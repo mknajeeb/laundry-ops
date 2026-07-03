@@ -246,13 +246,6 @@ def finalize_rinse_after_batch_confirm(
     batch_id = int(upload_batch_id)
     accepted = list(accepted_portal_rows or [])
 
-    from backend.rinse_portal_absence_completion import reject_bags_missing_from_latest_portal
-
-    portal_absence = reject_bags_missing_from_latest_portal(
-        cursor, org, batch_id, accepted
-    )
-    absence_bag_ids = list(portal_absence.get("bag_ids") or [])
-
     events_df = load_upload_batch_scan_events_as_dataframe(cursor, org, batch_id)
     merge_payload: dict[str, Any] = {"bags_merged": 0, "events_inserted": 0, "bag_ids": []}
     if not events_df.empty:
@@ -265,6 +258,14 @@ def finalize_rinse_after_batch_confirm(
             replace_existing=True,
             credential_sourced=True,
         )
+
+    from backend.rinse_portal_absence_completion import process_bags_missing_from_latest_portal
+
+    portal_absence = process_bags_missing_from_latest_portal(
+        cursor, org, batch_id, accepted
+    )
+    absence_bag_ids = list(portal_absence.get("rejected_bag_ids") or portal_absence.get("bag_ids") or [])
+    completed_absence_ids = list(portal_absence.get("completed_bag_ids") or [])
 
     merge_bag_ids = list(merge_payload.get("bag_ids") or [])
     accepted_bag_ids = [
@@ -281,6 +282,7 @@ def finalize_rinse_after_batch_confirm(
     completion_candidate_ids = _union_normalized_bag_ids(
         merge_bag_ids,
         accepted_bag_ids,
+        completed_absence_ids,
     )
 
     completion_payload: dict[str, Any] = {"bags_recomputed": 0, "bags_completed": 0, "bags": []}
@@ -314,10 +316,16 @@ def finalize_rinse_after_batch_confirm(
         "folding_summary": folding_summary,
         "bag_ids": completion_candidate_ids,
         "newly_completed_clean_rack_count": newly_completed_clean_rack_count,
-        "missing_prior_bags_rejected_count": int(portal_absence.get("count") or 0),
-        "missing_prior_bags_completed_count": 0,
+        "missing_prior_bags_rejected_count": int(portal_absence.get("rejected_count") or portal_absence.get("count") or 0),
+        "missing_prior_bags_completed_count": int(portal_absence.get("completed_count") or 0),
         "missing_prior_bag_ids_rejected": absence_bag_ids,
-        "missing_prior_bag_ids_completed": absence_bag_ids,
+        "missing_prior_bag_ids_completed": completed_absence_ids,
+        "missing_prior_bags_needs_verification_count": int(
+            portal_absence.get("needs_verification_count") or 0
+        ),
+        "missing_prior_bag_ids_needs_verification": list(
+            portal_absence.get("needs_verification_bag_ids") or []
+        ),
         "full_snapshot": bool(portal_absence.get("full_snapshot")),
         **folding_summary,
     }

@@ -43,13 +43,13 @@ class TestPortalScrapeRejectedRule(unittest.TestCase):
                 return_value={"BAGA"},
             ),
             patch(
-                "backend.rinse_portal_absence_completion.mark_registry_rejected_portal_absence",
-                return_value=True,
-            ) as mock_mark,
+                "backend.rinse_portal_absence_completion.verify_and_resolve_portal_departure_bag",
+                return_value={"bag_id": "BAGA", "action": "needs_verification"},
+            ) as mock_verify,
             patch(
                 "backend.rinse_portal_absence_completion.deactivate_at_vendor_presence_for_bags",
                 return_value=1,
-            ),
+            ) as mock_deact,
         ):
             out = reject_bags_missing_from_latest_portal(
                 cursor, 1, 99, accepted, full_snapshot=True
@@ -57,17 +57,18 @@ class TestPortalScrapeRejectedRule(unittest.TestCase):
 
         self.assertTrue(out["full_snapshot"])
         self.assertFalse(out["skipped"])
-        self.assertEqual(out["count"], 1)
-        self.assertEqual(out["bag_ids"], ["BAGA"])
-        self.assertEqual(out["action"], "rejected")
-        mock_mark.assert_called_once()
-        self.assertEqual(mock_mark.call_args[0][2], "BAGA")
+        self.assertEqual(out["needs_verification_count"], 1)
+        self.assertEqual(out["needs_verification_bag_ids"], ["BAGA"])
+        self.assertEqual(out["count"], 0)
+        self.assertEqual(out["bag_ids"], [])
+        mock_verify.assert_called_once()
+        mock_deact.assert_not_called()
 
     def test_finalize_calls_portal_absence_on_confirm(self):
         cursor = MagicMock()
         with (
             patch(
-                "backend.rinse_portal_absence_completion.reject_bags_missing_from_latest_portal",
+                "backend.rinse_portal_absence_completion.process_bags_missing_from_latest_portal",
                 return_value={
                     "full_snapshot": False,
                     "skipped": True,
@@ -107,8 +108,8 @@ class TestPortalScrapeRejectedRule(unittest.TestCase):
                 },
             ),
             patch(
-                "backend.rinse_portal_absence_completion.mark_registry_rejected_portal_absence"
-            ) as mock_mark,
+                "backend.rinse_portal_absence_completion.verify_and_resolve_portal_departure_bag"
+            ) as mock_verify,
         ):
             out = reject_bags_missing_from_latest_portal(
                 cursor,
@@ -119,7 +120,7 @@ class TestPortalScrapeRejectedRule(unittest.TestCase):
         self.assertTrue(out["skipped"])
         self.assertEqual(out["reason"], "partial_portal_scrape_max_pages")
         self.assertEqual(out["count"], 0)
-        mock_mark.assert_not_called()
+        mock_verify.assert_not_called()
 
     def test_absence_skipped_when_not_full_snapshot(self):
         cursor = MagicMock()
@@ -146,14 +147,14 @@ class TestPortalScrapeRejectedRule(unittest.TestCase):
                 return_value={"BAGA"},
             ),
             patch(
-                "backend.rinse_portal_absence_completion.mark_registry_rejected_portal_absence"
-            ) as mock_mark,
+                "backend.rinse_portal_absence_completion.verify_and_resolve_portal_departure_bag"
+            ) as mock_verify,
         ):
             out = reject_bags_missing_from_latest_portal(
                 cursor, 1, 10, accepted, full_snapshot=True
             )
         self.assertEqual(out["bag_ids"], [])
-        mock_mark.assert_not_called()
+        mock_verify.assert_not_called()
 
     def test_completed_bag_missing_from_upload_unchanged(self):
         cursor = MagicMock()
@@ -163,8 +164,8 @@ class TestPortalScrapeRejectedRule(unittest.TestCase):
                 return_value=True,
             ),
             patch(
-                "backend.rinse_portal_absence_completion.mark_registry_rejected_portal_absence"
-            ) as mock_mark,
+                "backend.rinse_portal_absence_completion.verify_and_resolve_portal_departure_bag"
+            ) as mock_verify,
             patch(
                 "backend.rinse_portal_absence_completion.fetch_incomplete_bag_candidates_for_org",
                 return_value=set(),
@@ -178,7 +179,7 @@ class TestPortalScrapeRejectedRule(unittest.TestCase):
                 full_snapshot=True,
             )
         self.assertEqual(out["bag_ids"], [])
-        mock_mark.assert_not_called()
+        mock_verify.assert_not_called()
 
     def test_scan_events_only_not_full_snapshot(self):
         cursor = MagicMock()
@@ -202,13 +203,19 @@ class TestPortalScrapeRejectedRule(unittest.TestCase):
         absence_out = {
             "full_snapshot": True,
             "skipped": False,
-            "count": 1,
-            "bag_ids": ["BAGOLD"],
-            "action": "rejected",
+            "count": 0,
+            "bag_ids": [],
+            "rejected_count": 0,
+            "rejected_bag_ids": [],
+            "completed_count": 0,
+            "completed_bag_ids": [],
+            "needs_verification_count": 1,
+            "needs_verification_bag_ids": ["BAGOLD"],
+            "action": "processed",
         }
         with (
             patch(
-                "backend.rinse_portal_absence_completion.reject_bags_missing_from_latest_portal",
+                "backend.rinse_portal_absence_completion.process_bags_missing_from_latest_portal",
                 return_value=absence_out,
             ),
             patch(
@@ -244,20 +251,24 @@ class TestPortalScrapeRejectedRule(unittest.TestCase):
         fold_bags = mock_fold.call_args[0][2]
         self.assertIn("BAGNEW", fold_bags)
         self.assertNotIn("BAGOLD", fold_bags)
-        self.assertEqual(out["missing_prior_bags_rejected_count"], 1)
-        self.assertEqual(out["missing_prior_bag_ids_rejected"], ["BAGOLD"])
+        self.assertEqual(out["missing_prior_bags_rejected_count"], 0)
+        self.assertEqual(out["missing_prior_bag_ids_rejected"], [])
+        self.assertEqual(out["missing_prior_bags_needs_verification_count"], 1)
 
     def test_confirm_response_fields_present(self):
         cursor = MagicMock()
         with (
             patch(
-                "backend.rinse_portal_absence_completion.reject_bags_missing_from_latest_portal",
+                "backend.rinse_portal_absence_completion.process_bags_missing_from_latest_portal",
                 return_value={
                     "full_snapshot": True,
                     "skipped": False,
-                    "count": 2,
-                    "bag_ids": ["OLD1", "OLD2"],
-                    "action": "rejected",
+                    "count": 0,
+                    "bag_ids": [],
+                    "rejected_count": 0,
+                    "rejected_bag_ids": [],
+                    "needs_verification_count": 2,
+                    "needs_verification_bag_ids": ["OLD1", "OLD2"],
                 },
             ),
             patch(
@@ -280,8 +291,10 @@ class TestPortalScrapeRejectedRule(unittest.TestCase):
             out = finalize_rinse_after_batch_confirm(
                 cursor, 1, 10, accepted_portal_rows=[{"ticket_id": "NEW1"}]
             )
-        self.assertEqual(out["missing_prior_bags_rejected_count"], 2)
-        self.assertEqual(out["missing_prior_bag_ids_rejected"], ["OLD1", "OLD2"])
+        self.assertEqual(out["missing_prior_bags_rejected_count"], 0)
+        self.assertEqual(out["missing_prior_bag_ids_rejected"], [])
+        self.assertEqual(out["missing_prior_bags_needs_verification_count"], 2)
+        self.assertEqual(out["missing_prior_bag_ids_needs_verification"], ["OLD1", "OLD2"])
         self.assertTrue(out["full_snapshot"])
 
     def test_multi_tenant_only_same_org_candidates(self):
@@ -292,8 +305,8 @@ class TestPortalScrapeRejectedRule(unittest.TestCase):
                 return_value={"BAG1"},
             ),
             patch(
-                "backend.rinse_portal_absence_completion.mark_registry_rejected_portal_absence",
-                return_value=True,
+                "backend.rinse_portal_absence_completion.verify_and_resolve_portal_departure_bag",
+                return_value={"bag_id": "BAG1", "action": "needs_verification"},
             ),
             patch(
                 "backend.rinse_portal_absence_completion.deactivate_at_vendor_presence_for_bags",
@@ -307,7 +320,7 @@ class TestPortalScrapeRejectedRule(unittest.TestCase):
                 [{"ticket_id": "BAG2"}],
                 full_snapshot=True,
             )
-        self.assertEqual(out["bag_ids"], ["BAG1"])
+        self.assertEqual(out["needs_verification_bag_ids"], ["BAG1"])
 
 
 class TestMarkRegistryPortalScrapeReject(unittest.TestCase):

@@ -752,6 +752,35 @@ def apply_completion_to_registry(
         }
     events = fetch_persistent_scan_events_for_bag(cursor, organization_id, bid)
     result = evaluate_bag_completion(events)
+    if result.completion_status != COMPLETION_COMPLETED:
+        from backend.rinse_bag_activity_rules import evaluate_bag_completion_v2
+        from backend.rinse_bag_completion import (
+            REASON_STRONG_COMPLETION_EVIDENCE,
+            _event_id_from_mapping,
+            order_events_for_completion,
+        )
+        from backend.rinse_bag_stage_bounds import event_ts, gaming_events_from_records, ts_valid
+
+        v2 = evaluate_bag_completion_v2(gaming_events_from_records(events))
+        if v2.completed and ts_valid(v2.completion_at):
+            result = CompletionResult(
+                completion_status=COMPLETION_COMPLETED,
+                completion_reason=REASON_STRONG_COMPLETION_EVIDENCE,
+                first_clean_scan_at=None,
+                first_clean_scan_event_id=None,
+                trigger_scan_at=v2.completion_at,
+                trigger_scan_event_id=_event_id_from_mapping(
+                    next(
+                        (
+                            ev
+                            for ev in order_events_for_completion(events)
+                            if event_ts(ev) == v2.completion_at
+                        ),
+                        {},
+                    )
+                ),
+                trigger_kind=v2.completion_kind,
+            )
     if result.completion_status == COMPLETION_COMPLETED and not completion_result_references_persisted_events(
         result, events
     ):

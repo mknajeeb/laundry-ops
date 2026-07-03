@@ -136,8 +136,8 @@ class TestPortalAbsenceSkippedOnMaxPages(unittest.TestCase):
                 },
             ),
             patch(
-                "backend.rinse_portal_absence_completion.mark_registry_completed_portal_absence"
-            ) as mock_mark,
+                "backend.rinse_portal_absence_completion.verify_and_resolve_portal_departure_bag"
+            ) as mock_verify,
         ):
             out = complete_bags_missing_from_latest_portal(
                 cursor, 3, 122, accepted
@@ -145,7 +145,7 @@ class TestPortalAbsenceSkippedOnMaxPages(unittest.TestCase):
         self.assertTrue(out["skipped"])
         self.assertEqual(out["reason"], "partial_portal_scrape_max_pages")
         self.assertEqual(out["count"], 0)
-        mock_mark.assert_not_called()
+        mock_verify.assert_not_called()
 
     def test_persist_sets_full_snapshot_zero_on_max_pages(self):
         cursor = MagicMock()

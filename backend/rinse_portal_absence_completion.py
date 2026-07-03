@@ -2,7 +2,8 @@
 Portal scrape absence rule on upload batch CONFIRM.
 
 On CONFIRM only: incomplete tenant bags missing from a confirmed full portal
-CSV snapshot are marked REJECTED (not completed).
+CSV snapshot are verified — completed bags are marked COMPLETED; bags without
+completion evidence enter needs-verification (not rejected).
 """
 
 from __future__ import annotations
@@ -16,7 +17,9 @@ from backend.rinse_bag_registry import (
     ensure_rinse_bag_registry_table,
     get_registry_row,
     is_bag_already_completed,
-    mark_registry_rejected_portal_absence,
+)
+from backend.rinse_portal_departure_completion import (
+    verify_and_resolve_portal_departure_bag,
 )
 from backend.rinse_portal_scrape_meta import (
     fetch_portal_scrape_meta_for_batch,
@@ -145,7 +148,7 @@ def fetch_incomplete_bag_candidates_for_org(
     return candidates
 
 
-def reject_bags_missing_from_latest_portal(
+def process_bags_missing_from_latest_portal(
     cursor,
     organization_id: int,
     upload_batch_id: int,
@@ -155,9 +158,11 @@ def reject_bags_missing_from_latest_portal(
     rejected_at: datetime | None = None,
 ) -> dict[str, Any]:
     """
-    Rejected rule: incomplete bags absent from the confirmed portal CSV are REJECTED.
+    Verify bags absent from the confirmed portal CSV.
 
-    Returns counts and bag ids; does nothing when not a full portal snapshot.
+    Completed bags (portal departure) → COMPLETED.
+    No completion evidence → needs verification (INCOMPLETE), not rejected.
+    Explicit cancellation only → REJECTED.
     """
     org = int(organization_id)
     batch_id = int(upload_batch_id)
@@ -166,7 +171,7 @@ def reject_bags_missing_from_latest_portal(
     batch_meta = fetch_portal_scrape_meta_for_batch(cursor, batch_id, org)
     if batch_meta is not None and not portal_scrape_meta_allows_absence_completion(batch_meta):
         logger.warning(
-            "Skipping portal scrape rejected rule for org=%s batch=%s: "
+            "Skipping portal departure rule for org=%s batch=%s: "
             "partial portal scrape (stopped_reason=%s reached_max_pages=%s pages_scraped=%s)",
             org,
             batch_id,
@@ -180,7 +185,7 @@ def reject_bags_missing_from_latest_portal(
             "reason": "partial_portal_scrape_max_pages",
             "count": 0,
             "bag_ids": [],
-            "action": "rejected",
+            "action": "processed",
             "portal_scrape_meta": batch_meta,
         }
 
@@ -196,7 +201,7 @@ def reject_bags_missing_from_latest_portal(
             "reason": "not_full_snapshot_or_scan_events_only",
             "count": 0,
             "bag_ids": [],
-            "action": "rejected",
+            "action": "processed",
         }
 
     current_ids = build_current_upload_bag_ids(accepted)
@@ -207,20 +212,37 @@ def reject_bags_missing_from_latest_portal(
             "reason": "no_ticket_ids_in_portal_rows",
             "count": 0,
             "bag_ids": [],
-            "action": "rejected",
+            "action": "processed",
         }
 
     candidates = fetch_incomplete_bag_candidates_for_org(cursor, org)
     missing = sorted(bid for bid in candidates if bid not in current_ids)
     when = rejected_at or datetime.utcnow()
+
+    completed: list[str] = []
+    needs_verification: list[str] = []
     rejected: list[str] = []
+    outcomes: list[dict[str, Any]] = []
+
     for bid in missing:
         if is_bag_already_completed(cursor, org, bid):
             continue
-        if mark_registry_rejected_portal_absence(
-            cursor, org, bid, upload_batch_id=batch_id, rejected_at=when
-        ):
+        outcome = verify_and_resolve_portal_departure_bag(
+            cursor,
+            org,
+            bid,
+            upload_batch_id=batch_id,
+            rejected_at=when,
+            recover_scans=True,
+        )
+        outcomes.append(outcome)
+        action = str(outcome.get("action") or "")
+        if action == "completed":
+            completed.append(bid)
+        elif action == "rejected":
             rejected.append(bid)
+        elif action == "needs_verification":
+            needs_verification.append(bid)
 
     presence_deactivated = 0
     if rejected:
@@ -232,10 +254,18 @@ def reject_bags_missing_from_latest_portal(
         "count": len(rejected),
         "bag_ids": rejected,
         "current_upload_bag_count": len(current_ids),
-        "action": "rejected",
+        "action": "processed",
         "presence_deactivated": presence_deactivated,
+        "completed_count": len(completed),
+        "completed_bag_ids": completed,
+        "needs_verification_count": len(needs_verification),
+        "needs_verification_bag_ids": needs_verification,
+        "rejected_count": len(rejected),
+        "rejected_bag_ids": rejected,
+        "outcomes": outcomes,
     }
 
 
-# Back-compat alias — behavior is now reject, not complete.
-complete_bags_missing_from_latest_portal = reject_bags_missing_from_latest_portal
+# Back-compat aliases.
+reject_bags_missing_from_latest_portal = process_bags_missing_from_latest_portal
+complete_bags_missing_from_latest_portal = process_bags_missing_from_latest_portal
