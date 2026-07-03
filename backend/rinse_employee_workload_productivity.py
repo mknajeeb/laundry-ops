@@ -133,7 +133,14 @@ def resolve_workload_bag_credit(
     else:
         display_employee = employee
 
-    lbs = _completed_lbs(row, meta)
+    lbs = _completed_lbs(
+        row,
+        meta,
+        events=events,
+        service_type=svc,
+        anchor_ts=anchor,
+        as_of_end=as_of_end,
+    )
     from backend.rinse_at_vendor_module import _format_et_display
 
     completion_ts_raw = row.get("completion_time")

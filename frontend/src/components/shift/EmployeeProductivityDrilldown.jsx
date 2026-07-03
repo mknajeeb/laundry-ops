@@ -42,24 +42,22 @@ function normalizeProcessedBag(bag) {
 function BagMobileCard({ bag, expanded, onToggle, referenceDateEt, statusLabel }) {
   const normalized = normalizeProcessedBag(bag);
   return (
-    <Paper variant="outlined" sx={{ p: 1.1, borderRadius: 1.5 }}>
+    <Paper
+      variant="outlined"
+      onClick={onToggle}
+      sx={{ p: 1.1, borderRadius: 1.5, cursor: "pointer" }}
+    >
       <Stack spacing={0.5}>
         <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
           <Box sx={{ minWidth: 0 }}>
             <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
-              <Link
-                component="button"
-                type="button"
-                underline="hover"
+              <Typography
+                component="span"
                 fontWeight={800}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggle();
-                }}
-                sx={{ fontSize: "0.95rem", wordBreak: "break-all", textAlign: "left" }}
+                sx={{ fontSize: "0.95rem", wordBreak: "break-all", textAlign: "left", color: "primary.main" }}
               >
                 {bag.bag_id}
-              </Link>
+              </Typography>
               {statusLabel ? (
                 <Chip label={statusLabel} size="small" sx={{ fontWeight: 700, fontSize: "0.7rem" }} />
               ) : null}
@@ -80,7 +78,7 @@ function BagMobileCard({ bag, expanded, onToggle, referenceDateEt, statusLabel }
         </Typography>
       </Stack>
       <Collapse in={expanded} unmountOnExit>
-        <Box sx={{ mt: 1 }}>
+        <Box sx={{ mt: 1 }} onClick={(e) => e.stopPropagation()}>
           <ShiftBagRecordRow
             row={normalized}
             variant="at_vendor"
@@ -148,7 +146,8 @@ function BagTableSection({
                   key={`${title}-${bag.bag_id}`}
                   selected={expandedBagId === bag.bag_id}
                   hover
-                  sx={{ "& td": { py: 1.1 } }}
+                  onClick={() => setExpandedBagId((prev) => (prev === bag.bag_id ? null : bag.bag_id))}
+                  sx={{ cursor: "pointer", "& td": { py: 1.1 } }}
                 >
                   <TableCell sx={{ whiteSpace: "nowrap" }}>
                     {formatFriendlyEtWall(normalized.completion_time_et || normalized.completion_time)}
@@ -200,14 +199,14 @@ function BagTableSection({
 export default function EmployeeProductivityDrilldown({
   bags,
   referenceDateEt,
-  loading = false,
+  bagsLoading = false,
 }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const [expandedBagId, setExpandedBagId] = useState(null);
-  const completed = bags || [];
+  const completed = bags;
 
-  if (loading) {
+  if (bagsLoading || completed == null) {
     return (
       <Typography variant="body2" color="text.secondary">
         Loading bag details…
