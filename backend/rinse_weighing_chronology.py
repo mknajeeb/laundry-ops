@@ -267,20 +267,27 @@ def extract_weighing_sessions_for_bag(
             )
         prev_bound = add_ts
 
-    orphan = _first_weight_after_ts(anchored, after_ts=prev_bound)
-    if orphan is not None:
-        weight_ev, weight_ts = orphan
-        _try_append_weighing_session(
-            sessions,
-            bid=bid,
-            timeline=tl,
-            anchored=anchored,
-            weight_ev=weight_ev,
-            weight_ts=weight_ts,
-            selected_date_et=selected_date_et,
-        )
+    # Only incomplete bags (no add-photos yet) may have a lone post-anchor weight.
+    if not add_photos_events:
+        orphan = _first_weight_after_ts(anchored, after_ts=prev_bound)
+        if orphan is not None:
+            weight_ev, weight_ts = orphan
+            _try_append_weighing_session(
+                sessions,
+                bid=bid,
+                timeline=tl,
+                anchored=anchored,
+                weight_ev=weight_ev,
+                weight_ts=weight_ts,
+                selected_date_et=selected_date_et,
+            )
 
-    return _dedupe_sessions_by_window(sessions)
+    sessions = _dedupe_sessions_by_window(sessions)
+    first_weight = _first_weight_after_ts(anchored, after_ts=anchor_ts)
+    if first_weight is None:
+        return []
+    first_weight_ts = first_weight[1]
+    return [s for s in sessions if s.get("weigh_end_et") == first_weight_ts]
 
 
 def chronology_rows_with_gaps(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -450,10 +457,10 @@ def build_weighing_chronology_payload(
             }
         ),
         "grouping_rules": (
-            "One session per post-sent-to-vendor weigh cycle; "
+            "One row per bag for the first post-sent-to-vendor weight-entry only; "
             "bounds from rinse_weighing_session (same-employee cleaning/start-cleaning before "
-            "first weight-entry in cycle; weight-entry is weigh end; "
-            "sorting/washing/drying/folding scans do not extend weighing); "
+            "first weight-entry; weight-entry is weigh end; post-processing completion "
+            "weights and later weigh cycles are excluded); "
             "global chronological order; gap_until_next = next session weigh_start minus current weigh_end."
         ),
     }

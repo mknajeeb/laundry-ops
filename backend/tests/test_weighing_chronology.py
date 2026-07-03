@@ -214,6 +214,25 @@ class TestWeighingChronologySessions:
         assert sessions[0]["weigh_end_et"] == datetime(2026, 6, 18, 7, 10)
         assert all(int(s["duration_seconds"]) < 30 * 60 for s in sessions)
 
+    def test_only_first_weight_entry_per_bag_when_later_post_processing_weight(self):
+        """Later weight-entry after processing must not appear on the weighing tab."""
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 17, 6, 0), ev_id=1),
+            _ev("cleaning", datetime(2026, 7, 2, 11, 55), ev_id=2, scan_index=2, user="Maria"),
+            _ev("weight-entry", datetime(2026, 7, 2, 11, 57), ev_id=3, scan_index=3, user="Maria"),
+            _ev("add-photos", datetime(2026, 7, 2, 11, 58), ev_id=4, scan_index=4, user="Maria"),
+            _ev("start-cleaning", datetime(2026, 7, 2, 12, 30), ev_id=5, scan_index=5, user="Varun"),
+            _ev("weight-entry", datetime(2026, 7, 2, 16, 5), ev_id=6, scan_index=6, user="Sarah"),
+        ]
+        sessions = extract_weighing_sessions_for_bag(
+            "CUI64XHJRL",
+            events,
+            selected_date_et=date(2026, 7, 2),
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["weigh_end_et"] == datetime(2026, 7, 2, 11, 57)
+        assert sessions[0]["source"] == "cleaning → weight-entry"
+
     def test_regression_db_bags_if_available(self):
         try:
             from backend.db import get_db
