@@ -22,8 +22,6 @@ import PayrollDashboard from "../components/PayrollDashboard";
 import PayrollWorkerPaymentsPanel from "../components/PayrollWorkerPaymentsPanel";
 import PayrollTaxSettingsPanel from "../components/PayrollTaxSettingsPanel";
 import PayrollTimeRecordsPanel from "../components/PayrollTimeRecordsPanel";
-import TaskMaintenancePage from "../pages/TaskMaintenancePage";
-import ShiftTaskHistoryPanel from "../components/ShiftTaskHistoryPanel";
 import PayrollSchedulingPanel from "../components/PayrollSchedulingPanel";
 import PayrollPeriodSearchBar from "../components/PayrollPeriodSearchBar";
 import { defaultPayPeriodRange } from "../payroll/payPeriodDefaults";
@@ -65,8 +63,6 @@ export default function PayrollManagementPage() {
     const out = [];
     if (readOnlyAccountant) return [...accountantTabs];
     if (canTime) out.push({ key: "time", label: "Time Records" });
-    if (canTime && hasPerm("ta.settings")) out.push({ key: "tasks", label: "Task Maintenance" });
-    if (canTime) out.push({ key: "shift_task_history", label: "Shift Task History" });
     if (canPayout) out.push({ key: "batches", label: "Payout Batches" });
     if (canPayout || (isAccountantRole && canAccountant)) {
       out.push(...accountantTabs);
@@ -258,8 +254,6 @@ export default function PayrollManagementPage() {
             onPayPeriodChange={setPayPeriod}
           />
         ) : null}
-        {active?.key === "tasks" ? <TaskMaintenancePage /> : null}
-        {active?.key === "shift_task_history" ? <ShiftTaskHistoryPanel /> : null}
         {active?.key === "schedule" ? <PayrollSchedulingPanel /> : null}
         {active?.key === "batches" ? (
           <PayoutBatchesPanel
