@@ -9,6 +9,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Grid,
   Paper,
   Stack,
   Typography,
@@ -16,7 +17,9 @@ import {
 import {
   authLogout,
   getClockPayrollUiSettings,
+  getTaskTrackingTasks,
   getTaSessionCurrent,
+  postTaskTrackingSwitchTask,
   taBreakEnd,
   taClockIn,
   taClockOut,
@@ -58,11 +61,17 @@ function ClockPage({ user: washproUser }) {
   const [personalBags, setPersonalBags] = useState(0);
   const [checkoutConfirmOpen, setCheckoutConfirmOpen] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [tasks, setTasks] = useState([]);
+  const [taskSelectOpen, setTaskSelectOpen] = useState(false);
+  const [pendingTaskId, setPendingTaskId] = useState(null);
+  const [switchTaskBusy, setSwitchTaskBusy] = useState(false);
 
   const lastPosRef = useRef({ lat: null, lng: null });
 
   const session = sessionRes?.session;
   const clockHints = sessionRes?.clock_hints;
+  const taskTracking = session?.task_tracking || session?.job_tracking;
+  const recentForceCheckout = sessionRes?.recent_force_checkout;
   const isClockedIn = !!session;
 
   const foldedByName = useMemo(() => {
@@ -83,6 +92,15 @@ function ClockPage({ user: washproUser }) {
     [t, foldedByName]
   );
 
+  const defaultCheckInTaskId = useMemo(() => {
+    const lastId = clockHints?.last_check_in_task_id;
+    if (lastId != null && tasks.some((task) => Number(task.id) === Number(lastId) && task.active !== false)) {
+      return Number(lastId);
+    }
+    const firstActive = tasks.find((task) => task.active !== false);
+    return firstActive?.id ?? tasks[0]?.id ?? null;
+  }, [clockHints?.last_check_in_task_id, tasks]);
+
   const loadClockUi = useCallback(async () => {
     try {
       const res = await getClockPayrollUiSettings();
@@ -92,6 +110,15 @@ function ClockPage({ user: washproUser }) {
       }
     } catch {
       setClockUi(DEFAULT_CLOCK_UI);
+    }
+  }, []);
+
+  const loadTasks = useCallback(async () => {
+    try {
+      const res = await getTaskTrackingTasks();
+      setTasks(Array.isArray(res.data) ? res.data : []);
+    } catch {
+      setTasks([]);
     }
   }, []);
 
@@ -149,7 +176,8 @@ function ClockPage({ user: washproUser }) {
   useEffect(() => {
     if (authLoading) return;
     loadClockUi();
-  }, [authLoading, loadClockUi]);
+    loadTasks();
+  }, [authLoading, loadClockUi, loadTasks]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -177,9 +205,41 @@ function ClockPage({ user: washproUser }) {
     if (authLoading || !isClockedIn) return undefined;
     const id = setInterval(() => {
       refreshAll(true);
-    }, 90000);
+    }, 30000);
     return () => clearInterval(id);
   }, [authLoading, isClockedIn, refreshAll]);
+
+  const formatDeadline = (iso) => {
+    if (!iso) return null;
+    const d = new Date(String(iso).replace(" ", "T"));
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  };
+
+  const scheduledEndLabel = formatDeadline(taskTracking?.effective_force_checkout_at);
+  const checkInLabel = formatDeadline(session?.clock_in_at);
+
+  const handleSwitchTask = async (taskId) => {
+    setSwitchTaskBusy(true);
+    setActionError("");
+    try {
+      await postTaskTrackingSwitchTask({ task_id: taskId });
+      await refreshAfterAction();
+    } catch (e) {
+      const d = e?.response?.data;
+      setActionError(d?.error || e?.message || "Could not switch task");
+    } finally {
+      setSwitchTaskBusy(false);
+    }
+  };
+
+  const clockInWithTask = async (lat, lng, taskId, bags) => {
+    const body = { latitude: lat, longitude: lng };
+    if (taskId) body.task_id = taskId;
+    if (bags != null) body.personal_laundry_bags = bags;
+    await taClockIn(body);
+    await refreshAfterAction();
+  };
 
   const sharedDevice = asBool(clockUi.shared_device_attendance);
 
@@ -289,14 +349,35 @@ function ClockPage({ user: washproUser }) {
   /** After user confirms clock-in: optional laundry bags step, then API. */
   const proceedAfterClockInConfirm = () => {
     setCheckInConfirmOpen(false);
+    if (tasks.length > 0) {
+      setPendingTaskId(defaultCheckInTaskId);
+      setTaskSelectOpen(true);
+      return;
+    }
     if (askBagsOnThisClockIn) {
       setPersonalBags(0);
       setBagsDialogOpen(true);
       return;
     }
     runWithPosition(async (lat, lng) => {
-      await taClockIn({ latitude: lat, longitude: lng });
-      await refreshAfterAction();
+      await clockInWithTask(lat, lng, null, null);
+      if (asBool(clockUi.shared_device_attendance) && !pinLockExcludedAdmin) {
+        await lockSharedDeviceScreen();
+        return;
+      }
+      navigate("/", { replace: true });
+    });
+  };
+
+  const confirmTaskAndClockIn = () => {
+    setTaskSelectOpen(false);
+    if (askBagsOnThisClockIn) {
+      setPersonalBags(0);
+      setBagsDialogOpen(true);
+      return;
+    }
+    runWithPosition(async (lat, lng) => {
+      await clockInWithTask(lat, lng, pendingTaskId, null);
       if (asBool(clockUi.shared_device_attendance) && !pinLockExcludedAdmin) {
         await lockSharedDeviceScreen();
         return;
@@ -308,12 +389,12 @@ function ClockPage({ user: washproUser }) {
   const confirmBagsAndClockIn = () => {
     setBagsDialogOpen(false);
     runWithPosition(async (lat, lng) => {
-      await taClockIn({
-        latitude: lat,
-        longitude: lng,
-        personal_laundry_bags: Math.max(0, Math.floor(Number(personalBags) || 0)),
-      });
-      await refreshAfterAction();
+      await clockInWithTask(
+        lat,
+        lng,
+        pendingTaskId,
+        Math.max(0, Math.floor(Number(personalBags) || 0)),
+      );
       if (asBool(clockUi.shared_device_attendance) && !pinLockExcludedAdmin) {
         await lockSharedDeviceScreen();
         return;
@@ -383,6 +464,15 @@ function ClockPage({ user: washproUser }) {
         ) : null}
         {!isClockedIn ? (
           <Stack spacing={3} alignItems="center">
+            {recentForceCheckout ? (
+              <Alert severity="warning" sx={{ width: "100%", textAlign: "left" }}>
+                Your shift ended automatically at{" "}
+                {formatDeadline(recentForceCheckout.force_checked_out_at) || "scheduled time"}.
+                {recentForceCheckout.continuation_allowed
+                  ? " An admin has allowed you to continue — check in again when ready."
+                  : " Contact a manager if you need to continue working."}
+              </Alert>
+            ) : null}
             <Typography
               sx={{
                 fontSize: { xs: 28, sm: 34 },
@@ -412,7 +502,7 @@ function ClockPage({ user: washproUser }) {
             </Button>
           </Stack>
         ) : (
-          <Stack spacing={3} alignItems="center">
+          <Stack spacing={2.5} alignItems="stretch" sx={{ width: "100%" }}>
             <Typography
               sx={{
                 fontSize: { xs: 26, sm: 32 },
@@ -420,16 +510,62 @@ function ClockPage({ user: washproUser }) {
                 color: "primary.main",
                 letterSpacing: "-0.02em",
                 lineHeight: 1.2,
+                textAlign: "center",
               }}
             >
               {atWorkLabel}
             </Typography>
+
+            {checkInLabel ? (
+              <Typography variant="body1" color="text.secondary" textAlign="center">
+                Checked in at {checkInLabel}
+              </Typography>
+            ) : null}
+
+            {scheduledEndLabel ? (
+              <Alert
+                severity={taskTracking?.force_checkout_blocked ? "error" : "info"}
+                sx={{ textAlign: "left" }}
+              >
+                {taskTracking?.force_checkout_blocked
+                  ? `Scheduled end (${scheduledEndLabel}) — shift should be closed.`
+                  : `Scheduled end: ${scheduledEndLabel}`}
+              </Alert>
+            ) : null}
+
+            <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, textAlign: "left" }}>
+              <Typography variant="overline" color="text.secondary">
+                Current task
+              </Typography>
+              <Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>
+                {taskTracking?.current_task_name || "No task selected"}
+              </Typography>
+              <Grid container spacing={1}>
+                {tasks.map((task) => {
+                  const active = Number(taskTracking?.current_task_id) === Number(task.id);
+                  return (
+                    <Grid item xs={6} key={task.id}>
+                      <Button
+                        fullWidth
+                        variant={active ? "contained" : "outlined"}
+                        disabled={busy || switchTaskBusy || active}
+                        onClick={() => handleSwitchTask(task.id)}
+                        sx={{ textTransform: "none", fontWeight: 700, py: 1.5, fontSize: 15 }}
+                      >
+                        {task.name}
+                      </Button>
+                    </Grid>
+                  );
+                })}
+              </Grid>
+            </Paper>
+
             <Button
               variant="contained"
               color="error"
               size="large"
               fullWidth
-              disabled={busy}
+              disabled={busy || switchTaskBusy}
               onClick={() => setCheckoutConfirmOpen(true)}
               sx={{
                 py: 2.5,
@@ -500,6 +636,35 @@ function ClockPage({ user: washproUser }) {
             {t("clock.cancel")}
           </Button>
           <Button variant="contained" onClick={confirmBagsAndClockIn} disabled={busy} size="large">
+            {busy ? <CircularProgress size={22} color="inherit" /> : t("clock.confirm")}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={taskSelectOpen} onClose={() => !busy && setTaskSelectOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle sx={{ fontWeight: 800 }}>Select starting task</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+            Your last check-in task is preselected. Confirm or choose a different task.
+          </Typography>
+          <Stack spacing={1} sx={{ pt: 1 }}>
+            {tasks.map((task) => (
+              <Button
+                key={task.id}
+                variant={Number(pendingTaskId) === Number(task.id) ? "contained" : "outlined"}
+                onClick={() => setPendingTaskId(task.id)}
+                sx={{ justifyContent: "flex-start", textTransform: "none", fontWeight: 700, py: 1.5 }}
+              >
+                {task.name}
+              </Button>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setTaskSelectOpen(false)} disabled={busy}>
+            {t("clock.cancel")}
+          </Button>
+          <Button variant="contained" onClick={confirmTaskAndClockIn} disabled={busy || !pendingTaskId} size="large">
             {busy ? <CircularProgress size={22} color="inherit" /> : t("clock.confirm")}
           </Button>
         </DialogActions>

@@ -1,7 +1,7 @@
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { tenantNavItemForPath, tenantNavItemVisible } from "../constants/tenantNav";
-import { isAccountantOnlyUser, isRinseScheduleOnlyUser, tenantDefaultRoute, userSatisfiesRoleGate } from "../utils/platformAccess";
+import { isPayrollManagementOnlyUser, isRinseScheduleOnlyUser, tenantDefaultRoute, userSatisfiesRoleGate } from "../utils/platformAccess";
 
 function isLoginPath(path) {
   const p = path || "";
@@ -19,7 +19,7 @@ export default function TenantNavAccessBoundary({ user, payrollNavVisible = true
 
   if (!user || isLoginPath(p)) return children;
 
-  if (isAccountantOnlyUser(user)) {
+  if (isPayrollManagementOnlyUser(user)) {
     const onPayroll = p === "/payroll" || p.startsWith("/payroll/");
     const onKiosk = p === "/kiosk" || p.startsWith("/kiosk/");
     if (onKiosk || !onPayroll) {

@@ -34,12 +34,13 @@ export function hasTaxWithheldBreakdown(line) {
 }
 
 export const TAX_WITHHELD_BREAKDOWN_LABELS = [
-  { key: "federal_income_tax", label: "Federal Income Tax" },
-  { key: "social_security", label: "Social Security" },
-  { key: "medicare", label: "Medicare" },
+  { key: "federal_income_tax", label: "FWT" },
+  { key: "social_security", label: "SS W/H" },
+  { key: "medicare", label: "MC W/H" },
   { key: "state_tax", label: "NY State Tax" },
-  { key: "local_tax", label: "NYC Local Tax" },
-  { key: "other_deduction", label: "Other Deduction" },
+  { key: "local_tax", label: "NYC Resident Tax" },
+  { key: "ny_sdi", label: "NY SDI" },
+  { key: "ny_pfml", label: "NY PFML" },
   { key: "total_employee_taxes", label: "Total estimated withholding (liability)" },
   { key: "prior_tax_balance", label: "Prior period estimated balance" },
   { key: "total_tax_liability", label: "Total estimated withholding liability" },

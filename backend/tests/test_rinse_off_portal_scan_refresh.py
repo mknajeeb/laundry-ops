@@ -123,3 +123,18 @@ def test_build_targeted_refresh_sync_summary_skipped_reason():
     )
     assert summary["targeted_refresh_ran"] is False
     assert summary["skipped_reason"] == "RINSE_OFF_PORTAL_SCAN_REFRESH_ENABLED=0"
+
+
+def test_targeted_refresh_import_chain_includes_fold_block_helper():
+    from backend.rinse_employee_completed_bags import _collect_employee_non_folding_scans
+    from backend.rinse_scan_purpose import is_fold_block_non_folding_purpose
+
+    assert is_fold_block_non_folding_purpose("fold-block", rack="A1") is False
+    assert _collect_employee_non_folding_scans(
+        "Alice",
+        day_scans=[],
+        completion_keys=set(),
+        anchor_by_bag={},
+        clock_in=None,
+        clock_out=None,
+    ) == []

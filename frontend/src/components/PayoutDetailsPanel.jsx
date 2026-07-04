@@ -81,22 +81,15 @@ import {
 import { downloadEmployeeRecentPaystubsPdf } from "../payroll/downloadEmployeePaystubArchive";
 import { DEFAULT_RECENT_PAYSTUB_BATCHES } from "../payroll/paystubArchive";
 import { ESTIMATE_DISCLAIMER } from "../payroll/payrollTaxMessages";
+import {
+  PAYROLL_REGISTER_EMPLOYEE_TAX_FIELDS,
+  PAYROLL_REGISTER_EMPLOYER_TAX_FIELDS,
+  sumEmployeeRegisterTaxes,
+  sumEmployerRegisterTaxes,
+} from "../payroll/payrollRegisterTaxFields";
 
-const DEDUCTION_FIELDS = [
-  { key: "fit", label: "FIT" },
-  { key: "ss", label: "SS" },
-  { key: "medicare", label: "Medicare" },
-  { key: "state", label: "State" },
-  { key: "local", label: "Local" },
-];
-
-const ER_TAX_FIELDS = [
-  { key: "er_ss", label: "ER SS" },
-  { key: "er_medicare", label: "ER Medicare" },
-  { key: "futa", label: "FUTA" },
-  { key: "suta", label: "SUTA" },
-  { key: "other", label: "Other" },
-];
+const DEDUCTION_FIELDS = PAYROLL_REGISTER_EMPLOYEE_TAX_FIELDS;
+const ER_TAX_FIELDS = PAYROLL_REGISTER_EMPLOYER_TAX_FIELDS;
 
 const PAYMENT_METHODS = [
   { value: "direct_deposit", label: "Direct Deposit" },
@@ -163,10 +156,7 @@ function withheldForCurrentPeriod(settlement, currentTax, paidFullGross) {
 
 function computeLocalTotals(line, draft) {
   const gross = num(line.gross_amount || line.total_amount);
-  const currentTax = DEDUCTION_FIELDS.reduce(
-    (s, f) => s + num(draft.employee_deductions?.[f.key]),
-    0,
-  );
+  const currentTax = sumEmployeeRegisterTaxes(draft.employee_deductions);
   const catchUp = num(draft.settlement?.catch_up_withholding);
   const priorCollected = priorCollectedFromPay(draft.settlement);
   const paidFullGross = Boolean(draft.settlement?.paid_full_gross_without_withholding);
@@ -175,7 +165,7 @@ function computeLocalTotals(line, draft) {
     currentTax,
     paidFullGross,
   );
-  const er = ER_TAX_FIELDS.reduce((s, f) => s + num(draft.employer_taxes?.[f.key]), 0);
+  const er = sumEmployerRegisterTaxes(draft.employer_taxes) + num(draft.employer_taxes?.other);
   const withheld = paidFullGross ? 0 : roundMoney(withheldCurrent + priorCollected);
   const net = paidFullGross ? gross : Math.max(0, roundMoney(gross - withheld));
   return {
@@ -294,7 +284,7 @@ function payoutDetailsPayload(draft) {
 }
 
 function lineTaxTotal(draft) {
-  return DEDUCTION_FIELDS.reduce((s, f) => s + num(draft.employee_deductions?.[f.key]), 0);
+  return sumEmployeeRegisterTaxes(draft.employee_deductions);
 }
 
 function formatDraftMoney(v) {
@@ -905,7 +895,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
                     {finalized
-                      ? "Accountant can confirm payment after employees are paid."
+                      ? "Paystubs are available — print or email from this tab as needed."
                       : "Record Federal (FIT) and State taxes for each employee, payment method and date, then click Finalize & close batch."}
                   </Typography>
                 </Box>
@@ -1035,8 +1025,8 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                   <TableCell width={32} />
                   <TableCell>Employee</TableCell>
                   <TableCell align="right">Gross</TableCell>
-                  <TableCell align="right">Federal</TableCell>
-                  <TableCell align="right">State</TableCell>
+                  <TableCell align="right">FWT</TableCell>
+                  <TableCell align="right">NY State</TableCell>
                   <TableCell align="right">Total tax</TableCell>
                   <TableCell align="right">Net paid</TableCell>
                   <TableCell>Method</TableCell>
@@ -1258,7 +1248,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         <DialogContent>
           <Typography variant="body2">
             Locks tax and payment fields, generates official paystubs, and marks the batch ready to pay.
-            The accountant can then confirm when payment has been initiated.
+            Print or email paystubs from this tab when employees are paid.
           </Typography>
         </DialogContent>
         <DialogActions>

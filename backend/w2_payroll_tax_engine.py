@@ -587,6 +587,7 @@ def calculate_w2_line_taxes(
         "employer_medicare": _money_json(er_medicare),
         "futa_estimate": _money_json(futa),
         "ny_suta_estimate": _money_json(ny_suta + ny_reemployment),
+        "ny_reemployment_estimate": _money_json(ny_reemployment),
         "employer_other_tax_estimate": _money_json(mctmt),
         "workers_comp_estimate": _money_json(workers_comp),
         "total_employer_taxes": _money_json(total_employer),

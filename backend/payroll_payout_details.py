@@ -20,20 +20,22 @@ EMPLOYEE_DEDUCTION_KEYS = (
     "other2",
 )
 PAYSTUB_DEDUCTION_LINES = (
-    ("fit", "Federal Income Tax"),
-    ("ss", "Social Security"),
-    ("medicare", "Medicare"),
+    ("fit", "FWT"),
+    ("ss", "SS W/H"),
+    ("medicare", "MC W/H"),
     ("state", "NY State Tax"),
-    ("local", "NYC Local Tax"),
+    ("local", "NYC Resident Tax"),
+    ("other2", "NY SDI"),
+    ("other1", "NY PFML"),
 )
 PAYSTUB_EMPLOYER_TAX_LINES = (
-    ("er_ss", "Employer Social Security"),
-    ("er_medicare", "Employer Medicare"),
+    ("er_ss", "ER SS"),
+    ("er_medicare", "ER MC"),
     ("futa", "FUTA"),
-    ("suta", "NY SUI"),
-    ("other", "MCTMT"),
+    ("suta", "NY SUTA"),
+    ("ny_reemploy", "NY Re-employ"),
 )
-EMPLOYER_TAX_KEYS = ("er_ss", "er_medicare", "futa", "suta", "other")
+EMPLOYER_TAX_KEYS = ("er_ss", "er_medicare", "futa", "suta", "ny_reemploy", "other")
 PAYMENT_METHODS = ("direct_deposit", "check", "cash", "zelle", "other")
 DOCUMENT_MODES = ("payment_receipt", "official_paystub")
 DEFAULT_DOCUMENT_MODE = "official_paystub"
@@ -660,6 +662,8 @@ def compute_tax_withheld_breakdown(details: dict) -> dict[str, float]:
         "medicare": float(_money(ded.get("medicare"))),
         "state_tax": float(_money(ded.get("state"))),
         "local_tax": float(_money(ded.get("local"))),
+        "ny_pfml": float(_money(ded.get("other1"))),
+        "ny_sdi": float(_money(ded.get("other2"))),
         "other_deduction": other,
         "prior_period_adjustment": prior_adj,
         "total_employee_taxes": float(tax_summary.get("current_period_taxes") or 0),
@@ -1235,7 +1239,12 @@ def build_estimated_payout_details_patch(
         "er_ss": float(calc.get("employer_social_security") or 0),
         "er_medicare": float(calc.get("employer_medicare") or 0),
         "futa": float(calc.get("futa_estimate") or 0),
-        "suta": float(calc.get("ny_suta_estimate") or 0),
+        "suta": round(
+            float(calc.get("ny_suta_estimate") or 0)
+            - float(calc.get("ny_reemployment_estimate") or 0),
+            2,
+        ),
+        "ny_reemploy": float(calc.get("ny_reemployment_estimate") or 0),
         "other": float(calc.get("employer_other_tax_estimate") or 0),
     }
     patch = {
@@ -1666,11 +1675,9 @@ def _other_deduction_amount(ded: dict) -> float:
 def paystub_deduction_rows(details: dict) -> tuple[list[tuple[str, float]], float]:
     """Return labeled deduction rows and total deductions for paystub display."""
     ded = details.get("employee_deductions") or {}
-    settlement = details.get("settlement") or {}
     rows: list[tuple[str, float]] = []
     for key, label in PAYSTUB_DEDUCTION_LINES:
         rows.append((label, float(_money(ded.get(key)))))
-    rows.append(("Other Deduction", _other_deduction_amount(ded)))
     total = round(sum(amt for _, amt in rows), 2)
     return rows, total
 
@@ -1796,6 +1803,8 @@ def _empty_paystub_ytd() -> dict[str, float]:
         "medicare": 0.0,
         "state": 0.0,
         "local": 0.0,
+        "other1": 0.0,
+        "other2": 0.0,
         "total_employee_deductions": 0.0,
         "net_pay": 0.0,
         "amount_paid": 0.0,
@@ -1811,6 +1820,8 @@ def _line_paystub_ytd_components(line: dict, details: dict, totals: dict) -> dic
         "medicare": float(_money(ded.get("medicare"))),
         "state": float(_money(ded.get("state"))),
         "local": float(_money(ded.get("local"))),
+        "other1": float(_money(ded.get("other1"))),
+        "other2": float(_money(ded.get("other2"))),
         "total_employee_deductions": float(totals.get("total_employee_deductions") or 0),
         "net_pay": float(totals.get("net_pay") or 0),
         "amount_paid": float(
@@ -2342,6 +2353,9 @@ Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p
             _paystub_money_row(label, float(_money(er.get(key))))
             for key, label in PAYSTUB_EMPLOYER_TAX_LINES
         )
+        mctmt = float(_money(er.get("other")))
+        if mctmt > 0:
+            er_rows += _paystub_money_row("MCTMT", mctmt)
         employer_html = f"""
 <h2>Employer Taxes</h2>
 <table class="compact">

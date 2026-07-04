@@ -1,6 +1,6 @@
 import {
   hasPlatformAdminRole,
-  isAccountantOnlyUser,
+  isPayrollManagementOnlyUser,
   isRinseScheduleOnlyUser,
   isTenantModuleEnabled,
   TENANT_PORTAL_ROLES,
@@ -115,7 +115,7 @@ export const TENANT_NAV_ITEMS = [
   { to: "/maintenance/machine-configuration", labelKey: "nav.machineConfiguration", roles: OPS, moduleKey: "maintenance" },
   { to: "/employees", labelKey: "nav.people", roles: ["ADMIN"], moduleKey: "people" },
   { to: "/documents", labelKey: "nav.documents", roles: ["ADMIN"], moduleKey: "people" },
-  { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS", "ACCOUNTANT"], permissionsAnyOf: ["users.view"], moduleKey: "payroll" },
+  { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS", "FINANCE", "ACCOUNTANT"], permissionsAnyOf: ["users.view", "payroll.view"], moduleKey: "payroll" },
   { to: "/organization", labelKey: "nav.organization", roles: ["ADMIN"], moduleKey: "organization" },
   { to: "/notifications", labelKey: "nav.notifications", roles: PORTAL, moduleKey: "notifications" },
   { to: "/permissions", labelKey: "nav.permissions", roles: ["ADMIN"], moduleKey: "permissions" },
@@ -132,7 +132,7 @@ export const TENANT_NAV_ITEMS = [
  * @param {(key: string) => boolean} [hasPerm] — from `useAuth()`; when omitted, only role gates apply.
  */
 export function tenantNavItemVisible(user, item, payrollNavVisible = true, hasPerm = null) {
-  if (isAccountantOnlyUser(user)) {
+  if (isPayrollManagementOnlyUser(user)) {
     if (item.to !== "/payroll") return false;
     if (payrollNavVisible === false) return false;
     return isTenantModuleEnabled(user, item.moduleKey || "payroll");

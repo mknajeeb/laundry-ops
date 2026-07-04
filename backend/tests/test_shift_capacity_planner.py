@@ -737,6 +737,31 @@ class TestPlannerBugFixes:
         ]
         assert folder_b2["fold_complete_at"] != base_b2["fold_complete_at"]
 
+    def test_command_board_has_batch_and_resource_timelines(self):
+        result = simulate_shift_capacity(
+            _default_payload(
+                start_time="7:00 AM",
+                target_time="12:00 PM",
+                bag_count=50,
+                orders_using_2_washers=40,
+                orders_using_2_dryers=10,
+                washer_count=4,
+                dryer_count=4,
+                folder_count=3,
+                sorter_count=1,
+                weigher_count=1,
+                washer_person_count=1,
+                batch_size=8,
+                washing_strategy="batch_washing",
+            )
+        )
+        board = result["operational"]["command_board"]
+        assert board["simulation_valid"] is True
+        assert len(board["batch_timeline"]) >= 6
+        assert board["summary"]["folded_by_target"] >= 1
+        assert board["summary"]["bottleneck"] not in (None, "", "none")
+        assert board["resource_timeline"]["cells"]["sorter"]
+
     def test_legacy_washing_strategy_aliases(self):
         batch = parse_planner_inputs({"washing_strategy": "hybrid_recommended"})
         assert batch.washing_strategy == "batch_washing"

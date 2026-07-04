@@ -225,6 +225,18 @@ def list_time_records(
         else ", 0 AS payroll_hours_approved"
     )
     review_sel = ", pc.review_state AS payroll_cycle_review_state" if has_review else ""
+    jt_cols = []
+    for col in (
+        "scheduled_end_at",
+        "force_checkout_at",
+        "force_checkout_waived",
+        "force_checked_out_at",
+        "checkout_type",
+        "continuation_allowed",
+    ):
+        if table_has_column(chk, "shift_sessions", col):
+            jt_cols.append(f"s.{col}")
+    jt_sel = (", " + ", ".join(jt_cols)) if jt_cols else ""
     if has_ss_org:
         org_clause = "s.organization_id = %s"
     else:
@@ -233,7 +245,7 @@ def list_time_records(
     q = f"""
         SELECT s.id, s.user_id, s.clock_in_at, s.clock_out_at, s.status,
                s.total_break_seconds, s.net_work_seconds
-               {override_sel}{hours_approved_sel}{remarks_sel},
+               {override_sel}{hours_approved_sel}{remarks_sel}{jt_sel},
                pp.first_name, pp.last_name
                {review_sel}
         FROM shift_sessions s
@@ -291,6 +303,17 @@ def list_time_records(
             "payroll_hours_approved": bool(row.get("payroll_hours_approved")),
             "pending_approval": bool(row.get("manual_override"))
             and not bool(row.get("payroll_hours_approved")),
+            "scheduled_end_at": row.get("scheduled_end_at"),
+            "force_checkout_at": row.get("force_checkout_at"),
+            "force_checkout_waived": bool(int(row.get("force_checkout_waived") or 0))
+            if row.get("force_checkout_waived") is not None
+            else False,
+            "force_checked_out_at": row.get("force_checked_out_at"),
+            "checkout_type": row.get("checkout_type"),
+            "continuation_allowed": bool(int(row.get("continuation_allowed") or 0))
+            if row.get("continuation_allowed") is not None
+            else False,
+            "was_force_checked_out": bool(row.get("force_checked_out_at")),
         }
         if status_filter and status_filter != "all" and rec["status"] != status_filter:
             continue
@@ -417,23 +440,36 @@ def _parse_clock_dt(value: Any) -> Optional[datetime]:
     return None
 
 
+def _user_has_active_shift(conn, user_id: int) -> bool:
+    c = conn.cursor()
+    c.execute(
+        "SELECT id FROM shift_sessions WHERE user_id=%s AND status='active' LIMIT 1",
+        (int(user_id),),
+    )
+    return c.fetchone() is not None
+
+
 def create_manual_time_record(
     conn,
     organization_id: int,
     *,
     user_id: int,
     clock_in_at: Any,
-    clock_out_at: Any,
+    clock_out_at: Any = None,
     remarks: str = "",
 ) -> dict:
     ci = _parse_clock_dt(clock_in_at)
-    co = _parse_clock_dt(clock_out_at)
-    if not ci or not co or co <= ci:
+    co_raw = clock_out_at
+    co = _parse_clock_dt(co_raw) if co_raw is not None and str(co_raw).strip() != "" else None
+    if not ci:
+        raise ValueError("Clock in is required")
+    if co is not None and co <= ci:
         raise ValueError("Clock out must be after clock in")
     uid = int(user_id)
     oid = int(organization_id)
+    if co is None and _user_has_active_shift(conn, uid):
+        raise ValueError("Worker already has an open shift. Clock them out first or edit the existing record.")
     pc_id = get_or_create_payroll_cycle_unified(conn, ci, oid)
-    net = int((co - ci).total_seconds())
     geofence_id = _geofence_for_user(conn, uid, oid)
     employment_category_id = _employment_category_for_user(conn, uid)
 
@@ -441,6 +477,13 @@ def create_manual_time_record(
     has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
     has_remarks = table_has_column(chk, "shift_sessions", "period_adjustment_remarks")
     has_manual = table_has_column(chk, "shift_sessions", "manual_override")
+
+    if co is None:
+        status = "active"
+        net = None
+    else:
+        status = "completed"
+        net = int((co - ci).total_seconds())
 
     cols = [
         "user_id",
@@ -453,7 +496,7 @@ def create_manual_time_record(
         "total_break_seconds",
         "net_work_seconds",
     ]
-    vals: list[Any] = [uid, pc_id, geofence_id, employment_category_id, ci, co, "completed", 0, net]
+    vals: list[Any] = [uid, pc_id, geofence_id, employment_category_id, ci, co, status, 0, net]
     if has_ss_org:
         cols.insert(1, "organization_id")
         vals.insert(1, oid)

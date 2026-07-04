@@ -28,7 +28,7 @@ import TenantNavAccessBoundary from "./components/TenantNavAccessBoundary";
 import Sidebar from "./components/Sidebar";
 import PlatformSidebar from "./components/PlatformSidebar";
 import { useI18n } from "./i18n/I18nContext";
-import { hasPlatformAdminRole, isAccountantOnlyUser, isPlatformOnlyUser, isRinseScheduleOnlyUser, tenantDefaultRoute, userMayUseKioskLock, userSatisfiesRoleGate } from "./utils/platformAccess";
+import { hasPlatformAdminRole, isPayrollManagementOnlyUser, isPlatformOnlyUser, isRinseScheduleOnlyUser, tenantDefaultRoute, userMayUseKioskLock, userSatisfiesRoleGate } from "./utils/platformAccess";
 
 import ProductionPage from "./pages/ProductionPage";
 import ScoreboardPage from "./pages/ScoreboardPage";
@@ -483,7 +483,7 @@ function AppShell() {
       return;
     }
     if (
-      isAccountantOnlyUser(user) &&
+      isPayrollManagementOnlyUser(user) &&
       pathname !== "/payroll" &&
       !pathname.startsWith("/payroll/")
     ) {

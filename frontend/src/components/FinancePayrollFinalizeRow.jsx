@@ -11,25 +11,11 @@ import {
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
-
-const PRIMARY_TAX_FIELDS = [
-  { key: "fit", label: "Federal (FIT)", helper: "Federal income tax withheld" },
-  { key: "state", label: "State", helper: "State income tax withheld" },
-];
-
-const OTHER_TAX_FIELDS = [
-  { key: "ss", label: "Social Security" },
-  { key: "medicare", label: "Medicare" },
-  { key: "local", label: "Local" },
-];
-
-const ER_TAX_FIELDS = [
-  { key: "er_ss", label: "ER SS" },
-  { key: "er_medicare", label: "ER Medicare" },
-  { key: "futa", label: "FUTA" },
-  { key: "suta", label: "SUTA" },
-  { key: "other", label: "Other" },
-];
+import {
+  PAYROLL_REGISTER_EMPLOYEE_TAX_FIELDS,
+  PAYROLL_REGISTER_EMPLOYER_TAX_FIELDS,
+  sumEmployeeRegisterTaxes,
+} from "../payroll/payrollRegisterTaxFields";
 
 const PAYMENT_METHODS = [
   { value: "direct_deposit", label: "Direct Deposit" },
@@ -59,10 +45,7 @@ export default function FinancePayrollFinalizeRow({
   onUpdateDraft,
   onUpdateLineFlag,
 }) {
-  const totalTax = PRIMARY_TAX_FIELDS.concat(OTHER_TAX_FIELDS).reduce(
-    (s, f) => s + num(draft.employee_deductions?.[f.key]),
-    0,
-  );
+  const totalTax = sumEmployeeRegisterTaxes(draft.employee_deductions);
 
   return (
     <Stack spacing={1.5}>
@@ -75,11 +58,14 @@ export default function FinancePayrollFinalizeRow({
             bgcolor: "rgba(25, 118, 210, 0.04)",
           }}
         >
-          <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
-            Taxes withheld (from accountant payroll run)
+          <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
+            Employee taxes (from payroll register)
           </Typography>
-          <Stack direction="row" flexWrap="wrap" gap={1.5} sx={{ mb: 1 }}>
-            {PRIMARY_TAX_FIELDS.map((f) => (
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+            Enter amounts from the accountant payroll register after payroll is confirmed.
+          </Typography>
+          <Stack direction="row" flexWrap="wrap" gap={1}>
+            {PAYROLL_REGISTER_EMPLOYEE_TAX_FIELDS.map((f) => (
               <TextField
                 key={f.key}
                 size="small"
@@ -88,21 +74,8 @@ export default function FinancePayrollFinalizeRow({
                 value={draft.employee_deductions?.[f.key] ?? ""}
                 onChange={(e) => onUpdateDraft(ln.id, "employee_deductions", f.key, e.target.value)}
                 helperText={f.helper}
-                sx={{ minWidth: 140 }}
+                sx={{ width: 130 }}
                 inputProps={{ style: { fontWeight: 600 } }}
-              />
-            ))}
-          </Stack>
-          <Stack direction="row" flexWrap="wrap" gap={1}>
-            {OTHER_TAX_FIELDS.map((f) => (
-              <TextField
-                key={f.key}
-                size="small"
-                label={f.label}
-                type="number"
-                value={draft.employee_deductions?.[f.key] ?? ""}
-                onChange={(e) => onUpdateDraft(ln.id, "employee_deductions", f.key, e.target.value)}
-                sx={{ width: 120 }}
               />
             ))}
             <Box sx={{ ml: 1, pt: 0.5 }}>
@@ -115,6 +88,27 @@ export default function FinancePayrollFinalizeRow({
                 {money(totals.net)}
               </Typography>
             </Box>
+          </Stack>
+        </Paper>
+      ) : null}
+
+      {!isReceiptMode ? (
+        <Paper variant="outlined" sx={{ p: 1.5 }}>
+          <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+            Employer taxes (from payroll register)
+          </Typography>
+          <Stack direction="row" flexWrap="wrap" gap={1}>
+            {PAYROLL_REGISTER_EMPLOYER_TAX_FIELDS.map((f) => (
+              <TextField
+                key={f.key}
+                size="small"
+                label={f.label}
+                type="number"
+                value={draft.employer_taxes?.[f.key] ?? ""}
+                onChange={(e) => onUpdateDraft(ln.id, "employer_taxes", f.key, e.target.value)}
+                sx={{ width: 120 }}
+              />
+            ))}
           </Stack>
         </Paper>
       ) : null}
@@ -301,26 +295,6 @@ export default function FinancePayrollFinalizeRow({
             </Stack>
           </Paper>
 
-          {!isReceiptMode ? (
-            <Paper variant="outlined" sx={{ p: 1.5 }}>
-              <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 1 }}>
-                Employer taxes
-              </Typography>
-              <Stack direction="row" flexWrap="wrap" gap={1}>
-                {ER_TAX_FIELDS.map((f) => (
-                  <TextField
-                    key={f.key}
-                    size="small"
-                    label={f.label}
-                    type="number"
-                    value={draft.employer_taxes?.[f.key] ?? ""}
-                    onChange={(e) => onUpdateDraft(ln.id, "employer_taxes", f.key, e.target.value)}
-                    sx={{ width: 110 }}
-                  />
-                ))}
-              </Stack>
-            </Paper>
-          ) : null}
         </Stack>
       </Collapse>
     </Stack>

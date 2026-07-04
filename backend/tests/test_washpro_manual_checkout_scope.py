@@ -153,6 +153,16 @@ class TestAtVendorCheckoutClassification(unittest.TestCase):
         self.assertEqual(st, "ACCEPTED")
         self.assertEqual(reason, REASON_OK)
 
+    def test_completed_before_upload_rejects_instead_of_needs_attention(self):
+        st, reason = classify_at_vendor_checkout_row(
+            ticket_id=self.BAG,
+            has_active_staging=False,
+            row_date_before_batch=True,
+            was_completed_before_upload=True,
+        )
+        self.assertEqual(st, "REJECTED_DUPLICATE")
+        self.assertEqual(reason, REASON_ALREADY_COMPLETED)
+
     def test_force_checkout_excluded(self):
         reason = staging_checkout_sent_reason({"logistics_status": "FORCE_CHECKOUT"})
         self.assertEqual(reason, REASON_ALREADY_FORCE_CHECKOUT)

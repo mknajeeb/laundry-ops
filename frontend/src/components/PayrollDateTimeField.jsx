@@ -32,7 +32,14 @@ export function PayrollDateField({ label, value, onChange, size = "small", sx })
   );
 }
 
-export function PayrollDateTimeField({ label, value, onChange, size = "small", disabled }) {
+export function PayrollDateTimeField({
+  label,
+  value,
+  onChange,
+  size = "small",
+  disabled,
+  clearable = false,
+}) {
   return (
     <LocalizationProvider dateAdapter={AdapterDayjs}>
       <DateTimePicker
@@ -44,6 +51,7 @@ export function PayrollDateTimeField({ label, value, onChange, size = "small", d
         closeOnSelect={false}
         slotProps={{
           textField: { size, fullWidth: true },
+          field: clearable ? { clearable: true } : undefined,
           openPickerButton: { "aria-label": `Choose ${label}` },
         }}
       />

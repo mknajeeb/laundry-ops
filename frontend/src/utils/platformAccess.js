@@ -9,11 +9,16 @@ export const TENANT_STANDARD_OPS_ROLES = [
   "OPERATIONS",
   "SUPERVISOR",
   "PAYROLL_ADMIN",
-  "FINANCE",
 ];
 
 /** All roles that may sign in to the tenant Laundry Ops app (includes narrow roles like CHECKOUT). */
-export const TENANT_PORTAL_ROLES = [...TENANT_STANDARD_OPS_ROLES, "CHECKOUT", "ACCOUNTANT", "RINSE"];
+export const TENANT_PORTAL_ROLES = [
+  ...TENANT_STANDARD_OPS_ROLES,
+  "CHECKOUT",
+  "ACCOUNTANT",
+  "RINSE",
+  "FINANCE",
+];
 
 /** Platform operators: manage tenants and entitlements (not operational laundry UI). */
 export const PLATFORM_ADMIN_ROLES = ["SUPER_ADMIN", "PLATFORM_ADMIN"];
@@ -49,9 +54,23 @@ export function isRinseScheduleOnlyUser(user) {
   return !r.some((role) => elevated.includes(role));
 }
 
+/** True when the user only has FINANCE (payroll management workspace, no ops modules). */
+export function isFinanceOnlyUser(user) {
+  const r = normalizedRoles(user);
+  if (!r.includes("FINANCE")) return false;
+  if (hasPlatformAdminRole(user)) return false;
+  const elevated = TENANT_PORTAL_ROLES.filter((role) => role !== "FINANCE");
+  return !r.some((role) => elevated.includes(role));
+}
+
+/** Payroll management workspace only — no dashboard, checkout, clock, etc. */
+export function isPayrollManagementOnlyUser(user) {
+  return isAccountantOnlyUser(user) || isFinanceOnlyUser(user);
+}
+
 /** Post-login / blocked-route landing path for tenant users. */
 export function tenantDefaultRoute(user) {
-  if (isAccountantOnlyUser(user)) return "/payroll";
+  if (isPayrollManagementOnlyUser(user)) return "/payroll";
   if (isRinseScheduleOnlyUser(user)) return "/performance/weekly-schedule";
   return "/";
 }
@@ -61,7 +80,7 @@ export function tenantDefaultRoute(user) {
  * Ops staff with clock access may lock to PIN kiosk explicitly; accountants use payroll only.
  */
 export function userMayUseKioskLock(user) {
-  if (!user || isAccountantOnlyUser(user) || isRinseScheduleOnlyUser(user) || isPlatformOnlyUser(user)) return false;
+  if (!user || isPayrollManagementOnlyUser(user) || isRinseScheduleOnlyUser(user) || isPlatformOnlyUser(user)) return false;
   const roles = normalizedRoles(user);
   if (roles.some((r) => ["ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"].includes(r))) return false;
   return true;

@@ -34,6 +34,16 @@ DEFAULT_ACTIONS: dict[str, dict] = {
         "force": True,
         "note": "Off-portal reject per operator review",
     },
+    "9KI3GEO04V": {
+        "action": "completed",
+        "completed_at": "2026-06-22 22:18:00",
+        "note": "Delivered Jun 22; repeat-trip sent-to-vendor stale carry",
+    },
+    "5I16QGWDZ5": {
+        "action": "rejected",
+        "force": True,
+        "note": "Operator reject — same-time weight dupes, never completed",
+    },
 }
 
 

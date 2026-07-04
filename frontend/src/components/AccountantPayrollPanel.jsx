@@ -28,6 +28,10 @@ import {
 } from "../payroll/accountantBatchPick";
 import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
 import {
+  PAYROLL_REGISTER_DEDUCTION_COLUMNS,
+  sumEmployeeRegisterTaxes,
+} from "../payroll/payrollRegisterTaxFields";
+import {
   formatNetPaidDisplay,
   formatTaxWithheldDisplay,
   hasTaxWithheldBreakdown,
@@ -37,14 +41,7 @@ import { VEEWASH_BRAND } from "../theme/veewashBrand";
 
 const DEFAULT_OT_MULTIPLIER = 1.5;
 
-const DEDUCTION_COLUMNS = [
-  { key: "fit", label: "FIT" },
-  { key: "ss", label: "SS" },
-  { key: "medicare", label: "Medicare" },
-  { key: "state", label: "State" },
-  { key: "local", label: "Local" },
-  { key: "other", label: "Other", keys: ["other1", "other2"] },
-];
+const DEDUCTION_COLUMNS = PAYROLL_REGISTER_DEDUCTION_COLUMNS;
 
 function num(v) {
   const n = Number(v);
@@ -57,16 +54,13 @@ function lineGross(ln) {
 
 function deductionAmount(ln, col) {
   const ded = ln.payout_details?.employee_deductions || {};
-  if (col.keys) {
-    return col.keys.reduce((s, k) => s + num(ded[k]), 0);
-  }
   return num(ded[col.key]);
 }
 
 function lineTotalTax(ln) {
   if (ln.tax_withheld != null && ln.tax_withheld !== "") return num(ln.tax_withheld);
   const ded = ln.payout_details?.employee_deductions || {};
-  return DEDUCTION_COLUMNS.reduce((s, col) => s + deductionAmount({ payout_details: { employee_deductions: ded } }, col), 0);
+  return sumEmployeeRegisterTaxes(ded);
 }
 
 function formatMoney(v) {

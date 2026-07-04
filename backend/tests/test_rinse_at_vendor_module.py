@@ -1472,6 +1472,50 @@ class TestCrossDayCompletionAttribution:
         assert comp_ts is None
         assert sent_ts == datetime(2026, 6, 13, 5, 11)
 
+    def test_baseline_seed_departed_before_day_start_excluded_from_carry_in(self):
+        from backend.rinse_at_vendor_module import (
+            DAILY_CLASS_DEPARTED_BEFORE_DAY_START,
+            _classify_baseline_seed_bag,
+        )
+
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 20, 5, 23)),
+        ]
+        departures = [
+            _ev("received-from-vendor", datetime(2026, 6, 20, 18, 1)),
+            _ev("actual-delivery", datetime(2026, 6, 22, 22, 18)),
+        ]
+        daily_class, signal, comp_ts, sent_ts = _classify_baseline_seed_bag(
+            events,
+            service_type="HD",
+            selected_date_et=date(2026, 6, 26),
+            departure_events=departures,
+        )
+        assert daily_class == DAILY_CLASS_DEPARTED_BEFORE_DAY_START
+        assert signal is None
+        assert comp_ts is None
+        assert sent_ts == datetime(2026, 6, 20, 5, 23)
+
+    def test_baseline_seed_same_day_resend_not_treated_as_departed(self):
+        from backend.rinse_at_vendor_module import (
+            DAILY_CLASS_OPEN_AT_DAY_START,
+            _classify_baseline_seed_bag,
+        )
+
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
+            _ev("received-from-vendor", datetime(2026, 6, 12, 22, 0)),
+            _ev("sent-to-vendor", datetime(2026, 6, 13, 5, 11)),
+        ]
+        daily_class, _, _, sent_ts = _classify_baseline_seed_bag(
+            events,
+            service_type="WF",
+            selected_date_et=date(2026, 6, 13),
+            departure_events=[_ev("received-from-vendor", datetime(2026, 6, 12, 22, 0))],
+        )
+        assert daily_class == DAILY_CLASS_OPEN_AT_DAY_START
+        assert sent_ts == datetime(2026, 6, 13, 5, 11)
+
     def test_completion_counts_on_completion_et_date_only(self):
         from backend.rinse_at_vendor_module import (
             DAILY_CLASS_COMPLETED_DURING_SELECTED_DAY,

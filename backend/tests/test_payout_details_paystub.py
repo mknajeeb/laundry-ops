@@ -583,11 +583,11 @@ def test_paystub_html_zero_deductions():
         assert "Earnings" in emp
         assert "Gross pay" in emp
         assert "Employee Taxes" in emp
-        assert "Federal Income Tax" in emp
-        assert "Social Security" in emp
-        assert "Medicare" in emp
+        assert "FWT" in emp
+        assert "SS W/H" in emp
+        assert "MC W/H" in emp
         assert "NY State Tax" in emp
-        assert "NYC Local Tax" in emp
+        assert "NYC Resident Tax" in emp
         assert "Total employee taxes" in emp
         assert "Net Pay" in emp
         assert "Amount paid to employee" not in emp
@@ -598,7 +598,7 @@ def test_paystub_html_zero_deductions():
 
         er = generate_paystub_html(conn, 1, 1, 10, copy_mode="employer")
         assert "EMPLOYER COPY" in er
-        assert "Federal Income Tax" in er
+        assert "FWT" in er
         assert "Employer Taxes" in er
         assert "Tax Balances (Audit)" in er
 

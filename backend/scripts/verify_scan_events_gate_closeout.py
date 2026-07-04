@@ -24,8 +24,14 @@ def _today_et() -> date:
 
 
 def _check_health() -> dict:
-    with urllib.request.urlopen(API_HEALTH, timeout=15) as resp:
-        return json.loads(resp.read().decode())
+    import subprocess
+
+    raw = subprocess.check_output(
+        ["curl", "-sS", API_HEALTH],
+        text=True,
+        timeout=20,
+    )
+    return json.loads(raw)
 
 
 def main() -> int:

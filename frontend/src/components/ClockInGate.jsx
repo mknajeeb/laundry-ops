@@ -4,6 +4,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import { getTaBootstrap, getTaSessionCurrent } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { asBool } from "../utils/bool";
+import { isPayrollManagementOnlyUser } from "../utils/platformAccess";
 
 function isLoginPath(path) {
   const p = path || "";
@@ -48,6 +49,7 @@ export default function ClockInGate({ user, children }) {
 
   const exempt = useMemo(() => {
     if (!user) return true;
+    if (isPayrollManagementOnlyUser(user)) return true;
     if (!gateEnabled) return true;
     if (!hasPerm("ta.clock")) return true;
     if (asBool(taIdentity?.clock_in_gate_exempt, false)) return true;

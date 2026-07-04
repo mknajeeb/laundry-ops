@@ -14,7 +14,7 @@ import { useAuth } from "../context/AuthContext";
 import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
 import { getTaSessionCurrent } from "../api";
 import { useI18n } from "../i18n/I18nContext";
-import { isRinseScheduleOnlyUser } from "../utils/platformAccess";
+import { isPayrollManagementOnlyUser, isRinseScheduleOnlyUser } from "../utils/platformAccess";
 import TenantLogo from "../components/TenantLogo";
 
 const SECTION_CARD = {
@@ -201,6 +201,10 @@ function HomePage({ user }) {
 
   const visibleRinse = rinseTiles.filter((t) => can(t.path));
   const visibleEmployee = employeeTiles.filter((t) => can(t.path));
+
+  if (isPayrollManagementOnlyUser(user)) {
+    return <Navigate to="/payroll" replace />;
+  }
 
   if (isRinseScheduleOnlyUser(user)) {
     return <Navigate to="/performance/weekly-schedule" replace />;
