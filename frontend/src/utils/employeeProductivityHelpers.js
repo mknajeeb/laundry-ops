@@ -170,6 +170,7 @@ export function productivityEndDisplay(emp, formatTime) {
 /** Resolve lbs from a credited bag record (matches drilldown fallback chain). */
 export function resolveBagWeightLbs(bag) {
   if (!bag || typeof bag !== "object") return null;
+  if (bag.weight_lbs != null) return Number(bag.weight_lbs);
   if (bag.completed_lbs != null) return Number(bag.completed_lbs);
   if (bag.processed_lbs != null) return Number(bag.processed_lbs);
   if (bag.credited_lbs != null) return Number(bag.credited_lbs);
@@ -291,7 +292,9 @@ export function buildExecutiveSummaryCards(summary = {}, scopeLabel = "") {
       label: "Avg Lbs / Hour",
       value: fmtSummaryNumber(summary.average_completed_pounds_per_hour ?? summary.average_pounds_per_hour, 2),
       variant: "default",
-      sub: scopeLabel ? `Scope: ${scopeLabel}` : undefined,
+      sub: summary.missing_weight_warning
+        || (scopeLabel ? `Scope: ${scopeLabel}` : undefined),
+      warning: Boolean(summary.missing_weight_warning),
     },
   );
   return cards;

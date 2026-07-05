@@ -142,6 +142,7 @@ def resolve_workload_bag_credit(
         anchor_ts=anchor,
         as_of_end=as_of_end,
         service_type=svc,
+        selected_date_et=selected_date_et,
     )
     from backend.rinse_at_vendor_module import _format_et_display
 

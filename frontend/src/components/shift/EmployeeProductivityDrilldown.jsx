@@ -12,6 +12,7 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Tooltip,
   Typography,
   useMediaQuery,
   useTheme,
@@ -30,6 +31,25 @@ function eventTs(bag) {
   );
 }
 
+function WeightCell({ bag }) {
+  const lbs = resolveBagWeightLbs(bag);
+  if (lbs != null) {
+    return `${lbs} lbs`;
+  }
+  const debugReason = bag.weight_debug_reason;
+  const label = "Missing";
+  if (!debugReason) {
+    return label;
+  }
+  return (
+    <Tooltip title={debugReason} arrow placement="top">
+      <Typography component="span" variant="body2" color="warning.main" sx={{ fontWeight: 600 }}>
+        {label}
+      </Typography>
+    </Tooltip>
+  );
+}
+
 function normalizeProcessedBag(bag) {
   const completedLbs = resolveBagWeightLbs(bag);
   return {
@@ -38,6 +58,7 @@ function normalizeProcessedBag(bag) {
     completion_time_et: bag.completion_time_et || bag.processed_time_et,
     completion_signal: bag.completion_signal || bag.processed_signal,
     completed_lbs: completedLbs,
+    weight_lbs: completedLbs,
   };
 }
 
@@ -68,9 +89,15 @@ function BagMobileCard({ bag, expanded, onToggle, referenceDateEt, statusLabel }
               {formatFriendlyEtWall(normalized.completion_time_et || normalized.completion_time)}
             </Typography>
           </Box>
-          <Typography variant="body2" fontWeight={700} sx={{ whiteSpace: "nowrap" }}>
-            {normalized.completed_lbs != null ? `${normalized.completed_lbs} lbs` : "—"}
-          </Typography>
+          <Box sx={{ whiteSpace: "nowrap" }}>
+            {resolveBagWeightLbs(bag) != null ? (
+              <Typography variant="body2" fontWeight={700} component="span">
+                {`${resolveBagWeightLbs(bag)} lbs`}
+              </Typography>
+            ) : (
+              <WeightCell bag={bag} />
+            )}
+          </Box>
         </Stack>
         <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
           {bag.customer_name || "—"}
@@ -171,7 +198,7 @@ function BagTableSection({
                   <TableCell sx={{ maxWidth: 180, wordBreak: "break-word" }}>{bag.customer_name || "—"}</TableCell>
                   <TableCell>{bag.service_type || bag.service_bucket || "—"}</TableCell>
                   <TableCell align="right">
-                    {normalized.completed_lbs != null ? `${normalized.completed_lbs} lbs` : "—"}
+                    <WeightCell bag={normalized} />
                   </TableCell>
                   <TableCell>{normalized.completion_signal || "—"}</TableCell>
                   <TableCell>{statusLabel || "—"}</TableCell>

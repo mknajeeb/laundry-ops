@@ -242,11 +242,27 @@ def _build_executive_summary(employees: Sequence[Mapping[str, Any]]) -> dict[str
         if e.get("completed_lbs_per_hour") is not None
         and not isinstance(e.get("completed_lbs_per_hour"), str)
     ]
+    total_productive_hours = round(
+        sum(float(e.get("productive_hours") or e.get("worked_hours") or 0) for e in active_completed),
+        4,
+    )
+    missing_weight_total = sum(int(e.get("missing_weight_count") or 0) for e in employees)
 
     def _avg(vals: list[float]) -> float | None:
         if not vals:
             return None
         return round(sum(vals) / len(vals), 2)
+
+    global_lbs_per_hour: float | None = None
+    if total_productive_hours > 0 and total_completed_lbs > 0:
+        global_lbs_per_hour = round(total_completed_lbs / total_productive_hours, 2)
+
+    missing_weight_warning: str | None = None
+    if missing_weight_total > 0 and total_completed > 0:
+        missing_weight_warning = (
+            f"{missing_weight_total} of {total_completed} completed bags missing weight; "
+            "lbs/hr may be understated."
+        )
 
     return {
         "total_employees_active": len(active_completed),
@@ -254,13 +270,16 @@ def _build_executive_summary(employees: Sequence[Mapping[str, Any]]) -> dict[str
         "total_pounds_completed": total_completed_lbs,
         "total_unassigned_bags": unassigned_count,
         "average_completed_bags_per_hour": _avg(completed_rates),
-        "average_completed_pounds_per_hour": _avg(completed_lbs_rates),
+        "average_completed_pounds_per_hour": global_lbs_per_hour or _avg(completed_lbs_rates),
+        "total_productive_hours": total_productive_hours if total_productive_hours > 0 else None,
+        "missing_weight_count": missing_weight_total,
+        "missing_weight_warning": missing_weight_warning,
         # Backward-compatible aliases
         "total_bags_credited": total_completed,
         "total_credited_lbs": total_completed_lbs,
         "total_pending_completion": 0,
         "average_bags_per_hour": _avg(completed_rates),
-        "average_pounds_per_hour": _avg(completed_lbs_rates),
+        "average_pounds_per_hour": global_lbs_per_hour or _avg(completed_lbs_rates),
         "total_bags_processed": total_completed,
         "total_pounds_processed": total_completed_lbs,
         "average_processed_bags_per_hour": _avg(completed_rates),

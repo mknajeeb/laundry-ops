@@ -140,6 +140,11 @@ function EmployeeMobileCard({ emp, open, onToggle, selectedDate, bagsLoading }) 
             <Typography variant="body2" color="text.secondary">
               {fmtProductivityRate(emp.completed_bags_per_hour ?? emp.bags_per_hour, missingClockIn)} bags/hr · {fmtProductivityRate(emp.completed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn)} lbs/hr · {missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2)} hrs
             </Typography>
+            {emp.missing_weight_warning ? (
+              <Typography variant="caption" color="warning.main" display="block" sx={{ mt: 0.35 }}>
+                {emp.missing_weight_warning}
+              </Typography>
+            ) : null}
           </Box>
           <ExpandMoreIcon
             fontSize="small"
@@ -397,6 +402,11 @@ export default function EmployeeProductivityDashboard({
 
         {fetchError ? (
           <Alert severity="error" sx={{ mb: 1.25 }}>{fetchError}</Alert>
+        ) : null}
+        {executiveSummary.missing_weight_warning ? (
+          <Alert severity="warning" sx={{ mb: 1.25 }}>
+            {executiveSummary.missing_weight_warning}
+          </Alert>
         ) : null}
 
         <Box sx={{ mb: 1.5 }}>

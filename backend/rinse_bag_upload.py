@@ -121,7 +121,76 @@ def upsert_registry_from_portal_row(
     reg = get_registry_row(cursor, org, bid)
     batch_id = int(upload_batch_id)
 
-    if is_completed or (reg and str(reg.get("completion_status") or "").upper() == COMPLETION_COMPLETED):
+    prior_completed = is_completed or (
+        reg is not None and str(reg.get("completion_status") or "").upper() == COMPLETION_COMPLETED
+    )
+    prior_date_clean = reg.get("date_clean") if reg else None
+    if isinstance(prior_date_clean, datetime):
+        prior_date_clean = prior_date_clean.date()
+    new_portal_date = date_clean
+    if isinstance(new_portal_date, datetime):
+        new_portal_date = new_portal_date.date()
+    new_portal_cycle = isinstance(new_portal_date, date) and (
+        not isinstance(prior_date_clean, date) or new_portal_date != prior_date_clean
+    )
+    portal_weight = None
+    try:
+        if weight_num is not None:
+            portal_weight = float(weight_num)
+            if portal_weight <= 0:
+                portal_weight = None
+    except (TypeError, ValueError):
+        portal_weight = None
+
+    if prior_completed and not new_portal_cycle:
+        cursor.execute(
+            """
+            INSERT INTO rinse_bag_registry (organization_id, bag_id, completion_status, last_seen_upload_batch_id, last_seen_at)
+            VALUES (%s, %s, %s, %s, NOW())
+            ON DUPLICATE KEY UPDATE
+                last_seen_upload_batch_id = VALUES(last_seen_upload_batch_id),
+                last_seen_at = NOW(),
+                updated_at = NOW()
+            """,
+            (org, bid, COMPLETION_COMPLETED, batch_id),
+        )
+        return
+
+    if prior_completed and new_portal_cycle and portal_weight is not None:
+        cursor.execute(
+            """
+            INSERT INTO rinse_bag_registry (
+                organization_id, bag_id, completion_status,
+                name_clean, weight_num, service_type, date_clean, rush_type,
+                last_upload_batch_id, last_seen_upload_batch_id, last_seen_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            ON DUPLICATE KEY UPDATE
+                name_clean = VALUES(name_clean),
+                weight_num = VALUES(weight_num),
+                service_type = VALUES(service_type),
+                date_clean = VALUES(date_clean),
+                rush_type = VALUES(rush_type),
+                last_upload_batch_id = VALUES(last_upload_batch_id),
+                last_seen_upload_batch_id = VALUES(last_seen_upload_batch_id),
+                last_seen_at = NOW(),
+                updated_at = NOW()
+            """,
+            (
+                org,
+                bid,
+                COMPLETION_INCOMPLETE,
+                name_clean,
+                portal_weight,
+                service_type,
+                new_portal_date,
+                rush_type,
+                batch_id,
+                batch_id,
+            ),
+        )
+        return
+
+    if prior_completed:
         cursor.execute(
             """
             INSERT INTO rinse_bag_registry (organization_id, bag_id, completion_status, last_seen_upload_batch_id, last_seen_at)
