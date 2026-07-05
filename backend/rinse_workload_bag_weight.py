@@ -1,19 +1,22 @@
-"""Current-day completed workload weight resolution from portal upload + scans."""
+"""WF completed-bag weight: post-processing scan only, with integrity tracing."""
 
 from __future__ import annotations
 
-POST_PROCESSING_WEIGHT_SIGNAL = "post_processing_weight"
-POST_CLEAN_WEIGHT_UNAVAILABLE_SIGNAL = "post_clean_weight_unavailable"
-WEIGHT_STATUS_RESOLVED = "resolved"
-WEIGHT_STATUS_MISSING = "missing"
-
+import json
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_stage_bounds import gaming_events_from_records, ts_valid
 from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_start
 from backend.rinse_scan_purpose import is_weight_entry_purpose
-from backend.rinse_wf_weight_events import parse_weight_lbs_from_scan_event
+from backend.rinse_wf_weight_events import (
+    WF_POST_PROCESSING_WEIGHT_SIGNAL,
+    parse_weight_lbs_from_scan_event,
+)
+
+WEIGHT_SOURCE_POST_PROCESSING_SCAN = "post_processing_scan_weight"
+WEIGHT_STATUS_RESOLVED = "resolved"
+WEIGHT_STATUS_INTEGRITY_FAILURE = "integrity_failure"
 
 
 def _positive_float(raw: Any) -> float | None:
@@ -42,9 +45,245 @@ def _parse_dt(raw: Any) -> datetime | None:
 def _on_selected_et_day(ts: datetime | None, selected_date_et: date) -> bool:
     if ts is None:
         return False
-    day_start = naive_et_day_start(selected_date_et)
-    day_end = naive_et_day_end_inclusive(selected_date_et)
-    return day_start <= ts <= day_end
+    return naive_et_day_start(selected_date_et) <= ts <= naive_et_day_end_inclusive(selected_date_et)
+
+
+def _raw_json_weight_keys(raw_json: Any) -> list[str]:
+    if isinstance(raw_json, str):
+        try:
+            raw_json = json.loads(raw_json)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if not isinstance(raw_json, dict):
+        return []
+    keys = ("Weight", "weight", "# WF LBS", "WF LBS", "weight_lbs", "weight_num")
+    return [k for k in keys if raw_json.get(k) not in (None, "", "(None)")]
+
+
+def _weight_from_completion_scan_event(ev: Mapping[str, Any] | None) -> float | None:
+    if not ev:
+        return None
+    col_lbs = _positive_float(ev.get("weight_lbs"))
+    if col_lbs is not None:
+        return col_lbs
+    return _positive_float(parse_weight_lbs_from_scan_event(ev))
+
+
+def trace_wf_completion_weight(
+    *,
+    bag_id: str,
+    events: Sequence[Mapping[str, Any]] | None,
+    credit_ts: datetime | None,
+    anchor_ts: datetime | None,
+    as_of_end: datetime | None,
+    selected_date_et: date | None = None,
+    portal_upload_weight: float | None = None,
+) -> dict[str, Any]:
+    """
+    Trace post-processing weight for a completed WF bag.
+
+    Business rule: completed WF ⇒ post-processing weight-entry scan exists with numeric lbs.
+    """
+    from backend.rinse_employee_completed_bags import (
+        _scan_event_timestamp,
+        _wf_completion_weight_event,
+    )
+
+    bid = str(bag_id or "").strip().upper()
+    trace: dict[str, Any] = {
+        "bag_id": bid,
+        "completion_event_found": False,
+        "completion_event_id": None,
+        "completion_event_ts": None,
+        "completion_scan_purpose": None,
+        "scan_weight_lbs_column": None,
+        "scan_weight_lbs_parsed": None,
+        "raw_json_weight_keys": [],
+        "failure_stage": None,
+        "failure_detail": None,
+        "portal_weight_available": _positive_float(portal_upload_weight),
+        "events_count": len(events or []),
+    }
+
+    if not events:
+        trace["failure_stage"] = "no_scan_events"
+        trace["failure_detail"] = "No rinse_bag_scan_events rows loaded for this bag."
+        return trace
+
+    if anchor_ts is None or not ts_valid(anchor_ts):
+        trace["failure_stage"] = "no_lifecycle_anchor"
+        trace["failure_detail"] = "Could not resolve lifecycle anchor for the selected ET day."
+        return trace
+
+    if as_of_end is None:
+        trace["failure_stage"] = "missing_as_of_end"
+        trace["failure_detail"] = "Day boundary (as_of_end) not provided."
+        return trace
+
+    timeline = gaming_events_from_records(events)
+    weight_ev: Mapping[str, Any] | None = None
+    comp_ts: datetime | None = None
+
+    if credit_ts is not None:
+        for ev in timeline:
+            if _scan_event_timestamp(ev) == credit_ts and is_weight_entry_purpose(ev.get("purpose")):
+                weight_ev = ev
+                comp_ts = credit_ts
+                break
+
+    if weight_ev is None:
+        weight_ev, comp_ts = _wf_completion_weight_event(
+            timeline,
+            anchor_ts=anchor_ts,
+            as_of_end=as_of_end,
+        )
+
+    if weight_ev is None or comp_ts is None:
+        trace["failure_stage"] = "no_post_processing_weight_scan"
+        trace["failure_detail"] = (
+            "No qualifying post-processing weight-entry scan after latest processing step."
+        )
+        return trace
+
+    trace["completion_event_found"] = True
+    trace["completion_event_id"] = weight_ev.get("id")
+    trace["completion_event_ts"] = comp_ts.isoformat() if comp_ts else None
+    trace["completion_scan_purpose"] = weight_ev.get("purpose")
+    trace["scan_weight_lbs_column"] = _positive_float(weight_ev.get("weight_lbs"))
+    trace["scan_weight_lbs_parsed"] = _weight_from_completion_scan_event(weight_ev)
+    trace["raw_json_weight_keys"] = _raw_json_weight_keys(weight_ev.get("raw_json"))
+
+    if trace["scan_weight_lbs_parsed"] is not None:
+        return trace
+
+    trace["failure_stage"] = "scan_missing_weight_payload"
+    if not trace["raw_json_weight_keys"]:
+        trace["failure_detail"] = (
+            "Post-processing weight-entry scan exists but carries no numeric weight. "
+            "Events CSV schema (Bag ID, Time Scanned, User, Purpose) excludes Weight; "
+            "weight must be attached to this scan row at portal batch confirm."
+        )
+    else:
+        trace["failure_detail"] = (
+            "Post-processing weight-entry scan raw_json has weight-like keys "
+            f"{trace['raw_json_weight_keys']} but parser could not extract numeric lbs."
+        )
+
+    if trace["portal_weight_available"] is not None:
+        trace["failure_detail"] = (
+            f"{trace['failure_detail']} Portal upload has {trace['portal_weight_available']} lbs "
+            "but it is not joined onto the completion scan event."
+        )
+    return trace
+
+
+def resolve_wf_completion_weight_lbs(
+    *,
+    bag_id: str,
+    events: Sequence[Mapping[str, Any]] | None,
+    credit_ts: datetime | None,
+    anchor_ts: datetime | None,
+    as_of_end: datetime | None,
+    selected_date_et: date | None = None,
+    portal_upload_weight: float | None = None,
+) -> tuple[float | None, dict[str, Any]]:
+    """Resolve weight ONLY from the post-processing completion scan."""
+    trace = trace_wf_completion_weight(
+        bag_id=bag_id,
+        events=events,
+        credit_ts=credit_ts,
+        anchor_ts=anchor_ts,
+        as_of_end=as_of_end,
+        selected_date_et=selected_date_et,
+        portal_upload_weight=portal_upload_weight,
+    )
+    lbs = trace.get("scan_weight_lbs_parsed")
+    if lbs is not None:
+        return float(lbs), trace
+    return None, trace
+
+
+def ensure_scan_events_weight_lbs_column(cursor) -> None:
+    from backend.rinse_bag_registry import ensure_rinse_bag_scan_events_table
+    from backend.ta_helpers import table_has_column
+
+    ensure_rinse_bag_scan_events_table(cursor)
+    if table_has_column(cursor, "rinse_bag_scan_events", "weight_lbs"):
+        return
+    try:
+        cursor.execute(
+            "ALTER TABLE rinse_bag_scan_events ADD COLUMN weight_lbs DECIMAL(10,4) NULL"
+        )
+    except Exception as exc:
+        errno = getattr(exc, "errno", None)
+        if errno != 1060 and "Duplicate column" not in str(exc):
+            raise
+    from backend.ta_helpers import _column_cache, _schema_lock
+
+    with _schema_lock:
+        _column_cache[("rinse_bag_scan_events", "weight_lbs")] = True
+
+
+def attach_portal_weight_to_post_processing_scan(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    weight_lbs: float,
+    selected_date_et: date,
+    events: Sequence[Mapping[str, Any]] | None = None,
+    credit_ts: datetime | None = None,
+) -> dict[str, Any]:
+    """
+    Ingestion repair: portal list weight belongs on the post-processing scan row.
+
+    Events CSV does not include Weight; this join writes portal weight onto the
+    completion weight-entry scan so productivity reads a single authoritative source.
+    """
+    from backend.rinse_employee_completed_bags import _resolve_anchor_ts
+    from backend.rinse_post_processing_weight_chronology import _load_scan_events_for_bags
+
+    org = int(organization_id)
+    bid = str(bag_id or "").strip().upper()
+    lbs = _positive_float(weight_lbs)
+    if not bid or lbs is None:
+        return {"updated": False, "reason": "invalid_bag_or_weight"}
+
+    if events is None:
+        events = _load_scan_events_for_bags(cursor, org, [bid])
+    as_of_end = naive_et_day_end_inclusive(selected_date_et)
+    anchor = _resolve_anchor_ts(events, selected_date_et)
+    trace = trace_wf_completion_weight(
+        bag_id=bid,
+        events=events,
+        credit_ts=credit_ts,
+        anchor_ts=anchor,
+        as_of_end=as_of_end,
+        selected_date_et=selected_date_et,
+        portal_upload_weight=lbs,
+    )
+    scan_id = trace.get("completion_event_id")
+    if not scan_id:
+        return {"updated": False, "reason": "no_completion_scan", "trace": trace}
+
+    if trace.get("scan_weight_lbs_parsed") is not None:
+        return {"updated": False, "reason": "scan_already_has_weight", "trace": trace}
+
+    ensure_scan_events_weight_lbs_column(cursor)
+    cursor.execute(
+        """
+        UPDATE rinse_bag_scan_events
+        SET weight_lbs = %s, updated_at = NOW()
+        WHERE organization_id = %s AND id = %s AND bag_id = %s
+        """,
+        (lbs, org, int(scan_id), bid),
+    )
+    return {
+        "updated": cursor.rowcount > 0,
+        "scan_event_id": scan_id,
+        "weight_lbs": lbs,
+        "trace": trace,
+    }
 
 
 def load_portal_upload_weights_for_bags(
@@ -54,7 +293,7 @@ def load_portal_upload_weights_for_bags(
     *,
     selected_date_et: date,
 ) -> dict[str, float]:
-    """Latest portal upload weight per bag for the selected ET clean date."""
+    """Portal upload weights — used only to attach onto completion scan rows, not for display."""
     from backend.ta_helpers import table_exists, table_has_column
 
     org = int(organization_id)
@@ -76,7 +315,10 @@ def load_portal_upload_weights_for_bags(
     org_args: tuple[Any, ...] = ()
     if row_batch_col and table_exists(cursor, "upload_batches"):
         if table_has_column(cursor, "upload_batches", "organization_id"):
-            org_join = f" INNER JOIN upload_batches ub ON ub.{batch_pk} = ubr.{row_batch_col} AND ub.organization_id = %s"
+            org_join = (
+                f" INNER JOIN upload_batches ub ON ub.{batch_pk} = ubr.{row_batch_col}"
+                f" AND ub.organization_id = %s"
+            )
             org_args = (org,)
 
     for i in range(0, len(ids), chunk):
@@ -98,226 +340,39 @@ def load_portal_upload_weights_for_bags(
             bid = str(row.get("ticket_id") or "").strip().upper()
             if not bid or bid in out:
                 continue
-            lbs = _positive_float(row.get("weight_num"))
-            if lbs is not None:
-                out[bid] = lbs
+            w = _positive_float(row.get("weight_num"))
+            if w is not None:
+                out[bid] = w
     return out
 
 
-def load_registry_weight_context_for_bags(
+def sync_post_processing_scan_weights_from_portal(
     cursor,
     organization_id: int,
     bag_ids: Sequence[str],
-) -> dict[str, dict[str, Any]]:
-    from backend.ta_helpers import table_exists, table_has_column
-
-    org = int(organization_id)
-    ids = sorted({str(b).strip().upper() for b in bag_ids if str(b).strip()})
-    if not ids or not table_exists(cursor, "rinse_bag_registry"):
-        return {}
-
-    cols = ["bag_id", "weight_num", "completion_status"]
-    if table_has_column(cursor, "rinse_bag_registry", "completed_at"):
-        cols.append("completed_at")
-    if table_has_column(cursor, "rinse_bag_registry", "date_clean"):
-        cols.append("date_clean")
-    if table_has_column(cursor, "rinse_bag_registry", "updated_at"):
-        cols.append("updated_at")
-
-    out: dict[str, dict[str, Any]] = {}
-    chunk = 100
-    for i in range(0, len(ids), chunk):
-        part = ids[i : i + chunk]
-        ph = ",".join(["%s"] * len(part))
-        cursor.execute(
-            f"""
-            SELECT {", ".join(cols)}
-            FROM rinse_bag_registry
-            WHERE organization_id = %s AND bag_id IN ({ph})
-            """,
-            (org, *part),
-        )
-        for row in cursor.fetchall() or []:
-            if not isinstance(row, dict):
-                continue
-            bid = str(row.get("bag_id") or "").strip().upper()
-            if bid:
-                out[bid] = dict(row)
-    return out
-
-
-def registry_weight_for_selected_day(
-    registry_ctx: Mapping[str, Any] | None,
     *,
     selected_date_et: date,
-) -> float | None:
-    """Registry weight only when it belongs to the selected ET completion instance."""
-    if not registry_ctx:
-        return None
-    lbs = _positive_float(registry_ctx.get("weight_num"))
-    if lbs is None:
-        return None
-
-    completed_at = _parse_dt(registry_ctx.get("completed_at"))
-    if completed_at is not None and _on_selected_et_day(completed_at, selected_date_et):
-        return lbs
-
-    date_clean = registry_ctx.get("date_clean")
-    if isinstance(date_clean, datetime):
-        date_clean = date_clean.date()
-    if isinstance(date_clean, date) and date_clean == selected_date_et:
-        return lbs
-
-    return None
-
-
-def _weight_from_row_only(row: Mapping[str, Any]) -> float | None:
-    for key in ("post_clean_weight", "weight_lbs", "weight_num", "pre_clean_weight"):
-        lbs = _positive_float(row.get(key))
-        if lbs is not None:
-            return lbs
-    return None
-
-
-def _weight_from_scan_events(
-    *,
-    events: Sequence[Mapping[str, Any]] | None,
-    credit_ts: datetime | None,
-    anchor_ts: datetime | None,
-    as_of_end: datetime | None,
-    service_type: str | None,
-    meta: Mapping[str, Any] | None,
-) -> float | None:
-    if not events:
-        return None
-
-    from backend.rinse_employee_completed_bags import (
-        _completed_lbs_from_attribution_scan,
-        _scan_event_timestamp,
-        _wf_completion_weight_event,
-    )
-
-    timeline = gaming_events_from_records(events)
-    if credit_ts is not None:
-        for ev in timeline:
-            if _scan_event_timestamp(ev) == credit_ts and is_weight_entry_purpose(ev.get("purpose")):
-                lbs = _positive_float(parse_weight_lbs_from_scan_event(ev))
-                if lbs is not None:
-                    return lbs
-    if anchor_ts is not None and as_of_end is not None and ts_valid(anchor_ts):
-        weight_ev, _ = _wf_completion_weight_event(
-            timeline,
-            anchor_ts=anchor_ts,
-            as_of_end=as_of_end,
+    events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Attach portal upload weight onto post-processing scan rows missing weight."""
+    portal = load_portal_upload_weights_for_bags(cursor, organization_id, bag_ids, selected_date_et=selected_date_et)
+    results: list[dict[str, Any]] = []
+    for bid in sorted(set(str(b).strip().upper() for b in bag_ids if str(b).strip())):
+        portal_lbs = portal.get(bid)
+        if portal_lbs is None:
+            continue
+        events = (events_by_bag or {}).get(bid)
+        results.append(
+            attach_portal_weight_to_post_processing_scan(
+                cursor,
+                organization_id,
+                bid,
+                weight_lbs=portal_lbs,
+                selected_date_et=selected_date_et,
+                events=events,
+            )
         )
-        if weight_ev is not None:
-            lbs = _positive_float(parse_weight_lbs_from_scan_event(weight_ev))
-            if lbs is not None:
-                return lbs
-        return _completed_lbs_from_attribution_scan(
-            service_type=str(service_type or ""),
-            events=events,
-            anchor_ts=anchor_ts,
-            as_of_end=as_of_end,
-        )
-    return None
-
-
-def resolve_current_completed_workload_weight_lbs(
-    row: Mapping[str, Any],
-    meta: Mapping[str, Any] | None,
-    *,
-    events: Sequence[Mapping[str, Any]] | None = None,
-    credit_ts: datetime | None = None,
-    anchor_ts: datetime | None = None,
-    as_of_end: datetime | None = None,
-    service_type: str | None = None,
-    selected_date_et: date | None = None,
-    portal_upload_weight: float | None = None,
-    registry_context: Mapping[str, Any] | None = None,
-    processed_lbs: float | None = None,
-) -> tuple[float | None, str | None]:
-    """
-    Resolve weight for a current completed workload instance.
-
-    Priority:
-    1. Current-day post-clean / final weight scan numeric
-    2. Registry weight only when same completion instance/date
-    3. Current-date upload_batch_rows.weight_num (same bag)
-    4. Current workload row weight fields
-    5. Legacy processed_lbs fallback (same day chronology)
-    """
-    scan_lbs = _weight_from_scan_events(
-        events=events,
-        credit_ts=credit_ts,
-        anchor_ts=anchor_ts,
-        as_of_end=as_of_end,
-        service_type=service_type,
-        meta=meta,
-    )
-    if scan_lbs is not None:
-        return scan_lbs, "scan_post_clean_weight"
-
-    if selected_date_et is not None:
-        reg_lbs = registry_weight_for_selected_day(registry_context, selected_date_et=selected_date_et)
-        if reg_lbs is not None:
-            return reg_lbs, "registry_same_day_weight"
-
-    portal_lbs = _positive_float(portal_upload_weight)
-    if portal_lbs is not None:
-        return portal_lbs, "portal_upload_weight"
-
-    row_lbs = _weight_from_row_only(row)
-    if row_lbs is not None:
-        return row_lbs, "workload_row_weight"
-
-    proc_lbs = _positive_float(processed_lbs)
-    if proc_lbs is not None:
-        return proc_lbs, "processed_chronology_weight"
-
-    return None, None
-
-
-def _explain_missing_weight(
-    *,
-    service_type: str | None,
-    selected_date_et: date | None,
-    registry_context: Mapping[str, Any] | None,
-    portal_upload_weight: float | None,
-    attribution_signal: str | None,
-) -> str:
-    parts: list[str] = []
-    svc = str(service_type or "").upper()
-    if svc == "WF" and str(attribution_signal or "") == POST_PROCESSING_WEIGHT_SIGNAL:
-        parts.append(
-            "Completion attributed to a post-processing weight-entry scan, "
-            "but the scan payload has no numeric weight."
-        )
-    elif svc == "WF":
-        parts.append("No parseable post-clean weight on scan events for this completion.")
-
-    reg_ctx = registry_context or {}
-    stale_reg = _positive_float(reg_ctx.get("weight_num"))
-    if stale_reg is not None and selected_date_et is not None and registry_weight_for_selected_day(
-        reg_ctx, selected_date_et=selected_date_et
-    ) is None:
-        parts.append("Registry weight exists but belongs to a prior completion date.")
-
-    if portal_upload_weight is None:
-        parts.append("No portal upload weight for this bag on the selected date.")
-
-    if not parts:
-        return "No weight source matched for this completed bag."
-    return " ".join(parts)
-
-
-def _reconcile_weight_display_signals(bag: dict[str, Any], *, weight_lbs: float | None) -> None:
-    """Never show post_processing_weight as the display signal when weight is missing."""
-    if weight_lbs is not None:
-        return
-    for field in ("completion_signal", "processed_signal"):
-        if str(bag.get(field) or "") == POST_PROCESSING_WEIGHT_SIGNAL:
-            bag[field] = POST_CLEAN_WEIGHT_UNAVAILABLE_SIGNAL
+    return results
 
 
 def finalize_completed_bag_weight_fields(
@@ -329,14 +384,16 @@ def finalize_completed_bag_weight_fields(
     selected_date_et: date,
     as_of_end: datetime,
     portal_upload_weight: float | None = None,
-    registry_context: Mapping[str, Any] | None = None,
-    processed_lbs: float | None = None,
     credit_ts: datetime | None = None,
     anchor_ts: datetime | None = None,
+    cursor=None,
+    organization_id: int | None = None,
+    repair_scan_from_portal: bool = True,
 ) -> None:
-    """Resolve weight, attach API fields, and reconcile display signals."""
+    """Resolve WF weight from post-processing scan only; record integrity failures."""
     from backend.rinse_employee_completed_bags import _apply_bag_weight_fields, _resolve_anchor_ts
 
+    bid = str(bag.get("bag_id") or row.get("bag_id") or "").strip().upper()
     svc = str(row.get("service_type") or row.get("service_bucket") or bag.get("service_type") or "")
     if anchor_ts is None and events:
         anchor_ts = _resolve_anchor_ts(events, selected_date_et)
@@ -350,110 +407,84 @@ def finalize_completed_bag_weight_fields(
             except ValueError:
                 credit_ts = None
 
-    lbs, weight_source = resolve_current_completed_workload_weight_lbs(
-        row,
-        meta,
+    portal_lbs = _positive_float(portal_upload_weight)
+    if (
+        repair_scan_from_portal
+        and cursor is not None
+        and organization_id is not None
+        and portal_lbs is not None
+        and svc.upper() == "WF"
+    ):
+        attach_portal_weight_to_post_processing_scan(
+            cursor,
+            int(organization_id),
+            bid,
+            weight_lbs=portal_lbs,
+            selected_date_et=selected_date_et,
+            events=events,
+            credit_ts=credit_ts,
+        )
+        if events and isinstance(events, list):
+            for ev in events:
+                if ev.get("id") and not _positive_float(ev.get("weight_lbs")):
+                    ev["weight_lbs"] = portal_lbs
+
+    lbs, trace = resolve_wf_completion_weight_lbs(
+        bag_id=bid,
         events=events,
         credit_ts=credit_ts,
         anchor_ts=anchor_ts,
         as_of_end=as_of_end,
-        processed_lbs=processed_lbs,
-        service_type=svc,
         selected_date_et=selected_date_et,
-        portal_upload_weight=portal_upload_weight,
-        registry_context=registry_context,
-    )
-    attribution_signal = (
-        bag.get("credit_event_type")
-        or bag.get("credit_signal")
-        or bag.get("completion_signal")
-        or row.get("completion_signal")
+        portal_upload_weight=portal_lbs,
     )
 
+    bag["weight_trace"] = trace
     if lbs is not None:
         _apply_bag_weight_fields(bag, lbs)
         bag["weight_lbs"] = lbs
+        bag["weight_source"] = WEIGHT_SOURCE_POST_PROCESSING_SCAN
         bag["weight_status"] = WEIGHT_STATUS_RESOLVED
-        bag["weight_source"] = weight_source
-        bag["weight_debug_reason"] = None
-        if portal_upload_weight is not None:
-            bag["portal_upload_weight"] = portal_upload_weight
+        bag["weight_integrity_failure"] = None
         return
 
     bag["weight_lbs"] = None
-    bag["weight_status"] = WEIGHT_STATUS_MISSING
+    bag["completed_lbs"] = None
+    bag["weight"] = None
+    bag["weight_status"] = WEIGHT_STATUS_INTEGRITY_FAILURE
     bag["weight_source"] = None
     bag["weight_missing"] = True
-    bag["completed_lbs"] = None
-    bag["processed_lbs"] = None
-    bag["credited_lbs"] = None
-    bag["weight"] = None
-    reg_ctx = registry_context or {}
-    debug_reason = _explain_missing_weight(
-        service_type=svc,
-        selected_date_et=selected_date_et,
-        registry_context=reg_ctx,
-        portal_upload_weight=portal_upload_weight,
-        attribution_signal=str(attribution_signal or ""),
-    )
-    if stale_reg := _positive_float(reg_ctx.get("weight_num")):
-        if registry_weight_for_selected_day(reg_ctx, selected_date_et=selected_date_et) is None:
-            debug_reason = (
-                f"{debug_reason} Prior registry weight {stale_reg} lbs is from another completion date."
-            ).strip()
-    bag["weight_debug_reason"] = debug_reason
-    _reconcile_weight_display_signals(bag, weight_lbs=None)
+    bag["weight_integrity_failure"] = {
+        "failure_stage": trace.get("failure_stage"),
+        "failure_detail": trace.get("failure_detail"),
+        "completion_event_id": trace.get("completion_event_id"),
+        "portal_weight_available": trace.get("portal_weight_available"),
+    }
 
 
-def sync_registry_weight_for_workload_day(
-    cursor,
-    organization_id: int,
-    bag_id: str,
-    *,
-    weight_lbs: float,
-    selected_date_et: date,
-) -> bool:
-    """Write current-day portal/completion weight into rinse_bag_registry when safe."""
-    from backend.rinse_bag_registry import ensure_rinse_bag_registry_table, normalize_bag_id
-    from backend.ta_helpers import table_has_column
-
-    bid = normalize_bag_id(bag_id)
-    if not bid:
-        return False
-    org = int(organization_id)
-    lbs = _positive_float(weight_lbs)
-    if lbs is None:
-        return False
-
-    ensure_rinse_bag_registry_table(cursor)
-    ctx = load_registry_weight_context_for_bags(cursor, org, [bid]).get(bid) or {}
-    status = str(ctx.get("completion_status") or "").upper()
-    completed_at = _parse_dt(ctx.get("completed_at"))
-    date_clean = ctx.get("date_clean")
-    if isinstance(date_clean, datetime):
-        date_clean = date_clean.date()
-
-    prior_completed = status == "COMPLETED"
-    new_portal_cycle = isinstance(selected_date_et, date) and (
-        not isinstance(date_clean, date) or date_clean != selected_date_et
-    )
-    if prior_completed and completed_at is not None and not _on_selected_et_day(completed_at, selected_date_et):
-        if not new_portal_cycle:
-            return False
-
-    set_parts = ["weight_num = %s", "updated_at = NOW()"]
-    args: list[Any] = [lbs]
-    if table_has_column(cursor, "rinse_bag_registry", "date_clean"):
-        set_parts.append("date_clean = %s")
-        args.append(selected_date_et)
-
-    args.extend([org, bid])
-    cursor.execute(
-        f"""
-        UPDATE rinse_bag_registry
-        SET {", ".join(set_parts)}
-        WHERE organization_id = %s AND bag_id = %s
-        """,
-        tuple(args),
-    )
-    return cursor.rowcount > 0
+def assert_completed_wf_bags_have_weight(
+    bags: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return integrity violations for completed WF bags without post-processing scan weight."""
+    violations: list[dict[str, Any]] = []
+    for bag in bags:
+        if not isinstance(bag, dict):
+            continue
+        svc = str(bag.get("service_type") or bag.get("service_bucket") or "").upper()
+        if svc != "WF":
+            continue
+        if bag.get("weight_lbs") is None and bag.get("completed_lbs") is None:
+            failure = bag.get("weight_integrity_failure") or {}
+            trace = bag.get("weight_trace") or {}
+            violations.append(
+                {
+                    "bag_id": bag.get("bag_id"),
+                    "employee": bag.get("credited_employee") or bag.get("completed_by_employee"),
+                    "completion_signal": bag.get("completion_signal") or bag.get("processed_signal"),
+                    "failure_stage": failure.get("failure_stage") or trace.get("failure_stage"),
+                    "failure_detail": failure.get("failure_detail") or trace.get("failure_detail"),
+                    "completion_event_id": failure.get("completion_event_id") or trace.get("completion_event_id"),
+                    "portal_weight_available": trace.get("portal_weight_available"),
+                }
+            )
+    return violations

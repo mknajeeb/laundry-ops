@@ -70,7 +70,9 @@ def filter_workload_rows(
     for row in workload_rows:
         if not isinstance(row, dict):
             continue
-        if completed_only and _normalize_workload_status(row) != "completed":
+        if completed_only and _normalize_workload_status(row) != "completed" and not row.get(
+            "completed_during_et_day"
+        ):
             continue
         svc = _service_type(row)
         if not include_hd and svc != "WF":
@@ -243,6 +245,138 @@ def credit_workload_bags(
     return credited, duplicates
 
 
+def build_et_day_completed_bag_credits(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    registry_meta: Mapping[str, Mapping[str, Any]] | None,
+    events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]],
+    workload_rows: Sequence[Mapping[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Credit completed production from immutable ET-day completion events (not workload membership)."""
+    from backend.rinse_employee_processed_bags import build_employee_processed_bag_records
+    from backend.rinse_post_processing_weight_chronology import _load_scan_events_for_bags
+    from backend.rinse_wf_weight_events import WF_POST_PROCESSING_WEIGHT_SIGNAL
+
+    org = int(organization_id)
+    as_of_end = naive_et_day_end_inclusive(selected_date_et)
+    registry = registry_meta or {}
+    workload_by_bag = {
+        str(row.get("bag_id") or "").strip().upper(): dict(row)
+        for row in (workload_rows or [])
+        if isinstance(row, dict) and row.get("bag_id")
+    }
+
+    processed_records = build_employee_processed_bag_records(
+        cursor,
+        org,
+        selected_date_et=selected_date_et,
+        registry_meta_by_bag=registry,
+    )
+
+    extended_events: dict[str, list[dict[str, Any]]] = {
+        str(bid).upper(): list(evs) for bid, evs in events_by_bag.items() if bid
+    }
+    missing_ids = sorted(
+        {
+            str(rec.get("bag_id") or "").strip().upper()
+            for rec in processed_records
+            if str(rec.get("bag_id") or "").strip().upper()
+            and str(rec.get("bag_id") or "").strip().upper() not in extended_events
+        }
+    )
+    if missing_ids and hasattr(cursor, "execute"):
+        for ev in _load_scan_events_for_bags(cursor, org, missing_ids):
+            bid = str(ev.get("bag_id") or "").strip().upper()
+            if bid:
+                extended_events.setdefault(bid, []).append(dict(ev))
+
+    credited: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    duplicates: list[str] = []
+
+    def _append_credit(
+        bid: str,
+        *,
+        svc: str,
+        events: Sequence[Mapping[str, Any]],
+        customer_name: str | None = None,
+    ) -> None:
+        if bid in seen:
+            duplicates.append(bid)
+            return
+        seen.add(bid)
+        row = dict(workload_by_bag.get(bid) or {})
+        row.setdefault("bag_id", bid)
+        row.setdefault("service_type", svc)
+        row.setdefault("service_bucket", svc)
+        if customer_name is not None:
+            row.setdefault("customer_name", customer_name)
+        row["at_vendor_status"] = "Completed"
+        record = resolve_workload_bag_credit(
+            row,
+            events=events,
+            selected_date_et=selected_date_et,
+            as_of_end=as_of_end,
+            registry_meta=registry,
+        )
+        if record.get("excluded_reason"):
+            seen.discard(bid)
+            return
+        record["completion_source"] = "et_day_completion_event"
+        record["credit_from_workload_membership"] = bid in workload_by_bag and _normalize_workload_status(
+            workload_by_bag.get(bid) or {}
+        ) == "completed"
+        credited.append(record)
+
+    for proc in processed_records:
+        bid = str(proc.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        svc = _service_type(proc)
+        if svc == "WF" and str(proc.get("processed_signal") or "") != WF_POST_PROCESSING_WEIGHT_SIGNAL:
+            continue
+        _append_credit(
+            bid,
+            svc=svc,
+            events=extended_events.get(bid) or [],
+            customer_name=proc.get("customer_name"),
+        )
+
+    from backend.rinse_at_vendor_module import resolve_immutable_et_day_completion
+
+    for bid, events in extended_events.items():
+        if bid in seen:
+            continue
+        row = dict(workload_by_bag.get(bid) or {})
+        svc = _service_type(row) if row.get("service_type") or row.get("service_bucket") else str(
+            (registry.get(bid) or {}).get("service_type") or "WF"
+        ).upper()
+        if svc not in ("WF", "HD"):
+            continue
+        if resolve_immutable_et_day_completion(
+            events,
+            service_type=svc,
+            selected_date_et=selected_date_et,
+            as_of_end=as_of_end,
+        ) is None:
+            continue
+        if not (
+            row.get("completed_during_et_day")
+            or _normalize_workload_status(row) == "completed"
+        ):
+            continue
+        _append_credit(
+            bid,
+            svc=svc,
+            events=events,
+            customer_name=row.get("customer_name") or (registry.get(bid) or {}).get("customer_name"),
+        )
+
+    return credited, duplicates
+
+
 def build_completed_attribution_audit(
     workload_rows: Sequence[Mapping[str, Any]],
     *,
@@ -254,11 +388,10 @@ def build_completed_attribution_audit(
 ) -> list[dict[str, Any]]:
     """Explain every completed workload bag's productivity attribution in scope."""
     as_of_end = naive_et_day_end_inclusive(selected_date_et)
-    scoped_rows = filter_workload_rows(
+    scoped_rows = _scoped_completed_workload_rows(
         workload_rows,
         rush_filter=rush_filter,
         include_hd=include_hd,
-        completed_only=True,
     )
     audit: list[dict[str, Any]] = []
     for row in scoped_rows:
@@ -297,17 +430,74 @@ def build_completed_attribution_audit(
     return audit
 
 
+def _filter_credited_bags_scope(
+    credited_bags: Sequence[Mapping[str, Any]],
+    *,
+    rush_filter: str = "all",
+    include_hd: bool = True,
+) -> list[dict[str, Any]]:
+    rush = normalize_rush_filter(rush_filter)
+    out: list[dict[str, Any]] = []
+    for bag in credited_bags:
+        if not isinstance(bag, dict):
+            continue
+        svc = _service_type(bag)
+        if not include_hd and svc != "WF":
+            continue
+        bucket = _rush_bucket(bag)
+        if rush == "rush" and bucket != AV_RUSH:
+            continue
+        if rush == "non_rush" and bucket != AV_NON_RUSH:
+            continue
+        out.append(dict(bag))
+    return out
+
+
+def _scoped_completed_workload_rows(
+    workload_rows: Sequence[Mapping[str, Any]],
+    *,
+    rush_filter: str = "all",
+    include_hd: bool = True,
+) -> list[dict[str, Any]]:
+    """Completed workload scope including immutable ET-day completions."""
+    scoped = filter_workload_rows(
+        workload_rows,
+        rush_filter=rush_filter,
+        include_hd=include_hd,
+        completed_only=True,
+    )
+    rush = normalize_rush_filter(rush_filter)
+    scoped_ids = {str(r.get("bag_id") or "").upper() for r in scoped if r.get("bag_id")}
+    for row in workload_rows:
+        if not isinstance(row, dict):
+            continue
+        if not row.get("completed_during_et_day"):
+            continue
+        bid = str(row.get("bag_id") or "").upper()
+        if not bid or bid in scoped_ids:
+            continue
+        if not include_hd and _service_type(row) != "WF":
+            continue
+        bucket = _rush_bucket(row)
+        if rush == "rush" and bucket != AV_RUSH:
+            continue
+        if rush == "non_rush" and bucket != AV_NON_RUSH:
+            continue
+        scoped.append(dict(row))
+        scoped_ids.add(bid)
+    return scoped
+
+
 def _count_completed_scope(
     workload_rows: Sequence[Mapping[str, Any]],
     *,
     rush_filter: str = "all",
     include_hd: bool = True,
 ) -> dict[str, int]:
-    scoped = filter_workload_rows(
+    scoped = _scoped_completed_workload_rows(
         workload_rows,
         rush_filter=rush_filter,
         include_hd=include_hd,
-        completed_only=True,
     )
     wf = sum(1 for r in scoped if _service_type(r) == "WF")
     hd = sum(1 for r in scoped if _service_type(r) == "HD")
@@ -345,25 +535,27 @@ def build_workload_productivity_reconciliation(
         rush_filter=rush_filter,
         include_hd=include_hd,
     )
+    scoped_completed_rows = _scoped_completed_workload_rows(
+        workload_rows,
+        rush_filter=rush_filter,
+        include_hd=include_hd,
+    )
     scoped_completed_ids = {
-        str(r.get("bag_id") or "").strip().upper()
-        for r in filter_workload_rows(
-            workload_rows,
-            rush_filter=rush_filter,
-            include_hd=include_hd,
-            completed_only=True,
-        )
-        if r.get("bag_id")
+        str(r.get("bag_id") or "").strip().upper() for r in scoped_completed_rows if r.get("bag_id")
     }
-    scoped_credited = [
-        b
-        for b in credited_bags
-        if str(b.get("bag_id") or "").strip().upper() in scoped_completed_ids
-    ]
+    workload_completed = scope_counts["workload_completed_today"]
+    scoped_credited = _filter_credited_bags_scope(
+        credited_bags,
+        rush_filter=rush_filter,
+        include_hd=include_hd,
+    )
     credited_ids = sorted(
         {str(b.get("bag_id") or "").strip().upper() for b in scoped_credited if b.get("bag_id")}
     )
     credited_set = set(credited_ids)
+
+    def _row_completed_today(row: Mapping[str, Any]) -> bool:
+        return _normalize_workload_status(row) == "completed" or bool(row.get("completed_during_et_day"))
 
     wf_total = sum(1 for r in workload_rows if isinstance(r, dict) and _service_type(r) == "WF")
     hd_total = sum(1 for r in workload_rows if isinstance(r, dict) and _service_type(r) == "HD")
@@ -372,17 +564,21 @@ def build_workload_productivity_reconciliation(
         for r in workload_rows
         if isinstance(r, dict)
         and _service_type(r) == "WF"
-        and _normalize_workload_status(r) == "pending"
+        and not _row_completed_today(r)
     )
     hd_pending = sum(
         1
         for r in workload_rows
         if isinstance(r, dict)
         and _service_type(r) == "HD"
-        and _normalize_workload_status(r) == "pending"
+        and not _row_completed_today(r)
     )
-    wf_completed = wf_total - wf_pending
-    hd_completed = hd_total - hd_pending
+    wf_completed = sum(
+        1 for r in workload_rows if isinstance(r, dict) and _service_type(r) == "WF" and _row_completed_today(r)
+    )
+    hd_completed = sum(
+        1 for r in workload_rows if isinstance(r, dict) and _service_type(r) == "HD" and _row_completed_today(r)
+    )
 
     credited_wf = sum(1 for b in scoped_credited if _service_type(b) == "WF")
     credited_hd = sum(1 for b in scoped_credited if _service_type(b) == "HD")
@@ -412,14 +608,9 @@ def build_workload_productivity_reconciliation(
     employee_attributed = credited_total - unassigned_count
 
     recon_ok = (
-        workload_completed == credited_total
-        and not duplicate_bag_ids
+        not duplicate_bag_ids
         and not missing_from_productivity
-        and not extra_in_productivity
         and duplicate_credit_count == 0
-        and scope_counts["workload_wf_completed"] == credited_wf
-        and (include_hd or credited_hd == 0)
-        and (not include_hd or scope_counts["workload_hd_completed"] == credited_hd)
     )
 
     audit = [

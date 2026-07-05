@@ -250,7 +250,7 @@ class TestBuildEmployeeCompletedBagsToday:
                 _ev("sent-to-vendor", T0),
                 _ev("weight-entry", T1),
                 _ev("add-photos", T2),
-                _ev("weight-entry", T3, user_name="Weight Clerk"),
+                _ev("weight-entry", T3, user_name="Weight Clerk", weight_lbs=12.5),
             ],
             "BAGHD1": [
                 _ev("sent-to-vendor", T0),
@@ -284,7 +284,7 @@ class TestBuildEmployeeCompletedBagsToday:
                 _ev("sent-to-vendor", T0),
                 _ev("weight-entry", T1),
                 _ev("add-photos", T2),
-                _ev("weight-entry", T3, user_name="Unknown Person"),
+                _ev("weight-entry", T3, user_name="Unknown Person", weight_lbs=12.5),
             ],
         }
         out = self._build([row], events, clock_in=None, user_maps={})
@@ -294,7 +294,7 @@ class TestBuildEmployeeCompletedBagsToday:
         assert emp["bags_per_hour"] is None
         assert emp["lbs_per_hour"] is None
 
-    def test_missing_weight_counted_not_in_lbs_total(self):
+    def test_weight_integrity_failure_excluded_from_lbs_total(self):
         row = _completed_row("BAG1", post_clean_weight=None)
         row.pop("post_clean_weight", None)
         events = {
@@ -309,7 +309,8 @@ class TestBuildEmployeeCompletedBagsToday:
         emp = next(e for e in out["employees"] if e["employee"] == "Weight Clerk")
         assert emp["completed_bags"] == 1
         assert emp["total_completed_lbs"] == 0
-        assert emp["missing_weight_count"] == 1
+        assert emp["weight_integrity_failure_count"] == 1
+        assert out["weight_integrity_ok"] is False
 
     def test_completed_lbs_from_attribution_weight_scan_when_portal_weight_missing(self):
         row = _completed_row("BAG1", post_clean_weight=None)
@@ -326,7 +327,8 @@ class TestBuildEmployeeCompletedBagsToday:
         emp = next(e for e in out["employees"] if e["employee"] == "Weight Clerk")
         assert emp["completed_bags"] == 1
         assert emp["total_completed_lbs"] == 14.2
-        assert emp["missing_weight_count"] == 0
+        assert emp["weight_integrity_failure_count"] == 0
+        assert out["weight_integrity_ok"] is True
         assert emp["bags"][0]["completed_lbs"] == 14.2
 
     def test_bags_sorted_chronologically_in_drilldown(self):
@@ -337,7 +339,7 @@ class TestBuildEmployeeCompletedBagsToday:
                 _ev("sent-to-vendor", T0),
                 _ev("weight-entry", T1),
                 _ev("add-photos", T2),
-                _ev("weight-entry", T3, user_name="Weight Clerk"),
+                _ev("weight-entry", T3, user_name="Weight Clerk", weight_lbs=12.5),
             ],
             "BAG2": [
                 _ev("sent-to-vendor", T0),
@@ -358,7 +360,7 @@ class TestBuildEmployeeCompletedBagsToday:
                 _ev("sent-to-vendor", T0),
                 _ev("weight-entry", T1),
                 _ev("add-photos", T2, user_name="Processor"),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=6),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=6, weight_lbs=12.5),
             ],
             "BAG2": [
                 _ev("drying", T2, user_name="Weight Clerk", ev_id=5),
@@ -386,7 +388,7 @@ class TestBuildEmployeeCompletedBagsToday:
                 _ev("sent-to-vendor", T0),
                 _ev("weight-entry", T1),
                 _ev("add-photos", T2, user_name="Weight Clerk"),
-                _ev("weight-entry", T3, user_name="Weight Clerk"),
+                _ev("weight-entry", T3, user_name="Weight Clerk", weight_lbs=12.5),
             ],
         }
         out = self._build(
@@ -423,7 +425,7 @@ class TestFoldingBlocks:
                 _ev("sent-to-vendor", T0),
                 _ev("weight-entry", T1),
                 _ev("add-photos", T2, user_name="Processor"),
-                _ev("weight-entry", T3, user_name="Folder Person", ev_id=4),
+                _ev("weight-entry", T3, user_name="Folder Person", ev_id=4, weight_lbs=12.5),
             ],
         }
         out = self._build(
@@ -445,7 +447,7 @@ class TestFoldingBlocks:
                 _ev("sent-to-vendor", T0),
                 _ev("weight-entry", T1, user_name="Processor"),
                 _ev("add-photos", datetime(2026, 6, 10, 6, 30), user_name="Processor"),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=5),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=5, weight_lbs=12.5),
             ],
             "BAG2": [
                 _ev("drying", T2, user_name="Weight Clerk"),
@@ -466,7 +468,7 @@ class TestFoldingBlocks:
                 _ev("sent-to-vendor", T0),
                 _ev("weight-entry", T1),
                 _ev("add-photos", T2, user_name="Processor"),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=4),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=4, weight_lbs=12.5),
             ],
             "BAG2": [
                 _ev("sent-to-vendor", T0),
@@ -491,7 +493,7 @@ class TestFoldingBlocks:
                 _ev("sent-to-vendor", T0),
                 _ev("weight-entry", T1),
                 _ev("add-photos", T2, user_name="Processor"),
-                _ev("weight-entry", T3, user_name="Folder Person", ev_id=4),
+                _ev("weight-entry", T3, user_name="Folder Person", ev_id=4, weight_lbs=12.5),
             ],
         }
         out = self._build(
@@ -515,7 +517,7 @@ class TestFoldingBlocks:
                 _ev("sent-to-vendor", T0),
                 _ev("weight-entry", T1),
                 _ev("add-photos", T2, user_name="Processor"),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=4),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=4, weight_lbs=12.5),
             ],
             "BAG2": [
                 _ev("sent-to-vendor", T0),
@@ -540,7 +542,7 @@ class TestFoldingBlocks:
                 _ev("weight-entry", T1),
                 _ev("add-photos", T2, user_name="Processor"),
                 _ev("weight-entry", T2, user_name="Weight Clerk", ev_id=5),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=6),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=6, weight_lbs=12.5),
             ],
         }
         out = self._build([row], events, roster_roles={"weight clerk": "operator"})
@@ -557,7 +559,7 @@ class TestFoldingBlocks:
                 _ev("drying", T2, user_name="Other Worker"),
                 _ev("weight-entry", T1),
                 _ev("add-photos", datetime(2026, 6, 10, 6, 30), user_name="Processor"),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=5),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=5, weight_lbs=12.5),
             ],
         }
         out = self._build([row], events, roster_roles={"weight clerk": "operator"})
@@ -573,7 +575,7 @@ class TestFoldingBlocks:
                 _ev("drying", prior_day, user_name="Weight Clerk"),
                 _ev("weight-entry", T1),
                 _ev("add-photos", T2, user_name="Processor"),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=5),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=5, weight_lbs=12.5),
             ],
         }
         out = self._build([row], events, roster_roles={"weight clerk": "operator"})
@@ -589,7 +591,7 @@ class TestFoldingBlocks:
                 _ev("drying", early, user_name="Weight Clerk"),
                 _ev("weight-entry", T1),
                 _ev("add-photos", T2, user_name="Processor"),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=5),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=5, weight_lbs=12.5),
             ],
         }
         out = self._build([row], events, roster_roles={"weight clerk": "operator"})
@@ -608,7 +610,7 @@ class TestFoldingBlocks:
                 _ev("sent-to-vendor", resend, ev_id=3),
                 _ev("weight-entry", post_anchor_proc, user_name="Processor", ev_id=5),
                 _ev("add-photos", post_resend, user_name="Processor", ev_id=6),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=7),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=7, weight_lbs=12.5),
             ],
             "BAG2": [
                 _ev("drying", post_resend, user_name="Weight Clerk", ev_id=4),

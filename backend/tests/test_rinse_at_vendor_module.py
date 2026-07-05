@@ -37,14 +37,22 @@ from backend.rinse_folding_et import naive_et_day_end_inclusive
 from backend.rinse_shift_monitor_modules import build_shift_monitor_modules
 
 
-def _ev(purpose: str, ts: datetime, *, ev_id: int = 1, scan_index: int = 1, rack: str = "") -> dict:
+def _ev(
+    purpose: str,
+    ts: datetime,
+    *,
+    ev_id: int = 1,
+    scan_index: int = 1,
+    rack: str = "",
+    user_name: str = "Tester",
+) -> dict:
     return {
         "purpose": purpose,
         "scanned_at_parsed": ts,
         "id": ev_id,
         "scan_index": scan_index,
         "rack": rack,
-        "user_name": "Tester",
+        "user_name": user_name,
     }
 
 
@@ -1551,6 +1559,40 @@ class TestCrossDayCompletionAttribution:
         assert june13_row["daily_classification"] == DAILY_CLASS_PENDING_AS_OF_SELECTED_DAY_END_OR_NOW
         assert june13_row["at_vendor_status"] == AV_STATUS_PENDING
 
+    def test_repeat_trip_after_et_day_completion_stays_completed_in_days_load(self):
+        from backend.rinse_at_vendor_module import (
+            DAILY_CLASS_COMPLETED_DURING_SELECTED_DAY,
+            _apply_off_portal_workload_row_filter,
+        )
+
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 5, 5, 0)),
+            _ev("weight-entry", datetime(2026, 7, 5, 6, 0)),
+            _ev("add-photos", datetime(2026, 7, 5, 8, 0)),
+            _ev("weight-entry", datetime(2026, 7, 5, 9, 0), user_name="Jennifer"),
+            _ev("received-from-vendor", datetime(2026, 7, 5, 11, 0)),
+            _ev("sent-to-vendor", datetime(2026, 7, 5, 14, 0)),
+        ]
+        row = _build_row(
+            bag_id="TRIP1",
+            meta={"service_type": "WF"},
+            events=events,
+            selected_date_et=date(2026, 7, 5),
+            as_of_end=naive_et_day_end_inclusive(date(2026, 7, 5)),
+            daily_et_attribution=True,
+        )
+        assert row["daily_classification"] == DAILY_CLASS_COMPLETED_DURING_SELECTED_DAY
+        assert row["at_vendor_status"] == AV_STATUS_COMPLETED
+        assert row["completed_during_et_day"] is True
+
+        kept, meta = _apply_off_portal_workload_row_filter(
+            [row],
+            off_portal_terminal_ids={"TRIP1"},
+            portal_scrape_rejected_ids=set(),
+        )
+        assert len(kept) == 1
+        assert meta["off_portal_completed_retained_in_days_load"] == ["TRIP1"]
+
     def test_clean_baseline_excludes_completed_before_day_start_from_workload(self):
         from unittest.mock import patch
 
@@ -1611,6 +1653,9 @@ class TestCrossDayCompletionAttribution:
         ), patch(
             "backend.rinse_employee_completed_bags.build_employee_completed_bags_today",
             return_value={"employees": [], "reconciliation": {"ok": True}, "reconciliation_banner": {}},
+        ), patch(
+            "backend.rinse_simple_shift_performance._load_bag_metadata",
+            return_value={},
         ):
             out = build_at_vendor_module(
                 object(),

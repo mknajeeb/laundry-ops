@@ -798,31 +798,25 @@ def _pending_processed_bag_ids(
 
 
 def _completed_lbs_from_row_meta(row: Mapping[str, Any], meta: Mapping[str, Any] | None) -> float | None:
-    from backend.rinse_workload_bag_weight import _weight_from_row_only
-
-    row_lbs = _weight_from_row_only(row)
-    if row_lbs is not None:
-        return row_lbs
-    if not meta:
-        return None
-    for key in (
-        "post_clean_weight",
-        "weight_num",
-        "registry_weight_num",
-        "weight_lbs",
-        "weight",
-        "credited_lbs",
-        "processed_lbs",
-    ):
-        raw = meta.get(key)
-        if raw is None:
-            continue
-        try:
-            val = float(raw)
-            if val > 0:
-                return round(val, 4)
-        except (TypeError, ValueError):
-            continue
+    for source in (row, meta or {}):
+        for key in (
+            "post_clean_weight",
+            "weight_num",
+            "registry_weight_num",
+            "weight_lbs",
+            "weight",
+            "credited_lbs",
+            "processed_lbs",
+        ):
+            raw = source.get(key)
+            if raw is None:
+                continue
+            try:
+                val = float(raw)
+                if val > 0:
+                    return round(val, 4)
+            except (TypeError, ValueError):
+                continue
     return None
 
 
@@ -869,24 +863,23 @@ def _resolve_bag_display_weight_lbs(
     service_type: str | None = None,
     selected_date_et: date | None = None,
     portal_upload_weight: float | None = None,
-    registry_context: Mapping[str, Any] | None = None,
 ) -> float | None:
-    from backend.rinse_workload_bag_weight import resolve_current_completed_workload_weight_lbs
+    svc = str(service_type or row.get("service_type") or row.get("service_bucket") or "").upper()
+    if svc == "WF":
+        from backend.rinse_workload_bag_weight import resolve_wf_completion_weight_lbs
 
-    lbs, _source = resolve_current_completed_workload_weight_lbs(
-        row,
-        meta,
-        events=events,
-        credit_ts=credit_ts,
-        anchor_ts=anchor_ts,
-        as_of_end=as_of_end,
-        service_type=service_type,
-        selected_date_et=selected_date_et,
-        portal_upload_weight=portal_upload_weight,
-        registry_context=registry_context,
-        processed_lbs=processed_lbs,
-    )
-    return lbs
+        bid = str(row.get("bag_id") or "").strip().upper()
+        lbs, _trace = resolve_wf_completion_weight_lbs(
+            bag_id=bid,
+            events=events,
+            credit_ts=credit_ts,
+            anchor_ts=anchor_ts,
+            as_of_end=as_of_end,
+            selected_date_et=selected_date_et,
+            portal_upload_weight=portal_upload_weight,
+        )
+        return lbs
+    return _completed_lbs_from_row_meta(row, meta)
 
 
 def _completed_lbs(
@@ -899,7 +892,6 @@ def _completed_lbs(
     as_of_end: datetime | None = None,
     selected_date_et: date | None = None,
     portal_upload_weight: float | None = None,
-    registry_context: Mapping[str, Any] | None = None,
 ) -> float | None:
     return _resolve_bag_display_weight_lbs(
         row,
@@ -910,7 +902,6 @@ def _completed_lbs(
         service_type=service_type,
         selected_date_et=selected_date_et,
         portal_upload_weight=portal_upload_weight,
-        registry_context=registry_context,
     )
 
 
@@ -927,12 +918,10 @@ def _enrich_credited_bag_weights(
     processed_lbs_by_bag: Mapping[str, float] | None = None,
     sync_registry: bool = False,
 ) -> None:
-    """Attach current-day display weights to credited bags without changing attribution."""
+    """Attach post-processing scan weights; portal weight joins onto scan row when needed."""
     from backend.rinse_workload_bag_weight import (
         finalize_completed_bag_weight_fields,
         load_portal_upload_weights_for_bags,
-        load_registry_weight_context_for_bags,
-        sync_registry_weight_for_workload_day,
     )
 
     row_by_bag = {
@@ -940,16 +929,16 @@ def _enrich_credited_bag_weights(
         for r in workload_rows
         if isinstance(r, dict) and r.get("bag_id")
     }
-    processed_lookup = dict(processed_lbs_by_bag or {})
     weight_row_keys = ("post_clean_weight", "pre_clean_weight", "weight_num", "weight_lbs", "registry_weight_num")
     bag_ids = [str(b.get("bag_id") or "").strip().upper() for b in credited_bags if b.get("bag_id")]
-    portal_weights = load_portal_upload_weights_for_bags(
-        cursor,
-        organization_id,
-        bag_ids,
-        selected_date_et=selected_date_et,
-    )
-    registry_context_by_bag = load_registry_weight_context_for_bags(cursor, organization_id, bag_ids)
+    portal_weights: dict[str, float] = {}
+    if bag_ids and hasattr(cursor, "execute"):
+        portal_weights = load_portal_upload_weights_for_bags(
+            cursor,
+            organization_id,
+            bag_ids,
+            selected_date_et=selected_date_et,
+        )
 
     for bag in credited_bags:
         bid = str(bag.get("bag_id") or "").strip().upper()
@@ -957,7 +946,7 @@ def _enrich_credited_bag_weights(
             continue
         row = row_by_bag.get(bid) or {}
         meta = registry_meta.get(bid) or {}
-        events = events_by_bag.get(bid) or []
+        events = list(events_by_bag.get(bid) or [])
         anchor = _resolve_anchor_ts(events, selected_date_et)
         credit_ts: datetime | None = None
         raw_credit_ts = bag.get("credit_timestamp")
@@ -976,27 +965,17 @@ def _enrich_credited_bag_weights(
             events=events,
             selected_date_et=selected_date_et,
             as_of_end=as_of_end,
-            processed_lbs=processed_lookup.get(bid),
             portal_upload_weight=portal_weights.get(bid),
-            registry_context=registry_context_by_bag.get(bid),
             credit_ts=credit_ts,
             anchor_ts=anchor,
+            cursor=cursor,
+            organization_id=organization_id,
+            repair_scan_from_portal=True,
         )
-        lbs = bag.get("weight_lbs")
-        weight_source = bag.get("weight_source")
 
         for key in weight_row_keys:
             if row.get(key) is not None and bag.get(key) is None:
                 bag[key] = row[key]
-
-        if sync_registry and lbs is not None and weight_source == "portal_upload_weight":
-            sync_registry_weight_for_workload_day(
-                cursor,
-                organization_id,
-                bid,
-                weight_lbs=lbs,
-                selected_date_et=selected_date_et,
-            )
 
 
 def _attach_processed_productivity_metrics(
@@ -1166,19 +1145,12 @@ def build_employee_completed_bags_today(
                 completed_bag_id_candidates.add(bid)
 
     portal_upload_weights_by_bag: dict[str, float] = {}
-    registry_weight_context_by_bag: dict[str, dict[str, Any]] = {}
     if completed_bag_id_candidates and hasattr(cursor, "execute"):
-        from backend.rinse_workload_bag_weight import (
-            load_portal_upload_weights_for_bags,
-            load_registry_weight_context_for_bags,
-        )
+        from backend.rinse_workload_bag_weight import load_portal_upload_weights_for_bags
 
         bag_id_list = sorted(completed_bag_id_candidates)
         portal_upload_weights_by_bag = load_portal_upload_weights_for_bags(
             cursor, org, bag_id_list, selected_date_et=selected_date_et
-        )
-        registry_weight_context_by_bag = load_registry_weight_context_for_bags(
-            cursor, org, bag_id_list
         )
 
     attributed_bags: list[dict[str, Any]] = []
@@ -1189,13 +1161,15 @@ def build_employee_completed_bags_today(
     scan_derived_wf_bag_ids: list[str] = []
 
     if use_workload_mode:
-        from backend.rinse_employee_workload_productivity import credit_workload_bags
+        from backend.rinse_employee_workload_productivity import build_et_day_completed_bag_credits
 
-        attributed_bags, duplicate_bags = credit_workload_bags(
-            workload_rows or [],
-            events_by_bag=events_by_bag,
+        attributed_bags, duplicate_bags = build_et_day_completed_bag_credits(
+            cursor,
+            org,
             selected_date_et=selected_date_et,
             registry_meta=registry_meta,
+            events_by_bag=events_by_bag,
+            workload_rows=workload_rows or [],
         )
         processed_lbs_by_bag: dict[str, float] = {}
         credited_ids = [
@@ -1227,7 +1201,7 @@ def build_employee_completed_bags_today(
             selected_date_et=selected_date_et,
             as_of_end=as_of_end,
             processed_lbs_by_bag=processed_lbs_by_bag,
-            sync_registry=True,
+            sync_registry=False,
         )
         seen_bags = {str(b.get("bag_id") or "").upper() for b in attributed_bags if b.get("bag_id")}
     else:
@@ -1280,7 +1254,6 @@ def build_employee_completed_bags_today(
                 as_of_end=as_of_end,
                 selected_date_et=selected_date_et,
                 portal_upload_weight=portal_upload_weights_by_bag.get(bid),
-                registry_context=registry_weight_context_by_bag.get(bid),
             )
             attr_reason = _attribution_reason(svc, attr_signal or row.get("completion_signal"))
             if employee == UNKNOWN_EMPLOYEE:
@@ -1328,7 +1301,7 @@ def build_employee_completed_bags_today(
             attributed_bags=attributed_bags,
             events_by_bag=events_by_bag,
         )
-        if attributed_bags and hasattr(cursor, "execute"):
+        if attributed_bags:
             _enrich_credited_bag_weights(
                 attributed_bags,
                 cursor=cursor,
@@ -1348,6 +1321,10 @@ def build_employee_completed_bags_today(
             b.get("credit_timestamp") or b.get("completion_time") or "",
         )
     )
+
+    from backend.rinse_workload_bag_weight import assert_completed_wf_bags_have_weight
+
+    weight_integrity_violations = assert_completed_wf_bags_have_weight(attributed_bags)
 
     by_employee: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for bag in attributed_bags:
@@ -1571,16 +1548,17 @@ def build_employee_completed_bags_today(
             )
         folding_duration_seconds = productive_sec or 0
 
-        missing_weight_count = sum(
+        weight_integrity_failure_count = sum(
             1
             for b in bags_sorted
-            if b.get("weight_status") == "missing" or b.get("weight_missing")
+            if b.get("weight_status") == "integrity_failure" or b.get("weight_integrity_failure")
         )
         total_completed_lbs = round(
             sum(
                 float(b.get("weight_lbs") or b.get("completed_lbs"))
                 for b in bags_sorted
                 if (b.get("weight_lbs") or b.get("completed_lbs")) is not None
+                and b.get("weight_status") != "integrity_failure"
             ),
             2,
         )
@@ -1605,12 +1583,6 @@ def build_employee_completed_bags_today(
         bags_per_hour: float | None = None
         lbs_per_hour: float | None = None
         productivity_note: str | None = None
-        missing_weight_warning: str | None = None
-        if missing_weight_count > 0 and credited_bag_count > 0:
-            missing_weight_warning = (
-                f"{missing_weight_count} of {credited_bag_count} completed bags missing weight; "
-                "lbs/hr may be understated."
-            )
 
         if clock_in is None:
             productivity_note = "Missing clock-in data"
@@ -1694,8 +1666,8 @@ def build_employee_completed_bags_today(
                 "completed_lbs_per_hour": lbs_per_hour,
                 "bags_per_hour": bags_per_hour,
                 "lbs_per_hour": lbs_per_hour,
-                "missing_weight_count": missing_weight_count,
-                "missing_weight_warning": missing_weight_warning,
+                "weight_integrity_failure_count": weight_integrity_failure_count,
+                "missing_weight_count": weight_integrity_failure_count,
                 "productivity_note": productivity_note or clock_diagnostic,
                 "bags": bags_sorted,
                 "show_processed_completed_split": False if use_workload_mode else (
@@ -1879,6 +1851,8 @@ def build_employee_completed_bags_today(
         "reconciliation_banner": reconciliation_banner,
         "reconciliation": reconciliation,
         "workload_based_productivity": use_workload_mode,
+        "weight_integrity_violations": weight_integrity_violations,
+        "weight_integrity_ok": not weight_integrity_violations,
     }
 
 

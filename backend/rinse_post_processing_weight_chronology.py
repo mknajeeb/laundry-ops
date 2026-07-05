@@ -111,6 +111,9 @@ def _load_scan_events_for_bags(
 ) -> list[dict[str, Any]]:
     if not bag_ids or not table_exists(cursor, "rinse_bag_scan_events"):
         return []
+    from backend.ta_helpers import table_has_column
+
+    weight_col = ", weight_lbs" if table_has_column(cursor, "rinse_bag_scan_events", "weight_lbs") else ""
     org = int(organization_id)
     out: list[dict[str, Any]] = []
     chunk = 100
@@ -121,7 +124,7 @@ def _load_scan_events_for_bags(
         cursor.execute(
             f"""
             SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index,
-                   last_location, last_scan, raw_json
+                   last_location, last_scan, raw_json{weight_col}
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND bag_id IN ({placeholders})

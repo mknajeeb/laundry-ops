@@ -570,7 +570,11 @@ def _apply_off_portal_workload_row_filter(
             continue
         if bid in off_portal_terminal_ids:
             tags = row.get("module_tags") or []
-            if MOD_AT_VENDOR_COMPLETED in tags:
+            if (
+                MOD_AT_VENDOR_COMPLETED in tags
+                or row.get("completed_during_et_day")
+                or row.get("daily_classification") == DAILY_CLASS_COMPLETED_DURING_SELECTED_DAY
+            ):
                 off_portal_completed_retained.append(bid)
                 kept.append(row)
                 continue
@@ -2325,6 +2329,56 @@ def _resolve_selected_day_anchor_ts(
     return _latest_sent_to_vendor_ts(events, before=start)
 
 
+def _sent_to_vendor_anchor_timestamps(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    before: datetime,
+) -> list[datetime]:
+    anchors: list[datetime] = []
+    for ev in timeline:
+        if not is_sent_to_vendor_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if ts_valid(ts) and ts <= before:
+            anchors.append(ts)
+    return sorted(set(anchors))
+
+
+def resolve_immutable_et_day_completion(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    service_type: str,
+    selected_date_et: date,
+    as_of_end: datetime,
+) -> tuple[datetime, str, dict[str, Any] | None, datetime] | None:
+    """Immutable ET-day completion from chronology — survives repeat trips / vendor departure."""
+    timeline = gaming_events_from_records(events)
+    svc = service_type if service_type in ("WF", "HD") else AV_UNKNOWN
+    if svc not in ("WF", "HD"):
+        return None
+
+    from backend.rinse_wf_weight_events import WF_POST_PROCESSING_WEIGHT_SIGNAL
+
+    best: tuple[datetime, str, dict[str, Any] | None, datetime] | None = None
+    for anchor_ts in _sent_to_vendor_anchor_timestamps(timeline, before=as_of_end):
+        if svc == "HD":
+            signal, comp_ts = _hd_completion_signal(
+                timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
+            )
+            wf_weight_fields = None
+        else:
+            signal, comp_ts, wf_weight_fields = _wf_completion_signal(
+                timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
+            )
+        if comp_ts is None or not ts_valid(comp_ts) or comp_ts > as_of_end:
+            continue
+        if _completion_date_et(comp_ts) != selected_date_et:
+            continue
+        if best is None or comp_ts > best[0]:
+            best = (comp_ts, signal or WF_POST_PROCESSING_WEIGHT_SIGNAL, wf_weight_fields, anchor_ts)
+    return best
+
+
 def _evaluate_bag_as_of(
     events: Sequence[Mapping[str, Any]],
     *,
@@ -2399,6 +2453,7 @@ def _load_at_vendor_scan_events_for_bags(
     out: dict[str, list[dict[str, Any]]] = {bid: [] for bid in bag_ids if bid}
     if not bag_ids or not table_exists(cursor, "rinse_bag_scan_events"):
         return out
+    weight_col = ", weight_lbs" if table_has_column(cursor, "rinse_bag_scan_events", "weight_lbs") else ""
     purpose_filter = _at_vendor_purpose_sql_filter()
     time_clauses: list[str] = []
     time_args: list[Any] = []
@@ -2417,7 +2472,7 @@ def _load_at_vendor_scan_events_for_bags(
         placeholders = ",".join(["%s"] * len(part))
         cursor.execute(
             f"""
-            SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index, raw_json
+            SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index, raw_json{weight_col}
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND UPPER(TRIM(bag_id)) IN ({placeholders})
@@ -2701,7 +2756,23 @@ def _build_row(
         anchor_ts_override=anchor_ts,
     )
     daily_classification = None
-    if daily_et_attribution:
+    completed_during_et_day = False
+    immutable_completion = (
+        resolve_immutable_et_day_completion(
+            events,
+            service_type=svc,
+            selected_date_et=selected_date_et,
+            as_of_end=as_of_end,
+        )
+        if daily_et_attribution
+        else None
+    )
+    if daily_et_attribution and immutable_completion is not None:
+        completion_ts, completion_signal, wf_weight_fields, _immutable_anchor = immutable_completion
+        status = AV_STATUS_COMPLETED
+        daily_classification = DAILY_CLASS_COMPLETED_DURING_SELECTED_DAY
+        completed_during_et_day = True
+    elif daily_et_attribution:
         comp_date = _completion_date_et(completion_ts) if status == AV_STATUS_COMPLETED else None
         if (
             status == AV_STATUS_COMPLETED
@@ -2710,11 +2781,13 @@ def _build_row(
             and completion_ts <= as_of_end
         ):
             daily_classification = DAILY_CLASS_COMPLETED_DURING_SELECTED_DAY
+            completed_during_et_day = True
         else:
             daily_classification = DAILY_CLASS_PENDING_AS_OF_SELECTED_DAY_END_OR_NOW
             status = AV_STATUS_PENDING
             completion_signal = None
             completion_ts = None
+            wf_weight_fields = None
     elif (
         status == AV_STATUS_COMPLETED
         and completion_ts is not None
@@ -2817,6 +2890,7 @@ def _build_row(
             meta.get("currently_on_vendor_home") is False
             and bool(meta.get("population_inclusion"))
         ),
+        "completed_during_et_day": completed_during_et_day,
         "previous_rush_bucket": previous_rush,
         "previous_edd": previous_edd.isoformat() if previous_edd else None,
         "prior_edd_source": prior_edd_source,
@@ -3033,7 +3107,7 @@ def build_at_vendor_module(
             selected_date_et=selected_date_et,
             as_of_end=as_of_end,
             completion_window_start=start_of_day_et,
-            daily_et_attribution=bool(uses_clean_baseline and baseline_ctx),
+            daily_et_attribution=True,
             explanation_events=explanation_events_by_bag.get(bid) or [],
         )
         rows.append(row)
@@ -3221,36 +3295,40 @@ def build_at_vendor_module(
     def _row_svc(row: Mapping[str, Any]) -> str:
         return _normalize_service(row.get("service_type") or row.get("service_bucket"))
 
+    def _row_completed_today(row: Mapping[str, Any]) -> bool:
+        return row.get("at_vendor_status") == AV_STATUS_COMPLETED or bool(row.get("completed_during_et_day"))
+
     rush_total = sum(1 for r in rows if r.get("rush_bucket") == AV_RUSH)
     non_rush_total = sum(1 for r in rows if r.get("rush_bucket") == AV_NON_RUSH)
     rush_pending = sum(
-        1 for r in rows if r.get("rush_bucket") == AV_RUSH and r.get("at_vendor_status") == AV_STATUS_PENDING
+        1 for r in rows if r.get("rush_bucket") == AV_RUSH and not _row_completed_today(r)
     )
     from backend.rinse_at_vendor_pending_explanation import summarize_rush_pending_why
 
     rush_pending_why_summary = summarize_rush_pending_why(rows)
+
     rush_completed = sum(
-        1 for r in rows if r.get("rush_bucket") == AV_RUSH and r.get("at_vendor_status") == AV_STATUS_COMPLETED
+        1 for r in rows if r.get("rush_bucket") == AV_RUSH and _row_completed_today(r)
     )
     non_rush_pending = sum(
-        1 for r in rows if r.get("rush_bucket") == AV_NON_RUSH and r.get("at_vendor_status") == AV_STATUS_PENDING
+        1 for r in rows if r.get("rush_bucket") == AV_NON_RUSH and not _row_completed_today(r)
     )
     non_rush_completed = sum(
-        1 for r in rows if r.get("rush_bucket") == AV_NON_RUSH and r.get("at_vendor_status") == AV_STATUS_COMPLETED
+        1 for r in rows if r.get("rush_bucket") == AV_NON_RUSH and _row_completed_today(r)
     )
     wf_total = sum(1 for r in rows if _row_svc(r) == "WF")
     wf_pending = sum(
-        1 for r in rows if _row_svc(r) == "WF" and r.get("at_vendor_status") == AV_STATUS_PENDING
+        1 for r in rows if _row_svc(r) == "WF" and not _row_completed_today(r)
     )
     wf_completed = sum(
-        1 for r in rows if _row_svc(r) == "WF" and r.get("at_vendor_status") == AV_STATUS_COMPLETED
+        1 for r in rows if _row_svc(r) == "WF" and _row_completed_today(r)
     )
     hd_total = sum(1 for r in rows if _row_svc(r) == "HD")
     hd_pending = sum(
-        1 for r in rows if _row_svc(r) == "HD" and r.get("at_vendor_status") == AV_STATUS_PENDING
+        1 for r in rows if _row_svc(r) == "HD" and not _row_completed_today(r)
     )
     hd_completed = sum(
-        1 for r in rows if _row_svc(r) == "HD" and r.get("at_vendor_status") == AV_STATUS_COMPLETED
+        1 for r in rows if _row_svc(r) == "HD" and _row_completed_today(r)
     )
     completed_today_count = len(completed_rows)
 
@@ -3264,15 +3342,28 @@ def build_at_vendor_module(
     completed_bag_ids = [
         str(r.get("bag_id") or "").strip().upper() for r in completed_rows if r.get("bag_id")
     ]
-    employee_completed_bags_today = build_employee_completed_bags_today(
-        cursor,
-        org,
-        completed_rows=completed_rows,
-        workload_rows=rows,
-        events_by_bag=events_by_bag,
-        selected_date_et=selected_date_et,
-        registry_meta_by_bag=_load_bag_metadata(cursor, org, workload_bag_ids),
-    )
+    if hasattr(cursor, "execute"):
+        registry_meta_by_bag = _load_bag_metadata(cursor, org, workload_bag_ids)
+        employee_completed_bags_today = build_employee_completed_bags_today(
+            cursor,
+            org,
+            completed_rows=completed_rows,
+            workload_rows=rows,
+            events_by_bag=events_by_bag,
+            selected_date_et=selected_date_et,
+            registry_meta_by_bag=registry_meta_by_bag,
+        )
+    else:
+        employee_completed_bags_today = {
+            "employees": [],
+            "reconciliation": {
+                "ok": True,
+                "workload_completed_today": completed,
+                "credited_total": 0,
+            },
+            "reconciliation_banner": {},
+            "workload_based_productivity": True,
+        }
     step_ms["employee_completed_bags_ms"] = round((time.perf_counter() - t_emp) * 1000, 1)
 
     cards = [

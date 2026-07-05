@@ -65,7 +65,7 @@ def _wf_events(
     post_weight: datetime,
     *,
     photo_user: str = EMPLOYEE,
-    post_weight_lbs: float | None = None,
+    post_weight_lbs: float | None = 12.0,
 ) -> list[dict]:
     events = [
         {**_ev("sent-to-vendor", T0, ev_id=1), "bag_id": bag_id},
@@ -211,9 +211,9 @@ class TestWorkloadProductivityReconciliation:
             _workload_row("WF3", weight=33.0),
         ]
         events = {
-            "WF1": _wf_events("WF1", T2),
-            "WF2": _wf_events("WF2", T2),
-            "WF3": _wf_events("WF3", T2),
+            "WF1": _wf_events("WF1", T2, post_weight_lbs=11.0),
+            "WF2": _wf_events("WF2", T2, post_weight_lbs=22.0),
+            "WF3": _wf_events("WF3", T2, post_weight_lbs=33.0),
         }
         section = build_employee_completed_bags_today(
             _FakeCursor(),
@@ -298,7 +298,7 @@ class TestWorkloadProductivityReconciliation:
     @patch("backend.rinse_employee_completed_bags._load_employee_day_scan_events_bulk", return_value={})
     def test_lbs_per_hour_present_on_employee(self, *_mocks):
         rows = [_workload_row("WF1", weight=20.0)]
-        events = {"WF1": _wf_events("WF1", T2)}
+        events = {"WF1": _wf_events("WF1", T2, post_weight_lbs=20.0)}
         section = build_employee_completed_bags_today(
             _FakeCursor(),
             1,
@@ -311,3 +311,57 @@ class TestWorkloadProductivityReconciliation:
         emp = next(e for e in section["employees"] if e["employee"] == EMPLOYEE)
         assert emp["completed_lbs_per_hour"] is not None or emp["lbs_per_hour"] is not None
         assert emp["completed_bags"] == 1
+
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps", return_value={EMPLOYEE.casefold(): {"user_id": 42, "display_name": EMPLOYEE}})
+    @patch("backend.rinse_processing_productivity._load_shift_sessions_bulk", return_value={42: [{"clock_in_at": T0, "clock_out_at": T2}]})
+    @patch("backend.daily_shift_roster.list_roster_entries", return_value=[])
+    @patch("backend.rinse_employee_completed_bags._load_upstream_processing_scan_times_bulk", return_value={})
+    @patch("backend.rinse_employee_completed_bags._load_employee_day_scan_events_bulk", return_value={})
+    def test_productivity_stable_when_workload_row_leaves_completed(self, *_mocks):
+        completed_row = _workload_row("WF1", weight=12.0)
+        pending_row = _workload_row("WF1", status="Pending", weight=12.0)
+        events = {"WF1": _wf_events("WF1", T2, post_weight_lbs=12.0)}
+        processed = [
+            {
+                "bag_id": "WF1",
+                "service_type": "WF",
+                "service_bucket": "WF",
+                "employee_credited": EMPLOYEE,
+                "processed_by_employee": EMPLOYEE,
+                "processed_signal": "post_processing_weight",
+                "processed_time": T2.isoformat(),
+                "processed_timestamp": T2.isoformat(),
+                "processed_lbs": 12.0,
+                "customer_name": "Customer",
+            }
+        ]
+
+        with patch(
+            "backend.rinse_employee_processed_bags.build_employee_processed_bag_records",
+            return_value=processed,
+        ):
+            completed_section = build_employee_completed_bags_today(
+                _FakeCursor(),
+                1,
+                completed_rows=[completed_row],
+                workload_rows=[completed_row],
+                events_by_bag=events,
+                selected_date_et=SELECTED,
+                registry_meta_by_bag={},
+            )
+            pending_section = build_employee_completed_bags_today(
+                _FakeCursor(),
+                1,
+                completed_rows=[pending_row],
+                workload_rows=[pending_row],
+                events_by_bag=events,
+                selected_date_et=SELECTED,
+                registry_meta_by_bag={},
+            )
+
+        assert completed_section["employees"][0]["completed_bags"] == 1
+        assert pending_section["employees"][0]["completed_bags"] == 1
+        assert (
+            completed_section["employees"][0]["total_completed_lbs"]
+            == pending_section["employees"][0]["total_completed_lbs"]
+        )
