@@ -28,6 +28,7 @@ import {
   PRODUCTIVITY_RANK_OPTIONS,
   PERFORMANCE_TIER_STYLES,
   buildExecutiveSummaryCards,
+  employeeDisplayLbs,
   fmtProductivityRate,
   fmtSummaryNumber,
   isMissingClockIn,
@@ -50,9 +51,10 @@ const DATE_PRESETS = [
 function EmployeeSummaryPanel({ emp }) {
   const missingClockIn = isMissingClockIn(emp);
   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
+  const displayLbs = employeeDisplayLbs(emp);
   const items = [
     { label: "Completed Bags", value: emp.completed_bags ?? 0 },
-    { label: "Completed Lbs", value: emp.total_completed_lbs ?? 0 },
+    { label: "Completed Lbs", value: displayLbs },
     { label: "Productive Hours", value: missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2) },
     { label: "Bags / Hr", value: fmtProductivityRate(emp.completed_bags_per_hour ?? emp.bags_per_hour, missingClockIn) },
     { label: "Lbs / Hr", value: fmtProductivityRate(emp.completed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn) },
@@ -106,6 +108,7 @@ function EmployeeMobileCard({ emp, open, onToggle, selectedDate, bagsLoading }) 
   const missingClockIn = isMissingClockIn(emp);
   const tier = PERFORMANCE_TIER_STYLES[emp.performance_tier] || PERFORMANCE_TIER_STYLES.middle;
   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
+  const displayLbs = employeeDisplayLbs(emp);
 
   return (
     <Paper
@@ -132,7 +135,7 @@ function EmployeeMobileCard({ emp, open, onToggle, selectedDate, bagsLoading }) 
               </Typography>
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-              {emp.completed_bags ?? 0} completed · {emp.total_completed_lbs ?? 0} lbs
+              {emp.completed_bags ?? 0} completed · {displayLbs} lbs
             </Typography>
             <Typography variant="body2" color="text.secondary">
               {fmtProductivityRate(emp.completed_bags_per_hour ?? emp.bags_per_hour, missingClockIn)} bags/hr · {fmtProductivityRate(emp.completed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn)} lbs/hr · {missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2)} hrs
@@ -172,6 +175,7 @@ export default function EmployeeProductivityDashboard({
   initialSection,
   initialDateEt,
   rushFilter: rushFilterProp = "all",
+  refreshToken = 0,
   onRushChange,
 }) {
   const theme = useTheme();
@@ -194,7 +198,15 @@ export default function EmployeeProductivityDashboard({
     setRushFilter(rushFilterProp || "all");
   }, [rushFilterProp]);
 
-  const fetchSection = useCallback(async (dateEt, rush = rushFilter) => {
+  useEffect(() => {
+    if (!initialDateEt || initialDateEt === activeDateEt) return;
+    setActiveDateEt(initialDateEt);
+    setDatePreset(resolvePreset(initialDateEt));
+    setCustomDate(initialDateEt);
+    setExpandedEmployee(null);
+  }, [initialDateEt]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const fetchSection = useCallback(async (dateEt, rush = rushFilterProp || "all") => {
     if (!dateEt) return;
     setLoading(true);
     setFetchError("");
@@ -220,11 +232,13 @@ export default function EmployeeProductivityDashboard({
     } finally {
       setLoading(false);
     }
-  }, [activeDateEt, initialDateEt, initialSection, rushFilter]);
+  }, [activeDateEt, initialDateEt, initialSection, rushFilterProp]);
 
   useEffect(() => {
-    fetchSection(activeDateEt);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- load full bags on mount
+    const dateEt = initialDateEt || activeDateEt;
+    if (!dateEt) return;
+    fetchSection(dateEt, rushFilterProp || "all");
+  }, [initialDateEt, rushFilterProp, refreshToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const employees = section?.employees || [];
   const executiveSummary = section?.executive_summary || {};
@@ -624,7 +638,7 @@ export default function EmployeeProductivityDashboard({
                         </TableCell>
                         <TableCell sx={{ fontWeight: 700 }}>{emp.employee}</TableCell>
                         <TableCell align="right">{emp.completed_bags ?? 0}</TableCell>
-                        <TableCell align="right">{emp.total_completed_lbs ?? 0}</TableCell>
+                        <TableCell align="right">{employeeDisplayLbs(emp)}</TableCell>
                         <TableCell align="right">{fmtProductivityRate(emp.completed_bags_per_hour ?? emp.bags_per_hour, missingClockIn)}</TableCell>
                         <TableCell align="right">{fmtProductivityRate(emp.completed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn)}</TableCell>
                         <TableCell align="right">

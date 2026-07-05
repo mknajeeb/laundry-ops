@@ -17,6 +17,7 @@ import {
   useTheme,
 } from "@mui/material";
 import ShiftBagRecordRow from "./ShiftBagRecordRow";
+import { resolveBagWeightLbs } from "../../utils/employeeProductivityHelpers";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 
 function eventTs(bag) {
@@ -27,17 +28,6 @@ function eventTs(bag) {
     || bag.completion_timestamp
     || "",
   );
-}
-
-function resolveBagWeightLbs(bag) {
-  if (bag.completed_lbs != null) return bag.completed_lbs;
-  if (bag.processed_lbs != null) return bag.processed_lbs;
-  if (bag.credited_lbs != null) return bag.credited_lbs;
-  if (bag.post_clean_weight != null) return bag.post_clean_weight;
-  if (bag.weight != null) return bag.weight;
-  if (bag.weight_num != null) return bag.weight_num;
-  if (bag.weight_lbs != null) return bag.weight_lbs;
-  return null;
 }
 
 function normalizeProcessedBag(bag) {
