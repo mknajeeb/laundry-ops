@@ -644,6 +644,7 @@ export default function ShiftMonitorPage({ user }) {
   });
   const [dateStart, setDateStart] = useState(() => searchParams.get("date_start") || initialToday.start);
   const [dateEnd, setDateEnd] = useState(() => searchParams.get("date_end") || initialToday.end);
+  const [dataRefreshKey, setDataRefreshKey] = useState(0);
 
   useEffect(() => () => {
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
@@ -659,6 +660,7 @@ export default function ShiftMonitorPage({ user }) {
         summary_only: 1,
       });
       setData(res.data || null);
+      setDataRefreshKey((k) => k + 1);
     } catch (e) {
       setError(e?.response?.data?.error || "Failed to load shift monitor");
     } finally {
@@ -967,9 +969,11 @@ export default function ShiftMonitorPage({ user }) {
 
           {singleDaySelected ? (
             <EmployeeProductivityDashboard
+              key={`${dateEnd || dateStart}-${avRushFilter}`}
               initialSection={employeeProductivity}
               initialDateEt={dateEnd || dateStart}
               rushFilter={avRushFilter}
+              refreshToken={dataRefreshKey}
               onRushChange={setAvRushFilter}
             />
           ) : null}

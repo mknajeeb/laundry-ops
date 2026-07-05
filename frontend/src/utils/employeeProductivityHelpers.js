@@ -167,6 +167,37 @@ export function productivityEndDisplay(emp, formatTime) {
   return parts.current ?? "—";
 }
 
+/** Resolve lbs from a credited bag record (matches drilldown fallback chain). */
+export function resolveBagWeightLbs(bag) {
+  if (!bag || typeof bag !== "object") return null;
+  if (bag.completed_lbs != null) return Number(bag.completed_lbs);
+  if (bag.processed_lbs != null) return Number(bag.processed_lbs);
+  if (bag.credited_lbs != null) return Number(bag.credited_lbs);
+  if (bag.post_clean_weight != null) return Number(bag.post_clean_weight);
+  if (bag.weight != null) return Number(bag.weight);
+  if (bag.weight_num != null) return Number(bag.weight_num);
+  if (bag.weight_lbs != null) return Number(bag.weight_lbs);
+  return null;
+}
+
+/** Employee total lbs — prefer API total, else sum bag-level fallbacks. */
+export function employeeDisplayLbs(emp) {
+  const apiTotal = emp?.total_completed_lbs;
+  if (apiTotal != null && Number(apiTotal) > 0) return Number(apiTotal);
+  const bags = emp?.bags;
+  if (!Array.isArray(bags) || !bags.length) return Number(apiTotal) || 0;
+  let sum = 0;
+  let hasWeight = false;
+  for (const bag of bags) {
+    const lbs = resolveBagWeightLbs(bag);
+    if (lbs != null && !Number.isNaN(lbs)) {
+      sum += lbs;
+      hasWeight = true;
+    }
+  }
+  return hasWeight ? Math.round(sum * 100) / 100 : Number(apiTotal) || 0;
+}
+
 export function fmtProductivityRate(value, missingClockIn) {
   if (missingClockIn) return "N/A";
   if (value == null || Number.isNaN(Number(value))) return "N/A";

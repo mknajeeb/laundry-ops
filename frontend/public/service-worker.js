@@ -1,5 +1,5 @@
 // Bump when fetch strategy changes so clients pick up new worker.
-const CACHE_NAME = "laundry-ops-shell-v8";
+const CACHE_NAME = "laundry-ops-shell-v9";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -66,6 +66,12 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) {
+    return;
+  }
+
+  // Live operational APIs must never be served from cache.
+  if (url.pathname.startsWith("/rinse/") || url.pathname.startsWith("/api/")) {
+    event.respondWith(fetch(request));
     return;
   }
 

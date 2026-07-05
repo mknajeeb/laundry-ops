@@ -534,11 +534,19 @@ export const getFoldingEmployeeAnalysis = (params = {}) =>
   axios.get(`${API_BASE}/rinse/folding/employee-analysis`, { params, timeout: 30000 });
 
 export const getShiftAnalysisSimple = (params = {}) =>
-  axios.get(`${API_BASE}/rinse/shift-analysis/simple`, { params, timeout: 120000 });
+  axios.get(`${API_BASE}/rinse/shift-analysis/simple`, {
+    params: { ...params, _t: Date.now() },
+    timeout: 120000,
+    headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+  });
 
 /** Phase 2 — employee productivity section only (full bag drilldown, single ET day). */
 export const getEmployeeProductivityDashboard = (params = {}) =>
-  axios.get(`${API_BASE}/rinse/shift-analysis/employee-productivity`, { params, timeout: 120000 });
+  axios.get(`${API_BASE}/rinse/shift-analysis/employee-productivity`, {
+    params: { ...params, _t: Date.now() },
+    timeout: 120000,
+    headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+  });
 
 /** Daily shift roster — end-of-day labor recording. */
 export const getDailyShiftRoster = (params = {}) =>

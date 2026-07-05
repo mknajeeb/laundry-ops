@@ -799,7 +799,15 @@ def _pending_processed_bag_ids(
 
 def _completed_lbs_from_row_meta(row: Mapping[str, Any], meta: Mapping[str, Any] | None) -> float | None:
     for source in (row, meta or {}):
-        for key in ("post_clean_weight", "weight_num", "registry_weight_num", "weight_lbs"):
+        for key in (
+            "post_clean_weight",
+            "weight_num",
+            "registry_weight_num",
+            "weight_lbs",
+            "weight",
+            "credited_lbs",
+            "processed_lbs",
+        ):
             raw = source.get(key)
             if raw is None:
                 continue
