@@ -119,6 +119,33 @@ class TestFinalizeCompletedBagWeight:
         assert bag["weight_source"] == WEIGHT_SOURCE_POST_PROCESSING_SCAN
         assert bag["weight_status"] == WEIGHT_STATUS_RESOLVED
 
+    def test_registry_weight_repairs_scan_missing_payload(self):
+        bag = {"bag_id": "WF1"}
+        row = {"bag_id": "WF1", "service_type": "WF"}
+        events = _wf_events("WF1", T2, post_weight_lbs=None)
+        cursor = MagicMock()
+        cursor.rowcount = 1
+        with patch(
+            "backend.rinse_workload_bag_weight.attach_portal_weight_to_post_processing_scan",
+            return_value={"updated": True, "scan_event_id": 5, "weight_lbs": 21.4},
+        ) as attach:
+            finalize_completed_bag_weight_fields(
+                bag,
+                row,
+                {"weight_num": 21.4},
+                events=events,
+                selected_date_et=JUL3,
+                as_of_end=T2,
+                credit_ts=T2,
+                cursor=cursor,
+                organization_id=3,
+                repair_scan_from_portal=True,
+            )
+        attach.assert_called_once()
+        assert bag["weight_lbs"] == 21.4
+        assert bag["weight_status"] == WEIGHT_STATUS_RESOLVED
+        assert events[-1]["weight_lbs"] == 21.4
+
 
 class _FakeCursor:
     def execute(self, *args, **kwargs):

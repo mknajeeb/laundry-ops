@@ -286,6 +286,16 @@ def attach_portal_weight_to_post_processing_scan(
     }
 
 
+def _registry_weight_for_repair(meta: Mapping[str, Any] | None) -> float | None:
+    if not meta:
+        return None
+    for key in ("weight_num", "post_clean_weight", "registry_weight_num", "weight_lbs"):
+        lbs = _positive_float(meta.get(key))
+        if lbs is not None:
+            return lbs
+    return None
+
+
 def load_portal_upload_weights_for_bags(
     cursor,
     organization_id: int,
@@ -293,7 +303,7 @@ def load_portal_upload_weights_for_bags(
     *,
     selected_date_et: date,
 ) -> dict[str, float]:
-    """Portal upload weights — used only to attach onto completion scan rows, not for display."""
+    """Portal upload weights for selected ET day — attach onto completion scan rows only."""
     from backend.ta_helpers import table_exists, table_has_column
 
     org = int(organization_id)
@@ -346,6 +356,98 @@ def load_portal_upload_weights_for_bags(
     return out
 
 
+def load_latest_portal_weights_for_bags(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+) -> dict[str, float]:
+    """Latest portal upload weight per bag (any date_clean) — ingestion repair only."""
+    from backend.ta_helpers import table_exists, table_has_column
+
+    org = int(organization_id)
+    ids = sorted({str(b).strip().upper() for b in bag_ids if str(b).strip()})
+    if not ids or not hasattr(cursor, "execute"):
+        return {}
+    if not table_exists(cursor, "upload_batch_rows"):
+        return {}
+    if not table_has_column(cursor, "upload_batch_rows", "ticket_id"):
+        return {}
+
+    out: dict[str, float] = {}
+    chunk = 100
+    from backend.checkout_batch_scope import _batch_pk, _row_batch_col
+
+    row_batch_col = _row_batch_col(cursor)
+    batch_pk = _batch_pk(cursor)
+    org_join = ""
+    org_args: tuple[Any, ...] = ()
+    if row_batch_col and table_exists(cursor, "upload_batches"):
+        if table_has_column(cursor, "upload_batches", "organization_id"):
+            org_join = (
+                f" INNER JOIN upload_batches ub ON ub.{batch_pk} = ubr.{row_batch_col}"
+                f" AND ub.organization_id = %s"
+            )
+            org_args = (org,)
+
+    for i in range(0, len(ids), chunk):
+        part = ids[i : i + chunk]
+        ph = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT ubr.ticket_id, ubr.weight_num
+            FROM upload_batch_rows ubr{org_join}
+            INNER JOIN (
+                SELECT ticket_id, MAX(upload_batch_id) AS max_batch_id
+                FROM upload_batch_rows
+                WHERE ticket_id IN ({ph})
+                  AND weight_num IS NOT NULL
+                  AND UPPER(COALESCE(row_status, '')) IN ('ACCEPTED', 'OVERRIDDEN', 'NEEDS_ATTENTION')
+                GROUP BY ticket_id
+            ) latest ON latest.ticket_id = ubr.ticket_id
+                AND latest.max_batch_id = ubr.upload_batch_id
+            WHERE ubr.ticket_id IN ({ph})
+              AND ubr.weight_num IS NOT NULL
+            """,
+            (*org_args, *part, *part),
+        )
+        for row in cursor.fetchall() or []:
+            bid = str(row.get("ticket_id") or "").strip().upper()
+            if not bid or bid in out:
+                continue
+            w = _positive_float(row.get("weight_num"))
+            if w is not None:
+                out[bid] = w
+    return out
+
+
+def load_weight_repair_sources_for_bags(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+    *,
+    selected_date_et: date,
+    registry_meta: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, float]:
+    """
+    Weight candidates to attach onto post-processing scan rows.
+
+    Rinse scan-events CSV has no Weight column. Portal uploads often use EDD
+    (date_clean) rather than completion day, so same-day lookup alone misses
+    most bags. Registry weight_num is the final fallback for ingestion repair.
+    """
+    registry = registry_meta or {}
+    same_day = load_portal_upload_weights_for_bags(
+        cursor, organization_id, bag_ids, selected_date_et=selected_date_et
+    )
+    latest = load_latest_portal_weights_for_bags(cursor, organization_id, bag_ids)
+    out: dict[str, float] = {}
+    for bid in sorted({str(b).strip().upper() for b in bag_ids if str(b).strip()}):
+        lbs = same_day.get(bid) or latest.get(bid) or _registry_weight_for_repair(registry.get(bid))
+        if lbs is not None:
+            out[bid] = lbs
+    return out
+
+
 def sync_post_processing_scan_weights_from_portal(
     cursor,
     organization_id: int,
@@ -355,7 +457,12 @@ def sync_post_processing_scan_weights_from_portal(
     events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Attach portal upload weight onto post-processing scan rows missing weight."""
-    portal = load_portal_upload_weights_for_bags(cursor, organization_id, bag_ids, selected_date_et=selected_date_et)
+    portal = load_weight_repair_sources_for_bags(
+        cursor,
+        organization_id,
+        bag_ids,
+        selected_date_et=selected_date_et,
+    )
     results: list[dict[str, Any]] = []
     for bid in sorted(set(str(b).strip().upper() for b in bag_ids if str(b).strip())):
         portal_lbs = portal.get(bid)
@@ -408,6 +515,9 @@ def finalize_completed_bag_weight_fields(
                 credit_ts = None
 
     portal_lbs = _positive_float(portal_upload_weight)
+    if portal_lbs is None and svc.upper() == "WF":
+        portal_lbs = _registry_weight_for_repair(meta)
+
     if (
         repair_scan_from_portal
         and cursor is not None
@@ -415,7 +525,7 @@ def finalize_completed_bag_weight_fields(
         and portal_lbs is not None
         and svc.upper() == "WF"
     ):
-        attach_portal_weight_to_post_processing_scan(
+        repair_result = attach_portal_weight_to_post_processing_scan(
             cursor,
             int(organization_id),
             bid,
@@ -424,10 +534,12 @@ def finalize_completed_bag_weight_fields(
             events=events,
             credit_ts=credit_ts,
         )
-        if events and isinstance(events, list):
+        scan_id = (repair_result or {}).get("scan_event_id")
+        if events and isinstance(events, list) and scan_id is not None:
             for ev in events:
-                if ev.get("id") and not _positive_float(ev.get("weight_lbs")):
+                if ev.get("id") == scan_id:
                     ev["weight_lbs"] = portal_lbs
+                    break
 
     lbs, trace = resolve_wf_completion_weight_lbs(
         bag_id=bid,

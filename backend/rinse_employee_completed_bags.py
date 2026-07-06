@@ -921,7 +921,7 @@ def _enrich_credited_bag_weights(
     """Attach post-processing scan weights; portal weight joins onto scan row when needed."""
     from backend.rinse_workload_bag_weight import (
         finalize_completed_bag_weight_fields,
-        load_portal_upload_weights_for_bags,
+        load_weight_repair_sources_for_bags,
     )
 
     row_by_bag = {
@@ -933,11 +933,12 @@ def _enrich_credited_bag_weights(
     bag_ids = [str(b.get("bag_id") or "").strip().upper() for b in credited_bags if b.get("bag_id")]
     portal_weights: dict[str, float] = {}
     if bag_ids and hasattr(cursor, "execute"):
-        portal_weights = load_portal_upload_weights_for_bags(
+        portal_weights = load_weight_repair_sources_for_bags(
             cursor,
             organization_id,
             bag_ids,
             selected_date_et=selected_date_et,
+            registry_meta=registry_meta,
         )
 
     for bag in credited_bags:
@@ -1146,11 +1147,11 @@ def build_employee_completed_bags_today(
 
     portal_upload_weights_by_bag: dict[str, float] = {}
     if completed_bag_id_candidates and hasattr(cursor, "execute"):
-        from backend.rinse_workload_bag_weight import load_portal_upload_weights_for_bags
+        from backend.rinse_workload_bag_weight import load_weight_repair_sources_for_bags
 
         bag_id_list = sorted(completed_bag_id_candidates)
-        portal_upload_weights_by_bag = load_portal_upload_weights_for_bags(
-            cursor, org, bag_id_list, selected_date_et=selected_date_et
+        portal_upload_weights_by_bag = load_weight_repair_sources_for_bags(
+            cursor, org, bag_id_list, selected_date_et=selected_date_et, registry_meta=registry_meta
         )
 
     attributed_bags: list[dict[str, Any]] = []
