@@ -99,7 +99,16 @@ def resolve_workload_bag_credit(
     svc = _service_type(row)
     workload_status = _normalize_workload_status(row)
     meta = (registry_meta or {}).get(bid) or {}
-    anchor = _resolve_anchor_ts(events, selected_date_et)
+    if svc == "WF":
+        from backend.rinse_employee_completed_bags import resolve_wf_et_day_completion_anchor
+
+        anchor = resolve_wf_et_day_completion_anchor(
+            events,
+            selected_date_et=selected_date_et,
+            as_of_end=as_of_end,
+        )
+    else:
+        anchor = _resolve_anchor_ts(events, selected_date_et)
 
     employee = UNKNOWN_EMPLOYEE
     credit_ts: datetime | None = None
@@ -116,6 +125,7 @@ def resolve_workload_bag_credit(
             events=events,
             anchor_ts=anchor,
             as_of_end=as_of_end,
+            selected_date_et=selected_date_et,
         )
         if attr_employee != UNKNOWN_EMPLOYEE and attr_ts is not None:
             if svc == "WF" and not _completion_on_selected_et_day(attr_ts, selected_date_et):

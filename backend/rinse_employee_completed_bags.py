@@ -122,6 +122,60 @@ def _wf_completion_weight_event(
     return dict(last.event), last.timestamp
 
 
+def _wf_et_day_completion_weight_event(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    selected_date_et: date,
+    as_of_end: datetime,
+) -> tuple[dict[str, Any] | None, datetime | None, datetime | None]:
+    """
+    WF completion weight for the selected ET day across all sent-to-vendor cycles.
+
+    Same-day re-send after completion must not move the anchor past the
+    post-processing weight-entry that credits the employee.
+    """
+    from backend.rinse_at_vendor_module import _completion_date_et, _sent_to_vendor_anchor_timestamps
+
+    best: tuple[dict[str, Any], datetime, datetime] | None = None
+    for anchor_ts in _sent_to_vendor_anchor_timestamps(timeline, before=as_of_end):
+        ev, comp_ts = _wf_completion_weight_event(
+            timeline,
+            anchor_ts=anchor_ts,
+            as_of_end=as_of_end,
+        )
+        if ev is None or comp_ts is None:
+            continue
+        comp_date = _completion_date_et(comp_ts)
+        if comp_date != selected_date_et:
+            continue
+        if best is None or comp_ts > best[1]:
+            best = (dict(ev), comp_ts, anchor_ts)
+    if best is None:
+        return None, None, None
+    return best[0], best[1], best[2]
+
+
+def resolve_wf_et_day_completion_anchor(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    selected_date_et: date,
+    as_of_end: datetime | None = None,
+) -> datetime | None:
+    """Lifecycle anchor for WF weight resolution on the selected ET day."""
+    from backend.rinse_bag_stage_bounds import gaming_events_from_records
+    from backend.rinse_folding_et import naive_et_day_end_inclusive
+
+    end = as_of_end or naive_et_day_end_inclusive(selected_date_et)
+    _, _, anchor = _wf_et_day_completion_weight_event(
+        gaming_events_from_records(events),
+        selected_date_et=selected_date_et,
+        as_of_end=end,
+    )
+    if anchor is not None:
+        return anchor
+    return _resolve_anchor_ts(events, selected_date_et)
+
+
 def _attribution_reason(service_type: str, signal: str | None) -> str:
     svc = str(service_type or "").upper()
     if svc == "WF":
@@ -138,16 +192,27 @@ def resolve_completion_attribution(
     events: Sequence[Mapping[str, Any]],
     anchor_ts: datetime | None,
     as_of_end: datetime,
+    selected_date_et: date | None = None,
 ) -> tuple[str, datetime | None, str | None]:
     """Return (employee, completion_ts, completion_signal)."""
     if anchor_ts is None or not ts_valid(anchor_ts):
-        return UNKNOWN_EMPLOYEE, None, None
+        if not (selected_date_et and str(service_type or "").upper() == "WF"):
+            return UNKNOWN_EMPLOYEE, None, None
     timeline = gaming_events_from_records(events)
     svc = str(service_type or "").upper()
     if svc == "WF":
-        ev, comp_ts = _wf_completion_weight_event(
-            timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
-        )
+        if selected_date_et is not None:
+            ev, comp_ts, _anchor = _wf_et_day_completion_weight_event(
+                timeline,
+                selected_date_et=selected_date_et,
+                as_of_end=as_of_end,
+            )
+        else:
+            if anchor_ts is None or not ts_valid(anchor_ts):
+                return UNKNOWN_EMPLOYEE, None, None
+            ev, comp_ts = _wf_completion_weight_event(
+                timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
+            )
         if ev is None or comp_ts is None:
             return UNKNOWN_EMPLOYEE, None, None
         return _event_user_name(ev), comp_ts, "post_processing_weight"
@@ -948,7 +1013,11 @@ def _enrich_credited_bag_weights(
         row = row_by_bag.get(bid) or {}
         meta = registry_meta.get(bid) or {}
         events = list(events_by_bag.get(bid) or [])
-        anchor = _resolve_anchor_ts(events, selected_date_et)
+        anchor = resolve_wf_et_day_completion_anchor(
+            events,
+            selected_date_et=selected_date_et,
+            as_of_end=as_of_end,
+        ) if str(bag.get("service_type") or row.get("service_type") or "").upper() == "WF" else _resolve_anchor_ts(events, selected_date_et)
         credit_ts: datetime | None = None
         raw_credit_ts = bag.get("credit_timestamp")
         if isinstance(raw_credit_ts, datetime):
@@ -1219,13 +1288,21 @@ def build_employee_completed_bags_today(
                 continue
 
             events = events_by_bag.get(bid) or []
-            anchor = _resolve_anchor_ts(events, selected_date_et)
             svc = str(row.get("service_type") or row.get("service_bucket") or "").upper()
+            if svc == "WF":
+                anchor = resolve_wf_et_day_completion_anchor(
+                    events,
+                    selected_date_et=selected_date_et,
+                    as_of_end=as_of_end,
+                )
+            else:
+                anchor = _resolve_anchor_ts(events, selected_date_et)
             employee, attr_comp_ts, attr_signal = resolve_completion_attribution(
                 service_type=svc,
                 events=events,
                 anchor_ts=anchor,
                 as_of_end=as_of_end,
+                selected_date_et=selected_date_et,
             )
             comp_ts = attr_comp_ts
             if comp_ts is None:

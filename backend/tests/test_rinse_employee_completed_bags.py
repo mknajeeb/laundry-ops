@@ -98,6 +98,28 @@ class TestResolveCompletionAttribution:
         assert comp_ts == T3
         assert signal == "post_processing_weight"
 
+    def test_wf_attribution_survives_same_day_resend_after_completion(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 6, 2, 35), user_name="Intake"),
+            _ev("weight-entry", datetime(2026, 7, 6, 2, 37), user_name="Intake"),
+            _ev("complete-cleaning", datetime(2026, 7, 6, 7, 53), user_name="Yesenia Worker"),
+            _ev("weight-entry", datetime(2026, 7, 6, 7, 57), user_name="Yesenia Worker"),
+            _ev("processed-by-vendor", datetime(2026, 7, 6, 7, 57), user_name="Yesenia Worker"),
+            _ev("sent-to-vendor", datetime(2026, 7, 6, 7, 59), user_name="Yesenia Worker"),
+            _ev("weight-entry", datetime(2026, 7, 6, 7, 59), user_name="Yesenia Worker"),
+        ]
+        selected = date(2026, 7, 6)
+        employee, comp_ts, signal = resolve_completion_attribution(
+            service_type="WF",
+            events=events,
+            anchor_ts=datetime(2026, 7, 6, 7, 59),
+            as_of_end=naive_et_day_end_inclusive(selected),
+            selected_date_et=selected,
+        )
+        assert employee == "Yesenia Worker"
+        assert comp_ts == datetime(2026, 7, 6, 7, 59)
+        assert signal == "post_processing_weight"
+
     def test_hd_complete_cleaning_user(self):
         events = [
             _ev("sent-to-vendor", T0),
