@@ -69,16 +69,15 @@ export function matchesEntityTab(employee, tab, organizationSlug = null) {
 }
 
 export function matchesEntryEntityTab(entry, tab, employeesById = null, organizationSlug = null) {
-  if (tab === BUSINESS_ENTITY.COMBINED) return true;
   const employee = employeesById?.get(Number(entry?.user_id));
   const workerEntity = resolveEmployeeEntity(employee, organizationSlug);
   if (workerEntity === BUSINESS_ENTITY.NONE) return false;
+  if (tab === BUSINESS_ENTITY.COMBINED) return true;
   const shiftEntity = resolveEntryEntity(entry, employee, organizationSlug);
   return shiftMatchesEntityTab(shiftEntity, tab, organizationSlug);
 }
 
 export function filterEntriesByEntityTab(entries, tab, employees = null, organizationSlug = null) {
-  if (tab === BUSINESS_ENTITY.COMBINED) return entries || [];
   const employeesById = new Map((employees || []).map((row) => [Number(row.user_id), row]));
   return (entries || []).filter((entry) =>
     matchesEntryEntityTab(entry, tab, employeesById, organizationSlug),
@@ -87,7 +86,11 @@ export function filterEntriesByEntityTab(entries, tab, employees = null, organiz
 
 export function filterEmployeesByEntityTab(employees, tab, entries = null, organizationSlug = null) {
   const list = employees || [];
-  if (tab === BUSINESS_ENTITY.COMBINED) return list;
+  if (tab === BUSINESS_ENTITY.COMBINED) {
+    return list.filter(
+      (employee) => resolveEmployeeEntity(employee, organizationSlug) !== BUSINESS_ENTITY.NONE,
+    );
+  }
 
   const allEntries = entries || [];
   const tabEntries = filterEntriesByEntityTab(allEntries, tab, list, organizationSlug);
