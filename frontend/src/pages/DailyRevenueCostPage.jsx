@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Box, Tab, Tabs, Typography } from "@mui/material";
 import EditNoteIcon from "@mui/icons-material/EditNote";
 import SettingsIcon from "@mui/icons-material/Settings";
@@ -19,6 +19,8 @@ const TABS = [
 
 export default function DailyRevenueCostPage() {
   const [tab, setTab] = useState(0);
+  const [dashboardRefreshToken, setDashboardRefreshToken] = useState(0);
+  const bumpDashboard = useCallback(() => setDashboardRefreshToken((n) => n + 1), []);
 
   return (
     <Box className="page" sx={{ maxWidth: 720, mx: "auto", width: "100%" }}>
@@ -53,10 +55,10 @@ export default function DailyRevenueCostPage() {
         </Tabs>
       </Box>
 
-      {tab === 0 ? <DailyEntryTab /> : null}
+      {tab === 0 ? <DailyEntryTab onDashboardRefresh={bumpDashboard} /> : null}
       {tab === 1 ? <RevenueMaintenanceTab /> : null}
       {tab === 2 ? <CostMaintenanceTab /> : null}
-      {tab === 3 ? <DashboardTab /> : null}
+      {tab === 3 ? <DashboardTab refreshToken={dashboardRefreshToken} /> : null}
     </Box>
   );
 }

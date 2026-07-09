@@ -45,7 +45,7 @@ function TrendBar({ label, value, max, color }) {
   );
 }
 
-export default function DashboardTab() {
+export default function DashboardTab({ refreshToken = 0 }) {
   const [period, setPeriod] = useState("daily");
   const [refDate, setRefDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [startDate, setStartDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -70,7 +70,7 @@ export default function DashboardTab() {
     } finally {
       setLoading(false);
     }
-  }, [period, refDate, startDate, endDate]);
+  }, [period, refDate, startDate, endDate, refreshToken]);
 
   useEffect(() => {
     load();

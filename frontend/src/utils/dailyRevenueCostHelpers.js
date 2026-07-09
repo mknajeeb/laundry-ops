@@ -129,3 +129,84 @@ export function formToPayload(form) {
     })),
   };
 }
+
+export const DRC_ENTRY_STATUS = {
+  OPEN: "open",
+  LOCKED: "locked",
+  SUBMITTED: "submitted",
+  APPROVED: "approved",
+  REJECTED: "rejected",
+};
+
+export function isDrcEntryEditable(status) {
+  return String(status || DRC_ENTRY_STATUS.OPEN) === DRC_ENTRY_STATUS.OPEN;
+}
+
+export function getDrcStatusChipColor(status) {
+  switch (String(status || DRC_ENTRY_STATUS.OPEN)) {
+    case DRC_ENTRY_STATUS.LOCKED:
+      return "warning";
+    case DRC_ENTRY_STATUS.SUBMITTED:
+      return "info";
+    case DRC_ENTRY_STATUS.APPROVED:
+      return "success";
+    case DRC_ENTRY_STATUS.REJECTED:
+      return "error";
+    default:
+      return "default";
+  }
+}
+
+export function getDrcStatusLabel(status) {
+  const key = String(status || DRC_ENTRY_STATUS.OPEN);
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+/** Workflow actions available for the current entry status (requires saved entry). */
+export function getDrcWorkflowActions(status, hasEntry = true) {
+  if (!hasEntry) return [];
+  const s = String(status || DRC_ENTRY_STATUS.OPEN);
+  if (s === DRC_ENTRY_STATUS.OPEN) return ["lock", "submit"];
+  if (s === DRC_ENTRY_STATUS.SUBMITTED) return ["approve", "reject"];
+  if (s === DRC_ENTRY_STATUS.REJECTED) return ["reopen"];
+  return [];
+}
+
+export function drcWorkflowActionLabel(action) {
+  switch (action) {
+    case "lock":
+      return "Lock";
+    case "submit":
+      return "Submit";
+    case "approve":
+      return "Approve";
+    case "reject":
+      return "Reject";
+    case "reopen":
+      return "Reopen";
+    default:
+      return action;
+  }
+}
+
+export function drcWorkflowConfirmMessage(action, entryDate) {
+  const dateLabel = entryDate || "this date";
+  switch (action) {
+    case "lock":
+      return `Lock the entry for ${dateLabel}? It will become read-only.`;
+    case "submit":
+      return `Submit the entry for ${dateLabel} for review?`;
+    case "approve":
+      return `Approve the entry for ${dateLabel}?`;
+    case "reject":
+      return `Reject the entry for ${dateLabel}?`;
+    case "reopen":
+      return `Reopen the rejected entry for ${dateLabel} for editing?`;
+    default:
+      return `Apply "${action}" to the entry for ${dateLabel}?`;
+  }
+}
+
+export function drcWorkflowSupportsNotes(action) {
+  return action === "reject" || action === "reopen";
+}

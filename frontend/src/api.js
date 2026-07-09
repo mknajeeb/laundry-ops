@@ -1751,4 +1751,7 @@ export const previewDailyRevenueEntry = (entryDate, body) =>
 export const getDrcDashboard = (params) =>
   axios.get(`${API_BASE}/finance/daily-revenue-cost/dashboard`, { params });
 
+export const postDrcEntryWorkflow = (entryDate, body) =>
+  axios.post(`${API_BASE}/finance/daily-revenue-cost/entries/${entryDate}/workflow`, body);
+
 export { API_BASE };
