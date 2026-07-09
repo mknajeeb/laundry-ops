@@ -1717,4 +1717,38 @@ export const forceClockOut = (sessionId, remarks) =>
 export const getTaExceptions = () =>
   axios.get(`${API_BASE}/api/ta/exceptions`);
 
+// Daily Revenue & Cost
+export const getDrcCostSettings = () =>
+  axios.get(`${API_BASE}/finance/daily-revenue-cost/cost-settings`);
+
+export const updateDrcCostSettings = (body) =>
+  axios.put(`${API_BASE}/finance/daily-revenue-cost/cost-settings`, body);
+
+export const getDrcCommercialAccounts = (params) =>
+  axios.get(`${API_BASE}/finance/daily-revenue-cost/commercial-accounts`, { params });
+
+export const createDrcCommercialAccount = (body) =>
+  axios.post(`${API_BASE}/finance/daily-revenue-cost/commercial-accounts`, body);
+
+export const updateDrcCommercialAccount = (id, body) =>
+  axios.put(`${API_BASE}/finance/daily-revenue-cost/commercial-accounts/${id}`, body);
+
+export const getDrcRinseWfTiers = () =>
+  axios.get(`${API_BASE}/finance/daily-revenue-cost/rinse-wf-tiers`);
+
+export const updateDrcRinseWfTiers = (body) =>
+  axios.put(`${API_BASE}/finance/daily-revenue-cost/rinse-wf-tiers`, body);
+
+export const getDailyRevenueEntry = (entryDate) =>
+  axios.get(`${API_BASE}/finance/daily-revenue-cost/entries/${entryDate}`);
+
+export const saveDailyRevenueEntry = (entryDate, body) =>
+  axios.put(`${API_BASE}/finance/daily-revenue-cost/entries/${entryDate}`, body);
+
+export const previewDailyRevenueEntry = (entryDate, body) =>
+  axios.post(`${API_BASE}/finance/daily-revenue-cost/entries/${entryDate}/preview`, body);
+
+export const getDrcDashboard = (params) =>
+  axios.get(`${API_BASE}/finance/daily-revenue-cost/dashboard`, { params });
+
 export { API_BASE };

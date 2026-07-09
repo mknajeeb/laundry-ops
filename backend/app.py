@@ -60,6 +60,7 @@ from backend.rinse_folding_routes import register_rinse_folding_routes
 from backend.rinse_processing_routes import register_rinse_processing_routes
 from backend.rinse_shift_analysis_routes import register_rinse_shift_analysis_routes
 from backend.supply_usage_routes import register_supply_usage_routes
+from backend.daily_revenue_cost_routes import register_daily_revenue_cost_routes
 from backend.machine_configuration_routes import register_machine_configuration_routes
 from backend.ta_routes import (
     _build_permission_hierarchy,
@@ -1148,6 +1149,7 @@ TENANT_MODULE_KEYS = frozenset(
         "maintenance",
         "people",
         "payroll",
+        "finance",
         "organization",
         "permissions",
         "notifications",
@@ -11061,6 +11063,13 @@ register_rinse_admin_routes(
     orders_status_capabilities=orders_status_capabilities,
     where_not_sent_or_forced_sql=where_not_sent_or_forced_sql,
     get_upload_batch_rows_pk=get_upload_batch_rows_pk,
+)
+register_daily_revenue_cost_routes(
+    app,
+    require_user=require_user,
+    require_admin=require_admin,
+    user_org_id=user_org_id,
+    parse_date_value=parse_date_value,
 )
 register_rinse_presence_routes(
     app,
