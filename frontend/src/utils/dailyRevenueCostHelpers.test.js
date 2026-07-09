@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   DRC_ENTRY_STATUS,
+  buildDrcOverridePayload,
   drcWorkflowSupportsNotes,
+  fieldsNeedingOverrideReason,
+  getDrcSourceIndicatorStyle,
   getDrcStatusChipColor,
   getDrcStatusLabel,
   getDrcWorkflowActions,
@@ -36,5 +39,30 @@ describe("DRC workflow helpers", () => {
     expect(drcWorkflowSupportsNotes("reject")).toBe(true);
     expect(drcWorkflowSupportsNotes("reopen")).toBe(true);
     expect(drcWorkflowSupportsNotes("lock")).toBe(false);
+  });
+});
+
+describe("DRC source indicators", () => {
+  it("styles manual, imported, and override sources", () => {
+    expect(getDrcSourceIndicatorStyle(null).label).toBe("Manual");
+    expect(getDrcSourceIndicatorStyle({ source_system: "payroll" }).color).toBe("info");
+    expect(getDrcSourceIndicatorStyle({ source_system: "payroll", is_manual_override: true }).color).toBe("warning");
+  });
+
+  it("detects imported field changes needing override reason", () => {
+    const baselineForm = { payroll_total: 500 };
+    const form = { payroll_total: 642.15 };
+    const lineSources = {
+      "payroll.total": { source_system: "payroll", is_manual_override: false },
+    };
+    const needs = fieldsNeedingOverrideReason({ baselineForm, form, lineSources, overrideReasons: {} });
+    expect(needs).toHaveLength(1);
+    expect(needs[0].lineKey).toBe("payroll.total");
+  });
+
+  it("builds override payload for save", () => {
+    expect(buildDrcOverridePayload({ "payroll.total": "Adjusted for bonus payout" })).toEqual({
+      "payroll.total": { is_manual_override: true, reason: "Adjusted for bonus payout" },
+    });
   });
 });

@@ -108,7 +108,7 @@ export function entryToForm(entry) {
   };
 }
 
-export function formToPayload(form) {
+export function formToPayload(form, overrideReasons = {}) {
   return {
     self_service_cash: parseMoneyInput(form.self_service_cash),
     self_service_card: parseMoneyInput(form.self_service_card),
@@ -127,6 +127,7 @@ export function formToPayload(form) {
       logistics_charge: parseMoneyInput(line.logistics_charge),
       additional_charge: parseMoneyInput(line.additional_charge),
     })),
+    overrides: buildDrcOverridePayload(overrideReasons),
   };
 }
 
@@ -209,4 +210,139 @@ export function drcWorkflowConfirmMessage(action, entryDate) {
 
 export function drcWorkflowSupportsNotes(action) {
   return action === "reject" || action === "reopen";
+}
+
+export const DRC_SOURCE_MANUAL = "manual";
+
+export const DRC_LINE_KEYS = {
+  self_service_cash: "revenue.self_service.cash",
+  self_service_card: "revenue.self_service.card",
+  drop_off_cash: "revenue.drop_off.cash",
+  drop_off_card: "revenue.drop_off.card",
+  rinse_wf_pounds: "revenue.rinse_wf.pounds",
+  rinse_hd_orders: "revenue.rinse_hd.orders",
+  rinse_hd_revenue: "revenue.rinse_hd.amount",
+  rinse_wi_orders: "revenue.rinse_wi.orders",
+  rinse_wi_revenue: "revenue.rinse_wi.amount",
+  payroll_total: "payroll.total",
+};
+
+export function commercialPoundsLineKey(accountId) {
+  return `revenue.commercial.${accountId}.pounds`;
+}
+
+export const DRC_SOURCE_LABELS = {
+  manual: "Manual",
+  workload: "Workload",
+  productivity: "Productivity",
+  payroll: "Payroll",
+  pos: "POS",
+  stripe: "Stripe",
+  cleancloud: "CleanCloud",
+  accounting: "Accounting",
+};
+
+export function getDrcSourceLabel(sourceSystem) {
+  const key = String(sourceSystem || DRC_SOURCE_MANUAL).toLowerCase();
+  return DRC_SOURCE_LABELS[key] || key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+/** gray = manual, blue = imported, orange = manual override */
+export function getDrcSourceIndicatorStyle(meta) {
+  if (!meta) {
+    return { color: "default", variant: "outlined", label: "Manual" };
+  }
+  if (meta.is_manual_override) {
+    return { color: "warning", variant: "filled", label: "Override" };
+  }
+  const source = String(meta.source_system || DRC_SOURCE_MANUAL).toLowerCase();
+  if (source === DRC_SOURCE_MANUAL) {
+    return { color: "default", variant: "outlined", label: "Manual" };
+  }
+  return { color: "info", variant: "filled", label: getDrcSourceLabel(source) };
+}
+
+export function isImportedDrcSource(meta) {
+  if (!meta) return false;
+  return String(meta.source_system || DRC_SOURCE_MANUAL).toLowerCase() !== DRC_SOURCE_MANUAL;
+}
+
+export function normalizeDrcFieldValue(field, value) {
+  if (["rinse_hd_orders", "rinse_wi_orders"].includes(field)) {
+    return parseIntInput(value);
+  }
+  return parseMoneyInput(value);
+}
+
+export function drcFieldValuesEqual(field, a, b) {
+  return normalizeDrcFieldValue(field, a) === normalizeDrcFieldValue(field, b);
+}
+
+export function buildDrcOverridePayload(overrideReasons) {
+  const overrides = {};
+  Object.entries(overrideReasons || {}).forEach(([lineKey, reason]) => {
+    if (reason && String(reason).trim()) {
+      overrides[lineKey] = { is_manual_override: true, reason: String(reason).trim() };
+    }
+  });
+  return overrides;
+}
+
+/**
+ * Fields changed from imported baseline that still need an override reason.
+ * Returns [{ lineKey, fieldLabel, sourceLabel, field?, commercialIndex? }]
+ */
+export function fieldsNeedingOverrideReason({ baselineForm, form, lineSources, overrideReasons, commercialAccountIds }) {
+  const needs = [];
+  const reasons = overrideReasons || {};
+
+  Object.entries(DRC_LINE_KEYS).forEach(([field, lineKey]) => {
+    const meta = lineSources?.[lineKey];
+    if (!isImportedDrcSource(meta)) return;
+    if (!drcFieldValuesEqual(field, baselineForm?.[field], form?.[field])) {
+      if (!reasons[lineKey]?.trim()) {
+        needs.push({
+          lineKey,
+          field,
+          fieldLabel: drcFieldLabel(field),
+          sourceLabel: getDrcSourceLabel(meta.source_system),
+        });
+      }
+    }
+  });
+
+  (form?.commercial_lines || []).forEach((line, index) => {
+    const aid = line.commercial_account_id;
+    const lineKey = commercialPoundsLineKey(aid);
+    const meta = lineSources?.[lineKey];
+    if (!isImportedDrcSource(meta)) return;
+    const baselineLine = (baselineForm?.commercial_lines || []).find((l) => l.commercial_account_id === aid);
+    if (!drcFieldValuesEqual("pounds", baselineLine?.pounds, line.pounds) && !reasons[lineKey]?.trim()) {
+      needs.push({
+        lineKey,
+        field: "pounds",
+        fieldLabel: `${line.account_name || "Commercial"} pounds`,
+        sourceLabel: getDrcSourceLabel(meta.source_system),
+        commercialIndex: index,
+      });
+    }
+  });
+
+  return needs;
+}
+
+export function drcFieldLabel(field) {
+  const labels = {
+    self_service_cash: "Self Service Cash",
+    self_service_card: "Self Service Card",
+    drop_off_cash: "Drop Off Cash",
+    drop_off_card: "Drop Off Card",
+    rinse_wf_pounds: "Rinse WF Pounds",
+    rinse_hd_orders: "Rinse HD Orders",
+    rinse_hd_revenue: "Rinse HD Revenue",
+    rinse_wi_orders: "Rinse WI Orders",
+    rinse_wi_revenue: "Rinse WI Revenue",
+    payroll_total: "Payroll Total",
+  };
+  return labels[field] || field;
 }

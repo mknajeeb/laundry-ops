@@ -771,8 +771,9 @@ def create_commercial_account(cursor, org_id: int, payload: dict, *, user_id: in
         ),
     )
     cursor.execute("SELECT * FROM dr_commercial_accounts WHERE id = %s", (acct_id,))
+    acct_row = cursor.fetchone()
     pricing = get_commercial_pricing_for_date(cursor, acct_id, eff_date)
-    return _commercial_account_to_dict(cursor.fetchone(), pricing)
+    return _commercial_account_to_dict(acct_row, pricing)
 
 
 def update_commercial_account(cursor, org_id: int, account_id: int, payload: dict, *, user_id: int | None = None) -> dict:
@@ -823,8 +824,9 @@ def update_commercial_account(cursor, org_id: int, account_id: int, payload: dic
             )
             _log_schedule_audit(cursor, None, "pricing_schedule_changed", user_id=user_id, notes=f"commercial account={account_id} updated id={current['id']}")
             cursor.execute("SELECT * FROM dr_commercial_accounts WHERE id = %s", (account_id,))
+            acct_row = cursor.fetchone()
             pricing = get_commercial_pricing_for_date(cursor, account_id, business_today())
-            return _commercial_account_to_dict(cursor.fetchone(), pricing)
+            return _commercial_account_to_dict(acct_row, pricing)
 
         assert_no_overlapping_schedules(
             cursor,
@@ -959,6 +961,102 @@ def _line_qty(lines: dict[str, dict], key: str) -> float:
     return _money(row.get("quantity")) if row and row.get("quantity") is not None else 0.0
 
 
+def _parse_json_field(val: Any) -> Any:
+    if val is None or isinstance(val, (dict, list)):
+        return val
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except (TypeError, ValueError):
+            return val
+    return val
+
+
+def _line_source_meta(row: dict | None, *, line_key: str, audit_history: list[dict] | None = None) -> dict:
+    row = row or {}
+    source = str(row.get("source_system") or SOURCE_MANUAL)
+    return {
+        "line_key": line_key,
+        "source_system": source,
+        "source_ref": row.get("source_ref"),
+        "source_captured_at": str(row.get("source_captured_at") or "") or None,
+        "source_payload": _parse_json_field(row.get("source_payload")),
+        "is_manual_override": bool(row.get("is_manual_override")),
+        "override_reason": row.get("override_reason"),
+        "overridden_at": str(row.get("overridden_at") or "") or None,
+        "overridden_by": row.get("overridden_by"),
+        "history": audit_history or [],
+    }
+
+
+def _load_line_audit_events(cursor, entry_id: int) -> dict[str, list[dict]]:
+    cursor.execute(
+        """
+        SELECT event_type, line_key, old_value, new_value, source_system, actor_user_id, notes, created_at
+        FROM dr_entry_audit_events
+        WHERE daily_entry_id = %s AND line_key IS NOT NULL
+        ORDER BY created_at DESC
+        """,
+        (entry_id,),
+    )
+    grouped: dict[str, list[dict]] = {}
+    for row in cursor.fetchall() or []:
+        lk = str(row.get("line_key") or "")
+        if not lk:
+            continue
+        grouped.setdefault(lk, []).append({
+            "event_type": row.get("event_type"),
+            "old_value": row.get("old_value"),
+            "new_value": row.get("new_value"),
+            "source_system": row.get("source_system"),
+            "actor_user_id": row.get("actor_user_id"),
+            "notes": row.get("notes"),
+            "created_at": str(row.get("created_at") or ""),
+        })
+    return grouped
+
+
+def _field_sources_from_lines(lines: dict[str, dict], accounts: list[dict], audit_by_line: dict[str, list[dict]] | None = None) -> dict:
+    audit_by_line = audit_by_line or {}
+
+    def _meta(key: str) -> dict:
+        return _line_source_meta(lines.get(key), line_key=key, audit_history=audit_by_line.get(key, []))
+
+    out = {
+        LK_SELF_SERVICE_CASH: _meta(LK_SELF_SERVICE_CASH),
+        LK_SELF_SERVICE_CARD: _meta(LK_SELF_SERVICE_CARD),
+        LK_DROP_OFF_CASH: _meta(LK_DROP_OFF_CASH),
+        LK_DROP_OFF_CARD: _meta(LK_DROP_OFF_CARD),
+        LK_RINSE_WF_POUNDS: _meta(LK_RINSE_WF_POUNDS),
+        LK_RINSE_HD_ORDERS: _meta(LK_RINSE_HD_ORDERS),
+        LK_RINSE_HD_AMOUNT: _meta(LK_RINSE_HD_AMOUNT),
+        LK_RINSE_WI_ORDERS: _meta(LK_RINSE_WI_ORDERS),
+        LK_RINSE_WI_AMOUNT: _meta(LK_RINSE_WI_AMOUNT),
+        LK_PAYROLL_TOTAL: _meta(LK_PAYROLL_TOTAL),
+    }
+    for acct in accounts:
+        aid = int(acct["id"])
+        pk, ak = commercial_pounds_key(aid), commercial_amount_key(aid)
+        out[pk] = _line_source_meta(
+            lines.get(pk) or lines.get(ak),
+            line_key=pk,
+            audit_history=(audit_by_line.get(pk) or []) + (audit_by_line.get(ak) or []),
+        )
+    return out
+
+
+def _resolve_line_source(existing_lines: dict[str, dict], line_key: str, *, is_override: bool) -> str:
+    existing = existing_lines.get(line_key) or {}
+    if existing.get("source_system"):
+        return str(existing["source_system"])
+    return SOURCE_MANUAL
+
+
+def _resolve_line_source_ref(existing_lines: dict[str, dict], line_key: str) -> str | None:
+    existing = existing_lines.get(line_key) or {}
+    return existing.get("source_ref")
+
+
 def _upsert_line(
     cursor, entry_id: int, line_key: str, line_category: str,
     amount: float, quantity: float | None = None,
@@ -1076,7 +1174,14 @@ def _entry_summary_from_lines(lines: dict[str, dict]) -> dict:
     }
 
 
-def _lines_to_entry_shape(lines: dict[str, dict], header: dict | None, commercial_accounts: list[dict], wf_meta: dict | None = None) -> dict:
+def _lines_to_entry_shape(
+    lines: dict[str, dict],
+    header: dict | None,
+    commercial_accounts: list[dict],
+    wf_meta: dict | None = None,
+    *,
+    audit_by_line: dict[str, list[dict]] | None = None,
+) -> dict:
     commercial_lines = []
     for acct in commercial_accounts:
         aid = acct["id"]
@@ -1084,6 +1189,7 @@ def _lines_to_entry_shape(lines: dict[str, dict], header: dict | None, commercia
         ak = commercial_amount_key(aid)
         lr = lines.get(pk)
         ar = lines.get(ak)
+        src_row = lr or ar or {}
         commercial_lines.append({
             "commercial_account_id": aid,
             "account_name": acct["name"],
@@ -1092,8 +1198,9 @@ def _lines_to_entry_shape(lines: dict[str, dict], header: dict | None, commercia
             "logistics_charge": acct.get("default_logistics_charge", 0),
             "additional_charge": acct.get("default_additional_charge", 0),
             "revenue": _line_amount(lines, ak) if ar else 0,
-            "source_system": (lr or ar or {}).get("source_system", SOURCE_MANUAL),
-            "is_manual_override": bool((lr or ar or {}).get("is_manual_override")),
+            "source_system": src_row.get("source_system", SOURCE_MANUAL),
+            "is_manual_override": bool(src_row.get("is_manual_override")),
+            "line_key": pk,
         })
 
     summary = _entry_summary_from_lines(lines)
@@ -1140,6 +1247,7 @@ def _lines_to_entry_shape(lines: dict[str, dict], header: dict | None, commercia
         "payroll_tax_amount": _line_amount(lines, LK_PAYROLL_TAX),
         "operating_costs": op,
         "commercial_lines": commercial_lines,
+        "line_sources": _field_sources_from_lines(lines, commercial_accounts, audit_by_line),
         "summary": summary,
         **meta,
     }
@@ -1154,6 +1262,7 @@ def get_daily_entry(cursor, org_id: int, entry_date: date) -> dict:
     cursor.execute("SELECT * FROM dr_daily_entries WHERE organization_id = %s AND entry_date = %s", (org_id, entry_date))
     header = cursor.fetchone()
     lines: dict[str, dict] = _load_entry_lines(cursor, int(header["id"])) if header else {}
+    audit_by_line = _load_line_audit_events(cursor, int(header["id"])) if header else {}
 
     if not header:
         wf_rev, wf_meta = wf_revenue_for_day(cursor, org_id, entry_date, 0, tiers)
@@ -1162,7 +1271,7 @@ def get_daily_entry(cursor, org_id: int, entry_date: date) -> dict:
             pricing = get_commercial_pricing_for_date(cursor, acct["id"], entry_date) or {}
             draft_lines[commercial_pounds_key(acct["id"])] = {"amount": 0, "quantity": 0}
             draft_lines[commercial_amount_key(acct["id"])] = {"amount": 0}
-        entry_shape = _lines_to_entry_shape(draft_lines, None, accounts, wf_meta)
+        entry_shape = _lines_to_entry_shape(draft_lines, None, accounts, wf_meta, audit_by_line={})
         entry_shape["rinse_wf_revenue"] = wf_rev
         entry_shape["summary"] = _entry_summary_from_lines(draft_lines)
         return {
@@ -1175,7 +1284,7 @@ def get_daily_entry(cursor, org_id: int, entry_date: date) -> dict:
 
     if header:
         # Frozen lines only — never recalculate historical revenue from current maintenance.
-        entry_shape = _lines_to_entry_shape(lines, header, accounts, wf_meta={})
+        entry_shape = _lines_to_entry_shape(lines, header, accounts, wf_meta={}, audit_by_line=audit_by_line)
         return {
             "entry": entry_shape,
             "cost_settings": cost_settings,
@@ -1258,7 +1367,8 @@ def save_daily_entry(cursor, org_id: int, entry_date: date, payload: dict, *, us
         snap = wf_snapshot if line_key in (LK_RINSE_WF_POUNDS, LK_RINSE_WF_AMOUNT) else None
         _upsert_line(
             cursor, entry_id, line_key, cat, amt, qty,
-            source_system=SOURCE_MANUAL,
+            source_system=_resolve_line_source(existing_lines, line_key, is_override=_is_override(line_key)),
+            source_ref=_resolve_line_source_ref(existing_lines, line_key),
             is_override=_is_override(line_key), override_reason=_override_reason(line_key),
             user_id=user_id,
             pricing_schedule_id=wf_schedule_id if snap else None,
@@ -1309,7 +1419,9 @@ def save_daily_entry(cursor, org_id: int, entry_date: date, payload: dict, *, us
         for lk, amt, qty in [(pk, 0, pounds), (ak, rev, pounds)]:
             _upsert_line(
                 cursor, entry_id, lk, "revenue", amt if lk == ak else 0, qty,
-                commercial_account_id=aid, source_system=SOURCE_MANUAL,
+                commercial_account_id=aid,
+                source_system=_resolve_line_source(existing_lines, lk, is_override=_is_override(lk)),
+                source_ref=_resolve_line_source_ref(existing_lines, lk),
                 pricing_schedule_id=pricing.get("id"),
                 rate_snapshot=comm_snapshot if lk == ak else {**comm_snapshot, "line": "pounds"},
                 is_override=_is_override(lk), override_reason=_override_reason(lk),
@@ -1322,7 +1434,7 @@ def save_daily_entry(cursor, org_id: int, entry_date: date, payload: dict, *, us
     cursor.execute("SELECT * FROM dr_daily_entries WHERE id = %s", (entry_id,))
     header = cursor.fetchone()
     lines = _load_entry_lines(cursor, entry_id)
-    entry_shape = _lines_to_entry_shape(lines, header, accounts, wf_meta)
+    entry_shape = _lines_to_entry_shape(lines, header, accounts, wf_meta, audit_by_line=_load_line_audit_events(cursor, entry_id))
     summary = _entry_summary_from_lines(lines)
     return {"entry": entry_shape, "summary": summary}
 

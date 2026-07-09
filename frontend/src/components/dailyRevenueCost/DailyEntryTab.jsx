@@ -20,8 +20,11 @@ import {
   saveDailyRevenueEntry,
 } from "../../api";
 import {
+  commercialPoundsLineKey,
+  DRC_LINE_KEYS,
   DRC_STICKY_SAVE_SX,
   entryToForm,
+  fieldsNeedingOverrideReason,
   formToPayload,
   formatCurrency,
   getDrcStatusChipColor,
@@ -30,6 +33,7 @@ import {
 } from "../../utils/dailyRevenueCostHelpers";
 import { CurrencyField, DailySummaryCard, NumberField, SectionCard } from "./DrcShared";
 import DrcWorkflowBar from "./DrcWorkflowBar";
+import { DrcFieldRow, DrcOverrideReasonDialog, formatDrcSourceValue } from "./DrcSourceIndicator";
 
 function commercialRevenue(line) {
   const pounds = Number(line.pounds) || 0;
@@ -42,6 +46,8 @@ function commercialRevenue(line) {
 export default function DailyEntryTab({ onDashboardRefresh }) {
   const [entryDate, setEntryDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [form, setForm] = useState(entryToForm(null));
+  const [baselineForm, setBaselineForm] = useState(entryToForm(null));
+  const [lineSources, setLineSources] = useState({});
   const [summary, setSummary] = useState(null);
   const [wfMeta, setWfMeta] = useState({});
   const [entryId, setEntryId] = useState(null);
@@ -52,6 +58,9 @@ export default function DailyEntryTab({ onDashboardRefresh }) {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [toast, setToast] = useState({ open: false, message: "", severity: "success" });
+  const [overrideReasons, setOverrideReasons] = useState({});
+  const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
+  const [pendingOverrideFields, setPendingOverrideFields] = useState([]);
 
   const isEditable = isDrcEntryEditable(entryStatus);
   const hasEntry = Boolean(entryId);
@@ -69,6 +78,18 @@ export default function DailyEntryTab({ onDashboardRefresh }) {
     }
   }, [entryDate, onDashboardRefresh]);
 
+  const applyEntryResponse = useCallback((entry) => {
+    const nextForm = entryToForm(entry);
+    setForm(nextForm);
+    setBaselineForm(nextForm);
+    setLineSources(entry?.line_sources || {});
+    setSummary(entry?.summary || null);
+    setWfMeta(entry?.rinse_wf_meta || {});
+    setEntryId(entry?.id || null);
+    setEntryStatus(entry?.status || "open");
+    setOverrideReasons({});
+  }, []);
+
   const loadEntry = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -76,18 +97,13 @@ export default function DailyEntryTab({ onDashboardRefresh }) {
     try {
       const res = await getDailyRevenueEntry(entryDate);
       const data = res.data || {};
-      const entry = data.entry || {};
-      setForm(entryToForm(entry));
-      setSummary(entry.summary || null);
-      setWfMeta(entry.rinse_wf_meta || {});
-      setEntryId(entry.id || null);
-      setEntryStatus(entry.status || "open");
+      applyEntryResponse(data.entry || {});
     } catch (e) {
       setError(e?.response?.data?.error || e.message || "Failed to load entry");
     } finally {
       setLoading(false);
     }
-  }, [entryDate]);
+  }, [applyEntryResponse, entryDate]);
 
   useEffect(() => {
     loadEntry();
@@ -97,7 +113,7 @@ export default function DailyEntryTab({ onDashboardRefresh }) {
     async (nextForm) => {
       if (!isEditable) return;
       try {
-        const payload = formToPayload(nextForm);
+        const payload = formToPayload(nextForm, overrideReasons);
         const res = await previewDailyRevenueEntry(entryDate, {
           ...payload,
           exclude_entry_id: entryId,
@@ -109,7 +125,7 @@ export default function DailyEntryTab({ onDashboardRefresh }) {
         // preview is best-effort
       }
     },
-    [entryDate, entryId, isEditable],
+    [entryDate, entryId, isEditable, overrideReasons],
   );
 
   const updateField = (field, value) => {
@@ -133,22 +149,25 @@ export default function DailyEntryTab({ onDashboardRefresh }) {
     });
   };
 
-  const handleSave = async () => {
-    if (!isEditable) return;
+  const performSave = async (reasons) => {
     setSaving(true);
     setError("");
     setSuccess("");
     try {
-      const payload = formToPayload(form);
+      const payload = formToPayload(form, reasons);
       const res = await saveDailyRevenueEntry(entryDate, payload);
       const data = res.data || {};
-      setSummary(data.summary || data.entry?.summary || null);
-      setEntryId(data.entry?.id || entryId);
-      setEntryStatus(data.entry?.status || entryStatus);
+      if (data.entry) {
+        applyEntryResponse(data.entry);
+      } else {
+        setSummary(data.summary || null);
+      }
       setSuccess("Saved successfully");
       showToast("Entry saved");
       await loadEntry();
       await refreshDashboardTotals();
+      setOverrideDialogOpen(false);
+      setPendingOverrideFields([]);
     } catch (e) {
       const msg = e?.response?.data?.error || e.message || "Failed to save";
       setError(msg);
@@ -156,6 +175,26 @@ export default function DailyEntryTab({ onDashboardRefresh }) {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleSave = async () => {
+    if (!isEditable) return;
+    const needs = fieldsNeedingOverrideReason({
+      baselineForm,
+      form,
+      lineSources,
+      overrideReasons,
+    });
+    if (needs.length > 0) {
+      setPendingOverrideFields(needs);
+      setOverrideDialogOpen(true);
+      return;
+    }
+    await performSave(overrideReasons);
+  };
+
+  const handleConfirmOverrides = async () => {
+    await performSave(overrideReasons);
   };
 
   const handleWorkflow = async ({ action, notes }) => {
@@ -177,6 +216,8 @@ export default function DailyEntryTab({ onDashboardRefresh }) {
       setWorkflowBusy(false);
     }
   };
+
+  const sourceMeta = (lineKey) => lineSources?.[lineKey] || null;
 
   const saveLabel = useMemo(() => {
     if (!isEditable) return `Read-only (${getDrcStatusLabel(entryStatus)})`;
@@ -242,26 +283,36 @@ export default function DailyEntryTab({ onDashboardRefresh }) {
 
       <SectionCard title="Self Service">
         <Stack spacing={2}>
-          <CurrencyField label="Cash Revenue" value={form.self_service_cash} onChange={(e) => updateField("self_service_cash", e.target.value)} disabled={!isEditable} />
-          <CurrencyField label="Card Revenue" value={form.self_service_card} onChange={(e) => updateField("self_service_card", e.target.value)} disabled={!isEditable} />
+          <DrcFieldRow meta={sourceMeta(DRC_LINE_KEYS.self_service_cash)} valueLabel={formatDrcSourceValue("self_service_cash", form.self_service_cash)}>
+            <CurrencyField label="Cash Revenue" value={form.self_service_cash} onChange={(e) => updateField("self_service_cash", e.target.value)} disabled={!isEditable} />
+          </DrcFieldRow>
+          <DrcFieldRow meta={sourceMeta(DRC_LINE_KEYS.self_service_card)} valueLabel={formatDrcSourceValue("self_service_card", form.self_service_card)}>
+            <CurrencyField label="Card Revenue" value={form.self_service_card} onChange={(e) => updateField("self_service_card", e.target.value)} disabled={!isEditable} />
+          </DrcFieldRow>
         </Stack>
       </SectionCard>
 
       <SectionCard title="Drop Off">
         <Stack spacing={2}>
-          <CurrencyField label="Cash Revenue" value={form.drop_off_cash} onChange={(e) => updateField("drop_off_cash", e.target.value)} disabled={!isEditable} />
-          <CurrencyField label="Card Revenue" value={form.drop_off_card} onChange={(e) => updateField("drop_off_card", e.target.value)} disabled={!isEditable} />
+          <DrcFieldRow meta={sourceMeta(DRC_LINE_KEYS.drop_off_cash)} valueLabel={formatDrcSourceValue("drop_off_cash", form.drop_off_cash)}>
+            <CurrencyField label="Cash Revenue" value={form.drop_off_cash} onChange={(e) => updateField("drop_off_cash", e.target.value)} disabled={!isEditable} />
+          </DrcFieldRow>
+          <DrcFieldRow meta={sourceMeta(DRC_LINE_KEYS.drop_off_card)} valueLabel={formatDrcSourceValue("drop_off_card", form.drop_off_card)}>
+            <CurrencyField label="Card Revenue" value={form.drop_off_card} onChange={(e) => updateField("drop_off_card", e.target.value)} disabled={!isEditable} />
+          </DrcFieldRow>
         </Stack>
       </SectionCard>
 
       <SectionCard title="Rinse WF" subtitle="Revenue auto-calculates from monthly tier pricing.">
         <Stack spacing={2}>
-          <NumberField
-            label="Pounds Processed"
-            value={form.rinse_wf_pounds}
-            onChange={(e) => updateField("rinse_wf_pounds", e.target.value)}
-            disabled={!isEditable}
-          />
+          <DrcFieldRow meta={sourceMeta(DRC_LINE_KEYS.rinse_wf_pounds)} valueLabel={formatDrcSourceValue("rinse_wf_pounds", form.rinse_wf_pounds)}>
+            <NumberField
+              label="Pounds Processed"
+              value={form.rinse_wf_pounds}
+              onChange={(e) => updateField("rinse_wf_pounds", e.target.value)}
+              disabled={!isEditable}
+            />
+          </DrcFieldRow>
           <Box sx={{ p: 1.5, bgcolor: "grey.50", borderRadius: 1 }}>
             <Typography variant="body2" color="text.secondary">
               MTD before today: {wfMeta.mtd_pounds_before ?? 0} lbs · After today: {wfMeta.mtd_pounds_after ?? 0} lbs
@@ -276,29 +327,37 @@ export default function DailyEntryTab({ onDashboardRefresh }) {
 
       <SectionCard title="Rinse HD">
         <Stack spacing={2}>
-          <TextField
-            label="Number of Orders"
-            type="number"
-            value={form.rinse_hd_orders}
-            onChange={(e) => updateField("rinse_hd_orders", e.target.value)}
-            fullWidth
-            disabled={!isEditable}
-          />
-          <CurrencyField label="Revenue" value={form.rinse_hd_revenue} onChange={(e) => updateField("rinse_hd_revenue", e.target.value)} disabled={!isEditable} />
+          <DrcFieldRow meta={sourceMeta(DRC_LINE_KEYS.rinse_hd_orders)} valueLabel={formatDrcSourceValue("rinse_hd_orders", form.rinse_hd_orders)}>
+            <TextField
+              label="Number of Orders"
+              type="number"
+              value={form.rinse_hd_orders}
+              onChange={(e) => updateField("rinse_hd_orders", e.target.value)}
+              fullWidth
+              disabled={!isEditable}
+            />
+          </DrcFieldRow>
+          <DrcFieldRow meta={sourceMeta(DRC_LINE_KEYS.rinse_hd_revenue)} valueLabel={formatDrcSourceValue("rinse_hd_revenue", form.rinse_hd_revenue)}>
+            <CurrencyField label="Revenue" value={form.rinse_hd_revenue} onChange={(e) => updateField("rinse_hd_revenue", e.target.value)} disabled={!isEditable} />
+          </DrcFieldRow>
         </Stack>
       </SectionCard>
 
       <SectionCard title="Rinse WI">
         <Stack spacing={2}>
-          <TextField
-            label="Number of Orders"
-            type="number"
-            value={form.rinse_wi_orders}
-            onChange={(e) => updateField("rinse_wi_orders", e.target.value)}
-            fullWidth
-            disabled={!isEditable}
-          />
-          <CurrencyField label="Revenue" value={form.rinse_wi_revenue} onChange={(e) => updateField("rinse_wi_revenue", e.target.value)} disabled={!isEditable} />
+          <DrcFieldRow meta={sourceMeta(DRC_LINE_KEYS.rinse_wi_orders)} valueLabel={formatDrcSourceValue("rinse_wi_orders", form.rinse_wi_orders)}>
+            <TextField
+              label="Number of Orders"
+              type="number"
+              value={form.rinse_wi_orders}
+              onChange={(e) => updateField("rinse_wi_orders", e.target.value)}
+              fullWidth
+              disabled={!isEditable}
+            />
+          </DrcFieldRow>
+          <DrcFieldRow meta={sourceMeta(DRC_LINE_KEYS.rinse_wi_revenue)} valueLabel={formatDrcSourceValue("rinse_wi_revenue", form.rinse_wi_revenue)}>
+            <CurrencyField label="Revenue" value={form.rinse_wi_revenue} onChange={(e) => updateField("rinse_wi_revenue", e.target.value)} disabled={!isEditable} />
+          </DrcFieldRow>
         </Stack>
       </SectionCard>
 
@@ -310,7 +369,12 @@ export default function DailyEntryTab({ onDashboardRefresh }) {
                 {line.account_name}
               </Typography>
               <Stack spacing={2}>
-                <NumberField label="Pounds / Volume" value={line.pounds} onChange={(e) => updateCommercialLine(idx, "pounds", e.target.value)} disabled={!isEditable} />
+                <DrcFieldRow
+                  meta={sourceMeta(commercialPoundsLineKey(line.commercial_account_id))}
+                  valueLabel={formatDrcSourceValue("pounds", line.pounds)}
+                >
+                  <NumberField label="Pounds / Volume" value={line.pounds} onChange={(e) => updateCommercialLine(idx, "pounds", e.target.value)} disabled={!isEditable} />
+                </DrcFieldRow>
                 <CurrencyField label="Rate per Pound" value={line.rate_per_pound} onChange={(e) => updateCommercialLine(idx, "rate_per_pound", e.target.value)} disabled={!isEditable} />
                 <CurrencyField label="Logistics Charge" value={line.logistics_charge} onChange={(e) => updateCommercialLine(idx, "logistics_charge", e.target.value)} disabled={!isEditable} />
                 <CurrencyField label="Additional Charge" value={line.additional_charge} onChange={(e) => updateCommercialLine(idx, "additional_charge", e.target.value)} disabled={!isEditable} />
@@ -325,7 +389,9 @@ export default function DailyEntryTab({ onDashboardRefresh }) {
 
       <SectionCard title="Daily Payroll">
         <Stack spacing={2}>
-          <CurrencyField label="Total Payroll" value={form.payroll_total} onChange={(e) => updateField("payroll_total", e.target.value)} disabled={!isEditable} />
+          <DrcFieldRow meta={sourceMeta(DRC_LINE_KEYS.payroll_total)} valueLabel={formatDrcSourceValue("payroll_total", form.payroll_total)}>
+            <CurrencyField label="Total Payroll" value={form.payroll_total} onChange={(e) => updateField("payroll_total", e.target.value)} disabled={!isEditable} />
+          </DrcFieldRow>
           <Box sx={{ p: 1.5, bgcolor: "grey.50", borderRadius: 1 }}>
             <Typography variant="body2" color="text.secondary">Estimated Payroll Tax</Typography>
             <Typography variant="subtitle1" fontWeight={700}>{formatCurrency(summary?.payroll_tax_amount ?? 0)}</Typography>
@@ -357,6 +423,21 @@ export default function DailyEntryTab({ onDashboardRefresh }) {
           {saveLabel}
         </Button>
       </Box>
+
+      <DrcOverrideReasonDialog
+        open={overrideDialogOpen}
+        fields={pendingOverrideFields}
+        reasons={overrideReasons}
+        onReasonChange={(lineKey, value) => setOverrideReasons((prev) => ({ ...prev, [lineKey]: value }))}
+        onCancel={() => {
+          if (!saving) {
+            setOverrideDialogOpen(false);
+            setPendingOverrideFields([]);
+          }
+        }}
+        onConfirm={handleConfirmOverrides}
+        busy={saving}
+      />
 
       <Snackbar
         open={toast.open}

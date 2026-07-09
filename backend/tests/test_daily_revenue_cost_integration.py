@@ -390,6 +390,75 @@ def test_ambiguous_active_schedule_raises(drc_db):
         )
 
 
+def test_same_day_commercial_account_update(drc_db):
+    """Same-day rate edit must fetch account row before pricing lookup (MySQL unread-result guard)."""
+    conn, cursor = drc_db
+    from backend.business_time import business_today
+
+    eff = business_today().isoformat()
+    cursor.execute(
+        "UPDATE dr_commercial_pricing_schedules SET effective_from = ? WHERE commercial_account_id = 1",
+        (eff,),
+    )
+    conn.commit()
+    out = update_commercial_account(
+        cursor, 1, 1,
+        {"rate_per_pound": 0.80, "default_logistics_charge": 0, "default_additional_charge": 0},
+        user_id=1,
+    )
+    assert out["rate_per_pound"] == 0.80
+
+
+def test_line_sources_returned_on_get_entry(drc_db):
+    conn, cursor = drc_db
+    entry_date = date(2026, 7, 10)
+    save_daily_entry(cursor, 1, entry_date, {"payroll_total": 500, "rinse_wf_pounds": 0}, user_id=1)
+    cursor.execute("SELECT id FROM dr_daily_entries WHERE entry_date = '2026-07-10'")
+    entry_id = cursor.fetchone()["id"]
+    cursor.execute(
+        """UPDATE dr_daily_entry_lines SET source_system = 'payroll', source_ref = 'run-42',
+           source_captured_at = '2026-07-10 08:00:00' WHERE daily_entry_id = ? AND line_key = 'payroll.total'""",
+        (entry_id,),
+    )
+    conn.commit()
+    out = get_daily_entry(cursor, 1, entry_date)
+    src = out["entry"]["line_sources"]["payroll.total"]
+    assert src["source_system"] == "payroll"
+    assert src["source_ref"] == "run-42"
+
+
+def test_override_preserves_import_source(drc_db):
+    conn, cursor = drc_db
+    from backend.daily_revenue_cost_constants import LK_PAYROLL_TOTAL, SOURCE_PAYROLL
+
+    entry_date = date(2026, 7, 11)
+    save_daily_entry(cursor, 1, entry_date, {"payroll_total": 500, "rinse_wf_pounds": 0}, user_id=1)
+    cursor.execute("SELECT id FROM dr_daily_entries WHERE entry_date = '2026-07-11'")
+    entry_id = cursor.fetchone()["id"]
+    cursor.execute(
+        "UPDATE dr_daily_entry_lines SET source_system = ?, source_ref = 'run-99' WHERE daily_entry_id = ? AND line_key = ?",
+        (SOURCE_PAYROLL, entry_id, LK_PAYROLL_TOTAL),
+    )
+    conn.commit()
+    save_daily_entry(
+        cursor, 1, entry_date,
+        {
+            "payroll_total": 642.15,
+            "rinse_wf_pounds": 0,
+            "overrides": {LK_PAYROLL_TOTAL: {"is_manual_override": True, "reason": "Bonus adjustment"}},
+        },
+        user_id=1,
+    )
+    cursor.execute(
+        "SELECT source_system, is_manual_override, override_reason FROM dr_daily_entry_lines WHERE daily_entry_id = ? AND line_key = ?",
+        (entry_id, LK_PAYROLL_TOTAL),
+    )
+    row = cursor.fetchone()
+    assert row["source_system"] == SOURCE_PAYROLL
+    assert int(row["is_manual_override"]) == 1
+    assert row["override_reason"] == "Bonus adjustment"
+
+
 def test_dashboard_totals_separate_fixed_variable(drc_db):
     conn, cursor = drc_db
     from backend.daily_revenue_cost import build_dashboard
