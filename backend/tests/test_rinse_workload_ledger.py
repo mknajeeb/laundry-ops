@@ -18,6 +18,7 @@ from backend.rinse_at_vendor_module import (
     _build_immutable_workload_ledger,
     _build_needs_verification_exception_rows,
     _is_operational_workload_row,
+    _merge_operational_active_pending_rows,
     _merge_operational_completed_rows,
 )
 from backend.rinse_workload_ledger import (
@@ -363,6 +364,42 @@ def test_scenario9_wf_hd_totals_stable_after_leaving_portal(fake_cursor):
     hd = {b for b, rec in loaded.items() if rec.get("workflow") == "HD"}
     assert wf == {"A", "C"}
     assert hd == {"B"}
+
+
+def test_active_pending_reinjected_from_portal_scrape_rejected(fake_cursor):
+    """Active-tier pending bags rejected by portal scrape stay in operational workload."""
+    universe = [
+        _pending_row("A", on_portal=True),
+        _pending_row("B", on_portal=False),
+    ]
+    pre = {r["bag_id"]: r for r in universe}
+    kept = [_pending_row("A")]
+    meta = {"off_portal_stale_pending_excluded": [], "portal_scrape_rejected_excluded": ["B"]}
+    result = _build_immutable_workload_ledger(
+        fake_cursor,
+        ORG,
+        ET,
+        kept_rows=kept,
+        pre_filter_rows_by_bag=pre,
+        off_portal_filter_meta=meta,
+        portal_scrape_rejected_ids={"B"},
+    )
+    tiers = dict(result.get("membership_tiers_by_bag") or {})
+    ops = _merge_operational_active_pending_rows(
+        kept,
+        pre,
+        active_bag_ids=result["active_bag_ids"],
+        off_portal_filter_meta=meta,
+        membership_tiers_by_bag=tiers,
+    )
+    nv = _build_needs_verification_exception_rows(
+        pre,
+        meta,
+        active_bag_ids=result["active_bag_ids"],
+        membership_tiers_by_bag=tiers,
+    )
+    assert {r["bag_id"] for r in ops} == {"A", "B"}
+    assert len(nv) == 0
 
 
 def test_operational_total_excludes_needs_verification(fake_cursor):

@@ -2936,6 +2936,75 @@ def _is_operational_workload_row(row: Mapping[str, Any]) -> bool:
     )
 
 
+def _is_operational_pending_row(row: Mapping[str, Any]) -> bool:
+    tags = row.get("module_tags") or []
+    if MOD_AT_VENDOR_COMPLETED in tags or row.get("completed_during_et_day"):
+        return False
+    if str(row.get("at_vendor_status") or "").lower() == str(AV_STATUS_COMPLETED).lower():
+        return False
+    return MOD_AT_VENDOR_PENDING in tags or MOD_AT_VENDOR_CHANGED_RUSH in tags
+
+
+def _soft_removed_bag_ids(off_portal_filter_meta: Mapping[str, Any]) -> set[str]:
+    stale = {
+        str(b).strip().upper()
+        for b in (off_portal_filter_meta.get("off_portal_stale_pending_excluded") or [])
+    }
+    rejected = {
+        str(b).strip().upper()
+        for b in (off_portal_filter_meta.get("portal_scrape_rejected_excluded") or [])
+    }
+    return stale | rejected
+
+
+def _should_retain_active_pending_in_operational_workload(
+    row: Mapping[str, Any],
+    *,
+    membership_tier: str | None,
+) -> bool:
+    """Active-tier pending bags removed from the live board stay in Today's Workload."""
+    from backend.rinse_workload_ledger import is_active_membership_tier
+
+    if not is_active_membership_tier(membership_tier):
+        return False
+    return _is_operational_pending_row(row)
+
+
+def _merge_operational_active_pending_rows(
+    rows: list[dict[str, Any]],
+    pre_filter_rows_by_bag: Mapping[str, dict[str, Any]],
+    *,
+    active_bag_ids: set[str],
+    off_portal_filter_meta: Mapping[str, Any],
+    membership_tiers_by_bag: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """Re-add active-tier pending bags dropped by off-portal / scrape-rejected filters."""
+    soft_removed = _soft_removed_bag_ids(off_portal_filter_meta)
+    present = {str(r.get("bag_id") or "").strip().upper() for r in rows if r.get("bag_id")}
+    merged = list(rows)
+    for bid in sorted(active_bag_ids):
+        if bid not in soft_removed or bid in present:
+            continue
+        pre = pre_filter_rows_by_bag.get(bid)
+        if not pre or not _should_retain_active_pending_in_operational_workload(
+            pre,
+            membership_tier=membership_tiers_by_bag.get(bid),
+        ):
+            continue
+        merged.append(
+            {
+                **dict(pre),
+                "bag_id": bid,
+                "ledger_retained": True,
+                "off_portal_operational_pending": True,
+                "currently_on_vendor_home": False,
+                "membership_tier": membership_tiers_by_bag.get(bid),
+            }
+        )
+        present.add(bid)
+    return merged
+
+
 def _needs_verification_reason(bid: str, *, stale_pending: set[str], scrape_rejected: set[str]) -> str:
     if bid in scrape_rejected:
         return "missing_from_latest_portal_scrape"
@@ -2976,6 +3045,9 @@ def _build_needs_verification_exception_rows(
             continue
         pre = pre_filter_rows_by_bag.get(bid)
         if not pre:
+            continue
+        tier = (membership_tiers_by_bag or {}).get(bid)
+        if _should_retain_active_pending_in_operational_workload(pre, membership_tier=tier):
             continue
         tags = pre.get("module_tags") or []
         if MOD_AT_VENDOR_COMPLETED in tags or pre.get("completed_during_et_day"):
@@ -3512,6 +3584,13 @@ def build_at_vendor_module(
             rows,
             pre_filter_rows_by_bag,
             active_bag_ids=active_bag_ids,
+        )
+        rows = _merge_operational_active_pending_rows(
+            rows,
+            pre_filter_rows_by_bag,
+            active_bag_ids=active_bag_ids,
+            off_portal_filter_meta=off_portal_filter_meta,
+            membership_tiers_by_bag=membership_tiers_by_bag,
         )
         rows = [
             r
