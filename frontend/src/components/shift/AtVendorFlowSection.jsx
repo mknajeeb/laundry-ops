@@ -17,7 +17,9 @@ import { RushPendingWhyPanel } from "./RushPendingWhyPanel";
 import PortalSnapshotFreshness from "./PortalSnapshotFreshness";
 import PortalReconciliationSection from "./PortalReconciliationSection";
 import {
+  buildAtVendorAuditLedger,
   buildAtVendorHierarchy,
+  buildAtVendorOperationalExceptions,
   buildAtVendorPortalSnapshot,
   buildWorkloadReportStats,
 } from "../../utils/shiftMonitorHelpers";
@@ -45,11 +47,14 @@ export default function AtVendorFlowSection({
   const [monitoringOpen, setMonitoringOpen] = useState(!monitoringCollapsedByDefault);
 
   const workloadSections = buildAtVendorHierarchy(av, segment, { historical: !isOperationsMode });
+  const exceptionSections = isOperationsMode ? buildAtVendorOperationalExceptions(av) : [];
+  const auditSections = isOperationsMode ? buildAtVendorAuditLedger(av) : [];
   const portalSections = isOperationsMode ? buildAtVendorPortalSnapshot(av) : [];
   const reportStats = !isOperationsMode ? buildWorkloadReportStats(av) : null;
 
   const handleCardClick = (card) => {
     if (!onDrilldown) return;
+    const isException = card.moduleTag === "mod_at_vendor_needs_verification";
     onDrilldown({
       moduleKey: "at_vendor_flow",
       moduleTag: card.moduleTag,
@@ -58,13 +63,17 @@ export default function AtVendorFlowSection({
       cardLabel: card.label,
       cardKey: card.key,
       expectedCount: card.count,
-      moduleTitle: card.portalFilter ? "Current Portal Snapshot" : "At Vendor",
+      moduleTitle: card.portalFilter
+        ? "Current Portal Snapshot"
+        : isException
+          ? "Operational Exceptions"
+          : "At Vendor",
     });
   };
 
   const workloadTitle = isOperationsMode ? "Today\u2019s Workload" : "Workload Summary";
   const workloadSubtitle = isOperationsMode
-    ? "Full ET-day workload including bags that already left the portal."
+    ? "How much work we have today: pending and completed only."
     : "Daily workload report for the selected period — no live portal data.";
 
   return (
@@ -140,6 +149,51 @@ export default function AtVendorFlowSection({
           ) : null}
         </Box>
       </Paper>
+
+      {isOperationsMode && exceptionSections.length > 0 ? (
+        <Paper
+          elevation={0}
+          sx={{
+            p: { xs: 1.25, sm: 1.75 },
+            mb: 1.25,
+            borderRadius: 2,
+            border: "1px solid",
+            borderColor: VEEWASH_DASHBOARD.monitoringBorder,
+            bgcolor: VEEWASH_DASHBOARD.monitoringBg,
+            boxShadow: "none",
+          }}
+        >
+          <MetricCardGrid
+            sections={exceptionSections}
+            onCardClick={handleCardClick}
+            activeKey={activeKey}
+          />
+        </Paper>
+      ) : null}
+
+      {isOperationsMode && auditSections.length > 0 ? (
+        <Accordion
+          disableGutters
+          elevation={0}
+          sx={{
+            mb: 1.25,
+            borderRadius: "10px !important",
+            border: "1px solid",
+            borderColor: VEEWASH_DASHBOARD.snapshotBorder,
+            bgcolor: "#fff",
+            "&:before": { display: "none" },
+          }}
+        >
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: { xs: 1.25, sm: 1.75 } }}>
+            <Typography variant="subtitle2" fontWeight={700}>
+              Audit / Ledger
+            </Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ px: { xs: 1.25, sm: 1.75 }, pt: 0 }}>
+            <MetricCardGrid sections={auditSections} compact />
+          </AccordionDetails>
+        </Accordion>
+      ) : null}
 
       {isOperationsMode ? (
         <Paper

@@ -147,6 +147,17 @@ export default function ShiftBagRecordRow({
             ) : null}
           </Stack>
           <BagWeightSummary row={row} />
+          {row.exception_reason_label ? (
+            <Typography
+              variant="caption"
+              fontWeight={700}
+              color="warning.dark"
+              display="block"
+              sx={{ mt: 0.5 }}
+            >
+              Needs verification: {row.exception_reason_label}
+            </Typography>
+          ) : null}
           {variant === "at_vendor" ? <PendingWhyBadge row={row} /> : null}
         </Box>
         <IconButton
@@ -196,6 +207,7 @@ export default function ShiftBagRecordRow({
                   <DetailField label="EDD" value={row.estimated_delivery_date || row.date_clean} />
                   <DetailField label="Population source" value={row.population_source || row.inclusion_reason} />
                   <DetailField label="Presence run" value={row.presence_run_id || row.presence_source} />
+                  <DetailField label="Investigation reason" value={row.exception_reason_label} />
                   <DetailField label="Reason" value={row.status_reason || row.reason || row.rush_reason} />
                   {isWfBag(row) ? (
                     <>

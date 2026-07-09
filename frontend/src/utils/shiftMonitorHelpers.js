@@ -255,12 +255,60 @@ function avUnknownCards(rows, rush) {
   ];
 }
 
+/** Operational exception cards (not part of Today's Workload totals). */
+export function buildAtVendorOperationalExceptions(module) {
+  const exc = module?.operational_exceptions || {};
+  const count = exc.needs_verification_count ?? (exc.needs_verification_rows || []).length;
+  if (!count) return [];
+  return [
+    {
+      key: "operational_exceptions",
+      title: "Operational Exceptions",
+      subtitle: "Bags requiring investigation — not included in Today's Workload.",
+      cards: [
+        {
+          key: "av_needs_verification",
+          label: "Needs Verification",
+          count,
+          variant: "monitoring",
+          moduleTag: "mod_at_vendor_needs_verification",
+          clickable: true,
+        },
+      ],
+    },
+  ];
+}
+
+/** Audit / immutable ledger (reconciliation — not operational KPIs). */
+export function buildAtVendorAuditLedger(module) {
+  const audit = module?.audit_ledger || {};
+  const breakout = audit.workload_breakout || module?.workload_breakout || {};
+  if (!breakout?.ledger_total && !audit.workload_ledger) return [];
+  const historical = breakout.historical_backlog || {};
+  const excluded = breakout.excluded_cleanup || {};
+  return [
+    {
+      key: "audit_ledger",
+      title: "Audit / Ledger",
+      subtitle: "Immutable reconciliation view — not used for daily operations.",
+      cards: [
+        { key: "audit_ledger_total", label: "Ledger Total", count: breakout.ledger_total, variant: "snapshot", clickable: false },
+        { key: "audit_historical_backlog", label: "Historical Backlog", count: historical.total, variant: "monitoring", clickable: false },
+        { key: "audit_historical_nv", label: "Backlog — Needs Verification", count: historical.needs_verification, variant: "monitoring", clickable: false },
+        { key: "audit_excluded", label: "Excluded / Cleanup", count: excluded.total, variant: "monitoring", clickable: false },
+      ],
+    },
+  ];
+}
+
 /** Management hierarchy cards for At Vendor daily workload. */
 export function buildAtVendorHierarchy(module, rushSegment = "all", options = {}) {
   const { historical = false } = options;
   const rows = module?.rows || [];
   const rush = rushSegment === "all" ? "all" : rushSegment;
   const sections = [];
+
+  const operationalTotal = module?.total ?? module?.daily_workload_total;
 
   sections.push({
     key: "kpi",
@@ -269,7 +317,8 @@ export function buildAtVendorHierarchy(module, rushSegment = "all", options = {}
       {
         key: "av_total",
         label: historical ? "Total Workload" : "Total",
-        count: module?.daily_workload_total ?? module?.total,
+        count: operationalTotal,
+        sub: !historical ? "Pending + Completed" : undefined,
         bucket: { rush: "all", service: "all", status: "all" },
         moduleTag: "mod_at_vendor_total",
         clickable: true,
@@ -597,6 +646,9 @@ export function filterAtVendorDrilldown(module, drilldown, options = {}) {
   }
   if (drilldown?.moduleTag === "mod_at_vendor_changed_rush") {
     return filterModuleRecords(module?.rows || [], { moduleTag: "mod_at_vendor_changed_rush" });
+  }
+  if (drilldown?.moduleTag === "mod_at_vendor_needs_verification") {
+    return module?.operational_exceptions?.needs_verification_rows || [];
   }
   if (drilldown?.bucket) {
     return filterAtVendorBucket(module?.rows || [], drilldown.bucket);

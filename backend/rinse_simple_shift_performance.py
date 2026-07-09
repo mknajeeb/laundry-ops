@@ -2731,6 +2731,11 @@ _AV_DRILLDOWN_ROW_KEYS = frozenset({
     "completed_lbs",
     "completed_by_employee",
     "weight_missing",
+    "exception_reason",
+    "exception_reason_label",
+    "operational_state",
+    "membership_tier",
+    "ledger_retained",
 })
 
 _RFV_DRILLDOWN_ROW_KEYS = frozenset({
@@ -2786,6 +2791,16 @@ def _slim_at_vendor_module_payload(module: Mapping[str, Any]) -> dict[str, Any]:
             "reconciliation_banner": emp_section.get("reconciliation_banner"),
             "reconciliation": emp_section.get("reconciliation"),
             "bags_stripped_for_summary": True,
+        }
+    exc = module.get("operational_exceptions")
+    if isinstance(exc, dict):
+        out["operational_exceptions"] = {
+            **exc,
+            "needs_verification_rows": [
+                _slim_row_for_drilldown(r, _AV_DRILLDOWN_ROW_KEYS)
+                for r in (exc.get("needs_verification_rows") or [])
+                if isinstance(r, dict)
+            ],
         }
     return out
 

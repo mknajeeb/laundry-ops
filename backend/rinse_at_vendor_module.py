@@ -532,7 +532,8 @@ def validate_days_load_invariant(module: Mapping[str, Any]) -> None:
         f"days_load={days_load} pending={pending} completed={completed}"
     )
     assert days_load == len(rows), (
-        f"Day's Load must equal visible workload rows: days_load={days_load} rows={len(rows)}"
+        f"Operational workload rows must equal pending+completed: "
+        f"days_load={days_load} rows={len(rows)}"
     )
     if module.get("total_equals_pending_plus_completed") is not None:
         assert module.get("total_equals_pending_plus_completed") is True
@@ -2921,6 +2922,345 @@ def _build_row(
     return row
 
 
+def _cursor_connection(cursor):
+    return getattr(cursor, "connection", None) or getattr(cursor, "_connection", None)
+
+
+def _is_operational_workload_row(row: Mapping[str, Any]) -> bool:
+    """Operational dashboard: Pending or Completed only (changed-rush counts as pending)."""
+    tags = row.get("module_tags") or []
+    return (
+        MOD_AT_VENDOR_PENDING in tags
+        or MOD_AT_VENDOR_COMPLETED in tags
+        or MOD_AT_VENDOR_CHANGED_RUSH in tags
+    )
+
+
+def _needs_verification_reason(bid: str, *, stale_pending: set[str], scrape_rejected: set[str]) -> str:
+    if bid in scrape_rejected:
+        return "missing_from_latest_portal_scrape"
+    if bid in stale_pending:
+        return "off_portal_stale_pending"
+    return "unexplained_portal_departure"
+
+
+def _needs_verification_reason_label(reason: str) -> str:
+    labels = {
+        "missing_from_latest_portal_scrape": "Missing from latest portal scrape",
+        "off_portal_stale_pending": "Left vendor portal while still pending",
+        "unexplained_portal_departure": "Unexplained portal departure",
+    }
+    return labels.get(reason, reason.replace("_", " ").title())
+
+
+def _build_needs_verification_exception_rows(
+    pre_filter_rows_by_bag: Mapping[str, dict[str, Any]],
+    off_portal_filter_meta: Mapping[str, Any],
+    *,
+    active_bag_ids: set[str] | None = None,
+    membership_tiers_by_bag: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Build operational exception rows for bags that left the board unexplained."""
+    stale_pending = {
+        str(b).strip().upper()
+        for b in (off_portal_filter_meta.get("off_portal_stale_pending_excluded") or [])
+    }
+    scrape_rejected = {
+        str(b).strip().upper()
+        for b in (off_portal_filter_meta.get("portal_scrape_rejected_excluded") or [])
+    }
+    candidate_ids = sorted(stale_pending | scrape_rejected)
+    out: list[dict[str, Any]] = []
+    for bid in candidate_ids:
+        if active_bag_ids is not None and bid not in active_bag_ids:
+            continue
+        pre = pre_filter_rows_by_bag.get(bid)
+        if not pre:
+            continue
+        tags = pre.get("module_tags") or []
+        if MOD_AT_VENDOR_COMPLETED in tags or pre.get("completed_during_et_day"):
+            continue
+        if str(pre.get("at_vendor_status") or "").lower() == str(AV_STATUS_COMPLETED).lower():
+            continue
+        reason = _needs_verification_reason(
+            bid, stale_pending=stale_pending, scrape_rejected=scrape_rejected
+        )
+        out.append(
+            {
+                **dict(pre),
+                "bag_id": bid,
+                "operational_state": "needs_verification",
+                "exception_reason": reason,
+                "exception_reason_label": _needs_verification_reason_label(reason),
+                "membership_tier": (membership_tiers_by_bag or {}).get(bid),
+            }
+        )
+    return out
+
+
+def _merge_operational_completed_rows(
+    rows: list[dict[str, Any]],
+    pre_filter_rows_by_bag: Mapping[str, dict[str, Any]],
+    *,
+    active_bag_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Ensure completed active-tier bags remain in operational workload when off-portal."""
+    present = {str(r.get("bag_id") or "").strip().upper() for r in rows if r.get("bag_id")}
+    merged = list(rows)
+    for bid in sorted(active_bag_ids):
+        if bid in present:
+            continue
+        pre = pre_filter_rows_by_bag.get(bid)
+        if not pre or not _is_operational_workload_row(pre):
+            continue
+        if MOD_AT_VENDOR_COMPLETED not in (pre.get("module_tags") or []):
+            if not pre.get("completed_during_et_day"):
+                continue
+        merged.append(
+            {
+                **dict(pre),
+                "bag_id": bid,
+                "ledger_retained": True,
+                "currently_on_vendor_home": False,
+            }
+        )
+        present.add(bid)
+    return merged
+
+
+def _commit_cursor(cursor) -> None:
+    conn = _cursor_connection(cursor)
+    if conn is not None and hasattr(conn, "commit"):
+        conn.commit()
+
+
+def _rollback_cursor(cursor) -> None:
+    conn = _cursor_connection(cursor)
+    if conn is not None and hasattr(conn, "rollback"):
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
+def _build_immutable_workload_ledger(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    kept_rows: list[dict[str, Any]],
+    pre_filter_rows_by_bag: Mapping[str, dict[str, Any]],
+    off_portal_filter_meta: Mapping[str, Any],
+    portal_scrape_rejected_ids: set[str],
+    events_by_bag: Mapping[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    """Persist and reconcile the immutable ET-day workload ledger.
+
+    Membership is append-only. Every bag in the pre-filter population is classified
+    into Active Today, Historical Backlog, or Excluded/Cleanup. The headline total
+    is Active Today only (new + carry-over + re-sends). Completed active bags that
+    drop out of the live population are re-injected so active completed counts never
+    shrink when bags leave the portal.
+    """
+    from backend.rinse_at_vendor_module import (
+        MOD_AT_VENDOR_COMPLETED,
+        _load_at_vendor_scan_events_for_bags,
+        _normalize_service,
+    )
+    from backend.rinse_workload_ledger import (
+        LEDGER_STATUS_COMPLETED,
+        LEDGER_STATUS_REJECTED,
+        REMOVAL_REASON_NEEDS_VERIFICATION,
+        build_membership_record,
+        build_membership_records,
+        classify_bag_membership_tier,
+        is_active_membership_tier,
+        load_workload_ledger,
+        persist_workload_membership_isolated,
+        reconcile_active_ledger_breakout,
+        record_workload_membership,
+    )
+
+    org = int(organization_id)
+    stale_pending = {
+        str(b).strip().upper()
+        for b in (off_portal_filter_meta.get("off_portal_stale_pending_excluded") or [])
+    }
+    rejected_excluded = {
+        str(b).strip().upper()
+        for b in (off_portal_filter_meta.get("portal_scrape_rejected_excluded") or [])
+    }
+    soft_removed = stale_pending | rejected_excluded
+
+    all_bag_ids = sorted(pre_filter_rows_by_bag.keys())
+    kept_by_bag = {
+        str(r.get("bag_id") or "").strip().upper(): r
+        for r in kept_rows
+        if r.get("bag_id")
+    }
+
+    if events_by_bag is None and hasattr(cursor, "execute"):
+        events_by_bag = _load_at_vendor_scan_events_for_bags(cursor, org, all_bag_ids)
+    events_by_bag = events_by_bag or {}
+
+    membership_tiers: dict[str, str] = {}
+    for bid in all_bag_ids:
+        base = pre_filter_rows_by_bag.get(bid) or {"bag_id": bid}
+        svc = _normalize_service(base.get("service_type"))
+        tier = classify_bag_membership_tier(
+            events_by_bag.get(bid) or [],
+            service_type=svc,
+            selected_date_et=selected_date_et,
+            explicit_rejected=False,
+        )
+        membership_tiers[bid] = tier
+
+    records: list[dict[str, Any]] = []
+    for bid in all_bag_ids:
+        base = dict(pre_filter_rows_by_bag.get(bid) or {"bag_id": bid})
+        base.setdefault("bag_id", bid)
+        row = dict(kept_by_bag.get(bid) or base)
+        removal_reason = REMOVAL_REASON_NEEDS_VERIFICATION if bid in soft_removed else None
+        records.append(
+            build_membership_record(
+                row,
+                removal_reason=removal_reason,
+                membership_tier=membership_tiers.get(bid),
+            )
+        )
+    current_bag_ids = {r["bag_id"] for r in records}
+
+    prior_ledger: dict[str, Any] = {}
+    persist_ok = False
+    if hasattr(cursor, "execute"):
+        try:
+            persist_ok = persist_workload_membership_isolated(
+                organization_id, selected_date_et, records
+            )
+        except Exception:
+            try:
+                record_workload_membership(
+                    cursor, organization_id, selected_date_et, records
+                )
+                _commit_cursor(cursor)
+                persist_ok = True
+            except Exception:
+                _rollback_cursor(cursor)
+        try:
+            prior_ledger = load_workload_ledger(cursor, organization_id, selected_date_et)
+        except Exception:
+            prior_ledger = {}
+
+    reinjected_completed_rows: list[dict[str, Any]] = []
+    ledger_only_records: list[dict[str, Any]] = []
+    for bid, rec in prior_ledger.items():
+        if bid in current_bag_ids:
+            continue
+        if not isinstance(rec, Mapping):
+            continue
+        tier = str(rec.get("membership_tier") or membership_tiers.get(bid) or "")
+        if not is_active_membership_tier(tier):
+            ledger_only_records.append(
+                {
+                    "bag_id": bid,
+                    "membership_tier": tier,
+                    "current_status": str(rec.get("current_status") or ""),
+                    "workflow": rec.get("workflow"),
+                    "rush_bucket": rec.get("rush_bucket"),
+                }
+            )
+            continue
+        snapshot = rec.get("row_snapshot")
+        snapshot = snapshot if isinstance(snapshot, Mapping) else {"bag_id": bid}
+        status = str(rec.get("current_status") or "")
+        if status == LEDGER_STATUS_REJECTED:
+            ledger_only_records.append(
+                {
+                    "bag_id": bid,
+                    "membership_tier": tier,
+                    "current_status": LEDGER_STATUS_REJECTED,
+                    "workflow": rec.get("workflow"),
+                    "rush_bucket": rec.get("rush_bucket"),
+                }
+            )
+            continue
+        if status != LEDGER_STATUS_COMPLETED:
+            ledger_only_records.append(
+                {
+                    "bag_id": bid,
+                    "membership_tier": tier,
+                    "current_status": status,
+                    "workflow": rec.get("workflow"),
+                    "rush_bucket": rec.get("rush_bucket"),
+                }
+            )
+            continue
+        if (
+            snapshot.get("bag_id")
+            and MOD_AT_VENDOR_COMPLETED in (snapshot.get("module_tags") or [])
+        ):
+            row = dict(snapshot)
+            row["ledger_retained"] = True
+            row["membership_tier"] = tier
+            row["currently_on_vendor_home"] = False
+            reinjected_completed_rows.append(row)
+        ledger_only_records.append(
+            {
+                "bag_id": bid,
+                "membership_tier": tier,
+                "current_status": LEDGER_STATUS_COMPLETED,
+                "workflow": rec.get("workflow"),
+                "rush_bucket": rec.get("rush_bucket"),
+            }
+        )
+
+    all_records = records + ledger_only_records
+    summary = reconcile_active_ledger_breakout(all_records)
+    active_bag_ids = {
+        str(r.get("bag_id"))
+        for r in all_records
+        if is_active_membership_tier(str(r.get("membership_tier") or ""))
+    }
+
+    ledger_block = {
+        **summary,
+        "original_workload_total": summary["active_today_total"],
+        "immutable_workload_total": summary["ledger_total"],
+        "persisted": persist_ok,
+        "pending_bag_ids": [
+            str(r.get("bag_id"))
+            for r in all_records
+            if str(r.get("current_status") or "") == "pending"
+        ],
+        "completed_bag_ids": [
+            str(r.get("bag_id"))
+            for r in all_records
+            if str(r.get("current_status") or "") == LEDGER_STATUS_COMPLETED
+        ],
+        "sent_to_rinse_bag_ids": [
+            str(r.get("bag_id"))
+            for r in all_records
+            if str(r.get("current_status") or "") == "sent_to_rinse"
+        ],
+        "needs_verification_bag_ids": [
+            str(r.get("bag_id"))
+            for r in all_records
+            if str(r.get("current_status") or "") == "needs_verification"
+        ],
+        "rejected_bag_ids": [
+            str(r.get("bag_id"))
+            for r in all_records
+            if str(r.get("current_status") or "") == LEDGER_STATUS_REJECTED
+        ],
+    }
+    return {
+        "ledger_block": ledger_block,
+        "reinjected_completed_rows": reinjected_completed_rows,
+        "active_bag_ids": active_bag_ids,
+        "membership_tiers_by_bag": membership_tiers,
+    }
+
+
 def build_at_vendor_module(
     cursor,
     organization_id: int,
@@ -3132,11 +3472,68 @@ def build_at_vendor_module(
     if hasattr(cursor, "execute"):
         off_portal_terminal_ids = _load_off_portal_registry_terminal_bag_ids(cursor, org)
         portal_scrape_rejected_ids = _load_portal_scrape_rejected_bag_ids(cursor, org)
+    pre_filter_rows_by_bag = {
+        str(r.get("bag_id") or "").strip().upper(): r for r in rows if r.get("bag_id")
+    }
     rows, off_portal_filter_meta = _apply_off_portal_workload_row_filter(
         rows,
         off_portal_terminal_ids=off_portal_terminal_ids,
         portal_scrape_rejected_ids=portal_scrape_rejected_ids,
     )
+
+    # Immutable audit ledger (separate from operational dashboard).
+    workload_ledger_block: dict[str, Any] = {}
+    needs_verification_rows: list[dict[str, Any]] = []
+    active_bag_ids: set[str] = set()
+    membership_tiers_by_bag: dict[str, str] = {}
+    try:
+        _ledger = _build_immutable_workload_ledger(
+            cursor,
+            org,
+            selected_date_et,
+            kept_rows=rows,
+            pre_filter_rows_by_bag=pre_filter_rows_by_bag,
+            off_portal_filter_meta=off_portal_filter_meta,
+            portal_scrape_rejected_ids=portal_scrape_rejected_ids,
+            events_by_bag=events_by_bag,
+        )
+        workload_ledger_block = _ledger.get("ledger_block") or {}
+        active_bag_ids = set(_ledger.get("active_bag_ids") or [])
+        membership_tiers_by_bag = dict(_ledger.get("membership_tiers_by_bag") or {})
+
+        for reinj in _ledger.get("reinjected_completed_rows") or []:
+            rbid = str(reinj.get("bag_id") or "").strip().upper()
+            if rbid and rbid not in {
+                str(r.get("bag_id") or "").strip().upper() for r in rows if r.get("bag_id")
+            }:
+                rows.append(reinj)
+
+        rows = _merge_operational_completed_rows(
+            rows,
+            pre_filter_rows_by_bag,
+            active_bag_ids=active_bag_ids,
+        )
+        rows = [
+            r
+            for r in rows
+            if str(r.get("bag_id") or "").strip().upper() in active_bag_ids
+            and _is_operational_workload_row(r)
+        ]
+        for row in rows:
+            bid = str(row.get("bag_id") or "").strip().upper()
+            if bid in membership_tiers_by_bag:
+                row["membership_tier"] = membership_tiers_by_bag[bid]
+
+        needs_verification_rows = _build_needs_verification_exception_rows(
+            pre_filter_rows_by_bag,
+            off_portal_filter_meta,
+            active_bag_ids=active_bag_ids,
+            membership_tiers_by_bag=membership_tiers_by_bag,
+        )
+    except Exception:
+        workload_ledger_block = {}
+        needs_verification_rows = []
+        active_bag_ids = set()
 
     t_edd = time.perf_counter()
     prior_edd_map = _load_prior_edd_from_batches_bulk(cursor, org, pending_for_prior_edd)
@@ -3156,7 +3553,7 @@ def build_at_vendor_module(
     changed_rows = [r for r in rows if MOD_AT_VENDOR_CHANGED_RUSH in r.get("module_tags", [])]
 
     current_live_vendor_home_total = int(population_meta.get("current_live_vendor_home_total") or 0)
-    selected_day_total = len(rows)
+    selected_day_total = len(pending_rows) + len(completed_rows)
     pending = len(pending_rows)
     completed = len(completed_rows)
     changed_to_rush = len(changed_rows)
@@ -3526,6 +3923,41 @@ def build_at_vendor_module(
             off_portal_filter_meta.get("off_portal_completed_retained_in_days_load") or []
         ),
         "changed_to_rush": changed_to_rush,
+        "operational_exceptions": {
+            "needs_verification_count": len(needs_verification_rows),
+            "needs_verification_rows": needs_verification_rows,
+        },
+        "audit_ledger": {
+            "workload_ledger": workload_ledger_block,
+            "workload_breakout": {
+                "active_today": {
+                    "total": workload_ledger_block.get("active_today_total"),
+                    "new_today": workload_ledger_block.get("new_today"),
+                    "carryover_yesterday": workload_ledger_block.get("carryover_yesterday"),
+                    "resends_today": workload_ledger_block.get("resends_today"),
+                },
+                "historical_backlog": {
+                    "total": workload_ledger_block.get("historical_backlog_total"),
+                    "needs_verification": workload_ledger_block.get(
+                        "historical_backlog_needs_verification"
+                    ),
+                },
+                "excluded_cleanup": {
+                    "completed_before_day": workload_ledger_block.get(
+                        "excluded_completed_before_day"
+                    ),
+                    "rejected": workload_ledger_block.get("excluded_rejected"),
+                    "total": workload_ledger_block.get("excluded_total"),
+                },
+                "ledger_total": workload_ledger_block.get("ledger_total"),
+                "active_today_reconciles": workload_ledger_block.get("active_today_reconciles"),
+                "ledger_total_reconciles": workload_ledger_block.get("ledger_total_reconciles"),
+            },
+        }
+        if workload_ledger_block
+        else {},
+        # Back-compat for callers still reading workload_ledger at top level.
+        "workload_ledger": workload_ledger_block,
         "total_equals_pending_plus_completed": selected_day_total == pending + completed,
         "uses_scans": True,
         "scope": scope,
