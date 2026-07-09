@@ -1,0 +1,68 @@
+"""Inventory module constants."""
+
+from __future__ import annotations
+
+DEFAULT_CATEGORIES = [
+    ("Bags", 10),
+    ("Poly Bags", 20),
+    ("Detergent", 30),
+    ("Softener", 40),
+    ("Chemicals", 50),
+    ("Retail Products", 60),
+    ("Cleaning", 65),
+    ("Other Supplies", 70),
+]
+
+LEGACY_CATEGORY_MAP = {
+    "BAG": "Bags",
+    "SUPPLY": "Other Supplies",
+}
+
+STOCK_CHECK_DRAFT = "DRAFT"
+STOCK_CHECK_SUBMITTED = "SUBMITTED"
+
+ORDER_DRAFT = "DRAFT"
+ORDER_ORDERED = "ORDERED"
+ORDER_PARTIALLY_RECEIVED = "PARTIALLY_RECEIVED"
+ORDER_RECEIVED = "RECEIVED"
+ORDER_CANCELLED = "CANCELLED"
+
+ORDER_STATUSES = {
+    ORDER_DRAFT,
+    ORDER_ORDERED,
+    ORDER_PARTIALLY_RECEIVED,
+    ORDER_RECEIVED,
+    ORDER_CANCELLED,
+}
+
+# Orders counted in spend KPIs (by order_date, not received_date).
+PURCHASE_SPEND_STATUSES = (ORDER_ORDERED, ORDER_PARTIALLY_RECEIVED, ORDER_RECEIVED)
+
+LEGACY_MIGRATION_SETTING_KEY = "legacy_inventory_migrated"
+
+ADJUSTMENT_MANUAL = "MANUAL"
+ADJUSTMENT_STOCK_CHECK = "STOCK_CHECK"
+ADJUSTMENT_ORDER_RECEIVE = "ORDER_RECEIVE"
+ADJUSTMENT_BAG_SALE = "BAG_SALE"
+
+ADJUSTMENT_REASONS = [
+    "DAMAGED",
+    "LOST",
+    "EMPLOYEE_USE",
+    "CUSTOMER_USE",
+    "CORRECTION",
+    "TRANSFER",
+    "OTHER",
+]
+
+VARIANCE_REASONS = [
+    "DAMAGED",
+    "USED",
+    "MISSING",
+    "COUNT_CORRECTION",
+    "OTHER",
+]
+
+BAG_PRICE_SETTING_KEY = "bag_default_price"
+VARIANCE_THRESHOLD_KEY = "count_variance_threshold"
+DEFAULT_VARIANCE_THRESHOLD = 5

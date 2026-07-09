@@ -932,11 +932,38 @@ export const getMaintenanceAgenda = () =>
   axios.get(`${API_BASE}/maintenance/agenda`);
 
 /* =========================================
-   INVENTORY
+   INVENTORY (v2)
 ========================================= */
 
-export const getInventoryItems = () =>
-  axios.get(`${API_BASE}/inventory/items`);
+export const getInventoryDashboard = () =>
+  axios.get(`${API_BASE}/inventory/dashboard`);
+
+export const getInventoryMeta = () =>
+  axios.get(`${API_BASE}/inventory/meta`);
+
+export const getInventoryBootstrap = () =>
+  axios.get(`${API_BASE}/inventory/bootstrap`);
+
+export const getInventoryCategories = (params = {}) =>
+  axios.get(`${API_BASE}/inventory/categories`, { params });
+
+export const createInventoryCategory = (payload) =>
+  axios.post(`${API_BASE}/inventory/categories`, payload);
+
+export const updateInventoryCategory = (payload) =>
+  axios.put(`${API_BASE}/inventory/categories`, payload);
+
+export const getInventoryVendors = (params = {}) =>
+  axios.get(`${API_BASE}/inventory/vendors`, { params });
+
+export const createInventoryVendor = (payload) =>
+  axios.post(`${API_BASE}/inventory/vendors`, payload);
+
+export const updateInventoryVendor = (payload) =>
+  axios.put(`${API_BASE}/inventory/vendors`, payload);
+
+export const getInventoryItems = (params = {}) =>
+  axios.get(`${API_BASE}/inventory/items`, { params });
 
 export const createInventoryItem = (payload) =>
   axios.post(`${API_BASE}/inventory/items`, payload);
@@ -945,9 +972,58 @@ export const updateInventoryItem = (payload) =>
   axios.put(`${API_BASE}/inventory/items`, payload);
 
 export const removeInventoryItem = (id) =>
-  axios.delete(`${API_BASE}/inventory/items`, {
-    params: { id },
-  });
+  axios.delete(`${API_BASE}/inventory/items`, { params: { id } });
+
+export const getInventoryStockCheckDraft = () =>
+  axios.get(`${API_BASE}/inventory/stock-check/draft`);
+
+export const saveInventoryStockCheckDraft = (payload) =>
+  axios.post(`${API_BASE}/inventory/stock-check/draft`, payload);
+
+export const submitInventoryStockCheck = (payload) =>
+  axios.post(`${API_BASE}/inventory/stock-check/submit`, payload);
+
+export const getInventoryReorderSuggestions = () =>
+  axios.get(`${API_BASE}/inventory/reorder-suggestions`);
+
+export const duplicateInventoryOrder = (orderId) =>
+  axios.post(`${API_BASE}/inventory/orders/${orderId}/duplicate`);
+
+export const getInventoryVendorDetail = (vendorId) =>
+  axios.get(`${API_BASE}/inventory/vendors/${vendorId}`);
+
+export const getInventoryItemHistory = (itemId, params = {}) =>
+  axios.get(`${API_BASE}/inventory/items/${itemId}/history`, { params });
+
+export const getInventoryReports = (params = {}) =>
+  axios.get(`${API_BASE}/inventory/reports`, { params });
+
+export const saveInventoryVarianceThreshold = (payload) =>
+  axios.put(`${API_BASE}/inventory/settings/variance-threshold`, payload);
+
+export const createInventoryAdjustment = (payload) =>
+  axios.post(`${API_BASE}/inventory/adjustments`, payload);
+
+export const getInventoryOrdersSummary = () =>
+  axios.get(`${API_BASE}/inventory/orders/summary`);
+
+export const getInventoryOrders = (params = {}) =>
+  axios.get(`${API_BASE}/inventory/orders`, { params });
+
+export const createInventoryOrder = (payload) =>
+  axios.post(`${API_BASE}/inventory/orders`, payload);
+
+export const updateInventoryOrder = (payload) =>
+  axios.put(`${API_BASE}/inventory/orders`, payload);
+
+export const receiveInventoryOrder = (orderId, payload) =>
+  axios.post(`${API_BASE}/inventory/orders/${orderId}/receive`, payload);
+
+export const getInventoryWeeklyOrderReport = (params = {}) =>
+  axios.get(`${API_BASE}/inventory/reports/weekly-orders`, { params });
+
+export const createInventoryAdjustment = (payload) =>
+  axios.post(`${API_BASE}/inventory/adjustments`, payload);
 
 export const saveInventoryCount = (payload) =>
   axios.post(`${API_BASE}/inventory/counts`, payload);
