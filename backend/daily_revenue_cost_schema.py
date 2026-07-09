@@ -162,6 +162,7 @@ def upsert_entry_line(
     source_system: str = SOURCE_MANUAL,
     source_ref: str | None = None,
     source_payload: dict | None = None,
+    source_captured_at: datetime | str | None = None,
     is_override: bool = False,
     override_reason: str | None = None,
     user_id: int | None = None,
@@ -174,6 +175,9 @@ def upsert_entry_line(
     old_amt = float(existing_line.get("amount") or 0) if existing_line else None
     payload_json = json_dump(source_payload)
     snapshot_json = json_dump(rate_snapshot)
+    captured_at = source_captured_at
+    if isinstance(captured_at, datetime):
+        captured_at = captured_at.isoformat(sep=" ")
     overridden_at = datetime.utcnow() if is_override else None
     overridden_by = user_id if is_override else None
 
@@ -182,14 +186,14 @@ def upsert_entry_line(
             """
             UPDATE dr_daily_entry_lines SET
               line_category = %s, amount = %s, quantity = %s, commercial_account_id = %s,
-              source_system = %s, source_ref = %s, source_payload = %s,
+              source_system = %s, source_ref = %s, source_payload = %s, source_captured_at = COALESCE(%s, source_captured_at),
               is_manual_override = %s, override_reason = %s, overridden_by = %s, overridden_at = %s,
               pricing_schedule_id = %s, rate_snapshot_json = %s
             WHERE id = %s
             """,
             (
                 line_category, amount, quantity, commercial_account_id,
-                source_system, source_ref, payload_json,
+                source_system, source_ref, payload_json, captured_at,
                 1 if is_override else 0, override_reason, overridden_by, overridden_at,
                 pricing_schedule_id, snapshot_json,
                 int(existing_line["id"]),
@@ -200,14 +204,14 @@ def upsert_entry_line(
             """
             INSERT INTO dr_daily_entry_lines (
               daily_entry_id, line_key, line_category, amount, quantity, commercial_account_id,
-              source_system, source_ref, source_payload,
+              source_system, source_ref, source_payload, source_captured_at,
               is_manual_override, override_reason, overridden_by, overridden_at,
               pricing_schedule_id, rate_snapshot_json
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 daily_entry_id, line_key, line_category, amount, quantity, commercial_account_id,
-                source_system, source_ref, payload_json,
+                source_system, source_ref, payload_json, captured_at,
                 1 if is_override else 0, override_reason, overridden_by, overridden_at,
                 pricing_schedule_id, snapshot_json,
             ),

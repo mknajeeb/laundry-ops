@@ -46,6 +46,12 @@ from backend.daily_revenue_cost_constants import (
     commercial_amount_key,
     commercial_pounds_key,
 )
+from backend.daily_revenue_cost_payroll import (
+    fetch_payroll_total_suggestion,
+    resolve_payroll_line_for_save,
+    should_apply_payroll_suggestion,
+    suggestion_to_line_row,
+)
 from backend.daily_revenue_cost_schema import (
     SQL_SCHEMA_PATH,
     V1_MIGRATION_ERROR,
@@ -1062,6 +1068,7 @@ def _upsert_line(
     amount: float, quantity: float | None = None,
     *, commercial_account_id: int | None = None,
     source_system: str = SOURCE_MANUAL, source_ref: str | None = None,
+    source_payload: dict | None = None, source_captured_at: str | None = None,
     is_override: bool = False, override_reason: str | None = None,
     user_id: int | None = None,
     pricing_schedule_id: int | None = None, rate_snapshot: dict | None = None,
@@ -1086,6 +1093,8 @@ def _upsert_line(
         commercial_account_id=commercial_account_id,
         source_system=source_system,
         source_ref=source_ref,
+        source_payload=_parse_json_field(source_payload) if isinstance(source_payload, str) else source_payload,
+        source_captured_at=source_captured_at,
         is_override=is_override,
         override_reason=override_reason,
         user_id=user_id,
@@ -1123,12 +1132,31 @@ def _log_audit(cursor, entry_id: int, event_type: str, *, line_key: str | None =
 
 
 def fetch_integration_suggestions(cursor, org_id: int, entry_date: date) -> dict:
-    """Placeholder for auto-populate from workload, productivity, payroll, POS, etc."""
+    suggestions: dict[str, dict] = {}
+    payroll = fetch_payroll_total_suggestion(cursor, org_id, entry_date)
+    if payroll:
+        suggestions[LK_PAYROLL_TOTAL] = payroll
     return {
         "available_sources": ["workload", "productivity", "payroll", "pos", "stripe", "cleancloud"],
-        "suggestions": {},
-        "note": "Integration adapters not yet wired; manual entry with override audit is supported.",
+        "suggestions": suggestions,
+        "note": "Payroll adapter active; other sources pending.",
     }
+
+
+def _integration_suggestions_for_entry(cursor, org_id: int, entry_date: date, lines: dict[str, dict]) -> dict:
+    payload = fetch_integration_suggestions(cursor, org_id, entry_date)
+    payroll = payload.get("suggestions", {}).get(LK_PAYROLL_TOTAL)
+    if payroll and not should_apply_payroll_suggestion(lines.get(LK_PAYROLL_TOTAL)):
+        payload = {**payload, "payroll_blocked_by_override": True}
+    return payload
+
+
+def _apply_payroll_suggestion_to_lines(lines: dict[str, dict], suggestion: dict | None) -> dict[str, dict]:
+    if not suggestion or not should_apply_payroll_suggestion(lines.get(LK_PAYROLL_TOTAL)):
+        return lines
+    merged = dict(lines)
+    merged[LK_PAYROLL_TOTAL] = suggestion_to_line_row(suggestion)
+    return merged
 
 
 # ── Summary + API shape ────────────────────────────────────────────────────
@@ -1263,14 +1291,15 @@ def get_daily_entry(cursor, org_id: int, entry_date: date) -> dict:
     header = cursor.fetchone()
     lines: dict[str, dict] = _load_entry_lines(cursor, int(header["id"])) if header else {}
     audit_by_line = _load_line_audit_events(cursor, int(header["id"])) if header else {}
+    payroll_suggestion = fetch_payroll_total_suggestion(cursor, org_id, entry_date)
 
     if not header:
         wf_rev, wf_meta = wf_revenue_for_day(cursor, org_id, entry_date, 0, tiers)
         draft_lines = {}
         for acct in accounts:
-            pricing = get_commercial_pricing_for_date(cursor, acct["id"], entry_date) or {}
             draft_lines[commercial_pounds_key(acct["id"])] = {"amount": 0, "quantity": 0}
             draft_lines[commercial_amount_key(acct["id"])] = {"amount": 0}
+        draft_lines = _apply_payroll_suggestion_to_lines(draft_lines, payroll_suggestion)
         entry_shape = _lines_to_entry_shape(draft_lines, None, accounts, wf_meta, audit_by_line={})
         entry_shape["rinse_wf_revenue"] = wf_rev
         entry_shape["summary"] = _entry_summary_from_lines(draft_lines)
@@ -1279,18 +1308,19 @@ def get_daily_entry(cursor, org_id: int, entry_date: date) -> dict:
             "cost_settings": cost_settings,
             "commercial_accounts": accounts,
             "rinse_wf_tiers": tiers,
-            "integration_suggestions": fetch_integration_suggestions(cursor, org_id, entry_date),
+            "integration_suggestions": _integration_suggestions_for_entry(cursor, org_id, entry_date, draft_lines),
         }
 
     if header:
+        display_lines = _apply_payroll_suggestion_to_lines(lines, payroll_suggestion)
         # Frozen lines only — never recalculate historical revenue from current maintenance.
-        entry_shape = _lines_to_entry_shape(lines, header, accounts, wf_meta={}, audit_by_line=audit_by_line)
+        entry_shape = _lines_to_entry_shape(display_lines, header, accounts, wf_meta={}, audit_by_line=audit_by_line)
         return {
             "entry": entry_shape,
             "cost_settings": cost_settings,
             "commercial_accounts": accounts,
             "rinse_wf_tiers": tiers,
-            "integration_suggestions": fetch_integration_suggestions(cursor, org_id, entry_date),
+            "integration_suggestions": _integration_suggestions_for_entry(cursor, org_id, entry_date, lines),
         }
 
 
@@ -1317,8 +1347,8 @@ def save_daily_entry(cursor, org_id: int, entry_date: date, payload: dict, *, us
         exclude_entry_id=int(header["id"]) if header else None,
     )
     payroll_total = _money(payload.get("payroll_total"))
-    payroll_tax = calc_payroll_tax(payroll_total, cost_settings)
     overrides = payload.get("overrides") or {}
+    payroll_suggestion = fetch_payroll_total_suggestion(cursor, org_id, entry_date)
 
     if header:
         entry_id = int(header["id"])
@@ -1348,6 +1378,15 @@ def save_daily_entry(cursor, org_id: int, entry_date: date, payload: dict, *, us
     def _override_reason(key: str) -> str | None:
         return overrides.get(key, {}).get("reason")
 
+    payroll_write = resolve_payroll_line_for_save(
+        payload_amount=payroll_total,
+        overrides=overrides,
+        existing_line=(existing_lines or {}).get(LK_PAYROLL_TOTAL),
+        suggestion=payroll_suggestion,
+    )
+    payroll_total = _money(payroll_write["amount"])
+    payroll_tax = calc_payroll_tax(payroll_total, cost_settings)
+
     revenue_fields = [
         (LK_SELF_SERVICE_CASH, "revenue", _money(payload.get("self_service_cash")), None),
         (LK_SELF_SERVICE_CARD, "revenue", _money(payload.get("self_service_card")), None),
@@ -1359,8 +1398,6 @@ def save_daily_entry(cursor, org_id: int, entry_date: date, payload: dict, *, us
         (LK_RINSE_HD_AMOUNT, "revenue", _money(payload.get("rinse_hd_revenue")), None),
         (LK_RINSE_WI_ORDERS, "revenue", 0, int(payload.get("rinse_wi_orders") or 0)),
         (LK_RINSE_WI_AMOUNT, "revenue", _money(payload.get("rinse_wi_revenue")), None),
-        (LK_PAYROLL_TOTAL, "payroll", payroll_total, None),
-        (LK_PAYROLL_TAX, "payroll", payroll_tax, None),
     ]
 
     for line_key, cat, amt, qty in revenue_fields:
@@ -1375,6 +1412,23 @@ def save_daily_entry(cursor, org_id: int, entry_date: date, payload: dict, *, us
             rate_snapshot=snap,
             existing_lines=existing_lines,
         )
+
+    _upsert_line(
+        cursor, entry_id, LK_PAYROLL_TOTAL, "payroll", payroll_total, None,
+        source_system=payroll_write["source_system"],
+        source_ref=payroll_write.get("source_ref"),
+        source_payload=payroll_write.get("source_payload"),
+        source_captured_at=payroll_write.get("source_captured_at"),
+        is_override=bool(payroll_write.get("is_override")),
+        override_reason=payroll_write.get("override_reason"),
+        user_id=user_id,
+        existing_lines=existing_lines,
+    )
+    _upsert_line(
+        cursor, entry_id, LK_PAYROLL_TAX, "payroll", payroll_tax, None,
+        source_system=SOURCE_MANUAL,
+        existing_lines=existing_lines,
+    )
 
     cost_lines = [
         (LK_COST_RENT, "cost_fixed", cost_settings.get("rent_daily", 0)),

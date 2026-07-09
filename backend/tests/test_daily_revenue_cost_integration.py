@@ -83,7 +83,9 @@ class DictConnection:
         self._conn.row_factory = sqlite3.Row
 
     def cursor(self, dictionary=True):
-        return DictConnectionCursor(self._conn)
+        cur = DictConnectionCursor(self._conn)
+        cur._dict_connection = self
+        return cur
 
     def commit(self):
         self._conn.commit()
@@ -409,24 +411,6 @@ def test_same_day_commercial_account_update(drc_db):
     assert out["rate_per_pound"] == 0.80
 
 
-def test_line_sources_returned_on_get_entry(drc_db):
-    conn, cursor = drc_db
-    entry_date = date(2026, 7, 10)
-    save_daily_entry(cursor, 1, entry_date, {"payroll_total": 500, "rinse_wf_pounds": 0}, user_id=1)
-    cursor.execute("SELECT id FROM dr_daily_entries WHERE entry_date = '2026-07-10'")
-    entry_id = cursor.fetchone()["id"]
-    cursor.execute(
-        """UPDATE dr_daily_entry_lines SET source_system = 'payroll', source_ref = 'run-42',
-           source_captured_at = '2026-07-10 08:00:00' WHERE daily_entry_id = ? AND line_key = 'payroll.total'""",
-        (entry_id,),
-    )
-    conn.commit()
-    out = get_daily_entry(cursor, 1, entry_date)
-    src = out["entry"]["line_sources"]["payroll.total"]
-    assert src["source_system"] == "payroll"
-    assert src["source_ref"] == "run-42"
-
-
 def test_override_preserves_import_source(drc_db):
     conn, cursor = drc_db
     from backend.daily_revenue_cost_constants import LK_PAYROLL_TOTAL, SOURCE_PAYROLL
@@ -457,6 +441,96 @@ def test_override_preserves_import_source(drc_db):
     assert row["source_system"] == SOURCE_PAYROLL
     assert int(row["is_manual_override"]) == 1
     assert row["override_reason"] == "Bonus adjustment"
+
+
+def test_line_sources_returned_on_get_entry(drc_db):
+    conn, cursor = drc_db
+    entry_date = date(2026, 7, 10)
+    save_daily_entry(cursor, 1, entry_date, {"payroll_total": 500, "rinse_wf_pounds": 0}, user_id=1)
+    cursor.execute("SELECT id FROM dr_daily_entries WHERE entry_date = '2026-07-10'")
+    entry_id = cursor.fetchone()["id"]
+    cursor.execute(
+        """UPDATE dr_daily_entry_lines SET source_system = 'payroll', source_ref = 'run-42',
+           source_captured_at = '2026-07-10 08:00:00' WHERE daily_entry_id = ? AND line_key = 'payroll.total'""",
+        (entry_id,),
+    )
+    conn.commit()
+    out = get_daily_entry(cursor, 1, entry_date)
+    src = out["entry"]["line_sources"]["payroll.total"]
+    assert src["source_system"] == "payroll"
+    assert src["source_ref"] == "run-42"
+
+
+PAYROLL_SUGGESTION = {
+    "line_key": "payroll.total",
+    "source_system": "payroll",
+    "amount": 642.15,
+    "source_ref": "payroll-day:2026-07-12:sessions=1,2",
+    "source_captured_at": "2026-07-12 08:00:00",
+    "source_payload": {
+        "entry_date": "2026-07-12",
+        "record_count": 2,
+        "total_gross": 642.15,
+        "calculation": "sum(approved_hours * hourly_rate)",
+        "records": [{"shift_session_id": 1, "gross": 300}, {"shift_session_id": 2, "gross": 342.15}],
+    },
+}
+
+
+def test_payroll_suggestion_populates_draft_entry(drc_db):
+    conn, cursor = drc_db
+    entry_date = date(2026, 7, 12)
+    with patch("backend.daily_revenue_cost.fetch_payroll_total_suggestion", return_value=PAYROLL_SUGGESTION):
+        out = get_daily_entry(cursor, 1, entry_date)
+    assert out["integration_suggestions"]["suggestions"]["payroll.total"]["amount"] == 642.15
+    assert out["entry"]["payroll_total"] == 642.15
+    src = out["entry"]["line_sources"]["payroll.total"]
+    assert src["source_system"] == "payroll"
+    assert src["source_ref"].startswith("payroll-day:2026-07-12")
+
+
+def test_no_payroll_suggestion_when_no_data(drc_db):
+    conn, cursor = drc_db
+    entry_date = date(2026, 7, 13)
+    with patch("backend.daily_revenue_cost.fetch_payroll_total_suggestion", return_value=None):
+        out = get_daily_entry(cursor, 1, entry_date)
+    assert out["integration_suggestions"]["suggestions"] == {}
+    assert out["entry"]["payroll_total"] == 0
+
+
+def test_manual_override_preserves_value_with_suggestion_available(drc_db):
+    conn, cursor = drc_db
+    entry_date = date(2026, 7, 14)
+    save_daily_entry(cursor, 1, entry_date, {"payroll_total": 500, "rinse_wf_pounds": 0}, user_id=1)
+    cursor.execute("SELECT id FROM dr_daily_entries WHERE entry_date = '2026-07-14'")
+    entry_id = cursor.fetchone()["id"]
+    cursor.execute(
+        """UPDATE dr_daily_entry_lines SET source_system = 'payroll', is_manual_override = 1,
+           override_reason = 'Manager adjustment' WHERE daily_entry_id = ? AND line_key = 'payroll.total'""",
+        (entry_id,),
+    )
+    conn.commit()
+    with patch("backend.daily_revenue_cost.fetch_payroll_total_suggestion", return_value=PAYROLL_SUGGESTION):
+        out = get_daily_entry(cursor, 1, entry_date)
+    assert out["entry"]["payroll_total"] == 500.0
+    assert out["integration_suggestions"]["payroll_blocked_by_override"] is True
+    assert out["integration_suggestions"]["suggestions"]["payroll.total"]["amount"] == 642.15
+
+
+def test_save_applies_payroll_source_metadata(drc_db):
+    conn, cursor = drc_db
+    entry_date = date(2026, 7, 15)
+    with patch("backend.daily_revenue_cost.fetch_payroll_total_suggestion", return_value=PAYROLL_SUGGESTION):
+        save_daily_entry(
+            cursor, 1, entry_date,
+            {"payroll_total": 642.15, "rinse_wf_pounds": 0},
+            user_id=1,
+        )
+        out = get_daily_entry(cursor, 1, entry_date)
+    src = out["entry"]["line_sources"]["payroll.total"]
+    assert src["source_system"] == "payroll"
+    assert src["source_ref"].startswith("payroll-day:")
+    assert src["source_payload"]["total_gross"] == 642.15
 
 
 def test_dashboard_totals_separate_fixed_variable(drc_db):
