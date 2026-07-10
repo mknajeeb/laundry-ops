@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Box, Button, Stack, Typography } from "@mui/material";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import {
   getInventoryStockCheckDraft,
@@ -16,10 +16,21 @@ import {
 } from "./InventoryShared";
 import { formatDateTime, groupItemsByCategory } from "../../utils/inventoryHelpers";
 
-export default function StockCheckTab({ user, items, categories, latestCheck, varianceThreshold, onRefresh, onMessage }) {
+export default function StockCheckTab({
+  user,
+  items,
+  categories,
+  latestCheck,
+  varianceThreshold,
+  onRefresh,
+  onMessage,
+  onGoDashboard,
+}) {
   const displayName = user?.display_name || user?.username || "Unknown";
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
   const [started, setStarted] = useState(false);
   const [search, setSearch] = useState("");
   const [counts, setCounts] = useState({});
@@ -78,6 +89,7 @@ export default function StockCheckTab({ user, items, categories, latestCheck, va
       }));
 
   const onSaveDraft = async () => {
+    if (submitting) return;
     try {
       setSaving(true);
       await saveInventoryStockCheckDraft({ lines: buildLines(), notes: `Draft by ${displayName}` });
@@ -92,26 +104,46 @@ export default function StockCheckTab({ user, items, categories, latestCheck, va
   };
 
   const onSubmit = async () => {
+    if (submitting || submitLockRef.current) return;
     const lines = buildLines();
     if (lines.length === 0) {
       onMessage?.({ type: "error", text: "Enter at least one count before submitting." });
       return;
     }
+    submitLockRef.current = true;
+    setSubmitting(true);
     try {
-      setSaving(true);
-      await submitInventoryStockCheck({ lines, notes: `Weekly check ${new Date().toISOString().slice(0, 10)}` });
+      const res = await submitInventoryStockCheck({
+        lines,
+        oneshot: true,
+        notes: `Weekly check ${new Date().toISOString().slice(0, 10)}`,
+      });
+      const submitted = res?.data?.lines_submitted ?? lines.length;
       setCounts({});
       setNotes({});
       setVarianceReasons({});
       setStarted(false);
-      onMessage?.({ type: "success", text: "Weekly check submitted." });
       await onRefresh?.();
+      onMessage?.({
+        type: "success",
+        text: `Weekly check submitted (${submitted} item${submitted === 1 ? "" : "s"} counted).`,
+      });
+      onGoDashboard?.();
     } catch (e) {
-      onMessage?.({ type: "error", text: e?.response?.data?.error || "Submit failed." });
+      const status = e?.response?.status;
+      const err = e?.response?.data?.error || "Submit failed.";
+      onMessage?.({
+        type: "error",
+        text: status === 409 ? err : err,
+      });
     } finally {
-      setSaving(false);
+      setSubmitting(false);
+      submitLockRef.current = false;
     }
   };
+
+  const submitLabel = submitting ? "Submitting…" : "Submit Weekly Check";
+  const submitShortLabel = submitting ? "Submitting…" : "Submit";
 
   if (loading && !started) return <LoadingBlock />;
 
@@ -152,16 +184,31 @@ export default function StockCheckTab({ user, items, categories, latestCheck, va
               </CategoryAccordion>
             ))}
             <Stack direction="row" spacing={1.5} justifyContent="flex-end" sx={{ mt: 2, display: { xs: "none", md: "flex" } }}>
-              <Button variant="outlined" onClick={onSaveDraft} disabled={saving}>Save Draft</Button>
-              <Button variant="contained" onClick={onSubmit} disabled={saving}>Submit Weekly Check</Button>
+              <Button variant="outlined" onClick={onSaveDraft} disabled={saving || submitting}>Save Draft</Button>
+              <Button
+                variant="contained"
+                onClick={onSubmit}
+                disabled={saving || submitting}
+                startIcon={submitting ? <CircularProgress size={18} color="inherit" /> : null}
+              >
+                {submitLabel}
+              </Button>
             </Stack>
           </>
         )}
       </SectionCard>
       {started ? (
         <StickyActionBar>
-          <Button fullWidth variant="outlined" onClick={onSaveDraft} disabled={saving}>Save Draft</Button>
-          <Button fullWidth variant="contained" onClick={onSubmit} disabled={saving}>Submit</Button>
+          <Button fullWidth variant="outlined" onClick={onSaveDraft} disabled={saving || submitting}>Save Draft</Button>
+          <Button
+            fullWidth
+            variant="contained"
+            onClick={onSubmit}
+            disabled={saving || submitting}
+            startIcon={submitting ? <CircularProgress size={18} color="inherit" /> : null}
+          >
+            {submitShortLabel}
+          </Button>
         </StickyActionBar>
       ) : null}
     </Box>

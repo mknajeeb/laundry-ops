@@ -33,6 +33,10 @@ from backend.ta_helpers import table_exists
 MONEY_Q = Decimal("0.01")
 
 
+class StockCheckConflictError(ValueError):
+    """Stock check submit conflicts with current draft/submitted state (HTTP 409)."""
+
+
 def _d(val: Any) -> Decimal:
     if val is None:
         return Decimal("0")
@@ -1024,9 +1028,19 @@ def save_stock_check_draft(cursor, org_id: int, data: dict, user_id: int | None,
     notes = (data.get("notes") or "").strip() or None
     check_date = data.get("check_date") or date.today().isoformat()
 
-    draft = get_draft_stock_check(cursor, org_id)
-    if draft:
-        check_id = draft["id"]
+    cursor.execute(
+        """
+        SELECT id FROM inventory_stock_checks
+        WHERE organization_id = %s AND status = %s
+        ORDER BY created_at DESC
+        LIMIT 1
+        FOR UPDATE
+        """,
+        (org_id, STOCK_CHECK_DRAFT),
+    )
+    row = cursor.fetchone()
+    if row:
+        check_id = row["id"]
         cursor.execute(
             "UPDATE inventory_stock_checks SET notes = %s, check_date = %s WHERE id = %s",
             (notes, check_date, check_id),
@@ -1086,6 +1100,22 @@ def _sum_purchase_orders(cursor, org_id: int, start: date, end: date) -> float:
     return _money((cursor.fetchone() or {}).get("total"))
 
 
+def _lock_stock_check_row(cursor, check_id: int, org_id: int) -> dict:
+    cursor.execute(
+        """
+        SELECT id, status FROM inventory_stock_checks
+        WHERE id = %s AND organization_id = %s
+        LIMIT 1
+        FOR UPDATE
+        """,
+        (check_id, org_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        raise StockCheckConflictError("Stock check not found")
+    return row
+
+
 def submit_stock_check(cursor, org_id: int, data: dict, user_id: int | None, user_name: str) -> dict:
     threshold = get_variance_threshold(cursor, org_id)
     lines_in = data.get("lines") or []
@@ -1105,23 +1135,25 @@ def submit_stock_check(cursor, org_id: int, data: dict, user_id: int | None, use
                     f"Variance reason required for {item['name']} (difference {diff:.0f}, threshold {threshold:.0f})"
                 )
 
-    save_stock_check_draft(cursor, org_id, data, user_id, user_name)
     draft = get_draft_stock_check(cursor, org_id)
-    if not draft:
-        raise ValueError("No draft to submit")
+    if draft:
+        if lines_in:
+            save_stock_check_draft(cursor, org_id, data, user_id, user_name)
+            draft = get_draft_stock_check(cursor, org_id)
+    elif lines_in and data.get("oneshot"):
+        if not get_draft_stock_check(cursor, org_id):
+            save_stock_check_draft(cursor, org_id, data, user_id, user_name)
+        draft = get_draft_stock_check(cursor, org_id)
+    else:
+        raise StockCheckConflictError("No draft stock check to submit")
 
-    check_id = draft["id"]
-    cursor.execute(
-        """
-        SELECT status FROM inventory_stock_checks
-        WHERE id = %s AND organization_id = %s
-        LIMIT 1
-        """,
-        (check_id, org_id),
-    )
-    check_row = cursor.fetchone()
-    if not check_row or check_row.get("status") != STOCK_CHECK_DRAFT:
-        raise ValueError("Stock check already submitted")
+    if not draft:
+        raise StockCheckConflictError("No draft to submit")
+
+    check_id = int(draft["id"])
+    locked = _lock_stock_check_row(cursor, check_id, org_id)
+    if locked.get("status") != STOCK_CHECK_DRAFT:
+        raise StockCheckConflictError("Stock check already submitted")
 
     lines = list((draft.get("lines") or {}).values())
     submitted = 0
@@ -1162,7 +1194,7 @@ def submit_stock_check(cursor, org_id: int, data: dict, user_id: int | None, use
         (STOCK_CHECK_SUBMITTED, user_id, user_name, check_id, org_id, STOCK_CHECK_DRAFT),
     )
     if cursor.rowcount != 1:
-        raise ValueError("Stock check already submitted")
+        raise StockCheckConflictError("Stock check already submitted")
 
     reorder_suggestions = list_reorder_suggestions(cursor, org_id)
     return {"id": check_id, "status": "submitted", "lines_submitted": submitted, "reorder_suggestions": reorder_suggestions}

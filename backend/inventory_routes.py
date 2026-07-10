@@ -37,6 +37,7 @@ from backend.inventory_module import (
     save_org_setting,
     save_stock_check_draft,
     save_vendor,
+    StockCheckConflictError,
     submit_stock_check,
 )
 from backend.inventory_ops import build_dashboard, get_item_history, get_reports_bundle
@@ -326,6 +327,9 @@ def register_inventory_routes(
             out = submit_stock_check(cursor, org_id, data, user_id, user_name)
             conn.commit()
             return jsonify(json_safe_rinse(out))
+        except StockCheckConflictError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 409
         except ValueError as e:
             conn.rollback()
             return jsonify({"error": str(e)}), 400
@@ -665,10 +669,13 @@ def register_inventory_routes(
             rows = data.get("rows") or []
             user_id = int(me["user_id"]) if me.get("user_id") else None
             user_name = data.get("counted_by") or me.get("display_name") or me.get("username") or "Unknown"
-            payload = {"notes": data.get("notes"), "lines": [{"item_id": r["item_id"], "counted_qty": r["counted_qty"]} for r in rows]}
+            payload = {"notes": data.get("notes"), "lines": [{"item_id": r["item_id"], "counted_qty": r["counted_qty"]} for r in rows], "oneshot": True}
             out = submit_stock_check(cursor, org_id, payload, user_id, user_name)
             conn.commit()
             return jsonify(json_safe_rinse({"status": "saved", "rows_saved": out.get("lines_submitted", 0)}))
+        except StockCheckConflictError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 409
         except ValueError as e:
             conn.rollback()
             return jsonify({"error": str(e)}), 400

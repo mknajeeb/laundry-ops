@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import unittest
 from datetime import date
 from decimal import Decimal
@@ -17,6 +18,7 @@ from backend.inventory_constants import (
     STOCK_CHECK_SUBMITTED,
 )
 from backend.inventory_module import (
+    StockCheckConflictError,
     _item_row,
     _sum_purchase_orders,
     manual_adjustment,
@@ -111,8 +113,8 @@ class InventoryHardeningTests(unittest.TestCase):
         cursor.fetchone.return_value = {"status": STOCK_CHECK_SUBMITTED}
         get_draft.return_value = {"id": 9, "lines": {1: {"item_id": 1, "counted_qty": 5}}}
         get_item.return_value = {"id": 1, "name": "Bags", "current_on_hand": 4}
-        with self.assertRaises(ValueError) as ctx:
-            submit_stock_check(cursor, 3, {"lines": [{"item_id": 1, "counted_qty": 5}]}, 1, "Tester")
+        with self.assertRaises(StockCheckConflictError) as ctx:
+            submit_stock_check(cursor, 3, {"lines": [{"item_id": 1, "counted_qty": 5}], "oneshot": True}, 1, "Tester")
         self.assertIn("already submitted", str(ctx.exception).lower())
 
     @patch("backend.inventory_module.list_reorder_suggestions", return_value=[])
@@ -125,16 +127,105 @@ class InventoryHardeningTests(unittest.TestCase):
         self, _ensure, _threshold, _save_draft, get_draft, get_item, _reorder
     ):
         cursor = MagicMock()
-        cursor.fetchone.side_effect = [{"status": STOCK_CHECK_DRAFT}]
+        cursor.fetchone.return_value = {"status": STOCK_CHECK_DRAFT}
         cursor.rowcount = 1
         get_draft.return_value = {"id": 9, "lines": {1: {"item_id": 1, "counted_qty": 6}}}
         get_item.return_value = {"id": 1, "name": "Bags", "current_on_hand": 4}
-        out = submit_stock_check(cursor, 3, {"lines": [{"item_id": 1, "counted_qty": 6}]}, 1, "Tester")
+        out = submit_stock_check(cursor, 3, {"lines": [{"item_id": 1, "counted_qty": 6}], "oneshot": True}, 1, "Tester")
         self.assertEqual(out["lines_submitted"], 1)
         update_calls = [c for c in cursor.execute.call_args_list if "UPDATE inventory_items SET on_hand_qty" in str(c[0][0])]
         self.assertEqual(len(update_calls), 1)
         adj_calls = [c for c in cursor.execute.call_args_list if "INSERT INTO inventory_adjustments" in str(c[0][0])]
         self.assertEqual(len(adj_calls), 1)
+
+    @patch("backend.inventory_module.list_reorder_suggestions", return_value=[])
+    @patch("backend.inventory_module.get_item")
+    @patch("backend.inventory_module.get_draft_stock_check")
+    @patch("backend.inventory_module.save_stock_check_draft")
+    @patch("backend.inventory_module.get_variance_threshold", return_value=5)
+    @patch("backend.inventory_module.ensure_inventory_tables")
+    def test_simultaneous_submit_requests_apply_once(
+        self, _ensure, _threshold, _save_draft, get_draft, get_item, _reorder
+    ):
+        draft = {"id": 9, "lines": {1: {"item_id": 1, "counted_qty": 5}}}
+        get_draft.return_value = draft
+        get_item.return_value = {"id": 1, "name": "Bags", "current_on_hand": 4}
+
+        lock = threading.Lock()
+        state = {"submitted": False}
+        metrics = {"status_updates": 0, "item_updates": 0, "adjustments": 0}
+
+        def make_cursor():
+            cursor = MagicMock()
+
+            def fetchone():
+                with lock:
+                    if state["submitted"]:
+                        return {"status": STOCK_CHECK_SUBMITTED}
+                    return {"status": STOCK_CHECK_DRAFT}
+
+            def execute(sql, params=None):
+                sql_s = str(sql)
+                if "FOR UPDATE" in sql_s and "inventory_stock_checks" in sql_s:
+                    return
+                with lock:
+                    if state["submitted"] and "UPDATE inventory_items SET on_hand_qty" in sql_s:
+                        raise StockCheckConflictError("Stock check already submitted")
+                    if "UPDATE inventory_items SET on_hand_qty" in sql_s:
+                        metrics["item_updates"] += 1
+                    elif "INSERT INTO inventory_adjustments" in sql_s:
+                        metrics["adjustments"] += 1
+                    elif "UPDATE inventory_stock_checks" in sql_s and "status" in sql_s:
+                        metrics["status_updates"] += 1
+                        state["submitted"] = True
+                        cursor.rowcount = 1
+
+            cursor.execute.side_effect = execute
+            cursor.fetchone.side_effect = fetchone
+            return cursor
+
+        payload = {"lines": [{"item_id": 1, "counted_qty": 5}], "oneshot": True}
+        results: list = []
+        errors: list = []
+
+        def worker():
+            try:
+                out = submit_stock_check(make_cursor(), 3, payload, 1, "Tester")
+                results.append(out)
+            except StockCheckConflictError as e:
+                errors.append(str(e))
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("already submitted", errors[0].lower())
+        self.assertEqual(metrics["item_updates"], 1)
+        self.assertEqual(metrics["adjustments"], 1)
+        self.assertEqual(metrics["status_updates"], 1)
+
+    @patch("backend.inventory_module.list_reorder_suggestions", return_value=[])
+    @patch("backend.inventory_module.get_draft_stock_check")
+    @patch("backend.inventory_module.save_stock_check_draft")
+    @patch("backend.inventory_module.get_variance_threshold", return_value=5)
+    @patch("backend.inventory_module.ensure_inventory_tables")
+    def test_oneshot_reuses_existing_draft(
+        self, _ensure, _threshold, save_draft, get_draft, _reorder
+    ):
+        get_draft.side_effect = [
+            {"id": 3, "lines": {1: {"item_id": 1, "counted_qty": 2}}},
+            {"id": 3, "lines": {1: {"item_id": 1, "counted_qty": 2}}},
+        ]
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {"status": STOCK_CHECK_DRAFT}
+        cursor.rowcount = 1
+        with patch("backend.inventory_module.get_item", return_value={"id": 1, "name": "Bags", "current_on_hand": 2}):
+            submit_stock_check(cursor, 3, {"lines": [{"item_id": 1, "counted_qty": 2}], "oneshot": True}, 1, "Tester")
+        save_draft.assert_called_once()
 
     @patch("backend.inventory_module._refresh_item_average_cost")
     @patch("backend.inventory_module.get_item")
