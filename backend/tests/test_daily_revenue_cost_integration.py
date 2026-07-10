@@ -533,6 +533,107 @@ def test_save_applies_payroll_source_metadata(drc_db):
     assert src["source_payload"]["total_gross"] == 642.15
 
 
+WORKLOAD_SUGGESTION = {
+    "line_key": "revenue.rinse_wf.pounds",
+    "source_system": "workload",
+    "quantity": 125.5,
+    "source_ref": "workload-day:2026-07-16:org=1:bags=WF1,WF2",
+    "source_captured_at": "2026-07-16 08:00:00",
+    "source_payload": {
+        "entry_date": "2026-07-16",
+        "organization_id": 1,
+        "total_pounds": 125.5,
+        "calculation": "sum(weight_lbs) for WF completed bags on ET day",
+        "wf_completed_bag_count": 2,
+        "wf_completed_bags_with_weight": 2,
+        "records": [
+            {"bag_id": "WF1", "weight_lbs": 50.0},
+            {"bag_id": "WF2", "weight_lbs": 75.5},
+        ],
+    },
+}
+
+
+def test_workload_suggestion_populates_draft_entry(drc_db):
+    conn, cursor = drc_db
+    entry_date = date(2026, 7, 16)
+    with patch("backend.daily_revenue_cost.fetch_workload_wf_pounds_suggestion", return_value=WORKLOAD_SUGGESTION):
+        out = get_daily_entry(cursor, 1, entry_date)
+    assert out["integration_suggestions"]["suggestions"]["revenue.rinse_wf.pounds"]["quantity"] == 125.5
+    assert out["entry"]["rinse_wf_pounds"] == 125.5
+    assert out["entry"]["rinse_wf_revenue"] == 125.5
+    src = out["entry"]["line_sources"]["revenue.rinse_wf.pounds"]
+    assert src["source_system"] == "workload"
+    assert src["source_ref"].startswith("workload-day:2026-07-16")
+
+
+def test_no_workload_suggestion_when_no_data(drc_db):
+    conn, cursor = drc_db
+    entry_date = date(2026, 7, 17)
+    with patch("backend.daily_revenue_cost.fetch_workload_wf_pounds_suggestion", return_value=None):
+        out = get_daily_entry(cursor, 1, entry_date)
+    assert "revenue.rinse_wf.pounds" not in out["integration_suggestions"]["suggestions"]
+    assert out["entry"]["rinse_wf_pounds"] == 0
+
+
+def test_manual_override_preserves_wf_pounds_with_suggestion_available(drc_db):
+    conn, cursor = drc_db
+    entry_date = date(2026, 7, 18)
+    save_daily_entry(cursor, 1, entry_date, {"rinse_wf_pounds": 80, "payroll_total": 0}, user_id=1)
+    cursor.execute("SELECT id FROM dr_daily_entries WHERE entry_date = '2026-07-18'")
+    entry_id = cursor.fetchone()["id"]
+    cursor.execute(
+        """UPDATE dr_daily_entry_lines SET source_system = 'workload', is_manual_override = 1,
+           override_reason = 'Manager adjustment' WHERE daily_entry_id = ? AND line_key = 'revenue.rinse_wf.pounds'""",
+        (entry_id,),
+    )
+    conn.commit()
+    with patch("backend.daily_revenue_cost.fetch_workload_wf_pounds_suggestion", return_value=WORKLOAD_SUGGESTION):
+        out = get_daily_entry(cursor, 1, entry_date)
+    assert out["entry"]["rinse_wf_pounds"] == 80.0
+    assert out["integration_suggestions"]["workload_wf_pounds_blocked_by_override"] is True
+    assert out["integration_suggestions"]["suggestions"]["revenue.rinse_wf.pounds"]["quantity"] == 125.5
+
+
+def test_save_applies_workload_source_metadata(drc_db):
+    conn, cursor = drc_db
+    entry_date = date(2026, 7, 19)
+    with patch("backend.daily_revenue_cost.fetch_workload_wf_pounds_suggestion", return_value=WORKLOAD_SUGGESTION):
+        save_daily_entry(
+            cursor, 1, entry_date,
+            {"rinse_wf_pounds": 125.5, "payroll_total": 0},
+            user_id=1,
+        )
+        out = get_daily_entry(cursor, 1, entry_date)
+    src = out["entry"]["line_sources"]["revenue.rinse_wf.pounds"]
+    assert src["source_system"] == "workload"
+    assert src["source_ref"].startswith("workload-day:")
+    assert src["source_payload"]["total_pounds"] == 125.5
+
+
+def test_wf_revenue_from_suggested_pounds_uses_tier(drc_db):
+    conn, cursor = drc_db
+    entry_date = date(2026, 7, 20)
+    suggestion = {**WORKLOAD_SUGGESTION, "quantity": 100.0, "source_payload": {**WORKLOAD_SUGGESTION["source_payload"], "total_pounds": 100.0}}
+    with patch("backend.daily_revenue_cost.fetch_workload_wf_pounds_suggestion", return_value=suggestion):
+        save_daily_entry(
+            cursor, 1, entry_date,
+            {"rinse_wf_pounds": 100.0, "payroll_total": 0},
+            user_id=1,
+        )
+        out = get_daily_entry(cursor, 1, entry_date)
+    assert out["entry"]["rinse_wf_revenue"] == 100.0
+    cursor.execute(
+        "SELECT pricing_schedule_id, rate_snapshot_json, amount, quantity FROM dr_daily_entry_lines WHERE line_key = 'revenue.rinse_wf.amount'"
+    )
+    row = cursor.fetchone()
+    assert row["pricing_schedule_id"] is not None
+    snap = json.loads(row["rate_snapshot_json"])
+    assert snap["calculated_amount"] == 100.0
+    assert snap["quantity"] == 100.0
+    assert row["amount"] == 100.0
+
+
 def test_dashboard_totals_separate_fixed_variable(drc_db):
     conn, cursor = drc_db
     from backend.daily_revenue_cost import build_dashboard

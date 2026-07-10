@@ -52,6 +52,12 @@ from backend.daily_revenue_cost_payroll import (
     should_apply_payroll_suggestion,
     suggestion_to_line_row,
 )
+from backend.daily_revenue_cost_workload import (
+    fetch_workload_wf_pounds_suggestion,
+    resolve_workload_wf_line_for_save,
+    should_apply_workload_wf_suggestion,
+    suggestion_to_line_row as workload_suggestion_to_line_row,
+)
 from backend.daily_revenue_cost_schema import (
     SQL_SCHEMA_PATH,
     V1_MIGRATION_ERROR,
@@ -1136,10 +1142,13 @@ def fetch_integration_suggestions(cursor, org_id: int, entry_date: date) -> dict
     payroll = fetch_payroll_total_suggestion(cursor, org_id, entry_date)
     if payroll:
         suggestions[LK_PAYROLL_TOTAL] = payroll
+    workload_wf = fetch_workload_wf_pounds_suggestion(cursor, org_id, entry_date)
+    if workload_wf:
+        suggestions[LK_RINSE_WF_POUNDS] = workload_wf
     return {
         "available_sources": ["workload", "productivity", "payroll", "pos", "stripe", "cleancloud"],
         "suggestions": suggestions,
-        "note": "Payroll adapter active; other sources pending.",
+        "note": "Payroll and workload adapters active; other sources pending.",
     }
 
 
@@ -1148,6 +1157,9 @@ def _integration_suggestions_for_entry(cursor, org_id: int, entry_date: date, li
     payroll = payload.get("suggestions", {}).get(LK_PAYROLL_TOTAL)
     if payroll and not should_apply_payroll_suggestion(lines.get(LK_PAYROLL_TOTAL)):
         payload = {**payload, "payroll_blocked_by_override": True}
+    workload_wf = payload.get("suggestions", {}).get(LK_RINSE_WF_POUNDS)
+    if workload_wf and not should_apply_workload_wf_suggestion(lines.get(LK_RINSE_WF_POUNDS)):
+        payload = {**payload, "workload_wf_pounds_blocked_by_override": True}
     return payload
 
 
@@ -1157,6 +1169,37 @@ def _apply_payroll_suggestion_to_lines(lines: dict[str, dict], suggestion: dict 
     merged = dict(lines)
     merged[LK_PAYROLL_TOTAL] = suggestion_to_line_row(suggestion)
     return merged
+
+
+def _apply_workload_suggestion_to_lines(lines: dict[str, dict], suggestion: dict | None) -> dict[str, dict]:
+    if not suggestion or not should_apply_workload_wf_suggestion(lines.get(LK_RINSE_WF_POUNDS)):
+        return lines
+    merged = dict(lines)
+    merged[LK_RINSE_WF_POUNDS] = workload_suggestion_to_line_row(suggestion)
+    return merged
+
+
+def _refresh_wf_revenue_display_lines(
+    cursor,
+    org_id: int,
+    entry_date: date,
+    lines: dict[str, dict],
+    tiers: list[dict],
+    *,
+    exclude_entry_id: int | None = None,
+) -> tuple[dict[str, dict], dict]:
+    pounds = _line_qty(lines, LK_RINSE_WF_POUNDS)
+    if pounds <= 0:
+        return lines, {}
+    wf_rev, wf_meta = wf_revenue_for_day(
+        cursor, org_id, entry_date, pounds, tiers, exclude_entry_id=exclude_entry_id,
+    )
+    merged = dict(lines)
+    amount_row = dict(merged.get(LK_RINSE_WF_AMOUNT) or {})
+    amount_row["amount"] = wf_rev
+    amount_row["quantity"] = pounds
+    merged[LK_RINSE_WF_AMOUNT] = amount_row
+    return merged, wf_meta
 
 
 # ── Summary + API shape ────────────────────────────────────────────────────
@@ -1292,16 +1335,19 @@ def get_daily_entry(cursor, org_id: int, entry_date: date) -> dict:
     lines: dict[str, dict] = _load_entry_lines(cursor, int(header["id"])) if header else {}
     audit_by_line = _load_line_audit_events(cursor, int(header["id"])) if header else {}
     payroll_suggestion = fetch_payroll_total_suggestion(cursor, org_id, entry_date)
+    workload_suggestion = fetch_workload_wf_pounds_suggestion(cursor, org_id, entry_date)
 
     if not header:
-        wf_rev, wf_meta = wf_revenue_for_day(cursor, org_id, entry_date, 0, tiers)
         draft_lines = {}
         for acct in accounts:
             draft_lines[commercial_pounds_key(acct["id"])] = {"amount": 0, "quantity": 0}
             draft_lines[commercial_amount_key(acct["id"])] = {"amount": 0}
         draft_lines = _apply_payroll_suggestion_to_lines(draft_lines, payroll_suggestion)
+        draft_lines = _apply_workload_suggestion_to_lines(draft_lines, workload_suggestion)
+        draft_lines, wf_meta = _refresh_wf_revenue_display_lines(
+            cursor, org_id, entry_date, draft_lines, tiers,
+        )
         entry_shape = _lines_to_entry_shape(draft_lines, None, accounts, wf_meta, audit_by_line={})
-        entry_shape["rinse_wf_revenue"] = wf_rev
         entry_shape["summary"] = _entry_summary_from_lines(draft_lines)
         return {
             "entry": entry_shape,
@@ -1313,8 +1359,16 @@ def get_daily_entry(cursor, org_id: int, entry_date: date) -> dict:
 
     if header:
         display_lines = _apply_payroll_suggestion_to_lines(lines, payroll_suggestion)
+        display_lines = _apply_workload_suggestion_to_lines(display_lines, workload_suggestion)
+        exclude_id = int(header["id"])
+        if should_apply_workload_wf_suggestion(lines.get(LK_RINSE_WF_POUNDS)) and workload_suggestion:
+            display_lines, wf_meta = _refresh_wf_revenue_display_lines(
+                cursor, org_id, entry_date, display_lines, tiers, exclude_entry_id=exclude_id,
+            )
+        else:
+            wf_meta = {}
         # Frozen lines only — never recalculate historical revenue from current maintenance.
-        entry_shape = _lines_to_entry_shape(display_lines, header, accounts, wf_meta={}, audit_by_line=audit_by_line)
+        entry_shape = _lines_to_entry_shape(display_lines, header, accounts, wf_meta=wf_meta, audit_by_line=audit_by_line)
         return {
             "entry": entry_shape,
             "cost_settings": cost_settings,
@@ -1341,14 +1395,9 @@ def save_daily_entry(cursor, org_id: int, entry_date: date, payload: dict, *, us
         header = cursor.fetchone()
 
     was_existing = bool(header)
-    wf_pounds = _money(payload.get("rinse_wf_pounds"))
-    wf_rev, wf_meta = wf_revenue_for_day(
-        cursor, org_id, entry_date, wf_pounds, tiers,
-        exclude_entry_id=int(header["id"]) if header else None,
-    )
-    payroll_total = _money(payload.get("payroll_total"))
     overrides = payload.get("overrides") or {}
     payroll_suggestion = fetch_payroll_total_suggestion(cursor, org_id, entry_date)
+    workload_suggestion = fetch_workload_wf_pounds_suggestion(cursor, org_id, entry_date)
 
     if header:
         entry_id = int(header["id"])
@@ -1362,6 +1411,19 @@ def save_daily_entry(cursor, org_id: int, entry_date: date, payload: dict, *, us
         entry_id = int(cursor.lastrowid)
         existing_lines = {}
         _log_audit(cursor, entry_id, "created", actor_user_id=user_id)
+
+    wf_write = resolve_workload_wf_line_for_save(
+        payload_quantity=_money(payload.get("rinse_wf_pounds")),
+        overrides=overrides,
+        existing_line=(existing_lines or {}).get(LK_RINSE_WF_POUNDS),
+        suggestion=workload_suggestion,
+    )
+    wf_pounds = _money(wf_write["quantity"])
+    wf_rev, wf_meta = wf_revenue_for_day(
+        cursor, org_id, entry_date, wf_pounds, tiers,
+        exclude_entry_id=int(header["id"]) if header else None,
+    )
+    payroll_total = _money(payload.get("payroll_total"))
 
     wf_snapshot = {
         "schedule_id": wf_schedule_id,
@@ -1392,8 +1454,6 @@ def save_daily_entry(cursor, org_id: int, entry_date: date, payload: dict, *, us
         (LK_SELF_SERVICE_CARD, "revenue", _money(payload.get("self_service_card")), None),
         (LK_DROP_OFF_CASH, "revenue", _money(payload.get("drop_off_cash")), None),
         (LK_DROP_OFF_CARD, "revenue", _money(payload.get("drop_off_card")), None),
-        (LK_RINSE_WF_POUNDS, "revenue", 0, wf_pounds),
-        (LK_RINSE_WF_AMOUNT, "revenue", wf_rev, wf_pounds),
         (LK_RINSE_HD_ORDERS, "revenue", 0, int(payload.get("rinse_hd_orders") or 0)),
         (LK_RINSE_HD_AMOUNT, "revenue", _money(payload.get("rinse_hd_revenue")), None),
         (LK_RINSE_WI_ORDERS, "revenue", 0, int(payload.get("rinse_wi_orders") or 0)),
@@ -1401,17 +1461,36 @@ def save_daily_entry(cursor, org_id: int, entry_date: date, payload: dict, *, us
     ]
 
     for line_key, cat, amt, qty in revenue_fields:
-        snap = wf_snapshot if line_key in (LK_RINSE_WF_POUNDS, LK_RINSE_WF_AMOUNT) else None
         _upsert_line(
             cursor, entry_id, line_key, cat, amt, qty,
             source_system=_resolve_line_source(existing_lines, line_key, is_override=_is_override(line_key)),
             source_ref=_resolve_line_source_ref(existing_lines, line_key),
             is_override=_is_override(line_key), override_reason=_override_reason(line_key),
             user_id=user_id,
-            pricing_schedule_id=wf_schedule_id if snap else None,
-            rate_snapshot=snap,
             existing_lines=existing_lines,
         )
+
+    _upsert_line(
+        cursor, entry_id, LK_RINSE_WF_POUNDS, "revenue", 0, wf_pounds,
+        source_system=wf_write["source_system"],
+        source_ref=wf_write.get("source_ref"),
+        source_payload=wf_write.get("source_payload"),
+        source_captured_at=wf_write.get("source_captured_at"),
+        is_override=bool(wf_write.get("is_override")),
+        override_reason=wf_write.get("override_reason"),
+        user_id=user_id,
+        pricing_schedule_id=wf_schedule_id,
+        rate_snapshot=wf_snapshot,
+        existing_lines=existing_lines,
+    )
+    _upsert_line(
+        cursor, entry_id, LK_RINSE_WF_AMOUNT, "revenue", wf_rev, wf_pounds,
+        source_system=SOURCE_MANUAL,
+        user_id=user_id,
+        pricing_schedule_id=wf_schedule_id,
+        rate_snapshot=wf_snapshot,
+        existing_lines=existing_lines,
+    )
 
     _upsert_line(
         cursor, entry_id, LK_PAYROLL_TOTAL, "payroll", payroll_total, None,
