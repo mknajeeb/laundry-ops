@@ -31,6 +31,12 @@ const STATUS_COLORS = {
   not_yet_ready: { bg: "#eff6ff", color: "#1d4ed8" },
 };
 
+/** Subtle alternating hour-block tint (~6% primary blue). */
+const HOUR_BLOCK_TINTED = "rgba(25, 71, 149, 0.06)";
+const HOUR_BLOCK_TINTED_HOVER = "rgba(25, 71, 149, 0.10)";
+const HOUR_BLOCK_PLAIN = "#ffffff";
+const HOUR_BLOCK_PLAIN_HOVER = "rgba(0, 0, 0, 0.03)";
+
 function StatusChip({ status }) {
   const key = String(status || "").toLowerCase();
   const colors = STATUS_COLORS[key] || { bg: "#f3f4f6", color: "#374151" };
@@ -48,6 +54,31 @@ function formatWeight(weight) {
   const n = Number(weight);
   if (!Number.isFinite(n)) return String(weight);
   return `${n} lb`;
+}
+
+function intervalParts(interval) {
+  // Prefer digits from naive ET ISO so hour striping is timezone-stable.
+  const raw = String(interval?.interval_start_et || "");
+  const match = raw.match(/T(\d{2}):(\d{2})/);
+  if (match) {
+    return { hour: Number(match[1]), minute: Number(match[2]) };
+  }
+  const d = new Date(raw);
+  if (!Number.isNaN(d.getTime())) {
+    return { hour: d.getHours(), minute: d.getMinutes() };
+  }
+  return { hour: 0, minute: 0 };
+}
+
+function hourBlockStyles(interval) {
+  const { hour, minute } = intervalParts(interval);
+  // 7:xx / 9:xx / … tinted; 8:xx / 10:xx / … plain (alternating hour blocks).
+  const tinted = hour % 2 === 1;
+  return {
+    bgcolor: tinted ? HOUR_BLOCK_TINTED : HOUR_BLOCK_PLAIN,
+    hoverBg: tinted ? HOUR_BLOCK_TINTED_HOVER : HOUR_BLOCK_PLAIN_HOVER,
+    isHourStart: minute === 0,
+  };
 }
 
 function IntervalBagTable({ bags, onBagClick }) {
@@ -113,25 +144,42 @@ function IntervalRow({ interval, viewMode, onBagClick }) {
   const [open, setOpen] = useState(false);
   const showNewly = viewMode === "newly_ready" || viewMode === "both";
   const showCumulative = viewMode === "cumulative" || viewMode === "both";
+  const { bgcolor, hoverBg, isHourStart } = hourBlockStyles(interval);
+  const timeWeight = isHourStart ? 800 : 600;
 
   return (
     <Fragment>
-      <TableRow hover sx={{ "& > *": { borderBottom: "unset" } }}>
-        <TableCell sx={{ width: 48 }}>
+      <TableRow
+        hover
+        sx={{
+          bgcolor,
+          "& > *": { borderBottom: "unset" },
+          "&:hover": { bgcolor: hoverBg },
+          "&.MuiTableRow-hover:hover": { bgcolor: hoverBg },
+        }}
+      >
+        <TableCell sx={{ width: 48, bgcolor: "inherit" }}>
           <IconButton size="small" onClick={() => setOpen((v) => !v)} aria-label="Expand interval">
             {open ? <KeyboardArrowUpIcon /> : <KeyboardArrowDownIcon />}
           </IconButton>
         </TableCell>
-        <TableCell sx={{ fontWeight: 700 }}>{interval.label}</TableCell>
+        <TableCell sx={{ fontWeight: timeWeight, bgcolor: "inherit" }}>{interval.label}</TableCell>
         {showNewly ? (
-          <TableCell align="right">{interval.newly_ready_count ?? 0}</TableCell>
+          <TableCell align="right" sx={{ bgcolor: "inherit" }}>
+            {interval.newly_ready_count ?? 0}
+          </TableCell>
         ) : null}
         {showCumulative ? (
-          <TableCell align="right">{interval.available_count ?? 0}</TableCell>
+          <TableCell align="right" sx={{ fontWeight: timeWeight, bgcolor: "inherit" }}>
+            {interval.available_count ?? 0}
+          </TableCell>
         ) : null}
       </TableRow>
       <TableRow>
-        <TableCell colSpan={showNewly && showCumulative ? 4 : 3} sx={{ py: 0, bgcolor: "grey.50" }}>
+        <TableCell
+          colSpan={showNewly && showCumulative ? 4 : 3}
+          sx={{ py: 0, bgcolor: open ? "grey.50" : bgcolor }}
+        >
           <Collapse in={open} timeout="auto" unmountOnExit>
             <Box sx={{ py: 1.5, px: 1 }}>
               <IntervalBagTable bags={interval.bags || []} onBagClick={onBagClick} />

@@ -645,15 +645,14 @@ export default function ScanChronologyPage() {
           <SummaryCard label="Currently Waiting to Fold" value={summary.currently_waiting_to_fold ?? 0} />
           <SummaryCard label="First Bag Ready" value={formatDateTime(summary.first_bag_ready_et) || "—"} />
           <SummaryCard
-            label="Peak Ready Interval"
-            value={summary.peak_ready_interval_label || "—"}
+            label="Peak Waiting"
+            value={summary.peak_waiting_label || summary.peak_ready_interval_label || "—"}
             sub={
-              summary.max_bags_waiting != null
-                ? `${summary.max_bags_waiting} waiting`
+              (summary.peak_waiting_count ?? summary.max_bags_waiting) != null
+                ? `${summary.peak_waiting_count ?? summary.max_bags_waiting} bags waiting`
                 : undefined
             }
           />
-          <SummaryCard label="Max Bags Waiting" value={summary.max_bags_waiting ?? 0} />
         </>
       );
     }

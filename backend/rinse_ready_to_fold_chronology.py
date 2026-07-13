@@ -320,18 +320,36 @@ def build_ready_to_fold_bag_records(
     return records
 
 
+def bag_is_available_to_fold_at(
+    bag: Mapping[str, Any],
+    *,
+    as_of: datetime,
+) -> bool:
+    """
+    True when the bag is physically waiting to be folded at *as_of*.
+
+    Available(as_of) =
+      ReadyTime <= as_of
+      AND (FoldStartTime IS NULL OR FoldStartTime > as_of)
+
+    Recalculated independently for every interval end — never derived by
+    adding/subtracting from the prior interval's Available.
+    """
+    ready_et = bag.get("ready_to_fold_et")
+    if not ts_valid(ready_et) or ready_et > as_of:
+        return False
+    fold_ts = bag.get("folding_start_et")
+    if fold_ts is not None and ts_valid(fold_ts) and fold_ts <= as_of:
+        return False
+    return True
+
+
 def _bag_available_at_interval_end(
     bag: Mapping[str, Any],
     *,
     interval_end: datetime,
 ) -> bool:
-    ready_et = bag.get("ready_to_fold_et")
-    if not ts_valid(ready_et) or ready_et >= interval_end:
-        return False
-    fold_ts = bag.get("folding_start_et")
-    if fold_ts is not None and ts_valid(fold_ts) and fold_ts < interval_end:
-        return False
-    return True
+    return bag_is_available_to_fold_at(bag, as_of=interval_end)
 
 
 def build_ready_to_fold_intervals(
@@ -354,7 +372,16 @@ def build_ready_to_fold_intervals(
             if ts_valid(b.get("ready_to_fold_et"))
             and start <= b["ready_to_fold_et"] < end
         ]
-        available = [b for b in bags if _bag_available_at_interval_end(b, interval_end=end)]
+        # Independent snapshot at interval_end — not prior Available + Newly Ready.
+        available = [b for b in bags if bag_is_available_to_fold_at(b, as_of=end)]
+        folded_in_interval = [
+            b
+            for b in bags
+            if ts_valid(b.get("folding_start_et"))
+            and start < b["folding_start_et"] <= end
+            and ts_valid(b.get("ready_to_fold_et"))
+            and b["ready_to_fold_et"] <= end
+        ]
 
         intervals.append(
             {
@@ -363,6 +390,7 @@ def build_ready_to_fold_intervals(
                 "label": start.strftime("%I:%M %p").lstrip("0"),
                 "newly_ready_count": len(newly),
                 "available_count": len(available),
+                "folded_count": len(folded_in_interval),
                 "newly_ready_bags": newly,
                 "available_bags": available,
             }
@@ -396,12 +424,16 @@ def build_ready_to_fold_summary(
             peak_available = count
             peak_interval = interval
 
+    peak_label = (peak_interval or {}).get("label")
     return {
         "total_bags_dried": len(dried),
         "total_bags_ready_to_fold": len(ready_on_day),
         "currently_waiting_to_fold": len(waiting),
         "first_bag_ready_et": min(ready_times) if ready_times else None,
-        "peak_ready_interval_label": (peak_interval or {}).get("label"),
+        "peak_waiting_label": peak_label,
+        "peak_waiting_count": peak_available,
+        # Back-compat aliases used by existing clients / tests.
+        "peak_ready_interval_label": peak_label,
         "peak_ready_interval_start_et": (peak_interval or {}).get("interval_start_et"),
         "max_bags_waiting": peak_available,
         "drying_duration_minutes": (
@@ -616,6 +648,7 @@ def build_ready_to_fold_chronology_payload(
                 "label": interval["label"],
                 "newly_ready_count": interval["newly_ready_count"],
                 "available_count": interval["available_count"],
+                "folded_count": interval.get("folded_count", 0),
                 "bags": detail_bags,
             }
         )
@@ -642,7 +675,9 @@ def build_ready_to_fold_chronology_payload(
             "Prior-day drying is included when ready-to-fold falls on the selected ET day "
             "or the bag is still waiting at day start. "
             "Folding start = first FOLDING rack/purpose scan after the drying scan. "
-            "Intervals are half-open 15-minute buckets [start, start+15) from 12:00 AM "
-            "through 11:45 PM ET."
+            "Newly Ready uses half-open 15-minute buckets [start, start+15). "
+            "Total Bags Available to Fold is recomputed independently at each interval "
+            "end as bags with ReadyTime <= interval_end and no FoldStartTime yet "
+            "(or FoldStartTime > interval_end) — never by summing Newly Ready."
         ),
     }
