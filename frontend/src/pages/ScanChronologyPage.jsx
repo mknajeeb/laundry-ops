@@ -72,9 +72,9 @@ const READY_STATUS_OPTIONS = [
 ];
 
 const READY_VIEW_OPTIONS = [
-  { id: "both", label: "Both" },
-  { id: "newly_ready", label: "Newly Ready" },
-  { id: "cumulative", label: "Cumulative Available" },
+  { id: "both", label: "Both + Waiting" },
+  { id: "newly_ready", label: "New Bags Ready" },
+  { id: "cumulative", label: "Cumulative Bags Ready" },
 ];
 
 const ACTIVITY_TYPE_OPTIONS = [
@@ -640,18 +640,32 @@ export default function ScanChronologyPage() {
     if (isReadyToFold) {
       return (
         <>
-          <SummaryCard label="Total Bags Dried" value={summary.total_bags_dried ?? 0} />
-          <SummaryCard label="Total Bags Ready to Fold" value={summary.total_bags_ready_to_fold ?? 0} />
-          <SummaryCard label="Currently Waiting to Fold" value={summary.currently_waiting_to_fold ?? 0} />
+          <SummaryCard
+            label="Total Bags Ready Today"
+            value={summary.total_bags_ready_today ?? summary.total_bags_ready_to_fold ?? 0}
+          />
           <SummaryCard label="First Bag Ready" value={formatDateTime(summary.first_bag_ready_et) || "—"} />
           <SummaryCard
-            label="Peak Waiting"
-            value={summary.peak_waiting_label || summary.peak_ready_interval_label || "—"}
+            label="Peak 15-Minute Ready"
+            value={summary.peak_15min_ready_label || summary.peak_ready_interval_label || "—"}
             sub={
-              (summary.peak_waiting_count ?? summary.max_bags_waiting) != null
-                ? `${summary.peak_waiting_count ?? summary.max_bags_waiting} bags waiting`
+              summary.peak_15min_ready_count != null
+                ? `${summary.peak_15min_ready_count} new bags`
                 : undefined
             }
+          />
+          <SummaryCard
+            label="Peak Cumulative Available"
+            value={summary.peak_cumulative_ready_label || summary.peak_waiting_label || "—"}
+            sub={
+              (summary.peak_cumulative_ready_count ?? summary.peak_waiting_count) != null
+                ? `${summary.peak_cumulative_ready_count ?? summary.peak_waiting_count} bags ready`
+                : undefined
+            }
+          />
+          <SummaryCard
+            label="Current Waiting to Fold"
+            value={summary.currently_waiting_to_fold ?? 0}
           />
         </>
       );
@@ -1227,7 +1241,9 @@ export default function ScanChronologyPage() {
 
               {readyIntervals.every(
                 (interval) =>
-                  (interval.newly_ready_count || 0) === 0 && (interval.available_count || 0) === 0,
+                  (interval.newly_ready_count || 0) === 0 &&
+                    (interval.cumulative_ready_count || interval.available_count || 0) === 0 &&
+                    (interval.waiting_count || 0) === 0,
               ) ? (
                 <Alert severity="info">
                   No ready-to-fold bags for {activeDateEt} at {dryingDurationMinutes} minutes after drying.

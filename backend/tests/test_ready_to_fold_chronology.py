@@ -129,8 +129,8 @@ class TestReadyToFoldCore:
         assert by_label["12:15 AM"]["newly_ready_count"] == 1
         assert by_label["12:00 AM"]["newly_ready_count"] == 0
         # Still waiting at 12:00 AM before ready → not yet in cumulative until 12:15 end
-        assert by_label["12:00 AM"]["available_count"] == 0
-        assert by_label["12:15 AM"]["available_count"] == 1
+        assert by_label["12:00 AM"]["cumulative_ready_count"] == 0
+        assert by_label["12:15 AM"]["cumulative_ready_count"] == 1
 
     def test_carryover_waiting_not_newly_ready(self):
         drying_rows = [_dry("BAG1", datetime(2026, 7, 12, 22, 0))]
@@ -147,7 +147,7 @@ class TestReadyToFoldCore:
         intervals = build_ready_to_fold_intervals(bags, selected_date_et=SELECTED)
         newly_total = sum(i["newly_ready_count"] for i in intervals)
         assert newly_total == 0
-        assert intervals[0]["available_count"] == 1
+        assert intervals[0]["cumulative_ready_count"] == 1
         assert intervals[0]["label"] == "12:00 AM"
 
     def test_uses_most_recent_drying_cycle(self):
@@ -263,12 +263,14 @@ class TestReadyToFoldCore:
             as_of=datetime(2026, 7, 13, 23, 59, 59),
         )
         intervals = build_ready_to_fold_intervals(bags, selected_date_et=SELECTED)
-        assert all(i["available_count"] >= 0 for i in intervals)
+        assert all(i["cumulative_ready_count"] >= 0 for i in intervals)
         ready_iv = next(
             i for i in intervals if i["interval_start_et"] == datetime(2026, 7, 13, 12, 45)
         )
         assert ready_iv["newly_ready_count"] == 1
-        assert ready_iv["available_count"] == 0
+        assert ready_iv["cumulative_ready_count"] == 1
+        # Fold started before ready → not in waiting queue at ready interval end
+        assert ready_iv["waiting_count"] == 0
 
     def test_not_yet_ready_when_as_of_before_ready(self):
         bags = build_ready_to_fold_bag_records(
@@ -316,7 +318,7 @@ class TestReadyToFoldIntervals:
         newly_ids = [b["bag_id"] for i in intervals for b in i["newly_ready_bags"]]
         assert len(newly_ids) == len(set(newly_ids)) == 5
 
-    def test_newly_ready_and_available_snapshot(self):
+    def test_newly_ready_and_cumulative_capacity(self):
         bags = build_ready_to_fold_bag_records(
             drying_rows=[
                 _dry("A", datetime(2026, 7, 13, 7, 20), ev_id=1),  # ready 8:00
@@ -333,14 +335,13 @@ class TestReadyToFoldIntervals:
         by_label = {i["label"]: i for i in intervals}
 
         assert by_label["8:00 AM"]["newly_ready_count"] == 2
-        assert by_label["8:00 AM"]["available_count"] == 2
+        assert by_label["8:00 AM"]["cumulative_ready_count"] == 2
         assert by_label["8:15 AM"]["newly_ready_count"] == 1
-        assert by_label["8:15 AM"]["available_count"] == 3
+        assert by_label["8:15 AM"]["cumulative_ready_count"] == 3
 
-    def test_available_independent_of_newly_ready_sum(self):
-        """Available is a live snapshot — never prior Available + Newly Ready."""
-        # Spec example: Ready +6 / +3 / +0 / +0 with folds 0 / 1 / 2 / 1
-        # → Available 6 → 8 → 6 → 5
+    def test_cumulative_never_decreases_and_equals_running_newly(self):
+        """Capacity cumulative ignores folding; Cumulative(i)=Cumulative(i-1)+Newly(i)."""
+        # Spec-style inflow with folds that must NOT reduce cumulative.
         bags = []
         for i in range(6):
             bags.append(
@@ -368,44 +369,63 @@ class TestReadyToFoldIntervals:
             {
                 "bag_id": "R815_2",
                 "ready_to_fold_et": datetime(2026, 7, 13, 8, 18),
-                "folding_start_et": datetime(2026, 7, 13, 8, 20),  # folded in 8:15
+                "folding_start_et": datetime(2026, 7, 13, 8, 20),
             }
         )
-        # Two more folds in 8:30 from the original six waiting
         bags[0]["folding_start_et"] = datetime(2026, 7, 13, 8, 32)
         bags[1]["folding_start_et"] = datetime(2026, 7, 13, 8, 33)
-        # One fold in 8:45
         bags[2]["folding_start_et"] = datetime(2026, 7, 13, 8, 46)
 
         intervals = build_ready_to_fold_intervals(bags, selected_date_et=SELECTED)
         by_label = {i["label"]: i for i in intervals}
 
         assert by_label["8:00 AM"]["newly_ready_count"] == 6
-        assert by_label["8:00 AM"]["available_count"] == 6
+        assert by_label["8:00 AM"]["cumulative_ready_count"] == 6
         assert by_label["8:15 AM"]["newly_ready_count"] == 3
-        assert by_label["8:15 AM"]["available_count"] == 8  # 6+3-1
+        assert by_label["8:15 AM"]["cumulative_ready_count"] == 9  # 6+3, folds ignored
         assert by_label["8:30 AM"]["newly_ready_count"] == 0
-        assert by_label["8:30 AM"]["available_count"] == 6  # 8-2
+        assert by_label["8:30 AM"]["cumulative_ready_count"] == 9
         assert by_label["8:45 AM"]["newly_ready_count"] == 0
-        assert by_label["8:45 AM"]["available_count"] == 5  # 6-1
+        assert by_label["8:45 AM"]["cumulative_ready_count"] == 9
 
-        # Prove it is recomputed, not "previous + newly"
-        assert by_label["8:15 AM"]["available_count"] != (
-            by_label["8:00 AM"]["available_count"] + by_label["8:15 AM"]["newly_ready_count"]
-        )
+        # Waiting may drop; cumulative must not.
+        assert by_label["8:15 AM"]["waiting_count"] == 8  # 9 cumulative - 1 folded
+        assert by_label["8:30 AM"]["waiting_count"] == 6
+        assert by_label["8:45 AM"]["waiting_count"] == 5
 
-    def test_available_boundary_ready_inclusive_fold_exclusive(self):
-        bag = {
-            "bag_id": "B1",
-            "ready_to_fold_et": datetime(2026, 7, 13, 8, 15),
-            "folding_start_et": datetime(2026, 7, 13, 8, 30),
-        }
-        assert bag_is_available_to_fold_at(bag, as_of=datetime(2026, 7, 13, 8, 15)) is True
-        assert bag_is_available_to_fold_at(bag, as_of=datetime(2026, 7, 13, 8, 14, 59)) is False
-        assert bag_is_available_to_fold_at(bag, as_of=datetime(2026, 7, 13, 8, 29, 59)) is True
-        assert bag_is_available_to_fold_at(bag, as_of=datetime(2026, 7, 13, 8, 30)) is False
+        prev = None
+        for iv in intervals:
+            cum = iv["cumulative_ready_count"]
+            newly = iv["newly_ready_count"]
+            if prev is None:
+                assert cum == newly or cum >= newly  # carry-in possible
+            else:
+                assert cum == prev + newly
+                assert cum >= prev
+            prev = cum
 
-    def test_available_drops_immediately_after_folding_start(self):
+    def test_user_spec_cumulative_example_745_through_845(self):
+        bags = [
+            {"bag_id": "A", "ready_to_fold_et": datetime(2026, 7, 13, 7, 50)},  # 7:45
+            *[{"bag_id": f"B{i}", "ready_to_fold_et": datetime(2026, 7, 13, 8, 1 + i)} for i in range(6)],
+            *[{"bag_id": f"C{i}", "ready_to_fold_et": datetime(2026, 7, 13, 8, 16 + i)} for i in range(3)],
+            {"bag_id": "D0", "ready_to_fold_et": datetime(2026, 7, 13, 8, 46)},
+            {"bag_id": "D1", "ready_to_fold_et": datetime(2026, 7, 13, 8, 47)},
+        ]
+        intervals = build_ready_to_fold_intervals(bags, selected_date_et=SELECTED)
+        by_label = {i["label"]: i for i in intervals}
+        assert by_label["7:45 AM"]["newly_ready_count"] == 1
+        assert by_label["7:45 AM"]["cumulative_ready_count"] == 1
+        assert by_label["8:00 AM"]["newly_ready_count"] == 6
+        assert by_label["8:00 AM"]["cumulative_ready_count"] == 7
+        assert by_label["8:15 AM"]["newly_ready_count"] == 3
+        assert by_label["8:15 AM"]["cumulative_ready_count"] == 10
+        assert by_label["8:30 AM"]["newly_ready_count"] == 0
+        assert by_label["8:30 AM"]["cumulative_ready_count"] == 10
+        assert by_label["8:45 AM"]["newly_ready_count"] == 2
+        assert by_label["8:45 AM"]["cumulative_ready_count"] == 12
+
+    def test_waiting_drops_after_folding_cumulative_does_not(self):
         bags = build_ready_to_fold_bag_records(
             drying_rows=[_dry("A", datetime(2026, 7, 13, 7, 20), ev_id=1)],
             events_by_bag={
@@ -418,12 +438,13 @@ class TestReadyToFoldIntervals:
         )
         intervals = build_ready_to_fold_intervals(bags, selected_date_et=SELECTED)
         by_label = {i["label"]: i for i in intervals}
-        # Ready at 8:00, folded at 8:10 → gone by end of 8:00 interval (8:15)
         assert by_label["8:00 AM"]["newly_ready_count"] == 1
-        assert by_label["8:00 AM"]["available_count"] == 0
-        assert by_label["8:15 AM"]["available_count"] == 0
+        assert by_label["8:00 AM"]["cumulative_ready_count"] == 1
+        assert by_label["8:00 AM"]["waiting_count"] == 0  # folded at 8:10
+        assert by_label["8:15 AM"]["cumulative_ready_count"] == 1
+        assert by_label["8:15 AM"]["waiting_count"] == 0
 
-    def test_summary_peak_waiting_equals_max_available(self):
+    def test_summary_peak_newly_and_cumulative(self):
         bags = build_ready_to_fold_bag_records(
             drying_rows=[
                 _dry("A", datetime(2026, 7, 13, 7, 20), ev_id=1),
@@ -440,15 +461,14 @@ class TestReadyToFoldIntervals:
         summary = build_ready_to_fold_summary(
             bags, intervals, selected_date_et=SELECTED
         )
-        max_available = max(i["available_count"] for i in intervals)
-        assert summary["total_bags_dried"] == 3
-        assert summary["total_bags_ready_to_fold"] == 3
-        assert summary["currently_waiting_to_fold"] == 3
+        max_cum = max(i["cumulative_ready_count"] for i in intervals)
+        max_newly = max(i["newly_ready_count"] for i in intervals)
+        assert summary["total_bags_ready_today"] == 3
         assert summary["first_bag_ready_et"] == datetime(2026, 7, 13, 8, 0)
-        assert summary["peak_waiting_count"] == max_available == 3
-        assert summary["max_bags_waiting"] == 3
-        assert summary["peak_waiting_label"] in {"8:15 AM", "8:30 AM", "8:45 AM"}
-
+        assert summary["peak_cumulative_ready_count"] == max_cum == 3
+        assert summary["peak_15min_ready_count"] == max_newly == 2
+        assert summary["peak_15min_ready_label"] == "8:00 AM"
+        assert summary["peak_cumulative_ready_label"] == "8:15 AM"
     def test_filters_update_summary_scope(self):
         bags = [
             {

@@ -156,11 +156,17 @@ function buildUserActivityRows(employeeGroups) {
 }
 
 function buildReadyToFoldIntervalRows(intervals) {
-  const headers = ["Time", "Newly Ready Bags", "Total Bags Available to Fold"];
+  const headers = [
+    "Time",
+    "New Bags Ready",
+    "Cumulative Bags Ready",
+    "Currently Waiting",
+  ];
   const rows = (intervals || []).map((interval) => [
     interval.label ?? "",
     interval.newly_ready_count ?? 0,
-    interval.available_count ?? 0,
+    interval.cumulative_ready_count ?? interval.available_count ?? 0,
+    interval.waiting_count ?? "",
   ]);
   return { headers, rows };
 }

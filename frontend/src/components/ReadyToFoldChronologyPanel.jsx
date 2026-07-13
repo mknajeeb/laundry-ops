@@ -57,7 +57,6 @@ function formatWeight(weight) {
 }
 
 function intervalParts(interval) {
-  // Prefer digits from naive ET ISO so hour striping is timezone-stable.
   const raw = String(interval?.interval_start_et || "");
   const match = raw.match(/T(\d{2}):(\d{2})/);
   if (match) {
@@ -72,13 +71,17 @@ function intervalParts(interval) {
 
 function hourBlockStyles(interval) {
   const { hour, minute } = intervalParts(interval);
-  // 7:xx / 9:xx / … tinted; 8:xx / 10:xx / … plain (alternating hour blocks).
+  // 7:xx / 9:xx / … tinted; 8:xx / 10:xx / … plain
   const tinted = hour % 2 === 1;
   return {
     bgcolor: tinted ? HOUR_BLOCK_TINTED : HOUR_BLOCK_PLAIN,
     hoverBg: tinted ? HOUR_BLOCK_TINTED_HOVER : HOUR_BLOCK_PLAIN_HOVER,
     isHourStart: minute === 0,
   };
+}
+
+function cumulativeCount(interval) {
+  return interval.cumulative_ready_count ?? interval.available_count ?? 0;
 }
 
 function IntervalBagTable({ bags, onBagClick }) {
@@ -144,8 +147,10 @@ function IntervalRow({ interval, viewMode, onBagClick }) {
   const [open, setOpen] = useState(false);
   const showNewly = viewMode === "newly_ready" || viewMode === "both";
   const showCumulative = viewMode === "cumulative" || viewMode === "both";
+  const showWaiting = viewMode === "both";
   const { bgcolor, hoverBg, isHourStart } = hourBlockStyles(interval);
   const timeWeight = isHourStart ? 800 : 600;
+  const colSpan = 2 + (showNewly ? 1 : 0) + (showCumulative ? 1 : 0) + (showWaiting ? 1 : 0);
 
   return (
     <Fragment>
@@ -171,15 +176,17 @@ function IntervalRow({ interval, viewMode, onBagClick }) {
         ) : null}
         {showCumulative ? (
           <TableCell align="right" sx={{ fontWeight: timeWeight, bgcolor: "inherit" }}>
-            {interval.available_count ?? 0}
+            {cumulativeCount(interval)}
+          </TableCell>
+        ) : null}
+        {showWaiting ? (
+          <TableCell align="right" sx={{ bgcolor: "inherit" }}>
+            {interval.waiting_count ?? 0}
           </TableCell>
         ) : null}
       </TableRow>
       <TableRow>
-        <TableCell
-          colSpan={showNewly && showCumulative ? 4 : 3}
-          sx={{ py: 0, bgcolor: open ? "grey.50" : bgcolor }}
-        >
+        <TableCell colSpan={colSpan} sx={{ py: 0, bgcolor: open ? "grey.50" : bgcolor }}>
           <Collapse in={open} timeout="auto" unmountOnExit>
             <Box sx={{ py: 1.5, px: 1 }}>
               <IntervalBagTable bags={interval.bags || []} onBagClick={onBagClick} />
@@ -198,10 +205,15 @@ export default function ReadyToFoldChronologyPanel({
 }) {
   const showNewly = viewMode === "newly_ready" || viewMode === "both";
   const showCumulative = viewMode === "cumulative" || viewMode === "both";
+  const showWaiting = viewMode === "both";
   const visible = intervals.filter((interval) => {
     if (viewMode === "newly_ready") return (interval.newly_ready_count || 0) > 0;
-    if (viewMode === "cumulative") return (interval.available_count || 0) > 0;
-    return (interval.newly_ready_count || 0) > 0 || (interval.available_count || 0) > 0;
+    if (viewMode === "cumulative") return cumulativeCount(interval) > 0;
+    return (
+      (interval.newly_ready_count || 0) > 0 ||
+      cumulativeCount(interval) > 0 ||
+      (interval.waiting_count || 0) > 0
+    );
   });
 
   if (!visible.length) {
@@ -214,13 +226,14 @@ export default function ReadyToFoldChronologyPanel({
       elevation={0}
       sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2 }}
     >
-      <Table size="small" sx={{ minWidth: 520 }}>
+      <Table size="small" sx={{ minWidth: 560 }}>
         <TableHead>
           <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
             <TableCell />
             <TableCell>Time</TableCell>
-            {showNewly ? <TableCell align="right">Newly Ready Bags</TableCell> : null}
-            {showCumulative ? <TableCell align="right">Total Bags Available to Fold</TableCell> : null}
+            {showNewly ? <TableCell align="right">New Bags Ready</TableCell> : null}
+            {showCumulative ? <TableCell align="right">Cumulative Bags Ready</TableCell> : null}
+            {showWaiting ? <TableCell align="right">Currently Waiting</TableCell> : null}
           </TableRow>
         </TableHead>
         <TableBody>

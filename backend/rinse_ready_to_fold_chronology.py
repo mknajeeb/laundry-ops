@@ -320,23 +320,28 @@ def build_ready_to_fold_bag_records(
     return records
 
 
-def bag_is_available_to_fold_at(
+def bag_is_cumulatively_ready_at(
+    bag: Mapping[str, Any],
+    *,
+    as_of: datetime,
+) -> bool:
+    """True when ReadyTime has already been reached by *as_of* (capacity cumulative)."""
+    ready_et = bag.get("ready_to_fold_et")
+    return bool(ts_valid(ready_et) and ready_et <= as_of)
+
+
+def bag_is_waiting_to_fold_at(
     bag: Mapping[str, Any],
     *,
     as_of: datetime,
 ) -> bool:
     """
-    True when the bag is physically waiting to be folded at *as_of*.
+    Live folding queue at *as_of* (optional metric).
 
-    Available(as_of) =
-      ReadyTime <= as_of
-      AND (FoldStartTime IS NULL OR FoldStartTime > as_of)
-
-    Recalculated independently for every interval end — never derived by
-    adding/subtracting from the prior interval's Available.
+    ReadyTime <= as_of AND (FoldStart IS NULL OR FoldStart > as_of).
+    May decrease as bags start folding. Must not replace cumulative ready.
     """
-    ready_et = bag.get("ready_to_fold_et")
-    if not ts_valid(ready_et) or ready_et > as_of:
+    if not bag_is_cumulatively_ready_at(bag, as_of=as_of):
         return False
     fold_ts = bag.get("folding_start_et")
     if fold_ts is not None and ts_valid(fold_ts) and fold_ts <= as_of:
@@ -344,12 +349,13 @@ def bag_is_available_to_fold_at(
     return True
 
 
-def _bag_available_at_interval_end(
+# Back-compat alias used by older tests / callers.
+def bag_is_available_to_fold_at(
     bag: Mapping[str, Any],
     *,
-    interval_end: datetime,
+    as_of: datetime,
 ) -> bool:
-    return bag_is_available_to_fold_at(bag, as_of=interval_end)
+    return bag_is_waiting_to_fold_at(bag, as_of=as_of)
 
 
 def build_ready_to_fold_intervals(
@@ -357,8 +363,26 @@ def build_ready_to_fold_intervals(
     *,
     selected_date_et: date,
 ) -> list[dict[str, Any]]:
+    """
+    Capacity-planning intervals.
+
+    - New Bags Ready: half-open [start, end)
+    - Cumulative Bags Ready: never decreases; CarryIn + sum(Newly through i)
+      (= bags with ReadyTime <= interval_end for the report set under half-open newly)
+    - Currently Waiting: live queue (ready and not yet folded by interval_end)
+    """
     interval_starts = build_day_interval_starts(selected_date_et)
-    day_end_exclusive = naive_et_day_start(selected_date_et) + timedelta(days=1)
+    day_start = naive_et_day_start(selected_date_et)
+    day_end_exclusive = day_start + timedelta(days=1)
+
+    # Overnight carry-in: already ready before the selected day starts.
+    carry_in = [
+        b
+        for b in bags
+        if ts_valid(b.get("ready_to_fold_et")) and b["ready_to_fold_et"] < day_start
+    ]
+    cumulative_bags: list[Mapping[str, Any]] = list(carry_in)
+    seen_ids = {_bag_key(b.get("bag_id")) for b in cumulative_bags}
 
     intervals: list[dict[str, Any]] = []
     for start in interval_starts:
@@ -372,16 +396,16 @@ def build_ready_to_fold_intervals(
             if ts_valid(b.get("ready_to_fold_et"))
             and start <= b["ready_to_fold_et"] < end
         ]
-        # Independent snapshot at interval_end — not prior Available + Newly Ready.
-        available = [b for b in bags if bag_is_available_to_fold_at(b, as_of=end)]
-        folded_in_interval = [
-            b
-            for b in bags
-            if ts_valid(b.get("folding_start_et"))
-            and start < b["folding_start_et"] <= end
-            and ts_valid(b.get("ready_to_fold_et"))
-            and b["ready_to_fold_et"] <= end
-        ]
+        for b in newly:
+            bid = _bag_key(b.get("bag_id"))
+            if bid and bid not in seen_ids:
+                cumulative_bags.append(b)
+                seen_ids.add(bid)
+
+        # Capacity cumulative never subtracts folding and never decreases.
+        # Identity: Cumulative(i) = Cumulative(i-1) + NewlyReady(i) (unique bag ids).
+        cumulative_count = len(cumulative_bags)
+        waiting = [b for b in bags if bag_is_waiting_to_fold_at(b, as_of=end)]
 
         intervals.append(
             {
@@ -389,10 +413,14 @@ def build_ready_to_fold_intervals(
                 "interval_end_et": end,
                 "label": start.strftime("%I:%M %p").lstrip("0"),
                 "newly_ready_count": len(newly),
-                "available_count": len(available),
-                "folded_count": len(folded_in_interval),
+                "cumulative_ready_count": cumulative_count,
+                # Primary capacity column (API / table). Never decreases.
+                "available_count": cumulative_count,
+                "waiting_count": len(waiting),
                 "newly_ready_bags": newly,
-                "available_bags": available,
+                "cumulative_ready_bags": list(cumulative_bags),
+                "available_bags": list(cumulative_bags),
+                "waiting_bags": waiting,
             }
         )
     return intervals
@@ -416,26 +444,45 @@ def build_ready_to_fold_summary(
     waiting = [b for b in bags if b.get("status") == STATUS_WAITING]
     ready_times = [b["ready_to_fold_et"] for b in ready_on_day if ts_valid(b.get("ready_to_fold_et"))]
 
-    peak_interval = None
-    peak_available = 0
+    peak_newly_interval = None
+    peak_newly = 0
+    peak_cum_interval = None
+    peak_cum = 0
     for interval in intervals:
-        count = int(interval.get("available_count") or 0)
-        if peak_interval is None or count > peak_available:
-            peak_available = count
-            peak_interval = interval
+        newly = int(interval.get("newly_ready_count") or 0)
+        cum = int(
+            interval.get("cumulative_ready_count")
+            if interval.get("cumulative_ready_count") is not None
+            else interval.get("available_count")
+            or 0
+        )
+        if peak_newly_interval is None or newly > peak_newly:
+            peak_newly = newly
+            peak_newly_interval = interval
+        if peak_cum_interval is None or cum > peak_cum:
+            peak_cum = cum
+            peak_cum_interval = interval
 
-    peak_label = (peak_interval or {}).get("label")
+    peak_newly_label = (peak_newly_interval or {}).get("label")
+    peak_cum_label = (peak_cum_interval or {}).get("label")
     return {
         "total_bags_dried": len(dried),
         "total_bags_ready_to_fold": len(ready_on_day),
+        "total_bags_ready_today": len(ready_on_day),
         "currently_waiting_to_fold": len(waiting),
         "first_bag_ready_et": min(ready_times) if ready_times else None,
-        "peak_waiting_label": peak_label,
-        "peak_waiting_count": peak_available,
-        # Back-compat aliases used by existing clients / tests.
-        "peak_ready_interval_label": peak_label,
-        "peak_ready_interval_start_et": (peak_interval or {}).get("interval_start_et"),
-        "max_bags_waiting": peak_available,
+        "peak_15min_ready_count": peak_newly,
+        "peak_15min_ready_label": peak_newly_label,
+        "peak_15min_ready_start_et": (peak_newly_interval or {}).get("interval_start_et"),
+        "peak_cumulative_ready_count": peak_cum,
+        "peak_cumulative_ready_label": peak_cum_label,
+        "peak_cumulative_ready_start_et": (peak_cum_interval or {}).get("interval_start_et"),
+        # Legacy aliases (older Peak Waiting / Peak Ready Interval clients).
+        "peak_waiting_label": peak_cum_label,
+        "peak_waiting_count": peak_cum,
+        "peak_ready_interval_label": peak_newly_label,
+        "peak_ready_interval_start_et": (peak_newly_interval or {}).get("interval_start_et"),
+        "max_bags_waiting": peak_cum,
         "drying_duration_minutes": (
             bags[0].get("drying_duration_minutes") if bags else DEFAULT_DRYING_DURATION_MINUTES
         ),
@@ -631,15 +678,16 @@ def build_ready_to_fold_chronology_payload(
     interval_rows = []
     for interval in intervals:
         newly = interval["newly_ready_bags"]
-        available = interval["available_bags"]
+        cumulative = interval["cumulative_ready_bags"]
+        waiting = interval.get("waiting_bags") or []
         if mode == "newly_ready":
             detail_bags = newly
         elif mode == "cumulative":
-            detail_bags = available
+            detail_bags = cumulative
         else:
-            # Prefer newly ready bag identities first, then remaining available.
+            # Prefer newly ready bag identities first, then remaining cumulative.
             seen = {b["bag_id"] for b in newly}
-            detail_bags = list(newly) + [b for b in available if b["bag_id"] not in seen]
+            detail_bags = list(newly) + [b for b in cumulative if b["bag_id"] not in seen]
 
         interval_rows.append(
             {
@@ -647,9 +695,11 @@ def build_ready_to_fold_chronology_payload(
                 "interval_end_et": interval["interval_end_et"],
                 "label": interval["label"],
                 "newly_ready_count": interval["newly_ready_count"],
+                "cumulative_ready_count": interval["cumulative_ready_count"],
                 "available_count": interval["available_count"],
-                "folded_count": interval.get("folded_count", 0),
+                "waiting_count": interval.get("waiting_count", 0),
                 "bags": detail_bags,
+                "waiting_bags": waiting,
             }
         )
 
@@ -674,10 +724,10 @@ def build_ready_to_fold_chronology_payload(
             "Redry within the same lifecycle replaces the earlier dry (no double count). "
             "Prior-day drying is included when ready-to-fold falls on the selected ET day "
             "or the bag is still waiting at day start. "
-            "Folding start = first FOLDING rack/purpose scan after the drying scan. "
-            "Newly Ready uses half-open 15-minute buckets [start, start+15). "
-            "Total Bags Available to Fold is recomputed independently at each interval "
-            "end as bags with ReadyTime <= interval_end and no FoldStartTime yet "
-            "(or FoldStartTime > interval_end) — never by summing Newly Ready."
+            "New Bags Ready = half-open buckets [interval_start, interval_end). "
+            "Cumulative Bags Ready = overnight carry-in + running sum of New Bags Ready "
+            "(never decreases; does not subtract folding). "
+            "Currently Waiting = ReadyTime <= interval_end and no FoldStart yet "
+            "(or FoldStart > interval_end) — optional live queue."
         ),
     }
