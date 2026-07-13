@@ -1012,18 +1012,16 @@ def bulk_set_week_entry_employer_affiliation(
 ) -> tuple[int, str | None, list[dict[str, Any]]]:
     """Move this week's shifts to ``employer_affiliation``.
 
-    Admin bulk moves also migrate each scheduled worker's payroll profile to the
-    same entity so VeeWash/WashPro workers are not skipped and then snap back
-    onto the home-entity tab after reload.
+    Uses batch SQLs (not per-row profile saves) so the admin button does not
+    hang / hit the browser timeout. Scheduled workers are migrated onto the
+    target entity in the same call.
     """
     from backend.payroll_employer_affiliation import (
-        EMPLOYER_AFFILIATION_NONE,
         _organization_slug,
-        employer_affiliation_from_flags,
         flags_from_employer_affiliation,
         normalize_shift_employer_affiliation,
-        save_employer_affiliation,
     )
+    from backend.payroll_schedule import ensure_worker_profile
 
     ensure_planned_weekly_schedule_table(cursor)
     org_slug = _organization_slug(conn, organization_id)
@@ -1031,45 +1029,47 @@ def bulk_set_week_entry_employer_affiliation(
     if not aff:
         return 0, "employer_affiliation must be washpro, washmate, veewash, or rinse_exclusive", []
 
-    workers_by_uid = _workers_index(_load_workers(conn, organization_id))
     rows = list_week_entries(cursor, organization_id, week_start=week_start, conn=conn)
-    skipped: list[dict[str, Any]] = []
-    updated = 0
-    migrated_user_ids: set[int] = set()
+    if not rows:
+        return 0, None, []
 
-    for row in rows:
-        entry_id = int(row.get("id") or 0)
-        uid = int(row.get("user_id") or 0)
-        worker = workers_by_uid.get(uid)
-        worker_entity = employer_affiliation_from_flags(worker, organization_slug=org_slug)
-        if worker_entity == EMPLOYER_AFFILIATION_NONE:
-            skipped.append(
-                {
-                    "entry_id": entry_id,
-                    "user_id": uid,
-                    "reason": "worker affiliation is none",
-                }
-            )
-            continue
-        if uid not in migrated_user_ids and worker_entity != aff:
-            save_employer_affiliation(conn, int(organization_id), uid, aff)
-            workers_by_uid[uid] = {
-                **dict(worker or {}),
-                **flags_from_employer_affiliation(aff),
-                "business_entity": aff,
-                "employer_affiliation": aff,
-            }
-            migrated_user_ids.add(uid)
+    user_ids = sorted({int(row.get("user_id") or 0) for row in rows if int(row.get("user_id") or 0) > 0})
+    flags = flags_from_employer_affiliation(aff)
+    for uid in user_ids:
+        ensure_worker_profile(conn, int(organization_id), uid)
         cursor.execute(
             """
-            UPDATE planned_weekly_schedule_entries
-            SET employer_affiliation=%s
-            WHERE organization_id=%s AND id=%s
+            UPDATE payroll_worker_profiles
+            SET business_entity=%s,
+                can_work_rinse=%s,
+                can_work_drop_off=%s,
+                can_work_both=%s
+            WHERE organization_id=%s AND user_id=%s
             """,
-            (aff, int(organization_id), entry_id),
+            (
+                aff,
+                1 if flags.get("can_work_rinse") else 0,
+                1 if flags.get("can_work_drop_off") else 0,
+                1 if flags.get("can_work_both") else 0,
+                int(organization_id),
+                uid,
+            ),
         )
-        updated += int(getattr(cursor, "rowcount", 0) or 0)
-    return updated, None, skipped
+
+    placeholders = ",".join(["%s"] * len(user_ids))
+    cursor.execute(
+        f"""
+        UPDATE planned_weekly_schedule_entries
+        SET employer_affiliation=%s
+        WHERE organization_id=%s AND week_start=%s AND user_id IN ({placeholders})
+        """,
+        (aff, int(organization_id), week_start, *user_ids),
+    )
+    updated = int(getattr(cursor, "rowcount", 0) or 0)
+    # Some connectors report 0 when values were already equal; fall back to row count.
+    if updated <= 0:
+        updated = len(rows)
+    return updated, None, []
 
 
 def build_week_payload(

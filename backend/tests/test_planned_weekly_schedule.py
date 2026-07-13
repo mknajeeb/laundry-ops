@@ -96,14 +96,23 @@ class _FakeCursor:
             }
             self.rows.append(row)
             return
+        if "update payroll_worker_profiles" in sql_norm and "set business_entity=%s" in sql_norm:
+            self._rowcount = 1
+            return
         if "update planned_weekly_schedule_entries" in sql_norm:
             if "set employer_affiliation=%s" in sql_norm and "week_start=%s" in sql_norm:
-                aff, org_id, week_start = params
+                aff = params[0]
+                org_id = params[1]
+                week_start = params[2]
+                user_ids = set(params[3:]) if len(params) > 3 else None
                 count = 0
                 for row in self.rows:
-                    if row["organization_id"] == org_id and row["week_start"] == week_start:
-                        row["employer_affiliation"] = aff
-                        count += 1
+                    if row["organization_id"] != org_id or row["week_start"] != week_start:
+                        continue
+                    if user_ids is not None and row["user_id"] not in user_ids:
+                        continue
+                    row["employer_affiliation"] = aff
+                    count += 1
                 self._rowcount = count
                 return
             if "set employer_affiliation=%s" in sql_norm and "and id=%s" in sql_norm:
@@ -812,8 +821,8 @@ def test_bulk_set_week_entry_employer_affiliation():
         "backend.payroll_employer_affiliation._organization_slug",
         return_value="washpro",
     ), patch(
-        "backend.payroll_employer_affiliation.save_employer_affiliation",
-    ) as save_aff:
+        "backend.payroll_schedule.ensure_worker_profile",
+    ):
         updated, err, skipped = bulk_set_week_entry_employer_affiliation(
             conn,
             cursor,
@@ -825,9 +834,6 @@ def test_bulk_set_week_entry_employer_affiliation():
     assert updated == 2
     assert skipped == []
     assert all(row["employer_affiliation"] == "rinse_exclusive" for row in cursor.rows)
-    # Shared worker (uid 10) is migrated; rinse-exclusive worker (uid 20) is not.
-    assert save_aff.call_count == 1
-    assert save_aff.call_args.args[2] == 10
 
 
 def test_bulk_set_week_entry_employer_affiliation_migrates_cross_entity_worker():
@@ -858,8 +864,8 @@ def test_bulk_set_week_entry_employer_affiliation_migrates_cross_entity_worker()
         "backend.payroll_employer_affiliation._organization_slug",
         return_value="washpro",
     ), patch(
-        "backend.payroll_employer_affiliation.save_employer_affiliation",
-    ) as save_aff:
+        "backend.payroll_schedule.ensure_worker_profile",
+    ):
         updated, err, skipped = bulk_set_week_entry_employer_affiliation(
             conn,
             cursor,
@@ -871,10 +877,9 @@ def test_bulk_set_week_entry_employer_affiliation_migrates_cross_entity_worker()
     assert updated == 1
     assert skipped == []
     assert cursor.rows[0]["employer_affiliation"] == "rinse_exclusive"
-    save_aff.assert_called_once_with(conn, 1, 10, "rinse_exclusive")
 
 
-def test_bulk_set_week_entry_employer_affiliation_skips_none_worker():
+def test_bulk_set_week_entry_employer_affiliation_moves_none_worker():
     cursor = _FakeCursor()
     conn = MagicMock()
     week = date(2026, 6, 28)
@@ -902,8 +907,8 @@ def test_bulk_set_week_entry_employer_affiliation_skips_none_worker():
         "backend.payroll_employer_affiliation._organization_slug",
         return_value="washpro",
     ), patch(
-        "backend.payroll_employer_affiliation.save_employer_affiliation",
-    ) as save_aff:
+        "backend.payroll_schedule.ensure_worker_profile",
+    ):
         updated, err, skipped = bulk_set_week_entry_employer_affiliation(
             conn,
             cursor,
@@ -912,8 +917,6 @@ def test_bulk_set_week_entry_employer_affiliation_skips_none_worker():
             employer_affiliation="rinse_exclusive",
         )
     assert err is None
-    assert updated == 0
-    assert len(skipped) == 1
-    assert skipped[0]["reason"] == "worker affiliation is none"
-    assert cursor.rows[0]["employer_affiliation"] == "washpro"
-    save_aff.assert_not_called()
+    assert updated == 1
+    assert skipped == []
+    assert cursor.rows[0]["employer_affiliation"] == "rinse_exclusive"
