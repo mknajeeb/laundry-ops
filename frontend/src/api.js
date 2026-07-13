@@ -1026,9 +1026,6 @@ export const receiveInventoryOrder = (orderId, payload) =>
 export const getInventoryWeeklyOrderReport = (params = {}) =>
   axios.get(`${API_BASE}/inventory/reports/weekly-orders`, { params });
 
-export const createInventoryAdjustment = (payload) =>
-  axios.post(`${API_BASE}/inventory/adjustments`, payload);
-
 export const saveInventoryCount = (payload) =>
   axios.post(`${API_BASE}/inventory/counts`, payload);
 
