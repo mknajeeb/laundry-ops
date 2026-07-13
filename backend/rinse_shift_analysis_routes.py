@@ -342,6 +342,20 @@ def register_rinse_shift_analysis_routes(
             confidence = (request.args.get("confidence") or "").strip() or None
             machine = (request.args.get("machine") or "").strip() or None
             activity_type = (request.args.get("activity_type") or "all").strip().lower()
+            order_type = (request.args.get("order_type") or request.args.get("service_type") or "").strip() or None
+            status = (request.args.get("status") or request.args.get("bag_status") or "").strip() or None
+            view_mode = (request.args.get("view_mode") or "").strip() or None
+            drying_duration_raw = (
+                request.args.get("drying_duration_minutes")
+                or request.args.get("drying_duration")
+                or ""
+            ).strip()
+            drying_duration_minutes = None
+            if drying_duration_raw:
+                try:
+                    drying_duration_minutes = int(drying_duration_raw)
+                except ValueError:
+                    return jsonify({"error": "drying_duration_minutes must be an integer"}), 400
             payload = build_scan_chronology_payload(
                 cursor,
                 tenant_oid,
@@ -352,6 +366,10 @@ def register_rinse_shift_analysis_routes(
                 confidence_filter=confidence,
                 machine_filter=machine,
                 activity_type_filter=activity_type,
+                drying_duration_minutes=drying_duration_minutes,
+                order_type_filter=order_type,
+                status_filter=status,
+                view_mode=view_mode,
             )
             return jsonify(json_safe_rinse(payload))
         except ValueError as exc:

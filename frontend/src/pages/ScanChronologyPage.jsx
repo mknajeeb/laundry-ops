@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import {
   Alert,
@@ -30,9 +30,14 @@ import {
 import CloseIcon from "@mui/icons-material/Close";
 import { getRinseBagScanEvents, getScanChronology } from "../api";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
+import ReadyToFoldChronologyPanel from "../components/ReadyToFoldChronologyPanel";
 import { todayRange, yesterdayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
 import { parseRinseBagScanEventsResponse } from "../utils/rinseTimeFormat";
+import {
+  exportScanChronologyCsv,
+  hasScanChronologyExportRows,
+} from "../utils/scanChronologyExport";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import VeeWashLogo from "../components/VeeWashLogo";
 
@@ -47,6 +52,7 @@ const STAGE_TABS = [
   { id: "sorting", label: "Sorting" },
   { id: "washing", label: "Washing" },
   { id: "drying", label: "Drying" },
+  { id: "ready_to_fold", label: "Ready to Fold" },
   { id: "washer_utilization", label: "Washer Utilization" },
   { id: "dryer_utilization", label: "Dryer Utilization" },
   { id: "coverage_audit", label: "Coverage Audit" },
@@ -56,6 +62,20 @@ const STAGE_TABS = [
 const DURATION_STAGES = new Set(["weighing", "sorting"]);
 const EVENT_STAGES = new Set(["washing", "drying"]);
 const UTIL_STAGES = new Set(["washer_utilization", "dryer_utilization"]);
+const DEFAULT_DRYING_DURATION_MINUTES = 40;
+
+const READY_STATUS_OPTIONS = [
+  { id: "all", label: "All statuses" },
+  { id: "waiting_to_fold", label: "Waiting to fold" },
+  { id: "folding_started", label: "Folding started" },
+  { id: "not_yet_ready", label: "Not yet ready" },
+];
+
+const READY_VIEW_OPTIONS = [
+  { id: "both", label: "Both" },
+  { id: "newly_ready", label: "Newly Ready" },
+  { id: "cumulative", label: "Cumulative Available" },
+];
 
 const ACTIVITY_TYPE_OPTIONS = [
   { id: "all", label: "All" },
@@ -131,14 +151,6 @@ const COVERAGE_STATUS_COLORS = {
   missing: { bg: "#fef2f2", color: "#b91c1c", label: "Missing" },
   exception: { bg: "#fff7ed", color: "#c2410c", label: "Exception" },
 };
-
-function resolvePreset(isoDate) {
-  const today = todayRange().start;
-  const yesterday = yesterdayRange().start;
-  if (!isoDate || isoDate === today) return "today";
-  if (isoDate === yesterday) return "yesterday";
-  return "custom";
-}
 
 function formatDurationSeconds(seconds) {
   const s = Number(seconds);
@@ -314,6 +326,7 @@ export default function ScanChronologyPage() {
   const activeStage = STAGE_TABS.some((t) => t.id === stageParam) ? stageParam : "weighing";
   const isUserActivity = activeStage === "user_activity";
   const isCoverageAudit = activeStage === "coverage_audit";
+  const isReadyToFold = activeStage === "ready_to_fold";
   const isDurationStage = DURATION_STAGES.has(activeStage);
   const isEventStage = EVENT_STAGES.has(activeStage);
   const isUtilStage = UTIL_STAGES.has(activeStage);
@@ -328,12 +341,26 @@ export default function ScanChronologyPage() {
   const [bagFilter, setBagFilter] = useState("");
   const [confidenceFilter, setConfidenceFilter] = useState("");
   const [activityTypeFilter, setActivityTypeFilter] = useState("all");
+  const [dryingDurationMinutes, setDryingDurationMinutes] = useState(DEFAULT_DRYING_DURATION_MINUTES);
+  const [orderTypeFilter, setOrderTypeFilter] = useState("");
+  const [machineFilter, setMachineFilter] = useState("");
+  const [readyStatusFilter, setReadyStatusFilter] = useState("all");
+  const [readyViewMode, setReadyViewMode] = useState("both");
   const [drawerSession, setDrawerSession] = useState(null);
   const [drawerScans, setDrawerScans] = useState([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
+  const loadAbortRef = useRef(null);
+  const loadSeqRef = useRef(0);
 
   const load = useCallback(async (dateEt, stage, filters = {}) => {
     if (!dateEt) return;
+    if (loadAbortRef.current) {
+      loadAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const seq = ++loadSeqRef.current;
+
     setLoading(true);
     setError("");
     try {
@@ -342,31 +369,85 @@ export default function ScanChronologyPage() {
       if (filters.bag_id) params.bag_id = filters.bag_id;
       if (filters.confidence) params.confidence = filters.confidence;
       if (filters.activity_type) params.activity_type = filters.activity_type;
-      const res = await getScanChronology(params);
+      if (filters.drying_duration_minutes != null && filters.drying_duration_minutes !== "") {
+        params.drying_duration_minutes = filters.drying_duration_minutes;
+      }
+      if (filters.order_type) params.order_type = filters.order_type;
+      if (filters.machine) params.machine = filters.machine;
+      if (filters.status) params.status = filters.status;
+      if (filters.view_mode) params.view_mode = filters.view_mode;
+      const res = await getScanChronology(params, { signal: controller.signal });
+      if (seq !== loadSeqRef.current) return;
       setData(res.data);
       setActiveDateEt(dateEt);
+      if (stage === "ready_to_fold" && res.data?.drying_duration_minutes != null) {
+        const nextDuration = Number(res.data.drying_duration_minutes);
+        if (Number.isFinite(nextDuration)) {
+          setDryingDurationMinutes(nextDuration);
+        }
+      }
     } catch (e) {
+      if (controller.signal.aborted || e?.code === "ERR_CANCELED" || e?.name === "CanceledError") {
+        return;
+      }
+      if (seq !== loadSeqRef.current) return;
       setError(e?.response?.data?.error || e?.message || "Failed to load scan chronology");
       setData(null);
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
   const currentFilters = useMemo(
     () => ({
-      employee: employeeFilter,
+      employee: isReadyToFold ? "" : employeeFilter,
       bag_id: bagFilter,
-      confidence: isUserActivity || isCoverageAudit ? "" : confidenceFilter,
+      confidence: isUserActivity || isCoverageAudit || isReadyToFold ? "" : confidenceFilter,
       activity_type: isUserActivity ? activityTypeFilter : undefined,
+      drying_duration_minutes: isReadyToFold ? dryingDurationMinutes : undefined,
+      order_type: isReadyToFold ? orderTypeFilter : undefined,
+      machine: isReadyToFold ? machineFilter : undefined,
+      status: isReadyToFold && readyStatusFilter !== "all" ? readyStatusFilter : undefined,
+      view_mode: isReadyToFold ? readyViewMode : undefined,
     }),
-    [employeeFilter, bagFilter, confidenceFilter, activityTypeFilter, isUserActivity, isCoverageAudit],
+    [
+      employeeFilter,
+      bagFilter,
+      confidenceFilter,
+      activityTypeFilter,
+      dryingDurationMinutes,
+      orderTypeFilter,
+      machineFilter,
+      readyStatusFilter,
+      readyViewMode,
+      isUserActivity,
+      isCoverageAudit,
+      isReadyToFold,
+    ],
   );
 
   useEffect(() => {
     load(activeDateEt, activeStage, currentFilters);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeStage]);
+
+  useEffect(() => {
+    if (!isReadyToFold) return undefined;
+    const parsed = Number(dryingDurationMinutes);
+    if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+    const next = Math.min(1440, Math.max(0, Math.round(parsed)));
+    const timer = setTimeout(() => {
+      load(activeDateEt, activeStage, {
+        ...currentFilters,
+        drying_duration_minutes: next,
+      });
+    }, 250);
+    return () => clearTimeout(timer);
+    // Recalculate only when the duration input changes (filters use Apply / own handlers).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dryingDurationMinutes, isReadyToFold]);
 
   const applyDate = (preset, dateEt) => {
     setDatePreset(preset);
@@ -385,6 +466,30 @@ export default function ScanChronologyPage() {
 
   const applyFilters = () => {
     load(activeDateEt, activeStage, currentFilters);
+  };
+
+  const canExport = useMemo(
+    () =>
+      hasScanChronologyExportRows({
+        stage: activeStage,
+        sessions: data?.sessions || [],
+        coverageRows: data?.rows || data?.sessions || [],
+        employeeGroups: data?.employee_groups || [],
+        intervals: data?.intervals || [],
+      }),
+    [activeStage, data],
+  );
+
+  const handleExport = () => {
+    if (!data) return;
+    exportScanChronologyCsv({
+      stage: activeStage,
+      dateEt: activeDateEt,
+      sessions: data.sessions || [],
+      coverageRows: data.rows || data.sessions || [],
+      employeeGroups: data.employee_groups || [],
+      intervals: data.intervals || [],
+    });
   };
 
   const handleStageChange = (_, value) => {
@@ -431,6 +536,7 @@ export default function ScanChronologyPage() {
   const sessions = data?.sessions || [];
   const coverageRows = data?.rows || sessions;
   const employeeGroups = data?.employee_groups || [];
+  const readyIntervals = data?.intervals || [];
   const labels = STAGE_SUMMARY_LABELS[activeStage] || STAGE_SUMMARY_LABELS.weighing;
 
   const washingBagSummary = useMemo(() => {
@@ -483,6 +589,20 @@ export default function ScanChronologyPage() {
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [data, employeeGroups, isUserActivity]);
 
+  const machineOptions = useMemo(() => {
+    if (Array.isArray(data?.machines) && data.machines.length > 0) {
+      return [...data.machines].sort((a, b) => a.localeCompare(b));
+    }
+    return [];
+  }, [data]);
+
+  const orderTypeOptions = useMemo(() => {
+    if (Array.isArray(data?.order_types) && data.order_types.length > 0) {
+      return [...data.order_types].sort((a, b) => a.localeCompare(b));
+    }
+    return ["WF", "HD"];
+  }, [data]);
+
   const handleEmployeeFilterChange = (value) => {
     setEmployeeFilter(value);
     load(activeDateEt, activeStage, {
@@ -499,9 +619,45 @@ export default function ScanChronologyPage() {
     });
   };
 
+  const handleReadyFilterChange = (patch) => {
+    if (Object.prototype.hasOwnProperty.call(patch, "order_type")) setOrderTypeFilter(patch.order_type);
+    if (Object.prototype.hasOwnProperty.call(patch, "machine")) setMachineFilter(patch.machine);
+    if (Object.prototype.hasOwnProperty.call(patch, "status")) setReadyStatusFilter(patch.status);
+    if (Object.prototype.hasOwnProperty.call(patch, "view_mode")) setReadyViewMode(patch.view_mode);
+    const next = {
+      ...currentFilters,
+      ...patch,
+    };
+    if (next.status === "all" || next.status === "") next.status = undefined;
+    if (next.order_type === "") next.order_type = undefined;
+    if (next.machine === "") next.machine = undefined;
+    load(activeDateEt, activeStage, next);
+  };
+
   const stageLabel = STAGE_TABS.find((t) => t.id === activeStage)?.label || "Weighing";
 
   const renderSummaryCards = () => {
+    if (isReadyToFold) {
+      return (
+        <>
+          <SummaryCard label="Total Bags Dried" value={summary.total_bags_dried ?? 0} />
+          <SummaryCard label="Total Bags Ready to Fold" value={summary.total_bags_ready_to_fold ?? 0} />
+          <SummaryCard label="Currently Waiting to Fold" value={summary.currently_waiting_to_fold ?? 0} />
+          <SummaryCard label="First Bag Ready" value={formatDateTime(summary.first_bag_ready_et) || "—"} />
+          <SummaryCard
+            label="Peak Ready Interval"
+            value={summary.peak_ready_interval_label || "—"}
+            sub={
+              summary.max_bags_waiting != null
+                ? `${summary.max_bags_waiting} waiting`
+                : undefined
+            }
+          />
+          <SummaryCard label="Max Bags Waiting" value={summary.max_bags_waiting ?? 0} />
+        </>
+      );
+    }
+
     if (isCoverageAudit) {
       return (
         <>
@@ -905,21 +1061,94 @@ export default function ScanChronologyPage() {
 
       <Paper elevation={0} sx={{ p: 1.5, mb: 2, borderRadius: 2, border: "1px solid", borderColor: "divider" }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} flexWrap="wrap" useFlexGap>
-          <FormControl size="small" sx={{ minWidth: 180 }}>
-            <InputLabel>Employee</InputLabel>
-            <Select
-              label="Employee"
-              value={employeeFilter}
-              onChange={(e) => handleEmployeeFilterChange(e.target.value)}
-            >
-              <MenuItem value="">All Employees</MenuItem>
-              {employeeOptions.map((name) => (
-                <MenuItem key={name} value={name}>
-                  {name}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
+          {isReadyToFold ? (
+            <>
+              <TextField
+                size="small"
+                type="number"
+                label="Minutes After Drying Scan"
+                value={dryingDurationMinutes}
+                onChange={(e) => setDryingDurationMinutes(e.target.value)}
+                inputProps={{ min: 0, max: 1440, step: 1 }}
+                sx={{ minWidth: 200 }}
+                helperText="Ready = drying scan + this duration"
+              />
+              <FormControl size="small" sx={{ minWidth: 130 }}>
+                <InputLabel>Order type</InputLabel>
+                <Select
+                  label="Order type"
+                  value={orderTypeFilter}
+                  onChange={(e) => handleReadyFilterChange({ order_type: e.target.value })}
+                >
+                  <MenuItem value="">All</MenuItem>
+                  {orderTypeOptions.map((ot) => (
+                    <MenuItem key={ot} value={ot}>
+                      {ot}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl size="small" sx={{ minWidth: 150 }}>
+                <InputLabel>Dryer / machine</InputLabel>
+                <Select
+                  label="Dryer / machine"
+                  value={machineFilter}
+                  onChange={(e) => handleReadyFilterChange({ machine: e.target.value })}
+                >
+                  <MenuItem value="">All dryers</MenuItem>
+                  {machineOptions.map((name) => (
+                    <MenuItem key={name} value={name}>
+                      {name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl size="small" sx={{ minWidth: 160 }}>
+                <InputLabel>Bag status</InputLabel>
+                <Select
+                  label="Bag status"
+                  value={readyStatusFilter}
+                  onChange={(e) => handleReadyFilterChange({ status: e.target.value })}
+                >
+                  {READY_STATUS_OPTIONS.map(({ id, label }) => (
+                    <MenuItem key={id} value={id}>
+                      {label}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl size="small" sx={{ minWidth: 180 }}>
+                <InputLabel>View</InputLabel>
+                <Select
+                  label="View"
+                  value={readyViewMode}
+                  onChange={(e) => handleReadyFilterChange({ view_mode: e.target.value })}
+                >
+                  {READY_VIEW_OPTIONS.map(({ id, label }) => (
+                    <MenuItem key={id} value={id}>
+                      {label}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </>
+          ) : (
+            <FormControl size="small" sx={{ minWidth: 180 }}>
+              <InputLabel>Employee</InputLabel>
+              <Select
+                label="Employee"
+                value={employeeFilter}
+                onChange={(e) => handleEmployeeFilterChange(e.target.value)}
+              >
+                <MenuItem value="">All Employees</MenuItem>
+                {employeeOptions.map((name) => (
+                  <MenuItem key={name} value={name}>
+                    {name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
           {isUserActivity ? (
             <FormControl size="small" sx={{ minWidth: 150 }}>
               <InputLabel>Activity type</InputLabel>
@@ -935,7 +1164,7 @@ export default function ScanChronologyPage() {
                 ))}
               </Select>
             </FormControl>
-          ) : !isCoverageAudit ? (
+          ) : !isCoverageAudit && !isReadyToFold ? (
             <FormControl size="small" sx={{ minWidth: 130 }}>
               <InputLabel>Confidence</InputLabel>
               <Select
@@ -959,6 +1188,15 @@ export default function ScanChronologyPage() {
           <Button size="small" variant="outlined" onClick={applyFilters} disabled={loading}>
             Apply filters
           </Button>
+          <Button
+            size="small"
+            variant="contained"
+            onClick={handleExport}
+            disabled={loading || !canExport}
+            sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue }}
+          >
+            Export CSV
+          </Button>
         </Stack>
       </Paper>
 
@@ -974,9 +1212,36 @@ export default function ScanChronologyPage() {
         </Box>
       ) : null}
 
+      {loading && data ? (
+        <Alert severity="info" sx={{ mb: 2 }} icon={<CircularProgress size={16} />}>
+          Refreshing {stageLabel}…
+        </Alert>
+      ) : null}
+
       {data ? (
         <>
-          {isUserActivity ? (
+          {isReadyToFold ? (
+            <>
+              <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
+                {renderSummaryCards()}
+              </Stack>
+
+              {readyIntervals.every(
+                (interval) =>
+                  (interval.newly_ready_count || 0) === 0 && (interval.available_count || 0) === 0,
+              ) ? (
+                <Alert severity="info">
+                  No ready-to-fold bags for {activeDateEt} at {dryingDurationMinutes} minutes after drying.
+                </Alert>
+              ) : (
+                <ReadyToFoldChronologyPanel
+                  intervals={readyIntervals}
+                  viewMode={readyViewMode}
+                  onBagClick={openDrawer}
+                />
+              )}
+            </>
+          ) : isUserActivity ? (
             <>
               <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
                 {renderSummaryCards()}
@@ -1066,6 +1331,33 @@ export default function ScanChronologyPage() {
                     <strong>Included via:</strong> {(drawerSession.inclusion_sources || []).join(", ")}
                   </Typography>
                 ) : null}
+              </>
+            ) : drawerSession.ready_to_fold_et ? (
+              <>
+                <Typography variant="body2">
+                  <strong>Drying scan:</strong> {formatDateTime(drawerSession.drying_scan_et) || "—"}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Ready to fold:</strong> {formatDateTime(drawerSession.ready_to_fold_et) || "—"}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Drying duration:</strong> {drawerSession.drying_duration_minutes ?? "—"} min
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Folding start:</strong> {formatDateTime(drawerSession.folding_start_et) || "—"}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Status:</strong> {drawerSession.status || "—"}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Order type:</strong> {drawerSession.order_type || drawerSession.service_type || "—"}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Weight:</strong>{" "}
+                  {drawerSession.weight != null && drawerSession.weight !== ""
+                    ? `${drawerSession.weight} lb`
+                    : "—"}
+                </Typography>
               </>
             ) : (
               <>

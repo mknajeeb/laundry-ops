@@ -34,6 +34,7 @@ class TestScanChronologyPayload:
                 "dryer_utilization",
                 "coverage_audit",
                 "user_activity",
+                "ready_to_fold",
             }
         )
         assert DURATION_STAGES == frozenset({"weighing", "sorting"})
