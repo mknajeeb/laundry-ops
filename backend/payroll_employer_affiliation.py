@@ -135,6 +135,8 @@ def save_employer_affiliation(
     organization_id: int,
     user_id: int,
     affiliation: str,
+    *,
+    cascade_shifts: bool = True,
 ) -> dict[str, Any]:
     from backend.payroll_schedule import get_worker_by_user_id, save_scheduling_profile
 
@@ -151,6 +153,24 @@ def save_employer_affiliation(
         int(user_id),
         {**flags, "business_entity": aff},
     )
+    # Keep shift tabs in sync when the worker moves to a concrete entity. Otherwise
+    # stored veewash/washpro shift tags keep them parked on the home-entity tab.
+    if cascade_shifts and aff in SHIFT_EMPLOYER_AFFILIATIONS:
+        cursor = conn.cursor()
+        try:
+            from backend.planned_weekly_schedule import ensure_planned_weekly_schedule_table
+
+            ensure_planned_weekly_schedule_table(cursor)
+            cursor.execute(
+                """
+                UPDATE planned_weekly_schedule_entries
+                SET employer_affiliation=%s
+                WHERE organization_id=%s AND user_id=%s
+                """,
+                (aff, int(organization_id), int(user_id)),
+            )
+        finally:
+            cursor.close()
     worker = get_worker_by_user_id(conn, int(organization_id), int(user_id))
     return {
         "user_id": int(user_id),

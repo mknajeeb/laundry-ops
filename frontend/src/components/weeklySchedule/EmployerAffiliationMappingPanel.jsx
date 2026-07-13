@@ -146,6 +146,7 @@ export default function EmployerAffiliationMappingPanel() {
       </Typography>
       <Typography variant="caption" color="text.secondary" display="block" mb={1.5}>
         Stored on each worker&apos;s payroll scheduling profile. Controls which Weekly Schedule entity tabs they appear on.
+        Changing to VeeWash, WashPro, WashMate, or Rinse Exclusive also retags that worker&apos;s planned shifts so they do not stay parked on the old tab.
         Use <strong>None</strong> for system / admin accounts that should not appear on entity-specific schedule tabs.
         Changes here are the same as editing the profile under People → Scheduling.
       </Typography>

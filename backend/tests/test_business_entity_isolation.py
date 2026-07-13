@@ -65,6 +65,7 @@ def test_shared_worker_visible_on_washpro_and_rinse_tabs_for_washpro_org():
 
 
 def test_bulk_move_blocks_cross_entity_worker():
+    """Per-shift guards still block mismatched entities; bulk migrate updates profiles first."""
     worker = {"employer_affiliation": ENTITY_WASHPRO}
     allowed, reason = bulk_shift_entity_allowed(worker, ENTITY_RINSE_EXCLUSIVE, organization_slug="washpro")
     assert allowed is False
@@ -74,6 +75,11 @@ def test_bulk_move_blocks_cross_entity_worker():
 def test_bulk_move_allows_matching_entity_worker():
     worker = {"employer_affiliation": ENTITY_RINSE_EXCLUSIVE}
     allowed, _ = bulk_shift_entity_allowed(worker, ENTITY_RINSE_EXCLUSIVE, organization_slug="washpro")
+    assert allowed is True
+
+def test_bulk_move_allows_veewash_worker_on_veewash_org_to_veewash_shift():
+    worker = {"employer_affiliation": ENTITY_VEEWASH}
+    allowed, _ = bulk_shift_entity_allowed(worker, ENTITY_VEEWASH, organization_slug="veewash")
     assert allowed is True
 
 

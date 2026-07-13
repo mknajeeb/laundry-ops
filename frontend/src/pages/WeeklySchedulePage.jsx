@@ -575,7 +575,7 @@ export default function WeeklySchedulePage() {
   const handleBulkMoveToRinseExclusive = async () => {
     if (
       !window.confirm(
-        "Move every shift this week to Rinse Exclusive? Shifts on other entity tabs will move where permitted; cross-entity shifts are skipped.",
+        "Move every shift this week to Rinse Exclusive? Worker profiles are updated too so they stay on the Rinse Exclusive tab.",
       )
     ) {
       return;
@@ -591,7 +591,7 @@ export default function WeeklySchedulePage() {
       setEmployerTab(ENTITY_TAB.RINSE_EXCLUSIVE);
       const skipped = res.data?.entries_skipped || [];
       if (skipped.length) {
-        setError(`Moved ${res.data?.entries_updated || 0} shifts. Skipped ${skipped.length} cross-entity shift(s).`);
+        setError(`Moved ${res.data?.entries_updated || 0} shifts. Skipped ${skipped.length} (None-affiliated) shift(s).`);
       }
     } catch (e) {
       setError(e?.response?.data?.error || "Failed to move shifts to Rinse Exclusive");

@@ -1010,10 +1010,19 @@ def bulk_set_week_entry_employer_affiliation(
     week_start: date,
     employer_affiliation: str,
 ) -> tuple[int, str | None, list[dict[str, Any]]]:
+    """Move this week's shifts to ``employer_affiliation``.
+
+    Admin bulk moves also migrate each scheduled worker's payroll profile to the
+    same entity so VeeWash/WashPro workers are not skipped and then snap back
+    onto the home-entity tab after reload.
+    """
     from backend.payroll_employer_affiliation import (
+        EMPLOYER_AFFILIATION_NONE,
         _organization_slug,
-        bulk_shift_entity_allowed,
+        employer_affiliation_from_flags,
+        flags_from_employer_affiliation,
         normalize_shift_employer_affiliation,
+        save_employer_affiliation,
     )
 
     ensure_planned_weekly_schedule_table(cursor)
@@ -1026,20 +1035,31 @@ def bulk_set_week_entry_employer_affiliation(
     rows = list_week_entries(cursor, organization_id, week_start=week_start, conn=conn)
     skipped: list[dict[str, Any]] = []
     updated = 0
+    migrated_user_ids: set[int] = set()
+
     for row in rows:
         entry_id = int(row.get("id") or 0)
         uid = int(row.get("user_id") or 0)
         worker = workers_by_uid.get(uid)
-        allowed, reason = bulk_shift_entity_allowed(worker, aff, organization_slug=org_slug)
-        if not allowed:
+        worker_entity = employer_affiliation_from_flags(worker, organization_slug=org_slug)
+        if worker_entity == EMPLOYER_AFFILIATION_NONE:
             skipped.append(
                 {
                     "entry_id": entry_id,
                     "user_id": uid,
-                    "reason": reason or "entity mismatch",
+                    "reason": "worker affiliation is none",
                 }
             )
             continue
+        if uid not in migrated_user_ids and worker_entity != aff:
+            save_employer_affiliation(conn, int(organization_id), uid, aff)
+            workers_by_uid[uid] = {
+                **dict(worker or {}),
+                **flags_from_employer_affiliation(aff),
+                "business_entity": aff,
+                "employer_affiliation": aff,
+            }
+            migrated_user_ids.add(uid)
         cursor.execute(
             """
             UPDATE planned_weekly_schedule_entries

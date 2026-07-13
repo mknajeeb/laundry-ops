@@ -811,7 +811,9 @@ def test_bulk_set_week_entry_employer_affiliation():
     ), patch(
         "backend.payroll_employer_affiliation._organization_slug",
         return_value="washpro",
-    ):
+    ), patch(
+        "backend.payroll_employer_affiliation.save_employer_affiliation",
+    ) as save_aff:
         updated, err, skipped = bulk_set_week_entry_employer_affiliation(
             conn,
             cursor,
@@ -823,9 +825,12 @@ def test_bulk_set_week_entry_employer_affiliation():
     assert updated == 2
     assert skipped == []
     assert all(row["employer_affiliation"] == "rinse_exclusive" for row in cursor.rows)
+    # Shared worker (uid 10) is migrated; rinse-exclusive worker (uid 20) is not.
+    assert save_aff.call_count == 1
+    assert save_aff.call_args.args[2] == 10
 
 
-def test_bulk_set_week_entry_employer_affiliation_skips_cross_entity_worker():
+def test_bulk_set_week_entry_employer_affiliation_migrates_cross_entity_worker():
     cursor = _FakeCursor()
     conn = MagicMock()
     week = date(2026, 6, 28)
@@ -852,7 +857,53 @@ def test_bulk_set_week_entry_employer_affiliation_skips_cross_entity_worker():
     ), patch(
         "backend.payroll_employer_affiliation._organization_slug",
         return_value="washpro",
-    ):
+    ), patch(
+        "backend.payroll_employer_affiliation.save_employer_affiliation",
+    ) as save_aff:
+        updated, err, skipped = bulk_set_week_entry_employer_affiliation(
+            conn,
+            cursor,
+            1,
+            week_start=week,
+            employer_affiliation="rinse_exclusive",
+        )
+    assert err is None
+    assert updated == 1
+    assert skipped == []
+    assert cursor.rows[0]["employer_affiliation"] == "rinse_exclusive"
+    save_aff.assert_called_once_with(conn, 1, 10, "rinse_exclusive")
+
+
+def test_bulk_set_week_entry_employer_affiliation_skips_none_worker():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    week = date(2026, 6, 28)
+    workers = [
+        {"user_id": 10, "can_work_rinse": False, "can_work_drop_off": False, "can_work_both": False},
+    ]
+    cursor.rows = [
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": week,
+            "user_id": 10,
+            "day_of_week": 0,
+            "role": "fold",
+            "start_time": time(9, 0),
+            "end_time": time(16, 0),
+            "break_minutes": 0,
+            "employer_affiliation": "washpro",
+        },
+    ]
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers",
+        return_value=workers,
+    ), patch(
+        "backend.payroll_employer_affiliation._organization_slug",
+        return_value="washpro",
+    ), patch(
+        "backend.payroll_employer_affiliation.save_employer_affiliation",
+    ) as save_aff:
         updated, err, skipped = bulk_set_week_entry_employer_affiliation(
             conn,
             cursor,
@@ -863,4 +914,6 @@ def test_bulk_set_week_entry_employer_affiliation_skips_cross_entity_worker():
     assert err is None
     assert updated == 0
     assert len(skipped) == 1
+    assert skipped[0]["reason"] == "worker affiliation is none"
     assert cursor.rows[0]["employer_affiliation"] == "washpro"
+    save_aff.assert_not_called()
