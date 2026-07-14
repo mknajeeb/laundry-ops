@@ -443,7 +443,12 @@ class TestLoadUploadBatchOrders:
                 return True
             if table == "upload_batches" and col == "organization_id":
                 return True
-            if table == "upload_batch_rows" and col in ("ticket_id", "date_clean", "special_instructions_raw"):
+            if table == "upload_batch_rows" and col in (
+                "ticket_id",
+                "date_clean",
+                "special_instructions_raw",
+                "row_status",
+            ):
                 return True
             return False
 
@@ -469,6 +474,310 @@ class TestLoadUploadBatchOrders:
         sql = executed[0][0]
         assert "ub.batch_id = ubr.upload_batch_id" in sql
         assert "ub.id" not in sql
+        assert "ubr.row_status IN ('ACCEPTED', 'OVERRIDDEN')" in sql
+        assert executed[0][1] == (date(2026, 6, 19), 3)
+
+
+class TestUploadRowStatusSupplyUsage:
+    """Rejected/deleted/unresolved upload rows must not consume supplies."""
+
+    TARGET = date(2026, 7, 14)
+    FAB_OXIC = "USE FABRIC SOFTENER; USE OXICLEAN"
+    HYPO = "Use Hypoallergenic Soap"
+
+    def _patch_schema(self, su):
+        def fake_table_exists(cursor, table):
+            return table in ("upload_batch_rows", "upload_batches")
+
+        def fake_table_has_column(cursor, table, col):
+            if table == "upload_batches" and col == "id":
+                return True
+            if table == "upload_batches" and col == "organization_id":
+                return True
+            if table == "upload_batch_rows" and col in (
+                "ticket_id",
+                "date_clean",
+                "special_instructions_raw",
+                "row_status",
+            ):
+                return True
+            return False
+
+        original_te = su.table_exists
+        original_thc = su.table_has_column
+        su.table_exists = fake_table_exists
+        su.table_has_column = fake_table_has_column
+        return original_te, original_thc
+
+    def _cursor_for_upload_rows(self, rows):
+        """Simulate SQL date/org/ticket/row_status filters against in-memory rows."""
+        executed: list[tuple[str, tuple]] = []
+        result: list[dict] = []
+
+        cursor = MagicMock()
+
+        def capture_execute(sql, args=()):
+            executed.append((sql, args))
+            sql_norm = " ".join(sql.split())
+            assert "ubr.row_status IN ('ACCEPTED', 'OVERRIDDEN')" in sql_norm
+            target = args[0]
+            org_id = args[1] if len(args) > 1 else None
+            filtered = []
+            for row in rows:
+                if row.get("date_clean") != target:
+                    continue
+                if org_id is not None and int(row.get("organization_id") or 0) != int(org_id):
+                    continue
+                if row.get("row_status") not in ("ACCEPTED", "OVERRIDDEN"):
+                    continue
+                tid = str(row.get("ticket_id") or "").strip()
+                if not tid:
+                    continue
+                filtered.append(
+                    {
+                        "date_clean": row["date_clean"],
+                        "name_clean": row["name_clean"],
+                        "service_type": row.get("service_type"),
+                        "ticket_id": row["ticket_id"],
+                        "special_instructions_raw": row.get("special_instructions_raw"),
+                        "supply_interpretation": row.get("supply_interpretation"),
+                        "special_instruction_review": row.get("special_instruction_review"),
+                    }
+                )
+            result.clear()
+            result.extend(filtered)
+
+        cursor.execute = capture_execute
+        cursor.fetchall = lambda: list(result)
+        cursor.fetchone = MagicMock(return_value=None)
+        cursor._executed = executed
+        return cursor
+
+    def _report_from_upload_rows(self, rows, organization_id=3, target=None):
+        from backend import supply_usage as su
+
+        target = target or self.TARGET
+        cursor = self._cursor_for_upload_rows(rows)
+        original_te, original_thc = self._patch_schema(su)
+        original_staging = su._load_staging_orders
+        original_split = su._load_split_load_bag_ids
+        su._load_staging_orders = lambda *a, **k: []
+        su._load_split_load_bag_ids = lambda *a, **k: set()
+        try:
+            return build_supply_usage_report(cursor, organization_id, target)
+        finally:
+            su.table_exists = original_te
+            su.table_has_column = original_thc
+            su._load_staging_orders = original_staging
+            su._load_split_load_bag_ids = original_split
+
+    def _row(
+        self,
+        *,
+        ticket_id,
+        row_status,
+        special_instructions_raw=None,
+        name_clean="Customer",
+        organization_id=3,
+        date_clean=None,
+    ):
+        return {
+            "ticket_id": ticket_id,
+            "row_status": row_status,
+            "special_instructions_raw": special_instructions_raw,
+            "name_clean": name_clean,
+            "organization_id": organization_id,
+            "date_clean": date_clean or self.TARGET,
+            "service_type": "Wash & Fold",
+        }
+
+    def test_accepted_row_contributes_tide_downy_oxiclean(self):
+        report = self._report_from_upload_rows(
+            [
+                self._row(
+                    ticket_id="ACC001",
+                    row_status="ACCEPTED",
+                    special_instructions_raw=self.FAB_OXIC,
+                    name_clean="Accepted Customer",
+                )
+            ]
+        )
+        assert report["summary"]["orders_analyzed"] == 1
+        assert report["usage_by_supply"]["Tide"]["orders"] == 1
+        assert report["usage_by_supply"]["Tide"]["doses"] == 1
+        assert report["usage_by_supply"]["Tide"]["ounces"] == 2.0
+        assert report["usage_by_supply"]["Downy"]["doses"] == 1
+        assert report["usage_by_supply"]["Downy"]["ounces"] == 1.0
+        assert report["usage_by_supply"]["OxiClean"]["doses"] == 1
+        assert report["usage_by_supply"]["OxiClean"]["ounces"] == 1.0
+        assert report["orders"][0]["supplies_used"] == ["Tide", "Downy", "OxiClean"]
+
+    def test_overridden_row_contributes_all_free_clear(self):
+        report = self._report_from_upload_rows(
+            [
+                self._row(
+                    ticket_id="OVR001",
+                    row_status="OVERRIDDEN",
+                    special_instructions_raw=self.HYPO,
+                    name_clean="Overridden Customer",
+                )
+            ]
+        )
+        assert report["summary"]["orders_analyzed"] == 1
+        assert report["summary"]["hypo_orders"] == 1
+        assert report["usage_by_supply"]["All Free & Clear"]["orders"] == 1
+        assert report["usage_by_supply"]["All Free & Clear"]["doses"] == 1
+        assert report["usage_by_supply"]["All Free & Clear"]["ounces"] == 2.0
+        assert report["usage_by_supply"]["Tide"]["doses"] == 0
+        assert report["orders"][0]["supplies_used"] == ["All Free & Clear"]
+
+    def test_rejected_duplicate_contributes_zero_usage(self):
+        report = self._report_from_upload_rows(
+            [
+                self._row(
+                    ticket_id="REJ001",
+                    row_status="REJECTED_DUPLICATE",
+                    special_instructions_raw=self.FAB_OXIC,
+                )
+            ]
+        )
+        assert report["summary"]["orders_analyzed"] == 0
+        assert report["orders"] == []
+        assert report["usage_by_supply"]["Tide"]["doses"] == 0
+        assert report["usage_by_supply"]["Downy"]["doses"] == 0
+        assert report["usage_by_supply"]["OxiClean"]["doses"] == 0
+
+    def test_deleted_row_contributes_zero_usage(self):
+        report = self._report_from_upload_rows(
+            [
+                self._row(
+                    ticket_id="DEL001",
+                    row_status="DELETED",
+                    special_instructions_raw=self.HYPO,
+                )
+            ]
+        )
+        assert report["summary"]["orders_analyzed"] == 0
+        assert report["usage_by_supply"]["All Free & Clear"]["doses"] == 0
+        assert report["usage_by_supply"]["All Free & Clear"]["ounces"] == 0.0
+
+    def test_needs_attention_row_contributes_zero_usage(self):
+        report = self._report_from_upload_rows(
+            [
+                self._row(
+                    ticket_id="ATT001",
+                    row_status="NEEDS_ATTENTION",
+                    special_instructions_raw=self.FAB_OXIC,
+                )
+            ]
+        )
+        assert report["summary"]["orders_analyzed"] == 0
+        assert report["usage_by_supply"]["Tide"]["doses"] == 0
+        assert report["usage_by_supply"]["Downy"]["doses"] == 0
+        assert report["usage_by_supply"]["OxiClean"]["doses"] == 0
+
+    def test_accepted_plus_rejected_duplicate_counts_once(self):
+        report = self._report_from_upload_rows(
+            [
+                self._row(
+                    ticket_id="SAMEBAG01",
+                    row_status="ACCEPTED",
+                    special_instructions_raw=self.FAB_OXIC,
+                    name_clean="Bella Lavarre",
+                ),
+                self._row(
+                    ticket_id="SAMEBAG01",
+                    row_status="REJECTED_DUPLICATE",
+                    special_instructions_raw=self.FAB_OXIC,
+                    name_clean="Bella Lavarre",
+                ),
+            ]
+        )
+        assert report["summary"]["orders_analyzed"] == 1
+        assert report["usage_by_supply"]["Tide"]["orders"] == 1
+        assert report["usage_by_supply"]["Tide"]["doses"] == 1
+        assert report["usage_by_supply"]["Tide"]["ounces"] == 2.0
+        assert report["usage_by_supply"]["Downy"]["doses"] == 1
+        assert report["usage_by_supply"]["OxiClean"]["doses"] == 1
+        assert len(report["orders"]) == 1
+        assert report["orders"][0]["order_id"] == "SAMEBAG01"
+
+    def test_organization_scoping_excludes_other_org_rows(self):
+        report = self._report_from_upload_rows(
+            [
+                self._row(
+                    ticket_id="ORG3OK",
+                    row_status="ACCEPTED",
+                    special_instructions_raw=self.HYPO,
+                    organization_id=3,
+                ),
+                self._row(
+                    ticket_id="ORG9NO",
+                    row_status="ACCEPTED",
+                    special_instructions_raw=self.FAB_OXIC,
+                    organization_id=9,
+                ),
+            ],
+            organization_id=3,
+        )
+        assert report["summary"]["orders_analyzed"] == 1
+        assert report["orders"][0]["order_id"] == "ORG3OK"
+        assert report["usage_by_supply"]["All Free & Clear"]["doses"] == 1
+        assert report["usage_by_supply"]["Tide"]["doses"] == 0
+        assert report["usage_by_supply"]["Downy"]["doses"] == 0
+
+    def test_date_and_ticket_filtering_still_apply(self):
+        from backend import supply_usage as su
+
+        rows = [
+            self._row(
+                ticket_id="TODAY1",
+                row_status="ACCEPTED",
+                special_instructions_raw="USE FABRIC SOFTENER",
+                date_clean=self.TARGET,
+            ),
+            self._row(
+                ticket_id="YDAY1",
+                row_status="ACCEPTED",
+                special_instructions_raw=self.FAB_OXIC,
+                date_clean=date(2026, 7, 13),
+            ),
+            self._row(
+                ticket_id="",
+                row_status="ACCEPTED",
+                special_instructions_raw=self.HYPO,
+                date_clean=self.TARGET,
+            ),
+            self._row(
+                ticket_id=None,
+                row_status="OVERRIDDEN",
+                special_instructions_raw=self.FAB_OXIC,
+                date_clean=self.TARGET,
+            ),
+        ]
+        cursor = self._cursor_for_upload_rows(rows)
+        original_te, original_thc = self._patch_schema(su)
+        try:
+            loaded = su._load_upload_batch_orders(cursor, 3, self.TARGET)
+        finally:
+            su.table_exists = original_te
+            su.table_has_column = original_thc
+
+        assert len(loaded) == 1
+        assert loaded[0]["ticket_id"] == "TODAY1"
+        sql, args = cursor._executed[0]
+        assert args == (self.TARGET, 3)
+        assert "ubr.date_clean = %s" in sql
+        assert "ub.organization_id = %s" in sql
+        assert "ubr.ticket_id IS NOT NULL" in sql
+        assert "ubr.row_status IN ('ACCEPTED', 'OVERRIDDEN')" in sql
+
+        report = self._report_from_upload_rows(rows)
+        assert report["summary"]["orders_analyzed"] == 1
+        assert report["usage_by_supply"]["Tide"]["doses"] == 1
+        assert report["usage_by_supply"]["Downy"]["doses"] == 1
+        assert report["usage_by_supply"]["Downy"]["ounces"] == 1.0
+        assert report["usage_by_supply"]["OxiClean"]["doses"] == 0
 
 
 class TestBuildSupplyUsageReportEmptyDay:

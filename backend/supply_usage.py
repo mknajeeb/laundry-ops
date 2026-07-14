@@ -328,7 +328,9 @@ def _load_upload_batch_orders(cursor, organization_id: int, target_date: date) -
         SELECT {", ".join(cols)}
         FROM upload_batch_rows ubr
         INNER JOIN upload_batches ub ON ub.{ub_pk} = ubr.upload_batch_id
-        WHERE ubr.date_clean = %s{org_clause}{ticket_clause}
+        WHERE ubr.date_clean = %s
+          AND ubr.row_status IN ('ACCEPTED', 'OVERRIDDEN')
+          {org_clause}{ticket_clause}
         ORDER BY {order_by}
         """,
         tuple(args),
@@ -426,7 +428,10 @@ def build_supply_usage_report(
     order_rows.sort(key=lambda r: (str(r.get("customer") or "").lower(), str(r.get("order_id") or "")))
     return {
         "date_et": target_date.isoformat(),
-        "data_source": "orders_staging + upload_batch_rows (date_clean, staging preferred on duplicate ticket_id)",
+        "data_source": (
+            "orders_staging + upload_batch_rows "
+            "(date_clean, ACCEPTED/OVERRIDDEN only, staging preferred on duplicate ticket_id)"
+        ),
         "summary": _summary_counts(order_rows),
         "usage_by_supply": _usage_by_supply(order_rows, dosages),
         "orders": order_rows,
