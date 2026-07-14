@@ -1282,6 +1282,42 @@ def run_scheduled_scrape_for_org(
             result.at_vendor_status = "failed"
             result.error_message = str(e)
             log.write(f"ERROR: {e}\n")
+            # Best-effort: still pull near-complete pending bags via direct
+            # ?q= lookup when the Events CSV scrape/import path fails.
+            if not dry_run:
+                try:
+                    fallback_batch_id = result.batch_id
+                    if not fallback_batch_id:
+                        cursor.execute(
+                            """
+                            SELECT batch_id FROM upload_batches
+                            WHERE organization_id = %s AND state = 'CONFIRMED'
+                            ORDER BY batch_id DESC LIMIT 1
+                            """,
+                            (org_id,),
+                        )
+                        brow = cursor.fetchone() or {}
+                        fallback_batch_id = brow.get("batch_id") if isinstance(brow, dict) else None
+                    targeted_pending_refresh_detail = _run_targeted_pending_scan_refresh(
+                        conn,
+                        cursor,
+                        org_id=org_id,
+                        upload_batch_id=int(fallback_batch_id) if fallback_batch_id else None,
+                        batch_date=_today_et(),
+                        run_type=run_type,
+                        targeted_pending_refresh=targeted_pending_refresh,
+                        log=log,
+                    )
+                    if targeted_pending_refresh_detail is not None:
+                        result.detail["targeted_pending_scan_refresh"] = (
+                            targeted_pending_refresh_detail
+                        )
+                        result.detail["targeted_refresh_after_scrape_failure"] = True
+                except Exception as refresh_exc:
+                    log.write(
+                        f"Targeted pending scan refresh after scrape failure "
+                        f"ERROR (non-fatal): {refresh_exc}\n"
+                    )
 
         if rfv_detail is not None:
             result.detail["ready_for_vendor_sync"] = rfv_detail

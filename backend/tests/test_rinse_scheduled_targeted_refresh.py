@@ -104,3 +104,64 @@ def test_scheduled_refresh_failure_does_not_fail_main_sync():
     detail = (result.detail or {}).get("targeted_pending_scan_refresh") or {}
     assert detail.get("targeted_refresh_ran") is False
     assert "portal timeout" in str(detail.get("error") or "")
+
+
+def test_scheduled_scrape_failure_still_runs_targeted_refresh():
+    """When Events CSV scrape fails, still attempt near-complete pending refresh."""
+    import tempfile
+
+    from backend.rinse_scheduled_scrape import ScrapePaths, run_scheduled_scrape_for_org
+
+    run_dir = Path(tempfile.mkdtemp())
+    paths = ScrapePaths(
+        run_dir=run_dir,
+        portal_csv=run_dir / "portal.csv",
+        scan_tickets_csv=run_dir / "t.csv",
+        scan_events_csv=run_dir / "e.csv",
+        log_path=run_dir / "log",
+    )
+    write_gate_passing_portal_csv(paths.portal_csv)
+    paths.scan_events_csv.write_text("h\n1\n")
+
+    conn = MagicMock()
+    cursor = MagicMock()
+    cursor.fetchone.return_value = {"batch_id": 55, "c": 1}
+    conn.cursor.return_value = cursor
+
+    tenant = MagicMock()
+    tenant.is_dir.return_value = True
+
+    refresh_summary = {
+        "targeted_refresh_ran": True,
+        "targeted_bags_considered": 1,
+        "targeted_bags_refreshed": 1,
+        "missing_scans_imported": 3,
+        "bags_completed_after_refresh": 1,
+        "lookup_failures": 0,
+    }
+
+    with patch("backend.rinse_scheduled_scrape.tenant_script_dir", return_value=tenant), patch(
+        "backend.rinse_scheduled_scrape.acquire_scrape_lock", return_value=(True, "")
+    ), patch(
+        "backend.rinse_scheduled_scrape.insert_scrape_run", return_value=1
+    ), patch(
+        "backend.rinse_scheduled_scrape.build_run_paths", return_value=paths
+    ), patch(
+        "backend.rinse_scheduled_scrape._run_bash_script", return_value=1
+    ), patch(
+        "backend.rinse_scheduled_scrape._subprocess_env_for_vendor", return_value={}
+    ), patch(
+        "backend.rinse_scheduled_scrape._run_targeted_pending_scan_refresh",
+        return_value=refresh_summary,
+    ) as mock_refresh, patch(
+        "backend.rinse_scheduled_scrape.finish_scrape_run"
+    ), patch(
+        "backend.rinse_scheduled_scrape.release_scrape_lock"
+    ):
+        result = run_scheduled_scrape_for_org(conn, 3, run_type="scheduled")
+
+    assert result.status == "failed"
+    assert mock_refresh.called
+    detail = (result.detail or {}).get("targeted_pending_scan_refresh") or {}
+    assert detail.get("targeted_refresh_ran") is True
+    assert (result.detail or {}).get("targeted_refresh_after_scrape_failure") is True

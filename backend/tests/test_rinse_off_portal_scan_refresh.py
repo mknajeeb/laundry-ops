@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -138,3 +138,62 @@ def test_targeted_refresh_import_chain_includes_fold_block_helper():
         clock_in=None,
         clock_out=None,
     ) == []
+
+
+def test_pending_row_has_complete_cleaning():
+    from backend.rinse_off_portal_scan_refresh import _pending_row_has_complete_cleaning
+
+    assert _pending_row_has_complete_cleaning(
+        [{"purpose": "complete-cleaning"}, {"purpose": "weight-entry"}]
+    )
+    assert _pending_row_has_complete_cleaning(
+        [{"purpose": "complete-cleaning Last Scan"}]
+    )
+    assert not _pending_row_has_complete_cleaning(
+        [{"purpose": "start-cleaning"}, {"purpose": "weight-entry"}]
+    )
+
+
+def test_resolve_pending_near_complete_bag_ids_selects_complete_cleaning_pending():
+    from datetime import date
+
+    from backend.rinse_off_portal_scan_refresh import resolve_pending_near_complete_bag_ids
+
+    av = {
+        "rows": [
+            {
+                "bag_id": "NEAR1",
+                "at_vendor_status": AV_STATUS_PENDING,
+                "service_type": "WF",
+                "rush_bucket": "RUSH",
+            },
+            {
+                "bag_id": "EARLY1",
+                "at_vendor_status": AV_STATUS_PENDING,
+                "service_type": "WF",
+                "rush_bucket": "RUSH",
+            },
+            {
+                "bag_id": "DONE1",
+                "at_vendor_status": AV_STATUS_COMPLETED,
+                "service_type": "WF",
+                "rush_bucket": "RUSH",
+            },
+        ]
+    }
+    events = {
+        "NEAR1": [{"purpose": "complete-cleaning"}, {"purpose": "weight-entry"}],
+        "EARLY1": [{"purpose": "start-cleaning"}, {"purpose": "weight-entry"}],
+        "DONE1": [{"purpose": "complete-cleaning"}, {"purpose": "weight-entry"}],
+    }
+    with patch(
+        "backend.rinse_at_vendor_module._load_at_vendor_scan_events_for_bags",
+        return_value=events,
+    ):
+        out = resolve_pending_near_complete_bag_ids(
+            MagicMock(),
+            3,
+            selected_date_et=date(2026, 7, 14),
+            av_module=av,
+        )
+    assert out == ["NEAR1"]

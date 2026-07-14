@@ -7,7 +7,7 @@ import os
 import subprocess
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
@@ -597,6 +597,61 @@ def bag_in_portal_crawl_batch(
     return cursor.fetchone() is not None
 
 
+def _pending_row_has_complete_cleaning(
+    events: Sequence[Mapping[str, Any]] | None,
+) -> bool:
+    from backend.rinse_scan_purpose import is_complete_cleaning_purpose
+
+    for ev in events or []:
+        if is_complete_cleaning_purpose(ev.get("purpose")):
+            return True
+    return False
+
+
+def resolve_pending_near_complete_bag_ids(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    baseline_ctx: dict[str, Any] | None = None,
+    rush_only: bool = False,
+    av_module: dict[str, Any] | None = None,
+) -> list[str]:
+    """
+    Pending WF bags that already have complete-cleaning locally but no post-weight.
+
+    These often remain "in latest crawl" after Events CSV lags behind the portal
+    detail page (post weight-entry finished but scheduled scrape hasn't caught up).
+    """
+    from backend.rinse_at_vendor_module import _load_at_vendor_scan_events_for_bags
+
+    org = int(organization_id)
+    av = av_module or build_at_vendor_module(
+        cursor, org, selected_date_et=selected_date_et, baseline_ctx=baseline_ctx
+    )
+    candidates: list[str] = []
+    for row in av.get("rows") or []:
+        if row.get("at_vendor_status") != AV_STATUS_PENDING:
+            continue
+        if str(row.get("service_type") or row.get("service_bucket") or "").upper() != "WF":
+            continue
+        bid = str(row.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        if rush_only and row.get("rush_bucket") != AV_RUSH:
+            continue
+        candidates.append(bid)
+    if not candidates or not hasattr(cursor, "execute"):
+        return []
+
+    events_by_bag = _load_at_vendor_scan_events_for_bags(cursor, org, candidates)
+    near_complete: list[str] = []
+    for bid in candidates:
+        if _pending_row_has_complete_cleaning(events_by_bag.get(bid)):
+            near_complete.append(bid)
+    return near_complete
+
+
 def resolve_pending_not_in_latest_crawl_bag_ids(
     cursor,
     organization_id: int,
@@ -631,7 +686,36 @@ def resolve_pending_not_in_latest_crawl_bag_ids(
             rush_pending.append(bid)
         elif not rush_only:
             other_pending.append(bid)
-    return sorted(rush_pending) + sorted(other_pending), batch_id, on_portal_map
+
+    # Also refresh pending WF bags that already folded locally but still lack
+    # post-weight — even when the bag remains on the latest portal crawl list.
+    near_complete = resolve_pending_near_complete_bag_ids(
+        cursor,
+        org,
+        selected_date_et=selected_date_et,
+        baseline_ctx=baseline_ctx,
+        rush_only=rush_only,
+        av_module=av,
+    )
+    for bid in near_complete:
+        on_portal_map.setdefault(bid, bid in live)
+        if bid in rush_pending or bid in other_pending:
+            continue
+        # Prefer rush ordering: look up rush from av rows.
+        row = next(
+            (
+                r
+                for r in (av.get("rows") or [])
+                if str(r.get("bag_id") or "").strip().upper() == bid
+            ),
+            None,
+        )
+        if row and row.get("rush_bucket") == AV_RUSH:
+            rush_pending.append(bid)
+        elif not rush_only:
+            other_pending.append(bid)
+
+    return sorted(set(rush_pending)) + sorted(set(other_pending) - set(rush_pending)), batch_id, on_portal_map
 
 
 def resolve_off_portal_pending_bag_ids(

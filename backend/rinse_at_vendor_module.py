@@ -3825,7 +3825,9 @@ def build_at_vendor_module(
             org,
             completed_rows=completed_rows,
             workload_rows=rows,
-            events_by_bag=events_by_bag,
+            # Use completion-supplemented events so WF post-processing gates
+            # (and productivity attribution) match row completion evaluation.
+            events_by_bag=completion_events_by_bag,
             selected_date_et=selected_date_et,
             registry_meta_by_bag=registry_meta_by_bag,
         )
