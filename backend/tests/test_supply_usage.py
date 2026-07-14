@@ -1,18 +1,18 @@
-"""Tests for supply usage mapping, split multiplier, and dose/oz math."""
+"""Tests for supply usage mapping, first-weight ET day population, and scan splits."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 from unittest.mock import MagicMock
-
-import pytest
 
 from backend.supply_usage import (
     build_supply_usage_report,
     detect_split_order,
+    first_weight_on_et_day,
     load_orders_for_supply_usage,
+    processing_units_from_split_confirmation,
     split_order_multiplier,
     supplies_for_usage,
     _display_special_instructions,
-    _load_split_load_bag_ids,
+    _load_approved_upload_orders_by_tickets,
     _order_row_from_staging,
 )
 from backend.supply_usage_settings import (
@@ -23,6 +23,27 @@ from backend.supply_usage_settings import (
     get_supply_usage_mapping_rules,
     save_supply_usage_mapping_rules,
 )
+
+
+def _ev(
+    purpose: str,
+    ts: datetime,
+    *,
+    scan_index: int = 1,
+    eid: int = 1,
+    user: str = "Op",
+    rack: str | None = None,
+    bag_id: str = "BAG00001",
+) -> dict:
+    return {
+        "id": eid,
+        "bag_id": bag_id,
+        "purpose": purpose,
+        "scanned_at_parsed": ts,
+        "scan_index": scan_index,
+        "user_name": user,
+        "rack": rack,
+    }
 
 
 class TestSuppliesForUsage:
@@ -140,7 +161,6 @@ class TestDisplaySpecialInstructions:
                 "name_clean": "Curtis Teegardin",
                 "special_instructions_raw": None,
             },
-            split_load_bags=set(),
             mapping_rules=DEFAULT_MAPPING_RULES,
         )
         assert row["special_instructions"] is None
@@ -157,7 +177,6 @@ class TestDisplaySpecialInstructions:
                 "name_clean": "Standard Customer",
                 "special_instructions_raw": CHRISTIAN_CATALOG_ONLY,
             },
-            split_load_bags=set(),
             mapping_rules=DEFAULT_MAPPING_RULES,
         )
         assert row["special_instructions"] is None
@@ -171,7 +190,6 @@ class TestDisplaySpecialInstructions:
                 "name_clean": "Fab Oxi Customer",
                 "special_instructions_raw": "USE FABRIC SOFTENER; USE OXICLEAN",
             },
-            split_load_bags=set(),
             mapping_rules=DEFAULT_MAPPING_RULES,
         )
         assert row["special_instructions"] == "Fabric Softener + OxiClean"
@@ -192,7 +210,6 @@ class TestDisplaySpecialInstructions:
                 "name_clean": "Eldar Hadad 0",
                 "special_instructions_raw": raw,
             },
-            split_load_bags=set(),
             mapping_rules=DEFAULT_MAPPING_RULES,
         )
         assert row["special_instructions"] is None
@@ -207,7 +224,6 @@ class TestDisplaySpecialInstructions:
                 "name_clean": "Curtis Teegardin",
                 "special_instructions_raw": CURTIS_EMPTY_SI_PORTAL,
             },
-            split_load_bags=set(),
             mapping_rules=DEFAULT_MAPPING_RULES,
         )
         assert row["special_instructions"] is None
@@ -231,7 +247,6 @@ class TestDisplaySpecialInstructions:
                 "name_clean": "Test Customer",
                 "special_instructions_raw": RYAN_TIFFANY_LABELED_SI,
             },
-            split_load_bags=set(),
             mapping_rules=DEFAULT_MAPPING_RULES,
         )
         assert row["special_instructions"] == "Hypoallergenic + OxiClean"
@@ -239,7 +254,9 @@ class TestDisplaySpecialInstructions:
         assert "Downy" not in row["supplies_used"]
 
 
-class TestSplitOrder:
+class TestPortalSplitTextHelper:
+    """Portal split text remains detectable, but Supply Usage dosing ignores it."""
+
     def test_split_order_label(self):
         assert detect_split_order("Customer requested Split Order") is True
         assert split_order_multiplier("Split-Order tag") == 2
@@ -248,87 +265,234 @@ class TestSplitOrder:
         assert detect_split_order(
             "Vendor Notes Vendor Price Add New Item Split Ticket Processed Save"
         ) is False
-        assert split_order_multiplier(
-            "Vendor Notes Vendor Price Add New Item Split Ticket Processed Save"
-        ) == 1
 
-    def test_split_order_in_instructions(self):
-        assert detect_split_order("Split Order; USE OXICLEAN") is True
-
-    def test_split_load_scan_primary(self):
-        assert detect_split_order(has_split_load_scan=True) is True
-        assert split_order_multiplier(has_split_load_scan=True) == 2
-
-    def test_split_load_scan_without_portal_label(self):
-        assert detect_split_order("USE OXICLEAN", has_split_load_scan=True) is True
-        assert split_order_multiplier("USE OXICLEAN", has_split_load_scan=True) == 2
-
-
-class TestSplitLoadScanIntegration:
-    def test_order_row_split_load_scan_sets_multiplier(self):
+    def test_portal_split_text_does_not_set_processing_units_on_order_row(self):
         row = _order_row_from_staging(
             {
-                "ticket_id": "ABC12345",
-                "name_clean": "Test Customer",
+                "ticket_id": "SPLITTXT1",
+                "name_clean": "Split Text Customer",
+                "special_instructions_raw": "Split Order; USE OXICLEAN",
+            },
+            mapping_rules=DEFAULT_MAPPING_RULES,
+            processing_units=1,
+            split_confirmed=False,
+        )
+        assert row["processing_units"] == 1
+        assert row["multiplier"] == 1
+        assert row["split_order"] is False
+        assert row["split_pending"] is True
+        assert row["split_status"] == "pending"
+        assert row["doses_by_supply"]["Tide"] == 1
+        assert row["doses_by_supply"]["OxiClean"] == 1
+
+
+class TestFirstWeightEtDayMembership:
+    DAY = date(2026, 7, 14)
+
+    def test_upload_today_first_weight_yesterday_excluded(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 13, 8, 0, 0), eid=1),
+            _ev("weight-entry", datetime(2026, 7, 13, 9, 0, 0), eid=2),
+        ]
+        assert first_weight_on_et_day(events, self.DAY) is None
+
+    def test_upload_yesterday_first_weight_today_included(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 13, 18, 0, 0), eid=1),
+            _ev("weight-entry", datetime(2026, 7, 14, 10, 15, 0), eid=2),
+        ]
+        out = first_weight_on_et_day(events, self.DAY)
+        assert out is not None
+        assert out["first_weight_et"] == datetime(2026, 7, 14, 10, 15, 0)
+        assert out["processing_units"] == 1
+        assert out["split_confirmed"] is False
+
+    def test_first_weight_at_14_235959_et_included(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 14, 8, 0, 0), eid=1),
+            _ev("weight-entry", datetime(2026, 7, 14, 23, 59, 59), eid=2),
+        ]
+        out = first_weight_on_et_day(events, self.DAY)
+        assert out is not None
+        assert out["first_weight_et"] == datetime(2026, 7, 14, 23, 59, 59)
+
+    def test_first_weight_at_15_000000_et_belongs_to_next_day(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 14, 8, 0, 0), eid=1),
+            _ev("weight-entry", datetime(2026, 7, 15, 0, 0, 0), eid=2),
+        ]
+        assert first_weight_on_et_day(events, self.DAY) is None
+        out_next = first_weight_on_et_day(events, date(2026, 7, 15))
+        assert out_next is not None
+        assert out_next["first_weight_et"] == datetime(2026, 7, 15, 0, 0, 0)
+
+    def test_utc_aware_timestamp_around_et_midnight_stripped_to_wall(self):
+        # Production stores naive ET wall time. Aware inputs are coerced to naive
+        # wall clock before lifecycle comparison (00:00 ET belongs to that ET day).
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 13, 20, 0, 0), eid=1),
+            _ev(
+                "weight-entry",
+                datetime(2026, 7, 14, 0, 0, 0, tzinfo=timezone.utc),
+                eid=2,
+            ),
+        ]
+        out = first_weight_on_et_day(events, self.DAY)
+        assert out is not None
+        assert out["first_weight_et"] == datetime(2026, 7, 14, 0, 0, 0)
+
+        # 04:00 UTC wall-stripped would be treated as 04:00 ET under Rinse naive-ET
+        # convention; true zone conversion is not applied to scan DATETIME values.
+        aware_four = [
+            _ev("sent-to-vendor", datetime(2026, 7, 13, 20, 0, 0), eid=1),
+            _ev(
+                "weight-entry",
+                datetime(2026, 7, 14, 4, 0, 0, tzinfo=timezone.utc),
+                eid=2,
+            ),
+        ]
+        out_four = first_weight_on_et_day(aware_four, self.DAY)
+        assert out_four is not None
+        assert out_four["first_weight_et"] == datetime(2026, 7, 14, 4, 0, 0)
+
+    def test_approved_row_without_first_weight_excluded(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 14, 8, 0, 0), eid=1),
+            _ev("add-photos", datetime(2026, 7, 14, 9, 0, 0), eid=2),
+        ]
+        assert first_weight_on_et_day(events, self.DAY) is None
+
+    def test_repeat_trip_uses_current_lifecycle_first_weight_only(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 1, 8, 0, 0), eid=1),
+            _ev("weight-entry", datetime(2026, 7, 1, 9, 0, 0), eid=2),
+            _ev("start-cleaning", datetime(2026, 7, 1, 10, 0, 0), eid=3, rack="W25-30-VW"),
+            _ev("start-cleaning", datetime(2026, 7, 1, 10, 0, 0), eid=4, rack="W26-30-VW"),
+            _ev("sent-to-vendor", datetime(2026, 7, 14, 7, 0, 0), eid=5),
+            _ev("weight-entry", datetime(2026, 7, 14, 11, 0, 0), eid=6),
+        ]
+        out = first_weight_on_et_day(events, self.DAY)
+        assert out is not None
+        assert out["first_weight_et"] == datetime(2026, 7, 14, 11, 0, 0)
+        assert out["lifecycle_anchor_et"] == datetime(2026, 7, 14, 7, 0, 0)
+        assert out["processing_units"] == 1
+        assert out["split_confirmed"] is False
+
+    def test_old_lifecycle_split_does_not_affect_current(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 1, 8, 0, 0), eid=1),
+            _ev("weight-entry", datetime(2026, 6, 1, 9, 0, 0), eid=2),
+            _ev("start-cleaning", datetime(2026, 6, 1, 10, 0, 0), eid=3, rack="W25-30-VW"),
+            _ev("start-cleaning", datetime(2026, 6, 1, 10, 0, 0), eid=4, rack="W26-30-VW"),
+            _ev("sent-to-vendor", datetime(2026, 7, 14, 8, 0, 0), eid=5),
+            _ev("weight-entry", datetime(2026, 7, 14, 9, 30, 0), eid=6),
+            _ev("start-cleaning", datetime(2026, 7, 14, 10, 0, 0), eid=7, rack="W31-40-VW"),
+        ]
+        out = first_weight_on_et_day(events, self.DAY)
+        assert out["processing_units"] == 1
+        assert out["split_confirmed"] is False
+        assert out["washer_racks"] == ["W31-40-VW"]
+
+    def test_split_capable_before_confirmation_is_one_unit(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 14, 8, 0, 0), eid=1),
+            _ev("weight-entry", datetime(2026, 7, 14, 9, 0, 0), eid=2),
+            _ev("split-load", datetime(2026, 7, 14, 9, 20, 0), eid=3),
+            _ev("add-photos", datetime(2026, 7, 14, 9, 20, 0), eid=4),
+        ]
+        out = first_weight_on_et_day(events, self.DAY)
+        assert out["processing_units"] == 1
+        assert out["split_confirmed"] is False
+        assert out["has_split_load_scan"] is True
+        assert processing_units_from_split_confirmation(split_confirmed=False) == 1
+
+    def test_split_load_purpose_alone_does_not_confirm_two_units(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 14, 8, 0, 0), eid=1),
+            _ev("weight-entry", datetime(2026, 7, 14, 9, 0, 0), eid=2),
+            _ev("split-load", datetime(2026, 7, 14, 9, 2, 0), eid=3),
+            _ev("add-photos", datetime(2026, 7, 14, 9, 2, 0), eid=4),
+        ]
+        out = first_weight_on_et_day(events, self.DAY)
+        assert out["processing_units"] == 1
+        assert out["split_confirmed"] is False
+        assert out["has_split_load_scan"] is True
+
+    def test_si_split_order_marks_pending_without_changing_units(self):
+        row = _order_row_from_staging(
+            {
+                "ticket_id": "PEND0001",
+                "name_clean": "Pending Split",
+                "special_instructions_raw": "Split Order; USE OXICLEAN",
+            },
+            mapping_rules=DEFAULT_MAPPING_RULES,
+            processing_units=1,
+            split_confirmed=False,
+        )
+        assert row["processing_units"] == 1
+        assert row["split_pending"] is True
+        assert row["split_status"] == "pending"
+        assert row["doses_by_supply"]["Tide"] == 1
+
+    def test_no_si_split_is_unresolved_not_pending(self):
+        row = _order_row_from_staging(
+            {
+                "ticket_id": "UNRESOL1",
+                "name_clean": "No Split Hint",
                 "special_instructions_raw": "USE OXICLEAN",
             },
-            split_load_bags={"ABC12345"},
             mapping_rules=DEFAULT_MAPPING_RULES,
+            processing_units=1,
+            split_confirmed=False,
+            has_split_load_scan=True,
         )
-        assert row["split_order"] is True
+        assert row["processing_units"] == 1
+        assert row["split_pending"] is False
+        assert row["split_status"] == "unresolved"
         assert row["split_load_scan"] is True
-        assert row["multiplier"] == 2
-        assert row["doses_by_supply"]["Tide"] == 2
-        assert row["doses_by_supply"]["OxiClean"] == 2
 
-    def test_load_split_load_bag_ids_from_scan_events(self):
-        cursor = MagicMock()
-        cursor.fetchall.return_value = [
-            {"bag_id": "ABC12345", "purpose": "split-load"},
-            {"bag_id": "OTHER123", "purpose": "cleaning"},
+    def test_dual_washer_start_cleaning_confirms_two_units(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 14, 8, 0, 0), eid=1),
+            _ev("weight-entry", datetime(2026, 7, 14, 9, 28, 0), eid=2),
+            _ev("split-load", datetime(2026, 7, 14, 9, 30, 0), eid=3),
+            _ev("add-photos", datetime(2026, 7, 14, 9, 30, 0), eid=4),
+            _ev(
+                "start-cleaning",
+                datetime(2026, 7, 14, 9, 46, 0),
+                eid=5,
+                rack="W28-20-VW",
+            ),
+            _ev(
+                "start-cleaning",
+                datetime(2026, 7, 14, 9, 46, 0),
+                eid=6,
+                rack="W27-20-VW",
+            ),
         ]
+        out = first_weight_on_et_day(events, self.DAY)
+        assert out["processing_units"] == 2
+        assert out["split_confirmed"] is True
+        assert set(out["washer_racks"]) == {"W27-20-VW", "W28-20-VW"}
+        assert out["washer_load_count"] == 2
+        assert processing_units_from_split_confirmation(split_confirmed=True) == 2
 
-        from backend import supply_usage as su
-
-        original_te = su.table_exists
-        su.table_exists = lambda _c, table: table == "rinse_bag_scan_events"
-        try:
-            out = _load_split_load_bag_ids(cursor, 3, ["ABC12345", "OTHER123"])
-        finally:
-            su.table_exists = original_te
-
-        assert out == {"ABC12345"}
-
-    def test_load_orders_applies_split_load_scans(self):
-        cursor = MagicMock()
-        cursor.fetchone.return_value = None
-        cursor.fetchall.return_value = [{"bag_id": "SPLITBAG1", "purpose": "split-load"}]
-
-        from backend import supply_usage as su
-
-        staging_row = {
-            "ticket_id": "SPLITBAG1",
-            "name_clean": "Split Customer",
-            "special_instructions_raw": None,
-            "_source": "orders_staging",
-        }
-
-        original_load_staging = su._load_staging_orders
-        original_load_upload = su._load_upload_batch_orders
-        original_te = su.table_exists
-        su._load_staging_orders = lambda *a, **k: [staging_row]
-        su._load_upload_batch_orders = lambda *a, **k: []
-        su.table_exists = lambda _c, table: table == "rinse_bag_scan_events"
-        try:
-            orders = load_orders_for_supply_usage(cursor, 3, date(2026, 6, 18))
-        finally:
-            su._load_staging_orders = original_load_staging
-            su._load_upload_batch_orders = original_load_upload
-            su.table_exists = original_te
-
-        assert len(orders) == 1
-        assert orders[0]["split_order"] is True
-        assert orders[0]["multiplier"] == 2
+    def test_single_washer_start_cleaning_is_one_unit(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 14, 8, 0, 0), eid=1),
+            _ev("weight-entry", datetime(2026, 7, 14, 9, 0, 0), eid=2),
+            _ev("add-photos", datetime(2026, 7, 14, 9, 20, 0), eid=3),
+            _ev(
+                "start-cleaning",
+                datetime(2026, 7, 14, 9, 40, 0),
+                eid=4,
+                rack="W30-40-VW",
+            ),
+        ]
+        out = first_weight_on_et_day(events, self.DAY)
+        assert out["processing_units"] == 1
+        assert out["split_confirmed"] is False
+        assert out["washer_racks"] == ["W30-40-VW"]
 
 
 class TestDoseOzMath:
@@ -356,6 +520,7 @@ class TestDoseOzMath:
                 "supplies_used": ["Tide", "Downy"],
                 "doses_by_supply": {"Tide": 1, "Downy": 1},
                 "multiplier": 1,
+                "processing_units": 1,
                 "split_order": False,
             }
         ]
@@ -365,12 +530,13 @@ class TestDoseOzMath:
         assert report["usage_by_supply"]["Downy"]["doses"] == 1
         assert report["usage_by_supply"]["Downy"]["ounces"] == 1.0
 
-    def test_split_order_doubles_doses(self):
+    def test_confirmed_split_doubles_doses(self):
         orders = [
             {
                 "supplies_used": ["Tide"],
                 "doses_by_supply": {"Tide": 2},
                 "multiplier": 2,
+                "processing_units": 2,
                 "split_order": True,
             }
         ]
@@ -426,9 +592,8 @@ class TestSupplyUsageSettings:
             sus._set_setting = original_set
 
 
-class TestLoadUploadBatchOrders:
-    def test_upload_batches_batch_id_pk_join(self):
-        """Production schema uses upload_batches.batch_id, not id."""
+class TestApprovedUploadRowStatusSql:
+    def test_approved_upload_query_filters_row_status_and_org(self):
         from backend import supply_usage as su
 
         executed: list[tuple[str, tuple]] = []
@@ -465,319 +630,155 @@ class TestLoadUploadBatchOrders:
         su.table_exists = fake_table_exists
         su.table_has_column = fake_table_has_column
         try:
-            su._load_upload_batch_orders(cursor, 3, date(2026, 6, 19))
+            _load_approved_upload_orders_by_tickets(cursor, 3, ["ABC12345"])
         finally:
             su.table_exists = original_te
             su.table_has_column = original_thc
 
-        assert executed, "expected SQL query"
+        assert executed
         sql = executed[0][0]
         assert "ub.batch_id = ubr.upload_batch_id" in sql
-        assert "ub.id" not in sql
         assert "ubr.row_status IN ('ACCEPTED', 'OVERRIDDEN')" in sql
-        assert executed[0][1] == (date(2026, 6, 19), 3)
+        assert "UPPER(TRIM(ubr.ticket_id)) IN" in sql
+        assert "date_clean = %s" not in sql
+        assert executed[0][1][0] == "ABC12345"
+        assert executed[0][1][-1] == 3
 
 
-class TestUploadRowStatusSupplyUsage:
-    """Rejected/deleted/unresolved upload rows must not consume supplies."""
-
-    TARGET = date(2026, 7, 14)
+class TestLoadOrdersFirstWeightPopulation:
+    DAY = date(2026, 7, 14)
     FAB_OXIC = "USE FABRIC SOFTENER; USE OXICLEAN"
-    HYPO = "Use Hypoallergenic Soap"
 
-    def _patch_schema(self, su):
+    def _membership(self, bag_id="BAG00001", *, units=1, split=False):
+        return {
+            bag_id: {
+                "lifecycle_anchor_et": datetime(2026, 7, 14, 8, 0, 0),
+                "first_weight_et": datetime(2026, 7, 14, 10, 0, 0),
+                "split_confirmed": split,
+                "split_pending": not split,
+                "latest_split_scan_et": datetime(2026, 7, 14, 10, 30, 0) if split else None,
+                "processing_units": units,
+                "split_load_scan_count": 1 if split else 0,
+            }
+        }
+
+    def _meta(self, ticket_id, *, row_status="ACCEPTED", si=None, source="upload_batch_rows"):
+        return {
+            ticket_id: {
+                "ticket_id": ticket_id,
+                "name_clean": "Customer",
+                "date_clean": date(2026, 7, 13),
+                "special_instructions_raw": si if si is not None else self.FAB_OXIC,
+                "row_status": row_status,
+                "_source": source,
+            }
+        }
+
+    def _load(self, membership, meta):
+        from backend import supply_usage as su
+
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+        original_fw = su._bags_with_first_weight_on_et_day
+        original_meta = su._load_approved_order_metadata
+        su._bags_with_first_weight_on_et_day = lambda *a, **k: membership
+        su._load_approved_order_metadata = lambda *a, **k: meta
+        try:
+            return load_orders_for_supply_usage(cursor, 3, self.DAY)
+        finally:
+            su._bags_with_first_weight_on_et_day = original_fw
+            su._load_approved_order_metadata = original_meta
+
+    def test_accepted_counts_with_first_weight(self):
+        orders = self._load(self._membership("ACC00001"), self._meta("ACC00001"))
+        assert len(orders) == 1
+        assert orders[0]["supplies_used"] == ["Tide", "Downy", "OxiClean"]
+        assert orders[0]["processing_units"] == 1
+        assert orders[0]["doses_by_supply"]["Tide"] == 1
+        assert orders[0]["doses_by_supply"]["Downy"] == 1
+        assert orders[0]["doses_by_supply"]["OxiClean"] == 1
+
+    def test_overridden_counts(self):
+        meta = self._meta(
+            "OVR00001",
+            row_status="OVERRIDDEN",
+            si="Use Hypoallergenic Soap",
+        )
+        orders = self._load(self._membership("OVR00001"), meta)
+        assert len(orders) == 1
+        assert orders[0]["supplies_used"] == ["All Free & Clear"]
+        assert orders[0]["doses_by_supply"]["All Free & Clear"] == 1
+
+    def test_no_metadata_means_excluded_even_with_first_weight(self):
+        # REJECTED / DELETED / NEEDS_ATTENTION never appear in approved metadata loader.
+        orders = self._load(self._membership("REJ00001"), {})
+        assert orders == []
+
+    def test_rejected_deleted_needs_attention_not_in_metadata(self):
+        from backend import supply_usage as su
+
+        executed: list[str] = []
+
         def fake_table_exists(cursor, table):
             return table in ("upload_batch_rows", "upload_batches")
 
         def fake_table_has_column(cursor, table, col):
-            if table == "upload_batches" and col == "id":
-                return True
-            if table == "upload_batches" and col == "organization_id":
+            if table == "upload_batches" and col in ("id", "organization_id"):
                 return True
             if table == "upload_batch_rows" and col in (
                 "ticket_id",
-                "date_clean",
                 "special_instructions_raw",
                 "row_status",
             ):
                 return True
             return False
 
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+
+        def capture(sql, args=()):
+            executed.append(sql)
+
+        cursor.execute = capture
         original_te = su.table_exists
         original_thc = su.table_has_column
         su.table_exists = fake_table_exists
         su.table_has_column = fake_table_has_column
-        return original_te, original_thc
+        try:
+            _load_approved_upload_orders_by_tickets(
+                cursor, 3, ["REJ1", "DEL1", "ATT1", "ACC1"]
+            )
+        finally:
+            su.table_exists = original_te
+            su.table_has_column = original_thc
 
-    def _cursor_for_upload_rows(self, rows):
-        """Simulate SQL date/org/ticket/row_status filters against in-memory rows."""
-        executed: list[tuple[str, tuple]] = []
-        result: list[dict] = []
+        assert any("row_status IN ('ACCEPTED', 'OVERRIDDEN')" in s for s in executed)
+        assert all("REJECTED_DUPLICATE" not in s for s in executed)
+
+    def test_confirmed_split_doubles_supply_doses(self):
+        orders = self._load(
+            self._membership("SPL00001", units=2, split=True),
+            self._meta("SPL00001"),
+        )
+        assert orders[0]["processing_units"] == 2
+        assert orders[0]["split_confirmed"] is True
+        assert orders[0]["doses_by_supply"]["Tide"] == 2
+        assert orders[0]["doses_by_supply"]["Downy"] == 2
+        assert orders[0]["estimated_doses"] == 6
+
+    def test_report_excludes_other_day_first_weights(self):
+        from backend import supply_usage as su
 
         cursor = MagicMock()
-
-        def capture_execute(sql, args=()):
-            executed.append((sql, args))
-            sql_norm = " ".join(sql.split())
-            assert "ubr.row_status IN ('ACCEPTED', 'OVERRIDDEN')" in sql_norm
-            target = args[0]
-            org_id = args[1] if len(args) > 1 else None
-            filtered = []
-            for row in rows:
-                if row.get("date_clean") != target:
-                    continue
-                if org_id is not None and int(row.get("organization_id") or 0) != int(org_id):
-                    continue
-                if row.get("row_status") not in ("ACCEPTED", "OVERRIDDEN"):
-                    continue
-                tid = str(row.get("ticket_id") or "").strip()
-                if not tid:
-                    continue
-                filtered.append(
-                    {
-                        "date_clean": row["date_clean"],
-                        "name_clean": row["name_clean"],
-                        "service_type": row.get("service_type"),
-                        "ticket_id": row["ticket_id"],
-                        "special_instructions_raw": row.get("special_instructions_raw"),
-                        "supply_interpretation": row.get("supply_interpretation"),
-                        "special_instruction_review": row.get("special_instruction_review"),
-                    }
-                )
-            result.clear()
-            result.extend(filtered)
-
-        cursor.execute = capture_execute
-        cursor.fetchall = lambda: list(result)
-        cursor.fetchone = MagicMock(return_value=None)
-        cursor._executed = executed
-        return cursor
-
-    def _report_from_upload_rows(self, rows, organization_id=3, target=None):
-        from backend import supply_usage as su
-
-        target = target or self.TARGET
-        cursor = self._cursor_for_upload_rows(rows)
-        original_te, original_thc = self._patch_schema(su)
-        original_staging = su._load_staging_orders
-        original_split = su._load_split_load_bag_ids
-        su._load_staging_orders = lambda *a, **k: []
-        su._load_split_load_bag_ids = lambda *a, **k: set()
+        cursor.fetchone.return_value = None
+        original_fw = su._bags_with_first_weight_on_et_day
+        su._bags_with_first_weight_on_et_day = lambda *a, **k: {}
         try:
-            return build_supply_usage_report(cursor, organization_id, target)
+            report = build_supply_usage_report(cursor, 3, self.DAY)
         finally:
-            su.table_exists = original_te
-            su.table_has_column = original_thc
-            su._load_staging_orders = original_staging
-            su._load_split_load_bag_ids = original_split
-
-    def _row(
-        self,
-        *,
-        ticket_id,
-        row_status,
-        special_instructions_raw=None,
-        name_clean="Customer",
-        organization_id=3,
-        date_clean=None,
-    ):
-        return {
-            "ticket_id": ticket_id,
-            "row_status": row_status,
-            "special_instructions_raw": special_instructions_raw,
-            "name_clean": name_clean,
-            "organization_id": organization_id,
-            "date_clean": date_clean or self.TARGET,
-            "service_type": "Wash & Fold",
-        }
-
-    def test_accepted_row_contributes_tide_downy_oxiclean(self):
-        report = self._report_from_upload_rows(
-            [
-                self._row(
-                    ticket_id="ACC001",
-                    row_status="ACCEPTED",
-                    special_instructions_raw=self.FAB_OXIC,
-                    name_clean="Accepted Customer",
-                )
-            ]
-        )
-        assert report["summary"]["orders_analyzed"] == 1
-        assert report["usage_by_supply"]["Tide"]["orders"] == 1
-        assert report["usage_by_supply"]["Tide"]["doses"] == 1
-        assert report["usage_by_supply"]["Tide"]["ounces"] == 2.0
-        assert report["usage_by_supply"]["Downy"]["doses"] == 1
-        assert report["usage_by_supply"]["Downy"]["ounces"] == 1.0
-        assert report["usage_by_supply"]["OxiClean"]["doses"] == 1
-        assert report["usage_by_supply"]["OxiClean"]["ounces"] == 1.0
-        assert report["orders"][0]["supplies_used"] == ["Tide", "Downy", "OxiClean"]
-
-    def test_overridden_row_contributes_all_free_clear(self):
-        report = self._report_from_upload_rows(
-            [
-                self._row(
-                    ticket_id="OVR001",
-                    row_status="OVERRIDDEN",
-                    special_instructions_raw=self.HYPO,
-                    name_clean="Overridden Customer",
-                )
-            ]
-        )
-        assert report["summary"]["orders_analyzed"] == 1
-        assert report["summary"]["hypo_orders"] == 1
-        assert report["usage_by_supply"]["All Free & Clear"]["orders"] == 1
-        assert report["usage_by_supply"]["All Free & Clear"]["doses"] == 1
-        assert report["usage_by_supply"]["All Free & Clear"]["ounces"] == 2.0
-        assert report["usage_by_supply"]["Tide"]["doses"] == 0
-        assert report["orders"][0]["supplies_used"] == ["All Free & Clear"]
-
-    def test_rejected_duplicate_contributes_zero_usage(self):
-        report = self._report_from_upload_rows(
-            [
-                self._row(
-                    ticket_id="REJ001",
-                    row_status="REJECTED_DUPLICATE",
-                    special_instructions_raw=self.FAB_OXIC,
-                )
-            ]
-        )
+            su._bags_with_first_weight_on_et_day = original_fw
         assert report["summary"]["orders_analyzed"] == 0
-        assert report["orders"] == []
-        assert report["usage_by_supply"]["Tide"]["doses"] == 0
-        assert report["usage_by_supply"]["Downy"]["doses"] == 0
-        assert report["usage_by_supply"]["OxiClean"]["doses"] == 0
-
-    def test_deleted_row_contributes_zero_usage(self):
-        report = self._report_from_upload_rows(
-            [
-                self._row(
-                    ticket_id="DEL001",
-                    row_status="DELETED",
-                    special_instructions_raw=self.HYPO,
-                )
-            ]
-        )
-        assert report["summary"]["orders_analyzed"] == 0
-        assert report["usage_by_supply"]["All Free & Clear"]["doses"] == 0
-        assert report["usage_by_supply"]["All Free & Clear"]["ounces"] == 0.0
-
-    def test_needs_attention_row_contributes_zero_usage(self):
-        report = self._report_from_upload_rows(
-            [
-                self._row(
-                    ticket_id="ATT001",
-                    row_status="NEEDS_ATTENTION",
-                    special_instructions_raw=self.FAB_OXIC,
-                )
-            ]
-        )
-        assert report["summary"]["orders_analyzed"] == 0
-        assert report["usage_by_supply"]["Tide"]["doses"] == 0
-        assert report["usage_by_supply"]["Downy"]["doses"] == 0
-        assert report["usage_by_supply"]["OxiClean"]["doses"] == 0
-
-    def test_accepted_plus_rejected_duplicate_counts_once(self):
-        report = self._report_from_upload_rows(
-            [
-                self._row(
-                    ticket_id="SAMEBAG01",
-                    row_status="ACCEPTED",
-                    special_instructions_raw=self.FAB_OXIC,
-                    name_clean="Bella Lavarre",
-                ),
-                self._row(
-                    ticket_id="SAMEBAG01",
-                    row_status="REJECTED_DUPLICATE",
-                    special_instructions_raw=self.FAB_OXIC,
-                    name_clean="Bella Lavarre",
-                ),
-            ]
-        )
-        assert report["summary"]["orders_analyzed"] == 1
-        assert report["usage_by_supply"]["Tide"]["orders"] == 1
-        assert report["usage_by_supply"]["Tide"]["doses"] == 1
-        assert report["usage_by_supply"]["Tide"]["ounces"] == 2.0
-        assert report["usage_by_supply"]["Downy"]["doses"] == 1
-        assert report["usage_by_supply"]["OxiClean"]["doses"] == 1
-        assert len(report["orders"]) == 1
-        assert report["orders"][0]["order_id"] == "SAMEBAG01"
-
-    def test_organization_scoping_excludes_other_org_rows(self):
-        report = self._report_from_upload_rows(
-            [
-                self._row(
-                    ticket_id="ORG3OK",
-                    row_status="ACCEPTED",
-                    special_instructions_raw=self.HYPO,
-                    organization_id=3,
-                ),
-                self._row(
-                    ticket_id="ORG9NO",
-                    row_status="ACCEPTED",
-                    special_instructions_raw=self.FAB_OXIC,
-                    organization_id=9,
-                ),
-            ],
-            organization_id=3,
-        )
-        assert report["summary"]["orders_analyzed"] == 1
-        assert report["orders"][0]["order_id"] == "ORG3OK"
-        assert report["usage_by_supply"]["All Free & Clear"]["doses"] == 1
-        assert report["usage_by_supply"]["Tide"]["doses"] == 0
-        assert report["usage_by_supply"]["Downy"]["doses"] == 0
-
-    def test_date_and_ticket_filtering_still_apply(self):
-        from backend import supply_usage as su
-
-        rows = [
-            self._row(
-                ticket_id="TODAY1",
-                row_status="ACCEPTED",
-                special_instructions_raw="USE FABRIC SOFTENER",
-                date_clean=self.TARGET,
-            ),
-            self._row(
-                ticket_id="YDAY1",
-                row_status="ACCEPTED",
-                special_instructions_raw=self.FAB_OXIC,
-                date_clean=date(2026, 7, 13),
-            ),
-            self._row(
-                ticket_id="",
-                row_status="ACCEPTED",
-                special_instructions_raw=self.HYPO,
-                date_clean=self.TARGET,
-            ),
-            self._row(
-                ticket_id=None,
-                row_status="OVERRIDDEN",
-                special_instructions_raw=self.FAB_OXIC,
-                date_clean=self.TARGET,
-            ),
-        ]
-        cursor = self._cursor_for_upload_rows(rows)
-        original_te, original_thc = self._patch_schema(su)
-        try:
-            loaded = su._load_upload_batch_orders(cursor, 3, self.TARGET)
-        finally:
-            su.table_exists = original_te
-            su.table_has_column = original_thc
-
-        assert len(loaded) == 1
-        assert loaded[0]["ticket_id"] == "TODAY1"
-        sql, args = cursor._executed[0]
-        assert args == (self.TARGET, 3)
-        assert "ubr.date_clean = %s" in sql
-        assert "ub.organization_id = %s" in sql
-        assert "ubr.ticket_id IS NOT NULL" in sql
-        assert "ubr.row_status IN ('ACCEPTED', 'OVERRIDDEN')" in sql
-
-        report = self._report_from_upload_rows(rows)
-        assert report["summary"]["orders_analyzed"] == 1
-        assert report["usage_by_supply"]["Tide"]["doses"] == 1
-        assert report["usage_by_supply"]["Downy"]["doses"] == 1
-        assert report["usage_by_supply"]["Downy"]["ounces"] == 1.0
-        assert report["usage_by_supply"]["OxiClean"]["doses"] == 0
+        assert "first_weight_et day" in report["data_source"]
 
 
 class TestBuildSupplyUsageReportEmptyDay:
