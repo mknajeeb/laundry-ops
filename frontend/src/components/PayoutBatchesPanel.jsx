@@ -266,7 +266,13 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
                       >
                         <Typography variant="caption" color="text.secondary">
                           {Number(ln.approved_hours || 0).toFixed(2)} reg hrs
-                          {ln.ot_hours ? ` · ${Number(ln.ot_hours).toFixed(2)} OT` : ""}
+                          {Number(ln.ot_hours || 0) > 0
+                            ? ` · ${Number(ln.ot_hours).toFixed(2)} OT @ $${(
+                                Number(ln.ot_rate) > 0
+                                  ? Number(ln.ot_rate)
+                                  : Number(ln.rate || 0) * 1.5
+                              ).toFixed(2)}`
+                            : ""}
                           · ${Number(ln.rate || 0).toFixed(2)}/hr
                         </Typography>
                         <Typography variant="caption" color="text.secondary">

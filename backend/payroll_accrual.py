@@ -97,6 +97,7 @@ def ensure_payout_line_accrual_columns(conn_or_cursor) -> None:
         return
     extras = [
         ("ot_hours", "DECIMAL(10,2) NOT NULL DEFAULT 0"),
+        ("ot_rate", "DECIMAL(10,2) NOT NULL DEFAULT 0"),
         ("sick_hours_accrued", "DECIMAL(10,4) NOT NULL DEFAULT 0"),
         ("sick_hours_used", "DECIMAL(10,4) NOT NULL DEFAULT 0"),
         ("sick_pay_amount", "DECIMAL(10,2) NOT NULL DEFAULT 0"),
@@ -391,8 +392,11 @@ def process_w2_line_accruals(
     allow_sick_over_balance: bool = False,
     sick_override_note: Optional[str] = None,
     created_by: Optional[int] = None,
+    ot_hourly_rate: Optional[Decimal] = None,
 ) -> dict[str, Any]:
     """Accrue sick leave and compute sick pay for one W-2 batch line."""
+    from backend.payroll_overtime import compute_wage_with_overtime
+
     settings = fetch_payroll_tax_settings(cursor, organization_id)
     year = int(str(period_end or date.today())[:4])
     ytd = get_ledger_ytd_totals(cursor, organization_id, user_id, "SICK_LEAVE", year)
@@ -452,7 +456,14 @@ def process_w2_line_accruals(
             created_by=created_by,
         )
 
-    gross = (regular_hours + ot_hours) * hourly_rate + sick_pay
+    # OT hours are paid at OT rate (default 1.5×), not regular rate.
+    gross = compute_wage_with_overtime(
+        regular_hours,
+        ot_hours,
+        hourly_rate,
+        ot_hourly_rate,
+        sick_pay=sick_pay,
+    )
     return {
         "sick_hours_accrued": _q4(sick_accrued),
         "sick_hours_used": _q4(sick_hours_used),

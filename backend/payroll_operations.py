@@ -695,11 +695,14 @@ def delete_time_record(conn, organization_id: int, session_id: int) -> bool:
 
 
 def _recompute_batch_totals(conn, batch_id: int) -> None:
+    from backend.payroll_accrual import ensure_payout_line_accrual_columns
+
+    ensure_payout_line_accrual_columns(conn.cursor())
     c = conn.cursor(dictionary=True)
     c.execute(
         """
         SELECT COUNT(*) AS cnt,
-               COALESCE(SUM(approved_hours), 0) AS hours,
+               COALESCE(SUM(approved_hours + COALESCE(ot_hours, 0)), 0) AS hours,
                COALESCE(SUM(gross_amount), 0) AS gross,
                COALESCE(SUM(adjustments), 0) AS adj,
                COALESCE(SUM(total_amount), 0) AS total
@@ -950,6 +953,7 @@ def _compute_payout_line_amounts(
         process_contractor_line_health_credit,
         process_w2_line_accruals,
     )
+    from backend.payroll_overtime import compute_wage_with_overtime, resolve_overtime_rate
     from backend.payroll_workflow import ensure_payout_batch_line_extensions
 
     ensure_payout_batch_line_extensions(conn.cursor())
@@ -957,6 +961,11 @@ def _compute_payout_line_amounts(
     regular = float(_money(body.get("approved_hours") or body.get("hours") or 0))
     ot = float(_money(body.get("ot_hours") or 0))
     rate = float(_money(body.get("rate")))
+    ot_rate = float(
+        resolve_overtime_rate(rate, explicit_ot_rate=body.get("ot_rate"))
+        if ot > 0
+        else Decimal("0")
+    )
     adj = float(_money(body.get("adjustments")))
     bonus = float(_money(body.get("bonus_tip_amount") or 0))
     reimb = float(_money(body.get("reimbursement_amount") or 0))
@@ -968,6 +977,7 @@ def _compute_payout_line_amounts(
         "approved_hours": regular,
         "ot_hours": ot,
         "rate": rate,
+        "ot_rate": ot_rate,
         "adjustments": adj,
         "bonus_tip_amount": bonus,
         "reimbursement_amount": reimb,
@@ -994,6 +1004,7 @@ def _compute_payout_line_amounts(
             ot_hours=_money(ot),
             sick_hours_used=_money(out["sick_hours_used"]),
             hourly_rate=_money(rate),
+            ot_hourly_rate=_money(ot_rate) if ot > 0 else None,
             period_start=str(period_start) if period_start else None,
             period_end=str(period_end) if period_end else None,
             allow_sick_over_balance=bool(body.get("allow_sick_over_balance")),
@@ -1006,6 +1017,9 @@ def _compute_payout_line_amounts(
         return out
 
     eligible_hours = _money(regular + ot)
+    wage_base = float(
+        compute_wage_with_overtime(regular, ot, rate, ot_rate if ot > 0 else None)
+    )
     if cat in ("contractor_1099", "temp") and uid and batch_id and line_id:
         from backend.payroll_accrual import reverse_ledger_entries_for_line
 
@@ -1028,30 +1042,32 @@ def _compute_payout_line_amounts(
         out["health_credit_amount"] = hc["health_credit_amount"]
         if cat == "contractor_1099":
             legacy_hc_hours = float(body.get("health_safety_credit_hours") or 0)
-            amounts = compute_payment_summary_amounts(regular, rate, legacy_hc_hours, 0)
-            base = amounts["service_amount"]
+            # Prefer OT-inclusive wage when OT hours present; keep legacy HC hours additive path.
+            if ot > 0:
+                base = wage_base
+            else:
+                amounts = compute_payment_summary_amounts(regular, rate, legacy_hc_hours, 0)
+                base = amounts["service_amount"]
             out["gross_amount"] = base
             out["total_amount"] = float(
                 _money(base + hc["health_credit_amount"] + adj + bonus + reimb)
             )
         else:
-            base = float(_money(regular * rate))
-            out["gross_amount"] = base
+            out["gross_amount"] = wage_base
             out["total_amount"] = float(
-                _money(base + hc["health_credit_amount"] + adj + bonus + reimb)
+                _money(wage_base + hc["health_credit_amount"] + adj + bonus + reimb)
             )
         return out
 
-    if cat == "contractor_1099":
+    if cat == "contractor_1099" and ot <= 0:
         amounts = compute_payment_summary_amounts(
             regular, rate, body.get("health_safety_credit_hours") or 0, adj
         )
         out["gross_amount"] = amounts["service_amount"]
         out["total_amount"] = amounts["total_payment"] + bonus + reimb
     else:
-        base = float(_money((regular + ot) * rate))
-        out["gross_amount"] = base
-        out["total_amount"] = base + adj + bonus + reimb
+        out["gross_amount"] = wage_base
+        out["total_amount"] = wage_base + adj + bonus + reimb
     return out
 
 
@@ -1087,7 +1103,7 @@ def update_payout_batch_line(
         """
         UPDATE payout_batch_lines SET
           approved_hours=%s, rate=%s, gross_amount=%s, adjustments=%s, total_amount=%s,
-          ot_hours=%s, sick_hours_accrued=%s, sick_hours_used=%s, sick_pay_amount=%s,
+          ot_hours=%s, ot_rate=%s, sick_hours_accrued=%s, sick_hours_used=%s, sick_pay_amount=%s,
           health_credit_amount=%s, bonus_tip_amount=%s, reimbursement_amount=%s,
           line_status=%s, notes=%s
         WHERE id=%s AND batch_id=%s AND organization_id=%s
@@ -1099,6 +1115,7 @@ def update_payout_batch_line(
             adj,
             total,
             amounts.get("ot_hours") or 0,
+            amounts.get("ot_rate") or 0,
             amounts.get("sick_hours_accrued") or 0,
             amounts.get("sick_hours_used") or 0,
             amounts.get("sick_pay_amount") or 0,
@@ -1240,7 +1257,7 @@ def add_payout_batch_line(
         """
         UPDATE payout_batch_lines SET
           approved_hours=%s, rate=%s, gross_amount=%s, adjustments=%s, total_amount=%s,
-          ot_hours=%s, sick_hours_accrued=%s, sick_hours_used=%s, sick_pay_amount=%s,
+          ot_hours=%s, ot_rate=%s, sick_hours_accrued=%s, sick_hours_used=%s, sick_pay_amount=%s,
           health_credit_amount=%s, bonus_tip_amount=%s, reimbursement_amount=%s,
           gross_wages=%s
         WHERE id=%s AND organization_id=%s
@@ -1252,6 +1269,7 @@ def add_payout_batch_line(
             amounts["adjustments"],
             total,
             amounts.get("ot_hours") or 0,
+            amounts.get("ot_rate") or 0,
             amounts.get("sick_hours_accrued") or 0,
             amounts.get("sick_hours_used") or 0,
             amounts.get("sick_pay_amount") or 0,
@@ -1333,10 +1351,33 @@ def build_batch_from_time_records(
             }
         by_user[uid]["hours"] += float(rec.get("approved_hours") or 0)
         by_user[uid]["session_ids"].append(rec["id"])
+    from backend.payroll_overtime import (
+        resolve_batch_overtime_policy,
+        resolve_overtime_rate,
+        split_hours_for_overtime,
+    )
+
+    ot_policy = resolve_batch_overtime_policy(
+        conn, organization_id, batch["worker_category"]
+    )
     for uid, agg in by_user.items():
         from backend.payroll_workflow import resolve_rate_for_batch_line
 
         rate = resolve_rate_for_batch_line(conn, organization_id, uid)
+        regular_h, ot_h = split_hours_for_overtime(
+            agg["hours"],
+            threshold=ot_policy["threshold_hours"],
+            enabled=ot_policy["enabled"] and rate > 0,
+        )
+        ot_rate = (
+            float(
+                resolve_overtime_rate(
+                    rate, multiplier=ot_policy["multiplier"]
+                )
+            )
+            if float(ot_h) > 0
+            else 0.0
+        )
         add_payout_batch_line(
             conn,
             organization_id,
@@ -1344,8 +1385,10 @@ def build_batch_from_time_records(
             {
                 "user_id": uid,
                 "worker_name_snapshot": agg["worker_name"],
-                "approved_hours": agg["hours"],
+                "approved_hours": float(regular_h),
+                "ot_hours": float(ot_h),
                 "rate": rate,
+                "ot_rate": ot_rate,
                 "adjustments": 0,
                 "line_status": "approved",
                 "source_type": "clock_records",
