@@ -19,8 +19,6 @@ from backend.rinse_bag_stage_bounds import (
 )
 from backend.rinse_drying_chronology import extract_drying_rows_from_events
 from backend.rinse_folding_et import (
-    eastern_now,
-    eastern_today,
     naive_et_day_end_inclusive,
     naive_et_day_start,
 )
@@ -220,17 +218,32 @@ def select_current_cycle_drying_rows(
     )
 
 
-def resolve_bag_status(
-    *,
+def drying_scan_on_selected_date(dry_ts: datetime, selected_date_et: date) -> bool:
+    """selected_date_start <= DryingScan < selected_date_end (ET day)."""
+    day_start = naive_et_day_start(selected_date_et)
+    day_end_exclusive = day_start + timedelta(days=1)
+    return bool(ts_valid(dry_ts) and day_start <= dry_ts < day_end_exclusive)
+
+
+def ready_time_for_interval_bucket(
     ready_et: datetime,
-    folding_start_et: datetime | None,
-    as_of: datetime,
-) -> str:
-    if folding_start_et is not None and folding_start_et <= as_of:
-        return STATUS_FOLDING_STARTED
-    if ready_et > as_of:
-        return STATUS_NOT_YET_READY
-    return STATUS_WAITING
+    selected_date_et: date,
+) -> datetime | None:
+    """
+    Map ReadyTime onto the selected drying day's 96 intervals.
+
+    ReadyTimes at/after the next midnight still belong to the drying day and are
+    counted in the final 11:45 PM bucket.
+    """
+    if not ts_valid(ready_et):
+        return None
+    day_start = naive_et_day_start(selected_date_et)
+    day_end_exclusive = day_start + timedelta(days=1)
+    if ready_et < day_start:
+        return None
+    if ready_et >= day_end_exclusive:
+        return day_end_exclusive - timedelta(microseconds=1)
+    return ready_et
 
 
 def build_ready_to_fold_bag_records(
@@ -243,51 +256,33 @@ def build_ready_to_fold_bag_records(
     as_of: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Build bag-level ready-to-fold records for the selected ET day.
+    Selected-day drying output only.
 
-    Includes:
-    - Bags whose ready time falls on the selected date
-    - Overnight carryover: ready before day start, still waiting at day start
-      (or folding later on the selected day)
+    Include a bag iff its lifecycle-anchored drying scan falls on the selected
+    ET date. ReadyTime may spill past midnight; folding is ignored entirely.
     """
+    del as_of  # status / folding as-of no longer used
     duration = clamp_drying_duration_minutes(drying_duration_minutes)
-    day_start = naive_et_day_start(selected_date_et)
     day_end = naive_et_day_end_inclusive(selected_date_et)
-    as_of_ts = as_of if as_of is not None else day_end
 
     records: list[dict[str, Any]] = []
     selected_drying = select_current_cycle_drying_rows(
         drying_rows,
         events_by_bag,
-        as_of_end=as_of_ts,
+        as_of_end=day_end,
     )
     for dry in selected_drying:
         bid = _bag_key(dry.get("bag_id"))
         dry_ts = dry.get("timestamp_et")
-        if not bid or not ts_valid(dry_ts):
+        if not bid or not drying_scan_on_selected_date(dry_ts, selected_date_et):
             continue
         ready_et = dry_ts + timedelta(minutes=duration)
-        bag_events = events_by_bag.get(bid) or []
-        folding_start_et = find_folding_start_after(bag_events, after_ts=dry_ts)
-
-        ready_on_selected_day = day_start <= ready_et <= day_end
-        carryover_waiting = ready_et < day_start and (
-            folding_start_et is None or folding_start_et >= day_start
-        )
-        if not ready_on_selected_day and not carryover_waiting:
-            continue
 
         meta = metadata_by_bag.get(bid) or {}
         service_type = _normalize_service_type(meta.get("service_type"))
         weight = meta.get("weight_num")
         if weight is None:
             weight = meta.get("weight_lbs")
-
-        status = resolve_bag_status(
-            ready_et=ready_et,
-            folding_start_et=folding_start_et,
-            as_of=as_of_ts,
-        )
 
         records.append(
             {
@@ -300,11 +295,9 @@ def build_ready_to_fold_bag_records(
                 "weight": weight,
                 "service_type": service_type,
                 "order_type": service_type,
-                "folding_start_et": folding_start_et,
-                "status": status,
                 "confidence": dry.get("confidence"),
                 "scan_event_id": dry.get("scan_event_id"),
-                "is_carryover": ready_et < day_start,
+                "ready_spills_next_day": ready_et.date() > selected_date_et,
             }
         )
 
@@ -320,69 +313,23 @@ def build_ready_to_fold_bag_records(
     return records
 
 
-def bag_is_cumulatively_ready_at(
-    bag: Mapping[str, Any],
-    *,
-    as_of: datetime,
-) -> bool:
-    """True when ReadyTime has already been reached by *as_of* (capacity cumulative)."""
-    ready_et = bag.get("ready_to_fold_et")
-    return bool(ts_valid(ready_et) and ready_et <= as_of)
-
-
-def bag_is_waiting_to_fold_at(
-    bag: Mapping[str, Any],
-    *,
-    as_of: datetime,
-) -> bool:
-    """
-    Live folding queue at *as_of* (optional metric).
-
-    ReadyTime <= as_of AND (FoldStart IS NULL OR FoldStart > as_of).
-    May decrease as bags start folding. Must not replace cumulative ready.
-    """
-    if not bag_is_cumulatively_ready_at(bag, as_of=as_of):
-        return False
-    fold_ts = bag.get("folding_start_et")
-    if fold_ts is not None and ts_valid(fold_ts) and fold_ts <= as_of:
-        return False
-    return True
-
-
-# Back-compat alias used by older tests / callers.
-def bag_is_available_to_fold_at(
-    bag: Mapping[str, Any],
-    *,
-    as_of: datetime,
-) -> bool:
-    return bag_is_waiting_to_fold_at(bag, as_of=as_of)
-
-
 def build_ready_to_fold_intervals(
     bags: Sequence[Mapping[str, Any]],
     *,
     selected_date_et: date,
 ) -> list[dict[str, Any]]:
     """
-    Capacity-planning intervals.
+    Capacity intervals for selected-day drying output.
 
-    - New Bags Ready: half-open [start, end)
-    - Cumulative Bags Ready: never decreases; CarryIn + sum(Newly through i)
-      (= bags with ReadyTime <= interval_end for the report set under half-open newly)
-    - Currently Waiting: live queue (ready and not yet folded by interval_end)
+    - New Bags Ready: half-open [start, end) on ReadyTime (overflow → 11:45 PM)
+    - Cumulative Bags Ready: starts at 0; Cumulative(i)=Cumulative(i-1)+New(i)
+    Folding and prior-day carry-in are not used.
     """
     interval_starts = build_day_interval_starts(selected_date_et)
-    day_start = naive_et_day_start(selected_date_et)
-    day_end_exclusive = day_start + timedelta(days=1)
+    day_end_exclusive = naive_et_day_start(selected_date_et) + timedelta(days=1)
 
-    # Overnight carry-in: already ready before the selected day starts.
-    carry_in = [
-        b
-        for b in bags
-        if ts_valid(b.get("ready_to_fold_et")) and b["ready_to_fold_et"] < day_start
-    ]
-    cumulative_bags: list[Mapping[str, Any]] = list(carry_in)
-    seen_ids = {_bag_key(b.get("bag_id")) for b in cumulative_bags}
+    cumulative_bags: list[Mapping[str, Any]] = []
+    seen_ids: set[str] = set()
 
     intervals: list[dict[str, Any]] = []
     for start in interval_starts:
@@ -390,23 +337,22 @@ def build_ready_to_fold_intervals(
         if end > day_end_exclusive:
             end = day_end_exclusive
 
-        newly = [
-            b
-            for b in bags
-            if ts_valid(b.get("ready_to_fold_et"))
-            and start <= b["ready_to_fold_et"] < end
-        ]
+        newly = []
+        for b in bags:
+            bucket_ts = ready_time_for_interval_bucket(
+                b.get("ready_to_fold_et"),
+                selected_date_et,
+            )
+            if bucket_ts is not None and start <= bucket_ts < end:
+                newly.append(b)
+
         for b in newly:
             bid = _bag_key(b.get("bag_id"))
             if bid and bid not in seen_ids:
                 cumulative_bags.append(b)
                 seen_ids.add(bid)
 
-        # Capacity cumulative never subtracts folding and never decreases.
-        # Identity: Cumulative(i) = Cumulative(i-1) + NewlyReady(i) (unique bag ids).
         cumulative_count = len(cumulative_bags)
-        waiting = [b for b in bags if bag_is_waiting_to_fold_at(b, as_of=end)]
-
         intervals.append(
             {
                 "interval_start_et": start,
@@ -414,13 +360,10 @@ def build_ready_to_fold_intervals(
                 "label": start.strftime("%I:%M %p").lstrip("0"),
                 "newly_ready_count": len(newly),
                 "cumulative_ready_count": cumulative_count,
-                # Primary capacity column (API / table). Never decreases.
                 "available_count": cumulative_count,
-                "waiting_count": len(waiting),
                 "newly_ready_bags": newly,
                 "cumulative_ready_bags": list(cumulative_bags),
                 "available_bags": list(cumulative_bags),
-                "waiting_bags": waiting,
             }
         )
     return intervals
@@ -432,17 +375,10 @@ def build_ready_to_fold_summary(
     *,
     selected_date_et: date,
 ) -> dict[str, Any]:
-    day_start = naive_et_day_start(selected_date_et)
-    day_end = naive_et_day_end_inclusive(selected_date_et)
-
+    del selected_date_et  # population already scoped to selected-day drying
     dried = [b for b in bags if ts_valid(b.get("drying_scan_et"))]
-    ready_on_day = [
-        b
-        for b in bags
-        if ts_valid(b.get("ready_to_fold_et")) and day_start <= b["ready_to_fold_et"] <= day_end
-    ]
-    waiting = [b for b in bags if b.get("status") == STATUS_WAITING]
-    ready_times = [b["ready_to_fold_et"] for b in ready_on_day if ts_valid(b.get("ready_to_fold_et"))]
+    with_ready = [b for b in bags if ts_valid(b.get("ready_to_fold_et"))]
+    ready_times = [b["ready_to_fold_et"] for b in with_ready]
 
     peak_newly_interval = None
     peak_newly = 0
@@ -467,9 +403,9 @@ def build_ready_to_fold_summary(
     peak_cum_label = (peak_cum_interval or {}).get("label")
     return {
         "total_bags_dried": len(dried),
-        "total_bags_ready_to_fold": len(ready_on_day),
-        "total_bags_ready_today": len(ready_on_day),
-        "currently_waiting_to_fold": len(waiting),
+        "total_bags_ready": len(with_ready),
+        "total_bags_ready_to_fold": len(with_ready),
+        "total_bags_ready_today": len(with_ready),
         "first_bag_ready_et": min(ready_times) if ready_times else None,
         "peak_15min_ready_count": peak_newly,
         "peak_15min_ready_label": peak_newly_label,
@@ -477,11 +413,11 @@ def build_ready_to_fold_summary(
         "peak_cumulative_ready_count": peak_cum,
         "peak_cumulative_ready_label": peak_cum_label,
         "peak_cumulative_ready_start_et": (peak_cum_interval or {}).get("interval_start_et"),
-        # Legacy aliases (older Peak Waiting / Peak Ready Interval clients).
-        "peak_waiting_label": peak_cum_label,
-        "peak_waiting_count": peak_cum,
+        # Legacy aliases
         "peak_ready_interval_label": peak_newly_label,
         "peak_ready_interval_start_et": (peak_newly_interval or {}).get("interval_start_et"),
+        "peak_waiting_label": peak_cum_label,
+        "peak_waiting_count": peak_cum,
         "max_bags_waiting": peak_cum,
         "drying_duration_minutes": (
             bags[0].get("drying_duration_minutes") if bags else DEFAULT_DRYING_DURATION_MINUTES
@@ -512,9 +448,8 @@ def filter_ready_to_fold_bags(
         if ot and ot.lower() != "all":
             rows = [r for r in rows if _normalize_service_type(r.get("service_type")) == ot]
 
-    sf = str(status_filter or "all").strip().lower()
-    if sf in VALID_STATUS_FILTERS and sf != "all":
-        rows = [r for r in rows if r.get("status") == sf]
+    # Status / folding filters are intentionally ignored — drying-only report.
+    del status_filter
 
     for idx, row in enumerate(rows):
         row["index"] = idx + 1
@@ -601,35 +536,32 @@ def build_ready_to_fold_chronology_payload(
     if mode not in VALID_VIEW_MODES:
         mode = "both"
 
-    # Prior calendar day through selected day end — overnight drying + same-day folding.
-    window_start = naive_et_day_start(selected_date_et - timedelta(days=1))
-    window_end = naive_et_day_end_inclusive(selected_date_et)
-    if as_of is not None:
-        as_of_ts = as_of
-    elif selected_date_et == eastern_today():
-        # Naive ET wall clock for status comparisons against scanned_at_parsed.
-        now = eastern_now()
-        as_of_ts = now.replace(tzinfo=None)
-        if as_of_ts > window_end:
-            as_of_ts = window_end
-    else:
-        as_of_ts = window_end
+    day_start = naive_et_day_start(selected_date_et)
+    day_end = naive_et_day_end_inclusive(selected_date_et)
+    day_end_exclusive = day_start + timedelta(days=1)
+    # Look back one day only to discover candidate bag ids that dried on selected day
+    # when scans sit near midnight; lifecycle uses full bag timelines below.
+    window_start = day_start - timedelta(days=1)
+    window_end = day_end
+    del as_of  # folding / as-of status removed
 
     window_events = _load_scan_events_window(cursor, organization_id, window_start, window_end)
     window_drying_rows = extract_drying_rows_from_events(window_events)
 
+    # Candidate bags = those with a drying extract on the selected ET date only.
     candidate_ids = sorted(
         {
             _bag_key(r.get("bag_id"))
             for r in window_drying_rows
-            if _bag_key(r.get("bag_id"))
+            if drying_scan_on_selected_date(r.get("timestamp_et"), selected_date_et)
+            and _bag_key(r.get("bag_id"))
         }
     )
     if bag_id_filter:
         needle = _bag_key(bag_id_filter)
         candidate_ids = [bid for bid in candidate_ids if bid == needle]
 
-    # Full timelines so sent-to-vendor anchors outside the 2-day window still apply.
+    # Full timelines so sent-to-vendor anchors outside the window still apply.
     full_events = _load_scan_events_for_bags(cursor, organization_id, candidate_ids)
     events_by_bag: dict[str, list[dict[str, Any]]] = {}
     for ev in full_events:
@@ -637,10 +569,7 @@ def build_ready_to_fold_chronology_payload(
         if bid:
             events_by_bag.setdefault(bid, []).append(ev)
 
-    # Drying rows from full timelines (not just the lookback window) so redry / prior-day
-    # drying in the current lifecycle are available for selection.
     drying_rows = extract_drying_rows_from_events(full_events)
-
     metadata = _load_bag_metadata(cursor, organization_id, candidate_ids)
 
     bags = build_ready_to_fold_bag_records(
@@ -649,8 +578,15 @@ def build_ready_to_fold_chronology_payload(
         metadata_by_bag=metadata,
         selected_date_et=selected_date_et,
         drying_duration_minutes=duration,
-        as_of=as_of_ts,
+        as_of=day_end,
     )
+    # Defensive: never include prior-day drying even if selection misfires.
+    bags = [
+        b
+        for b in bags
+        if drying_scan_on_selected_date(b.get("drying_scan_et"), selected_date_et)
+    ]
+    del day_end_exclusive
 
     machines = sorted(
         {str(b.get("dryer_rack") or "").strip() for b in bags if b.get("dryer_rack")},
@@ -679,15 +615,29 @@ def build_ready_to_fold_chronology_payload(
     for interval in intervals:
         newly = interval["newly_ready_bags"]
         cumulative = interval["cumulative_ready_bags"]
-        waiting = interval.get("waiting_bags") or []
         if mode == "newly_ready":
             detail_bags = newly
         elif mode == "cumulative":
             detail_bags = cumulative
         else:
-            # Prefer newly ready bag identities first, then remaining cumulative.
             seen = {b["bag_id"] for b in newly}
             detail_bags = list(newly) + [b for b in cumulative if b["bag_id"] not in seen]
+
+        # Strip any folding fields from detail payloads.
+        detail_bags = [
+            {
+                "bag_id": b.get("bag_id"),
+                "drying_scan_et": b.get("drying_scan_et"),
+                "ready_to_fold_et": b.get("ready_to_fold_et"),
+                "drying_duration_minutes": b.get("drying_duration_minutes"),
+                "dryer_rack": b.get("dryer_rack"),
+                "weight": b.get("weight"),
+                "order_type": b.get("order_type") or b.get("service_type"),
+                "service_type": b.get("service_type"),
+                "ready_spills_next_day": b.get("ready_spills_next_day"),
+            }
+            for b in detail_bags
+        ]
 
         interval_rows.append(
             {
@@ -697,11 +647,25 @@ def build_ready_to_fold_chronology_payload(
                 "newly_ready_count": interval["newly_ready_count"],
                 "cumulative_ready_count": interval["cumulative_ready_count"],
                 "available_count": interval["available_count"],
-                "waiting_count": interval.get("waiting_count", 0),
                 "bags": detail_bags,
-                "waiting_bags": waiting,
             }
         )
+
+    sessions = [
+        {
+            "bag_id": b.get("bag_id"),
+            "drying_scan_et": b.get("drying_scan_et"),
+            "ready_to_fold_et": b.get("ready_to_fold_et"),
+            "drying_duration_minutes": b.get("drying_duration_minutes"),
+            "dryer_rack": b.get("dryer_rack"),
+            "weight": b.get("weight"),
+            "order_type": b.get("order_type") or b.get("service_type"),
+            "service_type": b.get("service_type"),
+            "ready_spills_next_day": b.get("ready_spills_next_day"),
+            "index": b.get("index"),
+        }
+        for b in filtered
+    ]
 
     return {
         "date_et": selected_date_et.isoformat(),
@@ -710,24 +674,21 @@ def build_ready_to_fold_chronology_payload(
         "view_mode": mode,
         "summary": summary,
         "intervals": interval_rows,
-        "sessions": filtered,
-        "bags": filtered,
+        "sessions": sessions,
+        "bags": sessions,
         "machines": machines,
         "order_types": order_types,
-        "status_options": sorted(VALID_STATUS_FILTERS - {"all"}),
+        "status_options": [],
         "employees": [],
         "event_purposes": None,
         "grouping_rules": (
-            "Ready to Fold = drying scan time + drying duration minutes (0–1440). "
-            "One bag per current lifecycle drying cycle: latest dryer-rack drying scan "
-            "on/after the latest sent-to-vendor at or before the selected day. "
-            "Redry within the same lifecycle replaces the earlier dry (no double count). "
-            "Prior-day drying is included when ready-to-fold falls on the selected ET day "
-            "or the bag is still waiting at day start. "
-            "New Bags Ready = half-open buckets [interval_start, interval_end). "
-            "Cumulative Bags Ready = overnight carry-in + running sum of New Bags Ready "
-            "(never decreases; does not subtract folding). "
-            "Currently Waiting = ReadyTime <= interval_end and no FoldStart yet "
-            "(or FoldStart > interval_end) — optional live queue."
+            "Ready to Fold is selected-day drying output only: "
+            "selected_date_start <= DryingScan < selected_date_end. "
+            "ReadyTime = DryingScan + drying duration (may spill past midnight). "
+            "Lifecycle-anchored drying (latest dry on/after latest sent-to-vendor). "
+            "No prior-day carry-in. No folding scans. "
+            "New Bags Ready = half-open [interval_start, interval_end); "
+            "post-midnight ReadyTimes count in the 11:45 PM bucket. "
+            "Cumulative Bags Ready starts at 0 and equals the running sum of New."
         ),
     }

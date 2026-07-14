@@ -64,15 +64,8 @@ const EVENT_STAGES = new Set(["washing", "drying"]);
 const UTIL_STAGES = new Set(["washer_utilization", "dryer_utilization"]);
 const DEFAULT_DRYING_DURATION_MINUTES = 40;
 
-const READY_STATUS_OPTIONS = [
-  { id: "all", label: "All statuses" },
-  { id: "waiting_to_fold", label: "Waiting to fold" },
-  { id: "folding_started", label: "Folding started" },
-  { id: "not_yet_ready", label: "Not yet ready" },
-];
-
 const READY_VIEW_OPTIONS = [
-  { id: "both", label: "Both + Waiting" },
+  { id: "both", label: "Both" },
   { id: "newly_ready", label: "New Bags Ready" },
   { id: "cumulative", label: "Cumulative Bags Ready" },
 ];
@@ -344,7 +337,6 @@ export default function ScanChronologyPage() {
   const [dryingDurationMinutes, setDryingDurationMinutes] = useState(DEFAULT_DRYING_DURATION_MINUTES);
   const [orderTypeFilter, setOrderTypeFilter] = useState("");
   const [machineFilter, setMachineFilter] = useState("");
-  const [readyStatusFilter, setReadyStatusFilter] = useState("all");
   const [readyViewMode, setReadyViewMode] = useState("both");
   const [drawerSession, setDrawerSession] = useState(null);
   const [drawerScans, setDrawerScans] = useState([]);
@@ -409,7 +401,6 @@ export default function ScanChronologyPage() {
       drying_duration_minutes: isReadyToFold ? dryingDurationMinutes : undefined,
       order_type: isReadyToFold ? orderTypeFilter : undefined,
       machine: isReadyToFold ? machineFilter : undefined,
-      status: isReadyToFold && readyStatusFilter !== "all" ? readyStatusFilter : undefined,
       view_mode: isReadyToFold ? readyViewMode : undefined,
     }),
     [
@@ -420,7 +411,6 @@ export default function ScanChronologyPage() {
       dryingDurationMinutes,
       orderTypeFilter,
       machineFilter,
-      readyStatusFilter,
       readyViewMode,
       isUserActivity,
       isCoverageAudit,
@@ -622,15 +612,14 @@ export default function ScanChronologyPage() {
   const handleReadyFilterChange = (patch) => {
     if (Object.prototype.hasOwnProperty.call(patch, "order_type")) setOrderTypeFilter(patch.order_type);
     if (Object.prototype.hasOwnProperty.call(patch, "machine")) setMachineFilter(patch.machine);
-    if (Object.prototype.hasOwnProperty.call(patch, "status")) setReadyStatusFilter(patch.status);
     if (Object.prototype.hasOwnProperty.call(patch, "view_mode")) setReadyViewMode(patch.view_mode);
     const next = {
       ...currentFilters,
       ...patch,
     };
-    if (next.status === "all" || next.status === "") next.status = undefined;
     if (next.order_type === "") next.order_type = undefined;
     if (next.machine === "") next.machine = undefined;
+    delete next.status;
     load(activeDateEt, activeStage, next);
   };
 
@@ -640,9 +629,10 @@ export default function ScanChronologyPage() {
     if (isReadyToFold) {
       return (
         <>
+          <SummaryCard label="Total Bags Dried" value={summary.total_bags_dried ?? 0} />
           <SummaryCard
-            label="Total Bags Ready Today"
-            value={summary.total_bags_ready_today ?? summary.total_bags_ready_to_fold ?? 0}
+            label="Total Bags Ready"
+            value={summary.total_bags_ready ?? summary.total_bags_ready_to_fold ?? 0}
           />
           <SummaryCard label="First Bag Ready" value={formatDateTime(summary.first_bag_ready_et) || "—"} />
           <SummaryCard
@@ -655,17 +645,13 @@ export default function ScanChronologyPage() {
             }
           />
           <SummaryCard
-            label="Peak Cumulative Available"
-            value={summary.peak_cumulative_ready_label || summary.peak_waiting_label || "—"}
+            label="Peak Cumulative Ready"
+            value={summary.peak_cumulative_ready_label || "—"}
             sub={
-              (summary.peak_cumulative_ready_count ?? summary.peak_waiting_count) != null
-                ? `${summary.peak_cumulative_ready_count ?? summary.peak_waiting_count} bags ready`
+              summary.peak_cumulative_ready_count != null
+                ? `${summary.peak_cumulative_ready_count} bags ready`
                 : undefined
             }
-          />
-          <SummaryCard
-            label="Current Waiting to Fold"
-            value={summary.currently_waiting_to_fold ?? 0}
           />
         </>
       );
@@ -1116,20 +1102,6 @@ export default function ScanChronologyPage() {
                   ))}
                 </Select>
               </FormControl>
-              <FormControl size="small" sx={{ minWidth: 160 }}>
-                <InputLabel>Bag status</InputLabel>
-                <Select
-                  label="Bag status"
-                  value={readyStatusFilter}
-                  onChange={(e) => handleReadyFilterChange({ status: e.target.value })}
-                >
-                  {READY_STATUS_OPTIONS.map(({ id, label }) => (
-                    <MenuItem key={id} value={id}>
-                      {label}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
               <FormControl size="small" sx={{ minWidth: 180 }}>
                 <InputLabel>View</InputLabel>
                 <Select
@@ -1242,11 +1214,10 @@ export default function ScanChronologyPage() {
               {readyIntervals.every(
                 (interval) =>
                   (interval.newly_ready_count || 0) === 0 &&
-                    (interval.cumulative_ready_count || interval.available_count || 0) === 0 &&
-                    (interval.waiting_count || 0) === 0,
+                  (interval.cumulative_ready_count || interval.available_count || 0) === 0,
               ) ? (
                 <Alert severity="info">
-                  No ready-to-fold bags for {activeDateEt} at {dryingDurationMinutes} minutes after drying.
+                  No selected-day drying bags for {activeDateEt} at {dryingDurationMinutes} minutes after drying.
                 </Alert>
               ) : (
                 <ReadyToFoldChronologyPanel
@@ -1347,7 +1318,7 @@ export default function ScanChronologyPage() {
                   </Typography>
                 ) : null}
               </>
-            ) : drawerSession.ready_to_fold_et ? (
+            ) : drawerSession.ready_to_fold_et || drawerSession.drying_scan_et ? (
               <>
                 <Typography variant="body2">
                   <strong>Drying scan:</strong> {formatDateTime(drawerSession.drying_scan_et) || "—"}
@@ -1359,10 +1330,7 @@ export default function ScanChronologyPage() {
                   <strong>Drying duration:</strong> {drawerSession.drying_duration_minutes ?? "—"} min
                 </Typography>
                 <Typography variant="body2">
-                  <strong>Folding start:</strong> {formatDateTime(drawerSession.folding_start_et) || "—"}
-                </Typography>
-                <Typography variant="body2">
-                  <strong>Status:</strong> {drawerSession.status || "—"}
+                  <strong>Dryer:</strong> {drawerSession.dryer_rack || "—"}
                 </Typography>
                 <Typography variant="body2">
                   <strong>Order type:</strong> {drawerSession.order_type || drawerSession.service_type || "—"}

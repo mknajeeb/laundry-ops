@@ -1,7 +1,6 @@
 import { Fragment, useState } from "react";
 import {
   Box,
-  Chip,
   Collapse,
   IconButton,
   Paper,
@@ -19,35 +18,11 @@ import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
 import { formatDateTime } from "../utils/foldingFormat";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 
-const STATUS_LABELS = {
-  waiting_to_fold: "Waiting to fold",
-  folding_started: "Folding started",
-  not_yet_ready: "Not yet ready",
-};
-
-const STATUS_COLORS = {
-  waiting_to_fold: { bg: "#fff7ed", color: "#c2410c" },
-  folding_started: { bg: "#ecfdf5", color: "#047857" },
-  not_yet_ready: { bg: "#eff6ff", color: "#1d4ed8" },
-};
-
 /** Subtle alternating hour-block tint (~6% primary blue). */
 const HOUR_BLOCK_TINTED = "rgba(25, 71, 149, 0.06)";
 const HOUR_BLOCK_TINTED_HOVER = "rgba(25, 71, 149, 0.10)";
 const HOUR_BLOCK_PLAIN = "#ffffff";
 const HOUR_BLOCK_PLAIN_HOVER = "rgba(0, 0, 0, 0.03)";
-
-function StatusChip({ status }) {
-  const key = String(status || "").toLowerCase();
-  const colors = STATUS_COLORS[key] || { bg: "#f3f4f6", color: "#374151" };
-  return (
-    <Chip
-      label={STATUS_LABELS[key] || status || "—"}
-      size="small"
-      sx={{ bgcolor: colors.bg, color: colors.color, fontWeight: 700, fontSize: "0.75rem" }}
-    />
-  );
-}
 
 function formatWeight(weight) {
   if (weight == null || weight === "") return "—";
@@ -71,7 +46,6 @@ function intervalParts(interval) {
 
 function hourBlockStyles(interval) {
   const { hour, minute } = intervalParts(interval);
-  // 7:xx / 9:xx / … tinted; 8:xx / 10:xx / … plain
   const tinted = hour % 2 === 1;
   return {
     bgcolor: tinted ? HOUR_BLOCK_TINTED : HOUR_BLOCK_PLAIN,
@@ -103,8 +77,6 @@ function IntervalBagTable({ bags, onBagClick }) {
           <TableCell sx={{ fontWeight: 700 }}>Dryer</TableCell>
           <TableCell sx={{ fontWeight: 700 }}>Weight</TableCell>
           <TableCell sx={{ fontWeight: 700 }}>Order Type</TableCell>
-          <TableCell sx={{ fontWeight: 700 }}>Folding Start</TableCell>
-          <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
         </TableRow>
       </TableHead>
       <TableBody>
@@ -132,10 +104,6 @@ function IntervalBagTable({ bags, onBagClick }) {
             <TableCell>{bag.dryer_rack || "—"}</TableCell>
             <TableCell>{formatWeight(bag.weight)}</TableCell>
             <TableCell>{bag.order_type || bag.service_type || "—"}</TableCell>
-            <TableCell>{formatDateTime(bag.folding_start_et) || "—"}</TableCell>
-            <TableCell>
-              <StatusChip status={bag.status} />
-            </TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -147,10 +115,9 @@ function IntervalRow({ interval, viewMode, onBagClick }) {
   const [open, setOpen] = useState(false);
   const showNewly = viewMode === "newly_ready" || viewMode === "both";
   const showCumulative = viewMode === "cumulative" || viewMode === "both";
-  const showWaiting = viewMode === "both";
   const { bgcolor, hoverBg, isHourStart } = hourBlockStyles(interval);
   const timeWeight = isHourStart ? 800 : 600;
-  const colSpan = 2 + (showNewly ? 1 : 0) + (showCumulative ? 1 : 0) + (showWaiting ? 1 : 0);
+  const colSpan = 2 + (showNewly ? 1 : 0) + (showCumulative ? 1 : 0);
 
   return (
     <Fragment>
@@ -179,11 +146,6 @@ function IntervalRow({ interval, viewMode, onBagClick }) {
             {cumulativeCount(interval)}
           </TableCell>
         ) : null}
-        {showWaiting ? (
-          <TableCell align="right" sx={{ bgcolor: "inherit" }}>
-            {interval.waiting_count ?? 0}
-          </TableCell>
-        ) : null}
       </TableRow>
       <TableRow>
         <TableCell colSpan={colSpan} sx={{ py: 0, bgcolor: open ? "grey.50" : bgcolor }}>
@@ -205,15 +167,10 @@ export default function ReadyToFoldChronologyPanel({
 }) {
   const showNewly = viewMode === "newly_ready" || viewMode === "both";
   const showCumulative = viewMode === "cumulative" || viewMode === "both";
-  const showWaiting = viewMode === "both";
   const visible = intervals.filter((interval) => {
     if (viewMode === "newly_ready") return (interval.newly_ready_count || 0) > 0;
     if (viewMode === "cumulative") return cumulativeCount(interval) > 0;
-    return (
-      (interval.newly_ready_count || 0) > 0 ||
-      cumulativeCount(interval) > 0 ||
-      (interval.waiting_count || 0) > 0
-    );
+    return (interval.newly_ready_count || 0) > 0 || cumulativeCount(interval) > 0;
   });
 
   if (!visible.length) {
@@ -226,14 +183,13 @@ export default function ReadyToFoldChronologyPanel({
       elevation={0}
       sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2 }}
     >
-      <Table size="small" sx={{ minWidth: 560 }}>
+      <Table size="small" sx={{ minWidth: 520 }}>
         <TableHead>
           <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
             <TableCell />
             <TableCell>Time</TableCell>
             {showNewly ? <TableCell align="right">New Bags Ready</TableCell> : null}
             {showCumulative ? <TableCell align="right">Cumulative Bags Ready</TableCell> : null}
-            {showWaiting ? <TableCell align="right">Currently Waiting</TableCell> : null}
           </TableRow>
         </TableHead>
         <TableBody>

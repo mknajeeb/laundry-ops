@@ -156,17 +156,11 @@ function buildUserActivityRows(employeeGroups) {
 }
 
 function buildReadyToFoldIntervalRows(intervals) {
-  const headers = [
-    "Time",
-    "New Bags Ready",
-    "Cumulative Bags Ready",
-    "Currently Waiting",
-  ];
+  const headers = ["Time", "New Bags Ready", "Cumulative Bags Ready"];
   const rows = (intervals || []).map((interval) => [
     interval.label ?? "",
     interval.newly_ready_count ?? 0,
     interval.cumulative_ready_count ?? interval.available_count ?? 0,
-    interval.waiting_count ?? "",
   ]);
   return { headers, rows };
 }
@@ -180,8 +174,6 @@ function buildReadyToFoldBagRows(sessions) {
     "Dryer",
     "Weight",
     "Order Type",
-    "Folding Start (ET)",
-    "Status",
   ];
   const rows = (sessions || []).map((row) => [
     row.bag_id ?? "",
@@ -191,8 +183,6 @@ function buildReadyToFoldBagRows(sessions) {
     row.dryer_rack ?? "",
     row.weight ?? "",
     row.order_type || row.service_type || "",
-    formatExportDateTime(row.folding_start_et),
-    row.status ?? "",
   ]);
   return { headers, rows };
 }
