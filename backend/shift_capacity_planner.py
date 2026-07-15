@@ -4246,6 +4246,102 @@ def _delta_time_label(baseline: str | None, scenario: str | None) -> str | None:
 
 
 def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
+    # Default to bag_des_v2. Explicit engine=bag_des keeps the prior DES; engine=legacy
+    # keeps the operational planner. Overlay-style continuation lives only in bag_des.
+    engine = str((data or {}).get("engine") or "bag_des_v2").strip().lower()
+    if engine in ("bag_des_v2", "des_v2", "v2", ""):
+        from backend.shift_capacity.service import run_shift_capacity
+
+        des = run_shift_capacity(dict(data or {}))
+        return {
+            "engine": "bag_des_v2",
+            "scenario_id": des.get("scenario_id"),
+            "parent_scenario_id": des.get("parent_scenario_id"),
+            "mode": des.get("mode"),
+            "validation": des.get("validation") or {},
+            "continuation": des.get("continuation") or {},
+            "inputs": des.get("inputs") or {},
+            "summary": des.get("summary") or des.get("kpis") or {},
+            "kpis": des.get("kpis") or des.get("summary") or {},
+            "ready_to_fold_by_batch": des.get("ready_to_fold_by_batch") or [],
+            "availability_30min": des.get("availability_30min") or des.get("time_summary") or [],
+            "time_summary": des.get("time_summary") or [],
+            "staffing_summary": des.get("staffing_summary") or des.get("staffing_chart") or [],
+            "bag_rows": des.get("bag_rows") or des.get("bags") or [],
+            "bags": des.get("bags") or des.get("bag_rows") or [],
+            "batches": des.get("batches") or [],
+            "staffing_chart": des.get("staffing_chart") or des.get("staffing_summary") or [],
+            "employees": des.get("employees") or [],
+            "resource_utilization": des.get("resource_utilization") or {},
+            "timelines": des.get("timelines") or {},
+            "employee_timeline": des.get("employee_timeline") or [],
+            "machine_timeline": des.get("machine_timeline") or [],
+            "recommendations": des.get("recommendations") or [],
+            "simulation_valid": des.get("simulation_valid", True),
+            "overlap_errors": des.get("overlap_errors") or [],
+            "des": des,
+            "validation_errors": des.get("validation_errors") or [],
+            "bags_moved": des.get("bags_moved") or [],
+            "override_impact": des.get("override_impact"),
+            "partial_resim": des.get("partial_resim") or des.get("continuation"),
+            "batch_edit_payload": des.get("batch_edit_payload") or {},
+            "strategies": {},
+            "recommendation": {},
+            "operational": {
+                "command_board": {
+                    "summary": des.get("summary") or des.get("kpis") or {},
+                    "batch_timeline": des.get("ready_to_fold_by_batch") or [],
+                    "resource_timeline": des.get("staffing_chart") or [],
+                    "next_batch": (des.get("ready_to_fold_by_batch") or [None])[0],
+                    "simulation_valid": des.get("simulation_valid", True),
+                },
+                "active_strategy": {"name": "bag_des_v2"},
+            },
+        }
+
+    if engine in ("bag_des", "des"):
+        from backend.shift_capacity_des import apply_des_action, run_bag_des_simulation
+
+        payload_in = dict(data or {})
+        if isinstance(payload_in.get("apply_action"), dict):
+            payload_in = apply_des_action(payload_in, payload_in["apply_action"])
+            payload_in.pop("apply_action", None)
+        des = run_bag_des_simulation(payload_in)
+        return {
+            "engine": "bag_des",
+            "inputs": des.get("inputs") or {},
+            "summary": des.get("summary") or {},
+            "ready_to_fold_by_batch": des.get("ready_to_fold_by_batch") or [],
+            "availability_30min": des.get("availability_30min") or [],
+            "bag_rows": des.get("bag_rows") or [],
+            "batches": des.get("batches") or [],
+            "staffing_chart": des.get("staffing_chart") or [],
+            "employees": des.get("employees") or [],
+            "resource_utilization": des.get("resource_utilization") or {},
+            "timelines": des.get("timelines") or {},
+            "recommendations": des.get("recommendations") or [],
+            "simulation_valid": des.get("simulation_valid", True),
+            "overlap_errors": des.get("overlap_errors") or [],
+            "des": des,
+            "validation_errors": des.get("validation_errors") or [],
+            "bags_moved": des.get("bags_moved") or [],
+            "override_impact": des.get("override_impact"),
+            "partial_resim": des.get("partial_resim"),
+            "batch_edit_payload": des.get("batch_edit_payload") or {},
+            "strategies": {},
+            "recommendation": {},
+            "operational": {
+                "command_board": {
+                    "summary": des.get("summary") or {},
+                    "batch_timeline": des.get("ready_to_fold_by_batch") or [],
+                    "resource_timeline": des.get("staffing_chart") or [],
+                    "next_batch": (des.get("ready_to_fold_by_batch") or [None])[0],
+                    "simulation_valid": des.get("simulation_valid", True),
+                },
+                "active_strategy": {"name": "bag_des"},
+            },
+        }
+
     inp = parse_planner_inputs(data)
     staffing = compute_staffing(inp)
     strategies = {

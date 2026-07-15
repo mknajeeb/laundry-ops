@@ -18,7 +18,8 @@ from backend.shift_capacity_planner import (
 
 
 def _default_payload(**overrides):
-    data = {**DEFAULTS, **overrides}
+    # Legacy operational planner tests must stay on the pre-DES engine.
+    data = {**DEFAULTS, "engine": "legacy", **overrides}
     return {k: v for k, v in data.items() if v is not None}
 
 
