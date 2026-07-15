@@ -1,14 +1,17 @@
 """
 Read-only washing chronology for Shift Analysis.
 
-One row per start-cleaning scan at a washer rack (split orders may produce multiple rows).
+One row per start-cleaning scan (split orders may produce multiple rows).
+W-prefix washer racks on the start-cleaning scan are exact; otherwise the row
+is still shown (inferred), including facility locations like VeeWash Clean.
+Optional same-bag washer-settings inference may fill a W rack for display only.
 Does not alter productivity, completion, or payroll logic.
 """
 
 from __future__ import annotations
 
 from collections import Counter
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_stage_bounds import event_ts, ts_valid
@@ -18,12 +21,20 @@ from backend.rinse_machine_rack import (
     dedupe_machine_load_rows,
     dedupe_scan_events_by_id,
     extract_washer_rack,
+    is_washer_rack_code,
+    normalize_rack_code,
 )
-from backend.rinse_scan_purpose import is_start_cleaning_purpose, normalize_scan_purpose
+from backend.rinse_scan_purpose import (
+    is_start_cleaning_purpose,
+    is_washer_settings_purpose,
+    normalize_scan_purpose,
+)
 from backend.ta_helpers import table_exists
 
 
 MAX_WASHING_START_CLEANING_ROWS_PER_BAG = 2
+# Display-only: fill a W rack from same-bag washer-settings shortly after start-cleaning.
+WASHER_SETTINGS_INFER_WINDOW = timedelta(minutes=15)
 
 
 def _operator(ev: Mapping[str, Any] | None) -> str | None:
@@ -38,25 +49,121 @@ def _operator(ev: Mapping[str, Any] | None) -> str | None:
 
 def _event_confidence(ev: Mapping[str, Any], *, rack: str | None) -> str:
     employee = _operator(ev)
-    if employee and rack and is_start_cleaning_purpose(ev.get("purpose")):
+    if (
+        employee
+        and rack
+        and is_washer_rack_code(rack)
+        and is_start_cleaning_purpose(ev.get("purpose"))
+    ):
         return "exact"
     return "inferred"
 
 
+def _next_start_cleaning_ts(
+    start_ev: Mapping[str, Any],
+    all_events: Sequence[Mapping[str, Any]],
+) -> datetime | None:
+    bag = str(start_ev.get("bag_id") or "").strip()
+    start_ts = event_ts(start_ev)
+    if not bag or not ts_valid(start_ts):
+        return None
+    next_ts: datetime | None = None
+    for ev in all_events:
+        if str(ev.get("bag_id") or "").strip() != bag:
+            continue
+        if not is_start_cleaning_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if not ts_valid(ts) or ts <= start_ts:
+            continue
+        if next_ts is None or ts < next_ts:
+            next_ts = ts
+    return next_ts
+
+
+def _infer_washer_rack_from_nearby(
+    start_ev: Mapping[str, Any],
+    all_events: Sequence[Mapping[str, Any]],
+) -> str | None:
+    """
+    Same-bag washer-settings with a W-prefix rack shortly after this start-cleaning.
+
+    Never borrows a W rack from a later separate start-cleaning load.
+    """
+    bag = str(start_ev.get("bag_id") or "").strip()
+    start_ts = event_ts(start_ev)
+    if not bag or not ts_valid(start_ts):
+        return None
+    window_end = start_ts + WASHER_SETTINGS_INFER_WINDOW
+    next_start = _next_start_cleaning_ts(start_ev, all_events)
+    if next_start is not None and next_start < window_end:
+        window_end = next_start
+    best: tuple[datetime, str] | None = None
+    for ev in all_events:
+        if str(ev.get("bag_id") or "").strip() != bag:
+            continue
+        if not is_washer_settings_purpose(ev.get("purpose")):
+            continue
+        rack = extract_washer_rack(ev)
+        if not rack:
+            continue
+        ts = event_ts(ev)
+        if not ts_valid(ts) or ts < start_ts or ts >= window_end:
+            continue
+        if best is None or ts < best[0]:
+            best = (ts, rack)
+    return best[1] if best else None
+
+
+def washing_rows_with_washer_rack(
+    rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Physical W-prefix washer loads only.
+
+    Inferred chronology rows (VeeWash Clean / borrowed washer-settings) are
+    display-only and must not feed Supply Usage or Washer Utilization.
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        rack = row.get("washer_rack")
+        if is_washer_rack_code(rack) and row.get("confidence") == "exact":
+            out.append(dict(row))
+    return out
+
+
 def extract_washing_rows_from_events(
     events: Sequence[Mapping[str, Any]],
+    *,
+    require_direct_washer_rack: bool = False,
 ) -> list[dict[str, Any]]:
+    """
+    Build washing chronology rows from start-cleaning scans.
+
+    By default every start-cleaning is kept. Pass
+    ``require_direct_washer_rack=True`` for Supply Usage (W-prefix on the
+    start-cleaning scan only — legacy physical-load counting).
+    """
     rows: list[dict[str, Any]] = []
     cleaning_events = [
         ev for ev in events if is_start_cleaning_purpose(ev.get("purpose"))
     ]
     for ev in dedupe_scan_events_by_id(cleaning_events):
-        rack = extract_washer_rack(ev)
-        if not rack:
-            continue
         ts = event_ts(ev)
         if not ts_valid(ts):
             continue
+        direct_washer = extract_washer_rack(ev)
+        if direct_washer:
+            rack = direct_washer
+            confidence = _event_confidence(ev, rack=rack)
+        elif require_direct_washer_rack:
+            continue
+        else:
+            rack = (
+                _infer_washer_rack_from_nearby(ev, events)
+                or normalize_rack_code(ev.get("rack"))
+            )
+            confidence = "inferred"
         rows.append(
             {
                 "scan_event_id": ev.get("id"),
@@ -64,7 +171,7 @@ def extract_washing_rows_from_events(
                 "employee": _operator(ev),
                 "timestamp_et": ts,
                 "washer_rack": rack,
-                "confidence": _event_confidence(ev, rack=rack),
+                "confidence": confidence,
                 "event_purpose": normalize_scan_purpose(ev.get("purpose")),
             }
         )
@@ -98,7 +205,12 @@ def build_washing_chronology_summary(rows: list[dict[str, Any]]) -> dict[str, An
             "first_washer_load_et": None,
             "last_washer_load_et": None,
         }
-    racks = [r.get("washer_rack") for r in rows if r.get("washer_rack")]
+    # Physical washer stats exclude inferred display-only machine fills.
+    racks = [
+        r.get("washer_rack")
+        for r in rows
+        if is_washer_rack_code(r.get("washer_rack")) and r.get("confidence") == "exact"
+    ]
     bag_load_counts = Counter(
         str(r.get("bag_id") or "").strip()
         for r in rows
@@ -166,7 +278,12 @@ def build_washing_chronology_payload(
         key=lambda name: name.casefold(),
     )
     machines = sorted(
-        {str(r.get("washer_rack") or "").strip() for r in rows if r.get("washer_rack")},
+        {
+            str(r.get("washer_rack") or "").strip()
+            for r in rows
+            if is_washer_rack_code(r.get("washer_rack"))
+            and r.get("confidence") == "exact"
+        },
         key=lambda name: name.casefold(),
     )
 
@@ -206,11 +323,14 @@ def build_washing_chronology_payload(
         "machines": machines,
         "event_purposes": ["start-cleaning"],
         "grouping_rules": (
-            "One row per start-cleaning scan with a washer rack code (W-prefix); "
-            "duplicate ingest with the same event id or same bag, employee, timestamp, "
-            "and rack collapse to one row; split loads at the same timestamp with "
-            "different washer racks produce separate rows; at most two start-cleaning "
-            "loads per bag per day (earliest two by time)."
+            "One row per start-cleaning scan; W-prefix on the start-cleaning scan is "
+            "exact; otherwise the row is kept as inferred (facility location such as "
+            "VeeWash Clean, or a same-bag washer-settings W rack within 15 minutes "
+            "before the next start-cleaning on that bag); duplicate ingest with the "
+            "same event id or same bag, employee, timestamp, and rack collapse to one "
+            "row; split loads at the same timestamp with different washer racks "
+            "produce separate rows; at most two start-cleaning loads per bag per day "
+            "(earliest two by time)."
         ),
     }
 
@@ -234,32 +354,63 @@ def build_washer_utilization_payload(
         confidence_filter=confidence_filter,
         machine_filter=machine_filter,
     )
+    # Utilization is unchanged: exact W-prefix assignments only (inferred display-only).
+    util_source = washing_rows_with_washer_rack(washing.get("sessions") or [])
     util_rows: list[dict[str, Any]] = []
-    for row in washing.get("sessions") or []:
+    for idx, row in enumerate(util_source):
         util_rows.append(
             {
-                "index": row.get("index"),
+                "index": idx + 1,
                 "timestamp_et": row.get("timestamp_et"),
                 "machine": row.get("washer_rack"),
                 "employee": row.get("employee"),
                 "bag_id": row.get("bag_id"),
             }
         )
-    summary = washing.get("summary") or {}
+    util_employees = sorted(
+        {
+            str(r.get("employee") or "").strip()
+            for r in util_rows
+            if r.get("employee")
+        },
+        key=lambda name: name.casefold(),
+    )
+    util_machines = sorted(
+        {
+            str(r.get("machine") or "").strip()
+            for r in util_rows
+            if r.get("machine")
+        },
+        key=lambda name: name.casefold(),
+    )
     util_summary = {
-        "total_loads": summary.get("total_washer_loads", 0),
-        "unique_machines_used": summary.get("unique_washers_used", 0),
-        "most_used_machine": summary.get("most_used_washer"),
-        "first_load_et": summary.get("first_washer_load_et"),
-        "last_load_et": summary.get("last_washer_load_et"),
+        "total_loads": len(util_rows),
+        "unique_machines_used": len(util_machines),
+        "most_used_machine": (
+            Counter(
+                str(r.get("machine") or "").strip()
+                for r in util_rows
+                if r.get("machine")
+            ).most_common(1)[0][0]
+            if util_rows
+            else None
+        ),
+        "first_load_et": min(
+            (r["timestamp_et"] for r in util_rows if ts_valid(r.get("timestamp_et"))),
+            default=None,
+        ),
+        "last_load_et": max(
+            (r["timestamp_et"] for r in util_rows if ts_valid(r.get("timestamp_et"))),
+            default=None,
+        ),
     }
     return {
         "date_et": washing.get("date_et"),
         "stage": "washer_utilization",
         "summary": util_summary,
         "sessions": util_rows,
-        "employees": washing.get("employees") or [],
-        "machines": washing.get("machines") or [],
+        "employees": util_employees,
+        "machines": util_machines,
         "grouping_rules": (
             "Chronological washer utilization from start-cleaning scans at washer rack codes; "
             "one utilization row per washer load scan."

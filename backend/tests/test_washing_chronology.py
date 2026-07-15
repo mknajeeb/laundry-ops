@@ -50,12 +50,184 @@ class TestWashingChronologyRows:
         assert rows[0]["washer_rack"] == "W24-30-VW"
         assert rows[1]["washer_rack"] == "W29-40-VW"
 
-    def test_start_cleaning_without_washer_rack_excluded(self):
+    def test_start_cleaning_without_washer_rack_kept_as_inferred(self):
         events = [
             _ev("start-cleaning", datetime(2026, 6, 18, 10, 0), rack="Scale"),
         ]
         rows = extract_washing_rows_from_events(events)
-        assert rows == []
+        assert len(rows) == 1
+        assert rows[0]["washer_rack"] == "Scale"
+        assert rows[0]["confidence"] == "inferred"
+
+    def test_CPFZXT2NMR_style_veewash_clean_start_cleaning_included(self):
+        """Early wash starts at facility Clean (no W code) must still appear for operators."""
+        events = [
+            {
+                "id": 1,
+                "bag_id": "CPFZXT2NMR",
+                "rack": "VeeWash Clean",
+                "user_name": "Singh (VeeWash)",
+                "purpose": "start-cleaning",
+                "scanned_at_parsed": datetime(2026, 7, 14, 6, 10),
+                "scan_index": 1,
+            },
+            {
+                "id": 2,
+                "bag_id": "CPFZXT2NMR",
+                "rack": "VeeWash Clean",
+                "user_name": "Singh (VeeWash)",
+                "purpose": "washer-settings",
+                "scanned_at_parsed": datetime(2026, 7, 14, 6, 12),
+                "scan_index": 2,
+            },
+            {
+                "id": 3,
+                "bag_id": "1LRORUB2CC",
+                "rack": "W25-30-VW",
+                "user_name": "Singh (VeeWash)",
+                "purpose": "start-cleaning",
+                "scanned_at_parsed": datetime(2026, 7, 14, 6, 52),
+                "scan_index": 1,
+            },
+        ]
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 2
+        assert rows[0]["bag_id"] == "CPFZXT2NMR"
+        assert rows[0]["washer_rack"] == "VeeWash Clean"
+        assert rows[0]["confidence"] == "inferred"
+        assert rows[0]["employee"] == "Singh (VeeWash)"
+        assert rows[1]["bag_id"] == "1LRORUB2CC"
+        assert rows[1]["confidence"] == "exact"
+        summary = build_washing_chronology_summary(rows)
+        assert summary["first_washer_load_et"] == datetime(2026, 7, 14, 6, 10)
+        assert summary["unique_washers_used"] == 1
+        assert summary["most_used_washer"] == "W25-30-VW"
+
+    def test_start_cleaning_infers_w_rack_from_nearby_washer_settings(self):
+        events = [
+            _ev(
+                "start-cleaning",
+                datetime(2026, 6, 18, 10, 0),
+                rack="VeeWash Clean",
+                ev_id=1,
+            ),
+            {
+                "id": 2,
+                "bag_id": "BAG1",
+                "rack": "W24-30-VW",
+                "user_name": "Alex",
+                "purpose": "washer-settings",
+                "scanned_at_parsed": datetime(2026, 6, 18, 10, 2),
+                "scan_index": 2,
+            },
+        ]
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 1
+        assert rows[0]["washer_rack"] == "W24-30-VW"
+        assert rows[0]["confidence"] == "inferred"
+
+    def test_washer_settings_outside_window_not_inferred(self):
+        events = [
+            _ev(
+                "start-cleaning",
+                datetime(2026, 6, 18, 10, 0),
+                rack="VeeWash Clean",
+                ev_id=1,
+            ),
+            {
+                "id": 2,
+                "bag_id": "BAG1",
+                "rack": "W24-30-VW",
+                "user_name": "Alex",
+                "purpose": "washer-settings",
+                "scanned_at_parsed": datetime(2026, 6, 18, 10, 20),
+                "scan_index": 2,
+            },
+        ]
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 1
+        assert rows[0]["washer_rack"] == "VeeWash Clean"
+        assert rows[0]["confidence"] == "inferred"
+
+    def test_ready_washer_does_not_infer_machine(self):
+        events = [
+            _ev(
+                "start-cleaning",
+                datetime(2026, 6, 18, 10, 0),
+                rack="VeeWash Clean",
+                ev_id=1,
+            ),
+            {
+                "id": 2,
+                "bag_id": "BAG1",
+                "rack": "W24-30-VW",
+                "user_name": "Alex",
+                "purpose": "ready-washer",
+                "scanned_at_parsed": datetime(2026, 6, 18, 10, 2),
+                "scan_index": 2,
+            },
+        ]
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 1
+        assert rows[0]["washer_rack"] == "VeeWash Clean"
+
+    def test_does_not_borrow_w_rack_from_later_start_cleaning_load(self):
+        events = [
+            _ev(
+                "start-cleaning",
+                datetime(2026, 6, 18, 10, 0),
+                rack="VeeWash Clean",
+                ev_id=1,
+                bag_id="BAG1",
+            ),
+            _ev(
+                "start-cleaning",
+                datetime(2026, 6, 18, 10, 5),
+                rack="VeeWash Clean",
+                ev_id=2,
+                scan_index=2,
+                bag_id="BAG1",
+            ),
+            {
+                "id": 3,
+                "bag_id": "BAG1",
+                "rack": "W25-30-VW",
+                "user_name": "Alex",
+                "purpose": "washer-settings",
+                "scanned_at_parsed": datetime(2026, 6, 18, 10, 6),
+                "scan_index": 3,
+            },
+        ]
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 2
+        assert rows[0]["washer_rack"] == "VeeWash Clean"
+        assert rows[0]["confidence"] == "inferred"
+        assert rows[1]["washer_rack"] == "W25-30-VW"
+        assert rows[1]["confidence"] == "inferred"
+
+    def test_require_direct_washer_rack_excludes_veewash_clean(self):
+        events = [
+            _ev(
+                "start-cleaning",
+                datetime(2026, 6, 18, 10, 0),
+                rack="VeeWash Clean",
+                ev_id=1,
+            ),
+            _ev(
+                "start-cleaning",
+                datetime(2026, 6, 18, 10, 5),
+                rack="W24-30-VW",
+                ev_id=2,
+                scan_index=2,
+            ),
+        ]
+        rows = extract_washing_rows_from_events(
+            events,
+            require_direct_washer_rack=True,
+        )
+        assert len(rows) == 1
+        assert rows[0]["washer_rack"] == "W24-30-VW"
+        assert rows[0]["confidence"] == "exact"
 
     def test_summary_counts(self):
         rows = extract_washing_rows_from_events(

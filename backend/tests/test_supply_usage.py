@@ -494,6 +494,32 @@ class TestFirstWeightEtDayMembership:
         assert out["split_confirmed"] is False
         assert out["washer_racks"] == ["W30-40-VW"]
 
+    def test_veewash_clean_start_cleaning_does_not_confirm_split(self):
+        """Facility Clean start-cleaning shows in chronology but is not a W load for SU."""
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 14, 5, 0, 0), eid=1),
+            _ev("weight-entry", datetime(2026, 7, 14, 5, 53, 0), eid=2),
+            _ev("split-load", datetime(2026, 7, 14, 6, 4, 0), eid=3),
+            _ev("add-photos", datetime(2026, 7, 14, 6, 4, 0), eid=4),
+            _ev(
+                "start-cleaning",
+                datetime(2026, 7, 14, 6, 10, 0),
+                eid=5,
+                rack="VeeWash Clean",
+            ),
+            _ev(
+                "start-cleaning",
+                datetime(2026, 7, 14, 6, 11, 0),
+                eid=6,
+                rack="VeeWash Clean",
+            ),
+        ]
+        out = first_weight_on_et_day(events, self.DAY)
+        assert out["processing_units"] == 1
+        assert out["split_confirmed"] is False
+        assert out["washer_racks"] == []
+        assert out["washer_load_count"] == 0
+
 
 class TestDoseOzMath:
     def _report_from_orders(self, orders):

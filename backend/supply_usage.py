@@ -204,7 +204,11 @@ def processing_units_from_washer_loads(
         if not row.get("bag_id"):
             row["bag_id"] = bid
         enriched.append(row)
-    wash_rows = extract_washing_rows_from_events(enriched)
+    # Physical W-prefix loads only — inferred chronology rows are display-only.
+    wash_rows = extract_washing_rows_from_events(
+        enriched,
+        require_direct_washer_rack=True,
+    )
     racks = sorted(
         {
             str(r.get("washer_rack") or "").strip()
