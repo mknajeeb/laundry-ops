@@ -11,6 +11,7 @@ from backend.rinse_near_complete_wf_backfill import (
     BACKFILL_REASON,
     BACKFILL_SOURCE,
     _insert_post_processing_weight_scan,
+    apply_near_complete_wf_backfill_for_bag,
     plan_near_complete_wf_backfill_for_bag,
 )
 
@@ -105,6 +106,57 @@ def test_eligible_wf_bag_is_recoverable_with_provenance():
     assert plan["portal_weight_lbs"] == 27.2
     assert plan["originating_complete_cleaning_event_id"] == 44
     assert plan["originating_complete_cleaning_dedupe_key"] == "cc-dedupe"
+
+
+def test_eligible_wf_bag_is_recovered_transactionally():
+    before = _eligible_events()
+    synthetic = _ev(
+        "weight-entry",
+        CC.replace(minute=55),
+        user="Jennifer (VeeWash)",
+        weight_lbs=27.2,
+        source_filename=BACKFILL_SOURCE,
+    )
+    conn = MagicMock()
+    conn.autocommit = True
+    cursor = conn.cursor.return_value
+    with patch(
+        "backend.rinse_near_complete_wf_backfill._registry_weight_evidence",
+        return_value=_weight_evidence(),
+    ), patch(
+        "backend.rinse_at_vendor_module._load_at_vendor_scan_events_for_bags",
+        side_effect=[{"BAG1": before}, {"BAG1": before + [synthetic]}],
+    ), patch(
+        "backend.rinse_near_complete_wf_backfill._insert_post_processing_weight_scan",
+        return_value={"action": "inserted_post_processing_weight_scan"},
+    ), patch(
+        "backend.rinse_portal_departure_completion.restore_portal_scrape_rejected_bag",
+        return_value=True,
+    ), patch(
+        "backend.rinse_bag_registry.recompute_completion_for_bags",
+        return_value={"completed": 1},
+    ), patch(
+        "backend.rinse_at_vendor_module._evaluate_bag_as_of",
+        return_value=(
+            "Completed",
+            "post_processing_weight",
+            CC.replace(minute=55),
+            {},
+            None,
+        ),
+    ):
+        out = apply_near_complete_wf_backfill_for_bag(
+            conn,
+            3,
+            "BAG1",
+            selected_date_et=DAY,
+        )
+    assert out["applied"] is True
+    assert out["success"] is True
+    assert out["after"]["at_vendor_status"] == "Completed"
+    conn.commit.assert_called_once()
+    conn.rollback.assert_called_once()
+    assert conn.autocommit is True
 
 
 def test_second_refresh_does_not_create_duplicate_synthetic_event():
