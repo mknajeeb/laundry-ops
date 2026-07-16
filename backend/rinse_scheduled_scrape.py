@@ -900,6 +900,44 @@ def _run_targeted_pending_scan_refresh(
             f"lookup_failed={summary.get('lookup_failures')} "
             f"dry_run={refresh_dry}\n"
         )
+
+        # High-confidence: still-pending near-complete WF bags with registry
+        # weight but no post-processing weight-entry (portal scrape lag / wrongful
+        # MISSING_FROM_LATEST_PORTAL_SCRAPE rejection).
+        try:
+            from backend.rinse_near_complete_wf_backfill import (
+                backfill_near_complete_wf_after_refresh,
+            )
+
+            backfill = backfill_near_complete_wf_after_refresh(
+                conn,
+                cursor,
+                org_id,
+                selected_date_et=batch_date,
+                baseline_ctx=baseline_ctx,
+                dry_run=refresh_dry,
+                log_fn=lambda msg: log.write(msg + "\n"),
+            )
+            summary["near_complete_wf_weight_backfill"] = {
+                "dry_run": backfill.get("dry_run"),
+                "bags_considered": backfill.get("bags_considered"),
+                "eligible": backfill.get("eligible"),
+                "applied": backfill.get("applied"),
+                "skipped": backfill.get("skipped"),
+            }
+            log.write(
+                "Near-complete WF weight backfill: "
+                f"considered={backfill.get('bags_considered')} "
+                f"eligible={backfill.get('eligible')} "
+                f"applied={backfill.get('applied')} "
+                f"dry_run={backfill.get('dry_run')}\n"
+            )
+        except Exception as backfill_exc:
+            log.write(
+                f"Near-complete WF weight backfill ERROR (non-fatal): {backfill_exc}\n"
+            )
+            summary["near_complete_wf_weight_backfill"] = {"error": str(backfill_exc)}
+
         return summary
     except Exception as refresh_exc:
         conn.rollback()
