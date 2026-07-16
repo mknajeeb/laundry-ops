@@ -33,6 +33,7 @@ from backend.rinse_wf_weight_events import (
     _post_processing_weight_events,
     distinct_wf_weight_events,
     parse_weight_lbs_from_scan_event,
+    preferred_post_processing_weight_event,
 )
 
 UNKNOWN_EMPLOYEE = "Unknown user"
@@ -118,7 +119,9 @@ def _wf_completion_weight_event(
     post = _post_processing_weight_events(weights, latest_proc)
     if not post:
         return None, None
-    last = post[-1]
+    last = preferred_post_processing_weight_event(post)
+    if last is None:
+        return None, None
     return dict(last.event), last.timestamp
 
 

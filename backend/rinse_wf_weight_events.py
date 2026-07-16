@@ -212,6 +212,39 @@ def _post_processing_weight_events(
     return out
 
 
+def is_synthetic_post_processing_weight_event(ev: Mapping[str, Any]) -> bool:
+    """True for the auditable near-complete recovery event, never a portal scan."""
+    if str(ev.get("source_filename") or "") == "near_complete_wf_weight_backfill":
+        return True
+    raw = ev.get("raw_json")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            raw = None
+    return bool(
+        isinstance(raw, dict)
+        and raw.get("synthetic") is True
+        and raw.get("backfill_source") == "near_complete_wf_weight_backfill"
+    )
+
+
+def preferred_post_processing_weight_event(
+    weights: Sequence[WfWeightEvent],
+) -> WfWeightEvent | None:
+    """
+    Prefer a real portal post-weight over recovery evidence.
+
+    A real event can arrive after recovery with an earlier portal timestamp.
+    Selecting by provenance first prevents the synthetic row from retaining
+    completion attribution merely because its generated timestamp is later.
+    """
+    if not weights:
+        return None
+    real = [w for w in weights if not is_synthetic_post_processing_weight_event(w.event)]
+    return (real or list(weights))[-1]
+
+
 def derive_wf_clean_weight_fields(
     timeline: Sequence[Mapping[str, Any]],
     *,
@@ -232,8 +265,7 @@ def derive_wf_clean_weight_fields(
     post: WfWeightEvent | None = None
     if latest_proc_ts is not None:
         post_weights = _post_processing_weight_events(weights, latest_proc_ts)
-        if post_weights:
-            post = post_weights[-1]
+        post = preferred_post_processing_weight_event(post_weights)
 
     pre_lbs = pre.weight_lbs if pre else None
     post_lbs = post.weight_lbs if post else None
@@ -275,7 +307,9 @@ def wf_post_processing_weight_completion(
     if not post_weights:
         return None
 
-    post = post_weights[-1]
+    post = preferred_post_processing_weight_event(post_weights)
+    if post is None:
+        return None
     pre = weights[0] if weights else None
     return WfWeightCompletion(
         signal=WF_POST_PROCESSING_WEIGHT_SIGNAL,

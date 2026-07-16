@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 BACKFILL_SOURCE = "near_complete_wf_weight_backfill"
+BACKFILL_REASON = "missing_post_processing_weight_after_complete_cleaning"
+ALLOWED_REJECTED_REASON = "MISSING_FROM_LATEST_PORTAL_SCRAPE"
+WEIGHT_MATCH_TOLERANCE_LBS = 0.05
 
 
 def near_complete_weight_backfill_enabled() -> bool:
@@ -54,25 +57,83 @@ def _latest_complete_cleaning_on_day(
     return best
 
 
-def _registry_weight_lbs(cursor, organization_id: int, bag_id: str) -> float | None:
+def _registry_weight_evidence(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    selected_date_et: date,
+) -> dict[str, Any]:
+    """Load registry state plus an independent confirmed portal-row weight."""
     cursor.execute(
         """
-        SELECT weight_num, completion_status, completion_reason
+        SELECT id, weight_num, service_type, date_clean, completion_status,
+               completion_reason, last_upload_batch_id
         FROM rinse_bag_registry
         WHERE organization_id = %s AND bag_id = %s
         LIMIT 1
         """,
         (int(organization_id), bag_id),
     )
-    row = cursor.fetchone() or {}
-    raw = row.get("weight_num") if isinstance(row, dict) else None
-    if raw is None:
-        return None
+    registry = dict(cursor.fetchone() or {})
+    raw = registry.get("weight_num")
     try:
-        lbs = float(raw)
+        registry_lbs = float(raw) if raw is not None else None
     except (TypeError, ValueError):
-        return None
-    return lbs if lbs > 0 else None
+        registry_lbs = None
+    if registry_lbs is not None and registry_lbs <= 0:
+        registry_lbs = None
+
+    cursor.execute(
+        """
+        SELECT ubr.id AS upload_row_id, ubr.upload_batch_id, ubr.weight_num,
+               ubr.service_type, ubr.date_clean, ubr.row_status, ubr.reason,
+               ub.state AS upload_batch_state
+        FROM upload_batch_rows ubr
+        JOIN upload_batches ub ON ub.batch_id = ubr.upload_batch_id
+        WHERE ub.organization_id = %s
+          AND UPPER(TRIM(ubr.ticket_id)) = %s
+          AND ubr.date_clean = %s
+          AND UPPER(COALESCE(ubr.service_type, '')) = 'WF'
+          AND UPPER(COALESCE(ubr.row_status, '')) = 'ACCEPTED'
+          AND UPPER(COALESCE(ub.state, '')) = 'CONFIRMED'
+          AND ubr.weight_num IS NOT NULL
+          AND ubr.weight_num > 0
+        ORDER BY ubr.upload_batch_id DESC, ubr.id DESC
+        LIMIT 1
+        """,
+        (int(organization_id), bag_id, selected_date_et),
+    )
+    portal = dict(cursor.fetchone() or {})
+    try:
+        portal_lbs = float(portal.get("weight_num")) if portal else None
+    except (TypeError, ValueError):
+        portal_lbs = None
+    consistent = (
+        registry_lbs is not None
+        and portal_lbs is not None
+        and abs(registry_lbs - portal_lbs) <= WEIGHT_MATCH_TOLERANCE_LBS
+    )
+    return {
+        "registry": registry,
+        "registry_weight_lbs": registry_lbs,
+        "portal_weight_lbs": portal_lbs,
+        "weights_consistent": consistent,
+        "weight_source": (
+            {
+                "kind": "confirmed_upload_batch_row",
+                "registry_row_id": registry.get("id"),
+                "registry_last_upload_batch_id": registry.get("last_upload_batch_id"),
+                "upload_row_id": portal.get("upload_row_id"),
+                "upload_batch_id": portal.get("upload_batch_id"),
+                "upload_batch_state": portal.get("upload_batch_state"),
+                "row_status": portal.get("row_status"),
+                "reason": portal.get("reason"),
+            }
+            if portal
+            else None
+        ),
+    }
 
 
 def _insert_post_processing_weight_scan(
@@ -84,6 +145,10 @@ def _insert_post_processing_weight_scan(
     user_name: str | None,
     weight_lbs: float,
     anchor_purpose: str | None,
+    complete_cleaning_timestamp: datetime,
+    complete_cleaning_event_id: int | None,
+    complete_cleaning_dedupe_key: str | None,
+    weight_source: Mapping[str, Any],
 ) -> dict[str, Any]:
     from backend.rinse_bag_registry import ensure_rinse_bag_scan_events_table
     from backend.rinse_scan_event_identity import dedupe_key_from_row
@@ -105,6 +170,7 @@ def _insert_post_processing_weight_scan(
         "last_scan": None,
     }
     dedupe_key = dedupe_key_from_row(row)
+    created_at_utc = datetime.now(timezone.utc).isoformat()
     cursor.execute(
         """
         SELECT id, weight_lbs FROM rinse_bag_scan_events
@@ -142,7 +208,19 @@ def _insert_post_processing_weight_scan(
             "Time Scanned": time_raw,
             "User": user_name or "",
             "backfill_source": BACKFILL_SOURCE,
+            "backfill_reason": BACKFILL_REASON,
+            "synthetic": True,
+            "synthetic_created_at_utc": created_at_utc,
+            "idempotency_key": dedupe_key,
             "anchor_purpose": anchor_purpose,
+            "originating_complete_cleaning": {
+                "event_id": complete_cleaning_event_id,
+                "dedupe_key": complete_cleaning_dedupe_key,
+                "purpose": anchor_purpose,
+                "timestamp": complete_cleaning_timestamp.isoformat(),
+                "user_name": user_name,
+            },
+            "registry_weight_source": dict(weight_source),
             "Weight": weight_lbs,
         }
     )
@@ -180,6 +258,9 @@ def _insert_post_processing_weight_scan(
         "dedupe_key": dedupe_key,
         "weight_lbs": weight_lbs,
         "scanned_at": scanned_at.isoformat(),
+        "synthetic_created_at_utc": created_at_utc,
+        "source": BACKFILL_SOURCE,
+        "reason": BACKFILL_REASON,
     }
 
 
@@ -209,7 +290,11 @@ def plan_near_complete_wf_backfill_for_bag(
         ).get(bid, [])
 
     cc_ts, cc_ev = _latest_complete_cleaning_on_day(events, selected_date_et)
-    weight_lbs = _registry_weight_lbs(cursor, org, bid)
+    weight_evidence = _registry_weight_evidence(
+        cursor, org, bid, selected_date_et=selected_date_et
+    )
+    registry = weight_evidence["registry"]
+    weight_lbs = weight_evidence["registry_weight_lbs"]
     anchor = _resolve_selected_day_anchor_ts(events, selected_date_et)
     timeline = gaming_events_from_records(list(events))
     weight_hit = (
@@ -226,13 +311,48 @@ def plan_near_complete_wf_backfill_for_bag(
         "complete_cleaning_ts": cc_ts.isoformat() if cc_ts else None,
         "credited_employee": (cc_ev or {}).get("user_name"),
         "registry_weight_lbs": weight_lbs,
+        "portal_weight_lbs": weight_evidence["portal_weight_lbs"],
+        "registry_weight_source": weight_evidence["weight_source"],
         "has_post_processing_weight": weight_hit is not None,
+        "service_type": str(registry.get("service_type") or "").upper(),
+        "registry_completion_status": str(
+            registry.get("completion_status") or ""
+        ).upper(),
+        "registry_completion_reason": str(
+            registry.get("completion_reason") or ""
+        ).strip(),
     }
+    if plan["service_type"] != "WF":
+        plan["skip_reason"] = "not_wf"
+        return plan
+    registry_date = registry.get("date_clean")
+    if registry_date != selected_date_et:
+        plan["skip_reason"] = "registry_date_mismatch"
+        return plan
+    registry_status = plan["registry_completion_status"]
+    registry_reason = plan["registry_completion_reason"]
+    if registry_status == "COMPLETED":
+        plan["skip_reason"] = "already_completed"
+        return plan
+    if registry_status == "REJECTED" and registry_reason != ALLOWED_REJECTED_REASON:
+        plan["skip_reason"] = "genuinely_rejected"
+        return plan
+    if registry_status not in ("", "INCOMPLETE", "REJECTED"):
+        plan["skip_reason"] = "unsupported_registry_status"
+        return plan
+    from backend.rinse_portal_departure_completion import detect_confirmed_cancellation
+
+    if detect_confirmed_cancellation(events):
+        plan["skip_reason"] = "confirmed_cancellation"
+        return plan
     if cc_ts is None or cc_ev is None:
         plan["skip_reason"] = "no_complete_cleaning_on_selected_day"
         return plan
     if weight_lbs is None:
         plan["skip_reason"] = "no_registry_weight"
+        return plan
+    if not weight_evidence["weights_consistent"]:
+        plan["skip_reason"] = "unreliable_registry_weight"
         return plan
     if weight_hit is not None:
         plan["skip_reason"] = "already_has_post_processing_weight"
@@ -241,6 +361,8 @@ def plan_near_complete_wf_backfill_for_bag(
     plan["eligible"] = True
     plan["proposed_scanned_at"] = (cc_ts + timedelta(minutes=1)).isoformat()
     plan["anchor_purpose"] = str(cc_ev.get("purpose") or "complete-cleaning")
+    plan["originating_complete_cleaning_event_id"] = cc_ev.get("id")
+    plan["originating_complete_cleaning_dedupe_key"] = cc_ev.get("dedupe_key")
     return plan
 
 
@@ -299,6 +421,14 @@ def apply_near_complete_wf_backfill_for_bag(
             user_name=user_name,
             weight_lbs=weight_lbs,
             anchor_purpose=plan.get("anchor_purpose"),
+            complete_cleaning_timestamp=cc_ts,
+            complete_cleaning_event_id=plan.get(
+                "originating_complete_cleaning_event_id"
+            ),
+            complete_cleaning_dedupe_key=plan.get(
+                "originating_complete_cleaning_dedupe_key"
+            ),
+            weight_source=plan.get("registry_weight_source") or {},
         )
         steps.append({"insert_weight_scan": insert_result})
 
