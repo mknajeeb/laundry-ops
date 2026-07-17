@@ -1812,6 +1812,119 @@ class TestDaysLoadOffPortalFilter:
         assert kept == []
         assert meta["portal_scrape_rejected_excluded"] == ["REJECTED"]
 
+    def test_merge_does_not_reinject_portal_scrape_rejected_pending(self):
+        from backend.rinse_at_vendor_module import _merge_operational_active_pending_rows
+        from backend.rinse_workload_ledger import MEMBERSHIP_NEW_TODAY
+
+        pre = {
+            "PHANTOM": {
+                "bag_id": "PHANTOM",
+                "at_vendor_status": AV_STATUS_PENDING,
+                "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING],
+                "customer_name": "Stale Customer 0",
+            }
+        }
+        kept = _merge_operational_active_pending_rows(
+            rows=[{"bag_id": "LIVE", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]}],
+            pre_filter_rows_by_bag=pre,
+            active_bag_ids={"PHANTOM", "LIVE"},
+            off_portal_filter_meta={
+                "off_portal_stale_pending_excluded": [],
+                "portal_scrape_rejected_excluded": ["PHANTOM"],
+            },
+            membership_tiers_by_bag={"PHANTOM": MEMBERSHIP_NEW_TODAY, "LIVE": MEMBERSHIP_NEW_TODAY},
+        )
+        assert [r["bag_id"] for r in kept] == ["LIVE"]
+
+    def test_merge_reinjects_stale_pending_but_not_scrape_rejected(self):
+        from backend.rinse_at_vendor_module import _merge_operational_active_pending_rows
+        from backend.rinse_workload_ledger import MEMBERSHIP_CARRYOVER_YESTERDAY
+
+        pre = {
+            "STALE": {
+                "bag_id": "STALE",
+                "at_vendor_status": AV_STATUS_PENDING,
+                "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING],
+            },
+            "REJECTED": {
+                "bag_id": "REJECTED",
+                "at_vendor_status": AV_STATUS_PENDING,
+                "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING],
+            },
+        }
+        kept = _merge_operational_active_pending_rows(
+            rows=[],
+            pre_filter_rows_by_bag=pre,
+            active_bag_ids={"STALE", "REJECTED"},
+            off_portal_filter_meta={
+                "off_portal_stale_pending_excluded": ["STALE", "REJECTED"],
+                "portal_scrape_rejected_excluded": ["REJECTED"],
+            },
+            membership_tiers_by_bag={
+                "STALE": MEMBERSHIP_CARRYOVER_YESTERDAY,
+                "REJECTED": MEMBERSHIP_CARRYOVER_YESTERDAY,
+            },
+        )
+        assert [r["bag_id"] for r in kept] == ["STALE"]
+        assert kept[0].get("off_portal_operational_pending") is True
+
+    def test_pending_completed_disjoint_invariant(self):
+        from backend.rinse_at_vendor_module import validate_pending_completed_disjoint
+
+        validate_pending_completed_disjoint(
+            {
+                "rows": [
+                    {"bag_id": "A", "at_vendor_status": AV_STATUS_PENDING, "module_tags": [MOD_AT_VENDOR_PENDING]},
+                    {"bag_id": "B", "at_vendor_status": AV_STATUS_COMPLETED, "module_tags": [MOD_AT_VENDOR_COMPLETED]},
+                ]
+            }
+        )
+        try:
+            validate_pending_completed_disjoint(
+                {
+                    "rows": [
+                        {
+                            "bag_id": "X",
+                            "at_vendor_status": AV_STATUS_PENDING,
+                            "module_tags": [MOD_AT_VENDOR_PENDING, MOD_AT_VENDOR_COMPLETED],
+                            "completed_during_et_day": True,
+                        }
+                    ]
+                }
+            )
+            raise AssertionError("expected conflict")
+        except AssertionError as exc:
+            assert "Pending/Completed conflict" in str(exc)
+
+    def test_scrape_rejected_not_operational_pending_invariant(self):
+        from backend.rinse_at_vendor_module import validate_no_scrape_rejected_operational_pending
+
+        validate_no_scrape_rejected_operational_pending(
+            {
+                "rows": [
+                    {"bag_id": "OK", "at_vendor_status": AV_STATUS_PENDING, "module_tags": [MOD_AT_VENDOR_PENDING]},
+                ]
+            },
+            portal_scrape_rejected_ids={"GONE"},
+        )
+        try:
+            validate_no_scrape_rejected_operational_pending(
+                {
+                    "rows": [
+                        {
+                            "bag_id": "GONE",
+                            "at_vendor_status": AV_STATUS_PENDING,
+                            "module_tags": [MOD_AT_VENDOR_PENDING],
+                            "off_portal_operational_pending": True,
+                        }
+                    ]
+                },
+                portal_scrape_rejected_ids={"GONE"},
+            )
+            raise AssertionError("expected scrape-rejected pending")
+        except AssertionError as exc:
+            assert "Portal-scrape rejected" in str(exc)
+
     def test_apply_filter_excludes_off_portal_stale_rush_wf_pending(self):
         from backend.rinse_at_vendor_module import _apply_off_portal_workload_row_filter
 

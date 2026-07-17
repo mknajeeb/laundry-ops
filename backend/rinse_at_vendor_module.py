@@ -539,6 +539,66 @@ def validate_days_load_invariant(module: Mapping[str, Any]) -> None:
         assert module.get("total_equals_pending_plus_completed") is True
 
 
+def validate_pending_completed_disjoint(module: Mapping[str, Any]) -> None:
+    """No bag may be both Completed for the current lifecycle and in WF/HD Pending."""
+    pending_ids: set[str] = set()
+    completed_ids: set[str] = set()
+    for row in module.get("rows") or []:
+        if not isinstance(row, Mapping):
+            continue
+        bid = str(row.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        tags = row.get("module_tags") or []
+        status = str(row.get("at_vendor_status") or "")
+        if MOD_AT_VENDOR_PENDING in tags or status == AV_STATUS_PENDING:
+            pending_ids.add(bid)
+        if (
+            MOD_AT_VENDOR_COMPLETED in tags
+            or status == AV_STATUS_COMPLETED
+            or row.get("completed_during_et_day")
+        ):
+            completed_ids.add(bid)
+    overlap = sorted(pending_ids & completed_ids)
+    assert not overlap, (
+        "Pending/Completed conflict for current lifecycle: " + ", ".join(overlap)
+    )
+
+
+def validate_no_scrape_rejected_operational_pending(
+    module: Mapping[str, Any],
+    *,
+    portal_scrape_rejected_ids: set[str] | None = None,
+) -> None:
+    """Portal-scrape REJECTED bags must not appear as operational Pending."""
+    rejected = {
+        str(b).strip().upper() for b in (portal_scrape_rejected_ids or set()) if b
+    }
+    if not rejected:
+        rejected = {
+            str(b).strip().upper()
+            for b in (module.get("portal_scrape_rejected_excluded") or [])
+            if b
+        }
+    if not rejected:
+        return
+    bad = sorted(
+        str(row.get("bag_id") or "").strip().upper()
+        for row in (module.get("rows") or [])
+        if isinstance(row, Mapping)
+        and str(row.get("bag_id") or "").strip().upper() in rejected
+        and (
+            MOD_AT_VENDOR_PENDING in (row.get("module_tags") or [])
+            or str(row.get("at_vendor_status") or "") == AV_STATUS_PENDING
+            or row.get("off_portal_operational_pending")
+        )
+    )
+    assert not bad, (
+        "Portal-scrape rejected bags must not appear as operational Pending: "
+        + ", ".join(bad)
+    )
+
+
 def _apply_off_portal_workload_row_filter(
     rows: list[dict[str, Any]],
     *,
@@ -2961,10 +3021,17 @@ def _should_retain_active_pending_in_operational_workload(
     row: Mapping[str, Any],
     *,
     membership_tier: str | None,
+    scrape_rejected: bool = False,
 ) -> bool:
-    """Active-tier pending bags removed from the live board stay in Today's Workload."""
+    """Active-tier pending bags that left the live board may stay in Today's Workload.
+
+    Portal-scrape REJECTED bags must never be retained as operational Pending — that
+    resurfaces stale presence customer/EDD rows as phantom WF Pending.
+    """
     from backend.rinse_workload_ledger import is_active_membership_tier
 
+    if scrape_rejected:
+        return False
     if not is_active_membership_tier(membership_tier):
         return False
     return _is_operational_pending_row(row)
@@ -2978,17 +3045,31 @@ def _merge_operational_active_pending_rows(
     off_portal_filter_meta: Mapping[str, Any],
     membership_tiers_by_bag: Mapping[str, str],
 ) -> list[dict[str, Any]]:
-    """Re-add active-tier pending bags dropped by off-portal / scrape-rejected filters."""
-    soft_removed = _soft_removed_bag_ids(off_portal_filter_meta)
+    """Re-add active-tier pending bags dropped as off-portal *stale* only.
+
+    Never reinject ``portal_scrape_rejected_excluded`` bags. Those were correctly
+    removed by ``_apply_off_portal_workload_row_filter`` and must stay out of
+    operational Pending / WF Pending.
+    """
+    stale_only = {
+        str(b).strip().upper()
+        for b in (off_portal_filter_meta.get("off_portal_stale_pending_excluded") or [])
+    }
+    scrape_rejected = {
+        str(b).strip().upper()
+        for b in (off_portal_filter_meta.get("portal_scrape_rejected_excluded") or [])
+    }
+    reinject_candidates = stale_only - scrape_rejected
     present = {str(r.get("bag_id") or "").strip().upper() for r in rows if r.get("bag_id")}
     merged = list(rows)
     for bid in sorted(active_bag_ids):
-        if bid not in soft_removed or bid in present:
+        if bid not in reinject_candidates or bid in present:
             continue
         pre = pre_filter_rows_by_bag.get(bid)
         if not pre or not _should_retain_active_pending_in_operational_workload(
             pre,
             membership_tier=membership_tiers_by_bag.get(bid),
+            scrape_rejected=bid in scrape_rejected,
         ):
             continue
         merged.append(
@@ -3047,7 +3128,11 @@ def _build_needs_verification_exception_rows(
         if not pre:
             continue
         tier = (membership_tiers_by_bag or {}).get(bid)
-        if _should_retain_active_pending_in_operational_workload(pre, membership_tier=tier):
+        if _should_retain_active_pending_in_operational_workload(
+            pre,
+            membership_tier=tier,
+            scrape_rejected=bid in scrape_rejected,
+        ):
             continue
         tags = pre.get("module_tags") or []
         if MOD_AT_VENDOR_COMPLETED in tags or pre.get("completed_during_et_day"):
@@ -3143,6 +3228,7 @@ def _build_immutable_workload_ledger(
         LEDGER_STATUS_COMPLETED,
         LEDGER_STATUS_REJECTED,
         REMOVAL_REASON_NEEDS_VERIFICATION,
+        REMOVAL_REASON_REJECTED,
         build_membership_record,
         build_membership_records,
         classify_bag_membership_tier,
@@ -3161,8 +3247,9 @@ def _build_immutable_workload_ledger(
     rejected_excluded = {
         str(b).strip().upper()
         for b in (off_portal_filter_meta.get("portal_scrape_rejected_excluded") or [])
+    } | {
+        str(b).strip().upper() for b in (portal_scrape_rejected_ids or set()) if b
     }
-    soft_removed = stale_pending | rejected_excluded
 
     all_bag_ids = sorted(pre_filter_rows_by_bag.keys())
     kept_by_bag = {
@@ -3179,11 +3266,18 @@ def _build_immutable_workload_ledger(
     for bid in all_bag_ids:
         base = pre_filter_rows_by_bag.get(bid) or {"bag_id": bid}
         svc = _normalize_service(base.get("service_type"))
+        pre_completed = (
+            MOD_AT_VENDOR_COMPLETED in (base.get("module_tags") or [])
+            or bool(base.get("completed_during_et_day"))
+            or str(base.get("at_vendor_status") or "") == "Completed"
+        )
+        # Pending scrape-rejects are excluded. Completed scrape-rejects stay active so
+        # Day's Load can retain confirmed completions after portal disappearance.
         tier = classify_bag_membership_tier(
             events_by_bag.get(bid) or [],
             service_type=svc,
             selected_date_et=selected_date_et,
-            explicit_rejected=False,
+            explicit_rejected=bid in rejected_excluded and not pre_completed,
         )
         membership_tiers[bid] = tier
 
@@ -3192,7 +3286,17 @@ def _build_immutable_workload_ledger(
         base = dict(pre_filter_rows_by_bag.get(bid) or {"bag_id": bid})
         base.setdefault("bag_id", bid)
         row = dict(kept_by_bag.get(bid) or base)
-        removal_reason = REMOVAL_REASON_NEEDS_VERIFICATION if bid in soft_removed else None
+        pre_completed = (
+            MOD_AT_VENDOR_COMPLETED in (base.get("module_tags") or [])
+            or bool(base.get("completed_during_et_day"))
+            or str(base.get("at_vendor_status") or "") == "Completed"
+        )
+        if bid in rejected_excluded and not pre_completed:
+            removal_reason = REMOVAL_REASON_REJECTED
+        elif bid in stale_pending and not pre_completed:
+            removal_reason = REMOVAL_REASON_NEEDS_VERIFICATION
+        else:
+            removal_reason = None
         records.append(
             build_membership_record(
                 row,
@@ -3931,7 +4035,7 @@ def build_at_vendor_module(
         },
     ]
 
-    return {
+    out = {
         "live": not population_meta.get("at_vendor_presence_stale")
         and population_meta.get("daily_metrics_reliable", True),
         "at_vendor_live": not population_meta.get("at_vendor_presence_stale")
@@ -4002,6 +4106,12 @@ def build_at_vendor_module(
         ),
         "off_portal_completed_retained_count": len(
             off_portal_filter_meta.get("off_portal_completed_retained_in_days_load") or []
+        ),
+        "portal_scrape_rejected_excluded": list(
+            off_portal_filter_meta.get("portal_scrape_rejected_excluded") or []
+        ),
+        "portal_scrape_rejected_excluded_count": len(
+            off_portal_filter_meta.get("portal_scrape_rejected_excluded") or []
         ),
         "changed_to_rush": changed_to_rush,
         "operational_exceptions": {
@@ -4100,3 +4210,10 @@ def build_at_vendor_module(
             "step_ms": step_ms,
         },
     }
+    validate_days_load_invariant(out)
+    validate_pending_completed_disjoint(out)
+    validate_no_scrape_rejected_operational_pending(
+        out,
+        portal_scrape_rejected_ids=portal_scrape_rejected_ids,
+    )
+    return out
