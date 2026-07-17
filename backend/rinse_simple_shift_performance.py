@@ -2802,6 +2802,29 @@ def _slim_at_vendor_module_payload(module: Mapping[str, Any]) -> dict[str, Any]:
                 if isinstance(r, dict)
             ],
         }
+    recon = module.get("completed_bags_reconciliation")
+    if isinstance(recon, dict):
+        # Keep diagnostic counts + unreconciled; drop full completed row dump from summary payload.
+        out["completed_bags_reconciliation"] = {
+            "selected_date_et": recon.get("selected_date_et"),
+            "service_scope": recon.get("service_scope"),
+            "title": recon.get("title"),
+            "counts": recon.get("counts"),
+            "invariant": recon.get("invariant"),
+            "unreconciled": recon.get("unreconciled") or [],
+            "notes": recon.get("notes") or [],
+            "bag_ids": {
+                "unreconciled": [
+                    str(u.get("bag_id") or "").upper()
+                    for u in (recon.get("unreconciled") or [])
+                    if isinstance(u, dict) and u.get("bag_id")
+                ],
+                "scan_evidence_count": len((recon.get("bag_ids") or {}).get("scan_evidence") or []),
+                "dashboard_completed_count": len(
+                    (recon.get("bag_ids") or {}).get("dashboard_completed") or []
+                ),
+            },
+        }
     return out
 
 

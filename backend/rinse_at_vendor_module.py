@@ -4216,4 +4216,21 @@ def build_at_vendor_module(
         out,
         portal_scrape_rejected_ids=portal_scrape_rejected_ids,
     )
+    if hasattr(cursor, "execute"):
+        try:
+            from backend.rinse_completed_bags_reconciliation import (
+                attach_completed_reconciliation_to_module,
+            )
+
+            attach_completed_reconciliation_to_module(
+                cursor,
+                org,
+                out,
+                selected_date_et=selected_date_et,
+            )
+        except Exception:
+            out.setdefault(
+                "completed_bags_reconciliation",
+                {"error": "completed_bags_reconciliation_failed"},
+            )
     return out
