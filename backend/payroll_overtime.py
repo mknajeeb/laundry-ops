@@ -75,10 +75,14 @@ def resolve_batch_overtime_policy(
     organization_id: int,
     worker_category: str,
 ) -> dict[str, Any]:
-    """Resolve OT threshold/multiplier for a batch category (matches Time Records)."""
+    """Resolve OT threshold/multiplier for a batch category (matches Time Records).
+
+    Time Records applies the same OT rules for W-2, 1099, and temp whenever a rate
+    exists. Batch gross must do the same — do not honor calendar overtime_enabled=False
+    for contractors/temps (that flag is forecast-only and defaults off for non-W2).
+    """
     threshold = DEFAULT_OT_THRESHOLD
     multiplier = DEFAULT_OT_MULTIPLIER
-    # Time Records enables OT whenever a rate exists; calendar may refine threshold/multiplier.
     enabled = True
     try:
         from backend.payroll_funding_forecast import get_calendar_settings
@@ -94,9 +98,6 @@ def resolve_batch_overtime_policy(
             threshold = _d(org["overtime_threshold_hours"])
         if cal.get("overtime_multiplier") is not None and _d(cal["overtime_multiplier"]) > 0:
             multiplier = _d(cal["overtime_multiplier"])
-        # Calendar can disable OT per category; keep W-2 on unless explicitly False.
-        if "overtime_enabled" in cal and cal.get("overtime_enabled") is False and cat != "w2":
-            enabled = False
     except Exception:
         pass
     if threshold <= 0:
@@ -107,4 +108,5 @@ def resolve_batch_overtime_policy(
         "enabled": enabled,
         "threshold_hours": float(threshold),
         "multiplier": float(multiplier),
+        "worker_category": str(worker_category or ""),
     }

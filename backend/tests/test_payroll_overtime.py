@@ -82,3 +82,47 @@ def test_w2_accrual_gross_includes_ot_premium():
     assert float(out["gross_wages"]) == 900.58
     # Must not be flat (reg+ot)*rate = 827.05
     assert float(out["gross_wages"]) != 827.05
+
+
+def test_temp_and_1099_policy_keeps_ot_enabled_even_when_calendar_off():
+    """Calendar defaults overtime_enabled=False for non-W2; batch gross must still OT."""
+    from backend.payroll_overtime import resolve_batch_overtime_policy
+
+    fake_bundle = {
+        "categories": {
+            "temp": {
+                "overtime_enabled": False,
+                "overtime_threshold_hours": 40,
+                "overtime_multiplier": 1.5,
+            },
+            "contractor_1099": {
+                "overtime_enabled": False,
+                "overtime_threshold_hours": 40,
+                "overtime_multiplier": 1.5,
+            },
+            "w2": {
+                "overtime_enabled": True,
+                "overtime_threshold_hours": 40,
+                "overtime_multiplier": 1.5,
+            },
+        },
+        "org_schedule_settings": {"overtime_threshold_hours": 40},
+    }
+    with patch(
+        "backend.payroll_funding_forecast.get_calendar_settings",
+        return_value=fake_bundle,
+    ):
+        for cat in ("temp", "contractor_1099", "w2"):
+            policy = resolve_batch_overtime_policy(MagicMock(), 3, cat)
+            assert policy["enabled"] is True, cat
+            reg, ot = split_hours_for_overtime(
+                48.65,
+                threshold=policy["threshold_hours"],
+                enabled=policy["enabled"],
+            )
+            assert float(reg) == 40.0
+            assert float(ot) == 8.65
+            gross = compute_wage_with_overtime(
+                reg, ot, 17, resolve_overtime_rate(17, multiplier=policy["multiplier"])
+            )
+            assert float(gross) == 900.58

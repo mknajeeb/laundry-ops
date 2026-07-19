@@ -1141,19 +1141,19 @@ export default function PayoutBatchesPanel({
             <TextField
               size="small"
               type="number"
-              label="Hours"
+              label="Regular hours"
               value={lineEdit?.approved_hours ?? ""}
               onChange={(e) => setLineEdit({ ...lineEdit, approved_hours: e.target.value })}
             />
+            <TextField
+              size="small"
+              type="number"
+              label="OT hours"
+              value={lineEdit?.ot_hours ?? ""}
+              onChange={(e) => setLineEdit({ ...lineEdit, ot_hours: e.target.value })}
+            />
             {isW2 ? (
               <>
-                <TextField
-                  size="small"
-                  type="number"
-                  label="OT hours"
-                  value={lineEdit?.ot_hours ?? ""}
-                  onChange={(e) => setLineEdit({ ...lineEdit, ot_hours: e.target.value })}
-                />
                 <TextField
                   size="small"
                   type="number"

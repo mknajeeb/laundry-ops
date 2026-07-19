@@ -1040,23 +1040,17 @@ def _compute_payout_line_amounts(
             created_by=created_by,
         )
         out["health_credit_amount"] = hc["health_credit_amount"]
-        if cat == "contractor_1099":
+        # Same OT wage rules as Time Records for 1099 and temp.
+        if cat == "contractor_1099" and ot <= 0:
             legacy_hc_hours = float(body.get("health_safety_credit_hours") or 0)
-            # Prefer OT-inclusive wage when OT hours present; keep legacy HC hours additive path.
-            if ot > 0:
-                base = wage_base
-            else:
-                amounts = compute_payment_summary_amounts(regular, rate, legacy_hc_hours, 0)
-                base = amounts["service_amount"]
-            out["gross_amount"] = base
-            out["total_amount"] = float(
-                _money(base + hc["health_credit_amount"] + adj + bonus + reimb)
-            )
+            amounts = compute_payment_summary_amounts(regular, rate, legacy_hc_hours, 0)
+            base = amounts["service_amount"]
         else:
-            out["gross_amount"] = wage_base
-            out["total_amount"] = float(
-                _money(wage_base + hc["health_credit_amount"] + adj + bonus + reimb)
-            )
+            base = wage_base
+        out["gross_amount"] = base
+        out["total_amount"] = float(
+            _money(base + hc["health_credit_amount"] + adj + bonus + reimb)
+        )
         return out
 
     if cat == "contractor_1099" and ot <= 0:
