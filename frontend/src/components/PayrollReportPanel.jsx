@@ -38,9 +38,40 @@ import {
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
 
 const RANGE_MODES = [
-  { value: "period", label: "Payroll period(s)" },
-  { value: "date_range", label: "Custom date range" },
-  { value: "all_history", label: "All payroll history" },
+  { value: "period", label: "Payroll Period Report", reportType: "payroll_period" },
+  {
+    value: "monthly_paid",
+    label: "Monthly Payroll Paid",
+    reportType: "monthly_paid",
+  },
+  { value: "date_range", label: "Custom Date Range", reportType: "custom_range" },
+  {
+    value: "labor_cost",
+    label: "Labor Cost Analysis (coming soon)",
+    reportType: "labor_cost",
+    disabled: true,
+  },
+  { value: "all_history", label: "All payroll history", reportType: "all_history" },
+];
+
+const DATE_BASIS_OPTIONS = [
+  { value: "pay_date", label: "Pay Date" },
+  { value: "period_overlap", label: "Payroll Period Overlap" },
+];
+
+const MONTH_OPTIONS = [
+  { value: 1, label: "January" },
+  { value: 2, label: "February" },
+  { value: 3, label: "March" },
+  { value: 4, label: "April" },
+  { value: 5, label: "May" },
+  { value: 6, label: "June" },
+  { value: 7, label: "July" },
+  { value: 8, label: "August" },
+  { value: 9, label: "September" },
+  { value: 10, label: "October" },
+  { value: 11, label: "November" },
+  { value: 12, label: "December" },
 ];
 
 function money(v) {
@@ -56,12 +87,19 @@ function hours(v) {
 }
 
 function buildQueryParams(filters) {
-  const params = {};
+  const mode = RANGE_MODES.find((m) => m.value === filters.rangeMode);
+  const params = {
+    report_type: mode?.reportType || "payroll_period",
+  };
   if (filters.rangeMode === "all_history") {
     params.all_history = "1";
+  } else if (filters.rangeMode === "monthly_paid") {
+    if (filters.month) params.month = filters.month;
+    if (filters.year) params.year = filters.year;
   } else if (filters.rangeMode === "date_range") {
     if (filters.dateFrom) params.date_from = filters.dateFrom;
     if (filters.dateTo) params.date_to = filters.dateTo;
+    params.date_basis = filters.dateBasis || "pay_date";
   } else if (filters.selectedPeriods?.length) {
     params.period_start = filters.selectedPeriods.map((p) => p.split("|")[0]).join(",");
     params.period_end = filters.selectedPeriods.map((p) => p.split("|")[1]).join(",");
@@ -79,11 +117,15 @@ function buildQueryParams(filters) {
   return params;
 }
 
+const now = new Date();
 const EMPTY_FILTERS = {
   rangeMode: "period",
   selectedPeriods: [],
   dateFrom: "",
   dateTo: "",
+  dateBasis: "pay_date",
+  month: now.getMonth() + 1,
+  year: now.getFullYear(),
   userId: "",
   workerCategory: "all",
   payrollStatus: "all",
@@ -182,6 +224,12 @@ export default function PayrollReportPanel() {
         return;
       }
     }
+    if (filters.rangeMode === "monthly_paid") {
+      if (!filters.month || !filters.year) {
+        setError("Select a month and year for Monthly Payroll Paid.");
+        return;
+      }
+    }
     if (filters.rangeMode === "period" && !filters.selectedPeriods.length) {
       setError("Select at least one payroll period, or switch to All payroll history.");
       return;
@@ -238,6 +286,28 @@ export default function PayrollReportPanel() {
 
   const patch = (p) => setFilters((f) => ({ ...f, ...p }));
 
+  const dynamicHeading = useMemo(() => {
+    if (report?.report_heading) return report.report_heading;
+    if (applied.rangeMode === "all_history") return "Payroll Reports — All History";
+    if (applied.rangeMode === "monthly_paid") {
+      const monthLabel = MONTH_OPTIONS.find((m) => m.value === applied.month)?.label || applied.month;
+      return `Monthly Payroll Paid: ${monthLabel} ${applied.year}`;
+    }
+    if (applied.rangeMode === "date_range" && applied.dateFrom && applied.dateTo) {
+      const basis =
+        applied.dateBasis === "period_overlap" ? "Payroll Period Overlap" : "Pay Date";
+      return `Payroll Report: ${applied.dateFrom} – ${applied.dateTo} (${basis} Basis)`;
+    }
+    if (applied.rangeMode === "period" && applied.selectedPeriods?.length === 1) {
+      const [ps, pe] = applied.selectedPeriods[0].split("|");
+      return `Payroll Period: ${ps} – ${pe}`;
+    }
+    if (applied.rangeMode === "period" && applied.selectedPeriods?.length > 1) {
+      return `Payroll Period Report (${applied.selectedPeriods.length} periods)`;
+    }
+    return "Payroll Reports";
+  }, [report, applied]);
+
   return (
     <Stack spacing={2}>
       {error ? (
@@ -249,33 +319,65 @@ export default function PayrollReportPanel() {
         sx={{ p: 2, borderTop: `3px solid ${VEEWASH_BRAND.primary}` }}
       >
         <Typography variant="h6" fontWeight={700} sx={{ color: VEEWASH_BRAND.primaryDark, mb: 0.5 }}>
-          Payroll Report
+          Payroll Reports
+        </Typography>
+        <Typography
+          variant="subtitle1"
+          fontWeight={700}
+          sx={{ color: VEEWASH_BRAND.primaryDark, mb: 0.5 }}
+        >
+          {dynamicHeading}
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Payroll records across all periods and employee categories (W-2, 1099, temp).
-          Exports use the filters currently applied.
+          Accounting payroll reports (W-2, 1099, temp). Monthly Payroll Paid uses Official Pay Date
+          only. Custom ranges default to Pay Date basis. Labor Cost Analysis is a separate future
+          module. Period end is never shown as a confirmed Pay Date.
         </Typography>
 
         <Stack spacing={2}>
-          <FormControl size="small" sx={{ minWidth: 220, maxWidth: 320 }}>
-            <InputLabel>Report scope</InputLabel>
+          {/* 1. Report Type */}
+          <FormControl size="small" sx={{ minWidth: 280, maxWidth: 420 }}>
+            <InputLabel>1. Report type</InputLabel>
             <Select
-              label="Report scope"
+              label="1. Report type"
               value={filters.rangeMode}
-              onChange={(e) => patch({ rangeMode: e.target.value })}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "labor_cost") return;
+                patch({ rangeMode: v });
+              }}
             >
               {RANGE_MODES.map((m) => (
-                <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>
+                <MenuItem key={m.value} value={m.value} disabled={Boolean(m.disabled)}>
+                  {m.label}
+                </MenuItem>
               ))}
             </Select>
           </FormControl>
 
+          {/* 2. Reporting Basis (custom only) */}
+          {filters.rangeMode === "date_range" ? (
+            <FormControl size="small" sx={{ minWidth: 240, maxWidth: 360 }}>
+              <InputLabel>2. Reporting basis</InputLabel>
+              <Select
+                label="2. Reporting basis"
+                value={filters.dateBasis || "pay_date"}
+                onChange={(e) => patch({ dateBasis: e.target.value })}
+              >
+                {DATE_BASIS_OPTIONS.map((o) => (
+                  <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          ) : null}
+
+          {/* 3. Period Selection */}
           {filters.rangeMode === "period" ? (
-            <FormControl size="small" sx={{ minWidth: 280, maxWidth: 480 }}>
-              <InputLabel>Payroll period(s)</InputLabel>
+            <FormControl size="small" sx={{ minWidth: 280, maxWidth: 520 }}>
+              <InputLabel>3. Payroll period</InputLabel>
               <Select
                 multiple
-                label="Payroll period(s)"
+                label="3. Payroll period"
                 value={filters.selectedPeriods}
                 onChange={(e) =>
                   patch({
@@ -285,7 +387,7 @@ export default function PayrollReportPanel() {
                         : e.target.value,
                   })
                 }
-                input={<OutlinedInput label="Payroll period(s)" />}
+                input={<OutlinedInput label="3. Payroll period" />}
                 renderValue={(selected) =>
                   selected
                     .map((v) => periodOptions.find((o) => o.value === v)?.label || v)
@@ -302,38 +404,76 @@ export default function PayrollReportPanel() {
             </FormControl>
           ) : null}
 
-          {filters.rangeMode === "date_range" ? (
-            <Paper variant="outlined" sx={{ p: 1.5, bgcolor: "grey.50" }}>
-              <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
-                Custom Date Range
+          {filters.rangeMode === "monthly_paid" ? (
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems="center">
+              <Typography variant="body2" fontWeight={600} sx={{ minWidth: 120 }}>
+                3. Month &amp; year
               </Typography>
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems="flex-end">
-                <PayrollDateField
-                  label="Start date"
-                  value={filters.dateFrom}
-                  onChange={(v) => patch({ dateFrom: v })}
-                  size="small"
-                />
-                <PayrollDateField
-                  label="End date"
-                  value={filters.dateTo}
-                  onChange={(v) => patch({ dateTo: v })}
-                  size="small"
-                />
-                <Button variant="contained" onClick={applyFilters} disabled={loading}>
-                  Apply
-                </Button>
-                <Button variant="outlined" onClick={clearFilters} disabled={loading}>
-                  Clear
-                </Button>
-              </Stack>
-              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-                {dateRule ||
-                  "Includes rows where the pay period overlaps the selected range, or the pay date falls within the selected range."}
+              <FormControl size="small" sx={{ minWidth: 160 }}>
+                <InputLabel>Month</InputLabel>
+                <Select
+                  label="Month"
+                  value={filters.month}
+                  onChange={(e) => patch({ month: Number(e.target.value) })}
+                >
+                  {MONTH_OPTIONS.map((m) => (
+                    <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl size="small" sx={{ minWidth: 120 }}>
+                <InputLabel>Year</InputLabel>
+                <Select
+                  label="Year"
+                  value={filters.year}
+                  onChange={(e) => patch({ year: Number(e.target.value) })}
+                >
+                  {[filters.year - 1, filters.year, filters.year + 1]
+                    .filter((y, i, arr) => arr.indexOf(y) === i)
+                    .map((y) => (
+                      <MenuItem key={y} value={y}>{y}</MenuItem>
+                    ))}
+                </Select>
+              </FormControl>
+              <Typography variant="caption" color="text.secondary">
+                Batches without Official Pay Date are excluded.
               </Typography>
-            </Paper>
+            </Stack>
           ) : null}
 
+          {filters.rangeMode === "date_range" ? (
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems="flex-end">
+              <Typography variant="body2" fontWeight={600} sx={{ minWidth: 120, pb: 1 }}>
+                3. Date range
+              </Typography>
+              <PayrollDateField
+                label="Start date"
+                value={filters.dateFrom}
+                onChange={(v) => patch({ dateFrom: v })}
+                size="small"
+              />
+              <PayrollDateField
+                label="End date"
+                value={filters.dateTo}
+                onChange={(v) => patch({ dateTo: v })}
+                size="small"
+              />
+            </Stack>
+          ) : null}
+
+          {filters.rangeMode === "date_range" ? (
+            <Typography variant="caption" color="text.secondary" display="block">
+              {dateRule ||
+                (filters.dateBasis === "period_overlap"
+                  ? "Includes rows whose payroll period overlaps the selected range."
+                  : "Includes rows whose Official Pay Date falls within the selected range.")}
+            </Typography>
+          ) : null}
+
+          {/* 4. Additional Filters */}
+          <Typography variant="subtitle2" fontWeight={700}>
+            4. Additional filters
+          </Typography>
           <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} flexWrap="wrap" useFlexGap>
             <FormControl size="small" sx={{ minWidth: 200 }}>
               <InputLabel>Employee</InputLabel>
@@ -388,16 +528,14 @@ export default function PayrollReportPanel() {
             </FormControl>
           </Stack>
 
-          {filters.rangeMode !== "date_range" ? (
-            <Stack direction="row" spacing={1}>
-              <Button variant="contained" onClick={applyFilters} disabled={loading}>
-                Apply filters
-              </Button>
-              <Button variant="outlined" onClick={clearFilters} disabled={loading}>
-                Clear / reset
-              </Button>
-            </Stack>
-          ) : null}
+          <Stack direction="row" spacing={1}>
+            <Button variant="contained" onClick={applyFilters} disabled={loading}>
+              Apply filters
+            </Button>
+            <Button variant="outlined" onClick={clearFilters} disabled={loading}>
+              Clear / reset
+            </Button>
+          </Stack>
         </Stack>
       </Paper>
 
@@ -426,11 +564,25 @@ export default function PayrollReportPanel() {
       <Paper variant="outlined">
         <Box sx={{ px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
           <Typography variant="subtitle2" fontWeight={700}>
-            Results{report ? ` · ${report.count ?? rows.length} records` : ""}
+            {dynamicHeading}
+            {report ? ` · ${report.count ?? rows.length} records` : ""}
           </Typography>
-          {dateRule && applied.rangeMode === "date_range" ? (
+          {report?.summary ? (
             <Typography variant="caption" color="text.secondary" display="block">
-              Date rule: {dateRule}
+              Batches: {report.summary.batch_count ?? "—"} · Unique employees:{" "}
+              {report.summary.unique_employees ?? "—"} · Gross: {money(totals.gross_pay)} ·
+              Employer taxes: {money(totals.employer_taxes)} · Total payroll cost:{" "}
+              {money(totals.total_payroll_cost)}
+            </Typography>
+          ) : null}
+          {dateRule ? (
+            <Typography variant="caption" color="text.secondary" display="block">
+              {dateRule}
+            </Typography>
+          ) : null}
+          {report?.excluded_missing_pay_date_count ? (
+            <Typography variant="caption" color="warning.main" display="block">
+              {report.excluded_missing_pay_date_count} finalized line(s) excluded — Pay Date Missing.
             </Typography>
           ) : null}
         </Box>
@@ -440,7 +592,7 @@ export default function PayrollReportPanel() {
           </Box>
         ) : (
           <TableContainer sx={{ overflowX: "auto" }}>
-            <Table size="small" sx={{ minWidth: 1600 }}>
+            <Table size="small" sx={{ minWidth: 1700 }}>
               <TableHead>
                 <TableRow>
                   <TableCell>Employee</TableCell>
@@ -464,6 +616,7 @@ export default function PayrollReportPanel() {
                   <TableCell align="right">Other deductions</TableCell>
                   <TableCell align="right">Net pay</TableCell>
                   <TableCell align="right">Employer taxes</TableCell>
+                  <TableCell align="right">Total payroll cost</TableCell>
                   <TableCell>Payment status</TableCell>
                   <TableCell>Payroll status</TableCell>
                 </TableRow>
@@ -474,7 +627,9 @@ export default function PayrollReportPanel() {
                     <TableCell>{row.employee_name}</TableCell>
                     <TableCell>{row.employee_category}</TableCell>
                     <TableCell>{row.payroll_period}</TableCell>
-                    <TableCell>{row.pay_date}</TableCell>
+                    <TableCell>
+                      {row.pay_date_display || row.pay_date || (row.pay_date_missing ? "Pay Date Missing" : "")}
+                    </TableCell>
                     <TableCell align="right">{hours(row.regular_hours)}</TableCell>
                     <TableCell align="right">{hours(row.ot_hours)}</TableCell>
                     <TableCell align="right">{money(row.base_earnings)}</TableCell>
@@ -489,6 +644,7 @@ export default function PayrollReportPanel() {
                     <TableCell align="right">{money(row.other_deductions)}</TableCell>
                     <TableCell align="right">{money(row.net_pay)}</TableCell>
                     <TableCell align="right">{money(row.employer_taxes)}</TableCell>
+                    <TableCell align="right">{money(row.total_payroll_cost)}</TableCell>
                     <TableCell>{row.payment_status}</TableCell>
                     <TableCell>{row.payroll_status}</TableCell>
                   </TableRow>
@@ -527,11 +683,14 @@ export default function PayrollReportPanel() {
                     <TableCell align="right" sx={{ fontWeight: 700 }}>
                       {money(totals.employer_taxes)}
                     </TableCell>
+                    <TableCell align="right" sx={{ fontWeight: 700 }}>
+                      {money(totals.total_payroll_cost)}
+                    </TableCell>
                     <TableCell colSpan={2} />
                   </TableRow>
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={16}>
+                    <TableCell colSpan={17}>
                       <Typography variant="body2" color="text.secondary">
                         No payroll records match the current filters.
                       </Typography>

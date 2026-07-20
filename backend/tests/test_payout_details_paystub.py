@@ -1128,10 +1128,17 @@ def test_finalize_receipt_mode_requires_payment_fields():
         return_value=enriched,
     ):
         try:
-            finalize_payout_details(conn, 1, 1, actor_id=9)
+            finalize_payout_details(
+                conn,
+                1,
+                1,
+                actor_id=9,
+                official_pay_date="2026-07-10",
+                confirm_pay_date=True,
+            )
             assert False, "expected ValueError"
         except ValueError as e:
-            assert "amount paid" in str(e).lower() or "payment date" in str(e).lower()
+            assert "amount paid" in str(e).lower() or "payment date" in str(e).lower() or "official pay date" in str(e).lower()
 
 
 def test_set_document_mode_blocks_after_finalize():

@@ -97,6 +97,8 @@ def ensure_payout_details_columns(cursor) -> None:
         ("payout_details_audit_json", "JSON NULL"),
         ("document_mode", "VARCHAR(32) NULL"),
         ("batch_note", "TEXT NULL"),
+        # Phase 1: authoritative Pay Date for Monthly Payroll Paid (no historical backfill).
+        ("official_pay_date", "DATE NULL"),
     ]
     for col, typedef in batch_cols:
         if not table_has_column(cursor, "payout_batches", col):
@@ -1038,18 +1040,109 @@ def enrich_line_with_payout_details(
     return json_safe(row)
 
 
-def _audit_append(batch: dict, event: str, actor_id: int, detail: str = "") -> list:
+def _audit_append(
+    batch: dict,
+    event: str,
+    actor_id: int,
+    detail: str = "",
+    *,
+    old_value: Any = None,
+    new_value: Any = None,
+    reason: str = "",
+) -> list:
     audit = _parse_json_blob(batch.get("payout_details_audit_json"))
     events = audit.get("events") if isinstance(audit.get("events"), list) else []
-    events.append(
-        {
-            "event": event,
-            "actor_id": int(actor_id),
-            "at": datetime.utcnow().isoformat(timespec="seconds"),
-            "detail": detail,
-        }
-    )
+    entry: dict[str, Any] = {
+        "event": event,
+        "actor_id": int(actor_id),
+        "at": datetime.utcnow().isoformat(timespec="seconds"),
+        "detail": detail,
+    }
+    if old_value is not None or new_value is not None:
+        entry["old_value"] = old_value
+        entry["new_value"] = new_value
+    if reason:
+        entry["reason"] = str(reason).strip()
+    events.append(entry)
     return events
+
+
+def _parse_official_pay_date(raw: Any) -> Optional[str]:
+    """Return YYYY-MM-DD or None. Never invents a date from period end."""
+    if raw is None:
+        return None
+    if hasattr(raw, "isoformat"):
+        try:
+            return raw.isoformat()[:10]
+        except Exception:
+            return None
+    s = str(raw).strip()[:10]
+    if not s:
+        return None
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return s
+
+
+def batch_official_pay_date(batch: dict) -> Optional[str]:
+    return _parse_official_pay_date(batch.get("official_pay_date"))
+
+
+def batch_pay_date_missing(batch: dict) -> bool:
+    return batch_official_pay_date(batch) is None
+
+
+def suggested_pay_date_for_ui(batch: dict) -> Optional[str]:
+    """Suggestion only — never treated as a confirmed official Pay Date."""
+    pe = batch.get("pay_period_end") or batch.get("pay_period_start")
+    return _parse_official_pay_date(pe)
+
+
+def compute_batch_finalize_cost_summary(batch: dict, lines: Optional[list] = None) -> dict:
+    """Gross / net / stored employer taxes / total payroll cost for finalize confirmation.
+
+    Total Payroll Cost = Gross + stored employer-side taxes only (no invented burdens).
+    Employee withholding is not added on top of gross.
+    """
+    rows = lines if lines is not None else (batch.get("lines") or [])
+    employee_count = len(rows)
+    gross_total = 0.0
+    net_total = 0.0
+    employer_total = 0.0
+    for ln in rows:
+        details = ln.get("payout_details") or parse_line_payout_details(ln)
+        totals = ln.get("payout_totals") or compute_line_totals(ln, details)
+        if isinstance(totals, dict):
+            gross_total += float(_money(totals.get("gross_pay")))
+            net_total += float(
+                _money(totals.get("net_paid_to_employee") or totals.get("net_pay"))
+            )
+            employer_total += float(_money(totals.get("total_employer_taxes")))
+        else:
+            gross_total += float(_money(ln.get("gross_amount") or ln.get("total_amount")))
+            er = details.get("employer_taxes") or {}
+            if isinstance(er, dict):
+                employer_total += sum(float(_money(v)) for v in er.values())
+    gross_total = round(gross_total, 2)
+    net_total = round(net_total, 2)
+    employer_total = round(employer_total, 2)
+    return {
+        "employee_count": employee_count,
+        "gross_pay": gross_total,
+        "net_pay": net_total,
+        "employer_taxes": employer_total,
+        "total_payroll_cost": round(gross_total + employer_total, 2),
+        "pay_period_start": str(batch.get("pay_period_start") or "")[:10],
+        "pay_period_end": str(batch.get("pay_period_end") or "")[:10],
+        "official_pay_date": batch_official_pay_date(batch),
+        "suggested_pay_date": suggested_pay_date_for_ui(batch),
+        "pay_date_missing": batch_pay_date_missing(batch),
+        "pay_date_note": (
+            "The Pay Date determines which monthly payroll report this batch appears in."
+        ),
+    }
 
 
 def batch_ready_for_payout_details(batch: dict) -> bool:
@@ -1086,6 +1179,7 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
         and not finalize_blockers_list
     )
     can_unfinalize = can_unfinalize_payout_details(batch)
+    opd = batch_official_pay_date(batch)
     return json_safe(
         {
             "batch_status": st,
@@ -1108,6 +1202,11 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
             "can_finalize": can_finalize,
             "can_unfinalize": can_unfinalize,
             "finalize_blockers": finalize_blockers_list,
+            "official_pay_date": opd,
+            "pay_date_missing": opd is None,
+            "pay_date_status": "set" if opd else "missing",
+            "suggested_pay_date": suggested_pay_date_for_ui(batch),
+            "can_correct_official_pay_date": bool(finalized),
         }
     )
 
@@ -1134,6 +1233,11 @@ def enrich_batch_payout_details(conn, organization_id: int, batch: dict) -> dict
         )
     batch["lines"] = lines
     batch["payout_workflow"] = payout_workflow_state(batch)
+    batch["official_pay_date"] = batch_official_pay_date(batch)
+    batch["pay_date_missing"] = batch_pay_date_missing(batch)
+    batch["pay_date_status"] = "set" if batch["official_pay_date"] else "missing"
+    batch["suggested_pay_date"] = suggested_pay_date_for_ui(batch)
+    batch["finalize_cost_summary"] = compute_batch_finalize_cost_summary(batch, lines)
     from backend.payroll_status_display import enrich_batch_payroll_display
 
     batch = enrich_batch_payroll_display(batch)
@@ -1576,14 +1680,25 @@ def set_batch_document_mode(
     return get_payout_batch_details(conn, organization_id, batch_id) or {}
 
 
-def _validate_finalize_batch(batch: dict) -> None:
+def _validate_finalize_batch(batch: dict, *, official_pay_date: Optional[str] = None) -> None:
     blockers = finalize_blockers(batch, batch.get("lines") or [])
+    if not _parse_official_pay_date(official_pay_date or batch.get("official_pay_date")):
+        blockers = [
+            "Official Pay Date is required to finalize. "
+            "Confirm the date employees are actually paid."
+        ] + blockers
     if blockers:
         raise ValueError(blockers[0])
 
 
 def finalize_payout_details(
-    conn, organization_id: int, batch_id: int, *, actor_id: int
+    conn,
+    organization_id: int,
+    batch_id: int,
+    *,
+    actor_id: int,
+    official_pay_date: Optional[str] = None,
+    confirm_pay_date: bool = False,
 ) -> dict:
     ensure_payout_details_columns(conn.cursor())
     batch = get_payout_batch(conn, organization_id, batch_id)
@@ -1593,6 +1708,17 @@ def finalize_payout_details(
         raise ValueError("Batch must be approved for payment before finalize")
     if batch.get("payout_details_finalized_at"):
         raise ValueError("Payout details already finalized")
+    pay_date = _parse_official_pay_date(official_pay_date)
+    if not pay_date:
+        raise ValueError(
+            "Official Pay Date is required to finalize. "
+            "Confirm the date employees are actually paid."
+        )
+    if not confirm_pay_date:
+        raise ValueError(
+            "Confirm the Official Pay Date explicitly before finalizing. "
+            "A suggested date is not applied automatically."
+        )
     enriched = get_payout_batch_details(conn, organization_id, batch_id) or {}
     if _persist_line_payment_defaults(
         conn,
@@ -1603,12 +1729,30 @@ def finalize_payout_details(
     ):
         conn.commit()
     enriched = get_payout_batch_details(conn, organization_id, batch_id) or {}
-    _validate_finalize_batch(enriched)
-    events = _audit_append(batch, "payout_details_finalized", actor_id)
+    _validate_finalize_batch(enriched, official_pay_date=pay_date)
+    events = _audit_append(
+        batch,
+        "payout_details_finalized",
+        actor_id,
+        detail=f"official_pay_date={pay_date}",
+        old_value=batch_official_pay_date(batch),
+        new_value=pay_date,
+        reason="finalization",
+    )
+    events = _audit_append(
+        {**batch, "payout_details_audit_json": json.dumps({"events": events})},
+        "official_pay_date_set",
+        actor_id,
+        detail="Set at finalization",
+        old_value=None,
+        new_value=pay_date,
+        reason="finalization",
+    )
     c = conn.cursor()
     c.execute(
         """
         UPDATE payout_batches SET
+          official_pay_date=%s,
           payout_details_finalized_at=NOW(),
           payout_details_finalized_by=%s,
           payout_details_audit_json=%s,
@@ -1616,6 +1760,7 @@ def finalize_payout_details(
         WHERE id=%s AND organization_id=%s
         """,
         (
+            pay_date,
             int(actor_id),
             json.dumps({"events": events}),
             int(batch_id),
@@ -1625,6 +1770,62 @@ def finalize_payout_details(
     conn.commit()
     return get_payout_batch_details(conn, organization_id, batch_id) or {}
 
+
+def set_official_pay_date(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    *,
+    actor_id: int,
+    official_pay_date: str,
+    reason: str,
+) -> dict:
+    """Assign or correct batch official_pay_date. Affects report membership only."""
+    ensure_payout_details_columns(conn.cursor())
+    batch = get_payout_batch(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    if not batch.get("payout_details_finalized_at"):
+        raise ValueError(
+            "Official Pay Date for unfinalized batches is set during finalization"
+        )
+    pay_date = _parse_official_pay_date(official_pay_date)
+    if not pay_date:
+        raise ValueError("A valid Official Pay Date (YYYY-MM-DD) is required")
+    reason_s = str(reason or "").strip()
+    if len(reason_s) < 3:
+        raise ValueError("A reason is required when setting or correcting Official Pay Date")
+    old = batch_official_pay_date(batch)
+    if old == pay_date:
+        return get_payout_batch_details(conn, organization_id, batch_id) or {}
+    event_name = "official_pay_date_corrected" if old else "official_pay_date_set"
+    events = _audit_append(
+        batch,
+        event_name,
+        actor_id,
+        detail="Report membership only; wages/taxes unchanged",
+        old_value=old,
+        new_value=pay_date,
+        reason=reason_s,
+    )
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE payout_batches SET
+          official_pay_date=%s,
+          payout_details_audit_json=%s,
+          updated_at=CURRENT_TIMESTAMP
+        WHERE id=%s AND organization_id=%s
+        """,
+        (
+            pay_date,
+            json.dumps({"events": events}),
+            int(batch_id),
+            int(organization_id),
+        ),
+    )
+    conn.commit()
+    return get_payout_batch_details(conn, organization_id, batch_id) or {}
 
 def can_unfinalize_payout_details(batch: dict) -> bool:
     """Allow reopening finalized payout details for corrections (same readiness as edit)."""

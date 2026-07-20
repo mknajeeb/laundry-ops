@@ -115,6 +115,7 @@ def test_report_row_ot_premium_and_labels():
         "pay_period_end": "2026-07-12",
         "status": "approved_for_payment",
         "payout_details_finalized_at": "2026-07-13",
+        "official_pay_date": "2026-07-15",
     }
     line = {
         "id": 10,
@@ -126,26 +127,33 @@ def test_report_row_ot_premium_and_labels():
         "ot_rate": 30,
         "gross_amount": 830,
         "payment_status": "paid",
-        "payout_details_json": '{"payment":{"date":"2026-07-15"},"employee_deductions":{"fit":50}}',
+        "payout_details_json": '{"payment":{"date":"2026-07-15"},"employee_deductions":{"fit":50},"employer_taxes":{"er_ss":51.46}}',
     }
     row = build_report_row(batch, line)
     assert row["ot_premium"] == 10.0
     assert row["base_earnings"] == 820.0
     assert abs(row["base_earnings"] + row["ot_premium"] + row["other_earnings"] - row["gross_pay"]) < 0.01
     assert row["pay_date"] == "2026-07-15"
+    assert row["total_payroll_cost"] == round(830 + 51.46, 2)
     assert "W-2" in row["employee_category"]
 
 
 def test_excel_export_includes_totals_and_ot_premium():
     report = {
-        "filters": {"all_history": True, "worker_category": "all"},
+        "filters": {"all_history": True, "worker_category": "all", "report_type": "all_history"},
         "date_match_rule": DATE_MATCH_RULE,
+        "report_type": "all_history",
         "rows": [
             {
                 "employee_name": "Ada",
                 "employee_category": "W-2 Employee",
+                "batch_name": "W2",
+                "batch_id": 1,
+                "pay_period_start": "2026-07-06",
+                "pay_period_end": "2026-07-12",
                 "payroll_period": "2026-07-06 – 2026-07-12",
                 "pay_date": "2026-07-15",
+                "finalized_date": "2026-07-13",
                 "regular_hours": 40,
                 "ot_hours": 1,
                 "base_earnings": 820,
@@ -156,6 +164,7 @@ def test_excel_export_includes_totals_and_ot_premium():
                 "other_deductions": 0,
                 "net_pay": 780,
                 "employer_taxes": 60,
+                "total_payroll_cost": 890,
                 "payment_status": "Paid",
                 "payroll_status": "Ready To Pay",
             }
@@ -171,24 +180,41 @@ def test_excel_export_includes_totals_and_ot_premium():
             "other_deductions": 0,
             "net_pay": 780,
             "employer_taxes": 60,
+            "total_payroll_cost": 890,
+        },
+        "summary": {
+            "batch_count": 1,
+            "unique_employees": 1,
+            "gross_pay": 830,
+            "employer_taxes": 60,
+            "total_payroll_cost": 890,
         },
     }
     data = build_payroll_report_xlsx(report)
     wb = load_workbook(BytesIO(data))
     ws = wb.active
-    headers = [c.value for c in ws[5]]
+    # Header row is after title/meta/summary lines
+    headers = None
+    header_row_idx = None
+    for i, row in enumerate(ws.iter_rows(min_row=1, max_row=10, values_only=True), start=1):
+        if row and "OT premium" in row:
+            headers = list(row)
+            header_row_idx = i
+            break
+    assert headers is not None
     assert "OT premium" in headers
     assert "Regular/Base earnings" in headers
-    # Find totals row
+    assert "Total payroll cost" in headers
     found_total = False
-    for row in ws.iter_rows(min_row=6, values_only=True):
+    for row in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
         if row and row[0] == "Totals":
             found_total = True
-            # ot_premium column index
             ot_idx = headers.index("OT premium")
             assert float(row[ot_idx]) == 10.0
             gross_idx = headers.index("Gross pay")
             assert float(row[gross_idx]) == 830.0
+            cost_idx = headers.index("Total payroll cost")
+            assert float(row[cost_idx]) == 890.0
     assert found_total
 
 
@@ -199,14 +225,21 @@ def test_pdf_html_export_includes_totals_and_premium_note():
             "date_to": "2026-07-31",
             "all_history": False,
             "worker_category": "all",
+            "report_type": "custom_range",
+            "date_basis": "pay_date",
         },
         "date_match_rule": DATE_MATCH_RULE,
+        "report_type": "custom_range",
+        "date_basis": "pay_date",
         "rows": [
             {
                 "employee_name": "Bob",
                 "employee_category": "1099 Contractor",
                 "payroll_period": "2026-07-06 – 2026-07-12",
+                "pay_period_start": "2026-07-06",
+                "pay_period_end": "2026-07-12",
                 "pay_date": "2026-07-14",
+                "pay_date_display": "2026-07-14",
                 "regular_hours": 40,
                 "ot_hours": 2,
                 "base_earnings": 840,
@@ -217,6 +250,7 @@ def test_pdf_html_export_includes_totals_and_premium_note():
                 "other_deductions": 0,
                 "net_pay": 860,
                 "employer_taxes": 0,
+                "total_payroll_cost": 860,
                 "payment_status": "Pending",
                 "payroll_status": "Draft",
             }
@@ -232,12 +266,19 @@ def test_pdf_html_export_includes_totals_and_premium_note():
             "other_deductions": 0,
             "net_pay": 860,
             "employer_taxes": 0,
+            "total_payroll_cost": 860,
+        },
+        "summary": {
+            "batch_count": 1,
+            "unique_employees": 1,
+            "gross_pay": 860,
+            "total_payroll_cost": 860,
         },
     }
     html = build_payroll_report_html(report)
     assert "OT Premium" in html or "OT premium" in html
     assert "$20.00" in html
-    assert "Totals" in html
+    assert "Grand Total" in html
     assert "$860.00" in html
     assert "additional amount" in html.lower() or "regular hourly rate" in html.lower()
 
@@ -257,8 +298,20 @@ def test_register_gross_matches_payroll_record():
 
 
 def test_date_range_rule_documented():
-    assert "pay period" in DATE_MATCH_RULE.lower()
-    assert "pay date" in DATE_MATCH_RULE.lower()
+    """Default custom-range rule is Pay Date only (not combined OR)."""
+    from backend.payroll_report import (
+        DATE_MATCH_RULE_PERIOD_OVERLAP,
+        date_match_rule_text,
+    )
+
+    assert "official pay date" in DATE_MATCH_RULE.lower()
+    assert "overlap" not in DATE_MATCH_RULE.lower()
+    assert " or " not in DATE_MATCH_RULE.lower()
+    assert "overlap" in DATE_MATCH_RULE_PERIOD_OVERLAP.lower()
+    assert "overlap" in date_match_rule_text("custom_range", date_basis="period_overlap").lower()
+    assert "official pay date" in date_match_rule_text(
+        "custom_range", date_basis="pay_date"
+    ).lower()
 
 
 def test_ot_premium_edge_cases_never_negative():
@@ -299,14 +352,25 @@ def test_excel_uses_numeric_and_date_cells():
     from datetime import date
 
     report = {
-        "filters": {"date_from": "2026-07-01", "date_to": "2026-07-31"},
+        "filters": {
+            "date_from": "2026-07-01",
+            "date_to": "2026-07-31",
+            "report_type": "custom_range",
+            "date_basis": "pay_date",
+        },
         "date_match_rule": DATE_MATCH_RULE,
+        "report_type": "custom_range",
         "rows": [
             {
                 "employee_name": "Ada",
                 "employee_category": "W-2 Employee",
+                "batch_name": "W2",
+                "batch_id": 1,
+                "pay_period_start": "2026-07-06",
+                "pay_period_end": "2026-07-12",
                 "payroll_period": "2026-07-06 – 2026-07-12",
                 "pay_date": "2026-07-15",
+                "finalized_date": "2026-07-13",
                 "regular_hours": 40,
                 "ot_hours": 1,
                 "base_earnings": 820.0,
@@ -317,6 +381,7 @@ def test_excel_uses_numeric_and_date_cells():
                 "other_deductions": 0.0,
                 "net_pay": 779.5,
                 "employer_taxes": 60.0,
+                "total_payroll_cost": 890.0,
                 "payment_status": "Paid",
                 "payroll_status": "Ready To Pay",
             }
@@ -332,25 +397,33 @@ def test_excel_uses_numeric_and_date_cells():
             "other_deductions": 0.0,
             "net_pay": 779.5,
             "employer_taxes": 60.0,
+            "total_payroll_cost": 890.0,
         },
+        "summary": {"batch_count": 1, "unique_employees": 1, "total_payroll_cost": 890.0},
     }
     data = build_payroll_report_xlsx(report)
     wb = load_workbook(BytesIO(data))
     ws = wb.active
-    headers = [c.value for c in ws[5]]
-    # Row 6 is first data row
-    pay_date_idx = headers.index("Pay date") + 1
+    headers = None
+    header_row_idx = None
+    for i, row in enumerate(ws.iter_rows(min_row=1, max_row=10, values_only=True), start=1):
+        if row and "Pay Date" in row:
+            headers = list(row)
+            header_row_idx = i
+            break
+    assert headers is not None
+    pay_date_idx = headers.index("Pay Date") + 1
     gross_idx = headers.index("Gross pay") + 1
     ot_idx = headers.index("OT premium") + 1
-    cell_date = ws.cell(row=6, column=pay_date_idx)
-    cell_gross = ws.cell(row=6, column=gross_idx)
-    cell_ot = ws.cell(row=6, column=ot_idx)
+    data_row = header_row_idx + 1
+    cell_date = ws.cell(row=data_row, column=pay_date_idx)
+    cell_gross = ws.cell(row=data_row, column=gross_idx)
+    cell_ot = ws.cell(row=data_row, column=ot_idx)
     assert isinstance(cell_date.value, date)
     assert isinstance(cell_gross.value, (int, float))
     assert not isinstance(cell_gross.value, str)
     assert float(cell_ot.value) == 10.0
-    # Totals row matches filtered report totals
-    assert float(ws.cell(row=7, column=gross_idx).value) == 830.0
+    assert float(ws.cell(row=data_row + 1, column=gross_idx).value) == 830.0
 
 
 def test_pdf_and_screen_totals_match_exactly():
@@ -365,99 +438,91 @@ def test_pdf_and_screen_totals_match_exactly():
         "other_deductions": 5.0,
         "net_pay": 1607.5,
         "employer_taxes": 80.0,
+        "total_payroll_cost": 1792.5,
     }
     report = {
-        "filters": {"date_from": "2026-07-01", "date_to": "2026-07-31"},
+        "filters": {
+            "date_from": "2026-07-01",
+            "date_to": "2026-07-31",
+            "report_type": "custom_range",
+            "date_basis": "pay_date",
+        },
         "date_match_rule": DATE_MATCH_RULE,
+        "report_type": "custom_range",
         "rows": [],
         "totals": totals,
+        "summary": {"batch_count": 0, "unique_employees": 0, **totals},
     }
     html = build_payroll_report_html(report)
     assert "thead" in html and "table-header-group" in html
     assert "page-break-inside: avoid" in html
-    assert "tfoot" in html
+    assert "Grand Total" in html
     assert "$1,712.50" in html
-    assert "$32.50" in html
+    assert "$1,792.50" in html
     xlsx = build_payroll_report_xlsx({**report, "rows": []})
     wb = load_workbook(BytesIO(xlsx))
     ws = wb.active
-    headers = [c.value for c in ws[5]]
+    headers = None
+    header_row_idx = None
+    for i, row in enumerate(ws.iter_rows(min_row=1, max_row=10, values_only=True), start=1):
+        if row and "Gross pay" in row:
+            headers = list(row)
+            header_row_idx = i
+            break
+    assert headers is not None
     gross_idx = headers.index("Gross pay") + 1
-    # totals appended after empty data
-    assert float(ws.cell(row=6, column=gross_idx).value) == 1712.5
+    assert float(ws.cell(row=header_row_idx + 1, column=gross_idx).value) == 1712.5
 
 
 def test_date_range_match_does_not_duplicate_line():
-    """Pay period overlap AND pay date in range → still one row per line_id."""
+    """Same line_id twice from SQL → still one row; pay_date basis uses official_pay_date."""
     from backend.payroll_report import query_payroll_report
 
     conn = MagicMock()
     cursor = MagicMock()
     conn.cursor.return_value = cursor
-    # Same line returned once from SQL (normal case); filter matches both rules
-    cursor.fetchall.return_value = [
-        {
-            "batch_id": 1,
-            "batch_name": "W2",
-            "worker_category": "w2",
-            "pay_period_start": "2026-07-06",
-            "pay_period_end": "2026-07-12",
-            "batch_status": "paid",
-            "payout_details_finalized_at": "2026-07-13",
-            "line_id": 99,
-            "user_id": 5,
-            "worker_name_snapshot": "Eve",
-            "approved_hours": 40,
-            "ot_hours": 0,
-            "rate": 20,
-            "ot_rate": 0,
-            "gross_amount": 800,
-            "total_amount": 800,
-            "gross_wages": 800,
-            "sick_pay_amount": 0,
-            "bonus_tip_amount": 0,
-            "reimbursement_amount": 0,
-            "adjustments": 0,
-            "payment_status": "paid",
-            "net_pay": 800,
-            "payout_details_json": '{"payment":{"date":"2026-07-10"}}',
-        },
-        # Simulate accidental duplicate SQL row for same line_id
-        {
-            "batch_id": 1,
-            "batch_name": "W2",
-            "worker_category": "w2",
-            "pay_period_start": "2026-07-06",
-            "pay_period_end": "2026-07-12",
-            "batch_status": "paid",
-            "payout_details_finalized_at": "2026-07-13",
-            "line_id": 99,
-            "user_id": 5,
-            "worker_name_snapshot": "Eve",
-            "approved_hours": 40,
-            "ot_hours": 0,
-            "rate": 20,
-            "ot_rate": 0,
-            "gross_amount": 800,
-            "total_amount": 800,
-            "gross_wages": 800,
-            "sick_pay_amount": 0,
-            "bonus_tip_amount": 0,
-            "reimbursement_amount": 0,
-            "adjustments": 0,
-            "payment_status": "paid",
-            "net_pay": 800,
-            "payout_details_json": '{"payment":{"date":"2026-07-10"}}',
-        },
-    ]
+    sample = {
+        "batch_id": 1,
+        "batch_name": "W2",
+        "worker_category": "w2",
+        "pay_period_start": "2026-07-06",
+        "pay_period_end": "2026-07-12",
+        "batch_status": "paid",
+        "payout_details_finalized_at": "2026-07-13",
+        "official_pay_date": "2026-07-10",
+        "line_id": 99,
+        "user_id": 5,
+        "worker_name_snapshot": "Eve",
+        "approved_hours": 40,
+        "ot_hours": 0,
+        "rate": 20,
+        "ot_rate": 0,
+        "gross_amount": 800,
+        "total_amount": 800,
+        "gross_wages": 800,
+        "sick_pay_amount": 0,
+        "bonus_tip_amount": 0,
+        "reimbursement_amount": 0,
+        "adjustments": 0,
+        "payment_status": "paid",
+        "net_pay": 800,
+        "payout_details_json": '{"payment":{"date":"2026-07-10"}}',
+    }
+    cursor.fetchall.return_value = [sample, dict(sample)]
     with patch("backend.payroll_operations.ensure_payout_batches_tables"), patch(
         "backend.payroll_report.table_has_column", return_value=True
     ):
         report = query_payroll_report(
-            conn, 3, date_from="2026-07-06", date_to="2026-07-12"
+            conn,
+            3,
+            date_from="2026-07-06",
+            date_to="2026-07-12",
+            date_basis="pay_date",
         )
     assert report["count"] == 1
     assert len(report["rows"]) == 1
+    assert report["report_type"] == "custom_range"
+    assert "overlap" not in (report["date_match_rule"] or "").lower()
 
 
 def test_query_payroll_report_filters_periods_and_categories():
@@ -476,6 +541,7 @@ def test_query_payroll_report_filters_periods_and_categories():
             "pay_period_end": "2026-07-12",
             "batch_status": "hours_reviewed",
             "payout_details_finalized_at": None,
+            "official_pay_date": None,
             "line_id": 2,
             "user_id": 5,
             "worker_name_snapshot": "Cara",
@@ -502,6 +568,7 @@ def test_query_payroll_report_filters_periods_and_categories():
             "pay_period_end": "2026-07-05",
             "batch_status": "paid",
             "payout_details_finalized_at": "2026-07-06",
+            "official_pay_date": "2026-07-08",
             "line_id": 3,
             "user_id": 6,
             "worker_name_snapshot": "Dan",
@@ -524,29 +591,39 @@ def test_query_payroll_report_filters_periods_and_categories():
     with patch("backend.payroll_operations.ensure_payout_batches_tables"), patch(
         "backend.payroll_report.table_has_column", return_value=True
     ):
-        # Multi-period: only first period pair requested
         multi = query_payroll_report(
             conn,
             3,
             period_starts=["2026-07-06"],
             period_ends=["2026-07-12"],
         )
-        # SQL filter applied; mock still returns both — exercise builder
         assert "rows" in multi
+        assert multi["report_type"] == "payroll_period"
         assert multi["date_match_rule"]
 
-        # Custom date range covering pay date of second row
-        cursor.fetchall.return_value = cursor.fetchall.return_value  # same data
+        # Default date_basis=pay_date: only Dan (official_pay_date in range)
         ranged = query_payroll_report(
             conn,
             3,
             date_from="2026-07-07",
             date_to="2026-07-10",
+            date_basis="pay_date",
         )
-        # Only Dan has pay_date 2026-07-08 in range; Cara period overlaps Jul 7–10 too
         names = {r["employee_name"] for r in ranged["rows"]}
-        assert "Cara" in names or "Dan" in names
-        for r in ranged["rows"]:
+        assert names == {"Dan"}
+        assert "Cara" not in names
+
+        # period_overlap: Cara's period overlaps Jul 7–10
+        overlapped = query_payroll_report(
+            conn,
+            3,
+            date_from="2026-07-07",
+            date_to="2026-07-10",
+            date_basis="period_overlap",
+        )
+        overlap_names = {r["employee_name"] for r in overlapped["rows"]}
+        assert "Cara" in overlap_names
+        for r in overlapped["rows"]:
             assert abs(
                 r["base_earnings"] + r["ot_premium"] + r["other_earnings"] - r["gross_pay"]
             ) < 0.02

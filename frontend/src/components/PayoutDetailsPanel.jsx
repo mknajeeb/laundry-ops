@@ -42,6 +42,7 @@ import LockOpenIcon from "@mui/icons-material/LockOpen";
 import { useAuth } from "../context/AuthContext";
 import {
   finalizePayoutDetails,
+  setOfficialPayDate,
   unfinalizePayoutDetails,
   estimatePayoutTaxes,
   getPaymentReceiptHtml,
@@ -56,6 +57,7 @@ import {
   putPayoutBatchDetails,
   setPayoutDocumentMode,
 } from "../api";
+import { PayrollDateField } from "./PayrollDateTimeField";
 import PayrollBatchSummaryCard from "./PayrollBatchSummaryCard";
 import EmployeePaystubArchivePanel from "./EmployeePaystubArchivePanel";
 import TaxWithheldBreakdownDialog from "./TaxWithheldBreakdownDialog";
@@ -426,6 +428,11 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   const [info, setInfo] = useState("");
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   const [unfinalizeOpen, setUnfinalizeOpen] = useState(false);
+  const [finalizePayDate, setFinalizePayDate] = useState("");
+  const [confirmPayDate, setConfirmPayDate] = useState(false);
+  const [payDateCorrectOpen, setPayDateCorrectOpen] = useState(false);
+  const [correctPayDate, setCorrectPayDate] = useState("");
+  const [correctPayDateReason, setCorrectPayDateReason] = useState("");
   const [moreAnchor, setMoreAnchor] = useState(null);
   const [taxDialog, setTaxDialog] = useState({ open: false, line: null, workerName: "" });
   const [paystubCopyMode, setPaystubCopyMode] = useState("employee");
@@ -594,16 +601,59 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
 
   const doFinalize = async () => {
     setError("");
+    if (!finalizePayDate) {
+      setError("Official Pay Date is required to finalize.");
+      return;
+    }
+    if (!confirmPayDate) {
+      setError("Confirm the Official Pay Date explicitly before finalizing.");
+      return;
+    }
     try {
       const saved = await saveDetails({ silent: true });
       if (!saved) return;
-      const res = await finalizePayoutDetails(selectedId);
+      const res = await finalizePayoutDetails(selectedId, {
+        official_pay_date: finalizePayDate,
+        confirm_pay_date: true,
+      });
       setDetail(res.data);
       setFinalizeOpen(false);
+      setConfirmPayDate(false);
       setInfo("Finalized — batch closed and ready to pay.");
       await loadBatches();
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Finalize failed");
+    }
+  };
+
+  const openFinalizeDialog = () => {
+    const suggested =
+      detail?.suggested_pay_date ||
+      detail?.payout_workflow?.suggested_pay_date ||
+      "";
+    setFinalizePayDate(suggested || "");
+    setConfirmPayDate(false);
+    setFinalizeOpen(true);
+  };
+
+  const doCorrectPayDate = async () => {
+    setError("");
+    if (!correctPayDate || String(correctPayDateReason || "").trim().length < 3) {
+      setError("Official Pay Date and a reason (at least 3 characters) are required.");
+      return;
+    }
+    try {
+      const res = await setOfficialPayDate(selectedId, {
+        official_pay_date: correctPayDate,
+        reason: correctPayDateReason.trim(),
+      });
+      setDetail(res.data);
+      setPayDateCorrectOpen(false);
+      setCorrectPayDateReason("");
+      setInfo("Official Pay Date updated — report membership only; wages unchanged.");
+      await loadBatches();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Pay Date update failed");
     }
   };
 
@@ -898,6 +948,33 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                       ? "Paystubs are available — print or email from this tab as needed."
                       : "Record Federal (FIT) and State taxes for each employee, payment method and date, then click Finalize & close batch."}
                   </Typography>
+                  {finalized && (detail.pay_date_missing || detail.payout_workflow?.pay_date_missing) ? (
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }}>
+                      <Chip size="small" color="warning" label="Pay Date Missing" />
+                      <Typography variant="caption" color="text.secondary">
+                        Excluded from Monthly Payroll Paid until an Official Pay Date is assigned.
+                      </Typography>
+                      <Button size="small" onClick={() => {
+                        setCorrectPayDate("");
+                        setCorrectPayDateReason("");
+                        setPayDateCorrectOpen(true);
+                      }}>
+                        Assign Pay Date
+                      </Button>
+                    </Stack>
+                  ) : null}
+                  {finalized && detail.official_pay_date ? (
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }}>
+                      <Chip size="small" color="success" label={`Pay Date ${detail.official_pay_date}`} />
+                      <Button size="small" onClick={() => {
+                        setCorrectPayDate(detail.official_pay_date || "");
+                        setCorrectPayDateReason("");
+                        setPayDateCorrectOpen(true);
+                      }}>
+                        Correct Pay Date
+                      </Button>
+                    </Stack>
+                  ) : null}
                 </Box>
               </Stack>
             </Paper>
@@ -949,7 +1026,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                 size="small"
                 startIcon={<LockIcon />}
                 variant="contained"
-                onClick={() => setFinalizeOpen(true)}
+                onClick={openFinalizeDialog}
                 disabled={!canFinalize}
               >
                 Finalize & close batch
@@ -1243,17 +1320,111 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={finalizeOpen} onClose={() => setFinalizeOpen(false)}>
+      <Dialog open={finalizeOpen} onClose={() => setFinalizeOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Finalize & close this payroll batch?</DialogTitle>
         <DialogContent>
-          <Typography variant="body2">
+          <Typography variant="body2" sx={{ mb: 1.5 }}>
             Locks tax and payment fields, generates official paystubs, and marks the batch ready to pay.
-            Print or email paystubs from this tab when employees are paid.
           </Typography>
+          {(() => {
+            const s = detail?.finalize_cost_summary || {};
+            return (
+              <Stack spacing={0.75} sx={{ mb: 2 }}>
+                <Typography variant="body2">
+                  <strong>Payroll period:</strong> {s.pay_period_start || detail?.pay_period_start} –{" "}
+                  {s.pay_period_end || detail?.pay_period_end}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Employee count:</strong> {s.employee_count ?? detail?.lines?.length ?? "—"}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Gross pay:</strong> {formatPayrollMoney(s.gross_pay)}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Net pay:</strong> {formatPayrollMoney(s.net_pay)}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Employer taxes:</strong> {formatPayrollMoney(s.employer_taxes)}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Total payroll cost:</strong> {formatPayrollMoney(s.total_payroll_cost)}
+                </Typography>
+              </Stack>
+            );
+          })()}
+          <PayrollDateField
+            label="Official Pay Date"
+            value={finalizePayDate}
+            onChange={(v) => {
+              setFinalizePayDate(v);
+              setConfirmPayDate(false);
+            }}
+            size="small"
+            sx={{ mb: 1, mt: 1 }}
+          />
+          {detail?.suggested_pay_date || detail?.payout_workflow?.suggested_pay_date ? (
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              Suggested (not applied unless you confirm):{" "}
+              {detail?.suggested_pay_date || detail?.payout_workflow?.suggested_pay_date}
+            </Typography>
+          ) : null}
+          <Alert severity="info" sx={{ mb: 1 }}>
+            The Pay Date determines which monthly payroll report this batch appears in.
+          </Alert>
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={confirmPayDate}
+                onChange={(e) => setConfirmPayDate(e.target.checked)}
+              />
+            }
+            label="I confirm this Official Pay Date is the date employees are actually paid"
+          />
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setFinalizeOpen(false)}>Cancel</Button>
-          <Button onClick={doFinalize} variant="contained">Finalize & close batch</Button>
+          <Button
+            onClick={doFinalize}
+            variant="contained"
+            disabled={!finalizePayDate || !confirmPayDate}
+          >
+            Finalize & close batch
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={payDateCorrectOpen} onClose={() => setPayDateCorrectOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          {(detail?.pay_date_missing || detail?.payout_workflow?.pay_date_missing)
+            ? "Assign Official Pay Date"
+            : "Correct Official Pay Date"}
+        </DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 1.5 }}>
+            Changes report membership only. Does not recalculate wages, taxes, gross, or net.
+          </Alert>
+          <PayrollDateField
+            label="Official Pay Date"
+            value={correctPayDate}
+            onChange={setCorrectPayDate}
+            size="small"
+            sx={{ mb: 1.5, mt: 1 }}
+          />
+          <TextField
+            label="Reason (required)"
+            value={correctPayDateReason}
+            onChange={(e) => setCorrectPayDateReason(e.target.value)}
+            fullWidth
+            multiline
+            minRows={2}
+            size="small"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPayDateCorrectOpen(false)}>Cancel</Button>
+          <Button onClick={doCorrectPayDate} variant="contained">
+            Save Pay Date
+          </Button>
         </DialogActions>
       </Dialog>
     </Stack>

@@ -56,7 +56,7 @@ export default function PayrollManagementPage() {
       { key: "accountant_payroll", label: "For Accountant" },
       { key: "accountant_documents", label: "Documents" },
       { key: "accountant_employee", label: "By Employee" },
-      { key: "reports", label: "Payroll Report" },
+      { key: "reports", label: "Payroll Reports" },
     ],
     [],
   );

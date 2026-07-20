@@ -6197,13 +6197,62 @@ def payroll_payout_finalize_details(batch_id: int):
         if not can_edit_payout_details(conn, uid):
             return jsonify({"error": "Forbidden"}), 403
         oid = _tenant_id()
+        body = request.get_json(silent=True) or {}
+        confirm = body.get("confirm_pay_date")
+        if confirm is None:
+            confirm = body.get("confirm_official_pay_date")
         try:
-            row = finalize_payout_details(conn, oid, batch_id, actor_id=uid)
+            row = finalize_payout_details(
+                conn,
+                oid,
+                batch_id,
+                actor_id=uid,
+                official_pay_date=body.get("official_pay_date") or body.get("pay_date"),
+                confirm_pay_date=bool(confirm),
+            )
             return jsonify(row)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
     except Exception as e:
         current_app.logger.exception("payroll_payout_finalize_details failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route(
+    "/payroll/payout-batches/<int:batch_id>/official-pay-date", methods=["POST"]
+)
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_set_official_pay_date(batch_id: int):
+    """Set/correct batch official_pay_date (report membership only; audit required)."""
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_edit_payout_details,
+            set_official_pay_date,
+        )
+
+        uid = int(g.ta_user["id"])
+        if not can_edit_payout_details(conn, uid):
+            return jsonify({"error": "Forbidden"}), 403
+        oid = _tenant_id()
+        body = request.get_json(silent=True) or {}
+        try:
+            row = set_official_pay_date(
+                conn,
+                oid,
+                batch_id,
+                actor_id=uid,
+                official_pay_date=body.get("official_pay_date") or body.get("pay_date") or "",
+                reason=body.get("reason") or "",
+            )
+            return jsonify(row)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_set_official_pay_date failed")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
@@ -6509,6 +6558,37 @@ def payroll_payout_pay_register(batch_id: int):
         conn.close()
 
 
+
+def _payroll_report_query_kwargs():
+    """Shared query args for payroll report JSON / Excel / PDF."""
+    period_starts = request.args.getlist("period_start") or []
+    period_ends = request.args.getlist("period_end") or []
+    if len(period_starts) == 1 and "," in str(period_starts[0]):
+        period_starts = [s.strip() for s in str(period_starts[0]).split(",") if s.strip()]
+    if len(period_ends) == 1 and "," in str(period_ends[0]):
+        period_ends = [s.strip() for s in str(period_ends[0]).split(",") if s.strip()]
+    user_id = request.args.get("user_id")
+    all_history = str(request.args.get("all_history") or "").lower() in ("1", "true", "yes")
+    month = request.args.get("month")
+    year = request.args.get("year")
+    return dict(
+        period_starts=period_starts or None,
+        period_ends=period_ends or None,
+        date_from=request.args.get("date_from") or request.args.get("from_date"),
+        date_to=request.args.get("date_to") or request.args.get("to_date"),
+        all_history=all_history,
+        user_id=int(user_id) if user_id else None,
+        worker_category=request.args.get("worker_category")
+        or request.args.get("employee_category"),
+        payroll_status=request.args.get("payroll_status"),
+        payment_status=request.args.get("payment_status"),
+        report_type=request.args.get("report_type"),
+        date_basis=request.args.get("date_basis") or "pay_date",
+        month=int(month) if month not in (None, "") else None,
+        year=int(year) if year not in (None, "") else None,
+    )
+
+
 @ta_bp.route("/payroll/report", methods=["GET"])
 @require_auth
 @require_any_perm("ta.settings", "users.view", "users.edit")
@@ -6519,33 +6599,7 @@ def payroll_report():
         from backend.payroll_report import query_payroll_report
 
         oid = _tenant_id()
-        period_starts = request.args.getlist("period_start") or []
-        period_ends = request.args.getlist("period_end") or []
-        # Support comma-separated multi-period: period_start=a,b & period_end=c,d
-        if len(period_starts) == 1 and "," in str(period_starts[0]):
-            period_starts = [s.strip() for s in str(period_starts[0]).split(",") if s.strip()]
-        if len(period_ends) == 1 and "," in str(period_ends[0]):
-            period_ends = [s.strip() for s in str(period_ends[0]).split(",") if s.strip()]
-        user_id = request.args.get("user_id")
-        all_history = str(request.args.get("all_history") or "").lower() in (
-            "1",
-            "true",
-            "yes",
-        )
-        report = query_payroll_report(
-            conn,
-            oid,
-            period_starts=period_starts or None,
-            period_ends=period_ends or None,
-            date_from=request.args.get("date_from") or request.args.get("from_date"),
-            date_to=request.args.get("date_to") or request.args.get("to_date"),
-            all_history=all_history,
-            user_id=int(user_id) if user_id else None,
-            worker_category=request.args.get("worker_category")
-            or request.args.get("employee_category"),
-            payroll_status=request.args.get("payroll_status"),
-            payment_status=request.args.get("payment_status"),
-        )
+        report = query_payroll_report(conn, oid, **_payroll_report_query_kwargs())
         return jsonify(report)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -6570,8 +6624,25 @@ def payroll_report_meta():
                 "employees": list_report_employees(conn, oid),
                 "periods": list_report_periods(conn, oid),
                 "date_match_rule": (
-                    "Includes rows where the pay period overlaps the selected range, "
-                    "or the pay date falls within the selected range."
+                    "Choose a report type. Custom Date Range defaults to Official Pay Date "
+                    "(not period overlap). Monthly Payroll Paid uses official_pay_date only."
+                ),
+                "report_types": [
+                    {"value": "payroll_period", "label": "Payroll Period Report"},
+                    {
+                        "value": "monthly_paid",
+                        "label": "Monthly Payroll Paid — Based on Pay Date",
+                    },
+                    {"value": "custom_range", "label": "Custom Date Range"},
+                    {"value": "all_history", "label": "All payroll history"},
+                ],
+                "date_basis_options": [
+                    {"value": "pay_date", "label": "Pay Date"},
+                    {"value": "period_overlap", "label": "Payroll Period Overlap"},
+                ],
+                "ytd_note": (
+                    "YTD tax calculations still use COALESCE(payment_date, period_end). "
+                    "Period end is not shown as a confirmed Pay Date in monthly reports."
                 ),
             }
         )
@@ -6591,32 +6662,7 @@ def payroll_report_export_xlsx():
         from backend.payroll_report import build_payroll_report_xlsx, query_payroll_report
 
         oid = _tenant_id()
-        period_starts = request.args.getlist("period_start") or []
-        period_ends = request.args.getlist("period_end") or []
-        if len(period_starts) == 1 and "," in str(period_starts[0]):
-            period_starts = [s.strip() for s in str(period_starts[0]).split(",") if s.strip()]
-        if len(period_ends) == 1 and "," in str(period_ends[0]):
-            period_ends = [s.strip() for s in str(period_ends[0]).split(",") if s.strip()]
-        user_id = request.args.get("user_id")
-        all_history = str(request.args.get("all_history") or "").lower() in (
-            "1",
-            "true",
-            "yes",
-        )
-        report = query_payroll_report(
-            conn,
-            oid,
-            period_starts=period_starts or None,
-            period_ends=period_ends or None,
-            date_from=request.args.get("date_from") or request.args.get("from_date"),
-            date_to=request.args.get("date_to") or request.args.get("to_date"),
-            all_history=all_history,
-            user_id=int(user_id) if user_id else None,
-            worker_category=request.args.get("worker_category")
-            or request.args.get("employee_category"),
-            payroll_status=request.args.get("payroll_status"),
-            payment_status=request.args.get("payment_status"),
-        )
+        report = query_payroll_report(conn, oid, **_payroll_report_query_kwargs())
         data = build_payroll_report_xlsx(report)
         return (
             data,
@@ -6647,32 +6693,7 @@ def payroll_report_export_pdf():
         from backend.payroll_report import build_payroll_report_html, query_payroll_report
 
         oid = _tenant_id()
-        period_starts = request.args.getlist("period_start") or []
-        period_ends = request.args.getlist("period_end") or []
-        if len(period_starts) == 1 and "," in str(period_starts[0]):
-            period_starts = [s.strip() for s in str(period_starts[0]).split(",") if s.strip()]
-        if len(period_ends) == 1 and "," in str(period_ends[0]):
-            period_ends = [s.strip() for s in str(period_ends[0]).split(",") if s.strip()]
-        user_id = request.args.get("user_id")
-        all_history = str(request.args.get("all_history") or "").lower() in (
-            "1",
-            "true",
-            "yes",
-        )
-        report = query_payroll_report(
-            conn,
-            oid,
-            period_starts=period_starts or None,
-            period_ends=period_ends or None,
-            date_from=request.args.get("date_from") or request.args.get("from_date"),
-            date_to=request.args.get("date_to") or request.args.get("to_date"),
-            all_history=all_history,
-            user_id=int(user_id) if user_id else None,
-            worker_category=request.args.get("worker_category")
-            or request.args.get("employee_category"),
-            payroll_status=request.args.get("payroll_status"),
-            payment_status=request.args.get("payment_status"),
-        )
+        report = query_payroll_report(conn, oid, **_payroll_report_query_kwargs())
         html = build_payroll_report_html(report)
         return html, 200, {"Content-Type": "text/html; charset=utf-8"}
     except ValueError as e:

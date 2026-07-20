@@ -1449,8 +1449,14 @@ export const putPayoutBatchDetails = (batchId, body) =>
 export const confirmPayoutPayment = (batchId) =>
   axios.post(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/confirm-payment`);
 
-export const finalizePayoutDetails = (batchId) =>
-  axios.post(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/finalize-details`);
+export const finalizePayoutDetails = (batchId, body = {}) =>
+  axios.post(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/finalize-details`, body);
+
+export const setOfficialPayDate = (batchId, body) =>
+  axios.post(
+    `${API_BASE}/api/ta/payroll/payout-batches/${batchId}/official-pay-date`,
+    body,
+  );
 
 export const unfinalizePayoutDetails = (batchId) =>
   axios.post(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/unfinalize-details`);
