@@ -1780,10 +1780,11 @@ def _paystub_ytd_money_row(
     label: str, current: float, ytd: float, *, bold: bool = False
 ) -> str:
     cls = " class='total'" if bold else ""
+    ytd_cell = "—" if ytd is None else f"${float(ytd):,.2f}"
     return (
         f"<tr{cls}><td>{label}</td>"
         f"<td class='col-current amount'>${current:,.2f}</td>"
-        f"<td class='col-ytd amount'>${ytd:,.2f}</td></tr>"
+        f"<td class='col-ytd amount'>{ytd_cell}</td></tr>"
     )
 
 
@@ -1977,8 +1978,42 @@ def _paystub_brand_head_html(branding: dict[str, str], doc_title: str) -> str:
 
 
 def _employee_earnings_ytd_html(
-    hours: float, rate: float, gross: float, ytd: dict[str, float]
+    hours: float,
+    rate: float,
+    gross: float,
+    ytd: dict[str, float],
+    *,
+    line: Optional[dict] = None,
 ) -> str:
+    from backend.payroll_overtime import earnings_breakdown_from_line
+
+    breakdown = None
+    if line is not None:
+        breakdown = earnings_breakdown_from_line(
+            {
+                **line,
+                "gross_amount": gross,
+                "approved_hours": line.get("approved_hours", hours),
+                "rate": line.get("rate", rate),
+            }
+        )
+    if breakdown and float(breakdown.get("ot_hours") or 0) > 0:
+        return f"""
+<h2>Earnings</h2>
+<table class="compact ytd">
+{_paystub_ytd_table_head()}
+<tr><td>Regular hours</td><td class="col-current amount">{breakdown['regular_hours']:.2f}</td><td class="col-ytd amount">—</td></tr>
+<tr><td>OT hours</td><td class="col-current amount">{breakdown['ot_hours']:.2f}</td><td class="col-ytd amount">—</td></tr>
+<tr><td>Hourly rate</td><td class="col-current amount">${rate:,.2f}</td><td class="col-ytd amount">—</td></tr>
+{_paystub_ytd_money_row("Regular/Base earnings", breakdown["base_earnings"], None)}
+{_paystub_ytd_money_row("OT premium", breakdown["ot_premium"], None)}
+{_paystub_ytd_money_row("Other earnings", breakdown["other_earnings"], None) if float(breakdown.get("other_earnings") or 0) else ""}
+{_paystub_ytd_money_row("Gross pay", gross, ytd["gross_pay"], bold=True)}
+</table>
+<p class="note" style="font-size:0.8rem;color:#64748b;margin-top:6px">
+OT Premium represents only the additional amount paid above the employee’s regular hourly rate.
+Regular/Base earnings include overtime hours at the regular rate.
+</p>"""
     return f"""
 <h2>Earnings</h2>
 <table class="compact ytd">
@@ -2103,7 +2138,41 @@ def _employee_tax_balance_html(totals: dict) -> str:
 </table>"""
 
 
-def _employee_earnings_html(hours: float, rate: float, gross: float) -> str:
+def _employee_earnings_html(
+    hours: float, rate: float, gross: float, *, line: Optional[dict] = None
+) -> str:
+    from backend.payroll_overtime import earnings_breakdown_from_line
+
+    breakdown = None
+    if line is not None:
+        breakdown = earnings_breakdown_from_line(
+            {
+                **line,
+                "gross_amount": gross,
+                "approved_hours": line.get("approved_hours", hours),
+                "rate": line.get("rate", rate),
+            }
+        )
+    if breakdown and float(breakdown.get("ot_hours") or 0) > 0:
+        other_row = (
+            _paystub_money_row("Other earnings", float(breakdown["other_earnings"]))
+            if float(breakdown.get("other_earnings") or 0)
+            else ""
+        )
+        return f"""
+<h2>Earnings</h2>
+<table class="compact">
+<tr><td>Regular hours</td><td class="amount">{breakdown['regular_hours']:.2f}</td></tr>
+<tr><td>OT hours</td><td class="amount">{breakdown['ot_hours']:.2f}</td></tr>
+<tr><td>Hourly rate</td><td class="amount">${rate:,.2f}</td></tr>
+{_paystub_money_row("Regular/Base earnings", float(breakdown["base_earnings"]))}
+{_paystub_money_row("OT premium", float(breakdown["ot_premium"]))}
+{other_row}
+{_paystub_money_row("Gross pay", gross, True)}
+</table>
+<p class="note" style="font-size:0.8rem;color:#64748b;margin-top:6px">
+OT Premium represents only the additional amount paid above the employee’s regular hourly rate.
+</p>"""
     return f"""
 <h2>Earnings</h2>
 <table class="compact">
@@ -2230,7 +2299,7 @@ def _render_paystub_html(
         employee_meta = f"""
 <p class="employee-meta"><strong>{worker}</strong><br>
 Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p>"""
-        earnings_html = _employee_earnings_ytd_html(hours, rate, gross, ytd)
+        earnings_html = _employee_earnings_ytd_html(hours, rate, gross, ytd, line=line)
         emp_tax_table = _employee_taxes_ytd_html(details, totals, ytd)
         net_pay_html = _employee_net_pay_ytd_html(
             net_pay, net_paid, ytd, gross=gross, withheld=withheld
@@ -2289,12 +2358,7 @@ Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p
 <dt>Hourly rate</dt><dd>${rate:,.2f}</dd>
 </dl>"""
 
-    earnings_html = f"""
-<h2>Earnings</h2>
-<table class="compact">
-<tr><th>Description</th><th class="amount">Amount</th></tr>
-{_paystub_money_row('Gross pay', gross, True)}
-</table>"""
+    earnings_html = _employee_earnings_html(hours, rate, gross, line=line)
 
     gross_paid_note = ""
     tax_balance = float(totals.get("tax_balance_owed") or 0)
@@ -2831,6 +2895,8 @@ def generate_pay_register_html(
     *,
     preview: bool = False,
 ) -> str:
+    from backend.payroll_overtime import earnings_breakdown_from_line
+
     batch = get_payout_batch_details(conn, organization_id, batch_id)
     if not batch:
         raise ValueError("Batch not found")
@@ -2840,19 +2906,31 @@ def generate_pay_register_html(
         raise ValueError("Batch must be approved for payment before previewing pay register")
 
     rows_html = []
-    sum_gross = sum_net = sum_wh = 0.0
+    sum_base = sum_ot_prem = sum_other = sum_gross = sum_net = sum_wh = 0.0
+    sum_reg_h = sum_ot_h = 0.0
     for line in batch.get("lines") or []:
         details = line.get("payout_details") or parse_line_payout_details(line)
         totals = line.get("payout_totals") or compute_line_totals(line, details)
-        gross = float(totals["gross_pay"])
+        breakdown = earnings_breakdown_from_line({**line, "gross_amount": totals["gross_pay"]})
+        gross = float(breakdown["gross_pay"])
         net = float(totals.get("net_paid_to_employee") or totals["amount_paid"])
         withheld = float(totals.get("amount_withheld") or 0)
         method = _payment_method_label((details.get("payment") or {}).get("method"))
+        sum_base += float(breakdown["base_earnings"])
+        sum_ot_prem += float(breakdown["ot_premium"])
+        sum_other += float(breakdown["other_earnings"])
+        sum_reg_h += float(breakdown["regular_hours"])
+        sum_ot_h += float(breakdown["ot_hours"])
         sum_gross += gross
         sum_net += net
         sum_wh += withheld
         rows_html.append(
             f"<tr><td>{line.get('worker_name_snapshot')}</td>"
+            f"<td style='text-align:right'>{breakdown['regular_hours']:.2f}</td>"
+            f"<td style='text-align:right'>{breakdown['ot_hours']:.2f}</td>"
+            f"<td style='text-align:right'>${breakdown['base_earnings']:,.2f}</td>"
+            f"<td style='text-align:right'>${breakdown['ot_premium']:,.2f}</td>"
+            f"<td style='text-align:right'>${breakdown['other_earnings']:,.2f}</td>"
             f"<td style='text-align:right'>${gross:,.2f}</td>"
             f"<td style='text-align:right'>${withheld:,.2f}</td>"
             f"<td style='text-align:right'>${net:,.2f}</td>"
@@ -2873,6 +2951,7 @@ def generate_pay_register_html(
   body {{ font-family: system-ui, sans-serif; color: #0f172a; margin: 24px; }}
   h1 {{ color: #0097b2; font-size: 1.35rem; }}
   .meta {{ color: #475569; margin-bottom: 16px; }}
+  .note {{ color: #64748b; font-size: 0.85rem; margin-bottom: 12px; }}
   table {{ width: 100%; border-collapse: collapse; margin: 12px 0; }}
   th, td {{ padding: 8px 10px; border-bottom: 1px solid #e2e8f0; }}
   th {{ text-align: left; color: #007a91; background: #f8fafc; }}
@@ -2883,15 +2962,30 @@ def generate_pay_register_html(
 <h1>Pay Register — {batch.get('batch_name')}</h1>
 {preview_banner}
 <p class="meta">Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p>
+<p class="note">OT Premium represents only the additional amount paid above the employee’s regular hourly rate.
+Regular/Base earnings include overtime hours at the regular rate.</p>
 <table>
 <thead><tr>
-<th>Employee</th><th style="text-align:right">Gross</th><th style="text-align:right">Withheld</th>
-<th style="text-align:right">Net paid</th><th>Method</th>
+<th>Employee</th>
+<th style="text-align:right">Reg hrs</th>
+<th style="text-align:right">OT hrs</th>
+<th style="text-align:right">Regular/Base</th>
+<th style="text-align:right">OT Premium</th>
+<th style="text-align:right">Other</th>
+<th style="text-align:right">Gross</th>
+<th style="text-align:right">Withheld</th>
+<th style="text-align:right">Net paid</th>
+<th>Method</th>
 </tr></thead>
 <tbody>
 {"".join(rows_html)}
 <tr class="total">
 <td>Total</td>
+<td style="text-align:right">{sum_reg_h:,.2f}</td>
+<td style="text-align:right">{sum_ot_h:,.2f}</td>
+<td style="text-align:right">${sum_base:,.2f}</td>
+<td style="text-align:right">${sum_ot_prem:,.2f}</td>
+<td style="text-align:right">${sum_other:,.2f}</td>
 <td style="text-align:right">${sum_gross:,.2f}</td>
 <td style="text-align:right">${sum_wh:,.2f}</td>
 <td style="text-align:right">${sum_net:,.2f}</td>

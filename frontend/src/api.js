@@ -540,6 +540,33 @@ export const getShiftAnalysisSimple = (params = {}) =>
     headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
   });
 
+/** Completion Review — bags that likely finished between portal scrapes. */
+export const getCompletionReview = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/completion-review`, {
+    params: { ...params, _t: Date.now() },
+    timeout: 60000,
+    headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+  });
+
+export const confirmCompletionReview = (bagId, body) =>
+  axios.post(
+    `${API_BASE}/rinse/shift-analysis/completion-review/${encodeURIComponent(bagId)}/confirm`,
+    body,
+    { timeout: 60000 }
+  );
+
+export const resolveCompletionReview = (bagId, body) =>
+  axios.post(
+    `${API_BASE}/rinse/shift-analysis/completion-review/${encodeURIComponent(bagId)}/resolve`,
+    body,
+    { timeout: 30000 }
+  );
+
+export const batchConfirmCompletionReviews = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/completion-review/batch-confirm`, body, {
+    timeout: 120000,
+  });
+
 /** Phase 2 — employee productivity section only (full bag drilldown, single ET day). */
 export const getEmployeeProductivityDashboard = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/employee-productivity`, {
@@ -1376,6 +1403,24 @@ export const getWorkerPayments = (params) =>
 
 export const getPayoutBatches = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/payout-batches`, { params });
+
+export const getPayrollReport = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/report`, { params });
+
+export const getPayrollReportMeta = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/report/meta`, { params });
+
+export const getPayrollReportExcel = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/report/export.xlsx`, {
+    params,
+    responseType: "blob",
+  });
+
+export const getPayrollReportPdfHtml = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/report/export.pdf`, {
+    params,
+    responseType: "text",
+  });
 
 export const postPayoutBatch = (body) =>
   axios.post(`${API_BASE}/api/ta/payroll/payout-batches`, body);

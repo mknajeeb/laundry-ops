@@ -24,6 +24,7 @@ import PayrollTaxSettingsPanel from "../components/PayrollTaxSettingsPanel";
 import PayrollTimeRecordsPanel from "../components/PayrollTimeRecordsPanel";
 import PayrollSchedulingPanel from "../components/PayrollSchedulingPanel";
 import PayrollPeriodSearchBar from "../components/PayrollPeriodSearchBar";
+import PayrollReportPanel from "../components/PayrollReportPanel";
 import { defaultPayPeriodRange } from "../payroll/payPeriodDefaults";
 
 export default function PayrollManagementPage() {
@@ -55,6 +56,7 @@ export default function PayrollManagementPage() {
       { key: "accountant_payroll", label: "For Accountant" },
       { key: "accountant_documents", label: "Documents" },
       { key: "accountant_employee", label: "By Employee" },
+      { key: "reports", label: "Payroll Report" },
     ],
     [],
   );
@@ -268,6 +270,7 @@ export default function PayrollManagementPage() {
           <PayoutDetailsPanel initialBatchId={detailsBatchId} />
         ) : null}
         {active?.key === "accountant_payroll" ? <AccountantPayrollPanel /> : null}
+        {active?.key === "reports" ? <PayrollReportPanel /> : null}
         {active?.key === "accountant_documents" ? (
           readOnlyAccountant ? (
             <AccountantW2DocumentsPanel />

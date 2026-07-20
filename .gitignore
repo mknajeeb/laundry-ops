@@ -41,3 +41,6 @@ dist-rinse-client/
 *.pyc
 uploads/*.xlsx
 .env # already there, but confirm
+
+# Local verification fixtures / screenshots (not for production)
+data/payroll_verification_screenshots/

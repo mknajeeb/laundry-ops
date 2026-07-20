@@ -50,6 +50,7 @@ import ContractorPrintPreviewDialog from "../contractorForms/ContractorPrintPrev
 import { ContractorPrintLetterhead } from "../contractorForms/ContractorPrintShell";
 import { openPrintWindow } from "../contractorForms/contractorPrint";
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
+import { computeEarningsBreakdown } from "../payroll/payrollOtDisplay";
 import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
 import {
   displayStatusColor,
@@ -267,11 +268,10 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
                         <Typography variant="caption" color="text.secondary">
                           {Number(ln.approved_hours || 0).toFixed(2)} reg hrs
                           {Number(ln.ot_hours || 0) > 0
-                            ? ` · ${Number(ln.ot_hours).toFixed(2)} OT @ $${(
-                                Number(ln.ot_rate) > 0
-                                  ? Number(ln.ot_rate)
-                                  : Number(ln.rate || 0) * 1.5
-                              ).toFixed(2)}`
+                            ? (() => {
+                                const earn = computeEarningsBreakdown(ln);
+                                return ` · ${earn.ot_hours.toFixed(2)} OT hrs · OT premium $${earn.ot_premium.toFixed(2)}`;
+                              })()
                             : ""}
                           · ${Number(ln.rate || 0).toFixed(2)}/hr
                         </Typography>
@@ -595,12 +595,31 @@ export default function PayoutBatchesPanel({
 
   const downloadCsv = () => {
     if (!detail?.lines?.length) return;
-    const header = ["Worker", "Hours", "Rate", "Gross", "Adjustments", "Total"];
-    const lines = detail.lines.map((ln) =>
-      [ln.worker_name_snapshot, ln.approved_hours, ln.rate, ln.gross_amount, ln.adjustments, ln.total_amount].join(
-        ",",
-      ),
-    );
+    const header = [
+      "Worker",
+      "Reg Hours",
+      "OT Hours",
+      "Regular/Base Earnings",
+      "OT Premium",
+      "Other Earnings",
+      "Gross Pay",
+      "Adjustments",
+      "Total",
+    ];
+    const lines = detail.lines.map((ln) => {
+      const earn = computeEarningsBreakdown(ln);
+      return [
+        ln.worker_name_snapshot,
+        earn.regular_hours,
+        earn.ot_hours,
+        earn.base_earnings.toFixed(2),
+        earn.ot_premium.toFixed(2),
+        earn.other_earnings.toFixed(2),
+        earn.gross_pay.toFixed(2),
+        ln.adjustments,
+        ln.total_amount,
+      ].join(",");
+    });
     const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -661,7 +680,7 @@ export default function PayoutBatchesPanel({
       if (ok) openEditBatch();
       return;
     }
-    setError("This batch cannot be edited after it has been approved for payment or paid.");
+    setError("This batch cannot be edited after it is ready to pay or paid.");
   };
 
   const handleDeleteBatchClick = async () => {
@@ -674,7 +693,7 @@ export default function PayoutBatchesPanel({
       if (ok) setDeleteOpen(true);
       return;
     }
-    setError("This batch cannot be deleted after it has been approved for payment or paid.");
+    setError("This batch cannot be deleted after it is ready to pay or paid.");
   };
 
   const renderBatchFormFields = ({ lockCategory = false, showCategoryPicker = false } = {}) => (

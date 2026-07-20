@@ -121,16 +121,19 @@ export function enrichTimeRecords(rows = [], rateMap = {}, { userId = "" } = {})
         otH = Math.max(0, hrs - regH);
       }
       cumulative += hrs;
-      const regularCost = regRate > 0 ? regH * regRate : 0;
-      const otCost = otEnabled && otRate > 0 ? otH * otRate : 0;
-      const rowTotal = regularCost + otCost;
-      totalRegularCost += regularCost;
-      totalOtCost += otCost;
+      // Base earnings include OT hours at the regular rate; ot_cost is premium only.
+      const baseCost = regRate > 0 ? (regH + otH) * regRate : 0;
+      const otPremium =
+        otEnabled && otRate > 0 && regRate > 0 ? otH * Math.max(0, otRate - regRate) : 0;
+      const rowTotal = baseCost + otPremium;
+      totalRegularCost += baseCost;
+      totalOtCost += otPremium;
       economicsById[r.id] = {
         regular_rate: rateInfo.regular_rate,
         ot_rate: rateInfo.ot_rate,
-        regular_cost: regularCost,
-        ot_cost: otCost,
+        regular_cost: baseCost,
+        ot_cost: otPremium,
+        ot_premium: otPremium,
         row_total: rowTotal,
         worker_period_hours: workerTotals[uid] || 0,
         hours_level: workerHoursLevel(workerTotals[uid]),

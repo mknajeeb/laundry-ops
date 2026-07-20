@@ -13,10 +13,12 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import HourglassEmptyIcon from "@mui/icons-material/HourglassEmpty";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import PayPeriodSelect from "./PayPeriodSelect";
 import PayrollBatchSummaryCard from "./PayrollBatchSummaryCard";
 import TaxWithheldBreakdownDialog from "./TaxWithheldBreakdownDialog";
@@ -37,9 +39,11 @@ import {
   hasTaxWithheldBreakdown,
   isPayoutDetailsFinalized,
 } from "../payroll/payoutSettlementDisplay";
+import {
+  OT_PREMIUM_TOOLTIP,
+  computeEarningsBreakdown,
+} from "../payroll/payrollOtDisplay";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
-
-const DEFAULT_OT_MULTIPLIER = 1.5;
 
 const DEDUCTION_COLUMNS = PAYROLL_REGISTER_DEDUCTION_COLUMNS;
 
@@ -77,22 +81,21 @@ function formatMoneyOrBlank(finalized, v) {
   return formatMoney(v);
 }
 
-function formatRate(rate) {
-  const n = num(rate);
-  return n > 0 ? `$${n.toFixed(2)}` : "";
-}
-
-function computeLineRates(ln, otMultiplier = DEFAULT_OT_MULTIPLIER) {
-  const regRate = num(ln.rate);
-  const otHours = num(ln.ot_hours);
-  const otRate = otHours > 0 && regRate > 0 ? regRate * otMultiplier : 0;
-  return { regRate, otRate };
-}
-
 function paymentStatusColor(status) {
   if (status === "paid") return "success";
   if (status === "approved_unpaid") return "warning";
   return "default";
+}
+
+function OtPremiumHeader() {
+  return (
+    <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
+      <span>OT Premium</span>
+      <Tooltip title={OT_PREMIUM_TOOLTIP}>
+        <InfoOutlinedIcon sx={{ fontSize: 14, color: "text.secondary" }} />
+      </Tooltip>
+    </Stack>
+  );
 }
 
 function WorkflowStep({ active, done, label, description }) {
@@ -225,6 +228,9 @@ export default function AccountantPayrollPanel() {
       pendingCount: 0,
       regHours: 0,
       otHours: 0,
+      baseEarnings: 0,
+      otPremium: 0,
+      otherEarnings: 0,
       gross: 0,
       deductions: Object.fromEntries(DEDUCTION_COLUMNS.map((c) => [c.key, 0])),
       totalTax: 0,
@@ -232,9 +238,13 @@ export default function AccountantPayrollPanel() {
       hasFinalizedLines: false,
     };
     for (const ln of lines) {
-      totals.regHours += num(ln.approved_hours);
-      totals.otHours += num(ln.ot_hours);
-      totals.gross += lineGross(ln);
+      const earn = computeEarningsBreakdown(ln);
+      totals.regHours += earn.regular_hours;
+      totals.otHours += earn.ot_hours;
+      totals.baseEarnings += earn.base_earnings;
+      totals.otPremium += earn.ot_premium;
+      totals.otherEarnings += earn.other_earnings;
+      totals.gross += earn.gross_pay || lineGross(ln);
       if (ln.payment_status === "paid") totals.paidCount += 1;
       else totals.pendingCount += 1;
       if (!isPayoutDetailsFinalized(ln)) continue;
@@ -274,7 +284,7 @@ export default function AccountantPayrollPanel() {
     }
   };
 
-  const colSpan = 5 + DEDUCTION_COLUMNS.length + 3;
+  const colSpan = 7 + DEDUCTION_COLUMNS.length + 3;
 
   return (
     <Stack spacing={2}>
@@ -376,6 +386,9 @@ export default function AccountantPayrollPanel() {
                   : null}
                 {!finalized ? " · Tax and net pending finance finalize" : null}
               </Typography>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                Regular/Base + OT Premium + Other Earnings = Gross Pay. {OT_PREMIUM_TOOLTIP}
+              </Typography>
             </Box>
             {loading ? (
               <Box sx={{ p: 2 }}>
@@ -383,15 +396,18 @@ export default function AccountantPayrollPanel() {
               </Box>
             ) : (
               <TableContainer sx={{ overflowX: "auto" }}>
-                <Table size="small" sx={{ minWidth: 1400 }}>
+                <Table size="small" sx={{ minWidth: 1500 }}>
                   <TableHead>
                     <TableRow>
                       <TableCell>Employee</TableCell>
                       <TableCell align="right">Reg hrs</TableCell>
-                      <TableCell align="right">OT hrs</TableCell>
-                      <TableCell align="right">Reg rate</TableCell>
-                      <TableCell align="right">OT rate</TableCell>
-                      <TableCell align="right">Gross</TableCell>
+                      <TableCell align="right">OT Hours</TableCell>
+                      <TableCell align="right">Regular/Base Earnings</TableCell>
+                      <TableCell align="right">
+                        <OtPremiumHeader />
+                      </TableCell>
+                      <TableCell align="right">Other Earnings</TableCell>
+                      <TableCell align="right">Gross Pay</TableCell>
                       {DEDUCTION_COLUMNS.map((col) => (
                         <TableCell key={col.key} align="right">
                           {col.label}
@@ -405,15 +421,20 @@ export default function AccountantPayrollPanel() {
                   <TableBody>
                     {(detail.lines || []).map((ln) => {
                       const lineFinalized = isPayoutDetailsFinalized(ln);
-                      const { regRate, otRate } = computeLineRates(ln);
+                      const earn = computeEarningsBreakdown(ln);
                       return (
                         <TableRow key={ln.id} hover>
                           <TableCell>{ln.worker_name_snapshot}</TableCell>
-                          <TableCell align="right">{formatHours(ln.approved_hours)}</TableCell>
-                          <TableCell align="right">{formatHours(ln.ot_hours)}</TableCell>
-                          <TableCell align="right">{formatRate(regRate)}</TableCell>
-                          <TableCell align="right">{formatRate(otRate)}</TableCell>
-                          <TableCell align="right">{formatMoney(lineGross(ln))}</TableCell>
+                          <TableCell align="right">{formatHours(earn.regular_hours)}</TableCell>
+                          <TableCell align="right">{formatHours(earn.ot_hours)}</TableCell>
+                          <TableCell align="right">{formatMoney(earn.base_earnings)}</TableCell>
+                          <TableCell align="right">
+                            {earn.ot_hours > 0 ? formatMoney(earn.ot_premium) : ""}
+                          </TableCell>
+                          <TableCell align="right">
+                            {earn.other_earnings ? formatMoney(earn.other_earnings) : ""}
+                          </TableCell>
+                          <TableCell align="right">{formatMoney(earn.gross_pay)}</TableCell>
                           {DEDUCTION_COLUMNS.map((col) => (
                             <TableCell key={col.key} align="right">
                               {formatMoneyOrBlank(lineFinalized, deductionAmount(ln, col))}
@@ -453,8 +474,15 @@ export default function AccountantPayrollPanel() {
                         <TableCell align="right" sx={{ fontWeight: 700 }}>
                           {formatHours(tableTotals.otHours)}
                         </TableCell>
-                        <TableCell />
-                        <TableCell />
+                        <TableCell align="right" sx={{ fontWeight: 700 }}>
+                          {formatMoney(tableTotals.baseEarnings)}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontWeight: 700 }}>
+                          {formatMoney(tableTotals.otPremium)}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontWeight: 700 }}>
+                          {formatMoney(tableTotals.otherEarnings)}
+                        </TableCell>
                         <TableCell align="right" sx={{ fontWeight: 700 }}>
                           {formatMoney(tableTotals.gross)}
                         </TableCell>

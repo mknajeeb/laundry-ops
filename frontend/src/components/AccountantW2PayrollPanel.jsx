@@ -32,9 +32,9 @@ import {
   hasTaxWithheldBreakdown,
   isPayoutDetailsFinalized,
 } from "../payroll/payoutSettlementDisplay";
+import { DEFAULT_OT_MULTIPLIER, computeEarningsBreakdown } from "../payroll/payrollOtDisplay";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
 
-const DEFAULT_OT_MULTIPLIER = 1.5;
 const ACCOUNTANT_BATCH_STATUSES = new Set([
   "sent_to_accountant",
   "accountant_reviewed",
@@ -60,20 +60,15 @@ function periodStatusLabel(batch) {
 }
 
 function computeLinePay(ln, otMultiplier = DEFAULT_OT_MULTIPLIER) {
-  const regHours = Number(ln.approved_hours || 0);
-  const otHours = Number(ln.ot_hours || 0);
-  const rate = Number(ln.rate || 0);
-  const regularAmount = regHours * rate;
-  const otRate = otHours > 0 && rate > 0 ? rate * otMultiplier : 0;
-  const otAmount = otHours * otRate;
-  const gross = Number(ln.gross_wages || ln.gross_amount || 0);
+  const earn = computeEarningsBreakdown(ln, { multiplier: otMultiplier });
   return {
-    totalHours: regHours + otHours,
-    regularRate: rate,
-    regularAmount,
-    otRate,
-    otAmount,
-    gross,
+    totalHours: earn.regular_hours + earn.ot_hours,
+    regularRate: earn.regular_rate,
+    regularAmount: earn.base_earnings,
+    otRate: earn.ot_rate,
+    otAmount: earn.ot_premium,
+    otherEarnings: earn.other_earnings,
+    gross: earn.gross_pay,
   };
 }
 
@@ -374,10 +369,10 @@ export default function AccountantW2PayrollPanel() {
                         <TableCell>Employee</TableCell>
                         <TableCell align="right">Hours</TableCell>
                         <TableCell align="right">Regular rate</TableCell>
-                        <TableCell align="right">Regular amount</TableCell>
-                        <TableCell align="right">OT rate</TableCell>
-                        <TableCell align="right">OT amount</TableCell>
-                        <TableCell align="right">Gross</TableCell>
+                        <TableCell align="right">Regular/Base Earnings</TableCell>
+                        <TableCell align="right">OT Hours</TableCell>
+                        <TableCell align="right">OT Premium</TableCell>
+                        <TableCell align="right">Gross Pay</TableCell>
                         <TableCell align="right">Net paid</TableCell>
                         <TableCell align="right">Tax withheld</TableCell>
                       </TableRow>
@@ -394,9 +389,13 @@ export default function AccountantW2PayrollPanel() {
                             </TableCell>
                             <TableCell align="right">${pay.regularAmount.toFixed(2)}</TableCell>
                             <TableCell align="right">
-                              {pay.otRate > 0 ? `$${pay.otRate.toFixed(2)}` : "—"}
+                              {Number(ln.ot_hours || 0) > 0
+                                ? Number(ln.ot_hours).toFixed(2)
+                                : "—"}
                             </TableCell>
-                            <TableCell align="right">${pay.otAmount.toFixed(2)}</TableCell>
+                            <TableCell align="right">
+                              {pay.otAmount > 0 ? `$${pay.otAmount.toFixed(2)}` : "—"}
+                            </TableCell>
                             <TableCell align="right">${pay.gross.toFixed(2)}</TableCell>
                             <TableCell align="right">{formatNetPaidDisplay(ln)}</TableCell>
                             <TableCell align="right">

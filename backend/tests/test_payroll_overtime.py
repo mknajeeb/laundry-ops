@@ -47,6 +47,17 @@ def test_compute_wage_without_ot_rate_uses_multiplier():
     assert float(gross) == 900.58
 
 
+def test_ot_premium_is_half_rate_for_time_and_a_half():
+    from backend.payroll_overtime import compute_overtime_premium, compute_earnings_breakdown
+
+    assert float(compute_overtime_premium(8.65, 17, 25.50)) == 73.53
+    br = compute_earnings_breakdown(
+        regular_hours=40, ot_hours=8.65, regular_rate=17, ot_rate=25.50, gross_pay=900.58
+    )
+    assert float(br["ot_premium"]) == 73.53
+    assert abs(br["base_earnings"] + br["ot_premium"] + br["other_earnings"] - 900.58) < 0.02
+
+
 def test_w2_accrual_gross_includes_ot_premium():
     from backend.payroll_accrual import process_w2_line_accruals
 

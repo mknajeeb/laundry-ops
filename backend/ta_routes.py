@@ -6509,6 +6509,181 @@ def payroll_payout_pay_register(batch_id: int):
         conn.close()
 
 
+@ta_bp.route("/payroll/report", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_report():
+    """Comprehensive payroll report across periods and employee categories."""
+    conn = get_db()
+    try:
+        from backend.payroll_report import query_payroll_report
+
+        oid = _tenant_id()
+        period_starts = request.args.getlist("period_start") or []
+        period_ends = request.args.getlist("period_end") or []
+        # Support comma-separated multi-period: period_start=a,b & period_end=c,d
+        if len(period_starts) == 1 and "," in str(period_starts[0]):
+            period_starts = [s.strip() for s in str(period_starts[0]).split(",") if s.strip()]
+        if len(period_ends) == 1 and "," in str(period_ends[0]):
+            period_ends = [s.strip() for s in str(period_ends[0]).split(",") if s.strip()]
+        user_id = request.args.get("user_id")
+        all_history = str(request.args.get("all_history") or "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        report = query_payroll_report(
+            conn,
+            oid,
+            period_starts=period_starts or None,
+            period_ends=period_ends or None,
+            date_from=request.args.get("date_from") or request.args.get("from_date"),
+            date_to=request.args.get("date_to") or request.args.get("to_date"),
+            all_history=all_history,
+            user_id=int(user_id) if user_id else None,
+            worker_category=request.args.get("worker_category")
+            or request.args.get("employee_category"),
+            payroll_status=request.args.get("payroll_status"),
+            payment_status=request.args.get("payment_status"),
+        )
+        return jsonify(report)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_report failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/report/meta", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_report_meta():
+    conn = get_db()
+    try:
+        from backend.payroll_report import list_report_employees, list_report_periods
+
+        oid = _tenant_id()
+        return jsonify(
+            {
+                "employees": list_report_employees(conn, oid),
+                "periods": list_report_periods(conn, oid),
+                "date_match_rule": (
+                    "Includes rows where the pay period overlaps the selected range, "
+                    "or the pay date falls within the selected range."
+                ),
+            }
+        )
+    except Exception as e:
+        current_app.logger.exception("payroll_report_meta failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/report/export.xlsx", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_report_export_xlsx():
+    conn = get_db()
+    try:
+        from backend.payroll_report import build_payroll_report_xlsx, query_payroll_report
+
+        oid = _tenant_id()
+        period_starts = request.args.getlist("period_start") or []
+        period_ends = request.args.getlist("period_end") or []
+        if len(period_starts) == 1 and "," in str(period_starts[0]):
+            period_starts = [s.strip() for s in str(period_starts[0]).split(",") if s.strip()]
+        if len(period_ends) == 1 and "," in str(period_ends[0]):
+            period_ends = [s.strip() for s in str(period_ends[0]).split(",") if s.strip()]
+        user_id = request.args.get("user_id")
+        all_history = str(request.args.get("all_history") or "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        report = query_payroll_report(
+            conn,
+            oid,
+            period_starts=period_starts or None,
+            period_ends=period_ends or None,
+            date_from=request.args.get("date_from") or request.args.get("from_date"),
+            date_to=request.args.get("date_to") or request.args.get("to_date"),
+            all_history=all_history,
+            user_id=int(user_id) if user_id else None,
+            worker_category=request.args.get("worker_category")
+            or request.args.get("employee_category"),
+            payroll_status=request.args.get("payroll_status"),
+            payment_status=request.args.get("payment_status"),
+        )
+        data = build_payroll_report_xlsx(report)
+        return (
+            data,
+            200,
+            {
+                "Content-Type": (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ),
+                "Content-Disposition": 'attachment; filename="payroll-report.xlsx"',
+            },
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_report_export_xlsx failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/report/export.pdf", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_report_export_pdf():
+    """Returns HTML for client-side PDF rendering (same pattern as paystubs)."""
+    conn = get_db()
+    try:
+        from backend.payroll_report import build_payroll_report_html, query_payroll_report
+
+        oid = _tenant_id()
+        period_starts = request.args.getlist("period_start") or []
+        period_ends = request.args.getlist("period_end") or []
+        if len(period_starts) == 1 and "," in str(period_starts[0]):
+            period_starts = [s.strip() for s in str(period_starts[0]).split(",") if s.strip()]
+        if len(period_ends) == 1 and "," in str(period_ends[0]):
+            period_ends = [s.strip() for s in str(period_ends[0]).split(",") if s.strip()]
+        user_id = request.args.get("user_id")
+        all_history = str(request.args.get("all_history") or "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        report = query_payroll_report(
+            conn,
+            oid,
+            period_starts=period_starts or None,
+            period_ends=period_ends or None,
+            date_from=request.args.get("date_from") or request.args.get("from_date"),
+            date_to=request.args.get("date_to") or request.args.get("to_date"),
+            all_history=all_history,
+            user_id=int(user_id) if user_id else None,
+            worker_category=request.args.get("worker_category")
+            or request.args.get("employee_category"),
+            payroll_status=request.args.get("payroll_status"),
+            payment_status=request.args.get("payment_status"),
+        )
+        html = build_payroll_report_html(report)
+        return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_report_export_pdf failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/paystub-archive/meta", methods=["GET"])
 @require_auth
 @require_any_perm("ta.settings", "users.view", "users.edit")

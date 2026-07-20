@@ -70,6 +70,133 @@ def compute_wage_with_overtime(
     return _q2(reg_h * rate + ot_h * ot_r + _d(sick_pay))
 
 
+def compute_overtime_premium(
+    ot_hours: Any,
+    regular_rate: Any,
+    ot_rate: Any = None,
+    *,
+    multiplier: Any = None,
+) -> Decimal:
+    """Additional OT amount above the regular rate (not full OT earnings).
+
+    OT Premium = OT Hours × (OT Rate − Regular Rate)
+    For time-and-a-half: OT Hours × Regular Rate × 0.5
+    """
+    ot_h = max(Decimal("0"), _d(ot_hours))
+    if ot_h <= 0:
+        return Decimal("0.00")
+    rate = _d(regular_rate)
+    if rate <= 0:
+        return Decimal("0.00")
+    ot_r = resolve_overtime_rate(
+        rate, multiplier=multiplier, explicit_ot_rate=ot_rate
+    )
+    premium_rate = max(Decimal("0"), ot_r - rate)
+    return _q2(ot_h * premium_rate)
+
+
+def compute_earnings_breakdown(
+    *,
+    regular_hours: Any = 0,
+    ot_hours: Any = 0,
+    regular_rate: Any = 0,
+    ot_rate: Any = None,
+    multiplier: Any = None,
+    gross_pay: Any = None,
+    sick_pay: Any = 0,
+    bonus_tip_amount: Any = 0,
+    reimbursement_amount: Any = 0,
+    adjustments: Any = 0,
+) -> dict[str, Any]:
+    """Display breakdown: base earnings include OT hours at the regular rate.
+
+    Reconciliation (always):
+      Regular/Base Earnings + OT Premium + Other Earnings = Gross Pay
+
+    Does not change stored gross — only how components are labeled for display.
+    OT Premium is never negative (clamped when OT rate ≤ regular rate).
+    Salaried / non-hourly (rate ≤ 0): base and premium are 0; gross stays in other.
+    """
+    reg_h = max(Decimal("0"), _d(regular_hours))
+    ot_h = max(Decimal("0"), _d(ot_hours))
+    rate = max(Decimal("0"), _d(regular_rate))
+    # Missing / blank OT rate → time-and-a-half when hourly OT hours exist.
+    # Explicit non-positive ot_rate is treated as missing (falls back to multiplier).
+    explicit = ot_rate
+    if explicit is not None and _d(explicit) <= 0:
+        explicit = None
+    ot_r = (
+        resolve_overtime_rate(rate, multiplier=multiplier, explicit_ot_rate=explicit)
+        if ot_h > 0 and rate > 0
+        else Decimal("0.00")
+    )
+    # Premium never negative; when OT rate ≤ regular, all OT wages sit in base.
+    ot_premium = compute_overtime_premium(
+        ot_h, rate, ot_r if ot_r > 0 else None, multiplier=multiplier
+    )
+    if rate <= 0:
+        # Salaried / non-hourly: no hourly base or OT premium breakout.
+        base_earnings = Decimal("0.00")
+        ot_premium = Decimal("0.00")
+    elif ot_r > 0 and ot_r < rate:
+        # OT rate below regular — do not inflate base above actual OT wages.
+        base_earnings = _q2(reg_h * rate + ot_h * ot_r)
+        ot_premium = Decimal("0.00")
+    else:
+        base_earnings = _q2((reg_h + ot_h) * rate)
+
+    other_from_fields = _q2(
+        _d(sick_pay) + _d(bonus_tip_amount) + _d(reimbursement_amount) + _d(adjustments)
+    )
+    wage_with_ot = _q2(reg_h * rate + ot_h * ot_r) if rate > 0 else Decimal("0.00")
+    computed_gross = _q2(wage_with_ot + other_from_fields)
+    if gross_pay is not None and str(gross_pay).strip() != "":
+        gross = _q2(_d(gross_pay))
+    else:
+        gross = computed_gross
+    # Residual other so base + premium + other always equals displayed gross.
+    other_earnings = _q2(gross - base_earnings - ot_premium)
+    if other_earnings < 0 and abs(other_earnings) <= Decimal("0.02"):
+        # Absorb tiny rounding into base rather than show negative other.
+        base_earnings = _q2(base_earnings + other_earnings)
+        other_earnings = Decimal("0.00")
+    # Final clamp: OT premium display must never be negative.
+    if ot_premium < 0:
+        ot_premium = Decimal("0.00")
+        other_earnings = _q2(gross - base_earnings - ot_premium)
+    return {
+        "regular_hours": float(_q2(reg_h)),
+        "ot_hours": float(_q2(ot_h)),
+        "regular_rate": float(_q2(rate)),
+        "ot_rate": float(_q2(ot_r)),
+        "base_earnings": float(base_earnings),
+        "ot_premium": float(max(Decimal("0.00"), ot_premium)),
+        "other_earnings": float(other_earnings),
+        "gross_pay": float(gross),
+    }
+
+
+def earnings_breakdown_from_line(line: dict[str, Any], *, multiplier: Any = None) -> dict[str, Any]:
+    """Build display earnings breakdown from a payout_batch_lines row."""
+    gross = line.get("gross_amount")
+    if gross is None or str(gross).strip() == "":
+        gross = line.get("total_amount")
+    if gross is None or str(gross).strip() == "":
+        gross = line.get("gross_wages")
+    return compute_earnings_breakdown(
+        regular_hours=line.get("approved_hours") or 0,
+        ot_hours=line.get("ot_hours") or 0,
+        regular_rate=line.get("rate") or 0,
+        ot_rate=line.get("ot_rate"),
+        multiplier=multiplier,
+        gross_pay=gross,
+        sick_pay=line.get("sick_pay_amount") or 0,
+        bonus_tip_amount=line.get("bonus_tip_amount") or 0,
+        reimbursement_amount=line.get("reimbursement_amount") or 0,
+        adjustments=line.get("adjustments") or 0,
+    )
+
+
 def resolve_batch_overtime_policy(
     conn,
     organization_id: int,
