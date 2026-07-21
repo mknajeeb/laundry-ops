@@ -19,26 +19,29 @@ import DownloadIcon from "@mui/icons-material/Download";
 import PrintIcon from "@mui/icons-material/Print";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import {
-  getBatchPaystubsHtml,
   getPayoutBatchDetails,
   getPayoutBatches,
   getPaystubHtml,
   getTaUsers,
+  getVendorReceiptHtml,
 } from "../api";
 import {
   formatNetPaidDisplay,
   formatTaxWithheldDisplay,
-  isPayoutDetailsFinalized,
 } from "../payroll/payoutSettlementDisplay";
+import { downloadPdfFromFetch, paystubDownloadFilename } from "../payroll/paystubDownload";
 import {
-  downloadPdfFromFetch,
-  paystubBatchDownloadFilename,
-  paystubDownloadFilename,
-} from "../payroll/paystubDownload";
-import {
-  filterAccountantDocumentUsers,
-  mapAccountantDocumentUserOption,
-} from "../payroll/accountantDocumentUsers";
+  DOC_HISTORY_CATEGORY_OPTIONS,
+  bulkDownloadPlan,
+  documentColumnLabel,
+  documentDownloadSuffix,
+  downloadAllLabel,
+  netColumnLabel,
+  rowDocumentActions,
+  rowDocumentKind,
+  taxWithheldApplies,
+  workerOptionsForCategory,
+} from "../payroll/payrollDocumentHistory";
 import { accountantPeriodStatusLabel } from "../payroll/accountantBatchPick";
 import AccountantScopeFilters from "./AccountantScopeFilters";
 import TaxWithheldBreakdownDialog from "./TaxWithheldBreakdownDialog";
@@ -93,8 +96,10 @@ async function printHtmlDocument(fetchFn) {
   setTimeout(() => frame.remove(), 1000);
 }
 
-function paystubReady(ln) {
-  return isPayoutDetailsFinalized(ln) && ln.paystub_available !== false;
+function documentFetch(kind, batchId, lineId, { preview = false } = {}) {
+  return kind === "receipt"
+    ? () => getVendorReceiptHtml(batchId, lineId, { preview })
+    : () => getPaystubHtml(batchId, lineId, { preview });
 }
 
 function filterBatchesByRange(batches, range) {
@@ -114,6 +119,7 @@ function filterBatchesByRange(batches, range) {
 
 export default function AccountantEmployeePaystubsPanel() {
   const [viewMode, setViewMode] = useState("employee");
+  const [category, setCategory] = useState("all");
   const [range, setRange] = useState("this_year");
   const [batches, setBatches] = useState([]);
   const [workers, setWorkers] = useState([]);
@@ -129,7 +135,8 @@ export default function AccountantEmployeePaystubsPanel() {
   const [busyKey, setBusyKey] = useState("");
 
   useEffect(() => {
-    getPayoutBatches({ worker_category: "w2" })
+    const params = category === "all" ? {} : { worker_category: category };
+    getPayoutBatches(params)
       .then((res) => {
         const list = (res.data?.items || []).filter((b) => ACCOUNTANT_BATCH_STATUSES.has(b.status));
         list.sort((a, b) =>
@@ -140,18 +147,24 @@ export default function AccountantEmployeePaystubsPanel() {
       .catch(() => setBatches([]));
     getTaUsers()
       .then((res) => {
-        const list = filterAccountantDocumentUsers(res.data?.users || res.data || [], "w2").map(
-          mapAccountantDocumentUserOption,
-        );
-        setWorkers(list);
+        setWorkers(workerOptionsForCategory(res.data?.users || res.data || [], category));
       })
       .catch(() => setWorkers([]));
-  }, []);
+  }, [category]);
 
   const loadRows = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
+      const shapeLine = (ln, batch) => ({
+        ...ln,
+        batch_id: batch.id,
+        batch_name: batch.batch_name,
+        worker_category: batch.worker_category,
+        pay_period_start: batch.pay_period_start,
+        pay_period_end: batch.pay_period_end,
+      });
+
       if (viewMode === "batch") {
         if (!selectedBatchId) {
           setRows([]);
@@ -159,14 +172,7 @@ export default function AccountantEmployeePaystubsPanel() {
         }
         const res = await getPayoutBatchDetails(Number(selectedBatchId));
         const batch = res.data;
-        let lines = (batch?.lines || []).map((ln) => ({
-          ...ln,
-          batch_id: batch.id,
-          batch_name: batch.batch_name,
-          pay_period_start: batch.pay_period_start,
-          pay_period_end: batch.pay_period_end,
-          paystub_available: Boolean(batch.payout_workflow?.paystub_available),
-        }));
+        let lines = (batch?.lines || []).map((ln) => shapeLine(ln, batch));
         if (selectedWorker?.id) {
           lines = lines.filter((ln) => Number(ln.user_id) === Number(selectedWorker.id));
         }
@@ -194,24 +200,19 @@ export default function AccountantEmployeePaystubsPanel() {
       for (const batch of details.filter(Boolean)) {
         for (const ln of batch.lines || []) {
           if (selectedWorker?.id && Number(ln.user_id) !== Number(selectedWorker.id)) continue;
-          out.push({
-            ...ln,
-            batch_id: batch.id,
-            batch_name: batch.batch_name,
-            pay_period_start: batch.pay_period_start,
-            pay_period_end: batch.pay_period_end,
-            paystub_available: Boolean(batch.payout_workflow?.paystub_available),
-          });
+          out.push(shapeLine(ln, batch));
         }
       }
       out.sort((a, b) => {
         const pe = String(b.pay_period_end || "").localeCompare(String(a.pay_period_end || ""));
         if (pe !== 0) return pe;
-        return String(a.worker_name_snapshot || "").localeCompare(String(b.worker_name_snapshot || ""));
+        return String(a.worker_name_snapshot || "").localeCompare(
+          String(b.worker_name_snapshot || ""),
+        );
       });
       setRows(out);
     } catch (e) {
-      setError(e.response?.data?.error || e.message || "Could not load employee paystubs");
+      setError(e.response?.data?.error || e.message || "Could not load payroll documents");
       setRows([]);
     } finally {
       setLoading(false);
@@ -258,61 +259,68 @@ export default function AccountantEmployeePaystubsPanel() {
     return rows;
   }, [viewMode, selectedWorker, rows]);
 
-  const paystubRows = useMemo(() => visibleRows.filter((ln) => paystubReady(ln)), [visibleRows]);
+  // Labels: driven by the concrete rows (batch view) or the category filter (employee view).
+  const labelCategory = viewMode === "batch" ? "all" : category;
+  const finalColumnLabel = documentColumnLabel(labelCategory, visibleRows);
+  const netLabel = netColumnLabel(visibleRows);
+  const bulkLabel = downloadAllLabel(labelCategory, visibleRows);
 
-  const runPaystubAction = async (key, fn) => {
+  const bulkPlan = useMemo(() => bulkDownloadPlan(visibleRows), [visibleRows]);
+
+  const runAction = async (key, fn) => {
     setBusyKey(key);
     setError("");
     try {
       await fn();
     } catch (e) {
-      setError(e.response?.data?.error || e.message || "Paystub action failed");
+      setError(e.response?.data?.error || e.message || "Document action failed");
     } finally {
       setBusyKey("");
     }
   };
 
-  const previewPaystub = (ln) =>
-    runPaystubAction(`pv-${ln.batch_id}-${ln.id}`, () =>
-      previewHtmlDocument(() => getPaystubHtml(ln.batch_id, ln.id)),
+  const previewDocument = (ln) => {
+    const kind = rowDocumentKind(ln);
+    const preview = !rowDocumentActions(ln).final;
+    return runAction(`pv-${ln.batch_id}-${ln.id}`, () =>
+      previewHtmlDocument(documentFetch(kind, ln.batch_id, ln.id, { preview })),
     );
+  };
 
-  const printPaystub = (ln) =>
-    runPaystubAction(`pr-${ln.batch_id}-${ln.id}`, () =>
-      printHtmlDocument(() => getPaystubHtml(ln.batch_id, ln.id)),
+  const printDocument = (ln) => {
+    const kind = rowDocumentKind(ln);
+    return runAction(`pr-${ln.batch_id}-${ln.id}`, () =>
+      printHtmlDocument(documentFetch(kind, ln.batch_id, ln.id)),
     );
+  };
 
-  const downloadPaystub = (ln) =>
-    runPaystubAction(`dl-${ln.batch_id}-${ln.id}`, () =>
+  const downloadDocument = (ln) => {
+    const kind = rowDocumentKind(ln);
+    return runAction(`dl-${ln.batch_id}-${ln.id}`, () =>
       downloadPdfFromFetch(
-        () => getPaystubHtml(ln.batch_id, ln.id),
-        paystubDownloadFilename(ln.worker_name_snapshot, ln.pay_period_start, ln.pay_period_end),
+        documentFetch(kind, ln.batch_id, ln.id),
+        paystubDownloadFilename(ln.worker_name_snapshot, ln.pay_period_start, ln.pay_period_end, {
+          suffix: documentDownloadSuffix(kind),
+        }),
       ),
     );
+  };
 
   const downloadAllVisible = async () => {
-    const batchIds =
-      viewMode === "batch" && selectedBatchId
-        ? [Number(selectedBatchId)]
-        : [...new Set(paystubRows.map((ln) => ln.batch_id).filter(Boolean))];
-    if (!batchIds.length) return;
+    if (!bulkPlan.length) return;
     setBusyKey("all");
     setError("");
     try {
-      for (const batchId of batchIds) {
-        const sample = paystubRows.find((ln) => ln.batch_id === batchId) || rows.find((ln) => ln.batch_id === batchId);
-        if (!sample) continue;
+      for (const item of bulkPlan) {
         await downloadPdfFromFetch(
-          () => getBatchPaystubsHtml(batchId),
-          paystubBatchDownloadFilename(
-            sample.batch_name,
-            sample.pay_period_start,
-            sample.pay_period_end,
-          ),
+          documentFetch(item.kind, item.batchId, item.lineId),
+          paystubDownloadFilename(item.workerName, item.payPeriodStart, item.payPeriodEnd, {
+            suffix: documentDownloadSuffix(item.kind),
+          }),
         );
       }
     } catch (e) {
-      setError(e.response?.data?.error || e.message || "Download all paystubs failed");
+      setError(e.response?.data?.error || e.message || "Bulk download failed");
     } finally {
       setBusyKey("");
     }
@@ -324,6 +332,12 @@ export default function AccountantEmployeePaystubsPanel() {
     if (mode === "employee") {
       setSelectedBatchId("");
     }
+  };
+
+  const handleCategoryChange = (value) => {
+    setCategory(value);
+    setSelectedWorker(null);
+    setSelectedBatchId("");
   };
 
   return (
@@ -346,17 +360,17 @@ export default function AccountantEmployeePaystubsPanel() {
               By Employee
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Paystub history — filter by employee or batch, then view, print, or download.
+              Payroll document history — filter by worker or batch, then view, print, or download.
             </Typography>
           </Box>
           <Button
             size="small"
             variant="outlined"
             startIcon={<DownloadIcon />}
-            disabled={!paystubRows.length || busyKey === "all"}
+            disabled={!bulkPlan.length || busyKey === "all"}
             onClick={downloadAllVisible}
           >
-            Download all paystubs
+            {bulkLabel}
           </Button>
         </Stack>
       </Paper>
@@ -370,7 +384,10 @@ export default function AccountantEmployeePaystubsPanel() {
         workers={viewMode === "batch" ? batchWorkers : workers}
         selectedWorker={selectedWorker}
         onWorkerChange={setSelectedWorker}
-        workerLabel="Employee"
+        workerLabel={category === "w2" ? "Employee" : "Worker"}
+        category={category}
+        onCategoryChange={handleCategoryChange}
+        categoryOptions={DOC_HISTORY_CATEGORY_OPTIONS}
         range={range}
         onRangeChange={setRange}
         rangeOptions={RANGE_OPTIONS}
@@ -392,31 +409,34 @@ export default function AccountantEmployeePaystubsPanel() {
           </Typography>
         ) : viewMode === "employee" && !selectedWorker ? (
           <Typography sx={{ p: 2 }} color="text.secondary">
-            Select an employee to see paystub history.
+            Select a worker to see their payroll document history.
           </Typography>
         ) : viewMode === "batch" && !selectedBatchId ? (
           <Typography sx={{ p: 2 }} color="text.secondary">
-            Select a batch to see employee paystubs for that pay period.
+            Select a batch to see payroll documents for that pay period.
           </Typography>
         ) : (
           <TableContainer sx={{ px: 1, pb: 1 }}>
-            <Table size="small" sx={{ minWidth: 640 }}>
+            <Table size="small" sx={{ minWidth: 680 }}>
               <TableHead>
                 <TableRow>
-                  {viewMode === "batch" ? <TableCell>Employee</TableCell> : null}
+                  {viewMode === "batch" ? <TableCell>Worker</TableCell> : null}
                   <TableCell>Pay period</TableCell>
+                  <TableCell>Category</TableCell>
                   <TableCell align="right">Gross</TableCell>
                   <TableCell align="right">Tax withheld</TableCell>
-                  <TableCell align="right">Net paid</TableCell>
+                  <TableCell align="right">{netLabel}</TableCell>
                   <TableCell align="right" sx={{ pr: 2, minWidth: 120 }}>
-                    Paystub
+                    {finalColumnLabel}
                   </TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
                 {visibleRows.map((ln) => {
                   const key = `${ln.batch_id}-${ln.id}`;
-                  const ready = paystubReady(ln);
+                  const actions = rowDocumentActions(ln);
+                  const kind = rowDocumentKind(ln);
+                  const categoryLabel = kind === "receipt" ? "Contractor" : "W-2";
                   return (
                     <TableRow key={key} hover>
                       {viewMode === "batch" ? (
@@ -425,32 +445,39 @@ export default function AccountantEmployeePaystubsPanel() {
                       <TableCell>
                         {ln.pay_period_start} – {ln.pay_period_end}
                       </TableCell>
+                      <TableCell>{categoryLabel}</TableCell>
                       <TableCell align="right">${lineGross(ln).toFixed(2)}</TableCell>
                       <TableCell align="right">
-                        <Button
-                          size="small"
-                          variant="text"
-                          sx={{ minWidth: 0, p: 0 }}
-                          onClick={() =>
-                            setTaxDialog({
-                              open: true,
-                              line: ln,
-                              workerName: ln.worker_name_snapshot,
-                            })
-                          }
-                        >
-                          {formatTaxWithheldDisplay(ln)}
-                        </Button>
+                        {taxWithheldApplies(ln) ? (
+                          <Button
+                            size="small"
+                            variant="text"
+                            sx={{ minWidth: 0, p: 0 }}
+                            onClick={() =>
+                              setTaxDialog({
+                                open: true,
+                                line: ln,
+                                workerName: ln.worker_name_snapshot,
+                              })
+                            }
+                          >
+                            {formatTaxWithheldDisplay(ln)}
+                          </Button>
+                        ) : (
+                          <Typography variant="body2" color="text.secondary">
+                            —
+                          </Typography>
+                        )}
                       </TableCell>
                       <TableCell align="right">{formatNetPaidDisplay(ln)}</TableCell>
                       <TableCell align="right" sx={{ pr: 1 }}>
-                        {ready ? (
+                        {actions.final ? (
                           <Stack direction="row" spacing={0.25} justifyContent="flex-end">
                             <Tooltip title="View">
                               <IconButton
                                 size="small"
                                 disabled={!!busyKey}
-                                onClick={() => previewPaystub(ln)}
+                                onClick={() => previewDocument(ln)}
                               >
                                 <VisibilityIcon fontSize="small" />
                               </IconButton>
@@ -459,7 +486,7 @@ export default function AccountantEmployeePaystubsPanel() {
                               <IconButton
                                 size="small"
                                 disabled={!!busyKey}
-                                onClick={() => printPaystub(ln)}
+                                onClick={() => printDocument(ln)}
                               >
                                 <PrintIcon fontSize="small" />
                               </IconButton>
@@ -468,11 +495,30 @@ export default function AccountantEmployeePaystubsPanel() {
                               <IconButton
                                 size="small"
                                 disabled={!!busyKey}
-                                onClick={() => downloadPaystub(ln)}
+                                onClick={() => downloadDocument(ln)}
                               >
                                 <DownloadIcon fontSize="small" />
                               </IconButton>
                             </Tooltip>
+                          </Stack>
+                        ) : actions.preview ? (
+                          <Stack direction="row" spacing={0.25} justifyContent="flex-end">
+                            <Tooltip title="Preview (not finalized)">
+                              <IconButton
+                                size="small"
+                                disabled={!!busyKey}
+                                onClick={() => previewDocument(ln)}
+                              >
+                                <VisibilityIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              sx={{ alignSelf: "center" }}
+                            >
+                              Pending
+                            </Typography>
                           </Stack>
                         ) : (
                           <Typography variant="caption" color="text.secondary">
@@ -485,9 +531,9 @@ export default function AccountantEmployeePaystubsPanel() {
                 })}
                 {!visibleRows.length ? (
                   <TableRow>
-                    <TableCell colSpan={viewMode === "batch" ? 6 : 5}>
+                    <TableCell colSpan={viewMode === "batch" ? 7 : 6}>
                       <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
-                        No paystub records match these filters.
+                        No payroll documents match these filters.
                       </Typography>
                     </TableCell>
                   </TableRow>
