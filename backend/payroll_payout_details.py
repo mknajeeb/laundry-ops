@@ -119,6 +119,9 @@ def ensure_payout_details_columns(cursor) -> None:
             if getattr(exc, "args", (None,))[0] != 1060:
                 raise
         invalidate_schema_cache()
+    from backend.payroll_vendors import ensure_payroll_vendor_tables
+
+    ensure_payroll_vendor_tables(cursor)
 
 
 def user_role_codes(conn, user_id: int) -> set[str]:
@@ -292,6 +295,14 @@ def parse_line_payout_details(line: dict) -> dict[str, Any]:
         base["show_tax_payment_section"] = bool(raw.get("show_tax_payment_section"))
     if "employee_note" in raw:
         base["employee_note"] = str(raw.get("employee_note") or "").strip()
+    if isinstance(raw.get("vendor"), dict) and raw["vendor"].get("name"):
+        v = raw["vendor"]
+        base["vendor"] = {
+            "id": v.get("id"),
+            "name": v.get("name"),
+            "address": v.get("address"),
+            "logo_url": v.get("logo_url"),
+        }
     for k in EMPLOYEE_DEDUCTION_KEYS:
         base["employee_deductions"][k] = float(_money(base["employee_deductions"].get(k)))
     for k in EMPLOYER_TAX_KEYS:
@@ -763,6 +774,15 @@ def compute_line_totals(line: dict, details: Optional[dict] = None) -> dict[str,
     }
 
 
+# Categories whose finalized document is a vendor-branded Contractor Invoice &
+# Payment Receipt (replaces the paystub entirely). W-2 keeps official paystubs.
+VENDOR_RECEIPT_CATEGORIES = ("temp", "contractor_1099")
+
+
+def batch_uses_vendor_receipt(batch: dict) -> bool:
+    return str(batch.get("worker_category") or "") in VENDOR_RECEIPT_CATEGORIES
+
+
 def batch_document_mode(batch: dict) -> str:
     raw = batch.get("document_mode")
     if raw is None or str(raw).strip() == "":
@@ -849,7 +869,21 @@ def finalize_blockers(batch: dict, lines: list[dict]) -> list[str]:
 
 
 def can_generate_paystub_for_line(batch: dict, details: dict, *, preview: bool = False) -> bool:
+    # Temp/1099 never get a paystub — they get the vendor receipt instead.
+    if batch_uses_vendor_receipt(batch):
+        return False
     if line_uses_payment_receipt(batch, details):
+        return False
+    if preview:
+        return batch_ready_for_payout_details(batch)
+    return bool(batch.get("payout_details_finalized_at"))
+
+
+def can_generate_vendor_receipt_for_line(
+    batch: dict, details: dict, *, preview: bool = False
+) -> bool:
+    """Vendor receipt is the finalized document for temp/1099 (preview when ready)."""
+    if not batch_uses_vendor_receipt(batch):
         return False
     if preview:
         return batch_ready_for_payout_details(batch)
@@ -872,11 +906,18 @@ def can_generate_receipt_for_line(batch: dict, details: dict) -> bool:
 
 def line_document_state(batch: dict, line: dict, details: Optional[dict] = None) -> dict[str, Any]:
     details = details or parse_line_payout_details(line)
-    effective = (
-        "payment_receipt"
-        if line_uses_payment_receipt(batch, details)
-        else "official_paystub"
-    )
+    uses_vendor_receipt = batch_uses_vendor_receipt(batch)
+    if uses_vendor_receipt:
+        effective = "vendor_receipt"
+    elif line_uses_payment_receipt(batch, details):
+        effective = "payment_receipt"
+    else:
+        effective = "official_paystub"
+    vendor_snapshot = None
+    if uses_vendor_receipt and isinstance(details, dict):
+        v = details.get("vendor")
+        if isinstance(v, dict) and v.get("name"):
+            vendor_snapshot = json_safe(v)
     return json_safe(
         {
             "effective_type": effective,
@@ -886,6 +927,11 @@ def line_document_state(batch: dict, line: dict, details: Optional[dict] = None)
             "paystub_preview_available": can_generate_paystub_for_line(
                 batch, details, preview=True
             ),
+            "vendor_receipt_available": can_generate_vendor_receipt_for_line(batch, details),
+            "vendor_receipt_preview_available": can_generate_vendor_receipt_for_line(
+                batch, details, preview=True
+            ),
+            "vendor": vendor_snapshot,
             "use_payment_receipt": bool(details.get("use_payment_receipt")),
         }
     )
@@ -1037,6 +1083,19 @@ def enrich_line_with_payout_details(
     if batch:
         row = enrich_line_settlement_fields(row, batch)
         row["document"] = line_document_state(batch, row, details)
+        if (
+            batch_uses_vendor_receipt(batch)
+            and conn is not None
+            and organization_id is not None
+        ):
+            try:
+                from backend.payroll_vendors import resolve_line_vendor
+
+                row["vendor"] = resolve_line_vendor(
+                    conn, int(organization_id), row, batch
+                )
+            except Exception:  # pragma: no cover - vendor resolution is best-effort
+                row["vendor"] = None
     return json_safe(row)
 
 
@@ -1194,8 +1253,19 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
             "payout_details_finalized_by": batch.get("payout_details_finalized_by"),
             "document_mode": doc_mode,
             "can_set_document_mode": ready and not finalized,
-            "paystub_available": bool(finalized) and doc_mode == "official_paystub",
-            "paystub_preview_available": ready and doc_mode == "official_paystub",
+            "uses_vendor_receipt": batch_uses_vendor_receipt(batch),
+            "paystub_available": (
+                bool(finalized)
+                and doc_mode == "official_paystub"
+                and not batch_uses_vendor_receipt(batch)
+            ),
+            "paystub_preview_available": (
+                ready
+                and doc_mode == "official_paystub"
+                and not batch_uses_vendor_receipt(batch)
+            ),
+            "vendor_receipt_available": bool(finalized) and batch_uses_vendor_receipt(batch),
+            "vendor_receipt_preview_available": ready and batch_uses_vendor_receipt(batch),
             "payment_receipt_available": bool(finalized) and doc_mode == "payment_receipt",
             "receipt_required_pending": receipt_required_pending,
             "can_edit_details": ready and not finalized,
@@ -1518,6 +1588,49 @@ def _persist_line_payment_defaults(
     return updated
 
 
+def _persist_line_vendor_snapshots(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    batch: dict,
+    lines: list[dict],
+) -> int:
+    """Freeze the resolved vendor branding onto each temp/1099 line before finalize."""
+    if not batch_uses_vendor_receipt(batch):
+        return 0
+    from backend.payroll_vendors import (
+        resolve_line_vendor,
+        vendor_snapshot_for_finalize,
+    )
+
+    c = conn.cursor()
+    updated = 0
+    for ln in lines:
+        details = ln.get("payout_details") or parse_line_payout_details(ln)
+        if isinstance(details.get("vendor"), dict) and details["vendor"].get("name"):
+            continue  # already snapshotted
+        vendor = resolve_line_vendor(conn, int(organization_id), ln, batch)
+        snapshot = vendor_snapshot_for_finalize(vendor)
+        if not snapshot:
+            continue
+        merged = dict(details)
+        merged["vendor"] = snapshot
+        c.execute(
+            """
+            UPDATE payout_batch_lines SET payout_details_json=%s, updated_at=CURRENT_TIMESTAMP
+            WHERE id=%s AND batch_id=%s AND organization_id=%s
+            """,
+            (
+                json.dumps(merged),
+                int(ln["id"]),
+                int(batch_id),
+                int(organization_id),
+            ),
+        )
+        updated += 1
+    return updated
+
+
 def update_payout_batch_details(
     conn,
     organization_id: int,
@@ -1592,6 +1705,24 @@ def update_payout_batch_details(
                 int(organization_id),
             ),
         )
+        if "vendor_id" in item and batch_uses_vendor_receipt(batch):
+            from backend.payroll_vendors import ensure_payroll_vendor_tables, get_vendor
+
+            ensure_payroll_vendor_tables(c)
+            raw_vendor = item.get("vendor_id")
+            vendor_val = None
+            if raw_vendor not in (None, "", "null"):
+                v = get_vendor(conn, int(organization_id), int(raw_vendor))
+                if not v:
+                    raise ValueError("Vendor not found")
+                vendor_val = int(raw_vendor)
+            c.execute(
+                """
+                UPDATE payout_batch_lines SET vendor_id=%s, updated_at=CURRENT_TIMESTAMP
+                WHERE id=%s AND batch_id=%s AND organization_id=%s
+                """,
+                (vendor_val, int(line_id), int(batch_id), int(organization_id)),
+            )
     events = _audit_append(batch, "details_updated", actor_id, f"{len(lines_patch)} line(s)")
     c.execute(
         """
@@ -1720,13 +1851,21 @@ def finalize_payout_details(
             "A suggested date is not applied automatically."
         )
     enriched = get_payout_batch_details(conn, organization_id, batch_id) or {}
-    if _persist_line_payment_defaults(
+    changed = _persist_line_payment_defaults(
         conn,
         organization_id,
         batch_id,
         enriched,
         enriched.get("lines") or [],
-    ):
+    )
+    changed += _persist_line_vendor_snapshots(
+        conn,
+        organization_id,
+        batch_id,
+        enriched,
+        enriched.get("lines") or [],
+    )
+    if changed:
         conn.commit()
     enriched = get_payout_batch_details(conn, organization_id, batch_id) or {}
     _validate_finalize_batch(enriched, official_pay_date=pay_date)
@@ -3308,3 +3447,335 @@ Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p
 </div>
 </body></html>"""
     return html
+
+
+def _vendor_receipt_year(batch: dict, payment: dict) -> int:
+    for raw in (
+        batch.get("official_pay_date"),
+        payment.get("date"),
+        batch.get("pay_period_end"),
+    ):
+        if raw:
+            try:
+                return int(str(raw)[:4])
+            except (TypeError, ValueError):
+                continue
+    return datetime.utcnow().year
+
+
+def fetch_vendor_receipt_ytd_prior(
+    conn,
+    organization_id: int,
+    user_id: int,
+    *,
+    year: int,
+    pay_date: str,
+    current_batch_id: Optional[int] = None,
+    exclude_line_id: Optional[int] = None,
+) -> float:
+    """Amount paid to a temp/1099 worker on finalized batches earlier this year.
+
+    "Earlier" = pay date strictly before this line's pay date, or same date on an
+    earlier batch id. Only finalized vendor-receipt batches contribute.
+    """
+    c = conn.cursor(dictionary=True)
+    pd = str(pay_date or "")[:10]
+    bid = int(current_batch_id or 0)
+    params: list[Any] = [int(organization_id), int(user_id), int(year)]
+    date_clause = ""
+    if pd:
+        date_clause = (
+            " AND (COALESCE(pb.official_pay_date, pb.pay_period_end) < %s"
+            " OR (COALESCE(pb.official_pay_date, pb.pay_period_end) = %s AND pb.id < %s))"
+        )
+        params += [pd, pd, bid]
+    exclude_sql = ""
+    if exclude_line_id is not None:
+        exclude_sql = " AND pbl.id <> %s"
+        params.append(int(exclude_line_id))
+    c.execute(
+        f"""
+        SELECT pbl.gross_amount, pbl.total_amount, pbl.payout_details_json
+        FROM payout_batch_lines pbl
+        JOIN payout_batches pb ON pb.id = pbl.batch_id
+        WHERE pb.organization_id = %s
+          AND pbl.user_id = %s
+          AND pb.worker_category IN ('temp', 'contractor_1099')
+          AND pb.payout_details_finalized_at IS NOT NULL
+          AND YEAR(COALESCE(pb.official_pay_date, pb.pay_period_end)) = %s
+          {date_clause}{exclude_sql}
+        """,
+        tuple(params),
+    )
+    prior = 0.0
+    for row in c.fetchall() or []:
+        ln = {
+            "gross_amount": row.get("gross_amount"),
+            "total_amount": row.get("total_amount"),
+            "payout_details_json": row.get("payout_details_json"),
+        }
+        details = parse_line_payout_details(ln)
+        totals = compute_line_totals(ln, details)
+        prior += float(totals.get("amount_paid") or 0)
+    return round(prior, 2)
+
+
+def _vendor_worker_contact(conn, user_id: Optional[int]) -> dict[str, str]:
+    if not user_id:
+        return {"phone": "", "email": ""}
+    c = conn.cursor(dictionary=True)
+    try:
+        c.execute(
+            "SELECT email, mobile FROM payroll_profiles WHERE user_id=%s LIMIT 1",
+            (int(user_id),),
+        )
+    except Exception:
+        return {"phone": "", "email": ""}
+    row = c.fetchone() or {}
+    return {
+        "phone": str(row.get("mobile") or "").strip(),
+        "email": str(row.get("email") or "").strip(),
+    }
+
+
+def _vendor_receipt_type_label(worker_category: str) -> str:
+    if worker_category == "temp":
+        return "Temporary / Short-Term Contractor"
+    if worker_category == "contractor_1099":
+        return "1099 Contractor"
+    return "Contractor"
+
+
+def generate_vendor_receipt_html(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    line_id: int,
+    *,
+    preview: bool = False,
+) -> str:
+    """Contractor Invoice & Payment Receipt for a temp/1099 line (replaces paystub).
+
+    Branding (name/address/logo) comes from the line's resolved vendor. YTD is the
+    payout-based total paid this calendar year, including this payment.
+    """
+    import html as _html
+
+    from backend.payroll_vendors import resolve_line_vendor
+
+    batch = get_payout_batch_details(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    if not batch_uses_vendor_receipt(batch):
+        raise ValueError("Vendor receipt applies to temp / 1099 batches only")
+    if not preview and not batch.get("payout_details_finalized_at"):
+        raise ValueError("Vendor receipt not available until payout details are finalized")
+    line = next(
+        (ln for ln in batch.get("lines") or [] if int(ln.get("id")) == int(line_id)),
+        None,
+    )
+    if not line:
+        raise ValueError("Line not found")
+    details = line.get("payout_details") or parse_line_payout_details(line)
+    totals = line.get("payout_totals") or compute_line_totals(line, details)
+    payment = details.get("payment") or {}
+
+    vendor = resolve_line_vendor(conn, int(organization_id), line, batch) or {}
+    contact = _vendor_worker_contact(conn, line.get("user_id"))
+
+    gross = float(totals.get("gross_pay") or 0)
+    amount_paid = float(totals.get("amount_paid") or gross)
+    hours = float(line.get("approved_hours") or 0)
+    rate = float(line.get("rate") or 0)
+    adjustments = float(_money(line.get("adjustments") or 0))
+
+    year = _vendor_receipt_year(batch, payment)
+    pay_date = str(
+        payment.get("date") or batch.get("official_pay_date") or batch.get("pay_period_end") or ""
+    )[:10]
+    prior_ytd = fetch_vendor_receipt_ytd_prior(
+        conn,
+        int(organization_id),
+        int(line.get("user_id") or 0),
+        year=year,
+        pay_date=pay_date,
+        current_batch_id=int(batch.get("id") or 0),
+        exclude_line_id=int(line.get("id") or 0) or None,
+    )
+    ytd_including = round(prior_ytd + amount_paid, 2)
+
+    worker_name = str(line.get("worker_name_snapshot") or "").strip()
+    method = _payment_method_label(payment.get("method"))
+    reference = str(payment.get("reference") or "").strip()
+    type_label = _vendor_receipt_type_label(str(batch.get("worker_category") or ""))
+    vendor_name = str(vendor.get("name") or "").strip()
+    vendor_address = str(vendor.get("address") or "").strip()
+    vendor_logo = str(vendor.get("logo_url") or "").strip()
+
+    def esc(val: Any) -> str:
+        return _html.escape(str(val)) if val is not None else ""
+
+    def money(val: float) -> str:
+        return f"${val:,.2f}"
+
+    def row(label: str, value: str, *, strong: bool = False, left: bool = True) -> str:
+        if value is None or value == "":
+            return ""
+        align = "left" if left else "right"
+        cell = f"<strong>{value}</strong>" if strong else value
+        lbl = f"<strong>{label}</strong>" if strong else label
+        return f"<tr><td>{lbl}</td><td style='text-align:{align}'>{cell}</td></tr>"
+
+    logo_html = ""
+    if vendor_logo:
+        logo_html = (
+            f"<img src='{esc(vendor_logo)}' alt='{esc(vendor_name)}' "
+            "style='max-height:60px;max-width:240px;object-fit:contain' />"
+        )
+    else:
+        logo_html = f"<h1 style='margin:0;color:#0f2f66'>{esc(vendor_name)}</h1>"
+
+    work_period = f"{batch.get('pay_period_start')} — {batch.get('pay_period_end')}"
+
+    part1_rows = "".join(
+        [
+            row("Contractor / worker name", esc(worker_name), strong=True),
+            row("Phone", esc(contact["phone"])) if contact["phone"] else "",
+            row("Email", esc(contact["email"])) if contact["email"] else "",
+            row("Work period", esc(work_period)),
+            row("Total approved hours", f"{hours:.2f}", left=False) if hours else "",
+            row("Service rate", money(rate), left=False) if rate else "",
+            row("Service amount", money(gross), left=False),
+            (row("Adjustments, if any", money(adjustments), left=False) if adjustments else ""),
+            row("Total amount due", money(round(gross + adjustments, 2)), strong=True, left=False),
+            (row("Total paid this year (before this payment)", money(prior_ytd), left=False)
+             if prior_ytd > 0 else ""),
+            row(
+                "Total paid this year (including this payment)",
+                money(ytd_including),
+                strong=True,
+                left=False,
+            ),
+        ]
+    )
+
+    part2_rows = "".join(
+        [
+            row("Amount paid", money(amount_paid), strong=True, left=False),
+            row("Payment method", esc(method)),
+            row("Payment reference", esc(reference)) if reference else "",
+            row("Payment date", esc(payment.get("date") or "—"), strong=True),
+        ]
+    )
+
+    issue_from = ""
+    if vendor_name or vendor_address:
+        addr_html = (
+            f"<p style='margin:2px 0;white-space:pre-line'>{esc(vendor_address)}</p>"
+            if vendor_address
+            else ""
+        )
+        issue_from = (
+            "<div style='margin:12px 0'>"
+            "<strong>Issue from</strong>"
+            f"<p style='margin:2px 0'>{esc(vendor_name)}</p>{addr_html}</div>"
+        )
+
+    draft_banner = (
+        "<p class='draft'>DRAFT PREVIEW — not finalized</p>" if preview and not batch.get(
+            "payout_details_finalized_at"
+        ) else ""
+    )
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Contractor Invoice &amp; Payment Receipt — {esc(worker_name)}</title>
+<style>
+  body {{ font-family: system-ui, -apple-system, sans-serif; color: #0f172a; margin: 32px; }}
+  .head {{ border-bottom: 3px solid #0f2f66; padding-bottom: 12px; margin-bottom: 12px; }}
+  .addr {{ color: #475569; margin: 6px 0 0; }}
+  h2.doc {{ font-size: 1.25rem; margin: 4px 0 0; }}
+  h3.section {{ color: #0f2f66; font-size: 1rem; margin: 20px 0 4px; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; }}
+  .hint {{ font-size: 0.8rem; color: #64748b; margin: 0 0 6px; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 6px 0; }}
+  td {{ padding: 7px 10px; border: 1px solid #e2e8f0; font-size: 0.92rem; }}
+  td:first-child {{ background: #f8fafc; width: 55%; }}
+  .draft {{ color: #b45309; font-weight: 700; letter-spacing: 0.05em; }}
+  .sig {{ display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 36px; }}
+  .sig-line {{ border-top: 1px solid #334155; margin-top: 40px; padding-top: 4px; font-size: 0.85rem; color: #475569; }}
+</style></head><body>
+<div class="head">
+  {logo_html}
+  {f"<p class='addr'>{esc(vendor_address)}</p>" if vendor_address else ""}
+  <h2 class="doc">Contractor Invoice &amp; Payment Receipt</h2>
+</div>
+{draft_banner}
+{issue_from}
+<p class="hint"><strong>Contractor type:</strong> {esc(type_label)}</p>
+
+<h3 class="section">Part 1 — Invoice / Work Summary</h3>
+<p class="hint">Work summary for the pay period. Signature is not required for this section.</p>
+<table><tbody>{part1_rows}</tbody></table>
+
+<h3 class="section">Part 2 — Payment Receipt</h3>
+<p class="hint">Worker/Contractor confirms that the work listed above was completed and that
+payment listed below was received. This receipt confirms payment only and does not waive any
+legal rights. This form does not guarantee future work.</p>
+<table><tbody>{part2_rows}</tbody></table>
+
+<div class="sig">
+  <div><strong>Contractor / worker signature</strong>
+    <p style="margin:6px 0 0">Name: {esc(worker_name)}</p>
+    <div class="sig-line">Signature</div>
+    <div class="sig-line">Date</div>
+  </div>
+  <div><strong>Company signature</strong>
+    <p style="margin:6px 0 0">&nbsp;</p>
+    <div class="sig-line">Signature</div>
+    <div class="sig-line">Date</div>
+  </div>
+</div>
+<p class="hint" style="margin-top:20px">Total paid this year is based on finalized payouts for {year}.
+{"Finalized " + str(batch.get('payout_details_finalized_at')) if batch.get('payout_details_finalized_at') else ""}</p>
+</body></html>"""
+    return html
+
+
+def generate_batch_vendor_receipts_html(
+    conn, organization_id: int, batch_id: int, *, preview: bool = False
+) -> str:
+    """Concatenate every temp/1099 line's vendor receipt into one printable doc."""
+    batch = get_payout_batch_details(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    if not batch_uses_vendor_receipt(batch):
+        raise ValueError("Vendor receipt applies to temp / 1099 batches only")
+    parts: list[str] = []
+    for ln in batch.get("lines") or []:
+        try:
+            parts.append(
+                generate_vendor_receipt_html(
+                    conn, organization_id, batch_id, int(ln.get("id")), preview=preview
+                )
+            )
+        except ValueError:
+            continue
+    if not parts:
+        raise ValueError("No vendor receipts available for this batch")
+    bodies = []
+    for doc in parts:
+        start = doc.find("<body>")
+        end = doc.find("</body>")
+        if start != -1 and end != -1:
+            bodies.append(doc[start + len("<body>") : end])
+    combined = (
+        "<div style='page-break-after:always'></div>".join(bodies) if bodies else ""
+    )
+    style_start = parts[0].find("<style>")
+    style_end = parts[0].find("</style>")
+    style = parts[0][style_start : style_end + len("</style>")] if style_start != -1 else ""
+    return (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        f"<title>Vendor Receipts — {batch.get('batch_name')}</title>{style}"
+        f"</head><body>{combined}</body></html>"
+    )

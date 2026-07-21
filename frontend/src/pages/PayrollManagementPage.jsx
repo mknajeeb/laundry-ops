@@ -20,6 +20,7 @@ import PayoutBatchesPanel from "../components/PayoutBatchesPanel";
 import PayoutDetailsPanel from "../components/PayoutDetailsPanel";
 import PayrollDashboard from "../components/PayrollDashboard";
 import PayrollWorkerPaymentsPanel from "../components/PayrollWorkerPaymentsPanel";
+import PayrollVendorsPanel from "../components/PayrollVendorsPanel";
 import PayrollTaxSettingsPanel from "../components/PayrollTaxSettingsPanel";
 import PayrollTimeRecordsPanel from "../components/PayrollTimeRecordsPanel";
 import PayrollSchedulingPanel from "../components/PayrollSchedulingPanel";
@@ -75,6 +76,7 @@ export default function PayrollManagementPage() {
     if (canTime) out.push({ key: "schedule", label: "Scheduling" });
     if (canContractors) out.push({ key: "contractors", label: t("payroll.tabContractors") });
     if (canContractors) out.push({ key: "w2forms", label: t("payroll.tabW2Forms") });
+    if (canPayout) out.push({ key: "vendors", label: "Vendors" });
     if (canPayout) out.push({ key: "payments", label: "Worker Payments" });
     if (canPayout) out.push({ key: "taxsettings", label: "Tax Settings" });
     return out;
@@ -281,6 +283,7 @@ export default function PayrollManagementPage() {
         {active?.key === "accountant_employee" ? <AccountantEmployeePaystubsPanel /> : null}
         {active?.key === "contractors" ? <ContractorManagementPanel /> : null}
         {active?.key === "w2forms" ? <W2EmployeeFormsPanel /> : null}
+        {active?.key === "vendors" ? <PayrollVendorsPanel /> : null}
         {active?.key === "payments" ? <PayrollWorkerPaymentsPanel /> : null}
         {active?.key === "taxsettings" ? <PayrollTaxSettingsPanel /> : null}
       </Box>

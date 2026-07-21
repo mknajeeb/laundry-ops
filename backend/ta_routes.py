@@ -6360,6 +6360,190 @@ def payroll_payout_payment_receipt(batch_id: int, line_id: int):
 
 
 @ta_bp.route(
+    "/payroll/payout-batches/<int:batch_id>/vendor-receipt/<int:line_id>",
+    methods=["GET"],
+)
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_payout_vendor_receipt(batch_id: int, line_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_view_paystub,
+            generate_vendor_receipt_html,
+            get_payout_batch_details,
+        )
+
+        oid = _tenant_id()
+        uid = int(g.ta_user["id"])
+        batch = get_payout_batch_details(conn, oid, batch_id)
+        if not batch:
+            return jsonify({"error": "Not found"}), 404
+        preview = str(request.args.get("preview") or "").lower() in ("1", "true", "yes")
+        if not can_view_paystub(conn, uid, batch, preview=preview):
+            return jsonify({"error": "Vendor receipt not available"}), 403
+        fmt = str(request.args.get("format") or "html").lower()
+        try:
+            html = generate_vendor_receipt_html(
+                conn, oid, batch_id, line_id, preview=preview
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        if fmt == "json":
+            line = next(
+                (ln for ln in batch.get("lines") or [] if int(ln["id"]) == int(line_id)),
+                None,
+            )
+            return jsonify({"html": html, "line": line, "batch": batch})
+        return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_vendor_receipt failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route(
+    "/payroll/payout-batches/<int:batch_id>/vendor-receipts",
+    methods=["GET"],
+)
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_payout_vendor_receipts_batch(batch_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_view_paystub,
+            generate_batch_vendor_receipts_html,
+            get_payout_batch_details,
+        )
+
+        oid = _tenant_id()
+        uid = int(g.ta_user["id"])
+        batch = get_payout_batch_details(conn, oid, batch_id)
+        if not batch:
+            return jsonify({"error": "Not found"}), 404
+        preview = str(request.args.get("preview") or "").lower() in ("1", "true", "yes")
+        if not can_view_paystub(conn, uid, batch, preview=preview):
+            return jsonify({"error": "Vendor receipts not available"}), 403
+        try:
+            html = generate_batch_vendor_receipts_html(
+                conn, oid, batch_id, preview=preview
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_vendor_receipts_batch failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/vendors", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_vendors_list():
+    conn = get_db()
+    try:
+        from backend.payroll_vendors import ensure_default_vendor, list_vendors
+
+        oid = _tenant_id()
+        include_inactive = str(
+            request.args.get("include_inactive") or "1"
+        ).lower() in ("1", "true", "yes")
+        ensure_default_vendor(conn, oid)
+        return jsonify({"vendors": list_vendors(conn, oid, include_inactive=include_inactive)})
+    except Exception as e:
+        current_app.logger.exception("payroll_vendors_list failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/vendors", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_vendors_create():
+    conn = get_db()
+    try:
+        from backend.payroll_vendors import create_vendor
+
+        oid = _tenant_id()
+        body = request.get_json(silent=True) or {}
+        try:
+            vendor = create_vendor(
+                conn,
+                oid,
+                name=body.get("name") or "",
+                address=body.get("address"),
+                logo_url=body.get("logo_url"),
+            )
+            return jsonify({"vendor": vendor})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_vendors_create failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/vendors/<int:vendor_id>", methods=["PUT"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_vendors_update(vendor_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_vendors import update_vendor
+
+        oid = _tenant_id()
+        body = request.get_json(silent=True) or {}
+        try:
+            vendor = update_vendor(
+                conn,
+                oid,
+                vendor_id,
+                name=body.get("name"),
+                address=body.get("address"),
+                logo_url=body.get("logo_url"),
+                active=body.get("active"),
+            )
+            return jsonify({"vendor": vendor})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_vendors_update failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/workers/<int:user_id>/default-vendor", methods=["PUT"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_worker_default_vendor(user_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_vendors import set_worker_default_vendor
+
+        oid = _tenant_id()
+        body = request.get_json(silent=True) or {}
+        raw = body.get("vendor_id")
+        vendor_id = int(raw) if raw not in (None, "", "null") else None
+        try:
+            resolved = set_worker_default_vendor(conn, oid, user_id, vendor_id)
+            return jsonify({"user_id": user_id, "default_vendor_id": resolved})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_worker_default_vendor failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route(
     "/payroll/payout-batches/<int:batch_id>/paystub/<int:line_id>",
     methods=["GET"],
 )

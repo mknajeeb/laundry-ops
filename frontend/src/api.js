@@ -1527,6 +1527,37 @@ export const getPaymentReceiptUrl = (batchId, lineId) =>
 export const getPaymentReceiptHtml = (batchId, lineId) =>
   axios.get(getPaymentReceiptUrl(batchId, lineId), { responseType: "text" });
 
+export const getVendorReceiptUrl = (batchId, lineId) =>
+  `${API_BASE}/api/ta/payroll/payout-batches/${batchId}/vendor-receipt/${lineId}`;
+
+export const getVendorReceiptHtml = (batchId, lineId, { preview = false } = {}) =>
+  axios.get(getVendorReceiptUrl(batchId, lineId), {
+    params: preview ? { preview: 1 } : {},
+    responseType: "text",
+  });
+
+export const getBatchVendorReceiptsHtml = (batchId, { preview = false } = {}) =>
+  axios.get(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/vendor-receipts`, {
+    params: preview ? { preview: 1 } : {},
+    responseType: "text",
+  });
+
+export const listPayrollVendors = ({ includeInactive = true } = {}) =>
+  axios.get(`${API_BASE}/api/ta/payroll/vendors`, {
+    params: { include_inactive: includeInactive ? 1 : 0 },
+  });
+
+export const createPayrollVendor = (body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/vendors`, body);
+
+export const updatePayrollVendor = (vendorId, body) =>
+  axios.put(`${API_BASE}/api/ta/payroll/vendors/${vendorId}`, body);
+
+export const setWorkerDefaultVendor = (userId, vendorId) =>
+  axios.put(`${API_BASE}/api/ta/payroll/workers/${userId}/default-vendor`, {
+    vendor_id: vendorId,
+  });
+
 export const getAccountantYtd = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/accountant/ytd`, { params });
 

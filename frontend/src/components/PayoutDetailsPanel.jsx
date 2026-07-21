@@ -52,6 +52,9 @@ import {
   getBatchPaystubsHtml,
   getEmployerPayrollPacketHtml,
   getPayRegisterHtml,
+  getVendorReceiptHtml,
+  getBatchVendorReceiptsHtml,
+  listPayrollVendors,
   postPaystubPreviewHtml,
   postRefreshPriorBalances,
   putPayoutBatchDetails,
@@ -440,6 +443,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   const [archiveInitialUserId, setArchiveInitialUserId] = useState("");
   const [archiveInitialWorkerName, setArchiveInitialWorkerName] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState({});
+  const [vendors, setVendors] = useState([]);
 
   const loadBatches = useCallback(async () => {
     try {
@@ -483,6 +487,30 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
       loadDetail(batches[0].id);
     }
   }, [batches, selectedId, initialBatchId, loadDetail]);
+
+  const usesVendorReceiptCategory = ["temp", "contractor_1099"].includes(
+    detail?.worker_category,
+  );
+
+  useEffect(() => {
+    if (!usesVendorReceiptCategory) return;
+    listPayrollVendors({ includeInactive: false })
+      .then((res) => setVendors(res.data?.vendors || []))
+      .catch(() => setVendors([]));
+  }, [usesVendorReceiptCategory]);
+
+  const setLineVendor = async (lineId, vendorId) => {
+    if (!selectedId) return;
+    setError("");
+    try {
+      await putPayoutBatchDetails(selectedId, {
+        lines: [{ line_id: lineId, vendor_id: vendorId || null }],
+      });
+      await loadDetail(selectedId);
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Vendor update failed");
+    }
+  };
 
   const canEdit = detail?.payout_workflow?.can_edit_details && canEditDetails;
   const finalized = detail?.payout_workflow?.payout_details_finalized;
@@ -675,13 +703,26 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
     }
   };
 
+  const usesVendorReceipt = Boolean(
+    detail?.payout_workflow?.uses_vendor_receipt ||
+      ["temp", "contractor_1099"].includes(detail?.worker_category),
+  );
+
   const showPaystubActions =
+    !usesVendorReceipt &&
     !isReceiptMode &&
     Boolean(
       detail?.payout_workflow?.paystub_preview_available ||
         detail?.payout_workflow?.paystub_available ||
         detail?.payout_workflow?.can_edit_details ||
         detail?.status === "approved_for_payment",
+    );
+
+  const showVendorReceiptActions =
+    usesVendorReceipt &&
+    Boolean(
+      detail?.payout_workflow?.vendor_receipt_available ||
+        detail?.payout_workflow?.vendor_receipt_preview_available,
     );
 
   const fetchPaystubHtml = (lineId, draft) => {
@@ -864,6 +905,88 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
     }
   };
 
+  const previewVendorReceipt = async (lineId) => {
+    if (!selectedId) return;
+    setError("");
+    try {
+      if (canEdit && !finalized) {
+        const ok = await saveDetails({ silent: true });
+        if (!ok) return;
+      }
+      await previewHtmlDocument(() =>
+        getVendorReceiptHtml(selectedId, lineId, { preview: !finalized }),
+      );
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Vendor receipt preview failed");
+    }
+  };
+
+  const printVendorReceipt = async (lineId) => {
+    if (!selectedId) return;
+    setError("");
+    try {
+      await printHtmlDocument(() =>
+        getVendorReceiptHtml(selectedId, lineId, { preview: !finalized }),
+      );
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Vendor receipt load failed");
+    }
+  };
+
+  const previewAllVendorReceipts = async () => {
+    if (!selectedId) return;
+    setError("");
+    try {
+      if (canEdit && !finalized) {
+        const ok = await saveDetails({ silent: true });
+        if (!ok) return;
+      }
+      await previewHtmlDocument(() =>
+        getBatchVendorReceiptsHtml(selectedId, { preview: !finalized }),
+      );
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Preview all receipts failed");
+    }
+  };
+
+  const printAllVendorReceipts = async () => {
+    if (!selectedId) return;
+    setError("");
+    try {
+      if (canEdit && !finalized) {
+        const ok = await saveDetails({ silent: true });
+        if (!ok) return;
+      }
+      await printHtmlDocument(() =>
+        getBatchVendorReceiptsHtml(selectedId, { preview: !finalized }),
+      );
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Print all receipts failed");
+    }
+  };
+
+  const downloadAllVendorReceipts = async () => {
+    if (!selectedId) return;
+    setError("");
+    try {
+      if (canEdit && !finalized) {
+        const ok = await saveDetails({ silent: true });
+        if (!ok) return;
+      }
+      const filename = paystubBatchDownloadFilename(
+        detail?.batch_name,
+        detail?.pay_period_start,
+        detail?.pay_period_end,
+      );
+      await downloadPdfFromFetch(
+        () => getBatchVendorReceiptsHtml(selectedId, { preview: !finalized }),
+        filename,
+      );
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Download receipts failed");
+    }
+  };
+
   const toggleExpand = (lineId) => {
     setExpanded((prev) => ({ ...prev, [lineId]: !prev[lineId] }));
   };
@@ -999,6 +1122,31 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                   Print All Paystubs
                 </Button>
                 <Button size="small" startIcon={<DownloadIcon />} onClick={downloadAllPaystubs}>
+                  Download batch PDF
+                </Button>
+              </>
+            ) : null}
+            {showVendorReceiptActions ? (
+              <>
+                <Button
+                  size="small"
+                  startIcon={<VisibilityIcon />}
+                  onClick={previewAllVendorReceipts}
+                >
+                  Preview All Receipts
+                </Button>
+                <Button
+                  size="small"
+                  startIcon={<PrintIcon />}
+                  onClick={printAllVendorReceipts}
+                >
+                  Print All Receipts
+                </Button>
+                <Button
+                  size="small"
+                  startIcon={<DownloadIcon />}
+                  onClick={downloadAllVendorReceipts}
+                >
                   Download batch PDF
                 </Button>
               </>
@@ -1206,7 +1354,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                               </Tooltip>
                             </Stack>
                           ) : null}
-                          {finalized && doc.receipt_available ? (
+                          {finalized && doc.receipt_available && !usesVendorReceipt ? (
                             <Tooltip
                               title={
                                 method === "cash" ? "Generate cash receipt" : "Print payment receipt"
@@ -1216,6 +1364,28 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                 <PrintIcon fontSize="small" />
                               </IconButton>
                             </Tooltip>
+                          ) : null}
+                          {usesVendorReceipt &&
+                          (doc.vendor_receipt_available ||
+                            doc.vendor_receipt_preview_available) ? (
+                            <Stack direction="row" justifyContent="flex-end" spacing={0.25}>
+                              <Tooltip title="Preview vendor receipt">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => previewVendorReceipt(ln.id)}
+                                >
+                                  <VisibilityIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                              <Tooltip title="Print vendor receipt">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => printVendorReceipt(ln.id)}
+                                >
+                                  <PrintIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                            </Stack>
                           ) : null}
                         </TableCell>
                       </TableRow>
@@ -1287,6 +1457,66 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                   ) : null}
                                 </Stack>
                               ) : null}
+                              {usesVendorReceipt ? (
+                                <Stack
+                                  direction="row"
+                                  spacing={1}
+                                  alignItems="center"
+                                  flexWrap="wrap"
+                                  useFlexGap
+                                  sx={{ mt: 1.5 }}
+                                >
+                                  <Chip
+                                    size="small"
+                                    color="info"
+                                    variant="outlined"
+                                    label={`Vendor: ${
+                                      ln.vendor?.name ||
+                                      doc.vendor?.name ||
+                                      "Not assigned"
+                                    }`}
+                                  />
+                                  {canEdit && !finalized ? (
+                                    <Select
+                                      size="small"
+                                      displayEmpty
+                                      value={ln.vendor_id ?? ""}
+                                      onChange={(e) =>
+                                        setLineVendor(ln.id, e.target.value || null)
+                                      }
+                                      sx={{ minWidth: 190, fontSize: "0.8rem" }}
+                                    >
+                                      <MenuItem value="">
+                                        <em>Use worker default</em>
+                                      </MenuItem>
+                                      {vendors.map((v) => (
+                                        <MenuItem key={v.id} value={v.id}>
+                                          {v.name}
+                                        </MenuItem>
+                                      ))}
+                                    </Select>
+                                  ) : null}
+                                  {doc.vendor_receipt_available ||
+                                  doc.vendor_receipt_preview_available ? (
+                                    <>
+                                      <Button
+                                        size="small"
+                                        startIcon={<VisibilityIcon />}
+                                        onClick={() => previewVendorReceipt(ln.id)}
+                                      >
+                                        Preview Receipt
+                                      </Button>
+                                      <Button
+                                        size="small"
+                                        startIcon={<PrintIcon />}
+                                        onClick={() => printVendorReceipt(ln.id)}
+                                      >
+                                        Print Receipt
+                                      </Button>
+                                    </>
+                                  ) : null}
+                                </Stack>
+                              ) : null}
                             </Box>
                           </Collapse>
                         </TableCell>
@@ -1325,6 +1555,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         <DialogContent>
           <Typography variant="body2" sx={{ mb: 1.5 }}>
             Locks tax and payment fields, generates official paystubs, and marks the batch ready to pay.
+            Print or email paystubs from this tab when employees are paid.
           </Typography>
           {(() => {
             const s = detail?.finalize_cost_summary || {};

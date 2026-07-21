@@ -157,3 +157,22 @@ export function serializeRosterDraftEntry(data = {}) {
   out.times_modified = rosterTimesModified(out);
   return out;
 }
+
+/**
+ * Lightweight hours/cost calculator for a roster entry.
+ * Kept from the stashed branch as a public helper; implemented on the shared
+ * time helpers above so both branches' behavior is preserved without a
+ * duplicate time parser.
+ */
+export function calcRosterEntryMetrics(entry) {
+  const shiftOpen = Boolean(entry?.shift_open || !entry?.end_time);
+  const startMin = rosterTimeToMinutes(entry?.start_time);
+  const endMin = rosterTimeToMinutes(entry?.end_time);
+  const rate = Number(entry?.rate) || 0;
+  if (shiftOpen || startMin == null || endMin == null) {
+    return { hours: null, cost: null, shift_open: shiftOpen };
+  }
+  const hours = calcRosterHours(entry?.start_time, entry?.end_time, entry?.break_minutes);
+  const cost = hours != null ? calcRosterCost(hours, rate) : null;
+  return { hours, cost, shift_open: false };
+}
