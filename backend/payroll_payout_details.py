@@ -3546,6 +3546,26 @@ def _vendor_receipt_type_label(worker_category: str) -> str:
     return "Contractor"
 
 
+def _org_display_name(conn, organization_id) -> str:
+    """Display name of the organization the work was performed for (the client).
+
+    Identifies the service recipient, not the contractor vendor, so it resolves
+    from the batch's organization record.
+    """
+    if not organization_id:
+        return ""
+    c = conn.cursor(dictionary=True)
+    try:
+        c.execute(
+            "SELECT display_name, slug FROM organizations WHERE id=%s LIMIT 1",
+            (int(organization_id),),
+        )
+    except Exception:
+        return ""
+    row = c.fetchone() or {}
+    return str(row.get("display_name") or row.get("slug") or "").strip()
+
+
 def generate_vendor_receipt_html(
     conn,
     organization_id: int,
@@ -3668,6 +3688,8 @@ def generate_vendor_receipt_html(
         ]
     )
 
+    org_display_name = _org_display_name(conn, organization_id)
+
     issue_from = ""
     if vendor_name or vendor_address:
         addr_html = (
@@ -3675,10 +3697,24 @@ def generate_vendor_receipt_html(
             if vendor_address
             else ""
         )
+        service_recipient_html = (
+            "<p style='margin:8px 0 2px'><strong>Work performed for</strong></p>"
+            f"<p style='margin:2px 0'>{esc(org_display_name)}</p>"
+            if org_display_name
+            else ""
+        )
         issue_from = (
             "<div style='margin:12px 0'>"
-            "<strong>Issue from</strong>"
-            f"<p style='margin:2px 0'>{esc(vendor_name)}</p>{addr_html}</div>"
+            "<strong>Issued from</strong>"
+            f"<p style='margin:2px 0'>{esc(vendor_name)}</p>{addr_html}"
+            f"{service_recipient_html}</div>"
+        )
+    elif org_display_name:
+        # No vendor branding resolved, but still show the service recipient.
+        issue_from = (
+            "<div style='margin:12px 0'>"
+            "<strong>Work performed for</strong>"
+            f"<p style='margin:2px 0'>{esc(org_display_name)}</p></div>"
         )
 
     draft_banner = (

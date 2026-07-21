@@ -4,10 +4,14 @@ These cover the pure gating/document-state logic (no DB) plus vendor snapshot
 helpers. W-2 behavior must be unaffected.
 """
 
+from unittest import mock
+
+import backend.payroll_payout_details as ppd
 from backend.payroll_payout_details import (
     batch_uses_vendor_receipt,
     can_generate_paystub_for_line,
     can_generate_vendor_receipt_for_line,
+    generate_vendor_receipt_html,
     line_document_state,
     payout_workflow_state,
 )
@@ -120,3 +124,62 @@ def test_vendor_snapshot_for_finalize_shape():
     snap = vendor_snapshot_for_finalize(vendor)
     assert snap == {"id": 1, "name": "Washmate Inc", "address": "A", "logo_url": "/l.png"}
     assert vendor_snapshot_for_finalize(None) is None
+
+
+def test_vendor_receipt_shows_issued_from_and_service_recipient():
+    """Receipt shows the vendor (from snapshot) plus the client org it was for."""
+    batch = {
+        "id": 22,
+        "organization_id": 3,
+        "worker_category": "temp",
+        "payout_details_finalized_at": "2026-07-01T00:00:00",
+        "pay_period_start": "2026-05-11",
+        "pay_period_end": "2026-05-17",
+        "official_pay_date": "2026-05-16",
+        "lines": [
+            {
+                "id": 211,
+                "user_id": 5,
+                "worker_name_snapshot": "Jane Doe",
+                "approved_hours": 10,
+                "rate": 20,
+                "adjustments": 0,
+                "payout_details": {
+                    "payment": {"method": "check", "date": "2026-05-16"},
+                    "vendor": {
+                        "id": 1,
+                        "name": "Washmate Inc",
+                        "address": "921 2nd Avenue, Franklin Square, NY 11010",
+                        "logo_url": None,
+                    },
+                },
+                "payout_totals": {"gross_pay": 200.0, "amount_paid": 200.0},
+            }
+        ],
+    }
+    # Finalized snapshot must be the branding source; org name is the service recipient.
+    vendor_snapshot = {
+        "id": 1,
+        "name": "Washmate Inc",
+        "address": "921 2nd Avenue, Franklin Square, NY 11010",
+        "logo_url": None,
+        "snapshot": True,
+    }
+    with mock.patch.object(ppd, "get_payout_batch_details", return_value=batch), mock.patch.object(
+        ppd, "_vendor_worker_contact", return_value={"phone": "", "email": ""}
+    ), mock.patch.object(
+        ppd, "fetch_vendor_receipt_ytd_prior", return_value=0.0
+    ), mock.patch.object(
+        ppd, "_org_display_name", return_value="VeeWash"
+    ), mock.patch(
+        "backend.payroll_vendors.resolve_line_vendor", return_value=vendor_snapshot
+    ):
+        html = generate_vendor_receipt_html(object(), 3, 22, 211)
+
+    assert "Issued from" in html
+    assert "Washmate Inc" in html
+    assert "Work performed for" in html
+    assert "VeeWash" in html
+    # Service recipient appears directly below the vendor block.
+    assert html.index("Issued from") < html.index("Work performed for")
+    assert html.index("Washmate Inc") < html.index("Work performed for")
