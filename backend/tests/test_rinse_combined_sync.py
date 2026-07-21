@@ -1,5 +1,6 @@
 """Tests for combined At Vendor + Ready for Vendor scheduled sync."""
 
+import os
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
@@ -33,15 +34,27 @@ class TestCombineScheduledStatus:
 
 
 class TestReadyForVendorFlag:
+    @patch.dict(os.environ, {"RFV_SCRAPE_ENABLED": "true"})
     @patch("backend.rinse_presence_scrape.is_feature_enabled", return_value=True)
     def test_enabled(self, _mock):
+        # Enabled only when the master kill-switch is on AND the tenant flag is on.
         assert ready_for_vendor_scrape_enabled(MagicMock(), 3) is True
 
+    @patch.dict(os.environ, {"RFV_SCRAPE_ENABLED": "true"})
     @patch("backend.rinse_presence_scrape.is_feature_enabled", return_value=False)
     def test_disabled(self, _mock):
         assert ready_for_vendor_scrape_enabled(MagicMock(), 3) is False
 
-    def test_veewash_org_default_enables_rfv(self):
+    def test_master_kill_switch_overrides_tenant_flag(self):
+        # RFV_SCRAPE_ENABLED unset (default false) => disabled even if the tenant flag is on.
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RFV_SCRAPE_ENABLED", None)
+            with patch("backend.rinse_presence_scrape.is_feature_enabled", return_value=True):
+                assert ready_for_vendor_scrape_enabled(MagicMock(), 3) is False
+
+    def test_veewash_org_no_longer_auto_enables_rfv(self):
+        # The old VeeWash slug auto-enable was removed; a tenant/DB default must not
+        # override the disabled code default.
         from backend.tenant_feature_flags import get_tenant_feature_flags
 
         cursor = MagicMock()
@@ -50,7 +63,106 @@ class TestReadyForVendorFlag:
             "backend.tenant_feature_flags._get_setting", return_value=None
         ):
             flags = get_tenant_feature_flags(cursor, 3)
-        assert flags["enable_ready_for_vendor_scrape"] is True
+        assert flags["enable_ready_for_vendor_scrape"] is False
+
+
+class TestRfvScrapeMasterKillSwitch:
+    def test_rfv_scrape_enabled_default_false(self):
+        from backend.rinse_presence_scrape import rfv_scrape_enabled
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RFV_SCRAPE_ENABLED", None)
+            assert rfv_scrape_enabled() is False
+        with patch.dict(os.environ, {"RFV_SCRAPE_ENABLED": "true"}):
+            assert rfv_scrape_enabled() is True
+        with patch.dict(os.environ, {"RFV_SCRAPE_ENABLED": "false"}):
+            assert rfv_scrape_enabled() is False
+
+    @patch("backend.rinse_presence_scrape.run_presence_scrape_for_org")
+    @patch("backend.rinse_scheduled_scrape._run_bash_script", return_value=0)
+    @patch("backend.rinse_scheduled_scrape.count_csv_data_rows", return_value=5)
+    @patch("backend.rinse_scheduled_scrape.acquire_scrape_lock", return_value=(True, ""))
+    @patch("backend.rinse_scheduled_scrape.release_scrape_lock")
+    @patch("backend.rinse_scheduled_scrape.finish_scrape_run")
+    @patch("backend.rinse_scheduled_scrape.insert_scrape_run", return_value=99)
+    @patch("backend.rinse_scheduled_scrape.resolve_rinse_vendor", return_value="veewash")
+    @patch("backend.rinse_scheduled_scrape.tenant_script_dir")
+    @patch("backend.rinse_scheduled_scrape.build_run_paths")
+    @patch("backend.rinse_scheduled_scrape._org_slug_name", return_value=("veewash", "VeeWash"))
+    def test_combined_sync_skips_rfv_when_disabled_but_runs_at_vendor(
+        self,
+        _slug,
+        mock_paths,
+        mock_tenant_dir,
+        _vendor,
+        _ins,
+        _fin,
+        _rel,
+        _lock,
+        _count,
+        _bash,
+        mock_rfv,
+    ):
+        from pathlib import Path
+        import tempfile
+
+        from backend.rinse_scheduled_scrape import ScrapePaths, run_rinse_combined_sync_for_org
+
+        mock_tenant_dir.return_value.is_dir.return_value = True
+        run_dir = Path(tempfile.mkdtemp())
+        p = ScrapePaths(
+            run_dir=run_dir,
+            portal_csv=run_dir / "portal.csv",
+            scan_tickets_csv=run_dir / "t.csv",
+            scan_events_csv=run_dir / "e.csv",
+            log_path=run_dir / "log",
+        )
+        mock_paths.return_value = p
+        write_gate_passing_portal_csv(p.portal_csv)
+        p.scan_events_csv.write_text("h\n1\n")
+
+        call_order: list[str] = []
+
+        def _presence_side_effect(*_args, **kwargs):
+            portal = kwargs.get("portal_status") or "ready_for_vendor"
+            call_order.append("rfv" if portal == "ready_for_vendor" else "av_presence")
+            return PresenceScrapeResult(
+                organization_id=3,
+                portal_status=portal,
+                status="success",
+                started_at=datetime.utcnow(),
+                finished_at=datetime.utcnow(),
+                stats={"rows_found": 0, "active_rows": 0},
+            )
+
+        mock_rfv.side_effect = _presence_side_effect
+
+        conn = MagicMock()
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {"c": 5}
+        conn.cursor.return_value = cursor
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RFV_SCRAPE_ENABLED", None)
+            with patch("backend.rinse_portal_csv.portal_csv_to_orders_df") as pdf, patch(
+                "backend.rinse_scan_events_upload.parse_scan_events_csv", return_value=(MagicMock(), [])
+            ), patch("backend.rinse_combined_upload.commit_rinse_combined_upload", return_value={"batch_id": 1, "rows_inserted": 5, "portal_absence_allowed": True}), patch(
+                "backend.upload_batch_confirm.confirm_upload_batch_core", return_value={"ok": True}
+            ), patch("backend.rinse_scheduled_scrape._subprocess_env_for_vendor", return_value={"RINSE_MAX_PAGES": "500"}), patch(
+                "backend.rinse_scheduled_scrape._count_accepted_rows", return_value=5
+            ), patch("backend.rinse_scheduled_scrape._count_attention_rows", return_value=0):
+                import pandas as pd
+
+                pdf.return_value = pd.DataFrame([{"ticket_id": "ABC"}])
+                result = run_rinse_combined_sync_for_org(conn, 3, run_type="scheduled")
+
+        # RFV scrape skipped entirely; only the At Vendor presence scrape ran.
+        assert call_order == ["av_presence"]
+        assert result.ready_for_vendor_status == "disabled"
+        # A disabled RFV must NOT fail the cycle — At Vendor still proceeds.
+        assert result.at_vendor_status != "skipped"
+        sync_cycle = result.detail.get("sync_cycle") or {}
+        assert sync_cycle.get("cycle_status") != "RFV_FAILED"
 
 
 class TestZeroRowsPresenceScrape:
@@ -226,6 +338,7 @@ class TestScheduledScrapeRunsBoth:
     @patch("backend.rinse_scheduled_scrape.tenant_script_dir")
     @patch("backend.rinse_scheduled_scrape.build_run_paths")
     @patch("backend.rinse_scheduled_scrape._org_slug_name", return_value=("veewash", "VeeWash"))
+    @patch.dict(os.environ, {"RFV_SCRAPE_ENABLED": "true"})
     def test_scheduled_combined_runs_rfv_first(
         self,
         _slug,
@@ -315,6 +428,7 @@ class TestScheduledScrapeRunsBoth:
     @patch("backend.rinse_scheduled_scrape.tenant_script_dir")
     @patch("backend.rinse_scheduled_scrape.build_run_paths")
     @patch("backend.rinse_scheduled_scrape._org_slug_name", return_value=("veewash", "VeeWash"))
+    @patch.dict(os.environ, {"RFV_SCRAPE_ENABLED": "true"})
     def test_partial_success_when_rfv_fails(
         self,
         _slug,
@@ -395,6 +509,7 @@ class TestCombinedSyncOrchestration:
     @patch("backend.rinse_scheduled_scrape.build_run_paths")
     @patch("backend.rinse_scheduled_scrape.resolve_rinse_vendor", return_value="veewash")
     @patch("backend.rinse_scheduled_scrape._org_slug_name", return_value=("veewash", "VeeWash"))
+    @patch.dict(os.environ, {"RFV_SCRAPE_ENABLED": "true"})
     def test_manual_and_scheduled_share_rfv_first_orchestrator(
         self,
         _slug,
@@ -467,6 +582,7 @@ class TestCombinedSyncOrchestration:
     @patch("backend.rinse_scheduled_scrape.build_run_paths")
     @patch("backend.rinse_scheduled_scrape.resolve_rinse_vendor", return_value="veewash")
     @patch("backend.rinse_scheduled_scrape._org_slug_name", return_value=("veewash", "VeeWash"))
+    @patch.dict(os.environ, {"RFV_SCRAPE_ENABLED": "true"})
     def test_av_presence_failure_does_not_hide_rfv_success(
         self,
         _slug,

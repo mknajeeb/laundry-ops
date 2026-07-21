@@ -57,20 +57,10 @@ def _set_setting(cursor, organization_id: int, key: str, value: str) -> None:
 
 def get_tenant_feature_flags(cursor, organization_id: int) -> dict[str, bool]:
     out = dict(DEFAULT_FLAGS)
-    org = int(organization_id)
-    if table_exists(cursor, "organizations"):
-        cursor.execute(
-            "SELECT slug FROM organizations WHERE id=%s LIMIT 1",
-            (org,),
-        )
-        row = cursor.fetchone()
-        slug = ""
-        if isinstance(row, dict):
-            slug = str(row.get("slug") or "").strip().lower()
-        elif row:
-            slug = str(row[0] or "").strip().lower()
-        if "veewash" in slug:
-            out["enable_ready_for_vendor_scrape"] = True
+    # NOTE: RFV scraping is globally gated by the RFV_SCRAPE_ENABLED master kill-switch
+    # (see rinse_presence_scrape.rfv_scrape_enabled). We intentionally no longer auto-enable
+    # enable_ready_for_vendor_scrape for VeeWash tenants here, so a tenant/DB default cannot
+    # override the disabled code default.
     raw = _get_setting(cursor, organization_id, KEY_FEATURE_FLAGS_JSON)
     if not raw:
         return out

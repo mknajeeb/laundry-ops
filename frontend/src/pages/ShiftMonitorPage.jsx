@@ -1,9 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import {
-  Accordion,
-  AccordionDetails,
-  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -17,19 +14,11 @@ import {
   Switch,
   Typography,
 } from "@mui/material";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import CloseIcon from "@mui/icons-material/Close";
 import LiveBaselineBanner from "../components/shift/LiveBaselineBanner";
 import SyncStatusSection from "../components/shift/SyncStatusSection";
-import ReadyForVendorSection from "../components/shift/ReadyForVendorSection";
 import AtVendorFlowSection from "../components/shift/AtVendorFlowSection";
 import EmployeeProductivityDashboard from "../components/shift/EmployeeProductivityDashboard";
-import ShiftMonitorModuleSection from "../components/shift/ShiftMonitorModuleSection";
-import VendorHomeComparisonSection from "../components/shift/VendorHomeComparisonSection";
-import CurrentFacilitySnapshotSection from "../components/shift/CurrentFacilitySnapshotSection";
-import DueTodaySnapshotSection from "../components/shift/DueTodaySnapshotSection";
-import FacilityWorkloadSection from "../components/shift/FacilityWorkloadSection";
-import { EmployeeActivityPlaceholder } from "../components/shift/DashboardPreviewSections";
 import ShiftMonitorDateBar from "../components/shift/ShiftMonitorDateBar";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import { getFoldingPerformanceDetail, getRinseScheduledScrapeStatus, getShiftAnalysisSimple, runRinseBothSyncs } from "../api";
@@ -56,8 +45,6 @@ import {
   formatEtDateTime,
 } from "../utils/shiftMonitorHelpers";
 
-const ShiftAnalysisAdvancedPanel = lazy(() => import("./ShiftAnalysisAdvancedPanel"));
-
 const SYNC_POLL_INTERVAL_MS = 10000;
 const SYNC_POLL_MAX_MS = 1800000;
 
@@ -75,20 +62,6 @@ async function pollUntilSchedulerSyncComplete() {
 
 const WORKLOAD_BASELINE_AUDIT_NOTE =
   "Historical workload uses clean baseline reset from Jun 12, 2026 11:20 PM ET. Legacy carry-in bags before reset are excluded.";
-
-function WorkloadBaselineAuditNote({ visible }) {
-  if (!visible) return null;
-  return (
-    <Typography
-      variant="caption"
-      color="text.secondary"
-      display="block"
-      sx={{ mb: 1.5, fontStyle: "italic", maxWidth: 640 }}
-    >
-      {WORKLOAD_BASELINE_AUDIT_NOTE}
-    </Typography>
-  );
-}
 
 function MonitorNav() {
   return (
@@ -401,223 +374,6 @@ function RecordRow({ row, expanded, onToggle }) {
   );
 }
 
-function AdvancedDebugSection({ dateStart, dateEnd, initialData, user }) {
-  const [expanded, setExpanded] = useState(false);
-  const [debugData, setDebugData] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const data = debugData || initialData;
-  const audit = data?.debug_audit || {};
-  const facility = audit.facility_tracker_today || {};
-  const recon = audit.reconciliation_status || {};
-  const tagCounts = audit.drilldown_tag_counts || {};
-  const cfs = data?.current_facility_snapshot || {};
-  const dts = data?.due_today_snapshot || {};
-  const facilityTracker = data?.facility_tracker_today || {};
-  const debugRush = "all";
-
-  const handleChange = async (_, isExpanded) => {
-    setExpanded(isExpanded);
-    if (!isExpanded || debugData) return;
-    setLoading(true);
-    setError("");
-    try {
-      const res = await getShiftAnalysisSimple({
-        date_start: dateStart,
-        date_end: dateEnd,
-        summary_only: 0,
-        include_debug: 1,
-      });
-      setDebugData(res.data || null);
-    } catch (e) {
-      setError(e?.response?.data?.error || "Failed to load debug data");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <Accordion
-      expanded={expanded}
-      onChange={handleChange}
-      sx={{ mt: 2, boxShadow: "none", border: "1px solid", borderColor: "divider" }}
-      TransitionProps={{ unmountOnExit: true }}
-    >
-      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-        <Typography fontWeight={700}>Advanced Debug</Typography>
-      </AccordionSummary>
-      <AccordionDetails>
-        {loading ? <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Loading debug data…</Typography> : null}
-        {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
-        {!loading && !error && expanded ? (
-          <>
-        <WorkloadBaselineAuditNote
-          visible={Boolean(
-            data?.at_vendor_module?.uses_clean_veewash_baseline
-            || data?.live_baseline?.baseline_source === "latest_clean_veewash_scrape",
-          )}
-        />
-        <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
-          Vendor Home vs Internal Scan (reconciliation)
-        </Typography>
-        <VendorHomeComparisonSection parity={data?.vendor_home_parity} presence={data?.vendor_home_parity?.presence} />
-
-        <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1, mt: 2 }}>
-          Current Facility Snapshot (A/B)
-        </Typography>
-        <CurrentFacilitySnapshotSection snapshot={cfs} rushFilter={debugRush} onDrilldown={() => {}} activeTag={null} />
-
-        <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1, mt: 2 }}>
-          Due Today Snapshot (A/B)
-        </Typography>
-        <DueTodaySnapshotSection snapshot={dts} rushFilter={debugRush} onDrilldown={() => {}} activeTag={null} />
-
-        <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1, mt: 2 }}>
-          Historical Workload
-        </Typography>
-        <FacilityWorkloadSection tracker={facilityTracker} rushFilter={debugRush} onDrilldown={() => {}} activeTag={null} />
-
-        <EmployeeActivityPlaceholder />
-
-        <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.5, mt: 2 }}>
-          Sync & reconciliation JSON
-        </Typography>
-        <Box component="pre" sx={{ fontSize: 11, overflow: "auto", mb: 2, p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
-          {JSON.stringify(
-            {
-              ready_for_vendor_sync: audit.ready_for_vendor_sync,
-              at_vendor_sync: audit.at_vendor_sync,
-              reconciliation_status: recon,
-              live_baseline: audit.live_baseline,
-            },
-            null,
-            2,
-          )}
-        </Box>
-        <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.5 }}>
-          Facility workload IDs
-        </Typography>
-        <Box component="pre" sx={{ fontSize: 11, overflow: "auto", mb: 2, p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
-          {JSON.stringify(
-            {
-              received_today_ids: facility.entered_today_ids,
-              carryover_ids: facility.carryover_ids,
-              total_workload_ids: facility.total_workload_ids,
-            },
-            null,
-            2,
-          )}
-        </Box>
-        <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.5 }}>
-          Drilldown tag counts
-        </Typography>
-        <Box component="pre" sx={{ fontSize: 11, overflow: "auto", mb: 2, p: 1, bgcolor: "action.hover", borderRadius: 1, maxHeight: 240 }}>
-          {JSON.stringify(tagCounts, null, 2)}
-        </Box>
-        {data?.scope_overlap ? (
-          <Box component="pre" sx={{ fontSize: 11, overflow: "auto", mb: 2, p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
-            {JSON.stringify({ overlap: data.scope_overlap }, null, 2)}
-          </Box>
-        ) : null}
-        {data?.employee_diagnostics?.excluded_external?.length ? (
-          <Alert severity="info" sx={{ mb: 2 }}>
-            External / ignored users: {data.employee_diagnostics.excluded_external.join(", ")}
-          </Alert>
-        ) : null}
-        <Suspense fallback={<Typography sx={{ p: 2 }}>Loading advanced view…</Typography>}>
-          <ShiftAnalysisAdvancedPanel user={user} embedded />
-        </Suspense>
-          </>
-        ) : null}
-      </AccordionDetails>
-    </Accordion>
-  );
-}
-
-function PipelineModulesSection({
-  dateStart,
-  dateEnd,
-  moduleFilters,
-  setModuleFilter,
-  openDrilldown,
-  drilldown,
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [fullData, setFullData] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const handleChange = async (_, isExpanded) => {
-    setExpanded(isExpanded);
-    if (!isExpanded || fullData) return;
-    setLoading(true);
-    setError("");
-    try {
-      const res = await getShiftAnalysisSimple({
-        date_start: dateStart,
-        date_end: dateEnd,
-        summary_only: 0,
-      });
-      setFullData(res.data || null);
-    } catch (e) {
-      setError(e?.response?.data?.error || "Failed to load pipeline monitor");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const modules = fullData?.shift_monitor_modules || {};
-  const records = fullData?.records || [];
-  const production = modules.production_stage;
-
-  return (
-    <Accordion
-      expanded={expanded}
-      onChange={handleChange}
-      sx={{
-        mt: 2,
-        boxShadow: "none",
-        border: "1px dashed",
-        borderColor: "warning.main",
-        bgcolor: "rgba(255, 247, 237, 0.35)",
-      }}
-      TransitionProps={{ unmountOnExit: true }}
-    >
-      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-        <Box>
-          <Typography fontWeight={700} color="warning.dark">
-            Production Pipeline Monitor — Under Review
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            Experimental · counts may not match Today&apos;s Workload
-          </Typography>
-        </Box>
-      </AccordionSummary>
-      <AccordionDetails>
-        <Alert severity="warning" sx={{ mb: 2 }}>
-          Production Pipeline Monitor is under review. Counts may not match Today&apos;s Workload and should not be used as trusted production KPIs until re-audited.
-        </Alert>
-        {loading ? <Typography variant="body2" color="text.secondary">Loading…</Typography> : null}
-        {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
-        {!loading && expanded && production ? (
-          <ShiftMonitorModuleSection
-            moduleKey="production_stage"
-            module={production}
-            records={records}
-            rushFilter={moduleFilters.production_stage?.rush || "all"}
-            serviceFilter={moduleFilters.production_stage?.service || "all"}
-            onRushChange={(v) => setModuleFilter("production_stage", { rush: v })}
-            onServiceChange={(v) => setModuleFilter("production_stage", { service: v })}
-            onDrilldown={openDrilldown}
-            activeTag={drilldown}
-          />
-        ) : null}
-      </AccordionDetails>
-    </Accordion>
-  );
-}
-
 export default function ShiftMonitorPage({ user }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState(null);
@@ -633,7 +389,6 @@ export default function ShiftMonitorPage({ user }) {
     exceptions: { rush: "all", service: "all" },
     monitor: { rush: "all", service: "all" },
   });
-  const [rfvRushFilter, setRfvRushFilter] = useState("all");
   const [avRushFilter, setAvRushFilter] = useState("all");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [dueSortEnabled, setDueSortEnabled] = useState(true);
@@ -722,33 +477,6 @@ export default function ShiftMonitorPage({ user }) {
     if (bucket?.status === "pending" && bucket?.rush === "rush") return true;
     return false;
   }, [drilldown]);
-
-  const openDrilldown = (ctx) => {
-    setDrilldown(ctx);
-    setDrawerOpen(true);
-  };
-
-  const openRfvDrilldown = (ctx) => {
-    const tag = typeof ctx === "string" ? ctx : (ctx?.drilldownTag || ctx?.drilldown_tag);
-    const cardLabel = typeof ctx === "string" ? tag : (ctx?.cardLabel || ctx?.label || tag);
-    const cardKey = typeof ctx === "string" ? tag : (ctx?.cardKey || tag);
-    setDrilldown({
-      type: "rfv",
-      drilldownTag: tag,
-      cardLabel,
-      cardKey,
-      expectedCount: typeof ctx === "object" ? ctx.expectedCount : undefined,
-      moduleTitle: "Ready for Vendor",
-    });
-    setDrawerOpen(true);
-  };
-
-  const setModuleFilter = (moduleKey, patch) => {
-    setModuleFilters((prev) => ({
-      ...prev,
-      [moduleKey]: { ...(prev[moduleKey] || { rush: "all", service: "all" }), ...patch },
-    }));
-  };
 
   const runRinseSync = async () => {
     setSyncRunning(true);
@@ -965,6 +693,8 @@ export default function ShiftMonitorPage({ user }) {
             }}
             activeKey={drilldown?.moduleKey === "at_vendor_flow" ? drilldown.cardKey : null}
             isOperationsMode={operationsMode}
+            selectedDateEt={dateEnd || dateStart}
+            onCompletionReviewChanged={load}
           />
 
           {singleDaySelected ? (
@@ -978,17 +708,6 @@ export default function ShiftMonitorPage({ user }) {
             />
           ) : null}
 
-          {operationsMode ? (
-            <ReadyForVendorSection
-              rfv={rfv}
-              rfvSync={rfvSync}
-              rushFilter={rfvRushFilter}
-              onRushChange={setRfvRushFilter}
-              onDrilldown={openRfvDrilldown}
-              activeKey={drilldown?.type === "rfv" ? drilldown.cardKey : null}
-            />
-          ) : null}
-
           {operationsMode ? <LiveBaselineBanner baseline={data?.live_baseline} /> : null}
 
           {perfMeta ? (
@@ -998,19 +717,6 @@ export default function ShiftMonitorPage({ user }) {
               {perfMeta.summary_only ? " (summary)" : ""}
             </Typography>
           ) : null}
-
-          {operationsMode ? (
-            <PipelineModulesSection
-              dateStart={dateStart}
-              dateEnd={dateEnd}
-              moduleFilters={moduleFilters}
-              setModuleFilter={setModuleFilter}
-              openDrilldown={openDrilldown}
-              drilldown={drilldown}
-            />
-          ) : null}
-
-          <AdvancedDebugSection dateStart={dateStart} dateEnd={dateEnd} initialData={data} user={user} />
         </>
       ) : null}
 

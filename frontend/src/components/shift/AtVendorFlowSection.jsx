@@ -14,13 +14,11 @@ import RushFilterChips from "./RushFilterChips";
 import ShiftCountCard from "./ShiftCountCard";
 import WorkloadReportStats from "./WorkloadReportStats";
 import { RushPendingWhyPanel } from "./RushPendingWhyPanel";
-import PortalSnapshotFreshness from "./PortalSnapshotFreshness";
-import PortalReconciliationSection from "./PortalReconciliationSection";
+import CompletionReviewSection from "./CompletionReviewSection";
+import VeeWashStep1Section from "./VeeWashStep1Section";
 import {
-  buildAtVendorAuditLedger,
   buildAtVendorHierarchy,
   buildAtVendorOperationalExceptions,
-  buildAtVendorPortalSnapshot,
   buildWorkloadReportStats,
 } from "../../utils/shiftMonitorHelpers";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
@@ -36,9 +34,15 @@ export default function AtVendorFlowSection({
   activeKey,
   isLiveView = true,
   isOperationsMode: isOperationsModeProp,
+  selectedDateEt,
+  onCompletionReviewChanged,
 }) {
   const isOperationsMode = isOperationsModeProp ?? isLiveView;
   const av = module || {};
+  // Step 1 authoritative model (feature-flagged, today/future + org 3). When active,
+  // it replaces the legacy headline + legacy operational exceptions entirely so the
+  // user never sees stale legacy totals next to the validated ones.
+  const step1Active = Boolean(isOperationsMode && av.veewash_step1_active && av.veewash_step1_summary);
   const monitoringCount = av.completed_before_day_start_still_present_count ?? 0;
   const monitoringRows = av.completed_before_day_start_still_present_rows || [];
   const dailyReliable = av.daily_metrics_reliable !== false;
@@ -48,8 +52,6 @@ export default function AtVendorFlowSection({
 
   const workloadSections = buildAtVendorHierarchy(av, segment, { historical: !isOperationsMode });
   const exceptionSections = isOperationsMode ? buildAtVendorOperationalExceptions(av) : [];
-  const auditSections = isOperationsMode ? buildAtVendorAuditLedger(av) : [];
-  const portalSections = isOperationsMode ? buildAtVendorPortalSnapshot(av) : [];
   const reportStats = !isOperationsMode ? buildWorkloadReportStats(av) : null;
 
   const handleCardClick = (card) => {
@@ -84,6 +86,15 @@ export default function AtVendorFlowSection({
         </Alert>
       ) : null}
 
+      {step1Active ? (
+        <VeeWashStep1Section
+          summary={av.veewash_step1_summary}
+          segment={segment}
+          onRushChange={onRushChange}
+        />
+      ) : null}
+
+      {step1Active ? null : (
       <Paper
         elevation={0}
         sx={{
@@ -149,8 +160,9 @@ export default function AtVendorFlowSection({
           ) : null}
         </Box>
       </Paper>
+      )}
 
-      {isOperationsMode && exceptionSections.length > 0 ? (
+      {!step1Active && isOperationsMode && exceptionSections.length > 0 ? (
         <Paper
           elevation={0}
           sx={{
@@ -171,63 +183,12 @@ export default function AtVendorFlowSection({
         </Paper>
       ) : null}
 
-      {isOperationsMode && auditSections.length > 0 ? (
-        <Accordion
-          disableGutters
-          elevation={0}
-          sx={{
-            mb: 1.25,
-            borderRadius: "10px !important",
-            border: "1px solid",
-            borderColor: VEEWASH_DASHBOARD.snapshotBorder,
-            bgcolor: "#fff",
-            "&:before": { display: "none" },
-          }}
-        >
-          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: { xs: 1.25, sm: 1.75 } }}>
-            <Typography variant="subtitle2" fontWeight={700}>
-              Audit / Ledger
-            </Typography>
-          </AccordionSummary>
-          <AccordionDetails sx={{ px: { xs: 1.25, sm: 1.75 }, pt: 0 }}>
-            <MetricCardGrid sections={auditSections} compact />
-          </AccordionDetails>
-        </Accordion>
-      ) : null}
-
-      {isOperationsMode ? (
-        <Paper
-          elevation={0}
-          sx={{
-            p: { xs: 1, sm: 1.25 },
-            mb: 1.25,
-            borderRadius: 2,
-            border: "1px solid",
-            borderColor: VEEWASH_DASHBOARD.snapshotBorder,
-            bgcolor: VEEWASH_DASHBOARD.snapshotBg,
-            boxShadow: "none",
-          }}
-        >
-          <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.25, color: VEEWASH_DASHBOARD.primaryBlueDark, fontSize: "0.9375rem" }}>
-            Current Portal Snapshot
-          </Typography>
-          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
-            Currently visible on Vendor Home.
-          </Typography>
-          <PortalSnapshotFreshness
-            freshness={av.portal_snapshot_freshness}
-            legacyScrapeAt={av.portal_snapshot_scrape_at}
-          />
-
-          <MetricCardGrid
-            sections={portalSections}
-            onCardClick={handleCardClick}
-            activeKey={activeKey}
-            compact
-          />
-
-          <PortalReconciliationSection reconciliation={av.portal_reconciliation} />
-        </Paper>
+      {isOperationsMode && !step1Active ? (
+        <CompletionReviewSection
+          block={av.completion_review}
+          selectedDateEt={selectedDateEt}
+          onChanged={onCompletionReviewChanged}
+        />
       ) : null}
 
       {isOperationsMode && monitoringCount > 0 ? (

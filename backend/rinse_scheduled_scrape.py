@@ -385,9 +385,9 @@ def _resolve_combined_cycle_status(
     import_status: str | None,
 ) -> str:
     """Map step outcomes to combined cycle status labels."""
-    if rfv_status in (None, "failed", "disabled") or (
-        rfv_status not in ("success", "dry_run") and rfv_status is not None
-    ):
+    # "disabled" = RFV globally off (RFV_SCRAPE_ENABLED=false): a clean skip, NOT a failure.
+    # The cycle status is then driven purely by the At Vendor + import steps.
+    if rfv_status not in ("success", "dry_run", "disabled"):
         return "RFV_FAILED"
     if av_presence_status not in ("success", "dry_run"):
         return "AT_VENDOR_FAILED"
@@ -525,7 +525,11 @@ def run_rinse_combined_sync_for_org(
     Shared by manual Refresh Both Syncs and scheduled ACA cron.
     """
     from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
-    from backend.rinse_presence_scrape import run_presence_scrape_for_org
+    from backend.rinse_presence_scrape import (
+        PresenceScrapeResult,
+        rfv_scrape_enabled,
+        run_presence_scrape_for_org,
+    )
 
     org_id = int(organization_id)
     cursor = conn.cursor(dictionary=True)
@@ -590,35 +594,52 @@ def run_rinse_combined_sync_for_org(
     delay_seconds: int | None = None
 
     try:
-        print(
-            f"Ready for Vendor sync org={org_id} vendor={vendor} run_type={run_type}",
-            flush=True,
-        )
         log.write(
             f"Combined sync cycle run_id={run_id} org={org_id} vendor={vendor} run_type={run_type}\n"
         )
-        rfv_result = run_presence_scrape_for_org(
-            conn,
-            org_id,
-            portal_status="ready_for_vendor",
-            dry_run=False,
-            mark_missing=True,
-            run_type=run_type,
-            organization_slug=slug,
-            organization_name=org_name,
-            rinse_vendor=vendor,
-            log_write=log.write,
-        )
-        rfv_detail = build_ready_for_vendor_sync_detail(rfv_result)
-        result.ready_for_vendor_status = rfv_result.status
-        conn.commit()
-        print(
-            f"Ready for Vendor sync done org={org_id} status={rfv_result.status} "
-            f"rows_found={(rfv_result.stats or {}).get('rows_found')}",
-            flush=True,
-        )
+        if rfv_scrape_enabled():
+            print(
+                f"Ready for Vendor sync org={org_id} vendor={vendor} run_type={run_type}",
+                flush=True,
+            )
+            rfv_result = run_presence_scrape_for_org(
+                conn,
+                org_id,
+                portal_status="ready_for_vendor",
+                dry_run=False,
+                mark_missing=True,
+                run_type=run_type,
+                organization_slug=slug,
+                organization_name=org_name,
+                rinse_vendor=vendor,
+                log_write=log.write,
+            )
+            rfv_detail = build_ready_for_vendor_sync_detail(rfv_result)
+            result.ready_for_vendor_status = rfv_result.status
+            conn.commit()
+            print(
+                f"Ready for Vendor sync done org={org_id} status={rfv_result.status} "
+                f"rows_found={(rfv_result.stats or {}).get('rows_found')}",
+                flush=True,
+            )
+        else:
+            # RFV scraping globally disabled (RFV_SCRAPE_ENABLED=false). Skip quietly and
+            # proceed straight to the independent At Vendor sync — RFV must not block it.
+            log.write(
+                f"Ready for Vendor sync skipped org={org_id}: RFV_SCRAPE_ENABLED=false\n"
+            )
+            rfv_result = PresenceScrapeResult(
+                organization_id=org_id,
+                portal_status="ready_for_vendor",
+                status="disabled",
+                skipped_reason="RFV_SCRAPE_ENABLED=false",
+                started_at=cycle_started_at,
+                finished_at=datetime.utcnow(),
+            )
+            rfv_detail = build_ready_for_vendor_sync_detail(rfv_result)
+            result.ready_for_vendor_status = "disabled"
 
-        if rfv_result.status not in ("success", "dry_run"):
+        if rfv_result.status not in ("success", "dry_run", "disabled"):
             cycle_status = "RFV_FAILED"
             result.status = "failed"
             result.at_vendor_status = "skipped"

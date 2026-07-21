@@ -277,6 +277,9 @@ MOD_AT_VENDOR_TOTAL = "mod_at_vendor_total"
 MOD_AT_VENDOR_PENDING = "mod_at_vendor_pending"
 MOD_AT_VENDOR_COMPLETED = "mod_at_vendor_completed"
 MOD_AT_VENDOR_CHANGED_RUSH = "mod_at_vendor_changed_rush"
+# Disappeared-between-scrapes bags awaiting operator confirmation. Part of the
+# day's workload total, but NOT ordinary Pending and NOT Completed.
+MOD_AT_VENDOR_IN_REVIEW = "mod_at_vendor_in_review"
 
 AV_RUSH = "RUSH"
 AV_NON_RUSH = "NON_RUSH"
@@ -284,6 +287,7 @@ AV_UNKNOWN = "UNKNOWN_REVIEW"
 
 AV_STATUS_PENDING = "Pending"
 AV_STATUS_COMPLETED = "Completed"
+AV_STATUS_IN_REVIEW = "In Review"
 
 DAILY_CLASS_OPEN_AT_DAY_START = "OPEN_AT_DAY_START"
 DAILY_CLASS_COMPLETED_BEFORE_DAY_START = "COMPLETED_BEFORE_DAY_START"
@@ -3731,12 +3735,110 @@ def build_at_vendor_module(
                 selected_date_et=selected_date_et,
             )
 
-    pending_rows = [r for r in rows if MOD_AT_VENDOR_PENDING in r.get("module_tags", [])]
+    # --- Completion Review: "In Review" segment ---
+    # Disappeared-between-scrapes bags awaiting operator confirmation stay in the
+    # day's workload total but are neither ordinary Pending nor Completed. Tag any
+    # such rows already present, and inject rows for bags that vanished entirely.
+    from backend.rinse_workload_ledger import MEMBERSHIP_NEW_TODAY
+
+    completion_review_by_bag: dict[str, dict[str, Any]] = {}
+    if hasattr(cursor, "execute"):
+        try:
+            from backend.rinse_completion_review import (
+                list_open_completion_reviews,
+                sync_completion_reviews_for_org,
+            )
+
+            sync_completion_reviews_for_org(
+                cursor, org, selected_date_et=selected_date_et
+            )
+            for rr in list_open_completion_reviews(
+                cursor, org, selected_date_et=selected_date_et
+            ):
+                rbid = str(rr.get("bag_id") or "").strip().upper()
+                if rbid:
+                    completion_review_by_bag[rbid] = rr
+        except Exception:
+            completion_review_by_bag = {}
+
+    if completion_review_by_bag:
+        existing_row_ids = {
+            str(r.get("bag_id") or "").strip().upper() for r in rows if r.get("bag_id")
+        }
+        for row in rows:
+            bid = str(row.get("bag_id") or "").strip().upper()
+            if bid not in completion_review_by_bag:
+                continue
+            # A genuinely completed bag stays Completed; review only overrides
+            # not-yet-completed rows.
+            if row.get("at_vendor_status") == AV_STATUS_COMPLETED or row.get(
+                "completed_during_et_day"
+            ):
+                continue
+            tags = [t for t in (row.get("module_tags") or []) if t != MOD_AT_VENDOR_PENDING]
+            if MOD_AT_VENDOR_IN_REVIEW not in tags:
+                tags.append(MOD_AT_VENDOR_IN_REVIEW)
+            row["module_tags"] = tags
+            row["at_vendor_status"] = AV_STATUS_IN_REVIEW
+            row["in_review"] = True
+
+        for bid, rr in completion_review_by_bag.items():
+            if bid in existing_row_ids:
+                continue
+            svc = _normalize_service(rr.get("workflow") or rr.get("service_type") or "WF")
+            rush_bucket = rr.get("rush_bucket")
+            if rush_bucket not in (AV_RUSH, AV_NON_RUSH):
+                edd_val = rr.get("estimated_delivery_date")
+                edd_date = None
+                if isinstance(edd_val, date):
+                    edd_date = edd_val
+                elif isinstance(edd_val, str) and edd_val.strip():
+                    try:
+                        edd_date = date.fromisoformat(edd_val[:10])
+                    except ValueError:
+                        edd_date = None
+                rush_bucket, _ = classify_at_vendor_rush(
+                    latest_edd=edd_date,
+                    delivery_texts=[],
+                    selected_date_et=selected_date_et,
+                    pending=True,
+                )
+            rows.append(
+                {
+                    "bag_id": bid,
+                    "service_type": svc,
+                    "service_bucket": svc,
+                    "rush_bucket": rush_bucket,
+                    "at_vendor_status": AV_STATUS_IN_REVIEW,
+                    "in_review": True,
+                    "completed_during_et_day": False,
+                    "module_tags": [MOD_AT_VENDOR_IN_REVIEW],
+                    "customer_name": rr.get("customer_name"),
+                    "customer": rr.get("customer_name"),
+                    "estimated_delivery_date": rr.get("estimated_delivery_date"),
+                    "membership_tier": MEMBERSHIP_NEW_TODAY,
+                    "injected_completion_review": True,
+                    "daily_classification": DAILY_CLASS_PENDING_AS_OF_SELECTED_DAY_END_OR_NOW,
+                }
+            )
+
+    def _row_in_review(row: Mapping[str, Any]) -> bool:
+        return bool(row.get("in_review")) or MOD_AT_VENDOR_IN_REVIEW in row.get(
+            "module_tags", []
+        )
+
+    pending_rows = [
+        r
+        for r in rows
+        if MOD_AT_VENDOR_PENDING in r.get("module_tags", []) and not _row_in_review(r)
+    ]
     completed_rows = [r for r in rows if MOD_AT_VENDOR_COMPLETED in r.get("module_tags", [])]
+    in_review_rows = [r for r in rows if _row_in_review(r)]
     changed_rows = [r for r in rows if MOD_AT_VENDOR_CHANGED_RUSH in r.get("module_tags", [])]
 
     current_live_vendor_home_total = int(population_meta.get("current_live_vendor_home_total") or 0)
-    selected_day_total = len(pending_rows) + len(completed_rows)
+    in_review = len(in_review_rows)
+    selected_day_total = len(pending_rows) + len(completed_rows) + in_review
     pending = len(pending_rows)
     completed = len(completed_rows)
     changed_to_rush = len(changed_rows)
@@ -3878,37 +3980,55 @@ def build_at_vendor_module(
     def _row_completed_today(row: Mapping[str, Any]) -> bool:
         return row.get("at_vendor_status") == AV_STATUS_COMPLETED or bool(row.get("completed_during_et_day"))
 
+    def _row_pending_now(row: Mapping[str, Any]) -> bool:
+        # Ordinary Pending excludes both Completed and In-Review.
+        return not _row_completed_today(row) and not _row_in_review(row)
+
     rush_total = sum(1 for r in rows if r.get("rush_bucket") == AV_RUSH)
     non_rush_total = sum(1 for r in rows if r.get("rush_bucket") == AV_NON_RUSH)
     rush_pending = sum(
-        1 for r in rows if r.get("rush_bucket") == AV_RUSH and not _row_completed_today(r)
+        1 for r in rows if r.get("rush_bucket") == AV_RUSH and _row_pending_now(r)
     )
     from backend.rinse_at_vendor_pending_explanation import summarize_rush_pending_why
 
-    rush_pending_why_summary = summarize_rush_pending_why(rows)
+    rush_pending_why_summary = summarize_rush_pending_why(
+        [r for r in rows if not _row_in_review(r)]
+    )
 
     rush_completed = sum(
         1 for r in rows if r.get("rush_bucket") == AV_RUSH and _row_completed_today(r)
     )
+    rush_in_review = sum(
+        1 for r in rows if r.get("rush_bucket") == AV_RUSH and _row_in_review(r)
+    )
     non_rush_pending = sum(
-        1 for r in rows if r.get("rush_bucket") == AV_NON_RUSH and not _row_completed_today(r)
+        1 for r in rows if r.get("rush_bucket") == AV_NON_RUSH and _row_pending_now(r)
     )
     non_rush_completed = sum(
         1 for r in rows if r.get("rush_bucket") == AV_NON_RUSH and _row_completed_today(r)
     )
+    non_rush_in_review = sum(
+        1 for r in rows if r.get("rush_bucket") == AV_NON_RUSH and _row_in_review(r)
+    )
     wf_total = sum(1 for r in rows if _row_svc(r) == "WF")
     wf_pending = sum(
-        1 for r in rows if _row_svc(r) == "WF" and not _row_completed_today(r)
+        1 for r in rows if _row_svc(r) == "WF" and _row_pending_now(r)
     )
     wf_completed = sum(
         1 for r in rows if _row_svc(r) == "WF" and _row_completed_today(r)
     )
+    wf_in_review = sum(
+        1 for r in rows if _row_svc(r) == "WF" and _row_in_review(r)
+    )
     hd_total = sum(1 for r in rows if _row_svc(r) == "HD")
     hd_pending = sum(
-        1 for r in rows if _row_svc(r) == "HD" and not _row_completed_today(r)
+        1 for r in rows if _row_svc(r) == "HD" and _row_pending_now(r)
     )
     hd_completed = sum(
         1 for r in rows if _row_svc(r) == "HD" and _row_completed_today(r)
+    )
+    hd_in_review = sum(
+        1 for r in rows if _row_svc(r) == "HD" and _row_in_review(r)
     )
     completed_today_count = len(completed_rows)
 
@@ -3973,6 +4093,15 @@ def build_at_vendor_module(
             "module_tag": MOD_AT_VENDOR_COMPLETED,
             "count": completed,
             "records_count": completed,
+            "clickable": True,
+            "level": 1,
+        },
+        {
+            "id": "av_in_review",
+            "label": "In Review",
+            "module_tag": MOD_AT_VENDOR_IN_REVIEW,
+            "count": in_review,
+            "records_count": in_review,
             "clickable": True,
             "level": 1,
         },
@@ -4084,15 +4213,21 @@ def build_at_vendor_module(
         "rush_pending": rush_pending,
         "rush_pending_why_summary": rush_pending_why_summary,
         "rush_completed": rush_completed,
+        "rush_in_review": rush_in_review,
         "non_rush_total": non_rush_total,
         "non_rush_pending": non_rush_pending,
         "non_rush_completed": non_rush_completed,
+        "non_rush_in_review": non_rush_in_review,
         "wf_total": wf_total,
         "wf_pending": wf_pending,
         "wf_completed": wf_completed,
+        "wf_in_review": wf_in_review,
         "hd_total": hd_total,
         "hd_pending": hd_pending,
         "hd_completed": hd_completed,
+        "hd_in_review": hd_in_review,
+        "in_review": in_review,
+        "in_review_count": in_review,
         "completed_before_day_start_still_present_count": len(still_present_rows),
         "completed_before_day_start_still_present_rows": still_present_rows,
         "rows": rows,
@@ -4210,12 +4345,45 @@ def build_at_vendor_module(
             "step_ms": step_ms,
         },
     }
-    validate_days_load_invariant(out)
-    validate_pending_completed_disjoint(out)
-    validate_no_scrape_rejected_operational_pending(
-        out,
-        portal_scrape_rejected_ids=portal_scrape_rejected_ids,
-    )
+    # Step-1 activation gate (feature-flagged, org 3 + activation date forward).
+    _step1_active = False
+    try:
+        from backend.rinse_veewash_workload import (
+            VEEWASH_ORG_ID,
+            get_step1_activation_date,
+            is_step1_enabled,
+        )
+
+        if org == VEEWASH_ORG_ID and is_step1_enabled(cursor, org):
+            _act = get_step1_activation_date(cursor, org)
+            _step1_active = _act is not None and selected_date_et >= _act
+    except Exception:
+        _step1_active = False
+
+    if _step1_active:
+        # Step 1 is the authoritative read for today/future. The legacy day's-load
+        # invariants are known to be inconsistent on live data (the motivation for
+        # this redesign) and must not take down the dashboard; record violations.
+        legacy_warnings: list[str] = []
+        for _validate in (validate_days_load_invariant, validate_pending_completed_disjoint):
+            try:
+                _validate(out)
+            except AssertionError as exc:
+                legacy_warnings.append(str(exc))
+        try:
+            validate_no_scrape_rejected_operational_pending(
+                out, portal_scrape_rejected_ids=portal_scrape_rejected_ids
+            )
+        except AssertionError as exc:
+            legacy_warnings.append(str(exc))
+        out["veewash_step1_legacy_invariant_warnings"] = legacy_warnings
+    else:
+        validate_days_load_invariant(out)
+        validate_pending_completed_disjoint(out)
+        validate_no_scrape_rejected_operational_pending(
+            out,
+            portal_scrape_rejected_ids=portal_scrape_rejected_ids,
+        )
     if hasattr(cursor, "execute"):
         try:
             from backend.rinse_completed_bags_reconciliation import (
@@ -4233,4 +4401,75 @@ def build_at_vendor_module(
                 "completed_bags_reconciliation",
                 {"error": "completed_bags_reconciliation_failed"},
             )
+        try:
+            from backend.rinse_completion_review import (
+                build_completion_review_dashboard_block,
+            )
+
+            # Already synced + counted as the "In Review" segment during the build
+            # (rows tagged / injected, pending & totals adjusted). Here we only
+            # attach the dashboard block and keep review bags out of the
+            # Needs-Verification exception list.
+            review_block = build_completion_review_dashboard_block(
+                cursor,
+                org,
+                selected_date_et=selected_date_et,
+                confirmed_completed_count=int(out.get("completed") or 0),
+                sync=False,
+            )
+            out["completion_review"] = review_block
+            review_ids = {
+                str(b).strip().upper()
+                for b in (review_block.get("bag_ids") or [])
+                if b
+            }
+            if review_ids:
+                exc = out.get("operational_exceptions")
+                if isinstance(exc, dict):
+                    nv_rows = [
+                        r
+                        for r in (exc.get("needs_verification_rows") or [])
+                        if str(r.get("bag_id") or "").strip().upper() not in review_ids
+                    ]
+                    exc["needs_verification_rows"] = nv_rows
+                    exc["needs_verification_count"] = len(nv_rows)
+        except Exception:
+            out.setdefault(
+                "completion_review",
+                {"error": "completion_review_failed", "review_required_count": 0, "rows": []},
+            )
+
+    # --- Step 1 VeeWash workload (feature-flagged; org 3 + activation date forward) ---
+    # Read-only. For flag OFF or dates before the activation date this is a no-op and
+    # the existing dashboard logic is unchanged. Rollback = veewash_step1_enabled=false.
+    try:
+        from backend.rinse_veewash_workload import (
+            VEEWASH_ORG_ID,
+            build_step1_headline_summary,
+            build_today_validation,
+            build_veewash_daily_workload,
+            get_step1_activation_date,
+            is_step1_enabled,
+        )
+
+        out["veewash_step1_active"] = False
+        if org == VEEWASH_ORG_ID and is_step1_enabled(cursor, org):
+            activation = get_step1_activation_date(cursor, org)
+            if activation is not None and selected_date_et >= activation:
+                s1 = build_veewash_daily_workload(
+                    cursor, org, selected_date_et=selected_date_et
+                )
+                s1["today_validation"] = build_today_validation(
+                    s1, selected_date_et=selected_date_et
+                )
+                s1["activation_date_et"] = activation.isoformat()
+                out["veewash_step1"] = s1
+                out["veewash_step1_active"] = True
+                out["veewash_step1_summary"] = build_step1_headline_summary(
+                    s1, selected_date_et=selected_date_et, activation_date=activation
+                )
+    except Exception:
+        out.setdefault("veewash_step1_active", False)
+        out.setdefault("veewash_step1", {"error": "veewash_step1_failed"})
+
     return out

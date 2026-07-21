@@ -77,7 +77,23 @@ class PresenceScrapeResult:
         return None
 
 
+def rfv_scrape_enabled() -> bool:
+    """Master kill-switch for ALL Ready-For-Vendor scraping/processing.
+
+    Controlled by env ``RFV_SCRAPE_ENABLED`` (default ``false``). When disabled no
+    scheduled, combined-cycle, manual, or API-triggered RFV scrape runs — regardless of
+    the per-tenant ``enable_ready_for_vendor_scrape`` flag or any DB-driven override. This
+    is intentionally an env/config default so a stale DB setting cannot re-enable RFV.
+    """
+    raw = (os.getenv("RFV_SCRAPE_ENABLED") or "").strip().lower()
+    return raw in {"1", "true", "on", "yes", "enabled"}
+
+
 def ready_for_vendor_scrape_enabled(cursor, organization_id: int) -> bool:
+    # Master kill-switch first: RFV_SCRAPE_ENABLED (default false) overrides the per-tenant
+    # flag and any DB-driven override so RFV stays off until explicitly re-enabled.
+    if not rfv_scrape_enabled():
+        return False
     return is_feature_enabled(cursor, int(organization_id), "enable_ready_for_vendor_scrape")
 
 
@@ -256,9 +272,16 @@ def run_presence_scrape_for_org(
         conn.commit()
 
     if portal_status == PORTAL_STATUS_READY and not ready_for_vendor_scrape_enabled(cursor, org):
+        # Quiet, non-error skip. Master kill-switch (RFV_SCRAPE_ENABLED) takes precedence in
+        # the reason so an overlooked scheduler/manual/internal call cannot run RFV.
         result.status = "disabled"
-        result.skipped_reason = "enable_ready_for_vendor_scrape=false"
+        result.skipped_reason = (
+            "RFV_SCRAPE_ENABLED=false"
+            if not rfv_scrape_enabled()
+            else "enable_ready_for_vendor_scrape=false"
+        )
         result.finished_at = _utcnow()
+        _log(f"Ready for Vendor scrape skipped org={org} ({result.skipped_reason})")
         return result
 
     if not export_enabled():

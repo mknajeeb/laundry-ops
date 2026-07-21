@@ -2813,6 +2813,7 @@ def _slim_at_vendor_module_payload(module: Mapping[str, Any]) -> dict[str, Any]:
             "invariant": recon.get("invariant"),
             "unreconciled": recon.get("unreconciled") or [],
             "notes": recon.get("notes") or [],
+            "completion_review": recon.get("completion_review"),
             "bag_ids": {
                 "unreconciled": [
                     str(u.get("bag_id") or "").upper()
@@ -2864,6 +2865,141 @@ def _build_performance_meta(
     }
 
 
+def _try_build_step1_lightweight_summary(
+    cursor,
+    organization_id: int,
+    *,
+    period_start: date,
+    period_end: date,
+    baseline_ctx: Mapping[str, Any],
+    baseline_ms: float,
+    eval_at: datetime | None,
+    t0: float,
+) -> dict[str, Any] | None:
+    """Lightweight Shift Monitor payload for the Step-1 model.
+
+    Returns ``None`` when Step-1 is not active for this org + selected date, so the caller
+    falls through to the legacy summary builder unchanged. When active, this builds ONLY the
+    Step-1 headline (from the same functions the legacy module uses, so totals are identical)
+    plus sync freshness, and skips the heavy legacy at-vendor builder, RFV queue, and portal
+    reconciliation entirely. Employee productivity is fetched by its own dashboard endpoint.
+    """
+    import time
+
+    org = int(organization_id)
+    try:
+        from backend.rinse_veewash_workload import (
+            VEEWASH_ORG_ID,
+            build_step1_headline_summary,
+            build_today_validation,
+            build_veewash_daily_workload,
+            get_step1_activation_date,
+            is_step1_enabled,
+        )
+    except Exception:
+        return None
+
+    if org != VEEWASH_ORG_ID or not is_step1_enabled(cursor, org):
+        return None
+    activation = get_step1_activation_date(cursor, org)
+    if activation is None or period_end < activation:
+        return None
+
+    from backend.rinse_shift_monitor_baseline import format_baseline_banner_et
+
+    t_s1 = time.perf_counter()
+    s1 = build_veewash_daily_workload(cursor, org, selected_date_et=period_end)
+    s1["today_validation"] = build_today_validation(s1, selected_date_et=period_end)
+    s1["activation_date_et"] = activation.isoformat()
+    summary = build_step1_headline_summary(
+        s1, selected_date_et=period_end, activation_date=activation
+    )
+    s1_ms = (time.perf_counter() - t_s1) * 1000
+
+    # Minimal at-vendor module: only the fields the simplified Step-1 UI reads. Legacy
+    # "Monitoring Only" / "Changed to Rush" cards are intentionally omitted (zeroed) under
+    # Step-1; employee productivity is fetched by EmployeeProductivityDashboard separately.
+    at_vendor_module: dict[str, Any] = {
+        "scope": "veewash_step1_lightweight",
+        "selected_date_et": period_end.isoformat(),
+        "daily_metrics_reliable": True,
+        "veewash_step1_active": True,
+        "veewash_step1_summary": summary,
+        "employee_completed_bags_today": None,
+        "completed_before_day_start_still_present_count": 0,
+        "completed_before_day_start_still_present_rows": [],
+        "changed_to_rush": 0,
+        "uses_clean_veewash_baseline": bool(
+            (baseline_ctx or {}).get("baseline_source") == "latest_clean_veewash_scrape"
+        ),
+    }
+
+    t_sync = time.perf_counter()
+    active_work_stub: dict[str, Any] = {"live": True}
+    rinse_sync = _attach_section_sync_statuses(
+        cursor,
+        org,
+        ready_for_vendor={},
+        active_work=active_work_stub,
+        evaluation_time=eval_at,
+    )
+    sync_ms = (time.perf_counter() - t_sync) * 1000
+
+    baseline_payload = {
+        "baseline_source": baseline_ctx.get("baseline_source"),
+        "baseline_time_et": baseline_ctx.get("baseline_time_et"),
+        "banner_title": format_baseline_banner_et(baseline_ctx),
+        "banner_subtitle": (
+            "Using latest post-baseline Rinse scrape + post-baseline scans"
+            if baseline_ctx.get("at_vendor_scrape_ready")
+            else baseline_ctx.get("needs_refresh_reason")
+        ),
+        "at_vendor_scrape_ready": baseline_ctx.get("at_vendor_scrape_ready"),
+    }
+
+    payload: dict[str, Any] = {
+        "timezone": RINSE_SCAN_SOURCE_TIMEZONE,
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+        "summary_only": True,
+        "veewash_step1_active": True,
+        # RFV results, portal snapshot/reconciliation, ledger, debug, pipeline and the full
+        # legacy record set are intentionally not computed for the Step-1 lightweight path.
+        "ready_for_vendor": {},
+        "at_vendor_module": at_vendor_module,
+        "rinse_sync": rinse_sync,
+        "live_baseline": baseline_payload,
+        "records": [],
+        "shift_monitor_modules": None,
+        "current_facility_snapshot": None,
+        "due_today_snapshot": None,
+        "vendor_home_parity": None,
+        "vendor_home_gap_analysis": None,
+        "facility_tracker_today": None,
+        "sections_under_review": None,
+        "employee_cards": None,
+        "debug_audit": None,
+        "drilldown_parity": None,
+        "scope_overlap": None,
+        "current_work_pipeline": active_work_stub,
+        "current_active_work": active_work_stub,
+        "current_active_work_now": active_work_stub,
+    }
+    total_ms = (time.perf_counter() - t0) * 1000
+    payload["performance_meta"] = _build_performance_meta(
+        total_build_ms=total_ms,
+        at_vendor_build_ms=s1_ms,
+        rfv_build_ms=baseline_ms,
+        records_build_ms=0.0,
+        debug_build_ms=0.0,
+        drilldown_build_ms=sync_ms,
+        payload=payload,
+        summary_only=True,
+    )
+    payload["performance_meta"]["step1_lightweight"] = True
+    return payload
+
+
 def _build_shift_monitor_summary_payload(
     cursor,
     organization_id: int,
@@ -2895,6 +3031,27 @@ def _build_shift_monitor_summary_payload(
     baseline_settings = get_shift_monitor_baseline(cursor, org)
     baseline_ctx = build_baseline_context(cursor, org, baseline_settings)
     baseline_ms = (time.perf_counter() - t_baseline) * 1000
+
+    # --- Step 1 lightweight read path -------------------------------------- #
+    # When the Step-1 VeeWash model is active for this org + selected date, the simplified
+    # Shift Monitor renders ONLY the Step-1 headline (New/Carryover/Active/Completed/
+    # Pending/Exceptions) + employee productivity (which fetches from its own endpoint).
+    # We therefore skip the heavy legacy builder entirely (full at-vendor population, per-bag
+    # scans, RFV queue, portal reconciliation, ledgers, snapshots) instead of building and
+    # then discarding them. The Step-1 numbers come from the exact same functions the legacy
+    # module uses, so the totals are byte-for-byte identical.
+    step1_payload = _try_build_step1_lightweight_summary(
+        cursor,
+        org,
+        period_start=period_start,
+        period_end=period_end,
+        baseline_ctx=baseline_ctx,
+        baseline_ms=baseline_ms,
+        eval_at=eval_at,
+        t0=t0,
+    )
+    if step1_payload is not None:
+        return step1_payload
 
     t_rfv = time.perf_counter()
     rfv_sync = get_ready_for_vendor_sync_status(cursor, org, evaluation_time=eval_at)
