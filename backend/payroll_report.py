@@ -235,7 +235,30 @@ def _payment_status_label(st: str) -> str:
     return labels.get(key, key.replace("_", " ").title() or "Pending")
 
 
+def _effective_payment_status(batch: dict, line: dict) -> str:
+    """Line payment_status, corrected when the batch itself is already paid.
+
+    Some historical batches were marked paid at batch level without updating
+    every line's payment_status (left as pending / approved_unpaid). For
+    reporting, a paid batch's lines are Paid.
+    """
+    batch_st = str(batch.get("status") or "").strip().lower()
+    if batch_st == "paid":
+        return "paid"
+    return str(line.get("payment_status") or "pending").strip().lower() or "pending"
+
+
 def _finalized_date_str(batch: dict) -> str:
+    """Business Finalized date for reports.
+
+    Prefer Official Pay Date (the date entered at finalization) over the
+    system timestamp of the finalize click. Historical finalization stamps
+    payout_details_finalized_at as "today", which mislabels older payroll
+    (e.g. TEMP-2026-004 paid 2026-06-06 but finalized in-system on 2026-07-21).
+    """
+    pay_date = _batch_official_pay_date(batch)
+    if pay_date:
+        return pay_date
     raw = batch.get("payout_details_finalized_at")
     if not raw:
         return ""
@@ -278,7 +301,7 @@ def build_report_row(batch: dict, line: dict) -> dict[str, Any]:
     gross_pay = breakdown["gross_pay"]
     total_payroll_cost = round(_money(gross_pay) + employer_taxes, 2)
 
-    payment_st = str(line.get("payment_status") or "pending")
+    payment_st = _effective_payment_status(batch, line)
     return {
         "line_id": line.get("id"),
         "batch_id": batch.get("id"),
@@ -861,6 +884,17 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
         ),
     )
     ws.freeze_panes = f"A{data_start}"
+    # Date columns need enough width so Excel does not show ########.
+    for col_idx, (key, _) in enumerate(REPORT_COLUMNS, start=1):
+        letter = ws.cell(row=header_row, column=col_idx).column_letter
+        if key in date_keys or key in ("pay_period_start", "pay_period_end", "pay_date", "finalized_date"):
+            ws.column_dimensions[letter].width = 14
+        elif key == "employee_name":
+            ws.column_dimensions[letter].width = 22
+        elif key in ("employee_category", "batch_name", "payroll_status", "payment_status"):
+            ws.column_dimensions[letter].width = 16
+        elif key in money_keys or key in hour_keys:
+            ws.column_dimensions[letter].width = 12
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -997,7 +1031,7 @@ def build_payroll_report_html(report: dict) -> str:
         g_summary = _build_summary(g_rows, g_totals)
         group_html.append(
             f"""
-<section class="group">
+<section class="group pdf-capture-page">
   <h2>{g_heading}</h2>
   {summary_block("Group summary", g_summary)}
   {rows_table(g_rows, g_totals)}
@@ -1055,7 +1089,7 @@ Regular/Base Earnings include overtime hours at the regular rate.
 Pay Date is the batch official_pay_date (no period-end fallback).
 Totals match the filtered on-screen report.</p>
 {"".join(group_html)}
-<section class="grand">
+<section class="grand pdf-capture-page">
   <h2>Grand Total</h2>
   <table>
   <thead><tr>{grand_th}</tr></thead>

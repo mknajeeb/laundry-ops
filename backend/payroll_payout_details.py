@@ -3843,7 +3843,12 @@ def generate_batch_vendor_receipts_html(
         start = doc.find("<body>")
         end = doc.find("</body>")
         if start != -1 and end != -1:
-            bodies.append(doc[start + len("<body>") : end])
+            body = doc[start + len("<body>") : end]
+            # Capture targets so Download batch PDF / html2canvas emits one
+            # page per receipt instead of shrinking everything onto a blank page.
+            bodies.append(
+                f'<div class="paystub-sheet pdf-capture-page">{body}</div>'
+            )
     combined = (
         "<div style='page-break-after:always'></div>".join(bodies) if bodies else ""
     )

@@ -134,9 +134,71 @@ def test_report_row_ot_premium_and_labels():
     assert row["base_earnings"] == 820.0
     assert abs(row["base_earnings"] + row["ot_premium"] + row["other_earnings"] - row["gross_pay"]) < 0.01
     assert row["pay_date"] == "2026-07-15"
+    # Finalized date prefers Official Pay Date (business date), not system stamp.
+    assert row["finalized_date"] == "2026-07-15"
     assert row["total_payroll_cost"] == round(830 + 51.46, 2)
     assert "W-2" in row["employee_category"]
 
+
+def test_finalized_date_prefers_official_pay_date_over_system_stamp():
+    """Historical finalize stamps NOW(); report must show the business pay date."""
+    batch = {
+        "id": 28,
+        "batch_name": "TEMP-2026-004",
+        "worker_category": "temp",
+        "pay_period_start": "2026-05-25",
+        "pay_period_end": "2026-05-31",
+        "status": "paid",
+        "payout_details_finalized_at": "2026-07-21T22:32:47",
+        "official_pay_date": "2026-06-06",
+    }
+    line = {
+        "id": 198,
+        "user_id": 1,
+        "worker_name_snapshot": "Aaliyah Rudowitz",
+        "approved_hours": 10,
+        "ot_hours": 0,
+        "rate": 20,
+        "ot_rate": 0,
+        "gross_amount": 200,
+        "payment_status": "pending",
+        "payout_details_json": '{"payment":{"date":"2026-06-06"}}',
+    }
+    row = build_report_row(batch, line)
+    assert row["pay_date"] == "2026-06-06"
+    assert row["finalized_date"] == "2026-06-06"
+    assert row["payroll_status"] == "Paid"
+    # Batch is paid → report Payment status is Paid even if line is still pending.
+    assert row["payment_status"] == "Paid"
+    assert row["payment_status_key"] == "paid"
+
+
+def test_payment_status_paid_when_batch_paid_but_line_approved_unpaid():
+    batch = {
+        "id": 18,
+        "batch_name": "W2-2026-005",
+        "worker_category": "w2",
+        "pay_period_start": "2026-06-08",
+        "pay_period_end": "2026-06-14",
+        "status": "paid",
+        "payout_details_finalized_at": "2026-06-21",
+        "official_pay_date": "2026-06-13",
+    }
+    line = {
+        "id": 50,
+        "user_id": 2,
+        "worker_name_snapshot": "Worker",
+        "approved_hours": 40,
+        "ot_hours": 0,
+        "rate": 18,
+        "ot_rate": 0,
+        "gross_amount": 720,
+        "payment_status": "approved_unpaid",
+        "payout_details_json": None,
+    }
+    row = build_report_row(batch, line)
+    assert row["payment_status"] == "Paid"
+    assert row["finalized_date"] == "2026-06-13"
 
 def test_excel_export_includes_totals_and_ot_premium():
     report = {

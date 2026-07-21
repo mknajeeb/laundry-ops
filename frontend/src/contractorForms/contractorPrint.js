@@ -87,14 +87,17 @@ export function downloadPrintDocument(
 
 const PDF_CAPTURE_ROOT_CLASS = "paystub-pdf-capture-root";
 
-function loadHtmlForPdfCapture(html) {
+function loadHtmlForPdfCapture(html, { pageSize = "letter portrait" } = {}) {
   return new Promise((resolve, reject) => {
     try {
+      const landscape = String(pageSize || "").toLowerCase().includes("landscape");
+      // Letter @ 96dpi: portrait ~816px, landscape ~1056px content width.
+      const captureWidth = landscape ? 1056 : 816;
       const container = document.createElement("div");
       container.className = PDF_CAPTURE_ROOT_CLASS;
       container.setAttribute("aria-hidden", "true");
       container.style.cssText =
-        "position:fixed;left:0;top:0;width:816px;opacity:0;pointer-events:none;z-index:-1;overflow:hidden;background:#fff;";
+        `position:fixed;left:0;top:0;width:${captureWidth}px;opacity:0;pointer-events:none;z-index:-1;overflow:hidden;background:#fff;`;
 
       const parsed = new DOMParser().parseFromString(html, "text/html");
       parsed.querySelectorAll("style").forEach((styleEl) => {
@@ -171,7 +174,9 @@ async function captureElementToCanvas(element, { pageSize = "letter portrait", w
   }
 
   const [{ default: html2canvas }] = await Promise.all([import("html2canvas")]);
-  const w = Math.max(Math.ceil(element.scrollWidth || 0), 816);
+  const landscape = String(pageSize || "").toLowerCase().includes("landscape");
+  const minW = landscape ? 1056 : 816;
+  const w = Math.max(Math.ceil(element.scrollWidth || 0), minW);
   const h = Math.max(Math.ceil(element.scrollHeight || 0), 200);
 
   return html2canvas(element, {
@@ -190,19 +195,21 @@ async function captureElementToCanvas(element, { pageSize = "letter portrait", w
 }
 
 function pdfCaptureTargets(root) {
-  const sheets = Array.from(root.querySelectorAll(".paystub-sheet"));
+  const sheets = Array.from(
+    root.querySelectorAll(".paystub-sheet, .pdf-capture-page"),
+  );
   return sheets.length ? sheets : [root];
 }
 
 async function renderBodyToPdf(root, { pageSize = "letter portrait", win } = {}) {
   const [{ default: jsPDF }] = await Promise.all([import("jspdf")]);
 
-  const doc = root?.ownerDocument;
   const targets = root ? pdfCaptureTargets(root) : [root];
   const { format, orientation } = pdfFormatFromPageSize(pageSize);
   const pdf = new jsPDF({ orientation, unit: "in", format });
   const pageW = pdf.internal.pageSize.getWidth();
   const pageH = pdf.internal.pageSize.getHeight();
+  let pageStarted = false;
 
   for (let i = 0; i < targets.length; i += 1) {
     let canvas;
@@ -218,16 +225,52 @@ async function renderBodyToPdf(root, { pageSize = "letter portrait", win } = {})
         throw firstErr;
       }
     }
-    const imgData = canvas.toDataURL("image/jpeg", 0.92);
-    let drawW = pageW;
-    let drawH = (canvas.height * drawW) / canvas.width;
-    if (drawH > pageH) {
-      drawH = pageH;
-      drawW = (canvas.width * drawH) / canvas.height;
+    // Fit width to the page; if taller than one page, slice across pages
+    // instead of shrinking the whole capture (which looked blank).
+    const drawW = pageW;
+    const fullH = (canvas.height * drawW) / canvas.width;
+    if (fullH <= pageH + 0.01) {
+      if (pageStarted) pdf.addPage();
+      pageStarted = true;
+      const x = (pageW - drawW) / 2;
+      const imgData = canvas.toDataURL("image/jpeg", 0.92);
+      pdf.addImage(imgData, "JPEG", x, 0, drawW, fullH);
+      continue;
     }
-    const x = (pageW - drawW) / 2;
-    if (i > 0) pdf.addPage();
-    pdf.addImage(imgData, "JPEG", x, 0, drawW, drawH);
+    const pageCanvasH = Math.max(1, Math.floor((pageH / fullH) * canvas.height));
+    let srcY = 0;
+    while (srcY < canvas.height) {
+      const sliceH = Math.min(pageCanvasH, canvas.height - srcY);
+      const slice = document.createElement("canvas");
+      slice.width = canvas.width;
+      slice.height = sliceH;
+      const ctx = slice.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, slice.width, slice.height);
+      ctx.drawImage(
+        canvas,
+        0,
+        srcY,
+        canvas.width,
+        sliceH,
+        0,
+        0,
+        canvas.width,
+        sliceH,
+      );
+      const sliceDrawH = (sliceH * drawW) / canvas.width;
+      if (pageStarted) pdf.addPage();
+      pageStarted = true;
+      pdf.addImage(
+        slice.toDataURL("image/jpeg", 0.92),
+        "JPEG",
+        (pageW - drawW) / 2,
+        0,
+        drawW,
+        sliceDrawH,
+      );
+      srcY += sliceH;
+    }
   }
   return pdf;
 }
@@ -242,7 +285,7 @@ export async function getPrintDocumentPdfBlob(
 
   let session;
   try {
-    session = await loadHtmlForPdfCapture(html);
+    session = await loadHtmlForPdfCapture(html, { pageSize });
     const pdf = await renderBodyToPdf(session.container, {
       pageSize,
       win: session.win,
@@ -283,7 +326,7 @@ export async function downloadHtmlDocumentPdf(
 
   let session;
   try {
-    session = await loadHtmlForPdfCapture(docHtml);
+    session = await loadHtmlForPdfCapture(docHtml, { pageSize });
     const pdf = await renderBodyToPdf(session.container, {
       pageSize,
       win: session.win,
