@@ -29,6 +29,8 @@ def ensure_payroll_vendor_tables(cursor) -> None:
           name VARCHAR(255) NOT NULL,
           address TEXT NULL,
           logo_url VARCHAR(1024) NULL,
+          representative_name VARCHAR(255) NULL,
+          representative_title VARCHAR(255) NULL,
           active TINYINT(1) NOT NULL DEFAULT 1,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -36,6 +38,17 @@ def ensure_payroll_vendor_tables(cursor) -> None:
         )
         """
     )
+    # Authorized signer for the vendor (additive; nullable for existing rows).
+    for col in ("representative_name", "representative_title"):
+        if not table_has_column(cursor, "payroll_vendors", col):
+            try:
+                cursor.execute(
+                    f"ALTER TABLE payroll_vendors ADD COLUMN {col} VARCHAR(255) NULL"
+                )
+            except Exception as exc:  # pragma: no cover - column race
+                if getattr(exc, "args", (None,))[0] != 1060:
+                    raise
+            invalidate_schema_cache()
     # Worker-level default vendor (payroll_profiles is keyed by user_id).
     if not table_has_column(cursor, "payroll_profiles", "default_vendor_id"):
         try:
@@ -65,6 +78,8 @@ def _vendor_row(row: dict) -> dict:
             "name": row.get("name"),
             "address": row.get("address"),
             "logo_url": row.get("logo_url"),
+            "representative_name": row.get("representative_name"),
+            "representative_title": row.get("representative_title"),
             "active": bool(row.get("active", 1)),
         }
     )
@@ -130,6 +145,8 @@ def create_vendor(
     name: str,
     address: Optional[str] = None,
     logo_url: Optional[str] = None,
+    representative_name: Optional[str] = None,
+    representative_title: Optional[str] = None,
 ) -> dict:
     ensure_payroll_vendor_tables(conn.cursor())
     clean_name = str(name or "").strip()
@@ -139,14 +156,18 @@ def create_vendor(
     try:
         c.execute(
             """
-            INSERT INTO payroll_vendors (organization_id, name, address, logo_url, active)
-            VALUES (%s, %s, %s, %s, 1)
+            INSERT INTO payroll_vendors
+              (organization_id, name, address, logo_url,
+               representative_name, representative_title, active)
+            VALUES (%s, %s, %s, %s, %s, %s, 1)
             """,
             (
                 int(organization_id),
                 clean_name,
                 str(address or "").strip() or None,
                 str(logo_url or "").strip() or None,
+                str(representative_name or "").strip() or None,
+                str(representative_title or "").strip() or None,
             ),
         )
     except Exception as exc:
@@ -165,6 +186,8 @@ def update_vendor(
     name: Optional[str] = None,
     address: Optional[str] = None,
     logo_url: Optional[str] = None,
+    representative_name: Optional[str] = None,
+    representative_title: Optional[str] = None,
     active: Optional[bool] = None,
 ) -> dict:
     existing = get_vendor(conn, organization_id, vendor_id)
@@ -184,6 +207,12 @@ def update_vendor(
     if logo_url is not None:
         fields.append("logo_url=%s")
         params.append(str(logo_url).strip() or None)
+    if representative_name is not None:
+        fields.append("representative_name=%s")
+        params.append(str(representative_name).strip() or None)
+    if representative_title is not None:
+        fields.append("representative_title=%s")
+        params.append(str(representative_title).strip() or None)
     if active is not None:
         fields.append("active=%s")
         params.append(1 if active else 0)
@@ -287,6 +316,8 @@ def _line_vendor_snapshot(line: dict) -> Optional[dict]:
                 "name": snap.get("name"),
                 "address": snap.get("address"),
                 "logo_url": snap.get("logo_url"),
+                "representative_name": snap.get("representative_name"),
+                "representative_title": snap.get("representative_title"),
                 "active": True,
                 "snapshot": True,
             }
@@ -303,4 +334,6 @@ def vendor_snapshot_for_finalize(vendor: Optional[dict]) -> Optional[dict]:
         "name": vendor.get("name"),
         "address": vendor.get("address"),
         "logo_url": vendor.get("logo_url"),
+        "representative_name": vendor.get("representative_name"),
+        "representative_title": vendor.get("representative_title"),
     }

@@ -78,4 +78,27 @@ describe("accountantDocumentUsers", () => {
     expect(filterPayrollTimelineUsers(users, "contractor_1099")).toEqual([contractor]);
     expect(workerLaneForCategory("contractor_1099")).toBe("contractor_1099");
   });
+
+  it("filters temp workers by canonical temp_worker lane plus legacy aliases", () => {
+    // Backend infer_user_form_lanes emits `temp_worker`; this was the blank-dropdown bug.
+    const tempCanonical = {
+      id: 41,
+      first_name: "Tom",
+      last_name: "Temp",
+      hr_form_lanes: ["temp_worker"],
+    };
+    const tempLegacy = {
+      id: 42,
+      first_name: "Tim",
+      last_name: "Legacy",
+      hr_form_lanes: ["contractor_temp"],
+    };
+    const users = [w2Worker, tempCanonical, tempLegacy];
+    expect(
+      filterPayrollTimelineUsers(users, "temp")
+        .map((u) => u.id)
+        .sort(),
+    ).toEqual([41, 42]);
+    expect(workerLaneForCategory("temp")).toBe("temp_worker");
+  });
 });

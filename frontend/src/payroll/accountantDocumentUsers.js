@@ -92,16 +92,35 @@ function hasLane(user, lane) {
   return lanes.includes(lane);
 }
 
+/**
+ * Canonical form-lane values, tolerant of legacy variants, keyed by payroll
+ * worker category. `infer_user_form_lanes` (backend) emits `temp_worker` for
+ * temp workers — earlier UI code filtered `contractor_temp`/`temp`, which left
+ * the Temp worker list empty. Accept the canonical value plus legacy aliases so
+ * no historical worker is dropped, without hard-coding a single guessed value.
+ */
+export const CATEGORY_FORM_LANES = {
+  w2: ["employee_w2"],
+  contractor_1099: ["contractor_1099"],
+  temp: ["temp_worker", "contractor_temp", "temp", "temporary", "temp_contractor"],
+};
+
+function hasAnyLane(user, lanes) {
+  return (lanes || []).some((lane) => hasLane(user, lane));
+}
+
 /** Payroll workers eligible for HR Timeline by category (mirrors document filing scope). */
 export function filterPayrollTimelineUsers(users, category) {
   const list = users || [];
   if (category === "w2") return list.filter(isW2EmployeeForDocuments);
   if (category === "contractor_1099") {
-    return list.filter((u) => hasLane(u, "contractor_1099") && !isAccountantSystemUser(u));
+    return list.filter(
+      (u) => hasAnyLane(u, CATEGORY_FORM_LANES.contractor_1099) && !isAccountantSystemUser(u),
+    );
   }
   if (category === "temp") {
     return list.filter(
-      (u) => (hasLane(u, "contractor_temp") || hasLane(u, "temp")) && !isAccountantSystemUser(u),
+      (u) => hasAnyLane(u, CATEGORY_FORM_LANES.temp) && !isAccountantSystemUser(u),
     );
   }
   return [];
@@ -109,7 +128,7 @@ export function filterPayrollTimelineUsers(users, category) {
 
 export function workerLaneForCategory(category) {
   if (category === "contractor_1099") return "contractor_1099";
-  if (category === "temp") return "contractor_temp";
+  if (category === "temp") return "temp_worker";
   return "employee_w2";
 }
 

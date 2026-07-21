@@ -3546,6 +3546,29 @@ def _vendor_receipt_type_label(worker_category: str) -> str:
     return "Contractor"
 
 
+def _org_service_recipient(conn, organization_id) -> dict[str, str]:
+    """Legal/display name + full address of the client the work was performed for.
+
+    Reuses the existing employer/organization settings resolver (legal name,
+    structured address). Identifies the service recipient, not the vendor.
+    """
+    if not organization_id:
+        return {"name": "", "address": ""}
+    name = ""
+    address = ""
+    try:
+        from backend.hr_compliance import fetch_hr_org_settings
+
+        settings = fetch_hr_org_settings(conn, int(organization_id)) or {}
+        name = str(settings.get("employer_name") or "").strip()
+        address = str(settings.get("employer_address") or "").strip()
+    except Exception:  # pragma: no cover - settings lookup is best-effort
+        pass
+    if not name:
+        name = _org_display_name(conn, organization_id)
+    return {"name": name, "address": address}
+
+
 def _org_display_name(conn, organization_id) -> str:
     """Display name of the organization the work was performed for (the client).
 
@@ -3688,34 +3711,35 @@ def generate_vendor_receipt_html(
         ]
     )
 
-    org_display_name = _org_display_name(conn, organization_id)
+    recipient = _org_service_recipient(conn, organization_id)
+    org_name = str(recipient.get("name") or "").strip()
+    org_address = str(recipient.get("address") or "").strip()
 
-    issue_from = ""
-    if vendor_name or vendor_address:
-        addr_html = (
-            f"<p style='margin:2px 0;white-space:pre-line'>{esc(vendor_address)}</p>"
-            if vendor_address
-            else ""
+    def party(title: str, name: str, address: str) -> str:
+        if not (name or address):
+            return ""
+        addr = (
+            f"<p class='party-addr'>{esc(address)}</p>" if address else ""
         )
-        service_recipient_html = (
-            "<p style='margin:8px 0 2px'><strong>Work performed for</strong></p>"
-            f"<p style='margin:2px 0'>{esc(org_display_name)}</p>"
-            if org_display_name
-            else ""
+        return (
+            "<div class='party'>"
+            f"<span class='party-label'>{title}</span>"
+            f"<p class='party-name'>{esc(name)}</p>{addr}</div>"
         )
-        issue_from = (
-            "<div style='margin:12px 0'>"
-            "<strong>Issued from</strong>"
-            f"<p style='margin:2px 0'>{esc(vendor_name)}</p>{addr_html}"
-            f"{service_recipient_html}</div>"
-        )
-    elif org_display_name:
-        # No vendor branding resolved, but still show the service recipient.
-        issue_from = (
-            "<div style='margin:12px 0'>"
-            "<strong>Work performed for</strong>"
-            f"<p style='margin:2px 0'>{esc(org_display_name)}</p></div>"
-        )
+
+    issued_party = party("Issued from", vendor_name, vendor_address)
+    recipient_party = party("Work performed for", org_name, org_address)
+    parties_html = (
+        f"<div class='parties'>{issued_party}{recipient_party}</div>"
+        if (issued_party or recipient_party)
+        else ""
+    )
+
+    # Signature: contractor (from worker + category) and vendor representative
+    # (from the finalized vendor snapshot for historical immutability).
+    contractor_designation = type_label
+    rep_name = str(vendor.get("representative_name") or "").strip()
+    rep_title = str(vendor.get("representative_title") or "").strip()
 
     draft_banner = (
         "<p class='draft'>DRAFT PREVIEW — not finalized</p>" if preview and not batch.get(
@@ -3727,26 +3751,38 @@ def generate_vendor_receipt_html(
 <html><head><meta charset="utf-8">
 <title>Contractor Invoice &amp; Payment Receipt — {esc(worker_name)}</title>
 <style>
-  body {{ font-family: system-ui, -apple-system, sans-serif; color: #0f172a; margin: 32px; }}
-  .head {{ border-bottom: 3px solid #0f2f66; padding-bottom: 12px; margin-bottom: 12px; }}
-  .addr {{ color: #475569; margin: 6px 0 0; }}
-  h2.doc {{ font-size: 1.25rem; margin: 4px 0 0; }}
-  h3.section {{ color: #0f2f66; font-size: 1rem; margin: 20px 0 4px; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; }}
-  .hint {{ font-size: 0.8rem; color: #64748b; margin: 0 0 6px; }}
-  table {{ width: 100%; border-collapse: collapse; margin: 6px 0; }}
-  td {{ padding: 7px 10px; border: 1px solid #e2e8f0; font-size: 0.92rem; }}
+  @page {{ size: letter portrait; margin: 0.5in; }}
+  * {{ box-sizing: border-box; }}
+  body {{ font-family: system-ui, -apple-system, sans-serif; color: #0f172a; margin: 0; padding: 28px; font-size: 12px; line-height: 1.35; }}
+  @media print {{ body {{ padding: 0; }} }}
+  .head {{ border-bottom: 2px solid #0f2f66; padding-bottom: 8px; margin-bottom: 8px; }}
+  .head img {{ max-height: 48px; max-width: 220px; object-fit: contain; }}
+  .head h1 {{ margin: 0; color: #0f2f66; font-size: 1.3rem; }}
+  h2.doc {{ font-size: 1.1rem; margin: 4px 0 0; }}
+  h3.section {{ color: #0f2f66; font-size: 0.95rem; margin: 12px 0 3px; border-bottom: 1px solid #cbd5e1; padding-bottom: 3px; page-break-after: avoid; }}
+  .hint {{ font-size: 0.72rem; color: #64748b; margin: 0 0 4px; }}
+  .parties {{ display: flex; align-items: flex-start; gap: 28px; margin: 10px 0; page-break-inside: avoid; }}
+  .party {{ flex: 1; min-width: 0; }}
+  .party-label {{ font-weight: 700; }}
+  .party-name {{ margin: 2px 0 0; font-weight: 600; }}
+  .party-addr {{ margin: 2px 0 0; color: #475569; white-space: pre-line; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 4px 0; page-break-inside: avoid; }}
+  td {{ padding: 4px 8px; border: 1px solid #e2e8f0; font-size: 0.82rem; }}
   td:first-child {{ background: #f8fafc; width: 55%; }}
-  .draft {{ color: #b45309; font-weight: 700; letter-spacing: 0.05em; }}
-  .sig {{ display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 36px; }}
-  .sig-line {{ border-top: 1px solid #334155; margin-top: 40px; padding-top: 4px; font-size: 0.85rem; color: #475569; }}
+  .draft {{ color: #b45309; font-weight: 700; letter-spacing: 0.05em; margin: 4px 0; }}
+  .sig {{ display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 18px; page-break-inside: avoid; }}
+  .sig-col {{ min-width: 0; }}
+  .sig-title {{ font-weight: 700; display: block; }}
+  .sig-meta {{ margin: 4px 0 0; font-size: 0.82rem; }}
+  .sig-line {{ border-top: 1px solid #334155; margin-top: 26px; padding-top: 3px; font-size: 0.78rem; color: #475569; }}
+  .footnote {{ font-size: 0.7rem; color: #64748b; margin-top: 12px; }}
 </style></head><body>
 <div class="head">
   {logo_html}
-  {f"<p class='addr'>{esc(vendor_address)}</p>" if vendor_address else ""}
   <h2 class="doc">Contractor Invoice &amp; Payment Receipt</h2>
 </div>
 {draft_banner}
-{issue_from}
+{parties_html}
 <p class="hint"><strong>Contractor type:</strong> {esc(type_label)}</p>
 
 <h3 class="section">Part 1 — Invoice / Work Summary</h3>
@@ -3760,18 +3796,22 @@ legal rights. This form does not guarantee future work.</p>
 <table><tbody>{part2_rows}</tbody></table>
 
 <div class="sig">
-  <div><strong>Contractor / worker signature</strong>
-    <p style="margin:6px 0 0">Name: {esc(worker_name)}</p>
+  <div class="sig-col">
+    <span class="sig-title">Contractor / worker signature</span>
+    <p class="sig-meta">Name: {esc(worker_name) or "&nbsp;"}</p>
+    <p class="sig-meta">Designation: {esc(contractor_designation) or "&nbsp;"}</p>
     <div class="sig-line">Signature</div>
     <div class="sig-line">Date</div>
   </div>
-  <div><strong>Company signature</strong>
-    <p style="margin:6px 0 0">&nbsp;</p>
+  <div class="sig-col">
+    <span class="sig-title">Vendor representative signature</span>
+    <p class="sig-meta">Name: {esc(rep_name) if rep_name else "&nbsp;"}</p>
+    <p class="sig-meta">Designation: {esc(rep_title) if rep_title else "&nbsp;"}</p>
     <div class="sig-line">Signature</div>
     <div class="sig-line">Date</div>
   </div>
 </div>
-<p class="hint" style="margin-top:20px">Total paid this year is based on finalized payouts for {year}.
+<p class="hint footnote">Total paid this year is based on finalized payouts for {year}.
 {"Finalized " + str(batch.get('payout_details_finalized_at')) if batch.get('payout_details_finalized_at') else ""}</p>
 </body></html>"""
     return html

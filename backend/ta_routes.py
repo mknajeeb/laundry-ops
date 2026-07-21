@@ -6478,6 +6478,8 @@ def payroll_vendors_create():
                 name=body.get("name") or "",
                 address=body.get("address"),
                 logo_url=body.get("logo_url"),
+                representative_name=body.get("representative_name"),
+                representative_title=body.get("representative_title"),
             )
             return jsonify({"vendor": vendor})
         except ValueError as e:
@@ -6507,6 +6509,8 @@ def payroll_vendors_update(vendor_id: int):
                 name=body.get("name"),
                 address=body.get("address"),
                 logo_url=body.get("logo_url"),
+                representative_name=body.get("representative_name"),
+                representative_title=body.get("representative_title"),
                 active=body.get("active"),
             )
             return jsonify({"vendor": vendor})

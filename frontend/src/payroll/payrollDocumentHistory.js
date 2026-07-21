@@ -161,3 +161,34 @@ export function workersForCategory(users, category) {
 export function workerOptionsForCategory(users, category) {
   return workersForCategory(users, category).map(mapAccountantDocumentUserOption);
 }
+
+/**
+ * Worker options derived from returned document rows, so workers with historical
+ * documents remain selectable even if they are inactive or missing a profile
+ * form-lane. Rows are already category-scoped by the loaded batches.
+ */
+export function workerOptionsFromRows(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const r of rows || []) {
+    const id = r?.user_id;
+    if (id == null || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, label: r?.worker_name_snapshot || `User #${id}` });
+  }
+  return out;
+}
+
+/** Merge worker option lists, de-duping by id and sorting by label. */
+export function mergeWorkerOptions(...lists) {
+  const byId = new Map();
+  for (const list of lists) {
+    for (const opt of list || []) {
+      if (opt?.id == null) continue;
+      if (!byId.has(opt.id)) byId.set(opt.id, opt);
+    }
+  }
+  return [...byId.values()].sort((a, b) =>
+    String(a.label).localeCompare(String(b.label)),
+  );
+}

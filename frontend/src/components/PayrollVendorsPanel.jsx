@@ -31,7 +31,13 @@ import {
   updatePayrollVendor,
 } from "../api";
 
-const EMPTY_FORM = { name: "", address: "", logo_url: "" };
+const EMPTY_FORM = {
+  name: "",
+  address: "",
+  logo_url: "",
+  representative_name: "",
+  representative_title: "",
+};
 
 export default function PayrollVendorsPanel() {
   const [vendors, setVendors] = useState([]);
@@ -68,6 +74,8 @@ export default function PayrollVendorsPanel() {
       name: vendor.name || "",
       address: vendor.address || "",
       logo_url: vendor.logo_url || "",
+      representative_name: vendor.representative_name || "",
+      representative_title: vendor.representative_title || "",
     });
     setDialogOpen(true);
   };
@@ -145,6 +153,7 @@ export default function PayrollVendorsPanel() {
             <TableRow>
               <TableCell>Vendor</TableCell>
               <TableCell>Address</TableCell>
+              <TableCell>Representative</TableCell>
               <TableCell>Logo</TableCell>
               <TableCell>Status</TableCell>
               <TableCell align="right">Actions</TableCell>
@@ -161,6 +170,15 @@ export default function PayrollVendorsPanel() {
                 <TableCell>
                   <Typography variant="body2" color="text.secondary">
                     {v.address || "—"}
+                  </Typography>
+                </TableCell>
+                <TableCell>
+                  <Typography variant="body2" color="text.secondary">
+                    {v.representative_name
+                      ? `${v.representative_name}${
+                          v.representative_title ? ` — ${v.representative_title}` : ""
+                        }`
+                      : "—"}
                   </Typography>
                 </TableCell>
                 <TableCell>
@@ -203,7 +221,7 @@ export default function PayrollVendorsPanel() {
             ))}
             {!vendors.length ? (
               <TableRow>
-                <TableCell colSpan={5}>
+                <TableCell colSpan={6}>
                   <Typography variant="body2" color="text.secondary">
                     No vendors yet. Add one to brand temp / 1099 receipts.
                   </Typography>
@@ -241,6 +259,22 @@ export default function PayrollVendorsPanel() {
               fullWidth
               helperText="Leave blank to use a text letterhead."
             />
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+              <TextField
+                label="Representative name"
+                value={form.representative_name}
+                onChange={(e) => setForm({ ...form, representative_name: e.target.value })}
+                fullWidth
+                helperText="Person authorized to sign for the vendor (e.g. John Smith)."
+              />
+              <TextField
+                label="Representative designation / title"
+                value={form.representative_title}
+                onChange={(e) => setForm({ ...form, representative_title: e.target.value })}
+                fullWidth
+                helperText="e.g. Manager"
+              />
+            </Stack>
           </Stack>
         </DialogContent>
         <DialogActions>

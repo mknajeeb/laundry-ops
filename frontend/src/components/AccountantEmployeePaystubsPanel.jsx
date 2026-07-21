@@ -36,11 +36,13 @@ import {
   documentColumnLabel,
   documentDownloadSuffix,
   downloadAllLabel,
+  mergeWorkerOptions,
   netColumnLabel,
   rowDocumentActions,
   rowDocumentKind,
   taxWithheldApplies,
   workerOptionsForCategory,
+  workerOptionsFromRows,
 } from "../payroll/payrollDocumentHistory";
 import { accountantPeriodStatusLabel } from "../payroll/accountantBatchPick";
 import AccountantScopeFilters from "./AccountantScopeFilters";
@@ -122,7 +124,7 @@ export default function AccountantEmployeePaystubsPanel() {
   const [category, setCategory] = useState("all");
   const [range, setRange] = useState("this_year");
   const [batches, setBatches] = useState([]);
-  const [workers, setWorkers] = useState([]);
+  const [profileWorkers, setProfileWorkers] = useState([]);
   const [selectedWorker, setSelectedWorker] = useState(null);
   const [selectedBatchId, setSelectedBatchId] = useState("");
   const [periodStart, setPeriodStart] = useState("");
@@ -147,9 +149,11 @@ export default function AccountantEmployeePaystubsPanel() {
       .catch(() => setBatches([]));
     getTaUsers()
       .then((res) => {
-        setWorkers(workerOptionsForCategory(res.data?.users || res.data || [], category));
+        setProfileWorkers(
+          workerOptionsForCategory(res.data?.users || res.data || [], category),
+        );
       })
-      .catch(() => setWorkers([]));
+      .catch(() => setProfileWorkers([]));
   }, [category]);
 
   const loadRows = useCallback(async () => {
@@ -196,10 +200,11 @@ export default function AccountantEmployeePaystubsPanel() {
         }),
       );
 
+      // Keep every worker's line so the worker dropdown (built from these rows)
+      // stays complete; the selected worker is applied in `visibleRows`.
       const out = [];
       for (const batch of details.filter(Boolean)) {
         for (const ln of batch.lines || []) {
-          if (selectedWorker?.id && Number(ln.user_id) !== Number(selectedWorker.id)) continue;
           out.push(shapeLine(ln, batch));
         }
       }
@@ -255,9 +260,17 @@ export default function AccountantEmployeePaystubsPanel() {
   }, [loadRows]);
 
   const visibleRows = useMemo(() => {
-    if (viewMode === "employee" && !selectedWorker) return [];
-    return rows;
+    if (viewMode === "batch") return rows;
+    if (!selectedWorker) return [];
+    return rows.filter((ln) => Number(ln.user_id) === Number(selectedWorker.id));
   }, [viewMode, selectedWorker, rows]);
+
+  // Worker dropdown = payroll profiles for the category ∪ workers present in the
+  // loaded document rows (so historical / inactive workers never disappear).
+  const employeeWorkerOptions = useMemo(
+    () => mergeWorkerOptions(profileWorkers, workerOptionsFromRows(rows)),
+    [profileWorkers, rows],
+  );
 
   // Labels: driven by the concrete rows (batch view) or the category filter (employee view).
   const labelCategory = viewMode === "batch" ? "all" : category;
@@ -381,7 +394,7 @@ export default function AccountantEmployeePaystubsPanel() {
         batches={batches}
         selectedBatchId={selectedBatchId}
         onBatchChange={setSelectedBatchId}
-        workers={viewMode === "batch" ? batchWorkers : workers}
+        workers={viewMode === "batch" ? batchWorkers : employeeWorkerOptions}
         selectedWorker={selectedWorker}
         onWorkerChange={setSelectedWorker}
         workerLabel={category === "w2" ? "Employee" : "Worker"}

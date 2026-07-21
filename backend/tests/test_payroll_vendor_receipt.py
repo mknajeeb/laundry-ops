@@ -120,14 +120,50 @@ def test_resolve_line_vendor_uses_snapshot_without_db():
 
 
 def test_vendor_snapshot_for_finalize_shape():
-    vendor = {"id": 1, "name": "Washmate Inc", "address": "A", "logo_url": "/l.png", "active": True}
+    vendor = {
+        "id": 1,
+        "name": "Washmate Inc",
+        "address": "A",
+        "logo_url": "/l.png",
+        "representative_name": "John Smith",
+        "representative_title": "Manager",
+        "active": True,
+    }
     snap = vendor_snapshot_for_finalize(vendor)
-    assert snap == {"id": 1, "name": "Washmate Inc", "address": "A", "logo_url": "/l.png"}
+    assert snap == {
+        "id": 1,
+        "name": "Washmate Inc",
+        "address": "A",
+        "logo_url": "/l.png",
+        "representative_name": "John Smith",
+        "representative_title": "Manager",
+    }
     assert vendor_snapshot_for_finalize(None) is None
 
 
-def test_vendor_receipt_shows_issued_from_and_service_recipient():
-    """Receipt shows the vendor (from snapshot) plus the client org it was for."""
+def test_resolve_line_vendor_snapshot_carries_representative():
+    batch = _batch("temp")
+    line = {
+        "id": 1,
+        "user_id": 9,
+        "payout_details": {
+            "vendor": {
+                "id": 2,
+                "name": "Washmate Inc",
+                "address": "A",
+                "logo_url": None,
+                "representative_name": "John Smith",
+                "representative_title": "Manager",
+            }
+        },
+    }
+    resolved = resolve_line_vendor(None, 3, line, batch)
+    assert resolved["representative_name"] == "John Smith"
+    assert resolved["representative_title"] == "Manager"
+    assert resolved["snapshot"] is True
+
+
+def _vendor_receipt_batch(vendor_snapshot):
     batch = {
         "id": 22,
         "organization_id": 3,
@@ -140,24 +176,40 @@ def test_vendor_receipt_shows_issued_from_and_service_recipient():
             {
                 "id": 211,
                 "user_id": 5,
-                "worker_name_snapshot": "Jane Doe",
+                "worker_name_snapshot": "Maria Perez",
                 "approved_hours": 10,
                 "rate": 20,
                 "adjustments": 0,
                 "payout_details": {
                     "payment": {"method": "check", "date": "2026-05-16"},
-                    "vendor": {
-                        "id": 1,
-                        "name": "Washmate Inc",
-                        "address": "921 2nd Avenue, Franklin Square, NY 11010",
-                        "logo_url": None,
-                    },
+                    "vendor": vendor_snapshot,
                 },
                 "payout_totals": {"gross_pay": 200.0, "amount_paid": 200.0},
             }
         ],
     }
-    # Finalized snapshot must be the branding source; org name is the service recipient.
+    return batch
+
+
+def _render_vendor_receipt(vendor_snapshot, recipient=None):
+    recipient = recipient or {
+        "name": "VeeWash LLC",
+        "address": "10438 Jamaica Avenue\nRichmond Hill, NY 11418",
+    }
+    batch = _vendor_receipt_batch(vendor_snapshot)
+    with mock.patch.object(ppd, "get_payout_batch_details", return_value=batch), mock.patch.object(
+        ppd, "_vendor_worker_contact", return_value={"phone": "", "email": ""}
+    ), mock.patch.object(
+        ppd, "fetch_vendor_receipt_ytd_prior", return_value=0.0
+    ), mock.patch.object(
+        ppd, "_org_service_recipient", return_value=recipient
+    ), mock.patch(
+        "backend.payroll_vendors.resolve_line_vendor", return_value=vendor_snapshot
+    ):
+        return generate_vendor_receipt_html(object(), 3, 22, 211)
+
+
+def test_vendor_receipt_renders_legal_recipient_and_side_by_side_blocks():
     vendor_snapshot = {
         "id": 1,
         "name": "Washmate Inc",
@@ -165,21 +217,42 @@ def test_vendor_receipt_shows_issued_from_and_service_recipient():
         "logo_url": None,
         "snapshot": True,
     }
-    with mock.patch.object(ppd, "get_payout_batch_details", return_value=batch), mock.patch.object(
-        ppd, "_vendor_worker_contact", return_value={"phone": "", "email": ""}
-    ), mock.patch.object(
-        ppd, "fetch_vendor_receipt_ytd_prior", return_value=0.0
-    ), mock.patch.object(
-        ppd, "_org_display_name", return_value="VeeWash"
-    ), mock.patch(
-        "backend.payroll_vendors.resolve_line_vendor", return_value=vendor_snapshot
-    ):
-        html = generate_vendor_receipt_html(object(), 3, 22, 211)
+    html = _render_vendor_receipt(vendor_snapshot)
 
+    # Both parties present, with the client rendered as its legal name + address.
     assert "Issued from" in html
     assert "Washmate Inc" in html
     assert "Work performed for" in html
-    assert "VeeWash" in html
-    # Service recipient appears directly below the vendor block.
+    assert "VeeWash LLC" in html
+    assert "10438 Jamaica Avenue" in html
+    # Side-by-side layout: single flex container holding both parties in order.
+    assert "class='parties'" in html
+    assert ".parties { display: flex" in html
     assert html.index("Issued from") < html.index("Work performed for")
-    assert html.index("Washmate Inc") < html.index("Work performed for")
+
+
+def test_finalized_receipt_uses_snapshot_representative_in_signature():
+    vendor_snapshot = {
+        "id": 1,
+        "name": "Washmate Inc",
+        "address": "921 2nd Avenue, Franklin Square, NY 11010",
+        "logo_url": None,
+        "representative_name": "John Smith",
+        "representative_title": "Manager",
+        "snapshot": True,
+    }
+    html = _render_vendor_receipt(vendor_snapshot)
+
+    # Two aligned signature columns with identical structure.
+    assert html.count("class=\"sig-col\"") == 2
+    assert "Contractor / worker signature" in html
+    assert "Vendor representative signature" in html
+    # Contractor designation reflects worker category (temp).
+    assert "Temporary / Short-Term Contractor" in html
+    # Vendor representative comes from the finalized snapshot.
+    assert "John Smith" in html
+    assert "Manager" in html
+    # Each column carries Name / Designation / Signature rows.
+    assert html.count("Name:") == 2
+    assert html.count("Designation:") == 2
+    assert html.count(">Signature<") == 2

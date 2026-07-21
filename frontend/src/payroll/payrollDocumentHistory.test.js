@@ -6,10 +6,12 @@ import {
   documentDownloadSuffix,
   downloadAllLabel,
   netColumnLabel,
+  mergeWorkerOptions,
   rowDocumentActions,
   rowDocumentKind,
   taxWithheldApplies,
   workerOptionsForCategory,
+  workerOptionsFromRows,
   workersForCategory,
 } from "./payrollDocumentHistory";
 import { paystubDownloadFilename } from "./paystubDownload";
@@ -199,7 +201,10 @@ describe("worker filtering by category", () => {
   const users = [
     { id: 1, first_name: "Ann", last_name: "Lee", hr_form_lanes: ["employee_w2"] },
     { id: 2, first_name: "Bob", last_name: "Ray", hr_form_lanes: ["contractor_1099"] },
-    { id: 3, first_name: "Cid", last_name: "Poe", hr_form_lanes: ["contractor_temp"] },
+    // Canonical backend temp lane is `temp_worker` (the blank-dropdown root cause).
+    { id: 3, first_name: "Cid", last_name: "Poe", hr_form_lanes: ["temp_worker"] },
+    // Legacy alias still tolerated so no historical worker is dropped.
+    { id: 5, first_name: "Uma", last_name: "Nix", hr_form_lanes: ["contractor_temp"] },
     { id: 4, first_name: "Dee", last_name: "Fox", hr_form_lanes: ["employee_w2", "contractor_1099"] },
   ];
 
@@ -209,11 +214,11 @@ describe("worker filtering by category", () => {
   test("1099 category returns only 1099 lanes", () => {
     expect(workersForCategory(users, "contractor_1099").map((u) => u.id).sort()).toEqual([2, 4]);
   });
-  test("temp category returns only temp lanes", () => {
-    expect(workersForCategory(users, "temp").map((u) => u.id).sort()).toEqual([3]);
+  test("temp category returns canonical temp_worker plus legacy alias", () => {
+    expect(workersForCategory(users, "temp").map((u) => u.id).sort()).toEqual([3, 5]);
   });
   test("all categories unions and de-dupes workers", () => {
-    expect(workersForCategory(users, "all").map((u) => u.id).sort()).toEqual([1, 2, 3, 4]);
+    expect(workersForCategory(users, "all").map((u) => u.id).sort()).toEqual([1, 2, 3, 4, 5]);
   });
   test("options carry id and label", () => {
     const opts = workerOptionsForCategory(users, "w2");
@@ -221,5 +226,39 @@ describe("worker filtering by category", () => {
       { id: 1, label: "Ann Lee" },
       { id: 4, label: "Dee Fox" },
     ]);
+  });
+});
+
+describe("worker options from historical document rows", () => {
+  const rows = [
+    { user_id: 30, worker_name_snapshot: "Old Temp", worker_category: "temp" },
+    { user_id: 30, worker_name_snapshot: "Old Temp", worker_category: "temp" },
+    { user_id: 31, worker_name_snapshot: "Ghost 1099", worker_category: "contractor_1099" },
+    { user_id: null, worker_name_snapshot: "No id", worker_category: "temp" },
+  ];
+
+  test("derives de-duplicated worker options from rows", () => {
+    expect(workerOptionsFromRows(rows)).toEqual([
+      { id: 30, label: "Old Temp" },
+      { id: 31, label: "Ghost 1099" },
+    ]);
+  });
+
+  test("historical / inactive workers remain selectable when missing from profiles", () => {
+    // Profile list has an active worker (40) but not the historical temp (30).
+    const profiles = [{ id: 40, label: "Active Temp" }];
+    const merged = mergeWorkerOptions(profiles, workerOptionsFromRows(rows));
+    expect(merged.map((o) => o.id).sort()).toEqual([30, 31, 40]);
+  });
+
+  test("all-category worker list has no duplicates", () => {
+    const profiles = [
+      { id: 30, label: "Old Temp" },
+      { id: 40, label: "Active Temp" },
+    ];
+    const merged = mergeWorkerOptions(profiles, workerOptionsFromRows(rows));
+    const ids = merged.map((o) => o.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.sort()).toEqual([30, 31, 40]);
   });
 });
