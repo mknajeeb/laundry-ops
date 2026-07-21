@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { defineConfig, loadEnv } from 'vite'
+import { loadEnv } from 'vite'
+import { configDefaults, defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -70,6 +71,15 @@ export default defineConfig(({ mode }) => {
       headers: {
         'Cache-Control': 'no-store',
       },
+    },
+    // Vitest config — ignored by `vite build` / `vite` dev server.
+    // Node `node:test` files use the `.nodetest.js` suffix and are excluded here
+    // so they run only under `npm run test:node`.
+    test: {
+      globals: true,
+      environment: 'node',
+      include: ['src/**/*.test.{js,jsx}'],
+      exclude: [...configDefaults.exclude, '**/*.nodetest.js'],
     },
   }
 })

@@ -1,7 +1,6 @@
-/** @jest-environment node */
+import { describe, expect, test } from "vitest";
 import {
   computeDayPlan,
-  computePlanSummary,
   computeScheduledHours,
   detectCoverageGaps,
   previewHoursAfterAssignment,
@@ -83,7 +82,7 @@ describe("schedulePlanner", () => {
   });
 
   test("coverage gap detection", () => {
-    const gaps = detectCoverageGaps([], settings, settings, "2026-05-21");
+    const gaps = detectCoverageGaps([], [], settings, "2026-05-21");
     expect(Array.isArray(gaps)).toBe(true);
   });
 

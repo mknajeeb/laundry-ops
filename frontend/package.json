@@ -8,7 +8,10 @@
     "build": "vite build",
     "check:productivity-times": "node scripts/checkEmployeeProductivityTimeFormat.mjs",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:node": "node --test \"src/**/*.nodetest.js\""
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -38,6 +41,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^3.2.4"
   }
 }

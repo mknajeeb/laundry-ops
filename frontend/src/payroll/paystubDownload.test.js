@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { paystubDownloadFilename } from "./paystubDownload";
+import {
+  paystubArchiveDownloadFilename,
+  paystubDownloadFilename,
+} from "./paystubDownload";
 
 describe("paystubDownloadFilename", () => {
   it("uses employee name and pay period", () => {
