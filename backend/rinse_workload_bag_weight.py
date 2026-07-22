@@ -11,6 +11,7 @@ from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_st
 from backend.rinse_scan_purpose import is_weight_entry_purpose
 from backend.rinse_wf_weight_events import (
     WF_POST_PROCESSING_WEIGHT_SIGNAL,
+    normalize_scan_weight_lbs,
     parse_weight_lbs_from_scan_event,
 )
 
@@ -20,15 +21,11 @@ WEIGHT_STATUS_INTEGRITY_FAILURE = "integrity_failure"
 
 
 def _positive_float(raw: Any) -> float | None:
-    if raw is None:
+    """Strictly > 0 — used for revenue / integrity positive checks only."""
+    val = normalize_scan_weight_lbs(raw)
+    if val is None or val <= 0:
         return None
-    try:
-        val = float(raw)
-        if val > 0:
-            return round(val, 4)
-    except (TypeError, ValueError):
-        return None
-    return None
+    return val
 
 
 def _parse_dt(raw: Any) -> datetime | None:
@@ -56,17 +53,36 @@ def _raw_json_weight_keys(raw_json: Any) -> list[str]:
             return []
     if not isinstance(raw_json, dict):
         return []
-    keys = ("Weight", "weight", "# WF LBS", "WF LBS", "weight_lbs", "weight_num")
+    keys = ("Weight", "weight", "# WF LBS", "WF LBS", "weight_lbs", "weight_num", "pounds", "lbs")
     return [k for k in keys if raw_json.get(k) not in (None, "", "(None)")]
 
 
 def _weight_from_completion_scan_event(ev: Mapping[str, Any] | None) -> float | None:
     if not ev:
         return None
-    col_lbs = _positive_float(ev.get("weight_lbs"))
+    col_lbs = normalize_scan_weight_lbs(ev.get("weight_lbs"))
     if col_lbs is not None:
         return col_lbs
-    return _positive_float(parse_weight_lbs_from_scan_event(ev))
+    return parse_weight_lbs_from_scan_event(ev)
+
+
+def _last_weight_entry_on_selected_day(
+    events: Sequence[Mapping[str, Any]] | None,
+    selected_date_et: date,
+) -> Mapping[str, Any] | None:
+    """Chronologically last weight-entry on the selected ET day (fallback attach target)."""
+    best: Mapping[str, Any] | None = None
+    best_ts: datetime | None = None
+    for ev in events or []:
+        if not is_weight_entry_purpose(ev.get("purpose")):
+            continue
+        ts = _parse_dt(ev.get("scanned_at_parsed") or ev.get("scanned_at"))
+        if not _on_selected_et_day(ts, selected_date_et):
+            continue
+        if best_ts is None or (ts is not None and ts >= best_ts):
+            best_ts = ts
+            best = ev
+    return best
 
 
 def trace_wf_completion_weight(
@@ -101,7 +117,7 @@ def trace_wf_completion_weight(
         "raw_json_weight_keys": [],
         "failure_stage": None,
         "failure_detail": None,
-        "portal_weight_available": _positive_float(portal_upload_weight),
+        "portal_weight_available": normalize_scan_weight_lbs(portal_upload_weight),
         "events_count": len(events or []),
     }
 
@@ -149,7 +165,7 @@ def trace_wf_completion_weight(
     trace["completion_event_id"] = weight_ev.get("id")
     trace["completion_event_ts"] = comp_ts.isoformat() if comp_ts else None
     trace["completion_scan_purpose"] = weight_ev.get("purpose")
-    trace["scan_weight_lbs_column"] = _positive_float(weight_ev.get("weight_lbs"))
+    trace["scan_weight_lbs_column"] = normalize_scan_weight_lbs(weight_ev.get("weight_lbs"))
     trace["scan_weight_lbs_parsed"] = _weight_from_completion_scan_event(weight_ev)
     trace["raw_json_weight_keys"] = _raw_json_weight_keys(weight_ev.get("raw_json"))
 
@@ -238,14 +254,17 @@ def attach_portal_weight_to_post_processing_scan(
     Ingestion repair: portal list weight belongs on the post-processing scan row.
 
     Events CSV does not include Weight; this join writes portal weight onto the
-    completion weight-entry scan so productivity reads a single authoritative source.
+    completion weight-entry scan so productivity / chronology reads one source.
+
+    Fallback: when no post-processing weight-entry exists after the latest
+    processing step, attach onto the last weight-entry on the selected ET day.
     """
     from backend.rinse_employee_completed_bags import _resolve_anchor_ts
     from backend.rinse_post_processing_weight_chronology import _load_scan_events_for_bags
 
     org = int(organization_id)
     bid = str(bag_id or "").strip().upper()
-    lbs = _positive_float(weight_lbs)
+    lbs = normalize_scan_weight_lbs(weight_lbs)
     if not bid or lbs is None:
         return {"updated": False, "reason": "invalid_bag_or_weight"}
 
@@ -263,8 +282,27 @@ def attach_portal_weight_to_post_processing_scan(
         portal_upload_weight=lbs,
     )
     scan_id = trace.get("completion_event_id")
+    attach_target = "post_processing_weight_entry"
     if not scan_id:
-        return {"updated": False, "reason": "no_completion_scan", "trace": trace}
+        fallback = _last_weight_entry_on_selected_day(events, selected_date_et)
+        if fallback and fallback.get("id") is not None:
+            scan_id = fallback.get("id")
+            attach_target = "last_weight_entry_on_day"
+            trace["completion_event_found"] = True
+            trace["completion_event_id"] = scan_id
+            fb_ts = _parse_dt(fallback.get("scanned_at_parsed") or fallback.get("scanned_at"))
+            trace["completion_event_ts"] = fb_ts.isoformat() if fb_ts else None
+            trace["completion_scan_purpose"] = fallback.get("purpose")
+            trace["scan_weight_lbs_column"] = normalize_scan_weight_lbs(fallback.get("weight_lbs"))
+            trace["scan_weight_lbs_parsed"] = _weight_from_completion_scan_event(fallback)
+            trace["raw_json_weight_keys"] = _raw_json_weight_keys(fallback.get("raw_json"))
+            trace["failure_stage"] = None
+            trace["failure_detail"] = None
+            trace["attach_target"] = attach_target
+        else:
+            return {"updated": False, "reason": "no_completion_scan", "trace": trace}
+    else:
+        trace["attach_target"] = attach_target
 
     if trace.get("scan_weight_lbs_parsed") is not None:
         return {"updated": False, "reason": "scan_already_has_weight", "trace": trace}
@@ -282,6 +320,8 @@ def attach_portal_weight_to_post_processing_scan(
         "updated": cursor.rowcount > 0,
         "scan_event_id": scan_id,
         "weight_lbs": lbs,
+        "attach_target": attach_target,
+        "source_field": "portal_weight_num",
         "trace": trace,
     }
 
@@ -350,7 +390,7 @@ def load_portal_upload_weights_for_bags(
             bid = str(row.get("ticket_id") or "").strip().upper()
             if not bid or bid in out:
                 continue
-            w = _positive_float(row.get("weight_num"))
+            w = normalize_scan_weight_lbs(row.get("weight_num"))
             if w is not None:
                 out[bid] = w
     return out
@@ -414,7 +454,7 @@ def load_latest_portal_weights_for_bags(
             bid = str(row.get("ticket_id") or "").strip().upper()
             if not bid or bid in out:
                 continue
-            w = _positive_float(row.get("weight_num"))
+            w = normalize_scan_weight_lbs(row.get("weight_num"))
             if w is not None:
                 out[bid] = w
     return out
@@ -431,9 +471,9 @@ def load_weight_repair_sources_for_bags(
     """
     Weight candidates to attach onto post-processing scan rows.
 
-    Rinse scan-events CSV has no Weight column. Portal uploads often use EDD
-    (date_clean) rather than completion day, so same-day lookup alone misses
-    most bags. Registry weight_num is the final fallback for ingestion repair.
+    Rinse scan-events CSV has no Weight column. Prefer same-day portal
+    weight_num (0 preserved). Registry weight_num is last fallback only when
+    portal has no numeric value at all.
     """
     registry = registry_meta or {}
     same_day = load_portal_upload_weights_for_bags(
@@ -442,7 +482,13 @@ def load_weight_repair_sources_for_bags(
     latest = load_latest_portal_weights_for_bags(cursor, organization_id, bag_ids)
     out: dict[str, float] = {}
     for bid in sorted({str(b).strip().upper() for b in bag_ids if str(b).strip()}):
-        lbs = same_day.get(bid) or latest.get(bid) or _registry_weight_for_repair(registry.get(bid))
+        if bid in same_day:
+            out[bid] = same_day[bid]
+            continue
+        if bid in latest:
+            out[bid] = latest[bid]
+            continue
+        lbs = _registry_weight_for_repair(registry.get(bid))
         if lbs is not None:
             out[bid] = lbs
     return out
@@ -455,18 +501,31 @@ def sync_post_processing_scan_weights_from_portal(
     *,
     selected_date_et: date,
     events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    portal_weights_by_bag: Mapping[str, float] | None = None,
+    dry_run: bool = False,
 ) -> list[dict[str, Any]]:
     """Attach portal upload weight onto post-processing scan rows missing weight."""
-    portal = load_weight_repair_sources_for_bags(
-        cursor,
-        organization_id,
-        bag_ids,
-        selected_date_et=selected_date_et,
-    )
+    portal = dict(portal_weights_by_bag or {})
+    if not portal:
+        portal = load_weight_repair_sources_for_bags(
+            cursor,
+            organization_id,
+            bag_ids,
+            selected_date_et=selected_date_et,
+        )
     results: list[dict[str, Any]] = []
     for bid in sorted(set(str(b).strip().upper() for b in bag_ids if str(b).strip())):
         portal_lbs = portal.get(bid)
         if portal_lbs is None:
+            continue
+        if dry_run:
+            results.append(
+                {
+                    "bag_id": bid,
+                    "dry_run": True,
+                    "would_attach_weight_lbs": float(portal_lbs),
+                }
+            )
             continue
         events = (events_by_bag or {}).get(bid)
         results.append(
@@ -514,7 +573,7 @@ def finalize_completed_bag_weight_fields(
             except ValueError:
                 credit_ts = None
 
-    portal_lbs = _positive_float(portal_upload_weight)
+    portal_lbs = normalize_scan_weight_lbs(portal_upload_weight)
     if portal_lbs is None and svc.upper() == "WF":
         portal_lbs = _registry_weight_for_repair(meta)
 
@@ -523,7 +582,6 @@ def finalize_completed_bag_weight_fields(
         and cursor is not None
         and organization_id is not None
         and portal_lbs is not None
-        and svc.upper() == "WF"
     ):
         repair_result = attach_portal_weight_to_post_processing_scan(
             cursor,

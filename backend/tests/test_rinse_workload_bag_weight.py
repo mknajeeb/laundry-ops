@@ -194,3 +194,63 @@ class TestEmployeeProductivityWeightIntegrity:
         }
         violations = assert_completed_wf_bags_have_weight([bag])
         assert len(violations) == 1
+
+
+class TestAttachPortalWeightFallback:
+    def test_falls_back_to_last_weight_entry_when_no_post_processing(self):
+        """Sole pre-processing weight-entry still receives portal lbs."""
+        events = [
+            {**_ev("sent-to-vendor", T0, ev_id=1), "bag_id": "SOLO1"},
+            {**_ev("weight-entry", T0, ev_id=10), "bag_id": "SOLO1"},
+            {**_ev("start-cleaning", T1, ev_id=2), "bag_id": "SOLO1"},
+            {**_ev("drying", T2, ev_id=3), "bag_id": "SOLO1"},
+        ]
+        cursor = MagicMock()
+        cursor.rowcount = 1
+
+        with patch(
+            "backend.rinse_workload_bag_weight.ensure_scan_events_weight_lbs_column"
+        ), patch(
+            "backend.rinse_employee_completed_bags._resolve_anchor_ts",
+            return_value=T0,
+        ):
+            result = attach_portal_weight_to_post_processing_scan(
+                cursor,
+                3,
+                "SOLO1",
+                weight_lbs=9.2,
+                selected_date_et=JUL3,
+                events=events,
+            )
+
+        assert result["updated"] is True
+        assert result["scan_event_id"] == 10
+        assert result["weight_lbs"] == 9.2
+        assert result["attach_target"] == "last_weight_entry_on_day"
+        cursor.execute.assert_called()
+        args = cursor.execute.call_args[0][1]
+        assert args[0] == 9.2
+        assert args[2] == 10
+
+    def test_attaches_zero_as_valid(self):
+        events = _wf_events("Z1", T2, post_weight_lbs=None)
+        cursor = MagicMock()
+        cursor.rowcount = 1
+        with patch(
+            "backend.rinse_workload_bag_weight.ensure_scan_events_weight_lbs_column"
+        ), patch(
+            "backend.rinse_employee_completed_bags._resolve_anchor_ts",
+            return_value=T0,
+        ):
+            result = attach_portal_weight_to_post_processing_scan(
+                cursor,
+                3,
+                "Z1",
+                weight_lbs=0,
+                selected_date_et=JUL3,
+                events=events,
+            )
+        assert result["updated"] is True
+        assert result["weight_lbs"] == 0.0
+        args = cursor.execute.call_args[0][1]
+        assert args[0] == 0.0

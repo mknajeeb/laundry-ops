@@ -34,6 +34,7 @@ import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { PayrollDateTimeField } from "../PayrollDateTimeField";
 import BulkWorkitemEntrySection from "./BulkWorkitemEntrySection";
+import CopyableBagId from "../CopyableBagId";
 
 /** Session-scoped maintenance catalog (fetched once per browser session). */
 let cachedBulkCatalog = null;
@@ -375,9 +376,7 @@ export default function Step1MetricDrawer({
                 <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                   <Box sx={{ width: "100%", pr: 1 }}>
                     <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                      <Typography fontFamily="monospace" fontWeight={700}>
-                        {bag.bag_id}
-                      </Typography>
+                      <CopyableBagId bagId={bag.bag_id} />
                       <Chip size="small" label={bag.service_type || "—"} />
                       <Chip size="small" label={bag.rush_flag || "—"} variant="outlined" />
                       <Chip

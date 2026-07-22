@@ -14,6 +14,7 @@ import { getFoldingPerformanceDetail } from "../../api";
 import FoldingScanEventsTable from "../folding/FoldingScanEventsTable";
 import { PendingWhyBadge } from "./RushPendingWhyPanel";
 import BagWeightSummary from "./BagWeightSummary";
+import CopyableBagId from "../CopyableBagId";
 import {
   computeDueStatus,
   DUE_STATUS_COLORS,
@@ -128,9 +129,7 @@ export default function ShiftBagRecordRow({
         onClick={() => setOpen((v) => !v)}
       >
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="subtitle2" fontWeight={800} sx={{ wordBreak: "break-all" }}>
-            {row.bag_id}
-          </Typography>
+          <CopyableBagId bagId={row.bag_id} variant="subtitle2" fontWeight={800} sx={{ wordBreak: "break-all" }} />
           <Typography variant="body2" color="primary.main" fontWeight={600}>
             {row.customer_name || row.customer || "—"}
           </Typography>

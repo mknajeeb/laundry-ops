@@ -168,6 +168,21 @@ def apply_registry_from_accepted_portal_rows(
             rush_type=str(row.get("rush_type") or "NON-RUSH"),
             is_completed=is_completed,
         )
+        # Events CSV never carries Weight. Portal weight_num (incl. 0) must be
+        # re-attached after every confirm merge, including HD rows — otherwise
+        # replace_existing scan imports wipe prior weight_lbs and leave nulls.
+        from backend.rinse_wf_weight_events import normalize_scan_weight_lbs
+        from backend.rinse_workload_bag_weight import attach_portal_weight_to_post_processing_scan
+
+        lbs = normalize_scan_weight_lbs(row.get("weight_num"))
+        if lbs is not None and isinstance(row_date, date):
+            attach_portal_weight_to_post_processing_scan(
+                cursor,
+                organization_id,
+                tid,
+                weight_lbs=lbs,
+                selected_date_et=row_date,
+            )
         n += 1
     return n
 

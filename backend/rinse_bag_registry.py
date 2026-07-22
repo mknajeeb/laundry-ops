@@ -448,6 +448,7 @@ def upsert_scan_event_row(
     source_filename: str | None,
     raw_json: str | None,
     credential_sourced: bool = False,
+    weight_lbs: float | None = None,
 ) -> str:
     """
     Insert a new scan row, or touch metadata only when dedupe_key matches.
@@ -457,6 +458,8 @@ def upsert_scan_event_row(
     and therefore a new row.
     """
     from backend.rinse_bag_operational_owner import assert_operational_write_allowed
+    from backend.rinse_workload_bag_weight import ensure_scan_events_weight_lbs_column
+    from backend.ta_helpers import table_has_column
 
     allowed, _, _ = assert_operational_write_allowed(
         cursor,
@@ -471,6 +474,8 @@ def upsert_scan_event_row(
 
     ensure_rinse_bag_scan_events_table(cursor)
     ensure_rinse_bag_scan_events_dedupe_schema(cursor)
+    ensure_scan_events_weight_lbs_column(cursor)
+    has_weight_col = table_has_column(cursor, "rinse_bag_scan_events", "weight_lbs")
     cursor.execute(
         """
         SELECT id FROM rinse_bag_scan_events
@@ -482,63 +487,125 @@ def upsert_scan_event_row(
     existing = cursor.fetchone()
     if existing:
         row_id = existing["id"] if isinstance(existing, dict) else existing[0]
+        if has_weight_col and weight_lbs is not None:
+            cursor.execute(
+                """
+                UPDATE rinse_bag_scan_events
+                SET
+                    source_upload_batch_id = COALESCE(%s, source_upload_batch_id),
+                    source_filename = COALESCE(NULLIF(%s, ''), source_filename),
+                    user_name = COALESCE(NULLIF(%s, ''), user_name),
+                    purpose = COALESCE(NULLIF(%s, ''), purpose),
+                    last_location = COALESCE(NULLIF(%s, ''), last_location),
+                    last_scan = COALESCE(NULLIF(%s, ''), last_scan),
+                    raw_json = COALESCE(%s, raw_json),
+                    weight_lbs = COALESCE(weight_lbs, %s),
+                    last_seen_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    int(source_upload_batch_id),
+                    source_filename,
+                    user_name,
+                    purpose,
+                    last_location,
+                    last_scan,
+                    raw_json,
+                    weight_lbs,
+                    int(row_id),
+                ),
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE rinse_bag_scan_events
+                SET
+                    source_upload_batch_id = COALESCE(%s, source_upload_batch_id),
+                    source_filename = COALESCE(NULLIF(%s, ''), source_filename),
+                    user_name = COALESCE(NULLIF(%s, ''), user_name),
+                    purpose = COALESCE(NULLIF(%s, ''), purpose),
+                    last_location = COALESCE(NULLIF(%s, ''), last_location),
+                    last_scan = COALESCE(NULLIF(%s, ''), last_scan),
+                    raw_json = COALESCE(%s, raw_json),
+                    last_seen_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    int(source_upload_batch_id),
+                    source_filename,
+                    user_name,
+                    purpose,
+                    last_location,
+                    last_scan,
+                    raw_json,
+                    int(row_id),
+                ),
+            )
+        return "metadata_updated"
+
+    if has_weight_col:
         cursor.execute(
             """
-            UPDATE rinse_bag_scan_events
-            SET
-                source_upload_batch_id = COALESCE(%s, source_upload_batch_id),
-                source_filename = COALESCE(NULLIF(%s, ''), source_filename),
-                user_name = COALESCE(NULLIF(%s, ''), user_name),
-                purpose = COALESCE(NULLIF(%s, ''), purpose),
-                last_location = COALESCE(NULLIF(%s, ''), last_location),
-                last_scan = COALESCE(NULLIF(%s, ''), last_scan),
-                raw_json = COALESCE(%s, raw_json),
-                last_seen_at = NOW(),
-                updated_at = NOW()
-            WHERE id = %s
+            INSERT INTO rinse_bag_scan_events (
+                organization_id, bag_id, dedupe_key, scan_index, rack,
+                time_scanned_raw, scanned_at_parsed, source_timezone,
+                user_name, purpose,
+                last_location, last_scan, source_upload_batch_id, source_filename,
+                last_seen_at, raw_json, weight_lbs
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s)
             """,
             (
-                int(source_upload_batch_id),
-                source_filename,
+                int(organization_id),
+                bag_id,
+                dedupe_key,
+                scan_index,
+                rack,
+                time_scanned_raw,
+                scanned_at_parsed,
+                RINSE_SCAN_SOURCE_TIMEZONE,
                 user_name,
                 purpose,
                 last_location,
                 last_scan,
+                int(source_upload_batch_id),
+                source_filename,
                 raw_json,
-                int(row_id),
+                weight_lbs,
             ),
         )
-        return "metadata_updated"
-
-    cursor.execute(
-        """
-        INSERT INTO rinse_bag_scan_events (
-            organization_id, bag_id, dedupe_key, scan_index, rack,
-            time_scanned_raw, scanned_at_parsed, source_timezone,
-            user_name, purpose,
-            last_location, last_scan, source_upload_batch_id, source_filename,
-            last_seen_at, raw_json
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
-        """,
-        (
-            int(organization_id),
-            bag_id,
-            dedupe_key,
-            scan_index,
-            rack,
-            time_scanned_raw,
-            scanned_at_parsed,
-            RINSE_SCAN_SOURCE_TIMEZONE,
-            user_name,
-            purpose,
-            last_location,
-            last_scan,
-            int(source_upload_batch_id),
-            source_filename,
-            raw_json,
-        ),
-    )
+    else:
+        cursor.execute(
+            """
+            INSERT INTO rinse_bag_scan_events (
+                organization_id, bag_id, dedupe_key, scan_index, rack,
+                time_scanned_raw, scanned_at_parsed, source_timezone,
+                user_name, purpose,
+                last_location, last_scan, source_upload_batch_id, source_filename,
+                last_seen_at, raw_json
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+            """,
+            (
+                int(organization_id),
+                bag_id,
+                dedupe_key,
+                scan_index,
+                rack,
+                time_scanned_raw,
+                scanned_at_parsed,
+                RINSE_SCAN_SOURCE_TIMEZONE,
+                user_name,
+                purpose,
+                last_location,
+                last_scan,
+                int(source_upload_batch_id),
+                source_filename,
+                raw_json,
+            ),
+        )
     return "inserted"
+
 
 
 def delete_persistent_scan_events_for_bags(
@@ -642,6 +709,16 @@ def merge_scan_events_from_upload(
                 k: ("" if pd.isna(row.get(k)) else str(row.get(k)))
                 for k in row.index
             }
+            from backend.rinse_wf_weight_events import normalize_scan_weight_lbs, parse_weight_lbs_from_scan_event
+
+            weight_lbs = None
+            for key in ("Weight", "weight", "# WF LBS", "WF LBS", "weight_lbs", "weight_num", "pounds", "lbs"):
+                if key in row.index:
+                    weight_lbs = normalize_scan_weight_lbs(row.get(key), allow_unit_suffix=True)
+                    if weight_lbs is not None:
+                        break
+            if weight_lbs is None:
+                weight_lbs = parse_weight_lbs_from_scan_event({"raw_json": raw, "purpose": purpose})
             try:
                 dedupe_key = compute_scan_event_dedupe_key(
                     organization_id=org,
@@ -673,6 +750,7 @@ def merge_scan_events_from_upload(
                 source_filename=(source_filename or "")[:512] or None,
                 raw_json=json.dumps(raw),
                 credential_sourced=credential_sourced,
+                weight_lbs=weight_lbs,
             )
             if action == "rejected_operational_owner":
                 rejected_owner += 1

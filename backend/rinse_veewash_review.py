@@ -33,14 +33,9 @@ from backend.rinse_veewash_workload import (
 
 def _parse_weight(raw: Any) -> float | None:
     """Parse numeric weight; null/blank/non-numeric → None. Zero kept as 0.0."""
-    if raw is None:
-        return None
-    if isinstance(raw, str) and not raw.strip():
-        return None
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return None
+    from backend.rinse_wf_weight_events import normalize_scan_weight_lbs
+
+    return normalize_scan_weight_lbs(raw)
 
 
 def _valid_positive_weight(raw: Any) -> float | None:

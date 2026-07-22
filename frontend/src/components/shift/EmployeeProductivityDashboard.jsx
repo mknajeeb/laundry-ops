@@ -22,6 +22,7 @@ import {
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { getEmployeeProductivityDashboard } from "../../api";
+import CopyableBagId from "../CopyableBagId";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import { yesterdayRange, todayRange } from "../../utils/foldingDateRange";
 import {
@@ -565,7 +566,9 @@ export default function EmployeeProductivityDashboard({
                 <TableBody>
                   {completedAttributionAudit.map((row) => (
                     <TableRow key={row.bag_id}>
-                      <TableCell>{row.bag_id}</TableCell>
+                      <TableCell>
+                        <CopyableBagId bagId={row.bag_id} />
+                      </TableCell>
                       <TableCell>{row.workflow || row.service_type || "—"}</TableCell>
                       <TableCell>{row.rush_label || row.rush_bucket || "—"}</TableCell>
                       <TableCell>{row.credited_employee || "—"}</TableCell>

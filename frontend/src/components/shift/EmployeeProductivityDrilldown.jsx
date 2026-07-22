@@ -3,7 +3,6 @@ import {
   Box,
   Chip,
   Collapse,
-  Link,
   Paper,
   Stack,
   Table,
@@ -18,6 +17,7 @@ import {
   useTheme,
 } from "@mui/material";
 import ShiftBagRecordRow from "./ShiftBagRecordRow";
+import CopyableBagId from "../CopyableBagId";
 import { resolveBagWeightLbs } from "../../utils/employeeProductivityHelpers";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 
@@ -74,13 +74,10 @@ function BagMobileCard({ bag, expanded, onToggle, referenceDateEt, statusLabel }
         <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
           <Box sx={{ minWidth: 0 }}>
             <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
-              <Typography
-                component="span"
-                fontWeight={800}
-                sx={{ fontSize: "0.95rem", wordBreak: "break-all", textAlign: "left", color: "primary.main" }}
-              >
-                {bag.bag_id}
-              </Typography>
+              <CopyableBagId
+                bagId={bag.bag_id}
+                sx={{ fontSize: "0.95rem", wordBreak: "break-all", color: "primary.main" }}
+              />
               {statusLabel ? (
                 <Chip label={statusLabel} size="small" sx={{ fontWeight: 700, fontSize: "0.7rem" }} />
               ) : null}
@@ -182,18 +179,7 @@ function BagTableSection({
                     {formatFriendlyEtWall(normalized.completion_time_et || normalized.completion_time)}
                   </TableCell>
                   <TableCell>
-                    <Link
-                      component="button"
-                      type="button"
-                      underline="hover"
-                      fontWeight={700}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setExpandedBagId((prev) => (prev === bag.bag_id ? null : bag.bag_id));
-                      }}
-                    >
-                      {bag.bag_id}
-                    </Link>
+                    <CopyableBagId bagId={bag.bag_id} />
                   </TableCell>
                   <TableCell sx={{ maxWidth: 180, wordBreak: "break-word" }}>{bag.customer_name || "—"}</TableCell>
                   <TableCell>{bag.service_type || bag.service_bucket || "—"}</TableCell>

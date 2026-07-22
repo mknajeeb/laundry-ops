@@ -26,20 +26,49 @@ _WEIGHT_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:lbs?|lb\.?)?", re.I)
 WF_POST_PROCESSING_WEIGHT_SIGNAL = "post_processing_weight"
 
 
+def normalize_scan_weight_lbs(raw: Any, *, allow_unit_suffix: bool = False) -> float | None:
+    """
+    Shared scan/portal weight normalization.
+
+    - numeric / numeric-string → float (0 preserved)
+    - blank / null / "(None)" → None
+    - non-numeric garbage → None
+    - "13 lbs" only when allow_unit_suffix=True
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, str):
+        s = raw.strip().replace(",", "")
+        if not s or s in ("(None)", "None", "null", "nan", "NaN"):
+            return None
+        try:
+            return round(float(s), 4)
+        except ValueError:
+            if not allow_unit_suffix:
+                return None
+            m = _WEIGHT_NUM_RE.search(s)
+            if not m:
+                return None
+            try:
+                return round(float(m.group(1)), 4)
+            except (TypeError, ValueError):
+                return None
+    try:
+        return round(float(raw), 4)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_weight_lbs_from_scan_event(record: Mapping[str, Any] | None) -> float | None:
-    """Extract numeric weight (lbs) from a scan row when present."""
+    """Extract numeric weight (lbs) from a scan row when present (0 is valid)."""
     if not record:
         return None
-    for key in ("weight_lbs", "weight_num", "weight"):
-        raw = record.get(key)
-        if raw is None:
-            continue
-        try:
-            v = float(raw)
-            if v > 0:
-                return round(v, 4)
-        except (TypeError, ValueError):
-            continue
+    for key in ("weight_lbs", "weight_num", "weight", "value"):
+        lbs = normalize_scan_weight_lbs(record.get(key))
+        if lbs is not None:
+            return lbs
 
     raw_json = record.get("raw_json")
     if isinstance(raw_json, str):
@@ -55,34 +84,16 @@ def parse_weight_lbs_from_scan_event(record: Mapping[str, Any] | None) -> float 
             "WF LBS",
             "weight_lbs",
             "weight_num",
+            "pounds",
+            "lbs",
+            "entered_value",
         ):
-            raw = raw_json.get(key)
-            if raw is None or str(raw).strip() in ("", "(None)"):
-                continue
-            try:
-                v = float(str(raw).replace(",", "").strip())
-                if v > 0:
-                    return round(v, 4)
-            except (TypeError, ValueError):
-                m = _WEIGHT_NUM_RE.search(str(raw))
-                if m:
-                    try:
-                        v = float(m.group(1))
-                        if v > 0:
-                            return round(v, 4)
-                    except (TypeError, ValueError):
-                        pass
+            lbs = normalize_scan_weight_lbs(raw_json.get(key), allow_unit_suffix=True)
+            if lbs is not None:
+                return lbs
 
     purpose = str(record.get("purpose") or "")
-    m = _WEIGHT_NUM_RE.search(purpose)
-    if m:
-        try:
-            v = float(m.group(1))
-            if v > 0:
-                return round(v, 4)
-        except (TypeError, ValueError):
-            pass
-    return None
+    return normalize_scan_weight_lbs(purpose, allow_unit_suffix=True)
 
 
 def _occurrence_et_key(ts: datetime) -> datetime:

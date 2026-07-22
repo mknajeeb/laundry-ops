@@ -8,6 +8,7 @@ from backend.rinse_wf_weight_events import (
     WF_POST_PROCESSING_WEIGHT_SIGNAL,
     derive_wf_clean_weight_fields,
     distinct_wf_weight_events,
+    normalize_scan_weight_lbs,
     parse_weight_lbs_from_scan_event,
     wf_post_processing_weight_completion,
     wf_two_weight_completion,
@@ -31,9 +32,31 @@ T3 = datetime(2026, 6, 14, 12, 0)
 T4 = datetime(2026, 6, 14, 12, 5)
 
 
+class TestNormalizeScanWeightLbs:
+    def test_numeric_and_string(self):
+        assert normalize_scan_weight_lbs("13.2") == 13.2
+        assert normalize_scan_weight_lbs(13.2) == 13.2
+        assert normalize_scan_weight_lbs("0") == 0.0
+        assert normalize_scan_weight_lbs(0) == 0.0
+
+    def test_blank_and_null(self):
+        assert normalize_scan_weight_lbs("") is None
+        assert normalize_scan_weight_lbs(None) is None
+        assert normalize_scan_weight_lbs("  ") is None
+
+    def test_rejects_garbage_without_unit_contract(self):
+        assert normalize_scan_weight_lbs("13 lbs") is None
+        assert normalize_scan_weight_lbs("13 lbs", allow_unit_suffix=True) == 13.0
+        assert normalize_scan_weight_lbs("abc") is None
+
+
 class TestParseWeightFromScanEvent:
     def test_weight_lbs_column(self):
         assert parse_weight_lbs_from_scan_event({"weight_lbs": 14.5}) == 14.5
+
+    def test_zero_preserved(self):
+        assert parse_weight_lbs_from_scan_event({"weight_lbs": 0}) == 0.0
+        assert parse_weight_lbs_from_scan_event({"weight_lbs": "0"}) == 0.0
 
     def test_raw_json_weight(self):
         ev = {"raw_json": {"Weight": "18.25"}}

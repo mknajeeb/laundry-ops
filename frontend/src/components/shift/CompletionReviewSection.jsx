@@ -21,6 +21,7 @@ import {
   batchConfirmCompletionReviews,
 } from "../../api";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+import CopyableBagId from "../CopyableBagId";
 
 function toLocalInputValue(iso) {
   if (!iso) return "";
@@ -222,10 +223,8 @@ export default function CompletionReviewSection({
                     />
                   </TableCell>
                   <TableCell>
-                    <Typography variant="body2" fontWeight={700}>
-                      {row.bag_id}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
+                    <CopyableBagId bagId={row.bag_id} />
+                    <Typography variant="caption" color="text.secondary" display="block">
                       {row.workflow || "WF"} · {row.confidence_level || "—"}
                     </Typography>
                   </TableCell>
