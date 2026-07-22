@@ -27,6 +27,10 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { getVeewashStep1Drilldown, postVeewashStep1Correction } from "../../api";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
+function defaultRackForService(service) {
+  return String(service).toUpperCase() === "HD" ? "workitems-added" : "VeeWash Dirty";
+}
+
 const REASON_LABELS = {
   DISAPPEARED_WITHOUT_COMPLETION: "Disappeared without completion",
   COMPLETED_WITHOUT_RECOGNIZED_ENTRY: "Completed without recognized entry",
@@ -94,6 +98,7 @@ export default function Step1MetricDrawer({
       completion_at: bag.completion_at ? String(bag.completion_at).slice(0, 16) : "",
       entry_at: "",
       service_type: bag.service_type || "WF",
+      rack: defaultRackForService(bag.service_type || "WF"),
       weight_lbs: "",
       weight_at: "",
     });
@@ -111,6 +116,7 @@ export default function Step1MetricDrawer({
         ...form,
         completion_at: form.completion_at ? form.completion_at.replace(" ", "T") : undefined,
         entry_at: form.entry_at ? form.entry_at.replace(" ", "T") : undefined,
+        rack: form.action === "correct_entry" && form.service_type !== "HD" ? form.rack : undefined,
         weight_at: form.weight_at ? form.weight_at.replace(" ", "T") : undefined,
         weight_lbs: form.weight_lbs !== "" ? Number(form.weight_lbs) : undefined,
       };
@@ -304,7 +310,16 @@ export default function Step1MetricDrawer({
                               <Select
                                 label="Service"
                                 value={form.service_type || "WF"}
-                                onChange={(e) => setForm((f) => ({ ...f, service_type: e.target.value }))}
+                                onChange={(e) => {
+                                  const nextService = e.target.value;
+                                  setForm((f) => ({
+                                    ...f,
+                                    service_type: nextService,
+                                    rack: f.rack === defaultRackForService(f.service_type)
+                                      ? defaultRackForService(nextService)
+                                      : f.rack,
+                                  }));
+                                }}
                               >
                                 <MenuItem value="WF">WF</MenuItem>
                                 <MenuItem value="HD">HD</MenuItem>
@@ -315,6 +330,14 @@ export default function Step1MetricDrawer({
                               label="Entry at (YYYY-MM-DDTHH:MM)"
                               value={form.entry_at || ""}
                               onChange={(e) => setForm((f) => ({ ...f, entry_at: e.target.value }))}
+                            />
+                            <TextField
+                              size="small"
+                              label="Rack"
+                              value={form.rack || ""}
+                              disabled={form.service_type === "HD"}
+                              helperText={form.service_type === "HD" ? "HD entries use workitems-added, not a rack" : undefined}
+                              onChange={(e) => setForm((f) => ({ ...f, rack: e.target.value }))}
                             />
                           </>
                         )}
