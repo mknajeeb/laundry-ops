@@ -1,25 +1,20 @@
 """
-VeeWash Shift Monitor — Step 1: authoritative daily workload from the scrape.
+VeeWash Shift Monitor — Step 1: authoritative daily workload from At-Vendor scrape.
 
-Simple operating model (no RFV / ledger / reconciliation dependencies):
+Operating model:
 
-  * The VeeWash scrape (rinse_cleaner_ticket_presence, organization_id = 3) is the
-    ONLY eligibility source. A row's existence there proves the bag is a valid
-    VeeWash order. `active` only says whether it is currently present (1) or has
-    disappeared (0) — it never erases workload membership.
-  * A bag joins a day's workload when it has a qualifying entry-rack scan
-    (configurable facility_entry_racks, default ["VeeWash Dirty"]). The workload
-    date is the ET date of that scan.
-  * A presence-backed bag that is still active but has no entry-rack scan is an
-    exception seed: MISSING_WORKLOAD_ENTRY_SCAN (never auto-assigned to today).
-  * Unfinished membership carries forward each ET day until completed or resolved.
-  * Completion = first Clean-rack scan (existing rule); its ET date is the
-    completion date and stops future carryover.
-  * A bag that established membership, then goes active=0 without a completion, is
-    an exception seed: DISAPPEARED_WITHOUT_COMPLETION (never silently excluded).
-
-Registry is used only AFTER eligibility, for operational fields — never to decide
-whether a bag belongs to VeeWash.
+  * Eligibility: organization_id = 3 AND portal_status = at_vendor.
+    RFV (ready_for_vendor) is completely excluded from processing workload.
+  * WF entry: service_type = WF + first configured Dirty rack scan (facility_entry_racks).
+  * HD entry: service_type = HD + first workitems-added event.
+    Rush/Non-Rush is a filter within each service — never reclassifies HD as WF.
+  * Completion: evaluate_bag_completion_v2 (canonical production resolver).
+    If completed before disappearance → Completed, never Review Required.
+  * Carryover: entered previously, not completed, still unresolved.
+  * Only operational review exception: entered + not completed + confirmed absence
+    from trustworthy At-Vendor scrapes → Review Required (DISAPPEARED_WITHOUT_COMPLETION).
+  * Completed without a recognized entry event is tracked internally only
+    (completed_without_recognized_entry) — never New Today, never a manager exception.
 
 This module is read-only reporting logic. It does not write to the DB.
 """
@@ -27,9 +22,11 @@ This module is read-only reporting logic. It does not write to the DB.
 from __future__ import annotations
 
 import os
+from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping
 
+from backend.rinse_bag_activity_rules import evaluate_bag_completion_v2
 from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
 from backend.rinse_scan_time import normalize_rack_value, system_datetime_to_et
 from backend.rinse_scrape_completeness import (
@@ -42,25 +39,31 @@ from backend.ta_helpers import table_exists
 
 VEEWASH_ORG_ID = 3
 
-# Feature flag + activation date. Step 1 is authoritative ONLY from the activation
-# ET date forward; earlier days are never rebuilt and their disappearances stay in
-# the read-only standing backlog (no historical exceptions are created).
 KEY_STEP1_ENABLED = "veewash_step1_enabled"
 KEY_STEP1_ACTIVATION_DATE = "veewash_step1_activation_date"
 ENV_STEP1_ENABLED = "VEEWASH_STEP1_ENABLED"
 _TRUTHY = ("1", "true", "yes", "on", "y")
 
-ENTRY_SOURCE_RACK_SCAN = "rack_scan"
+PORTAL_AT_VENDOR = "at_vendor"
+PORTAL_RFV = "ready_for_vendor"
+
+ENTRY_SOURCE_WF_DIRTY = "wf_dirty_scan"
+ENTRY_SOURCE_HD_WIA = "hd_workitems_added"
 ENTRY_SOURCE_MANUAL_REVIEW = "manual_exception_review"
 
-EXC_MISSING_ENTRY_SCAN = "MISSING_WORKLOAD_ENTRY_SCAN"
 EXC_DISAPPEARED_WITHOUT_COMPLETION = "DISAPPEARED_WITHOUT_COMPLETION"
+# Retained for import compatibility; no longer a user-facing operational category.
+EXC_MISSING_ENTRY_SCAN = "MISSING_WORKLOAD_ENTRY_SCAN"
 
 ENTRY_CLASS_NEW = "new_today"
 ENTRY_CLASS_CARRYOVER = "carryover"
 OUTCOME_COMPLETED = "completed"
 OUTCOME_PENDING = "pending"
 OUTCOME_DISAPPEARED = "disappeared_exception"
+OUTCOME_REVIEW_REQUIRED = "review_required"
+
+SERVICE_WF = "WF"
+SERVICE_HD = "HD"
 
 
 def _norm_bag(bag_id: Any) -> str:
@@ -83,11 +86,31 @@ def _scan_et_date(dt: Any) -> date | None:
     return None
 
 
+def _presence_et_date(dt: Any) -> date | None:
+    """Presence first/last_seen timestamps are system UTC-naive → convert to ET date."""
+    if not isinstance(dt, datetime):
+        return None
+    et = system_datetime_to_et(dt)
+    return et.date() if et else None
+
+
+def _service_of(pres: Mapping[str, Any]) -> str:
+    return str(pres.get("service_type") or "").strip().upper()
+
+
+def _is_rfv_status(portal_status: Any) -> bool:
+    return str(portal_status or "").strip().lower() in {PORTAL_RFV, "rfv"}
+
+
+def _is_at_vendor_status(portal_status: Any) -> bool:
+    return str(portal_status or "").strip().lower() == PORTAL_AT_VENDOR
+
+
 # --------------------------------------------------------------------------- #
 # DB loaders (thin, read-only)                                                 #
 # --------------------------------------------------------------------------- #
 def load_presence_orders(cursor, organization_id: int) -> dict[str, dict[str, Any]]:
-    """Authoritative VeeWash order population — one row per bag ever scraped."""
+    """All presence rows for the org (caller filters At-Vendor vs RFV)."""
     if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
         return {}
     cursor.execute(
@@ -122,10 +145,30 @@ def load_presence_orders(cursor, organization_id: int) -> dict[str, dict[str, An
     return out
 
 
-def load_first_entry_scans(
+def split_presence_at_vendor_vs_rfv(
+    presence_by_bag: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Return (at_vendor_population, sorted RFV-excluded bag IDs).
+
+    Processing eligibility requires portal_status = at_vendor.
+    RFV (ready_for_vendor) is listed explicitly for reconciliation.
+    Any other non-at_vendor status is dropped silently from the population
+    (not counted as RFV).
+    """
+    at_vendor: dict[str, dict[str, Any]] = {}
+    rfv_excluded: list[str] = []
+    for bid, row in presence_by_bag.items():
+        if _is_at_vendor_status(row.get("portal_status")):
+            at_vendor[bid] = dict(row)
+        elif _is_rfv_status(row.get("portal_status")):
+            rfv_excluded.append(bid)
+    return at_vendor, sorted(rfv_excluded)
+
+
+def load_first_dirty_scans(
     cursor, organization_id: int, *, entry_racks: Iterable[str]
 ) -> dict[str, dict[str, Any]]:
-    """First qualifying entry-rack scan per bag → establishes workload date."""
+    """First configured Dirty / facility-entry rack scan per bag."""
     if not table_exists(cursor, "rinse_bag_scan_events"):
         return {}
     rack_keys = _entry_rack_keys(entry_racks)
@@ -157,10 +200,133 @@ def load_first_entry_scans(
     return out
 
 
+# Backward-compatible alias used by older callers / tests.
+def load_first_entry_scans(
+    cursor, organization_id: int, *, entry_racks: Iterable[str]
+) -> dict[str, dict[str, Any]]:
+    return load_first_dirty_scans(cursor, organization_id, entry_racks=entry_racks)
+
+
+def load_first_workitems_added_scans(
+    cursor, organization_id: int
+) -> dict[str, dict[str, Any]]:
+    """First workitems-added event per bag → HD workload entry."""
+    if not table_exists(cursor, "rinse_bag_scan_events"):
+        return {}
+    cursor.execute(
+        """
+        SELECT bag_id, MIN(scanned_at_parsed) AS first_scan
+        FROM rinse_bag_scan_events
+        WHERE organization_id = %s
+          AND scanned_at_parsed IS NOT NULL
+          AND bag_id IS NOT NULL AND TRIM(bag_id) != ''
+          AND LOWER(TRIM(COALESCE(purpose, ''))) IN ('workitems-added', 'workitems_added')
+        GROUP BY bag_id
+        """,
+        (int(organization_id),),
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        bid = _norm_bag(row.get("bag_id"))
+        ts = row.get("first_scan")
+        d = _scan_et_date(ts)
+        if bid and d is not None:
+            out[bid] = {"first_entry_at": ts, "entry_date": d}
+    return out
+
+
+def build_service_entry_map(
+    presence_by_bag: Mapping[str, Mapping[str, Any]],
+    *,
+    dirty_by_bag: Mapping[str, Mapping[str, Any]],
+    wia_by_bag: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Assign recognized entry events by service type (WF Dirty / HD WIA)."""
+    out: dict[str, dict[str, Any]] = {}
+    for bid, pres in presence_by_bag.items():
+        svc = _service_of(pres)
+        if svc == SERVICE_WF:
+            dirty = dirty_by_bag.get(bid)
+            if dirty:
+                out[bid] = {
+                    **dict(dirty),
+                    "entry_source": ENTRY_SOURCE_WF_DIRTY,
+                    "service_type": SERVICE_WF,
+                }
+        elif svc == SERVICE_HD:
+            wia = wia_by_bag.get(bid)
+            if wia:
+                out[bid] = {
+                    **dict(wia),
+                    "entry_source": ENTRY_SOURCE_HD_WIA,
+                    "service_type": SERVICE_HD,
+                }
+    return out
+
+
+def load_canonical_completions_v2(
+    cursor, organization_id: int, bag_ids: Iterable[str]
+) -> dict[str, dict[str, Any]]:
+    """Canonical completions via evaluate_bag_completion_v2 for the given bags."""
+    ids = sorted({_norm_bag(b) for b in bag_ids if _norm_bag(b)})
+    if not ids or not table_exists(cursor, "rinse_bag_scan_events"):
+        return {}
+
+    # Join against presence to avoid a huge IN list; filter bags in Python.
+    id_set = set(ids)
+    cursor.execute(
+        """
+        SELECT bag_id, rack, purpose, scanned_at_parsed, user_name, weight_lbs
+        FROM rinse_bag_scan_events
+        WHERE organization_id = %s
+          AND scanned_at_parsed IS NOT NULL
+          AND bag_id IS NOT NULL AND TRIM(bag_id) != ''
+        ORDER BY scanned_at_parsed ASC, id ASC
+        """,
+        (int(organization_id),),
+    )
+    by_bag: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        bid = _norm_bag(row.get("bag_id"))
+        if bid not in id_set:
+            continue
+        by_bag[bid].append(
+            {
+                "rack": row.get("rack"),
+                "purpose": row.get("purpose"),
+                "scanned_at_parsed": row.get("scanned_at_parsed"),
+                "user_name": row.get("user_name"),
+                "weight_lbs": row.get("weight_lbs"),
+            }
+        )
+
+    out: dict[str, dict[str, Any]] = {}
+    for bid, timeline in by_bag.items():
+        result = evaluate_bag_completion_v2(timeline)
+        if not result.completed or result.completion_at is None:
+            continue
+        d = _scan_et_date(result.completion_at)
+        if d is None:
+            continue
+        out[bid] = {
+            "completion_at": result.completion_at,
+            "completion_date": d,
+            "completed_by": (str(result.completion_user or "").strip() or None),
+            "completion_source": f"evaluate_bag_completion_v2:{result.completion_kind or 'completed'}",
+            "completion_kind": result.completion_kind,
+            "via_clean_rack": bool(result.via_clean_rack),
+        }
+    return out
+
+
 def load_first_completion_scans(
     cursor, organization_id: int
 ) -> dict[str, dict[str, Any]]:
-    """First Clean-rack scan per bag → completion date/time + completing employee."""
+    """Deprecated Clean-only loader — retained for tests/legacy callers."""
     if not table_exists(cursor, "rinse_bag_scan_events"):
         return {}
     cursor.execute(
@@ -191,7 +357,6 @@ def load_first_completion_scans(
         d = _scan_et_date(ts)
         if not bid or d is None:
             continue
-        # Keep earliest if the join yields duplicates (same bag, tie on time).
         if bid not in out or ts < out[bid]["completion_at"]:
             out[bid] = {
                 "completion_at": ts,
@@ -203,12 +368,7 @@ def load_first_completion_scans(
 
 
 def load_registry_completions(cursor, organization_id: int) -> dict[str, dict[str, Any]]:
-    """Operational completion field (used ONLY after scrape+scan eligibility).
-
-    Registry ``completed_at`` captures completions however they were detected
-    (Clean-rack scan AND post-processing-weight), so it is the authoritative
-    completion timestamp. This is NOT an eligibility source.
-    """
+    """Deprecated registry COMPLETED fallback — retained for tests/legacy callers."""
     if not table_exists(cursor, "rinse_bag_registry"):
         return {}
     cursor.execute(
@@ -227,8 +387,6 @@ def load_registry_completions(cursor, organization_id: int) -> dict[str, dict[st
             continue
         bid = _norm_bag(row.get("bag_id"))
         ts = row.get("completed_at") or row.get("first_clean_scan_at")
-        # Registry timestamps are written by jobs in UTC-naive; convert to ET for
-        # the completion calendar date (scan timestamps, by contrast, are ET-naive).
         et = system_datetime_to_et(ts) if isinstance(ts, datetime) else None
         d = et.date() if et else None
         if bid and d is not None:
@@ -245,14 +403,7 @@ def merge_completions(
     registry_completions: Mapping[str, Mapping[str, Any]],
     clean_scan_completions: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """Canonical completion, independent of registry lifecycle status.
-
-    The first Clean-rack scan is the ground-truth completion moment (it is exactly
-    what the registry records as CLEAN_RACK_SCANNED) and it is trusted even when the
-    old portal-absence job wrongly flipped the registry row to REJECTED. Registry
-    ``completed_at`` is only a fallback for completions with no Clean-rack scan
-    (e.g. HD or manual completions).
-    """
+    """Legacy merge retained for unit tests; production uses load_canonical_completions_v2."""
     out: dict[str, dict[str, Any]] = {}
     for bid in set(registry_completions) | set(clean_scan_completions):
         clean = clean_scan_completions.get(bid)
@@ -269,7 +420,7 @@ def merge_completions(
 def load_excluded_not_presence_backed(
     cursor, organization_id: int, *, entry_racks: Iterable[str]
 ) -> list[str]:
-    """Bags with an entry-rack scan but NOT in the VeeWash scrape → excluded."""
+    """Bags with an entry-rack scan but NOT in the At-Vendor scrape → excluded."""
     if not table_exists(cursor, "rinse_bag_scan_events") or not table_exists(
         cursor, "rinse_cleaner_ticket_presence"
     ):
@@ -289,9 +440,10 @@ def load_excluded_not_presence_backed(
             SELECT 1 FROM rinse_cleaner_ticket_presence p
             WHERE p.organization_id = %s
               AND UPPER(TRIM(p.bag_id)) = UPPER(TRIM(e.bag_id))
+              AND LOWER(COALESCE(p.portal_status, '')) = %s
           )
         """,
-        (int(organization_id), *sorted(rack_keys), int(organization_id)),
+        (int(organization_id), *sorted(rack_keys), int(organization_id), PORTAL_AT_VENDOR),
     )
     return sorted(
         _norm_bag(r.get("bag_id"))
@@ -312,14 +464,10 @@ def classify_veewash_workload(
     disappearance_state_by_bag: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """
-    Classify the presence-backed population for one ET day. Pure — no DB.
+    Classify the At-Vendor population for one ET day. Pure — no DB.
 
-    Every presence-backed bag lands in exactly one of these mutually exclusive
-    final buckets:
-      new_today | carryover            (workload members for the day)
-        each further tagged completed / pending / disappeared_exception
-      missing_entry_scan_exception     (active, no entry scan — not yet in workload)
-      not_in_workload                  (no membership relevant to this day)
+    Presence must already exclude RFV. Entry must already be service-specific.
+    Completion must already come from evaluate_bag_completion_v2 (or a test double).
     """
     D = selected_date_et
     prev_day = D - timedelta(days=1)
@@ -330,11 +478,12 @@ def classify_veewash_workload(
     completed_on_date: list[str] = []
     pending_end_of_date: list[str] = []
     disappeared_exception: list[str] = []
-    missing_entry_exception: list[str] = []
     disappeared_prior_open: list[str] = []
-    completed_without_entry_scan: list[str] = []
+    completed_without_recognized_entry: list[str] = []
     pending_disappearance_confirmation: list[str] = []
     not_in_workload: list[str] = []
+    # Kept empty for API compatibility — no longer a user-facing category.
+    missing_entry_exception: list[str] = []
 
     for bid in sorted(presence_by_bag.keys()):
         pres = presence_by_bag[bid]
@@ -342,17 +491,12 @@ def classify_veewash_workload(
         entry = entry_by_bag.get(bid)
         comp = completion_by_bag.get(bid)
         entry_date = entry.get("entry_date") if entry else None
+        entry_source = (entry.get("entry_source") if entry else None) or ENTRY_SOURCE_WF_DIRTY
         comp_date = comp.get("completion_date") if comp else None
-        # Effective disappearance date: for a departed bag, the last ET day it was
-        # seen in the portal. This scopes the exception to the day it went missing
-        # instead of re-flooding every subsequent day's workload.
-        last_seen_date = _scan_et_date(pres.get("last_seen_at"))
-        # A bag is only a DISAPPEARED_WITHOUT_COMPLETION exception once its absence
-        # is CONFIRMED across two consecutive trustworthy (complete) scrape runs. A
-        # single missing / anomalous scrape must not create an exception: such bags
-        # stay operationally Pending (state PENDING_DISAPPEARANCE_CONFIRMATION until
-        # a second complete absence, or cleared if they return). When no confirmation
-        # map is supplied the legacy behaviour (active==0 → disappeared) is preserved.
+        last_seen_date = _presence_et_date(pres.get("last_seen_at")) or _scan_et_date(
+            pres.get("last_seen_at")
+        )
+
         disappearance_state: str | None = None
         if active == 0 and comp_date is None:
             if disappearance_state_by_bag is None:
@@ -364,7 +508,7 @@ def classify_veewash_workload(
 
         base = {
             "bag_id": bid,
-            "service_type": pres.get("service_type"),
+            "service_type": _service_of(pres) or pres.get("service_type"),
             "rush_flag": pres.get("rush_flag"),
             "active": active,
             "portal_status": pres.get("portal_status"),
@@ -375,127 +519,144 @@ def classify_veewash_workload(
             "completion_at": comp.get("completion_at") if comp else None,
             "completed_by": comp.get("completed_by") if comp else None,
             "completion_source": comp.get("completion_source") if comp else None,
+            "completion_kind": comp.get("completion_kind") if comp else None,
         }
 
-        # --- COMPLETION IS AUTHORITATIVE, independent of the entry gate. ----------
-        # A presence-backed bag that has a canonical completion was processed and
-        # must never silently vanish from completion reporting — even if it never
-        # scanned a configured entry rack, or the old portal-absence job wrongly
-        # flipped its registry row to REJECTED.
+        # --- Canonical completion is authoritative. -----------------------------
         if comp_date is not None:
             has_entry = entry_date is not None
             if comp_date < D:
                 not_in_workload.append(bid)
-                rows.append({**base, "final_bucket": "not_in_workload",
-                             "reason": "completed_before_selected_date",
-                             "completion_date": comp_date.isoformat()})
+                rows.append(
+                    {
+                        **base,
+                        "final_bucket": "not_in_workload",
+                        "reason": "completed_before_selected_date",
+                        "completion_date": comp_date.isoformat(),
+                    }
+                )
                 continue
             if comp_date == D:
                 if not has_entry:
-                    # Completed but never scanned a configured entry rack. It is NOT
-                    # part of the established (entry-backed) workload — it awaits a
-                    # workload-date assignment via the exception queue. Reported in
-                    # its own bucket, excluded from Active Workload and official
-                    # Completed totals.
-                    completed_without_entry_scan.append(bid)
-                    rows.append({
-                        **base,
-                        "entry_source": "completion_without_entry_scan",
-                        "current_workload_date": D.isoformat(),
-                        "outcome": OUTCOME_COMPLETED,
-                        "completion_date": comp_date.isoformat(),
-                        "entry_scan_missing": True,
-                        "final_bucket": "completed_without_entry_scan",
-                    })
+                    # Proven completion without recognized WF Dirty / HD WIA entry.
+                    # Internal reconciliation only — not New Today, not Review Required.
+                    completed_without_recognized_entry.append(bid)
+                    rows.append(
+                        {
+                            **base,
+                            "entry_source": "completion_without_recognized_entry",
+                            "current_workload_date": D.isoformat(),
+                            "outcome": OUTCOME_COMPLETED,
+                            "completion_date": comp_date.isoformat(),
+                            "entry_scan_missing": True,
+                            "final_bucket": "completed_without_recognized_entry",
+                        }
+                    )
                     continue
-                # Established workload, completed on the selected day.
                 is_new = entry_date >= D
                 entry_class = ENTRY_CLASS_NEW if is_new else ENTRY_CLASS_CARRYOVER
                 (new_today if is_new else carryover).append(bid)
                 completed_on_date.append(bid)
-                rows.append({
-                    **base,
-                    "entry_source": ENTRY_SOURCE_RACK_SCAN,
-                    "entry_class": entry_class,
-                    "current_workload_date": D.isoformat(),
-                    "carried_from_date": None if is_new else prev_day.isoformat(),
-                    "outcome": OUTCOME_COMPLETED,
-                    "completion_date": comp_date.isoformat(),
-                    "final_bucket": f"{entry_class}_{OUTCOME_COMPLETED}",
-                })
+                rows.append(
+                    {
+                        **base,
+                        "entry_source": entry_source,
+                        "entry_class": entry_class,
+                        "current_workload_date": D.isoformat(),
+                        "carried_from_date": None if is_new else prev_day.isoformat(),
+                        "outcome": OUTCOME_COMPLETED,
+                        "completion_date": comp_date.isoformat(),
+                        "final_bucket": f"{entry_class}_{OUTCOME_COMPLETED}",
+                    }
+                )
                 continue
-            # comp_date > D: completes later. It is a pending member of D only if it
-            # had already entered (Dirty scan) by D; otherwise it belongs to a later day.
+            # Completes after D — pending member of D only if already entered by D.
             if not (entry_date is not None and entry_date <= D):
                 not_in_workload.append(bid)
-                rows.append({**base, "final_bucket": "not_in_workload",
-                             "reason": "completes_after_selected_date_not_yet_entered",
-                             "completion_date": comp_date.isoformat()})
+                rows.append(
+                    {
+                        **base,
+                        "final_bucket": "not_in_workload",
+                        "reason": "completes_after_selected_date_not_yet_entered",
+                        "completion_date": comp_date.isoformat(),
+                    }
+                )
                 continue
             is_new = entry_date == D
             entry_class = ENTRY_CLASS_NEW if is_new else ENTRY_CLASS_CARRYOVER
             (new_today if is_new else carryover).append(bid)
             pending_end_of_date.append(bid)
-            rows.append({**base,
-                         "entry_source": ENTRY_SOURCE_RACK_SCAN,
-                         "entry_class": entry_class,
-                         "current_workload_date": D.isoformat(),
-                         "carried_from_date": None if is_new else prev_day.isoformat(),
-                         "outcome": OUTCOME_PENDING,
-                         "completion_date": comp_date.isoformat(),
-                         "final_bucket": f"{entry_class}_{OUTCOME_PENDING}"})
+            rows.append(
+                {
+                    **base,
+                    "entry_source": entry_source,
+                    "entry_class": entry_class,
+                    "current_workload_date": D.isoformat(),
+                    "carried_from_date": None if is_new else prev_day.isoformat(),
+                    "outcome": OUTCOME_PENDING,
+                    "completion_date": comp_date.isoformat(),
+                    "final_bucket": f"{entry_class}_{OUTCOME_PENDING}",
+                }
+            )
             continue
 
-        # --- No completion. Membership depends on an established entry-rack scan. --
+        # --- No completion. Membership requires a recognized service entry. ------
         if entry_date is None:
-            if active == 1:
-                missing_entry_exception.append(bid)
-                rows.append({**base, "final_bucket": "missing_entry_scan_exception",
-                             "exception_reason": EXC_MISSING_ENTRY_SCAN})
-            else:
-                not_in_workload.append(bid)
-                rows.append({**base, "final_bucket": "not_in_workload",
-                             "reason": "inactive_no_entry_scan"})
+            # Not a manager-facing exception. At-Vendor without recognized entry
+            # is simply outside today's processing workload (HD pending WIA, etc.).
+            not_in_workload.append(bid)
+            rows.append(
+                {
+                    **base,
+                    "final_bucket": "not_in_workload",
+                    "reason": "no_recognized_service_entry",
+                }
+            )
             continue
 
         if entry_date > D:
             not_in_workload.append(bid)
-            rows.append({**base, "final_bucket": "not_in_workload",
-                         "reason": "entered_after_selected_date"})
+            rows.append(
+                {
+                    **base,
+                    "final_bucket": "not_in_workload",
+                    "reason": "entered_after_selected_date",
+                }
+            )
             continue
 
-        # Disappeared without completion BEFORE the selected day → it left the
-        # carryover stream when it went missing; open exception dated to that day.
         if disappeared_date is not None and disappeared_date < D:
             disappeared_prior_open.append(bid)
-            rows.append({**base, "final_bucket": "disappeared_prior_open_exception",
-                         "exception_reason": EXC_DISAPPEARED_WITHOUT_COMPLETION,
-                         "disappeared_date": disappeared_date.isoformat()})
+            rows.append(
+                {
+                    **base,
+                    "final_bucket": "disappeared_prior_open_exception",
+                    "exception_reason": EXC_DISAPPEARED_WITHOUT_COMPLETION,
+                    "disappeared_date": disappeared_date.isoformat(),
+                }
+            )
             continue
 
-        # --- Member of this day's workload (entered by D, unfinished at start of D) ---
         is_new = entry_date == D
         entry_class = ENTRY_CLASS_NEW if is_new else ENTRY_CLASS_CARRYOVER
         (new_today if is_new else carryover).append(bid)
         member = {
             **base,
-            "entry_source": ENTRY_SOURCE_RACK_SCAN,
+            "entry_source": entry_source,
             "entry_class": entry_class,
             "current_workload_date": D.isoformat(),
             "carried_from_date": None if is_new else prev_day.isoformat(),
         }
         if disappeared_date is not None and disappeared_date == D:
-            outcome = OUTCOME_DISAPPEARED
+            outcome = OUTCOME_REVIEW_REQUIRED
             disappeared_exception.append(bid)
-            member["final_bucket"] = "disappeared_without_completion_exception"
+            member["final_bucket"] = "review_required"
             member["exception_reason"] = EXC_DISAPPEARED_WITHOUT_COMPLETION
             member["disappeared_date"] = disappeared_date.isoformat()
         else:
             outcome = OUTCOME_PENDING
             pending_end_of_date.append(bid)
             member["final_bucket"] = f"{entry_class}_{OUTCOME_PENDING}"
-            # Absent from the latest scrape but not yet confirmed (one trustworthy
-            # absence, or an anomalous run). Stays in Pending; tracked internally.
             if disappearance_state == STATE_PENDING_CONFIRMATION:
                 pending_disappearance_confirmation.append(bid)
                 member["awaiting_disappearance_confirmation"] = True
@@ -503,14 +664,8 @@ def classify_veewash_workload(
         rows.append(member)
 
     total_active_workload = len(new_today) + len(carryover)
-    # Pending end of day = active workload - completed that day - disappeared (valid exclusion)
     pending_check = (
         total_active_workload - len(completed_on_date) - len(disappeared_exception)
-    )
-    total_operational = (
-        total_active_workload
-        + len(completed_without_entry_scan)
-        + len(missing_entry_exception)
     )
 
     return {
@@ -520,9 +675,11 @@ def classify_veewash_workload(
         "completed_on_date": sorted(completed_on_date),
         "pending_end_of_date": sorted(pending_end_of_date),
         "disappeared_without_completion_exceptions": sorted(disappeared_exception),
+        "review_required": sorted(disappeared_exception),
         "missing_entry_scan_exceptions": sorted(missing_entry_exception),
         "disappeared_prior_open_exceptions": sorted(disappeared_prior_open),
-        "completed_without_entry_scan": sorted(completed_without_entry_scan),
+        "completed_without_entry_scan": sorted(completed_without_recognized_entry),
+        "completed_without_recognized_entry": sorted(completed_without_recognized_entry),
         "pending_disappearance_confirmation": sorted(pending_disappearance_confirmation),
         "not_in_workload": sorted(not_in_workload),
         "counts": {
@@ -533,35 +690,34 @@ def classify_veewash_workload(
             "completed_on_date": len(completed_on_date),
             "pending_end_of_date": len(pending_end_of_date),
             "disappeared_without_completion": len(disappeared_exception),
-            "missing_entry_scan": len(missing_entry_exception),
+            "review_required": len(disappeared_exception),
+            "missing_entry_scan": 0,
             "disappeared_prior_open": len(disappeared_prior_open),
-            "completed_without_entry_scan": len(completed_without_entry_scan),
+            "completed_without_recognized_entry": len(completed_without_recognized_entry),
+            "completed_without_entry_scan": len(completed_without_recognized_entry),
             "pending_disappearance_confirmation": len(pending_disappearance_confirmation),
-            "total_operational": total_operational,
+            # Operational set = established workload only (entry-backed).
+            "total_operational": total_active_workload,
             "not_in_workload": len(not_in_workload),
         },
         "reconciliation": {
-            # total_active_workload = new_today + carryover (+ manual accepts — Step 2)
             "total_active_workload_equals_new_plus_carryover": (
                 total_active_workload == len(new_today) + len(carryover)
             ),
-            # pending = active_workload - completed - disappeared(valid exclusion)
             "pending_reconciles": pending_check == len(pending_end_of_date),
             "pending_expected": pending_check,
             "pending_actual": len(pending_end_of_date),
-            # Established workload partitions into exactly completed | pending | disappeared.
             "members_partitioned": (
                 total_active_workload
                 == len(completed_on_date)
                 + len(pending_end_of_date)
                 + len(disappeared_exception)
             ),
-            # total operational = established + completed-without-entry + missing-entry
-            "total_operational_reconciles": (
-                total_operational
-                == total_active_workload
-                + len(completed_without_entry_scan)
-                + len(missing_entry_exception)
+            "active_equals_completed_plus_pending_plus_review": (
+                total_active_workload
+                == len(completed_on_date)
+                + len(pending_end_of_date)
+                + len(disappeared_exception)
             ),
         },
         "rows": rows,
@@ -590,23 +746,22 @@ def build_veewash_daily_workload(
         except Exception:
             racks = list(DEFAULT_FACILITY_ENTRY_RACKS)
 
-    presence = load_presence_orders(cursor, organization_id)
-    entry = load_first_entry_scans(cursor, organization_id, entry_racks=racks)
-    completion = merge_completions(
-        load_registry_completions(cursor, organization_id),
-        load_first_completion_scans(cursor, organization_id),
-    )
+    all_presence = load_presence_orders(cursor, organization_id)
+    presence, rfv_excluded = split_presence_at_vendor_vs_rfv(all_presence)
 
-    # Confirm disappearances against the two most recent trustworthy scrape runs:
-    # a single missing / anomalous scrape must not create an exception. Only bags
-    # currently absent (active==0) with no canonical completion are candidates.
+    dirty = load_first_dirty_scans(cursor, organization_id, entry_racks=racks)
+    wia = load_first_workitems_added_scans(cursor, organization_id)
+    entry = build_service_entry_map(presence, dirty_by_bag=dirty, wia_by_bag=wia)
+
+    completion = load_canonical_completions_v2(cursor, organization_id, presence.keys())
+
     candidate_absent = [
         bid
         for bid, p in presence.items()
         if int(p.get("active") or 0) == 0 and bid not in completion
     ]
     disappearance_state = build_disappearance_confirmation(
-        cursor, organization_id, candidate_absent
+        cursor, organization_id, candidate_absent, portal_status=PORTAL_AT_VENDOR
     )
     disappearance_state_by_bag = {
         bid: info.get("state") for bid, info in disappearance_state.items()
@@ -626,10 +781,13 @@ def build_veewash_daily_workload(
     result["active_presence_orders"] = sum(
         1 for p in presence.values() if int(p.get("active") or 0) == 1
     )
+    result["rfv_excluded"] = rfv_excluded
+    result["rfv_excluded_count"] = len(rfv_excluded)
     result["excluded_not_presence_backed"] = load_excluded_not_presence_backed(
         cursor, organization_id, entry_racks=racks
     )
     result["rush_split"] = _rush_split(result["rows"])
+    result["service_split"] = _service_split(result)
     return result
 
 
@@ -650,7 +808,9 @@ def is_step1_enabled(cursor, organization_id: int = VEEWASH_ORG_ID) -> bool:
     try:
         from backend.rinse_processing_settings import _get_setting
 
-        return str(_get_setting(cursor, organization_id, KEY_STEP1_ENABLED) or "").strip().lower() in _TRUTHY
+        return str(
+            _get_setting(cursor, organization_id, KEY_STEP1_ENABLED) or ""
+        ).strip().lower() in _TRUTHY
     except Exception:
         return False
 
@@ -695,12 +855,7 @@ def build_today_veewash_workload(
     entry_racks: Iterable[str] | None = None,
     today_override: date | None = None,
 ) -> dict[str, Any]:
-    """Step-1 build for TODAY only, with the end-of-day validation partition.
-
-    Read-only. Historical days are never rebuilt: disappearances before the
-    activation date remain in the standing backlog and are not turned into new
-    exceptions here.
-    """
+    """Step-1 build for TODAY only, with the end-of-day validation partition."""
     D = today_override or today_et()
     activation = get_step1_activation_date(cursor, organization_id) or D
     res = build_veewash_daily_workload(
@@ -714,64 +869,55 @@ def build_today_veewash_workload(
 
 
 def build_today_validation(result: Mapping[str, Any], *, selected_date_et: date) -> dict[str, Any]:
-    """Partition today's operational orders into exactly one path each.
-
-    Operational paths (mutually exclusive):
-      completed_entered_via_dirty | completed_without_entry_scan | pending |
-      disappeared_without_completion | missing_entry_scan_exception
-
-    Historical disappearances (standing backlog) and prior-completed-still-present
-    rows are reported for context but are NOT part of today's operational set.
-    """
+    """Partition today's entry-backed operational orders into exactly one path each."""
     completed = set(result.get("completed_on_date") or [])
-    cwo = set(result.get("completed_without_entry_scan") or [])
+    cwo = set(
+        result.get("completed_without_recognized_entry")
+        or result.get("completed_without_entry_scan")
+        or []
+    )
     paths = {
-        "completed_entered_via_dirty": sorted(completed - cwo),
-        "completed_without_entry_scan": sorted(cwo),
+        "completed_entered": sorted(completed),
+        "completed_without_recognized_entry": sorted(cwo),
         "pending": sorted(result.get("pending_end_of_date") or []),
-        "disappeared_without_completion": sorted(
-            result.get("disappeared_without_completion_exceptions") or []
-        ),
-        "missing_entry_scan_exception": sorted(
-            result.get("missing_entry_scan_exceptions") or []
+        "review_required": sorted(
+            result.get("review_required")
+            or result.get("disappeared_without_completion_exceptions")
+            or []
         ),
     }
-    all_ids: list[str] = []
-    for ids in paths.values():
-        all_ids.extend(ids)
-    operational_total = len(all_ids)
-    unique_total = len(set(all_ids))
+    # Operational (entry-backed) paths exclude completed_without_recognized_entry.
+    operational_ids = (
+        paths["completed_entered"] + paths["pending"] + paths["review_required"]
+    )
+    operational_total = len(operational_ids)
+    unique_total = len(set(operational_ids))
 
     counts = result.get("counts") or {}
     established = int(counts.get("total_active_workload") or 0)
-    completed = len(paths["completed_entered_via_dirty"])
+    completed_n = len(paths["completed_entered"])
     pending = len(paths["pending"])
-    disappeared = len(paths["disappeared_without_completion"])
-    completed_awaiting = len(paths["completed_without_entry_scan"])
-    missing_entry = len(paths["missing_entry_scan_exception"])
+    review = len(paths["review_required"])
     return {
         "selected_date_et": selected_date_et.isoformat(),
         "total_scrape_orders_all_history": result.get("eligible_presence_orders"),
         "active_in_latest_scrape": result.get("active_presence_orders"),
         "total_operational_orders": operational_total,
-        # Established (entry-backed) workload and its outcome partition.
         "established_workload": established,
         "new_today": counts.get("new_today"),
         "carryover": counts.get("carryover"),
         "established_outcomes": {
-            "completed": completed,
+            "completed": completed_n,
             "pending": pending,
-            "disappeared_exception": disappeared,
+            "review_required": review,
         },
-        # Non-established operational buckets (kept OUT of established workload).
-        "completed_awaiting_workload_assignment": completed_awaiting,
-        "missing_entry_scan_exception": missing_entry,
+        "completed_without_recognized_entry": len(paths["completed_without_recognized_entry"]),
+        "completed_awaiting_workload_assignment": 0,
+        "missing_entry_scan_exception": 0,
+        "rfv_excluded": len(result.get("rfv_excluded") or []),
         "operational_paths": {k: len(v) for k, v in paths.items()},
         "operational_path_bag_ids": paths,
-        # Untouched historical context.
-        "standing_unresolved_backlog": len(
-            result.get("disappeared_prior_open_exceptions") or []
-        ),
+        "standing_unresolved_backlog": 0,
         "excluded_not_presence_backed": len(result.get("excluded_not_presence_backed") or []),
         "invariants": {
             "every_order_exactly_one_operational_path": unique_total == operational_total,
@@ -779,17 +925,9 @@ def build_today_validation(result: Mapping[str, Any], *, selected_date_et: date)
                 established
                 == (counts.get("new_today") or 0) + (counts.get("carryover") or 0)
             ),
-            # Established workload = completed(entry) + pending + disappeared.
             "established_outcomes_partition": established
-            == completed + pending + disappeared,
-            # total operational = established + completed-awaiting + missing-entry.
-            "total_operational_reconciles": operational_total
-            == established + completed_awaiting + missing_entry,
-            # The completed-awaiting bag is NOT double-counted inside missing-entry.
-            "no_double_count_completed_vs_missing_entry": not (
-                set(paths["completed_without_entry_scan"])
-                & set(paths["missing_entry_scan_exception"])
-            ),
+            == completed_n + pending + review,
+            "total_operational_reconciles": operational_total == established,
         },
     }
 
@@ -797,60 +935,134 @@ def build_today_validation(result: Mapping[str, Any], *, selected_date_et: date)
 def build_step1_headline_summary(
     result: Mapping[str, Any], *, selected_date_et: date, activation_date: date
 ) -> dict[str, Any]:
-    """Headline summary for the Shift Monitor, segmented by Rush / Non-Rush.
-
-    Every category is provided per segment (all / rush / non_rush) with bag-ID lists
-    so the UI can render authoritative, filter-correct totals without shipping the
-    full row set. The historical backlog is intentionally NOT segmented — it is a
-    separate read-only concern.
-    """
+    """Headline summary: WF/HD × Rush/Non-Rush, simplified exceptions."""
     rows = result.get("rows") or []
-    rush_by_bag = {
-        r.get("bag_id"): _rush_bucket(r.get("rush_flag")) for r in rows if r.get("bag_id")
+    meta_by_bag = {
+        r.get("bag_id"): {
+            "rush": _rush_bucket(r.get("rush_flag")),
+            "service": str(r.get("service_type") or "").upper(),
+        }
+        for r in rows
+        if r.get("bag_id")
     }
 
-    def _seg(segment: str) -> dict[str, Any]:
-        def f(key: str) -> list[str]:
-            ids = result.get(key) or []
-            if segment == "all":
-                return sorted(ids)
-            return sorted(b for b in ids if rush_by_bag.get(b) == segment)
+    def _filter(ids: list[str], *, service: str | None = None, rush: str | None = None) -> list[str]:
+        out = []
+        for bid in ids:
+            m = meta_by_bag.get(bid) or {}
+            if service and m.get("service") != service:
+                continue
+            if rush and m.get("rush") != rush:
+                continue
+            out.append(bid)
+        return sorted(out)
 
-        new = f("new_today")
-        carry = f("carryover")
-        completed = f("completed_on_date")
-        pending = f("pending_end_of_date")
-        disappeared = f("disappeared_without_completion_exceptions")
-        missing = f("missing_entry_scan_exceptions")
-        cwo = f("completed_without_entry_scan")
-        active = len(new) + len(carry)
-        exceptions_total = len(disappeared) + len(missing) + len(cwo)
+    def _seg(ids_new, ids_carry, ids_completed, ids_pending, ids_review) -> dict[str, Any]:
+        active = len(ids_new) + len(ids_carry)
         return {
-            "new_today": len(new),
-            "carryover": len(carry),
+            "new_today": len(ids_new),
+            "carryover": len(ids_carry),
             "active_workload": active,
-            "completed": len(completed),
-            "pending": len(pending),
+            "completed": len(ids_completed),
+            "pending": len(ids_pending),
             "exceptions": {
-                "disappeared_without_completion": len(disappeared),
-                "missing_workload_entry_scan": len(missing),
-                "completed_awaiting_workload_assignment": len(cwo),
-                "total": exceptions_total,
+                "review_required": len(ids_review),
+                "disappeared_without_completion": len(ids_review),
+                "missing_workload_entry_scan": 0,
+                "completed_awaiting_workload_assignment": 0,
+                "total": len(ids_review),
             },
-            "total_operational_orders": active + len(missing) + len(cwo),
+            "total_operational_orders": active,
             "bag_ids": {
-                "new_today": new,
-                "carryover": carry,
-                "completed": completed,
-                "pending": pending,
-                "disappeared_without_completion": disappeared,
-                "missing_workload_entry_scan": missing,
-                "completed_awaiting_workload_assignment": cwo,
+                "new_today": ids_new,
+                "carryover": ids_carry,
+                "completed": ids_completed,
+                "pending": ids_pending,
+                "review_required": ids_review,
+                "disappeared_without_completion": ids_review,
+                "missing_workload_entry_scan": [],
+                "completed_awaiting_workload_assignment": [],
             },
         }
 
-    segments = {"all": _seg("all"), "rush": _seg("RUSH"), "non_rush": _seg("NON_RUSH")}
+    all_new = list(result.get("new_today") or [])
+    all_carry = list(result.get("carryover") or [])
+    all_completed = list(result.get("completed_on_date") or [])
+    all_pending = list(result.get("pending_end_of_date") or [])
+    all_review = list(
+        result.get("review_required")
+        or result.get("disappeared_without_completion_exceptions")
+        or []
+    )
+    cwo = list(
+        result.get("completed_without_recognized_entry")
+        or result.get("completed_without_entry_scan")
+        or []
+    )
+
+    segments = {
+        "all": _seg(all_new, all_carry, all_completed, all_pending, all_review),
+        "rush": _seg(
+            _filter(all_new, rush="RUSH"),
+            _filter(all_carry, rush="RUSH"),
+            _filter(all_completed, rush="RUSH"),
+            _filter(all_pending, rush="RUSH"),
+            _filter(all_review, rush="RUSH"),
+        ),
+        "non_rush": _seg(
+            _filter(all_new, rush="NON_RUSH"),
+            _filter(all_carry, rush="NON_RUSH"),
+            _filter(all_completed, rush="NON_RUSH"),
+            _filter(all_pending, rush="NON_RUSH"),
+            _filter(all_review, rush="NON_RUSH"),
+        ),
+        "wf": _seg(
+            _filter(all_new, service=SERVICE_WF),
+            _filter(all_carry, service=SERVICE_WF),
+            _filter(all_completed, service=SERVICE_WF),
+            _filter(all_pending, service=SERVICE_WF),
+            _filter(all_review, service=SERVICE_WF),
+        ),
+        "hd": _seg(
+            _filter(all_new, service=SERVICE_HD),
+            _filter(all_carry, service=SERVICE_HD),
+            _filter(all_completed, service=SERVICE_HD),
+            _filter(all_pending, service=SERVICE_HD),
+            _filter(all_review, service=SERVICE_HD),
+        ),
+        "wf_rush": _seg(
+            _filter(all_new, service=SERVICE_WF, rush="RUSH"),
+            _filter(all_carry, service=SERVICE_WF, rush="RUSH"),
+            _filter(all_completed, service=SERVICE_WF, rush="RUSH"),
+            _filter(all_pending, service=SERVICE_WF, rush="RUSH"),
+            _filter(all_review, service=SERVICE_WF, rush="RUSH"),
+        ),
+        "wf_non_rush": _seg(
+            _filter(all_new, service=SERVICE_WF, rush="NON_RUSH"),
+            _filter(all_carry, service=SERVICE_WF, rush="NON_RUSH"),
+            _filter(all_completed, service=SERVICE_WF, rush="NON_RUSH"),
+            _filter(all_pending, service=SERVICE_WF, rush="NON_RUSH"),
+            _filter(all_review, service=SERVICE_WF, rush="NON_RUSH"),
+        ),
+        "hd_rush": _seg(
+            _filter(all_new, service=SERVICE_HD, rush="RUSH"),
+            _filter(all_carry, service=SERVICE_HD, rush="RUSH"),
+            _filter(all_completed, service=SERVICE_HD, rush="RUSH"),
+            _filter(all_pending, service=SERVICE_HD, rush="RUSH"),
+            _filter(all_review, service=SERVICE_HD, rush="RUSH"),
+        ),
+        "hd_non_rush": _seg(
+            _filter(all_new, service=SERVICE_HD, rush="NON_RUSH"),
+            _filter(all_carry, service=SERVICE_HD, rush="NON_RUSH"),
+            _filter(all_completed, service=SERVICE_HD, rush="NON_RUSH"),
+            _filter(all_pending, service=SERVICE_HD, rush="NON_RUSH"),
+            _filter(all_review, service=SERVICE_HD, rush="NON_RUSH"),
+        ),
+    }
+
     a = segments["all"]
+    wf = segments["wf"]
+    hd = segments["hd"]
     exc = a["exceptions"]
     return {
         "selected_date_et": selected_date_et.isoformat(),
@@ -862,24 +1074,23 @@ def build_step1_headline_summary(
         "pending": a["pending"],
         "exceptions": exc,
         "total_operational_orders": a["total_operational_orders"],
-        "historical_unresolved_backlog": len(
-            result.get("disappeared_prior_open_exceptions") or []
-        ),
-        "historical_unresolved_backlog_bag_ids": sorted(
-            result.get("disappeared_prior_open_exceptions") or []
-        ),
+        "wf_new_today": wf["new_today"],
+        "hd_new_today": hd["new_today"],
+        "historical_unresolved_backlog": 0,
+        "historical_unresolved_backlog_bag_ids": [],
+        "completed_without_recognized_entry": len(cwo),
+        "completed_without_recognized_entry_bag_ids": sorted(cwo),
+        "rfv_excluded": len(result.get("rfv_excluded") or []),
+        "rfv_excluded_bag_ids": list(result.get("rfv_excluded") or []),
         "segments": segments,
         "reconciliation_lines": {
+            "new_today": (
+                f"New Today {a['new_today']} = WF {wf['new_today']} + HD {hd['new_today']}"
+            ),
             "active_workload": (
                 f"Active Workload {a['active_workload']} = Completed {a['completed']}"
                 f" + Pending {a['pending']}"
-                f" + Disappeared {exc['disappeared_without_completion']}"
-            ),
-            "total_operational": (
-                f"Total Operational Orders {a['total_operational_orders']}"
-                f" = Active Workload {a['active_workload']}"
-                f" + Missing Entry {exc['missing_workload_entry_scan']}"
-                f" + Completed Awaiting Assignment {exc['completed_awaiting_workload_assignment']}"
+                f" + Review Required {exc['review_required']}"
             ),
         },
     }
@@ -889,7 +1100,7 @@ def _rush_bucket(rush_flag: Any) -> str:
     v = str(rush_flag or "").strip().lower()
     if not v:
         return "UNKNOWN"
-    if "non" in v:  # "non-rush" / "non rush"
+    if "non" in v:
         return "NON_RUSH"
     if "rush" in v or v in ("1", "true", "yes", "y"):
         return "RUSH"
@@ -899,7 +1110,8 @@ def _rush_bucket(rush_flag: Any) -> str:
 def _rush_split(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Rush / Non-Rush breakdown of the active workload (new + carryover)."""
     members = [
-        r for r in rows
+        r
+        for r in rows
         if str(r.get("entry_class") or "") in (ENTRY_CLASS_NEW, ENTRY_CLASS_CARRYOVER)
     ]
     out = {"RUSH": [], "NON_RUSH": [], "UNKNOWN": []}
@@ -912,4 +1124,34 @@ def _rush_split(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "rush_bag_ids": sorted(b for b in out["RUSH"] if b),
         "non_rush_bag_ids": sorted(b for b in out["NON_RUSH"] if b),
         "unknown_bag_ids": sorted(b for b in out["UNKNOWN"] if b),
+    }
+
+
+def _service_split(result: Mapping[str, Any]) -> dict[str, Any]:
+    rows = {r.get("bag_id"): r for r in (result.get("rows") or []) if r.get("bag_id")}
+
+    def _svc_ids(key: str, service: str) -> list[str]:
+        return sorted(
+            b
+            for b in (result.get(key) or [])
+            if str((rows.get(b) or {}).get("service_type") or "").upper() == service
+        )
+
+    return {
+        "wf": {
+            "new_today": _svc_ids("new_today", SERVICE_WF),
+            "carryover": _svc_ids("carryover", SERVICE_WF),
+            "completed": _svc_ids("completed_on_date", SERVICE_WF),
+            "pending": _svc_ids("pending_end_of_date", SERVICE_WF),
+            "review_required": _svc_ids("review_required", SERVICE_WF)
+            or _svc_ids("disappeared_without_completion_exceptions", SERVICE_WF),
+        },
+        "hd": {
+            "new_today": _svc_ids("new_today", SERVICE_HD),
+            "carryover": _svc_ids("carryover", SERVICE_HD),
+            "completed": _svc_ids("completed_on_date", SERVICE_HD),
+            "pending": _svc_ids("pending_end_of_date", SERVICE_HD),
+            "review_required": _svc_ids("review_required", SERVICE_HD)
+            or _svc_ids("disappeared_without_completion_exceptions", SERVICE_HD),
+        },
     }
