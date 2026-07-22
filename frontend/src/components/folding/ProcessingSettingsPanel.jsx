@@ -79,6 +79,9 @@ export default function ProcessingSettingsPanel() {
         dryingMinutes: d.drying_minutes ?? 45,
         rejectAfterIssueMinutes: d.reject_after_create_issue_minutes ?? 45,
         weightDiffLbs: d.weight_difference_threshold_lbs ?? 5,
+        facilityEntryRacks: Array.isArray(d.facility_entry_racks)
+          ? d.facility_entry_racks.join("\n")
+          : "VeeWash Dirty\nRinse Zipvan",
         rfvRushCutoff: d.rfv_rush_cutoff_time_et ?? "07:00",
         rfvRushCutoffInvalidStored: Boolean(d.rfv_rush_cutoff_invalid_stored),
         totalMinutes: d.total_minutes_per_bag,
@@ -98,6 +101,14 @@ export default function ProcessingSettingsPanel() {
       setMessage("Invalid Ready for Vendor Rush Cutoff Time — use HH:MM (e.g. 07:00). Previous value kept.");
       return;
     }
+    const racks = String(fields.facilityEntryRacks || "")
+      .split(/[\n,]+/)
+      .map((r) => r.trim())
+      .filter(Boolean);
+    if (racks.length === 0) {
+      setMessage("Facility entry racks require at least one rack name.");
+      return;
+    }
     try {
       setLoading(true);
       setMessage("");
@@ -111,6 +122,7 @@ export default function ProcessingSettingsPanel() {
         drying_minutes: Math.max(1, Number(fields.dryingMinutes) || 45),
         reject_after_create_issue_minutes: Math.max(1, Number(fields.rejectAfterIssueMinutes) || 45),
         weight_difference_threshold_lbs: Math.max(0, Number(fields.weightDiffLbs) || 5),
+        facility_entry_racks: racks,
         rfv_rush_cutoff_time_et: String(fields.rfvRushCutoff || "07:00").trim(),
       };
       const res = await putProcessingSettings(body);
@@ -125,6 +137,9 @@ export default function ProcessingSettingsPanel() {
         dryingMinutes: d.drying_minutes ?? 45,
         rejectAfterIssueMinutes: d.reject_after_create_issue_minutes ?? 45,
         weightDiffLbs: d.weight_difference_threshold_lbs ?? 5,
+        facilityEntryRacks: Array.isArray(d.facility_entry_racks)
+          ? d.facility_entry_racks.join("\n")
+          : racks.join("\n"),
         rfvRushCutoff: d.rfv_rush_cutoff_time_et ?? "07:00",
         rfvRushCutoffInvalidStored: Boolean(d.rfv_rush_cutoff_invalid_stored),
         totalMinutes: d.total_minutes_per_bag,
@@ -230,6 +245,18 @@ export default function ProcessingSettingsPanel() {
             value={fields.rejectMinutes ?? 30}
             onChange={(e) => setFields({ ...fields, rejectMinutes: e.target.value })}
             inputProps={{ min: 1 }}
+            fullWidth
+          />
+        </Grid>
+        <Grid item xs={12} md={6}>
+          <TextField
+            size="small"
+            label="Facility entry racks"
+            helperText="One rack name per line. First scan into any of these racks establishes workload membership."
+            value={fields.facilityEntryRacks ?? ""}
+            onChange={(e) => setFields({ ...fields, facilityEntryRacks: e.target.value })}
+            multiline
+            minRows={3}
             fullWidth
           />
         </Grid>

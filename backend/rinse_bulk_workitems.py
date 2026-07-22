@@ -590,6 +590,41 @@ def save_bag_bulk_workitems(
     if not bid:
         return {"ok": False, "error": "invalid_bag_id"}
 
+    # WF-only: reject HD bags (effective service after bulk/registry resolution).
+    from backend.rinse_veewash_review import load_registry_service_map
+    from backend.rinse_veewash_workload import SERVICE_HD, SERVICE_WF, _norm_bag
+
+    portal_svc = None
+    try:
+        cursor.execute(
+            """
+            SELECT service_type FROM rinse_cleaner_ticket_presence
+            WHERE organization_id = %s AND bag_id = %s
+            LIMIT 1
+            """,
+            (int(organization_id), bid),
+        )
+        prow = cursor.fetchone() or {}
+        portal_svc = str(prow.get("service_type") or "").strip().upper()
+    except Exception:
+        portal_svc = None
+    reg_svc = (load_registry_service_map(cursor, organization_id, [bid]).get(bid) or "").upper()
+    bulk_map = load_bulk_workitem_scan_map(cursor, organization_id, [bid])
+    has_bulk = bool(bulk_map.get(bid) and int((bulk_map.get(bid) or {}).get("count") or 0) > 0)
+    if has_bulk or reg_svc == SERVICE_WF:
+        effective = SERVICE_WF
+    elif reg_svc == SERVICE_HD:
+        effective = SERVICE_HD
+    else:
+        effective = portal_svc or SERVICE_WF
+    if effective == SERVICE_HD:
+        return {
+            "ok": False,
+            "error": "bulk_workitems_wf_only",
+            "message": "Bulk workitem entry is only allowed for WF bags.",
+            "service_type": effective,
+        }
+
     day_rec = get_day_record(cursor, organization_id, shift_date_et)
     if day_rec and day_rec.get("status") == STATUS_CLOSED and not allow_closed:
         return {"ok": False, "error": "shift_closed_reopen_required", "day_status": STATUS_CLOSED}

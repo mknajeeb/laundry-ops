@@ -42,6 +42,7 @@ export default function BulkWorkitemEntrySection({
   const needsBulk = reasons.includes("WF_BULK_WORKITEM_REVIEW");
   const scan = bag?.bulk_workitem_scan || {};
   const existing = bag?.bulk_workitems || [];
+  const serviceType = String(bag?.service_type || "").toUpperCase();
 
   const initialQty = useMemo(() => {
     const map = {};
@@ -69,6 +70,10 @@ export default function BulkWorkitemEntrySection({
     setNoChargeReason(bag?.bulk_resolution?.no_charge_reason || "");
   }, [bag?.bag_id, initialQty, bag?.bulk_resolution]);
 
+  // Bulk workitem entry is WF-only — never show under HD.
+  if (serviceType === "HD") {
+    return null;
+  }
   if (!needsBulk && !existing.length && !scan?.count) {
     return null;
   }

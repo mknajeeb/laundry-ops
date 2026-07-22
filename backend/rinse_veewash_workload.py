@@ -5,15 +5,15 @@ Operating model:
 
   * Eligibility: organization_id = 3 AND portal_status = at_vendor.
     RFV (ready_for_vendor) is inactive and never loaded into this workload.
-  * Workload entry (WF and HD): first configured Dirty rack scan (facility_entry_racks).
-    Service type comes from presence (WF vs HD). Rush/Non-Rush filters within service
-    and never reclassifies HD as WF.
+  * Workload entry (WF and HD): first scan into ANY configured facility entry rack
+    (facility_entry_racks). Service type comes from presence (WF vs HD).
   * Recognized-entry check for COMPLETED_WITHOUT_RECOGNIZED_ENTRY:
-      WF → Dirty required; HD → workitems-added required (in addition to Dirty membership).
+      WF → configured facility entry rack required; HD → workitems-added required
+      (in addition to entry-rack membership).
     When completed without the service-appropriate signal, bag enters Active as Review Required.
   * workitems-added is NOT a WF workload entry event. Recognized entry:
-      WF → first configured Dirty rack scan
-      HD → first workitems-added scan (Dirty is not HD entry for CWO checks)
+      WF → first configured facility entry rack scan
+      HD → first workitems-added scan (entry rack is not HD entry for CWO checks)
   * Completion: evaluate_bag_completion_v2 (canonical production resolver).
   * Review Required (manager-facing, reason_codes, one count per bag) includes:
       DISAPPEARED_WITHOUT_COMPLETION
@@ -294,7 +294,7 @@ def build_dirty_entry_map(
     *,
     dirty_by_bag: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """WF and HD enter Active workload via first configured VeeWash Dirty scan."""
+    """WF and HD enter Active workload via first scan into any configured entry rack."""
     out: dict[str, dict[str, Any]] = {}
     for bid, pres in presence_by_bag.items():
         svc = _service_of(pres)
@@ -854,6 +854,7 @@ def build_veewash_daily_workload(
     from backend.rinse_veewash_review import (
         expand_review_required,
         load_bag_weight_map,
+        load_registry_service_map,
     )
 
     weight_ids = sorted(
@@ -864,6 +865,7 @@ def build_veewash_daily_workload(
         | set(presence.keys())
     )
     weights = load_bag_weight_map(cursor, organization_id, weight_ids)
+    registry_services = load_registry_service_map(cursor, organization_id, weight_ids)
 
     from backend.rinse_bulk_workitems import (
         load_bag_bulk_lines,
@@ -887,6 +889,7 @@ def build_veewash_daily_workload(
         bulk_scan_by_bag=bulk_scans,
         bulk_resolution_by_bag=bulk_resolutions,
         bulk_lines_by_bag=bulk_lines,
+        registry_service_by_bag=registry_services,
     )
     result["disappearance_confirmation"] = disappearance_state
     result["organization_id"] = int(organization_id)

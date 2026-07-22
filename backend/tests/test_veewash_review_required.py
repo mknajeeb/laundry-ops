@@ -54,52 +54,55 @@ def _comp(d, hour=13, by="Francis (Veewash)"):
 
 
 def test_derive_null_5_5_6_0():
-    assert derive_pre_post_weights([None, 5.5, 6.0]) == {
-        "pre_weight_lbs": 5.5,
-        "post_weight_lbs": 6.0,
-    }
+    d = derive_pre_post_weights([None, 5.5, 6.0])
+    assert d["pre_weight_lbs"] == 5.5
+    assert d["post_weight_lbs"] == 6.0
+    assert d["post_weight_event_exists"] is True
+    assert d["post_weight_value"] == 6.0
+    assert d["post_weight_valid_for_standard_weight_revenue"] is True
 
 
 def test_derive_null_5_5_5_5_same_value_two_events():
-    assert derive_pre_post_weights([None, 5.5, 5.5]) == {
-        "pre_weight_lbs": 5.5,
-        "post_weight_lbs": 5.5,
-    }
+    d = derive_pre_post_weights([None, 5.5, 5.5])
+    assert d["pre_weight_lbs"] == 5.5
+    assert d["post_weight_lbs"] == 5.5
+    assert d["post_weight_event_exists"] is True
 
 
 def test_derive_null_5_5_single_event_post_missing():
-    assert derive_pre_post_weights([None, 5.5]) == {
-        "pre_weight_lbs": 5.5,
-        "post_weight_lbs": None,
-    }
+    d = derive_pre_post_weights([None, 5.5])
+    assert d["pre_weight_lbs"] == 5.5
+    assert d["post_weight_lbs"] is None
+    assert d["post_weight_event_exists"] is False
 
 
-def test_derive_0_5_5_6_0_zero_ignored():
-    assert derive_pre_post_weights([0, 5.5, 6.0]) == {
-        "pre_weight_lbs": 5.5,
-        "post_weight_lbs": 6.0,
-    }
+def test_derive_0_5_5_6_0_zero_is_real_then_positive_pre_preferred():
+    d = derive_pre_post_weights([0, 5.5, 6.0])
+    assert d["pre_weight_lbs"] == 5.5
+    assert d["post_weight_lbs"] == 6.0
+    assert d["post_weight_event_exists"] is True
 
 
-def test_derive_5_5_then_0_no_valid_post():
-    assert derive_pre_post_weights([5.5, 0]) == {
-        "pre_weight_lbs": 5.5,
-        "post_weight_lbs": None,
-    }
+def test_derive_5_5_then_0_recorded_post_zero_not_missing():
+    d = derive_pre_post_weights([5.5, 0])
+    assert d["pre_weight_lbs"] == 5.5
+    assert d["post_weight_lbs"] == 0.0
+    assert d["post_weight_event_exists"] is True
+    assert d["post_weight_value"] == 0.0
+    assert d["post_weight_valid_for_standard_weight_revenue"] is False
 
 
 def test_derive_5_5_null_6_0():
-    assert derive_pre_post_weights([5.5, None, 6.0]) == {
-        "pre_weight_lbs": 5.5,
-        "post_weight_lbs": 6.0,
-    }
+    d = derive_pre_post_weights([5.5, None, 6.0])
+    assert d["pre_weight_lbs"] == 5.5
+    assert d["post_weight_lbs"] == 6.0
+    assert d["post_weight_event_exists"] is True
 
 
 def test_derive_ignores_blank_and_negative():
-    assert derive_pre_post_weights([None, "", -1, 5.5, 6.0]) == {
-        "pre_weight_lbs": 5.5,
-        "post_weight_lbs": 6.0,
-    }
+    d = derive_pre_post_weights([None, "", -1, 5.5, 6.0])
+    assert d["pre_weight_lbs"] == 5.5
+    assert d["post_weight_lbs"] == 6.0
 
 
 def test_cwo_bag_appears_in_review_required_not_completed():
@@ -154,7 +157,8 @@ def test_cwo_still_counts_in_active_headline():
     )
 
 
-def test_wf_zero_post_weight_in_review_pre_zero_ok_hd_exempt():
+def test_wf_recorded_zero_post_not_missing_post_review():
+    """Recorded post weight 0 is not WF_ZERO_OR_MISSING_POST_WEIGHT."""
     presence = {
         "WFPOST0": _pres(service="WF"),
         "WFPRE0": _pres(service="WF"),
@@ -182,18 +186,86 @@ def test_wf_zero_post_weight_in_review_pre_zero_ok_hd_exempt():
         presence_by_bag=presence,
         entry_by_bag=entry,
         weight_by_bag={
-            "WFPOST0": {"pre_weight_lbs": 5.5, "post_weight_lbs": 0},
-            "WFPRE0": {"pre_weight_lbs": 0, "post_weight_lbs": 6.0},
+            "WFPOST0": {
+                "pre_weight_lbs": 5.5,
+                "post_weight_lbs": 0,
+                "post_weight_event_exists": True,
+                "post_weight_value": 0,
+                "post_weight_valid_for_standard_weight_revenue": False,
+            },
+            "WFPRE0": {
+                "pre_weight_lbs": 0,
+                "post_weight_lbs": 6.0,
+                "post_weight_event_exists": True,
+                "post_weight_value": 6.0,
+                "post_weight_valid_for_standard_weight_revenue": True,
+            },
             "HDZERO1": {"pre_weight_lbs": None, "post_weight_lbs": None},
         },
     )
-    assert "WFPOST0" in out["review_required"]
-    assert REASON_WF_ZERO_OR_MISSING_POST_WEIGHT in out["review_reasons_by_bag"]["WFPOST0"]
+    assert REASON_WF_ZERO_OR_MISSING_POST_WEIGHT not in (
+        out["review_reasons_by_bag"].get("WFPOST0") or []
+    )
+    row = next(r for r in out["rows"] if r["bag_id"] == "WFPOST0")
+    assert row.get("post_weight_event_exists") is True
+    assert row.get("post_weight_value") == 0
     assert "WFPRE0" not in out["review_required"] or REASON_WF_ZERO_OR_MISSING_POST_WEIGHT not in (
         out["review_reasons_by_bag"].get("WFPRE0") or []
     )
     assert "HDZERO1" not in out["review_required"] or REASON_WF_ZERO_OR_MISSING_POST_WEIGHT not in (
         out["review_reasons_by_bag"].get("HDZERO1") or []
+    )
+
+
+def test_wf_bulk_with_post_zero_stays_in_wf_rush_active():
+    """WF Rush bag: pre>0, post=0, create-workitem-bulk → bulk review, stays in Active."""
+    from backend.rinse_bulk_workitems import REASON_WF_BULK_WORKITEM_REVIEW
+
+    presence = {"7OPZ6IZ0X7": _pres(service="HD", rush="RUSH")}  # portal mis-tag
+    entry = {"7OPZ6IZ0X7": _entry(D1)}
+    completion = {"7OPZ6IZ0X7": _comp(D1)}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag=completion,
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        weight_by_bag={
+            "7OPZ6IZ0X7": {
+                "pre_weight_lbs": 4.9,
+                "post_weight_lbs": 0.0,
+                "post_weight_event_exists": True,
+                "post_weight_value": 0.0,
+                "post_weight_valid_for_standard_weight_revenue": False,
+            }
+        },
+        bulk_scan_by_bag={
+            "7OPZ6IZ0X7": {
+                "count": 1,
+                "first_at": datetime(2026, 7, 22, 7, 31),
+                "employee": "Francis (Veewash)",
+            }
+        },
+        registry_service_by_bag={"7OPZ6IZ0X7": "WF"},
+    )
+    assert "7OPZ6IZ0X7" in out["new_today"]  # still Active
+    assert "7OPZ6IZ0X7" in out["review_required"]
+    codes = out["review_reasons_by_bag"]["7OPZ6IZ0X7"]
+    assert REASON_WF_BULK_WORKITEM_REVIEW in codes
+    assert REASON_WF_ZERO_OR_MISSING_POST_WEIGHT not in codes
+    row = next(r for r in out["rows"] if r["bag_id"] == "7OPZ6IZ0X7")
+    assert row["service_type"] == "WF"
+    summary = build_step1_headline_summary(out, selected_date_et=D1, activation_date=D1)
+    wf_rush = summary["segments"]["wf_rush"]
+    assert "7OPZ6IZ0X7" in (wf_rush["bag_ids"]["new_today"] + wf_rush["bag_ids"]["carryover"])
+    assert "7OPZ6IZ0X7" in wf_rush["bag_ids"]["review_required"]
+    assert "7OPZ6IZ0X7" in (summary.get("review_by_reason") or {}).get(
+        REASON_WF_BULK_WORKITEM_REVIEW, []
     )
 
 

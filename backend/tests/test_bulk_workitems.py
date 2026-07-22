@@ -79,7 +79,8 @@ def test_wf_bulk_scan_enters_review():
     assert out["counts"]["review_required"] == 1
 
 
-def test_hd_bulk_scan_does_not_enter_review():
+def test_hd_presence_with_bulk_scan_remaps_to_wf_review():
+    """create-workitem-bulk is WF-only — portal HD bags remapped into WF + bulk review."""
     presence = {"BAGHD1": _pres("HD")}
     entry = {"BAGHD1": _entry()}
     raw = classify_veewash_workload(
@@ -88,11 +89,10 @@ def test_hd_bulk_scan_does_not_enter_review():
         entry_by_bag=entry,
         completion_by_bag={},
     )
-    # Ensure HD bag is in active workload for expand
     if "BAGHD1" not in (raw.get("new_today") or []) and "BAGHD1" not in (raw.get("carryover") or []):
         raw.setdefault("new_today", []).append("BAGHD1")
         raw.setdefault("rows", []).append(
-            {"bag_id": "BAGHD1", "service_type": "HD", "outcome": "pending"}
+            {"bag_id": "BAGHD1", "service_type": "HD", "outcome": "pending", "rush_flag": "RUSH"}
         )
     out = expand_review_required(
         raw,
@@ -111,7 +111,10 @@ def test_hd_bulk_scan_does_not_enter_review():
         },
     )
     reasons = out.get("review_reasons_by_bag") or {}
-    assert REASON_WF_BULK_WORKITEM_REVIEW not in (reasons.get("BAGHD1") or [])
+    assert REASON_WF_BULK_WORKITEM_REVIEW in (reasons.get("BAGHD1") or [])
+    assert "BAGHD1" in out["review_required"]
+    row = next(r for r in out["rows"] if r["bag_id"] == "BAGHD1")
+    assert row["service_type"] == "WF"
 
 
 def test_multiple_bulk_scans_one_review_count():

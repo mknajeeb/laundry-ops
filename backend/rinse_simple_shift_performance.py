@@ -3252,7 +3252,9 @@ def build_simple_shift_performance_payload(
 
     dashboard_snapshot = get_dashboard_active_staging_snapshot(cursor, org)
     rfv_sync = get_ready_for_vendor_sync_status(cursor, org, evaluation_time=eval_at)
-    entry_racks = settings.get("facility_entry_racks") or ["VeeWash Dirty"]
+    from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
+
+    entry_racks = settings.get("facility_entry_racks") or list(DEFAULT_FACILITY_ENTRY_RACKS)
     facility_entry_ids = load_facility_entry_bag_ids(
         cursor,
         org,

@@ -128,7 +128,7 @@ export default function BulkWorkitemsPanel() {
     <Box>
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}>
         <Typography variant="body2" color="text.secondary">
-          Maintain chargeable bulk workitems (Bath Mat, Comforter, …). Price changes never rewrite
+          Maintain chargeable WF bulk workitems (Bath Mat, Comforter, …). Price changes never rewrite
           historical bag totals.
         </Typography>
         <Button variant="contained" onClick={openNew} disabled={loading}>

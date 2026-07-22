@@ -7,7 +7,7 @@ from typing import Any
 
 from backend.ta_helpers import table_exists
 
-DEFAULT_FACILITY_ENTRY_RACKS = ("VeeWash Dirty",)
+DEFAULT_FACILITY_ENTRY_RACKS = ("VeeWash Dirty", "Rinse Zipvan")
 
 
 def parse_facility_entry_racks(raw: Any) -> list[str]:

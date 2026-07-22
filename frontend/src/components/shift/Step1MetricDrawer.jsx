@@ -310,7 +310,14 @@ export default function Step1MetricDrawer({
                     </Stack>
                     <Typography variant="caption" color="text.secondary" display="block">
                       {bag.customer_name || "—"} · {bag.entry_class || "—"} · Pre Weight{" "}
-                      {bag.pre_weight_lbs ?? "—"} · Post Weight {bag.post_weight_lbs ?? "—"}
+                      {bag.pre_weight_lbs ?? "—"} · Post Weight{" "}
+                      {bag.post_weight_event_exists
+                        ? bag.post_weight_value ?? bag.post_weight_lbs ?? 0
+                        : bag.post_weight_lbs ?? "—"}
+                      {bag.post_weight_event_exists &&
+                      Number(bag.post_weight_value ?? bag.post_weight_lbs) === 0
+                        ? " (recorded 0)"
+                        : ""}
                     </Typography>
                     {(bag.reason_codes || []).length > 0 ? (
                       <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>

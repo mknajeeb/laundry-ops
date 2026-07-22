@@ -19,6 +19,7 @@ from backend.rinse_veewash_workload import (
     REASON_COMPLETED_WITHOUT_RECOGNIZED_ENTRY,
     REASON_COMPLETION_DETAILS_MISSING,
     REASON_DISAPPEARED_WITHOUT_COMPLETION,
+    REASON_SERVICE_CLASSIFICATION_MISMATCH,
     REASON_WF_BULK_WORKITEM_REVIEW,
     REASON_WF_ZERO_OR_MISSING_POST_WEIGHT,
     REASON_WF_ZERO_OR_MISSING_WEIGHT,  # noqa: F401 — alias
@@ -43,57 +44,155 @@ def _parse_weight(raw: Any) -> float | None:
 
 
 def _valid_positive_weight(raw: Any) -> float | None:
-    """Valid completed weight event: strictly > 0. Ignores null/blank/non-numeric/≤0."""
+    """Valid revenue weight: strictly > 0. Ignores null/blank/non-numeric/≤0."""
     w = _parse_weight(raw)
     if w is None or w <= 0:
         return None
     return w
 
 
-def _post_weight_invalid(raw: Any) -> bool:
-    """Post weight missing or <= 0 triggers WF Review Required."""
-    return _valid_positive_weight(raw) is None
-
-
-def derive_pre_post_weights(weight_values: Sequence[Any]) -> dict[str, float | None]:
+def derive_pre_post_weights(weight_values: Sequence[Any]) -> dict[str, Any]:
     """
-    Chronological weight-event derivation (not distinct numeric values):
+    Chronological weight-event derivation.
 
-    - Ignore null, blank, non-numeric, and negative events
-    - Zero may appear in chronology but is not a valid pre/post event
-    - Pre  = first valid positive weight event
-    - Post = next (second) valid positive weight event later in chronology
-      (may equal pre numerically, e.g. 5.5 → 5.5)
+    - Null/blank/non-numeric/negative are skipped as non-events when passed as bare values
+    - Zero is a real recorded weight event (not treated as missing)
+    - Pre  = first event with a numeric value >= 0 (prefer first > 0 when present)
+    - Post = second numeric event (may be 0)
 
-    A single valid event sets pre only; post stays missing → Review Required.
-    Aligns with production two-weight chronology (first/second weight events).
+    Also returns:
+      post_weight_event_exists
+      post_weight_value  (includes 0)
+      post_weight_valid_for_standard_weight_revenue  (True only when post > 0)
     """
-    valid: list[float] = []
+    events: list[float] = []
     for raw in weight_values:
-        w = _valid_positive_weight(raw)
-        if w is not None:
-            valid.append(w)
-    if not valid:
-        return {"pre_weight_lbs": None, "post_weight_lbs": None}
-    if len(valid) == 1:
-        return {"pre_weight_lbs": valid[0], "post_weight_lbs": None}
-    return {"pre_weight_lbs": valid[0], "post_weight_lbs": valid[1]}
+        w = _parse_weight(raw)
+        if w is None or w < 0:
+            continue
+        events.append(w)
 
+    empty = {
+        "pre_weight_lbs": None,
+        "post_weight_lbs": None,
+        "post_weight_event_exists": False,
+        "post_weight_value": None,
+        "post_weight_valid_for_standard_weight_revenue": False,
+    }
+    if not events:
+        return empty
 
-
-def _coerce_weight_info(raw: Any) -> dict[str, float | None]:
-    """Accept structured {pre,post} or legacy scalar (treated as post)."""
-    if isinstance(raw, Mapping):
+    # Prefer first strictly positive as pre when available; else first numeric (may be 0).
+    pre_idx = next((i for i, v in enumerate(events) if v > 0), 0)
+    pre = events[pre_idx]
+    remaining = events[pre_idx + 1 :]
+    if not remaining:
         return {
-            "pre_weight_lbs": _parse_weight(
-                raw.get("pre_weight_lbs", raw.get("pre"))
-            ),
-            "post_weight_lbs": _parse_weight(
-                raw.get("post_weight_lbs", raw.get("post", raw.get("weight_lbs")))
+            "pre_weight_lbs": pre,
+            "post_weight_lbs": None,
+            "post_weight_event_exists": False,
+            "post_weight_value": None,
+            "post_weight_valid_for_standard_weight_revenue": False,
+        }
+    post = remaining[0]
+    return {
+        "pre_weight_lbs": pre,
+        "post_weight_lbs": post,
+        "post_weight_event_exists": True,
+        "post_weight_value": post,
+        "post_weight_valid_for_standard_weight_revenue": post > 0,
+    }
+
+
+def derive_pre_post_from_weight_events(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    supplemental_positive: float | None = None,
+) -> dict[str, Any]:
+    """
+    Event-aware derivation.
+
+    ``events`` items: {value: float|None, is_weight_purpose: bool}
+    A weight-entry purpose with null lbs still counts as a weight event.
+    Null purpose values are treated as recorded 0 for post-slot display when the
+    event exists (ingestion often stores 0 as NULL).
+    """
+    slots: list[float | None] = []
+    for ev in events or []:
+        if not isinstance(ev, Mapping):
+            continue
+        w = _parse_weight(ev.get("value"))
+        is_purpose = bool(ev.get("is_weight_purpose"))
+        if w is not None and w < 0:
+            continue
+        if w is not None:
+            slots.append(w)
+        elif is_purpose:
+            slots.append(None)  # event exists, numeric unknown
+        # else skip non-weight nulls
+
+    # Fill first missing/zero-ish pre from supplemental positive (folding/registry).
+    if supplemental_positive is not None and supplemental_positive > 0:
+        if not slots:
+            slots = [supplemental_positive]
+        elif slots[0] is None or slots[0] == 0:
+            slots[0] = supplemental_positive
+        elif not any(s is not None and s > 0 for s in slots):
+            slots.insert(0, supplemental_positive)
+
+    numeric_for_derive: list[float] = []
+    for i, s in enumerate(slots):
+        if s is None:
+            # Event with unknown lbs → treat as 0 so event chronology is preserved.
+            numeric_for_derive.append(0.0)
+        else:
+            numeric_for_derive.append(float(s))
+
+    derived = derive_pre_post_weights(numeric_for_derive)
+    # post_weight_event_exists follows slot count, not only positive seconds.
+    if len(slots) >= 2:
+        second = slots[1]
+        post_val = 0.0 if second is None else float(second)
+        derived["post_weight_event_exists"] = True
+        derived["post_weight_value"] = post_val
+        derived["post_weight_lbs"] = post_val
+        derived["post_weight_valid_for_standard_weight_revenue"] = post_val > 0
+    return derived
+
+
+def _coerce_weight_info(raw: Any) -> dict[str, Any]:
+    """Accept structured {pre,post,...} or legacy scalar (treated as post)."""
+    if isinstance(raw, Mapping):
+        post_raw = raw.get("post_weight_lbs", raw.get("post", raw.get("weight_lbs")))
+        post_parsed = _parse_weight(post_raw)
+        event_exists = raw.get("post_weight_event_exists")
+        if event_exists is None:
+            event_exists = post_parsed is not None
+        post_value = raw.get("post_weight_value")
+        if post_value is None:
+            post_value = post_parsed
+        else:
+            post_value = _parse_weight(post_value)
+        return {
+            "pre_weight_lbs": _parse_weight(raw.get("pre_weight_lbs", raw.get("pre"))),
+            "post_weight_lbs": post_parsed,
+            "post_weight_event_exists": bool(event_exists),
+            "post_weight_value": post_value,
+            "post_weight_valid_for_standard_weight_revenue": bool(
+                raw.get("post_weight_valid_for_standard_weight_revenue")
+                if "post_weight_valid_for_standard_weight_revenue" in raw
+                else (post_value is not None and post_value > 0)
             ),
         }
-    # Legacy float/int → post only (tests / older callers)
-    return {"pre_weight_lbs": None, "post_weight_lbs": _parse_weight(raw)}
+    post = _parse_weight(raw)
+    return {
+        "pre_weight_lbs": None,
+        "post_weight_lbs": post,
+        "post_weight_event_exists": post is not None,
+        "post_weight_value": post,
+        "post_weight_valid_for_standard_weight_revenue": post is not None and post > 0,
+    }
+
 
 
 def expand_review_required(
@@ -108,20 +207,22 @@ def expand_review_required(
     bulk_scan_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
     bulk_resolution_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
     bulk_lines_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    registry_service_by_bag: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     Mutate/return classification so Review Required includes CWO + WF post-weight gaps
     + WF bulk workitem review.
 
     Priority: Review > Completed > Pending. One bag → one review count.
+    Review never removes bags from Active / service×rush population.
 
-    WF post-weight review is gated:
-      valid entry + valid pre + canonically completed + no valid post
-    → WF_ZERO_OR_MISSING_POST_WEIGHT
+    create-workitem-bulk forces Step-1 service_type = WF (bulk is WF-only).
+    Registry WF preferred over portal HD when they disagree.
 
-    WF create-workitem-bulk (WF only) → WF_BULK_WORKITEM_REVIEW until resolved.
+    WF missing-post review only when no post weight *event* exists
+    (recorded post=0 is not missing).
     """
-    _ = shift_closed  # reserved; gate is completion-based for both OPEN and CLOSED
+    _ = shift_closed
     D = selected_date_et
     prev_day = D - timedelta(days=1)
     wia_map = wia_by_bag or {}
@@ -129,6 +230,11 @@ def expand_review_required(
     bulk_scans = bulk_scan_by_bag or {}
     bulk_resolutions = bulk_resolution_by_bag or {}
     bulk_lines = bulk_lines_by_bag or {}
+    registry_svc = {
+        _norm_bag(k): str(v or "").strip().upper()
+        for k, v in (registry_service_by_bag or {}).items()
+        if _norm_bag(k)
+    }
 
     from backend.rinse_bulk_workitems import bag_bulk_review_cleared
 
@@ -171,6 +277,41 @@ def expand_review_required(
             return True
         return bool(row.get("entry_source") or row.get("original_entry_date") or row.get("first_entry_at"))
 
+    def resolve_service(bid: str, pres: Mapping[str, Any], row: Mapping[str, Any]) -> tuple[str, bool]:
+        """Return (effective_service, mismatched). Bulk → WF; registry WF overrides portal HD."""
+        portal = (
+            _service_of(pres)
+            or str(pres.get("service_type") or row.get("service_type") or "").upper()
+        )
+        reg = registry_svc.get(bid) or ""
+        has_bulk = bool(bulk_scans.get(bid) and int((bulk_scans.get(bid) or {}).get("count") or 0) > 0)
+        if has_bulk:
+            return SERVICE_WF, portal == SERVICE_HD or reg == SERVICE_HD
+        if reg == SERVICE_WF and portal == SERVICE_HD:
+            return SERVICE_WF, True
+        if reg in (SERVICE_WF, SERVICE_HD) and portal and reg != portal:
+            return reg, True
+        return portal or reg or SERVICE_WF, False
+
+    # --- Remap service for bulk / registry WF (before other reviews) ----------
+    active = new_today | carryover
+    for bid in list(active):
+        bid = _norm_bag(bid)
+        if not bid:
+            continue
+        pres = presence_by_bag.get(bid) or {}
+        row = rows_by_id.get(bid) or {"bag_id": bid}
+        svc, mismatched = resolve_service(bid, pres, row)
+        portal = _service_of(pres) or str(pres.get("service_type") or row.get("service_type") or "").upper()
+        rows_by_id[bid] = {
+            **row,
+            "service_type": svc,
+            "portal_service_type": portal or row.get("portal_service_type"),
+            "registry_service_type": registry_svc.get(bid) or row.get("registry_service_type"),
+        }
+        if mismatched:
+            add_reason(bid, REASON_SERVICE_CLASSIFICATION_MISMATCH)
+
     # Seed disappeared reasons
     for bid in disappeared:
         add_reason(bid, REASON_DISAPPEARED_WITHOUT_COMPLETION)
@@ -193,7 +334,7 @@ def expand_review_required(
         if comp_date != D and bid not in completed and bid not in cwo:
             continue
 
-        svc = _service_of(pres) or str(pres.get("service_type") or row.get("service_type") or "").upper()
+        svc, _mm = resolve_service(bid, pres, row)
         entry = entry_by_bag.get(bid)
         wia = wia_map.get(bid)
         recognized = _has_recognized_entry_for_service(svc, dirty_entry=entry, wia_entry=wia)
@@ -248,66 +389,7 @@ def expand_review_required(
                 },
             }
 
-    # --- WF missing POST weight — only after canonical completion ------------
-    active = new_today | carryover
-    for bid in list(active):
-        pres = presence_by_bag.get(bid) or {}
-        row = rows_by_id.get(bid) or {}
-        svc = _service_of(pres) or str(row.get("service_type") or "").upper()
-        if svc != SERVICE_WF:
-            continue
-        info = _coerce_weight_info(
-            weight_map.get(bid)
-            if bid in weight_map
-            else {
-                "pre_weight_lbs": row.get("pre_weight_lbs"),
-                "post_weight_lbs": row.get("post_weight_lbs", row.get("weight_lbs")),
-            }
-        )
-        pre_w = info["pre_weight_lbs"]
-        post_w = info["post_weight_lbs"]
-        if bid in rows_by_id:
-            rows_by_id[bid]["pre_weight_lbs"] = pre_w
-            rows_by_id[bid]["post_weight_lbs"] = post_w
-            rows_by_id[bid]["weight_lbs"] = post_w if post_w is not None else pre_w
-
-        # Always attach weights for display; only review when gated conditions hold.
-        if not _post_weight_invalid(post_w):
-            continue
-        if not has_valid_entry(bid, row):
-            continue
-        if _valid_positive_weight(pre_w) is None:
-            continue
-        if not is_canonically_completed(bid, row):
-            # Still processing — keep Pending/Completed as classified; no weight review.
-            continue
-
-        add_reason(bid, REASON_WF_ZERO_OR_MISSING_POST_WEIGHT)
-        review.add(bid)
-        if bid in completed:
-            completed.discard(bid)
-        if bid in pending and bid in review:
-            pending.discard(bid)
-        row = rows_by_id.get(bid) or {"bag_id": bid}
-        canon = row.get("canonical_status") or row.get("outcome") or OUTCOME_PENDING
-        if bid in cwo or REASON_COMPLETED_WITHOUT_RECOGNIZED_ENTRY in (reasons.get(bid) or []):
-            canon = OUTCOME_COMPLETED
-        elif row.get("completion_date") or row.get("completion_at"):
-            canon = OUTCOME_COMPLETED
-        elif bid in completed or is_canonically_completed(bid, row):
-            canon = OUTCOME_COMPLETED
-        rows_by_id[bid] = {
-            **row,
-            "pre_weight_lbs": pre_w,
-            "post_weight_lbs": post_w,
-            "weight_lbs": post_w if post_w is not None else pre_w,
-            "outcome": OUTCOME_REVIEW_REQUIRED,
-            "canonical_status": canon,
-            "final_bucket": "review_required",
-            "reason_codes": list(reasons.get(bid) or []),
-        }
-
-    # --- WF create-workitem-bulk → Review Required (HD excluded) --------------
+    # --- WF create-workitem-bulk → Review Required (before missing-post) ------
     active = new_today | carryover
     for bid in list(active):
         bid = _norm_bag(bid)
@@ -318,11 +400,11 @@ def expand_review_required(
             continue
         pres = presence_by_bag.get(bid) or {}
         row = rows_by_id.get(bid) or {}
-        svc = _service_of(pres) or str(row.get("service_type") or "").upper()
+        svc, _mm = resolve_service(bid, pres, row)
         if svc != SERVICE_WF:
             continue
+        rows_by_id[bid] = {**(rows_by_id.get(bid) or row), "service_type": SERVICE_WF}
         if bag_bulk_review_cleared(bulk_resolutions.get(bid), list(bulk_lines.get(bid) or [])):
-            # Attach bulk metadata for drawer but do not flag.
             if bid in rows_by_id:
                 rows_by_id[bid]["bulk_workitem_scan"] = {
                     "count": scan_info.get("count"),
@@ -343,6 +425,7 @@ def expand_review_required(
         row = rows_by_id.get(bid) or {"bag_id": bid}
         rows_by_id[bid] = {
             **row,
+            "service_type": SERVICE_WF,
             "outcome": OUTCOME_REVIEW_REQUIRED,
             "final_bucket": "review_required",
             "reason_codes": list(reasons.get(bid) or []),
@@ -355,6 +438,93 @@ def expand_review_required(
             "bulk_workitems": list(bulk_lines.get(bid) or []),
             "bulk_resolution": bulk_resolutions.get(bid),
         }
+
+    # --- WF missing POST *event* — only after canonical completion ------------
+    active = new_today | carryover
+    for bid in list(active):
+        pres = presence_by_bag.get(bid) or {}
+        row = rows_by_id.get(bid) or {}
+        svc, _mm = resolve_service(bid, pres, row)
+        if svc != SERVICE_WF:
+            continue
+        info = _coerce_weight_info(
+            weight_map.get(bid)
+            if bid in weight_map
+            else {
+                "pre_weight_lbs": row.get("pre_weight_lbs"),
+                "post_weight_lbs": row.get("post_weight_lbs", row.get("weight_lbs")),
+                "post_weight_event_exists": row.get("post_weight_event_exists"),
+                "post_weight_value": row.get("post_weight_value"),
+            }
+        )
+        pre_w = info["pre_weight_lbs"]
+        post_w = info["post_weight_lbs"]
+        post_exists = bool(info.get("post_weight_event_exists"))
+        post_value = info.get("post_weight_value")
+        if bid in rows_by_id:
+            rows_by_id[bid]["pre_weight_lbs"] = pre_w
+            rows_by_id[bid]["post_weight_lbs"] = post_w
+            rows_by_id[bid]["post_weight_event_exists"] = post_exists
+            rows_by_id[bid]["post_weight_value"] = post_value
+            rows_by_id[bid]["post_weight_valid_for_standard_weight_revenue"] = bool(
+                info.get("post_weight_valid_for_standard_weight_revenue")
+            )
+            rows_by_id[bid]["weight_lbs"] = (
+                post_value if post_value is not None else (post_w if post_w is not None else pre_w)
+            )
+
+        if post_exists:
+            continue
+        if not has_valid_entry(bid, row):
+            continue
+        if _valid_positive_weight(pre_w) is None:
+            continue
+        if not is_canonically_completed(bid, row):
+            continue
+
+        add_reason(bid, REASON_WF_ZERO_OR_MISSING_POST_WEIGHT)
+        review.add(bid)
+        if bid in completed:
+            completed.discard(bid)
+        if bid in pending and bid in review:
+            pending.discard(bid)
+        row = rows_by_id.get(bid) or {"bag_id": bid}
+        canon = row.get("canonical_status") or row.get("outcome") or OUTCOME_PENDING
+        if bid in cwo or REASON_COMPLETED_WITHOUT_RECOGNIZED_ENTRY in (reasons.get(bid) or []):
+            canon = OUTCOME_COMPLETED
+        elif row.get("completion_date") or row.get("completion_at"):
+            canon = OUTCOME_COMPLETED
+        elif bid in completed or is_canonically_completed(bid, row):
+            canon = OUTCOME_COMPLETED
+        rows_by_id[bid] = {
+            **row,
+            "pre_weight_lbs": pre_w,
+            "post_weight_lbs": post_w,
+            "post_weight_event_exists": False,
+            "post_weight_value": post_value,
+            "post_weight_valid_for_standard_weight_revenue": False,
+            "weight_lbs": post_w if post_w is not None else pre_w,
+            "outcome": OUTCOME_REVIEW_REQUIRED,
+            "canonical_status": canon,
+            "final_bucket": "review_required",
+            "reason_codes": list(reasons.get(bid) or []),
+        }
+
+    # Ensure mismatched classification bags in review when flagged
+    for bid, codes in list(reasons.items()):
+        if REASON_SERVICE_CLASSIFICATION_MISMATCH in codes and bid in (new_today | carryover):
+            review.add(bid)
+            if bid in completed:
+                completed.discard(bid)
+            if bid in pending:
+                pending.discard(bid)
+            row = rows_by_id.get(bid) or {"bag_id": bid}
+            rows_by_id[bid] = {
+                **row,
+                "outcome": OUTCOME_REVIEW_REQUIRED,
+                "final_bucket": "review_required",
+                "reason_codes": list(codes),
+            }
 
     # Ensure disappeared stay in review not pending/completed
     for bid in disappeared:
@@ -378,7 +548,6 @@ def expand_review_required(
         row["outcome"] = OUTCOME_REVIEW_REQUIRED
         row["final_bucket"] = "review_required"
 
-    # Rebuild ordered lists
     new_today_l = sorted(new_today)
     carryover_l = sorted(carryover)
     completed_l = sorted(completed - review)
@@ -450,12 +619,14 @@ def build_review_by_reason(result: Mapping[str, Any]) -> dict[str, list[str]]:
 
 def load_bag_weight_map(
     cursor, organization_id: int, bag_ids: list[str]
-) -> dict[str, dict[str, float | None]]:
+) -> dict[str, dict[str, Any]]:
     """
     Load pre/post WF weights from chronological weight events.
 
-    Pre  = first valid positive weight event
-    Post = next valid positive weight event (may equal pre)
+    Distinguishes:
+      - post_weight_event_exists (second weight event present, value may be 0)
+      - post_weight_value (includes 0)
+      - post_weight_valid_for_standard_weight_revenue (post > 0)
 
     Latest Step-1 ``correct_weight`` corrections override effective post only
     (source scans are never modified).
@@ -463,17 +634,28 @@ def load_bag_weight_map(
     from backend.ta_helpers import table_exists
 
     ids = sorted({_norm_bag(b) for b in bag_ids if _norm_bag(b)})
-    empty = {b: {"pre_weight_lbs": None, "post_weight_lbs": None} for b in ids}
+    empty = {
+        b: {
+            "pre_weight_lbs": None,
+            "post_weight_lbs": None,
+            "post_weight_event_exists": False,
+            "post_weight_value": None,
+            "post_weight_valid_for_standard_weight_revenue": False,
+        }
+        for b in ids
+    }
     if not ids:
         return empty
 
     out = dict(empty)
+    events_by: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
+    supplemental: dict[str, float] = {}
+
     if table_exists(cursor, "rinse_bag_scan_events"):
         placeholders = ",".join(["%s"] * len(ids))
-        # Include zero/null-capable rows in order so chronology is event-based.
         cursor.execute(
             f"""
-            SELECT bag_id, weight_lbs, scanned_at_parsed, id
+            SELECT bag_id, weight_lbs, purpose, scanned_at_parsed, id
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND bag_id IN ({placeholders})
@@ -485,12 +667,55 @@ def load_bag_weight_map(
             """,
             (int(organization_id), *ids),
         )
-        series: dict[str, list[Any]] = {b: [] for b in ids}
         for row in cursor.fetchall() or []:
             bid = _norm_bag(row.get("bag_id"))
-            if bid in series:
-                series[bid].append(row.get("weight_lbs"))
-        out = {bid: derive_pre_post_weights(vals) for bid, vals in series.items()}
+            if bid not in events_by:
+                continue
+            purpose = str(row.get("purpose") or "")
+            events_by[bid].append(
+                {
+                    "value": row.get("weight_lbs"),
+                    "is_weight_purpose": "weight" in purpose.lower(),
+                }
+            )
+
+    # Supplemental positive weights from folding / registry when scan lbs are null.
+    if table_exists(cursor, "rinse_folding_performance"):
+        placeholders = ",".join(["%s"] * len(ids))
+        cursor.execute(
+            f"""
+            SELECT bag_id, weight_lbs
+            FROM rinse_folding_performance
+            WHERE organization_id = %s AND bag_id IN ({placeholders})
+            """,
+            (int(organization_id), *ids),
+        )
+        for row in cursor.fetchall() or []:
+            bid = _norm_bag(row.get("bag_id"))
+            w = _valid_positive_weight(row.get("weight_lbs"))
+            if bid and w is not None:
+                supplemental[bid] = w
+    if table_exists(cursor, "rinse_bag_registry"):
+        placeholders = ",".join(["%s"] * len(ids))
+        cursor.execute(
+            f"""
+            SELECT bag_id, weight_num
+            FROM rinse_bag_registry
+            WHERE organization_id = %s AND bag_id IN ({placeholders})
+            """,
+            (int(organization_id), *ids),
+        )
+        for row in cursor.fetchall() or []:
+            bid = _norm_bag(row.get("bag_id"))
+            w = _valid_positive_weight(row.get("weight_num"))
+            if bid and w is not None and bid not in supplemental:
+                supplemental[bid] = w
+
+    for bid in ids:
+        out[bid] = derive_pre_post_from_weight_events(
+            events_by.get(bid) or [],
+            supplemental_positive=supplemental.get(bid),
+        )
 
     if table_exists(cursor, "rinse_step1_corrections"):
         placeholders = ",".join(["%s"] * len(ids))
@@ -519,15 +744,49 @@ def load_bag_weight_map(
                     raw = {}
             if not isinstance(raw, dict):
                 continue
-            post = _valid_positive_weight(raw.get("corrected_post_weight_lbs", raw.get("post_weight_lbs", raw.get("weight_lbs"))))
+            # Corrections may set post including 0.
+            post = _parse_weight(
+                raw.get("corrected_post_weight_lbs", raw.get("post_weight_lbs", raw.get("weight_lbs")))
+            )
             if post is None:
                 continue
             detected = out[bid]
             out[bid] = {
+                **detected,
                 "pre_weight_lbs": detected.get("pre_weight_lbs"),
                 "post_weight_lbs": post,
+                "post_weight_event_exists": True,
+                "post_weight_value": post,
+                "post_weight_valid_for_standard_weight_revenue": post > 0,
                 "detected_pre_weight_lbs": detected.get("pre_weight_lbs"),
                 "detected_post_weight_lbs": detected.get("post_weight_lbs"),
                 "corrected_post_weight_lbs": post,
             }
+    return out
+
+
+def load_registry_service_map(
+    cursor, organization_id: int, bag_ids: list[str]
+) -> dict[str, str]:
+    """bag_id → registry service_type (WF/HD) when present."""
+    from backend.ta_helpers import table_exists
+
+    ids = sorted({_norm_bag(b) for b in bag_ids if _norm_bag(b)})
+    if not ids or not table_exists(cursor, "rinse_bag_registry"):
+        return {}
+    placeholders = ",".join(["%s"] * len(ids))
+    cursor.execute(
+        f"""
+        SELECT bag_id, service_type
+        FROM rinse_bag_registry
+        WHERE organization_id = %s AND bag_id IN ({placeholders})
+        """,
+        (int(organization_id), *ids),
+    )
+    out: dict[str, str] = {}
+    for row in cursor.fetchall() or []:
+        bid = _norm_bag(row.get("bag_id"))
+        svc = str(row.get("service_type") or "").strip().upper()
+        if bid and svc in (SERVICE_WF, SERVICE_HD):
+            out[bid] = svc
     return out

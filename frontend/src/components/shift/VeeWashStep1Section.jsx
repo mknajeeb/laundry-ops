@@ -26,13 +26,17 @@ const REASON_GROUPS = [
     label: "Completed without entry",
   },
   {
+    key: "WF_BULK_WORKITEM_REVIEW",
+    label: "Bulk Workitems",
+  },
+  {
     key: "WF_ZERO_OR_MISSING_POST_WEIGHT",
     label: "Zero or missing WF post weight",
     legacyKeys: ["WF_ZERO_OR_MISSING_WEIGHT"],
   },
   {
-    key: "WF_BULK_WORKITEM_REVIEW",
-    label: "Bulk Workitems",
+    key: "SERVICE_CLASSIFICATION_MISMATCH",
+    label: "Service classification mismatch",
   },
   {
     key: "DISAPPEARED_WITHOUT_COMPLETION",
