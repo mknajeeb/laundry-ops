@@ -1291,57 +1291,109 @@ def build_payroll_report_html(report: dict) -> str:
     heading = report.get("report_heading") or report_heading(filters)
     charts = build_analytics_chart_svgs(analytics) if analytics else {}
     kpis = analytics.get("kpis") or []
+    ot = analytics.get("ot_summary") or {}
+    categories = analytics.get("category_breakdown") or []
+    workforce_totals = analytics.get("workforce_totals") or {}
+
+    def fmt_kpi_val(kind: Any, val: Any) -> str:
+        if val is None:
+            return "—"
+        if kind == "money":
+            return fmt_money(val)
+        if kind == "hours":
+            return fmt_hours(val)
+        return str(val)
+
     kpi_html = "".join(
         f"""<div class="kpi">
           <div class="kpi-label">{k.get('label')}</div>
-          <div class="kpi-value">{fmt_money(k.get('value')) if k.get('kind') == 'money' else (fmt_hours(k.get('value')) if k.get('kind') == 'hours' else k.get('value'))}</div>
-          <div class="kpi-delta">{fmt_delta(k.get('diff'), k.get('pct'))} · {k.get('direction') or 'flat'}</div>
+          <div class="kpi-value">{fmt_kpi_val(k.get('kind'), k.get('current', k.get('value')))}</div>
+          <div class="kpi-prev">Previous: {fmt_kpi_val(k.get('kind'), k.get('previous'))}</div>
+          <div class="kpi-delta">{fmt_delta(k.get('diff'), k.get('pct'))}</div>
         </div>"""
         for k in kpis
     )
+    ot_html = ""
+    if ot:
+        ot_html = f"""
+<div class="ot-card">
+  <div class="kpi-label">OT Hours</div>
+  <div class="kpi-value">{fmt_hours(ot.get('value'))}</div>
+  <div class="kpi-prev">{_money(ot.get('ot_pct_of_hours')):.2f}% of Total Hours</div>
+  <div class="kpi-prev">Previous: {fmt_hours(ot.get('previous'))}</div>
+  <div class="kpi-delta">{fmt_delta(ot.get('diff'), ot.get('pct'))}</div>
+</div>"""
+
+    wf_rows = []
+    for c in categories:
+        wf_rows.append(
+            "<tr>"
+            f"<td>{c.get('label') or c.get('worker_category') or ''}</td>"
+            f"<td class='num'>{c.get('head_count') or c.get('worker_count') or 0}</td>"
+            f"<td class='num'>{fmt_hours(c.get('total_hours'))}</td>"
+            f"<td class='num'>{fmt_hours(c.get('ot_hours'))}</td>"
+            f"<td class='num'>{fmt_money(c.get('gross_pay'))}</td>"
+            f"<td class='num'>{fmt_money(c.get('employer_taxes'))}</td>"
+            f"<td class='num'>{fmt_money(c.get('total_payroll_cost'))}</td>"
+            f"<td class='num'>{fmt_money(c.get('avg_rate') if c.get('avg_rate') is not None else c.get('avg_pay_rate'))}</td>"
+            "</tr>"
+        )
+    if categories:
+        wf_rows.append(
+            "<tr class='subtotal'>"
+            "<td><strong>Total</strong></td>"
+            f"<td class='num'><strong>{workforce_totals.get('head_count') or workforce_totals.get('worker_count') or 0}</strong></td>"
+            f"<td class='num'><strong>{fmt_hours(workforce_totals.get('total_hours'))}</strong></td>"
+            f"<td class='num'><strong>{fmt_hours(workforce_totals.get('ot_hours'))}</strong></td>"
+            f"<td class='num'><strong>{fmt_money(workforce_totals.get('gross_pay'))}</strong></td>"
+            f"<td class='num'><strong>{fmt_money(workforce_totals.get('employer_taxes'))}</strong></td>"
+            f"<td class='num'><strong>{fmt_money(workforce_totals.get('total_payroll_cost'))}</strong></td>"
+            f"<td class='num'><strong>{fmt_money(workforce_totals.get('avg_rate'))}</strong></td>"
+            "</tr>"
+        )
+    workforce_table = f"""
+<table class="cmp">
+<thead><tr>
+  <th>Category</th><th>Head Count</th><th>Hours</th><th>OT Hours</th>
+  <th>Gross</th><th>Employer Tax</th><th>Total Cost</th><th>Avg Rate</th>
+</tr></thead>
+<tbody>{"".join(wf_rows) if wf_rows else "<tr><td colspan='8'>No category data</td></tr>"}</tbody>
+</table>"""
 
     pc = analytics.get("period_comparison") or []
     cmp_rows = []
     for e in pc:
         avg = e.get("avg_cost_per_hour")
+        d_cost = (e.get("delta_from_previous") or {}).get("total_payroll_cost")
+        p_cost = (e.get("pct_from_previous") or {}).get("total_payroll_cost")
         cmp_rows.append(
             "<tr>"
             f"<td>{e.get('payroll_period') or ''}</td>"
-            f"<td>{e.get('pay_dates_label') or ''}</td>"
             f"<td class='num'>{e.get('worker_count', 0)}</td>"
-            f"<td class='num'>{fmt_hours(e.get('regular_hours'))}</td>"
-            f"<td class='num'>{fmt_hours(e.get('ot_hours'))}</td>"
             f"<td class='num'>{fmt_hours(e.get('total_hours'))}</td>"
-            f"<td class='num'>{fmt_money(e.get('base_earnings'))}</td>"
-            f"<td class='num'>{fmt_money(e.get('ot_premium'))}</td>"
+            f"<td class='num'>{fmt_hours(e.get('ot_hours'))}</td>"
             f"<td class='num'>{fmt_money(e.get('gross_pay'))}</td>"
-            f"<td class='num'>{fmt_money(e.get('employee_tax_deductions'))}</td>"
-            f"<td class='num'>{fmt_money(e.get('net_pay'))}</td>"
             f"<td class='num'>{fmt_money(e.get('employer_taxes'))}</td>"
             f"<td class='num'>{fmt_money(e.get('total_payroll_cost'))}</td>"
-            f"<td class='num'>{fmt_money(e.get('amount_paid'))}</td>"
-            f"<td class='num'>{fmt_money(e.get('outstanding_balance'))}</td>"
             f"<td class='num'>{fmt_money(avg) if avg is not None else '—'}</td>"
+            f"<td class='num'>{fmt_delta(d_cost, p_cost)}</td>"
             "</tr>"
         )
     comparison_table = f"""
 <table class="cmp">
 <thead><tr>
-  <th>Payroll Period</th><th>Pay Date(s)</th><th>Workers</th>
-  <th>Reg hrs</th><th>OT hrs</th><th>Total hrs</th>
-  <th>Base</th><th>OT prem</th><th>Gross</th><th>EE taxes</th><th>Net</th>
-  <th>ER taxes</th><th>Total cost</th><th>Paid</th><th>Outstanding</th><th>$/hr</th>
+  <th>Payroll Period</th><th>Workers</th><th>Hours</th><th>OT</th>
+  <th>Gross</th><th>ER taxes</th><th>Total cost</th><th>$/hr</th><th>Δ cost</th>
 </tr></thead>
-<tbody>{"".join(cmp_rows) if cmp_rows else "<tr><td colspan='16'>No comparison periods</td></tr>"}</tbody>
+<tbody>{"".join(cmp_rows) if cmp_rows else "<tr><td colspan='9'>No comparison periods</td></tr>"}</tbody>
 </table>"""
 
     chart_grid = f"""
 <div class="chart-grid">
   <div class="chart">{charts.get('cost_trajectory') or ''}</div>
   <div class="chart">{charts.get('hours_trajectory') or ''}</div>
-  <div class="chart">{charts.get('cost_composition') or ''}</div>
-  <div class="chart">{charts.get('overtime_analysis') or ''}</div>
-  <div class="chart chart-wide">{charts.get('category_comparison') or ''}</div>
+  <div class="chart">{charts.get('employment_mix') or ''}</div>
+  <div class="chart">{charts.get('cost_per_hour') or ''}</div>
 </div>"""
 
     # Nested detail: prefer analytics groups
@@ -1424,14 +1476,16 @@ def build_payroll_report_html(report: dict) -> str:
   .warn {{ color: #c2410c; font-weight: 600; }}
   .note {{ color: #64748b; font-size: 8.5px; margin: 6px 0 10px; max-width: 1100px; }}
   .dashboard {{ page-break-after: always; break-after: page; }}
-  .kpi-grid {{ display:grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin: 8px 0 10px; }}
+  .kpi-grid {{ display:grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin: 6px 0 8px; }}
   .kpi {{ background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:6px 7px; }}
   .kpi-label {{ color:#64748b; font-size:8px; text-transform:uppercase; letter-spacing:0.03em; }}
   .kpi-value {{ font-weight:700; font-size:12px; color:#0f172a; margin-top:2px; }}
-  .kpi-delta {{ color:#64748b; font-size:8px; margin-top:2px; }}
-  .chart-grid {{ display:grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }}
+  .kpi-prev {{ color:#64748b; font-size:8px; margin-top:2px; }}
+  .kpi-delta {{ color:#475569; font-size:8px; margin-top:2px; font-weight:600; }}
+  .ot-card {{ background:#e6f5f8; border:1px solid #c5e7ee; border-radius:6px; padding:6px 8px; max-width:220px; margin: 4px 0 8px; }}
+  .section-title {{ color:#007a91; font-size:11px; font-weight:700; margin: 8px 0 4px; }}
+  .chart-grid {{ display:grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }}
   .chart {{ border:1px solid #e2e8f0; border-radius:6px; padding:4px; background:#fff; }}
-  .chart-wide {{ grid-column: 1 / -1; }}
   .chart svg {{ max-width:100%; height:auto; display:block; }}
   .group {{ page-break-inside: avoid; break-inside: avoid; margin-bottom: 12px; }}
   .period-group {{ page-break-before: auto; }}
@@ -1466,12 +1520,18 @@ def build_payroll_report_html(report: dict) -> str:
     </div>
   </div>
   {summary_block("Report summary", summary)}
+  <div class="section-title">Executive Summary</div>
   <div class="kpi-grid">{kpi_html or "<div class='kpi'><div class='kpi-label'>No KPI data</div></div>"}</div>
+  {ot_html}
+  <div class="section-title">Workforce Breakdown</div>
+  {workforce_table}
+  <div class="section-title">Trends</div>
   {chart_grid}
-  <h2>Period comparison</h2>
+  <div class="section-title">Period comparison</div>
   {comparison_table}
   <p class="note">OT Premium is only the additional amount above the regular hourly rate.
   Regular/Base + OT Premium + Other Earnings = Gross. Total Payroll Cost = Gross + Employer Taxes (EE taxes are not added again).
+  Employment mix stacks W-2 gross + employer taxes with Temp and 1099 gross.
   Dashboard and detail use the same filtered dataset. Pay Date is official_pay_date only.</p>
 </section>
 {"".join(group_html)}

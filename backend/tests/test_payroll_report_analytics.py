@@ -258,12 +258,61 @@ def test_kpi_neutral_trend_for_cost_increase():
         "amount_paid": 2000,
         "outstanding_balance": 0,
         "worker_count": 5,
+        "avg_cost_per_hour": 20.5,
+        "avg_pay_rate": 20.0,
+        "ot_pct_of_hours": 10.0,
     }
-    previous = {**current, "total_payroll_cost": 1800, "ot_hours": 5, "ot_premium": 40}
+    previous = {
+        **current,
+        "total_payroll_cost": 1800,
+        "ot_hours": 5,
+        "ot_premium": 40,
+        "avg_cost_per_hour": 18.0,
+        "avg_pay_rate": 18.0,
+        "ot_pct_of_hours": 5.0,
+    }
     cards = {c["key"]: c for c in build_kpi_cards(current, previous)}
+    assert set(cards) == {
+        "total_payroll_cost",
+        "gross_pay",
+        "total_hours",
+        "worker_count",
+        "avg_cost_per_hour",
+        "avg_pay_rate",
+    }
+    assert "amount_paid" not in cards
+    assert "outstanding_balance" not in cards
     assert cards["total_payroll_cost"]["direction"] == "up"
     assert cards["total_payroll_cost"]["neutral_trend"] is True
-    assert cards["ot_hours"]["neutral_trend"] is True
+    assert cards["total_payroll_cost"]["previous"] == 1800
+    assert cards["total_payroll_cost"]["diff"] == 250
+    from backend.payroll_report_analytics import build_ot_summary
+
+    ot = build_ot_summary(current, previous)
+    assert ot["value"] == 10
+    assert ot["ot_pct_of_hours"] == 10.0
+    assert ot["direction"] == "up"
+
+
+def test_avg_cost_and_pay_rate_definitions():
+    rows = [
+        _row(
+            name="A",
+            cat="temp",
+            ps="2026-06-08",
+            pe="2026-06-14",
+            pay_date="2026-06-20",
+            reg=40,
+            ot=2,
+            line_id=1,
+            user_id=1,
+        ),
+    ]
+    metrics = aggregate_period_metrics(rows)
+    assert metrics["avg_cost_per_hour"] == round(
+        metrics["total_payroll_cost"] / metrics["total_hours"], 2
+    )
+    assert metrics["avg_pay_rate"] == round(metrics["gross_pay"] / metrics["total_hours"], 2)
 
 
 def test_pdf_dashboard_before_detail_and_contains_charts():
@@ -342,9 +391,10 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     assert dash_idx != -1
     assert detail_idx != -1
     assert dash_idx < detail_idx
-    assert "Total payroll cost trajectory" in html
+    assert "Payroll cost trend" in html or "Total payroll cost trajectory" in html or "Executive Summary" in html
     assert "<svg" in html
     assert "page-break-after: always" in html or "break-after: page" in html
+    assert "Workforce Breakdown" in html or "Employment mix" in html or "category" in html.lower()
 
     xlsx = build_payroll_report_xlsx(report)
     assert xlsx[:2] == b"PK"

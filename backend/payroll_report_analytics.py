@@ -13,19 +13,33 @@ from backend.payroll_operations import CATEGORY_LABELS
 COMPARISON_RANGE_OPTIONS = (4, 8, 12)
 DEFAULT_COMPARISON_RANGE = 4
 
+# Executive Summary KPIs only (management scan).
 KPI_DEFS = (
-    ("total_hours", "Total Hours", "hours"),
-    ("regular_hours", "Regular Hours", "hours"),
-    ("ot_hours", "OT Hours", "hours"),
-    ("gross_pay", "Gross Payroll", "money"),
-    ("ot_premium", "OT Premium", "money"),
-    ("employee_tax_deductions", "Employee Taxes", "money"),
-    ("net_pay", "Net Pay", "money"),
-    ("employer_taxes", "Employer Taxes", "money"),
     ("total_payroll_cost", "Total Payroll Cost", "money"),
-    ("amount_paid", "Amount Paid", "money"),
-    ("outstanding_balance", "Outstanding Balance", "money"),
-    ("worker_count", "Employee/Worker Count", "count"),
+    ("gross_pay", "Gross Payroll", "money"),
+    ("total_hours", "Total Hours", "hours"),
+    ("worker_count", "Head Count", "count"),
+    ("avg_cost_per_hour", "Average Cost / Hour", "money"),
+    ("avg_pay_rate", "Average Pay Rate", "money"),
+)
+
+# Period-comparison delta keys (broader than executive KPIs).
+COMPARISON_DELTA_KEYS = (
+    "total_payroll_cost",
+    "gross_pay",
+    "total_hours",
+    "regular_hours",
+    "ot_hours",
+    "worker_count",
+    "base_earnings",
+    "ot_premium",
+    "employee_tax_deductions",
+    "net_pay",
+    "employer_taxes",
+    "amount_paid",
+    "outstanding_balance",
+    "avg_cost_per_hour",
+    "avg_pay_rate",
 )
 
 # Increases are not styled as "good" for these cost-like metrics.
@@ -36,6 +50,8 @@ NEUTRAL_TREND_KEYS = frozenset(
         "employer_taxes",
         "total_payroll_cost",
         "gross_pay",
+        "avg_cost_per_hour",
+        "avg_pay_rate",
         "employee_tax_deductions",
         "outstanding_balance",
     }
@@ -101,6 +117,7 @@ def aggregate_period_metrics(rows: list[dict]) -> dict[str, Any]:
     gross = _money(totals.get("gross_pay"))
     cost = _money(totals.get("total_payroll_cost"))
     avg_cost = round(cost / total_hours, 2) if total_hours > 0.005 else None
+    avg_pay = round(gross / total_hours, 2) if total_hours > 0.005 else None
     ot_pct_hours = round((ot / total_hours) * 100.0, 2) if total_hours > 0.005 else 0.0
     ot_pct_gross = (
         round((_money(totals.get("ot_premium")) / gross) * 100.0, 2) if gross > 0.005 else 0.0
@@ -112,6 +129,7 @@ def aggregate_period_metrics(rows: list[dict]) -> dict[str, Any]:
         "pay_dates": pay_dates,
         "pay_date_count": len(pay_dates),
         "avg_cost_per_hour": avg_cost,
+        "avg_pay_rate": avg_pay,
         "ot_pct_of_hours": ot_pct_hours,
         "ot_premium_pct_of_gross": ot_pct_gross,
         "line_count": len(rows),
@@ -152,26 +170,63 @@ def build_kpi_cards(
 ) -> list[dict[str, Any]]:
     cards = []
     for key, label, kind in KPI_DEFS:
-        cur_val = _money(current.get(key)) if kind != "count" else int(current.get(key) or 0)
+        if kind == "count":
+            cur_val = int(current.get(key) or 0)
+        elif current.get(key) is None and key in ("avg_cost_per_hour", "avg_pay_rate"):
+            cur_val = None
+        else:
+            cur_val = _money(current.get(key))
         prev_val = None
         if previous is not None:
-            prev_val = (
-                _money(previous.get(key))
-                if kind != "count"
-                else int(previous.get(key) or 0)
-            )
-        delta = _delta(float(cur_val), float(prev_val) if prev_val is not None else None)
+            if kind == "count":
+                prev_val = int(previous.get(key) or 0)
+            elif previous.get(key) is None and key in ("avg_cost_per_hour", "avg_pay_rate"):
+                prev_val = None
+            else:
+                prev_val = _money(previous.get(key))
+        delta = _delta(
+            float(cur_val or 0),
+            float(prev_val) if prev_val is not None else None,
+        )
+        if cur_val is None:
+            delta = {
+                "previous": prev_val,
+                "diff": None,
+                "pct": None,
+                "direction": "flat",
+            }
         cards.append(
             {
                 "key": key,
                 "label": label,
                 "kind": kind,
-                "value": cur_val,
+                "value": cur_val if cur_val is not None else 0,
+                "current": cur_val if cur_val is not None else 0,
                 "neutral_trend": key in NEUTRAL_TREND_KEYS,
                 **delta,
             }
         )
     return cards
+
+
+def build_ot_summary(
+    current: dict[str, Any], previous: Optional[dict[str, Any]]
+) -> dict[str, Any]:
+    """Compact OT insight: hours + share of total hours + vs prior period."""
+    ot = _money(current.get("ot_hours"))
+    pct = _money(current.get("ot_pct_of_hours"))
+    prev_ot = _money(previous.get("ot_hours")) if previous else None
+    delta = _delta(ot, prev_ot)
+    return {
+        "key": "ot_hours",
+        "label": "OT Hours",
+        "kind": "hours",
+        "value": ot,
+        "current": ot,
+        "ot_pct_of_hours": pct,
+        "neutral_trend": True,
+        **delta,
+    }
 
 
 def group_rows_by_period_then_pay_date(rows: list[dict]) -> list[dict[str, Any]]:
@@ -249,14 +304,84 @@ def category_breakdown(rows: list[dict]) -> list[dict[str, Any]]:
     )
     for cat in keys:
         metrics = aggregate_period_metrics(by_cat[cat])
+        # Employer true cost: W-2 = gross + ER taxes; Temp/1099 = gross.
+        if cat == "w2":
+            employer_cost = round(
+                _money(metrics.get("gross_pay")) + _money(metrics.get("employer_taxes")), 2
+            )
+        else:
+            employer_cost = _money(metrics.get("gross_pay"))
         out.append(
             {
                 "worker_category": cat,
                 "label": CATEGORY_LABELS.get(cat, cat),
                 **metrics,
+                "head_count": metrics.get("worker_count", 0),
+                "avg_rate": metrics.get("avg_pay_rate"),
+                "employer_cost": employer_cost,
             }
         )
     return out
+
+
+def employment_mix_by_period(
+    period_rows_map: dict[tuple[str, str], list[dict]],
+    ordered_periods: list[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """Stacked employment-mix series: W-2 gross, ER taxes, Temp, 1099."""
+    out = []
+    for ps, pe in ordered_periods:
+        rows = period_rows_map.get((ps, pe)) or []
+        by_cat: dict[str, list[dict]] = defaultdict(list)
+        for row in rows:
+            by_cat[str(row.get("worker_category") or "unknown")].append(row)
+        w2 = aggregate_period_metrics(by_cat.get("w2") or [])
+        temp = aggregate_period_metrics(by_cat.get("temp") or [])
+        c1099 = aggregate_period_metrics(by_cat.get("contractor_1099") or [])
+        out.append(
+            {
+                "pay_period_start": ps,
+                "pay_period_end": pe,
+                "payroll_period": period_label(ps, pe),
+                "w2_gross": _money(w2.get("gross_pay")),
+                "w2_employer_taxes": _money(w2.get("employer_taxes")),
+                "w2_cost": round(
+                    _money(w2.get("gross_pay")) + _money(w2.get("employer_taxes")), 2
+                ),
+                "temp_gross": _money(temp.get("gross_pay")),
+                "temp_cost": _money(temp.get("gross_pay")),
+                "contractor_1099_gross": _money(c1099.get("gross_pay")),
+                "contractor_1099_cost": _money(c1099.get("gross_pay")),
+            }
+        )
+    return out
+
+
+def workforce_breakdown_totals(categories: list[dict]) -> dict[str, Any]:
+    """Total row for workforce breakdown table."""
+    keys = (
+        "worker_count",
+        "total_hours",
+        "ot_hours",
+        "gross_pay",
+        "employer_taxes",
+        "total_payroll_cost",
+        "employer_cost",
+    )
+    tot = {k: 0.0 for k in keys}
+    for c in categories:
+        for k in keys:
+            if k == "worker_count":
+                tot[k] += int(c.get("head_count") or c.get("worker_count") or 0)
+            else:
+                tot[k] = round(tot[k] + _money(c.get(k)), 2)
+    hours = tot["total_hours"]
+    tot["avg_rate"] = round(tot["gross_pay"] / hours, 2) if hours > 0.005 else None
+    tot["avg_cost_per_hour"] = (
+        round(tot["total_payroll_cost"] / hours, 2) if hours > 0.005 else None
+    )
+    tot["head_count"] = int(tot["worker_count"])
+    return tot
 
 
 def build_period_comparison_entries(
@@ -278,23 +403,14 @@ def build_period_comparison_entries(
             "pct_from_previous": {},
         }
         if prev_metrics is not None:
-            for key, _label, kind in KPI_DEFS:
-                if kind == "count":
+            for key in COMPARISON_DELTA_KEYS:
+                if key == "worker_count":
                     cur = float(metrics.get(key) or 0)
                     prev = float(prev_metrics.get(key) or 0)
                 else:
                     cur = _money(metrics.get(key))
                     prev = _money(prev_metrics.get(key))
                 d = _delta(cur, prev)
-                entry["delta_from_previous"][key] = d["diff"]
-                entry["pct_from_previous"][key] = d["pct"]
-            # Also include table money/hour extras
-            for key in (
-                "base_earnings",
-                "total_payroll_cost",
-                "avg_cost_per_hour",
-            ):
-                d = _delta(_money(metrics.get(key)), _money(prev_metrics.get(key)))
                 entry["delta_from_previous"][key] = d["diff"]
                 entry["pct_from_previous"][key] = d["pct"]
         entries.append(entry)
@@ -478,9 +594,12 @@ def build_report_analytics(
             focus_metrics = period_comparison[idx]
 
     kpis = build_kpi_cards(focus_metrics, prev_metrics)
+    ot_summary = build_ot_summary(focus_metrics, prev_metrics)
 
-    # Category breakdown from detail rows (respects filters)
+    # Category / workforce breakdown from detail rows (respects filters)
     categories = category_breakdown(detail_rows)
+    workforce_totals = workforce_breakdown_totals(categories)
+    employment_mix = employment_mix_by_period(period_rows_map, selected)
 
     overtime_analysis = [
         {
@@ -493,6 +612,8 @@ def build_report_analytics(
             "ot_premium_pct_of_gross": e.get("ot_premium_pct_of_gross", 0),
             "total_hours": e.get("total_hours", 0),
             "gross_pay": e.get("gross_pay", 0),
+            "avg_cost_per_hour": e.get("avg_cost_per_hour"),
+            "avg_pay_rate": e.get("avg_pay_rate"),
         }
         for e in period_comparison
     ]
@@ -510,6 +631,7 @@ def build_report_analytics(
         "payroll_period_count": len(groups),
         "official_pay_date_count": pay_date_count,
         "unique_employees": detail_metrics.get("worker_count", 0),
+        "head_count": detail_metrics.get("worker_count", 0),
         "comparison_range": n,
         "focus_period": period_label(focus[0], focus[1]) if focus else None,
         "previous_period": (
@@ -520,298 +642,16 @@ def build_report_analytics(
     return {
         "summary": summary,
         "kpis": kpis,
+        "ot_summary": ot_summary,
         "period_comparison": period_comparison,
         "category_breakdown": categories,
+        "workforce_totals": workforce_totals,
+        "employment_mix": employment_mix,
         "overtime_analysis": overtime_analysis,
         "groups": groups,
         "comparison_range": n,
         "comparison_range_options": list(COMPARISON_RANGE_OPTIONS),
+        "layout": "executive_v2",
     }
 
-
-# --- PDF SVG charts (no JS dependency; html2canvas-friendly) ---
-
-
-def _svg_escape(text: str) -> str:
-    return (
-        str(text)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
-
-
-def _scale(vals: list[float], height: float, pad: float = 8.0) -> tuple[float, list[float]]:
-    mx = max(vals) if vals else 0.0
-    if mx <= 0:
-        mx = 1.0
-    usable = height - pad * 2
-    return mx, [pad + usable * (1 - (v / mx)) for v in vals]
-
-
-def render_cost_trajectory_svg(period_comparison: list[dict], *, width: int = 520, height: int = 200) -> str:
-    if not period_comparison:
-        return _empty_chart_svg(width, height, "No period data")
-    labels = [e.get("pay_period_end") or e.get("payroll_period") or "" for e in period_comparison]
-    series = {
-        "Total Payroll Cost": [ _money(e.get("total_payroll_cost")) for e in period_comparison ],
-        "Gross Payroll": [ _money(e.get("gross_pay")) for e in period_comparison ],
-        "Net Pay": [ _money(e.get("net_pay")) for e in period_comparison ],
-    }
-    colors = {
-        "Total Payroll Cost": "#007a91",
-        "Gross Payroll": "#0097b2",
-        "Net Pay": "#c4a052",
-    }
-    all_vals = [v for vals in series.values() for v in vals]
-    mx, _ = _scale(all_vals, height - 40)
-    n = len(period_comparison)
-    left, right, top, bottom = 44, width - 12, 18, height - 36
-    plot_w = right - left
-    plot_h = bottom - top
-
-    def x_at(i: int) -> float:
-        if n == 1:
-            return left + plot_w / 2
-        return left + (plot_w * i / (n - 1))
-
-    def y_at(v: float) -> float:
-        return top + plot_h * (1 - (v / mx if mx else 0))
-
-    paths = []
-    for name, vals in series.items():
-        pts = " ".join(f"{x_at(i):.1f},{y_at(v):.1f}" for i, v in enumerate(vals))
-        paths.append(
-            f'<polyline fill="none" stroke="{colors[name]}" stroke-width="2" points="{pts}" />'
-        )
-        for i, v in enumerate(vals):
-            paths.append(
-                f'<circle cx="{x_at(i):.1f}" cy="{y_at(v):.1f}" r="2.5" fill="{colors[name]}" />'
-            )
-
-    legend = []
-    lx = left
-    for name, color in colors.items():
-        legend.append(
-            f'<rect x="{lx}" y="2" width="10" height="10" fill="{color}" />'
-            f'<text x="{lx + 14}" y="11" font-size="9" fill="#334155">{_svg_escape(name)}</text>'
-        )
-        lx += 130
-
-    xlabels = []
-    for i, lab in enumerate(labels):
-        short = str(lab)[-5:] if lab else ""
-        xlabels.append(
-            f'<text x="{x_at(i):.1f}" y="{height - 8}" font-size="8" text-anchor="middle" fill="#64748b">{_svg_escape(short)}</text>'
-        )
-
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
-  <rect width="100%" height="100%" fill="#ffffff"/>
-  <text x="{left}" y="12" font-size="11" font-weight="700" fill="#007a91">Total payroll cost trajectory</text>
-  {"".join(legend)}
-  <line x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}" stroke="#e2e8f0"/>
-  <line x1="{left}" y1="{top}" x2="{left}" y2="{bottom}" stroke="#e2e8f0"/>
-  {"".join(paths)}
-  {"".join(xlabels)}
-</svg>'''
-
-
-def render_hours_stacked_svg(period_comparison: list[dict], *, width: int = 520, height: int = 200) -> str:
-    if not period_comparison:
-        return _empty_chart_svg(width, height, "No period data")
-    n = len(period_comparison)
-    left, right, top, bottom = 44, width - 12, 28, height - 36
-    plot_w = right - left
-    plot_h = bottom - top
-    totals = [
-        _money(e.get("regular_hours")) + _money(e.get("ot_hours"))
-        for e in period_comparison
-    ]
-    mx = max(totals) if totals else 1.0
-    if mx <= 0:
-        mx = 1.0
-    gap = 8
-    bar_w = max(8.0, (plot_w / max(n, 1)) - gap)
-    parts = [
-        f'<text x="{left}" y="14" font-size="11" font-weight="700" fill="#007a91">Hours trajectory</text>',
-        '<rect x="44" y="2" width="10" height="10" fill="#0097b2"/><text x="58" y="11" font-size="9" fill="#334155">Regular</text>',
-        '<rect x="120" y="2" width="10" height="10" fill="#c4a052"/><text x="134" y="11" font-size="9" fill="#334155">OT</text>',
-        f'<line x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}" stroke="#e2e8f0"/>',
-    ]
-    for i, e in enumerate(period_comparison):
-        reg = _money(e.get("regular_hours"))
-        ot = _money(e.get("ot_hours"))
-        x = left + i * (plot_w / max(n, 1)) + gap / 2
-        h_reg = plot_h * (reg / mx)
-        h_ot = plot_h * (ot / mx)
-        y_ot = bottom - h_ot
-        y_reg = y_ot - h_reg
-        parts.append(
-            f'<rect x="{x:.1f}" y="{y_reg:.1f}" width="{bar_w:.1f}" height="{h_reg:.1f}" fill="#0097b2"/>'
-        )
-        parts.append(
-            f'<rect x="{x:.1f}" y="{y_ot:.1f}" width="{bar_w:.1f}" height="{h_ot:.1f}" fill="#c4a052"/>'
-        )
-        total = reg + ot
-        parts.append(
-            f'<text x="{x + bar_w / 2:.1f}" y="{y_reg - 3:.1f}" font-size="8" text-anchor="middle" fill="#475569">{total:.0f}</text>'
-        )
-        lab = str(e.get("pay_period_end") or "")[-5:]
-        parts.append(
-            f'<text x="{x + bar_w / 2:.1f}" y="{height - 8}" font-size="8" text-anchor="middle" fill="#64748b">{_svg_escape(lab)}</text>'
-        )
-    return f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}"><rect width="100%" height="100%" fill="#fff"/>{"".join(parts)}</svg>'
-
-
-def render_cost_composition_svg(period_comparison: list[dict], *, width: int = 520, height: int = 200) -> str:
-    if not period_comparison:
-        return _empty_chart_svg(width, height, "No period data")
-    n = len(period_comparison)
-    left, right, top, bottom = 44, width - 12, 28, height - 36
-    plot_w = right - left
-    plot_h = bottom - top
-    stacks = [
-        (_money(e.get("gross_pay")), _money(e.get("employer_taxes")))
-        for e in period_comparison
-    ]
-    mx = max((g + er for g, er in stacks), default=1.0) or 1.0
-    gap = 8
-    bar_w = max(8.0, (plot_w / max(n, 1)) - gap)
-    parts = [
-        f'<text x="{left}" y="14" font-size="11" font-weight="700" fill="#007a91">Payroll-cost composition</text>',
-        '<rect x="44" y="2" width="10" height="10" fill="#0097b2"/><text x="58" y="11" font-size="9" fill="#334155">Gross</text>',
-        '<rect x="120" y="2" width="10" height="10" fill="#64748b"/><text x="134" y="11" font-size="9" fill="#334155">ER taxes</text>',
-        f'<line x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}" stroke="#e2e8f0"/>',
-    ]
-    for i, (gross, er) in enumerate(stacks):
-        x = left + i * (plot_w / max(n, 1)) + gap / 2
-        h_g = plot_h * (gross / mx)
-        h_e = plot_h * (er / mx)
-        y_e = bottom - h_e
-        y_g = y_e - h_g
-        parts.append(
-            f'<rect x="{x:.1f}" y="{y_g:.1f}" width="{bar_w:.1f}" height="{h_g:.1f}" fill="#0097b2"/>'
-        )
-        parts.append(
-            f'<rect x="{x:.1f}" y="{y_e:.1f}" width="{bar_w:.1f}" height="{h_e:.1f}" fill="#64748b"/>'
-        )
-        lab = str(period_comparison[i].get("pay_period_end") or "")[-5:]
-        parts.append(
-            f'<text x="{x + bar_w / 2:.1f}" y="{height - 8}" font-size="8" text-anchor="middle" fill="#64748b">{_svg_escape(lab)}</text>'
-        )
-    return f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}"><rect width="100%" height="100%" fill="#fff"/>{"".join(parts)}</svg>'
-
-
-def render_overtime_analysis_svg(overtime_analysis: list[dict], *, width: int = 520, height: int = 200) -> str:
-    if not overtime_analysis:
-        return _empty_chart_svg(width, height, "No OT data")
-    # Dual: OT hours as bars, OT premium as line (scaled independently visually via labels)
-    n = len(overtime_analysis)
-    left, right, top, bottom = 44, width - 12, 28, height - 36
-    plot_w = right - left
-    plot_h = bottom - top
-    hours = [_money(e.get("ot_hours")) for e in overtime_analysis]
-    prem = [_money(e.get("ot_premium")) for e in overtime_analysis]
-    mx_h = max(hours) if hours else 1.0
-    mx_p = max(prem) if prem else 1.0
-    if mx_h <= 0:
-        mx_h = 1.0
-    if mx_p <= 0:
-        mx_p = 1.0
-    gap = 8
-    bar_w = max(8.0, (plot_w / max(n, 1)) - gap)
-    parts = [
-        f'<text x="{left}" y="14" font-size="11" font-weight="700" fill="#007a91">Overtime analysis</text>',
-        '<rect x="44" y="2" width="10" height="10" fill="#c4a052"/><text x="58" y="11" font-size="9" fill="#334155">OT hrs</text>',
-        '<line x1="120" y1="7" x2="140" y2="7" stroke="#007a91" stroke-width="2"/>'
-        '<text x="144" y="11" font-size="9" fill="#334155">OT premium</text>',
-        f'<line x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}" stroke="#e2e8f0"/>',
-    ]
-    pts = []
-    for i, e in enumerate(overtime_analysis):
-        x = left + i * (plot_w / max(n, 1)) + gap / 2
-        h = plot_h * (hours[i] / mx_h)
-        y = bottom - h
-        parts.append(
-            f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w:.1f}" height="{h:.1f}" fill="#c4a052" opacity="0.85"/>'
-        )
-        cx = x + bar_w / 2
-        cy = top + plot_h * (1 - (prem[i] / mx_p))
-        pts.append(f"{cx:.1f},{cy:.1f}")
-        parts.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="2.5" fill="#007a91"/>')
-        pct = e.get("ot_pct_of_hours") or 0
-        parts.append(
-            f'<text x="{cx:.1f}" y="{y - 3:.1f}" font-size="7" text-anchor="middle" fill="#64748b">{pct:.0f}%</text>'
-        )
-        lab = str(e.get("pay_period_end") or "")[-5:]
-        parts.append(
-            f'<text x="{cx:.1f}" y="{height - 8}" font-size="8" text-anchor="middle" fill="#64748b">{_svg_escape(lab)}</text>'
-        )
-    parts.append(
-        f'<polyline fill="none" stroke="#007a91" stroke-width="2" points="{" ".join(pts)}" />'
-    )
-    return f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}"><rect width="100%" height="100%" fill="#fff"/>{"".join(parts)}</svg>'
-
-
-def render_category_comparison_svg(category_breakdown: list[dict], *, width: int = 520, height: int = 200) -> str:
-    if not category_breakdown:
-        return _empty_chart_svg(width, height, "No category data")
-    n = len(category_breakdown)
-    left, right, top, bottom = 80, width - 12, 28, height - 36
-    plot_w = right - left
-    plot_h = bottom - top
-    costs = [_money(c.get("total_payroll_cost")) for c in category_breakdown]
-    hours = [_money(c.get("total_hours")) for c in category_breakdown]
-    mx_c = max(costs) if costs else 1.0
-    mx_h = max(hours) if hours else 1.0
-    if mx_c <= 0:
-        mx_c = 1.0
-    if mx_h <= 0:
-        mx_h = 1.0
-    gap = 16
-    pair_w = max(20.0, (plot_w / max(n, 1)) - gap)
-    bar_w = pair_w / 2 - 2
-    parts = [
-        f'<text x="12" y="14" font-size="11" font-weight="700" fill="#007a91">Category comparison</text>',
-        '<rect x="200" y="2" width="10" height="10" fill="#0097b2"/><text x="214" y="11" font-size="9" fill="#334155">Cost</text>',
-        '<rect x="260" y="2" width="10" height="10" fill="#94a3b8"/><text x="274" y="11" font-size="9" fill="#334155">Hours</text>',
-        f'<line x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}" stroke="#e2e8f0"/>',
-    ]
-    for i, c in enumerate(category_breakdown):
-        x0 = left + i * (plot_w / max(n, 1)) + gap / 2
-        h_c = plot_h * (costs[i] / mx_c)
-        h_h = plot_h * (hours[i] / mx_h)
-        parts.append(
-            f'<rect x="{x0:.1f}" y="{bottom - h_c:.1f}" width="{bar_w:.1f}" height="{h_c:.1f}" fill="#0097b2"/>'
-        )
-        parts.append(
-            f'<rect x="{x0 + bar_w + 4:.1f}" y="{bottom - h_h:.1f}" width="{bar_w:.1f}" height="{h_h:.1f}" fill="#94a3b8"/>'
-        )
-        lab = str(c.get("label") or c.get("worker_category") or "")[:12]
-        parts.append(
-            f'<text x="{x0 + pair_w / 2:.1f}" y="{height - 8}" font-size="9" text-anchor="middle" fill="#64748b">{_svg_escape(lab)}</text>'
-        )
-    return f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}"><rect width="100%" height="100%" fill="#fff"/>{"".join(parts)}</svg>'
-
-
-def _empty_chart_svg(width: int, height: int, msg: str) -> str:
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
-  <rect width="100%" height="100%" fill="#f8fafc"/>
-  <text x="{width/2}" y="{height/2}" font-size="11" text-anchor="middle" fill="#94a3b8">{_svg_escape(msg)}</text>
-</svg>'''
-
-
-def build_analytics_chart_svgs(analytics: dict) -> dict[str, str]:
-    pc = analytics.get("period_comparison") or []
-    return {
-        "cost_trajectory": render_cost_trajectory_svg(pc),
-        "hours_trajectory": render_hours_stacked_svg(pc),
-        "cost_composition": render_cost_composition_svg(pc),
-        "overtime_analysis": render_overtime_analysis_svg(
-            analytics.get("overtime_analysis") or pc
-        ),
-        "category_comparison": render_category_comparison_svg(
-            analytics.get("category_breakdown") or []
-        ),
-    }
+from backend.payroll_report_analytics_charts import build_analytics_chart_svgs  # noqa: E402
