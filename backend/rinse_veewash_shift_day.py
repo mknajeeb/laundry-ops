@@ -29,6 +29,8 @@ DISPOSITION_COMPLETED = "COMPLETED"
 DISPOSITION_EXCLUDE = "EXCLUDE"
 DISPOSITION_HISTORICAL_REVIEW_ONLY = "HISTORICAL_REVIEW_ONLY"
 
+_SHIFT_MONITOR_TABLES_READY = False
+
 
 def _json_dump(value: Any) -> str | None:
     if value is None:
@@ -74,6 +76,9 @@ def _commit(cursor) -> None:
 
 
 def ensure_shift_monitor_day_tables(cursor) -> None:
+    global _SHIFT_MONITOR_TABLES_READY
+    if _SHIFT_MONITOR_TABLES_READY:
+        return
     # Always run CREATE IF NOT EXISTS for each table (partial deploys / missing siblings).
     cursor.execute(
         """
@@ -151,6 +156,7 @@ def ensure_shift_monitor_day_tables(cursor) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    _SHIFT_MONITOR_TABLES_READY = True
 
 
 def get_day_record(cursor, organization_id: int, shift_date_et: date) -> dict[str, Any] | None:
@@ -352,6 +358,13 @@ def persist_day_snapshot(
     return get_day_record(cursor, organization_id, shift_date_et) or {}
 
 
+def _hydrate_day_bag_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    d["review_reason_codes"] = _json_load(d.pop("review_reason_codes_json", None)) or []
+    d["bag_snapshot"] = _json_load(d.pop("bag_snapshot_json", None)) or {}
+    return d
+
+
 def load_day_bags(cursor, organization_id: int, shift_date_et: date) -> list[dict[str, Any]]:
     ensure_shift_monitor_day_tables(cursor)
     cursor.execute(
@@ -363,13 +376,51 @@ def load_day_bags(cursor, organization_id: int, shift_date_et: date) -> list[dic
         """,
         (int(organization_id), shift_date_et),
     )
-    out = []
-    for row in cursor.fetchall() or []:
-        d = dict(row)
-        d["review_reason_codes"] = _json_load(d.pop("review_reason_codes_json", None)) or []
-        d["bag_snapshot"] = _json_load(d.pop("bag_snapshot_json", None)) or {}
-        out.append(d)
-    return out
+    return [_hydrate_day_bag_row(row) for row in (cursor.fetchall() or [])]
+
+
+def load_day_bags_by_ids(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    bag_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Load only the requested day-bag rows (drawer page / single-bag detail)."""
+    ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
+    if not ids:
+        return []
+    ensure_shift_monitor_day_tables(cursor)
+    placeholders = ",".join(["%s"] * len(ids))
+    cursor.execute(
+        f"""
+        SELECT *
+        FROM rinse_shift_monitor_day_bags
+        WHERE organization_id = %s
+          AND shift_date_et = %s
+          AND bag_id IN ({placeholders})
+        ORDER BY bag_id
+        """,
+        (int(organization_id), shift_date_et, *ids),
+    )
+    by_id = {
+        normalize_bag_id(row.get("bag_id")): _hydrate_day_bag_row(row)
+        for row in (cursor.fetchall() or [])
+    }
+    return [by_id[b] for b in ids if b in by_id]
+
+
+def day_bag_count(cursor, organization_id: int, shift_date_et: date) -> int:
+    ensure_shift_monitor_day_tables(cursor)
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS n
+        FROM rinse_shift_monitor_day_bags
+        WHERE organization_id = %s AND shift_date_et = %s
+        """,
+        (int(organization_id), shift_date_et),
+    )
+    row = cursor.fetchone() or {}
+    return int(row.get("n") or 0)
 
 
 def summary_from_day_record(day: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -423,6 +474,7 @@ def build_or_load_step1_for_date(
     selected_date_et: date,
     *,
     persist_live: bool = True,
+    include_bag_rows: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """
     Return (workload, summary, day_meta).
@@ -431,6 +483,9 @@ def build_or_load_step1_for_date(
     Prior OPEN/READY_TO_CLOSE days load the persisted snapshot (never live portal rebuild).
     Today and REOPENED days rebuild live and persist.
     Missing prior-day snapshot: one-time reconstruct from source + persist.
+
+    When ``include_bag_rows`` is False (dashboard cards), return headline/summary only and
+    skip loading every day-bag snapshot into memory.
     """
     ensure_shift_monitor_day_tables(cursor)
     activation = get_step1_activation_date(cursor, organization_id) or selected_date_et
@@ -438,15 +493,50 @@ def build_or_load_step1_for_date(
     today = today_et()
     status = (day or {}).get("status")
 
-    if day and status == STATUS_CLOSED:
-        summary = summary_from_day_record(day)
-        if summary:
-            bags = load_day_bags(cursor, organization_id, selected_date_et)
+    def _summary_shell(day_rec: Mapping[str, Any], *, status_value: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        summary = summary_from_day_record(day_rec)
+        if not summary:
+            return {}, {}, dict(day_rec)
+        if not include_bag_rows:
             return (
-                _workload_shell_from_bags(bags, selected_date_et=selected_date_et, status=STATUS_CLOSED),
+                {
+                    "selected_date_et": selected_date_et.isoformat(),
+                    "rows": [],
+                    "from_snapshot": True,
+                    "shift_day_status": status_value,
+                    "review_required": [],
+                    "review_reasons_by_bag": {},
+                    "bag_rows_omitted": True,
+                },
                 summary,
-                day,
+                dict(day_rec),
             )
+        bags = load_day_bags(cursor, organization_id, selected_date_et)
+        return (
+            _workload_shell_from_bags(bags, selected_date_et=selected_date_et, status=status_value),
+            summary,
+            dict(day_rec),
+        )
+
+    if day and status == STATUS_CLOSED:
+        wl, summary, day_out = _summary_shell(day, status_value=STATUS_CLOSED)
+        if summary:
+            return wl, summary, day_out
+
+    # Snapshot-first read path (dashboard cards + drawers): serve persisted headline
+    # for today and prior days when bags/headline exist. Live rebuild is reserved for
+    # persist_live=True (scrape / backfill / explicit refresh).
+    if (
+        day
+        and status in (STATUS_OPEN, STATUS_READY_TO_CLOSE, STATUS_REOPENED)
+        and day.get("headline")
+        and not persist_live
+    ):
+        has_bags = (not include_bag_rows) or day_bag_count(cursor, organization_id, selected_date_et) > 0
+        if has_bags or not include_bag_rows:
+            wl, summary, day_out = _summary_shell(day, status_value=str(status))
+            if summary:
+                return wl, summary, day_out
 
     # Historical OPEN/READY/REOPENED snapshots stay stable after first persist (midnight-safe).
     # REOPENED prior days keep the frozen bag set until an explicit backfill/correction rebuild.
@@ -456,17 +546,11 @@ def build_or_load_step1_for_date(
         and status in (STATUS_OPEN, STATUS_READY_TO_CLOSE, STATUS_REOPENED)
         and day.get("headline")
     ):
-        summary = summary_from_day_record(day)
-        if summary:
-            bags = load_day_bags(cursor, organization_id, selected_date_et)
-            if bags:
-                return (
-                    _workload_shell_from_bags(
-                        bags, selected_date_et=selected_date_et, status=str(status)
-                    ),
-                    summary,
-                    day,
-                )
+        has_bags = (not include_bag_rows) or day_bag_count(cursor, organization_id, selected_date_et) > 0
+        if has_bags:
+            wl, summary, day_out = _summary_shell(day, status_value=str(status))
+            if summary:
+                return wl, summary, day_out
 
     # Live / reconstruct path (today, or missing prior-day snapshot).
     wl = build_veewash_daily_workload(
@@ -490,7 +574,7 @@ def build_or_load_step1_for_date(
         or (
             selected_date_et < today
             and status in (STATUS_OPEN, STATUS_READY_TO_CLOSE, STATUS_REOPENED)
-            and not load_day_bags(cursor, organization_id, selected_date_et)
+            and day_bag_count(cursor, organization_id, selected_date_et) == 0
         )
     )
     if should_persist and (not day or status != STATUS_CLOSED):

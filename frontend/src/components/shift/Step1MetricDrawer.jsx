@@ -59,6 +59,13 @@ const REASON_LABELS = {
 
 const PAGE_SIZE = 25;
 
+/** Session cache: avoid refetching chronology when collapsing/reopening the same bag. */
+const bagDetailCache = new Map();
+
+function detailCacheKey(dateEt, bagId) {
+  return `${dateEt || ""}::${String(bagId || "").toUpperCase()}`;
+}
+
 function fmtTs(v) {
   if (!v) return "—";
   const s = String(v);
@@ -91,7 +98,7 @@ export default function Step1MetricDrawer({
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(
-    async (nextPage = 1) => {
+    async (nextPage = 1, signal) => {
       if (!open || !selectedDateEt || !metric) return;
       setLoading(true);
       setError("");
@@ -106,31 +113,69 @@ export default function Step1MetricDrawer({
           page_size: PAGE_SIZE,
           include_details: false,
           reason_code: reasonCode || undefined,
+          signal,
         });
+        if (signal?.aborted) return;
         const data = res?.data || {};
-        setBags(data.bags || []);
-        setCatalog(data.active_bulk_workitems || []);
+        setBags(
+          (data.bags || []).map((b) => {
+            const cached = bagDetailCache.get(detailCacheKey(selectedDateEt, b.bag_id));
+            return cached
+              ? {
+                  ...b,
+                  ...cached,
+                  scans: cached.scans || [],
+                  corrections: cached.corrections || [],
+                  _detailsLoaded: true,
+                }
+              : b;
+          })
+        );
+        if (Array.isArray(data.active_bulk_workitems) && data.active_bulk_workitems.length) {
+          setCatalog(data.active_bulk_workitems);
+        }
         setPage(data.pagination?.page || nextPage);
         setTotal(data.pagination?.total ?? (data.bags || []).length);
         setHasMore(Boolean(data.pagination?.has_more));
       } catch (e) {
+        if (signal?.aborted || e?.code === "ERR_CANCELED" || e?.name === "CanceledError") return;
         setError(e?.response?.data?.error || e?.message || "Failed to load drill-down");
         setBags([]);
         setTotal(0);
         setHasMore(false);
       } finally {
-        setLoading(false);
+        if (!signal?.aborted) setLoading(false);
       }
     },
     [open, selectedDateEt, metric, serviceFilter, rushFilter, reasonCode]
   );
 
   useEffect(() => {
-    load(1);
+    const controller = new AbortController();
+    load(1, controller.signal);
+    return () => controller.abort();
   }, [load]);
 
   const loadBagDetail = async (bagId) => {
     if (!bagId || !selectedDateEt || !metric) return;
+    const cacheKey = detailCacheKey(selectedDateEt, bagId);
+    const cached = bagDetailCache.get(cacheKey);
+    if (cached) {
+      setBags((prev) =>
+        prev.map((b) =>
+          b.bag_id === bagId
+            ? {
+                ...b,
+                ...cached,
+                scans: cached.scans || [],
+                corrections: cached.corrections || [],
+                _detailsLoaded: true,
+              }
+            : b
+        )
+      );
+      return;
+    }
     setDetailLoading((m) => ({ ...m, [bagId]: true }));
     try {
       const res = await getVeewashStep1BagDetail({
@@ -144,6 +189,10 @@ export default function Step1MetricDrawer({
       });
       const detail = (res?.data?.bags || [])[0];
       if (!detail) return;
+      bagDetailCache.set(cacheKey, detail);
+      if (Array.isArray(res?.data?.active_bulk_workitems) && res.data.active_bulk_workitems.length) {
+        setCatalog(res.data.active_bulk_workitems);
+      }
       setBags((prev) =>
         prev.map((b) =>
           b.bag_id === bagId
@@ -218,6 +267,9 @@ export default function Step1MetricDrawer({
         return;
       }
       setActionBag(null);
+      if (actionBag) {
+        bagDetailCache.delete(detailCacheKey(selectedDateEt, actionBag));
+      }
       await load(page);
       onCorrected?.();
     } catch (e) {

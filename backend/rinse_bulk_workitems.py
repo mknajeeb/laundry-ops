@@ -53,8 +53,13 @@ def _json_load(raw: Any) -> Any:
         return None
 
 
+_BULK_TABLES_READY = False
+
+
 def ensure_bulk_workitem_tables(cursor) -> None:
-    if table_exists(cursor, "rinse_bulk_workitems"):
+    global _BULK_TABLES_READY
+    if _BULK_TABLES_READY or table_exists(cursor, "rinse_bulk_workitems"):
+        _BULK_TABLES_READY = True
         return
     # Lightweight create if migration not yet applied (matches route bootstrap style).
     cursor.execute(
@@ -141,6 +146,9 @@ def ensure_bulk_workitem_tables(cursor) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+
+
+    _BULK_TABLES_READY = True
 
 
 def seed_default_workitems(

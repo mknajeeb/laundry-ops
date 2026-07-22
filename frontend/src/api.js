@@ -568,31 +568,37 @@ export const batchConfirmCompletionReviews = (body) =>
   });
 
 /** VeeWash Step-1 metric drill-down (summary by default; paginated). */
-export const getVeewashStep1Drilldown = (params = {}) =>
-  axios.get(`${API_BASE}/rinse/shift-analysis/veewash-step1/drilldown`, {
+export const getVeewashStep1Drilldown = (params = {}) => {
+  const { signal, timeout_ms, ...query } = params || {};
+  return axios.get(`${API_BASE}/rinse/shift-analysis/veewash-step1/drilldown`, {
     params: {
       page: 1,
       page_size: 25,
       include_details: false,
-      ...params,
+      ...query,
       _t: Date.now(),
     },
-    timeout: Number(params.timeout_ms) || 20000,
+    signal,
+    timeout: Number(timeout_ms) || 20000,
     headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
   });
+};
 
 /** One-bag chronology + corrections (lazy expand). */
-export const getVeewashStep1BagDetail = (params = {}) =>
-  axios.get(`${API_BASE}/rinse/shift-analysis/veewash-step1/drilldown`, {
+export const getVeewashStep1BagDetail = (params = {}) => {
+  const { signal, timeout_ms, ...query } = params || {};
+  return axios.get(`${API_BASE}/rinse/shift-analysis/veewash-step1/drilldown`, {
     params: {
       include_details: true,
       page_size: 1,
-      ...params,
+      ...query,
       _t: Date.now(),
     },
-    timeout: 20000,
+    signal,
+    timeout: Number(timeout_ms) || 20000,
     headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
   });
+};
 
 /** Bulk workitem maintenance (Settings → Bulk Workitems). */
 export const getBulkWorkitems = (params = {}) =>

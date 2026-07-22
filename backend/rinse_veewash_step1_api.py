@@ -232,6 +232,9 @@ def build_drilldown(
 
     Default: bag summaries only (fast). Pass bag_id + include_details for one-bag
     chronology/corrections. Paginate summary lists (default 25).
+
+    Uses persisted day headline for ID filtering, then loads only the current page
+    of day-bag rows (never the full day snapshot set on list open).
     """
     import time
 
@@ -245,30 +248,23 @@ def build_drilldown(
     from backend.rinse_veewash_shift_day import (
         _workload_shell_from_bags,
         get_day_record,
-        load_day_bags,
+        load_day_bags_by_ids,
         summary_from_day_record,
     )
 
     t0 = time.perf_counter()
-    # Prefer persisted day snapshot for drawer speed. Full live rebuild is for the
-    # dashboard cards; drawer must stay summary-first and avoid re-scanning all bags.
+    t_snap = time.perf_counter()
     day_rec = get_day_record(cursor, organization_id, selected_date_et)
-    snap_bags = (
-        load_day_bags(cursor, organization_id, selected_date_et) if day_rec else []
-    )
-    if day_rec and day_rec.get("headline") and snap_bags:
-        summary = summary_from_day_record(day_rec) or {}
-        wl = _workload_shell_from_bags(
-            snap_bags,
-            selected_date_et=selected_date_et,
-            status=str(day_rec.get("status") or "OPEN"),
-        )
-    else:
+    summary = summary_from_day_record(day_rec) if day_rec else None
+    snap_ms = (time.perf_counter() - t_snap) * 1000.0
+
+    if not (day_rec and summary):
         payload = build_step1_payload(cursor, organization_id, selected_date_et)
-        wl = payload["workload"]
         summary = payload["summary"]
+        day_rec = payload.get("day") or day_rec
+
     ids = _filter_bag_ids(
-        summary,
+        summary or {},
         metric=metric,
         service=service,
         rush=rush,
@@ -284,21 +280,85 @@ def build_drilldown(
     start = (page - 1) * page_size
     page_ids = ids if (include_details and bag_id) else ids[start : start + page_size]
 
-    rows_by_id = {r.get("bag_id"): r for r in (wl.get("rows") or []) if r.get("bag_id")}
-    reasons = wl.get("review_reasons_by_bag") or summary.get("review_reasons_by_bag") or {}
+    t_bags = time.perf_counter()
+    snap_bags = (
+        load_day_bags_by_ids(cursor, organization_id, selected_date_et, page_ids)
+        if page_ids
+        else []
+    )
+    bags_ms = (time.perf_counter() - t_bags) * 1000.0
 
-    bulk_scans = load_bulk_workitem_scan_map(cursor, organization_id, page_ids) if page_ids else {}
-    bulk_lines = (
-        load_bag_bulk_lines(cursor, organization_id, selected_date_et, page_ids)
-        if page_ids
-        else {}
+    if snap_bags or not page_ids:
+        wl = _workload_shell_from_bags(
+            snap_bags,
+            selected_date_et=selected_date_et,
+            status=str((day_rec or {}).get("status") or "OPEN"),
+        )
+    else:
+        payload = build_step1_payload(cursor, organization_id, selected_date_et)
+        wl = payload["workload"]
+        summary = payload["summary"] or summary
+
+    rows_by_id = {r.get("bag_id"): r for r in (wl.get("rows") or []) if r.get("bag_id")}
+    for sb in snap_bags:
+        bid = sb.get("bag_id")
+        if not bid:
+            continue
+        snap = sb.get("bag_snapshot") or {}
+        rows_by_id[bid] = {
+            **(rows_by_id.get(bid) or {}),
+            **snap,
+            "bag_id": bid,
+            "customer_name": snap.get("customer_name")
+            or (rows_by_id.get(bid) or {}).get("customer_name"),
+            "service_type": snap.get("service_type") or sb.get("service_type"),
+            "rush_flag": snap.get("rush_flag") or sb.get("rush_status"),
+            "pre_weight_lbs": snap.get("pre_weight_lbs", sb.get("pre_weight_lbs")),
+            "post_weight_lbs": snap.get("post_weight_lbs", sb.get("post_weight_lbs")),
+            "weight_lbs": snap.get("weight_lbs", sb.get("weight_lbs")),
+            "completion_at": snap.get("completion_at")
+            or sb.get("canonical_completion_timestamp"),
+            "completed_by": snap.get("completed_by")
+            or sb.get("canonical_completion_employee"),
+            "reason_codes": snap.get("reason_codes") or sb.get("review_reason_codes") or [],
+            "outcome": snap.get("outcome") or sb.get("effective_status"),
+            "final_bucket": snap.get("final_bucket") or sb.get("effective_status"),
+            "entry_class": snap.get("entry_class") or sb.get("new_or_carryover"),
+            "original_entry_date": snap.get("original_entry_date")
+            or sb.get("workload_entry_timestamp"),
+            "entry_source": snap.get("entry_source") or sb.get("workload_entry_type"),
+            "portal_status": snap.get("portal_status") or sb.get("portal_status_at_sync"),
+            "post_weight_event_exists": snap.get("post_weight_event_exists"),
+        }
+
+    reasons = wl.get("review_reasons_by_bag") or (summary or {}).get("review_reasons_by_bag") or {}
+    for sb in snap_bags:
+        bid = sb.get("bag_id")
+        if bid and sb.get("review_reason_codes") and bid not in reasons:
+            reasons[bid] = list(sb.get("review_reason_codes") or [])
+
+    need_bulk_catalog = bool(
+        include_details
+        or str(metric or "") == "review_required"
+        or str(reason_code or "") == "WF_BULK_WORKITEM_REVIEW"
     )
-    bulk_resolutions = (
-        load_bulk_resolutions(cursor, organization_id, selected_date_et, page_ids)
-        if page_ids
-        else {}
-    )
-    active_catalog = list_workitems(cursor, organization_id, active_only=True)
+    # List path: reason codes + denormalized snapshot fields are enough.
+    # Bulk lines / resolutions / catalog load only for review drawers or bag expand.
+    bulk_scans: dict = {}
+    bulk_lines: dict = {}
+    bulk_resolutions: dict = {}
+    active_catalog: list = []
+    if page_ids and (include_details or need_bulk_catalog):
+        bulk_scans = load_bulk_workitem_scan_map(cursor, organization_id, page_ids)
+        bulk_lines = load_bag_bulk_lines(
+            cursor, organization_id, selected_date_et, page_ids
+        )
+        bulk_resolutions = load_bulk_resolutions(
+            cursor, organization_id, selected_date_et, page_ids
+        )
+        if need_bulk_catalog:
+            active_catalog = list_workitems(cursor, organization_id, active_only=True)
+
 
     scans: dict[str, list] = {b: [] for b in page_ids}
     corrections: dict[str, list] = {b: [] for b in page_ids}
@@ -356,6 +416,7 @@ def build_drilldown(
             "weight_lbs": r.get("weight_lbs"),
             "pre_weight_lbs": r.get("pre_weight_lbs"),
             "post_weight_lbs": r.get("post_weight_lbs"),
+            "post_weight_event_exists": r.get("post_weight_event_exists"),
             "entry_at": r.get("original_entry_date") or r.get("first_entry_at"),
             "entry_source": r.get("entry_source"),
             "completion_at": r.get("completion_at"),
@@ -363,9 +424,13 @@ def build_drilldown(
             "portal_status": r.get("portal_status"),
             "last_seen_at": r.get("last_seen_date"),
             "bulk_workitem_scan": scan_info,
-            "bulk_workitems": lines,
+            "bulk_workitems": lines if include_details else [],
             "bulk_resolution": bulk_resolutions.get(bid) or r.get("bulk_resolution"),
             "bulk_item_total": round(sum(float(x.get("line_total") or 0) for x in lines), 2),
+            "bulk_review_required": bool(
+                "WF_BULK_WORKITEM_REVIEW"
+                in (reasons.get(bid) or r.get("reason_codes") or [])
+            ),
             "system_result": {
                 "outcome": r.get("outcome"),
                 "canonical_status": r.get("canonical_status"),
@@ -378,6 +443,7 @@ def build_drilldown(
             item["scans"] = scans.get(bid) or []
             item["corrections"] = corrections.get(bid) or []
             item["bulk_audits"] = bulk_audits.get(bid) or []
+            item["bulk_workitems"] = lines
         else:
             item["scans"] = []
             item["corrections"] = []
@@ -385,6 +451,11 @@ def build_drilldown(
         bags.append(item)
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    # Drawer list needs reason counts, not full bag-id maps (keeps payload small).
+    review_counts = {
+        k: len(v or [])
+        for k, v in ((summary or {}).get("review_by_reason") or {}).items()
+    }
     return {
         "selected_date_et": selected_date_et.isoformat(),
         "metric": metric,
@@ -393,7 +464,7 @@ def build_drilldown(
         "reason_code": reason_code,
         "bags": bags,
         "active_bulk_workitems": active_catalog,
-        "review_by_reason": summary.get("review_by_reason") or {},
+        "review_by_reason": review_counts,
         "pagination": {
             "page": page,
             "page_size": page_size,
@@ -403,9 +474,12 @@ def build_drilldown(
         "include_details": bool(include_details),
         "timing_ms": {
             "total": round(elapsed_ms, 1),
+            "headline": round(snap_ms, 1),
+            "page_bags": round(bags_ms, 1),
             "detail_queries": round(detail_ms, 1),
         },
     }
+
 
 
 def apply_step1_correction(

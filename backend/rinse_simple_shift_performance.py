@@ -2923,9 +2923,15 @@ def _try_build_step1_lightweight_summary(
     from backend.rinse_veewash_shift_day import build_or_load_step1_for_date
 
     t_s1 = time.perf_counter()
+    # Dashboard cards must stay snapshot-first. Live rebuild happens on scrape /
+    # backfill / correction — not on every Shift Monitor page open.
     s1, summary, day_meta = build_or_load_step1_for_date(
-        cursor, org, period_end, persist_live=True
+        cursor, org, period_end, persist_live=False, include_bag_rows=False
     )
+    if not summary or not (summary.get("segments") or summary.get("active_workload") is not None):
+        s1, summary, day_meta = build_or_load_step1_for_date(
+            cursor, org, period_end, persist_live=True, include_bag_rows=False
+        )
     s1["today_validation"] = build_today_validation(s1, selected_date_et=period_end)
     s1["activation_date_et"] = activation.isoformat()
     s1_ms = (time.perf_counter() - t_s1) * 1000
