@@ -211,8 +211,9 @@ def expand_review_required(
     Priority: Review > Completed > Pending. One bag → one review count.
     Review never removes bags from Active / service×rush population.
 
-    create-workitem-bulk forces Step-1 service_type = WF (bulk is WF-only).
-    Registry WF preferred over portal HD when they disagree.
+    create-workitem-bulk is WF-only for review UI, but does not redefine true HD
+    bags whose workitems-added is same-day as facility entry. Registry WF still
+    overrides portal HD.
 
     WF_ZERO_OR_MISSING_POST_WEIGHT only when the bag is canonically completed
     and exactly one weight-entry scan exists (no second event). Recorded post=0
@@ -274,17 +275,40 @@ def expand_review_required(
         return bool(row.get("entry_source") or row.get("original_entry_date") or row.get("first_entry_at"))
 
     def resolve_service(bid: str, pres: Mapping[str, Any], row: Mapping[str, Any]) -> tuple[str, bool]:
-        """Return (effective_service, mismatched). Bulk → WF; registry WF overrides portal HD."""
+        """
+        Effective Step-1 service.
+
+        - Registry WF overrides portal HD (explicit WF identity).
+        - create-workitem-bulk does NOT redefine HD when portal/registry are HD and
+          workitems-added falls on the same ET day as facility entry (true HD start).
+        - Bulk may still force WF when HD workitems-added is a prior day and facility
+          entry (+ bulk) happens later — the WF comforter/bath-mat path.
+        - Facility racks never determine service.
+        """
         portal = (
             _service_of(pres)
             or str(pres.get("service_type") or row.get("service_type") or "").upper()
         )
         reg = registry_svc.get(bid) or ""
         has_bulk = bool(bulk_scans.get(bid) and int((bulk_scans.get(bid) or {}).get("count") or 0) > 0)
-        if has_bulk:
-            return SERVICE_WF, portal == SERVICE_HD or reg == SERVICE_HD
+
         if reg == SERVICE_WF and portal == SERVICE_HD:
             return SERVICE_WF, True
+        if reg == SERVICE_WF:
+            return SERVICE_WF, portal == SERVICE_HD
+
+        portal_or_reg_hd = portal == SERVICE_HD or reg == SERVICE_HD
+        if has_bulk and portal_or_reg_hd:
+            wia_d = (wia_map.get(bid) or {}).get("entry_date")
+            dirty_d = (entry_by_bag.get(bid) or {}).get("entry_date")
+            # Same-day HD start: keep HD. Bulk scan is not a service signal.
+            if wia_d is not None and dirty_d is not None and wia_d == dirty_d:
+                return SERVICE_HD, False
+            # Prior-day WIA + later facility/bulk → WF bulk-workitem path.
+            return SERVICE_WF, True
+
+        if has_bulk:
+            return SERVICE_WF, portal == SERVICE_HD or reg == SERVICE_HD
         if reg in (SERVICE_WF, SERVICE_HD) and portal and reg != portal:
             return reg, True
         return portal or reg or SERVICE_WF, False
