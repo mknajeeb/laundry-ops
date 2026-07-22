@@ -26,7 +26,7 @@ const REASON_GROUPS = [
   },
   {
     key: "WF_ZERO_OR_MISSING_WEIGHT",
-    label: "Zero or missing WF weight",
+    label: "Zero or missing WF post weight",
   },
   {
     key: "DISAPPEARED_WITHOUT_COMPLETION",

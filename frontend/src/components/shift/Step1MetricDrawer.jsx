@@ -45,7 +45,7 @@ function toPickerValue(v) {
 const REASON_LABELS = {
   DISAPPEARED_WITHOUT_COMPLETION: "Disappeared without completion",
   COMPLETED_WITHOUT_RECOGNIZED_ENTRY: "Completed without recognized entry",
-  WF_ZERO_OR_MISSING_WEIGHT: "Zero or missing WF weight",
+  WF_ZERO_OR_MISSING_WEIGHT: "Zero or missing WF post weight",
   SERVICE_CLASSIFICATION_MISMATCH: "Service classification mismatch",
   COMPLETION_DETAILS_MISSING: "Completion details missing",
 };
@@ -110,7 +110,11 @@ export default function Step1MetricDrawer({
       entry_at: toPickerValue(bag.entry_at) || `${selectedDateEt || ""}T09:00`.slice(0, 16),
       service_type: bag.service_type || "WF",
       rack: defaultRackForService(bag.service_type || "WF"),
-      weight_lbs: bag.weight_lbs != null && Number(bag.weight_lbs) > 0 ? String(bag.weight_lbs) : "",
+      weight_lbs: bag.post_weight_lbs != null && Number(bag.post_weight_lbs) > 0
+        ? String(bag.post_weight_lbs)
+        : bag.weight_lbs != null && Number(bag.weight_lbs) > 0
+          ? String(bag.weight_lbs)
+          : "",
       weight_at: toPickerValue(selectedDateEt ? `${selectedDateEt}T12:00` : ""),
     });
   };
@@ -207,7 +211,8 @@ export default function Step1MetricDrawer({
                       <Chip size="small" label={bag.dashboard_status || "—"} color="warning" variant="outlined" />
                     </Stack>
                     <Typography variant="caption" color="text.secondary" display="block">
-                      {bag.customer_name || "—"} · {bag.entry_class || "—"} · WF scan wt {bag.weight_lbs ?? "—"}
+                      {bag.customer_name || "—"} · {bag.entry_class || "—"} · pre{" "}
+                      {bag.pre_weight_lbs ?? "—"} · post {bag.post_weight_lbs ?? "—"}
                     </Typography>
                     {(bag.reason_codes || []).length > 0 ? (
                       <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
@@ -356,10 +361,10 @@ export default function Step1MetricDrawer({
                             <TextField
                               size="small"
                               type="number"
-                              label="WF weight lbs (>0)"
+                              label="Post weight lbs (>0)"
                               value={form.weight_lbs}
                               onChange={(e) => setForm((f) => ({ ...f, weight_lbs: e.target.value }))}
-                              helperText="Post-processing / final WF scan weight (not dirty intake). Clears zero-weight review when > 0."
+                              helperText={`Pre weight: ${bag.pre_weight_lbs ?? "—"} (not reviewed). Only post weight missing/≤0 goes to Review Required.`}
                               inputProps={{ min: 0.1, step: 0.1 }}
                             />
                             <PayrollDateTimeField

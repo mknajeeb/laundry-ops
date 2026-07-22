@@ -266,6 +266,8 @@ def build_drilldown(
                 "canonical_status": r.get("canonical_status"),
                 "reason_codes": list(reasons.get(bid) or r.get("reason_codes") or []),
                 "weight_lbs": r.get("weight_lbs"),
+                "pre_weight_lbs": r.get("pre_weight_lbs"),
+                "post_weight_lbs": r.get("post_weight_lbs"),
                 "entry_at": r.get("original_entry_date"),
                 "entry_source": r.get("entry_source"),
                 "completion_at": r.get("completion_at"),
@@ -423,12 +425,26 @@ def apply_step1_correction(
             action=action,
             reason_text=reason,
             reason_code="WF_ZERO_OR_MISSING_WEIGHT",
-            previous_values={"weight_lbs": prior.get("weight_lbs")},
-            new_values={"weight_lbs": weight_f, "weight_at": ts.isoformat(), "employee": emp},
+            previous_values={
+                "pre_weight_lbs": prior.get("pre_weight_lbs"),
+                "post_weight_lbs": prior.get("post_weight_lbs"),
+                "weight_lbs": prior.get("weight_lbs"),
+            },
+            new_values={
+                "post_weight_lbs": weight_f,
+                "weight_lbs": weight_f,
+                "weight_at": ts.isoformat(),
+                "employee": emp,
+            },
             actor_user_id=actor_user_id,
             actor_display_name=actor_display_name,
         )
-        return {"ok": True, "action": action, "weight_lbs": weight_f}
+        return {
+            "ok": True,
+            "action": action,
+            "weight_lbs": weight_f,
+            "post_weight_lbs": weight_f,
+        }
 
     if action == "correct_entry":
         svc = str(body.get("service_type") or prior.get("service_type") or SERVICE_WF).upper()

@@ -8,7 +8,7 @@ CWO bags are included in Active Workload via Review Required.
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from backend.rinse_veewash_workload import (
     ENTRY_CLASS_CARRYOVER,
@@ -28,15 +28,63 @@ from backend.rinse_veewash_workload import (
 )
 
 
-def _weight_invalid(raw: Any) -> bool:
+def _parse_weight(raw: Any) -> float | None:
+    """Null/blank → None (ignored). Zero and positives are kept as numeric values."""
     if raw is None:
-        return True
+        return None
     if isinstance(raw, str) and not raw.strip():
-        return True
+        return None
     try:
-        return float(raw) <= 0
+        return float(raw)
     except (TypeError, ValueError):
+        return None
+
+
+def _post_weight_invalid(raw: Any) -> bool:
+    """Post weight missing or <= 0 triggers WF Review Required."""
+    w = _parse_weight(raw)
+    if w is None:
         return True
+    return w <= 0
+
+
+def derive_pre_post_weights(weight_values: Sequence[Any]) -> dict[str, float | None]:
+    """
+    From chronological scrape weight readings (nulls ignored):
+
+    - pre  = first non-null weight
+    - post = later non-null weight when the value changes during the cycle
+             (latest changed value wins)
+
+    A single non-null reading sets pre only; post stays None until a change.
+    """
+    pre: float | None = None
+    post: float | None = None
+    for raw in weight_values:
+        w = _parse_weight(raw)
+        if w is None:
+            continue
+        if pre is None:
+            pre = w
+            continue
+        if w != pre:
+            post = w
+    return {"pre_weight_lbs": pre, "post_weight_lbs": post}
+
+
+def _coerce_weight_info(raw: Any) -> dict[str, float | None]:
+    """Accept structured {pre,post} or legacy scalar (treated as post)."""
+    if isinstance(raw, Mapping):
+        return {
+            "pre_weight_lbs": _parse_weight(
+                raw.get("pre_weight_lbs", raw.get("pre"))
+            ),
+            "post_weight_lbs": _parse_weight(
+                raw.get("post_weight_lbs", raw.get("post", raw.get("weight_lbs")))
+            ),
+        }
+    # Legacy float/int → post only (tests / older callers)
+    return {"pre_weight_lbs": None, "post_weight_lbs": _parse_weight(raw)}
 
 
 def expand_review_required(
@@ -49,9 +97,10 @@ def expand_review_required(
     weight_by_bag: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Mutate/return classification so Review Required includes CWO + WF weight gaps.
+    Mutate/return classification so Review Required includes CWO + WF post-weight gaps.
 
     Priority: Review > Completed > Pending. One bag → one review count.
+    WF Review for weight uses post_weight only (pre may be null/zero without review).
     """
     D = selected_date_et
     prev_day = D - timedelta(days=1)
@@ -86,7 +135,6 @@ def expand_review_required(
         review.add(bid)
 
     # --- CWO + HD missing WIA while completed ---------------------------------
-    # Re-scan presence for completed-on-D without service-recognized entry.
     for bid, pres in presence_by_bag.items():
         bid = _norm_bag(bid)
         if not bid:
@@ -98,7 +146,6 @@ def expand_review_required(
                 comp_date = date.fromisoformat(str(row["completion_date"])[:10])
             except ValueError:
                 comp_date = None
-        # Also detect via completed set / cwo list
         if bid in cwo:
             comp_date = D
         if comp_date != D and bid not in completed and bid not in cwo:
@@ -109,7 +156,6 @@ def expand_review_required(
         wia = wia_map.get(bid)
         recognized = _has_recognized_entry_for_service(svc, dirty_entry=entry, wia_entry=wia)
 
-        # Ensure we only treat as completed-on-D candidates
         is_completed_today = bid in completed or bid in cwo or (
             row.get("outcome") == OUTCOME_COMPLETED and comp_date == D
         ) or (
@@ -124,7 +170,6 @@ def expand_review_required(
             review.add(bid)
             completed.discard(bid)
             pending.discard(bid)
-            # Include in Active
             entry_date = entry.get("entry_date") if entry else None
             if entry_date is not None and entry_date < D:
                 carryover.add(bid)
@@ -161,7 +206,7 @@ def expand_review_required(
                 },
             }
 
-    # --- WF zero / missing weight (Active members) ---------------------------
+    # --- WF zero / missing POST weight (Active members) ----------------------
     active = new_today | carryover
     for bid in list(active):
         pres = presence_by_bag.get(bid) or {}
@@ -169,18 +214,30 @@ def expand_review_required(
         svc = _service_of(pres) or str(row.get("service_type") or "").upper()
         if svc != SERVICE_WF:
             continue
-        w = weight_map.get(bid, row.get("weight_lbs"))
-        if not _weight_invalid(w):
-            if bid in rows_by_id:
-                rows_by_id[bid]["weight_lbs"] = w
+        info = _coerce_weight_info(
+            weight_map.get(bid)
+            if bid in weight_map
+            else {
+                "pre_weight_lbs": row.get("pre_weight_lbs"),
+                "post_weight_lbs": row.get("post_weight_lbs", row.get("weight_lbs")),
+            }
+        )
+        pre_w = info["pre_weight_lbs"]
+        post_w = info["post_weight_lbs"]
+        if bid in rows_by_id:
+            rows_by_id[bid]["pre_weight_lbs"] = pre_w
+            rows_by_id[bid]["post_weight_lbs"] = post_w
+            # Display weight prefers post, else pre (for chronology summaries).
+            rows_by_id[bid]["weight_lbs"] = post_w if post_w is not None else pre_w
+
+        if not _post_weight_invalid(post_w):
             continue
+
         add_reason(bid, REASON_WF_ZERO_OR_MISSING_WEIGHT)
         review.add(bid)
-        # Priority: leave Completed/Pending if already Review; else move Completed→Review
         if bid in completed:
             completed.discard(bid)
         if bid in pending and bid in review:
-            # Keep pending only if no review — but weight review forces Review
             pending.discard(bid)
         row = rows_by_id.get(bid) or {"bag_id": bid}
         canon = row.get("canonical_status") or row.get("outcome") or OUTCOME_PENDING
@@ -190,7 +247,9 @@ def expand_review_required(
             canon = OUTCOME_COMPLETED
         rows_by_id[bid] = {
             **row,
-            "weight_lbs": w,
+            "pre_weight_lbs": pre_w,
+            "post_weight_lbs": post_w,
+            "weight_lbs": post_w if post_w is not None else pre_w,
             "outcome": OUTCOME_REVIEW_REQUIRED,
             "canonical_status": canon,
             "final_bucket": "review_required",
@@ -271,7 +330,6 @@ def build_review_by_reason(result: Mapping[str, Any]) -> dict[str, list[str]]:
     for bid, codes in reasons.items():
         for code in codes or []:
             out.setdefault(str(code), []).append(bid)
-    # Also fold disappeared list if missing from reasons
     for bid in result.get("disappeared_without_completion_exceptions") or []:
         out.setdefault(REASON_DISAPPEARED_WITHOUT_COMPLETION, [])
         if bid not in out[REASON_DISAPPEARED_WITHOUT_COMPLETION]:
@@ -287,39 +345,75 @@ def build_review_by_reason(result: Mapping[str, Any]) -> dict[str, list[str]]:
 
 def load_bag_weight_map(
     cursor, organization_id: int, bag_ids: list[str]
-) -> dict[str, float | None]:
+) -> dict[str, dict[str, float | None]]:
     """
-    WF Review weight = max positive lbs on weight-entry scans for the bag.
+    Load pre/post WF weights from scrape chronology.
 
-    This is the post-processing / final scan weight Rinse records on weight-entry
-    events (not dirty intake). Missing, blank, or <= 0 ⇒ Review Required for WF.
+    Null weight_lbs rows are ignored. First non-null → pre; a later changed
+    non-null value → post (latest change wins). Review uses post only.
+
+    Latest Step-1 ``correct_weight`` corrections override ``post_weight_lbs``.
     """
     from backend.ta_helpers import table_exists
 
     ids = sorted({_norm_bag(b) for b in bag_ids if _norm_bag(b)})
-    if not ids or not table_exists(cursor, "rinse_bag_scan_events"):
-        return {}
-    placeholders = ",".join(["%s"] * len(ids))
-    cursor.execute(
-        f"""
-        SELECT bag_id, MAX(weight_lbs) AS max_w
-        FROM rinse_bag_scan_events
-        WHERE organization_id = %s
-          AND bag_id IN ({placeholders})
-          AND weight_lbs IS NOT NULL
-          AND LOWER(TRIM(COALESCE(purpose, ''))) LIKE 'weight-entry%%'
-        GROUP BY bag_id
-        """,
-        (int(organization_id), *ids),
-    )
-    out: dict[str, float | None] = {b: None for b in ids}
-    for row in cursor.fetchall() or []:
-        bid = _norm_bag(row.get("bag_id"))
-        if not bid:
-            continue
-        try:
-            w = float(row.get("max_w"))
-        except (TypeError, ValueError):
-            w = None
-        out[bid] = w
+    empty = {b: {"pre_weight_lbs": None, "post_weight_lbs": None} for b in ids}
+    if not ids:
+        return empty
+
+    out = dict(empty)
+    if table_exists(cursor, "rinse_bag_scan_events"):
+        placeholders = ",".join(["%s"] * len(ids))
+        cursor.execute(
+            f"""
+            SELECT bag_id, weight_lbs, scanned_at_parsed, id
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND bag_id IN ({placeholders})
+              AND weight_lbs IS NOT NULL
+            ORDER BY scanned_at_parsed ASC, id ASC
+            """,
+            (int(organization_id), *ids),
+        )
+        series: dict[str, list[Any]] = {b: [] for b in ids}
+        for row in cursor.fetchall() or []:
+            bid = _norm_bag(row.get("bag_id"))
+            if bid in series:
+                series[bid].append(row.get("weight_lbs"))
+        out = {bid: derive_pre_post_weights(vals) for bid, vals in series.items()}
+
+    if table_exists(cursor, "rinse_step1_corrections"):
+        placeholders = ",".join(["%s"] * len(ids))
+        cursor.execute(
+            f"""
+            SELECT bag_id, new_values, created_at, id
+            FROM rinse_step1_corrections
+            WHERE organization_id = %s
+              AND bag_id IN ({placeholders})
+              AND action = 'correct_weight'
+            ORDER BY created_at ASC, id ASC
+            """,
+            (int(organization_id), *ids),
+        )
+        for row in cursor.fetchall() or []:
+            bid = _norm_bag(row.get("bag_id"))
+            if bid not in out:
+                continue
+            raw = row.get("new_values")
+            if isinstance(raw, str):
+                try:
+                    import json
+
+                    raw = json.loads(raw)
+                except Exception:
+                    raw = {}
+            if not isinstance(raw, dict):
+                continue
+            post = _parse_weight(raw.get("post_weight_lbs", raw.get("weight_lbs")))
+            if post is None:
+                continue
+            out[bid] = {
+                "pre_weight_lbs": out[bid].get("pre_weight_lbs"),
+                "post_weight_lbs": post,
+            }
     return out
