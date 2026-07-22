@@ -59,7 +59,7 @@ def test_derive_pre_post_weights_ignores_nulls_and_tracks_change():
     }
     assert derive_pre_post_weights([None, 4.0]) == {
         "pre_weight_lbs": 4.0,
-        "post_weight_lbs": None,
+        "post_weight_lbs": 4.0,
     }
     assert derive_pre_post_weights([0, 5.5]) == {
         "pre_weight_lbs": 0.0,
@@ -169,6 +169,7 @@ def test_wf_zero_post_weight_in_review_pre_zero_ok_hd_exempt():
 
 
 def test_missing_post_weight_in_review_even_with_pre():
+    # Explicit null post (not single-reading case) still reviews.
     presence = {"WFPREONLY": _pres(service="WF", rush="RUSH")}
     entry = {"WFPREONLY": _entry(D1)}
     completion = {"WFPREONLY": _comp(D1)}
@@ -190,6 +191,13 @@ def test_missing_post_weight_in_review_even_with_pre():
     row = next(r for r in out["rows"] if r["bag_id"] == "WFPREONLY")
     assert row["pre_weight_lbs"] == 5.5
     assert row["post_weight_lbs"] is None
+
+
+def test_single_scrape_weight_counts_as_pre_and_post():
+    assert derive_pre_post_weights([None, 8.25, None]) == {
+        "pre_weight_lbs": 8.25,
+        "post_weight_lbs": 8.25,
+    }
 
 
 def test_multiple_reasons_one_review_count():

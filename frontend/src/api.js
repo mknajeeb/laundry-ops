@@ -584,6 +584,22 @@ export const postVeewashStep1Correction = (body) =>
 /** Alias used by Step1MetricDrawer. */
 export const correctVeewashStep1Bag = postVeewashStep1Correction;
 
+export const getVeewashStep1DayStatus = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/veewash-step1/day-status`, {
+    params: { ...params, _t: Date.now() },
+    timeout: 90000,
+    headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+  });
+
+export const closeVeewashStep1Day = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/veewash-step1/close`, body, { timeout: 90000 });
+
+export const reopenVeewashStep1Day = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/veewash-step1/reopen`, body, { timeout: 60000 });
+
+export const backfillVeewashStep1Day = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/veewash-step1/backfill-day`, body, { timeout: 120000 });
+
 /** Phase 2 — employee productivity section only (full bag drilldown, single ET day). */
 export const getEmployeeProductivityDashboard = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/employee-productivity`, {

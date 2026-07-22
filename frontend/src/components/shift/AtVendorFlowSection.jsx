@@ -39,10 +39,9 @@ export default function AtVendorFlowSection({
 }) {
   const isOperationsMode = isOperationsModeProp ?? isLiveView;
   const av = module || {};
-  // Step 1 authoritative model (feature-flagged, today/future + org 3). When active,
-  // it replaces the legacy headline + legacy operational exceptions entirely so the
-  // user never sees stale legacy totals next to the validated ones.
-  const step1Active = Boolean(isOperationsMode && av.veewash_step1_active && av.veewash_step1_summary);
+  // Step-1 dashboard is available for every stored/activation day (today live or prior snapshot).
+  // Do not hide it in Reporting Mode — that caused blank prior-day UI after midnight.
+  const step1Active = Boolean(av.veewash_step1_active && av.veewash_step1_summary);
   const monitoringCount = av.completed_before_day_start_still_present_count ?? 0;
   const monitoringRows = av.completed_before_day_start_still_present_rows || [];
   const dailyReliable = av.daily_metrics_reliable !== false;
@@ -52,7 +51,7 @@ export default function AtVendorFlowSection({
 
   const workloadSections = buildAtVendorHierarchy(av, segment, { historical: !isOperationsMode });
   const exceptionSections = isOperationsMode ? buildAtVendorOperationalExceptions(av) : [];
-  const reportStats = !isOperationsMode ? buildWorkloadReportStats(av) : null;
+  const reportStats = !isOperationsMode && !step1Active ? buildWorkloadReportStats(av) : null;
 
   const handleCardClick = (card) => {
     if (!onDrilldown) return;
@@ -93,6 +92,8 @@ export default function AtVendorFlowSection({
           onRushChange={onRushChange}
           selectedDateEt={selectedDateEt || av.veewash_step1_summary?.selected_date_et}
           onRefresh={onCompletionReviewChanged}
+          isToday={Boolean(isOperationsMode)}
+          shiftDay={av.veewash_step1_day || av.veewash_step1_summary?.shift_day}
         />
       ) : null}
 

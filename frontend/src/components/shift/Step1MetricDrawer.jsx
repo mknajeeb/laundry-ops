@@ -65,6 +65,7 @@ export default function Step1MetricDrawer({
   rushFilter = "all",
   title,
   onCorrected,
+  readOnly = false,
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -280,6 +281,12 @@ export default function Step1MetricDrawer({
                   ) : null}
 
                   <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
+                    {readOnly ? (
+                      <Typography variant="caption" color="text.secondary">
+                        Shift is closed — reopen to make corrections.
+                      </Typography>
+                    ) : (
+                      <>
                     <Button size="small" variant="outlined" onClick={() => startAction(bag, "mark_completed")}>
                       Mark completed
                     </Button>
@@ -295,9 +302,11 @@ export default function Step1MetricDrawer({
                     <Button size="small" color="error" variant="outlined" onClick={() => startAction(bag, "exclude")}>
                       Exclude
                     </Button>
+                      </>
+                    )}
                   </Stack>
 
-                  {actionBag === bag.bag_id ? (
+                  {!readOnly && actionBag === bag.bag_id ? (
                     <Box sx={{ mt: 1.5, p: 1.25, bgcolor: VEEWASH_DASHBOARD.primaryBlueLight, borderRadius: 1 }}>
                       <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
                         {form.action}

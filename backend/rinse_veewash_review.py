@@ -53,23 +53,21 @@ def derive_pre_post_weights(weight_values: Sequence[Any]) -> dict[str, float | N
     From chronological scrape weight readings (nulls ignored):
 
     - pre  = first non-null weight
-    - post = later non-null weight when the value changes during the cycle
-             (latest changed value wins)
+    - post = last non-null weight (may equal pre when weight never changed)
 
-    A single non-null reading sets pre only; post stays None until a change.
+    A single non-null reading therefore sets both pre and post to that value.
+    Review Required uses post only (missing/≤0).
     """
-    pre: float | None = None
-    post: float | None = None
+    seen: list[float] = []
     for raw in weight_values:
         w = _parse_weight(raw)
         if w is None:
             continue
-        if pre is None:
-            pre = w
-            continue
-        if w != pre:
-            post = w
-    return {"pre_weight_lbs": pre, "post_weight_lbs": post}
+        seen.append(w)
+    if not seen:
+        return {"pre_weight_lbs": None, "post_weight_lbs": None}
+    return {"pre_weight_lbs": seen[0], "post_weight_lbs": seen[-1]}
+
 
 
 def _coerce_weight_info(raw: Any) -> dict[str, float | None]:

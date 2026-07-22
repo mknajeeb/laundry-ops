@@ -2906,9 +2906,7 @@ def _try_build_step1_lightweight_summary(
     try:
         from backend.rinse_veewash_workload import (
             VEEWASH_ORG_ID,
-            build_step1_headline_summary,
             build_today_validation,
-            build_veewash_daily_workload,
             get_step1_activation_date,
             is_step1_enabled,
         )
@@ -2922,14 +2920,14 @@ def _try_build_step1_lightweight_summary(
         return None
 
     from backend.rinse_shift_monitor_baseline import format_baseline_banner_et
+    from backend.rinse_veewash_shift_day import build_or_load_step1_for_date
 
     t_s1 = time.perf_counter()
-    s1 = build_veewash_daily_workload(cursor, org, selected_date_et=period_end)
+    s1, summary, day_meta = build_or_load_step1_for_date(
+        cursor, org, period_end, persist_live=True
+    )
     s1["today_validation"] = build_today_validation(s1, selected_date_et=period_end)
     s1["activation_date_et"] = activation.isoformat()
-    summary = build_step1_headline_summary(
-        s1, selected_date_et=period_end, activation_date=activation
-    )
     s1_ms = (time.perf_counter() - t_s1) * 1000
 
     # Minimal at-vendor module: only the fields the simplified Step-1 UI reads. Legacy
@@ -2941,6 +2939,11 @@ def _try_build_step1_lightweight_summary(
         "daily_metrics_reliable": True,
         "veewash_step1_active": True,
         "veewash_step1_summary": summary,
+        "veewash_step1_day": (summary or {}).get("shift_day")
+        or {
+            "status": (day_meta or {}).get("status") or "OPEN",
+            "read_only": (day_meta or {}).get("status") == "CLOSED",
+        },
         "employee_completed_bags_today": None,
         "completed_before_day_start_still_present_count": 0,
         "completed_before_day_start_still_present_rows": [],

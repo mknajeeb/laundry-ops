@@ -13,6 +13,7 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ShiftCountCard from "./ShiftCountCard";
 import RushFilterChips from "./RushFilterChips";
 import Step1MetricDrawer from "./Step1MetricDrawer";
+import ShiftDayStatusBar from "./ShiftDayStatusBar";
 import { SERVICE_FILTERS } from "../../utils/shiftMonitorHelpers";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import { resolveStep1SegmentKeys } from "./veewashStep1SegmentKeys";
@@ -189,11 +190,15 @@ export default function VeeWashStep1Section({
   onRushChange,
   selectedDateEt,
   onRefresh,
+  isToday = false,
+  shiftDay,
 }) {
   const [serviceFilter, setServiceFilter] = useState("all");
   const [drawer, setDrawer] = useState({ open: false, metric: null, title: "" });
   const rushFilter = segment || "all";
   const segments = summary?.segments || {};
+  const dayMeta = shiftDay || summary?.shift_day || {};
+  const readOnly = Boolean(dayMeta.read_only || String(dayMeta.status || "").toUpperCase() === "CLOSED");
 
   const keys = useMemo(
     () => resolveStep1SegmentKeys(serviceFilter, rushFilter),
@@ -220,8 +225,39 @@ export default function VeeWashStep1Section({
     .filter(([k]) => !REASON_GROUPS.some((g) => g.key === k))
     .flatMap(([, ids]) => ids || []);
 
+  const dayLabel = isToday ? "Today's Workload" : `Workload · ${selectedDateEt || summary.selected_date_et || ""}`;
+
   return (
     <Box sx={{ mb: 2.5 }}>
+      <ShiftDayStatusBar
+        selectedDateEt={selectedDateEt || summary.selected_date_et}
+        shiftDay={dayMeta}
+        validation={{
+          review_required_count: reviewCount,
+          totals: {
+            active: totalSeg.active_workload,
+            completed: totalSeg.completed,
+            pending: totalSeg.pending,
+            review_required: reviewCount,
+            wf: {
+              new_today: wfSeg?.new_today,
+              carryover: wfSeg?.carryover,
+              completed: wfSeg?.completed,
+              pending: wfSeg?.pending,
+              review_required: wfSeg?.exceptions?.review_required,
+            },
+            hd: {
+              new_today: hdSeg?.new_today,
+              carryover: hdSeg?.carryover,
+              completed: hdSeg?.completed,
+              pending: hdSeg?.pending,
+              review_required: hdSeg?.exceptions?.review_required,
+            },
+          },
+        }}
+        isToday={isToday}
+        onChanged={onRefresh}
+      />
       <Paper
         elevation={0}
         sx={{
@@ -244,7 +280,7 @@ export default function VeeWashStep1Section({
         >
           <Stack direction="row" alignItems="center" spacing={0.75}>
             <Typography variant="h6" fontWeight={800} sx={{ lineHeight: 1.2, fontSize: "1.125rem" }}>
-              Today&apos;s Workload
+              {dayLabel}
             </Typography>
             <Chip
               label="Step 1"
@@ -370,6 +406,7 @@ export default function VeeWashStep1Section({
         serviceFilter={serviceFilter}
         rushFilter={rushFilter}
         onCorrected={onRefresh}
+        readOnly={readOnly}
       />
     </Box>
   );

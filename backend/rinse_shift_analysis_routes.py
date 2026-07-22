@@ -473,6 +473,168 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/veewash-step1/day-status", methods=["GET"])
+    def rinse_veewash_step1_day_status():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org = user_org_id(me)
+            raw_day = request.args.get("date") or request.args.get("selected_date_et")
+            day = parse_date_value(raw_day) if raw_day else date.today()
+            if not isinstance(day, date):
+                day = date.today()
+            from backend.rinse_veewash_shift_day import (
+                get_day_record,
+                list_close_audit,
+                validate_close,
+                build_or_load_step1_for_date,
+            )
+
+            _wl, summary, day_rec = build_or_load_step1_for_date(
+                cursor, org, day, persist_live=True
+            )
+            conn.commit()
+            validation = validate_close(summary, allow_unresolved_reviews=False)
+            return jsonify(
+                json_safe_rinse(
+                    {
+                        "day": day_rec or get_day_record(cursor, org, day),
+                        "shift_day": summary.get("shift_day"),
+                        "validation": validation,
+                        "audit": list_close_audit(cursor, org, day),
+                    }
+                )
+            )
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/veewash-step1/close", methods=["POST"])
+    def rinse_veewash_step1_close():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            roles = {(me.get("roles") or me.get("role") or "")} if isinstance(me, dict) else set()
+            if isinstance(me, dict) and isinstance(me.get("roles"), list):
+                roles = {str(r).upper() for r in me.get("roles")}
+            else:
+                roles = {str(x).upper() for x in str(me.get("role") if isinstance(me, dict) else "").split(",") if x}
+            if not roles.intersection({"ADMIN", "OPS", "SUPER_ADMIN", "PLATFORM_ADMIN", "MANAGER"}):
+                # Also allow if username-style admin roles present on me.roles string
+                role_blob = " ".join(sorted(roles)).upper()
+                if "ADMIN" not in role_blob and "OPS" not in role_blob and "MANAGER" not in role_blob:
+                    return jsonify({"error": "forbidden"}), 403
+            org = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            raw_day = body.get("date") or body.get("selected_date_et")
+            day = parse_date_value(raw_day) if raw_day else date.today()
+            if not isinstance(day, date):
+                return jsonify({"error": "invalid_date"}), 400
+            from backend.rinse_veewash_shift_day import close_shift_day
+
+            out = close_shift_day(
+                cursor,
+                org,
+                day,
+                actor_user_id=me.get("id") if isinstance(me, dict) else None,
+                actor_display_name=(
+                    (me.get("display_name") or me.get("username"))
+                    if isinstance(me, dict)
+                    else None
+                ),
+                reason=body.get("reason"),
+                allow_unresolved_reviews=bool(body.get("allow_unresolved_reviews")),
+                checklist=body.get("checklist"),
+            )
+            if not out.get("ok"):
+                conn.rollback()
+                return jsonify(json_safe_rinse(out)), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/veewash-step1/reopen", methods=["POST"])
+    def rinse_veewash_step1_reopen():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            raw_day = body.get("date") or body.get("selected_date_et")
+            day = parse_date_value(raw_day) if raw_day else date.today()
+            if not isinstance(day, date):
+                return jsonify({"error": "invalid_date"}), 400
+            from backend.rinse_veewash_shift_day import reopen_shift_day
+
+            out = reopen_shift_day(
+                cursor,
+                org,
+                day,
+                actor_user_id=me.get("id") if isinstance(me, dict) else None,
+                actor_display_name=(
+                    (me.get("display_name") or me.get("username"))
+                    if isinstance(me, dict)
+                    else None
+                ),
+                reason=str(body.get("reason") or ""),
+            )
+            if not out.get("ok"):
+                conn.rollback()
+                return jsonify(json_safe_rinse(out)), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/veewash-step1/backfill-day", methods=["POST"])
+    def rinse_veewash_step1_backfill_day():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            raw_day = body.get("date") or body.get("selected_date_et")
+            day = parse_date_value(raw_day) if raw_day else None
+            if not isinstance(day, date):
+                return jsonify({"error": "invalid_date"}), 400
+            from backend.rinse_veewash_shift_day import backfill_day_from_live
+
+            out = backfill_day_from_live(cursor, org, day)
+            if not out.get("ok"):
+                conn.rollback()
+                return jsonify(json_safe_rinse(out)), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/shift-analysis/debug", methods=["GET"])
     def rinse_shift_analysis_debug():
         """Admin-only audit payload for /performance data reconciliation."""

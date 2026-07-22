@@ -109,14 +109,12 @@ def _record_correction(
 
 
 def build_step1_payload(cursor, organization_id: int, selected_date_et: date) -> dict[str, Any]:
-    wl = build_veewash_daily_workload(
-        cursor, organization_id, selected_date_et=selected_date_et
+    from backend.rinse_veewash_shift_day import build_or_load_step1_for_date
+
+    wl, summary, day = build_or_load_step1_for_date(
+        cursor, organization_id, selected_date_et, persist_live=True
     )
-    activation = get_step1_activation_date(cursor, organization_id) or selected_date_et
-    summary = build_step1_headline_summary(
-        wl, selected_date_et=selected_date_et, activation_date=activation
-    )
-    return {"workload": wl, "summary": summary}
+    return {"workload": wl, "summary": summary, "day": day}
 
 
 def _filter_bag_ids(
@@ -320,6 +318,16 @@ def apply_step1_correction(
             day = date.fromisoformat(str(day_raw)[:10])
         except ValueError:
             pass
+
+    from backend.rinse_veewash_shift_day import STATUS_CLOSED, get_day_record
+
+    day_rec = get_day_record(cursor, organization_id, day)
+    if day_rec and day_rec.get("status") == STATUS_CLOSED:
+        return {
+            "ok": False,
+            "error": "shift_closed_reopen_required",
+            "day_status": STATUS_CLOSED,
+        }
 
     # Snapshot prior row from workload
     payload = build_step1_payload(cursor, organization_id, day)
