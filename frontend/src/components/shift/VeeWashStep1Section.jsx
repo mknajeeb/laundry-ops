@@ -5,28 +5,25 @@ import {
   AccordionSummary,
   Box,
   Chip,
-  Drawer,
-  IconButton,
   Paper,
   Stack,
   Typography,
 } from "@mui/material";
-import CloseIcon from "@mui/icons-material/Close";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ShiftCountCard from "./ShiftCountCard";
+import RushFilterChips from "./RushFilterChips";
+import { SERVICE_FILTERS } from "../../utils/shiftMonitorHelpers";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+import { resolveStep1SegmentKeys } from "./veewashStep1SegmentKeys";
 
-/**
- * Step-1 Shift Monitor headline: WF / HD × Total | Rush | Non-Rush.
- * Uses veewash_step1_summary from the lightweight API (bag_ids included).
- */
+export { resolveStep1SegmentKeys };
 
-function BagChips({ ids }) {
+function BagList({ ids }) {
   const list = ids || [];
-  if (!list.length) {
+  if (list.length === 0) {
     return (
       <Typography variant="caption" color="text.secondary">
-        No bags in this bucket.
+        No bags in this category.
       </Typography>
     );
   }
@@ -38,7 +35,7 @@ function BagChips({ ids }) {
           label={id}
           size="small"
           sx={{
-            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            fontFamily: "monospace",
             fontSize: "0.72rem",
             height: 22,
             bgcolor: "#f1f5f9",
@@ -50,200 +47,130 @@ function BagChips({ ids }) {
   );
 }
 
-function TriStat({ label, total, rush, nonRush, onSelect, activeKey, prefix }) {
-  const cell = (key, title, value, variant) => (
-    <ShiftCountCard
-      key={key}
-      label={title}
-      value={value}
-      size="snapshot"
-      variant={variant}
-      active={activeKey === key}
-      onClick={onSelect ? () => onSelect(key) : undefined}
-    />
-  );
+function emptySeg() {
+  return {
+    new_today: 0,
+    carryover: 0,
+    active_workload: 0,
+    completed: 0,
+    pending: 0,
+    exceptions: { review_required: 0, total: 0 },
+    bag_ids: { review_required: [] },
+  };
+}
+
+function pickSeg(segments, key) {
+  if (!key) return null;
+  return segments?.[key] || emptySeg();
+}
+
+function ServiceFilterChips({ value, onChange }) {
   return (
-    <Box sx={{ mb: 1.25 }}>
-      <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ mb: 0.5, display: "block" }}>
-        {label}
+    <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+      {SERVICE_FILTERS.map(({ id, label }) => {
+        const selected = value === id;
+        return (
+          <Chip
+            key={id}
+            size="small"
+            label={label}
+            onClick={() => onChange(id)}
+            variant={selected ? "filled" : "outlined"}
+            sx={{
+              fontWeight: 600,
+              borderRadius: 1.5,
+              px: 0.5,
+              minHeight: 30,
+              fontSize: "0.8125rem",
+              bgcolor: selected ? VEEWASH_DASHBOARD.primaryBlue : "transparent",
+              color: selected ? "#fff" : "text.primary",
+              border: "2px solid",
+              borderColor: selected ? VEEWASH_DASHBOARD.primaryBlue : "divider",
+              "&:hover": {
+                bgcolor: selected ? VEEWASH_DASHBOARD.primaryBlueDark : VEEWASH_DASHBOARD.primaryBlueLight,
+              },
+            }}
+          />
+        );
+      })}
+    </Stack>
+  );
+}
+
+function MetricRow({ title, seg, showEntryMetrics = true, emphasize = false }) {
+  if (!seg) return null;
+  const review = seg.exceptions?.review_required ?? seg.exceptions?.total ?? 0;
+  return (
+    <Box sx={{ mb: emphasize ? 0 : 1.5 }}>
+      <Typography
+        variant="subtitle2"
+        fontWeight={800}
+        sx={{
+          mb: 0.75,
+          letterSpacing: 0.4,
+          color: emphasize ? VEEWASH_DASHBOARD.primaryBlueDark : "text.primary",
+        }}
+      >
+        {title}
       </Typography>
       <Box
         sx={{
           display: "grid",
-          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-          gap: 0.75,
+          gridTemplateColumns: {
+            xs: "repeat(2, 1fr)",
+            sm: showEntryMetrics ? "repeat(3, 1fr)" : "repeat(2, 1fr)",
+            md: showEntryMetrics ? "repeat(5, 1fr)" : "repeat(4, 1fr)",
+          },
+          gap: 1,
         }}
       >
-        {cell(`${prefix}:total`, "Total", total, "total")}
-        {cell(`${prefix}:rush`, "Rush", rush, "rush")}
-        {cell(`${prefix}:non_rush`, "Non-Rush", nonRush, "info")}
+        {showEntryMetrics ? (
+          <>
+            <ShiftCountCard label="New Today" value={seg.new_today} size="kpi" />
+            <ShiftCountCard label="Carryover" value={seg.carryover} size="kpi" />
+          </>
+        ) : (
+          <ShiftCountCard label="Active Workload" value={seg.active_workload} size="kpi" variant="wf" />
+        )}
+        <ShiftCountCard label="Completed" value={seg.completed} size="kpi" />
+        <ShiftCountCard label="Pending" value={seg.pending} size="kpi" variant="pending" />
+        <ShiftCountCard label="Review Required" value={review} size="kpi" warn={review > 0} />
       </Box>
+      {showEntryMetrics ? (
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
+          Active {seg.active_workload} = New {seg.new_today} + Carryover {seg.carryover}
+          {" · "}
+          Outcomes {seg.active_workload} = Completed {seg.completed} + Pending {seg.pending} + Review {review}
+        </Typography>
+      ) : (
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
+          Active {seg.active_workload} = Completed {seg.completed} + Pending {seg.pending} + Review {review}
+        </Typography>
+      )}
     </Box>
   );
 }
 
-function ServicePanel({
-  title,
-  variant,
-  totalSeg,
-  rushSeg,
-  nonRushSeg,
-  onOpenBucket,
-  activeKey,
-}) {
-  const accent = variant === "wf" ? VEEWASH_DASHBOARD.wfCharcoal : VEEWASH_DASHBOARD.hdTeal;
-  const border = variant === "wf" ? VEEWASH_DASHBOARD.wfBorder : VEEWASH_DASHBOARD.hdBorder;
-  const bg = variant === "wf" ? VEEWASH_DASHBOARD.wfBg : VEEWASH_DASHBOARD.hdBg;
-  const prefix = variant;
-
-  return (
-    <Paper
-      elevation={0}
-      sx={{
-        p: { xs: 1.25, sm: 1.5 },
-        borderRadius: 2,
-        border: "2px solid",
-        borderColor: border,
-        bgcolor: bg,
-        height: "100%",
-      }}
-    >
-      <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ mb: 1 }}>
-        <Typography variant="subtitle1" fontWeight={800} sx={{ color: accent }}>
-          {title}
-        </Typography>
-        <Typography variant="caption" color="text.secondary" fontWeight={600}>
-          Active {totalSeg?.active_workload ?? 0}
-        </Typography>
-      </Stack>
-
-      <TriStat
-        label="New Today"
-        total={totalSeg?.new_today ?? 0}
-        rush={rushSeg?.new_today ?? 0}
-        nonRush={nonRushSeg?.new_today ?? 0}
-        prefix={`${prefix}:new`}
-        activeKey={activeKey}
-        onSelect={(key) => {
-          const rushKey = key.endsWith(":rush") ? "rush" : key.endsWith(":non_rush") ? "non_rush" : "total";
-          const seg = rushKey === "rush" ? rushSeg : rushKey === "non_rush" ? nonRushSeg : totalSeg;
-          onOpenBucket({
-            key,
-            title: `${title} · New Today · ${rushKey === "total" ? "Total" : rushKey === "rush" ? "Rush" : "Non-Rush"}`,
-            ids: seg?.bag_ids?.new_today || [],
-            count: seg?.new_today ?? 0,
-          });
-        }}
-      />
-
-      <Box
-        sx={{
-          display: "grid",
-          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-          gap: 0.75,
-        }}
-      >
-        <ShiftCountCard
-          label="Carryover"
-          value={totalSeg?.carryover ?? 0}
-          size="snapshot"
-          variant={variant}
-          active={activeKey === `${prefix}:carryover`}
-          onClick={() =>
-            onOpenBucket({
-              key: `${prefix}:carryover`,
-              title: `${title} · Carryover`,
-              ids: totalSeg?.bag_ids?.carryover || [],
-              count: totalSeg?.carryover ?? 0,
-            })
-          }
-        />
-        <ShiftCountCard
-          label="Completed"
-          value={totalSeg?.completed ?? 0}
-          size="snapshot"
-          variant="completed"
-          active={activeKey === `${prefix}:completed`}
-          onClick={() =>
-            onOpenBucket({
-              key: `${prefix}:completed`,
-              title: `${title} · Completed`,
-              ids: totalSeg?.bag_ids?.completed || [],
-              count: totalSeg?.completed ?? 0,
-            })
-          }
-        />
-        <ShiftCountCard
-          label="Pending"
-          value={totalSeg?.pending ?? 0}
-          size="snapshot"
-          variant="pending"
-          active={activeKey === `${prefix}:pending`}
-          onClick={() =>
-            onOpenBucket({
-              key: `${prefix}:pending`,
-              title: `${title} · Pending`,
-              ids: totalSeg?.bag_ids?.pending || [],
-              count: totalSeg?.pending ?? 0,
-            })
-          }
-        />
-        <ShiftCountCard
-          label="Review Required"
-          value={totalSeg?.exceptions?.review_required ?? 0}
-          size="snapshot"
-          warn
-          active={activeKey === `${prefix}:review`}
-          onClick={() =>
-            onOpenBucket({
-              key: `${prefix}:review`,
-              title: `${title} · Review Required`,
-              ids: totalSeg?.bag_ids?.review_required || [],
-              count: totalSeg?.exceptions?.review_required ?? 0,
-            })
-          }
-        />
-      </Box>
-    </Paper>
-  );
-}
-
-export default function VeeWashStep1Section({ summary }) {
-  const [drawer, setDrawer] = useState(null);
-
+export default function VeeWashStep1Section({ summary, segment = "all", onRushChange }) {
+  const [serviceFilter, setServiceFilter] = useState("all");
+  const rushFilter = segment || "all";
   const segments = summary?.segments || {};
-  const all = segments.all || summary || {};
-  const wf = segments.wf || {};
-  const hd = segments.hd || {};
-  const wfRush = segments.wf_rush || {};
-  const wfNonRush = segments.wf_non_rush || {};
-  const hdRush = segments.hd_rush || {};
-  const hdNonRush = segments.hd_non_rush || {};
 
-  const reviewCount = all?.exceptions?.review_required ?? summary?.exceptions?.review_required ?? 0;
-  const reviewIds =
-    all?.bag_ids?.review_required ||
-    summary?.exceptions?.review_required_bag_ids ||
-    [];
+  const keys = useMemo(
+    () => resolveStep1SegmentKeys(serviceFilter, rushFilter),
+    [serviceFilter, rushFilter],
+  );
 
-  const reconLines = useMemo(() => {
-    const lines = summary?.reconciliation_lines || {};
-    return {
-      newToday:
-        lines.new_today ||
-        `New Today ${all.new_today ?? 0} = WF ${wf.new_today ?? 0} + HD ${hd.new_today ?? 0}`,
-      active:
-        lines.active_workload ||
-        `Active Workload ${all.active_workload ?? 0} = Completed ${all.completed ?? 0}` +
-          ` + Pending ${all.pending ?? 0} + Review Required ${reviewCount}`,
-    };
-  }, [summary, all, wf, hd, reviewCount]);
+  const wfSeg = pickSeg(segments, keys.wf);
+  const hdSeg = pickSeg(segments, keys.hd);
+  const totalSeg = pickSeg(segments, keys.total) || emptySeg();
+
+  const reviewIds = totalSeg.bag_ids?.review_required
+    || totalSeg.bag_ids?.disappeared_without_completion
+    || [];
+  const reviewCount = totalSeg.exceptions?.review_required ?? reviewIds.length ?? 0;
 
   if (!summary) return null;
-
-  const openOverall = (key, title, ids, count) => {
-    setDrawer({ key, title, ids: ids || [], count: count ?? (ids || []).length });
-  };
 
   return (
     <Box sx={{ mb: 2.5 }}>
@@ -284,202 +211,87 @@ export default function VeeWashStep1Section({ summary }) {
             />
           </Stack>
           <Typography variant="caption" sx={{ mt: 0.35, opacity: 0.9, display: "block", maxWidth: 640 }}>
-            WF and HD enter on first VeeWash Dirty scan. Rush filters within each service.
-            Completion uses canonical evidence. RFV is excluded.
+            WF and HD enter on Dirty scan. Completion is canonical. Review Required needs attention.
           </Typography>
         </Box>
 
         <Box sx={{ p: { xs: 1.25, sm: 1.75 } }}>
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={1.25}
+            justifyContent="space-between"
+            alignItems={{ xs: "stretch", sm: "center" }}
+            sx={{ mb: 1.5 }}
+          >
+            <Box>
+              <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
+                Service
+              </Typography>
+              <ServiceFilterChips value={serviceFilter} onChange={setServiceFilter} />
+            </Box>
+            <Box>
+              <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
+                Rush
+              </Typography>
+              <RushFilterChips value={rushFilter} onChange={onRushChange} />
+            </Box>
+          </Stack>
+
+          {wfSeg ? <MetricRow title="WF" seg={wfSeg} showEntryMetrics /> : null}
+          {hdSeg ? <MetricRow title="HD" seg={hdSeg} showEntryMetrics /> : null}
+
           <Box
             sx={{
-              display: "grid",
-              gridTemplateColumns: {
-                xs: "repeat(2, 1fr)",
-                sm: "repeat(3, 1fr)",
-                md: "repeat(6, 1fr)",
-              },
-              gap: 1,
-              mb: 1.25,
+              mt: 0.5,
+              pt: 1.25,
+              borderTop: "1px solid",
+              borderColor: "divider",
             }}
           >
-            <ShiftCountCard
-              label="New Today"
-              value={all.new_today ?? 0}
-              size="kpi"
-              active={drawer?.key === "all:new"}
-              onClick={() =>
-                openOverall("all:new", "New Today", all.bag_ids?.new_today, all.new_today)
-              }
-            />
-            <ShiftCountCard
-              label="Carryover"
-              value={all.carryover ?? 0}
-              size="kpi"
-              active={drawer?.key === "all:carryover"}
-              onClick={() =>
-                openOverall(
-                  "all:carryover",
-                  "Carryover",
-                  all.bag_ids?.carryover,
-                  all.carryover,
-                )
-              }
-            />
-            <ShiftCountCard
-              label="Active Workload"
-              value={all.active_workload ?? 0}
-              size="kpi"
-              variant="wf"
-              active={drawer?.key === "all:active"}
-              onClick={() =>
-                openOverall(
-                  "all:active",
-                  "Active Workload",
-                  [...(all.bag_ids?.new_today || []), ...(all.bag_ids?.carryover || [])],
-                  all.active_workload,
-                )
-              }
-            />
-            <ShiftCountCard
-              label="Completed"
-              value={all.completed ?? 0}
-              size="kpi"
-              variant="completed"
-              active={drawer?.key === "all:completed"}
-              onClick={() =>
-                openOverall(
-                  "all:completed",
-                  "Completed",
-                  all.bag_ids?.completed,
-                  all.completed,
-                )
-              }
-            />
-            <ShiftCountCard
-              label="Pending"
-              value={all.pending ?? 0}
-              size="kpi"
-              variant="pending"
-              active={drawer?.key === "all:pending"}
-              onClick={() =>
-                openOverall("all:pending", "Pending", all.bag_ids?.pending, all.pending)
-              }
-            />
-            <ShiftCountCard
-              label="Review Required"
-              value={reviewCount}
-              size="kpi"
-              warn
-              active={drawer?.key === "all:review"}
-              onClick={() =>
-                openOverall("all:review", "Review Required", reviewIds, reviewCount)
-              }
-            />
-          </Box>
-
-          <Typography variant="caption" color="text.secondary" display="block" fontWeight={600}>
-            {reconLines.newToday}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
-            {reconLines.active}
-          </Typography>
-
-          <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>
-            By service · Total | Rush | Non-Rush
-          </Typography>
-          <Box
-            sx={{
-              display: "grid",
-              gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-              gap: 1.25,
-            }}
-          >
-            <ServicePanel
-              title="Wash & Fold"
-              variant="wf"
-              totalSeg={wf}
-              rushSeg={wfRush}
-              nonRushSeg={wfNonRush}
-              onOpenBucket={setDrawer}
-              activeKey={drawer?.key}
-            />
-            <ServicePanel
-              title="Home Delivery"
-              variant="hd"
-              totalSeg={hd}
-              rushSeg={hdRush}
-              nonRushSeg={hdNonRush}
-              onOpenBucket={setDrawer}
-              activeKey={drawer?.key}
-            />
+            <MetricRow title="TOTAL" seg={totalSeg} showEntryMetrics={false} emphasize />
           </Box>
         </Box>
       </Paper>
 
-      {reviewCount > 0 ? (
+      <Paper
+        elevation={0}
+        sx={{
+          p: { xs: 1.25, sm: 1.75 },
+          mb: 1.25,
+          borderRadius: 2,
+          border: "1px solid",
+          borderColor: reviewCount > 0 ? "#fca5a5" : VEEWASH_DASHBOARD.monitoringBorder,
+          bgcolor: reviewCount > 0 ? "#fef2f2" : VEEWASH_DASHBOARD.monitoringBg,
+          boxShadow: "none",
+        }}
+      >
         <Accordion
           disableGutters
           elevation={0}
-          defaultExpanded
+          disabled={reviewCount === 0}
           sx={{
-            borderRadius: "10px !important",
-            border: "1px solid",
-            borderColor: "#fca5a5",
-            bgcolor: "#fef2f2",
+            bgcolor: "transparent",
             "&:before": { display: "none" },
-            mb: 1.25,
           }}
         >
-          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: 1.25, minHeight: 44 }}>
-            <Box>
-              <Typography variant="body2" fontWeight={800} sx={{ color: "#991b1b" }}>
-                Review Required · {reviewCount}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                Entered workload · no canonical completion · absent from trustworthy At-Vendor scrape
-              </Typography>
-            </Box>
+          <AccordionSummary
+            expandIcon={reviewCount > 0 ? <ExpandMoreIcon /> : null}
+            sx={{ px: 0, minHeight: 36, "&.Mui-disabled": { opacity: 1 } }}
+          >
+            <Typography variant="subtitle2" fontWeight={800} sx={{ color: reviewCount > 0 ? "#991b1b" : "text.primary" }}>
+              Review Required · {reviewCount}
+            </Typography>
           </AccordionSummary>
-          <AccordionDetails sx={{ px: 1.25, pt: 0, pb: 1.25 }}>
-            <BagChips ids={reviewIds} />
-          </AccordionDetails>
+          {reviewCount > 0 ? (
+            <AccordionDetails sx={{ px: 0, pt: 0, pb: 0.5 }}>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>
+                Entered workload, no canonical completion, confirmed absent from At-Vendor.
+              </Typography>
+              <BagList ids={reviewIds} />
+            </AccordionDetails>
+          ) : null}
         </Accordion>
-      ) : null}
-
-      <Drawer
-        anchor="bottom"
-        open={Boolean(drawer)}
-        onClose={() => setDrawer(null)}
-        PaperProps={{
-          sx: {
-            height: { xs: "70%", sm: "55vh" },
-            maxHeight: "75vh",
-            borderTopLeftRadius: { xs: 0, sm: 16 },
-            borderTopRightRadius: { xs: 0, sm: 16 },
-            p: { xs: 1.5, sm: 2 },
-          },
-        }}
-      >
-        <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 1.25 }}>
-          <Box sx={{ minWidth: 0, pr: 1 }}>
-            <Typography variant="h6" fontWeight={800} sx={{ wordBreak: "break-word" }}>
-              {drawer?.title || "Bags"}
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              {(drawer?.ids || []).length} bag{(drawer?.ids || []).length === 1 ? "" : "s"}
-              {drawer?.count != null && drawer.count !== (drawer?.ids || []).length
-                ? ` · expected ${drawer.count}`
-                : ""}
-            </Typography>
-          </Box>
-          <IconButton onClick={() => setDrawer(null)} aria-label="Close" size="small">
-            <CloseIcon />
-          </IconButton>
-        </Stack>
-        <Box sx={{ overflow: "auto" }}>
-          <BagChips ids={drawer?.ids} />
-        </Box>
-      </Drawer>
+      </Paper>
     </Box>
   );
 }

@@ -87,7 +87,11 @@ export default function AtVendorFlowSection({
       ) : null}
 
       {step1Active ? (
-        <VeeWashStep1Section summary={av.veewash_step1_summary} />
+        <VeeWashStep1Section
+          summary={av.veewash_step1_summary}
+          segment={segment}
+          onRushChange={onRushChange}
+        />
       ) : null}
 
       {step1Active ? null : (
