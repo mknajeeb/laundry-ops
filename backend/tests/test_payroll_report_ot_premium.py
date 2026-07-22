@@ -200,6 +200,75 @@ def test_payment_status_paid_when_batch_paid_but_line_approved_unpaid():
     assert row["payment_status"] == "Paid"
     assert row["finalized_date"] == "2026-06-13"
 
+
+def test_paid_full_gross_report_net_equals_gross_with_zero_ee_taxes():
+    """Paid-full-gross: Net = amount paid (= Gross); EE taxes column is actual withheld ($0).
+
+    Estimated employee_deductions remain a balance owed — they must not appear as
+    EE taxes beside an undeducted Net (that made Net look broken).
+    """
+    batch = {
+        "id": 15,
+        "batch_name": "W2-2026-004",
+        "worker_category": "w2",
+        "pay_period_start": "2026-05-25",
+        "pay_period_end": "2026-05-31",
+        "status": "paid",
+        "official_pay_date": "2026-06-06",
+        "payout_details_finalized_at": "2026-06-21",
+    }
+    line = {
+        "id": 236,
+        "user_id": 99,
+        "worker_name_snapshot": "Alec Coaxum",
+        "approved_hours": 20,
+        "ot_hours": 0,
+        "rate": 23.358,
+        "gross_amount": 467.16,
+        "payment_status": "paid",
+        "payout_details_json": (
+            '{"employee_deductions":{"fit":20,"ss":10,"medicare":5.73},"settlement":'
+            '{"amount_paid":467.16,"amount_withheld":0.0,'
+            '"paid_full_gross_without_withholding":true,"tax_balance_owed":35.73}}'
+        ),
+    }
+    row = build_report_row(batch, line)
+    assert row["gross_pay"] == 467.16
+    assert row["employee_tax_deductions"] == 0.0
+    assert row["net_pay"] == 467.16
+
+
+def test_withheld_taxes_reconcile_gross_minus_ee_equals_net():
+    batch = {
+        "id": 52,
+        "batch_name": "W2-2026-007",
+        "worker_category": "w2",
+        "pay_period_start": "2026-06-22",
+        "pay_period_end": "2026-06-28",
+        "status": "paid",
+        "official_pay_date": "2026-06-27",
+    }
+    line = {
+        "id": 300,
+        "user_id": 99,
+        "worker_name_snapshot": "Alec Coaxum",
+        "approved_hours": 40,
+        "ot_hours": 0,
+        "rate": 20,
+        "gross_amount": 442.17,
+        "payment_status": "paid",
+        "payout_details_json": (
+            '{"employee_deductions":{"fit":20,"ss":10,"medicare":3.82},"settlement":'
+            '{"amount_paid":408.35,"amount_withheld":33.82,'
+            '"paid_full_gross_without_withholding":false}}'
+        ),
+    }
+    row = build_report_row(batch, line)
+    assert row["gross_pay"] == 442.17
+    assert row["employee_tax_deductions"] == 33.82
+    assert row["net_pay"] == 408.35
+    assert abs(row["gross_pay"] - row["employee_tax_deductions"] - row["net_pay"]) < 0.01
+
 def test_excel_export_includes_totals_and_ot_premium():
     report = {
         "filters": {"all_history": True, "worker_category": "all", "report_type": "all_history"},

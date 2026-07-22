@@ -207,8 +207,40 @@ def _row_matches_date_range(
 
 
 def _employee_tax_total(details: dict) -> float:
+    """Employee taxes shown on the report.
+
+    When settlement records what was actually withheld/paid, use amount_withheld
+    so Net (amount paid) reconciles: Gross − EE taxes ≈ Net.
+
+    paid_full_gross_without_withholding pays the full gross and withholds $0 —
+    estimated employee_deductions remain a tax *balance owed*, not taxes taken
+    from this paycheck, so the report must show $0 EE taxes (not the estimate).
+    Otherwise Gross=Net while EE taxes > 0 looks like a broken Net column.
+    """
+    settlement = details.get("settlement") or {}
+    if bool(settlement.get("paid_full_gross_without_withholding")):
+        return 0.0
+    amount_paid = settlement.get("amount_paid")
+    has_paid = amount_paid is not None and str(amount_paid).strip() != ""
+    if has_paid or settlement.get("amount_withheld") is not None:
+        if has_paid or _money(settlement.get("amount_withheld")) > 0:
+            return round(_money(settlement.get("amount_withheld")), 2)
     ded = details.get("employee_deductions") or {}
     return round(sum(_money(v) for v in ded.values()), 2)
+
+
+def _report_net_pay(line: dict, details: dict, *, gross_pay: float, emp_tax: float, other_ded: float) -> float:
+    """Net for the report: amount paid to the worker when settled, else Gross − taxes − deductions."""
+    settlement = details.get("settlement") or {}
+    amount_paid = settlement.get("amount_paid")
+    if amount_paid is not None and str(amount_paid).strip() != "":
+        return round(_money(amount_paid), 2)
+    if bool(settlement.get("paid_full_gross_without_withholding")) and gross_pay > 0:
+        return round(_money(gross_pay), 2)
+    net = line.get("net_pay")
+    if net is not None and str(net).strip() != "":
+        return round(_money(net), 2)
+    return round(_money(gross_pay) - emp_tax - other_ded, 2)
 
 
 def _employer_tax_total(details: dict) -> float:
@@ -282,12 +314,15 @@ def build_report_row(batch: dict, line: dict) -> dict[str, Any]:
     pay_date_missing = pay_date is None
     emp_tax = _employee_tax_total(details)
     other_ded = _other_deductions_total(details)
-    settlement = details.get("settlement") or {}
-    net = settlement.get("amount_paid")
-    if net is None or str(net).strip() == "":
-        net = line.get("net_pay")
-    if net is None or str(net).strip() == "":
-        net = breakdown["gross_pay"] - emp_tax - other_ded
+    employer_taxes = _employer_tax_total(details)
+    gross_pay = breakdown["gross_pay"]
+    net = _report_net_pay(
+        line,
+        details,
+        gross_pay=gross_pay,
+        emp_tax=emp_tax,
+        other_ded=other_ded,
+    )
 
     ps = batch.get("pay_period_start")
     pe = batch.get("pay_period_end")
@@ -297,8 +332,6 @@ def build_report_row(batch: dict, line: dict) -> dict[str, Any]:
     elif ps or pe:
         period_label = str(ps or pe)[:10]
 
-    employer_taxes = _employer_tax_total(details)
-    gross_pay = breakdown["gross_pay"]
     total_payroll_cost = round(_money(gross_pay) + employer_taxes, 2)
 
     payment_st = _effective_payment_status(batch, line)
@@ -327,7 +360,7 @@ def build_report_row(batch: dict, line: dict) -> dict[str, Any]:
         "gross_pay": gross_pay,
         "employee_tax_deductions": emp_tax,
         "other_deductions": other_ded,
-        "net_pay": round(_money(net), 2),
+        "net_pay": net,
         "employer_taxes": employer_taxes,
         "total_payroll_cost": total_payroll_cost,
         "payment_status": _payment_status_label(payment_st),
