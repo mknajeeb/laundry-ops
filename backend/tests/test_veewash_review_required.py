@@ -53,37 +53,24 @@ def _comp(d, hour=13, by="Francis (Veewash)"):
     }
 
 
-def test_derive_null_5_5_6_0():
-    d = derive_pre_post_weights([None, 5.5, 6.0])
+def test_derive_one_weight_entry_pre_only():
+    d = derive_pre_post_weights([5.5])
+    assert d["pre_weight_lbs"] == 5.5
+    assert d["post_weight_lbs"] is None
+    assert d["post_weight_event_exists"] is False
+    assert d["weight_entry_count"] == 1
+
+
+def test_derive_two_weight_entry_pre_and_post():
+    d = derive_pre_post_weights([5.5, 6.0])
     assert d["pre_weight_lbs"] == 5.5
     assert d["post_weight_lbs"] == 6.0
     assert d["post_weight_event_exists"] is True
     assert d["post_weight_value"] == 6.0
-    assert d["post_weight_valid_for_standard_weight_revenue"] is True
+    assert d["weight_entry_count"] == 2
 
 
-def test_derive_null_5_5_5_5_same_value_two_events():
-    d = derive_pre_post_weights([None, 5.5, 5.5])
-    assert d["pre_weight_lbs"] == 5.5
-    assert d["post_weight_lbs"] == 5.5
-    assert d["post_weight_event_exists"] is True
-
-
-def test_derive_null_5_5_single_event_post_missing():
-    d = derive_pre_post_weights([None, 5.5])
-    assert d["pre_weight_lbs"] == 5.5
-    assert d["post_weight_lbs"] is None
-    assert d["post_weight_event_exists"] is False
-
-
-def test_derive_0_5_5_6_0_zero_is_real_then_positive_pre_preferred():
-    d = derive_pre_post_weights([0, 5.5, 6.0])
-    assert d["pre_weight_lbs"] == 5.5
-    assert d["post_weight_lbs"] == 6.0
-    assert d["post_weight_event_exists"] is True
-
-
-def test_derive_5_5_then_0_recorded_post_zero_not_missing():
+def test_derive_second_weight_entry_zero_is_post():
     d = derive_pre_post_weights([5.5, 0])
     assert d["pre_weight_lbs"] == 5.5
     assert d["post_weight_lbs"] == 0.0
@@ -92,17 +79,35 @@ def test_derive_5_5_then_0_recorded_post_zero_not_missing():
     assert d["post_weight_valid_for_standard_weight_revenue"] is False
 
 
-def test_derive_5_5_null_6_0():
-    d = derive_pre_post_weights([5.5, None, 6.0])
-    assert d["pre_weight_lbs"] == 5.5
+def test_derive_first_zero_still_pre_second_is_post():
+    """Chronology only — first weight-entry is Pre even when 0."""
+    d = derive_pre_post_weights([0, 6.0])
+    assert d["pre_weight_lbs"] == 0.0
     assert d["post_weight_lbs"] == 6.0
     assert d["post_weight_event_exists"] is True
 
 
-def test_derive_ignores_blank_and_negative():
-    d = derive_pre_post_weights([None, "", -1, 5.5, 6.0])
-    assert d["pre_weight_lbs"] == 5.5
-    assert d["post_weight_lbs"] == 6.0
+def test_resolve_weight_entry_pair_keeps_employee_and_timestamp():
+    from backend.rinse_veewash_review import resolve_weight_entry_pair
+
+    d = resolve_weight_entry_pair(
+        [
+            {
+                "weight_lbs": 4.9,
+                "scanned_at_parsed": datetime(2026, 7, 22, 6, 3),
+                "user_name": "Varun",
+            },
+            {
+                "weight_lbs": 0,
+                "scanned_at_parsed": datetime(2026, 7, 22, 9, 44),
+                "user_name": "Maria",
+            },
+        ]
+    )
+    assert d["pre_weight_employee"] == "Varun"
+    assert d["post_weight_employee"] == "Maria"
+    assert d["pre_weight_at"] == datetime(2026, 7, 22, 6, 3)
+    assert d["post_weight_at"] == datetime(2026, 7, 22, 9, 44)
 
 
 def test_cwo_bag_appears_in_review_required_not_completed():
@@ -360,9 +365,47 @@ def test_same_value_two_events_no_weight_review():
         selected_date_et=D1,
         presence_by_bag=presence,
         entry_by_bag=entry,
-        weight_by_bag={"WFSAME": {"pre_weight_lbs": 5.5, "post_weight_lbs": 5.5}},
+        weight_by_bag={
+            "WFSAME": {
+                "pre_weight_lbs": 5.5,
+                "post_weight_lbs": 5.5,
+                "post_weight_event_exists": True,
+                "weight_entry_count": 2,
+            }
+        },
     )
     assert REASON_WF_ZERO_OR_MISSING_POST_WEIGHT not in (out["review_reasons_by_bag"].get("WFSAME") or [])
+
+
+def test_completed_wf_two_weight_entries_no_missing_post_review():
+    presence = {"WFTWO": _pres(service="WF")}
+    entry = {"WFTWO": _entry(D1)}
+    completion = {"WFTWO": _comp(D1)}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag=completion,
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        weight_by_bag={
+            "WFTWO": {
+                "pre_weight_lbs": 4.9,
+                "post_weight_lbs": 0.0,
+                "post_weight_event_exists": True,
+                "post_weight_value": 0.0,
+                "weight_entry_count": 2,
+            }
+        },
+    )
+    assert "WFTWO" not in out["review_required"] or REASON_WF_ZERO_OR_MISSING_POST_WEIGHT not in (
+        out["review_reasons_by_bag"].get("WFTWO") or []
+    )
+    assert "WFTWO" in out["completed_on_date"]
 
 
 def test_no_double_count_and_review_by_reason_groups():

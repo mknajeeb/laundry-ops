@@ -32,7 +32,7 @@ from backend.rinse_veewash_workload import (
 
 
 def _parse_weight(raw: Any) -> float | None:
-    """Parse numeric weight; null/blank/non-numeric → None. Zero/negatives kept as floats."""
+    """Parse numeric weight; null/blank/non-numeric → None. Zero kept as 0.0."""
     if raw is None:
         return None
     if isinstance(raw, str) and not raw.strip():
@@ -44,138 +44,132 @@ def _parse_weight(raw: Any) -> float | None:
 
 
 def _valid_positive_weight(raw: Any) -> float | None:
-    """Valid revenue weight: strictly > 0. Ignores null/blank/non-numeric/≤0."""
+    """Valid revenue weight: strictly > 0. Kept for callers outside missing-post review."""
     w = _parse_weight(raw)
     if w is None or w <= 0:
         return None
     return w
 
 
-def derive_pre_post_weights(weight_values: Sequence[Any]) -> dict[str, Any]:
-    """
-    Chronological weight-event derivation.
+def purpose_is_weight_entry(purpose: Any) -> bool:
+    """True for canonical weight-entry purpose (incl. trailing 'Last Scan' variants)."""
+    p = str(purpose or "").strip().lower().replace("_", "-")
+    return p == "weight-entry" or p.startswith("weight-entry ")
 
-    - Null/blank/non-numeric/negative are skipped as non-events when passed as bare values
-    - Zero is a real recorded weight event (not treated as missing)
-    - Pre  = first event with a numeric value >= 0 (prefer first > 0 when present)
-    - Post = second numeric event (may be 0)
 
-    Also returns:
-      post_weight_event_exists
-      post_weight_value  (includes 0)
-      post_weight_valid_for_standard_weight_revenue  (True only when post > 0)
-    """
-    events: list[float] = []
-    for raw in weight_values:
-        w = _parse_weight(raw)
-        if w is None or w < 0:
-            continue
-        events.append(w)
-
-    empty = {
+def _empty_weight_info() -> dict[str, Any]:
+    return {
         "pre_weight_lbs": None,
         "post_weight_lbs": None,
+        "pre_weight_at": None,
+        "pre_weight_employee": None,
+        "post_weight_at": None,
+        "post_weight_employee": None,
+        "weight_entry_count": 0,
         "post_weight_event_exists": False,
         "post_weight_value": None,
         "post_weight_valid_for_standard_weight_revenue": False,
     }
+
+
+def resolve_weight_entry_pair(
+    weight_entry_scans: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """
+    Canonical Pre/Post from chronological weight-entry scans only.
+
+    Pre  = weight_entry_scans[0]
+    Post = weight_entry_scans[1] if present
+
+    No portal snapshots, no numeric inference, no replacements.
+    A second event with weight 0 is a real Post Weight (not missing).
+    """
+    events = [e for e in (weight_entry_scans or []) if isinstance(e, Mapping)]
+    out = _empty_weight_info()
+    out["weight_entry_count"] = len(events)
     if not events:
-        return empty
+        return out
 
-    # Prefer first strictly positive as pre when available; else first numeric (may be 0).
-    pre_idx = next((i for i, v in enumerate(events) if v > 0), 0)
-    pre = events[pre_idx]
-    remaining = events[pre_idx + 1 :]
-    if not remaining:
-        return {
-            "pre_weight_lbs": pre,
-            "post_weight_lbs": None,
-            "post_weight_event_exists": False,
-            "post_weight_value": None,
-            "post_weight_valid_for_standard_weight_revenue": False,
-        }
-    post = remaining[0]
-    return {
-        "pre_weight_lbs": pre,
-        "post_weight_lbs": post,
-        "post_weight_event_exists": True,
-        "post_weight_value": post,
-        "post_weight_valid_for_standard_weight_revenue": post > 0,
-    }
+    pre = events[0]
+    pre_w = _parse_weight(pre.get("weight_lbs", pre.get("value")))
+    out["pre_weight_lbs"] = pre_w
+    out["pre_weight_at"] = pre.get("scanned_at_parsed", pre.get("scanned_at"))
+    out["pre_weight_employee"] = pre.get("user_name", pre.get("employee"))
+
+    if len(events) < 2:
+        return out
+
+    post = events[1]
+    post_w = _parse_weight(post.get("weight_lbs", post.get("value")))
+    out["post_weight_event_exists"] = True
+    out["post_weight_lbs"] = post_w
+    out["post_weight_value"] = post_w
+    out["post_weight_at"] = post.get("scanned_at_parsed", post.get("scanned_at"))
+    out["post_weight_employee"] = post.get("user_name", post.get("employee"))
+    out["post_weight_valid_for_standard_weight_revenue"] = post_w is not None and post_w > 0
+    return out
 
 
+def derive_pre_post_weights(weight_values: Sequence[Any]) -> dict[str, Any]:
+    """
+    Test/helper adapter: treat each sequence item as one weight-entry scan's lbs.
+
+    Production path uses ``resolve_weight_entry_pair`` / ``load_bag_weight_map``.
+    """
+    synthetic = [{"weight_lbs": v} for v in weight_values]
+    return resolve_weight_entry_pair(synthetic)
+
+
+# Back-compat alias — old event-map helper; no supplemental inference.
 def derive_pre_post_from_weight_events(
     events: Sequence[Mapping[str, Any]],
     *,
     supplemental_positive: float | None = None,
 ) -> dict[str, Any]:
-    """
-    Event-aware derivation.
-
-    ``events`` items: {value: float|None, is_weight_purpose: bool}
-    A weight-entry purpose with null lbs still counts as a weight event.
-    Null purpose values are treated as recorded 0 for post-slot display when the
-    event exists (ingestion often stores 0 as NULL).
-    """
-    slots: list[float | None] = []
+    _ = supplemental_positive  # ignored — scan chronology only
+    normalized: list[dict[str, Any]] = []
     for ev in events or []:
         if not isinstance(ev, Mapping):
             continue
-        w = _parse_weight(ev.get("value"))
-        is_purpose = bool(ev.get("is_weight_purpose"))
-        if w is not None and w < 0:
+        if ev.get("is_weight_purpose") is False:
             continue
-        if w is not None:
-            slots.append(w)
-        elif is_purpose:
-            slots.append(None)  # event exists, numeric unknown
-        # else skip non-weight nulls
-
-    # Fill first missing/zero-ish pre from supplemental positive (folding/registry).
-    if supplemental_positive is not None and supplemental_positive > 0:
-        if not slots:
-            slots = [supplemental_positive]
-        elif slots[0] is None or slots[0] == 0:
-            slots[0] = supplemental_positive
-        elif not any(s is not None and s > 0 for s in slots):
-            slots.insert(0, supplemental_positive)
-
-    numeric_for_derive: list[float] = []
-    for i, s in enumerate(slots):
-        if s is None:
-            # Event with unknown lbs → treat as 0 so event chronology is preserved.
-            numeric_for_derive.append(0.0)
-        else:
-            numeric_for_derive.append(float(s))
-
-    derived = derive_pre_post_weights(numeric_for_derive)
-    # post_weight_event_exists follows slot count, not only positive seconds.
-    if len(slots) >= 2:
-        second = slots[1]
-        post_val = 0.0 if second is None else float(second)
-        derived["post_weight_event_exists"] = True
-        derived["post_weight_value"] = post_val
-        derived["post_weight_lbs"] = post_val
-        derived["post_weight_valid_for_standard_weight_revenue"] = post_val > 0
-    return derived
+        normalized.append(
+            {
+                "weight_lbs": ev.get("value", ev.get("weight_lbs")),
+                "scanned_at_parsed": ev.get("scanned_at_parsed", ev.get("scanned_at")),
+                "user_name": ev.get("user_name", ev.get("employee")),
+            }
+        )
+    return resolve_weight_entry_pair(normalized)
 
 
 def _coerce_weight_info(raw: Any) -> dict[str, Any]:
-    """Accept structured {pre,post,...} or legacy scalar (treated as post)."""
+    """Accept structured weight info or legacy scalar (treated as post value only)."""
     if isinstance(raw, Mapping):
-        post_raw = raw.get("post_weight_lbs", raw.get("post", raw.get("weight_lbs")))
-        post_parsed = _parse_weight(post_raw)
+        post_parsed = _parse_weight(
+            raw.get("post_weight_lbs", raw.get("post", raw.get("weight_lbs")))
+        )
         event_exists = raw.get("post_weight_event_exists")
         if event_exists is None:
             event_exists = post_parsed is not None
         post_value = raw.get("post_weight_value")
-        if post_value is None:
-            post_value = post_parsed
-        else:
-            post_value = _parse_weight(post_value)
+        post_value = _parse_weight(post_value) if post_value is not None else post_parsed
+        count = raw.get("weight_entry_count")
+        if count is None:
+            if bool(event_exists):
+                count = 2
+            elif raw.get("pre_weight_lbs", raw.get("pre")) is not None:
+                count = 1
+            else:
+                count = 0
         return {
             "pre_weight_lbs": _parse_weight(raw.get("pre_weight_lbs", raw.get("pre"))),
             "post_weight_lbs": post_parsed,
+            "pre_weight_at": raw.get("pre_weight_at"),
+            "pre_weight_employee": raw.get("pre_weight_employee"),
+            "post_weight_at": raw.get("post_weight_at"),
+            "post_weight_employee": raw.get("post_weight_employee"),
+            "weight_entry_count": int(count or 0),
             "post_weight_event_exists": bool(event_exists),
             "post_weight_value": post_value,
             "post_weight_valid_for_standard_weight_revenue": bool(
@@ -186,11 +180,12 @@ def _coerce_weight_info(raw: Any) -> dict[str, Any]:
         }
     post = _parse_weight(raw)
     return {
-        "pre_weight_lbs": None,
+        **_empty_weight_info(),
         "post_weight_lbs": post,
         "post_weight_event_exists": post is not None,
         "post_weight_value": post,
         "post_weight_valid_for_standard_weight_revenue": post is not None and post > 0,
+        "weight_entry_count": 2 if post is not None else 0,
     }
 
 
@@ -219,8 +214,9 @@ def expand_review_required(
     create-workitem-bulk forces Step-1 service_type = WF (bulk is WF-only).
     Registry WF preferred over portal HD when they disagree.
 
-    WF missing-post review only when no post weight *event* exists
-    (recorded post=0 is not missing).
+    WF_ZERO_OR_MISSING_POST_WEIGHT only when the bag is canonically completed
+    and exactly one weight-entry scan exists (no second event). Recorded post=0
+    is a real Post Weight event, not missing.
     """
     _ = shift_closed
     D = selected_date_et
@@ -439,7 +435,8 @@ def expand_review_required(
             "bulk_resolution": bulk_resolutions.get(bid),
         }
 
-    # --- WF missing POST *event* — only after canonical completion ------------
+    # --- WF missing POST weight-entry — completed + exactly one weight-entry -
+    # Recorded second weight-entry with value 0 is NOT missing.
     active = new_today | carryover
     for bid in list(active):
         pres = presence_by_bag.get(bid) or {}
@@ -455,17 +452,28 @@ def expand_review_required(
                 "post_weight_lbs": row.get("post_weight_lbs", row.get("weight_lbs")),
                 "post_weight_event_exists": row.get("post_weight_event_exists"),
                 "post_weight_value": row.get("post_weight_value"),
+                "weight_entry_count": row.get("weight_entry_count"),
+                "pre_weight_at": row.get("pre_weight_at"),
+                "pre_weight_employee": row.get("pre_weight_employee"),
+                "post_weight_at": row.get("post_weight_at"),
+                "post_weight_employee": row.get("post_weight_employee"),
             }
         )
         pre_w = info["pre_weight_lbs"]
         post_w = info["post_weight_lbs"]
         post_exists = bool(info.get("post_weight_event_exists"))
         post_value = info.get("post_weight_value")
+        entry_count = int(info.get("weight_entry_count") or 0)
         if bid in rows_by_id:
             rows_by_id[bid]["pre_weight_lbs"] = pre_w
             rows_by_id[bid]["post_weight_lbs"] = post_w
             rows_by_id[bid]["post_weight_event_exists"] = post_exists
             rows_by_id[bid]["post_weight_value"] = post_value
+            rows_by_id[bid]["weight_entry_count"] = entry_count
+            rows_by_id[bid]["pre_weight_at"] = info.get("pre_weight_at")
+            rows_by_id[bid]["pre_weight_employee"] = info.get("pre_weight_employee")
+            rows_by_id[bid]["post_weight_at"] = info.get("post_weight_at")
+            rows_by_id[bid]["post_weight_employee"] = info.get("post_weight_employee")
             rows_by_id[bid]["post_weight_valid_for_standard_weight_revenue"] = bool(
                 info.get("post_weight_valid_for_standard_weight_revenue")
             )
@@ -473,11 +481,7 @@ def expand_review_required(
                 post_value if post_value is not None else (post_w if post_w is not None else pre_w)
             )
 
-        if post_exists:
-            continue
-        if not has_valid_entry(bid, row):
-            continue
-        if _valid_positive_weight(pre_w) is None:
+        if entry_count != 1 or post_exists:
             continue
         if not is_canonically_completed(bid, row):
             continue
@@ -502,6 +506,7 @@ def expand_review_required(
             "post_weight_lbs": post_w,
             "post_weight_event_exists": False,
             "post_weight_value": post_value,
+            "weight_entry_count": entry_count,
             "post_weight_valid_for_standard_weight_revenue": False,
             "weight_lbs": post_w if post_w is not None else pre_w,
             "outcome": OUTCOME_REVIEW_REQUIRED,
@@ -621,48 +626,33 @@ def load_bag_weight_map(
     cursor, organization_id: int, bag_ids: list[str]
 ) -> dict[str, dict[str, Any]]:
     """
-    Load pre/post WF weights from chronological weight events.
+    Pre/Post from chronological ``weight-entry`` scans only.
 
-    Distinguishes:
-      - post_weight_event_exists (second weight event present, value may be 0)
-      - post_weight_value (includes 0)
-      - post_weight_valid_for_standard_weight_revenue (post > 0)
+    Pre  = first weight-entry
+    Post = second weight-entry (value may be 0)
 
-    Latest Step-1 ``correct_weight`` corrections override effective post only
-    (source scans are never modified).
+    No portal/registry/folding inference. Manager ``correct_weight`` may override
+    effective post without mutating source scans.
     """
     from backend.ta_helpers import table_exists
 
     ids = sorted({_norm_bag(b) for b in bag_ids if _norm_bag(b)})
-    empty = {
-        b: {
-            "pre_weight_lbs": None,
-            "post_weight_lbs": None,
-            "post_weight_event_exists": False,
-            "post_weight_value": None,
-            "post_weight_valid_for_standard_weight_revenue": False,
-        }
-        for b in ids
-    }
+    empty = {b: _empty_weight_info() for b in ids}
     if not ids:
         return empty
 
     out = dict(empty)
     events_by: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
-    supplemental: dict[str, float] = {}
 
     if table_exists(cursor, "rinse_bag_scan_events"):
         placeholders = ",".join(["%s"] * len(ids))
         cursor.execute(
             f"""
-            SELECT bag_id, weight_lbs, purpose, scanned_at_parsed, id
+            SELECT bag_id, weight_lbs, purpose, scanned_at_parsed, user_name, id
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND bag_id IN ({placeholders})
-              AND (
-                weight_lbs IS NOT NULL
-                OR LOWER(COALESCE(purpose, '')) LIKE '%%weight%%'
-              )
+              AND scanned_at_parsed IS NOT NULL
             ORDER BY scanned_at_parsed ASC, id ASC
             """,
             (int(organization_id), *ids),
@@ -671,51 +661,18 @@ def load_bag_weight_map(
             bid = _norm_bag(row.get("bag_id"))
             if bid not in events_by:
                 continue
-            purpose = str(row.get("purpose") or "")
+            if not purpose_is_weight_entry(row.get("purpose")):
+                continue
             events_by[bid].append(
                 {
-                    "value": row.get("weight_lbs"),
-                    "is_weight_purpose": "weight" in purpose.lower(),
+                    "weight_lbs": row.get("weight_lbs"),
+                    "scanned_at_parsed": row.get("scanned_at_parsed"),
+                    "user_name": row.get("user_name"),
                 }
             )
 
-    # Supplemental positive weights from folding / registry when scan lbs are null.
-    if table_exists(cursor, "rinse_folding_performance"):
-        placeholders = ",".join(["%s"] * len(ids))
-        cursor.execute(
-            f"""
-            SELECT bag_id, weight_lbs
-            FROM rinse_folding_performance
-            WHERE organization_id = %s AND bag_id IN ({placeholders})
-            """,
-            (int(organization_id), *ids),
-        )
-        for row in cursor.fetchall() or []:
-            bid = _norm_bag(row.get("bag_id"))
-            w = _valid_positive_weight(row.get("weight_lbs"))
-            if bid and w is not None:
-                supplemental[bid] = w
-    if table_exists(cursor, "rinse_bag_registry"):
-        placeholders = ",".join(["%s"] * len(ids))
-        cursor.execute(
-            f"""
-            SELECT bag_id, weight_num
-            FROM rinse_bag_registry
-            WHERE organization_id = %s AND bag_id IN ({placeholders})
-            """,
-            (int(organization_id), *ids),
-        )
-        for row in cursor.fetchall() or []:
-            bid = _norm_bag(row.get("bag_id"))
-            w = _valid_positive_weight(row.get("weight_num"))
-            if bid and w is not None and bid not in supplemental:
-                supplemental[bid] = w
-
     for bid in ids:
-        out[bid] = derive_pre_post_from_weight_events(
-            events_by.get(bid) or [],
-            supplemental_positive=supplemental.get(bid),
-        )
+        out[bid] = resolve_weight_entry_pair(events_by.get(bid) or [])
 
     if table_exists(cursor, "rinse_step1_corrections"):
         placeholders = ",".join(["%s"] * len(ids))
@@ -744,20 +701,22 @@ def load_bag_weight_map(
                     raw = {}
             if not isinstance(raw, dict):
                 continue
-            # Corrections may set post including 0.
             post = _parse_weight(
-                raw.get("corrected_post_weight_lbs", raw.get("post_weight_lbs", raw.get("weight_lbs")))
+                raw.get(
+                    "corrected_post_weight_lbs",
+                    raw.get("post_weight_lbs", raw.get("weight_lbs")),
+                )
             )
             if post is None:
                 continue
             detected = out[bid]
             out[bid] = {
                 **detected,
-                "pre_weight_lbs": detected.get("pre_weight_lbs"),
                 "post_weight_lbs": post,
                 "post_weight_event_exists": True,
                 "post_weight_value": post,
                 "post_weight_valid_for_standard_weight_revenue": post > 0,
+                "weight_entry_count": max(int(detected.get("weight_entry_count") or 0), 2),
                 "detected_pre_weight_lbs": detected.get("pre_weight_lbs"),
                 "detected_post_weight_lbs": detected.get("post_weight_lbs"),
                 "corrected_post_weight_lbs": post,
