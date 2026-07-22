@@ -26,9 +26,20 @@ import {
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { getVeewashStep1Drilldown, postVeewashStep1Correction } from "../../api";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+import FoldingUserSelect from "../folding/FoldingUserSelect";
+import { PayrollDateTimeField } from "../PayrollDateTimeField";
 
 function defaultRackForService(service) {
   return String(service).toUpperCase() === "HD" ? "workitems-added" : "VeeWash Dirty";
+}
+
+/** Normalize API timestamps into datetime-local / dayjs-friendly ET strings. */
+function toPickerValue(v) {
+  if (!v) return "";
+  const s = String(v).trim().replace(" ", "T");
+  // Strip timezone offset / seconds for the picker value we round-trip.
+  const m = s.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})/);
+  return m ? m[1] : s.slice(0, 16);
 }
 
 const REASON_LABELS = {
@@ -95,12 +106,12 @@ export default function Step1MetricDrawer({
       selected_date_et: selectedDateEt,
       reason: "",
       employee: bag.completed_by || "",
-      completion_at: bag.completion_at ? String(bag.completion_at).slice(0, 16) : "",
-      entry_at: "",
+      completion_at: toPickerValue(bag.completion_at),
+      entry_at: toPickerValue(bag.entry_at) || `${selectedDateEt || ""}T09:00`.slice(0, 16),
       service_type: bag.service_type || "WF",
       rack: defaultRackForService(bag.service_type || "WF"),
-      weight_lbs: "",
-      weight_at: "",
+      weight_lbs: bag.weight_lbs != null && Number(bag.weight_lbs) > 0 ? String(bag.weight_lbs) : "",
+      weight_at: toPickerValue(selectedDateEt ? `${selectedDateEt}T12:00` : ""),
     });
   };
 
@@ -196,7 +207,7 @@ export default function Step1MetricDrawer({
                       <Chip size="small" label={bag.dashboard_status || "—"} color="warning" variant="outlined" />
                     </Stack>
                     <Typography variant="caption" color="text.secondary" display="block">
-                      {bag.customer_name || "—"} · {bag.entry_class || "—"} · wt {bag.weight_lbs ?? "—"}
+                      {bag.customer_name || "—"} · {bag.entry_class || "—"} · WF scan wt {bag.weight_lbs ?? "—"}
                     </Typography>
                     {(bag.reason_codes || []).length > 0 ? (
                       <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
@@ -289,23 +300,23 @@ export default function Step1MetricDrawer({
                       <Stack spacing={1}>
                         {(form.action === "mark_completed" || form.action === "correct_completion") && (
                           <>
-                            <TextField
-                              size="small"
+                            <FoldingUserSelect
                               label="Completed by"
                               value={form.employee || ""}
-                              onChange={(e) => setForm((f) => ({ ...f, employee: e.target.value }))}
+                              onChange={(name) => setForm((f) => ({ ...f, employee: name }))}
+                              allowEmpty={false}
+                              sx={{ width: "100%", minWidth: 0 }}
                             />
-                            <TextField
-                              size="small"
-                              label="Completion (YYYY-MM-DDTHH:MM)"
+                            <PayrollDateTimeField
+                              label="Completion date & time (ET)"
                               value={form.completion_at || ""}
-                              onChange={(e) => setForm((f) => ({ ...f, completion_at: e.target.value }))}
+                              onChange={(v) => setForm((f) => ({ ...f, completion_at: v }))}
                             />
                           </>
                         )}
                         {form.action === "correct_entry" && (
                           <>
-                            <FormControl size="small">
+                            <FormControl size="small" fullWidth>
                               <InputLabel>Service</InputLabel>
                               <Select
                                 label="Service"
@@ -325,11 +336,10 @@ export default function Step1MetricDrawer({
                                 <MenuItem value="HD">HD</MenuItem>
                               </Select>
                             </FormControl>
-                            <TextField
-                              size="small"
-                              label="Entry at (YYYY-MM-DDTHH:MM)"
+                            <PayrollDateTimeField
+                              label="Entry date & time (ET)"
                               value={form.entry_at || ""}
-                              onChange={(e) => setForm((f) => ({ ...f, entry_at: e.target.value }))}
+                              onChange={(v) => setForm((f) => ({ ...f, entry_at: v }))}
                             />
                             <TextField
                               size="small"
@@ -346,21 +356,23 @@ export default function Step1MetricDrawer({
                             <TextField
                               size="small"
                               type="number"
-                              label="Weight lbs (>0)"
+                              label="WF weight lbs (>0)"
                               value={form.weight_lbs}
                               onChange={(e) => setForm((f) => ({ ...f, weight_lbs: e.target.value }))}
+                              helperText="Post-processing / final WF scan weight (not dirty intake). Clears zero-weight review when > 0."
+                              inputProps={{ min: 0.1, step: 0.1 }}
                             />
-                            <TextField
-                              size="small"
-                              label="Weight at (YYYY-MM-DDTHH:MM)"
+                            <PayrollDateTimeField
+                              label="Weight date & time (ET)"
                               value={form.weight_at || ""}
-                              onChange={(e) => setForm((f) => ({ ...f, weight_at: e.target.value }))}
+                              onChange={(v) => setForm((f) => ({ ...f, weight_at: v }))}
                             />
-                            <TextField
-                              size="small"
-                              label="Employee"
+                            <FoldingUserSelect
+                              label="Weight employee"
                               value={form.employee || ""}
-                              onChange={(e) => setForm((f) => ({ ...f, employee: e.target.value }))}
+                              onChange={(name) => setForm((f) => ({ ...f, employee: name }))}
+                              allowEmpty={false}
+                              sx={{ width: "100%", minWidth: 0 }}
                             />
                           </>
                         )}

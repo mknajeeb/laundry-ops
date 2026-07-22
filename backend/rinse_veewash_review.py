@@ -288,7 +288,12 @@ def build_review_by_reason(result: Mapping[str, Any]) -> dict[str, list[str]]:
 def load_bag_weight_map(
     cursor, organization_id: int, bag_ids: list[str]
 ) -> dict[str, float | None]:
-    """Best-effort positive weight from scan events (any weight_lbs > 0)."""
+    """
+    WF Review weight = max positive lbs on weight-entry scans for the bag.
+
+    This is the post-processing / final scan weight Rinse records on weight-entry
+    events (not dirty intake). Missing, blank, or <= 0 ⇒ Review Required for WF.
+    """
     from backend.ta_helpers import table_exists
 
     ids = sorted({_norm_bag(b) for b in bag_ids if _norm_bag(b)})
@@ -302,6 +307,7 @@ def load_bag_weight_map(
         WHERE organization_id = %s
           AND bag_id IN ({placeholders})
           AND weight_lbs IS NOT NULL
+          AND LOWER(TRIM(COALESCE(purpose, ''))) LIKE 'weight-entry%%'
         GROUP BY bag_id
         """,
         (int(organization_id), *ids),
