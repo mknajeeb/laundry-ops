@@ -35,6 +35,10 @@ import { downloadHtmlDocumentPdf } from "../contractorForms/contractorPrint";
 import {
   OT_PREMIUM_TOOLTIP,
 } from "../payroll/payrollOtDisplay";
+import {
+  distinctPayDates,
+  groupMonthlyPaidRows,
+} from "../payroll/payrollReportGroups";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
 
 const RANGE_MODES = [
@@ -200,9 +204,15 @@ export default function PayrollReportPanel() {
     { value: "all", label: "All payment statuses" },
   ];
 
-  const rows = report?.rows || [];
+  const rows = useMemo(() => report?.rows || [], [report]);
   const totals = report?.totals || {};
   const dateRule = report?.date_match_rule || meta.date_match_rule;
+  const isMonthlyPaid = applied.rangeMode === "monthly_paid";
+  const monthlyGroups = useMemo(
+    () => (isMonthlyPaid ? groupMonthlyPaidRows(rows) : []),
+    [isMonthlyPaid, rows],
+  );
+  const payDatesInMonth = useMemo(() => distinctPayDates(rows), [rows]);
 
   const periodOptions = useMemo(
     () =>
@@ -344,7 +354,14 @@ export default function PayrollReportPanel() {
               onChange={(e) => {
                 const v = e.target.value;
                 if (v === "labor_cost") return;
-                patch({ rangeMode: v });
+                const next = { ...filters, rangeMode: v };
+                setFilters(next);
+                // Monthly / all-history should load immediately so the prior
+                // single-period report is not left on screen looking like "only
+                // one period" for the whole month.
+                if (v === "monthly_paid" || v === "all_history") {
+                  loadReport(next);
+                }
               }}
             >
               {RANGE_MODES.map((m) => (
@@ -414,7 +431,12 @@ export default function PayrollReportPanel() {
                 <Select
                   label="Month"
                   value={filters.month}
-                  onChange={(e) => patch({ month: Number(e.target.value) })}
+                  onChange={(e) => {
+                    const month = Number(e.target.value);
+                    const next = { ...filters, month };
+                    setFilters(next);
+                    if (filters.rangeMode === "monthly_paid") loadReport(next);
+                  }}
                 >
                   {MONTH_OPTIONS.map((m) => (
                     <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>
@@ -426,7 +448,12 @@ export default function PayrollReportPanel() {
                 <Select
                   label="Year"
                   value={filters.year}
-                  onChange={(e) => patch({ year: Number(e.target.value) })}
+                  onChange={(e) => {
+                    const year = Number(e.target.value);
+                    const next = { ...filters, year };
+                    setFilters(next);
+                    if (filters.rangeMode === "monthly_paid") loadReport(next);
+                  }}
                 >
                   {[filters.year - 1, filters.year, filters.year + 1]
                     .filter((y, i, arr) => arr.indexOf(y) === i)
@@ -585,11 +612,145 @@ export default function PayrollReportPanel() {
               {report.excluded_missing_pay_date_count} finalized line(s) excluded — Pay Date Missing.
             </Typography>
           ) : null}
+          {isMonthlyPaid && payDatesInMonth.length ? (
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+              Official Pay Dates in this month: {payDatesInMonth.join(", ")}
+              {" · "}
+              {monthlyGroups.length} payroll period group
+              {monthlyGroups.length === 1 ? "" : "s"} (scroll to see each Pay Date).
+            </Typography>
+          ) : null}
         </Box>
         {loading ? (
           <Box sx={{ p: 2 }}>
             <Typography color="text.secondary">Loading…</Typography>
           </Box>
+        ) : isMonthlyPaid && monthlyGroups.length ? (
+          <Stack spacing={2} sx={{ p: 2 }}>
+            {monthlyGroups.map((group) => {
+              const gTotals = group.rows.reduce(
+                (acc, row) => {
+                  for (const k of Object.keys(acc)) {
+                    acc[k] += Number(row[k]) || 0;
+                  }
+                  return acc;
+                },
+                {
+                  regular_hours: 0,
+                  ot_hours: 0,
+                  base_earnings: 0,
+                  ot_premium: 0,
+                  other_earnings: 0,
+                  gross_pay: 0,
+                  employee_tax_deductions: 0,
+                  other_deductions: 0,
+                  net_pay: 0,
+                  employer_taxes: 0,
+                  total_payroll_cost: 0,
+                },
+              );
+              return (
+                <Box key={group.heading}>
+                  <Typography
+                    variant="subtitle2"
+                    fontWeight={700}
+                    sx={{ color: VEEWASH_BRAND.primaryDark, mb: 0.5 }}
+                  >
+                    {group.heading}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                    Employees: {group.rows.length} · Gross: {money(gTotals.gross_pay)} · EE taxes:{" "}
+                    {money(gTotals.employee_tax_deductions)} · Net: {money(gTotals.net_pay)} · ER
+                    taxes: {money(gTotals.employer_taxes)} · Total cost:{" "}
+                    {money(gTotals.total_payroll_cost)}
+                  </Typography>
+                  <TableContainer sx={{ overflowX: "auto" }}>
+                    <Table size="small" sx={{ minWidth: 1400 }}>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Employee</TableCell>
+                          <TableCell>Category</TableCell>
+                          <TableCell>Pay Date</TableCell>
+                          <TableCell align="right">Reg hrs</TableCell>
+                          <TableCell align="right">OT hrs</TableCell>
+                          <TableCell align="right">Base</TableCell>
+                          <TableCell align="right">OT prem</TableCell>
+                          <TableCell align="right">Gross</TableCell>
+                          <TableCell align="right">EE taxes</TableCell>
+                          <TableCell align="right">Net</TableCell>
+                          <TableCell align="right">ER taxes</TableCell>
+                          <TableCell align="right">Total cost</TableCell>
+                          <TableCell>Payment</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {group.rows.map((row) => (
+                          <TableRow key={`${row.batch_id}-${row.line_id}`} hover>
+                            <TableCell>{row.employee_name}</TableCell>
+                            <TableCell>{row.employee_category}</TableCell>
+                            <TableCell>
+                              {row.pay_date_display || row.pay_date || ""}
+                            </TableCell>
+                            <TableCell align="right">{hours(row.regular_hours)}</TableCell>
+                            <TableCell align="right">{hours(row.ot_hours)}</TableCell>
+                            <TableCell align="right">{money(row.base_earnings)}</TableCell>
+                            <TableCell align="right">
+                              {Number(row.ot_hours) > 0 ? money(row.ot_premium) : money(0)}
+                            </TableCell>
+                            <TableCell align="right">{money(row.gross_pay)}</TableCell>
+                            <TableCell align="right">
+                              {money(row.employee_tax_deductions)}
+                            </TableCell>
+                            <TableCell align="right">{money(row.net_pay)}</TableCell>
+                            <TableCell align="right">{money(row.employer_taxes)}</TableCell>
+                            <TableCell align="right">{money(row.total_payroll_cost)}</TableCell>
+                            <TableCell>{row.payment_status}</TableCell>
+                          </TableRow>
+                        ))}
+                        <TableRow>
+                          <TableCell sx={{ fontWeight: 700 }}>Subtotal</TableCell>
+                          <TableCell colSpan={2} />
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>
+                            {hours(gTotals.regular_hours)}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>
+                            {hours(gTotals.ot_hours)}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>
+                            {money(gTotals.base_earnings)}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>
+                            {money(gTotals.ot_premium)}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>
+                            {money(gTotals.gross_pay)}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>
+                            {money(gTotals.employee_tax_deductions)}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>
+                            {money(gTotals.net_pay)}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>
+                            {money(gTotals.employer_taxes)}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>
+                            {money(gTotals.total_payroll_cost)}
+                          </TableCell>
+                          <TableCell />
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Box>
+              );
+            })}
+            <Typography variant="subtitle2" fontWeight={700} sx={{ pt: 1 }}>
+              Month totals · Gross: {money(totals.gross_pay)} · EE taxes:{" "}
+              {money(totals.employee_tax_deductions)} · Net: {money(totals.net_pay)} · Total
+              payroll cost: {money(totals.total_payroll_cost)}
+            </Typography>
+          </Stack>
         ) : (
           <TableContainer sx={{ overflowX: "auto" }}>
             <Table size="small" sx={{ minWidth: 1700 }}>
