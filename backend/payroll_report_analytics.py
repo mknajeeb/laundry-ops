@@ -448,6 +448,39 @@ def attach_category_cost_shares(categories: list[dict]) -> list[dict]:
     return out
 
 
+def period_entries_within_month_rows(rows: list[dict]) -> list[dict[str, Any]]:
+    """Payroll periods (with pay dates) that contribute to a Monthly Paid month bucket.
+
+    Membership is already filtered by Official Pay Date month; this only groups
+    those rows by payroll period for nested table display.
+    """
+    by_period: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for row in rows or []:
+        key = period_key_from_row(row)
+        if not key[0] or not key[1]:
+            continue
+        by_period[key].append(row)
+    ordered = sorted(by_period.keys(), key=lambda t: (t[0] or "", t[1] or ""))
+    out: list[dict[str, Any]] = []
+    for ps, pe in ordered:
+        metrics = aggregate_period_metrics(by_period[(ps, pe)])
+        out.append(
+            {
+                "pay_period_start": ps,
+                "pay_period_end": pe,
+                "payroll_period": period_label(ps, pe),
+                "label": format_focus_period_label(ps, pe),
+                "pay_dates": list(metrics.get("pay_dates") or []),
+                "pay_dates_label": ", ".join(metrics.get("pay_dates") or []) or "—",
+                "row_kind": "period",
+                **metrics,
+                "worker_count": metrics.get("worker_count", 0),
+                "head_count": metrics.get("worker_count", 0),
+            }
+        )
+    return out
+
+
 def build_month_comparison_entries(
     month_metrics: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -468,6 +501,10 @@ def build_month_comparison_entries(
                 pcts[key] = d["pct"]
         entry["delta_from_previous"] = deltas
         entry["pct_from_previous"] = pcts
+        entry["row_kind"] = "month"
+        # Preserve nested periods attached when the month bucket was built.
+        if "periods" not in entry:
+            entry["periods"] = []
         out.append(entry)
         prev = m
     return out
@@ -1077,6 +1114,7 @@ def build_report_analytics(
                         "is_partial": partial,
                         "worker_count": metrics.get("worker_count", 0),
                         "head_count": metrics.get("worker_count", 0),
+                        "periods": period_entries_within_month_rows(rows_m),
                     }
                 )
             month_comparison = build_month_comparison_entries(month_buckets)

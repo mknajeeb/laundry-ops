@@ -198,13 +198,21 @@ def test_monthly_paid_comparison_excludes_prior_month_pay_date_periods(monkeypat
     months = [e["month"] for e in analytics["month_comparison"]]
     assert "2026-07" in months
     assert all(len(m) == 7 for m in months)  # YYYY-MM buckets
-    # No payroll-period rows in month_comparison
+    # Top-level period_comparison stays empty in month mode; periods nest under months.
     assert analytics["period_comparison"] == []
     july = next(e for e in analytics["month_comparison"] if e["month"] == "2026-07")
     assert july["worker_count"] == 3  # distinct user ids
     assert july["avg_cost_per_hour"] == round(
         july["total_payroll_cost"] / july["total_hours"], 2
     )
+    assert july["pay_dates_label"]
+    periods = july.get("periods") or []
+    assert len(periods) == 2
+    assert [p["pay_period_start"] for p in periods] == ["2026-06-22", "2026-07-06"]
+    assert periods[0]["pay_dates_label"] == "2026-07-04"
+    assert periods[1]["pay_dates_label"] == "2026-07-18"
+    assert periods[0]["worker_count"] == 2
+    assert periods[1]["worker_count"] == 1
     assert analytics["executive_narrative"]["headline"]
     assert any(c["key"] == "avg_hours_per_worker" for c in analytics["kpis"])
 

@@ -1164,6 +1164,7 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
             "Δ Hours",
             "% Δ Hours",
         ]
+        headers2[0] = "Month / Period"
         ws2.append(headers2)
         for cell in ws2[ws2.max_row]:
             cell.font = Font(bold=True)
@@ -1193,6 +1194,30 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
                     round(_money(p_hrs), 2) if p_hrs is not None else None,
                 ]
             )
+            for cell in ws2[ws2.max_row]:
+                cell.font = Font(bold=True)
+            for per in e.get("periods") or []:
+                ws2.append(
+                    [
+                        f"  {per.get('label') or per.get('payroll_period')}",
+                        per.get("pay_dates_label"),
+                        per.get("worker_count") or per.get("head_count"),
+                        round(_money(per.get("regular_hours")), 2),
+                        round(_money(per.get("ot_hours")), 2),
+                        round(_money(per.get("regular_earnings")), 2),
+                        round(_money(per.get("ot_earnings")), 2),
+                        round(_money(per.get("gross_pay")), 2),
+                        round(_money(per.get("employer_taxes")), 2),
+                        round(_money(per.get("total_payroll_cost")), 2),
+                        round(_money(per.get("avg_cost_per_hour")), 2)
+                        if per.get("avg_cost_per_hour") is not None
+                        else None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ]
+                )
     elif pc:
         ws2 = wb.create_sheet("Period Comparison")
         ws2.append(
@@ -1552,34 +1577,79 @@ def build_payroll_report_html(report: dict) -> str:
 <tbody>{"".join(wf_rows) if wf_rows else "<tr><td colspan='10'>No category data</td></tr>"}</tbody>
 </table>"""
 
+    mc = analytics.get("month_comparison") or []
     pc = analytics.get("period_comparison") or []
+    cmp_mode = analytics.get("comparison_mode") or ("month" if mc else "period")
     cmp_rows = []
-    for e in pc:
-        avg = e.get("avg_cost_per_hour")
-        d_cost = (e.get("delta_from_previous") or {}).get("total_payroll_cost")
-        p_cost = (e.get("pct_from_previous") or {}).get("total_payroll_cost")
-        cmp_rows.append(
-            "<tr>"
-            f"<td>{e.get('payroll_period') or ''}</td>"
-            f"<td class='num'>{e.get('worker_count', 0)}</td>"
-            f"<td class='num'>{fmt_hours(e.get('total_hours'))}</td>"
-            f"<td class='num'>{fmt_hours(e.get('ot_hours'))}</td>"
-            f"<td class='num'>{fmt_money(e.get('base_earnings'))}</td>"
-            f"<td class='num'>{fmt_money(e.get('ot_premium'))}</td>"
-            f"<td class='num'>{fmt_money(e.get('gross_pay'))}</td>"
-            f"<td class='num'>{fmt_money(e.get('employer_taxes'))}</td>"
-            f"<td class='num'>{fmt_money(e.get('total_payroll_cost'))}</td>"
-            f"<td class='num'>{fmt_money(avg) if avg is not None else '—'}</td>"
-            f"<td class='num'>{fmt_delta(d_cost, p_cost)}</td>"
-            "</tr>"
-        )
-    comparison_table = f"""
+    if cmp_mode == "month" and mc:
+        for e in mc:
+            avg = e.get("avg_cost_per_hour")
+            d_cost = (e.get("delta_from_previous") or {}).get("total_payroll_cost")
+            p_cost = (e.get("pct_from_previous") or {}).get("total_payroll_cost")
+            cmp_rows.append(
+                "<tr class='month-row'>"
+                f"<td><strong>{e.get('label') or e.get('month') or ''}</strong></td>"
+                f"<td>{e.get('pay_dates_label') or '—'}</td>"
+                f"<td class='num'>{e.get('worker_count', 0)}</td>"
+                f"<td class='num'>{fmt_hours(e.get('total_hours'))}</td>"
+                f"<td class='num'>{fmt_hours(e.get('ot_hours'))}</td>"
+                f"<td class='num'>{fmt_money(e.get('gross_pay'))}</td>"
+                f"<td class='num'>{fmt_money(e.get('total_payroll_cost'))}</td>"
+                f"<td class='num'>{fmt_money(avg) if avg is not None else '—'}</td>"
+                f"<td class='num'>{fmt_delta(d_cost, p_cost)}</td>"
+                "</tr>"
+            )
+            for per in e.get("periods") or []:
+                p_avg = per.get("avg_cost_per_hour")
+                cmp_rows.append(
+                    "<tr class='period-under-month'>"
+                    f"<td style='padding-left:18px'>{per.get('label') or per.get('payroll_period') or ''}</td>"
+                    f"<td>{per.get('pay_dates_label') or '—'}</td>"
+                    f"<td class='num'>{per.get('worker_count', 0)}</td>"
+                    f"<td class='num'>{fmt_hours(per.get('total_hours'))}</td>"
+                    f"<td class='num'>{fmt_hours(per.get('ot_hours'))}</td>"
+                    f"<td class='num'>{fmt_money(per.get('gross_pay'))}</td>"
+                    f"<td class='num'>{fmt_money(per.get('total_payroll_cost'))}</td>"
+                    f"<td class='num'>{fmt_money(p_avg) if p_avg is not None else '—'}</td>"
+                    f"<td class='num'>—</td>"
+                    "</tr>"
+                )
+        comparison_table = f"""
 <table class="cmp">
 <thead><tr>
-  <th>Payroll Period</th><th>Workers</th><th>Hours</th><th>OT</th>
+  <th>Month / Period</th><th>Pay Date(s)</th><th>Workers</th><th>Hours</th><th>OT</th>
+  <th>Gross</th><th>Total cost</th><th>$/hr</th><th>Δ cost</th>
+</tr></thead>
+<tbody>{"".join(cmp_rows) if cmp_rows else "<tr><td colspan='9'>No comparison months</td></tr>"}</tbody>
+</table>"""
+    else:
+        for e in pc:
+            avg = e.get("avg_cost_per_hour")
+            d_cost = (e.get("delta_from_previous") or {}).get("total_payroll_cost")
+            p_cost = (e.get("pct_from_previous") or {}).get("total_payroll_cost")
+            cmp_rows.append(
+                "<tr>"
+                f"<td>{e.get('payroll_period') or ''}</td>"
+                f"<td>{e.get('pay_dates_label') or '—'}</td>"
+                f"<td class='num'>{e.get('worker_count', 0)}</td>"
+                f"<td class='num'>{fmt_hours(e.get('total_hours'))}</td>"
+                f"<td class='num'>{fmt_hours(e.get('ot_hours'))}</td>"
+                f"<td class='num'>{fmt_money(e.get('base_earnings'))}</td>"
+                f"<td class='num'>{fmt_money(e.get('ot_premium'))}</td>"
+                f"<td class='num'>{fmt_money(e.get('gross_pay'))}</td>"
+                f"<td class='num'>{fmt_money(e.get('employer_taxes'))}</td>"
+                f"<td class='num'>{fmt_money(e.get('total_payroll_cost'))}</td>"
+                f"<td class='num'>{fmt_money(avg) if avg is not None else '—'}</td>"
+                f"<td class='num'>{fmt_delta(d_cost, p_cost)}</td>"
+                "</tr>"
+            )
+        comparison_table = f"""
+<table class="cmp">
+<thead><tr>
+  <th>Payroll Period</th><th>Pay Date(s)</th><th>Workers</th><th>Hours</th><th>OT</th>
   <th>Base</th><th>OT Prem</th><th>Gross</th><th>ER taxes</th><th>Total cost</th><th>$/hr</th><th>Δ cost</th>
 </tr></thead>
-<tbody>{"".join(cmp_rows) if cmp_rows else "<tr><td colspan='11'>No comparison periods</td></tr>"}</tbody>
+<tbody>{"".join(cmp_rows) if cmp_rows else "<tr><td colspan='12'>No comparison periods</td></tr>"}</tbody>
 </table>"""
 
     chart_grid = f"""

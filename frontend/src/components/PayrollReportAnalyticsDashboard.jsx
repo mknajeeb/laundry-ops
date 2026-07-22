@@ -635,7 +635,10 @@ export default function PayrollReportAnalyticsDashboard({
                 <TableHead>
                   <TableRow>
                     <TableCell sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark }}>
-                      {isMonth ? "Month" : "Payroll Period"}
+                      {isMonth ? "Month / Period" : "Payroll Period"}
+                    </TableCell>
+                    <TableCell sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark }}>
+                      Pay Date(s)
                     </TableCell>
                     <TableCell align="right" sx={{ color: VEEWASH_BRAND.primaryDark }}>Cost</TableCell>
                     <TableCell align="right" sx={{ color: VEEWASH_BRAND.primaryDark }}>Δ</TableCell>
@@ -651,10 +654,15 @@ export default function PayrollReportAnalyticsDashboard({
                   {trendRows.map((p) => {
                     const costPct = p.pct_from_previous?.total_payroll_cost;
                     const hrsPct = p.pct_from_previous?.total_hours;
-                    return (
-                      <TableRow key={p.label || p.payroll_period || p.month} hover>
+                    const nestedPeriods = isMonth ? p.periods || [] : [];
+                    const monthKey = p.label || p.payroll_period || p.month;
+                    return [
+                      <TableRow key={monthKey} hover sx={{ "& td": { fontWeight: isMonth ? 600 : 400 } }}>
                         <TableCell sx={{ whiteSpace: "nowrap" }}>
                           {p.label || p.payroll_period}
+                        </TableCell>
+                        <TableCell sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.inkMuted, fontSize: 12 }}>
+                          {p.pay_dates_label || "—"}
                         </TableCell>
                         <TableCell align="right">{money(p.total_payroll_cost)}</TableCell>
                         <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
@@ -668,8 +676,30 @@ export default function PayrollReportAnalyticsDashboard({
                         <TableCell align="right">{hours(p.ot_hours)}</TableCell>
                         <TableCell align="right">{money(p.gross_pay)}</TableCell>
                         <TableCell align="right">{money(p.avg_cost_per_hour)}</TableCell>
-                      </TableRow>
-                    );
+                      </TableRow>,
+                      ...nestedPeriods.map((per) => (
+                        <TableRow
+                          key={`${monthKey}-${per.pay_period_start}-${per.pay_period_end}`}
+                          hover
+                          sx={{ bgcolor: "rgba(0,122,145,0.03)" }}
+                        >
+                          <TableCell sx={{ whiteSpace: "nowrap", pl: 3, color: VEEWASH_BRAND.inkMuted }}>
+                            {per.label || per.payroll_period}
+                          </TableCell>
+                          <TableCell sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.inkMuted, fontSize: 12 }}>
+                            {per.pay_dates_label || "—"}
+                          </TableCell>
+                          <TableCell align="right">{money(per.total_payroll_cost)}</TableCell>
+                          <TableCell align="right">—</TableCell>
+                          <TableCell align="right">{hours(per.total_hours)}</TableCell>
+                          <TableCell align="right">—</TableCell>
+                          <TableCell align="right">{per.worker_count ?? per.head_count ?? 0}</TableCell>
+                          <TableCell align="right">{hours(per.ot_hours)}</TableCell>
+                          <TableCell align="right">{money(per.gross_pay)}</TableCell>
+                          <TableCell align="right">{money(per.avg_cost_per_hour)}</TableCell>
+                        </TableRow>
+                      )),
+                    ];
                   })}
                 </TableBody>
               </Table>
