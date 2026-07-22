@@ -64,7 +64,7 @@ def test_drilldown_list_loads_only_page_of_bags_not_full_day():
     summary = _summary()
     page_ids = [f"BAG{i:02d}" for i in range(25)]
     with (
-        patch("backend.rinse_veewash_shift_day.get_day_record", return_value={"status": "OPEN", "headline": summary}),
+        patch("backend.rinse_veewash_shift_day.get_day_headline", return_value={"status": "OPEN", "headline": summary}),
         patch("backend.rinse_veewash_shift_day.summary_from_day_record", return_value=summary),
         patch(
             "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
@@ -103,16 +103,16 @@ def test_drilldown_list_does_not_include_full_chronology():
     cursor = MagicMock()
     summary = _summary()
     with (
-        patch("backend.rinse_veewash_shift_day.get_day_record", return_value={"status": "OPEN", "headline": summary}),
+        patch("backend.rinse_veewash_shift_day.get_day_headline", return_value={"status": "OPEN", "headline": summary}),
         patch("backend.rinse_veewash_shift_day.summary_from_day_record", return_value=summary),
         patch(
             "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
             return_value=[_snap("BAG00"), _snap("BAG01")],
         ),
-        patch("backend.rinse_bulk_workitems.load_bulk_workitem_scan_map", return_value={}),
-        patch("backend.rinse_bulk_workitems.load_bag_bulk_lines", return_value={}),
-        patch("backend.rinse_bulk_workitems.load_bulk_resolutions", return_value={}),
-        patch("backend.rinse_bulk_workitems.list_workitems", return_value=[{"id": 1, "name": "Bath Mat"}]),
+        patch("backend.rinse_bulk_workitems.load_bulk_workitem_scan_map") as bulk_scans,
+        patch("backend.rinse_bulk_workitems.load_bag_bulk_lines") as bulk_lines,
+        patch("backend.rinse_bulk_workitems.load_bulk_resolutions") as bulk_res,
+        patch("backend.rinse_bulk_workitems.list_workitems") as catalog,
         patch("backend.rinse_veewash_step1_api.load_scans_for_bags") as scans,
     ):
         out = build_drilldown(
@@ -125,8 +125,50 @@ def test_drilldown_list_does_not_include_full_chronology():
             include_details=False,
         )
     scans.assert_not_called()
+    bulk_scans.assert_not_called()
+    bulk_lines.assert_not_called()
+    bulk_res.assert_not_called()
+    catalog.assert_not_called()
     assert out["bags"][0]["scans"] == []
+    assert out["active_bulk_workitems"] == []
+
+
+def test_bulk_reason_drawer_loads_catalog_for_page():
+    cursor = MagicMock()
+    summary = _summary()
+    with (
+        patch("backend.rinse_veewash_shift_day.get_day_headline", return_value={"status": "OPEN", "headline": summary}),
+        patch("backend.rinse_veewash_shift_day.summary_from_day_record", return_value=summary),
+        patch(
+            "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
+            return_value=[_snap("BAG00"), _snap("BAG01")],
+        ),
+        patch("backend.rinse_bulk_workitems.load_bulk_workitem_scan_map") as bulk_scans,
+        patch("backend.rinse_bulk_workitems.load_bag_bulk_lines") as bulk_lines,
+        patch("backend.rinse_bulk_workitems.load_bulk_resolutions") as bulk_res,
+        patch(
+            "backend.rinse_bulk_workitems.list_workitems",
+            return_value=[{"id": 1, "name": "Bath Mat"}],
+        ) as catalog,
+    ):
+        out = build_drilldown(
+            cursor,
+            3,
+            selected_date_et=D1,
+            metric="review_required",
+            reason_code="WF_BULK_WORKITEM_REVIEW",
+            page=1,
+            page_size=25,
+            include_details=False,
+        )
+    catalog.assert_called_once()
+    bulk_scans.assert_not_called()
+    bulk_lines.assert_not_called()
+    bulk_res.assert_not_called()
     assert out["active_bulk_workitems"]
+    assert len(out["bags"]) == 2
+    # List path must not pull per-bag bulk lines for the reason filter.
+    # (catalog is enough to render the editor once a bag is expanded)
 
 
 def test_summary_omits_bag_rows_when_requested():

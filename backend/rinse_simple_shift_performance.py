@@ -739,6 +739,79 @@ def _build_active_work_section(pending: Mapping[str, Any]) -> dict[str, Any]:
     return section
 
 
+def _attach_step1_lightweight_sync_statuses(
+    cursor,
+    organization_id: int,
+    *,
+    active_work: dict[str, Any],
+    evaluation_time: datetime | None = None,
+) -> dict[str, Any]:
+    """One-query At Vendor freshness for Step-1 summary (skips RFV/cycle scrape walks)."""
+    from backend.rinse_scan_time import naive_system_utc
+    from backend.ta_helpers import table_exists
+
+    org = int(organization_id)
+    rfv_sync = {
+        "enabled": False,
+        "status": "disabled",
+        "skipped_reason": "RFV_SCRAPE_ENABLED=false",
+        "stale": False,
+        "message": "Ready for Vendor Sync: disabled",
+        "sync_time_unavailable": True,
+    }
+    av_sync: dict[str, Any] = {
+        "enabled": True,
+        "status": "unknown",
+        "message": "At Vendor Sync",
+        "stale": False,
+        "last_refreshed_at": None,
+    }
+    if table_exists(cursor, "rinse_scrape_runs"):
+        cursor.execute(
+            """
+            SELECT status, finished_at, started_at, error_message
+            FROM rinse_scrape_runs
+            WHERE organization_id = %s
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (org,),
+        )
+        latest = cursor.fetchone() or {}
+        finished = latest.get("finished_at") if isinstance(latest, dict) else None
+        status = str((latest or {}).get("status") or "unknown")
+        av_sync["status"] = status
+        if finished is not None:
+            finished_naive = naive_system_utc(finished if isinstance(finished, datetime) else None)
+            av_sync["last_refreshed_at"] = (
+                finished_naive.isoformat(sep=" ") if finished_naive is not None else str(finished)
+            )
+            now = naive_system_utc(evaluation_time) or datetime.utcnow()
+            if finished_naive is not None:
+                age_min = max(0, int((now - finished_naive).total_seconds()) // 60)
+                av_sync["age_minutes"] = age_min
+                av_sync["stale"] = age_min > 90
+        if status == "failed":
+            av_sync["message"] = str((latest or {}).get("error_message") or "At Vendor Sync failed")
+        elif status == "success":
+            av_sync["message"] = "At Vendor Sync: up to date"
+        else:
+            av_sync["message"] = f"At Vendor Sync: {status}"
+    active_work["last_refreshed_at"] = av_sync.get("last_refreshed_at")
+    active_work["sync_status"] = av_sync
+    return {
+        "at_vendor": av_sync,
+        "ready_for_vendor": rfv_sync,
+        "ready_for_vendor_enabled": False,
+        "sync_cycle": {
+            "label": "Last Rinse Sync Cycle",
+            "cycle_status": av_sync.get("status"),
+            "at_vendor_status": av_sync.get("status"),
+            "at_vendor_completed_at": av_sync.get("last_refreshed_at"),
+        },
+    }
+
+
 def _attach_section_sync_statuses(
     cursor,
     organization_id: int,
@@ -2887,8 +2960,6 @@ def _try_build_step1_lightweight_summary(
     *,
     period_start: date,
     period_end: date,
-    baseline_ctx: Mapping[str, Any],
-    baseline_ms: float,
     eval_at: datetime | None,
     t0: float,
 ) -> dict[str, Any] | None:
@@ -2919,7 +2990,10 @@ def _try_build_step1_lightweight_summary(
     if activation is None or period_end < activation:
         return None
 
-    from backend.rinse_shift_monitor_baseline import format_baseline_banner_et
+    from backend.rinse_shift_monitor_baseline import (
+        format_baseline_banner_et,
+        get_shift_monitor_baseline,
+    )
     from backend.rinse_veewash_shift_day import build_or_load_step1_for_date
 
     t_s1 = time.perf_counter()
@@ -2935,6 +3009,22 @@ def _try_build_step1_lightweight_summary(
     s1["today_validation"] = build_today_validation(s1, selected_date_et=period_end)
     s1["activation_date_et"] = activation.isoformat()
     s1_ms = (time.perf_counter() - t_s1) * 1000
+
+    # Settings-only baseline banner (no scrape hunting on every page open).
+    t_baseline = time.perf_counter()
+    baseline_settings = get_shift_monitor_baseline(cursor, org)
+    baseline_ms = (time.perf_counter() - t_baseline) * 1000
+    baseline_payload = {
+        "active": True,
+        "shift_monitor_baseline_start_at_et": baseline_settings.get(
+            "shift_monitor_baseline_start_at_et"
+        ),
+        "baseline_source": baseline_settings.get("baseline_source"),
+        "baseline_time_et": baseline_settings.get("baseline_time_et"),
+        "banner_title": format_baseline_banner_et(baseline_settings),
+        "banner_subtitle": "Using persisted Step-1 day snapshot + latest At Vendor scrape",
+        "at_vendor_scrape_ready": True,
+    }
 
     # Minimal at-vendor module: only the fields the simplified Step-1 UI reads. Legacy
     # "Monitoring Only" / "Changed to Rush" cards are intentionally omitted (zeroed) under
@@ -2954,33 +3044,19 @@ def _try_build_step1_lightweight_summary(
         "completed_before_day_start_still_present_count": 0,
         "completed_before_day_start_still_present_rows": [],
         "changed_to_rush": 0,
-        "uses_clean_veewash_baseline": bool(
-            (baseline_ctx or {}).get("baseline_source") == "latest_clean_veewash_scrape"
-        ),
+        "uses_clean_veewash_baseline": str(baseline_settings.get("baseline_source") or "")
+        == "latest_clean_veewash_scrape",
     }
 
     t_sync = time.perf_counter()
     active_work_stub: dict[str, Any] = {"live": True}
-    rinse_sync = _attach_section_sync_statuses(
+    rinse_sync = _attach_step1_lightweight_sync_statuses(
         cursor,
         org,
-        ready_for_vendor={},
         active_work=active_work_stub,
         evaluation_time=eval_at,
     )
     sync_ms = (time.perf_counter() - t_sync) * 1000
-
-    baseline_payload = {
-        "baseline_source": baseline_ctx.get("baseline_source"),
-        "baseline_time_et": baseline_ctx.get("baseline_time_et"),
-        "banner_title": format_baseline_banner_et(baseline_ctx),
-        "banner_subtitle": (
-            "Using latest post-baseline Rinse scrape + post-baseline scans"
-            if baseline_ctx.get("at_vendor_scrape_ready")
-            else baseline_ctx.get("needs_refresh_reason")
-        ),
-        "at_vendor_scrape_ready": baseline_ctx.get("at_vendor_scrape_ready"),
-    }
 
     payload: dict[str, Any] = {
         "timezone": RINSE_SCAN_SOURCE_TIMEZONE,
@@ -3030,6 +3106,7 @@ def _try_build_step1_lightweight_summary(
         summary_only=True,
     )
     payload["performance_meta"]["step1_lightweight"] = True
+    payload["performance_meta"]["step1_sync_lightweight"] = True
     return payload
 
 
@@ -3060,31 +3137,26 @@ def _build_shift_monitor_summary_payload(
         evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
     )
 
-    t_baseline = time.perf_counter()
-    baseline_settings = get_shift_monitor_baseline(cursor, org)
-    baseline_ctx = build_baseline_context(cursor, org, baseline_settings)
-    baseline_ms = (time.perf_counter() - t_baseline) * 1000
-
     # --- Step 1 lightweight read path -------------------------------------- #
     # When the Step-1 VeeWash model is active for this org + selected date, the simplified
     # Shift Monitor renders ONLY the Step-1 headline (New/Carryover/Active/Completed/
     # Pending/Exceptions) + employee productivity (which fetches from its own endpoint).
-    # We therefore skip the heavy legacy builder entirely (full at-vendor population, per-bag
-    # scans, RFV queue, portal reconciliation, ledgers, snapshots) instead of building and
-    # then discarding them. The Step-1 numbers come from the exact same functions the legacy
-    # module uses, so the totals are byte-for-byte identical.
+    # Skip heavy baseline scrape hunting + full sync-cycle builders on every page open.
     step1_payload = _try_build_step1_lightweight_summary(
         cursor,
         org,
         period_start=period_start,
         period_end=period_end,
-        baseline_ctx=baseline_ctx,
-        baseline_ms=baseline_ms,
         eval_at=eval_at,
         t0=t0,
     )
     if step1_payload is not None:
         return step1_payload
+
+    t_baseline = time.perf_counter()
+    baseline_settings = get_shift_monitor_baseline(cursor, org)
+    baseline_ctx = build_baseline_context(cursor, org, baseline_settings)
+    baseline_ms = (time.perf_counter() - t_baseline) * 1000
 
     t_rfv = time.perf_counter()
     rfv_sync = get_ready_for_vendor_sync_status(cursor, org, evaluation_time=eval_at)

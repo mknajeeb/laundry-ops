@@ -25,6 +25,7 @@ import {
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
+  getBulkWorkitems,
   getVeewashStep1BagDetail,
   getVeewashStep1Drilldown,
   postVeewashStep1Correction,
@@ -33,6 +34,28 @@ import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { PayrollDateTimeField } from "../PayrollDateTimeField";
 import BulkWorkitemEntrySection from "./BulkWorkitemEntrySection";
+
+/** Session-scoped maintenance catalog (fetched once per browser session). */
+let cachedBulkCatalog = null;
+let cachedBulkCatalogPromise = null;
+
+async function loadBulkCatalogOnce() {
+  if (Array.isArray(cachedBulkCatalog) && cachedBulkCatalog.length) {
+    return cachedBulkCatalog;
+  }
+  if (cachedBulkCatalogPromise) return cachedBulkCatalogPromise;
+  cachedBulkCatalogPromise = getBulkWorkitems({ active_only: true })
+    .then((res) => {
+      const rows = res?.data?.items || res?.data?.workitems || res?.data || [];
+      cachedBulkCatalog = Array.isArray(rows) ? rows : [];
+      return cachedBulkCatalog;
+    })
+    .catch(() => {
+      cachedBulkCatalogPromise = null;
+      return [];
+    });
+  return cachedBulkCatalogPromise;
+}
 
 function defaultRackForService(service) {
   return String(service).toUpperCase() === "HD" ? "workitems-added" : "VeeWash Dirty";
@@ -133,6 +156,10 @@ export default function Step1MetricDrawer({
         );
         if (Array.isArray(data.active_bulk_workitems) && data.active_bulk_workitems.length) {
           setCatalog(data.active_bulk_workitems);
+        } else if (metric === "review_required" || reasonCode === "WF_BULK_WORKITEM_REVIEW") {
+          loadBulkCatalogOnce().then((rows) => {
+            if (!signal?.aborted && rows.length) setCatalog(rows);
+          });
         }
         setPage(data.pagination?.page || nextPage);
         setTotal(data.pagination?.total ?? (data.bags || []).length);

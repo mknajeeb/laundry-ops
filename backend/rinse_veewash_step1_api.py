@@ -247,14 +247,14 @@ def build_drilldown(
     )
     from backend.rinse_veewash_shift_day import (
         _workload_shell_from_bags,
-        get_day_record,
+        get_day_headline,
         load_day_bags_by_ids,
         summary_from_day_record,
     )
 
     t0 = time.perf_counter()
     t_snap = time.perf_counter()
-    day_rec = get_day_record(cursor, organization_id, selected_date_et)
+    day_rec = get_day_headline(cursor, organization_id, selected_date_et)
     summary = summary_from_day_record(day_rec) if day_rec else None
     snap_ms = (time.perf_counter() - t_snap) * 1000.0
 
@@ -337,18 +337,16 @@ def build_drilldown(
         if bid and sb.get("review_reason_codes") and bid not in reasons:
             reasons[bid] = list(sb.get("review_reason_codes") or [])
 
-    need_bulk_catalog = bool(
-        include_details
-        or str(metric or "") == "review_required"
-        or str(reason_code or "") == "WF_BULK_WORKITEM_REVIEW"
-    )
     # List path: reason codes + denormalized snapshot fields are enough.
-    # Bulk lines / resolutions / catalog load only for review drawers or bag expand.
+    # Full bulk lines/scans load only on bag expand. Catalog loads for the bulk-reason
+    # drawer (or expand) so managers can edit without waiting for every line query.
+    need_bulk_catalog = bool(include_details) or str(reason_code or "") == "WF_BULK_WORKITEM_REVIEW"
+    need_bulk_lines = bool(include_details)
     bulk_scans: dict = {}
     bulk_lines: dict = {}
     bulk_resolutions: dict = {}
     active_catalog: list = []
-    if page_ids and (include_details or need_bulk_catalog):
+    if page_ids and need_bulk_lines:
         bulk_scans = load_bulk_workitem_scan_map(cursor, organization_id, page_ids)
         bulk_lines = load_bag_bulk_lines(
             cursor, organization_id, selected_date_et, page_ids
@@ -356,8 +354,8 @@ def build_drilldown(
         bulk_resolutions = load_bulk_resolutions(
             cursor, organization_id, selected_date_et, page_ids
         )
-        if need_bulk_catalog:
-            active_catalog = list_workitems(cursor, organization_id, active_only=True)
+    if need_bulk_catalog:
+        active_catalog = list_workitems(cursor, organization_id, active_only=True)
 
 
     scans: dict[str, list] = {b: [] for b in page_ids}

@@ -163,7 +163,10 @@ def get_day_record(cursor, organization_id: int, shift_date_et: date) -> dict[st
     ensure_shift_monitor_day_tables(cursor)
     cursor.execute(
         """
-        SELECT *
+        SELECT id, organization_id, shift_date_et, status, opened_at, last_sync_at,
+               closed_at, closed_by_user_id, closed_by_display_name, close_reason,
+               close_override, reopen_count, review_required_count, created_at, updated_at,
+               headline_json, workload_meta_json
         FROM rinse_shift_monitor_days
         WHERE organization_id = %s AND shift_date_et = %s
         LIMIT 1
@@ -176,6 +179,27 @@ def get_day_record(cursor, organization_id: int, shift_date_et: date) -> dict[st
     out = dict(row)
     out["headline"] = _json_load(out.pop("headline_json", None))
     out["workload_meta"] = _json_load(out.pop("workload_meta_json", None))
+    return out
+
+
+def get_day_headline(cursor, organization_id: int, shift_date_et: date) -> dict[str, Any] | None:
+    """Fast path for drawers: status + headline only (skips unused day columns)."""
+    ensure_shift_monitor_day_tables(cursor)
+    cursor.execute(
+        """
+        SELECT status, reopen_count, review_required_count, headline_json
+        FROM rinse_shift_monitor_days
+        WHERE organization_id = %s AND shift_date_et = %s
+        LIMIT 1
+        """,
+        (int(organization_id), shift_date_et),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    out = dict(row)
+    out["headline"] = _json_load(out.pop("headline_json", None))
+    out["workload_meta"] = {}
     return out
 
 
