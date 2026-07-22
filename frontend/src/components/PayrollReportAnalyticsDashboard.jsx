@@ -12,6 +12,7 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Tooltip as MuiTooltip,
   Typography,
 } from "@mui/material";
 import TrendingDownIcon from "@mui/icons-material/TrendingDown";
@@ -101,30 +102,88 @@ function ExecKpiCard({ card }) {
 
 function OtInsightCard({ ot }) {
   if (!ot) return null;
+  const premiumDelta = {
+    diff: ot.ot_premium_diff,
+    pct: ot.ot_premium_pct,
+    kind: "money",
+  };
   return (
     <Paper
       variant="outlined"
       sx={{ p: 1.5, borderColor: VEEWASH_BRAND.borderSoft, background: VEEWASH_BRAND.primaryLight }}
     >
       <Typography variant="caption" sx={{ color: VEEWASH_BRAND.inkSoft, textTransform: "uppercase" }}>
-        OT Hours
+        OT Insight
       </Typography>
-      <Typography variant="h5" fontWeight={800} sx={{ color: VEEWASH_BRAND.ink }}>
-        {hours(ot.value)}
+      <Typography variant="h5" fontWeight={800} sx={{ color: VEEWASH_BRAND.ink, mt: 0.25 }}>
+        {hours(ot.ot_hours ?? ot.value)} OT Hours
       </Typography>
       <Typography variant="body2" sx={{ color: VEEWASH_BRAND.inkMuted, mt: 0.5 }}>
         {Number(ot.ot_pct_of_hours || 0).toFixed(2)}% of Total Hours
       </Typography>
+      <Typography variant="body2" fontWeight={700} sx={{ color: VEEWASH_BRAND.ink, mt: 0.75 }}>
+        OT Premium {money(ot.ot_premium)}
+      </Typography>
+      <Typography variant="caption" display="block" sx={{ color: VEEWASH_BRAND.inkMuted }}>
+        {Number(ot.ot_premium_pct_of_gross || 0).toFixed(2)}% of Gross Payroll
+      </Typography>
       <Typography variant="caption" display="block" sx={{ color: VEEWASH_BRAND.inkMuted, mt: 0.75 }}>
-        Previous: {hours(ot.previous)}
+        Previous OT Hours: {hours(ot.previous_ot_hours ?? ot.previous)}
       </Typography>
       <Stack direction="row" spacing={0.5} alignItems="center">
         <TrendIcon direction={ot.direction} />
         <Typography variant="caption" fontWeight={600} sx={{ color: VEEWASH_BRAND.inkMuted }}>
-          {deltaLine({ ...ot, kind: "hours" })}
+          Hours {deltaLine({ ...ot, kind: "hours" })}
+        </Typography>
+      </Stack>
+      <Typography variant="caption" display="block" sx={{ color: VEEWASH_BRAND.inkMuted, mt: 0.5 }}>
+        Previous OT Premium: {money(ot.previous_ot_premium)}
+      </Typography>
+      <Stack direction="row" spacing={0.5} alignItems="center">
+        <TrendIcon
+          direction={
+            premiumDelta.diff == null || Math.abs(premiumDelta.diff) < 0.005
+              ? "flat"
+              : premiumDelta.diff > 0
+                ? "up"
+                : "down"
+          }
+        />
+        <Typography variant="caption" fontWeight={600} sx={{ color: VEEWASH_BRAND.inkMuted }}>
+          Premium {deltaLine(premiumDelta)}
         </Typography>
       </Stack>
     </Paper>
+  );
+}
+
+function GrossCell({ row }) {
+  const other = Number(row?.other_earnings || 0);
+  const hasOther = Math.abs(other) >= 0.005 || row?.has_other_earnings;
+  const reconciles = row?.gross_reconciles !== false;
+  const tip = [
+    `Gross Payroll = Base + OT Premium + Other`,
+    `Base ${money(row?.base_earnings)}`,
+    `OT Premium ${money(row?.ot_premium)}`,
+    `Other ${money(row?.other_earnings)}`,
+    reconciles ? "Reconciliation: $0.00" : `Difference: ${money(row?.gross_reconciliation_diff)}`,
+  ].join(" · ");
+  return (
+    <MuiTooltip title={tip} arrow>
+      <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+        {money(row?.gross_pay)}
+        {hasOther ? (
+          <Typography component="span" variant="caption" sx={{ ml: 0.5, color: VEEWASH_BRAND.inkSoft }}>
+            +other
+          </Typography>
+        ) : null}
+        {!reconciles ? (
+          <Typography component="span" variant="caption" sx={{ ml: 0.5, color: "#b45309" }}>
+            !
+          </Typography>
+        ) : null}
+      </TableCell>
+    </MuiTooltip>
   );
 }
 
@@ -148,6 +207,20 @@ function SectionTitle({ children }) {
     </Typography>
   );
 }
+
+const WORKFORCE_HEADERS = [
+  "Category",
+  "Head Count",
+  "Total Hours",
+  "OT Hours",
+  "Base Earnings",
+  "OT Premium",
+  "Gross Payroll",
+  "Employer Tax",
+  "Total Payroll Cost",
+  "Avg Pay Rate",
+  "Cost / Hour",
+];
 
 /**
  * Slim management dashboard: Executive Summary → Workforce Breakdown → Trends.
@@ -175,6 +248,17 @@ export default function PayrollReportAnalyticsDashboard({
     label: String(p.pay_period_end || p.payroll_period || "").slice(5),
     fullLabel: p.payroll_period,
   }));
+
+  const costTooltip = (value, name, item) => {
+    const payload = item?.payload || {};
+    if (name === "Gross" || name === "Gross Payroll") {
+      return [
+        `${money(value)} (Base ${money(payload.base_earnings)} + OT Prem ${money(payload.ot_premium)})`,
+        "Gross Payroll",
+      ];
+    }
+    return [money(value), name];
+  };
 
   return (
     <Stack spacing={2.5} sx={{ mb: 1 }}>
@@ -215,18 +299,12 @@ export default function PayrollReportAnalyticsDashboard({
             mt: 1,
             display: "grid",
             gap: 1.25,
-            gridTemplateColumns: {
-              xs: "repeat(2, minmax(0, 1fr))",
-              md: "repeat(3, minmax(0, 1fr))",
-              lg: "repeat(6, minmax(0, 1fr))",
-            },
+            gridTemplateColumns: { xs: "1fr 1fr", md: "repeat(3, 1fr)", lg: "repeat(6, 1fr) 1.2fr" },
           }}
         >
           {kpis.map((card) => (
             <ExecKpiCard key={card.key} card={card} />
           ))}
-        </Box>
-        <Box sx={{ mt: 1.25, maxWidth: 360 }}>
           <OtInsightCard ot={ot} />
         </Box>
       </Box>
@@ -239,13 +317,11 @@ export default function PayrollReportAnalyticsDashboard({
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  {["Category", "Head Count", "Hours", "OT Hours", "Gross", "Employer Tax", "Total Cost", "Avg Rate"].map(
-                    (h) => (
-                      <TableCell key={h} sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark, fontWeight: 700 }}>
-                        {h}
-                      </TableCell>
-                    ),
-                  )}
+                  {WORKFORCE_HEADERS.map((h) => (
+                    <TableCell key={h} sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark, fontWeight: 700 }}>
+                      {h}
+                    </TableCell>
+                  ))}
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -255,10 +331,13 @@ export default function PayrollReportAnalyticsDashboard({
                     <TableCell align="right">{c.head_count ?? c.worker_count ?? 0}</TableCell>
                     <TableCell align="right">{hours(c.total_hours)}</TableCell>
                     <TableCell align="right">{hours(c.ot_hours)}</TableCell>
-                    <TableCell align="right">{money(c.gross_pay)}</TableCell>
+                    <TableCell align="right">{money(c.base_earnings)}</TableCell>
+                    <TableCell align="right">{money(c.ot_premium)}</TableCell>
+                    <GrossCell row={c} />
                     <TableCell align="right">{money(c.employer_taxes)}</TableCell>
                     <TableCell align="right">{money(c.total_payroll_cost)}</TableCell>
-                    <TableCell align="right">{money(c.avg_rate ?? c.avg_pay_rate)}</TableCell>
+                    <TableCell align="right">{money(c.avg_pay_rate ?? c.avg_rate)}</TableCell>
+                    <TableCell align="right">{money(c.avg_cost_per_hour)}</TableCell>
                   </TableRow>
                 ))}
                 <TableRow sx={{ background: "#f8fafc" }}>
@@ -268,10 +347,17 @@ export default function PayrollReportAnalyticsDashboard({
                   </TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700 }}>{hours(workforceTotals.total_hours)}</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700 }}>{hours(workforceTotals.ot_hours)}</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>{money(workforceTotals.gross_pay)}</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>{money(workforceTotals.base_earnings)}</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>{money(workforceTotals.ot_premium)}</TableCell>
+                  <GrossCell row={workforceTotals} />
                   <TableCell align="right" sx={{ fontWeight: 700 }}>{money(workforceTotals.employer_taxes)}</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700 }}>{money(workforceTotals.total_payroll_cost)}</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>{money(workforceTotals.avg_rate)}</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>
+                    {money(workforceTotals.avg_pay_rate ?? workforceTotals.avg_rate)}
+                  </TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>
+                    {money(workforceTotals.avg_cost_per_hour)}
+                  </TableCell>
                 </TableRow>
               </TableBody>
             </Table>
@@ -295,10 +381,10 @@ export default function PayrollReportAnalyticsDashboard({
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey="label" tick={{ fontSize: 11 }} />
               <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${Number(v) / 1000}k`} />
-              <Tooltip formatter={(v) => money(v)} labelFormatter={(_, p) => p?.[0]?.payload?.fullLabel} />
+              <Tooltip formatter={costTooltip} labelFormatter={(_, p) => p?.[0]?.payload?.fullLabel} />
               <Legend />
               <Area type="monotone" dataKey="total_payroll_cost" name="Total cost" stroke="#007a91" fill="#0097b233" />
-              <Area type="monotone" dataKey="gross_pay" name="Gross" stroke="#0097b2" fill="transparent" />
+              <Area type="monotone" dataKey="gross_pay" name="Gross Payroll" stroke="#0097b2" fill="transparent" />
             </AreaChart>
           </ChartCard>
           <ChartCard title="Hours trend">
@@ -328,14 +414,15 @@ export default function PayrollReportAnalyticsDashboard({
               <Bar dataKey="contractor_1099_cost" name="1099" stackId="m" fill="#94a3b8" />
             </BarChart>
           </ChartCard>
-          <ChartCard title="Payroll cost per hour">
+          <ChartCard title="Pay rate vs cost / hour">
             <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey="label" tick={{ fontSize: 11 }} />
               <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => money(v)} />
               <Tooltip formatter={(v) => money(v)} labelFormatter={(_, p) => p?.[0]?.payload?.fullLabel} />
               <Legend />
-              <Line type="monotone" dataKey="avg_cost_per_hour" name="Cost / hour" stroke="#007a91" strokeWidth={2} dot />
+              <Line type="monotone" dataKey="avg_pay_rate" name="Avg Pay Rate" stroke="#0097b2" strokeWidth={2} dot />
+              <Line type="monotone" dataKey="avg_cost_per_hour" name="Cost / Hour" stroke="#007a91" strokeWidth={2} dot />
             </LineChart>
           </ChartCard>
         </Box>
@@ -352,7 +439,7 @@ export default function PayrollReportAnalyticsDashboard({
           <Table size="small">
             <TableHead>
               <TableRow>
-                {["Payroll Period", "Workers", "Hours", "OT", "Gross", "ER taxes", "Total cost", "$/hr", "Δ cost"].map(
+                {["Payroll Period", "Workers", "Hours", "OT", "Base", "OT Prem", "Gross", "ER taxes", "Total cost", "$/hr", "Δ cost"].map(
                   (h) => (
                     <TableCell key={h} sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark }}>
                       {h}
@@ -371,6 +458,8 @@ export default function PayrollReportAnalyticsDashboard({
                     <TableCell align="right">{p.worker_count}</TableCell>
                     <TableCell align="right">{hours(p.total_hours)}</TableCell>
                     <TableCell align="right">{hours(p.ot_hours)}</TableCell>
+                    <TableCell align="right">{money(p.base_earnings)}</TableCell>
+                    <TableCell align="right">{money(p.ot_premium)}</TableCell>
                     <TableCell align="right">{money(p.gross_pay)}</TableCell>
                     <TableCell align="right">{money(p.employer_taxes)}</TableCell>
                     <TableCell align="right">{money(p.total_payroll_cost)}</TableCell>
@@ -378,9 +467,7 @@ export default function PayrollReportAnalyticsDashboard({
                     <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
                       {dCost == null
                         ? "—"
-                        : `${dCost > 0 ? "+" : ""}${money(dCost)}${
-                            pCost == null ? "" : ` (${pCost > 0 ? "+" : ""}${Number(pCost).toFixed(1)}%)`
-                          }`}
+                        : `${dCost >= 0 ? "+" : ""}${money(dCost)}${pCost == null ? "" : ` (${pCost >= 0 ? "+" : ""}${Number(pCost).toFixed(1)}%)`}`}
                     </TableCell>
                   </TableRow>
                 );

@@ -292,6 +292,11 @@ def test_kpi_neutral_trend_for_cost_increase():
     assert ot["value"] == 10
     assert ot["ot_pct_of_hours"] == 10.0
     assert ot["direction"] == "up"
+    assert ot["ot_premium"] == 85
+    assert ot["ot_premium_pct_of_gross"] == round(85 / 2000 * 100, 2)
+    assert ot["previous_ot_hours"] == 5
+    assert ot["previous_ot_premium"] == 40
+    assert ot["ot_premium_diff"] == 45
 
 
 def test_avg_cost_and_pay_rate_definitions():
@@ -313,6 +318,204 @@ def test_avg_cost_and_pay_rate_definitions():
         metrics["total_payroll_cost"] / metrics["total_hours"], 2
     )
     assert metrics["avg_pay_rate"] == round(metrics["gross_pay"] / metrics["total_hours"], 2)
+    # Avg pay rate includes OT premium in gross.
+    assert metrics["gross_pay"] == round(
+        metrics["base_earnings"] + metrics["ot_premium"] + metrics["other_earnings"], 2
+    )
+
+
+def test_category_base_plus_ot_premium_equals_gross_all_categories():
+    from backend.payroll_report_analytics import category_breakdown
+
+    rows = [
+        _row(
+            name="W2 Worker",
+            cat="w2",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=8.65,
+            rate=17.0,
+            ot_rate=25.5,
+            line_id=1,
+            user_id=1,
+            employer_taxes=100.0,
+            withheld=50.0,
+        ),
+        _row(
+            name="Temp Worker",
+            cat="temp",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=12.49,
+            rate=17.0,
+            ot_rate=25.5,
+            line_id=2,
+            user_id=2,
+        ),
+        _row(
+            name="1099 Worker",
+            cat="contractor_1099",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=7.02,
+            rate=17.0,
+            ot_rate=25.5,
+            line_id=3,
+            user_id=3,
+        ),
+    ]
+    rows[0]["total_payroll_cost"] = round(rows[0]["gross_pay"] + rows[0]["employer_taxes"], 2)
+
+    cats = {c["worker_category"]: c for c in category_breakdown(rows)}
+    for cat_key in ("w2", "temp", "contractor_1099"):
+        c = cats[cat_key]
+        detail = [r for r in rows if r["worker_category"] == cat_key]
+        assert abs(c["base_earnings"] + c["ot_premium"] + c["other_earnings"] - c["gross_pay"]) < 0.005
+        assert c["gross_reconciles"] is True
+        assert c["gross_reconciliation_diff"] == 0.0
+        assert abs(c["base_earnings"] - sum(r["base_earnings"] for r in detail)) < 0.005
+        assert abs(c["ot_premium"] - sum(r["ot_premium"] for r in detail)) < 0.005
+        assert abs(c["gross_pay"] - sum(r["gross_pay"] for r in detail)) < 0.005
+
+    # Employer taxes raise Cost/Hour but not Avg Pay Rate.
+    w2 = cats["w2"]
+    assert w2["avg_pay_rate"] == round(w2["gross_pay"] / w2["total_hours"], 2)
+    assert w2["avg_cost_per_hour"] == round(w2["total_payroll_cost"] / w2["total_hours"], 2)
+    assert w2["avg_cost_per_hour"] > w2["avg_pay_rate"]
+    assert cats["temp"]["avg_pay_rate"] == cats["temp"]["avg_cost_per_hour"]
+    assert cats["contractor_1099"]["avg_pay_rate"] == cats["contractor_1099"]["avg_cost_per_hour"]
+
+
+def test_w2_workforce_avg_pay_rate_and_cost_per_hour_production_example():
+    """Production Jul 6–12 W-2: $17.32 Avg Pay Rate, $19.45 Cost/Hour."""
+    from backend.payroll_report_analytics import category_breakdown, workforce_breakdown_totals
+
+    # Six W-2 workers at $17/hr matching org 3 period 2026-07-06 – 2026-07-12.
+    specs = [
+        ("Amna Yousaf", 38.16, 0.0, 1),
+        ("Evelin Delgado Hernandez", 39.97, 0.0, 2),
+        ("Jasanpreet Singh", 24.91, 0.0, 3),
+        ("Joshua Cuenca", 35.91, 0.0, 4),
+        ("Tarannum Mithila", 39.67, 0.0, 5),
+        ("Varun Kumar Mongia", 40.0, 8.65, 6),
+    ]
+    # Employer tax total $483.30 allocated proportional to gross for the category rollup.
+    rows = []
+    grosses = []
+    for name, reg, ot, uid in specs:
+        r = _row(
+            name=name,
+            cat="w2",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=reg,
+            ot=ot,
+            rate=17.0,
+            ot_rate=25.5,
+            line_id=uid,
+            user_id=uid,
+            employer_taxes=0.0,
+            withheld=50.0,
+        )
+        grosses.append(r["gross_pay"])
+        rows.append(r)
+    total_gross = round(sum(grosses), 2)
+    assert total_gross == 3937.12
+    # Distribute ER taxes so category ER sum equals production $483.30.
+    er_total = 483.30
+    allocated = 0.0
+    for i, r in enumerate(rows):
+        if i < len(rows) - 1:
+            share = round(er_total * (grosses[i] / total_gross), 2)
+            allocated = round(allocated + share, 2)
+        else:
+            share = round(er_total - allocated, 2)
+        r["employer_taxes"] = share
+        r["total_payroll_cost"] = round(r["gross_pay"] + share, 2)
+
+    cats = category_breakdown(rows)
+    w2 = next(c for c in cats if c["worker_category"] == "w2")
+    assert w2["total_hours"] == 227.27
+    assert w2["ot_hours"] == 8.65
+    assert w2["base_earnings"] == 3863.59
+    assert w2["ot_premium"] == 73.53
+    assert w2["gross_pay"] == 3937.12
+    assert abs(w2["base_earnings"] + w2["ot_premium"] - w2["gross_pay"]) < 0.005
+    assert abs(w2["employer_taxes"] - 483.30) < 0.02
+    assert abs(w2["total_payroll_cost"] - 4420.42) < 0.02
+    assert w2["avg_pay_rate"] == 17.32
+    assert w2["avg_cost_per_hour"] == 19.45
+    # Category gross must equal sum of detail-row gross exactly.
+    assert abs(w2["gross_pay"] - sum(r["gross_pay"] for r in rows)) < 0.005
+
+    totals = workforce_breakdown_totals(cats)
+    assert totals["avg_pay_rate"] == 17.32
+    assert totals["avg_cost_per_hour"] == 19.45
+    assert totals["base_earnings"] == 3863.59
+    assert totals["ot_premium"] == 73.53
+
+
+def test_category_gross_equals_sum_of_detail_gross():
+    from backend.payroll_report_analytics import category_breakdown
+
+    rows = [
+        _row(
+            name="A",
+            cat="w2",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=0,
+            line_id=1,
+            user_id=1,
+            employer_taxes=100,
+            withheld=80,
+        ),
+        _row(
+            name="B",
+            cat="w2",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=5,
+            line_id=2,
+            user_id=2,
+            employer_taxes=120,
+            withheld=90,
+        ),
+        _row(
+            name="C",
+            cat="temp",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=2,
+            line_id=3,
+            user_id=3,
+        ),
+    ]
+    # Rebuild total_payroll_cost after employer_taxes on W-2 rows.
+    for r in rows:
+        if r["worker_category"] == "w2":
+            r["total_payroll_cost"] = round(r["gross_pay"] + r["employer_taxes"], 2)
+
+    cats = {c["worker_category"]: c for c in category_breakdown(rows)}
+    w2_detail = [r for r in rows if r["worker_category"] == "w2"]
+    assert cats["w2"]["gross_pay"] == round(sum(r["gross_pay"] for r in w2_detail), 2)
+    assert cats["w2"]["base_earnings"] == round(sum(r["base_earnings"] for r in w2_detail), 2)
+    assert cats["w2"]["ot_premium"] == round(sum(r["ot_premium"] for r in w2_detail), 2)
+    # Temp/1099: Avg Pay Rate == Cost/Hour when no ER tax.
+    assert cats["temp"]["avg_pay_rate"] == cats["temp"]["avg_cost_per_hour"]
 
 
 def test_pdf_dashboard_before_detail_and_contains_charts():
@@ -344,9 +547,11 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     from backend.payroll_report import _sum_totals, _build_summary
     from backend.payroll_report_analytics import (
         build_kpi_cards,
+        build_ot_summary,
         build_period_comparison_entries,
         category_breakdown,
         group_rows_by_period_then_pay_date,
+        workforce_breakdown_totals,
     )
 
     groups = group_rows_by_period_then_pay_date(rows)
@@ -357,6 +562,8 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     ordered = sorted(by_period.keys())
     pc = build_period_comparison_entries(by_period, ordered)
     detail = aggregate_period_metrics(rows)
+    cats = category_breakdown(rows)
+    prev = pc[0] if len(pc) > 1 else None
     analytics = {
         "summary": {
             **detail,
@@ -364,9 +571,11 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
             "official_pay_date_count": 2,
             "comparison_range": 4,
         },
-        "kpis": build_kpi_cards(detail, pc[0] if len(pc) > 1 else None),
+        "kpis": build_kpi_cards(detail, prev),
+        "ot_summary": build_ot_summary(detail, prev),
         "period_comparison": pc,
-        "category_breakdown": category_breakdown(rows),
+        "category_breakdown": cats,
+        "workforce_totals": workforce_breakdown_totals(cats),
         "overtime_analysis": pc,
         "groups": groups,
         "comparison_range": 4,
@@ -395,9 +604,57 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     assert "<svg" in html
     assert "page-break-after: always" in html or "break-after: page" in html
     assert "Workforce Breakdown" in html or "Employment mix" in html or "category" in html.lower()
+    assert "Avg Pay Rate" in html
+    assert "Cost / Hour" in html
+    assert "Base Earnings" in html
+    assert "OT Premium" in html
+    assert "Gross Payroll" in html
+    assert "OT Insight" in html
+    assert "Pay rate vs cost / hour" in html or "Payroll cost per hour" in html
+
+    # PDF and Excel share identical Base / OT Premium / Gross from analytics payload.
+    maria = next(c for c in cats if c["worker_category"] == "contractor_1099")
+    guiying = next(c for c in cats if c["worker_category"] == "temp")
+    assert f"{maria['base_earnings']:.2f}" in html.replace(",", "")
+    assert f"{maria['ot_premium']:.2f}" in html.replace(",", "")
+    assert f"{guiying['base_earnings']:.2f}" in html.replace(",", "")
 
     xlsx = build_payroll_report_xlsx(report)
     assert xlsx[:2] == b"PK"
+    from openpyxl import load_workbook
+    import io
+
+    wb = load_workbook(io.BytesIO(xlsx))
+    assert "Workforce Breakdown" in wb.sheetnames
+    wf = wb["Workforce Breakdown"]
+    headers = [cell.value for cell in wf[2]]
+    assert "Avg Pay Rate" in headers
+    assert "Cost / Hour" in headers
+    assert "Base Earnings" in headers
+    assert "OT Premium" in headers
+    assert "Gross Payroll" in headers
+    # Row values match analytics category payload.
+    by_label = {}
+    for row in wf.iter_rows(min_row=3, values_only=True):
+        if not row or not row[0] or row[0] == "Total":
+            continue
+        by_label[row[0]] = {
+            "base_earnings": row[4],
+            "ot_premium": row[5],
+            "gross_pay": row[7],
+        }
+    assert by_label[maria["label"]]["base_earnings"] == round(maria["base_earnings"], 2)
+    assert by_label[maria["label"]]["ot_premium"] == round(maria["ot_premium"], 2)
+    assert by_label[maria["label"]]["gross_pay"] == round(maria["gross_pay"], 2)
+    assert by_label[guiying["label"]]["base_earnings"] == round(guiying["base_earnings"], 2)
+    assert by_label[guiying["label"]]["ot_premium"] == round(guiying["ot_premium"], 2)
+    assert by_label[guiying["label"]]["gross_pay"] == round(guiying["gross_pay"], 2)
+    pc = wb["Period Comparison"]
+    pc_headers = [cell.value for cell in pc[2]]
+    assert "Avg Pay Rate" in pc_headers
+    assert "Cost / Hour" in pc_headers
+    assert "Base Earnings" in pc_headers
+    assert "OT Premium" in pc_headers
 
 
 def test_ot_premium_included_in_gross_for_exports():

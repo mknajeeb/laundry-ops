@@ -212,20 +212,38 @@ def build_kpi_cards(
 def build_ot_summary(
     current: dict[str, Any], previous: Optional[dict[str, Any]]
 ) -> dict[str, Any]:
-    """Compact OT insight: hours + share of total hours + vs prior period."""
+    """OT insight: hours, premium, shares of totals, and vs prior period."""
     ot = _money(current.get("ot_hours"))
     pct = _money(current.get("ot_pct_of_hours"))
+    premium = _money(current.get("ot_premium"))
+    gross = _money(current.get("gross_pay"))
+    if current.get("ot_premium_pct_of_gross") is not None:
+        premium_pct = _money(current.get("ot_premium_pct_of_gross"))
+    else:
+        premium_pct = round((premium / gross) * 100.0, 2) if gross > 0.005 else 0.0
     prev_ot = _money(previous.get("ot_hours")) if previous else None
-    delta = _delta(ot, prev_ot)
+    prev_premium = _money(previous.get("ot_premium")) if previous else None
+    hours_delta = _delta(ot, prev_ot)
+    premium_delta = _delta(premium, prev_premium)
     return {
         "key": "ot_hours",
         "label": "OT Hours",
         "kind": "hours",
         "value": ot,
         "current": ot,
+        "ot_hours": ot,
         "ot_pct_of_hours": pct,
+        "ot_premium": premium,
+        "ot_premium_pct_of_gross": premium_pct,
+        "previous_ot_hours": prev_ot,
+        "previous_ot_premium": prev_premium,
+        "ot_hours_diff": hours_delta["diff"],
+        "ot_hours_pct": hours_delta["pct"],
+        "ot_premium_diff": premium_delta["diff"],
+        "ot_premium_pct": premium_delta["pct"],
         "neutral_trend": True,
-        **delta,
+        # Primary delta (hours) kept for existing UI helpers.
+        **hours_delta,
     }
 
 
@@ -311,14 +329,33 @@ def category_breakdown(rows: list[dict]) -> list[dict[str, Any]]:
             )
         else:
             employer_cost = _money(metrics.get("gross_pay"))
+        base = _money(metrics.get("base_earnings"))
+        prem = _money(metrics.get("ot_premium"))
+        other = _money(metrics.get("other_earnings"))
+        gross = _money(metrics.get("gross_pay"))
+        recon_diff = round(gross - base - prem - other, 2)
+        avg_pay = metrics.get("avg_pay_rate")
+        avg_cost = metrics.get("avg_cost_per_hour")
         out.append(
             {
                 "worker_category": cat,
                 "label": CATEGORY_LABELS.get(cat, cat),
                 **metrics,
                 "head_count": metrics.get("worker_count", 0),
-                "avg_rate": metrics.get("avg_pay_rate"),
+                "base_earnings": base,
+                "ot_premium": prem,
+                "other_earnings": other,
+                "gross_pay": gross,
+                # Avg Pay Rate = Gross ÷ Hours; Cost/Hour = Total Payroll Cost ÷ Hours.
+                "avg_pay_rate": avg_pay,
+                "avg_cost_per_hour": avg_cost,
+                # Legacy alias (Avg Rate) — same as avg_pay_rate.
+                "avg_rate": avg_pay,
                 "employer_cost": employer_cost,
+                # Gross = Base + OT Premium + Other (must be $0.00).
+                "gross_reconciliation_diff": recon_diff,
+                "gross_reconciles": abs(recon_diff) < 0.005,
+                "has_other_earnings": abs(other) >= 0.005,
             }
         )
     return out
@@ -363,6 +400,9 @@ def workforce_breakdown_totals(categories: list[dict]) -> dict[str, Any]:
         "worker_count",
         "total_hours",
         "ot_hours",
+        "base_earnings",
+        "ot_premium",
+        "other_earnings",
         "gross_pay",
         "employer_taxes",
         "total_payroll_cost",
@@ -376,11 +416,24 @@ def workforce_breakdown_totals(categories: list[dict]) -> dict[str, Any]:
             else:
                 tot[k] = round(tot[k] + _money(c.get(k)), 2)
     hours = tot["total_hours"]
-    tot["avg_rate"] = round(tot["gross_pay"] / hours, 2) if hours > 0.005 else None
-    tot["avg_cost_per_hour"] = (
+    avg_pay = round(tot["gross_pay"] / hours, 2) if hours > 0.005 else None
+    avg_cost = (
         round(tot["total_payroll_cost"] / hours, 2) if hours > 0.005 else None
     )
+    recon_diff = round(
+        tot["gross_pay"]
+        - tot["base_earnings"]
+        - tot["ot_premium"]
+        - tot["other_earnings"],
+        2,
+    )
+    tot["avg_pay_rate"] = avg_pay
+    tot["avg_cost_per_hour"] = avg_cost
+    tot["avg_rate"] = avg_pay  # legacy alias
     tot["head_count"] = int(tot["worker_count"])
+    tot["gross_reconciliation_diff"] = recon_diff
+    tot["gross_reconciles"] = abs(recon_diff) < 0.005
+    tot["has_other_earnings"] = abs(tot["other_earnings"]) >= 0.005
     return tot
 
 
@@ -608,6 +661,8 @@ def build_report_analytics(
             "pay_period_end": e["pay_period_end"],
             "ot_hours": e.get("ot_hours", 0),
             "ot_premium": e.get("ot_premium", 0),
+            "base_earnings": e.get("base_earnings", 0),
+            "other_earnings": e.get("other_earnings", 0),
             "ot_pct_of_hours": e.get("ot_pct_of_hours", 0),
             "ot_premium_pct_of_gross": e.get("ot_premium_pct_of_gross", 0),
             "total_hours": e.get("total_hours", 0),

@@ -1059,8 +1059,62 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
         elif key in money_keys or key in hour_keys:
             ws.column_dimensions[letter].width = 12
 
-    # Period comparison sheet
+    # Analytics sheets
     analytics = report.get("analytics") or {}
+    categories = analytics.get("category_breakdown") or []
+    workforce_totals = analytics.get("workforce_totals") or {}
+    if categories:
+        ws_wf = wb.create_sheet("Workforce Breakdown")
+        ws_wf.append([heading, "Workforce breakdown"])
+        ws_wf.append(
+            [
+                "Category",
+                "Head Count",
+                "Total Hours",
+                "OT Hours",
+                "Base Earnings",
+                "OT Premium",
+                "Other Earnings",
+                "Gross Payroll",
+                "Employer Tax",
+                "Total Payroll Cost",
+                "Avg Pay Rate",
+                "Cost / Hour",
+            ]
+        )
+        for cell in ws_wf[ws_wf.max_row]:
+            cell.font = Font(bold=True)
+
+        def _rate_cell(val):
+            return round(_money(val), 2) if val is not None else None
+
+        def _wf_values(c):
+            avg_pay = (
+                c.get("avg_pay_rate")
+                if c.get("avg_pay_rate") is not None
+                else c.get("avg_rate")
+            )
+            return [
+                c.get("label") or c.get("worker_category"),
+                c.get("head_count") or c.get("worker_count") or 0,
+                round(_money(c.get("total_hours")), 2),
+                round(_money(c.get("ot_hours")), 2),
+                round(_money(c.get("base_earnings")), 2),
+                round(_money(c.get("ot_premium")), 2),
+                round(_money(c.get("other_earnings")), 2),
+                round(_money(c.get("gross_pay")), 2),
+                round(_money(c.get("employer_taxes")), 2),
+                round(_money(c.get("total_payroll_cost")), 2),
+                _rate_cell(avg_pay),
+                _rate_cell(c.get("avg_cost_per_hour")),
+            ]
+
+        for c in categories:
+            ws_wf.append(_wf_values(c))
+        ws_wf.append(_wf_values({**workforce_totals, "label": "Total"}))
+        for cell in ws_wf[ws_wf.max_row]:
+            cell.font = Font(bold=True)
+
     pc = analytics.get("period_comparison") or []
     if pc:
         ws2 = wb.create_sheet("Period Comparison")
@@ -1081,7 +1135,8 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
             "Total Payroll Cost",
             "Amount Paid",
             "Outstanding",
-            "Avg Cost/Hour",
+            "Avg Pay Rate",
+            "Cost / Hour",
             "Δ Total Cost",
             "% Δ Total Cost",
         ]
@@ -1108,6 +1163,9 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
                     round(_money(e.get("total_payroll_cost")), 2),
                     round(_money(e.get("amount_paid")), 2),
                     round(_money(e.get("outstanding_balance")), 2),
+                    round(_money(e.get("avg_pay_rate")), 2)
+                    if e.get("avg_pay_rate") is not None
+                    else None,
                     round(_money(e.get("avg_cost_per_hour")), 2)
                     if e.get("avg_cost_per_hour") is not None
                     else None,
@@ -1317,47 +1375,71 @@ def build_payroll_report_html(report: dict) -> str:
     if ot:
         ot_html = f"""
 <div class="ot-card">
-  <div class="kpi-label">OT Hours</div>
-  <div class="kpi-value">{fmt_hours(ot.get('value'))}</div>
+  <div class="kpi-label">OT Insight</div>
+  <div class="kpi-value">{fmt_hours(ot.get('ot_hours') if ot.get('ot_hours') is not None else ot.get('value'))} OT Hours</div>
   <div class="kpi-prev">{_money(ot.get('ot_pct_of_hours')):.2f}% of Total Hours</div>
-  <div class="kpi-prev">Previous: {fmt_hours(ot.get('previous'))}</div>
-  <div class="kpi-delta">{fmt_delta(ot.get('diff'), ot.get('pct'))}</div>
+  <div class="kpi-prev"><strong>OT Premium {fmt_money(ot.get('ot_premium'))}</strong></div>
+  <div class="kpi-prev">{_money(ot.get('ot_premium_pct_of_gross')):.2f}% of Gross Payroll</div>
+  <div class="kpi-prev">Previous OT Hours: {fmt_hours(ot.get('previous_ot_hours') if ot.get('previous_ot_hours') is not None else ot.get('previous'))}</div>
+  <div class="kpi-delta">Hours {fmt_delta(ot.get('ot_hours_diff') if ot.get('ot_hours_diff') is not None else ot.get('diff'), ot.get('ot_hours_pct') if ot.get('ot_hours_pct') is not None else ot.get('pct'))}</div>
+  <div class="kpi-prev">Previous OT Premium: {fmt_money(ot.get('previous_ot_premium'))}</div>
+  <div class="kpi-delta">Premium {fmt_delta(ot.get('ot_premium_diff'), ot.get('ot_premium_pct'))}</div>
 </div>"""
+
+    def _fmt_rate(val):
+        return fmt_money(val) if val is not None else "—"
+
+    def _wf_row_cells(c, *, strong=False):
+        avg_pay = c.get("avg_pay_rate") if c.get("avg_pay_rate") is not None else c.get("avg_rate")
+        other = _money(c.get("other_earnings"))
+        other_note = f" <span class='muted'>+other {fmt_money(other)}</span>" if abs(other) >= 0.005 else ""
+        wrap = ("<strong>", "</strong>") if strong else ("", "")
+        b, e = wrap
+
+        def cell(val, *, money=False, hrs=False, rate=False):
+            if rate:
+                txt = _fmt_rate(val)
+            elif money:
+                txt = fmt_money(val)
+            elif hrs:
+                txt = fmt_hours(val)
+            else:
+                txt = str(val)
+            return f"<td class='num'>{b}{txt}{e}</td>"
+
+        return (
+            f"<td>{b}{c.get('label') or c.get('worker_category') or ''}{e}</td>"
+            + cell(c.get("head_count") or c.get("worker_count") or 0)
+            + cell(c.get("total_hours"), hrs=True)
+            + cell(c.get("ot_hours"), hrs=True)
+            + cell(c.get("base_earnings"), money=True)
+            + cell(c.get("ot_premium"), money=True)
+            + f"<td class='num'>{b}{fmt_money(c.get('gross_pay'))}{other_note}{e}</td>"
+            + cell(c.get("employer_taxes"), money=True)
+            + cell(c.get("total_payroll_cost"), money=True)
+            + cell(avg_pay, rate=True)
+            + cell(c.get("avg_cost_per_hour"), rate=True)
+        )
 
     wf_rows = []
     for c in categories:
-        wf_rows.append(
-            "<tr>"
-            f"<td>{c.get('label') or c.get('worker_category') or ''}</td>"
-            f"<td class='num'>{c.get('head_count') or c.get('worker_count') or 0}</td>"
-            f"<td class='num'>{fmt_hours(c.get('total_hours'))}</td>"
-            f"<td class='num'>{fmt_hours(c.get('ot_hours'))}</td>"
-            f"<td class='num'>{fmt_money(c.get('gross_pay'))}</td>"
-            f"<td class='num'>{fmt_money(c.get('employer_taxes'))}</td>"
-            f"<td class='num'>{fmt_money(c.get('total_payroll_cost'))}</td>"
-            f"<td class='num'>{fmt_money(c.get('avg_rate') if c.get('avg_rate') is not None else c.get('avg_pay_rate'))}</td>"
-            "</tr>"
-        )
+        wf_rows.append(f"<tr>{_wf_row_cells(c)}</tr>")
     if categories:
-        wf_rows.append(
-            "<tr class='subtotal'>"
-            "<td><strong>Total</strong></td>"
-            f"<td class='num'><strong>{workforce_totals.get('head_count') or workforce_totals.get('worker_count') or 0}</strong></td>"
-            f"<td class='num'><strong>{fmt_hours(workforce_totals.get('total_hours'))}</strong></td>"
-            f"<td class='num'><strong>{fmt_hours(workforce_totals.get('ot_hours'))}</strong></td>"
-            f"<td class='num'><strong>{fmt_money(workforce_totals.get('gross_pay'))}</strong></td>"
-            f"<td class='num'><strong>{fmt_money(workforce_totals.get('employer_taxes'))}</strong></td>"
-            f"<td class='num'><strong>{fmt_money(workforce_totals.get('total_payroll_cost'))}</strong></td>"
-            f"<td class='num'><strong>{fmt_money(workforce_totals.get('avg_rate'))}</strong></td>"
-            "</tr>"
-        )
+        tot = {
+            **workforce_totals,
+            "label": "Total",
+            "worker_category": "Total",
+        }
+        wf_rows.append(f"<tr class='subtotal'>{_wf_row_cells(tot, strong=True)}</tr>")
     workforce_table = f"""
 <table class="cmp">
 <thead><tr>
-  <th>Category</th><th>Head Count</th><th>Hours</th><th>OT Hours</th>
-  <th>Gross</th><th>Employer Tax</th><th>Total Cost</th><th>Avg Rate</th>
+  <th>Category</th><th>Head Count</th><th>Total Hours</th><th>OT Hours</th>
+  <th>Base Earnings</th><th>OT Premium</th><th>Gross Payroll</th>
+  <th>Employer Tax</th><th>Total Payroll Cost</th>
+  <th>Avg Pay Rate</th><th>Cost / Hour</th>
 </tr></thead>
-<tbody>{"".join(wf_rows) if wf_rows else "<tr><td colspan='8'>No category data</td></tr>"}</tbody>
+<tbody>{"".join(wf_rows) if wf_rows else "<tr><td colspan='11'>No category data</td></tr>"}</tbody>
 </table>"""
 
     pc = analytics.get("period_comparison") or []
@@ -1372,6 +1454,8 @@ def build_payroll_report_html(report: dict) -> str:
             f"<td class='num'>{e.get('worker_count', 0)}</td>"
             f"<td class='num'>{fmt_hours(e.get('total_hours'))}</td>"
             f"<td class='num'>{fmt_hours(e.get('ot_hours'))}</td>"
+            f"<td class='num'>{fmt_money(e.get('base_earnings'))}</td>"
+            f"<td class='num'>{fmt_money(e.get('ot_premium'))}</td>"
             f"<td class='num'>{fmt_money(e.get('gross_pay'))}</td>"
             f"<td class='num'>{fmt_money(e.get('employer_taxes'))}</td>"
             f"<td class='num'>{fmt_money(e.get('total_payroll_cost'))}</td>"
@@ -1383,9 +1467,9 @@ def build_payroll_report_html(report: dict) -> str:
 <table class="cmp">
 <thead><tr>
   <th>Payroll Period</th><th>Workers</th><th>Hours</th><th>OT</th>
-  <th>Gross</th><th>ER taxes</th><th>Total cost</th><th>$/hr</th><th>Δ cost</th>
+  <th>Base</th><th>OT Prem</th><th>Gross</th><th>ER taxes</th><th>Total cost</th><th>$/hr</th><th>Δ cost</th>
 </tr></thead>
-<tbody>{"".join(cmp_rows) if cmp_rows else "<tr><td colspan='9'>No comparison periods</td></tr>"}</tbody>
+<tbody>{"".join(cmp_rows) if cmp_rows else "<tr><td colspan='11'>No comparison periods</td></tr>"}</tbody>
 </table>"""
 
     chart_grid = f"""
@@ -1481,6 +1565,7 @@ def build_payroll_report_html(report: dict) -> str:
   .kpi-label {{ color:#64748b; font-size:8px; text-transform:uppercase; letter-spacing:0.03em; }}
   .kpi-value {{ font-weight:700; font-size:12px; color:#0f172a; margin-top:2px; }}
   .kpi-prev {{ color:#64748b; font-size:8px; margin-top:2px; }}
+  .muted {{ color:#94a3b8; font-size:8px; }}
   .kpi-delta {{ color:#475569; font-size:8px; margin-top:2px; font-weight:600; }}
   .ot-card {{ background:#e6f5f8; border:1px solid #c5e7ee; border-radius:6px; padding:6px 8px; max-width:220px; margin: 4px 0 8px; }}
   .section-title {{ color:#007a91; font-size:11px; font-weight:700; margin: 8px 0 4px; }}
