@@ -103,13 +103,21 @@ def expand_review_required(
     entry_by_bag: Mapping[str, Mapping[str, Any]],
     wia_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
     weight_by_bag: Mapping[str, Any] | None = None,
+    shift_closed: bool = False,
 ) -> dict[str, Any]:
     """
     Mutate/return classification so Review Required includes CWO + WF post-weight gaps.
 
     Priority: Review > Completed > Pending. One bag → one review count.
-    WF Review for weight uses post_weight only (pre may be null/zero without review).
+
+    WF post-weight review is gated:
+      valid entry + valid pre + canonically completed + no valid post
+    → WF_ZERO_OR_MISSING_POST_WEIGHT
+
+    During an OPEN shift, in-process bags with only a pre weight stay Pending.
+    CLOSED shifts use the same gate (only completed bags lacking post).
     """
+    _ = shift_closed  # reserved; gate is completion-based for both OPEN and CLOSED
     D = selected_date_et
     prev_day = D - timedelta(days=1)
     wia_map = wia_by_bag or {}
@@ -136,6 +144,23 @@ def expand_review_required(
         lst = reasons.setdefault(bid, [])
         if code not in lst:
             lst.append(code)
+
+    def is_canonically_completed(bid: str, row: Mapping[str, Any]) -> bool:
+        if bid in completed or bid in cwo:
+            return True
+        if REASON_COMPLETED_WITHOUT_RECOGNIZED_ENTRY in (reasons.get(bid) or []):
+            return True
+        if row.get("completion_date") or row.get("completion_at"):
+            return True
+        canon = str(row.get("canonical_status") or "").lower()
+        return "completed" in canon
+
+    def has_valid_entry(bid: str, row: Mapping[str, Any]) -> bool:
+        if entry_by_bag.get(bid):
+            return True
+        if wia_map.get(bid):
+            return True
+        return bool(row.get("entry_source") or row.get("original_entry_date") or row.get("first_entry_at"))
 
     # Seed disappeared reasons
     for bid in disappeared:
@@ -214,7 +239,7 @@ def expand_review_required(
                 },
             }
 
-    # --- WF zero / missing POST weight (Active members) ----------------------
+    # --- WF missing POST weight — only after canonical completion ------------
     active = new_today | carryover
     for bid in list(active):
         pres = presence_by_bag.get(bid) or {}
@@ -235,10 +260,17 @@ def expand_review_required(
         if bid in rows_by_id:
             rows_by_id[bid]["pre_weight_lbs"] = pre_w
             rows_by_id[bid]["post_weight_lbs"] = post_w
-            # Display weight prefers post, else pre (for chronology summaries).
             rows_by_id[bid]["weight_lbs"] = post_w if post_w is not None else pre_w
 
+        # Always attach weights for display; only review when gated conditions hold.
         if not _post_weight_invalid(post_w):
+            continue
+        if not has_valid_entry(bid, row):
+            continue
+        if _valid_positive_weight(pre_w) is None:
+            continue
+        if not is_canonically_completed(bid, row):
+            # Still processing — keep Pending/Completed as classified; no weight review.
             continue
 
         add_reason(bid, REASON_WF_ZERO_OR_MISSING_POST_WEIGHT)
@@ -252,6 +284,8 @@ def expand_review_required(
         if bid in cwo or REASON_COMPLETED_WITHOUT_RECOGNIZED_ENTRY in (reasons.get(bid) or []):
             canon = OUTCOME_COMPLETED
         elif row.get("completion_date") or row.get("completion_at"):
+            canon = OUTCOME_COMPLETED
+        elif bid in completed or is_canonically_completed(bid, row):
             canon = OUTCOME_COMPLETED
         rows_by_id[bid] = {
             **row,

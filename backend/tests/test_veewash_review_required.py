@@ -224,10 +224,37 @@ def test_hd_with_one_or_no_weight_no_weight_review():
         assert REASON_WF_ZERO_OR_MISSING_POST_WEIGHT not in (out["review_reasons_by_bag"].get(bid) or [])
 
 
-def test_single_scrape_weight_post_missing_review():
-    presence = {"WFPREONLY": _pres(service="WF", rush="RUSH")}
-    entry = {"WFPREONLY": _entry(D1)}
-    completion = {"WFPREONLY": _comp(D1)}
+def test_pending_wf_with_pre_only_stays_pending_not_review():
+    """During live shift, pre-only WF bags that are not completed stay Pending."""
+    presence = {"WFPEND1": _pres(service="WF", active=1)}
+    entry = {"WFPEND1": _entry(D1)}
+    completion = {}  # not completed
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag=completion,
+    )
+    assert "WFPEND1" in (raw.get("pending_end_of_date") or [])
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        weight_by_bag={"WFPEND1": {"pre_weight_lbs": 12.5, "post_weight_lbs": None}},
+    )
+    assert "WFPEND1" not in out["review_required"]
+    assert REASON_WF_ZERO_OR_MISSING_POST_WEIGHT not in (out["review_reasons_by_bag"].get("WFPEND1") or [])
+    assert "WFPEND1" in out["pending_end_of_date"]
+    row = next(r for r in out["rows"] if r["bag_id"] == "WFPEND1")
+    assert row["pre_weight_lbs"] == 12.5
+    assert row["post_weight_lbs"] is None
+
+
+def test_completed_wf_pre_only_goes_to_review():
+    presence = {"WFCOMP1": _pres(service="WF")}
+    entry = {"WFCOMP1": _entry(D1)}
+    completion = {"WFCOMP1": _comp(D1)}
     raw = classify_veewash_workload(
         selected_date_et=D1,
         presence_by_bag=presence,
@@ -239,13 +266,11 @@ def test_single_scrape_weight_post_missing_review():
         selected_date_et=D1,
         presence_by_bag=presence,
         entry_by_bag=entry,
-        weight_by_bag={"WFPREONLY": {"pre_weight_lbs": 5.5, "post_weight_lbs": None}},
+        weight_by_bag={"WFCOMP1": {"pre_weight_lbs": 12.5, "post_weight_lbs": None}},
     )
-    assert "WFPREONLY" in out["review_required"]
-    assert REASON_WF_ZERO_OR_MISSING_POST_WEIGHT in out["review_reasons_by_bag"]["WFPREONLY"]
-    row = next(r for r in out["rows"] if r["bag_id"] == "WFPREONLY")
-    assert row["pre_weight_lbs"] == 5.5
-    assert row["post_weight_lbs"] is None
+    assert "WFCOMP1" in out["review_required"]
+    assert REASON_WF_ZERO_OR_MISSING_POST_WEIGHT in out["review_reasons_by_bag"]["WFCOMP1"]
+    assert "WFCOMP1" not in out["completed_on_date"]
 
 
 def test_same_value_two_events_no_weight_review():
@@ -283,15 +308,15 @@ def test_no_double_count_and_review_by_reason_groups():
         selected_date_et=D1,
         presence_by_bag=presence,
         entry_by_bag=entry,
-        weight_by_bag={"MULTI1": {"pre_weight_lbs": None, "post_weight_lbs": None}},
+        # Disappeared + not completed: weight reason must NOT apply (no completion gate).
+        weight_by_bag={"MULTI1": {"pre_weight_lbs": 5.5, "post_weight_lbs": None}},
     )
     assert out["review_required"].count("MULTI1") == 1
     codes = out["review_reasons_by_bag"]["MULTI1"]
     assert REASON_DISAPPEARED_WITHOUT_COMPLETION in codes
-    assert REASON_WF_ZERO_OR_MISSING_POST_WEIGHT in codes
+    assert REASON_WF_ZERO_OR_MISSING_POST_WEIGHT not in codes
     by = build_review_by_reason(out)
     assert "MULTI1" in by[REASON_DISAPPEARED_WITHOUT_COMPLETION]
-    assert "MULTI1" in by[REASON_WF_ZERO_OR_MISSING_POST_WEIGHT]
     summary = build_step1_headline_summary(out, selected_date_et=D1, activation_date=D1)
     assert summary["exceptions"]["review_required"] == 1
     assert summary["active_workload"] == summary["completed"] + summary["pending"] + summary["exceptions"]["review_required"]

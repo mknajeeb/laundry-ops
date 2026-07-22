@@ -341,35 +341,39 @@ def load_canonical_completions_v2(
     if not ids or not table_exists(cursor, "rinse_bag_scan_events"):
         return {}
 
-    # Join against presence to avoid a huge IN list; filter bags in Python.
+    # Bound IN lists — never full-table scan all org scan events.
     id_set = set(ids)
-    cursor.execute(
-        """
-        SELECT bag_id, rack, purpose, scanned_at_parsed, user_name, weight_lbs
-        FROM rinse_bag_scan_events
-        WHERE organization_id = %s
-          AND scanned_at_parsed IS NOT NULL
-          AND bag_id IS NOT NULL AND TRIM(bag_id) != ''
-        ORDER BY scanned_at_parsed ASC, id ASC
-        """,
-        (int(organization_id),),
-    )
     by_bag: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in cursor.fetchall() or []:
-        if not isinstance(row, dict):
-            continue
-        bid = _norm_bag(row.get("bag_id"))
-        if bid not in id_set:
-            continue
-        by_bag[bid].append(
-            {
-                "rack": row.get("rack"),
-                "purpose": row.get("purpose"),
-                "scanned_at_parsed": row.get("scanned_at_parsed"),
-                "user_name": row.get("user_name"),
-                "weight_lbs": row.get("weight_lbs"),
-            }
+    chunk_size = 400
+    for i in range(0, len(ids), chunk_size):
+        chunk = ids[i : i + chunk_size]
+        placeholders = ",".join(["%s"] * len(chunk))
+        cursor.execute(
+            f"""
+            SELECT bag_id, rack, purpose, scanned_at_parsed, user_name, weight_lbs
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND bag_id IN ({placeholders})
+              AND scanned_at_parsed IS NOT NULL
+            ORDER BY scanned_at_parsed ASC, id ASC
+            """,
+            (int(organization_id), *chunk),
         )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            bid = _norm_bag(row.get("bag_id"))
+            if bid not in id_set:
+                continue
+            by_bag[bid].append(
+                {
+                    "rack": row.get("rack"),
+                    "purpose": row.get("purpose"),
+                    "scanned_at_parsed": row.get("scanned_at_parsed"),
+                    "user_name": row.get("user_name"),
+                    "weight_lbs": row.get("weight_lbs"),
+                }
+            )
 
     out: dict[str, dict[str, Any]] = {}
     for bid, timeline in by_bag.items():
