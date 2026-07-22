@@ -211,9 +211,14 @@ def expand_review_required(
     Priority: Review > Completed > Pending. One bag → one review count.
     Review never removes bags from Active / service×rush population.
 
-    create-workitem-bulk is WF-only for review UI, but does not redefine true HD
-    bags whose workitems-added is same-day as facility entry. Registry WF still
-    overrides portal HD.
+    create-workitem-bulk is WF-only for review UI.
+
+    Service signal from scan purposes:
+      - Hang Dry: workitems-added (and typically also create-workitem-bulk)
+      - WF with work items: create-workitem-bulk only (no workitems-added)
+
+    So bulk does not redefine a bag that has workitems-added + HD portal/registry.
+    Bulk without workitems-added forces WF. Registry WF still overrides portal HD.
 
     WF_ZERO_OR_MISSING_POST_WEIGHT only when the bag is canonically completed
     and exactly one weight-entry scan exists (no second event). Recorded post=0
@@ -274,15 +279,17 @@ def expand_review_required(
             return True
         return bool(row.get("entry_source") or row.get("original_entry_date") or row.get("first_entry_at"))
 
+    def has_workitems_added(bid: str) -> bool:
+        return bool(wia_map.get(bid))
+
     def resolve_service(bid: str, pres: Mapping[str, Any], row: Mapping[str, Any]) -> tuple[str, bool]:
         """
-        Effective Step-1 service.
+        Effective Step-1 service from portal/registry + scan purposes.
 
         - Registry WF overrides portal HD (explicit WF identity).
-        - create-workitem-bulk does NOT redefine HD when portal/registry are HD and
-          workitems-added falls on the same ET day as facility entry (true HD start).
-        - Bulk may still force WF when HD workitems-added is a prior day and facility
-          entry (+ bulk) happens later — the WF comforter/bath-mat path.
+        - Hang Dry always has workitems-added (often with create-workitem-bulk too).
+        - WF with work items has create-workitem-bulk only — no workitems-added.
+        - Therefore: bulk + HD portal/registry + WIA → keep HD; bulk without WIA → WF.
         - Facility racks never determine service.
         """
         portal = (
@@ -291,6 +298,7 @@ def expand_review_required(
         )
         reg = registry_svc.get(bid) or ""
         has_bulk = bool(bulk_scans.get(bid) and int((bulk_scans.get(bid) or {}).get("count") or 0) > 0)
+        has_wia = has_workitems_added(bid)
 
         if reg == SERVICE_WF and portal == SERVICE_HD:
             return SERVICE_WF, True
@@ -299,12 +307,10 @@ def expand_review_required(
 
         portal_or_reg_hd = portal == SERVICE_HD or reg == SERVICE_HD
         if has_bulk and portal_or_reg_hd:
-            wia_d = (wia_map.get(bid) or {}).get("entry_date")
-            dirty_d = (entry_by_bag.get(bid) or {}).get("entry_date")
-            # Same-day HD start: keep HD. Bulk scan is not a service signal.
-            if wia_d is not None and dirty_d is not None and wia_d == dirty_d:
+            # True Hang Dry: workitems-added is present (bulk may coexist).
+            if has_wia:
                 return SERVICE_HD, False
-            # Prior-day WIA + later facility/bulk → WF bulk-workitem path.
+            # WF with work items: create-workitem-bulk only.
             return SERVICE_WF, True
 
         if has_bulk:

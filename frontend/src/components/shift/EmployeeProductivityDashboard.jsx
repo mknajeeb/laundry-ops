@@ -242,7 +242,12 @@ export default function EmployeeProductivityDashboard({
   useEffect(() => {
     const dateEt = initialDateEt || activeDateEt;
     if (!dateEt) return;
-    fetchSection(dateEt, rushFilterProp || "all");
+    // Defer so metric drawer / summary requests win the connection pool first.
+    // Employee productivity is secondary UI and used to starve Shift Monitor drawers.
+    const timer = window.setTimeout(() => {
+      fetchSection(dateEt, rushFilterProp || "all");
+    }, 250);
+    return () => window.clearTimeout(timer);
   }, [initialDateEt, rushFilterProp, refreshToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const employees = section?.employees || [];

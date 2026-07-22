@@ -80,7 +80,7 @@ def test_wf_bulk_scan_enters_review():
 
 
 def test_hd_same_day_wia_with_bulk_stays_hd_not_wf_bulk_review():
-    """Same-day workitems-added + create-workitem-bulk keeps HD; bulk does not redefine service."""
+    """Hang Dry has workitems-added + create-workitem-bulk; bulk does not redefine service."""
     presence = {"BAGHD1": _pres("HD")}
     entry = {"BAGHD1": _entry()}
     raw = classify_veewash_workload(
@@ -117,8 +117,8 @@ def test_hd_same_day_wia_with_bulk_stays_hd_not_wf_bulk_review():
     assert row["service_type"] == "HD"
 
 
-def test_hd_prior_day_wia_with_later_bulk_remaps_to_wf_review():
-    """Prior-day WIA + later facility/bulk is the WF comforter/bath-mat path."""
+def test_hd_with_wia_and_bulk_stays_hd_even_if_wia_prior_day():
+    """Any workitems-added means Hang Dry pattern — prior-day WIA still keeps HD."""
     presence = {"BAGHD2": _pres("HD")}
     entry = {"BAGHD2": _entry()}
     raw = classify_veewash_workload(
@@ -150,8 +150,49 @@ def test_hd_prior_day_wia_with_later_bulk_remaps_to_wf_review():
         registry_service_by_bag={"BAGHD2": "HD"},
     )
     reasons = out.get("review_reasons_by_bag") or {}
-    assert REASON_WF_BULK_WORKITEM_REVIEW in (reasons.get("BAGHD2") or [])
+    assert REASON_WF_BULK_WORKITEM_REVIEW not in (reasons.get("BAGHD2") or [])
     row = next(r for r in out["rows"] if r["bag_id"] == "BAGHD2")
+    assert row["service_type"] == "HD"
+
+
+def test_portal_hd_bulk_without_wia_remaps_to_wf_review():
+    """WF with work items: create-workitem-bulk only (no workitems-added) → WF + bulk review."""
+    presence = {"BAGBULK1": _pres("HD")}
+    entry = {"BAGBULK1": _entry()}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={},
+    )
+    if "BAGBULK1" not in (raw.get("new_today") or []) and "BAGBULK1" not in (raw.get("carryover") or []):
+        raw.setdefault("new_today", []).append("BAGBULK1")
+        raw.setdefault("rows", []).append(
+            {
+                "bag_id": "BAGBULK1",
+                "service_type": "HD",
+                "outcome": "pending",
+                "rush_flag": "RUSH",
+            }
+        )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        wia_by_bag={},
+        bulk_scan_by_bag={
+            "BAGBULK1": {
+                "count": 1,
+                "first_at": datetime(2026, 7, 22, 6, 54),
+                "employee": "Francis",
+            }
+        },
+        registry_service_by_bag={"BAGBULK1": "HD"},
+    )
+    reasons = out.get("review_reasons_by_bag") or {}
+    assert REASON_WF_BULK_WORKITEM_REVIEW in (reasons.get("BAGBULK1") or [])
+    row = next(r for r in out["rows"] if r["bag_id"] == "BAGBULK1")
     assert row["service_type"] == "WF"
 
 

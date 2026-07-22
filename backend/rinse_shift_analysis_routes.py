@@ -1017,10 +1017,6 @@ def register_rinse_shift_analysis_routes(
         from backend.rinse_employee_completed_bags import (
             build_employee_productivity_dashboard_payload,
         )
-        from backend.rinse_shift_monitor_baseline import (
-            build_baseline_context,
-            get_shift_monitor_baseline,
-        )
 
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
@@ -1039,9 +1035,32 @@ def register_rinse_shift_analysis_routes(
             if not isinstance(selected, date):
                 return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
             rush_filter = (request.args.get("rush_filter") or "all").strip().lower()
-            baseline_ctx = build_baseline_context(
-                cursor, tenant_oid, get_shift_monitor_baseline(cursor, tenant_oid)
-            )
+            # Step-1 path builds from the day snapshot and ignores baseline_ctx.
+            # Only pay for baseline scrape hunting on the legacy at-vendor fallback.
+            baseline_ctx = None
+            try:
+                from backend.rinse_veewash_workload import (
+                    VEEWASH_ORG_ID,
+                    get_step1_activation_date,
+                    is_step1_enabled,
+                )
+
+                use_step1 = (
+                    int(tenant_oid) == VEEWASH_ORG_ID
+                    and is_step1_enabled(cursor, tenant_oid)
+                    and (get_step1_activation_date(cursor, tenant_oid) or selected) <= selected
+                )
+            except Exception:
+                use_step1 = False
+            if not use_step1:
+                from backend.rinse_shift_monitor_baseline import (
+                    build_baseline_context,
+                    get_shift_monitor_baseline,
+                )
+
+                baseline_ctx = build_baseline_context(
+                    cursor, tenant_oid, get_shift_monitor_baseline(cursor, tenant_oid)
+                )
             payload = build_employee_productivity_dashboard_payload(
                 cursor,
                 tenant_oid,

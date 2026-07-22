@@ -1937,6 +1937,169 @@ def build_employee_completed_bags_today(
     }
 
 
+def _workload_rows_from_step1_day_bags(
+    day_bags: Sequence[Mapping[str, Any]],
+    *,
+    completed_ids: set[str],
+    pending_ids: set[str],
+    review_ids: set[str],
+    active_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Map persisted Step-1 day bags into at-vendor-shaped workload rows."""
+    rows: list[dict[str, Any]] = []
+    for bag in day_bags or []:
+        if not isinstance(bag, Mapping):
+            continue
+        bid = str(bag.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        if bid not in completed_ids and bid not in pending_ids and bid not in review_ids and bid not in active_ids:
+            continue
+        snap = dict(bag.get("bag_snapshot") or {})
+        if bid in completed_ids:
+            status = "Completed"
+        elif bid in review_ids:
+            status = "In Review"
+        else:
+            status = "Pending"
+        rows.append(
+            {
+                **snap,
+                "bag_id": bid,
+                "service_type": bag.get("service_type") or snap.get("service_type"),
+                "service_bucket": bag.get("service_type") or snap.get("service_type"),
+                "rush_flag": bag.get("rush_status") or snap.get("rush_flag"),
+                "rush_bucket": bag.get("rush_status") or snap.get("rush_flag"),
+                "at_vendor_status": status,
+                "customer_name": snap.get("customer_name") or bag.get("customer_name"),
+            }
+        )
+    return rows
+
+
+_STEP1_PROD_CACHE: dict[tuple[int, str, str], tuple[float, dict[str, Any]]] = {}
+_STEP1_PROD_CACHE_TTL_SEC = 45.0
+
+
+def _try_build_step1_employee_productivity_dashboard(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    rush_filter: str = "all",
+) -> dict[str, Any] | None:
+    """Snapshot-first productivity for Step-1 — never rebuilds the legacy at-vendor module."""
+    import time
+
+    try:
+        from backend.rinse_veewash_workload import (
+            VEEWASH_ORG_ID,
+            get_step1_activation_date,
+            is_step1_enabled,
+        )
+    except Exception:
+        return None
+
+    org = int(organization_id)
+    if org != VEEWASH_ORG_ID or not is_step1_enabled(cursor, org):
+        return None
+    activation = get_step1_activation_date(cursor, org)
+    if activation is None or selected_date_et < activation:
+        return None
+
+    from backend.daily_shift_labor_summary import build_labor_summary
+    from backend.daily_shift_roster import list_roster_entries
+    from backend.rinse_employee_productivity_presentation import apply_employee_productivity_scope
+    from backend.rinse_employee_productivity_settings import (
+        include_hd_in_employee_productivity,
+        productivity_scope_label,
+    )
+    from backend.rinse_employee_workload_productivity import normalize_rush_filter
+    from backend.rinse_simple_shift_performance import _load_bag_metadata, _load_rinse_user_maps
+    from backend.rinse_veewash_shift_day import (
+        get_day_headline,
+        load_day_bags,
+        summary_from_day_record,
+    )
+
+    rush = normalize_rush_filter(rush_filter)
+    cache_key = (org, selected_date_et.isoformat(), rush)
+    cached = _STEP1_PROD_CACHE.get(cache_key)
+    now = time.time()
+    if cached and (now - cached[0]) < _STEP1_PROD_CACHE_TTL_SEC:
+        return dict(cached[1])
+
+    day = get_day_headline(cursor, org, selected_date_et)
+    summary = summary_from_day_record(day) if day else None
+    if not summary:
+        return None
+
+    segs = (summary.get("segments") or {}).get("all") or {}
+    bag_ids = segs.get("bag_ids") or {}
+    completed_ids = {str(b).strip().upper() for b in (bag_ids.get("completed") or []) if b}
+    pending_ids = {str(b).strip().upper() for b in (bag_ids.get("pending") or []) if b}
+    review_ids = {str(b).strip().upper() for b in (bag_ids.get("review_required") or []) if b}
+    active_ids = {
+        str(b).strip().upper()
+        for b in list(bag_ids.get("new_today") or []) + list(bag_ids.get("carryover") or [])
+        if b
+    }
+
+    day_bags = load_day_bags(cursor, org, selected_date_et)
+    workload_rows = _workload_rows_from_step1_day_bags(
+        day_bags,
+        completed_ids=completed_ids,
+        pending_ids=pending_ids,
+        review_ids=review_ids,
+        active_ids=active_ids,
+    )
+    completed_rows = [r for r in workload_rows if r.get("at_vendor_status") == "Completed"]
+    meta_ids = [r["bag_id"] for r in workload_rows if r.get("bag_id")]
+    registry_meta = _load_bag_metadata(cursor, org, meta_ids) if meta_ids else {}
+
+    emp = build_employee_completed_bags_today(
+        cursor,
+        org,
+        completed_rows=completed_rows,
+        workload_rows=workload_rows,
+        events_by_bag={},
+        selected_date_et=selected_date_et,
+        registry_meta_by_bag=registry_meta,
+    )
+    include_hd = include_hd_in_employee_productivity(cursor, org)
+    scoped_emp = apply_employee_productivity_scope(
+        emp,
+        include_hd=include_hd,
+        rush_filter=rush,
+        workload_rows=workload_rows,
+    )
+    roster_entries = list_roster_entries(cursor, org, roster_date=selected_date_et)
+    user_maps = _load_rinse_user_maps(cursor, org)
+    labor_summary = build_labor_summary(
+        roster_entries,
+        productivity_section=scoped_emp,
+        user_maps=user_maps,
+    )
+    payload = {
+        "selected_date_et": selected_date_et.isoformat(),
+        "employee_completed_bags_today": scoped_emp,
+        "completed_today_kpi": len(completed_ids),
+        "workload_total_kpi": int(summary.get("total_operational_orders") or len(active_ids)),
+        "workload_completed_kpi": len(completed_ids),
+        "rush_completed_kpi": ((summary.get("segments") or {}).get("rush") or {}).get("completed"),
+        "non_rush_completed_kpi": ((summary.get("segments") or {}).get("non_rush") or {}).get(
+            "completed"
+        ),
+        "include_hd_in_employee_productivity": include_hd,
+        "productivity_scope_label": productivity_scope_label(include_hd),
+        "productivity_rush_filter": rush,
+        "labor_summary": labor_summary,
+        "step1_lightweight_productivity": True,
+    }
+    _STEP1_PROD_CACHE[cache_key] = (now, payload)
+    return payload
+
+
 def build_employee_productivity_dashboard_payload(
     cursor,
     organization_id: int,
@@ -1946,6 +2109,15 @@ def build_employee_productivity_dashboard_payload(
     rush_filter: str = "all",
 ) -> dict[str, Any]:
     """Read-only Phase 2 payload — uses frozen Phase 1 employee_completed_bags_today."""
+    step1 = _try_build_step1_employee_productivity_dashboard(
+        cursor,
+        organization_id,
+        selected_date_et=selected_date_et,
+        rush_filter=rush_filter,
+    )
+    if step1 is not None:
+        return step1
+
     from backend.rinse_at_vendor_module import build_at_vendor_module
     from backend.rinse_employee_productivity_presentation import apply_employee_productivity_scope
     from backend.rinse_employee_productivity_settings import (
