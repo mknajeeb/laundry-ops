@@ -189,6 +189,33 @@ def test_prior_open_day_loads_snapshot_not_live():
     assert meta["status"] == STATUS_OPEN
 
 
+def test_prior_reopened_day_keeps_snapshot():
+    from backend.rinse_veewash_shift_day import STATUS_REOPENED, build_or_load_step1_for_date
+
+    cursor = MagicMock()
+    day = {
+        "status": STATUS_REOPENED,
+        "headline": _summary(review=9, active=90, completed=72, pending=9),
+        "review_required_count": 9,
+    }
+    bags = [{"bag_id": "A", "effective_status": "pending", "bag_snapshot": {"bag_id": "A"}}]
+    with (
+        patch("backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables"),
+        patch("backend.rinse_veewash_shift_day.get_step1_activation_date", return_value=D1),
+        patch("backend.rinse_veewash_shift_day.get_day_record", return_value=day),
+        patch("backend.rinse_veewash_shift_day.today_et", return_value=date(2026, 7, 22)),
+        patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=bags),
+        patch("backend.rinse_veewash_shift_day.build_veewash_daily_workload") as live,
+        patch("backend.rinse_veewash_shift_day.persist_day_snapshot") as persist,
+    ):
+        wl, summary, meta = build_or_load_step1_for_date(cursor, 3, D1, persist_live=True)
+    live.assert_not_called()
+    persist.assert_not_called()
+    assert wl.get("from_snapshot") is True
+    assert summary["active_workload"] == 90
+    assert meta["status"] == STATUS_REOPENED
+
+
 def test_carryover_seeds_pending_bags():
     from backend.rinse_veewash_shift_day import _seed_next_day_carryover
     from backend.rinse_veewash_workload import OUTCOME_PENDING

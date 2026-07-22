@@ -60,9 +60,7 @@ def _dt(value: Any) -> datetime | None:
 
 
 def ensure_shift_monitor_day_tables(cursor) -> None:
-    if table_exists(cursor, "rinse_shift_monitor_days"):
-        return
-    # Create all three via individual DDL so partial deploys still work.
+    # Always run CREATE IF NOT EXISTS for each table (partial deploys / missing siblings).
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS rinse_shift_monitor_days (
@@ -436,11 +434,12 @@ def build_or_load_step1_for_date(
                 day,
             )
 
-    # Historical OPEN/READY snapshots stay stable after first persist (midnight-safe).
+    # Historical OPEN/READY/REOPENED snapshots stay stable after first persist (midnight-safe).
+    # REOPENED prior days keep the frozen bag set until an explicit backfill/correction rebuild.
     if (
         day
         and selected_date_et < today
-        and status in (STATUS_OPEN, STATUS_READY_TO_CLOSE)
+        and status in (STATUS_OPEN, STATUS_READY_TO_CLOSE, STATUS_REOPENED)
         and day.get("headline")
     ):
         summary = summary_from_day_record(day)
@@ -455,7 +454,7 @@ def build_or_load_step1_for_date(
                     day,
                 )
 
-    # Live / reconstruct path (today, REOPENED, or missing snapshot).
+    # Live / reconstruct path (today, or missing prior-day snapshot).
     wl = build_veewash_daily_workload(
         cursor, organization_id, selected_date_et=selected_date_et
     )
@@ -470,8 +469,17 @@ def build_or_load_step1_for_date(
         if status == STATUS_REOPENED and review_n > 0:
             next_status = STATUS_REOPENED
 
-    should_persist = persist_live and (not day or status != STATUS_CLOSED)
-    if should_persist:
+    # Never silently rewrite a prior-day snapshot from a partial live rebuild.
+    should_persist = persist_live and (
+        selected_date_et == today
+        or day is None
+        or (
+            selected_date_et < today
+            and status in (STATUS_OPEN, STATUS_READY_TO_CLOSE, STATUS_REOPENED)
+            and not load_day_bags(cursor, organization_id, selected_date_et)
+        )
+    )
+    if should_persist and (not day or status != STATUS_CLOSED):
         day = persist_day_snapshot(
             cursor,
             organization_id,
@@ -608,8 +616,12 @@ def close_shift_day(
     allow_unresolved_reviews: bool = False,
     checklist: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # Prefer already-persisted prior-day snapshot; do not live-rebuild on close.
     wl, summary, day = build_or_load_step1_for_date(
-        cursor, organization_id, shift_date_et, persist_live=True
+        cursor,
+        organization_id,
+        shift_date_et,
+        persist_live=(shift_date_et == today_et()),
     )
     if (day or {}).get("status") == STATUS_CLOSED:
         return {"ok": False, "error": "already_closed", "day": day}
@@ -828,18 +840,47 @@ def list_close_audit(
 
 
 def backfill_day_from_live(
-    cursor, organization_id: int, shift_date_et: date
+    cursor, organization_id: int, shift_date_et: date, *, force: bool = False
 ) -> dict[str, Any]:
     """Rebuild and persist a day from source (activation onward)."""
     activation = get_step1_activation_date(cursor, organization_id)
     if activation and shift_date_et < activation:
         return {"ok": False, "error": "before_activation"}
     day = get_day_record(cursor, organization_id, shift_date_et)
-    if day and day.get("status") == STATUS_CLOSED:
+    if day and day.get("status") == STATUS_CLOSED and not force:
         return {"ok": False, "error": "day_closed", "day": day}
-    wl, summary, day = build_or_load_step1_for_date(
-        cursor, organization_id, shift_date_et, persist_live=True
+    if day and day.get("status") == STATUS_CLOSED and force:
+        reopen_shift_day(
+            cursor,
+            organization_id,
+            shift_date_et,
+            actor_user_id=None,
+            actor_display_name="system_backfill",
+            reason="force backfill of closed day",
+        )
+    # Explicit source rebuild + persist even for prior dates.
+    wl = build_veewash_daily_workload(
+        cursor, organization_id, selected_date_et=shift_date_et
     )
+    summary = build_step1_headline_summary(
+        wl,
+        selected_date_et=shift_date_et,
+        activation_date=activation or shift_date_et,
+    )
+    review_n = int((summary.get("exceptions") or {}).get("review_required") or 0)
+    day = persist_day_snapshot(
+        cursor,
+        organization_id,
+        shift_date_et,
+        workload=wl,
+        summary=summary,
+        status=STATUS_READY_TO_CLOSE if review_n == 0 else STATUS_OPEN,
+        force=True,
+    )
+    try:
+        cursor.connection.commit()
+    except Exception:
+        pass
     return {
         "ok": True,
         "day": day,
