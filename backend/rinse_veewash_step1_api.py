@@ -212,77 +212,130 @@ def build_drilldown(
     metric: str,
     service: str = "all",
     rush: str = "all",
+    include_details: bool = False,
+    bag_id: str | None = None,
+    page: int = 1,
+    page_size: int = 25,
 ) -> dict[str, Any]:
-    payload = build_step1_payload(cursor, organization_id, selected_date_et)
-    wl = payload["workload"]
-    summary = payload["summary"]
+    """
+    Step-1 metric drawer payload.
+
+    Default: bag summaries only (fast). Pass bag_id + include_details for one-bag
+    chronology/corrections. Paginate summary lists (default 25).
+    """
+    import time
+
+    from backend.rinse_veewash_shift_day import (
+        _workload_shell_from_bags,
+        get_day_record,
+        load_day_bags,
+        summary_from_day_record,
+    )
+
+    t0 = time.perf_counter()
+    # Prefer persisted day snapshot for drawer speed. Full live rebuild is for the
+    # dashboard cards; drawer must stay summary-first and avoid re-scanning all bags.
+    day_rec = get_day_record(cursor, organization_id, selected_date_et)
+    snap_bags = (
+        load_day_bags(cursor, organization_id, selected_date_et) if day_rec else []
+    )
+    if day_rec and day_rec.get("headline") and snap_bags:
+        summary = summary_from_day_record(day_rec) or {}
+        wl = _workload_shell_from_bags(
+            snap_bags,
+            selected_date_et=selected_date_et,
+            status=str(day_rec.get("status") or "OPEN"),
+        )
+    else:
+        payload = build_step1_payload(cursor, organization_id, selected_date_et)
+        wl = payload["workload"]
+        summary = payload["summary"]
     ids = _filter_bag_ids(summary, metric=metric, service=service, rush=rush)
+    if bag_id:
+        bid = normalize_bag_id(bag_id)
+        ids = [bid] if bid in ids or bid else ([bid] if bid else [])
+
+    page = max(1, int(page or 1))
+    page_size = max(1, min(100, int(page_size or 25)))
+    total = len(ids)
+    start = (page - 1) * page_size
+    page_ids = ids if (include_details and bag_id) else ids[start : start + page_size]
+
     rows_by_id = {r.get("bag_id"): r for r in (wl.get("rows") or []) if r.get("bag_id")}
     reasons = wl.get("review_reasons_by_bag") or summary.get("review_reasons_by_bag") or {}
-    scans = load_scans_for_bags(cursor, organization_id, ids)
 
-    # Latest corrections per bag
-    corrections: dict[str, list] = {b: [] for b in ids}
-    if ids and table_exists(cursor, "rinse_step1_corrections"):
-        placeholders = ",".join(["%s"] * len(ids))
-        cursor.execute(
-            f"""
-            SELECT bag_id, action, reason_code, reason_text, previous_values, new_values,
-                   actor_display_name, created_at
-            FROM rinse_step1_corrections
-            WHERE organization_id = %s AND bag_id IN ({placeholders})
-            ORDER BY created_at DESC
-            """,
-            (int(organization_id), *ids),
-        )
-        for row in cursor.fetchall() or []:
-            bid = normalize_bag_id(row.get("bag_id"))
-            if bid in corrections:
-                corrections[bid].append(
-                    {
-                        "action": row.get("action"),
-                        "reason_code": row.get("reason_code"),
-                        "reason_text": row.get("reason_text"),
-                        "previous_values": row.get("previous_values"),
-                        "new_values": row.get("new_values"),
-                        "actor_display_name": row.get("actor_display_name"),
-                        "created_at": row.get("created_at"),
-                    }
-                )
+    scans: dict[str, list] = {b: [] for b in page_ids}
+    corrections: dict[str, list] = {b: [] for b in page_ids}
+    detail_ms = 0.0
+    if include_details and page_ids:
+        t_detail = time.perf_counter()
+        scans = load_scans_for_bags(cursor, organization_id, page_ids)
+        if table_exists(cursor, "rinse_step1_corrections"):
+            placeholders = ",".join(["%s"] * len(page_ids))
+            cursor.execute(
+                f"""
+                SELECT bag_id, action, reason_code, reason_text, previous_values, new_values,
+                       actor_display_name, created_at
+                FROM rinse_step1_corrections
+                WHERE organization_id = %s AND bag_id IN ({placeholders})
+                ORDER BY created_at DESC
+                """,
+                (int(organization_id), *page_ids),
+            )
+            for row in cursor.fetchall() or []:
+                bid = normalize_bag_id(row.get("bag_id"))
+                if bid in corrections:
+                    corrections[bid].append(
+                        {
+                            "action": row.get("action"),
+                            "reason_code": row.get("reason_code"),
+                            "reason_text": row.get("reason_text"),
+                            "previous_values": row.get("previous_values"),
+                            "new_values": row.get("new_values"),
+                            "actor_display_name": row.get("actor_display_name"),
+                            "created_at": row.get("created_at"),
+                        }
+                    )
+        detail_ms = (time.perf_counter() - t_detail) * 1000.0
 
     bags = []
-    for bid in ids:
+    for bid in page_ids:
         r = rows_by_id.get(bid) or {}
-        bags.append(
-            {
-                "bag_id": bid,
-                "customer_name": r.get("customer_name"),
-                "service_type": r.get("service_type"),
-                "rush_flag": r.get("rush_flag"),
-                "entry_class": r.get("entry_class"),
-                "dashboard_status": r.get("outcome") or r.get("final_bucket"),
+        item = {
+            "bag_id": bid,
+            "customer_name": r.get("customer_name"),
+            "service_type": r.get("service_type"),
+            "rush_flag": r.get("rush_flag"),
+            "entry_class": r.get("entry_class"),
+            "dashboard_status": r.get("outcome") or r.get("final_bucket"),
+            "canonical_status": r.get("canonical_status"),
+            "reason_codes": list(reasons.get(bid) or r.get("reason_codes") or []),
+            "weight_lbs": r.get("weight_lbs"),
+            "pre_weight_lbs": r.get("pre_weight_lbs"),
+            "post_weight_lbs": r.get("post_weight_lbs"),
+            "entry_at": r.get("original_entry_date") or r.get("first_entry_at"),
+            "entry_source": r.get("entry_source"),
+            "completion_at": r.get("completion_at"),
+            "completed_by": r.get("completed_by"),
+            "portal_status": r.get("portal_status"),
+            "last_seen_at": r.get("last_seen_date"),
+            "system_result": {
+                "outcome": r.get("outcome"),
                 "canonical_status": r.get("canonical_status"),
                 "reason_codes": list(reasons.get(bid) or r.get("reason_codes") or []),
-                "weight_lbs": r.get("weight_lbs"),
-                "pre_weight_lbs": r.get("pre_weight_lbs"),
-                "post_weight_lbs": r.get("post_weight_lbs"),
-                "entry_at": r.get("original_entry_date"),
-                "entry_source": r.get("entry_source"),
                 "completion_at": r.get("completion_at"),
                 "completed_by": r.get("completed_by"),
-                "portal_status": r.get("portal_status"),
-                "last_seen_at": r.get("last_seen_date"),
-                "scans": scans.get(bid) or [],
-                "corrections": corrections.get(bid) or [],
-                "system_result": {
-                    "outcome": r.get("outcome"),
-                    "canonical_status": r.get("canonical_status"),
-                    "reason_codes": list(reasons.get(bid) or r.get("reason_codes") or []),
-                    "completion_at": r.get("completion_at"),
-                    "completed_by": r.get("completed_by"),
-                },
-            }
-        )
+            },
+        }
+        if include_details:
+            item["scans"] = scans.get(bid) or []
+            item["corrections"] = corrections.get(bid) or []
+        else:
+            item["scans"] = []
+            item["corrections"] = []
+        bags.append(item)
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
     return {
         "selected_date_et": selected_date_et.isoformat(),
         "metric": metric,
@@ -290,6 +343,17 @@ def build_drilldown(
         "rush": rush,
         "bags": bags,
         "review_by_reason": summary.get("review_by_reason") or {},
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "has_more": start + page_size < total,
+        },
+        "include_details": bool(include_details),
+        "timing_ms": {
+            "total": round(elapsed_ms, 1),
+            "detail_queries": round(detail_ms, 1),
+        },
     }
 
 

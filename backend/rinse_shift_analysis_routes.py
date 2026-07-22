@@ -428,6 +428,11 @@ def register_rinse_shift_analysis_routes(
                 metric=str(request.args.get("metric") or "review_required"),
                 service=str(request.args.get("service") or "all"),
                 rush=str(request.args.get("rush") or "all"),
+                include_details=str(request.args.get("include_details") or "").lower()
+                in ("1", "true", "yes"),
+                bag_id=request.args.get("bag_id"),
+                page=int(request.args.get("page") or 1),
+                page_size=int(request.args.get("page_size") or 25),
             )
             return jsonify(json_safe_rinse(out))
         except Exception as exc:

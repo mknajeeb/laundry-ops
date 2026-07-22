@@ -567,11 +567,30 @@ export const batchConfirmCompletionReviews = (body) =>
     timeout: 120000,
   });
 
-/** VeeWash Step-1 metric drill-down (respects date / service / rush / metric). */
+/** VeeWash Step-1 metric drill-down (summary by default; paginated). */
 export const getVeewashStep1Drilldown = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/veewash-step1/drilldown`, {
-    params: { ...params, _t: Date.now() },
-    timeout: 90000,
+    params: {
+      page: 1,
+      page_size: 25,
+      include_details: false,
+      ...params,
+      _t: Date.now(),
+    },
+    timeout: Number(params.timeout_ms) || 20000,
+    headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+  });
+
+/** One-bag chronology + corrections (lazy expand). */
+export const getVeewashStep1BagDetail = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/veewash-step1/drilldown`, {
+    params: {
+      include_details: true,
+      page_size: 1,
+      ...params,
+      _t: Date.now(),
+    },
+    timeout: 20000,
     headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
   });
 
