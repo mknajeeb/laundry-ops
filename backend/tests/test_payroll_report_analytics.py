@@ -477,7 +477,15 @@ def test_kpi_neutral_trend_for_cost_increase():
     assert cards["total_payroll_cost"]["neutral_trend"] is True
     assert cards["total_payroll_cost"]["previous"] == 1800
     assert cards["total_payroll_cost"]["diff"] == 250
+    # Absolute hours change only — no % for avg hours/worker.
+    assert cards["avg_hours_per_worker"]["diff"] == 2.0
+    assert cards["avg_hours_per_worker"]["pct"] is None
     from backend.payroll_report_analytics import build_ot_summary
+
+    narrative = __import__(
+        "backend.payroll_report_analytics", fromlist=["build_executive_narrative"]
+    ).build_executive_narrative(current, previous, [])
+    assert all("Hours/worker" not in d for d in narrative["drivers"])
 
     ot = build_ot_summary(current, previous)
     assert ot["value"] == 10

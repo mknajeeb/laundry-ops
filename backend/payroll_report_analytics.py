@@ -266,6 +266,10 @@ def build_kpi_cards(
                 "pct": None,
                 "direction": "flat",
             }
+        # Avg hours/worker is already hours ÷ headcount; a % change is
+        # redundant with Hours % (and confusing when headcount is flat).
+        if key == "avg_hours_per_worker" and delta.get("pct") is not None:
+            delta = {**delta, "pct": None}
         cards.append(
             {
                 "key": key,
@@ -384,13 +388,6 @@ def build_executive_narrative(
         float(current.get("worker_count") or 0),
         float(previous.get("worker_count") or 0),
     )
-    avg_h_d = _delta(
-        _money(current.get("avg_hours_per_worker") or 0),
-        _money(previous.get("avg_hours_per_worker") or 0)
-        if previous.get("avg_hours_per_worker") is not None
-        else None,
-    )
-
     direction_word = "unchanged"
     if cost_d["direction"] == "up":
         direction_word = "increased"
@@ -416,8 +413,7 @@ def build_executive_narrative(
             drivers.append("Headcount unchanged")
         else:
             drivers.append(f"Headcount {hc_d['diff']:+.0f}")
-    if avg_h_d["pct"] is not None and abs(avg_h_d["pct"]) >= 0.05:
-        drivers.append(f"Hours/worker {avg_h_d['pct']:+.1f}%")
+    # Do not narrate Hours/worker % — it duplicates Hours % when HC is flat.
 
     # Which employment type moved cost the most (by absolute $ change vs prior mix not available
     # at category prior — use share of focus cost as secondary signal).
