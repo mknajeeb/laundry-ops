@@ -137,3 +137,144 @@ def test_temp_and_1099_policy_keeps_ot_enabled_even_when_calendar_off():
                 reg, ot, 17, resolve_overtime_rate(17, multiplier=policy["multiplier"])
             )
             assert float(gross) == 900.58
+
+
+def test_temp_exactly_40_hours_has_no_overtime():
+    reg, ot = split_hours_for_overtime(40, threshold=40)
+    assert float(reg) == 40.0
+    assert float(ot) == 0.0
+    assert float(compute_wage_with_overtime(40, 0, 17)) == 680.0
+
+
+def test_temp_47_02_hours_at_17_produces_expected_gross():
+    """User example: 40 reg @ $17 + 7.02 OT @ $25.50 = $859.01."""
+    from backend.payroll_overtime import (
+        compute_contractor_invoice_earnings,
+        compute_earnings_breakdown,
+        compute_overtime_premium,
+    )
+
+    reg, ot = split_hours_for_overtime(47.02, threshold=40)
+    assert float(reg) == 40.0
+    assert float(ot) == 7.02
+    ot_rate = resolve_overtime_rate(17)
+    assert float(ot_rate) == 25.5
+    gross = compute_wage_with_overtime(reg, ot, 17, ot_rate)
+    assert float(gross) == 859.01
+    # Register shows premium only.
+    premium = compute_overtime_premium(ot, 17, ot_rate)
+    assert float(premium) == 59.67
+    br = compute_earnings_breakdown(
+        regular_hours=reg, ot_hours=ot, regular_rate=17, ot_rate=ot_rate, gross_pay=gross
+    )
+    assert float(br["ot_premium"]) == 59.67
+    assert abs(br["base_earnings"] + br["ot_premium"] + br["other_earnings"] - 859.01) < 0.02
+    # Contractor invoice shows full OT earnings.
+    inv = compute_contractor_invoice_earnings(
+        {
+            "approved_hours": float(reg),
+            "ot_hours": float(ot),
+            "rate": 17,
+            "ot_rate": float(ot_rate),
+            "gross_amount": float(gross),
+        }
+    )
+    assert inv["regular_earnings"] == 680.0
+    assert inv["overtime_earnings"] == 179.01
+    assert inv["gross_pay"] == 859.01
+    assert abs(inv["regular_earnings"] + inv["overtime_earnings"] + inv["other_earnings"] - 859.01) < 0.02
+
+
+def test_1099_uses_same_overtime_rule_as_temp():
+    reg, ot = split_hours_for_overtime(47.02)
+    gross = compute_wage_with_overtime(reg, ot, 17)
+    assert float(gross) == 859.01
+
+
+def test_custom_ot_multiplier_is_respected():
+    ot_rate = resolve_overtime_rate(17, multiplier=2.0)
+    assert float(ot_rate) == 34.0
+    gross = compute_wage_with_overtime(40, 5, 17, ot_rate)
+    assert float(gross) == 850.0  # 680 + 170
+
+
+def test_contractor_invoice_reconciles_to_stored_gross_without_inventing_ot():
+    """Historical underpayment: hours>40 all at regular — receipt must match stored flat gross."""
+    from backend.payroll_overtime import compute_contractor_invoice_earnings
+
+    inv = compute_contractor_invoice_earnings(
+        {
+            "approved_hours": 47.02,
+            "ot_hours": 0,
+            "rate": 17,
+            "gross_amount": 799.34,
+        }
+    )
+    assert inv["overtime_earnings"] == 0.0
+    assert inv["regular_earnings"] == 799.34
+    assert inv["gross_pay"] == 799.34
+
+
+def test_batch_allows_contractor_overtime_autosplit_gates_paid_history():
+    from backend.payroll_overtime import batch_allows_contractor_overtime_autosplit
+
+    assert batch_allows_contractor_overtime_autosplit(
+        {"worker_category": "temp", "status": "draft"}
+    )
+    assert batch_allows_contractor_overtime_autosplit(
+        {"worker_category": "contractor_1099", "status": "hours_reviewed"}
+    )
+    assert not batch_allows_contractor_overtime_autosplit(
+        {"worker_category": "temp", "status": "paid"}
+    )
+    assert not batch_allows_contractor_overtime_autosplit(
+        {
+            "worker_category": "temp",
+            "status": "draft",
+            "payout_details_finalized_at": "2026-07-01",
+        }
+    )
+    assert not batch_allows_contractor_overtime_autosplit(
+        {"worker_category": "w2", "status": "draft"}
+    )
+
+
+def test_compute_payout_line_amounts_autosplits_temp_draft():
+    from backend.payroll_operations import _compute_payout_line_amounts
+
+    conn = MagicMock()
+    cursor = MagicMock()
+    conn.cursor.return_value = cursor
+    batch = {"worker_category": "temp", "status": "draft", "pay_period_start": "2026-06-01", "pay_period_end": "2026-06-07"}
+    with patch("backend.payroll_workflow.ensure_payout_batch_line_extensions"), patch(
+        "backend.payroll_overtime.resolve_batch_overtime_policy",
+        return_value={"enabled": True, "threshold_hours": 40.0, "multiplier": 1.5},
+    ):
+        out = _compute_payout_line_amounts(
+            conn,
+            3,
+            batch,
+            {"approved_hours": 47.02, "ot_hours": 0, "rate": 17, "adjustments": 0},
+        )
+    assert float(out["approved_hours"]) == 40.0
+    assert float(out["ot_hours"]) == 7.02
+    assert float(out["ot_rate"]) == 25.5
+    assert float(out["gross_amount"]) == 859.01
+
+
+def test_compute_payout_line_amounts_does_not_autosplit_paid_batch():
+    from backend.payroll_operations import _compute_payout_line_amounts
+
+    conn = MagicMock()
+    conn.cursor.return_value = MagicMock()
+    batch = {"worker_category": "temp", "status": "paid", "pay_period_start": "2026-06-01", "pay_period_end": "2026-06-07"}
+    with patch("backend.payroll_workflow.ensure_payout_batch_line_extensions"):
+        out = _compute_payout_line_amounts(
+            conn,
+            3,
+            batch,
+            {"approved_hours": 47.02, "ot_hours": 0, "rate": 17, "adjustments": 0},
+        )
+    assert float(out["approved_hours"]) == 47.02
+    assert float(out["ot_hours"]) == 0.0
+    assert float(out["gross_amount"]) == 799.34

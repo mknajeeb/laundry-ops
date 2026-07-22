@@ -283,7 +283,9 @@ def _parse_json_blob(val: Any) -> dict[str, Any]:
         return {}
 
 
-def parse_line_payout_details(line: dict) -> dict[str, Any]:
+def parse_line_payout_details(
+    line: dict, *, worker_category: Optional[str] = None
+) -> dict[str, Any]:
     raw = _parse_json_blob(line.get("payout_details_json"))
     base = _empty_details()
     for section in ("employee_deductions", "employer_taxes", "payment", "settlement", "tax_summary"):
@@ -302,6 +304,8 @@ def parse_line_payout_details(line: dict) -> dict[str, Any]:
             "name": v.get("name"),
             "address": v.get("address"),
             "logo_url": v.get("logo_url"),
+            "representative_name": v.get("representative_name"),
+            "representative_title": v.get("representative_title"),
         }
     for k in EMPLOYEE_DEDUCTION_KEYS:
         base["employee_deductions"][k] = float(_money(base["employee_deductions"].get(k)))
@@ -341,6 +345,16 @@ def parse_line_payout_details(line: dict) -> dict[str, Any]:
         base["tax_summary"][k] = float(_money(base["tax_summary"].get(k)))
     if "estimated" in base["tax_summary"]:
         base["tax_summary"]["estimated"] = bool(base["tax_summary"].get("estimated"))
+
+    cat = worker_category or line.get("worker_category")
+    # Temp/1099: default paid-full-gross ON and tax-balance section OFF when unset.
+    raw_settlement = raw.get("settlement") if isinstance(raw.get("settlement"), dict) else {}
+    if _is_vendor_receipt_category(cat):
+        if "paid_full_gross_without_withholding" not in raw_settlement:
+            base["settlement"]["paid_full_gross_without_withholding"] = True
+        if "show_tax_payment_section" not in raw:
+            base["show_tax_payment_section"] = False
+
     gross = float(_money(line.get("gross_amount") or line.get("total_amount") or 0))
     base = reconcile_tax_summary(base)
     if gross > 0:
@@ -779,8 +793,150 @@ def compute_line_totals(line: dict, details: Optional[dict] = None) -> dict[str,
 VENDOR_RECEIPT_CATEGORIES = ("temp", "contractor_1099")
 
 
+def _is_vendor_receipt_category(worker_category: Optional[str]) -> bool:
+    return str(worker_category or "").strip() in VENDOR_RECEIPT_CATEGORIES
+
+
+def apply_vendor_receipt_detail_defaults(
+    details: dict, worker_category: Optional[str], *, force: bool = False
+) -> dict:
+    """Temp / 1099 defaults: paid full gross ON, show tax balance on paystub OFF.
+
+    When force=True (backfill), always write the defaults. Otherwise only fill
+    missing keys so explicit user edits are preserved on new drafts.
+    """
+    if not _is_vendor_receipt_category(worker_category):
+        return details
+    out = dict(details or {})
+    settlement = dict(out.get("settlement") or {})
+    if force or "paid_full_gross_without_withholding" not in settlement:
+        settlement["paid_full_gross_without_withholding"] = True
+    out["settlement"] = settlement
+    if force or "show_tax_payment_section" not in out:
+        out["show_tax_payment_section"] = False
+    return out
+
+
 def batch_uses_vendor_receipt(batch: dict) -> bool:
-    return str(batch.get("worker_category") or "") in VENDOR_RECEIPT_CATEGORIES
+    return _is_vendor_receipt_category(batch.get("worker_category"))
+
+
+def backfill_vendor_receipt_settlement_defaults(
+    conn,
+    organization_id: int,
+    *,
+    apply: bool = False,
+    batch_ids: Optional[list[int]] = None,
+) -> dict:
+    """Force temp/1099 settlement defaults on all matching lines (incl. finalized).
+
+    Sets paid_full_gross_without_withholding=True and show_tax_payment_section=False,
+    then recomputes settlement math so amount_paid/withheld stay consistent.
+    Preserves vendor snapshots and other payout_details keys.
+    """
+    ensure_payout_details_columns(conn.cursor())
+    c = conn.cursor(dictionary=True)
+    params: list[Any] = [int(organization_id)]
+    batch_filter = ""
+    if batch_ids:
+        placeholders = ",".join(["%s"] * len(batch_ids))
+        batch_filter = f" AND pb.id IN ({placeholders})"
+        params.extend(int(x) for x in batch_ids)
+    c.execute(
+        f"""
+        SELECT
+          pbl.id AS line_id,
+          pbl.batch_id,
+          pbl.gross_amount,
+          pbl.total_amount,
+          pbl.payout_details_json,
+          pb.batch_name,
+          pb.worker_category,
+          pb.status AS batch_status,
+          pb.payout_details_finalized_at
+        FROM payout_batch_lines pbl
+        JOIN payout_batches pb ON pb.id = pbl.batch_id
+        WHERE pb.organization_id = %s
+          AND pb.worker_category IN ('temp', 'contractor_1099')
+          {batch_filter}
+        ORDER BY pb.id, pbl.id
+        """,
+        tuple(params),
+    )
+    rows = c.fetchall() or []
+    report: dict[str, Any] = {
+        "organization_id": int(organization_id),
+        "apply": bool(apply),
+        "scanned": len(rows),
+        "changed": 0,
+        "unchanged": 0,
+        "lines": [],
+    }
+    updater = conn.cursor()
+    for row in rows:
+        cat = row.get("worker_category")
+        gross = float(_money(row.get("gross_amount") or row.get("total_amount") or 0))
+        before = parse_line_payout_details(row, worker_category=cat)
+        after = apply_vendor_receipt_detail_defaults(before, cat, force=True)
+        after = reconcile_tax_summary(after)
+        if gross > 0:
+            after = apply_settlement_math(after, gross)
+        before_flags = {
+            "paid_full_gross_without_withholding": bool(
+                (before.get("settlement") or {}).get("paid_full_gross_without_withholding")
+            ),
+            "show_tax_payment_section": bool(before.get("show_tax_payment_section")),
+            "amount_paid": float(_money((before.get("settlement") or {}).get("amount_paid"))),
+            "amount_withheld": float(
+                _money((before.get("settlement") or {}).get("amount_withheld"))
+            ),
+        }
+        after_flags = {
+            "paid_full_gross_without_withholding": bool(
+                (after.get("settlement") or {}).get("paid_full_gross_without_withholding")
+            ),
+            "show_tax_payment_section": bool(after.get("show_tax_payment_section")),
+            "amount_paid": float(_money((after.get("settlement") or {}).get("amount_paid"))),
+            "amount_withheld": float(
+                _money((after.get("settlement") or {}).get("amount_withheld"))
+            ),
+        }
+        changed = before_flags != after_flags or json.dumps(
+            before, sort_keys=True, default=str
+        ) != json.dumps(after, sort_keys=True, default=str)
+        entry = {
+            "line_id": int(row["line_id"]),
+            "batch_id": int(row["batch_id"]),
+            "batch_name": row.get("batch_name"),
+            "batch_status": row.get("batch_status"),
+            "finalized": bool(row.get("payout_details_finalized_at")),
+            "worker_category": cat,
+            "before": before_flags,
+            "after": after_flags,
+            "changed": changed,
+        }
+        report["lines"].append(entry)
+        if not changed:
+            report["unchanged"] += 1
+            continue
+        report["changed"] += 1
+        if apply:
+            updater.execute(
+                """
+                UPDATE payout_batch_lines
+                SET payout_details_json=%s, updated_at=CURRENT_TIMESTAMP
+                WHERE id=%s AND batch_id=%s AND organization_id=%s
+                """,
+                (
+                    json.dumps(after),
+                    int(row["line_id"]),
+                    int(row["batch_id"]),
+                    int(organization_id),
+                ),
+            )
+    if apply and report["changed"]:
+        conn.commit()
+    return report
 
 
 def batch_document_mode(batch: dict) -> str:
@@ -1066,7 +1222,12 @@ def enrich_line_with_payout_details(
     batch_id: Optional[int] = None,
 ) -> dict:
     row = dict(line)
-    details = parse_line_payout_details(row)
+    cat = None
+    if batch:
+        cat = batch.get("worker_category")
+    if not cat:
+        cat = row.get("worker_category")
+    details = parse_line_payout_details(row, worker_category=cat)
     if (
         conn is not None
         and organization_id is not None
@@ -3604,6 +3765,7 @@ def generate_vendor_receipt_html(
     """
     import html as _html
 
+    from backend.payroll_overtime import compute_contractor_invoice_earnings
     from backend.payroll_vendors import resolve_line_vendor
 
     batch = get_payout_batch_details(conn, organization_id, batch_id)
@@ -3626,11 +3788,20 @@ def generate_vendor_receipt_html(
     vendor = resolve_line_vendor(conn, int(organization_id), line, batch) or {}
     contact = _vendor_worker_contact(conn, line.get("user_id"))
 
-    gross = float(totals.get("gross_pay") or 0)
+    gross = float(
+        _money(line.get("total_amount") or line.get("gross_amount") or totals.get("gross_pay") or 0)
+    )
     amount_paid = float(totals.get("amount_paid") or gross)
-    hours = float(line.get("approved_hours") or 0)
-    rate = float(line.get("rate") or 0)
-    adjustments = float(_money(line.get("adjustments") or 0))
+    invoice = compute_contractor_invoice_earnings({**line, "gross_amount": gross})
+    reg_hours = float(invoice.get("regular_hours") or 0)
+    ot_hours = float(invoice.get("ot_hours") or 0)
+    reg_rate = float(invoice.get("regular_rate") or 0)
+    ot_rate = float(invoice.get("ot_rate") or 0)
+    reg_earn = float(invoice.get("regular_earnings") or 0)
+    ot_earn = float(invoice.get("overtime_earnings") or 0)
+    other_earn = float(invoice.get("other_earnings") or 0)
+    # Receipt total must reconcile to stored total (never invent OT that wasn't paid).
+    total_due = float(invoice.get("gross_pay") or gross)
 
     year = _vendor_receipt_year(batch, payment)
     pay_date = str(
@@ -3680,17 +3851,37 @@ def generate_vendor_receipt_html(
 
     work_period = f"{batch.get('pay_period_start')} — {batch.get('pay_period_end')}"
 
+    earnings_rows = []
+    if reg_hours > 0 or reg_rate > 0:
+        earnings_rows.extend(
+            [
+                row("Regular hours", f"{reg_hours:.2f}", left=False),
+                row("Regular rate", money(reg_rate), left=False) if reg_rate else "",
+                row("Regular earnings", money(reg_earn), left=False),
+            ]
+        )
+    if ot_hours > 0:
+        earnings_rows.extend(
+            [
+                row("Overtime hours", f"{ot_hours:.2f}", left=False),
+                row("Overtime rate", money(ot_rate), left=False) if ot_rate else "",
+                row("Overtime earnings", money(ot_earn), left=False),
+            ]
+        )
+    if abs(other_earn) >= 0.005:
+        earnings_rows.append(row("Other earnings", money(other_earn), left=False))
+    if not earnings_rows:
+        # Fallback for non-hourly / empty hour lines: still show total due.
+        earnings_rows.append(row("Service amount", money(total_due), left=False))
+
     part1_rows = "".join(
         [
             row("Contractor / worker name", esc(worker_name), strong=True),
             row("Phone", esc(contact["phone"])) if contact["phone"] else "",
             row("Email", esc(contact["email"])) if contact["email"] else "",
             row("Work period", esc(work_period)),
-            row("Total approved hours", f"{hours:.2f}", left=False) if hours else "",
-            row("Service rate", money(rate), left=False) if rate else "",
-            row("Service amount", money(gross), left=False),
-            (row("Adjustments, if any", money(adjustments), left=False) if adjustments else ""),
-            row("Total amount due", money(round(gross + adjustments, 2)), strong=True, left=False),
+            *earnings_rows,
+            row("Total amount due", money(total_due), strong=True, left=False),
             (row("Total paid this year (before this payment)", money(prior_ytd), left=False)
              if prior_ytd > 0 else ""),
             row(

@@ -197,6 +197,78 @@ def earnings_breakdown_from_line(line: dict[str, Any], *, multiplier: Any = None
     )
 
 
+def compute_contractor_invoice_earnings(
+    line: dict[str, Any],
+    *,
+    multiplier: Any = None,
+) -> dict[str, Any]:
+    """Contractor receipt earnings: full OT earnings (not premium-only).
+
+    Regular earnings = regular hours × regular rate
+    Overtime earnings = OT hours × OT rate (full rate, not premium)
+    Other earnings = residual so components always sum to stored gross/total.
+
+    Does not change stored amounts — presentation only.
+    """
+    reg_h = max(Decimal("0"), _d(line.get("approved_hours") or 0))
+    ot_h = max(Decimal("0"), _d(line.get("ot_hours") or 0))
+    rate = max(Decimal("0"), _d(line.get("rate") or 0))
+    explicit = line.get("ot_rate")
+    if explicit is not None and _d(explicit) <= 0:
+        explicit = None
+    ot_r = (
+        resolve_overtime_rate(rate, multiplier=multiplier, explicit_ot_rate=explicit)
+        if ot_h > 0 and rate > 0
+        else Decimal("0.00")
+    )
+    regular_earnings = _q2(reg_h * rate) if rate > 0 else Decimal("0.00")
+    overtime_earnings = _q2(ot_h * ot_r) if ot_h > 0 and ot_r > 0 else Decimal("0.00")
+    other_from_fields = _q2(
+        _d(line.get("sick_pay_amount") or 0)
+        + _d(line.get("bonus_tip_amount") or 0)
+        + _d(line.get("reimbursement_amount") or 0)
+        + _d(line.get("adjustments") or 0)
+        + _d(line.get("health_credit_amount") or 0)
+    )
+    gross_raw = line.get("gross_amount")
+    if gross_raw is None or str(gross_raw).strip() == "":
+        gross_raw = line.get("total_amount")
+    if gross_raw is None or str(gross_raw).strip() == "":
+        gross = _q2(regular_earnings + overtime_earnings + other_from_fields)
+    else:
+        gross = _q2(_d(gross_raw))
+    other_earnings = _q2(gross - regular_earnings - overtime_earnings)
+    if other_earnings < 0 and abs(other_earnings) <= Decimal("0.02"):
+        # Prefer adjusting overtime residual into regular for tiny rounding.
+        if overtime_earnings > 0:
+            overtime_earnings = _q2(overtime_earnings + other_earnings)
+        else:
+            regular_earnings = _q2(regular_earnings + other_earnings)
+        other_earnings = Decimal("0.00")
+    return {
+        "regular_hours": float(_q2(reg_h)),
+        "ot_hours": float(_q2(ot_h)),
+        "regular_rate": float(_q2(rate)),
+        "ot_rate": float(_q2(ot_r)),
+        "regular_earnings": float(regular_earnings),
+        "overtime_earnings": float(overtime_earnings),
+        "other_earnings": float(other_earnings),
+        "gross_pay": float(gross),
+    }
+
+
+def batch_allows_contractor_overtime_autosplit(batch: Optional[dict[str, Any]]) -> bool:
+    """Auto-split only for new/unfinalized unpaid contractor batches (never rewrite paid history)."""
+    if not batch:
+        return False
+    if batch.get("payout_details_finalized_at"):
+        return False
+    status = str(batch.get("status") or "").strip().lower()
+    if status in ("paid", "partially_paid", "closed"):
+        return False
+    return str(batch.get("worker_category") or "").strip() in ("temp", "contractor_1099")
+
+
 def resolve_batch_overtime_policy(
     conn,
     organization_id: int,

@@ -1519,3 +1519,61 @@ def test_enrich_payout_batch_without_employee_id_column():
         out = enrich_payout_batch(conn, 1, batch)
     assert out["lines"][0]["employee_id"] == ""
     assert out["lines"][0]["worker_name_snapshot"] == "Jane Doe"
+
+
+def test_temp_1099_parse_defaults_paid_full_gross_and_hide_tax_balance():
+    """Unset temp/1099 lines default to paid-full-gross ON and tax-balance OFF."""
+    from backend.payroll_payout_details import apply_vendor_receipt_detail_defaults
+
+    empty_temp = parse_line_payout_details(
+        {"gross_amount": 646, "payout_details_json": {}},
+        worker_category="temp",
+    )
+    assert empty_temp["settlement"]["paid_full_gross_without_withholding"] is True
+    assert empty_temp["show_tax_payment_section"] is False
+    assert empty_temp["settlement"]["amount_paid"] == 646.0
+    assert empty_temp["settlement"]["amount_withheld"] == 0.0
+
+    empty_1099 = parse_line_payout_details(
+        {"gross_amount": 646, "payout_details_json": {}},
+        worker_category="contractor_1099",
+    )
+    assert empty_1099["settlement"]["paid_full_gross_without_withholding"] is True
+    assert empty_1099["show_tax_payment_section"] is False
+
+    # Explicit false is preserved on parse (backfill force overrides separately).
+    explicit = parse_line_payout_details(
+        {
+            "gross_amount": 646,
+            "payout_details_json": {
+                "show_tax_payment_section": True,
+                "settlement": {"paid_full_gross_without_withholding": False},
+                "employee_deductions": {"fit": 50},
+            },
+        },
+        worker_category="contractor_1099",
+    )
+    assert explicit["settlement"]["paid_full_gross_without_withholding"] is False
+    assert explicit["show_tax_payment_section"] is True
+
+    forced = apply_vendor_receipt_detail_defaults(explicit, "contractor_1099", force=True)
+    forced = parse_line_payout_details(
+        {
+            "gross_amount": 646,
+            "payout_details_json": forced,
+        },
+        worker_category="contractor_1099",
+    )
+    assert forced["settlement"]["paid_full_gross_without_withholding"] is True
+    assert forced["show_tax_payment_section"] is False
+    assert forced["settlement"]["amount_paid"] == 646.0
+    assert forced["settlement"]["amount_withheld"] == 0.0
+
+
+def test_w2_parse_keeps_default_show_tax_and_not_paid_full_gross():
+    details = parse_line_payout_details(
+        {"gross_amount": 1000, "payout_details_json": {}},
+        worker_category="w2",
+    )
+    assert details["settlement"]["paid_full_gross_without_withholding"] is False
+    assert details["show_tax_payment_section"] is True

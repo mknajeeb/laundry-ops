@@ -953,7 +953,13 @@ def _compute_payout_line_amounts(
         process_contractor_line_health_credit,
         process_w2_line_accruals,
     )
-    from backend.payroll_overtime import compute_wage_with_overtime, resolve_overtime_rate
+    from backend.payroll_overtime import (
+        batch_allows_contractor_overtime_autosplit,
+        compute_wage_with_overtime,
+        resolve_batch_overtime_policy,
+        resolve_overtime_rate,
+        split_hours_for_overtime,
+    )
     from backend.payroll_workflow import ensure_payout_batch_line_extensions
 
     ensure_payout_batch_line_extensions(conn.cursor())
@@ -961,6 +967,30 @@ def _compute_payout_line_amounts(
     regular = float(_money(body.get("approved_hours") or body.get("hours") or 0))
     ot = float(_money(body.get("ot_hours") or 0))
     rate = float(_money(body.get("rate")))
+    # New/unfinalized unpaid temp/1099: auto-split hours above weekly threshold.
+    # Never rewrite paid/finalized historical lines. Authorized override via disable_overtime.
+    if (
+        batch_allows_contractor_overtime_autosplit(batch)
+        and not bool(body.get("disable_overtime") or body.get("skip_overtime_split"))
+        and rate > 0
+        and ot <= 0
+        and regular > 0
+    ):
+        policy = resolve_batch_overtime_policy(conn, organization_id, cat)
+        threshold = float(policy.get("threshold_hours") or 40)
+        if regular > threshold and policy.get("enabled", True):
+            reg_d, ot_d = split_hours_for_overtime(
+                regular,
+                threshold=threshold,
+                enabled=True,
+            )
+            regular = float(reg_d)
+            ot = float(ot_d)
+            if ot > 0 and body.get("ot_rate") in (None, "", 0, "0"):
+                body = dict(body)
+                body["ot_rate"] = float(
+                    resolve_overtime_rate(rate, multiplier=policy.get("multiplier"))
+                )
     ot_rate = float(
         resolve_overtime_rate(rate, explicit_ot_rate=body.get("ot_rate"))
         if ot > 0

@@ -256,3 +256,48 @@ def test_finalized_receipt_uses_snapshot_representative_in_signature():
     assert html.count("Name:") == 2
     assert html.count("Designation:") == 2
     assert html.count(">Signature<") == 2
+
+
+def test_vendor_receipt_shows_full_ot_earnings_not_premium():
+    vendor_snapshot = {
+        "id": 1,
+        "name": "Washmate Inc",
+        "address": "921 2nd Avenue, Franklin Square, NY 11010",
+        "logo_url": None,
+        "snapshot": True,
+    }
+    batch = _vendor_receipt_batch(vendor_snapshot)
+    line = batch["lines"][0]
+    line.update(
+        {
+            "approved_hours": 40,
+            "ot_hours": 7.02,
+            "rate": 17,
+            "ot_rate": 25.5,
+            "gross_amount": 859.01,
+            "total_amount": 859.01,
+            "payout_totals": {"gross_pay": 859.01, "amount_paid": 859.01},
+        }
+    )
+    with mock.patch.object(ppd, "get_payout_batch_details", return_value=batch), mock.patch.object(
+        ppd, "_vendor_worker_contact", return_value={"phone": "", "email": ""}
+    ), mock.patch.object(
+        ppd, "fetch_vendor_receipt_ytd_prior", return_value=0.0
+    ), mock.patch.object(
+        ppd, "_org_service_recipient",
+        return_value={"name": "VeeWash LLC", "address": "A"},
+    ), mock.patch(
+        "backend.payroll_vendors.resolve_line_vendor", return_value=vendor_snapshot
+    ):
+        html = generate_vendor_receipt_html(object(), 3, 22, 211)
+
+    assert "Regular hours" in html
+    assert "Regular earnings" in html
+    assert "Overtime hours" in html
+    assert "Overtime rate" in html
+    assert "Overtime earnings" in html
+    assert "$179.01" in html  # full OT earnings, not $59.67 premium
+    assert "$680.00" in html
+    assert "$859.01" in html
+    assert "OT Premium" not in html
+    assert "Total approved hours" not in html

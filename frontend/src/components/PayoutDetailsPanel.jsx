@@ -116,16 +116,26 @@ function emptyLineState(line, batch = null) {
   if (!payment.date && defaultPayDate) {
     payment.date = defaultPayDate;
   }
+  const category = batch?.worker_category || line?.worker_category || "";
+  const isVendorReceipt = ["temp", "contractor_1099"].includes(category);
+  const settlement = { ...(pd.settlement || {}) };
+  // Temp / 1099: Paid full gross ON by default; show tax balance OFF.
+  if (isVendorReceipt && settlement.paid_full_gross_without_withholding === undefined) {
+    settlement.paid_full_gross_without_withholding = true;
+  }
+  let showTax =
+    pd.show_tax_payment_section === undefined
+      ? !isVendorReceipt
+      : Boolean(pd.show_tax_payment_section);
   return {
     line_id: line.id,
     employee_deductions: { ...(pd.employee_deductions || {}) },
     employer_taxes: { ...(pd.employer_taxes || {}) },
     payment,
-    settlement: { ...(pd.settlement || {}) },
+    settlement,
     tax_summary: { ...(pd.tax_summary || {}) },
     use_payment_receipt: Boolean(pd.use_payment_receipt),
-    show_tax_payment_section:
-      pd.show_tax_payment_section === undefined ? true : Boolean(pd.show_tax_payment_section),
+    show_tax_payment_section: showTax,
     employee_note: pd.employee_note || "",
   };
 }
@@ -559,7 +569,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
       setBatchNote(res.data.batch_note || "");
       const drafts = {};
       (res.data.lines || []).forEach((ln) => {
-        drafts[ln.id] = emptyLineState(ln);
+        drafts[ln.id] = emptyLineState(ln, res.data);
       });
       setLineDrafts(drafts);
       if (!silent) setInfo("Saved.");
@@ -1261,7 +1271,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
               </TableHead>
               <TableBody>
                 {(detail.lines || []).map((ln) => {
-                  const draft = lineDrafts[ln.id] || emptyLineState(ln);
+                  const draft = lineDrafts[ln.id] || emptyLineState(ln, detail);
                   const totals = computeLocalTotals(ln, draft);
                   const method = draft.payment?.method || "direct_deposit";
                   const doc = ln.document || {};
