@@ -6774,6 +6774,9 @@ def _payroll_report_query_kwargs():
         date_basis=request.args.get("date_basis") or "pay_date",
         month=int(month) if month not in (None, "") else None,
         year=int(year) if year not in (None, "") else None,
+        comparison_range=int(request.args["comparison_range"])
+        if request.args.get("comparison_range") not in (None, "")
+        else None,
     )
 
 

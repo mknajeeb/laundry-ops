@@ -430,9 +430,29 @@ def _sum_totals(rows: list[dict]) -> dict[str, float]:
 def _build_summary(rows: list[dict], totals: dict[str, float]) -> dict[str, Any]:
     batch_ids = {r.get("batch_id") for r in rows if r.get("batch_id") is not None}
     user_ids = {r.get("user_id") for r in rows if r.get("user_id") is not None}
+    pay_dates = {
+        str(r.get("pay_date") or r.get("official_pay_date") or "")[:10]
+        for r in rows
+        if str(r.get("pay_date") or r.get("official_pay_date") or "").strip()
+    }
+    periods = {
+        (
+            str(r.get("pay_period_start") or "")[:10],
+            str(r.get("pay_period_end") or "")[:10],
+        )
+        for r in rows
+        if str(r.get("pay_period_start") or "").strip()
+        and str(r.get("pay_period_end") or "").strip()
+    }
     return {
         "batch_count": len(batch_ids),
         "unique_employees": len(user_ids),
+        "payroll_period_count": len(periods),
+        "official_pay_date_count": len(pay_dates),
+        "total_hours": round(
+            float(totals.get("regular_hours") or 0) + float(totals.get("ot_hours") or 0),
+            2,
+        ),
         **totals,
     }
 
@@ -488,6 +508,8 @@ def query_payroll_report(
     date_basis: str = "pay_date",
     month: Optional[int] = None,
     year: Optional[int] = None,
+    comparison_range: Optional[int] = None,
+    include_analytics: bool = True,
 ) -> dict[str, Any]:
     """Return filtered payroll report rows + totals across categories/periods."""
     from backend.payroll_operations import ensure_payout_batches_tables
@@ -644,7 +666,11 @@ def query_payroll_report(
         params.append(str(payment_status))
 
     if resolved_type == "monthly_paid" and has_official_pay_date:
-        q += " ORDER BY pb.official_pay_date, pb.pay_period_start, pb.worker_category, pbl.worker_name_snapshot LIMIT %s"
+        # Period primary, then pay date, then employee (matches analytics groups).
+        q += (
+            " ORDER BY pb.pay_period_start, pb.pay_period_end, pb.official_pay_date,"
+            " pb.worker_category, pbl.worker_name_snapshot LIMIT %s"
+        )
     else:
         q += " ORDER BY pb.pay_period_start DESC, pb.worker_category, pbl.worker_name_snapshot LIMIT %s"
     params.append(int(limit))
@@ -729,6 +755,12 @@ def query_payroll_report(
 
     totals = _sum_totals(rows)
     summary = _build_summary(rows, totals)
+    from backend.payroll_report_analytics import (
+        build_report_analytics,
+        normalize_comparison_range,
+    )
+
+    cmp_range = normalize_comparison_range(comparison_range)
     filters = {
         "report_type": resolved_type,
         "date_basis": basis if resolved_type == "custom_range" else "",
@@ -744,6 +776,7 @@ def query_payroll_report(
         "payroll_status": payroll_status or "all",
         "payment_status": payment_status or "all",
         "date_match_rule": match_rule,
+        "comparison_range": cmp_range,
     }
     out: dict[str, Any] = {
         "rows": rows,
@@ -777,6 +810,25 @@ def query_payroll_report(
     }
     if resolved_type == "monthly_paid":
         out["excluded_missing_pay_date_count"] = excluded_missing_pay_date_count
+    if include_analytics:
+        analytics = build_report_analytics(
+            conn,
+            organization_id,
+            detail_rows=rows,
+            report_type=resolved_type,
+            filters=filters,
+            comparison_range=cmp_range,
+        )
+        # Prefer analytics summary enrichment while keeping batch_count from detail.
+        merged_summary = {
+            **summary,
+            **(analytics.get("summary") or {}),
+            "batch_count": summary.get("batch_count", 0),
+            "unique_employees": summary.get("unique_employees", 0),
+        }
+        out["summary"] = merged_summary
+        out["analytics"] = analytics
+        out["groups"] = analytics.get("groups") or []
     return json_safe(out)
 
 
@@ -888,14 +940,44 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
     if summary:
         ws.append(
             [
-                f"Batches: {summary.get('batch_count', 0)}",
-                f"Unique employees: {summary.get('unique_employees', 0)}",
-                f"Total payroll cost: {round(_money(summary.get('total_payroll_cost')), 2)}",
+                f"Periods: {summary.get('payroll_period_count', 0)}",
+                f"Pay dates: {summary.get('official_pay_date_count', 0)}",
+                f"Workers: {summary.get('unique_employees', 0)}",
+                f"Gross: {round(_money(summary.get('gross_pay')), 2)}",
+                f"Paid: {round(_money(summary.get('amount_paid')), 2)}",
+                f"Outstanding: {round(_money(summary.get('outstanding_balance')), 2)}",
+                f"EE taxes: {round(_money(summary.get('employee_tax_deductions')), 2)}",
+                f"Net: {round(_money(summary.get('net_pay')), 2)}",
+                f"ER taxes: {round(_money(summary.get('employer_taxes')), 2)}",
+                f"Total cost: {round(_money(summary.get('total_payroll_cost')), 2)}",
             ]
         )
     else:
         ws.append([])
-    headers = [lab for _, lab in REPORT_COLUMNS]
+
+    # Detail rows ordered Period → Pay Date → Employee (via groups when present)
+    excel_rows: list[dict] = []
+    nested = report.get("groups") or []
+    if nested:
+        for period in nested:
+            for pd in period.get("pay_dates") or []:
+                for row in pd.get("rows") or []:
+                    enriched = dict(row)
+                    enriched["_group_period"] = period.get("payroll_period") or ""
+                    enriched["_group_pay_date"] = pd.get("pay_date") or ""
+                    excel_rows.append(enriched)
+    else:
+        excel_rows = list(report.get("rows") or [])
+
+    # Insert grouping columns at front of export when nested groups exist
+    group_cols = (
+        (("_group_period", "Payroll Period"), ("_group_pay_date", "Pay Date Group"))
+        if nested
+        else ()
+    )
+    export_columns = (*group_cols, *REPORT_COLUMNS)
+
+    headers = [lab for _, lab in export_columns]
     ws.append(headers)
     for cell in ws[ws.max_row]:
         cell.font = Font(bold=True)
@@ -906,9 +988,9 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
     header_row = ws.max_row
     data_start = header_row + 1
 
-    for row in report.get("rows") or []:
+    for row in excel_rows:
         excel_vals = []
-        for key, _ in REPORT_COLUMNS:
+        for key, _ in export_columns:
             val = row.get(key)
             if key in date_keys:
                 d = _parse_ymd(val)
@@ -921,7 +1003,7 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
                 excel_vals.append(val if val is not None else "")
         ws.append(excel_vals)
         r = ws.max_row
-        for col_idx, (key, _) in enumerate(REPORT_COLUMNS, start=1):
+        for col_idx, (key, _) in enumerate(export_columns, start=1):
             cell = ws.cell(row=r, column=col_idx)
             if key in date_keys and cell.value is not None:
                 cell.number_format = "YYYY-MM-DD"
@@ -932,18 +1014,20 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
 
     totals = report.get("totals") or {}
     total_row = []
-    for key, _lab in REPORT_COLUMNS:
-        if key == "employee_name":
-            total_row.append("Totals")
-        elif key in totals:
+    first_label_done = False
+    for key, _lab in export_columns:
+        if key in totals:
             total_row.append(round(_money(totals[key]), 2))
+        elif not first_label_done:
+            total_row.append("Totals")
+            first_label_done = True
         else:
             total_row.append("")
     ws.append(total_row)
     totals_excel_row = ws.max_row
     for cell in ws[totals_excel_row]:
         cell.font = Font(bold=True)
-    for col_idx, (key, _) in enumerate(REPORT_COLUMNS, start=1):
+    for col_idx, (key, _) in enumerate(export_columns, start=1):
         cell = ws.cell(row=totals_excel_row, column=col_idx)
         if key in money_keys:
             cell.number_format = numbers.FORMAT_NUMBER_COMMA_SEPARATED1
@@ -960,21 +1044,78 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
             "Regular/Base + OT Premium + Other Earnings = Gross Pay. "
             "Total Payroll Cost = Gross Pay + Employer Taxes (stored only). "
             "Pay Date is the batch official_pay_date (no period-end fallback). "
-            "Money and hour columns are numeric; date columns are date cells."
+            "Monthly Paid detail is ordered Payroll Period → Pay Date → Employee."
         ),
     )
     ws.freeze_panes = f"A{data_start}"
-    # Date columns need enough width so Excel does not show ########.
-    for col_idx, (key, _) in enumerate(REPORT_COLUMNS, start=1):
+    for col_idx, (key, _) in enumerate(export_columns, start=1):
         letter = ws.cell(row=header_row, column=col_idx).column_letter
         if key in date_keys or key in ("pay_period_start", "pay_period_end", "pay_date", "finalized_date"):
             ws.column_dimensions[letter].width = 14
-        elif key == "employee_name":
+        elif key in ("employee_name", "_group_period"):
             ws.column_dimensions[letter].width = 22
-        elif key in ("employee_category", "batch_name", "payroll_status", "payment_status"):
+        elif key in ("employee_category", "batch_name", "payroll_status", "payment_status", "_group_pay_date"):
             ws.column_dimensions[letter].width = 16
         elif key in money_keys or key in hour_keys:
             ws.column_dimensions[letter].width = 12
+
+    # Period comparison sheet
+    analytics = report.get("analytics") or {}
+    pc = analytics.get("period_comparison") or []
+    if pc:
+        ws2 = wb.create_sheet("Period Comparison")
+        ws2.append([heading, "Period comparison"])
+        headers2 = [
+            "Payroll Period",
+            "Pay Date(s)",
+            "Workers",
+            "Regular Hours",
+            "OT Hours",
+            "Total Hours",
+            "Base Earnings",
+            "OT Premium",
+            "Gross",
+            "EE Taxes",
+            "Net",
+            "ER Taxes",
+            "Total Payroll Cost",
+            "Amount Paid",
+            "Outstanding",
+            "Avg Cost/Hour",
+            "Δ Total Cost",
+            "% Δ Total Cost",
+        ]
+        ws2.append(headers2)
+        for cell in ws2[ws2.max_row]:
+            cell.font = Font(bold=True)
+        for e in pc:
+            delta = (e.get("delta_from_previous") or {}).get("total_payroll_cost")
+            pct = (e.get("pct_from_previous") or {}).get("total_payroll_cost")
+            ws2.append(
+                [
+                    e.get("payroll_period"),
+                    e.get("pay_dates_label"),
+                    e.get("worker_count"),
+                    round(_money(e.get("regular_hours")), 2),
+                    round(_money(e.get("ot_hours")), 2),
+                    round(_money(e.get("total_hours")), 2),
+                    round(_money(e.get("base_earnings")), 2),
+                    round(_money(e.get("ot_premium")), 2),
+                    round(_money(e.get("gross_pay")), 2),
+                    round(_money(e.get("employee_tax_deductions")), 2),
+                    round(_money(e.get("net_pay")), 2),
+                    round(_money(e.get("employer_taxes")), 2),
+                    round(_money(e.get("total_payroll_cost")), 2),
+                    round(_money(e.get("amount_paid")), 2),
+                    round(_money(e.get("outstanding_balance")), 2),
+                    round(_money(e.get("avg_cost_per_hour")), 2)
+                    if e.get("avg_cost_per_hour") is not None
+                    else None,
+                    round(_money(delta), 2) if delta is not None else None,
+                    round(_money(pct), 2) if pct is not None else None,
+                ]
+            )
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -992,7 +1133,30 @@ def _group_key_pay_date(row: dict) -> str:
 
 
 def _group_rows_for_pdf(report: dict) -> list[tuple[str, list[dict]]]:
-    """Return ordered (group_heading, rows) based on report_type / date_basis."""
+    """Return ordered (group_heading, rows) based on report_type / date_basis.
+
+    Monthly Payroll Paid (and default hierarchy): Payroll Period → Pay Date.
+    Flat list of (heading, rows) for PDF sections; nested groups preferred when
+    report['groups'] is present.
+    """
+    nested = report.get("groups")
+    if nested:
+        flat: list[tuple[str, list[dict]]] = []
+        for period in nested:
+            period_heading = period.get("heading") or (
+                f"Payroll Period: {period.get('payroll_period') or ''}"
+            )
+            pay_dates = period.get("pay_dates") or []
+            if not pay_dates:
+                continue
+            # First pay-date section carries the period heading as a marker;
+            # build_payroll_report_html renders nested structure when groups exist.
+            for pd in pay_dates:
+                pay_heading = pd.get("heading") or f"Pay Date: {pd.get('pay_date')}"
+                flat.append((f"{period_heading} · {pay_heading}", list(pd.get("rows") or [])))
+        if flat:
+            return flat
+
     rows = list(report.get("rows") or [])
     filters = report.get("filters") or {}
     rt = str(
@@ -1002,20 +1166,22 @@ def _group_rows_for_pdf(report: dict) -> list[tuple[str, list[dict]]]:
         report.get("date_basis") or filters.get("date_basis") or "pay_date"
     ).strip().lower()
 
-    if rt == "monthly_paid":
-        # Group by pay date, then by period within each pay date.
-        by_pay: dict[str, list[dict]] = defaultdict(list)
-        for r in rows:
-            by_pay[_group_key_pay_date(r)].append(r)
-        groups: list[tuple[str, list[dict]]] = []
-        for pd in sorted(by_pay.keys()):
-            by_period: dict[str, list[dict]] = defaultdict(list)
-            for r in by_pay[pd]:
-                by_period[_group_key_period(r)].append(r)
-            for period in sorted(by_period.keys()):
-                heading = f"Pay Date: {pd} · Payroll Period: {period}"
-                groups.append((heading, by_period[period]))
-        return groups
+    if rt == "monthly_paid" or rt in ("payroll_period", "all_history") or (
+        rt == "custom_range" and basis == "period_overlap"
+    ):
+        from backend.payroll_report_analytics import group_rows_by_period_then_pay_date
+
+        nested_groups = group_rows_by_period_then_pay_date(rows)
+        flat = []
+        for period in nested_groups:
+            for pd in period.get("pay_dates") or []:
+                flat.append(
+                    (
+                        f"{period.get('heading')} · {pd.get('heading')}",
+                        list(pd.get("rows") or []),
+                    )
+                )
+        return flat
 
     if rt == "custom_range" and basis == "pay_date":
         by_pay = defaultdict(list)
@@ -1023,7 +1189,6 @@ def _group_rows_for_pdf(report: dict) -> list[tuple[str, list[dict]]]:
             by_pay[_group_key_pay_date(r)].append(r)
         return [(f"Pay Date: {k}", by_pay[k]) for k in sorted(by_pay.keys())]
 
-    # payroll_period, all_history, custom_range period_overlap → group by period
     by_period = defaultdict(list)
     for r in rows:
         by_period[_group_key_period(r)].append(r)
@@ -1033,13 +1198,18 @@ def _group_rows_for_pdf(report: dict) -> list[tuple[str, list[dict]]]:
 def build_payroll_report_html(report: dict) -> str:
     """HTML suitable for browser print / PDF download.
 
-    Grouped by report type / date basis. thead repeats; rows avoid mid-row splits.
+    Page 1: title/filters, KPI cards, charts, period comparison table.
+    Following pages: Payroll Period → Pay Date detail groups.
     Landscape layout. Grand total at end.
     """
+    from backend.payroll_report_analytics import build_analytics_chart_svgs
+
     filters = report.get("filters") or {}
     totals = report.get("totals") or {}
     summary = report.get("summary") or _build_summary(report.get("rows") or [], totals)
+    analytics = report.get("analytics") or {}
     rt = str(report.get("report_type") or filters.get("report_type") or "").strip().lower()
+    generated = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     def fmt_money(v: Any) -> str:
         return f"${_money(v):,.2f}"
@@ -1047,18 +1217,35 @@ def build_payroll_report_html(report: dict) -> str:
     def fmt_hours(v: Any) -> str:
         return f"{_money(v):,.2f}"
 
+    def fmt_pct(v: Any) -> str:
+        if v is None:
+            return "—"
+        return f"{_money(v):,.1f}%"
+
+    def fmt_delta(diff: Any, pct: Any) -> str:
+        if diff is None:
+            return "—"
+        d = _money(diff)
+        sign = "+" if d > 0 else ""
+        base = f"{sign}{d:,.2f}"
+        if pct is None:
+            return base
+        return f"{base} ({sign}{_money(pct):,.1f}%)"
+
     def summary_block(title: str, data: dict) -> str:
         return f"""
 <div class="group-summary">
   <strong>{title}</strong>
-  <span>Batches: {data.get('batch_count', 0)}</span>
-  <span>Employees: {data.get('unique_employees', 0)}</span>
+  <span>Periods: {data.get('payroll_period_count', data.get('batch_count', 0))}</span>
+  <span>Pay dates: {data.get('official_pay_date_count', 0)}</span>
+  <span>Workers: {data.get('unique_employees', data.get('worker_count', 0))}</span>
   <span>Gross: {fmt_money(data.get('gross_pay'))}</span>
   <span>Paid: {fmt_money(data.get('amount_paid'))}</span>
   <span>Outstanding: {fmt_money(data.get('outstanding_balance'))}</span>
-  <span>ER taxes: {fmt_money(data.get('employer_taxes'))}</span>
-  <span>Total payroll cost: {fmt_money(data.get('total_payroll_cost'))}</span>
+  <span>EE taxes: {fmt_money(data.get('employee_tax_deductions'))}</span>
   <span>Net: {fmt_money(data.get('net_pay'))}</span>
+  <span>ER taxes: {fmt_money(data.get('employer_taxes'))}</span>
+  <span>Total cost: {fmt_money(data.get('total_payroll_cost'))}</span>
 </div>"""
 
     def rows_table(group_rows: list[dict], subtotal: dict) -> str:
@@ -1102,23 +1289,103 @@ def build_payroll_report_html(report: dict) -> str:
 </table>"""
 
     heading = report.get("report_heading") or report_heading(filters)
-    monthly_intro = ""
-    if rt == "monthly_paid" and filters.get("month") and filters.get("year"):
-        monthly_intro = summary_block("Monthly summary", summary)
+    charts = build_analytics_chart_svgs(analytics) if analytics else {}
+    kpis = analytics.get("kpis") or []
+    kpi_html = "".join(
+        f"""<div class="kpi">
+          <div class="kpi-label">{k.get('label')}</div>
+          <div class="kpi-value">{fmt_money(k.get('value')) if k.get('kind') == 'money' else (fmt_hours(k.get('value')) if k.get('kind') == 'hours' else k.get('value'))}</div>
+          <div class="kpi-delta">{fmt_delta(k.get('diff'), k.get('pct'))} · {k.get('direction') or 'flat'}</div>
+        </div>"""
+        for k in kpis
+    )
 
-    groups = _group_rows_for_pdf(report)
+    pc = analytics.get("period_comparison") or []
+    cmp_rows = []
+    for e in pc:
+        avg = e.get("avg_cost_per_hour")
+        cmp_rows.append(
+            "<tr>"
+            f"<td>{e.get('payroll_period') or ''}</td>"
+            f"<td>{e.get('pay_dates_label') or ''}</td>"
+            f"<td class='num'>{e.get('worker_count', 0)}</td>"
+            f"<td class='num'>{fmt_hours(e.get('regular_hours'))}</td>"
+            f"<td class='num'>{fmt_hours(e.get('ot_hours'))}</td>"
+            f"<td class='num'>{fmt_hours(e.get('total_hours'))}</td>"
+            f"<td class='num'>{fmt_money(e.get('base_earnings'))}</td>"
+            f"<td class='num'>{fmt_money(e.get('ot_premium'))}</td>"
+            f"<td class='num'>{fmt_money(e.get('gross_pay'))}</td>"
+            f"<td class='num'>{fmt_money(e.get('employee_tax_deductions'))}</td>"
+            f"<td class='num'>{fmt_money(e.get('net_pay'))}</td>"
+            f"<td class='num'>{fmt_money(e.get('employer_taxes'))}</td>"
+            f"<td class='num'>{fmt_money(e.get('total_payroll_cost'))}</td>"
+            f"<td class='num'>{fmt_money(e.get('amount_paid'))}</td>"
+            f"<td class='num'>{fmt_money(e.get('outstanding_balance'))}</td>"
+            f"<td class='num'>{fmt_money(avg) if avg is not None else '—'}</td>"
+            "</tr>"
+        )
+    comparison_table = f"""
+<table class="cmp">
+<thead><tr>
+  <th>Payroll Period</th><th>Pay Date(s)</th><th>Workers</th>
+  <th>Reg hrs</th><th>OT hrs</th><th>Total hrs</th>
+  <th>Base</th><th>OT prem</th><th>Gross</th><th>EE taxes</th><th>Net</th>
+  <th>ER taxes</th><th>Total cost</th><th>Paid</th><th>Outstanding</th><th>$/hr</th>
+</tr></thead>
+<tbody>{"".join(cmp_rows) if cmp_rows else "<tr><td colspan='16'>No comparison periods</td></tr>"}</tbody>
+</table>"""
+
+    chart_grid = f"""
+<div class="chart-grid">
+  <div class="chart">{charts.get('cost_trajectory') or ''}</div>
+  <div class="chart">{charts.get('hours_trajectory') or ''}</div>
+  <div class="chart">{charts.get('cost_composition') or ''}</div>
+  <div class="chart">{charts.get('overtime_analysis') or ''}</div>
+  <div class="chart chart-wide">{charts.get('category_comparison') or ''}</div>
+</div>"""
+
+    # Nested detail: prefer analytics groups
+    nested = report.get("groups") or (analytics.get("groups") if analytics else None) or []
     group_html = []
-    for g_heading, g_rows in groups:
-        g_totals = _sum_totals(g_rows)
-        g_summary = _build_summary(g_rows, g_totals)
-        group_html.append(
-            f"""
+    if nested:
+        for period in nested:
+            period_heading = period.get("heading") or f"Payroll Period: {period.get('payroll_period')}"
+            period_sections = []
+            for pd in period.get("pay_dates") or []:
+                g_rows = list(pd.get("rows") or [])
+                g_totals = pd.get("totals") or _sum_totals(g_rows)
+                g_summary = pd.get("summary") or _build_summary(g_rows, g_totals)
+                period_sections.append(
+                    f"""
+  <div class="pay-date-block">
+    <h3>{pd.get('heading') or ('Pay Date: ' + str(pd.get('pay_date') or ''))}</h3>
+    {summary_block("Pay-date summary", g_summary)}
+    {rows_table(g_rows, g_totals)}
+  </div>"""
+                )
+            if not period_sections:
+                continue
+            p_summary = period.get("summary") or {}
+            group_html.append(
+                f"""
+<section class="group pdf-capture-page period-group">
+  <h2>{period_heading}</h2>
+  {summary_block("Period summary", p_summary)}
+  {"".join(period_sections)}
+</section>"""
+            )
+    else:
+        for g_heading, g_rows in _group_rows_for_pdf(report):
+            g_totals = _sum_totals(g_rows)
+            g_summary = _build_summary(g_rows, g_totals)
+            group_html.append(
+                f"""
 <section class="group pdf-capture-page">
   <h2>{g_heading}</h2>
   {summary_block("Group summary", g_summary)}
   {rows_table(g_rows, g_totals)}
 </section>"""
-        )
+            )
 
     grand_cells = []
     for key, _ in PDF_COLUMNS:
@@ -1136,40 +1403,77 @@ def build_payroll_report_html(report: dict) -> str:
         else:
             grand_cells.append("<td></td>")
     grand_th = "".join(f"<th>{lab}</th>" for _, lab in PDF_COLUMNS)
+    excluded = ""
+    if rt == "monthly_paid" and report.get("excluded_missing_pay_date_count"):
+        excluded = (
+            f"<p class='warn'>{int(report['excluded_missing_pay_date_count'])} "
+            "line(s) excluded — Pay Date Missing.</p>"
+        )
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>{heading}</title>
 <style>
-  @page {{ size: letter landscape; margin: 0.45in; }}
-  body {{ font-family: system-ui, sans-serif; color: #0f172a; margin: 16px; font-size: 10px; }}
-  h1 {{ color: #0097b2; font-size: 1.25rem; margin-bottom: 4px; }}
-  h2 {{ color: #007a91; font-size: 1.05rem; margin: 14px 0 6px; page-break-after: avoid; }}
-  .meta {{ color: #475569; margin-bottom: 6px; }}
-  .note {{ color: #64748b; font-size: 9px; margin: 6px 0 12px; max-width: 960px; }}
+  @page {{ size: letter landscape; margin: 0.4in; }}
+  body {{ font-family: "Segoe UI", system-ui, sans-serif; color: #0f172a; margin: 14px; font-size: 9.5px; }}
+  .brand {{ display:flex; justify-content:space-between; align-items:flex-start; margin-bottom: 8px; }}
+  .brand-mark {{ color:#0097b2; font-weight:800; font-size:1.1rem; letter-spacing:0.02em; }}
+  h1 {{ color: #0097b2; font-size: 1.2rem; margin: 0 0 4px; }}
+  h2 {{ color: #007a91; font-size: 1.02rem; margin: 12px 0 6px; page-break-after: avoid; }}
+  h3 {{ color: #0f172a; font-size: 0.95rem; margin: 8px 0 4px; page-break-after: avoid; }}
+  .meta {{ color: #475569; margin: 2px 0; }}
+  .warn {{ color: #c2410c; font-weight: 600; }}
+  .note {{ color: #64748b; font-size: 8.5px; margin: 6px 0 10px; max-width: 1100px; }}
+  .dashboard {{ page-break-after: always; break-after: page; }}
+  .kpi-grid {{ display:grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin: 8px 0 10px; }}
+  .kpi {{ background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:6px 7px; }}
+  .kpi-label {{ color:#64748b; font-size:8px; text-transform:uppercase; letter-spacing:0.03em; }}
+  .kpi-value {{ font-weight:700; font-size:12px; color:#0f172a; margin-top:2px; }}
+  .kpi-delta {{ color:#64748b; font-size:8px; margin-top:2px; }}
+  .chart-grid {{ display:grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }}
+  .chart {{ border:1px solid #e2e8f0; border-radius:6px; padding:4px; background:#fff; }}
+  .chart-wide {{ grid-column: 1 / -1; }}
+  .chart svg {{ max-width:100%; height:auto; display:block; }}
   .group {{ page-break-inside: avoid; break-inside: avoid; margin-bottom: 12px; }}
-  .group-summary {{ display: flex; flex-wrap: wrap; gap: 10px 16px; margin: 4px 0 8px;
+  .period-group {{ page-break-before: auto; }}
+  .pay-date-block {{ margin-top: 6px; page-break-inside: avoid; }}
+  .group-summary {{ display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 4px 0 8px;
     color: #334155; background: #f8fafc; padding: 6px 8px; border-radius: 4px; }}
   table {{ width: 100%; border-collapse: collapse; margin-bottom: 8px; }}
+  table.cmp {{ font-size: 8.5px; }}
   thead {{ display: table-header-group; }}
-  th, td {{ padding: 5px 6px; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: top; }}
+  th, td {{ padding: 4px 5px; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: top; }}
   th {{ background: #f8fafc; color: #007a91; white-space: nowrap; }}
   td.num, th.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
   tr.data-row, tr.subtotal, tr.total {{ page-break-inside: avoid; break-inside: avoid; }}
   tr.subtotal {{ background: #f1f5f9; }}
   tr.total {{ background: #e2e8f0; font-weight: 700; }}
   .grand {{ margin-top: 16px; }}
+  .footer-meta {{ color:#94a3b8; font-size:8px; margin-top: 8px; }}
 </style></head><body>
-<h1>{heading}</h1>
-<p class="meta">{_filter_summary_text(filters)}</p>
-<p class="meta">{report.get("date_match_rule") or DATE_MATCH_RULE}</p>
-{summary_block("Report summary", summary)}
-{monthly_intro}
-<p class="note">OT Premium is only the additional amount above the regular hourly rate.
-Regular/Base Earnings include overtime hours at the regular rate.
-<strong>Regular/Base + OT Premium + Other Earnings = Gross Pay.</strong>
-<strong>Total Payroll Cost = Gross + Employer Taxes (stored only).</strong>
-Pay Date is the batch official_pay_date (no period-end fallback).
-Totals match the filtered on-screen report.</p>
+<section class="dashboard pdf-capture-page" id="payroll-analytics-dashboard">
+  <div class="brand">
+    <div>
+      <div class="brand-mark">VeeWash</div>
+      <h1>{heading}</h1>
+      <p class="meta">{_filter_summary_text(filters)}</p>
+      <p class="meta">{report.get("date_match_rule") or DATE_MATCH_RULE}</p>
+      {excluded}
+    </div>
+    <div class="meta" style="text-align:right">
+      <div>Payroll Analytics</div>
+      <div>Generated {generated}</div>
+      <div>Comparison: last {analytics.get('comparison_range') or filters.get('comparison_range') or 4} periods</div>
+    </div>
+  </div>
+  {summary_block("Report summary", summary)}
+  <div class="kpi-grid">{kpi_html or "<div class='kpi'><div class='kpi-label'>No KPI data</div></div>"}</div>
+  {chart_grid}
+  <h2>Period comparison</h2>
+  {comparison_table}
+  <p class="note">OT Premium is only the additional amount above the regular hourly rate.
+  Regular/Base + OT Premium + Other Earnings = Gross. Total Payroll Cost = Gross + Employer Taxes (EE taxes are not added again).
+  Dashboard and detail use the same filtered dataset. Pay Date is official_pay_date only.</p>
+</section>
 {"".join(group_html)}
 <section class="grand pdf-capture-page">
   <h2>Grand Total</h2>
@@ -1179,5 +1483,6 @@ Totals match the filtered on-screen report.</p>
   <tr class="total">{"".join(grand_cells)}</tr>
   </tbody>
   </table>
+  <p class="footer-meta">VeeWash Payroll Reports · {heading} · Generated {generated}</p>
 </section>
 </body></html>"""
