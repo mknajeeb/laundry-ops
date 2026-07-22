@@ -183,12 +183,13 @@ def _filter_bag_ids(
 def load_scans_for_bags(
     cursor, organization_id: int, bag_ids: list[str]
 ) -> dict[str, list[dict[str, Any]]]:
+    """Load complete persisted chronology for bags (no SQL LIMIT on events)."""
     if not bag_ids or not table_exists(cursor, "rinse_bag_scan_events"):
         return {}
     placeholders = ",".join(["%s"] * len(bag_ids))
     cursor.execute(
         f"""
-        SELECT bag_id, scanned_at_parsed, purpose, rack, user_name, weight_lbs
+        SELECT id, bag_id, scanned_at_parsed, purpose, rack, user_name, weight_lbs
         FROM rinse_bag_scan_events
         WHERE organization_id = %s AND bag_id IN ({placeholders})
         ORDER BY scanned_at_parsed ASC, id ASC
@@ -201,13 +202,16 @@ def load_scans_for_bags(
         if bid in out:
             out[bid].append(
                 {
+                    "id": row.get("id"),
                     "scanned_at_parsed": row.get("scanned_at_parsed"),
                     "purpose": row.get("purpose"),
+                    "raw_purpose": row.get("purpose"),
                     "rack": row.get("rack"),
                     "user_name": row.get("user_name"),
                     "weight_lbs": float(row["weight_lbs"])
                     if row.get("weight_lbs") is not None
                     else None,
+                    "source_table": "rinse_bag_scan_events",
                 }
             )
     return out
@@ -454,6 +458,18 @@ def build_drilldown(
         k: len(v or [])
         for k, v in ((summary or {}).get("review_by_reason") or {}).items()
     }
+    from backend.rinse_scan_freshness import freshness_from_day_and_presence
+
+    data_freshness = freshness_from_day_and_presence(
+        cursor,
+        organization_id,
+        selected_date_et,
+        day_meta=day_rec,
+        sample_bag_ids=page_ids,
+    )
+    if summary is not None:
+        summary = dict(summary)
+        summary["data_freshness"] = data_freshness
     return {
         "selected_date_et": selected_date_et.isoformat(),
         "metric": metric,
@@ -463,6 +479,7 @@ def build_drilldown(
         "bags": bags,
         "active_bulk_workitems": active_catalog,
         "review_by_reason": review_counts,
+        "data_freshness": data_freshness,
         "pagination": {
             "page": page,
             "page_size": page_size,
@@ -735,14 +752,17 @@ def apply_step1_correction(
         )
         return {"ok": True, "action": action, "entry_at": ts.isoformat(), "service_type": svc}
 
-    if action in ("return_pending", "exclude"):
+    if action in ("return_pending", "exclude", "move_to_review"):
         _record_correction(
             cursor,
             organization_id,
             bag_id=bid,
             action=action,
             reason_text=reason,
-            reason_code=str(body.get("reason_code") or action.upper()),
+            reason_code=str(
+                body.get("reason_code")
+                or ("SCAN_CHRONOLOGY_STALE" if action == "move_to_review" else action.upper())
+            ),
             previous_values=prior,
             new_values={"status": action},
             actor_user_id=actor_user_id,

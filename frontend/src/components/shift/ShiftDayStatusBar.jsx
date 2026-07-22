@@ -41,6 +41,7 @@ export default function ShiftDayStatusBar({
   validation,
   isToday = false,
   onChanged,
+  dataFreshness = null,
 }) {
   const day = shiftDay || {};
   const status = String(day.status || "OPEN").toUpperCase();
@@ -147,6 +148,17 @@ export default function ShiftDayStatusBar({
               ? ` · Closed by ${day.closed_by_display_name} @ ${fmtTs(day.closed_at)}`
               : ""}
           </Typography>
+          {dataFreshness && dataFreshness.status && dataFreshness.status !== "ok" ? (
+            <Typography variant="caption" color="warning.main" display="block">
+              Scan data freshness: {String(dataFreshness.status).replaceAll("_", " ")}
+              {dataFreshness.stale_chronology_bag_count
+                ? ` · ${dataFreshness.stale_chronology_bag_count} bag(s) behind portal last-seen`
+                : ""}
+              {!dataFreshness.trust_pending_from_missing_completion
+                ? " · Pending not trusted from missing completion"
+                : ""}
+            </Typography>
+          ) : null}
         </Stack>
         <Stack direction="row" spacing={1}>
           {readOnly ? (

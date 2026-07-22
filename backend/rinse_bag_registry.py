@@ -35,7 +35,7 @@ def ensure_rinse_bag_registry_table(cursor) -> None:
             id INT AUTO_INCREMENT PRIMARY KEY,
             organization_id INT NOT NULL,
             bag_id VARCHAR(64) NOT NULL,
-            completion_status VARCHAR(24) NOT NULL DEFAULT 'INCOMPLETE',
+            completion_status VARCHAR(32) NOT NULL DEFAULT 'INCOMPLETE',
             completed_at DATETIME NULL,
             completion_reason VARCHAR(64) NULL,
             first_clean_scan_at DATETIME NULL,
@@ -57,6 +57,25 @@ def ensure_rinse_bag_registry_table(cursor) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    # Widen legacy completion_status columns to hold longer lifecycle states
+    # (e.g. COMPLETION_REVIEW_REQUIRED = 26 chars).
+    cursor.execute(
+        """
+        SELECT CHARACTER_MAXIMUM_LENGTH AS len FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'rinse_bag_registry'
+          AND COLUMN_NAME = 'completion_status'
+        """
+    )
+    row = cursor.fetchone()
+    cur_len = None
+    if row is not None:
+        cur_len = row.get("len") if isinstance(row, dict) else row[0]
+    if cur_len is not None and int(cur_len) < 32:
+        cursor.execute(
+            "ALTER TABLE rinse_bag_registry "
+            "MODIFY COLUMN completion_status VARCHAR(32) NOT NULL DEFAULT 'INCOMPLETE'"
+        )
 
 
 def _scan_events_table_has_column(cursor, col_name: str) -> bool:
@@ -282,6 +301,66 @@ def mark_registry_rejected_portal_absence(
             REASON_MISSING_FROM_LATEST_PORTAL_SCRAPE,
             when,
             TRIGGER_KIND_PORTAL_SCRAPE_ABSENCE_REJECT,
+            batch_id,
+        ),
+    )
+    return True
+
+
+def mark_registry_rejected_create_issue_portal_departure(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    upload_batch_id: int,
+    rejected_at: datetime | None = None,
+    create_issue_at: datetime | None = None,
+    force: bool = False,
+) -> bool:
+    """Mark bag REJECTED after create-issue workflow with no valid completion before portal departure."""
+    from backend.rinse_bag_completion import (
+        COMPLETION_REJECTED,
+        REASON_CREATE_ISSUE_NO_COMPLETION_PORTAL_DEPARTURE,
+        TRIGGER_KIND_CREATE_ISSUE_PORTAL_DEPARTURE_REJECT,
+    )
+
+    bid = normalize_bag_id(bag_id)
+    if not bid:
+        return False
+    org = int(organization_id)
+    ensure_rinse_bag_registry_table(cursor)
+    existing = get_registry_row(cursor, org, bid)
+    if existing and str(existing.get("completion_status") or "").upper() == COMPLETION_COMPLETED:
+        if not force:
+            return False
+
+    when = rejected_at or datetime.utcnow()
+    trigger_at = create_issue_at or when
+    batch_id = int(upload_batch_id)
+    cursor.execute(
+        """
+        INSERT INTO rinse_bag_registry (
+            organization_id, bag_id, completion_status, completion_reason,
+            completed_at, trigger_kind, trigger_scan_at, last_upload_batch_id,
+            created_at, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE
+            completion_status = VALUES(completion_status),
+            completion_reason = VALUES(completion_reason),
+            completed_at = VALUES(completed_at),
+            trigger_kind = VALUES(trigger_kind),
+            trigger_scan_at = VALUES(trigger_scan_at),
+            last_upload_batch_id = VALUES(last_upload_batch_id),
+            updated_at = NOW()
+        """,
+        (
+            org,
+            bid,
+            COMPLETION_REJECTED,
+            REASON_CREATE_ISSUE_NO_COMPLETION_PORTAL_DEPARTURE,
+            when,
+            TRIGGER_KIND_CREATE_ISSUE_PORTAL_DEPARTURE_REJECT,
+            trigger_at,
             batch_id,
         ),
     )
@@ -607,7 +686,6 @@ def upsert_scan_event_row(
     return "inserted"
 
 
-
 def delete_persistent_scan_events_for_bags(
     cursor,
     organization_id: int,
@@ -633,6 +711,89 @@ def delete_persistent_scan_events_for_bags(
         )
         deleted += int(cursor.rowcount or 0)
     return deleted
+
+
+def _incoming_scan_bounds_from_rows(bag_rows: pd.DataFrame) -> tuple[datetime | None, int]:
+    """Max scanned_at + count of parseable rows in an events-CSV slice."""
+    max_ts: datetime | None = None
+    count = 0
+    if bag_rows is None or bag_rows.empty:
+        return None, 0
+    for _, row in bag_rows.iterrows():
+        time_raw = str(row.get("Time Scanned", "") or "").strip()
+        if not time_raw:
+            continue
+        scanned = parse_rinse_scanned_at(time_raw)
+        if scanned is None:
+            continue
+        count += 1
+        if max_ts is None or scanned > max_ts:
+            max_ts = scanned
+    return max_ts, count
+
+
+def _persistent_scan_bounds_for_bags(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+) -> dict[str, tuple[datetime | None, int]]:
+    """Existing max(scanned_at_parsed) + count per bag."""
+    out: dict[str, tuple[datetime | None, int]] = {
+        normalize_bag_id(b): (None, 0) for b in bag_ids if normalize_bag_id(b)
+    }
+    ids = sorted(out.keys())
+    if not ids:
+        return out
+    chunk = 200
+    for i in range(0, len(ids), chunk):
+        part = ids[i : i + chunk]
+        ph = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT bag_id, COUNT(*) AS n, MAX(scanned_at_parsed) AS mx
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s AND bag_id IN ({ph})
+            GROUP BY bag_id
+            """,
+            (int(organization_id), *part),
+        )
+        for row in cursor.fetchall() or []:
+            bid = normalize_bag_id(row.get("bag_id") if isinstance(row, dict) else row[0])
+            if not bid:
+                continue
+            if isinstance(row, dict):
+                out[bid] = (row.get("mx"), int(row.get("n") or 0))
+            else:
+                out[bid] = (row[2], int(row[1] or 0))
+    return out
+
+
+def _should_replace_scan_timeline(
+    *,
+    existing_max: datetime | None,
+    existing_n: int,
+    incoming_max: datetime | None,
+    incoming_n: int,
+) -> bool:
+    """
+    Replace only when the incoming export is at least as fresh and not thinner.
+
+    Truncated scrapes (older max timestamp, or fewer rows without a newer max)
+    must not delete later persisted scans.
+    """
+    if existing_n <= 0:
+        return True
+    if incoming_n <= 0:
+        return False
+    if existing_max is not None and incoming_max is not None and existing_max > incoming_max:
+        return False
+    if incoming_n < existing_n and (
+        incoming_max is None
+        or existing_max is None
+        or incoming_max <= existing_max
+    ):
+        return False
+    return True
 
 
 def merge_scan_events_from_upload(
@@ -681,8 +842,27 @@ def merge_scan_events_from_upload(
     )
     bag_ids = sorted(allowed_ids)
     events_deleted = 0
+    bags_replace: list[str] = []
+    bags_preserve_existing: list[str] = []
     if replace_existing and bag_ids:
-        events_deleted = delete_persistent_scan_events_for_bags(cursor, org, bag_ids)
+        # Never wipe a richer persisted timeline with a truncated scrape export.
+        # Additive upsert still runs for preserved bags so new rows can land.
+        existing_bounds = _persistent_scan_bounds_for_bags(cursor, org, bag_ids)
+        for bag_id in bag_ids:
+            bag_rows = df.loc[df["Bag ID"] == bag_id]
+            incoming_max, incoming_n = _incoming_scan_bounds_from_rows(bag_rows)
+            existing_max, existing_n = existing_bounds.get(bag_id, (None, 0))
+            if _should_replace_scan_timeline(
+                existing_max=existing_max,
+                existing_n=existing_n,
+                incoming_max=incoming_max,
+                incoming_n=incoming_n,
+            ):
+                bags_replace.append(bag_id)
+            else:
+                bags_preserve_existing.append(bag_id)
+        if bags_replace:
+            events_deleted = delete_persistent_scan_events_for_bags(cursor, org, bags_replace)
     inserted = 0
     metadata_updated = 0
     skipped_no_time = 0
@@ -782,6 +962,8 @@ def merge_scan_events_from_upload(
         "bags_rejected_operational_owner": rejected_owner,
         "operational_owner_rejected": owner_rejected,
         "replace_existing": replace_existing,
+        "bags_replaced": bags_replace if replace_existing else list(bag_ids),
+        "bags_preserve_existing_timeline": bags_preserve_existing,
         "bag_ids": bag_ids,
     }
 
@@ -820,6 +1002,8 @@ def fetch_persistent_scan_events_for_bag(
 def apply_completion_to_registry(
     cursor, organization_id: int, bag_id: str
 ) -> dict[str, Any]:
+    from backend.rinse_bag_completion import STATUS_COMPLETION_REVIEW_REQUIRED
+
     bid = normalize_bag_id(bag_id)
     org = int(organization_id)
     if is_bag_portal_scrape_rejected(cursor, org, bid):
@@ -828,6 +1012,12 @@ def apply_completion_to_registry(
             "completion_status": COMPLETION_REJECTED,
             "skipped": "portal_scrape_rejected",
         }
+    existing_row = get_registry_row(cursor, org, bid)
+    review_required = (
+        existing_row is not None
+        and str(existing_row.get("completion_status") or "").upper()
+        == STATUS_COMPLETION_REVIEW_REQUIRED
+    )
     events = fetch_persistent_scan_events_for_bag(cursor, organization_id, bid)
     result = evaluate_bag_completion(events)
     if result.completion_status != COMPLETION_COMPLETED:
@@ -871,6 +1061,15 @@ def apply_completion_to_registry(
             trigger_scan_event_id=None,
             trigger_kind=None,
         )
+    # A bag already routed to Completion Review must not be silently downgraded to
+    # INCOMPLETE by a scan-only recompute — only a real completion may promote it.
+    if review_required and result.completion_status != COMPLETION_COMPLETED:
+        return {
+            "bag_id": bid,
+            "completion_status": STATUS_COMPLETION_REVIEW_REQUIRED,
+            "skipped": "completion_review_required",
+        }
+
     fields = result.to_registry_update()
 
     ensure_rinse_bag_registry_table(cursor)

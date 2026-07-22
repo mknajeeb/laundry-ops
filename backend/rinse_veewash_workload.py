@@ -74,6 +74,7 @@ REASON_WF_BULK_WORKITEM_REVIEW = "WF_BULK_WORKITEM_REVIEW"
 
 REASON_SERVICE_CLASSIFICATION_MISMATCH = "SERVICE_CLASSIFICATION_MISMATCH"
 REASON_COMPLETION_DETAILS_MISSING = "COMPLETION_DETAILS_MISSING"
+REASON_SCAN_CHRONOLOGY_STALE = "SCAN_CHRONOLOGY_STALE"
 
 REVIEW_REASON_CODES = (
     REASON_DISAPPEARED_WITHOUT_COMPLETION,
@@ -82,6 +83,7 @@ REVIEW_REASON_CODES = (
     REASON_WF_BULK_WORKITEM_REVIEW,
     REASON_SERVICE_CLASSIFICATION_MISMATCH,
     REASON_COMPLETION_DETAILS_MISSING,
+    REASON_SCAN_CHRONOLOGY_STALE,
 )
 
 ENTRY_CLASS_NEW = "new_today"
@@ -879,6 +881,13 @@ def build_veewash_daily_workload(
     )
     bulk_lines = load_bag_bulk_lines(cursor, organization_id, selected_date_et, weight_ids)
 
+    from backend.rinse_scan_freshness import (
+        freshness_from_day_and_presence,
+        load_last_scan_at_by_bag,
+    )
+
+    last_scans = load_last_scan_at_by_bag(cursor, organization_id, weight_ids)
+
     result = expand_review_required(
         result,
         selected_date_et=selected_date_et,
@@ -890,6 +899,13 @@ def build_veewash_daily_workload(
         bulk_resolution_by_bag=bulk_resolutions,
         bulk_lines_by_bag=bulk_lines,
         registry_service_by_bag=registry_services,
+        last_scan_at_by_bag=last_scans,
+    )
+    result["data_freshness"] = freshness_from_day_and_presence(
+        cursor,
+        organization_id,
+        selected_date_et,
+        sample_bag_ids=weight_ids,
     )
     result["disappearance_confirmation"] = disappearance_state
     result["organization_id"] = int(organization_id)
@@ -1203,6 +1219,7 @@ def build_step1_headline_summary(
         "completed_without_recognized_entry_bag_ids": sorted(cwo),
         "review_by_reason": review_by_reason,
         "review_reasons_by_bag": dict(result.get("review_reasons_by_bag") or {}),
+        "data_freshness": result.get("data_freshness"),
         "rfv_excluded": len(result.get("rfv_excluded") or []),
         "rfv_excluded_bag_ids": list(result.get("rfv_excluded") or []),
         "segments": segments,

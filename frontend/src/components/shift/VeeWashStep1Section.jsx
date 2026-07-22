@@ -246,6 +246,7 @@ export default function VeeWashStep1Section({
       <ShiftDayStatusBar
         selectedDateEt={selectedDateEt || summary.selected_date_et}
         shiftDay={dayMeta}
+        dataFreshness={summary.data_freshness || dayMeta.data_freshness || null}
         validation={{
           review_required_count: reviewCount,
           totals: {

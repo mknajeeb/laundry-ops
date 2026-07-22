@@ -19,6 +19,7 @@ from backend.rinse_veewash_workload import (
     REASON_COMPLETED_WITHOUT_RECOGNIZED_ENTRY,
     REASON_COMPLETION_DETAILS_MISSING,
     REASON_DISAPPEARED_WITHOUT_COMPLETION,
+    REASON_SCAN_CHRONOLOGY_STALE,
     REASON_SERVICE_CLASSIFICATION_MISMATCH,
     REASON_WF_BULK_WORKITEM_REVIEW,
     REASON_WF_ZERO_OR_MISSING_POST_WEIGHT,
@@ -198,6 +199,7 @@ def expand_review_required(
     bulk_resolution_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
     bulk_lines_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     registry_service_by_bag: Mapping[str, str] | None = None,
+    last_scan_at_by_bag: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Mutate/return classification so Review Required includes CWO + WF post-weight gaps
@@ -337,6 +339,35 @@ def expand_review_required(
     for bid in disappeared:
         add_reason(bid, REASON_DISAPPEARED_WITHOUT_COMPLETION)
         review.add(bid)
+
+    # Stale scan chronology vs portal last_seen: do not trust Pending from
+    # missing completion evidence when the scan scrape lags portal activity.
+    from backend.rinse_scan_freshness import bag_scan_chronology_is_stale
+
+    last_scan_map = {
+        _norm_bag(k): v
+        for k, v in (last_scan_at_by_bag or {}).items()
+        if _norm_bag(k)
+    }
+    for bid in list(pending):
+        bid = _norm_bag(bid)
+        if not bid or bid in review or bid in completed:
+            continue
+        pres = presence_by_bag.get(bid) or {}
+        if bag_scan_chronology_is_stale(
+            last_scan_at=last_scan_map.get(bid),
+            portal_last_seen_at=pres.get("last_seen_at"),
+        ):
+            add_reason(bid, REASON_SCAN_CHRONOLOGY_STALE)
+            review.add(bid)
+            pending.discard(bid)
+            row = rows_by_id.get(bid) or {"bag_id": bid}
+            rows_by_id[bid] = {
+                **row,
+                "outcome": OUTCOME_REVIEW_REQUIRED,
+                "final_bucket": "review_required",
+                "reason_codes": list(reasons.get(bid) or []),
+            }
 
     # --- CWO + HD missing WIA while completed ---------------------------------
     for bid, pres in presence_by_bag.items():

@@ -35,6 +35,7 @@ import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { PayrollDateTimeField } from "../PayrollDateTimeField";
 import BulkWorkitemEntrySection from "./BulkWorkitemEntrySection";
 import CopyableBagId from "../CopyableBagId";
+import { actionsForBagStatus } from "./step1BagActions";
 
 /** Session-scoped maintenance catalog (fetched once per browser session). */
 let cachedBulkCatalog = null;
@@ -79,6 +80,7 @@ const REASON_LABELS = {
   WF_BULK_WORKITEM_REVIEW: "Bulk Workitems Require Review",
   SERVICE_CLASSIFICATION_MISMATCH: "Service classification mismatch",
   COMPLETION_DETAILS_MISSING: "Completion details missing",
+  SCAN_CHRONOLOGY_STALE: "Scan chronology behind portal last-seen",
 };
 
 const PAGE_SIZE = 25;
@@ -411,136 +413,127 @@ export default function Step1MetricDrawer({
                     ) : null}
                   </Box>
                 </AccordionSummary>
-                <AccordionDetails>
+                <AccordionDetails
+                  sx={{
+                    pt: 1,
+                    position: "relative",
+                    maxHeight: { xs: "70vh", sm: "65vh" },
+                    overflowY: "auto",
+                  }}
+                >
                   <Typography variant="caption" display="block" sx={{ mb: 0.5 }}>
                     Entry: {bag.entry_source || "—"} @ {fmtTs(bag.entry_at)} · Completion:{" "}
                     {fmtTs(bag.completion_at)} by {bag.completed_by || "—"} · Portal:{" "}
                     {bag.portal_status || "—"} · Last seen: {fmtTs(bag.last_seen_at)}
                   </Typography>
 
-                  <BulkWorkitemEntrySection
-                    bag={bag}
-                    selectedDateEt={selectedDateEt}
-                    catalog={catalog}
-                    readOnly={readOnly}
-                    onError={(msg) => setError(msg)}
-                    onSaved={async () => {
-                      await load(page);
-                      onCorrected?.();
-                    }}
-                  />
-
-                  <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 1, mb: 0.5 }}>
-                    Scan chronology (ET)
-                  </Typography>
-                  {loadingDetail ? (
-                    <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
-                      <CircularProgress size={22} />
-                    </Box>
-                  ) : (
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Time</TableCell>
-                          <TableCell>Purpose</TableCell>
-                          <TableCell>Rack</TableCell>
-                          <TableCell>Employee</TableCell>
-                          <TableCell>Wt</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {(bag.scans || []).map((s, i) => (
-                          <TableRow key={`${bag.bag_id}-${i}`}>
-                            <TableCell sx={{ whiteSpace: "nowrap" }}>
-                              {fmtTs(s.scanned_at_parsed)}
-                            </TableCell>
-                            <TableCell>{s.purpose || "—"}</TableCell>
-                            <TableCell>{s.rack || "—"}</TableCell>
-                            <TableCell>{s.user_name || "—"}</TableCell>
-                            <TableCell>{s.weight_lbs ?? "—"}</TableCell>
-                          </TableRow>
-                        ))}
-                        {(bag.scans || []).length === 0 ? (
-                          <TableRow>
-                            <TableCell colSpan={5}>No scans</TableCell>
-                          </TableRow>
-                        ) : null}
-                      </TableBody>
-                    </Table>
-                  )}
-
-                  <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 1.5, mb: 0.5 }}>
+                  <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 0.5, mb: 0.25 }}>
                     System result
                   </Typography>
-                  <Typography variant="caption" display="block">
-                    Outcome {bag.system_result?.outcome || "—"} · Canonical{" "}
+                  <Typography variant="caption" display="block" sx={{ mb: 1 }}>
+                    Outcome {bag.system_result?.outcome || bag.dashboard_status || "—"} · Canonical{" "}
                     {bag.system_result?.canonical_status || "—"} · Reasons{" "}
-                    {(bag.system_result?.reason_codes || []).join(", ") || "—"}
+                    {(bag.system_result?.reason_codes || bag.reason_codes || []).join(", ") || "—"}
                   </Typography>
-                  {!loadingDetail && (bag.corrections || []).length > 0 ? (
-                    <>
-                      <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 1, mb: 0.5 }}>
-                        Manager corrections
-                      </Typography>
-                      {(bag.corrections || []).slice(0, 5).map((c, i) => (
-                        <Typography key={i} variant="caption" display="block">
-                          {fmtTs(c.created_at)} · {c.action} · {c.actor_display_name || "—"} ·{" "}
-                          {c.reason_text}
-                        </Typography>
-                      ))}
-                    </>
-                  ) : null}
 
-                  <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
-                    {readOnly ? (
-                      <Typography variant="caption" color="text.secondary">
-                        Shift is closed — reopen to make corrections.
-                      </Typography>
-                    ) : (
-                      <>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={() => startAction(bag, "mark_completed")}
-                        >
-                          Mark completed
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={() => startAction(bag, "return_pending")}
-                        >
-                          Return to pending
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={() => startAction(bag, "correct_entry")}
-                        >
-                          Correct entry
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={() => startAction(bag, "correct_weight")}
-                        >
-                          Correct weight
-                        </Button>
-                        <Button
-                          size="small"
-                          color="error"
-                          variant="outlined"
-                          onClick={() => startAction(bag, "exclude")}
-                        >
-                          Exclude
-                        </Button>
-                      </>
-                    )}
-                  </Stack>
+                  {(() => {
+                    const acts = actionsForBagStatus(bag.dashboard_status || bag.outcome);
+                    return (
+                      <Box
+                        data-testid="bag-action-bar"
+                        sx={{
+                          position: "sticky",
+                          top: 0,
+                          zIndex: 2,
+                          py: 1,
+                          mb: 1,
+                          bgcolor: "background.paper",
+                          borderBottom: "1px solid",
+                          borderColor: "divider",
+                        }}
+                      >
+                        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                          {readOnly ? (
+                            <Typography variant="caption" color="text.secondary">
+                              Shift is closed — reopen to make corrections.
+                            </Typography>
+                          ) : (
+                            <>
+                              {acts.markCompleted ? (
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={() => startAction(bag, "mark_completed")}
+                                >
+                                  Mark completed
+                                </Button>
+                              ) : null}
+                              {acts.moveToReview ? (
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={() => startAction(bag, "move_to_review")}
+                                >
+                                  Move to Review Required
+                                </Button>
+                              ) : null}
+                              {acts.returnPending ? (
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={() => startAction(bag, "return_pending")}
+                                >
+                                  {acts.isCompleted ? "Reopen / Return to pending" : "Return to pending"}
+                                </Button>
+                              ) : null}
+                              {acts.correctEntry ? (
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={() => startAction(bag, "correct_entry")}
+                                >
+                                  Correct entry
+                                </Button>
+                              ) : null}
+                              {acts.correctWeight ? (
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={() => startAction(bag, "correct_weight")}
+                                >
+                                  Correct weight
+                                </Button>
+                              ) : null}
+                              {acts.correctCompletion ? (
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={() => startAction(bag, "correct_completion")}
+                                >
+                                  Correct completion
+                                </Button>
+                              ) : null}
+                              {acts.exclude ? (
+                                <Button
+                                  size="small"
+                                  color="error"
+                                  variant="outlined"
+                                  sx={{ ml: { xs: 0, sm: "auto" } }}
+                                  onClick={() => startAction(bag, "exclude")}
+                                >
+                                  Exclude
+                                </Button>
+                              ) : null}
+                            </>
+                          )}
+                        </Stack>
+                      </Box>
+                    );
+                  })()}
 
                   {!readOnly && actionBag === bag.bag_id ? (
                     <Box
-                      sx={{ mt: 1.5, p: 1.25, bgcolor: VEEWASH_DASHBOARD.primaryBlueLight, borderRadius: 1 }}
+                      sx={{ mb: 1.5, p: 1.25, bgcolor: VEEWASH_DASHBOARD.primaryBlueLight, borderRadius: 1 }}
                     >
                       <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
                         {form.action}
@@ -646,6 +639,76 @@ export default function Step1MetricDrawer({
                         </Stack>
                       </Stack>
                     </Box>
+                  ) : null}
+
+                  <BulkWorkitemEntrySection
+                    bag={bag}
+                    selectedDateEt={selectedDateEt}
+                    catalog={catalog}
+                    readOnly={readOnly}
+                    onError={(msg) => setError(msg)}
+                    onSaved={async () => {
+                      await load(page);
+                      onCorrected?.();
+                    }}
+                  />
+
+                  <Typography
+                    variant="subtitle2"
+                    fontWeight={700}
+                    sx={{ mt: 1, mb: 0.5 }}
+                    data-testid="scan-chronology-heading"
+                  >
+                    Scan chronology (ET)
+                  </Typography>
+                  {loadingDetail ? (
+                    <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
+                      <CircularProgress size={22} />
+                    </Box>
+                  ) : (
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Time</TableCell>
+                          <TableCell>Purpose</TableCell>
+                          <TableCell>Rack</TableCell>
+                          <TableCell>Employee</TableCell>
+                          <TableCell>Wt</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(bag.scans || []).map((s, i) => (
+                          <TableRow key={`${bag.bag_id}-${s.id || i}`}>
+                            <TableCell sx={{ whiteSpace: "nowrap" }}>
+                              {fmtTs(s.scanned_at_parsed)}
+                            </TableCell>
+                            <TableCell>{s.purpose || "—"}</TableCell>
+                            <TableCell>{s.rack || "—"}</TableCell>
+                            <TableCell>{s.user_name || "—"}</TableCell>
+                            <TableCell>{s.weight_lbs ?? "—"}</TableCell>
+                          </TableRow>
+                        ))}
+                        {(bag.scans || []).length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={5}>No scans</TableCell>
+                          </TableRow>
+                        ) : null}
+                      </TableBody>
+                    </Table>
+                  )}
+
+                  {!loadingDetail && (bag.corrections || []).length > 0 ? (
+                    <>
+                      <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 1.5, mb: 0.5 }}>
+                        Manager corrections
+                      </Typography>
+                      {(bag.corrections || []).slice(0, 5).map((c, i) => (
+                        <Typography key={i} variant="caption" display="block">
+                          {fmtTs(c.created_at)} · {c.action} · {c.actor_display_name || "—"} ·{" "}
+                          {c.reason_text}
+                        </Typography>
+                      ))}
+                    </>
                   ) : null}
                 </AccordionDetails>
               </Accordion>
