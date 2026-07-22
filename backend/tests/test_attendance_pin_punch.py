@@ -61,9 +61,15 @@ class TestAttendancePinPunchHelpers(unittest.TestCase):
         conn = MagicMock()
         cursor = MagicMock()
         conn.cursor.return_value = cursor
-        cursor.fetchall.return_value = [
-            {"user_id": 2, "attendance_pin_hash": h},
-        ]
+
+        def fetchall_side_effect():
+            # Mimic SQL `user_id != exclude`: only return other users.
+            args = cursor.execute.call_args[0][1]
+            exclude_uid = int(args[1])
+            rows = [{"user_id": 2, "attendance_pin_hash": h}]
+            return [r for r in rows if int(r["user_id"]) != exclude_uid]
+
+        cursor.fetchall.side_effect = fetchall_side_effect
         self.assertTrue(pin_already_used_in_org(conn, 1, pin, exclude_user_id=1))
         self.assertFalse(pin_already_used_in_org(conn, 1, pin, exclude_user_id=2))
 
@@ -157,12 +163,59 @@ class TestPerformPinPunchFlow(unittest.TestCase):
         clock_in.return_value = ({"id": 99, "clock_in_at": datetime.utcnow()}, None, 201)
 
         conn = MagicMock()
-        body, status = perform_pin_punch(conn, "veewash", "1234", _mock_roles, "127.0.0.1")
+        with patch(
+            "backend.category_role_tracking_settings.is_category_role_tracking_enabled",
+            return_value=False,
+        ):
+            body, status = perform_pin_punch(conn, "veewash", "1234", _mock_roles, "127.0.0.1")
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
         self.assertEqual(body["action"], "CLOCK_IN")
         self.assertNotIn("token", body)
+        clock_in.assert_called_once()
         conn.commit.assert_called()
+
+    @patch("backend.attendance_pin_punch.record_pin_attempt")
+    @patch("backend.attendance_pin_punch._active_shift")
+    @patch("backend.attendance_pin_punch.resolve_user_by_attendance_pin")
+    @patch("backend.attendance_pin_punch.is_rate_limited", return_value=False)
+    @patch("backend.attendance_pin_punch.shared_device_attendance_enabled", return_value=True)
+    @patch("backend.attendance_pin_punch.fetch_organization_by_slug")
+    @patch("backend.attendance_pin_punch.payroll_profiles_active", return_value=True)
+    def test_clock_in_requires_category_role_when_enabled(
+        self,
+        _ppa,
+        fetch_org,
+        _sda,
+        _rl,
+        resolve,
+        active_shift,
+        _rec,
+    ):
+        fetch_org.return_value = {"id": 3, "slug": "veewash", "display_name": "VeeWash", "active": 1}
+        resolve.return_value = {
+            "id": 10,
+            "first_name": "Sam",
+            "last_name": "Lee",
+            "username": "sam",
+        }
+        active_shift.return_value = None
+        tree = [{"id": 1, "name": "DHS", "roles": [{"id": 2, "name": "Operator"}]}]
+
+        conn = MagicMock()
+        with patch(
+            "backend.category_role_tracking_settings.is_category_role_tracking_enabled",
+            return_value=True,
+        ), patch(
+            "backend.shift_job_tracking.seed_default_categories_and_roles"
+        ), patch(
+            "backend.shift_job_tracking.list_active_selection_tree", return_value=tree
+        ):
+            body, status = perform_pin_punch(conn, "veewash", "1234", _mock_roles, "127.0.0.1")
+        self.assertEqual(status, 400)
+        self.assertFalse(body["ok"])
+        self.assertTrue(body["needs_category_role"])
+        self.assertEqual(body["selection_tree"], tree)
 
     @patch("backend.attendance_pin_punch.record_pin_attempt")
     @patch("backend.attendance_pin_punch.kiosk_clock_out")
@@ -265,6 +318,7 @@ class TestPerformPinPunchFlow(unittest.TestCase):
         _sda,
         _rl,
         resolve,
+        _active,
         clock_in,
         _rec,
     ):
@@ -273,7 +327,13 @@ class TestPerformPinPunchFlow(unittest.TestCase):
         clock_in.return_value = (None, COMPLIANCE_BLOCK_MESSAGE, 403)
 
         conn = MagicMock()
-        body, status = perform_pin_punch(conn, "veewash", "1234", _mock_roles, "8.8.8.8")
+        with patch(
+            "backend.category_role_tracking_settings.is_category_role_tracking_enabled",
+            return_value=True,
+        ):
+            body, status = perform_pin_punch(
+                conn, "veewash", "1234", _mock_roles, "8.8.8.8", category_id=1, role_id=2
+            )
         self.assertEqual(status, 403)
         self.assertEqual(body["error"], COMPLIANCE_BLOCK_MESSAGE)
 

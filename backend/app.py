@@ -5009,6 +5009,8 @@ def public_attendance_pin_punch():
             pin,
             fetch_user_roles,
             get_request_ip(),
+            category_id=data.get("category_id"),
+            role_id=data.get("role_id"),
         )
         return jsonify(body), status
     except Exception as e:

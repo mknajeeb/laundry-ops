@@ -202,12 +202,14 @@ export const getPublicActiveClockIns = (slug) =>
 /** Kiosk attendance: clock in/out with PIN only (no session). */
 export const ATTENDANCE_PIN_PUNCH_TIMEOUT_MS = 25000;
 
-export const attendancePinPunch = (organization_slug, pin) =>
+export const attendancePinPunch = (organization_slug, pin, options = {}) =>
   axios.post(
     `${API_BASE}/api/public/attendance/pin-punch`,
     {
       organization_slug: String(organization_slug || "").trim().toLowerCase(),
       pin: String(pin || "").trim(),
+      ...(options.category_id != null ? { category_id: options.category_id } : {}),
+      ...(options.role_id != null ? { role_id: options.role_id } : {}),
     },
     {
       timeout: ATTENDANCE_PIN_PUNCH_TIMEOUT_MS,
@@ -648,11 +650,20 @@ export const backfillVeewashStep1Day = (body) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/veewash-step1/backfill-day`, body, { timeout: 120000 });
 
 /** Phase 2 — employee productivity section only (full bag drilldown, single ET day). */
-export const getEmployeeProductivityDashboard = (params = {}) =>
+export const getEmployeeProductivityDashboard = (params = {}, config = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/employee-productivity`, {
     params: { ...params, _t: Date.now() },
-    timeout: 120000,
+    timeout: 30000,
     headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+    ...config,
+  });
+
+export const getEmployeeProductivityBags = (params = {}, config = {}) =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/employee-productivity/bags`, {
+    params: { ...params, _t: Date.now() },
+    timeout: 30000,
+    headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+    ...config,
   });
 
 /** Daily shift roster — end-of-day labor recording. */
@@ -1256,17 +1267,59 @@ export const taBreakEnd = () =>
 export const getTaskTrackingTasks = (params = {}) =>
   axios.get(`${API_BASE}/api/ta/job-tracking/job-names`, { params });
 
-export const postTaskTrackingTask = (body) =>
-  axios.post(`${API_BASE}/api/ta/job-tracking/job-names`, body);
+export const getTaskTrackingSelectionTree = () =>
+  axios.get(`${API_BASE}/api/ta/job-tracking/selection-tree`);
 
-export const patchTaskTrackingTask = (taskId, body) =>
-  axios.patch(`${API_BASE}/api/ta/job-tracking/job-names/${taskId}`, body);
+export const getCategoryRoleTrackingFeatureFlag = () =>
+  axios.get(`${API_BASE}/api/ta/job-tracking/feature-flag`);
 
-export const deleteTaskTrackingTask = (taskId) =>
-  axios.delete(`${API_BASE}/api/ta/job-tracking/job-names/${taskId}`);
+export const putCategoryRoleTrackingFeatureFlag = (body) =>
+  axios.put(`${API_BASE}/api/ta/job-tracking/feature-flag`, body);
 
-export const postTaskTrackingTasksReorder = (body) =>
-  axios.post(`${API_BASE}/api/ta/job-tracking/job-names/reorder`, body);
+export const getTaskTrackingCategories = (params = {}) =>
+  axios.get(`${API_BASE}/api/ta/job-tracking/categories`, { params });
+
+export const postTaskTrackingCategory = (body) =>
+  axios.post(`${API_BASE}/api/ta/job-tracking/categories`, body);
+
+export const patchTaskTrackingCategory = (categoryId, body) =>
+  axios.patch(`${API_BASE}/api/ta/job-tracking/categories/${categoryId}`, body);
+
+export const deleteTaskTrackingCategory = (categoryId) =>
+  axios.delete(`${API_BASE}/api/ta/job-tracking/categories/${categoryId}`);
+
+export const postTaskTrackingCategoriesReorder = (body) =>
+  axios.post(`${API_BASE}/api/ta/job-tracking/categories/reorder`, body);
+
+export const getTaskTrackingCategoryRoles = (categoryId, params = {}) =>
+  axios.get(`${API_BASE}/api/ta/job-tracking/categories/${categoryId}/roles`, { params });
+
+export const postTaskTrackingCategoryRole = (categoryId, body) =>
+  axios.post(`${API_BASE}/api/ta/job-tracking/categories/${categoryId}/roles`, body);
+
+export const postTaskTrackingCategoryRolesReorder = (categoryId, body) =>
+  axios.post(`${API_BASE}/api/ta/job-tracking/categories/${categoryId}/roles/reorder`, body);
+
+export const patchTaskTrackingCategoryRole = (assignmentId, body) =>
+  axios.patch(`${API_BASE}/api/ta/job-tracking/category-roles/${assignmentId}`, body);
+
+export const deleteTaskTrackingCategoryRole = (assignmentId) =>
+  axios.delete(`${API_BASE}/api/ta/job-tracking/category-roles/${assignmentId}`);
+
+export const getTaskTrackingRoles = (params = {}) =>
+  axios.get(`${API_BASE}/api/ta/job-tracking/roles`, { params });
+
+export const postTaskTrackingRole = (body) =>
+  axios.post(`${API_BASE}/api/ta/job-tracking/roles`, body);
+
+export const patchTaskTrackingRole = (roleId, body) =>
+  axios.patch(`${API_BASE}/api/ta/job-tracking/roles/${roleId}`, body);
+
+export const deleteTaskTrackingRole = (roleId) =>
+  axios.delete(`${API_BASE}/api/ta/job-tracking/roles/${roleId}`);
+
+export const postTaskTrackingRolesReorder = (body) =>
+  axios.post(`${API_BASE}/api/ta/job-tracking/roles/reorder`, body);
 
 export const postTaskTrackingSwitchTask = (body) =>
   axios.post(`${API_BASE}/api/ta/job-tracking/sessions/current/switch-task`, body);
@@ -1274,33 +1327,12 @@ export const postTaskTrackingSwitchTask = (body) =>
 export const getTaskTrackingReports = (params) =>
   axios.get(`${API_BASE}/api/ta/job-tracking/reports`, { params });
 
-/** @deprecated use getTaskTrackingTasks */
+/** @deprecated */
 export const getJobTrackingJobNames = getTaskTrackingTasks;
-/** @deprecated use postTaskTrackingTask */
-export const postJobTrackingJobName = postTaskTrackingTask;
-/** @deprecated use patchTaskTrackingTask */
-export const patchJobTrackingJobName = patchTaskTrackingTask;
-/** @deprecated use postTaskTrackingTasksReorder */
-export const postJobTrackingJobNamesReorder = postTaskTrackingTasksReorder;
-/** @deprecated use postTaskTrackingSwitchTask */
+/** @deprecated */
 export const postJobTrackingSwitchJob = postTaskTrackingSwitchTask;
-/** @deprecated use getTaskTrackingReports */
+/** @deprecated */
 export const getJobTrackingReports = getTaskTrackingReports;
-
-export const postJobTrackingWaiveSessionForceCheckout = (sessionId, body) =>
-  axios.post(`${API_BASE}/api/ta/job-tracking/sessions/${sessionId}/waive-force-checkout`, body);
-
-export const postJobTrackingOverrideForceCheckoutTime = (sessionId, body) =>
-  axios.post(`${API_BASE}/api/ta/job-tracking/sessions/${sessionId}/override-force-checkout-time`, body);
-
-export const postJobTrackingAllowContinuation = (sessionId, body) =>
-  axios.post(`${API_BASE}/api/ta/job-tracking/sessions/${sessionId}/continue`, body);
-
-export const postJobTrackingUserForceCheckoutWaiver = (userId, body) =>
-  axios.post(`${API_BASE}/api/ta/job-tracking/users/${userId}/force-checkout-waiver`, body);
-
-export const getJobTrackingUserForceCheckoutWaiver = (userId) =>
-  axios.get(`${API_BASE}/api/ta/job-tracking/users/${userId}/force-checkout-waiver`);
 
 export const getTaUsers = () => axios.get(`${API_BASE}/api/ta/users`);
 

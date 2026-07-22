@@ -28,7 +28,6 @@ import {
   useTheme,
 } from "@mui/material";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
-import WorkOutlineIcon from "@mui/icons-material/WorkOutline";
 import AddIcon from "@mui/icons-material/Add";
 import AttachMoneyIcon from "@mui/icons-material/AttachMoney";
 import CheckIcon from "@mui/icons-material/Check";
@@ -58,8 +57,6 @@ import {
   formatPayrollRate,
 } from "../payroll/timeRecordPayroll";
 import { PayrollDateField, PayrollDateTimeField } from "./PayrollDateTimeField";
-import JobTrackingAdminDialog from "./JobTrackingAdminDialog";
-import { useAuth } from "../context/AuthContext";
 
 const CATEGORY_SHORT = {
   w2: "W-2",
@@ -187,8 +184,6 @@ export default function PayrollTimeRecordsPanel({
   onPayPeriodChange,
 }) {
   const theme = useTheme();
-  const { hasPerm } = useAuth();
-  const canJobTrackingAdmin = hasPerm("ta.override");
   const [fromDate, setFromDate] = useState(payPeriodStart || "");
   const [toDate, setToDate] = useState(payPeriodEnd || "");
   const [category, setCategory] = useState(linkedCategory || "all");
@@ -208,7 +203,6 @@ export default function PayrollTimeRecordsPanel({
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [saving, setSaving] = useState(false);
   const [bulkApproving, setBulkApproving] = useState(false);
-  const [jobTrackingTarget, setJobTrackingTarget] = useState(null);
 
   useEffect(() => {
     getTaUsers()
@@ -687,17 +681,6 @@ export default function PayrollTimeRecordsPanel({
                       <EditIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
-                  {canJobTrackingAdmin ? (
-                    <Tooltip title="Task tracking / force check-out">
-                      <IconButton
-                        size="small"
-                        onClick={() => setJobTrackingTarget(r)}
-                        aria-label="Job tracking controls"
-                      >
-                        <WorkOutlineIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                  ) : null}
                   <Tooltip title="Delete">
                     <IconButton
                       size="small"
@@ -788,15 +771,6 @@ export default function PayrollTimeRecordsPanel({
           </Button>
         </DialogActions>
       </Dialog>
-
-      <JobTrackingAdminDialog
-        open={!!jobTrackingTarget}
-        record={jobTrackingTarget}
-        onClose={() => setJobTrackingTarget(null)}
-        onSaved={() => {
-          load();
-        }}
-      />
     </Stack>
   );
 }

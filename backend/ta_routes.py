@@ -1545,32 +1545,11 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
             conn.commit()
             sess = None
         else:
-            from backend.shift_job_tracking import maybe_force_checkout_scheduled_end
-
-            closed_sched = maybe_force_checkout_scheduled_end(
-                conn, sess, ta_user["id"], tenant_id
-            )
-            if closed_sched:
-                write_audit(
-                    conn,
-                    ta_user["id"],
-                    "shift_session",
-                    sess["id"],
-                    "force_checkout",
-                    old={"status": "active"},
-                    new={
-                        "status": "auto_closed",
-                        "force_checked_out_at": str(closed_sched.get("force_checked_out_at")),
-                        "checkout_type": "force_scheduled",
-                    },
-                )
+            # Category/role tracking does not enforce attendance force-checkout.
+            closed_md = maybe_force_clock_out_est_midnight(conn, sess, ta_user["id"], tenant_id)
+            if closed_md:
                 conn.commit()
                 sess = None
-            else:
-                closed_md = maybe_force_clock_out_est_midnight(conn, sess, ta_user["id"], tenant_id)
-                if closed_md:
-                    conn.commit()
-                    sess = None
 
         if sess:
             sess = fetch_session(conn, sess["id"])
@@ -1619,10 +1598,17 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
             sess["primary_geofence"] = json_safe(gfn) if gfn else None
             sess["assigned_geofences"] = [json_safe(x) for x in gfs]
 
+            from backend.category_role_tracking_settings import is_category_role_tracking_enabled
             from backend.shift_job_tracking import enrich_session_job_tracking
 
-            sess["job_tracking"] = enrich_session_job_tracking(conn, sess, ta_user["id"])
-            sess["task_tracking"] = sess["job_tracking"]
+            tracking_on = is_category_role_tracking_enabled(conn, tenant_id)
+            sess["category_role_tracking_enabled"] = tracking_on
+            if tracking_on:
+                sess["job_tracking"] = enrich_session_job_tracking(conn, sess, ta_user["id"])
+                sess["task_tracking"] = sess["job_tracking"]
+            else:
+                sess["job_tracking"] = None
+                sess["task_tracking"] = None
 
             if (
                 sess
@@ -1672,26 +1658,6 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
             )
         maybe_clock_in_geofence_reminder(conn, ta_user, tenant_id, inside)
 
-    recent_force_checkout = None
-    if not sess:
-        c_rf = conn.cursor(dictionary=True)
-        if table_has_column(c_rf, "shift_sessions", "force_checked_out_at"):
-            start, end = _today_est_midnight_bounds()
-            c_rf.execute(
-                """
-                SELECT id, clock_in_at, clock_out_at, force_checked_out_at,
-                       checkout_type, continuation_allowed, status
-                FROM shift_sessions
-                WHERE user_id=%s AND force_checked_out_at IS NOT NULL
-                  AND clock_in_at >= %s AND clock_in_at < %s
-                ORDER BY force_checked_out_at DESC LIMIT 1
-                """,
-                (ta_user["id"], start, end),
-            )
-            rf = c_rf.fetchone()
-            if rf and str(rf.get("status")) != "active":
-                recent_force_checkout = json_safe(rf)
-
     n_today = count_shift_sessions_starting_today_est(conn, ta_user["id"])
     ui_ck = load_clock_payroll_ui(conn, tenant_id)
     cc_k = ui_ck.get("clock") or {}
@@ -1701,11 +1667,16 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
         "est_midnight_force_clock_out": as_bool(cc_k.get("est_midnight_force_clock_out"), True),
     }
     if not sess:
-        from backend.shift_job_tracking import get_last_check_in_task_id
+        from backend.shift_job_tracking import get_last_check_in_assignment
 
-        last_task_id = get_last_check_in_task_id(conn, ta_user["id"])
-        if last_task_id:
-            clock_hints["last_check_in_task_id"] = last_task_id
+        last_asg = get_last_check_in_assignment(conn, ta_user["id"])
+        if last_asg:
+            clock_hints["last_check_in_category_id"] = last_asg.get("category_id")
+            clock_hints["last_check_in_role_id"] = last_asg.get("role_id")
+            clock_hints["last_check_in_display_label"] = last_asg.get("display_label")
+            # Legacy hint for older clients
+            if last_asg.get("category_role_id"):
+                clock_hints["last_check_in_task_id"] = last_asg.get("category_role_id")
 
     op = get_operational_state(
         conn,
@@ -1715,12 +1686,15 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
         open_break_cached=ob,
         assigned_geofences_cached=gfs if sess else _MISSING_OP_STATE,
     )
+    from backend.category_role_tracking_settings import is_category_role_tracking_enabled
+
+    tracking_enabled = is_category_role_tracking_enabled(conn, tenant_id)
     conn.commit()
     return {
         "session": json_safe(sess),
         "operational": op,
         "clock_hints": clock_hints,
-        "recent_force_checkout": recent_force_checkout,
+        "category_role_tracking_enabled": tracking_enabled,
     }
 
 
@@ -1962,16 +1936,34 @@ def clock_in():
                 ),
             )
         sid = c2.lastrowid
+        from backend.category_role_tracking_settings import is_category_role_tracking_enabled
         from backend.shift_job_tracking import init_session_job_tracking
 
-        job_name_id = data.get("job_name_id") or data.get("task_id")
+        tracking_enabled = is_category_role_tracking_enabled(conn, _tenant_id())
+        category_id = data.get("category_id")
+        role_id = data.get("role_id")
         try:
-            job_name_id = int(job_name_id) if job_name_id is not None else None
+            category_id = int(category_id) if category_id is not None else None
+            role_id = int(role_id) if role_id is not None else None
         except (TypeError, ValueError):
-            job_name_id = None
-        init_session_job_tracking(
-            conn, sid, _tenant_id(), g.ta_user["id"], now, job_name_id=job_name_id
-        )
+            return jsonify({"error": "category_id and role_id must be integers"}), 400
+        if tracking_enabled:
+            if not category_id or not role_id:
+                conn.rollback()
+                return jsonify({"error": "category_id and role_id are required to check in"}), 400
+            try:
+                init_session_job_tracking(
+                    conn,
+                    sid,
+                    _tenant_id(),
+                    g.ta_user["id"],
+                    now,
+                    category_id=category_id,
+                    role_id=role_id,
+                )
+            except ValueError as e:
+                conn.rollback()
+                return jsonify({"error": str(e)}), 400
         write_audit(
             conn,
             g.ta_user["id"],
@@ -2103,9 +2095,22 @@ def clock_out():
                     sess["id"],
                 ),
             )
-        from backend.shift_job_tracking import on_manual_clock_out
+        from backend.category_role_tracking_settings import is_category_role_tracking_enabled
+        from backend.shift_job_tracking import get_open_job_segment, on_manual_clock_out
 
+        had_open_segment = get_open_job_segment(conn, sess["id"]) is not None
         on_manual_clock_out(conn, sess["id"])
+        if is_category_role_tracking_enabled(conn, _tenant_id()) and not had_open_segment:
+            write_audit(
+                conn,
+                g.ta_user["id"],
+                "shift_session",
+                sess["id"],
+                "checkout_without_task_segment",
+                old={"session_id": sess["id"]},
+                new={"warning": "No active task segment at checkout"},
+                remarks="Category & Role Tracking enabled but no open task segment at checkout",
+            )
         write_audit(
             conn,
             g.ta_user["id"],

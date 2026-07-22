@@ -6,6 +6,10 @@ import {
   Box,
   Button,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
   IconButton,
   InputLabel,
@@ -255,6 +259,11 @@ export default function AttendancePinPage() {
   const slug = routeSlug || selectedSlug;
 
   const [pin, setPin] = useState("");
+  const [pendingPin, setPendingPin] = useState("");
+  const [selectionTree, setSelectionTree] = useState([]);
+  const [pickStep, setPickStep] = useState(null); // null | category | role
+  const [pendingCategoryId, setPendingCategoryId] = useState(null);
+  const [pendingRoleId, setPendingRoleId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(null);
@@ -381,7 +390,7 @@ export default function AttendancePinPage() {
   };
 
   const performPunch = useCallback(
-    async (digits) => {
+    async (digits, assignment = null) => {
       if (!slug || String(digits || "").replace(/\D/g, "").length !== PIN_LEN) return;
       if (punchInFlightRef.current) return;
       const clean = String(digits).replace(/\D/g, "");
@@ -390,7 +399,10 @@ export default function AttendancePinPage() {
       setSuccess(null);
       setLoading(true);
       try {
-        const res = await attendancePinPunch(slug, clean);
+        const opts = {};
+        if (assignment?.category_id != null) opts.category_id = assignment.category_id;
+        if (assignment?.role_id != null) opts.role_id = assignment.role_id;
+        const res = await attendancePinPunch(slug, clean, opts);
         const status = res?.status ?? 0;
         const data = res?.data;
         if (typeof data === "string" && data.trim().startsWith("<")) {
@@ -406,8 +418,21 @@ export default function AttendancePinPage() {
         if (status >= 200 && status < 300 && body.ok) {
           setSuccess(body);
           setPin("");
+          setPendingPin("");
+          setPickStep(null);
+          setSelectionTree([]);
           prevPinLenRef.current = 0;
           scheduleReset();
+          return;
+        }
+        if (body.needs_category_role && Array.isArray(body.selection_tree)) {
+          setPendingPin(clean);
+          setSelectionTree(body.selection_tree);
+          setPendingCategoryId(body.selection_tree[0]?.id ?? null);
+          setPendingRoleId(null);
+          setPickStep("category");
+          setPin("");
+          prevPinLenRef.current = 0;
           return;
         }
         const msg =
@@ -465,6 +490,19 @@ export default function AttendancePinPage() {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "";
     return d.toLocaleTimeString(localeTag, { hour: "numeric", minute: "2-digit" });
+  };
+
+  const selectedPickCategory =
+    selectionTree.find((c) => Number(c.id) === Number(pendingCategoryId)) || null;
+  const pickRoles = selectedPickCategory?.roles || [];
+
+  const confirmCategoryRolePunch = () => {
+    if (!pendingPin || !pendingCategoryId || !pendingRoleId) return;
+    setPickStep(null);
+    void performPunch(pendingPin, {
+      category_id: pendingCategoryId,
+      role_id: pendingRoleId,
+    });
   };
 
   const tenantTitle = branding?.display_name || slug || t("attendance.title");
@@ -726,6 +764,91 @@ export default function AttendancePinPage() {
           </Button>
         ) : null}
       </Stack>
+
+      <Dialog
+        open={Boolean(pickStep)}
+        onClose={() => {
+          setPickStep(null);
+          setPendingPin("");
+          setSelectionTree([]);
+          setPendingCategoryId(null);
+          setPendingRoleId(null);
+        }}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>
+          {pickStep === "role" ? "Select role" : "Select category"}
+        </DialogTitle>
+        <DialogContent>
+          {pickStep === "category" ? (
+            <Stack spacing={1} sx={{ pt: 1 }}>
+              {selectionTree.map((cat) => (
+                <Button
+                  key={cat.id}
+                  variant={Number(pendingCategoryId) === Number(cat.id) ? "contained" : "outlined"}
+                  onClick={() => {
+                    setPendingCategoryId(cat.id);
+                    setPendingRoleId(null);
+                    setPickStep("role");
+                  }}
+                  sx={{ justifyContent: "flex-start", textTransform: "none" }}
+                >
+                  {cat.display_name || cat.name}
+                </Button>
+              ))}
+            </Stack>
+          ) : null}
+          {pickStep === "role" ? (
+            <Stack spacing={1} sx={{ pt: 1 }}>
+              <Typography variant="body2" color="text.secondary">
+                {selectedPickCategory?.display_name || selectedPickCategory?.name || "Category"}
+              </Typography>
+              {pickRoles.map((role) => (
+                <Button
+                  key={role.role_id || role.id}
+                  variant={Number(pendingRoleId) === Number(role.role_id) ? "contained" : "outlined"}
+                  onClick={() => setPendingRoleId(role.role_id)}
+                  sx={{ justifyContent: "flex-start", textTransform: "none" }}
+                >
+                  {role.role_name || role.display_name || role.name}
+                </Button>
+              ))}
+            </Stack>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          {pickStep === "role" ? (
+            <Button
+              onClick={() => {
+                setPickStep("category");
+                setPendingRoleId(null);
+              }}
+            >
+              Back
+            </Button>
+          ) : (
+            <Button
+              onClick={() => {
+                setPickStep(null);
+                setPendingPin("");
+                setSelectionTree([]);
+              }}
+            >
+              Cancel
+            </Button>
+          )}
+          {pickStep === "role" ? (
+            <Button
+              variant="contained"
+              disabled={!pendingCategoryId || !pendingRoleId || loading}
+              onClick={confirmCategoryRolePunch}
+            >
+              Check In
+            </Button>
+          ) : null}
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

@@ -1,26 +1,32 @@
-"""Shift task tracking — records what task an employee performed during each shift."""
+"""Shift task tracking — Category + Role history during attendance shifts.
+
+Phase 1: capture accurate category/role segments for the future Employee
+Performance Dashboard. No productivity or payroll calculations here.
+"""
 
 from __future__ import annotations
 
-import json
+import re
 from datetime import date, datetime, time, timedelta
 from typing import Any, Optional
 
 from backend.payroll_identity import eastern_now_naive
 from backend.ta_helpers import invalidate_schema_cache, json_safe, table_exists, table_has_column
 
-DEFAULT_TASKS = (
-    "Rinse WF - Weigh",
-    "Rinse WF - Sort",
-    "Rinse WF - Wash",
-    "Rinse WF - Fold",
-    "Rinse HD - Wash",
-    "Rinse HD - Fold",
-    "DHS",
-    "Drop Off",
+DEFAULT_CATEGORIES = (
+    ("RINSE_WF", "Rinse WF"),
+    ("RINSE_HD", "Rinse HD"),
+    ("DHS", "DHS"),
+    ("DROP_OFF", "Drop Off"),
 )
 
-# Legacy alias
+STANDARD_ROLES = (
+    ("OPERATOR", "Operator"),
+    ("FOLDER", "Folder"),
+)
+
+# Legacy alias used by older tests / imports
+DEFAULT_TASKS = tuple(f"{name} — {role}" for _, name in DEFAULT_CATEGORIES for _, role in STANDARD_ROLES)
 DEFAULT_JOB_NAMES = DEFAULT_TASKS
 
 CHECKOUT_TYPES = (
@@ -40,6 +46,22 @@ _SESSION_COLS = (
     ("continuation_allowed", "TINYINT(1) NOT NULL DEFAULT 0"),
     ("continued_after_force_at", "DATETIME NULL"),
     ("current_job_name_id", "INT NULL"),
+    ("current_category_id", "INT NULL"),
+    ("current_role_id", "INT NULL"),
+    ("current_category_role_id", "INT NULL"),
+)
+
+_SEGMENT_COLS = (
+    ("user_id", "INT NULL"),
+    ("category_id", "INT NULL"),
+    ("role_id", "INT NULL"),
+    ("category_role_id", "INT NULL"),
+    ("category_code", "VARCHAR(64) NULL"),
+    ("role_code", "VARCHAR(64) NULL"),
+    ("category_name_snapshot", "VARCHAR(128) NULL"),
+    ("role_name_snapshot", "VARCHAR(128) NULL"),
+    ("change_source", "VARCHAR(64) NULL"),
+    ("close_source", "VARCHAR(64) NULL"),
 )
 
 
@@ -58,6 +80,19 @@ def _combine_date_time(d: date, t: time) -> datetime:
     return datetime(d.year, d.month, d.day, t.hour, t.minute, t.second)
 
 
+def _scalar(row) -> Any:
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return next(iter(row.values()))
+    return row[0]
+
+
+def _slug_code(name: str) -> str:
+    raw = re.sub(r"[^A-Za-z0-9]+", "_", (name or "").strip().upper()).strip("_")
+    return raw[:64] or "CATEGORY"
+
+
 def _add_column_if_missing(cursor, table: str, column: str, ddl: str) -> None:
     if not table_exists(cursor, table):
         return
@@ -72,6 +107,61 @@ def _add_column_if_missing(cursor, table: str, column: str, ddl: str) -> None:
 
 
 def ensure_shift_job_tracking_schema(cursor) -> None:
+    if not table_exists(cursor, "ta_task_categories"):
+        cursor.execute(
+            """
+            CREATE TABLE ta_task_categories (
+              id INT AUTO_INCREMENT PRIMARY KEY,
+              organization_id INT NOT NULL,
+              code VARCHAR(64) NOT NULL,
+              name VARCHAR(128) NOT NULL,
+              sort_order INT NOT NULL DEFAULT 0,
+              active TINYINT(1) NOT NULL DEFAULT 1,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY uq_ttc_org_code (organization_id, code),
+              INDEX idx_ttc_org_active (organization_id, active, sort_order)
+            ) ENGINE=InnoDB
+            """
+        )
+    if not table_exists(cursor, "ta_task_roles"):
+        cursor.execute(
+            """
+            CREATE TABLE ta_task_roles (
+              id INT AUTO_INCREMENT PRIMARY KEY,
+              organization_id INT NOT NULL,
+              code VARCHAR(64) NOT NULL,
+              name VARCHAR(128) NOT NULL,
+              sort_order INT NOT NULL DEFAULT 0,
+              active TINYINT(1) NOT NULL DEFAULT 1,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY uq_ttr_org_code (organization_id, code),
+              INDEX idx_ttr_org_active (organization_id, active, sort_order)
+            ) ENGINE=InnoDB
+            """
+        )
+    if not table_exists(cursor, "ta_task_category_roles"):
+        cursor.execute(
+            """
+            CREATE TABLE ta_task_category_roles (
+              id INT AUTO_INCREMENT PRIMARY KEY,
+              organization_id INT NOT NULL,
+              category_id INT NOT NULL,
+              role_id INT NOT NULL,
+              sort_order INT NOT NULL DEFAULT 0,
+              active TINYINT(1) NOT NULL DEFAULT 1,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY uq_ttcr_cat_role (category_id, role_id),
+              INDEX idx_ttcr_org (organization_id, active, sort_order),
+              CONSTRAINT fk_ttcr_category FOREIGN KEY (category_id)
+                REFERENCES ta_task_categories(id),
+              CONSTRAINT fk_ttcr_role FOREIGN KEY (role_id) REFERENCES ta_task_roles(id)
+            ) ENGINE=InnoDB
+            """
+        )
+    # Keep legacy flat table for any historical FKs; new orgs use category/role.
     if not table_exists(cursor, "ta_job_names"):
         cursor.execute(
             """
@@ -83,8 +173,7 @@ def ensure_shift_job_tracking_schema(cursor) -> None:
               active TINYINT(1) NOT NULL DEFAULT 1,
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              UNIQUE KEY uq_tjn_org_name (organization_id, name),
-              INDEX idx_tjn_org_active (organization_id, active, sort_order)
+              UNIQUE KEY uq_tjn_org_name (organization_id, name)
             ) ENGINE=InnoDB
             """
         )
@@ -94,17 +183,38 @@ def ensure_shift_job_tracking_schema(cursor) -> None:
             CREATE TABLE shift_job_segments (
               id INT AUTO_INCREMENT PRIMARY KEY,
               shift_session_id INT NOT NULL,
-              job_name_id INT NOT NULL,
+              user_id INT NULL,
+              category_id INT NULL,
+              role_id INT NULL,
+              category_role_id INT NULL,
+              category_code VARCHAR(64) NULL,
+              role_code VARCHAR(64) NULL,
+              category_name_snapshot VARCHAR(128) NULL,
+              role_name_snapshot VARCHAR(128) NULL,
+              job_name_id INT NULL,
               started_at DATETIME NOT NULL,
               ended_at DATETIME NULL,
+              change_source VARCHAR(64) NULL,
+              close_source VARCHAR(64) NULL,
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               INDEX idx_sjs_session (shift_session_id, started_at),
               CONSTRAINT fk_sjs_session FOREIGN KEY (shift_session_id)
-                REFERENCES shift_sessions(id) ON DELETE CASCADE,
-              CONSTRAINT fk_sjs_job FOREIGN KEY (job_name_id) REFERENCES ta_job_names(id)
+                REFERENCES shift_sessions(id) ON DELETE CASCADE
             ) ENGINE=InnoDB
             """
         )
+    else:
+        # Legacy table may have NOT NULL job_name_id — make nullable if present.
+        if table_has_column(cursor, "shift_job_segments", "job_name_id"):
+            try:
+                cursor.execute(
+                    "ALTER TABLE shift_job_segments MODIFY COLUMN job_name_id INT NULL"
+                )
+            except Exception:
+                pass
+        for col, ddl in _SEGMENT_COLS:
+            _add_column_if_missing(cursor, "shift_job_segments", col, ddl)
+
     for col, ddl in _SESSION_COLS:
         _add_column_if_missing(cursor, "shift_sessions", col, ddl)
     _add_column_if_missing(
@@ -113,37 +223,108 @@ def ensure_shift_job_tracking_schema(cursor) -> None:
     invalidate_schema_cache()
 
 
-def seed_default_job_names(cursor, organization_id: int) -> None:
+def seed_default_categories_and_roles(cursor, organization_id: int) -> None:
+    """Seed four categories + Operator/Folder, assign Operator/Folder to each category."""
     ensure_shift_job_tracking_schema(cursor)
+    oid = int(organization_id)
     cursor.execute(
-        "SELECT COUNT(*) FROM ta_job_names WHERE organization_id=%s",
-        (int(organization_id),),
+        "SELECT COUNT(*) FROM ta_task_categories WHERE organization_id=%s", (oid,)
     )
-    row = cursor.fetchone()
-    count = int(row[0] if not isinstance(row, dict) else list(row.values())[0])
-    if count > 0:
+    if int(_scalar(cursor.fetchone()) or 0) > 0:
+        # Still ensure standard roles exist and are assigned.
+        _ensure_standard_roles(cursor, oid)
+        _ensure_standard_assignments(cursor, oid)
         return
-    for idx, name in enumerate(DEFAULT_TASKS):
+
+    for idx, (code, name) in enumerate(DEFAULT_CATEGORIES):
         cursor.execute(
             """
-            INSERT INTO ta_job_names (organization_id, name, sort_order, active)
-            VALUES (%s, %s, %s, 1)
+            INSERT INTO ta_task_categories (organization_id, code, name, sort_order, active)
+            VALUES (%s, %s, %s, %s, 1)
             """,
-            (int(organization_id), name, idx),
+            (oid, code, name, idx),
         )
+    _ensure_standard_roles(cursor, oid)
+    _ensure_standard_assignments(cursor, oid)
 
 
-def list_job_names(
-    cursor,
-    organization_id: int,
-    *,
-    include_inactive: bool = False,
-    include_usage: bool = False,
+# Alias for older call sites
+def seed_default_job_names(cursor, organization_id: int) -> None:
+    seed_default_categories_and_roles(cursor, organization_id)
+
+
+def _ensure_standard_roles(cursor, organization_id: int) -> dict[str, int]:
+    oid = int(organization_id)
+    role_ids: dict[str, int] = {}
+    for idx, (code, name) in enumerate(STANDARD_ROLES):
+        cursor.execute(
+            """
+            SELECT id FROM ta_task_roles
+            WHERE organization_id=%s AND code=%s LIMIT 1
+            """,
+            (oid, code),
+        )
+        row = cursor.fetchone()
+        if row:
+            role_ids[code] = int(row["id"] if isinstance(row, dict) else row[0])
+            continue
+        cursor.execute(
+            """
+            INSERT INTO ta_task_roles (organization_id, code, name, sort_order, active)
+            VALUES (%s, %s, %s, %s, 1)
+            """,
+            (oid, code, name, idx),
+        )
+        role_ids[code] = int(cursor.lastrowid)
+    return role_ids
+
+
+def _ensure_standard_assignments(cursor, organization_id: int) -> None:
+    oid = int(organization_id)
+    role_ids = _ensure_standard_roles(cursor, oid)
+    cursor.execute(
+        "SELECT id FROM ta_task_categories WHERE organization_id=%s ORDER BY sort_order, id",
+        (oid,),
+    )
+    cats = cursor.fetchall() or []
+    for cat in cats:
+        cat_id = int(cat["id"] if isinstance(cat, dict) else cat[0])
+        for sort_idx, code in enumerate(("OPERATOR", "FOLDER")):
+            role_id = role_ids.get(code)
+            if not role_id:
+                continue
+            cursor.execute(
+                """
+                SELECT id FROM ta_task_category_roles
+                WHERE category_id=%s AND role_id=%s LIMIT 1
+                """,
+                (cat_id, role_id),
+            )
+            if cursor.fetchone():
+                continue
+            cursor.execute(
+                """
+                INSERT INTO ta_task_category_roles
+                  (organization_id, category_id, role_id, sort_order, active)
+                VALUES (%s, %s, %s, %s, 1)
+                """,
+                (oid, cat_id, role_id, sort_idx),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Category CRUD
+# ---------------------------------------------------------------------------
+
+
+def list_categories(
+    cursor, organization_id: int, *, include_inactive: bool = False, include_usage: bool = False
 ) -> list[dict]:
     ensure_shift_job_tracking_schema(cursor)
+    seed_default_categories_and_roles(cursor, organization_id)
     q = """
-        SELECT id, organization_id, name, sort_order, active, created_at, updated_at
-        FROM ta_job_names
+        SELECT id, organization_id, code, name, sort_order, active, created_at, updated_at
+        FROM ta_task_categories
         WHERE organization_id=%s
     """
     params: list[Any] = [int(organization_id)]
@@ -151,69 +332,93 @@ def list_job_names(
         q += " AND active=1"
     q += " ORDER BY sort_order ASC, name ASC"
     cursor.execute(q, params)
-    rows = [json_safe(r) for r in cursor.fetchall()]
+    rows = [json_safe(r) for r in (cursor.fetchall() or [])]
     if include_usage:
         for row in rows:
-            count = task_usage_count(cursor, int(row["id"]))
+            count = category_usage_count(cursor, int(row["id"]))
             row["usage_count"] = count
             row["can_delete"] = count == 0
     return rows
 
 
-def get_job_name(cursor, organization_id: int, job_name_id: int) -> Optional[dict]:
+def get_category(cursor, organization_id: int, category_id: int) -> Optional[dict]:
     ensure_shift_job_tracking_schema(cursor)
     cursor.execute(
         """
-        SELECT id, organization_id, name, sort_order, active
-        FROM ta_job_names
+        SELECT id, organization_id, code, name, sort_order, active
+        FROM ta_task_categories
         WHERE id=%s AND organization_id=%s
         """,
-        (int(job_name_id), int(organization_id)),
+        (int(category_id), int(organization_id)),
     )
     row = cursor.fetchone()
     return json_safe(row) if row else None
 
 
-def create_job_name(cursor, organization_id: int, name: str, *, active: bool = True) -> dict:
+def create_category(
+    cursor, organization_id: int, name: str, *, code: Optional[str] = None, active: bool = True
+) -> dict:
     ensure_shift_job_tracking_schema(cursor)
+    oid = int(organization_id)
     name = (name or "").strip()
     if not name:
-        raise ValueError("Task name is required")
+        raise ValueError("Category name is required")
+    code = (code or _slug_code(name)).strip().upper()
+    if not code:
+        raise ValueError("Category code is required")
     cursor.execute(
-        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM ta_job_names WHERE organization_id=%s",
-        (int(organization_id),),
+        "SELECT id FROM ta_task_categories WHERE organization_id=%s AND code=%s",
+        (oid, code),
     )
-    row = cursor.fetchone()
-    sort_order = int(row[0] if not isinstance(row, dict) else list(row.values())[0])
+    if cursor.fetchone():
+        raise ValueError(f"Category code '{code}' already exists")
+    cursor.execute(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM ta_task_categories WHERE organization_id=%s",
+        (oid,),
+    )
+    sort_order = int(_scalar(cursor.fetchone()) or 0)
     cursor.execute(
         """
-        INSERT INTO ta_job_names (organization_id, name, sort_order, active)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO ta_task_categories (organization_id, code, name, sort_order, active)
+        VALUES (%s, %s, %s, %s, %s)
         """,
-        (int(organization_id), name, sort_order, 1 if active else 0),
+        (oid, code, name, sort_order, 1 if active else 0),
     )
-    jid = cursor.lastrowid
-    return get_job_name(cursor, organization_id, jid) or {"id": jid, "name": name}
+    cat_id = int(cursor.lastrowid)
+    # Auto-assign Operator + Folder
+    role_ids = _ensure_standard_roles(cursor, oid)
+    for idx, role_code in enumerate(("OPERATOR", "FOLDER")):
+        rid = role_ids.get(role_code)
+        if not rid:
+            continue
+        cursor.execute(
+            """
+            INSERT INTO ta_task_category_roles
+              (organization_id, category_id, role_id, sort_order, active)
+            VALUES (%s, %s, %s, %s, 1)
+            """,
+            (oid, cat_id, rid, idx),
+        )
+    return get_category(cursor, oid, cat_id) or {"id": cat_id, "code": code, "name": name}
 
 
-def update_job_name(
+def update_category(
     cursor,
     organization_id: int,
-    job_name_id: int,
+    category_id: int,
     *,
     name: Optional[str] = None,
     active: Optional[bool] = None,
 ) -> dict:
-    ensure_shift_job_tracking_schema(cursor)
-    existing = get_job_name(cursor, organization_id, job_name_id)
+    existing = get_category(cursor, organization_id, category_id)
     if not existing:
-        raise ValueError("Task not found")
+        raise ValueError("Category not found")
     fields = []
     vals: list[Any] = []
     if name is not None:
         name = name.strip()
         if not name:
-            raise ValueError("Job name is required")
+            raise ValueError("Category name is required")
         fields.append("name=%s")
         vals.append(name)
     if active is not None:
@@ -221,75 +426,667 @@ def update_job_name(
         vals.append(1 if active else 0)
     if not fields:
         return existing
-    vals.extend([int(job_name_id), int(organization_id)])
+    vals.extend([int(category_id), int(organization_id)])
     cursor.execute(
-        f"UPDATE ta_job_names SET {', '.join(fields)} WHERE id=%s AND organization_id=%s",
+        f"UPDATE ta_task_categories SET {', '.join(fields)} WHERE id=%s AND organization_id=%s",
         vals,
     )
-    return get_job_name(cursor, organization_id, job_name_id) or existing
+    return get_category(cursor, organization_id, category_id) or existing
 
 
-def reorder_job_names(cursor, organization_id: int, ordered_ids: list[int]) -> list[dict]:
-    ensure_shift_job_tracking_schema(cursor)
-    for idx, jid in enumerate(ordered_ids):
+def reorder_categories(cursor, organization_id: int, ordered_ids: list[int]) -> list[dict]:
+    for idx, cid in enumerate(ordered_ids):
         cursor.execute(
             """
-            UPDATE ta_job_names SET sort_order=%s
+            UPDATE ta_task_categories SET sort_order=%s
             WHERE id=%s AND organization_id=%s
             """,
-            (idx, int(jid), int(organization_id)),
+            (idx, int(cid), int(organization_id)),
         )
-    return list_job_names(cursor, organization_id, include_inactive=True)
+    return list_categories(cursor, organization_id, include_inactive=True)
 
 
-def task_usage_count(cursor, task_id: int) -> int:
+def category_usage_count(cursor, category_id: int) -> int:
     if not table_exists(cursor, "shift_job_segments"):
         return 0
+    if not table_has_column(cursor, "shift_job_segments", "category_id"):
+        return 0
     cursor.execute(
-        "SELECT COUNT(*) FROM shift_job_segments WHERE job_name_id=%s",
-        (int(task_id),),
+        "SELECT COUNT(*) FROM shift_job_segments WHERE category_id=%s",
+        (int(category_id),),
+    )
+    return int(_scalar(cursor.fetchone()) or 0)
+
+
+def delete_category(cursor, organization_id: int, category_id: int) -> None:
+    existing = get_category(cursor, organization_id, category_id)
+    if not existing:
+        raise ValueError("Category not found")
+    if category_usage_count(cursor, category_id) > 0:
+        raise ValueError(
+            "Category has been used on a shift and cannot be deleted. Deactivate it instead."
+        )
+    cursor.execute(
+        "DELETE FROM ta_task_category_roles WHERE category_id=%s AND organization_id=%s",
+        (int(category_id), int(organization_id)),
+    )
+    cursor.execute(
+        "DELETE FROM ta_task_categories WHERE id=%s AND organization_id=%s",
+        (int(category_id), int(organization_id)),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Role CRUD
+# ---------------------------------------------------------------------------
+
+
+def list_roles(
+    cursor, organization_id: int, *, include_inactive: bool = False, include_usage: bool = False
+) -> list[dict]:
+    ensure_shift_job_tracking_schema(cursor)
+    seed_default_categories_and_roles(cursor, organization_id)
+    q = """
+        SELECT id, organization_id, code, name, sort_order, active, created_at, updated_at
+        FROM ta_task_roles
+        WHERE organization_id=%s
+    """
+    params: list[Any] = [int(organization_id)]
+    if not include_inactive:
+        q += " AND active=1"
+    q += " ORDER BY sort_order ASC, name ASC"
+    cursor.execute(q, params)
+    rows = [json_safe(r) for r in (cursor.fetchall() or [])]
+    if include_usage:
+        for row in rows:
+            count = role_usage_count(cursor, int(row["id"]))
+            row["usage_count"] = count
+            row["can_delete"] = count == 0
+    return rows
+
+
+def get_role(cursor, organization_id: int, role_id: int) -> Optional[dict]:
+    cursor.execute(
+        """
+        SELECT id, organization_id, code, name, sort_order, active
+        FROM ta_task_roles
+        WHERE id=%s AND organization_id=%s
+        """,
+        (int(role_id), int(organization_id)),
     )
     row = cursor.fetchone()
-    return int(row[0] if not isinstance(row, dict) else list(row.values())[0])
+    return json_safe(row) if row else None
 
 
-def delete_job_name(cursor, organization_id: int, task_id: int) -> None:
+def create_role(
+    cursor, organization_id: int, name: str, *, code: Optional[str] = None, active: bool = True
+) -> dict:
     ensure_shift_job_tracking_schema(cursor)
-    existing = get_job_name(cursor, organization_id, task_id)
-    if not existing:
-        raise ValueError("Task not found")
-    if task_usage_count(cursor, task_id) > 0:
-        raise ValueError("Task has been used on a shift and cannot be deleted. Deactivate it instead.")
+    oid = int(organization_id)
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Role name is required")
+    code = (code or _slug_code(name)).strip().upper()
+    if not code:
+        raise ValueError("Role code is required")
     cursor.execute(
-        "DELETE FROM ta_job_names WHERE id=%s AND organization_id=%s",
-        (int(task_id), int(organization_id)),
+        "SELECT id FROM ta_task_roles WHERE organization_id=%s AND code=%s",
+        (oid, code),
+    )
+    if cursor.fetchone():
+        raise ValueError(f"Role code '{code}' already exists")
+    cursor.execute(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM ta_task_roles WHERE organization_id=%s",
+        (oid,),
+    )
+    sort_order = int(_scalar(cursor.fetchone()) or 0)
+    cursor.execute(
+        """
+        INSERT INTO ta_task_roles (organization_id, code, name, sort_order, active)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (oid, code, name, sort_order, 1 if active else 0),
+    )
+    return get_role(cursor, oid, int(cursor.lastrowid)) or {"code": code, "name": name}
+
+
+def update_role(
+    cursor,
+    organization_id: int,
+    role_id: int,
+    *,
+    name: Optional[str] = None,
+    active: Optional[bool] = None,
+) -> dict:
+    existing = get_role(cursor, organization_id, role_id)
+    if not existing:
+        raise ValueError("Role not found")
+    fields = []
+    vals: list[Any] = []
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise ValueError("Role name is required")
+        fields.append("name=%s")
+        vals.append(name)
+    if active is not None:
+        fields.append("active=%s")
+        vals.append(1 if active else 0)
+    if not fields:
+        return existing
+    vals.extend([int(role_id), int(organization_id)])
+    cursor.execute(
+        f"UPDATE ta_task_roles SET {', '.join(fields)} WHERE id=%s AND organization_id=%s",
+        vals,
+    )
+    return get_role(cursor, organization_id, role_id) or existing
+
+
+def reorder_roles(cursor, organization_id: int, ordered_ids: list[int]) -> list[dict]:
+    for idx, rid in enumerate(ordered_ids):
+        cursor.execute(
+            """
+            UPDATE ta_task_roles SET sort_order=%s
+            WHERE id=%s AND organization_id=%s
+            """,
+            (idx, int(rid), int(organization_id)),
+        )
+    return list_roles(cursor, organization_id, include_inactive=True)
+
+
+def role_usage_count(cursor, role_id: int) -> int:
+    if not table_exists(cursor, "shift_job_segments"):
+        return 0
+    if not table_has_column(cursor, "shift_job_segments", "role_id"):
+        return 0
+    cursor.execute(
+        "SELECT COUNT(*) FROM shift_job_segments WHERE role_id=%s",
+        (int(role_id),),
+    )
+    return int(_scalar(cursor.fetchone()) or 0)
+
+
+def delete_role(cursor, organization_id: int, role_id: int) -> None:
+    existing = get_role(cursor, organization_id, role_id)
+    if not existing:
+        raise ValueError("Role not found")
+    if role_usage_count(cursor, role_id) > 0:
+        raise ValueError(
+            "Role has been used on a shift and cannot be deleted. Deactivate it instead."
+        )
+    cursor.execute(
+        "DELETE FROM ta_task_category_roles WHERE role_id=%s AND organization_id=%s",
+        (int(role_id), int(organization_id)),
+    )
+    cursor.execute(
+        "DELETE FROM ta_task_roles WHERE id=%s AND organization_id=%s",
+        (int(role_id), int(organization_id)),
     )
 
 
-def user_force_checkout_waiver(conn, user_id: int) -> bool:
+# ---------------------------------------------------------------------------
+# Category–role assignments
+# ---------------------------------------------------------------------------
+
+
+def list_category_roles(
+    cursor,
+    organization_id: int,
+    category_id: int,
+    *,
+    include_inactive: bool = False,
+) -> list[dict]:
+    ensure_shift_job_tracking_schema(cursor)
+    q = """
+        SELECT cr.id, cr.organization_id, cr.category_id, cr.role_id,
+               cr.sort_order, cr.active,
+               c.code AS category_code, c.name AS category_name, c.active AS category_active,
+               r.code AS role_code, r.name AS role_name, r.active AS role_active
+        FROM ta_task_category_roles cr
+        JOIN ta_task_categories c ON c.id = cr.category_id
+        JOIN ta_task_roles r ON r.id = cr.role_id
+        WHERE cr.organization_id=%s AND cr.category_id=%s
+    """
+    params: list[Any] = [int(organization_id), int(category_id)]
+    if not include_inactive:
+        q += " AND cr.active=1 AND c.active=1 AND r.active=1"
+    q += " ORDER BY cr.sort_order ASC, r.name ASC"
+    cursor.execute(q, params)
+    rows = []
+    for row in cursor.fetchall() or []:
+        r = json_safe(row)
+        r["display_label"] = f"{r.get('category_name')} — {r.get('role_name')}"
+        rows.append(r)
+    return rows
+
+
+def list_active_selection_tree(cursor, organization_id: int) -> list[dict]:
+    """Employee-facing tree: active categories with their active assigned roles."""
+    cats = list_categories(cursor, organization_id, include_inactive=False)
+    out = []
+    for cat in cats:
+        roles = list_category_roles(
+            cursor, organization_id, int(cat["id"]), include_inactive=False
+        )
+        if not roles:
+            continue
+        out.append({**cat, "roles": roles})
+    return out
+
+
+def get_assignment(cursor, organization_id: int, assignment_id: int) -> Optional[dict]:
+    cursor.execute(
+        """
+        SELECT cr.id, cr.organization_id, cr.category_id, cr.role_id,
+               cr.sort_order, cr.active,
+               c.code AS category_code, c.name AS category_name, c.active AS category_active,
+               r.code AS role_code, r.name AS role_name, r.active AS role_active
+        FROM ta_task_category_roles cr
+        JOIN ta_task_categories c ON c.id = cr.category_id
+        JOIN ta_task_roles r ON r.id = cr.role_id
+        WHERE cr.id=%s AND cr.organization_id=%s
+        """,
+        (int(assignment_id), int(organization_id)),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    r = json_safe(row)
+    r["display_label"] = f"{r.get('category_name')} — {r.get('role_name')}"
+    return r
+
+
+def assign_role_to_category(
+    cursor,
+    organization_id: int,
+    category_id: int,
+    role_id: int,
+    *,
+    active: bool = True,
+) -> dict:
+    ensure_shift_job_tracking_schema(cursor)
+    oid = int(organization_id)
+    cat = get_category(cursor, oid, category_id)
+    role = get_role(cursor, oid, role_id)
+    if not cat:
+        raise ValueError("Category not found")
+    if not role:
+        raise ValueError("Role not found")
+    cursor.execute(
+        """
+        SELECT id FROM ta_task_category_roles
+        WHERE category_id=%s AND role_id=%s LIMIT 1
+        """,
+        (int(category_id), int(role_id)),
+    )
+    existing = cursor.fetchone()
+    if existing:
+        aid = int(existing["id"] if isinstance(existing, dict) else existing[0])
+        cursor.execute(
+            "UPDATE ta_task_category_roles SET active=%s WHERE id=%s",
+            (1 if active else 0, aid),
+        )
+        return get_assignment(cursor, oid, aid) or {}
+    cursor.execute(
+        """
+        SELECT COALESCE(MAX(sort_order), -1) + 1 FROM ta_task_category_roles
+        WHERE category_id=%s
+        """,
+        (int(category_id),),
+    )
+    sort_order = int(_scalar(cursor.fetchone()) or 0)
+    cursor.execute(
+        """
+        INSERT INTO ta_task_category_roles
+          (organization_id, category_id, role_id, sort_order, active)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (oid, int(category_id), int(role_id), sort_order, 1 if active else 0),
+    )
+    return get_assignment(cursor, oid, int(cursor.lastrowid)) or {}
+
+
+def update_category_role_assignment(
+    cursor,
+    organization_id: int,
+    assignment_id: int,
+    *,
+    active: Optional[bool] = None,
+) -> dict:
+    existing = get_assignment(cursor, organization_id, assignment_id)
+    if not existing:
+        raise ValueError("Assignment not found")
+    if active is not None:
+        cursor.execute(
+            """
+            UPDATE ta_task_category_roles SET active=%s
+            WHERE id=%s AND organization_id=%s
+            """,
+            (1 if active else 0, int(assignment_id), int(organization_id)),
+        )
+    return get_assignment(cursor, organization_id, assignment_id) or existing
+
+
+def reorder_category_roles(
+    cursor, organization_id: int, category_id: int, ordered_ids: list[int]
+) -> list[dict]:
+    for idx, aid in enumerate(ordered_ids):
+        cursor.execute(
+            """
+            UPDATE ta_task_category_roles SET sort_order=%s
+            WHERE id=%s AND category_id=%s AND organization_id=%s
+            """,
+            (idx, int(aid), int(category_id), int(organization_id)),
+        )
+    return list_category_roles(cursor, organization_id, category_id, include_inactive=True)
+
+
+def remove_category_role_assignment(cursor, organization_id: int, assignment_id: int) -> None:
+    existing = get_assignment(cursor, organization_id, assignment_id)
+    if not existing:
+        raise ValueError("Assignment not found")
+    cursor.execute(
+        "SELECT COUNT(*) FROM shift_job_segments WHERE category_role_id=%s",
+        (int(assignment_id),),
+    )
+    if int(_scalar(cursor.fetchone()) or 0) > 0:
+        raise ValueError(
+            "This category-role assignment has been used and cannot be deleted. Deactivate it instead."
+        )
+    cursor.execute(
+        "DELETE FROM ta_task_category_roles WHERE id=%s AND organization_id=%s",
+        (int(assignment_id), int(organization_id)),
+    )
+
+
+def resolve_active_assignment(
+    cursor, organization_id: int, *, category_id: int, role_id: int
+) -> dict:
+    """Resolve and validate an active category+role selection for check-in/switch."""
+    ensure_shift_job_tracking_schema(cursor)
+    cursor.execute(
+        """
+        SELECT cr.id, cr.organization_id, cr.category_id, cr.role_id,
+               cr.sort_order, cr.active,
+               c.code AS category_code, c.name AS category_name, c.active AS category_active,
+               r.code AS role_code, r.name AS role_name, r.active AS role_active
+        FROM ta_task_category_roles cr
+        JOIN ta_task_categories c ON c.id = cr.category_id
+        JOIN ta_task_roles r ON r.id = cr.role_id
+        WHERE cr.organization_id=%s AND cr.category_id=%s AND cr.role_id=%s
+        LIMIT 1
+        """,
+        (int(organization_id), int(category_id), int(role_id)),
+    )
+    row = cursor.fetchone()
+    if not row:
+        raise ValueError("That role is not available under the selected category")
+    r = json_safe(row)
+    if not int(r.get("active") or 0):
+        raise ValueError("That category-role assignment is inactive")
+    if not int(r.get("category_active") or 0):
+        raise ValueError("That category is inactive")
+    if not int(r.get("role_active") or 0):
+        raise ValueError("That role is inactive")
+    r["display_label"] = f"{r.get('category_name')} — {r.get('role_name')}"
+    return r
+
+
+# ---------------------------------------------------------------------------
+# Segments
+# ---------------------------------------------------------------------------
+
+
+def close_open_job_segment(
+    conn,
+    session_id: int,
+    ended_at: Optional[datetime] = None,
+    *,
+    close_source: Optional[str] = None,
+) -> None:
+    c = conn.cursor()
+    if not table_exists(c, "shift_job_segments"):
+        return
+    ended = ended_at or eastern_now_naive()
+    if close_source and table_has_column(c, "shift_job_segments", "close_source"):
+        c.execute(
+            """
+            UPDATE shift_job_segments SET ended_at=%s, close_source=%s
+            WHERE shift_session_id=%s AND ended_at IS NULL
+            """,
+            (ended, close_source, int(session_id)),
+        )
+    else:
+        c.execute(
+            """
+            UPDATE shift_job_segments SET ended_at=%s
+            WHERE shift_session_id=%s AND ended_at IS NULL
+            """,
+            (ended, int(session_id)),
+        )
+    sets = []
+    if table_has_column(c, "shift_sessions", "current_job_name_id"):
+        sets.append("current_job_name_id=NULL")
+    if table_has_column(c, "shift_sessions", "current_category_id"):
+        sets.append("current_category_id=NULL")
+    if table_has_column(c, "shift_sessions", "current_role_id"):
+        sets.append("current_role_id=NULL")
+    if table_has_column(c, "shift_sessions", "current_category_role_id"):
+        sets.append("current_category_role_id=NULL")
+    if sets:
+        c.execute(
+            f"UPDATE shift_sessions SET {', '.join(sets)} WHERE id=%s",
+            (int(session_id),),
+        )
+
+
+def start_category_role_segment(
+    conn,
+    session_id: int,
+    organization_id: int,
+    user_id: int,
+    category_id: int,
+    role_id: int,
+    *,
+    started_at: Optional[datetime] = None,
+    change_source: str = "switch",
+) -> dict:
     c = conn.cursor(dictionary=True)
-    if not table_has_column(c, "payroll_profiles", "force_checkout_waiver"):
-        return False
+    ensure_shift_job_tracking_schema(c)
+    assignment = resolve_active_assignment(
+        c, organization_id, category_id=int(category_id), role_id=int(role_id)
+    )
+    started = started_at or eastern_now_naive()
+    close_open_job_segment(conn, session_id, started)
+    ins = conn.cursor()
+    ins.execute(
+        """
+        INSERT INTO shift_job_segments (
+          shift_session_id, user_id, category_id, role_id, category_role_id,
+          category_code, role_code, category_name_snapshot, role_name_snapshot,
+          started_at, change_source
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """,
+        (
+            int(session_id),
+            int(user_id),
+            int(assignment["category_id"]),
+            int(assignment["role_id"]),
+            int(assignment["id"]),
+            assignment.get("category_code"),
+            assignment.get("role_code"),
+            assignment.get("category_name"),
+            assignment.get("role_name"),
+            started,
+            change_source,
+        ),
+    )
+    seg_id = ins.lastrowid
+    upd = []
+    vals: list[Any] = []
+    if table_has_column(ins, "shift_sessions", "current_category_id"):
+        upd.append("current_category_id=%s")
+        vals.append(int(assignment["category_id"]))
+    if table_has_column(ins, "shift_sessions", "current_role_id"):
+        upd.append("current_role_id=%s")
+        vals.append(int(assignment["role_id"]))
+    if table_has_column(ins, "shift_sessions", "current_category_role_id"):
+        upd.append("current_category_role_id=%s")
+        vals.append(int(assignment["id"]))
+    if upd:
+        vals.append(int(session_id))
+        ins.execute(f"UPDATE shift_sessions SET {', '.join(upd)} WHERE id=%s", vals)
+    return {
+        "id": seg_id,
+        "shift_session_id": session_id,
+        "category_id": assignment["category_id"],
+        "role_id": assignment["role_id"],
+        "category_role_id": assignment["id"],
+        "category_code": assignment.get("category_code"),
+        "role_code": assignment.get("role_code"),
+        "category_name": assignment.get("category_name"),
+        "role_name": assignment.get("role_name"),
+        "display_label": assignment.get("display_label"),
+        "started_at": started.isoformat() if isinstance(started, datetime) else started,
+        "change_source": change_source,
+    }
+
+
+def switch_category_role(
+    conn,
+    session_id: int,
+    organization_id: int,
+    user_id: int,
+    category_id: int,
+    role_id: int,
+) -> dict:
+    return start_category_role_segment(
+        conn,
+        session_id,
+        organization_id,
+        user_id,
+        category_id,
+        role_id,
+        change_source="switch",
+    )
+
+
+# Legacy aliases used by older routes/tests
+def switch_job_role(conn, session_id: int, organization_id: int, job_name_id: int) -> dict:
+    raise ValueError("Use category_id and role_id to switch tasks")
+
+
+def start_job_segment(conn, session_id, organization_id, job_name_id, started_at=None):
+    raise ValueError("Use start_category_role_segment with category_id and role_id")
+
+
+def get_open_job_segment(conn, session_id: int) -> Optional[dict]:
+    c = conn.cursor(dictionary=True)
+    if not table_exists(c, "shift_job_segments"):
+        return None
     c.execute(
-        "SELECT force_checkout_waiver FROM payroll_profiles WHERE user_id=%s LIMIT 1",
+        """
+        SELECT * FROM shift_job_segments
+        WHERE shift_session_id=%s AND ended_at IS NULL
+        ORDER BY id DESC LIMIT 1
+        """,
+        (int(session_id),),
+    )
+    row = c.fetchone()
+    if not row:
+        return None
+    r = json_safe(row)
+    cat = r.get("category_name_snapshot")
+    role = r.get("role_name_snapshot")
+    if cat and role:
+        r["display_label"] = f"{cat} — {role}"
+        r["job_name"] = r["display_label"]  # legacy
+        r["task_name"] = r["display_label"]
+    return r
+
+
+def list_session_segments(conn, session_id: int) -> list[dict]:
+    c = conn.cursor(dictionary=True)
+    if not table_exists(c, "shift_job_segments"):
+        return []
+    c.execute(
+        """
+        SELECT * FROM shift_job_segments
+        WHERE shift_session_id=%s
+        ORDER BY started_at ASC, id ASC
+        """,
+        (int(session_id),),
+    )
+    rows = c.fetchall() or []
+    out = []
+    now = eastern_now_naive()
+    for row in rows:
+        r = json_safe(row)
+        start = _parse_dt(r.get("started_at"))
+        end = _parse_dt(r.get("ended_at"))
+        if start:
+            end_eff = end or now
+            r["duration_seconds"] = max(0, int((end_eff - start).total_seconds()))
+        else:
+            r["duration_seconds"] = 0
+        cat = r.get("category_name_snapshot")
+        role = r.get("role_name_snapshot")
+        if cat and role:
+            r["display_label"] = f"{cat} — {role}"
+            r["job_name"] = r["display_label"]
+            r["task_name"] = r["display_label"]
+        out.append(r)
+    return out
+
+
+def get_last_check_in_assignment(conn, user_id: int) -> Optional[dict]:
+    """First segment of the employee's most recent shift."""
+    c = conn.cursor(dictionary=True)
+    if not table_exists(c, "shift_job_segments"):
+        return None
+    if not table_has_column(c, "shift_job_segments", "category_id"):
+        return None
+    c.execute(
+        """
+        SELECT sjs.category_id, sjs.role_id, sjs.category_role_id,
+               sjs.category_code, sjs.role_code,
+               sjs.category_name_snapshot, sjs.role_name_snapshot
+        FROM shift_sessions ss
+        JOIN shift_job_segments sjs ON sjs.shift_session_id = ss.id
+        WHERE ss.user_id=%s AND sjs.category_id IS NOT NULL AND sjs.role_id IS NOT NULL
+        ORDER BY ss.clock_in_at DESC, sjs.started_at ASC, sjs.id ASC
+        LIMIT 1
+        """,
         (int(user_id),),
     )
     row = c.fetchone()
-    return bool(row and int(row.get("force_checkout_waiver") or 0))
-
-
-def set_user_force_checkout_waiver(conn, user_id: int, waived: bool) -> bool:
-    c = conn.cursor()
-    ensure_shift_job_tracking_schema(c)
-    c.execute(
-        "UPDATE payroll_profiles SET force_checkout_waiver=%s WHERE user_id=%s",
-        (1 if waived else 0, int(user_id)),
+    if not row:
+        return None
+    r = json_safe(row)
+    r["display_label"] = (
+        f"{r.get('category_name_snapshot')} — {r.get('role_name_snapshot')}"
+        if r.get("category_name_snapshot") and r.get("role_name_snapshot")
+        else None
     )
-    return bool(c.rowcount)
+    return r
 
 
-def resolve_scheduled_end_at(conn, organization_id: int, user_id: int, clock_in_at: datetime) -> Optional[datetime]:
-    """Best-effort scheduled end from payroll_schedule_entries for clock-in date."""
+def get_last_check_in_task_id(conn, user_id: int) -> Optional[int]:
+    """Legacy helper — returns last category_role_id if available."""
+    last = get_last_check_in_assignment(conn, user_id)
+    if not last:
+        return None
+    return int(last["category_role_id"]) if last.get("category_role_id") else None
+
+
+# ---------------------------------------------------------------------------
+# Session init + enrichment
+# ---------------------------------------------------------------------------
+
+
+def resolve_scheduled_end_at(
+    conn, organization_id: int, user_id: int, clock_in_at: datetime
+) -> Optional[datetime]:
     if not table_exists(conn.cursor(), "payroll_schedule_entries"):
         return None
     c = conn.cursor(dictionary=True)
@@ -307,7 +1104,7 @@ def resolve_scheduled_end_at(conn, organization_id: int, user_id: int, clock_in_
         """,
         (int(user_id), int(organization_id), work_date),
     )
-    rows = c.fetchall()
+    rows = c.fetchall() or []
     if not rows:
         return None
 
@@ -332,13 +1129,111 @@ def resolve_scheduled_end_at(conn, organization_id: int, user_id: int, clock_in_
         if st is not None and st <= clock_t <= et:
             best_end = et
             break
-        if best_end is None:
-            best_end = et
-        elif et > best_end:
+        if best_end is None or et > best_end:
             best_end = et
     if best_end is None:
         return None
     return _combine_date_time(work_date, best_end)
+
+
+def init_session_job_tracking(
+    conn,
+    session_id: int,
+    organization_id: int,
+    user_id: int,
+    clock_in_at: datetime,
+    job_name_id: Optional[int] = None,
+    *,
+    category_id: Optional[int] = None,
+    role_id: Optional[int] = None,
+) -> None:
+    """Open the first category/role segment for a newly created attendance shift.
+
+    Phase 1 does not attach attendance-policy deadlines (force checkout, etc.).
+    """
+    c = conn.cursor()
+    ensure_shift_job_tracking_schema(c)
+    seed_default_categories_and_roles(c, organization_id)
+    if category_id and role_id:
+        start_category_role_segment(
+            conn,
+            int(session_id),
+            int(organization_id),
+            int(user_id),
+            int(category_id),
+            int(role_id),
+            started_at=clock_in_at,
+            change_source="check_in",
+        )
+
+
+def enrich_session_job_tracking(conn, sess: dict, user_id: int) -> dict:
+    """Attach current category/role assignment to an attendance session payload."""
+    if not sess:
+        return {}
+    sid = int(sess["id"])
+    open_seg = get_open_job_segment(conn, sid)
+    segments = list_session_segments(conn, sid)
+
+    current_label = None
+    current_category_id = sess.get("current_category_id")
+    current_role_id = sess.get("current_role_id")
+    current_category_name = None
+    current_role_name = None
+    current_started_at = None
+    if open_seg:
+        current_label = open_seg.get("display_label")
+        current_category_id = open_seg.get("category_id") or current_category_id
+        current_role_id = open_seg.get("role_id") or current_role_id
+        current_category_name = open_seg.get("category_name_snapshot")
+        current_role_name = open_seg.get("role_name_snapshot")
+        current_started_at = open_seg.get("started_at")
+
+    out = {
+        "current_category_id": current_category_id,
+        "current_role_id": current_role_id,
+        "current_category_name": current_category_name,
+        "current_role_name": current_role_name,
+        "current_display_label": current_label,
+        "current_assignment_started_at": current_started_at,
+        "current_task_segment": open_seg,
+        "task_segments": segments,
+        "needs_current_assignment": open_seg is None,
+        # Legacy aliases
+        "current_task_id": open_seg.get("category_role_id") if open_seg else None,
+        "current_task_name": current_label,
+        "current_job_name": current_label,
+        "current_job_name_id": open_seg.get("category_role_id") if open_seg else None,
+        "job_segments": segments,
+    }
+    return json_safe(out)
+
+
+# ---------------------------------------------------------------------------
+# Force checkout (unchanged behavior)
+# ---------------------------------------------------------------------------
+
+
+def user_force_checkout_waiver(conn, user_id: int) -> bool:
+    c = conn.cursor(dictionary=True)
+    if not table_has_column(c, "payroll_profiles", "force_checkout_waiver"):
+        return False
+    c.execute(
+        "SELECT force_checkout_waiver FROM payroll_profiles WHERE user_id=%s LIMIT 1",
+        (int(user_id),),
+    )
+    row = c.fetchone()
+    return bool(row and int(row.get("force_checkout_waiver") or 0))
+
+
+def set_user_force_checkout_waiver(conn, user_id: int, waived: bool) -> bool:
+    c = conn.cursor()
+    ensure_shift_job_tracking_schema(c)
+    c.execute(
+        "UPDATE payroll_profiles SET force_checkout_waiver=%s WHERE user_id=%s",
+        (1 if waived else 0, int(user_id)),
+    )
+    return bool(c.rowcount)
 
 
 def effective_force_checkout_at(sess: dict, employee_waiver: bool) -> Optional[datetime]:
@@ -352,142 +1247,6 @@ def effective_force_checkout_at(sess: dict, employee_waiver: bool) -> Optional[d
     return _parse_dt(sess.get("scheduled_end_at"))
 
 
-def init_session_job_tracking(
-    conn,
-    session_id: int,
-    organization_id: int,
-    user_id: int,
-    clock_in_at: datetime,
-    job_name_id: Optional[int] = None,
-) -> None:
-    c = conn.cursor()
-    ensure_shift_job_tracking_schema(c)
-    seed_default_job_names(c, organization_id)
-
-    scheduled_end = resolve_scheduled_end_at(conn, organization_id, user_id, clock_in_at)
-    force_checkout = scheduled_end
-    c.execute(
-        """
-        UPDATE shift_sessions
-        SET scheduled_end_at=%s, force_checkout_at=%s
-        WHERE id=%s
-        """,
-        (scheduled_end, force_checkout, int(session_id)),
-    )
-    if job_name_id:
-        start_job_segment(conn, int(session_id), int(organization_id), int(job_name_id), clock_in_at)
-
-
-def get_open_job_segment(conn, session_id: int) -> Optional[dict]:
-    c = conn.cursor(dictionary=True)
-    if not table_exists(c, "shift_job_segments"):
-        return None
-    c.execute(
-        """
-        SELECT s.*, j.name AS job_name
-        FROM shift_job_segments s
-        JOIN ta_job_names j ON j.id = s.job_name_id
-        WHERE s.shift_session_id=%s AND s.ended_at IS NULL
-        ORDER BY s.id DESC LIMIT 1
-        """,
-        (int(session_id),),
-    )
-    row = c.fetchone()
-    return json_safe(row) if row else None
-
-
-def close_open_job_segment(conn, session_id: int, ended_at: Optional[datetime] = None) -> None:
-    c = conn.cursor()
-    if not table_exists(c, "shift_job_segments"):
-        return
-    ended = ended_at or eastern_now_naive()
-    c.execute(
-        """
-        UPDATE shift_job_segments SET ended_at=%s
-        WHERE shift_session_id=%s AND ended_at IS NULL
-        """,
-        (ended, int(session_id)),
-    )
-    c.execute(
-        "UPDATE shift_sessions SET current_job_name_id=NULL WHERE id=%s",
-        (int(session_id),),
-    )
-
-
-def start_job_segment(
-    conn,
-    session_id: int,
-    organization_id: int,
-    job_name_id: int,
-    started_at: Optional[datetime] = None,
-) -> dict:
-    c = conn.cursor(dictionary=True)
-    ensure_shift_job_tracking_schema(c)
-    job = get_job_name(c, organization_id, job_name_id)
-    if not job or not int(job.get("active") or 0):
-        raise ValueError("Invalid or inactive task")
-    started = started_at or eastern_now_naive()
-    close_open_job_segment(conn, session_id, started)
-    ins = conn.cursor()
-    ins.execute(
-        """
-        INSERT INTO shift_job_segments (shift_session_id, job_name_id, started_at)
-        VALUES (%s, %s, %s)
-        """,
-        (int(session_id), int(job_name_id), started),
-    )
-    seg_id = ins.lastrowid
-    ins.execute(
-        "UPDATE shift_sessions SET current_job_name_id=%s WHERE id=%s",
-        (int(job_name_id), int(session_id)),
-    )
-    c.execute(
-        """
-        SELECT s.*, j.name AS job_name
-        FROM shift_job_segments s
-        JOIN ta_job_names j ON j.id = s.job_name_id
-        WHERE s.id=%s
-        """,
-        (seg_id,),
-    )
-    row = c.fetchone()
-    return json_safe(row) if row else {"id": seg_id, "job_name_id": job_name_id}
-
-
-def switch_job_role(conn, session_id: int, organization_id: int, job_name_id: int) -> dict:
-    return start_job_segment(conn, session_id, organization_id, job_name_id)
-
-
-def list_session_segments(conn, session_id: int) -> list[dict]:
-    c = conn.cursor(dictionary=True)
-    if not table_exists(c, "shift_job_segments"):
-        return []
-    c.execute(
-        """
-        SELECT s.*, j.name AS job_name
-        FROM shift_job_segments s
-        JOIN ta_job_names j ON j.id = s.job_name_id
-        WHERE s.shift_session_id=%s
-        ORDER BY s.started_at ASC, s.id ASC
-        """,
-        (int(session_id),),
-    )
-    rows = c.fetchall()
-    out = []
-    now = eastern_now_naive()
-    for row in rows:
-        r = json_safe(row)
-        start = _parse_dt(r.get("started_at"))
-        end = _parse_dt(r.get("ended_at"))
-        if start:
-            end_eff = end or now
-            r["duration_seconds"] = max(0, int((end_eff - start).total_seconds()))
-        else:
-            r["duration_seconds"] = 0
-        out.append(r)
-    return out
-
-
 def _sum_break_seconds(conn, shift_id: int) -> int:
     c = conn.cursor(dictionary=True)
     if not table_exists(c, "shift_breaks"):
@@ -497,7 +1256,7 @@ def _sum_break_seconds(conn, shift_id: int) -> int:
         (int(shift_id),),
     )
     total = 0
-    for row in c.fetchall():
+    for row in c.fetchall() or []:
         start = _parse_dt(row.get("break_start_at"))
         end = _parse_dt(row.get("break_end_at"))
         if start and end:
@@ -529,7 +1288,6 @@ def perform_force_checkout(
     now = clock_out_at or eastern_now_naive()
     br, net = _compute_net_seconds(conn, sess, now)
     close_open_job_segment(conn, sid, now)
-
     c = conn.cursor()
     c.execute(
         """
@@ -555,12 +1313,8 @@ def perform_force_checkout(
 
 
 def maybe_force_checkout_scheduled_end(
-    conn,
-    sess: dict,
-    user_id: int,
-    organization_id: int,
+    conn, sess: dict, user_id: int, organization_id: int
 ) -> Optional[dict]:
-    """Force check-out when effective deadline reached. Called from session polling."""
     if not sess or str(sess.get("status")) != "active":
         return None
     ensure_shift_job_tracking_schema(conn.cursor())
@@ -581,62 +1335,6 @@ def maybe_force_checkout_scheduled_end(
     )
 
 
-def enrich_session_job_tracking(conn, sess: dict, user_id: int) -> dict:
-    """Task timing payload for active/completed shift sessions."""
-    if not sess:
-        return {}
-    sid = int(sess["id"])
-    employee_waiver = user_force_checkout_waiver(conn, user_id)
-    deadline = effective_force_checkout_at(sess, employee_waiver)
-    open_seg = get_open_job_segment(conn, sid)
-    segments = list_session_segments(conn, sid)
-    task_segments = [
-        {
-            **s,
-            "task_id": s.get("job_name_id"),
-            "task_name": s.get("job_name"),
-        }
-        for s in segments
-    ]
-    force_checked = bool(_parse_dt(sess.get("force_checked_out_at")))
-    can_continue = bool(int(sess.get("continuation_allowed") or 0))
-    current_task_id = None
-    current_task_name = None
-    if open_seg:
-        current_task_id = open_seg.get("job_name_id")
-        current_task_name = open_seg.get("job_name")
-    elif sess.get("current_job_name_id"):
-        c = conn.cursor(dictionary=True)
-        c.execute("SELECT name FROM ta_job_names WHERE id=%s", (int(sess["current_job_name_id"]),))
-        jn = c.fetchone()
-        current_task_id = sess.get("current_job_name_id")
-        current_task_name = jn.get("name") if jn else None
-    out = {
-        "scheduled_end_at": sess.get("scheduled_end_at"),
-        "force_checkout_at": sess.get("force_checkout_at"),
-        "effective_force_checkout_at": deadline.isoformat() if deadline else None,
-        "force_checkout_waived": bool(int(sess.get("force_checkout_waived") or 0)),
-        "employee_force_checkout_waiver": employee_waiver,
-        "force_checked_out_at": sess.get("force_checked_out_at"),
-        "checkout_type": sess.get("checkout_type"),
-        "continuation_allowed": can_continue,
-        "continued_after_force_at": sess.get("continued_after_force_at"),
-        "current_task_id": current_task_id,
-        "current_task_name": current_task_name,
-        "current_task_segment": open_seg,
-        "task_segments": task_segments,
-        "force_checkout_blocked": deadline is not None and eastern_now_naive() >= deadline,
-        "was_force_checked_out": force_checked,
-        "can_continue_after_force": force_checked and can_continue and str(sess.get("status")) != "active",
-        # Legacy aliases
-        "current_job_name_id": current_task_id,
-        "current_job_name": current_task_name,
-        "current_job_segment": open_seg,
-        "job_segments": segments,
-    }
-    return json_safe(out)
-
-
 def admin_waive_session_force_checkout(conn, session_id: int, waived: bool) -> dict:
     c = conn.cursor(dictionary=True)
     c.execute("SELECT * FROM shift_sessions WHERE id=%s", (int(session_id),))
@@ -650,9 +1348,8 @@ def admin_waive_session_force_checkout(conn, session_id: int, waived: bool) -> d
         (1 if waived else 0, int(session_id)),
     )
     c.execute("SELECT * FROM shift_sessions WHERE id=%s", (int(session_id),))
-    new_sess = c.fetchone()
     return {
-        "session": json_safe(new_sess),
+        "session": json_safe(c.fetchone()),
         "old": {"force_checkout_waived": old},
         "new": {"force_checkout_waived": waived},
     }
@@ -702,50 +1399,45 @@ def admin_allow_continuation(conn, session_id: int) -> dict:
     return {"session": json_safe(c.fetchone())}
 
 
-def get_last_check_in_task_id(conn, user_id: int) -> Optional[int]:
-    """First task segment from the employee's most recent shift (their last check-in task)."""
-    c = conn.cursor(dictionary=True)
-    if not table_exists(c, "shift_job_segments"):
-        return None
-    c.execute(
-        """
-        SELECT sjs.job_name_id
-        FROM shift_sessions ss
-        JOIN shift_job_segments sjs ON sjs.shift_session_id = ss.id
-        WHERE ss.user_id=%s
-        ORDER BY ss.clock_in_at DESC, sjs.started_at ASC, sjs.id ASC
-        LIMIT 1
-        """,
-        (int(user_id),),
-    )
-    row = c.fetchone()
-    if not row or row.get("job_name_id") is None:
-        return None
-    return int(row["job_name_id"])
+def on_manual_clock_out(conn, session_id: int) -> None:
+    """Close any open task segment; never blocks attendance checkout if none exists."""
+    close_open_job_segment(conn, int(session_id), close_source="checkout")
+    c = conn.cursor()
+    if table_has_column(c, "shift_sessions", "checkout_type"):
+        c.execute(
+            """
+            UPDATE shift_sessions SET checkout_type='manual'
+            WHERE id=%s AND (checkout_type IS NULL OR checkout_type='')
+            """,
+            (int(session_id),),
+        )
+
+
+# ---------------------------------------------------------------------------
+# History / timeline
+# ---------------------------------------------------------------------------
 
 
 def build_shift_timeline(rec: dict, segments: list[dict]) -> list[dict]:
-    """Chronological check-in, task segments, and check-out for one shift."""
     timeline: list[dict] = []
     clock_in = _parse_dt(rec.get("clock_in_at"))
     clock_out = _parse_dt(rec.get("clock_out_at"))
     force_checked = bool(_parse_dt(rec.get("force_checked_out_at")))
 
     if clock_in:
-        timeline.append(
-            {
-                "type": "check_in",
-                "at": clock_in.isoformat(),
-                "label": "Check In",
-            }
-        )
+        timeline.append({"type": "check_in", "at": clock_in.isoformat(), "label": "Check In"})
 
     for seg in segments:
+        label = seg.get("display_label") or seg.get("task_name") or seg.get("job_name")
         timeline.append(
             {
                 "type": "task",
-                "task_id": seg.get("job_name_id"),
-                "task_name": seg.get("job_name"),
+                "category_id": seg.get("category_id"),
+                "role_id": seg.get("role_id"),
+                "category_code": seg.get("category_code"),
+                "role_code": seg.get("role_code"),
+                "task_name": label,
+                "display_label": label,
                 "started_at": seg.get("started_at"),
                 "ended_at": seg.get("ended_at"),
             }
@@ -762,27 +1454,30 @@ def build_shift_timeline(rec: dict, segments: list[dict]) -> list[dict]:
             )
         else:
             timeline.append(
-                {
-                    "type": "check_out",
-                    "at": clock_out.isoformat(),
-                    "label": "Checked Out",
-                }
+                {"type": "check_out", "at": clock_out.isoformat(), "label": "Checked Out"}
             )
-
     return timeline
 
 
-def on_manual_clock_out(conn, session_id: int) -> None:
-    close_open_job_segment(conn, int(session_id))
-    c = conn.cursor()
-    if table_has_column(c, "shift_sessions", "checkout_type"):
-        c.execute(
-            """
-            UPDATE shift_sessions SET checkout_type='manual'
-            WHERE id=%s AND (checkout_type IS NULL OR checkout_type='')
-            """,
-            (int(session_id),),
-        )
+def _role_time_summary(segments: list[dict]) -> list[dict]:
+    totals: dict[str, dict] = {}
+    for seg in segments:
+        key = f"{seg.get('category_id')}:{seg.get('role_id')}"
+        label = seg.get("display_label") or seg.get("task_name") or "Unknown"
+        if key not in totals:
+            totals[key] = {
+                "category_id": seg.get("category_id"),
+                "role_id": seg.get("role_id"),
+                "category_code": seg.get("category_code"),
+                "role_code": seg.get("role_code"),
+                "task_name": label,
+                "display_label": label,
+                "job_name_id": seg.get("category_role_id"),
+                "job_name": label,
+                "total_seconds": 0,
+            }
+        totals[key]["total_seconds"] += int(seg.get("duration_seconds") or 0)
+    return sorted(totals.values(), key=lambda x: x.get("display_label") or "")
 
 
 def job_tracking_report(
@@ -795,9 +1490,9 @@ def job_tracking_report(
     shift_session_id: Optional[int] = None,
     job_name_id: Optional[int] = None,
     task_id: Optional[int] = None,
+    category_id: Optional[int] = None,
+    role_id: Optional[int] = None,
 ) -> list[dict]:
-    """Simple task time report for performance dashboard prep."""
-    filter_task_id = task_id or job_name_id
     ensure_shift_job_tracking_schema(conn.cursor())
     c = conn.cursor(dictionary=True)
     q = """
@@ -821,21 +1516,35 @@ def job_tracking_report(
         params.append(to_date)
     q += " ORDER BY s.clock_in_at DESC, s.id DESC LIMIT 500"
     c.execute(q, params)
-    rows = c.fetchall()
+    rows = c.fetchall() or []
+    filter_assignment = task_id or job_name_id
     out = []
     for row in rows:
         rec = json_safe(row)
         sid = int(rec["id"])
         segments = list_session_segments(conn, sid)
-        if filter_task_id:
-            segments = [s for s in segments if int(s.get("job_name_id") or 0) == int(filter_task_id)]
-            if not segments:
-                continue
+        if category_id:
+            segments = [s for s in segments if int(s.get("category_id") or 0) == int(category_id)]
+        if role_id:
+            segments = [s for s in segments if int(s.get("role_id") or 0) == int(role_id)]
+        if filter_assignment:
+            segments = [
+                s
+                for s in segments
+                if int(s.get("category_role_id") or 0) == int(filter_assignment)
+            ]
+        if (category_id or role_id or filter_assignment) and not segments:
+            continue
         summary = _role_time_summary(segments)
         task_breakdown = [
             {
-                "task_id": t["job_name_id"],
-                "task_name": t["job_name"],
+                "task_id": t.get("job_name_id"),
+                "task_name": t.get("display_label"),
+                "display_label": t.get("display_label"),
+                "category_id": t.get("category_id"),
+                "role_id": t.get("role_id"),
+                "category_code": t.get("category_code"),
+                "role_code": t.get("role_code"),
                 "duration_seconds": t["total_seconds"],
             }
             for t in summary
@@ -854,15 +1563,53 @@ def job_tracking_report(
     return out
 
 
-def _role_time_summary(segments: list[dict]) -> list[dict]:
-    totals: dict[int, dict] = {}
-    for seg in segments:
-        jid = int(seg.get("job_name_id") or 0)
-        if jid not in totals:
-            totals[jid] = {
-                "job_name_id": jid,
-                "job_name": seg.get("job_name"),
-                "total_seconds": 0,
-            }
-        totals[jid]["total_seconds"] += int(seg.get("duration_seconds") or 0)
-    return sorted(totals.values(), key=lambda x: x.get("job_name") or "")
+# ---------------------------------------------------------------------------
+# Legacy flat-task stubs (keep imports from older routes/tests from exploding)
+# ---------------------------------------------------------------------------
+
+
+def list_job_names(cursor, organization_id: int, **kwargs) -> list[dict]:
+    """Legacy: return active category-role assignments as selectable 'tasks'."""
+    tree = list_active_selection_tree(cursor, organization_id)
+    out = []
+    for cat in tree:
+        for role in cat.get("roles") or []:
+            out.append(
+                {
+                    "id": role["id"],
+                    "name": role.get("display_label"),
+                    "category_id": role["category_id"],
+                    "role_id": role["role_id"],
+                    "active": role.get("active", 1),
+                    "sort_order": role.get("sort_order", 0),
+                }
+            )
+    return out
+
+
+def get_job_name(cursor, organization_id: int, job_name_id: int) -> Optional[dict]:
+    return get_assignment(cursor, organization_id, job_name_id)
+
+
+def create_job_name(cursor, organization_id: int, name: str, *, active: bool = True) -> dict:
+    raise ValueError("Use create_category / create_role instead of flat task names")
+
+
+def update_job_name(cursor, organization_id: int, job_name_id: int, **kwargs) -> dict:
+    raise ValueError("Use update_category / update_role instead of flat task names")
+
+
+def reorder_job_names(cursor, organization_id: int, ordered_ids: list[int]) -> list[dict]:
+    raise ValueError("Use reorder_categories / reorder_category_roles")
+
+
+def delete_job_name(cursor, organization_id: int, task_id: int) -> None:
+    raise ValueError("Use delete_category / delete_role")
+
+
+def task_usage_count(cursor, task_id: int) -> int:
+    cursor.execute(
+        "SELECT COUNT(*) FROM shift_job_segments WHERE category_role_id=%s",
+        (int(task_id),),
+    )
+    return int(_scalar(cursor.fetchone()) or 0)

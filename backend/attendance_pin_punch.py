@@ -286,15 +286,26 @@ def _active_shift(conn, user_id: int) -> Optional[dict]:
 
 
 def kiosk_clock_in(
-    conn, user_id: int, organization_id: int, matched_user: Optional[dict] = None
+    conn,
+    user_id: int,
+    organization_id: int,
+    matched_user: Optional[dict] = None,
+    *,
+    category_id: Optional[int] = None,
+    role_id: Optional[int] = None,
 ) -> tuple[Optional[dict], Optional[str], int]:
     """Returns (session_row, error_message, http_status)."""
+    from backend.category_role_tracking_settings import is_category_role_tracking_enabled
     from backend.ta_routes import (
         get_or_create_payroll_cycle,
         table_has_column,
         write_audit,
         _tenant_fallback_geofence_id,
     )
+
+    tracking_enabled = is_category_role_tracking_enabled(conn, organization_id)
+    if tracking_enabled and (not category_id or not role_id):
+        return None, "category_id and role_id are required to check in", 400
 
     if matched_user:
         if matched_user.get("termination_date"):
@@ -383,13 +394,37 @@ def kiosk_clock_in(
             ),
         )
     sid = c2.lastrowid
+    if tracking_enabled and category_id and role_id:
+        try:
+            from backend.shift_job_tracking import init_session_job_tracking
+
+            init_session_job_tracking(
+                conn,
+                sid,
+                organization_id,
+                user_id,
+                now,
+                category_id=int(category_id),
+                role_id=int(role_id),
+            )
+        except ValueError as e:
+            conn.rollback()
+            return None, str(e), 400
     write_audit(
         conn,
         user_id,
         "shift_session",
         sid,
         "pin_clock_in",
-        new={"clock_in_at": now.isoformat(), "geofence_id": geofence_id_for_session},
+        new={
+            "clock_in_at": now.isoformat(),
+            "geofence_id": geofence_id_for_session,
+            **(
+                {"category_id": int(category_id), "role_id": int(role_id)}
+                if tracking_enabled and category_id and role_id
+                else {}
+            ),
+        },
         organization_id=organization_id,
     )
     from backend.ta_routes import fetch_session
@@ -428,6 +463,24 @@ def kiosk_clock_out(conn, user_id: int, organization_id: int) -> tuple[Optional[
         return None, "Invalid session", 500
     elapsed = (now - clock_in).total_seconds()
     net = int(elapsed) - br
+
+    from backend.category_role_tracking_settings import is_category_role_tracking_enabled
+    from backend.shift_job_tracking import get_open_job_segment, on_manual_clock_out
+
+    had_open_segment = get_open_job_segment(conn, sess["id"]) is not None
+    on_manual_clock_out(conn, sess["id"])
+    if is_category_role_tracking_enabled(conn, organization_id) and not had_open_segment:
+        write_audit(
+            conn,
+            user_id,
+            "shift_session",
+            sess["id"],
+            "checkout_without_task_segment",
+            old={"session_id": sess["id"]},
+            new={"warning": "No active task segment at checkout"},
+            remarks="Category & Role Tracking enabled but no open task segment at checkout",
+            organization_id=organization_id,
+        )
 
     c2 = conn.cursor()
     c2.execute(
@@ -482,6 +535,9 @@ def perform_pin_punch(
     pin: str,
     fetch_roles_fn,
     ip_address: str,
+    *,
+    category_id: Optional[int] = None,
+    role_id: Optional[int] = None,
 ) -> tuple[dict, int]:
     """
     Main entry. Returns (json_body, http_status).
@@ -524,7 +580,33 @@ def perform_pin_punch(
             sess, err, status = kiosk_clock_out(conn, user_id, org_id)
             action = "CLOCK_OUT"
         else:
-            sess, err, status = kiosk_clock_in(conn, user_id, org_id, matched)
+            from backend.category_role_tracking_settings import is_category_role_tracking_enabled
+
+            tracking_enabled = is_category_role_tracking_enabled(conn, org_id)
+            if tracking_enabled and (not category_id or not role_id):
+                from backend.shift_job_tracking import (
+                    list_active_selection_tree,
+                    seed_default_categories_and_roles,
+                )
+
+                c = conn.cursor(dictionary=True)
+                seed_default_categories_and_roles(c, org_id)
+                tree = list_active_selection_tree(c, org_id)
+                conn.commit()
+                return {
+                    "ok": False,
+                    "needs_category_role": True,
+                    "selection_tree": tree,
+                    "error": "Select a category and role to check in",
+                }, 400
+            sess, err, status = kiosk_clock_in(
+                conn,
+                user_id,
+                org_id,
+                matched,
+                category_id=int(category_id) if category_id else None,
+                role_id=int(role_id) if role_id else None,
+            )
             action = "CLOCK_IN"
 
         if err:
