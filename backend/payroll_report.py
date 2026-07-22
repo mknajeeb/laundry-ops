@@ -305,7 +305,7 @@ def _finalized_date_str(batch: dict) -> str:
     return d.isoformat() if d else s[:19]
 
 
-def build_report_row(batch: dict, line: dict) -> dict[str, Any]:
+def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = None) -> dict[str, Any]:
     details = line.get("payout_details") or _parse_details(line.get("payout_details_json"))
     breakdown = earnings_breakdown_from_line(line)
     cat = str(batch.get("worker_category") or "")
@@ -316,6 +316,24 @@ def build_report_row(batch: dict, line: dict) -> dict[str, Any]:
     other_ded = _other_deductions_total(details)
     employer_taxes = _employer_tax_total(details)
     gross_pay = breakdown["gross_pay"]
+    settlement = details.get("settlement") or {}
+    amount_paid = settlement.get("amount_paid")
+    outstanding = _money(settlement.get("outstanding_balance"))
+    # Monthly Payroll Paid = cash actually paid on the Official Pay Date.
+    # When an OT catch-up left an outstanding balance, do not inflate Gross to the
+    # corrected earned amount — report the preserved amount_paid only.
+    if (
+        str(report_type or "") == "monthly_paid"
+        and amount_paid is not None
+        and str(amount_paid).strip() != ""
+        and (
+            bool(settlement.get("preserve_amount_paid"))
+            or outstanding > 0
+        )
+        and cat in ("temp", "contractor_1099")
+    ):
+        gross_pay = round(_money(amount_paid), 2)
+        emp_tax = 0.0
     net = _report_net_pay(
         line,
         details,
@@ -369,6 +387,10 @@ def build_report_row(batch: dict, line: dict) -> dict[str, Any]:
         "payroll_status_key": display_status,
         "batch_status": batch.get("status"),
         "batch_name": batch.get("batch_name") or "",
+        "outstanding_balance": round(float(outstanding), 2),
+        "amount_paid": round(_money(amount_paid), 2)
+        if amount_paid is not None and str(amount_paid).strip() != ""
+        else None,
     }
 
 
@@ -670,7 +692,7 @@ def query_payroll_report(
             "net_pay": raw.get("net_pay"),
             "payout_details_json": raw.get("payout_details_json"),
         }
-        row = build_report_row(batch, line)
+        row = build_report_row(batch, line, report_type=resolved_type)
         if use_custom_range and not _row_matches_date_range(row, df, dt, date_basis=basis):
             continue
         if payroll_status and payroll_status != "all":

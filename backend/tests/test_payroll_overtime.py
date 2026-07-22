@@ -278,3 +278,45 @@ def test_compute_payout_line_amounts_does_not_autosplit_paid_batch():
     assert float(out["approved_hours"]) == 47.02
     assert float(out["ot_hours"]) == 0.0
     assert float(out["gross_amount"]) == 799.34
+
+
+def test_preserve_amount_paid_keeps_outstanding_ot_balance():
+    from backend.payroll_payout_details import apply_settlement_math, parse_line_payout_details
+
+    details = apply_settlement_math(
+        {
+            "settlement": {
+                "amount_paid": 799.34,
+                "amount_withheld": 0,
+                "preserve_amount_paid": True,
+                "paid_full_gross_without_withholding": False,
+            },
+            "employee_deductions": {},
+            "employer_taxes": {},
+            "tax_summary": {},
+            "payment": {},
+        },
+        859.01,
+    )
+    assert details["settlement"]["amount_paid"] == 799.34
+    assert details["settlement"]["outstanding_balance"] == 59.67
+
+    parsed = parse_line_payout_details(
+        {
+            "gross_amount": 859.01,
+            "worker_category": "contractor_1099",
+            "payout_details_json": {
+                "settlement": {
+                    "amount_paid": 799.34,
+                    "preserve_amount_paid": True,
+                    "paid_full_gross_without_withholding": False,
+                    "amount_withheld": 0,
+                },
+                "show_tax_payment_section": False,
+            },
+        },
+        worker_category="contractor_1099",
+    )
+    assert parsed["settlement"]["amount_paid"] == 799.34
+    assert parsed["settlement"]["outstanding_balance"] == 59.67
+    assert parsed["settlement"]["preserve_amount_paid"] is True

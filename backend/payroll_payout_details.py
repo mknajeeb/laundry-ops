@@ -325,6 +325,11 @@ def parse_line_payout_details(
         base["settlement"]["paid_full_gross_without_withholding"] = bool(
             base["settlement"].get("paid_full_gross_without_withholding")
         )
+    raw_settlement_early = raw.get("settlement") if isinstance(raw.get("settlement"), dict) else {}
+    if "preserve_amount_paid" in raw_settlement_early:
+        base["settlement"]["preserve_amount_paid"] = bool(
+            raw_settlement_early.get("preserve_amount_paid")
+        )
     if "withheld_from_payment" in base["settlement"]:
         wfp = base["settlement"].get("withheld_from_payment")
         if wfp is None or str(wfp).strip() == "":
@@ -647,13 +652,29 @@ def _withheld_for_current_period(
 
 
 def apply_settlement_math(details: dict, gross: float) -> dict:
-    """Derive withheld and net pay from current taxes + optional catch-up withholding."""
+    """Derive withheld and net pay from current taxes + optional catch-up withholding.
+
+    When settlement.preserve_amount_paid is True (e.g. approved OT catch-up), keep the
+    recorded amount_paid and set outstanding_balance = gross − amount_paid so a
+    partial payment is never rewritten to look fully paid.
+    """
     details = reconcile_tax_summary(dict(details))
     settlement = details.get("settlement") or {}
     tax_summary = details.get("tax_summary") or {}
     gross_f = float(_money(gross))
     current_period = float(tax_summary.get("current_period_taxes") or 0)
     paid_full_gross = bool(settlement.get("paid_full_gross_without_withholding"))
+    preserve_paid = bool(settlement.get("preserve_amount_paid"))
+
+    if preserve_paid and settlement.get("amount_paid") is not None:
+        paid = round(float(_money(settlement.get("amount_paid"))), 2)
+        withheld = round(float(_money(settlement.get("amount_withheld") or 0)), 2)
+        settlement["amount_withheld"] = withheld
+        settlement["amount_paid"] = paid
+        settlement["outstanding_balance"] = round(max(0.0, gross_f - paid), 2)
+        settlement["preserve_amount_paid"] = True
+        details["settlement"] = settlement
+        return reconcile_tax_summary(details)
 
     if paid_full_gross:
         settlement["catch_up_withholding"] = 0.0
@@ -3874,6 +3895,10 @@ def generate_vendor_receipt_html(
         # Fallback for non-hourly / empty hour lines: still show total due.
         earnings_rows.append(row("Service amount", money(total_due), left=False))
 
+    outstanding = float(_money((details.get("settlement") or {}).get("outstanding_balance")))
+    settle = details.get("settlement") or {}
+    preserve_paid = bool(settle.get("preserve_amount_paid"))
+
     part1_rows = "".join(
         [
             row("Contractor / worker name", esc(worker_name), strong=True),
@@ -3882,6 +3907,16 @@ def generate_vendor_receipt_html(
             row("Work period", esc(work_period)),
             *earnings_rows,
             row("Total amount due", money(total_due), strong=True, left=False),
+            (
+                row("Amount previously paid", money(amount_paid), left=False)
+                if (outstanding > 0.005 or preserve_paid)
+                else ""
+            ),
+            (
+                row("Outstanding OT balance", money(outstanding), strong=True, left=False)
+                if outstanding > 0.005
+                else ""
+            ),
             (row("Total paid this year (before this payment)", money(prior_ytd), left=False)
              if prior_ytd > 0 else ""),
             row(
@@ -3896,6 +3931,11 @@ def generate_vendor_receipt_html(
     part2_rows = "".join(
         [
             row("Amount paid", money(amount_paid), strong=True, left=False),
+            (
+                row("Outstanding OT balance", money(outstanding), strong=True, left=False)
+                if outstanding > 0.005
+                else ""
+            ),
             row("Payment method", esc(method)),
             row("Payment reference", esc(reference)) if reference else "",
             row("Payment date", esc(payment.get("date") or "—"), strong=True),

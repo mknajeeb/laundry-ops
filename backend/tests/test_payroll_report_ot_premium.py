@@ -227,6 +227,7 @@ def test_paid_full_gross_report_net_equals_gross_with_zero_ee_taxes():
         "gross_amount": 467.16,
         "payment_status": "paid",
         "payout_details_json": (
+
             '{"employee_deductions":{"fit":20,"ss":10,"medicare":5.73},"settlement":'
             '{"amount_paid":467.16,"amount_withheld":0.0,'
             '"paid_full_gross_without_withholding":true,"tax_balance_owed":35.73}}'
@@ -236,6 +237,49 @@ def test_paid_full_gross_report_net_equals_gross_with_zero_ee_taxes():
     assert row["gross_pay"] == 467.16
     assert row["employee_tax_deductions"] == 0.0
     assert row["net_pay"] == 467.16
+
+
+def test_monthly_paid_uses_amount_paid_when_ot_catchup_outstanding():
+    """Monthly Payroll Paid must report cash paid, not corrected earned gross."""
+    batch = {
+        "id": 54,
+        "batch_name": "1099-2026-010",
+        "worker_category": "contractor_1099",
+        "pay_period_start": "2026-07-06",
+        "pay_period_end": "2026-07-12",
+        "status": "paid",
+        "official_pay_date": "2026-07-18",
+        "payout_details_finalized_at": "2026-07-18",
+    }
+    line = {
+        "id": 342,
+        "user_id": 31,
+        "worker_name_snapshot": "Maria Perez",
+        "approved_hours": 40,
+        "ot_hours": 7.02,
+        "rate": 17,
+        "ot_rate": 25.5,
+        "gross_amount": 859.01,
+        "payment_status": "paid",
+        "payout_details_json": {
+            "settlement": {
+                "amount_paid": 799.34,
+                "amount_withheld": 0,
+                "outstanding_balance": 59.67,
+                "preserve_amount_paid": True,
+                "paid_full_gross_without_withholding": False,
+            },
+            "show_tax_payment_section": False,
+        },
+    }
+    earned = build_report_row(batch, line)
+    assert earned["gross_pay"] == 859.01
+    assert earned["net_pay"] == 799.34
+
+    paid_report = build_report_row(batch, line, report_type="monthly_paid")
+    assert paid_report["gross_pay"] == 799.34
+    assert paid_report["net_pay"] == 799.34
+    assert paid_report["ot_hours"] == 7.02
 
 
 def test_withheld_taxes_reconcile_gross_minus_ee_equals_net():
