@@ -289,7 +289,10 @@ def _load_active_rfv_presence_rows(
     source_batch_id: str | None = None,
 ) -> list[dict[str, Any]]:
     from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_READY
+    from backend.rinse_presence_scrape import rfv_feature_active
 
+    if not rfv_feature_active():
+        return []
     if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
         return []
     org = int(organization_id)
@@ -405,7 +408,50 @@ def build_ready_for_vendor_queue(
     baseline_ctx: Mapping[str, Any],
     rfv_sync: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build snapshot-only Ready for Vendor section and normalized rows."""
+    """Build snapshot-only Ready for Vendor section and normalized rows.
+
+    When RFV is inactive (``RFV_SCRAPE_ENABLED`` default false), returns an empty
+    inactive payload without reading RFV presence rows.
+    """
+    from backend.rinse_presence_scrape import rfv_feature_active
+
+    if not rfv_feature_active():
+        section = {
+            "live": False,
+            "inactive": True,
+            "under_review": False,
+            "total": 0,
+            "rush_total": 0,
+            "nonrush_total": 0,
+            "wf_total": 0,
+            "hd_total": 0,
+            "rush_wf": 0,
+            "rush_hd": 0,
+            "nonrush_wf": 0,
+            "nonrush_hd": 0,
+            "unknown_needs_review": 0,
+            "rows": [],
+            "cards": [],
+            "source": "Ready for Vendor queue",
+            "unavailable_reason": "RFV_SCRAPE_ENABLED=false",
+            "sync_status": {"enabled": False, "status": "disabled"},
+            "parity_ok": True,
+            "drilldown_filter": "ready_for_vendor",
+            "drilldown_source": "ready_for_vendor_rows",
+        }
+        return {
+            "section": section,
+            "rows": [],
+            "bag_ids": set(),
+            "meta": {
+                "source": RFV_SOURCE,
+                "rfv_scrape_ready": False,
+                "inactive": True,
+                "uses_scans": False,
+            },
+            "legacy_incoming_rows": [],
+        }
+
     org = int(organization_id)
     sync = dict(rfv_sync or {})
     cutoff_cfg = resolve_rfv_rush_cutoff_setting(cursor, org)

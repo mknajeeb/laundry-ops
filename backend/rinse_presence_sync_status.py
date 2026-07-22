@@ -338,7 +338,13 @@ def get_ready_for_vendor_sync_status(
     skipped_reason = None
     error_message = None
     if not enabled:
-        skipped_reason = "enable_ready_for_vendor_scrape=false"
+        from backend.rinse_presence_scrape import rfv_scrape_enabled
+
+        skipped_reason = (
+            "RFV_SCRAPE_ENABLED=false"
+            if not rfv_scrape_enabled()
+            else "enable_ready_for_vendor_scrape=false"
+        )
     elif latest_status == "disabled":
         skipped_reason = "enable_ready_for_vendor_scrape=false"
     elif latest_status == "failed":
@@ -732,8 +738,13 @@ def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any
             pass
 
     from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR, PORTAL_STATUS_READY
+    from backend.rinse_presence_scrape import rfv_feature_active
 
-    rfv_run = _latest_success_presence_run(cursor, org, PORTAL_STATUS_READY)
+    rfv_run = (
+        _latest_success_presence_run(cursor, org, PORTAL_STATUS_READY)
+        if rfv_feature_active()
+        else None
+    )
     av_presence_run = _latest_success_presence_run(cursor, org, PORTAL_STATUS_AT_VENDOR)
     if rfv_run:
         rfv_item = build_presence_run_list_item(rfv_run)

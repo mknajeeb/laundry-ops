@@ -447,6 +447,7 @@ class TestSimplePayloadScopes:
 
 
 class TestDrilldownCountIntegrity:
+    @patch("backend.rinse_presence_scrape.rfv_feature_active", return_value=True)
     @patch("backend.rinse_ready_for_vendor_queue.build_ready_for_vendor_queue")
     @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
     @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
@@ -467,6 +468,7 @@ class TestDrilldownCountIntegrity:
         mock_dashboard,
         mock_rfv_sync,
         mock_rfv_queue,
+        _mock_rfv_active,
     ):
         from datetime import date
         from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload, _count_tag
@@ -1128,6 +1130,7 @@ class TestActiveWorkCountLogic:
 
 
 class TestDashboardSourceOfTruth:
+    @patch("backend.rinse_presence_scrape.rfv_feature_active", return_value=True)
     @patch("backend.rinse_at_vendor_module.build_at_vendor_module")
     @patch("backend.rinse_ready_for_vendor_queue._load_active_rfv_presence_rows")
     @patch("backend.rinse_shift_monitor_baseline.latest_rfv_scrape_after_baseline")
@@ -1156,6 +1159,7 @@ class TestDashboardSourceOfTruth:
         mock_rfv_run,
         mock_active_rfv,
         mock_at_vendor,
+        _mock_rfv_active,
     ):
         from datetime import date, datetime
         from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload

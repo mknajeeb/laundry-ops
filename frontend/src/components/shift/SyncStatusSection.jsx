@@ -48,7 +48,7 @@ function TargetedRefreshSummary({ targeted }) {
       ) : null}
       {t.error ? (
         <Typography variant="caption" color="error.main" display="block" sx={{ mt: 0.35 }}>
-          {t.error}
+          Error: {t.error}
         </Typography>
       ) : null}
     </Box>
@@ -63,8 +63,10 @@ export default function SyncStatusSection({
   syncRunning,
   loading,
   onRefresh,
+  readyForVendorEnabled = false,
 }) {
   const [open, setOpen] = useState(false);
+  const rfvActive = Boolean(readyForVendorEnabled && rfvSync?.enabled !== false);
   const rfvSyncSub = syncStatusSubtext(
     { sync_status: rfvSync, last_refreshed_at: rfv?.last_refreshed_at },
     "Ready for Vendor Sync",
@@ -72,7 +74,8 @@ export default function SyncStatusSection({
   const avSyncSub = syncStatusSubtext({ sync_status: avSync }, "At Vendor Sync");
   const avWarn = avSync?.failed || avSync?.stale;
   const rfvWarn =
-    (rfvSync?.failed || rfvSync?.latest_failed || (rfvSync?.stale && !rfv?.zero_rows_success))
+    rfvActive
+    && (rfvSync?.failed || rfvSync?.latest_failed || (rfvSync?.stale && !rfv?.zero_rows_success))
     && !rfv?.zero_rows_success;
   const cycle = syncCycle || {};
   const targeted = cycle.targeted_pending_scan_refresh || {};
@@ -84,11 +87,15 @@ export default function SyncStatusSection({
   let cycleStatusMain = cycle.cycle_status || "—";
   let cycleStatusSuffix = cycle.at_vendor_ran === false ? " · At Vendor did not run" : "";
   if (misleadingCronSkip) {
-    const rfvEt = rfvSync?.last_success_at_et || rfvSync?.last_refreshed_at_et;
+    const rfvEt = rfvActive
+      ? (rfvSync?.last_success_at_et || rfvSync?.last_refreshed_at_et)
+      : null;
     const avEt = avSync?.last_refreshed_at_et || cycle.at_vendor_completed_at_et;
     if (rfvEt || avEt) {
       cycleStatusMain = "—";
-      cycleStatusSuffix = ` · latest completed RFV ${rfvEt || "—"} · portal crawl ${avEt || "—"}`;
+      cycleStatusSuffix = rfvActive
+        ? ` · latest completed RFV ${rfvEt || "—"} · portal crawl ${avEt || "—"}`
+        : ` · portal crawl ${avEt || "—"}`;
     } else {
       cycleStatusMain = "—";
       cycleStatusSuffix = " · no completed cycle on latest cron tick";
@@ -148,7 +155,9 @@ export default function SyncStatusSection({
             cursor: syncRunning || loading ? "not-allowed" : "pointer",
           }}
         >
-          {syncRunning ? "Refreshing…" : "Refresh Both Syncs"}
+          {syncRunning
+            ? "Refreshing…"
+            : (rfvActive ? "Refresh Both Syncs" : "Refresh Portal Sync")}
         </Box>
       </Box>
       <Collapse in={open}>
@@ -166,18 +175,23 @@ export default function SyncStatusSection({
         <Box
           sx={{
             display: "grid",
-            gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" },
+            gridTemplateColumns: {
+              xs: "1fr",
+              sm: rfvActive ? "repeat(2, 1fr)" : "1fr",
+            },
             gap: 1,
             mb: 1,
           }}
         >
-          <ShiftCountCard
-            label="Ready for Vendor"
-            value={rfvSync?.freshness?.portal_pulled_at_et || cycle.rfv_completed_at_et || "—"}
-            sub={rfvSyncSub}
-            warn={rfvWarn}
-            compact
-          />
+          {rfvActive ? (
+            <ShiftCountCard
+              label="Ready for Vendor"
+              value={rfvSync?.freshness?.portal_pulled_at_et || cycle.rfv_completed_at_et || "—"}
+              sub={rfvSyncSub}
+              warn={rfvWarn}
+              compact
+            />
+          ) : null}
           <ShiftCountCard
             label="Last portal crawl"
             value={portalCrawlEt}
@@ -193,7 +207,12 @@ export default function SyncStatusSection({
             compact
           />
         </Box>
-        <SyncCycleFreshnessSummary cycle={cycle} avSync={avSync} rfvSync={rfvSync} />
+        <SyncCycleFreshnessSummary
+          cycle={cycle}
+          avSync={avSync}
+          rfvSync={rfvActive ? rfvSync : null}
+          showRfv={rfvActive}
+        />
         <TargetedRefreshSummary targeted={targeted} />
         <Alert severity="info" variant="outlined" sx={{ mb: 1, py: 0.75 }}>
           <Typography variant="caption" display="block" sx={{ lineHeight: 1.45 }}>
@@ -203,7 +222,9 @@ export default function SyncStatusSection({
             missing from that crawl (including off-portal).
             {" "}
             Workload scans are current only after <strong>both</strong> steps succeed.
-            Manual Refresh Both Syncs runs portal crawl then targeted refresh.
+            {rfvActive
+              ? " Manual Refresh Both Syncs runs portal crawl then targeted refresh."
+              : " Manual Refresh Portal Sync runs portal crawl then targeted refresh."}
           </Typography>
         </Alert>
         <Typography variant="caption" color="text.secondary" sx={{ wordBreak: "break-word" }}>

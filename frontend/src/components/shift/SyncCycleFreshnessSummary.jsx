@@ -22,7 +22,7 @@ function SyncFreshnessCard({ title, freshness, warn = false }) {
 }
 
 /** Last Rinse Sync Cycle — Pulled vs Updated per section. */
-export function SyncCycleFreshnessSummary({ cycle, avSync, rfvSync }) {
+export function SyncCycleFreshnessSummary({ cycle, avSync, rfvSync, showRfv = true }) {
   const avScanRows = avSync?.scan_events_count ?? avSync?.freshness?.scan_events_count;
   const avBatchId = avSync?.imported_batch_id ?? avSync?.freshness?.imported_batch_id;
 
@@ -32,17 +32,20 @@ export function SyncCycleFreshnessSummary({ cycle, avSync, rfvSync }) {
     imported_batch_id: avBatchId,
   };
   const rfvFreshness = rfvSync?.freshness || cycle?.rfv_freshness;
+  const rfvActive = Boolean(showRfv && rfvSync);
 
   return (
     <Box
       sx={{
         display: "grid",
-        gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" },
+        gridTemplateColumns: { xs: "1fr", sm: rfvActive ? "repeat(2, 1fr)" : "1fr" },
         gap: 1,
         mb: 1,
       }}
     >
-      <SyncFreshnessCard title="Ready for Vendor" freshness={rfvFreshness} warn={rfvSync?.stale || rfvSync?.failed} />
+      {rfvActive ? (
+        <SyncFreshnessCard title="Ready for Vendor" freshness={rfvFreshness} warn={rfvSync?.stale || rfvSync?.failed} />
+      ) : null}
       <SyncFreshnessCard title="At Vendor" freshness={avFreshness} warn={avSync?.stale || avSync?.failed} />
     </Box>
   );

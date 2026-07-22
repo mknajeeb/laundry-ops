@@ -234,7 +234,9 @@ export default function RinseScheduledSyncPage() {
           </Paper>
 
           <SyncStatusPanel title="At Vendor Sync" sync={data.at_vendor_sync} />
-          <SyncStatusPanel title="Ready for Vendor Sync" sync={data.ready_for_vendor_sync} />
+          {data.ready_for_vendor_sync?.enabled ? (
+            <SyncStatusPanel title="Ready for Vendor Sync" sync={data.ready_for_vendor_sync} />
+          ) : null}
 
           <RunTimingPanel title="Latest At Vendor scrape run" run={latest} />
           {lastSuccess && lastSuccess.scrape_run_id !== latest?.scrape_run_id ? (

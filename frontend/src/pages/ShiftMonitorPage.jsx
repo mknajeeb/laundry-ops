@@ -498,7 +498,9 @@ export default function ShiftMonitorPage({ user }) {
 
       const av = res.data?.at_vendor_sync || {};
       const rfv = res.data?.ready_for_vendor_sync || {};
+      const rfvEnabled = rfv.enabled !== false && rfv.status !== "disabled" && !String(rfv.skipped_reason || "").includes("RFV_SCRAPE_ENABLED");
       const rfvDetail = (() => {
+        if (!rfvEnabled) return null;
         if (rfv.skipped_reason || rfv.status === "disabled") {
           return `Ready for Vendor skipped: ${rfv.skipped_reason || "feature flag disabled"}`;
         }
@@ -519,9 +521,11 @@ export default function ShiftMonitorPage({ user }) {
         return `Ready for Vendor: ${rfv.status || "—"}`;
       })();
       setSyncMessage(
-        overall === "partial_success"
-          ? `At Vendor: ${av.status || "—"} · ${rfvDetail} (partial success)`
-          : `Both syncs finished — At Vendor: ${av.status || "—"} · ${rfvDetail}`,
+        rfvDetail
+          ? (overall === "partial_success"
+            ? `At Vendor: ${av.status || "—"} · ${rfvDetail} (partial success)`
+            : `Both syncs finished — At Vendor: ${av.status || "—"} · ${rfvDetail}`)
+          : `Portal sync finished — At Vendor: ${av.status || "—"}`,
       );
       await load();
     } catch (e) {
@@ -558,6 +562,7 @@ export default function ShiftMonitorPage({ user }) {
   const pipeline = data?.current_work_pipeline || data?.current_active_work_now || data?.current_active_work || {};
   const avSync = data?.rinse_sync?.at_vendor || pipeline.sync_status || {};
   const perfMeta = data?.performance_meta;
+  const readyForVendorEnabled = Boolean(data?.rinse_sync?.ready_for_vendor_enabled);
 
   const syncCycle = data?.rinse_sync?.sync_cycle || {};
   const operationsMode = checkOperationsMode(dateStart, dateEnd);
@@ -674,6 +679,7 @@ export default function ShiftMonitorPage({ user }) {
               syncRunning={syncRunning}
               loading={loading}
               onRefresh={runRinseSync}
+              readyForVendorEnabled={readyForVendorEnabled}
             />
           ) : null}
 

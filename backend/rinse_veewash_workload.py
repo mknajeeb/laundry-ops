@@ -4,17 +4,18 @@ VeeWash Shift Monitor — Step 1: authoritative daily workload from At-Vendor sc
 Operating model:
 
   * Eligibility: organization_id = 3 AND portal_status = at_vendor.
-    RFV (ready_for_vendor) is completely excluded from processing workload.
-  * WF entry: service_type = WF + first configured Dirty rack scan (facility_entry_racks).
-  * HD entry: service_type = HD + first workitems-added event.
-    Rush/Non-Rush is a filter within each service — never reclassifies HD as WF.
+    RFV (ready_for_vendor) is inactive and never loaded into this workload.
+  * Workload entry (WF and HD): first configured Dirty rack scan (facility_entry_racks).
+    Service type comes from presence (WF vs HD). Rush/Non-Rush filters within service
+    and never reclassifies HD as WF.
+  * workitems-added is NOT a workload entry event. An HD/WF order that reaches
+    processing without a Dirty scan is a data-quality anomaly (internal
+    completed_without_recognized_entry / not_in_workload) — not a redefined workflow.
   * Completion: evaluate_bag_completion_v2 (canonical production resolver).
     If completed before disappearance → Completed, never Review Required.
   * Carryover: entered previously, not completed, still unresolved.
   * Only operational review exception: entered + not completed + confirmed absence
     from trustworthy At-Vendor scrapes → Review Required (DISAPPEARED_WITHOUT_COMPLETION).
-  * Completed without a recognized entry event is tracked internally only
-    (completed_without_recognized_entry) — never New Today, never a manager exception.
 
 This module is read-only reporting logic. It does not write to the DB.
 """
@@ -47,8 +48,11 @@ _TRUTHY = ("1", "true", "yes", "on", "y")
 PORTAL_AT_VENDOR = "at_vendor"
 PORTAL_RFV = "ready_for_vendor"
 
-ENTRY_SOURCE_WF_DIRTY = "wf_dirty_scan"
-ENTRY_SOURCE_HD_WIA = "hd_workitems_added"
+ENTRY_SOURCE_DIRTY = "facility_dirty_scan"
+# Backward-compatible aliases (Dirty is the sole workload entry for WF and HD).
+ENTRY_SOURCE_WF_DIRTY = ENTRY_SOURCE_DIRTY
+ENTRY_SOURCE_HD_DIRTY = ENTRY_SOURCE_DIRTY
+ENTRY_SOURCE_HD_WIA = "hd_workitems_added"  # retained for tests/legacy; not used for entry
 ENTRY_SOURCE_MANUAL_REVIEW = "manual_exception_review"
 
 EXC_DISAPPEARED_WITHOUT_COMPLETION = "DISAPPEARED_WITHOUT_COMPLETION"
@@ -109,20 +113,43 @@ def _is_at_vendor_status(portal_status: Any) -> bool:
 # --------------------------------------------------------------------------- #
 # DB loaders (thin, read-only)                                                 #
 # --------------------------------------------------------------------------- #
-def load_presence_orders(cursor, organization_id: int) -> dict[str, dict[str, Any]]:
-    """All presence rows for the org (caller filters At-Vendor vs RFV)."""
+def load_presence_orders(
+    cursor,
+    organization_id: int,
+    *,
+    at_vendor_only: bool = True,
+) -> dict[str, dict[str, Any]]:
+    """Load presence rows for the org.
+
+    Default ``at_vendor_only=True``: RFV rows are never loaded into Step-1 (RFV is
+    inactive until explicitly re-enabled). Pass ``at_vendor_only=False`` only for
+    offline diagnostics that intentionally inspect historical RFV rows.
+    """
     if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
         return {}
-    cursor.execute(
-        """
-        SELECT bag_id, active, portal_status, customer_name, service_type,
-               rush_flag, estimated_delivery_date, first_seen_at, last_seen_at,
-               source_batch_id
-        FROM rinse_cleaner_ticket_presence
-        WHERE organization_id = %s
-        """,
-        (int(organization_id),),
-    )
+    if at_vendor_only:
+        cursor.execute(
+            """
+            SELECT bag_id, active, portal_status, customer_name, service_type,
+                   rush_flag, estimated_delivery_date, first_seen_at, last_seen_at,
+                   source_batch_id
+            FROM rinse_cleaner_ticket_presence
+            WHERE organization_id = %s
+              AND LOWER(TRIM(COALESCE(portal_status, ''))) = %s
+            """,
+            (int(organization_id), PORTAL_AT_VENDOR),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT bag_id, active, portal_status, customer_name, service_type,
+                   rush_flag, estimated_delivery_date, first_seen_at, last_seen_at,
+                   source_batch_id
+            FROM rinse_cleaner_ticket_presence
+            WHERE organization_id = %s
+            """,
+            (int(organization_id),),
+        )
     out: dict[str, dict[str, Any]] = {}
     for row in cursor.fetchall() or []:
         if not isinstance(row, dict):
@@ -210,7 +237,7 @@ def load_first_entry_scans(
 def load_first_workitems_added_scans(
     cursor, organization_id: int
 ) -> dict[str, dict[str, Any]]:
-    """First workitems-added event per bag → HD workload entry."""
+    """Legacy loader retained for diagnostics/tests. Not used for workload entry."""
     if not table_exists(cursor, "rinse_bag_scan_events"):
         return {}
     cursor.execute(
@@ -237,33 +264,37 @@ def load_first_workitems_added_scans(
     return out
 
 
+def build_dirty_entry_map(
+    presence_by_bag: Mapping[str, Mapping[str, Any]],
+    *,
+    dirty_by_bag: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """WF and HD enter workload only via first configured VeeWash Dirty scan."""
+    out: dict[str, dict[str, Any]] = {}
+    for bid, pres in presence_by_bag.items():
+        svc = _service_of(pres)
+        if svc not in (SERVICE_WF, SERVICE_HD):
+            continue
+        dirty = dirty_by_bag.get(bid)
+        if not dirty:
+            continue
+        out[bid] = {
+            **dict(dirty),
+            "entry_source": ENTRY_SOURCE_DIRTY,
+            "service_type": svc,
+        }
+    return out
+
+
 def build_service_entry_map(
     presence_by_bag: Mapping[str, Mapping[str, Any]],
     *,
     dirty_by_bag: Mapping[str, Mapping[str, Any]],
-    wia_by_bag: Mapping[str, Mapping[str, Any]],
+    wia_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Assign recognized entry events by service type (WF Dirty / HD WIA)."""
-    out: dict[str, dict[str, Any]] = {}
-    for bid, pres in presence_by_bag.items():
-        svc = _service_of(pres)
-        if svc == SERVICE_WF:
-            dirty = dirty_by_bag.get(bid)
-            if dirty:
-                out[bid] = {
-                    **dict(dirty),
-                    "entry_source": ENTRY_SOURCE_WF_DIRTY,
-                    "service_type": SERVICE_WF,
-                }
-        elif svc == SERVICE_HD:
-            wia = wia_by_bag.get(bid)
-            if wia:
-                out[bid] = {
-                    **dict(wia),
-                    "entry_source": ENTRY_SOURCE_HD_WIA,
-                    "service_type": SERVICE_HD,
-                }
-    return out
+    """Compatibility wrapper — Dirty-only entry for WF and HD. ``wia_by_bag`` ignored."""
+    _ = wia_by_bag
+    return build_dirty_entry_map(presence_by_bag, dirty_by_bag=dirty_by_bag)
 
 
 def load_canonical_completions_v2(
@@ -746,12 +777,12 @@ def build_veewash_daily_workload(
         except Exception:
             racks = list(DEFAULT_FACILITY_ENTRY_RACKS)
 
-    all_presence = load_presence_orders(cursor, organization_id)
-    presence, rfv_excluded = split_presence_at_vendor_vs_rfv(all_presence)
+    # RFV is inactive: never load ready_for_vendor presence into Step-1.
+    presence = load_presence_orders(cursor, organization_id, at_vendor_only=True)
+    rfv_excluded: list[str] = []
 
     dirty = load_first_dirty_scans(cursor, organization_id, entry_racks=racks)
-    wia = load_first_workitems_added_scans(cursor, organization_id)
-    entry = build_service_entry_map(presence, dirty_by_bag=dirty, wia_by_bag=wia)
+    entry = build_dirty_entry_map(presence, dirty_by_bag=dirty)
 
     completion = load_canonical_completions_v2(cursor, organization_id, presence.keys())
 

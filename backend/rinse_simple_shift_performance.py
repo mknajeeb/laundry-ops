@@ -747,28 +747,44 @@ def _attach_section_sync_statuses(
     active_work: dict[str, Any],
     evaluation_time: datetime | None = None,
 ) -> dict[str, Any]:
+    from backend.rinse_presence_scrape import rfv_feature_active
     from backend.rinse_presence_sync_status import (
         build_at_vendor_sync_status,
         get_ready_for_vendor_sync_status,
     )
 
-    rfv_sync = get_ready_for_vendor_sync_status(
-        cursor, organization_id, evaluation_time=evaluation_time
-    )
     av_sync = build_at_vendor_sync_status(
         cursor, organization_id, evaluation_time=evaluation_time
     )
-    ready_for_vendor["last_refreshed_at"] = (
-        rfv_sync.get("last_refreshed_at") or ready_for_vendor.get("last_refreshed_at")
-    )
-    ready_for_vendor["sync_status"] = {
-        **_build_sync_status(
-            ready_for_vendor.get("last_refreshed_at"),
-            sync_name="Ready for Vendor Sync",
-            evaluation_time=evaluation_time,
-        ),
-        **{k: v for k, v in rfv_sync.items() if k not in ("message",)},
-    }
+    if rfv_feature_active():
+        rfv_sync = get_ready_for_vendor_sync_status(
+            cursor, organization_id, evaluation_time=evaluation_time
+        )
+        ready_for_vendor["last_refreshed_at"] = (
+            rfv_sync.get("last_refreshed_at") or ready_for_vendor.get("last_refreshed_at")
+        )
+        ready_for_vendor["sync_status"] = {
+            **_build_sync_status(
+                ready_for_vendor.get("last_refreshed_at"),
+                sync_name="Ready for Vendor Sync",
+                evaluation_time=evaluation_time,
+            ),
+            **{k: v for k, v in rfv_sync.items() if k not in ("message",)},
+        }
+    else:
+        rfv_sync = {
+            "enabled": False,
+            "status": "disabled",
+            "skipped_reason": "RFV_SCRAPE_ENABLED=false",
+            "stale": False,
+            "message": "Ready for Vendor Sync: disabled",
+            "sync_time_unavailable": True,
+        }
+        ready_for_vendor.clear()
+        ready_for_vendor["inactive"] = True
+        ready_for_vendor["total"] = 0
+        ready_for_vendor["rows"] = []
+        ready_for_vendor["sync_status"] = dict(rfv_sync)
     active_work["last_refreshed_at"] = av_sync.get("last_refreshed_at")
     active_work["sync_status"] = av_sync
     from backend.rinse_presence_sync_status import build_rinse_sync_cycle_status
@@ -776,7 +792,7 @@ def _attach_section_sync_statuses(
     return {
         "at_vendor": av_sync,
         "ready_for_vendor": rfv_sync,
-        "ready_for_vendor_enabled": bool(rfv_sync.get("enabled", True)),
+        "ready_for_vendor_enabled": bool(rfv_sync.get("enabled")),
         "sync_cycle": build_rinse_sync_cycle_status(cursor, organization_id),
     }
 
@@ -2963,11 +2979,19 @@ def _try_build_step1_lightweight_summary(
         "period_end": period_end.isoformat(),
         "summary_only": True,
         "veewash_step1_active": True,
-        # RFV results, portal snapshot/reconciliation, ledger, debug, pipeline and the full
-        # legacy record set are intentionally not computed for the Step-1 lightweight path.
-        "ready_for_vendor": {},
+        # RFV inactive: empty payload (implementation retained; re-enable via RFV_SCRAPE_ENABLED).
+        "ready_for_vendor": {"inactive": True, "total": 0, "rows": []},
         "at_vendor_module": at_vendor_module,
-        "rinse_sync": rinse_sync,
+        "rinse_sync": {
+            **rinse_sync,
+            "ready_for_vendor_enabled": False,
+            "ready_for_vendor": {
+                "enabled": False,
+                "status": "disabled",
+                "skipped_reason": "RFV_SCRAPE_ENABLED=false",
+                "message": "Ready for Vendor Sync: disabled",
+            },
+        },
         "live_baseline": baseline_payload,
         "records": [],
         "shift_monitor_modules": None,

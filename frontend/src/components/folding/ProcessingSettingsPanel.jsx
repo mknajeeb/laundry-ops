@@ -235,22 +235,7 @@ export default function ProcessingSettingsPanel() {
         </Grid>
       </Grid>
 
-      <Typography variant="subtitle1" fontWeight={800} gutterBottom sx={{ mt: 1 }}>
-        Ready for Vendor
-      </Typography>
-      <Grid container spacing={2} sx={{ mb: 3 }}>
-        <Grid item xs={12} sm={6} md={4}>
-          <TextField
-            size="small"
-            label="Ready for Vendor Rush Cutoff Time"
-            helperText="Before this ET time, RFV Rush includes TODAY/past-due/same-day orders only. At or after this ET time, next-day RFV orders also count as Rush. America/New_York. Format HH:MM."
-            value={fields.rfvRushCutoff ?? "07:00"}
-            onChange={(e) => setFields({ ...fields, rfvRushCutoff: e.target.value })}
-            placeholder="07:00"
-            fullWidth
-          />
-        </Grid>
-      </Grid>
+      {/* RFV inactive until RFV_SCRAPE_ENABLED=true — settings retained in code but not shown. */}
 
       <Typography variant="subtitle1" fontWeight={800} gutterBottom>
         Per-bag processing estimates

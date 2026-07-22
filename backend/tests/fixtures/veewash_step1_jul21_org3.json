@@ -1,1814 +1,1798 @@
 {
   "selected_date_et": "2026-07-21",
   "organization_id": 3,
+  "entry_model": "dirty_scan_wf_and_hd",
+  "rfv_inactive": true,
   "presence_by_bag": {
     "026QW4KAW2": {
-      "service_type": "WF",
       "customer_name": "Spencer Evans 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
+    },
+    "095GJA2GLI": {
+      "customer_name": "Kevin Keogh",
+      "rush_flag": "NON-RUSH",
+      "portal_status": "at_vendor",
+      "service_type": "HD",
+      "last_seen_at": "2026-07-22 00:31:53.041196",
+      "active": 1
     },
     "0ADIZODP09": {
-      "service_type": "WF",
       "customer_name": "Jeremy Kass 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "0IWQ19G4ZV": {
-      "service_type": "HD",
       "customer_name": "Stephanie Mishler",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "HD",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "0JRO6FR6RY": {
-      "service_type": "WF",
       "customer_name": "Julia Vilela 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "0T83LW5FVJ": {
-      "service_type": "WF",
       "customer_name": "Nathan Easley 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "128AL365VM": {
-      "service_type": "WF",
       "customer_name": "Zach Graumann 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "15E7GPU6MV": {
-      "service_type": "WF",
       "customer_name": "Vale Urcuyo 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "17LVCX1PBQ": {
-      "service_type": "WF",
       "customer_name": "Rachel Roth 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "1BSWRDTZRG": {
-      "service_type": "WF",
       "customer_name": "Adam Turner 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 22:01:54.718338",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "1T50ENBVP8": {
-      "service_type": "WF",
       "customer_name": "Olinah Hassan 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "2C686TFBZP": {
-      "service_type": "WF",
       "customer_name": "Sharon Volpe 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "2KFDJYPGYC": {
-      "service_type": "HD",
       "customer_name": "Courtney Clapper",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "HD",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "2UBWSYKM8O": {
-      "service_type": "WF",
       "customer_name": "Scott F 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "2YN9VXTLF4": {
-      "service_type": "WF",
       "customer_name": "Siubhan Lammas 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "33KSAP6ZFU": {
-      "service_type": "WF",
       "customer_name": "154 West 45th Street I'm Donut? 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "360MYDY992": {
-      "service_type": "WF",
       "customer_name": "Kylie Bellissimo 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "36T8SNUK5E": {
-      "service_type": "WF",
       "customer_name": "Riyaz S 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "38SFMP6A63": {
-      "service_type": "WF",
       "customer_name": "brian morton 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "3EXGD2VFPR": {
-      "service_type": "WF",
       "customer_name": "Jaclyn Evans 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "3F40GEEPDM": {
-      "service_type": "WF",
       "customer_name": "Monica Nowicki 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "3JDUWP25YW": {
-      "service_type": "WF",
       "customer_name": "Lara Vale 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "3RUEO22X9E": {
-      "service_type": "WF",
       "customer_name": "154 West 45th Street I'm Donut? 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "3UI1I9GUEC": {
-      "service_type": "WF",
       "customer_name": "Eva Weiss 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "3WC938XUZ8": {
-      "service_type": "WF",
       "customer_name": "John Lee 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
+    },
+    "4H3YBP6IBY": {
+      "customer_name": "Noah Cooney",
+      "rush_flag": "NON-RUSH",
+      "portal_status": "at_vendor",
+      "service_type": "HD",
+      "last_seen_at": "2026-07-22 00:31:53.041196",
+      "active": 1
     },
     "4MZZ7YATUT": {
-      "service_type": "WF",
       "customer_name": "Chantelle Bannister 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "5RQ4TP8WSG": {
-      "service_type": "WF",
       "customer_name": "Emma Guag 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "5VTTO70PRQ": {
-      "service_type": "WF",
       "customer_name": "Danielle Karliner Naish 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "60TUIK42JF": {
-      "service_type": "WF",
       "customer_name": "satoria ray 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "61D8SOPN8S": {
-      "service_type": "WF",
       "customer_name": "Matt Isherwood 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "62MRUIXOGF": {
-      "service_type": "WF",
       "customer_name": "Kali Flynt 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 22:01:54.718338",
-      "rush_flag": "RUSH"
-    },
-    "66CMVN8WEC": {
-      "service_type": "HD",
-      "customer_name": "Ruby G",
-      "portal_status": "at_vendor",
-      "active": 1,
-      "last_seen_at": "2026-07-22 00:31:53.041196",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "6C4WYBTF4S": {
-      "service_type": "WF",
       "customer_name": "Ashley Chambers 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "6K9257B7SV": {
-      "service_type": "WF",
       "customer_name": "Margaret Anderson 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "6KCIPU2YRP": {
-      "service_type": "WF",
       "customer_name": "Amy Baron 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "6SEFCZB8QS": {
-      "service_type": "WF",
       "customer_name": "Stephanie Mishler 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "73IGC02SF0": {
-      "service_type": "WF",
       "customer_name": "Abhi Pandya 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "73NN1KXV7P": {
-      "service_type": "WF",
       "customer_name": "Samika Kulkarni 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "7A9VQQL5ID": {
-      "service_type": "WF",
       "customer_name": "John Rech 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "7DU90LIVHF": {
-      "service_type": "WF",
       "customer_name": "Danielle Perkins 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "7ERRRSGP4E": {
-      "service_type": "WF",
       "customer_name": "Adam Turner 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "7KU46MILS3": {
-      "service_type": "WF",
       "customer_name": "Kali Flynt 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "7QYY762HWS": {
-      "service_type": "WF",
       "customer_name": "Zade Haobsh 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
+    },
+    "7W6SWDU4L8": {
+      "customer_name": "Malinda Mekles",
+      "rush_flag": "NON-RUSH",
+      "portal_status": "at_vendor",
+      "service_type": "HD",
+      "last_seen_at": "2026-07-22 00:31:53.041196",
+      "active": 1
     },
     "7XBU0QBBID": {
-      "service_type": "WF",
       "customer_name": "Emma Guag 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "83VXJSQOUU": {
-      "service_type": "HD",
       "customer_name": "brian morton",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "HD",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "8BLIXONK14": {
-      "service_type": "WF",
       "customer_name": "Monica Schell 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "8H43DFB1WO": {
-      "service_type": "WF",
       "customer_name": "Meital Bendet 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
+    },
+    "8HIXSJSZDY": {
+      "customer_name": "Connor Arendts",
+      "rush_flag": "NON-RUSH",
+      "portal_status": "at_vendor",
+      "service_type": "HD",
+      "last_seen_at": "2026-07-22 00:31:53.041196",
+      "active": 1
     },
     "8LY63JRTDR": {
-      "service_type": "WF",
       "customer_name": "Jordan Pavia 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "8PW2472WAC": {
-      "service_type": "WF",
       "customer_name": "Kali Flynt 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "8RJIDWOTHT": {
-      "service_type": "WF",
       "customer_name": "Chantelle Bannister 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "8VRADPKRTE": {
-      "service_type": "WF",
       "customer_name": "Virginia Kaycoff 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "97ZU9X8GLT": {
-      "service_type": "WF",
       "customer_name": "Lil Fazio 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "992Z23UEJI": {
-      "service_type": "HD",
       "customer_name": "BlueBottle #3 1345 6th Ave (Midtown North)",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
-      "last_seen_at": "2026-07-21 12:40:19.575527",
-      "rush_flag": "RUSH"
-    },
-    "9AWG89P7EP": {
       "service_type": "HD",
-      "customer_name": "Mallay Occhiogrosso",
-      "portal_status": "at_vendor",
-      "active": 1,
-      "last_seen_at": "2026-07-22 00:31:53.041196",
-      "rush_flag": "NON-RUSH"
+      "last_seen_at": "2026-07-21 12:40:19.575527",
+      "active": 0
     },
     "9B06ZXMV2V": {
-      "service_type": "WF",
       "customer_name": "154 West 45th Street I'm Donut? 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "9BCRK5ZD1W": {
-      "service_type": "WF",
       "customer_name": "Jeremy Wenz 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "9DQC43QAJ7": {
-      "service_type": "WF",
       "customer_name": "Olinah Hassan 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
+    },
+    "9FUW30XSFQ": {
+      "customer_name": "Amber Webster",
+      "rush_flag": "NON-RUSH",
+      "portal_status": "at_vendor",
+      "service_type": "HD",
+      "last_seen_at": "2026-07-22 00:31:53.041196",
+      "active": 1
     },
     "9NXK2PGVIS": {
-      "service_type": "WF",
       "customer_name": "Lauren Gambier 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "9W9MGGSQTG": {
-      "service_type": "WF",
       "customer_name": "Nicole Rocha 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "A4I4H2957T": {
-      "service_type": "WF",
       "customer_name": "Michelle Moriarty 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "A57N8EWBCD": {
-      "service_type": "HD",
       "customer_name": "Conor Chmiel",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "HD",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "AI7XJ5DWU5": {
-      "service_type": "WF",
       "customer_name": "154 West 45th Street I'm Donut? 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "AIDMO1L7ZX": {
-      "service_type": "HD",
       "customer_name": "Nicolas Hen",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "HD",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "AJ3K2UUWJ4": {
-      "service_type": "WF",
       "customer_name": "154 West 45th Street I'm Donut? 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "AZOIP2OZNF": {
-      "service_type": "WF",
       "customer_name": "Angelique Pierre 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
-    },
-    "B08GP4LQT0": {
-      "service_type": "HD",
-      "customer_name": "Snehal Jindal",
-      "portal_status": "at_vendor",
-      "active": 1,
-      "last_seen_at": "2026-07-22 00:31:53.041196",
-      "rush_flag": "NON-RUSH"
-    },
-    "B2MD5DPPSO": {
-      "service_type": "HD",
-      "customer_name": "Lily Macdonald",
-      "portal_status": "at_vendor",
-      "active": 1,
-      "last_seen_at": "2026-07-22 00:31:53.041196",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "BB2GCSF622": {
-      "service_type": "WF",
       "customer_name": "Isabella Rivas 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "BBDWX39XYC": {
-      "service_type": "HD",
       "customer_name": "BlueBottle #17 22 Broad St",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 1,
+      "service_type": "HD",
       "last_seen_at": "2026-07-22 00:31:53.041196",
-      "rush_flag": "NON-RUSH"
+      "active": 1
     },
     "BBPKT10ZVL": {
-      "service_type": "WF",
       "customer_name": "Francesca Cook 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "BOCDNRFRMJ": {
-      "service_type": "WF",
       "customer_name": "Jared Markowitz 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "BTXM05KPV2": {
-      "service_type": "WF",
       "customer_name": "Afton Hicks 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "BW88PA3GYG": {
-      "service_type": "WF",
       "customer_name": "Nicole Solimine 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "BWR8SDX2OL": {
-      "service_type": "WF",
       "customer_name": "Spencer Evans 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "C4QINNDXYU": {
-      "service_type": "WF",
       "customer_name": "Kashish Dhawan 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "CG9WYJHIYK": {
-      "service_type": "WF",
       "customer_name": "Abhi Pandya 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "CGLVPIE4W5": {
-      "service_type": "HD",
       "customer_name": "Iman Maasarani",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 1,
+      "service_type": "HD",
       "last_seen_at": "2026-07-22 00:31:53.041196",
-      "rush_flag": "NON-RUSH"
+      "active": 1
+    },
+    "CJ3KKKT3G4": {
+      "customer_name": "Drew Ullman",
+      "rush_flag": "NON-RUSH",
+      "portal_status": "at_vendor",
+      "service_type": "HD",
+      "last_seen_at": "2026-07-22 00:31:53.041196",
+      "active": 1
     },
     "CR21AKTTMQ": {
-      "service_type": "WF",
       "customer_name": "Kali Flynt 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "CSCHYKHAKG": {
-      "service_type": "WF",
       "customer_name": "ALEXEY YUFEROV 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "DBVV2PSN0X": {
-      "service_type": "WF",
       "customer_name": "Elizabeth Lilly 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
-    "DG898N8KO1": {
-      "service_type": "HD",
-      "customer_name": "Susanna Lee",
+    "DL9X1B082V": {
+      "customer_name": "Megan Kovach",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 1,
+      "service_type": "HD",
       "last_seen_at": "2026-07-22 00:31:53.041196",
-      "rush_flag": "NON-RUSH"
+      "active": 1
     },
     "DN5PANBY84": {
-      "service_type": "WF",
       "customer_name": "Emma Carter 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "E1I08UIBU1": {
-      "service_type": "WF",
       "customer_name": "Danielle Leavitt 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "E3YN1XSPES": {
-      "service_type": "WF",
       "customer_name": "Matthew Breen 0",
+      "rush_flag": "NON-RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "NON-RUSH"
+      "active": 0
     },
     "EA01QHB7VR": {
-      "service_type": "WF",
       "customer_name": "Brad Bugna 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "EPRM6DYJ3H": {
-      "service_type": "WF",
       "customer_name": "Chrissy Hartzell 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "EVL3TQOBNA": {
-      "service_type": "HD",
       "customer_name": "Melanie Vassallo",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "HD",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "EYAKFWV3WP": {
-      "service_type": "WF",
       "customer_name": "isabella dubow 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "EYPGWADM2J": {
-      "service_type": "WF",
       "customer_name": "Michelle Moriarty 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     },
     "F0P0ZPLTWU": {
-      "service_type": "WF",
       "customer_name": "Kody Mansfield 0",
+      "rush_flag": "RUSH",
       "portal_status": "at_vendor",
-      "active": 0,
+      "service_type": "WF",
       "last_seen_at": "2026-07-21 20:32:07.051471",
-      "rush_flag": "RUSH"
+      "active": 0
     }
   },
-  "rfv_excluded_expected": [
-    "048806E005",
-    "09X9PVXZU9",
-    "0JB5651GPT",
-    "0O7WJEK7FW",
-    "1J50JN3KRJ",
-    "1MLJL0H9SQ",
-    "1UB4NRW6LB",
-    "279RW15E6S",
-    "33YBMMCZ7E",
-    "3DOZ9I3VLD",
-    "3HJVM9ME6L",
-    "4AV2DM1AT9",
-    "4EPXFQYPEN",
-    "4LH8R5NCDT",
-    "50TNEQQTPS",
-    "51IU91LR1Q",
-    "5SQS3YZXL7",
-    "5TWHI6WW21",
-    "5Y3WD252FF",
-    "5YO7DXYVZ4",
-    "6GF0EYKAHP",
-    "702DMNX3BK",
-    "75G7G5Q3QD",
-    "7GC5VPQEQP",
-    "7Z6KG3EFG1",
-    "8K7WD1LSZH",
-    "8XRC1SNL7U",
-    "9ERMN1O9QM",
-    "9ICP0Z6ZXJ",
-    "9N0QJXJZ4L",
-    "A4B1XCPETC",
-    "A8LB22PVYU",
-    "AP0V1ERBVV",
-    "B45P19ZER8",
-    "B4NFHV6S2L",
-    "BDBRZE0GXW",
-    "BIWAUJ0M8I",
-    "C4UWPAUFVD",
-    "C64JYA82DK",
-    "D4CSQU984D",
-    "D6E0SRN9QV",
-    "DVEE4OJ68V",
-    "DXH4UEAELN",
-    "EN4M65Q4EQ"
-  ],
   "entry_by_bag": {
     "026QW4KAW2": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:03:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
+    },
+    "095GJA2GLI": {
+      "entry_date": "2026-07-21",
+      "service_type": "HD",
+      "first_entry_at": "2026-07-21 06:08:00",
+      "entry_source": "facility_dirty_scan"
     },
     "0ADIZODP09": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 05:57:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "0IWQ19G4ZV": {
-      "service_type": "HD",
       "entry_date": "2026-07-21",
-      "first_entry_at": "2026-07-21 07:17:00",
-      "entry_source": "hd_workitems_added"
+      "service_type": "HD",
+      "first_entry_at": "2026-07-21 06:36:00",
+      "entry_source": "facility_dirty_scan"
     },
     "0JRO6FR6RY": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:27:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "0T83LW5FVJ": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:15:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "128AL365VM": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:12:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "15E7GPU6MV": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:19:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "17LVCX1PBQ": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:03:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "1BSWRDTZRG": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:27:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "1T50ENBVP8": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 05:58:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "2C686TFBZP": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:19:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "2KFDJYPGYC": {
-      "service_type": "HD",
       "entry_date": "2026-07-21",
-      "first_entry_at": "2026-07-21 07:25:00",
-      "entry_source": "hd_workitems_added"
+      "service_type": "HD",
+      "first_entry_at": "2026-07-21 06:36:00",
+      "entry_source": "facility_dirty_scan"
     },
     "2UBWSYKM8O": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:35:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "2YN9VXTLF4": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:25:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "33KSAP6ZFU": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:12:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "360MYDY992": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:19:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "36T8SNUK5E": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:24:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "38SFMP6A63": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 05:59:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "3EXGD2VFPR": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:11:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "3F40GEEPDM": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:15:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "3JDUWP25YW": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:20:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "3RUEO22X9E": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:12:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "3UI1I9GUEC": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:15:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "3WC938XUZ8": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:29:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
+    },
+    "4H3YBP6IBY": {
+      "entry_date": "2026-07-21",
+      "service_type": "HD",
+      "first_entry_at": "2026-07-21 06:08:00",
+      "entry_source": "facility_dirty_scan"
     },
     "4MZZ7YATUT": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 05:56:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "5RQ4TP8WSG": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 05:57:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "5VTTO70PRQ": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:29:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "60TUIK42JF": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:16:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "61D8SOPN8S": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:23:00",
-      "entry_source": "wf_dirty_scan"
-    },
-    "66CMVN8WEC": {
-      "service_type": "HD",
-      "entry_date": "2026-07-20",
-      "first_entry_at": "2026-07-20 19:58:00",
-      "entry_source": "hd_workitems_added"
+      "entry_source": "facility_dirty_scan"
     },
     "6C4WYBTF4S": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:36:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "6K9257B7SV": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:04:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "6KCIPU2YRP": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 05:56:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "6SEFCZB8QS": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:35:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "73IGC02SF0": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:36:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "73NN1KXV7P": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:35:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "7A9VQQL5ID": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 05:56:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "7DU90LIVHF": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 05:57:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "7ERRRSGP4E": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:03:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "7KU46MILS3": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:09:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "7QYY762HWS": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:23:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
+    },
+    "7W6SWDU4L8": {
+      "entry_date": "2026-07-21",
+      "service_type": "HD",
+      "first_entry_at": "2026-07-21 06:34:00",
+      "entry_source": "facility_dirty_scan"
     },
     "7XBU0QBBID": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:15:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "83VXJSQOUU": {
+      "entry_date": "2026-07-21",
       "service_type": "HD",
-      "entry_date": "2026-07-20",
-      "first_entry_at": "2026-07-20 20:11:00",
-      "entry_source": "hd_workitems_added"
+      "first_entry_at": "2026-07-21 06:02:00",
+      "entry_source": "facility_dirty_scan"
     },
     "8BLIXONK14": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:35:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "8H43DFB1WO": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 05:56:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
+    },
+    "8HIXSJSZDY": {
+      "entry_date": "2026-07-21",
+      "service_type": "HD",
+      "first_entry_at": "2026-07-21 06:33:00",
+      "entry_source": "facility_dirty_scan"
     },
     "8LY63JRTDR": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:12:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "8PW2472WAC": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:13:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "8RJIDWOTHT": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:28:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "8VRADPKRTE": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:28:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "97ZU9X8GLT": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:08:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "992Z23UEJI": {
+      "entry_date": "2026-07-15",
       "service_type": "HD",
-      "entry_date": "2026-07-16",
-      "first_entry_at": "2026-07-16 17:59:00",
-      "entry_source": "hd_workitems_added"
-    },
-    "9AWG89P7EP": {
-      "service_type": "HD",
-      "entry_date": "2026-07-20",
-      "first_entry_at": "2026-07-20 19:18:00",
-      "entry_source": "hd_workitems_added"
+      "first_entry_at": "2026-07-15 06:13:00",
+      "entry_source": "facility_dirty_scan"
     },
     "9B06ZXMV2V": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:07:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "9BCRK5ZD1W": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:20:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "9DQC43QAJ7": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:04:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
+    },
+    "9FUW30XSFQ": {
+      "entry_date": "2026-07-21",
+      "service_type": "HD",
+      "first_entry_at": "2026-07-21 06:34:00",
+      "entry_source": "facility_dirty_scan"
     },
     "9NXK2PGVIS": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 05:56:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "9W9MGGSQTG": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:15:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "A4I4H2957T": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:07:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "A57N8EWBCD": {
+      "entry_date": "2026-07-19",
       "service_type": "HD",
-      "entry_date": "2026-07-20",
-      "first_entry_at": "2026-07-20 19:37:00",
-      "entry_source": "hd_workitems_added"
+      "first_entry_at": "2026-07-19 07:35:00",
+      "entry_source": "facility_dirty_scan"
     },
     "AI7XJ5DWU5": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:20:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "AIDMO1L7ZX": {
-      "service_type": "HD",
       "entry_date": "2026-07-21",
-      "first_entry_at": "2026-07-21 07:37:00",
-      "entry_source": "hd_workitems_added"
+      "service_type": "HD",
+      "first_entry_at": "2026-07-21 06:34:00",
+      "entry_source": "facility_dirty_scan"
     },
     "AJ3K2UUWJ4": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:20:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "AZOIP2OZNF": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:03:00",
-      "entry_source": "wf_dirty_scan"
-    },
-    "B08GP4LQT0": {
-      "service_type": "HD",
-      "entry_date": "2026-07-20",
-      "first_entry_at": "2026-07-20 19:49:00",
-      "entry_source": "hd_workitems_added"
-    },
-    "B2MD5DPPSO": {
-      "service_type": "HD",
-      "entry_date": "2026-07-20",
-      "first_entry_at": "2026-07-20 19:24:00",
-      "entry_source": "hd_workitems_added"
+      "entry_source": "facility_dirty_scan"
     },
     "BB2GCSF622": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:08:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "BBDWX39XYC": {
+      "entry_date": "2026-07-15",
       "service_type": "HD",
-      "entry_date": "2026-07-16",
-      "first_entry_at": "2026-07-16 18:01:00",
-      "entry_source": "hd_workitems_added"
+      "first_entry_at": "2026-07-15 06:10:00",
+      "entry_source": "facility_dirty_scan"
     },
     "BBPKT10ZVL": {
-      "service_type": "WF",
       "entry_date": "2026-07-20",
+      "service_type": "WF",
       "first_entry_at": "2026-07-20 05:46:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "BOCDNRFRMJ": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:19:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "BTXM05KPV2": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:28:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "BW88PA3GYG": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:03:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "BWR8SDX2OL": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:16:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "C4QINNDXYU": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:28:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "CG9WYJHIYK": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:16:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "CGLVPIE4W5": {
-      "service_type": "HD",
       "entry_date": "2026-07-20",
-      "first_entry_at": "2026-07-20 19:08:00",
-      "entry_source": "hd_workitems_added"
+      "service_type": "HD",
+      "first_entry_at": "2026-07-20 19:07:00",
+      "entry_source": "facility_dirty_scan"
+    },
+    "CJ3KKKT3G4": {
+      "entry_date": "2026-07-21",
+      "service_type": "HD",
+      "first_entry_at": "2026-07-21 06:34:00",
+      "entry_source": "facility_dirty_scan"
     },
     "CR21AKTTMQ": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:24:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "CSCHYKHAKG": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:23:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "DBVV2PSN0X": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:29:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
-    "DG898N8KO1": {
+    "DL9X1B082V": {
+      "entry_date": "2026-07-21",
       "service_type": "HD",
-      "entry_date": "2026-07-20",
-      "first_entry_at": "2026-07-20 20:03:00",
-      "entry_source": "hd_workitems_added"
+      "first_entry_at": "2026-07-21 06:32:00",
+      "entry_source": "facility_dirty_scan"
     },
     "DN5PANBY84": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:25:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "E1I08UIBU1": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:12:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "E3YN1XSPES": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 05:59:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "EA01QHB7VR": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:25:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "EPRM6DYJ3H": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 05:56:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "EVL3TQOBNA": {
-      "service_type": "HD",
       "entry_date": "2026-07-21",
-      "first_entry_at": "2026-07-21 08:12:00",
-      "entry_source": "hd_workitems_added"
+      "service_type": "HD",
+      "first_entry_at": "2026-07-21 06:36:00",
+      "entry_source": "facility_dirty_scan"
     },
     "EYAKFWV3WP": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:12:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "EYPGWADM2J": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:09:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     },
     "F0P0ZPLTWU": {
-      "service_type": "WF",
       "entry_date": "2026-07-21",
+      "service_type": "WF",
       "first_entry_at": "2026-07-21 06:25:00",
-      "entry_source": "wf_dirty_scan"
+      "entry_source": "facility_dirty_scan"
     }
   },
   "completion_by_bag": {
     "026QW4KAW2": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 14:17:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "0ADIZODP09": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 15:13:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "0JRO6FR6RY": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:02:00",
-      "completed_by": "Yessenia (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Yessenia (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "0T83LW5FVJ": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 09:32:00",
-      "completed_by": "Amna (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Amna (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "128AL365VM": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 10:45:00",
-      "completed_by": "Tarannum (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Tarannum (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "15E7GPU6MV": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 11:31:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "17LVCX1PBQ": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 11:20:00",
-      "completed_by": "Tarannum (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Tarannum (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "1BSWRDTZRG": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 09:58:00",
-      "completed_by": "Amna (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Amna (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "2C686TFBZP": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 10:20:00",
-      "completed_by": "Jennifer (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Jennifer (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "2UBWSYKM8O": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 11:34:00",
-      "completed_by": "Jennifer (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Jennifer (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "2YN9VXTLF4": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:01:00",
-      "completed_by": "Tarannum (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Tarannum (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "33KSAP6ZFU": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 14:08:00",
-      "completed_by": "Tarannum (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Tarannum (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "360MYDY992": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 10:31:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "36T8SNUK5E": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 12:30:00",
-      "completed_by": "Amna (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Amna (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "38SFMP6A63": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 11:51:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "3EXGD2VFPR": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 09:29:00",
-      "completed_by": "Jennifer (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Jennifer (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "3F40GEEPDM": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 09:10:00",
-      "completed_by": "Amna (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Amna (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "3RUEO22X9E": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 14:00:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "3UI1I9GUEC": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 12:00:00",
-      "completed_by": "Tarannum (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Tarannum (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "3WC938XUZ8": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 11:00:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "4MZZ7YATUT": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 09:51:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "5RQ4TP8WSG": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 10:01:00",
-      "completed_by": "Jennifer (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Jennifer (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "5VTTO70PRQ": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 11:15:00",
-      "completed_by": "Jennifer (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Jennifer (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "60TUIK42JF": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 12:17:00",
-      "completed_by": "Jennifer (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Jennifer (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "61D8SOPN8S": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:28:00",
-      "completed_by": "Tarannum (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Tarannum (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "62MRUIXOGF": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:40:00",
-      "completed_by": "Francis (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Francis (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "6C4WYBTF4S": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:02:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "6K9257B7SV": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 14:44:00",
-      "completed_by": "Tarannum (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Tarannum (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "6KCIPU2YRP": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:51:00",
-      "completed_by": "Jennifer (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Jennifer (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "6SEFCZB8QS": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:15:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "73IGC02SF0": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:40:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "73NN1KXV7P": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:29:00",
-      "completed_by": "Jennifer (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Jennifer (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "7A9VQQL5ID": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 14:24:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "7DU90LIVHF": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 12:45:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "7ERRRSGP4E": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 12:16:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "7KU46MILS3": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 09:37:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "7QYY762HWS": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 10:54:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "7XBU0QBBID": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 11:48:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "83VXJSQOUU": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 12:30:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "8BLIXONK14": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:32:00",
-      "completed_by": "Francis (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Francis (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "8H43DFB1WO": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 10:41:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "8LY63JRTDR": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:39:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "8PW2472WAC": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 11:02:00",
-      "completed_by": "Amna (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Amna (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "8RJIDWOTHT": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 11:47:00",
-      "completed_by": "Amna (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Amna (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "8VRADPKRTE": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 09:58:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "97ZU9X8GLT": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 11:33:00",
-      "completed_by": "Amna (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Amna (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "9B06ZXMV2V": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:53:00",
-      "completed_by": "Tarannum (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Tarannum (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "9BCRK5ZD1W": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 10:16:00",
-      "completed_by": "Tarannum (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Tarannum (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "9DQC43QAJ7": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 14:23:00",
-      "completed_by": "Jennifer (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Jennifer (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "9NXK2PGVIS": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 09:16:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "9W9MGGSQTG": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 12:48:00",
-      "completed_by": "Amna (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Amna (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "A4I4H2957T": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 12:44:00",
-      "completed_by": "Tarannum (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Tarannum (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "AI7XJ5DWU5": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:10:00",
-      "completed_by": "Yessenia (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Yessenia (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "AJ3K2UUWJ4": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 14:42:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "AZOIP2OZNF": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 10:41:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "BB2GCSF622": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 11:23:00",
-      "completed_by": "Maria (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Maria (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "BBPKT10ZVL": {
-      "completion_kind": "second-weight-entry",
       "completion_source": "evaluate_bag_completion_v2:second-weight-entry",
-      "completion_date": "2026-07-20",
       "completion_at": "2026-07-20 17:26:00",
-      "completed_by": "Sarah Kamran"
+      "completion_date": "2026-07-20",
+      "completed_by": "Sarah Kamran",
+      "completion_kind": "second-weight-entry"
     },
     "BOCDNRFRMJ": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:17:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "BTXM05KPV2": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 12:52:00",
-      "completed_by": "Francis (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Francis (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "BW88PA3GYG": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 14:52:00",
-      "completed_by": "Jennifer (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Jennifer (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "BWR8SDX2OL": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:14:00",
-      "completed_by": "Francis (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Francis (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "C4QINNDXYU": {
-      "completion_kind": "second-weight-entry",
       "completion_source": "evaluate_bag_completion_v2:second-weight-entry",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 15:01:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "second-weight-entry"
     },
     "CG9WYJHIYK": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 09:26:00",
-      "completed_by": "Tarannum (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Tarannum (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "CR21AKTTMQ": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 12:49:00",
-      "completed_by": "Jennifer (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Jennifer (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "CSCHYKHAKG": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 12:15:00",
-      "completed_by": "Amna (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Amna (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "DBVV2PSN0X": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 10:36:00",
-      "completed_by": "Amna (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Amna (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "DN5PANBY84": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:18:00",
-      "completed_by": "Tarannum (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Tarannum (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "E1I08UIBU1": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 09:03:00",
-      "completed_by": "Tarannum (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Tarannum (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "E3YN1XSPES": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:58:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "EA01QHB7VR": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 11:56:00",
-      "completed_by": "Amna (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Amna (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "EPRM6DYJ3H": {
-      "completion_kind": "second-weight-entry",
       "completion_source": "evaluate_bag_completion_v2:second-weight-entry",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 09:35:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "second-weight-entry"
     },
     "EYAKFWV3WP": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 12:03:00",
-      "completed_by": "Jennifer (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Jennifer (VeeWash)",
+      "completion_kind": "clean-rack"
     },
     "EYPGWADM2J": {
-      "completion_kind": "clean-rack",
       "completion_source": "evaluate_bag_completion_v2:clean-rack",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 13:02:00",
-      "completed_by": "Amna (Veewash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Amna (Veewash)",
+      "completion_kind": "clean-rack"
     },
     "F0P0ZPLTWU": {
-      "completion_kind": "second-weight-entry",
       "completion_source": "evaluate_bag_completion_v2:second-weight-entry",
-      "completion_date": "2026-07-21",
       "completion_at": "2026-07-21 12:15:00",
-      "completed_by": "Evelin (VeeWash)"
+      "completion_date": "2026-07-21",
+      "completed_by": "Evelin (VeeWash)",
+      "completion_kind": "second-weight-entry"
     }
   },
   "disappearance_state_by_bag": {
@@ -1821,18 +1805,19 @@
     "AIDMO1L7ZX": "DISAPPEARED_WITHOUT_COMPLETION",
     "EVL3TQOBNA": "DISAPPEARED_WITHOUT_COMPLETION"
   },
+  "rfv_excluded_expected": [],
   "expected_counts": {
     "wf_new": 73,
-    "hd_new": 4,
-    "new_today": 77,
-    "carryover": 10,
-    "active_workload": 87,
+    "hd_new": 12,
+    "new_today": 85,
+    "carryover": 4,
+    "active_workload": 89,
     "completed": 72,
-    "pending": 7,
+    "pending": 9,
     "review_required": 8,
     "completed_without_recognized_entry": 1,
     "missing_entry_scan_exceptions": 0,
-    "rfv_excluded": 44
+    "rfv_excluded": 0
   },
   "wf_new_today": [
     "026QW4KAW2",
@@ -1910,21 +1895,23 @@
     "F0P0ZPLTWU"
   ],
   "hd_new_today": [
+    "095GJA2GLI",
     "0IWQ19G4ZV",
     "2KFDJYPGYC",
+    "4H3YBP6IBY",
+    "7W6SWDU4L8",
+    "83VXJSQOUU",
+    "8HIXSJSZDY",
+    "9FUW30XSFQ",
     "AIDMO1L7ZX",
+    "CJ3KKKT3G4",
+    "DL9X1B082V",
     "EVL3TQOBNA"
   ],
   "hd_carryover": [
-    "66CMVN8WEC",
-    "83VXJSQOUU",
     "992Z23UEJI",
-    "9AWG89P7EP",
     "A57N8EWBCD",
-    "B08GP4LQT0",
-    "B2MD5DPPSO",
     "BBDWX39XYC",
-    "CGLVPIE4W5",
-    "DG898N8KO1"
+    "CGLVPIE4W5"
   ]
 }

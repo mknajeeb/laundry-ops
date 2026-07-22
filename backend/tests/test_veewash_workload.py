@@ -344,34 +344,40 @@ def test_rfv_split_excludes_ready_for_vendor():
     assert rfv == ["RFV"]
 
 
-def test_service_entry_map_wf_dirty_hd_wia():
+def test_service_entry_map_dirty_for_wf_and_hd():
     presence = {
         "WF1": _pres(service="WF"),
         "HD1": _pres(service="HD"),
-        "HD_DIRTY_ONLY": _pres(service="HD"),
-        "WF_WIA_ONLY": _pres(service="WF"),
+        "HD_NO_DIRTY": _pres(service="HD"),
+        "WF_NO_DIRTY": _pres(service="WF"),
     }
     dirty = {
         "WF1": _entry(D0),
-        "HD_DIRTY_ONLY": _entry(D0),
+        "HD1": _entry(D0),
     }
+    # WIA alone must not enter either service.
     wia = {
-        "HD1": _entry(D0, source="hd_workitems_added"),
-        "WF_WIA_ONLY": _entry(D0, source="hd_workitems_added"),
+        "HD_NO_DIRTY": _entry(D0, source="hd_workitems_added"),
+        "WF_NO_DIRTY": _entry(D0, source="hd_workitems_added"),
     }
     entry = build_service_entry_map(presence, dirty_by_bag=dirty, wia_by_bag=wia)
     assert set(entry) == {"WF1", "HD1"}
-    assert entry["WF1"]["entry_source"] == "wf_dirty_scan"
-    assert entry["HD1"]["entry_source"] == "hd_workitems_added"
-    # HD Dirty alone does not enter; WF WIA alone does not enter.
-    assert "HD_DIRTY_ONLY" not in entry
-    assert "WF_WIA_ONLY" not in entry
+    assert entry["WF1"]["entry_source"] == "facility_dirty_scan"
+    assert entry["HD1"]["entry_source"] == "facility_dirty_scan"
+    assert entry["HD1"]["service_type"] == "HD"
+    assert "HD_NO_DIRTY" not in entry
+    assert "WF_NO_DIRTY" not in entry
 
 
-def test_hd_rush_dirty_does_not_become_wf_new():
-    # Presence is HD Rush with Dirty — without WIA it must not enter as WF.
+def test_hd_enters_via_dirty_not_wia():
     presence = {"H": _pres(service="HD", rush="RUSH")}
-    # Classifier only sees service-specific entry map (empty here).
+    out = _run(D0, presence, {"H": {**_entry(D0), "entry_source": "facility_dirty_scan", "service_type": "HD"}}, {})
+    assert out["new_today"] == ["H"]
+
+
+def test_hd_rush_without_dirty_does_not_enter():
+    # Presence is HD Rush without Dirty — must not enter (WIA is not entry).
+    presence = {"H": _pres(service="HD", rush="RUSH")}
     out = _run(D0, presence, {}, {})
     assert out["new_today"] == []
     assert "H" in out["not_in_workload"]
@@ -462,7 +468,7 @@ def test_headline_summary_simplified_exceptions_and_service_segments():
         "R_CARRY_PEND": _entry(yesterday),
         "N_NEW_PEND": _entry(D0),
         "R_GONE": _entry(D0),
-        "HD_NEW": _entry(D0, source="hd_workitems_added"),
+        "HD_NEW": _entry(D0, source="facility_dirty_scan"),
     }
     # Tag HD row service via presence; entry map already built.
     for bid, e in entry.items():
@@ -481,11 +487,13 @@ def test_headline_summary_simplified_exceptions_and_service_segments():
     assert "HD_NEW" not in summ["segments"]["wf"]["bag_ids"]["new_today"]
 
 
-def test_jul21_fixture_locks_validated_service_entry_completion_model():
-    """Offline lock of the validated 2026-07-21 org-3 reconciliation."""
+def test_jul21_fixture_locks_validated_dirty_entry_completion_model():
+    """Offline lock of Dirty-only WF/HD entry + v2 completion for 2026-07-21 org-3."""
     payload, presence, entry, completion, state = _load_jul21_fixture()
     selected = date.fromisoformat(payload["selected_date_et"])
     assert selected == D1
+    assert payload.get("entry_model") == "dirty_scan_wf_and_hd"
+    assert payload.get("rfv_inactive") is True
 
     out = classify_veewash_workload(
         selected_date_et=selected,
@@ -494,7 +502,7 @@ def test_jul21_fixture_locks_validated_service_entry_completion_model():
         completion_by_bag=completion,
         disappearance_state_by_bag=state,
     )
-    out["rfv_excluded"] = list(payload["rfv_excluded_expected"])
+    out["rfv_excluded"] = list(payload.get("rfv_excluded_expected") or [])
     expected = payload["expected_counts"]
 
     wf_new = [
@@ -514,12 +522,12 @@ def test_jul21_fixture_locks_validated_service_entry_completion_model():
     ]
 
     assert len(wf_new) == expected["wf_new"] == 73
-    assert len(hd_new) == expected["hd_new"] == 4
-    assert len(out["new_today"]) == expected["new_today"] == 77
-    assert len(out["carryover"]) == expected["carryover"] == 10
-    assert len(out["new_today"]) + len(out["carryover"]) == expected["active_workload"] == 87
+    assert len(hd_new) == expected["hd_new"] == 12
+    assert len(out["new_today"]) == expected["new_today"] == 85
+    assert len(out["carryover"]) == expected["carryover"] == 4
+    assert len(out["new_today"]) + len(out["carryover"]) == expected["active_workload"] == 89
     assert len(out["completed_on_date"]) == expected["completed"] == 72
-    assert len(out["pending_end_of_date"]) == expected["pending"] == 7
+    assert len(out["pending_end_of_date"]) == expected["pending"] == 9
     assert len(out["review_required"]) == expected["review_required"] == 8
     assert (
         len(out["completed_without_recognized_entry"])
@@ -527,18 +535,22 @@ def test_jul21_fixture_locks_validated_service_entry_completion_model():
         == 1
     )
     assert out["missing_entry_scan_exceptions"] == []
-    assert len(out["rfv_excluded"]) == expected["rfv_excluded"] == 44
+    assert len(out["rfv_excluded"]) == expected["rfv_excluded"] == 0
     assert (
         len(out["completed_on_date"])
         + len(out["pending_end_of_date"])
         + len(out["review_required"])
-        == 87
+        == 89
     )
 
     assert sorted(wf_new) == sorted(payload["wf_new_today"])
     assert sorted(hd_new) == sorted(payload["hd_new_today"])
-    assert "83VXJSQOUU" in hd_carry
-    assert "83VXJSQOUU" not in hd_new
+    # Dirty today → HD New (not carryover). WIA is not the entry rule.
+    assert "83VXJSQOUU" in hd_new
+    assert "83VXJSQOUU" not in hd_carry
+    for bid in ("0IWQ19G4ZV", "2KFDJYPGYC", "AIDMO1L7ZX", "EVL3TQOBNA"):
+        assert bid in hd_new
+        assert str((presence.get(bid) or {}).get("service_type") or "").upper() == "HD"
 
     f0 = next(r for r in out["rows"] if r["bag_id"] == "F0P0ZPLTWU")
     assert "F0P0ZPLTWU" in out["completed_on_date"]
@@ -564,34 +576,24 @@ def test_jul21_fixture_locks_validated_service_entry_completion_model():
     assert "BBPKT10ZVL" not in out["review_required"]
     assert "BBPKT10ZVL" not in out["new_today"]
 
-    rfv = set(payload["rfv_excluded_expected"])
-    assert len(rfv) == 44
-    operational = (
-        set(out["new_today"])
-        | set(out["carryover"])
-        | set(out["completed_on_date"])
-        | set(out["pending_end_of_date"])
-        | set(out["review_required"])
-        | set(out["completed_without_recognized_entry"])
-    )
-    assert not (rfv & operational)
+    # RFV inactive: no RFV bags in operational buckets; fixture lists none excluded.
+    assert payload["rfv_excluded_expected"] == []
+    assert out["rfv_excluded"] == []
 
     summ = build_step1_headline_summary(out, selected_date_et=selected, activation_date=selected)
     assert summ["wf_new_today"] == 73
-    assert summ["hd_new_today"] == 4
-    assert summ["new_today"] == 77
-    assert summ["carryover"] == 10
-    assert summ["active_workload"] == 87
+    assert summ["hd_new_today"] == 12
+    assert summ["new_today"] == 85
+    assert summ["carryover"] == 4
+    assert summ["active_workload"] == 89
     assert summ["completed"] == 72
-    assert summ["pending"] == 7
+    assert summ["pending"] == 9
     assert summ["exceptions"]["review_required"] == 8
     assert summ["exceptions"]["missing_workload_entry_scan"] == 0
     assert summ["exceptions"]["completed_awaiting_workload_assignment"] == 0
     assert summ["historical_unresolved_backlog"] == 0
     assert summ["historical_unresolved_backlog_bag_ids"] == []
-    assert summ["segments"]["all"]["bag_ids"]["missing_workload_entry_scan"] == []
-    assert summ["segments"]["all"]["bag_ids"]["completed_awaiting_workload_assignment"] == []
-    # Internal reconciliation field may remain; it is not a user-facing exception card.
+    assert summ["rfv_excluded"] == 0
     assert summ["completed_without_recognized_entry"] == 1
     assert summ["completed_without_recognized_entry_bag_ids"] == ["62MRUIXOGF"]
 
@@ -607,7 +609,7 @@ def test_step1_headline_contract_hides_retired_exception_categories():
     entry = {"NEW": _entry(D0)}
     entry["NEW"]["service_type"] = "WF"
     out = _run(D0, at_vendor, entry, {"CWO": _comp(D0)})
-    out["rfv_excluded"] = rfv
+    out["rfv_excluded"] = []  # RFV inactive — not loaded into Step-1
     summ = build_step1_headline_summary(out, selected_date_et=D0, activation_date=D0)
 
     exc = summ["exceptions"]
@@ -623,10 +625,11 @@ def test_step1_headline_contract_hides_retired_exception_categories():
     assert "CWO" in summ["completed_without_recognized_entry_bag_ids"]
     assert "CWO" not in summ["segments"]["all"]["bag_ids"]["review_required"]
     assert "RFV" not in summ["segments"]["all"]["bag_ids"]["new_today"]
+    assert summ["rfv_excluded"] == 0
 
 
 def test_step1_lightweight_read_path_exposes_simplified_exception_contract():
-    """Lightweight Shift Monitor payload must not surface retired exception cards."""
+    """Lightweight Shift Monitor payload must not surface retired exception cards or RFV."""
     from datetime import datetime as dt
     from unittest.mock import MagicMock, patch
 
@@ -641,7 +644,7 @@ def test_step1_lightweight_read_path_exposes_simplified_exception_contract():
         completion_by_bag=completion,
         disappearance_state_by_bag=state,
     )
-    classified["rfv_excluded"] = list(payload["rfv_excluded_expected"])
+    classified["rfv_excluded"] = []
     classified["organization_id"] = 3
     classified["selected_date_et"] = selected.isoformat()
     classified["entry_racks"] = ["VeeWash Dirty"]
@@ -674,7 +677,12 @@ def test_step1_lightweight_read_path_exposes_simplified_exception_contract():
         ),
         patch(
             "backend.rinse_simple_shift_performance._attach_section_sync_statuses",
-            return_value={},
+            return_value={
+                "at_vendor": {"enabled": True},
+                "ready_for_vendor": {"enabled": False, "status": "disabled"},
+                "ready_for_vendor_enabled": False,
+                "sync_cycle": {},
+            },
         ),
         patch(
             "backend.rinse_shift_monitor_baseline.format_baseline_banner_et",
@@ -695,18 +703,17 @@ def test_step1_lightweight_read_path_exposes_simplified_exception_contract():
     assert body is not None
     assert body["veewash_step1_active"] is True
     assert body["performance_meta"]["step1_lightweight"] is True
+    assert body["rinse_sync"]["ready_for_vendor_enabled"] is False
+    assert body["ready_for_vendor"].get("inactive") is True
     summary = body["at_vendor_module"]["veewash_step1_summary"]
     assert summary["wf_new_today"] == 73
-    assert summary["hd_new_today"] == 4
-    assert summary["new_today"] == 77
-    assert summary["active_workload"] == 87
+    assert summary["hd_new_today"] == 12
+    assert summary["new_today"] == 85
+    assert summary["active_workload"] == 89
     assert summary["exceptions"]["review_required"] == 8
     assert summary["exceptions"]["missing_workload_entry_scan"] == 0
     assert summary["exceptions"]["completed_awaiting_workload_assignment"] == 0
     assert summary["historical_unresolved_backlog"] == 0
     assert summary["historical_unresolved_backlog_bag_ids"] == []
-    # Internal only — present for reconciliation, not a visible exception category.
     assert summary["completed_without_recognized_entry"] == 1
-    assert "missing_workload_entry_scan" not in (
-        k for k, v in summary["exceptions"].items() if v and k == "review_required"
-    )
+    assert summary["rfv_excluded"] == 0

@@ -84,9 +84,17 @@ def rfv_scrape_enabled() -> bool:
     scheduled, combined-cycle, manual, or API-triggered RFV scrape runs — regardless of
     the per-tenant ``enable_ready_for_vendor_scrape`` flag or any DB-driven override. This
     is intentionally an env/config default so a stale DB setting cannot re-enable RFV.
+
+    RFV is inactive in Shift Monitor until this returns True: no scrape, no scheduled
+    jobs, no RFV queue load, no RFV sync UI, no RFV workload contribution.
     """
     raw = (os.getenv("RFV_SCRAPE_ENABLED") or "").strip().lower()
     return raw in {"1", "true", "on", "yes", "enabled"}
+
+
+def rfv_feature_active() -> bool:
+    """True only when RFV is explicitly re-enabled via ``RFV_SCRAPE_ENABLED``."""
+    return rfv_scrape_enabled()
 
 
 def ready_for_vendor_scrape_enabled(cursor, organization_id: int) -> bool:
