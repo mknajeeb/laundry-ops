@@ -5,6 +5,7 @@ Presentation only — reuses report row totals; does not mutate payroll amounts.
 
 from __future__ import annotations
 
+import calendar
 from collections import defaultdict
 from typing import Any, Optional
 
@@ -730,6 +731,36 @@ def fetch_rows_for_periods(
     return list(report.get("rows") or [])
 
 
+def _fetch_monthly_paid_rows(
+    conn,
+    organization_id: int,
+    *,
+    month: int,
+    year: int,
+    user_id: Optional[int] = None,
+    worker_category: Optional[str] = None,
+    payroll_status: Optional[str] = None,
+    payment_status: Optional[str] = None,
+) -> list[dict]:
+    """Load Monthly Payroll Paid rows for a calendar month (no nested analytics)."""
+    from backend.payroll_report import query_payroll_report
+
+    report = query_payroll_report(
+        conn,
+        organization_id,
+        report_type="monthly_paid",
+        month=int(month),
+        year=int(year),
+        user_id=user_id,
+        worker_category=worker_category,
+        payroll_status=payroll_status,
+        payment_status=payment_status,
+        include_analytics=False,
+        limit=20000,
+    )
+    return list(report.get("rows") or [])
+
+
 def build_report_analytics(
     conn,
     organization_id: int,
@@ -764,9 +795,23 @@ def build_report_analytics(
     all_periods = list_org_periods_asc(conn, organization_id, require_complete=True)
     complete_set = set(all_periods)
     complete_anchors = [p for p in anchor_periods if p in complete_set]
-    selected = select_comparison_periods(
-        all_periods, anchor_periods=complete_anchors, comparison_range=n
-    )
+
+    # Monthly Paid: compare only among periods paid in the selected month.
+    # Do not pull prior-month pay-date periods into July charts just because
+    # they are chronologically adjacent work weeks.
+    if report_type == "monthly_paid":
+        month_periods_asc = sorted(
+            complete_anchors, key=lambda t: (t[0] or "", t[1] or "")
+        )
+        selected = select_comparison_periods(
+            month_periods_asc,
+            anchor_periods=complete_anchors,
+            comparison_range=n,
+        )
+    else:
+        selected = select_comparison_periods(
+            all_periods, anchor_periods=complete_anchors, comparison_range=n
+        )
 
     # Analytics KPIs / workforce ignore incomplete-period rows (detail export
     # may still include them for monthly paid / custom filters).
@@ -789,7 +834,12 @@ def build_report_analytics(
             period_rows_map[key].append(row)
 
     # Periods in comparison window but outside detail filter window need a fetch.
-    fetch_periods = [p for p in selected if p not in detail_period_set]
+    # Monthly Paid never fetches outside the month's paid periods.
+    fetch_periods = (
+        []
+        if report_type == "monthly_paid"
+        else [p for p in selected if p not in detail_period_set]
+    )
     if fetch_periods:
         extra = fetch_rows_for_periods(
             conn,
@@ -809,29 +859,78 @@ def build_report_analytics(
 
     period_comparison = build_period_comparison_entries(period_rows_map, selected)
 
-    # Focus: latest complete period in the report selection (never incomplete).
+    # Focus / KPI deltas
     focus = None
-    if complete_anchors:
-        focus = max(complete_anchors, key=lambda t: (t[1] or "", t[0] or ""))
-    elif selected:
-        focus = selected[-1]
-
+    focus_label = None
+    previous_label = None
     focus_metrics = analytics_metrics
     prev_metrics = None
-    if focus and period_comparison:
-        idx = next(
-            (
-                i
-                for i, e in enumerate(period_comparison)
-                if e.get("pay_period_start") == focus[0]
-                and e.get("pay_period_end") == focus[1]
-            ),
-            None,
-        )
-        if idx is not None and idx > 0:
-            prev_metrics = period_comparison[idx - 1]
-        if report_type == "payroll_period" and len(complete_anchors) == 1 and idx is not None:
-            focus_metrics = period_comparison[idx]
+
+    if report_type == "monthly_paid":
+        # Month-level focus (not a single week vs a June-paid prior week).
+        month = filters.get("month")
+        year = filters.get("year")
+        try:
+            month_i = int(month) if month not in (None, "") else None
+            year_i = int(year) if year not in (None, "") else None
+        except (TypeError, ValueError):
+            month_i, year_i = None, None
+        if month_i and year_i and 1 <= month_i <= 12:
+            focus_label = f"{calendar.month_name[month_i]} {year_i}"
+            prev_month, prev_year = (
+                (month_i - 1, year_i) if month_i > 1 else (12, year_i - 1)
+            )
+            previous_label = f"{calendar.month_name[prev_month]} {prev_year}"
+            prev_rows = _fetch_monthly_paid_rows(
+                conn,
+                organization_id,
+                month=prev_month,
+                year=prev_year,
+                user_id=filters.get("user_id"),
+                worker_category=filters.get("worker_category"),
+                payroll_status=filters.get("payroll_status"),
+                payment_status=filters.get("payment_status"),
+            )
+            prev_complete = [
+                r
+                for r in prev_rows
+                if period_key_from_row(r) in complete_set
+                or (
+                    not period_key_from_row(r)[0] and not period_key_from_row(r)[1]
+                )
+            ]
+            if prev_complete:
+                prev_metrics = aggregate_period_metrics(prev_complete)
+            else:
+                previous_label = None
+        if complete_anchors:
+            focus = max(complete_anchors, key=lambda t: (t[1] or "", t[0] or ""))
+    else:
+        if complete_anchors:
+            focus = max(complete_anchors, key=lambda t: (t[1] or "", t[0] or ""))
+        elif selected:
+            focus = selected[-1]
+        if focus:
+            focus_label = period_label(focus[0], focus[1])
+        if focus and period_comparison:
+            idx = next(
+                (
+                    i
+                    for i, e in enumerate(period_comparison)
+                    if e.get("pay_period_start") == focus[0]
+                    and e.get("pay_period_end") == focus[1]
+                ),
+                None,
+            )
+            if idx is not None and idx > 0:
+                prev_metrics = period_comparison[idx - 1]
+                previous_label = prev_metrics.get("payroll_period")
+            if (
+                report_type == "payroll_period"
+                and len(complete_anchors) == 1
+                and idx is not None
+            ):
+                focus_metrics = period_comparison[idx]
 
     kpis = build_kpi_cards(focus_metrics, prev_metrics)
     ot_summary = build_ot_summary(focus_metrics, prev_metrics)
@@ -881,10 +980,8 @@ def build_report_analytics(
         "unique_employees": detail_metrics.get("worker_count", 0),
         "head_count": detail_metrics.get("worker_count", 0),
         "comparison_range": n,
-        "focus_period": period_label(focus[0], focus[1]) if focus else None,
-        "previous_period": (
-            prev_metrics.get("payroll_period") if prev_metrics else None
-        ),
+        "focus_period": focus_label,
+        "previous_period": previous_label,
     }
 
     return {

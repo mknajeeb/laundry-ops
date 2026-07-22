@@ -102,6 +102,121 @@ def test_select_comparison_periods_includes_selected_and_prior():
     assert selected == sorted(selected)
 
 
+def test_monthly_paid_comparison_excludes_prior_month_pay_date_periods(monkeypatch):
+    """July Monthly Paid must not chart June-paid weeks (e.g. Jun 15–21 paid Jun 27)."""
+    july_rows = [
+        _row(
+            name="A",
+            cat="w2",
+            ps="2026-06-22",
+            pe="2026-06-28",
+            pay_date="2026-07-04",
+            reg=40,
+            ot=0,
+            line_id=1,
+            user_id=1,
+        ),
+        _row(
+            name="B",
+            cat="temp",
+            ps="2026-06-22",
+            pe="2026-06-28",
+            pay_date="2026-07-04",
+            reg=40,
+            ot=0,
+            line_id=2,
+            user_id=2,
+        ),
+        _row(
+            name="C",
+            cat="contractor_1099",
+            ps="2026-06-22",
+            pe="2026-06-28",
+            pay_date="2026-07-04",
+            reg=40,
+            ot=0,
+            line_id=3,
+            user_id=3,
+        ),
+        _row(
+            name="D",
+            cat="w2",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=2,
+            line_id=4,
+            user_id=4,
+        ),
+        _row(
+            name="E",
+            cat="temp",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=0,
+            line_id=5,
+            user_id=5,
+        ),
+        _row(
+            name="F",
+            cat="contractor_1099",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=0,
+            line_id=6,
+            user_id=6,
+        ),
+    ]
+    # Org has an earlier June-paid complete week that must not appear.
+    all_complete = [
+        ("2026-06-15", "2026-06-21"),
+        ("2026-06-22", "2026-06-28"),
+        ("2026-07-06", "2026-07-12"),
+    ]
+    monkeypatch.setattr(
+        "backend.payroll_report_analytics.list_org_periods_asc",
+        lambda *a, **k: list(all_complete),
+    )
+    monkeypatch.setattr(
+        "backend.payroll_report_analytics.fetch_rows_for_periods",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("monthly_paid must not fetch outside-month periods")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.payroll_report_analytics._fetch_monthly_paid_rows",
+        lambda *a, **k: [],
+    )
+
+    class _Conn:
+        def cursor(self, dictionary=False):
+            raise AssertionError("monthly analytics test should not hit DB cursor")
+
+    analytics = build_report_analytics(
+        _Conn(),
+        3,
+        detail_rows=july_rows,
+        report_type="monthly_paid",
+        filters={"month": 7, "year": 2026, "include_employee_detail": True},
+        comparison_range=4,
+    )
+    pc_periods = [
+        (e["pay_period_start"], e["pay_period_end"])
+        for e in analytics["period_comparison"]
+    ]
+    assert ("2026-06-15", "2026-06-21") not in pc_periods
+    assert ("2026-06-22", "2026-06-28") in pc_periods
+    assert ("2026-07-06", "2026-07-12") in pc_periods
+    assert analytics["summary"]["focus_period"] == "July 2026"
+    # No June month prior rows mocked → no previous label / no bogus week delta.
+    assert analytics["summary"]["previous_period"] is None
+
+
 def test_monthly_groups_period_then_pay_date():
     rows = [
         _row(
