@@ -239,8 +239,8 @@ def test_paid_full_gross_report_net_equals_gross_with_zero_ee_taxes():
     assert row["net_pay"] == 467.16
 
 
-def test_monthly_paid_uses_amount_paid_when_ot_catchup_outstanding():
-    """Monthly Payroll Paid must report cash paid, not corrected earned gross."""
+def test_monthly_paid_uses_earned_gross_with_separate_amount_paid():
+    """Gross includes OT; Amount Paid / Outstanding stay separate on Monthly Paid."""
     batch = {
         "id": 54,
         "batch_name": "1099-2026-010",
@@ -272,14 +272,58 @@ def test_monthly_paid_uses_amount_paid_when_ot_catchup_outstanding():
             "show_tax_payment_section": False,
         },
     }
-    earned = build_report_row(batch, line)
-    assert earned["gross_pay"] == 859.01
-    assert earned["net_pay"] == 799.34
+    row = build_report_row(batch, line, report_type="monthly_paid")
+    assert abs(row["base_earnings"] + row["ot_premium"] - row["gross_pay"]) < 0.02
+    assert row["gross_pay"] == 859.01
+    assert row["net_pay"] == 859.01
+    assert row["total_payroll_cost"] == 859.01
+    assert row["amount_paid"] == 799.34
+    assert row["outstanding_balance"] == 59.67
+    assert row["payment_status_key"] == "partial"
+    assert "Partial" in row["payment_status"]
 
-    paid_report = build_report_row(batch, line, report_type="monthly_paid")
-    assert paid_report["gross_pay"] == 799.34
-    assert paid_report["net_pay"] == 799.34
-    assert paid_report["ot_hours"] == 7.02
+
+def test_temp_ot_gross_includes_premium_guiying_example():
+    batch = {
+        "id": 21,
+        "batch_name": "TEMP-2026-006",
+        "worker_category": "temp",
+        "pay_period_start": "2026-06-08",
+        "pay_period_end": "2026-06-14",
+        "status": "paid",
+        "official_pay_date": "2026-06-20",
+        "payout_details_finalized_at": "2026-06-20",
+    }
+    line = {
+        "id": 203,
+        "user_id": 27,
+        "worker_name_snapshot": "Guiying Lin",
+        "approved_hours": 40,
+        "ot_hours": 7.4,
+        "rate": 17,
+        "ot_rate": 25.5,
+        "gross_amount": 868.70,
+        "payment_status": "paid",
+        "payout_details_json": {
+            "settlement": {
+                "amount_paid": 805.80,
+                "amount_withheld": 0,
+                "outstanding_balance": 62.90,
+                "preserve_amount_paid": True,
+                "paid_full_gross_without_withholding": False,
+            }
+        },
+    }
+    row = build_report_row(batch, line, report_type="monthly_paid")
+    assert row["base_earnings"] == 805.80
+    assert row["ot_premium"] == 62.90
+    assert row["gross_pay"] == 868.70
+    assert row["net_pay"] == 868.70
+    assert row["employee_tax_deductions"] == 0.0
+    assert row["employer_taxes"] == 0.0
+    assert row["total_payroll_cost"] == 868.70
+    assert row["amount_paid"] == 805.80
+    assert row["outstanding_balance"] == 62.90
 
 
 def test_withheld_taxes_reconcile_gross_minus_ee_equals_net():

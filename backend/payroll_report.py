@@ -69,6 +69,8 @@ REPORT_COLUMNS = (
     ("employee_tax_deductions", "Employee taxes"),
     ("other_deductions", "Deductions"),
     ("net_pay", "Net pay"),
+    ("amount_paid", "Amount paid"),
+    ("outstanding_balance", "Outstanding"),
     ("employer_taxes", "Employer taxes"),
     ("total_payroll_cost", "Total payroll cost"),
     ("payroll_status", "Payroll status"),
@@ -86,6 +88,8 @@ PDF_COLUMNS = (
     ("gross_pay", "Gross"),
     ("employee_tax_deductions", "EE taxes"),
     ("net_pay", "Net"),
+    ("amount_paid", "Paid"),
+    ("outstanding_balance", "Outstanding"),
     ("employer_taxes", "ER taxes"),
     ("total_payroll_cost", "Total cost"),
     ("payment_status", "Payment"),
@@ -100,6 +104,8 @@ MONEY_TOTAL_KEYS = (
     "employee_tax_deductions",
     "other_deductions",
     "net_pay",
+    "amount_paid",
+    "outstanding_balance",
     "employer_taxes",
     "total_payroll_cost",
 )
@@ -229,8 +235,26 @@ def _employee_tax_total(details: dict) -> float:
     return round(sum(_money(v) for v in ded.values()), 2)
 
 
-def _report_net_pay(line: dict, details: dict, *, gross_pay: float, emp_tax: float, other_ded: float) -> float:
-    """Net for the report: amount paid to the worker when settled, else Gross − taxes − deductions."""
+def _report_net_pay(
+    line: dict,
+    details: dict,
+    *,
+    gross_pay: float,
+    emp_tax: float,
+    other_ded: float,
+    worker_category: Optional[str] = None,
+) -> float:
+    """Net for the report.
+
+    Temp/1099: Net = earned Gross − EE taxes − other deductions. Amount paid is a
+    separate column (may be less than Gross when OT catch-up is outstanding).
+
+    W-2: prefer settlement amount_paid when present (cash net after withholding).
+    """
+    cat = str(worker_category or line.get("worker_category") or "").strip()
+    if cat in ("temp", "contractor_1099"):
+        return round(_money(gross_pay) - emp_tax - other_ded, 2)
+
     settlement = details.get("settlement") or {}
     amount_paid = settlement.get("amount_paid")
     if amount_paid is not None and str(amount_paid).strip() != "":
@@ -261,19 +285,23 @@ def _payment_status_label(st: str) -> str:
     key = str(st or "pending").strip().lower()
     labels = {
         "paid": "Paid",
+        "partial": "Partial — balance due",
         "approved_unpaid": "Approved — unpaid",
         "pending": "Pending",
     }
     return labels.get(key, key.replace("_", " ").title() or "Pending")
 
 
-def _effective_payment_status(batch: dict, line: dict) -> str:
+def _effective_payment_status(batch: dict, line: dict, *, outstanding: float = 0.0) -> str:
     """Line payment_status, corrected when the batch itself is already paid.
 
     Some historical batches were marked paid at batch level without updating
     every line's payment_status (left as pending / approved_unpaid). For
-    reporting, a paid batch's lines are Paid.
+    reporting, a paid batch's lines are Paid — unless an outstanding OT/catch-up
+    balance remains, in which case status is Partial.
     """
+    if float(outstanding or 0) > 0.005:
+        return "partial"
     batch_st = str(batch.get("status") or "").strip().lower()
     if batch_st == "paid":
         return "paid"
@@ -308,38 +336,36 @@ def _finalized_date_str(batch: dict) -> str:
 def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = None) -> dict[str, Any]:
     details = line.get("payout_details") or _parse_details(line.get("payout_details_json"))
     breakdown = earnings_breakdown_from_line(line)
-    cat = str(batch.get("worker_category") or "")
+    cat = str(batch.get("worker_category") or line.get("worker_category") or "")
     display_status = compute_display_status(batch)
     pay_date = _batch_official_pay_date(batch)
     pay_date_missing = pay_date is None
     emp_tax = _employee_tax_total(details)
     other_ded = _other_deductions_total(details)
     employer_taxes = _employer_tax_total(details)
-    gross_pay = breakdown["gross_pay"]
+    # Earned gross always includes OT premium (Base + OT prem [+ other] = Gross).
+    gross_pay = round(float(breakdown["gross_pay"]), 2)
     settlement = details.get("settlement") or {}
-    amount_paid = settlement.get("amount_paid")
-    outstanding = _money(settlement.get("outstanding_balance"))
-    # Monthly Payroll Paid = cash actually paid on the Official Pay Date.
-    # When an OT catch-up left an outstanding balance, do not inflate Gross to the
-    # corrected earned amount — report the preserved amount_paid only.
-    if (
-        str(report_type or "") == "monthly_paid"
-        and amount_paid is not None
-        and str(amount_paid).strip() != ""
-        and (
-            bool(settlement.get("preserve_amount_paid"))
-            or outstanding > 0
-        )
-        and cat in ("temp", "contractor_1099")
-    ):
-        gross_pay = round(_money(amount_paid), 2)
-        emp_tax = 0.0
+    amount_paid_raw = settlement.get("amount_paid")
+    outstanding = round(_money(settlement.get("outstanding_balance")), 2)
+    if amount_paid_raw is not None and str(amount_paid_raw).strip() != "":
+        amount_paid = round(_money(amount_paid_raw), 2)
+    elif bool(settlement.get("paid_full_gross_without_withholding")):
+        amount_paid = gross_pay
+    else:
+        amount_paid = None
+    # Temp/1099 with zero withholding: EE taxes stay $0 for report when paid-full
+    # or when amount_withheld is explicitly 0 / absent with no tax deductions taken.
+    if cat in ("temp", "contractor_1099"):
+        emp_tax = round(_money(settlement.get("amount_withheld") or 0), 2)
+
     net = _report_net_pay(
         line,
         details,
         gross_pay=gross_pay,
         emp_tax=emp_tax,
         other_ded=other_ded,
+        worker_category=cat,
     )
 
     ps = batch.get("pay_period_start")
@@ -352,7 +378,7 @@ def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = No
 
     total_payroll_cost = round(_money(gross_pay) + employer_taxes, 2)
 
-    payment_st = _effective_payment_status(batch, line)
+    payment_st = _effective_payment_status(batch, line, outstanding=outstanding)
     return {
         "line_id": line.get("id"),
         "batch_id": batch.get("id"),
@@ -376,9 +402,12 @@ def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = No
         "ot_premium": breakdown["ot_premium"],
         "other_earnings": breakdown["other_earnings"],
         "gross_pay": gross_pay,
+        "earned_gross": gross_pay,
         "employee_tax_deductions": emp_tax,
         "other_deductions": other_ded,
         "net_pay": net,
+        "amount_paid": amount_paid if amount_paid is not None else 0.0,
+        "outstanding_balance": outstanding,
         "employer_taxes": employer_taxes,
         "total_payroll_cost": total_payroll_cost,
         "payment_status": _payment_status_label(payment_st),
@@ -387,10 +416,6 @@ def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = No
         "payroll_status_key": display_status,
         "batch_status": batch.get("status"),
         "batch_name": batch.get("batch_name") or "",
-        "outstanding_balance": round(float(outstanding), 2),
-        "amount_paid": round(_money(amount_paid), 2)
-        if amount_paid is not None and str(amount_paid).strip() != ""
-        else None,
     }
 
 
@@ -1029,6 +1054,8 @@ def build_payroll_report_html(report: dict) -> str:
   <span>Batches: {data.get('batch_count', 0)}</span>
   <span>Employees: {data.get('unique_employees', 0)}</span>
   <span>Gross: {fmt_money(data.get('gross_pay'))}</span>
+  <span>Paid: {fmt_money(data.get('amount_paid'))}</span>
+  <span>Outstanding: {fmt_money(data.get('outstanding_balance'))}</span>
   <span>ER taxes: {fmt_money(data.get('employer_taxes'))}</span>
   <span>Total payroll cost: {fmt_money(data.get('total_payroll_cost'))}</span>
   <span>Net: {fmt_money(data.get('net_pay'))}</span>

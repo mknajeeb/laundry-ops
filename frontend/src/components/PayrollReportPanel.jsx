@@ -597,7 +597,8 @@ export default function PayrollReportPanel() {
           {report?.summary ? (
             <Typography variant="caption" color="text.secondary" display="block">
               Batches: {report.summary.batch_count ?? "—"} · Unique employees:{" "}
-              {report.summary.unique_employees ?? "—"} · Gross: {money(totals.gross_pay)} ·
+              {report.summary.unique_employees ?? "—"} · Gross: {money(totals.gross_pay)} · Paid:{" "}
+              {money(totals.amount_paid)} · Outstanding: {money(totals.outstanding_balance)} ·
               Employer taxes: {money(totals.employer_taxes)} · Total payroll cost:{" "}
               {money(totals.total_payroll_cost)}
             </Typography>
@@ -645,6 +646,8 @@ export default function PayrollReportPanel() {
                   employee_tax_deductions: 0,
                   other_deductions: 0,
                   net_pay: 0,
+                  amount_paid: 0,
+                  outstanding_balance: 0,
                   employer_taxes: 0,
                   total_payroll_cost: 0,
                 },
@@ -659,13 +662,14 @@ export default function PayrollReportPanel() {
                     {group.heading}
                   </Typography>
                   <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-                    Employees: {group.rows.length} · Gross: {money(gTotals.gross_pay)} · EE taxes:{" "}
-                    {money(gTotals.employee_tax_deductions)} · Net: {money(gTotals.net_pay)} · ER
-                    taxes: {money(gTotals.employer_taxes)} · Total cost:{" "}
+                    Employees: {group.rows.length} · Gross: {money(gTotals.gross_pay)} · Paid:{" "}
+                    {money(gTotals.amount_paid)} · Outstanding: {money(gTotals.outstanding_balance)} ·
+                    EE taxes: {money(gTotals.employee_tax_deductions)} · Net: {money(gTotals.net_pay)} ·
+                    ER taxes: {money(gTotals.employer_taxes)} · Total cost:{" "}
                     {money(gTotals.total_payroll_cost)}
                   </Typography>
                   <TableContainer sx={{ overflowX: "auto" }}>
-                    <Table size="small" sx={{ minWidth: 1400 }}>
+                    <Table size="small" sx={{ minWidth: 1600 }}>
                       <TableHead>
                         <TableRow>
                           <TableCell>Employee</TableCell>
@@ -678,6 +682,8 @@ export default function PayrollReportPanel() {
                           <TableCell align="right">Gross</TableCell>
                           <TableCell align="right">EE taxes</TableCell>
                           <TableCell align="right">Net</TableCell>
+                          <TableCell align="right">Amount paid</TableCell>
+                          <TableCell align="right">Outstanding</TableCell>
                           <TableCell align="right">ER taxes</TableCell>
                           <TableCell align="right">Total cost</TableCell>
                           <TableCell>Payment</TableCell>
@@ -702,6 +708,8 @@ export default function PayrollReportPanel() {
                               {money(row.employee_tax_deductions)}
                             </TableCell>
                             <TableCell align="right">{money(row.net_pay)}</TableCell>
+                            <TableCell align="right">{money(row.amount_paid)}</TableCell>
+                            <TableCell align="right">{money(row.outstanding_balance)}</TableCell>
                             <TableCell align="right">{money(row.employer_taxes)}</TableCell>
                             <TableCell align="right">{money(row.total_payroll_cost)}</TableCell>
                             <TableCell>{row.payment_status}</TableCell>
@@ -732,6 +740,12 @@ export default function PayrollReportPanel() {
                             {money(gTotals.net_pay)}
                           </TableCell>
                           <TableCell align="right" sx={{ fontWeight: 700 }}>
+                            {money(gTotals.amount_paid)}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>
+                            {money(gTotals.outstanding_balance)}
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>
                             {money(gTotals.employer_taxes)}
                           </TableCell>
                           <TableCell align="right" sx={{ fontWeight: 700 }}>
@@ -746,7 +760,8 @@ export default function PayrollReportPanel() {
               );
             })}
             <Typography variant="subtitle2" fontWeight={700} sx={{ pt: 1 }}>
-              Month totals · Gross: {money(totals.gross_pay)} · EE taxes:{" "}
+              Month totals · Gross: {money(totals.gross_pay)} · Paid: {money(totals.amount_paid)} ·
+              Outstanding: {money(totals.outstanding_balance)} · EE taxes:{" "}
               {money(totals.employee_tax_deductions)} · Net: {money(totals.net_pay)} · Total
               payroll cost: {money(totals.total_payroll_cost)}
             </Typography>
@@ -776,6 +791,8 @@ export default function PayrollReportPanel() {
                   <TableCell align="right">Employee tax</TableCell>
                   <TableCell align="right">Other deductions</TableCell>
                   <TableCell align="right">Net pay</TableCell>
+                  <TableCell align="right">Amount paid</TableCell>
+                  <TableCell align="right">Outstanding</TableCell>
                   <TableCell align="right">Employer taxes</TableCell>
                   <TableCell align="right">Total payroll cost</TableCell>
                   <TableCell>Payment status</TableCell>
@@ -804,6 +821,8 @@ export default function PayrollReportPanel() {
                     <TableCell align="right">{money(row.employee_tax_deductions)}</TableCell>
                     <TableCell align="right">{money(row.other_deductions)}</TableCell>
                     <TableCell align="right">{money(row.net_pay)}</TableCell>
+                    <TableCell align="right">{money(row.amount_paid)}</TableCell>
+                    <TableCell align="right">{money(row.outstanding_balance)}</TableCell>
                     <TableCell align="right">{money(row.employer_taxes)}</TableCell>
                     <TableCell align="right">{money(row.total_payroll_cost)}</TableCell>
                     <TableCell>{row.payment_status}</TableCell>
@@ -842,6 +861,12 @@ export default function PayrollReportPanel() {
                       {money(totals.net_pay)}
                     </TableCell>
                     <TableCell align="right" sx={{ fontWeight: 700 }}>
+                      {money(totals.amount_paid)}
+                    </TableCell>
+                    <TableCell align="right" sx={{ fontWeight: 700 }}>
+                      {money(totals.outstanding_balance)}
+                    </TableCell>
+                    <TableCell align="right" sx={{ fontWeight: 700 }}>
                       {money(totals.employer_taxes)}
                     </TableCell>
                     <TableCell align="right" sx={{ fontWeight: 700 }}>
@@ -851,7 +876,7 @@ export default function PayrollReportPanel() {
                   </TableRow>
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={17}>
+                    <TableCell colSpan={19}>
                       <Typography variant="body2" color="text.secondary">
                         No payroll records match the current filters.
                       </Typography>
