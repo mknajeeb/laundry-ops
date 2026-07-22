@@ -543,13 +543,22 @@ def validate_close(
         "wf_zero_weight_resolved": True,
         "completed_without_entry_resolved": True,
         "disappeared_reviewed": True,
+        "bulk_workitems_reviewed": True,
         "carryover_confirmed": True,
         "service_totals_ok": service_ok,
         "arithmetic_ok": arithmetic_ok,
     }
+    # Explicit bulk unresolved count (also covered by review_required_cleared).
+    review_by_reason = summary.get("review_by_reason") or {}
+    bulk_ids = review_by_reason.get("WF_BULK_WORKITEM_REVIEW") or []
+    bulk_n = len(bulk_ids)
+    checklist["bulk_workitems_reviewed"] = bulk_n == 0
     blocking = []
     if review_n > 0 and not allow_unresolved_reviews:
         blocking.append("unresolved_review_required")
+    if bulk_n > 0 and not allow_unresolved_reviews:
+        blocking.append("unresolved_bulk_workitem_review")
+        checklist["bulk_workitems_reviewed"] = False
     if not arithmetic_ok:
         blocking.append("headline_arithmetic_mismatch")
     return {
@@ -557,6 +566,7 @@ def validate_close(
         "blocking": blocking,
         "checklist": checklist,
         "review_required_count": review_n,
+        "bulk_workitem_review_count": bulk_n,
         "totals": {
             "active": active,
             "completed": completed,

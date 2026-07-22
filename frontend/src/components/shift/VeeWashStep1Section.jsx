@@ -31,6 +31,10 @@ const REASON_GROUPS = [
     legacyKeys: ["WF_ZERO_OR_MISSING_WEIGHT"],
   },
   {
+    key: "WF_BULK_WORKITEM_REVIEW",
+    label: "Bulk Workitems",
+  },
+  {
     key: "DISAPPEARED_WITHOUT_COMPLETION",
     label: "Disappeared without completion",
   },
@@ -195,7 +199,7 @@ export default function VeeWashStep1Section({
   shiftDay,
 }) {
   const [serviceFilter, setServiceFilter] = useState("all");
-  const [drawer, setDrawer] = useState({ open: false, metric: null, title: "" });
+  const [drawer, setDrawer] = useState({ open: false, metric: null, title: "", reasonCode: null });
   const rushFilter = segment || "all";
   const segments = summary?.segments || {};
   const dayMeta = shiftDay || summary?.shift_day || {};
@@ -216,8 +220,8 @@ export default function VeeWashStep1Section({
   const reviewCount = totalSeg.exceptions?.review_required ?? reviewIds.length ?? 0;
   const reviewByReason = summary?.review_by_reason || {};
 
-  const openMetric = (metric, title) => {
-    setDrawer({ open: true, metric, title });
+  const openMetric = (metric, title, reasonCode = null) => {
+    setDrawer({ open: true, metric, title, reasonCode });
   };
 
   if (!summary) return null;
@@ -391,7 +395,10 @@ export default function VeeWashStep1Section({
                     <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.35 }}>
                       {label} · {ids.length}
                     </Typography>
-                    <BagList ids={ids} onBagClick={() => openMetric("review_required", label)} />
+                    <BagList
+                      ids={ids}
+                      onBagClick={() => openMetric("review_required", label, key)}
+                    />
                   </Box>
                 );
               })}
@@ -414,6 +421,7 @@ export default function VeeWashStep1Section({
         selectedDateEt={selectedDateEt || summary.selected_date_et}
         metric={drawer.metric}
         title={drawer.title}
+        reasonCode={drawer.reasonCode}
         serviceFilter={serviceFilter}
         rushFilter={rushFilter}
         onCorrected={onRefresh}

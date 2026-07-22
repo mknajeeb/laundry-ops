@@ -4,6 +4,7 @@ import FoldingBenchmarksPanel from "../components/folding/FoldingBenchmarksPanel
 import FoldingExceptionRulesPanel from "../components/folding/FoldingExceptionRulesPanel";
 import ProcessingSettingsPanel from "../components/folding/ProcessingSettingsPanel";
 import WeeklyScheduleDisplaySettingsPanel from "../components/weeklySchedule/WeeklyScheduleDisplaySettingsPanel";
+import BulkWorkitemsPanel from "../components/shift/BulkWorkitemsPanel";
 
 function SettingsNav() {
   const links = [
@@ -61,6 +62,12 @@ export default function PerformanceSettingsPage() {
           description="Control what managers and external partners see on the planned weekly schedule — labor cost, rates, and role labels."
         >
           <WeeklyScheduleDisplaySettingsPanel />
+        </SettingsSection>
+        <SettingsSection
+          title="Bulk Workitems"
+          description="WF create-workitem-bulk review catalog. Unit prices snapshot onto each bag; historical totals never change."
+        >
+          <BulkWorkitemsPanel />
         </SettingsSection>
         <SettingsSection
           title="Benchmarks & quality targets"

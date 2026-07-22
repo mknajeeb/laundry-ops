@@ -433,6 +433,7 @@ def register_rinse_shift_analysis_routes(
                 bag_id=request.args.get("bag_id"),
                 page=int(request.args.get("page") or 1),
                 page_size=int(request.args.get("page_size") or 25),
+                reason_code=request.args.get("reason_code") or request.args.get("reason"),
             )
             return jsonify(json_safe_rinse(out))
         except Exception as exc:
@@ -473,6 +474,187 @@ def register_rinse_shift_analysis_routes(
             return jsonify(json_safe_rinse(out))
         except Exception as exc:
             conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    def _require_manager_or_admin(me) -> tuple[bool, Any, int | None]:
+        roles = set()
+        if isinstance(me, dict):
+            raw = me.get("roles") or me.get("role") or []
+            if isinstance(raw, str):
+                roles = {raw.upper()}
+            elif isinstance(raw, (list, tuple, set)):
+                roles = {str(r).upper() for r in raw}
+        if roles.intersection({"ADMIN", "OPS", "SUPER_ADMIN", "PLATFORM_ADMIN", "MANAGER"}):
+            return True, None, None
+        role_blob = " ".join(sorted(roles))
+        if "ADMIN" in role_blob or "OPS" in role_blob or "MANAGER" in role_blob:
+            return True, None, None
+        return False, jsonify({"error": "manager_or_admin_required"}), 403
+
+    @app.route("/rinse/bulk-workitems", methods=["GET"])
+    def rinse_bulk_workitems_list():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org = user_org_id(me)
+            from backend.rinse_bulk_workitems import list_workitems
+
+            include_inactive = str(request.args.get("include_inactive") or "1").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            rows = list_workitems(cursor, org, include_inactive=include_inactive)
+            conn.commit()
+            return jsonify({"ok": True, "workitems": json_safe_rinse(rows)})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/bulk-workitems", methods=["POST"])
+    def rinse_bulk_workitems_create():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            ok, err_j, err_c = _require_manager_or_admin(me)
+            if not ok:
+                return err_j, err_c
+            org = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            from backend.rinse_bulk_workitems import create_workitem
+
+            row = create_workitem(
+                cursor,
+                org,
+                name=str(body.get("name") or ""),
+                current_unit_price=body.get("current_unit_price") or body.get("unit_price") or 0,
+                display_order=int(body.get("display_order") or 100),
+                active=bool(body.get("active", True)),
+                actor_user_id=me.get("id") if isinstance(me, dict) else None,
+                actor_display_name=(
+                    (me.get("display_name") or me.get("username"))
+                    if isinstance(me, dict)
+                    else None
+                ),
+            )
+            conn.commit()
+            return jsonify({"ok": True, "workitem": json_safe_rinse(row)})
+        except ValueError as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/bulk-workitems/<int:workitem_id>", methods=["PUT", "PATCH"])
+    def rinse_bulk_workitems_update(workitem_id: int):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            ok, err_j, err_c = _require_manager_or_admin(me)
+            if not ok:
+                return err_j, err_c
+            org = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            from backend.rinse_bulk_workitems import update_workitem
+
+            row = update_workitem(
+                cursor,
+                org,
+                workitem_id,
+                name=body.get("name"),
+                current_unit_price=body.get("current_unit_price", body.get("unit_price")),
+                display_order=body.get("display_order"),
+                active=body.get("active"),
+                actor_user_id=me.get("id") if isinstance(me, dict) else None,
+                actor_display_name=(
+                    (me.get("display_name") or me.get("username"))
+                    if isinstance(me, dict)
+                    else None
+                ),
+            )
+            conn.commit()
+            return jsonify({"ok": True, "workitem": json_safe_rinse(row)})
+        except ValueError as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/bulk-workitems/<int:workitem_id>", methods=["DELETE"])
+    def rinse_bulk_workitems_delete(workitem_id: int):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            ok, err_j, err_c = _require_manager_or_admin(me)
+            if not ok:
+                return err_j, err_c
+            org = user_org_id(me)
+            from backend.rinse_bulk_workitems import delete_workitem
+
+            out = delete_workitem(cursor, org, workitem_id)
+            conn.commit()
+            return jsonify(out)
+        except ValueError as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/bulk-workitems/revenue", methods=["GET"])
+    def rinse_bulk_workitems_revenue():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org = user_org_id(me)
+            from backend.rinse_bulk_workitems import build_bulk_revenue_rows
+
+            raw_day = request.args.get("date") or request.args.get("shift_date_et")
+            start_raw = request.args.get("start_date")
+            end_raw = request.args.get("end_date")
+            day = parse_date_value(raw_day) if raw_day else None
+            start_d = parse_date_value(start_raw) if start_raw else None
+            end_d = parse_date_value(end_raw) if end_raw else None
+            rows = build_bulk_revenue_rows(
+                cursor,
+                org,
+                shift_date_et=day if isinstance(day, date) else None,
+                start_date=start_d if isinstance(start_d, date) else None,
+                end_date=end_d if isinstance(end_d, date) else None,
+            )
+            return jsonify({"ok": True, "rows": json_safe_rinse(rows), "count": len(rows)})
+        except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()

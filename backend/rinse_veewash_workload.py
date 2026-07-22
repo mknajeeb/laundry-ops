@@ -70,6 +70,7 @@ REASON_COMPLETED_WITHOUT_RECOGNIZED_ENTRY = "COMPLETED_WITHOUT_RECOGNIZED_ENTRY"
 REASON_WF_ZERO_OR_MISSING_POST_WEIGHT = "WF_ZERO_OR_MISSING_POST_WEIGHT"
 # Back-compat alias for earlier Step-1 reason code string.
 REASON_WF_ZERO_OR_MISSING_WEIGHT = REASON_WF_ZERO_OR_MISSING_POST_WEIGHT
+REASON_WF_BULK_WORKITEM_REVIEW = "WF_BULK_WORKITEM_REVIEW"
 
 REASON_SERVICE_CLASSIFICATION_MISMATCH = "SERVICE_CLASSIFICATION_MISMATCH"
 REASON_COMPLETION_DETAILS_MISSING = "COMPLETION_DETAILS_MISSING"
@@ -78,6 +79,7 @@ REVIEW_REASON_CODES = (
     REASON_DISAPPEARED_WITHOUT_COMPLETION,
     REASON_COMPLETED_WITHOUT_RECOGNIZED_ENTRY,
     REASON_WF_ZERO_OR_MISSING_POST_WEIGHT,
+    REASON_WF_BULK_WORKITEM_REVIEW,
     REASON_SERVICE_CLASSIFICATION_MISMATCH,
     REASON_COMPLETION_DETAILS_MISSING,
 )
@@ -862,6 +864,19 @@ def build_veewash_daily_workload(
         | set(presence.keys())
     )
     weights = load_bag_weight_map(cursor, organization_id, weight_ids)
+
+    from backend.rinse_bulk_workitems import (
+        load_bag_bulk_lines,
+        load_bulk_resolutions,
+        load_bulk_workitem_scan_map,
+    )
+
+    bulk_scans = load_bulk_workitem_scan_map(cursor, organization_id, weight_ids)
+    bulk_resolutions = load_bulk_resolutions(
+        cursor, organization_id, selected_date_et, weight_ids
+    )
+    bulk_lines = load_bag_bulk_lines(cursor, organization_id, selected_date_et, weight_ids)
+
     result = expand_review_required(
         result,
         selected_date_et=selected_date_et,
@@ -869,6 +884,9 @@ def build_veewash_daily_workload(
         entry_by_bag=entry,
         wia_by_bag=wia,
         weight_by_bag=weights,
+        bulk_scan_by_bag=bulk_scans,
+        bulk_resolution_by_bag=bulk_resolutions,
+        bulk_lines_by_bag=bulk_lines,
     )
     result["disappearance_confirmation"] = disappearance_state
     result["organization_id"] = int(organization_id)

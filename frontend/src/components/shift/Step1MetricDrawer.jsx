@@ -32,6 +32,7 @@ import {
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { PayrollDateTimeField } from "../PayrollDateTimeField";
+import BulkWorkitemEntrySection from "./BulkWorkitemEntrySection";
 
 function defaultRackForService(service) {
   return String(service).toUpperCase() === "HD" ? "workitems-added" : "VeeWash Dirty";
@@ -51,6 +52,7 @@ const REASON_LABELS = {
   COMPLETED_WITHOUT_RECOGNIZED_ENTRY: "Completed without recognized entry",
   WF_ZERO_OR_MISSING_POST_WEIGHT: "Zero or missing WF post weight",
   WF_ZERO_OR_MISSING_WEIGHT: "Zero or missing WF post weight",
+  WF_BULK_WORKITEM_REVIEW: "Bulk Workitems Require Review",
   SERVICE_CLASSIFICATION_MISMATCH: "Service classification mismatch",
   COMPLETION_DETAILS_MISSING: "Completion details missing",
 };
@@ -73,10 +75,12 @@ export default function Step1MetricDrawer({
   title,
   onCorrected,
   readOnly = false,
+  reasonCode = null,
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [bags, setBags] = useState([]);
+  const [catalog, setCatalog] = useState([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -101,9 +105,11 @@ export default function Step1MetricDrawer({
           page: nextPage,
           page_size: PAGE_SIZE,
           include_details: false,
+          reason_code: reasonCode || undefined,
         });
         const data = res?.data || {};
         setBags(data.bags || []);
+        setCatalog(data.active_bulk_workitems || []);
         setPage(data.pagination?.page || nextPage);
         setTotal(data.pagination?.total ?? (data.bags || []).length);
         setHasMore(Boolean(data.pagination?.has_more));
@@ -116,7 +122,7 @@ export default function Step1MetricDrawer({
         setLoading(false);
       }
     },
-    [open, selectedDateEt, metric, serviceFilter, rushFilter]
+    [open, selectedDateEt, metric, serviceFilter, rushFilter, reasonCode]
   );
 
   useEffect(() => {
@@ -134,6 +140,7 @@ export default function Step1MetricDrawer({
         rush: rushFilter,
         bag_id: bagId,
         include_details: true,
+        reason_code: reasonCode || undefined,
       });
       const detail = (res?.data?.bags || [])[0];
       if (!detail) return;
@@ -325,6 +332,19 @@ export default function Step1MetricDrawer({
                     {fmtTs(bag.completion_at)} by {bag.completed_by || "—"} · Portal:{" "}
                     {bag.portal_status || "—"} · Last seen: {fmtTs(bag.last_seen_at)}
                   </Typography>
+
+                  <BulkWorkitemEntrySection
+                    bag={bag}
+                    selectedDateEt={selectedDateEt}
+                    catalog={catalog}
+                    readOnly={readOnly}
+                    onError={(msg) => setError(msg)}
+                    onSaved={async () => {
+                      await load(page);
+                      onCorrected?.();
+                    }}
+                  />
+
                   <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 1, mb: 0.5 }}>
                     Scan chronology (ET)
                   </Typography>

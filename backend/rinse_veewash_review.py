@@ -19,6 +19,7 @@ from backend.rinse_veewash_workload import (
     REASON_COMPLETED_WITHOUT_RECOGNIZED_ENTRY,
     REASON_COMPLETION_DETAILS_MISSING,
     REASON_DISAPPEARED_WITHOUT_COMPLETION,
+    REASON_WF_BULK_WORKITEM_REVIEW,
     REASON_WF_ZERO_OR_MISSING_POST_WEIGHT,
     REASON_WF_ZERO_OR_MISSING_WEIGHT,  # noqa: F401 — alias
     SERVICE_HD,
@@ -104,9 +105,13 @@ def expand_review_required(
     wia_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
     weight_by_bag: Mapping[str, Any] | None = None,
     shift_closed: bool = False,
+    bulk_scan_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
+    bulk_resolution_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
+    bulk_lines_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """
-    Mutate/return classification so Review Required includes CWO + WF post-weight gaps.
+    Mutate/return classification so Review Required includes CWO + WF post-weight gaps
+    + WF bulk workitem review.
 
     Priority: Review > Completed > Pending. One bag → one review count.
 
@@ -114,14 +119,18 @@ def expand_review_required(
       valid entry + valid pre + canonically completed + no valid post
     → WF_ZERO_OR_MISSING_POST_WEIGHT
 
-    During an OPEN shift, in-process bags with only a pre weight stay Pending.
-    CLOSED shifts use the same gate (only completed bags lacking post).
+    WF create-workitem-bulk (WF only) → WF_BULK_WORKITEM_REVIEW until resolved.
     """
     _ = shift_closed  # reserved; gate is completion-based for both OPEN and CLOSED
     D = selected_date_et
     prev_day = D - timedelta(days=1)
     wia_map = wia_by_bag or {}
     weight_map = weight_by_bag or {}
+    bulk_scans = bulk_scan_by_bag or {}
+    bulk_resolutions = bulk_resolution_by_bag or {}
+    bulk_lines = bulk_lines_by_bag or {}
+
+    from backend.rinse_bulk_workitems import bag_bulk_review_cleared
 
     rows_by_id = {r.get("bag_id"): dict(r) for r in (result.get("rows") or []) if r.get("bag_id")}
     new_today = set(result.get("new_today") or [])
@@ -296,6 +305,55 @@ def expand_review_required(
             "canonical_status": canon,
             "final_bucket": "review_required",
             "reason_codes": list(reasons.get(bid) or []),
+        }
+
+    # --- WF create-workitem-bulk → Review Required (HD excluded) --------------
+    active = new_today | carryover
+    for bid in list(active):
+        bid = _norm_bag(bid)
+        if not bid:
+            continue
+        scan_info = bulk_scans.get(bid)
+        if not scan_info or int(scan_info.get("count") or 0) <= 0:
+            continue
+        pres = presence_by_bag.get(bid) or {}
+        row = rows_by_id.get(bid) or {}
+        svc = _service_of(pres) or str(row.get("service_type") or "").upper()
+        if svc != SERVICE_WF:
+            continue
+        if bag_bulk_review_cleared(bulk_resolutions.get(bid), list(bulk_lines.get(bid) or [])):
+            # Attach bulk metadata for drawer but do not flag.
+            if bid in rows_by_id:
+                rows_by_id[bid]["bulk_workitem_scan"] = {
+                    "count": scan_info.get("count"),
+                    "first_at": scan_info.get("first_at"),
+                    "last_at": scan_info.get("last_at"),
+                    "employee": scan_info.get("employee"),
+                }
+                rows_by_id[bid]["bulk_workitems"] = list(bulk_lines.get(bid) or [])
+                rows_by_id[bid]["bulk_resolution"] = bulk_resolutions.get(bid)
+            continue
+
+        add_reason(bid, REASON_WF_BULK_WORKITEM_REVIEW)
+        review.add(bid)
+        if bid in completed:
+            completed.discard(bid)
+        if bid in pending:
+            pending.discard(bid)
+        row = rows_by_id.get(bid) or {"bag_id": bid}
+        rows_by_id[bid] = {
+            **row,
+            "outcome": OUTCOME_REVIEW_REQUIRED,
+            "final_bucket": "review_required",
+            "reason_codes": list(reasons.get(bid) or []),
+            "bulk_workitem_scan": {
+                "count": scan_info.get("count"),
+                "first_at": scan_info.get("first_at"),
+                "last_at": scan_info.get("last_at"),
+                "employee": scan_info.get("employee"),
+            },
+            "bulk_workitems": list(bulk_lines.get(bid) or []),
+            "bulk_resolution": bulk_resolutions.get(bid),
         }
 
     # Ensure disappeared stay in review not pending/completed

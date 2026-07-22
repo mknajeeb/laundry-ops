@@ -594,6 +594,28 @@ export const getVeewashStep1BagDetail = (params = {}) =>
     headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
   });
 
+/** Bulk workitem maintenance (Settings → Bulk Workitems). */
+export const getBulkWorkitems = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/bulk-workitems`, {
+    params: { include_inactive: true, ...params, _t: Date.now() },
+    timeout: 30000,
+  });
+
+export const createBulkWorkitem = (body) =>
+  axios.post(`${API_BASE}/rinse/bulk-workitems`, body, { timeout: 30000 });
+
+export const updateBulkWorkitem = (id, body) =>
+  axios.put(`${API_BASE}/rinse/bulk-workitems/${id}`, body, { timeout: 30000 });
+
+export const deleteBulkWorkitem = (id) =>
+  axios.delete(`${API_BASE}/rinse/bulk-workitems/${id}`, { timeout: 30000 });
+
+export const getBulkWorkitemRevenue = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/bulk-workitems/revenue`, {
+    params: { ...params, _t: Date.now() },
+    timeout: 60000,
+  });
+
 /** Manager correction for Step-1 Review Required bags. */
 export const postVeewashStep1Correction = (body) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/veewash-step1/correct`, body, {

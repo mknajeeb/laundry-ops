@@ -25,6 +25,7 @@ const CHECKLIST_ITEMS = [
   ["wf_zero_weight_resolved", "WF zero/post-weight issues resolved"],
   ["completed_without_entry_resolved", "Completed-without-entry issues resolved"],
   ["disappeared_reviewed", "Disappeared bags reviewed"],
+  ["bulk_workitems_reviewed", "Bulk Workitems Reviewed"],
   ["carryover_confirmed", "Carryover confirmed"],
 ];
 

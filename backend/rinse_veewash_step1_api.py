@@ -123,6 +123,7 @@ def _filter_bag_ids(
     metric: str,
     service: str,
     rush: str,
+    reason_code: str | None = None,
 ) -> list[str]:
     from backend.rinse_veewash_workload import _rush_bucket
 
@@ -168,6 +169,14 @@ def _filter_bag_ids(
         ids = list(bags.get("new_today") or []) + list(bags.get("carryover") or [])
     else:
         ids = list(bags.get(metric_key) or [])
+
+    code = str(reason_code or "").strip()
+    if code:
+        by_reason = summary.get("review_by_reason") or {}
+        reason_ids = set(by_reason.get(code) or [])
+        if code == "WF_ZERO_OR_MISSING_WEIGHT":
+            reason_ids |= set(by_reason.get("WF_ZERO_OR_MISSING_POST_WEIGHT") or [])
+        ids = [b for b in ids if b in reason_ids] if ids else sorted(reason_ids)
     return sorted(set(ids))
 
 
@@ -216,6 +225,7 @@ def build_drilldown(
     bag_id: str | None = None,
     page: int = 1,
     page_size: int = 25,
+    reason_code: str | None = None,
 ) -> dict[str, Any]:
     """
     Step-1 metric drawer payload.
@@ -225,6 +235,13 @@ def build_drilldown(
     """
     import time
 
+    from backend.rinse_bulk_workitems import (
+        list_workitems,
+        load_bag_bulk_audits,
+        load_bag_bulk_lines,
+        load_bulk_resolutions,
+        load_bulk_workitem_scan_map,
+    )
     from backend.rinse_veewash_shift_day import (
         _workload_shell_from_bags,
         get_day_record,
@@ -250,10 +267,16 @@ def build_drilldown(
         payload = build_step1_payload(cursor, organization_id, selected_date_et)
         wl = payload["workload"]
         summary = payload["summary"]
-    ids = _filter_bag_ids(summary, metric=metric, service=service, rush=rush)
+    ids = _filter_bag_ids(
+        summary,
+        metric=metric,
+        service=service,
+        rush=rush,
+        reason_code=reason_code,
+    )
     if bag_id:
         bid = normalize_bag_id(bag_id)
-        ids = [bid] if bid in ids or bid else ([bid] if bid else [])
+        ids = [bid] if bid else []
 
     page = max(1, int(page or 1))
     page_size = max(1, min(100, int(page_size or 25)))
@@ -264,8 +287,22 @@ def build_drilldown(
     rows_by_id = {r.get("bag_id"): r for r in (wl.get("rows") or []) if r.get("bag_id")}
     reasons = wl.get("review_reasons_by_bag") or summary.get("review_reasons_by_bag") or {}
 
+    bulk_scans = load_bulk_workitem_scan_map(cursor, organization_id, page_ids) if page_ids else {}
+    bulk_lines = (
+        load_bag_bulk_lines(cursor, organization_id, selected_date_et, page_ids)
+        if page_ids
+        else {}
+    )
+    bulk_resolutions = (
+        load_bulk_resolutions(cursor, organization_id, selected_date_et, page_ids)
+        if page_ids
+        else {}
+    )
+    active_catalog = list_workitems(cursor, organization_id, active_only=True)
+
     scans: dict[str, list] = {b: [] for b in page_ids}
     corrections: dict[str, list] = {b: [] for b in page_ids}
+    bulk_audits: dict[str, list] = {b: [] for b in page_ids}
     detail_ms = 0.0
     if include_details and page_ids:
         t_detail = time.perf_counter()
@@ -296,11 +333,17 @@ def build_drilldown(
                             "created_at": row.get("created_at"),
                         }
                     )
+        for bid in page_ids:
+            bulk_audits[bid] = load_bag_bulk_audits(
+                cursor, organization_id, selected_date_et, bid
+            )
         detail_ms = (time.perf_counter() - t_detail) * 1000.0
 
     bags = []
     for bid in page_ids:
         r = rows_by_id.get(bid) or {}
+        lines = bulk_lines.get(bid) or r.get("bulk_workitems") or []
+        scan_info = bulk_scans.get(bid) or r.get("bulk_workitem_scan") or {}
         item = {
             "bag_id": bid,
             "customer_name": r.get("customer_name"),
@@ -319,6 +362,10 @@ def build_drilldown(
             "completed_by": r.get("completed_by"),
             "portal_status": r.get("portal_status"),
             "last_seen_at": r.get("last_seen_date"),
+            "bulk_workitem_scan": scan_info,
+            "bulk_workitems": lines,
+            "bulk_resolution": bulk_resolutions.get(bid) or r.get("bulk_resolution"),
+            "bulk_item_total": round(sum(float(x.get("line_total") or 0) for x in lines), 2),
             "system_result": {
                 "outcome": r.get("outcome"),
                 "canonical_status": r.get("canonical_status"),
@@ -330,9 +377,11 @@ def build_drilldown(
         if include_details:
             item["scans"] = scans.get(bid) or []
             item["corrections"] = corrections.get(bid) or []
+            item["bulk_audits"] = bulk_audits.get(bid) or []
         else:
             item["scans"] = []
             item["corrections"] = []
+            item["bulk_audits"] = []
         bags.append(item)
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -341,7 +390,9 @@ def build_drilldown(
         "metric": metric,
         "service": service,
         "rush": rush,
+        "reason_code": reason_code,
         "bags": bags,
+        "active_bulk_workitems": active_catalog,
         "review_by_reason": summary.get("review_by_reason") or {},
         "pagination": {
             "page": page,
@@ -372,6 +423,58 @@ def apply_step1_correction(
     reason = str(body.get("reason") or body.get("correction_reason") or "").strip()
     if not bid:
         return {"ok": False, "error": "invalid_bag_id"}
+
+    if action == "save_bulk_workitems":
+        from backend.rinse_bulk_workitems import save_bag_bulk_workitems
+
+        day_raw = body.get("selected_date_et") or body.get("date")
+        day = today_et()
+        if day_raw:
+            try:
+                day = date.fromisoformat(str(day_raw)[:10])
+            except ValueError:
+                pass
+        out = save_bag_bulk_workitems(
+            cursor,
+            organization_id,
+            shift_date_et=day,
+            bag_id=bid,
+            items=list(body.get("items") or []),
+            no_chargeable=bool(body.get("no_chargeable") or body.get("no_chargeable_bulk_items")),
+            no_charge_reason=str(body.get("no_charge_reason") or reason or "").strip() or None,
+            reason=reason or None,
+            actor_user_id=actor_user_id,
+            actor_display_name=actor_display_name,
+        )
+        if out.get("ok"):
+            # Refresh live snapshot so Review totals update immediately.
+            try:
+                from backend.rinse_veewash_shift_day import (
+                    build_or_load_step1_for_date,
+                    persist_day_snapshot,
+                    _commit,
+                )
+                from backend.rinse_veewash_workload import (
+                    build_step1_headline_summary,
+                    build_veewash_daily_workload,
+                    get_step1_activation_date,
+                )
+
+                wl = build_veewash_daily_workload(
+                    cursor, organization_id, selected_date_et=day
+                )
+                activation = get_step1_activation_date(cursor, organization_id) or day
+                summary = build_step1_headline_summary(
+                    wl, selected_date_et=day, activation_date=activation
+                )
+                persist_day_snapshot(
+                    cursor, organization_id, day, workload=wl, summary=summary
+                )
+                _commit(cursor)
+            except Exception:
+                pass
+        return out
+
     if not reason:
         return {"ok": False, "error": "reason_required"}
 
