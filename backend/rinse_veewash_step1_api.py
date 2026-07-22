@@ -382,67 +382,32 @@ def apply_step1_correction(
             return {"ok": False, "error": "weight_must_be_positive"}
         emp = str(body.get("employee") or "manager").strip()
         ts = _parse_dt(body.get("weight_at") or body.get("completion_at")) or datetime.utcnow()
-        from backend.rinse_bag_registry import ensure_rinse_bag_scan_events_table
-        from backend.rinse_scan_event_identity import dedupe_key_from_row
-        from backend.rinse_workload_bag_weight import ensure_scan_events_weight_lbs_column
-
-        ensure_rinse_bag_scan_events_table(cursor)
-        ensure_scan_events_weight_lbs_column(cursor)
-        time_raw = ts.strftime("%Y-%m-%d %H:%M:%S")
-        row = {
-            "organization_id": int(organization_id),
-            "bag_id": bid,
-            "purpose": "weight-entry",
-            "scanned_at_parsed": ts,
-            "time_scanned_raw": time_raw,
-            "user_name": emp,
-            "rack": None,
-        }
-        dedupe = dedupe_key_from_row(row)
-        cursor.execute(
-            """
-            INSERT INTO rinse_bag_scan_events (
-                organization_id, bag_id, purpose, scanned_at_parsed, time_scanned_raw,
-                user_name, rack, weight_lbs, dedupe_key, raw_json
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            ON DUPLICATE KEY UPDATE weight_lbs=VALUES(weight_lbs), user_name=VALUES(user_name)
-            """,
-            (
-                int(organization_id),
-                bid,
-                "weight-entry",
-                ts,
-                time_raw,
-                emp,
-                None,
-                weight_f,
-                dedupe,
-                json.dumps(
-                    {
-                        "backfill_source": "step1_correct_weight",
-                        "Weight": weight_f,
-                        "operator_approved": True,
-                    }
-                ),
-            ),
-        )
+        detected_pre = prior.get("pre_weight_lbs")
+        detected_post = prior.get("post_weight_lbs")
+        # Correction updates effective post only — never mutate source scan events.
         _record_correction(
             cursor,
             organization_id,
             bag_id=bid,
             action=action,
             reason_text=reason,
-            reason_code="WF_ZERO_OR_MISSING_WEIGHT",
+            reason_code="WF_ZERO_OR_MISSING_POST_WEIGHT",
             previous_values={
-                "pre_weight_lbs": prior.get("pre_weight_lbs"),
-                "post_weight_lbs": prior.get("post_weight_lbs"),
-                "weight_lbs": prior.get("weight_lbs"),
+                "pre_weight_lbs": detected_pre,
+                "post_weight_lbs": detected_post,
+                "original_detected_pre_weight": detected_pre,
+                "original_detected_post_weight": detected_post,
             },
             new_values={
+                "pre_weight_lbs": detected_pre,
                 "post_weight_lbs": weight_f,
-                "weight_lbs": weight_f,
+                "corrected_post_weight_lbs": weight_f,
+                "original_detected_pre_weight": detected_pre,
+                "original_detected_post_weight": detected_post,
                 "weight_at": ts.isoformat(),
                 "employee": emp,
+                "manager": actor_display_name,
+                "manager_user_id": actor_user_id,
             },
             actor_user_id=actor_user_id,
             actor_display_name=actor_display_name,
@@ -452,6 +417,10 @@ def apply_step1_correction(
             "action": action,
             "weight_lbs": weight_f,
             "post_weight_lbs": weight_f,
+            "pre_weight_lbs": detected_pre,
+            "original_detected_pre_weight": detected_pre,
+            "original_detected_post_weight": detected_post,
+            "corrected_post_weight_lbs": weight_f,
         }
 
     if action == "correct_entry":

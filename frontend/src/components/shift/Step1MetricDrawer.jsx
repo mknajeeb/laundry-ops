@@ -45,6 +45,7 @@ function toPickerValue(v) {
 const REASON_LABELS = {
   DISAPPEARED_WITHOUT_COMPLETION: "Disappeared without completion",
   COMPLETED_WITHOUT_RECOGNIZED_ENTRY: "Completed without recognized entry",
+  WF_ZERO_OR_MISSING_POST_WEIGHT: "Zero or missing WF post weight",
   WF_ZERO_OR_MISSING_WEIGHT: "Zero or missing WF post weight",
   SERVICE_CLASSIFICATION_MISMATCH: "Service classification mismatch",
   COMPLETION_DETAILS_MISSING: "Completion details missing",
@@ -212,8 +213,8 @@ export default function Step1MetricDrawer({
                       <Chip size="small" label={bag.dashboard_status || "—"} color="warning" variant="outlined" />
                     </Stack>
                     <Typography variant="caption" color="text.secondary" display="block">
-                      {bag.customer_name || "—"} · {bag.entry_class || "—"} · pre{" "}
-                      {bag.pre_weight_lbs ?? "—"} · post {bag.post_weight_lbs ?? "—"}
+                      {bag.customer_name || "—"} · {bag.entry_class || "—"} · Pre Weight{" "}
+                      {bag.pre_weight_lbs ?? "—"} · Post Weight {bag.post_weight_lbs ?? "—"}
                     </Typography>
                     {(bag.reason_codes || []).length > 0 ? (
                       <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
@@ -370,10 +371,10 @@ export default function Step1MetricDrawer({
                             <TextField
                               size="small"
                               type="number"
-                              label="Post weight lbs (>0)"
+                              label="Post Weight lbs (>0)"
                               value={form.weight_lbs}
                               onChange={(e) => setForm((f) => ({ ...f, weight_lbs: e.target.value }))}
-                              helperText={`Pre weight: ${bag.pre_weight_lbs ?? "—"} (not reviewed). Only post weight missing/≤0 goes to Review Required.`}
+                              helperText={`Pre Weight: ${bag.pre_weight_lbs ?? "—"} (informational). Review Required only when Post Weight is missing or ≤0.`}
                               inputProps={{ min: 0.1, step: 0.1 }}
                             />
                             <PayrollDateTimeField

@@ -26,8 +26,9 @@ const REASON_GROUPS = [
     label: "Completed without entry",
   },
   {
-    key: "WF_ZERO_OR_MISSING_WEIGHT",
+    key: "WF_ZERO_OR_MISSING_POST_WEIGHT",
     label: "Zero or missing WF post weight",
+    legacyKeys: ["WF_ZERO_OR_MISSING_WEIGHT"],
   },
   {
     key: "DISAPPEARED_WITHOUT_COMPLETION",
@@ -222,7 +223,12 @@ export default function VeeWashStep1Section({
   if (!summary) return null;
 
   const otherReasonIds = Object.entries(reviewByReason)
-    .filter(([k]) => !REASON_GROUPS.some((g) => g.key === k))
+    .filter(
+      ([k]) =>
+        !REASON_GROUPS.some(
+          (g) => g.key === k || (g.legacyKeys || []).includes(k),
+        ),
+    )
     .flatMap(([, ids]) => ids || []);
 
   const dayLabel = isToday ? "Today's Workload" : `Workload · ${selectedDateEt || summary.selected_date_et || ""}`;
@@ -372,8 +378,13 @@ export default function VeeWashStep1Section({
               <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
                 One count per bag. Click a group or open the drawer for chronology and corrections.
               </Typography>
-              {REASON_GROUPS.map(({ key, label }) => {
-                const ids = reviewByReason[key] || [];
+              {REASON_GROUPS.map(({ key, label, legacyKeys = [] }) => {
+                const ids = [
+                  ...new Set([
+                    ...(reviewByReason[key] || []),
+                    ...legacyKeys.flatMap((lk) => reviewByReason[lk] || []),
+                  ]),
+                ];
                 if (!ids.length) return null;
                 return (
                   <Box key={key} sx={{ mb: 1 }}>

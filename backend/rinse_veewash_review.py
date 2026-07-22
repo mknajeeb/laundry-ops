@@ -19,7 +19,8 @@ from backend.rinse_veewash_workload import (
     REASON_COMPLETED_WITHOUT_RECOGNIZED_ENTRY,
     REASON_COMPLETION_DETAILS_MISSING,
     REASON_DISAPPEARED_WITHOUT_COMPLETION,
-    REASON_WF_ZERO_OR_MISSING_WEIGHT,
+    REASON_WF_ZERO_OR_MISSING_POST_WEIGHT,
+    REASON_WF_ZERO_OR_MISSING_WEIGHT,  # noqa: F401 — alias
     SERVICE_HD,
     SERVICE_WF,
     _has_recognized_entry_for_service,
@@ -29,7 +30,7 @@ from backend.rinse_veewash_workload import (
 
 
 def _parse_weight(raw: Any) -> float | None:
-    """Null/blank → None (ignored). Zero and positives are kept as numeric values."""
+    """Parse numeric weight; null/blank/non-numeric → None. Zero/negatives kept as floats."""
     if raw is None:
         return None
     if isinstance(raw, str) and not raw.strip():
@@ -40,33 +41,42 @@ def _parse_weight(raw: Any) -> float | None:
         return None
 
 
+def _valid_positive_weight(raw: Any) -> float | None:
+    """Valid completed weight event: strictly > 0. Ignores null/blank/non-numeric/≤0."""
+    w = _parse_weight(raw)
+    if w is None or w <= 0:
+        return None
+    return w
+
+
 def _post_weight_invalid(raw: Any) -> bool:
     """Post weight missing or <= 0 triggers WF Review Required."""
-    w = _parse_weight(raw)
-    if w is None:
-        return True
-    return w <= 0
+    return _valid_positive_weight(raw) is None
 
 
 def derive_pre_post_weights(weight_values: Sequence[Any]) -> dict[str, float | None]:
     """
-    From chronological scrape weight readings (nulls ignored):
+    Chronological weight-event derivation (not distinct numeric values):
 
-    - pre  = first non-null weight
-    - post = last non-null weight (may equal pre when weight never changed)
+    - Ignore null, blank, non-numeric, and negative events
+    - Zero may appear in chronology but is not a valid pre/post event
+    - Pre  = first valid positive weight event
+    - Post = next (second) valid positive weight event later in chronology
+      (may equal pre numerically, e.g. 5.5 → 5.5)
 
-    A single non-null reading therefore sets both pre and post to that value.
-    Review Required uses post only (missing/≤0).
+    A single valid event sets pre only; post stays missing → Review Required.
+    Aligns with production two-weight chronology (first/second weight events).
     """
-    seen: list[float] = []
+    valid: list[float] = []
     for raw in weight_values:
-        w = _parse_weight(raw)
-        if w is None:
-            continue
-        seen.append(w)
-    if not seen:
+        w = _valid_positive_weight(raw)
+        if w is not None:
+            valid.append(w)
+    if not valid:
         return {"pre_weight_lbs": None, "post_weight_lbs": None}
-    return {"pre_weight_lbs": seen[0], "post_weight_lbs": seen[-1]}
+    if len(valid) == 1:
+        return {"pre_weight_lbs": valid[0], "post_weight_lbs": None}
+    return {"pre_weight_lbs": valid[0], "post_weight_lbs": valid[1]}
 
 
 
@@ -231,7 +241,7 @@ def expand_review_required(
         if not _post_weight_invalid(post_w):
             continue
 
-        add_reason(bid, REASON_WF_ZERO_OR_MISSING_WEIGHT)
+        add_reason(bid, REASON_WF_ZERO_OR_MISSING_POST_WEIGHT)
         review.add(bid)
         if bid in completed:
             completed.discard(bid)
@@ -327,6 +337,11 @@ def build_review_by_reason(result: Mapping[str, Any]) -> dict[str, list[str]]:
     reasons = result.get("review_reasons_by_bag") or {}
     for bid, codes in reasons.items():
         for code in codes or []:
+            code = str(code or "").strip()
+            if code == "WF_ZERO_OR_MISSING_WEIGHT":
+                code = REASON_WF_ZERO_OR_MISSING_POST_WEIGHT
+            if not code:
+                continue
             out.setdefault(str(code), []).append(bid)
     for bid in result.get("disappeared_without_completion_exceptions") or []:
         out.setdefault(REASON_DISAPPEARED_WITHOUT_COMPLETION, [])
@@ -345,12 +360,13 @@ def load_bag_weight_map(
     cursor, organization_id: int, bag_ids: list[str]
 ) -> dict[str, dict[str, float | None]]:
     """
-    Load pre/post WF weights from scrape chronology.
+    Load pre/post WF weights from chronological weight events.
 
-    Null weight_lbs rows are ignored. First non-null → pre; a later changed
-    non-null value → post (latest change wins). Review uses post only.
+    Pre  = first valid positive weight event
+    Post = next valid positive weight event (may equal pre)
 
-    Latest Step-1 ``correct_weight`` corrections override ``post_weight_lbs``.
+    Latest Step-1 ``correct_weight`` corrections override effective post only
+    (source scans are never modified).
     """
     from backend.ta_helpers import table_exists
 
@@ -362,13 +378,17 @@ def load_bag_weight_map(
     out = dict(empty)
     if table_exists(cursor, "rinse_bag_scan_events"):
         placeholders = ",".join(["%s"] * len(ids))
+        # Include zero/null-capable rows in order so chronology is event-based.
         cursor.execute(
             f"""
             SELECT bag_id, weight_lbs, scanned_at_parsed, id
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND bag_id IN ({placeholders})
-              AND weight_lbs IS NOT NULL
+              AND (
+                weight_lbs IS NOT NULL
+                OR LOWER(COALESCE(purpose, '')) LIKE '%%weight%%'
+              )
             ORDER BY scanned_at_parsed ASC, id ASC
             """,
             (int(organization_id), *ids),
@@ -407,11 +427,15 @@ def load_bag_weight_map(
                     raw = {}
             if not isinstance(raw, dict):
                 continue
-            post = _parse_weight(raw.get("post_weight_lbs", raw.get("weight_lbs")))
+            post = _valid_positive_weight(raw.get("corrected_post_weight_lbs", raw.get("post_weight_lbs", raw.get("weight_lbs"))))
             if post is None:
                 continue
+            detected = out[bid]
             out[bid] = {
-                "pre_weight_lbs": out[bid].get("pre_weight_lbs"),
+                "pre_weight_lbs": detected.get("pre_weight_lbs"),
                 "post_weight_lbs": post,
+                "detected_pre_weight_lbs": detected.get("pre_weight_lbs"),
+                "detected_post_weight_lbs": detected.get("post_weight_lbs"),
+                "corrected_post_weight_lbs": post,
             }
     return out
