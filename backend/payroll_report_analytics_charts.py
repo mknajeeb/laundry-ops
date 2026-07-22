@@ -193,15 +193,11 @@ def render_cost_per_hour_svg(
     n = len(period_comparison)
     left, right, top, bottom = 44, width - 12, 28, height - 28
     plot_w, plot_h = right - left, bottom - top
-    pay_vals = [
-        _money(e.get("avg_pay_rate")) if e.get("avg_pay_rate") is not None else 0.0
-        for e in period_comparison
-    ]
     cost_vals = [
         _money(e.get("avg_cost_per_hour")) if e.get("avg_cost_per_hour") is not None else 0.0
         for e in period_comparison
     ]
-    mx = max(pay_vals + cost_vals) or 1.0
+    mx = max(cost_vals) or 1.0
 
     def x_at(i: int) -> float:
         return left + plot_w / 2 if n == 1 else left + (plot_w * i / (n - 1))
@@ -211,22 +207,19 @@ def render_cost_per_hour_svg(
 
     parts = [
         f'<text x="{left}" y="14" font-size="11" font-weight="700" fill="#007a91">'
-        "Pay rate vs cost / hour</text>",
-        '<rect x="260" y="4" width="10" height="10" fill="#0097b2"/>'
-        '<text x="274" y="13" font-size="9" fill="#334155">Avg Pay Rate</text>',
-        '<rect x="370" y="4" width="10" height="10" fill="#007a91"/>'
-        '<text x="384" y="13" font-size="9" fill="#334155">Cost / Hour</text>',
+        "Avg employer cost / hour</text>",
+        '<rect x="320" y="4" width="10" height="10" fill="#007a91"/>'
+        '<text x="334" y="13" font-size="9" fill="#334155">Cost / Hour</text>',
         f'<line x1="{left}" y1="{bottom}" x2="{right}" y2="{bottom}" stroke="#e2e8f0"/>',
     ]
-    for vals, color in ((pay_vals, "#0097b2"), (cost_vals, "#007a91")):
-        pts = " ".join(f"{x_at(i):.1f},{y_at(v):.1f}" for i, v in enumerate(vals))
+    pts = " ".join(f"{x_at(i):.1f},{y_at(v):.1f}" for i, v in enumerate(cost_vals))
+    parts.append(
+        f'<polyline fill="none" stroke="#007a91" stroke-width="2" points="{pts}" />'
+    )
+    for i, v in enumerate(cost_vals):
         parts.append(
-            f'<polyline fill="none" stroke="{color}" stroke-width="2" points="{pts}" />'
+            f'<circle cx="{x_at(i):.1f}" cy="{y_at(v):.1f}" r="2.5" fill="#007a91" />'
         )
-        for i, v in enumerate(vals):
-            parts.append(
-                f'<circle cx="{x_at(i):.1f}" cy="{y_at(v):.1f}" r="2.5" fill="{color}" />'
-            )
     for i, e in enumerate(period_comparison):
         parts.append(
             f'<text x="{x_at(i):.1f}" y="{height - 6}" font-size="8" text-anchor="middle" '

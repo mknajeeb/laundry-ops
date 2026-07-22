@@ -26,11 +26,11 @@ import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import {
   getPayrollReport,
+  getPayrollReportCsv,
   getPayrollReportExcel,
   getPayrollReportMeta,
   getPayrollReportPdfHtml,
 } from "../api";
-import { PayrollDateField } from "./PayrollDateTimeField";
 import { downloadHtmlDocumentPdf } from "../contractorForms/contractorPrint";
 import {
   OT_PREMIUM_TOOLTIP,
@@ -50,7 +50,12 @@ const RANGE_MODES = [
     label: "Monthly Payroll Paid",
     reportType: "monthly_paid",
   },
-  { value: "date_range", label: "Custom Date Range", reportType: "custom_range" },
+  {
+    value: "date_range",
+    label: "Custom Date Range (coming soon)",
+    reportType: "custom_range",
+    disabled: true,
+  },
   {
     value: "labor_cost",
     label: "Labor Cost Analysis (coming soon)",
@@ -58,11 +63,6 @@ const RANGE_MODES = [
     disabled: true,
   },
   { value: "all_history", label: "All payroll history", reportType: "all_history" },
-];
-
-const DATE_BASIS_OPTIONS = [
-  { value: "pay_date", label: "Pay Date" },
-  { value: "period_overlap", label: "Payroll Period Overlap" },
 ];
 
 const MONTH_OPTIONS = [
@@ -144,7 +144,12 @@ const EMPTY_FILTERS = {
 
 export default function PayrollReportPanel({ viewMode = "dashboard" }) {
   const dashboardPrimary = viewMode !== "report";
-  const [meta, setMeta] = useState({ employees: [], periods: [], date_match_rule: "" });
+  const [meta, setMeta] = useState({
+    employees: [],
+    periods: [],
+    date_match_rule: "",
+    can_view_employee_detail: true,
+  });
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [applied, setApplied] = useState(EMPTY_FILTERS);
   const [report, setReport] = useState(null);
@@ -160,6 +165,7 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
           employees: res.data?.employees || [],
           periods: res.data?.periods || [],
           date_match_rule: res.data?.date_match_rule || "",
+          can_view_employee_detail: res.data?.can_view_employee_detail !== false,
         });
         const periods = res.data?.periods || [];
         if (periods.length) {
@@ -215,6 +221,7 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
   const rows = useMemo(() => report?.rows || [], [report]);
   const totals = report?.totals || {};
   const dateRule = report?.date_match_rule || meta.date_match_rule;
+  const canViewEmployeeDetail = meta.can_view_employee_detail !== false;
   const isMonthlyPaid = applied.rangeMode === "monthly_paid";
   const monthlyGroups = useMemo(
     () => (isMonthlyPaid ? groupMonthlyPaidRows(rows) : []),
@@ -263,8 +270,6 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
             <TableCell align="right">Gross</TableCell>
             <TableCell align="right">EE taxes</TableCell>
             <TableCell align="right">Net</TableCell>
-            <TableCell align="right">Amount paid</TableCell>
-            <TableCell align="right">Outstanding</TableCell>
             <TableCell align="right">ER taxes</TableCell>
             <TableCell align="right">Total cost</TableCell>
             <TableCell>Payment</TableCell>
@@ -285,8 +290,6 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
               <TableCell align="right">{money(row.gross_pay)}</TableCell>
               <TableCell align="right">{money(row.employee_tax_deductions)}</TableCell>
               <TableCell align="right">{money(row.net_pay)}</TableCell>
-              <TableCell align="right">{money(row.amount_paid)}</TableCell>
-              <TableCell align="right">{money(row.outstanding_balance)}</TableCell>
               <TableCell align="right">{money(row.employer_taxes)}</TableCell>
               <TableCell align="right">{money(row.total_payroll_cost)}</TableCell>
               <TableCell>{row.payment_status}</TableCell>
@@ -302,8 +305,6 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
             <TableCell align="right" sx={{ fontWeight: 700 }}>{money(subTotals.gross_pay)}</TableCell>
             <TableCell align="right" sx={{ fontWeight: 700 }}>{money(subTotals.employee_tax_deductions)}</TableCell>
             <TableCell align="right" sx={{ fontWeight: 700 }}>{money(subTotals.net_pay)}</TableCell>
-            <TableCell align="right" sx={{ fontWeight: 700 }}>{money(subTotals.amount_paid)}</TableCell>
-            <TableCell align="right" sx={{ fontWeight: 700 }}>{money(subTotals.outstanding_balance)}</TableCell>
             <TableCell align="right" sx={{ fontWeight: 700 }}>{money(subTotals.employer_taxes)}</TableCell>
             <TableCell align="right" sx={{ fontWeight: 700 }}>{money(subTotals.total_payroll_cost)}</TableCell>
             <TableCell />
@@ -375,6 +376,24 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
     }
   };
 
+  const downloadCsv = async () => {
+    setExporting("csv");
+    setError("");
+    try {
+      const res = await getPayrollReportCsv(buildQueryParams(applied));
+      const blob = new Blob([res.data], { type: "text/csv;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "payroll-report.csv";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "CSV export failed");
+    } finally {
+      setExporting("");
+    }
+  };
+
   const downloadPdf = async () => {
     setExporting("pdf");
     setError("");
@@ -425,201 +444,145 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
 
       <Paper
         variant="outlined"
-        sx={{ p: 2, borderTop: `3px solid ${VEEWASH_BRAND.primary}` }}
+        sx={{ p: 1.5, borderTop: `3px solid ${VEEWASH_BRAND.primary}` }}
       >
-        <Typography variant="h6" fontWeight={700} sx={{ color: VEEWASH_BRAND.primaryDark, mb: 0.5 }}>
-          {dashboardPrimary ? "Payroll Dashboard" : "Payroll Reports"}
-        </Typography>
-        <Typography
-          variant="subtitle1"
-          fontWeight={700}
-          sx={{ color: VEEWASH_BRAND.primaryDark, mb: 0.5 }}
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          justifyContent="space-between"
+          alignItems={{ xs: "stretch", sm: "baseline" }}
+          spacing={0.5}
+          sx={{ mb: 1 }}
         >
-          {dynamicHeading}
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          {dashboardPrimary
-            ? "Executive labor-cost view. Click a workforce category to drill into employee summary when permitted."
-            : "Accounting payroll reports (W-2, 1099, temp). Monthly Payroll Paid uses Official Pay Date only."}
-        </Typography>
+          <Box>
+            <Typography variant="subtitle1" fontWeight={700} sx={{ color: VEEWASH_BRAND.primaryDark }}>
+              {dashboardPrimary ? "Payroll Dashboard" : "Payroll Reports"}
+            </Typography>
+            <Typography variant="body2" fontWeight={600} sx={{ color: VEEWASH_BRAND.inkSoft }}>
+              {dynamicHeading}
+            </Typography>
+          </Box>
+        </Stack>
 
-        <Stack spacing={2}>
-          {/* 1. Report Type */}
-          <FormControl size="small" sx={{ minWidth: 280, maxWidth: 420 }}>
-            <InputLabel>1. Report type</InputLabel>
-            <Select
-              label="1. Report type"
-              value={filters.rangeMode}
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v === "labor_cost") return;
-                const next = { ...filters, rangeMode: v };
-                setFilters(next);
-                // Monthly / all-history should load immediately so the prior
-                // single-period report is not left on screen looking like "only
-                // one period" for the whole month.
-                if (v === "monthly_paid" || v === "all_history") {
-                  loadReport(next);
-                }
-              }}
-            >
-              {RANGE_MODES.map((m) => (
-                <MenuItem key={m.value} value={m.value} disabled={Boolean(m.disabled)}>
-                  {m.label}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-
-          {/* 2. Reporting Basis (custom only) */}
-          {filters.rangeMode === "date_range" ? (
-            <FormControl size="small" sx={{ minWidth: 240, maxWidth: 360 }}>
-              <InputLabel>2. Reporting basis</InputLabel>
+        <Stack spacing={1}>
+          <Stack direction={{ xs: "column", md: "row" }} spacing={1} flexWrap="wrap" useFlexGap>
+            <FormControl size="small" sx={{ minWidth: 200, flex: { md: "1 1 200px" } }}>
+              <InputLabel>Report type</InputLabel>
               <Select
-                label="2. Reporting basis"
-                value={filters.dateBasis || "pay_date"}
-                onChange={(e) => patch({ dateBasis: e.target.value })}
+                label="Report type"
+                value={filters.rangeMode}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "labor_cost" || v === "date_range") return;
+                  const next = { ...filters, rangeMode: v };
+                  setFilters(next);
+                  if (v === "monthly_paid" || v === "all_history") {
+                    loadReport(next);
+                  }
+                }}
               >
-                {DATE_BASIS_OPTIONS.map((o) => (
-                  <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          ) : null}
-
-          {/* 3. Period Selection */}
-          {filters.rangeMode === "period" ? (
-            <FormControl size="small" sx={{ minWidth: 280, maxWidth: 520 }}>
-              <InputLabel>3. Payroll period</InputLabel>
-              <Select
-                multiple
-                label="3. Payroll period"
-                value={filters.selectedPeriods}
-                onChange={(e) =>
-                  patch({
-                    selectedPeriods:
-                      typeof e.target.value === "string"
-                        ? e.target.value.split(",")
-                        : e.target.value,
-                  })
-                }
-                input={<OutlinedInput label="3. Payroll period" />}
-                renderValue={(selected) =>
-                  selected
-                    .map((v) => periodOptions.find((o) => o.value === v)?.label || v)
-                    .join(", ")
-                }
-              >
-                {periodOptions.map((o) => (
-                  <MenuItem key={o.value} value={o.value}>
-                    <Checkbox checked={filters.selectedPeriods.includes(o.value)} />
-                    <ListItemText primary={o.label} />
+                {RANGE_MODES.map((m) => (
+                  <MenuItem key={m.value} value={m.value} disabled={Boolean(m.disabled)}>
+                    {m.label}
                   </MenuItem>
                 ))}
               </Select>
             </FormControl>
-          ) : null}
 
-          {filters.rangeMode === "monthly_paid" ? (
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems="center">
-              <Typography variant="body2" fontWeight={600} sx={{ minWidth: 120 }}>
-                3. Month &amp; year
-              </Typography>
-              <FormControl size="small" sx={{ minWidth: 160 }}>
-                <InputLabel>Month</InputLabel>
+            {filters.rangeMode === "period" ? (
+              <FormControl size="small" sx={{ minWidth: 220, flex: { md: "1 1 240px" } }}>
+                <InputLabel>Payroll period</InputLabel>
                 <Select
-                  label="Month"
-                  value={filters.month}
-                  onChange={(e) => {
-                    const month = Number(e.target.value);
-                    const next = { ...filters, month };
-                    setFilters(next);
-                    if (filters.rangeMode === "monthly_paid") loadReport(next);
-                  }}
+                  multiple
+                  label="Payroll period"
+                  value={filters.selectedPeriods}
+                  onChange={(e) =>
+                    patch({
+                      selectedPeriods:
+                        typeof e.target.value === "string"
+                          ? e.target.value.split(",")
+                          : e.target.value,
+                    })
+                  }
+                  input={<OutlinedInput label="Payroll period" />}
+                  renderValue={(selected) =>
+                    selected
+                      .map((v) => periodOptions.find((o) => o.value === v)?.label || v)
+                      .join(", ")
+                  }
                 >
-                  {MONTH_OPTIONS.map((m) => (
-                    <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>
+                  {periodOptions.map((o) => (
+                    <MenuItem key={o.value} value={o.value}>
+                      <Checkbox checked={filters.selectedPeriods.includes(o.value)} />
+                      <ListItemText primary={o.label} />
+                    </MenuItem>
                   ))}
                 </Select>
               </FormControl>
-              <FormControl size="small" sx={{ minWidth: 120 }}>
-                <InputLabel>Year</InputLabel>
-                <Select
-                  label="Year"
-                  value={filters.year}
-                  onChange={(e) => {
-                    const year = Number(e.target.value);
-                    const next = { ...filters, year };
-                    setFilters(next);
-                    if (filters.rangeMode === "monthly_paid") loadReport(next);
-                  }}
-                >
-                  {[filters.year - 1, filters.year, filters.year + 1]
-                    .filter((y, i, arr) => arr.indexOf(y) === i)
-                    .map((y) => (
-                      <MenuItem key={y} value={y}>{y}</MenuItem>
+            ) : null}
+
+            {filters.rangeMode === "monthly_paid" ? (
+              <>
+                <FormControl size="small" sx={{ minWidth: 140 }}>
+                  <InputLabel>Month</InputLabel>
+                  <Select
+                    label="Month"
+                    value={filters.month}
+                    onChange={(e) => {
+                      const month = Number(e.target.value);
+                      const next = { ...filters, month };
+                      setFilters(next);
+                      if (filters.rangeMode === "monthly_paid") loadReport(next);
+                    }}
+                  >
+                    {MONTH_OPTIONS.map((m) => (
+                      <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>
                     ))}
+                  </Select>
+                </FormControl>
+                <FormControl size="small" sx={{ minWidth: 100 }}>
+                  <InputLabel>Year</InputLabel>
+                  <Select
+                    label="Year"
+                    value={filters.year}
+                    onChange={(e) => {
+                      const year = Number(e.target.value);
+                      const next = { ...filters, year };
+                      setFilters(next);
+                      if (filters.rangeMode === "monthly_paid") loadReport(next);
+                    }}
+                  >
+                    {[filters.year - 1, filters.year, filters.year + 1]
+                      .filter((y, i, arr) => arr.indexOf(y) === i)
+                      .map((y) => (
+                        <MenuItem key={y} value={y}>{y}</MenuItem>
+                      ))}
+                  </Select>
+                </FormControl>
+              </>
+            ) : null}
+
+            {canViewEmployeeDetail ? (
+              <FormControl size="small" sx={{ minWidth: 160, flex: { md: "1 1 160px" } }}>
+                <InputLabel>Employee</InputLabel>
+                <Select
+                  label="Employee"
+                  value={filters.userId}
+                  onChange={(e) => patch({ userId: e.target.value })}
+                >
+                  <MenuItem value="">All employees</MenuItem>
+                  {(meta.employees || []).map((e) => (
+                    <MenuItem key={e.user_id} value={String(e.user_id)}>
+                      {e.name}
+                    </MenuItem>
+                  ))}
                 </Select>
               </FormControl>
-              <Typography variant="caption" color="text.secondary">
-                Batches without Official Pay Date are excluded.
-              </Typography>
-            </Stack>
-          ) : null}
+            ) : null}
 
-          {filters.rangeMode === "date_range" ? (
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems="flex-end">
-              <Typography variant="body2" fontWeight={600} sx={{ minWidth: 120, pb: 1 }}>
-                3. Date range
-              </Typography>
-              <PayrollDateField
-                label="Start date"
-                value={filters.dateFrom}
-                onChange={(v) => patch({ dateFrom: v })}
-                size="small"
-              />
-              <PayrollDateField
-                label="End date"
-                value={filters.dateTo}
-                onChange={(v) => patch({ dateTo: v })}
-                size="small"
-              />
-            </Stack>
-          ) : null}
-
-          {filters.rangeMode === "date_range" ? (
-            <Typography variant="caption" color="text.secondary" display="block">
-              {dateRule ||
-                (filters.dateBasis === "period_overlap"
-                  ? "Includes rows whose payroll period overlaps the selected range."
-                  : "Includes rows whose Official Pay Date falls within the selected range.")}
-            </Typography>
-          ) : null}
-
-          {/* 4. Additional Filters */}
-          <Typography variant="subtitle2" fontWeight={700}>
-            4. Additional filters
-          </Typography>
-          <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} flexWrap="wrap" useFlexGap>
-            <FormControl size="small" sx={{ minWidth: 200 }}>
-              <InputLabel>Employee</InputLabel>
+            <FormControl size="small" sx={{ minWidth: 150, flex: { md: "1 1 150px" } }}>
+              <InputLabel>Category</InputLabel>
               <Select
-                label="Employee"
-                value={filters.userId}
-                onChange={(e) => patch({ userId: e.target.value })}
-              >
-                <MenuItem value="">All employees</MenuItem>
-                {(meta.employees || []).map((e) => (
-                  <MenuItem key={e.user_id} value={String(e.user_id)}>
-                    {e.name}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <FormControl size="small" sx={{ minWidth: 180 }}>
-              <InputLabel>Employee category</InputLabel>
-              <Select
-                label="Employee category"
+                label="Category"
                 value={filters.workerCategory}
                 onChange={(e) => patch({ workerCategory: e.target.value })}
               >
@@ -628,7 +591,7 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
                 ))}
               </Select>
             </FormControl>
-            <FormControl size="small" sx={{ minWidth: 180 }}>
+            <FormControl size="small" sx={{ minWidth: 150, flex: { md: "1 1 150px" } }}>
               <InputLabel>Payroll status</InputLabel>
               <Select
                 label="Payroll status"
@@ -640,7 +603,7 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
                 ))}
               </Select>
             </FormControl>
-            <FormControl size="small" sx={{ minWidth: 180 }}>
+            <FormControl size="small" sx={{ minWidth: 150, flex: { md: "1 1 150px" } }}>
               <InputLabel>Payment status</InputLabel>
               <Select
                 label="Payment status"
@@ -654,13 +617,22 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
             </FormControl>
           </Stack>
 
-          <Stack direction="row" spacing={1}>
-            <Button variant="contained" onClick={applyFilters} disabled={loading}>
-              Apply filters
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Button size="small" variant="contained" onClick={applyFilters} disabled={loading}>
+              Apply
             </Button>
-            <Button variant="outlined" onClick={clearFilters} disabled={loading}>
-              Clear / reset
+            <Button size="small" variant="outlined" onClick={clearFilters} disabled={loading}>
+              Reset
             </Button>
+            {filters.rangeMode === "monthly_paid" ? (
+              <Typography variant="caption" color="text.secondary">
+                Batches without Official Pay Date are excluded. Incomplete (open/draft) periods are hidden.
+              </Typography>
+            ) : (
+              <Typography variant="caption" color="text.secondary">
+                Periods appear only when all batches for that week are paid or finalized.
+              </Typography>
+            )}
           </Stack>
         </Stack>
       </Paper>
@@ -676,6 +648,17 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
           }
         >
           {exporting === "xlsx" ? "Exporting…" : "Download Excel"}
+        </Button>
+        <Button
+          variant="outlined"
+          startIcon={<DownloadIcon />}
+          onClick={downloadCsv}
+          disabled={
+            Boolean(exporting) ||
+            (!rows.length && !report?.employee_detail_restricted)
+          }
+        >
+          {exporting === "csv" ? "Exporting…" : "Download CSV"}
         </Button>
         <Button
           variant="outlined"
@@ -735,7 +718,6 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
               Periods: {report.summary.payroll_period_count ?? periodsInMonth.length ?? "—"} ·
               Pay dates: {report.summary.official_pay_date_count ?? payDatesInMonth.length ?? "—"} ·
               Workers: {report.summary.unique_employees ?? "—"} · Gross: {money(totals.gross_pay)} ·
-              Paid: {money(totals.amount_paid)} · Outstanding: {money(totals.outstanding_balance)} ·
               EE taxes: {money(totals.employee_tax_deductions)} · Net: {money(totals.net_pay)} ·
               Employer taxes: {money(totals.employer_taxes)} · Total payroll cost:{" "}
               {money(totals.total_payroll_cost)}
@@ -779,8 +761,7 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
                   </Typography>
                   <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
                     Pay dates: {(group.payDates || []).length} · Workers: {group.rows.length} ·
-                    Gross: {money(periodTotals.gross_pay)} · Paid: {money(periodTotals.amount_paid)} ·
-                    Outstanding: {money(periodTotals.outstanding_balance)} · EE taxes:{" "}
+                    Gross: {money(periodTotals.gross_pay)} · EE taxes:{" "}
                     {money(periodTotals.employee_tax_deductions)} · Net: {money(periodTotals.net_pay)} ·
                     ER taxes: {money(periodTotals.employer_taxes)} · Total cost:{" "}
                     {money(periodTotals.total_payroll_cost)}
@@ -798,9 +779,7 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
                             {pd.heading}
                           </Typography>
                           <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-                            Employees: {pd.rows.length} · Gross: {money(gTotals.gross_pay)} · Paid:{" "}
-                            {money(gTotals.amount_paid)} · Outstanding:{" "}
-                            {money(gTotals.outstanding_balance)}
+                            Employees: {pd.rows.length} · Gross: {money(gTotals.gross_pay)}
                           </Typography>
                           {renderEmployeeTable(pd.rows, gTotals)}
                         </Box>
@@ -811,8 +790,7 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
               );
             })}
             <Typography variant="subtitle2" fontWeight={700} sx={{ pt: 1 }}>
-              Month totals · Gross: {money(totals.gross_pay)} · Paid: {money(totals.amount_paid)} ·
-              Outstanding: {money(totals.outstanding_balance)} · EE taxes:{" "}
+              Month totals · Gross: {money(totals.gross_pay)} · EE taxes:{" "}
               {money(totals.employee_tax_deductions)} · Net: {money(totals.net_pay)} · Total
               payroll cost: {money(totals.total_payroll_cost)}
             </Typography>
@@ -842,8 +820,6 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
                   <TableCell align="right">Employee tax</TableCell>
                   <TableCell align="right">Other deductions</TableCell>
                   <TableCell align="right">Net pay</TableCell>
-                  <TableCell align="right">Amount paid</TableCell>
-                  <TableCell align="right">Outstanding</TableCell>
                   <TableCell align="right">Employer taxes</TableCell>
                   <TableCell align="right">Total payroll cost</TableCell>
                   <TableCell>Payment status</TableCell>
@@ -872,8 +848,6 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
                     <TableCell align="right">{money(row.employee_tax_deductions)}</TableCell>
                     <TableCell align="right">{money(row.other_deductions)}</TableCell>
                     <TableCell align="right">{money(row.net_pay)}</TableCell>
-                    <TableCell align="right">{money(row.amount_paid)}</TableCell>
-                    <TableCell align="right">{money(row.outstanding_balance)}</TableCell>
                     <TableCell align="right">{money(row.employer_taxes)}</TableCell>
                     <TableCell align="right">{money(row.total_payroll_cost)}</TableCell>
                     <TableCell>{row.payment_status}</TableCell>
@@ -910,12 +884,6 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
                     </TableCell>
                     <TableCell align="right" sx={{ fontWeight: 700 }}>
                       {money(totals.net_pay)}
-                    </TableCell>
-                    <TableCell align="right" sx={{ fontWeight: 700 }}>
-                      {money(totals.amount_paid)}
-                    </TableCell>
-                    <TableCell align="right" sx={{ fontWeight: 700 }}>
-                      {money(totals.outstanding_balance)}
                     </TableCell>
                     <TableCell align="right" sx={{ fontWeight: 700 }}>
                       {money(totals.employer_taxes)}

@@ -6748,7 +6748,7 @@ def payroll_payout_pay_register(batch_id: int):
 
 
 def _payroll_report_query_kwargs():
-    """Shared query args for payroll report JSON / Excel / PDF."""
+    """Shared query args for payroll report JSON / Excel / PDF / CSV."""
     period_starts = request.args.getlist("period_start") or []
     period_ends = request.args.getlist("period_end") or []
     if len(period_starts) == 1 and "," in str(period_starts[0]):
@@ -6759,6 +6759,9 @@ def _payroll_report_query_kwargs():
     all_history = str(request.args.get("all_history") or "").lower() in ("1", "true", "yes")
     month = request.args.get("month")
     year = request.args.get("year")
+    report_type = request.args.get("report_type")
+    if str(report_type or "").strip().lower() == "custom_range":
+        raise ValueError("Custom Date Range is temporarily disabled.")
     return dict(
         period_starts=period_starts or None,
         period_ends=period_ends or None,
@@ -6770,7 +6773,7 @@ def _payroll_report_query_kwargs():
         or request.args.get("employee_category"),
         payroll_status=request.args.get("payroll_status"),
         payment_status=request.args.get("payment_status"),
-        report_type=request.args.get("report_type"),
+        report_type=report_type,
         date_basis=request.args.get("date_basis") or "pay_date",
         month=int(month) if month not in (None, "") else None,
         year=int(year) if year not in (None, "") else None,
@@ -6836,8 +6839,8 @@ def payroll_report_meta():
                 "periods": list_report_periods(conn, oid),
                 "can_view_employee_detail": can_detail,
                 "date_match_rule": (
-                    "Choose a report type. Custom Date Range defaults to Official Pay Date "
-                    "(not period overlap). Monthly Payroll Paid uses official_pay_date only."
+                    "Choose a report type. Monthly Payroll Paid uses official_pay_date only. "
+                    "Custom Date Range is temporarily disabled."
                 ),
                 "report_types": [
                     {"value": "payroll_period", "label": "Payroll Period Report"},
@@ -6845,7 +6848,11 @@ def payroll_report_meta():
                         "value": "monthly_paid",
                         "label": "Monthly Payroll Paid — Based on Pay Date",
                     },
-                    {"value": "custom_range", "label": "Custom Date Range"},
+                    {
+                        "value": "custom_range",
+                        "label": "Custom Date Range (coming soon)",
+                        "disabled": True,
+                    },
                     {"value": "all_history", "label": "All payroll history"},
                 ],
                 "date_basis_options": [
@@ -6908,6 +6915,46 @@ def payroll_report_export_xlsx():
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         current_app.logger.exception("payroll_report_export_xlsx failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/report/export.csv", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit", "payroll.analytics.view")
+def payroll_report_export_csv():
+    conn = get_db()
+    try:
+        from backend.payroll_report import build_payroll_report_csv, query_payroll_report
+
+        oid = _tenant_id()
+        kwargs = _payroll_report_query_kwargs()
+        can_detail = _can_view_employee_payroll_detail(conn, g.ta_user["id"])
+        if kwargs.get("user_id") and not can_detail:
+            return jsonify(_EMPLOYEE_PAYROLL_DETAIL_FORBIDDEN), 403
+        kwargs["include_employee_detail"] = can_detail
+        report = query_payroll_report(conn, oid, **kwargs)
+        if not can_detail:
+            report = {
+                **report,
+                "rows": [],
+                "groups": [],
+                "analytics_only_export": True,
+            }
+        data = build_payroll_report_csv(report)
+        return (
+            data,
+            200,
+            {
+                "Content-Type": "text/csv; charset=utf-8",
+                "Content-Disposition": 'attachment; filename="payroll-dashboard.csv"',
+            },
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_report_export_csv failed")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()

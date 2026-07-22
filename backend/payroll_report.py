@@ -69,8 +69,6 @@ REPORT_COLUMNS = (
     ("employee_tax_deductions", "Employee taxes"),
     ("other_deductions", "Deductions"),
     ("net_pay", "Net pay"),
-    ("amount_paid", "Amount paid"),
-    ("outstanding_balance", "Outstanding"),
     ("employer_taxes", "Employer taxes"),
     ("total_payroll_cost", "Total payroll cost"),
     ("payroll_status", "Payroll status"),
@@ -88,8 +86,6 @@ PDF_COLUMNS = (
     ("gross_pay", "Gross"),
     ("employee_tax_deductions", "EE taxes"),
     ("net_pay", "Net"),
-    ("amount_paid", "Paid"),
-    ("outstanding_balance", "Outstanding"),
     ("employer_taxes", "ER taxes"),
     ("total_payroll_cost", "Total cost"),
     ("payment_status", "Payment"),
@@ -881,28 +877,24 @@ def list_report_employees(conn, organization_id: int) -> list[dict]:
 
 
 def list_report_periods(conn, organization_id: int) -> list[dict]:
-    """Distinct pay periods across all worker categories."""
+    """Distinct pay periods whose batches are all paid/closed/finalized.
+
+    Open, draft, or partially processed periods are omitted so pickers and
+    dashboards never surface incomplete payroll weeks. Category mix is
+    irrelevant (W-2-only / Temp-only weeks are included when complete).
+    """
     from backend.payroll_operations import ensure_payout_batches_tables
+    from backend.payroll_report_analytics import list_org_periods_asc
 
     ensure_payout_batches_tables(conn.cursor())
-    c = conn.cursor(dictionary=True)
-    c.execute(
-        """
-        SELECT DISTINCT pay_period_start, pay_period_end
-        FROM payout_batches
-        WHERE organization_id = %s
-        ORDER BY pay_period_start DESC
-        """,
-        (int(organization_id),),
-    )
+    periods = list_org_periods_asc(conn, organization_id, require_complete=True)
     return [
         {
-            "pay_period_start": str(r["pay_period_start"])[:10],
-            "pay_period_end": str(r["pay_period_end"])[:10],
-            "label": f"{str(r['pay_period_start'])[:10]} – {str(r['pay_period_end'])[:10]}",
+            "pay_period_start": ps,
+            "pay_period_end": pe,
+            "label": f"{ps} – {pe}",
         }
-        for r in (c.fetchall() or [])
-        if r.get("pay_period_start") and r.get("pay_period_end")
+        for ps, pe in reversed(periods)
     ]
 
 
@@ -965,8 +957,6 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
                 f"Pay dates: {summary.get('official_pay_date_count', 0)}",
                 f"Workers: {summary.get('unique_employees', 0)}",
                 f"Gross: {round(_money(summary.get('gross_pay')), 2)}",
-                f"Paid: {round(_money(summary.get('amount_paid')), 2)}",
-                f"Outstanding: {round(_money(summary.get('outstanding_balance')), 2)}",
                 f"EE taxes: {round(_money(summary.get('employee_tax_deductions')), 2)}",
                 f"Net: {round(_money(summary.get('net_pay')), 2)}",
                 f"ER taxes: {round(_money(summary.get('employer_taxes')), 2)}",
@@ -1099,7 +1089,6 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
                 "Gross Payroll",
                 "Employer Tax",
                 "Total Payroll Cost",
-                "Avg Pay Rate",
                 "Avg Employer Cost / Hour",
                 "Base Earnings (recon)",
                 "OT Premium (recon)",
@@ -1112,11 +1101,6 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
             return round(_money(val), 2) if val is not None else None
 
         def _wf_values(c):
-            avg_pay = (
-                c.get("avg_pay_rate")
-                if c.get("avg_pay_rate") is not None
-                else c.get("avg_rate")
-            )
             return [
                 c.get("label") or c.get("worker_category"),
                 c.get("head_count") or c.get("worker_count") or 0,
@@ -1128,7 +1112,6 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
                 round(_money(c.get("gross_pay")), 2),
                 round(_money(c.get("employer_taxes")), 2),
                 round(_money(c.get("total_payroll_cost")), 2),
-                _rate_cell(avg_pay),
                 _rate_cell(c.get("avg_cost_per_hour")),
                 round(_money(c.get("base_earnings")), 2),
                 round(_money(c.get("ot_premium")), 2),
@@ -1158,9 +1141,6 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
             "Net",
             "ER Taxes",
             "Total Payroll Cost",
-            "Amount Paid",
-            "Outstanding",
-            "Avg Pay Rate",
             "Cost / Hour",
             "Δ Total Cost",
             "% Δ Total Cost",
@@ -1186,11 +1166,6 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
                     round(_money(e.get("net_pay")), 2),
                     round(_money(e.get("employer_taxes")), 2),
                     round(_money(e.get("total_payroll_cost")), 2),
-                    round(_money(e.get("amount_paid")), 2),
-                    round(_money(e.get("outstanding_balance")), 2),
-                    round(_money(e.get("avg_pay_rate")), 2)
-                    if e.get("avg_pay_rate") is not None
-                    else None,
                     round(_money(e.get("avg_cost_per_hour")), 2)
                     if e.get("avg_cost_per_hour") is not None
                     else None,
@@ -1202,6 +1177,51 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def build_payroll_report_csv(report: dict) -> bytes:
+    """CSV export of payroll detail (same columns as Excel detail sheet)."""
+    import csv
+
+    filters = report.get("filters") or {}
+    nested = report.get("groups") or []
+    excel_rows: list[dict] = []
+    if nested:
+        for period in nested:
+            for pd in period.get("pay_dates") or []:
+                for row in pd.get("rows") or []:
+                    enriched = dict(row)
+                    enriched["_group_period"] = period.get("payroll_period") or ""
+                    enriched["_group_pay_date"] = pd.get("pay_date") or ""
+                    excel_rows.append(enriched)
+    else:
+        excel_rows = list(report.get("rows") or [])
+
+    group_cols = (
+        (("_group_period", "Payroll Period"), ("_group_pay_date", "Pay Date Group"))
+        if nested
+        else ()
+    )
+    export_columns = (*group_cols, *REPORT_COLUMNS)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([lab for _, lab in export_columns])
+    for row in excel_rows:
+        out = []
+        for key, _ in export_columns:
+            val = row.get(key)
+            if key in DATE_CELL_KEYS:
+                d = _parse_ymd(val)
+                out.append(d.isoformat() if d else "")
+            elif key in MONEY_TOTAL_KEYS or key in HOUR_TOTAL_KEYS:
+                out.append(round(_money(val), 2))
+            elif val is None:
+                out.append("")
+            else:
+                out.append(val)
+        writer.writerow(out)
+    # UTF-8 BOM helps Excel open CSV correctly
+    return ("\ufeff" + buf.getvalue()).encode("utf-8")
 
 
 def _group_key_period(row: dict) -> str:
@@ -1323,8 +1343,6 @@ def build_payroll_report_html(report: dict) -> str:
   <span>Pay dates: {data.get('official_pay_date_count', 0)}</span>
   <span>Workers: {data.get('unique_employees', data.get('worker_count', 0))}</span>
   <span>Gross: {fmt_money(data.get('gross_pay'))}</span>
-  <span>Paid: {fmt_money(data.get('amount_paid'))}</span>
-  <span>Outstanding: {fmt_money(data.get('outstanding_balance'))}</span>
   <span>EE taxes: {fmt_money(data.get('employee_tax_deductions'))}</span>
   <span>Net: {fmt_money(data.get('net_pay'))}</span>
   <span>ER taxes: {fmt_money(data.get('employer_taxes'))}</span>
@@ -1410,7 +1428,6 @@ def build_payroll_report_html(report: dict) -> str:
         return fmt_money(val) if val is not None else "—"
 
     def _wf_row_cells(c, *, strong=False):
-        avg_pay = c.get("avg_pay_rate") if c.get("avg_pay_rate") is not None else c.get("avg_rate")
         other = _money(c.get("other_earnings"))
         other_note = f" <span class='muted'>+other {fmt_money(other)}</span>" if abs(other) >= 0.005 else ""
         wrap = ("<strong>", "</strong>") if strong else ("", "")
@@ -1437,7 +1454,6 @@ def build_payroll_report_html(report: dict) -> str:
             + f"<td class='num'>{b}{fmt_money(c.get('gross_pay'))}{other_note}{e}</td>"
             + cell(c.get("employer_taxes"), money=True)
             + cell(c.get("total_payroll_cost"), money=True)
-            + cell(avg_pay, rate=True)
             + cell(c.get("avg_cost_per_hour"), rate=True)
         )
 
@@ -1457,9 +1473,9 @@ def build_payroll_report_html(report: dict) -> str:
   <th>Category</th><th>HC</th><th>Regular Hrs</th><th>OT Hrs</th>
   <th>Regular Earnings</th><th>OT Earnings</th><th>Gross</th>
   <th>Employer Tax</th><th>Total Cost</th>
-  <th>Avg Pay Rate</th><th>Avg Employer Cost</th>
+  <th>Avg Employer Cost</th>
 </tr></thead>
-<tbody>{"".join(wf_rows) if wf_rows else "<tr><td colspan='11'>No category data</td></tr>"}</tbody>
+<tbody>{"".join(wf_rows) if wf_rows else "<tr><td colspan='10'>No category data</td></tr>"}</tbody>
 </table>"""
 
     pc = analytics.get("period_comparison") or []

@@ -19,9 +19,13 @@ KPI_DEFS = (
     ("gross_pay", "Gross Payroll", "money"),
     ("total_hours", "Total Hours", "hours"),
     ("worker_count", "Head Count", "count"),
-    ("avg_pay_rate", "Average Pay Rate", "money"),
     ("avg_cost_per_hour", "Average Employer Cost / Hour", "money"),
 )
+
+# Periods appear in pickers / comparison only when every batch for that
+# period is terminal (paid/closed) or details-finalized — category mix
+# does not matter (W-2-only or Temp-only weeks are valid).
+TERMINAL_BATCH_STATUSES = frozenset({"paid", "closed"})
 
 # Period-comparison delta keys (broader than executive KPIs).
 COMPARISON_DELTA_KEYS = (
@@ -604,19 +608,86 @@ def select_comparison_periods(
     return all_periods_asc[start : idx + 1]
 
 
-def list_org_periods_asc(conn, organization_id: int) -> list[tuple[str, str]]:
+def batch_is_complete(batch: dict) -> bool:
+    """True when a payout batch is paid/closed or payroll details are finalized."""
+    st = str(
+        batch.get("status") or batch.get("batch_status") or ""
+    ).strip().lower()
+    if st in TERMINAL_BATCH_STATUSES:
+        return True
+    if batch.get("payout_details_finalized_at"):
+        return True
+    return False
+
+
+def period_batches_are_complete(batches: list[dict]) -> bool:
+    """A period is complete when it has ≥1 batch and every batch is terminal.
+
+    Worker category mix is irrelevant — W-2-only or Temp-only weeks count
+    when all generated batches for the period are paid/closed/finalized.
+    Partially processed periods (any open/draft batch) are incomplete.
+    """
+    if not batches:
+        return False
+    return all(batch_is_complete(b) for b in batches)
+
+
+def complete_period_keys_from_batches(
+    batches: list[dict],
+) -> set[tuple[str, str]]:
+    """Return (start, end) keys for periods whose batches are all complete."""
+    by_period: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for b in batches or []:
+        ps = str(b.get("pay_period_start") or "")[:10]
+        pe = str(b.get("pay_period_end") or "")[:10]
+        if ps and pe:
+            by_period[(ps, pe)].append(b)
+    return {key for key, rows in by_period.items() if period_batches_are_complete(rows)}
+
+
+def list_org_periods_asc(
+    conn, organization_id: int, *, require_complete: bool = True
+) -> list[tuple[str, str]]:
+    """Distinct payroll periods ascending.
+
+    When require_complete is True (default), only periods where every
+    payout batch is paid, closed, or details-finalized are returned.
+    """
     c = conn.cursor(dictionary=True)
-    c.execute(
-        """
-        SELECT DISTINCT pay_period_start, pay_period_end
-        FROM payout_batches
-        WHERE organization_id = %s
-          AND pay_period_start IS NOT NULL
-          AND pay_period_end IS NOT NULL
-        ORDER BY pay_period_start ASC, pay_period_end ASC
-        """,
-        (int(organization_id),),
-    )
+    if require_complete:
+        c.execute(
+            """
+            SELECT pay_period_start, pay_period_end
+            FROM payout_batches
+            WHERE organization_id = %s
+              AND pay_period_start IS NOT NULL
+              AND pay_period_end IS NOT NULL
+            GROUP BY pay_period_start, pay_period_end
+            HAVING COUNT(*) > 0
+               AND SUM(
+                     CASE
+                       WHEN LOWER(COALESCE(status, '')) IN ('paid', 'closed')
+                         OR payout_details_finalized_at IS NOT NULL
+                       THEN 0
+                       ELSE 1
+                     END
+                   ) = 0
+            ORDER BY pay_period_start ASC, pay_period_end ASC
+            """,
+            (int(organization_id),),
+        )
+    else:
+        c.execute(
+            """
+            SELECT DISTINCT pay_period_start, pay_period_end
+            FROM payout_batches
+            WHERE organization_id = %s
+              AND pay_period_start IS NOT NULL
+              AND pay_period_end IS NOT NULL
+            ORDER BY pay_period_start ASC, pay_period_end ASC
+            """,
+            (int(organization_id),),
+        )
     out = []
     for r in c.fetchall() or []:
         ps = str(r["pay_period_start"])[:10]
@@ -689,23 +760,35 @@ def build_report_analytics(
                 [str(e)[:10] for e in ends],
             ))
 
-    all_periods = list_org_periods_asc(conn, organization_id)
+    # Only fully processed periods enter comparison / focus (any category mix).
+    all_periods = list_org_periods_asc(conn, organization_id, require_complete=True)
+    complete_set = set(all_periods)
+    complete_anchors = [p for p in anchor_periods if p in complete_set]
     selected = select_comparison_periods(
-        all_periods, anchor_periods=anchor_periods, comparison_range=n
+        all_periods, anchor_periods=complete_anchors, comparison_range=n
     )
 
+    # Analytics KPIs / workforce ignore incomplete-period rows (detail export
+    # may still include them for monthly paid / custom filters).
+    analytics_rows = [
+        r
+        for r in detail_rows
+        if (period_key_from_row(r) in complete_set)
+        or (not period_key_from_row(r)[0] and not period_key_from_row(r)[1])
+    ]
+    if not analytics_rows and detail_rows and not complete_anchors:
+        # No complete periods in selection — empty analytics rather than half-baked.
+        analytics_rows = []
+    analytics_metrics = aggregate_period_metrics(analytics_rows)
+
     period_rows_map: dict[tuple[str, str], list[dict]] = defaultdict(list)
-    # Seed with detail rows (exact filtered membership for periods in selection)
-    detail_period_set = set(anchor_periods)
-    for row in detail_rows:
+    detail_period_set = set(complete_anchors)
+    for row in analytics_rows:
         key = period_key_from_row(row)
         if key[0] and key[1]:
             period_rows_map[key].append(row)
 
-    missing = [p for p in selected if p not in period_rows_map or not period_rows_map[p]]
     # Periods in comparison window but outside detail filter window need a fetch.
-    # Always fetch non-detail periods; for periods inside detail, keep detail rows
-    # so dashboard matches the filtered report.
     fetch_periods = [p for p in selected if p not in detail_period_set]
     if fetch_periods:
         extra = fetch_rows_for_periods(
@@ -721,25 +804,21 @@ def build_report_analytics(
             key = period_key_from_row(row)
             period_rows_map[key].append(row)
 
-    # Ensure empty shells for selected periods with no rows
     for p in selected:
         period_rows_map.setdefault(p, [])
 
     period_comparison = build_period_comparison_entries(period_rows_map, selected)
 
-    # Focus period for KPI deltas: latest period in comparison that is in the
-    # selected report when possible; else latest comparison period.
+    # Focus: latest complete period in the report selection (never incomplete).
     focus = None
-    if anchor_periods:
-        focus = max(anchor_periods, key=lambda t: (t[1] or "", t[0] or ""))
+    if complete_anchors:
+        focus = max(complete_anchors, key=lambda t: (t[1] or "", t[0] or ""))
     elif selected:
         focus = selected[-1]
 
-    focus_metrics = detail_metrics
+    focus_metrics = analytics_metrics
     prev_metrics = None
     if focus and period_comparison:
-        # Prefer full selected-report totals as KPI "current" so dashboard
-        # reconciles with detail; previous = period immediately before focus.
         idx = next(
             (
                 i
@@ -751,16 +830,13 @@ def build_report_analytics(
         )
         if idx is not None and idx > 0:
             prev_metrics = period_comparison[idx - 1]
-        # For single-period reports, current KPIs use that period's metrics
-        # (equal to detail). For monthly multi-period, current = detail totals.
-        if report_type == "payroll_period" and len(anchor_periods) == 1 and idx is not None:
+        if report_type == "payroll_period" and len(complete_anchors) == 1 and idx is not None:
             focus_metrics = period_comparison[idx]
 
     kpis = build_kpi_cards(focus_metrics, prev_metrics)
     ot_summary = build_ot_summary(focus_metrics, prev_metrics)
 
-    # Category / workforce breakdown from detail rows (respects filters)
-    categories = category_breakdown(detail_rows)
+    categories = category_breakdown(analytics_rows)
     workforce_totals = workforce_breakdown_totals(categories)
     employment_mix = employment_mix_by_period(period_rows_map, selected)
 
@@ -781,7 +857,6 @@ def build_report_analytics(
             "total_hours": e.get("total_hours", 0),
             "gross_pay": e.get("gross_pay", 0),
             "avg_cost_per_hour": e.get("avg_cost_per_hour"),
-            "avg_pay_rate": e.get("avg_pay_rate"),
         }
         for e in period_comparison
     ]

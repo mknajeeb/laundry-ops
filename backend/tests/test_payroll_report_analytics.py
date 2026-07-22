@@ -278,14 +278,12 @@ def test_kpi_neutral_trend_for_cost_increase():
         "total_hours",
         "worker_count",
         "avg_cost_per_hour",
-        "avg_pay_rate",
     }
     assert [c["key"] for c in build_kpi_cards(current, previous)] == [
         "total_payroll_cost",
         "gross_pay",
         "total_hours",
         "worker_count",
-        "avg_pay_rate",
         "avg_cost_per_hour",
     ]
     assert cards["avg_cost_per_hour"]["label"] == "Average Employer Cost / Hour"
@@ -613,8 +611,12 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     assert "<svg" in html
     assert "page-break-after: always" in html or "break-after: page" in html
     assert "Workforce Breakdown" in html or "Employment mix" in html or "category" in html.lower()
-    assert "Avg Pay Rate" in html
+    assert "Avg Pay Rate" not in html
+    assert "Avg Employer Cost" in html
     assert "Gross Payroll" in html or "Gross" in html
+    assert ">Paid:" not in html and "Paid: $" not in html
+    assert "Outstanding" not in html
+    assert "Amount paid" not in html
 
     # PDF and Excel share identical Gross from analytics payload.
     maria = next(c for c in cats if c["worker_category"] == "contractor_1099")
@@ -631,7 +633,7 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     assert "Workforce Breakdown" in wb.sheetnames
     wf = wb["Workforce Breakdown"]
     headers = [cell.value for cell in wf[2]]
-    assert "Avg Pay Rate" in headers
+    assert "Avg Pay Rate" not in headers
     assert "Avg Employer Cost / Hour" in headers
     assert "Regular Earnings" in headers
     assert "OT Earnings" in headers
@@ -654,10 +656,25 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     assert by_label[guiying["label"]]["gross_pay"] == round(guiying["gross_pay"], 2)
     pc = wb["Period Comparison"]
     pc_headers = [cell.value for cell in pc[2]]
-    assert "Avg Pay Rate" in pc_headers
+    assert "Avg Pay Rate" not in pc_headers
+    assert "Amount Paid" not in pc_headers
+    assert "Outstanding" not in pc_headers
     assert "Cost / Hour" in pc_headers
     assert "Base Earnings" in pc_headers
     assert "OT Premium" in pc_headers
+
+    detail = wb["Payroll Reports"]
+    detail_headers = [cell.value for cell in detail[5]]
+    assert "Amount paid" not in detail_headers
+    assert "Outstanding" not in detail_headers
+
+    from backend.payroll_report import build_payroll_report_csv
+
+    csv_bytes = build_payroll_report_csv(report)
+    csv_text = csv_bytes.decode("utf-8-sig")
+    assert "Amount paid" not in csv_text.splitlines()[0]
+    assert "Outstanding" not in csv_text.splitlines()[0]
+    assert "Gross pay" in csv_text.splitlines()[0]
 
 
 def test_regular_and_ot_earnings_reconcile_to_gross():
@@ -752,3 +769,128 @@ def test_ot_premium_included_in_gross_for_exports():
         user_id=1,
     )
     assert abs(row["base_earnings"] + row["ot_premium"] + row["other_earnings"] - row["gross_pay"]) < 0.02
+
+
+def test_period_completeness_by_batch_terminal_status():
+    """Complete = all batches paid/closed/finalized; category mix irrelevant."""
+    from backend.payroll_report_analytics import (
+        complete_period_keys_from_batches,
+        period_batches_are_complete,
+    )
+
+    # W-2-only complete week
+    w2_only = [
+        {
+            "pay_period_start": "2026-06-01",
+            "pay_period_end": "2026-06-07",
+            "worker_category": "w2",
+            "status": "paid",
+        }
+    ]
+    assert period_batches_are_complete(w2_only)
+    assert complete_period_keys_from_batches(w2_only) == {("2026-06-01", "2026-06-07")}
+
+    # Temp-only complete week (details finalized, not yet marked paid)
+    temp_only = [
+        {
+            "pay_period_start": "2026-06-08",
+            "pay_period_end": "2026-06-14",
+            "worker_category": "temp",
+            "status": "approved_for_payment",
+            "payout_details_finalized_at": "2026-06-15T12:00:00",
+        }
+    ]
+    assert period_batches_are_complete(temp_only)
+    assert complete_period_keys_from_batches(temp_only) == {("2026-06-08", "2026-06-14")}
+
+    # Mixed-category complete week
+    mixed = [
+        {
+            "pay_period_start": "2026-06-15",
+            "pay_period_end": "2026-06-21",
+            "worker_category": "w2",
+            "status": "paid",
+        },
+        {
+            "pay_period_start": "2026-06-15",
+            "pay_period_end": "2026-06-21",
+            "worker_category": "temp",
+            "status": "closed",
+        },
+        {
+            "pay_period_start": "2026-06-15",
+            "pay_period_end": "2026-06-21",
+            "worker_category": "contractor_1099",
+            "status": "paid",
+        },
+    ]
+    assert period_batches_are_complete(mixed)
+    assert complete_period_keys_from_batches(mixed) == {("2026-06-15", "2026-06-21")}
+
+    # Partially finalized week — excluded
+    partial = [
+        {
+            "pay_period_start": "2026-06-22",
+            "pay_period_end": "2026-06-28",
+            "worker_category": "w2",
+            "status": "paid",
+        },
+        {
+            "pay_period_start": "2026-06-22",
+            "pay_period_end": "2026-06-28",
+            "worker_category": "temp",
+            "status": "draft",
+        },
+    ]
+    assert not period_batches_are_complete(partial)
+    assert complete_period_keys_from_batches(partial) == set()
+
+    # Empty / open-only also incomplete
+    assert not period_batches_are_complete([])
+    assert not period_batches_are_complete(
+        [
+            {
+                "pay_period_start": "2026-07-01",
+                "pay_period_end": "2026-07-07",
+                "worker_category": "w2",
+                "status": "hours_reviewed",
+            }
+        ]
+    )
+
+    # Multi-period: only complete keys returned
+    keys = complete_period_keys_from_batches(w2_only + temp_only + mixed + partial)
+    assert keys == {
+        ("2026-06-01", "2026-06-07"),
+        ("2026-06-08", "2026-06-14"),
+        ("2026-06-15", "2026-06-21"),
+    }
+
+
+def test_list_org_periods_complete_sql_filters_open_batches():
+    """SQL path for complete periods uses terminal/finalized HAVING clause."""
+    from backend.payroll_report_analytics import list_org_periods_asc
+
+    captured = {}
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = params
+
+        def fetchall(self):
+            return [
+                {"pay_period_start": "2026-06-01", "pay_period_end": "2026-06-07"},
+            ]
+
+    class _Conn:
+        def cursor(self, dictionary=False):
+            return _Cur()
+
+    periods = list_org_periods_asc(_Conn(), 3, require_complete=True)
+    assert periods == [("2026-06-01", "2026-06-07")]
+    sql = captured["sql"].lower()
+    assert "payout_details_finalized_at is not null" in sql
+    assert "'paid'" in sql and "'closed'" in sql
+    assert "worker_category = 'w2'" not in sql
+    assert captured["params"] == (3,)

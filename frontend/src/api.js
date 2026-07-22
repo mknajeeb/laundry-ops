@@ -1496,6 +1496,12 @@ export const getPayrollReportExcel = (params) =>
     responseType: "blob",
   });
 
+export const getPayrollReportCsv = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/report/export.csv`, {
+    params,
+    responseType: "blob",
+  });
+
 export const getPayrollReportPdfHtml = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/report/export.pdf`, {
     params,

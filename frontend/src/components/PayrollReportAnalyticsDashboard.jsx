@@ -183,7 +183,6 @@ const WORKFORCE_HEADERS = [
   "Gross",
   "Employer Tax",
   "Total Cost",
-  "Avg Pay Rate",
   "Avg Employer Cost",
 ];
 
@@ -191,7 +190,7 @@ const RECON_HEADERS = ["Category", "Base Earnings", "OT Premium"];
 
 const EMPLOYEE_HEADERS = ["Employee", "Reg Hrs", "OT Hrs", "Regular Earnings", "OT Earnings", "Gross", "Total Cost"];
 
-const PERIOD_HEADERS = ["Payroll Period", "Workers", "Hours", "OT", "Gross", "Total cost", "Avg Pay", "Avg Employer Cost", "Δ cost"];
+const PERIOD_HEADERS = ["Payroll Period", "Workers", "Hours", "OT", "Gross", "Total cost", "Avg Employer Cost", "Δ cost"];
 
 /**
  * Payroll Dashboard v3 — compact executive management dashboard.
@@ -275,8 +274,11 @@ export default function PayrollReportAnalyticsDashboard({
             Payroll Dashboard
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Focus: {summary?.focus_period || "selected report"}
-            {summary?.previous_period ? ` · vs ${summary.previous_period}` : ""}
+            {summary?.focus_period
+              ? `Focus: ${summary.focus_period}${
+                  summary?.previous_period ? ` · vs ${summary.previous_period}` : ""
+                }`
+              : "No complete payroll period in selection (all batches must be paid or finalized)."}
           </Typography>
         </Box>
         <FormControl size="small" sx={{ minWidth: 180 }}>
@@ -298,7 +300,7 @@ export default function PayrollReportAnalyticsDashboard({
         sx={{
           display: "grid",
           gap: 1,
-          gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", md: "repeat(6, 1fr)" },
+          gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", md: "repeat(5, 1fr)" },
         }}
       >
         {kpis.map((card) => (
@@ -429,7 +431,6 @@ export default function PayrollReportAnalyticsDashboard({
                         <TableCell align="right">{money(c.gross_pay)}</TableCell>
                         <TableCell align="right">{money(c.employer_taxes)}</TableCell>
                         <TableCell align="right">{money(c.total_payroll_cost)}</TableCell>
-                        <TableCell align="right">{money(c.avg_pay_rate ?? c.avg_rate)}</TableCell>
                         <TableCell align="right">{money(c.avg_cost_per_hour)}</TableCell>
                       </TableRow>
                     ))}
@@ -532,7 +533,6 @@ export default function PayrollReportAnalyticsDashboard({
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => money(v)} />
                   <Tooltip formatter={(v) => money(v)} labelFormatter={(_, p) => p?.[0]?.payload?.fullLabel} />
                   <Legend />
-                  <Line type="monotone" dataKey="avg_pay_rate" name="Avg Pay Rate" stroke="#0097b2" strokeWidth={2} dot />
                   <Line
                     type="monotone"
                     dataKey="avg_cost_per_hour"
@@ -576,7 +576,6 @@ export default function PayrollReportAnalyticsDashboard({
                         <TableCell align="right">{hours(p.ot_hours)}</TableCell>
                         <TableCell align="right">{money(p.gross_pay)}</TableCell>
                         <TableCell align="right">{money(p.total_payroll_cost)}</TableCell>
-                        <TableCell align="right">{money(p.avg_pay_rate)}</TableCell>
                         <TableCell align="right">{money(p.avg_cost_per_hour)}</TableCell>
                         <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
                           {dCost == null
