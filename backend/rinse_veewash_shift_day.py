@@ -59,6 +59,20 @@ def _dt(value: Any) -> datetime | None:
         return None
 
 
+def _commit(cursor) -> None:
+    conn = (
+        getattr(cursor, "connection", None)
+        or getattr(cursor, "_connection", None)
+        or getattr(getattr(cursor, "_cnx", None), "commit", None) and getattr(cursor, "_cnx", None)
+    )
+    if conn is None or not hasattr(conn, "commit"):
+        return
+    try:
+        conn.commit()
+    except Exception:
+        pass
+
+
 def ensure_shift_monitor_day_tables(cursor) -> None:
     # Always run CREATE IF NOT EXISTS for each table (partial deploys / missing siblings).
     cursor.execute(
@@ -488,10 +502,7 @@ def build_or_load_step1_for_date(
             summary=summary,
             status=next_status,
         )
-        try:
-            cursor.connection.commit()
-        except Exception:
-            pass
+        _commit(cursor)
 
     if day:
         summary = summary_from_day_record(day) or summary
@@ -683,10 +694,7 @@ def close_shift_day(
     # Seed next-day carryover bag stubs from pending + explicit carry-forward dispositions.
     _seed_next_day_carryover(cursor, organization_id, shift_date_et)
 
-    try:
-        cursor.connection.commit()
-    except Exception:
-        pass
+    _commit(cursor)
     return {
         "ok": True,
         "day": get_day_record(cursor, organization_id, shift_date_et),
@@ -731,10 +739,7 @@ def reopen_shift_day(
         previous_status=prev,
         new_status=STATUS_REOPENED,
     )
-    try:
-        cursor.connection.commit()
-    except Exception:
-        pass
+    _commit(cursor)
     return {"ok": True, "day": get_day_record(cursor, organization_id, shift_date_et)}
 
 
@@ -877,10 +882,7 @@ def backfill_day_from_live(
         status=STATUS_READY_TO_CLOSE if review_n == 0 else STATUS_OPEN,
         force=True,
     )
-    try:
-        cursor.connection.commit()
-    except Exception:
-        pass
+    _commit(cursor)
     return {
         "ok": True,
         "day": day,
