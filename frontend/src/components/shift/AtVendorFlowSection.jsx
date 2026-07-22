@@ -91,6 +91,8 @@ export default function AtVendorFlowSection({
           summary={av.veewash_step1_summary}
           segment={segment}
           onRushChange={onRushChange}
+          selectedDateEt={selectedDateEt || av.veewash_step1_summary?.selected_date_et}
+          onRefresh={onCompletionReviewChanged}
         />
       ) : null}
 

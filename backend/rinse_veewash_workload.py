@@ -8,14 +8,20 @@ Operating model:
   * Workload entry (WF and HD): first configured Dirty rack scan (facility_entry_racks).
     Service type comes from presence (WF vs HD). Rush/Non-Rush filters within service
     and never reclassifies HD as WF.
-  * workitems-added is NOT a workload entry event. An HD/WF order that reaches
-    processing without a Dirty scan is a data-quality anomaly (internal
-    completed_without_recognized_entry / not_in_workload) — not a redefined workflow.
+  * Recognized-entry check for COMPLETED_WITHOUT_RECOGNIZED_ENTRY:
+      WF → Dirty required; HD → workitems-added required (in addition to Dirty membership).
+    When completed without the service-appropriate signal, bag enters Active as Review Required.
+  * workitems-added is NOT a WF workload entry event. Recognized entry:
+      WF → first configured Dirty rack scan
+      HD → first workitems-added scan (Dirty is not HD entry for CWO checks)
   * Completion: evaluate_bag_completion_v2 (canonical production resolver).
-    If completed before disappearance → Completed, never Review Required.
-  * Carryover: entered previously, not completed, still unresolved.
-  * Only operational review exception: entered + not completed + confirmed absence
-    from trustworthy At-Vendor scrapes → Review Required (DISAPPEARED_WITHOUT_COMPLETION).
+  * Review Required (manager-facing, reason_codes, one count per bag) includes:
+      DISAPPEARED_WITHOUT_COMPLETION
+      COMPLETED_WITHOUT_RECOGNIZED_ENTRY (was hidden CWO — now in Active as Review)
+      WF_ZERO_OR_MISSING_WEIGHT (WF only)
+      SERVICE_CLASSIFICATION_MISMATCH / COMPLETION_DETAILS_MISSING (extensible)
+  * Dashboard outcome priority: Review Required > Completed > Pending.
+    Active = Completed + Pending + Review Required (no double count).
 
 This module is read-only reporting logic. It does not write to the DB.
 """
@@ -58,6 +64,20 @@ ENTRY_SOURCE_MANUAL_REVIEW = "manual_exception_review"
 EXC_DISAPPEARED_WITHOUT_COMPLETION = "DISAPPEARED_WITHOUT_COMPLETION"
 # Retained for import compatibility; no longer a user-facing operational category.
 EXC_MISSING_ENTRY_SCAN = "MISSING_WORKLOAD_ENTRY_SCAN"
+
+REASON_DISAPPEARED_WITHOUT_COMPLETION = "DISAPPEARED_WITHOUT_COMPLETION"
+REASON_COMPLETED_WITHOUT_RECOGNIZED_ENTRY = "COMPLETED_WITHOUT_RECOGNIZED_ENTRY"
+REASON_WF_ZERO_OR_MISSING_WEIGHT = "WF_ZERO_OR_MISSING_WEIGHT"
+REASON_SERVICE_CLASSIFICATION_MISMATCH = "SERVICE_CLASSIFICATION_MISMATCH"
+REASON_COMPLETION_DETAILS_MISSING = "COMPLETION_DETAILS_MISSING"
+
+REVIEW_REASON_CODES = (
+    REASON_DISAPPEARED_WITHOUT_COMPLETION,
+    REASON_COMPLETED_WITHOUT_RECOGNIZED_ENTRY,
+    REASON_WF_ZERO_OR_MISSING_WEIGHT,
+    REASON_SERVICE_CLASSIFICATION_MISMATCH,
+    REASON_COMPLETION_DETAILS_MISSING,
+)
 
 ENTRY_CLASS_NEW = "new_today"
 ENTRY_CLASS_CARRYOVER = "carryover"
@@ -237,7 +257,7 @@ def load_first_entry_scans(
 def load_first_workitems_added_scans(
     cursor, organization_id: int
 ) -> dict[str, dict[str, Any]]:
-    """Legacy loader retained for diagnostics/tests. Not used for workload entry."""
+    """First workitems-added scan per bag — HD recognized workload entry."""
     if not table_exists(cursor, "rinse_bag_scan_events"):
         return {}
     cursor.execute(
@@ -269,7 +289,7 @@ def build_dirty_entry_map(
     *,
     dirty_by_bag: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """WF and HD enter workload only via first configured VeeWash Dirty scan."""
+    """WF and HD enter Active workload via first configured VeeWash Dirty scan."""
     out: dict[str, dict[str, Any]] = {}
     for bid, pres in presence_by_bag.items():
         svc = _service_of(pres)
@@ -292,9 +312,22 @@ def build_service_entry_map(
     dirty_by_bag: Mapping[str, Mapping[str, Any]],
     wia_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Compatibility wrapper — Dirty-only entry for WF and HD. ``wia_by_bag`` ignored."""
+    """Dirty membership for WF/HD. ``wia_by_bag`` used by callers for HD CWO checks."""
     _ = wia_by_bag
     return build_dirty_entry_map(presence_by_bag, dirty_by_bag=dirty_by_bag)
+
+
+def _has_recognized_entry_for_service(
+    svc: str,
+    *,
+    dirty_entry: Mapping[str, Any] | None,
+    wia_entry: Mapping[str, Any] | None,
+) -> bool:
+    """Service-specific recognized entry for CWO / Review Required."""
+    if svc == SERVICE_HD:
+        return wia_entry is not None and wia_entry.get("entry_date") is not None
+    # WF (and unknown): Dirty
+    return dirty_entry is not None and dirty_entry.get("entry_date") is not None
 
 
 def load_canonical_completions_v2(
@@ -782,7 +815,10 @@ def build_veewash_daily_workload(
     rfv_excluded: list[str] = []
 
     dirty = load_first_dirty_scans(cursor, organization_id, entry_racks=racks)
-    entry = build_dirty_entry_map(presence, dirty_by_bag=dirty)
+    wia = load_first_workitems_added_scans(cursor, organization_id)
+    entry = build_service_entry_map(
+        presence, dirty_by_bag=dirty, wia_by_bag=wia
+    )
 
     completion = load_canonical_completions_v2(cursor, organization_id, presence.keys())
 
@@ -804,6 +840,28 @@ def build_veewash_daily_workload(
         entry_by_bag=entry,
         completion_by_bag=completion,
         disappearance_state_by_bag=disappearance_state_by_bag,
+    )
+
+    from backend.rinse_veewash_review import (
+        expand_review_required,
+        load_bag_weight_map,
+    )
+
+    weight_ids = sorted(
+        set(result.get("new_today") or [])
+        | set(result.get("carryover") or [])
+        | set(result.get("completed_on_date") or [])
+        | set(result.get("completed_without_recognized_entry") or [])
+        | set(presence.keys())
+    )
+    weights = load_bag_weight_map(cursor, organization_id, weight_ids)
+    result = expand_review_required(
+        result,
+        selected_date_et=selected_date_et,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        wia_by_bag=wia,
+        weight_by_bag=weights,
     )
     result["disappearance_confirmation"] = disappearance_state
     result["organization_id"] = int(organization_id)
@@ -1031,6 +1089,10 @@ def build_step1_headline_summary(
         or []
     )
 
+    from backend.rinse_veewash_review import build_review_by_reason
+
+    review_by_reason = build_review_by_reason(result)
+
     segments = {
         "all": _seg(all_new, all_carry, all_completed, all_pending, all_review),
         "rush": _seg(
@@ -1111,6 +1173,8 @@ def build_step1_headline_summary(
         "historical_unresolved_backlog_bag_ids": [],
         "completed_without_recognized_entry": len(cwo),
         "completed_without_recognized_entry_bag_ids": sorted(cwo),
+        "review_by_reason": review_by_reason,
+        "review_reasons_by_bag": dict(result.get("review_reasons_by_bag") or {}),
         "rfv_excluded": len(result.get("rfv_excluded") or []),
         "rfv_excluded_bag_ids": list(result.get("rfv_excluded") or []),
         "segments": segments,

@@ -242,6 +242,237 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/completion-review", methods=["GET"])
+    def rinse_completion_review_list():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org = user_org_id(me)
+            raw_day = request.args.get("date") or request.args.get("selected_date_et")
+            day = parse_date_value(raw_day) if raw_day else date.today()
+            if not isinstance(day, date):
+                day = date.today()
+            sync = str(request.args.get("sync") or "1").lower() not in ("0", "false", "no")
+            from backend.rinse_completion_review import build_completion_review_dashboard_block
+
+            confirmed = request.args.get("confirmed_completed_count")
+            confirmed_n = int(confirmed) if confirmed not in (None, "") else None
+            block = build_completion_review_dashboard_block(
+                cursor,
+                org,
+                selected_date_et=day,
+                confirmed_completed_count=confirmed_n,
+                sync=sync,
+            )
+            return jsonify(json_safe_rinse(block))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/rinse/shift-analysis/completion-review/<bag_id>/confirm",
+        methods=["POST"],
+    )
+    def rinse_completion_review_confirm(bag_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            from datetime import datetime as dt
+
+            from backend.rinse_completion_review import confirm_completion_review
+
+            emp = str(body.get("employee") or "").strip()
+            completion_raw = body.get("completion_at") or body.get("completion_end_time")
+            completion_at = None
+            if isinstance(completion_raw, str) and completion_raw.strip():
+                try:
+                    completion_at = dt.fromisoformat(completion_raw.replace("Z", ""))
+                except ValueError:
+                    completion_at = None
+            day_raw = body.get("selected_date_et") or body.get("completion_date") or body.get("date")
+            day = parse_date_value(day_raw) if day_raw else date.today()
+            if not isinstance(day, date):
+                day = date.today()
+            weight = body.get("weight_lbs")
+            if weight is not None and weight != "":
+                try:
+                    weight = float(weight)
+                except (TypeError, ValueError):
+                    return jsonify({"error": "weight_lbs must be a number"}), 400
+            else:
+                weight = None
+            out = confirm_completion_review(
+                cursor,
+                org,
+                bag_id,
+                employee=emp,
+                completion_at=completion_at,
+                selected_date_et=day,
+                weight_lbs=weight,
+                review_note=body.get("review_note") or body.get("note"),
+                actor_user_id=me.get("id") if isinstance(me, dict) else None,
+            )
+            if not out.get("ok"):
+                conn.rollback()
+                return jsonify(out), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/rinse/shift-analysis/completion-review/<bag_id>/resolve",
+        methods=["POST"],
+    )
+    def rinse_completion_review_resolve(bag_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            from backend.rinse_completion_review import resolve_completion_review
+
+            resolution = str(body.get("resolution") or "").strip().upper()
+            out = resolve_completion_review(
+                cursor,
+                org,
+                bag_id,
+                resolution=resolution,
+                review_note=body.get("review_note") or body.get("note"),
+                actor_user_id=me.get("id") if isinstance(me, dict) else None,
+            )
+            if not out.get("ok"):
+                conn.rollback()
+                return jsonify(out), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/completion-review/batch-confirm", methods=["POST"])
+    def rinse_completion_review_batch_confirm():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            from backend.rinse_completion_review import batch_confirm_completion_reviews
+
+            day_raw = body.get("selected_date_et") or body.get("date")
+            day = parse_date_value(day_raw) if day_raw else date.today()
+            if not isinstance(day, date):
+                day = date.today()
+            items = body.get("items") or body.get("bags") or []
+            out = batch_confirm_completion_reviews(
+                cursor,
+                org,
+                items,
+                selected_date_et=day,
+                actor_user_id=me.get("id") if isinstance(me, dict) else None,
+            )
+            if not out.get("ok"):
+                conn.rollback()
+                return jsonify(out), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/veewash-step1/drilldown", methods=["GET"])
+    def rinse_veewash_step1_drilldown():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org = user_org_id(me)
+            raw_day = request.args.get("date") or request.args.get("selected_date_et")
+            day = parse_date_value(raw_day) if raw_day else date.today()
+            if not isinstance(day, date):
+                day = date.today()
+            from backend.rinse_veewash_step1_api import build_drilldown
+
+            out = build_drilldown(
+                cursor,
+                org,
+                selected_date_et=day,
+                metric=str(request.args.get("metric") or "review_required"),
+                service=str(request.args.get("service") or "all"),
+                rush=str(request.args.get("rush") or "all"),
+            )
+            return jsonify(json_safe_rinse(out))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/veewash-step1/correct", methods=["POST"])
+    def rinse_veewash_step1_correct():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            from backend.rinse_veewash_step1_api import apply_step1_correction
+
+            out = apply_step1_correction(
+                cursor,
+                org,
+                bag_id=str(body.get("bag_id") or ""),
+                action=str(body.get("action") or ""),
+                body=body,
+                actor_user_id=me.get("id") if isinstance(me, dict) else None,
+                actor_display_name=(
+                    (me.get("display_name") or me.get("username"))
+                    if isinstance(me, dict)
+                    else None
+                ),
+            )
+            if not out.get("ok"):
+                conn.rollback()
+                return jsonify(out), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/shift-analysis/debug", methods=["GET"])
     def rinse_shift_analysis_debug():
         """Admin-only audit payload for /performance data reconciliation."""

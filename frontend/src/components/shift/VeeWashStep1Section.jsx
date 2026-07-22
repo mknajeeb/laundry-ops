@@ -12,13 +12,29 @@ import {
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ShiftCountCard from "./ShiftCountCard";
 import RushFilterChips from "./RushFilterChips";
+import Step1MetricDrawer from "./Step1MetricDrawer";
 import { SERVICE_FILTERS } from "../../utils/shiftMonitorHelpers";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import { resolveStep1SegmentKeys } from "./veewashStep1SegmentKeys";
 
 export { resolveStep1SegmentKeys };
 
-function BagList({ ids }) {
+const REASON_GROUPS = [
+  {
+    key: "COMPLETED_WITHOUT_RECOGNIZED_ENTRY",
+    label: "Completed without entry",
+  },
+  {
+    key: "WF_ZERO_OR_MISSING_WEIGHT",
+    label: "Zero or missing WF weight",
+  },
+  {
+    key: "DISAPPEARED_WITHOUT_COMPLETION",
+    label: "Disappeared without completion",
+  },
+];
+
+function BagList({ ids, onBagClick }) {
   const list = ids || [];
   if (list.length === 0) {
     return (
@@ -34,12 +50,14 @@ function BagList({ ids }) {
           key={id}
           label={id}
           size="small"
+          onClick={onBagClick ? () => onBagClick(id) : undefined}
           sx={{
             fontFamily: "monospace",
             fontSize: "0.72rem",
             height: 22,
             bgcolor: "#f1f5f9",
             border: "1px solid #e2e8f0",
+            cursor: onBagClick ? "pointer" : "default",
           }}
         />
       ))}
@@ -78,14 +96,9 @@ function ServiceFilterChips({ value, onChange }) {
             variant={selected ? "filled" : "outlined"}
             sx={{
               fontWeight: 600,
-              borderRadius: 1.5,
-              px: 0.5,
-              minHeight: 30,
-              fontSize: "0.8125rem",
-              bgcolor: selected ? VEEWASH_DASHBOARD.primaryBlue : "transparent",
-              color: selected ? "#fff" : "text.primary",
-              border: "2px solid",
-              borderColor: selected ? VEEWASH_DASHBOARD.primaryBlue : "divider",
+              bgcolor: selected ? VEEWASH_DASHBOARD.primaryBlue : undefined,
+              color: selected ? "#fff" : undefined,
+              borderColor: VEEWASH_DASHBOARD.primaryBlueBorder,
               "&:hover": {
                 bgcolor: selected ? VEEWASH_DASHBOARD.primaryBlueDark : VEEWASH_DASHBOARD.primaryBlueLight,
               },
@@ -97,9 +110,10 @@ function ServiceFilterChips({ value, onChange }) {
   );
 }
 
-function MetricRow({ title, seg, showEntryMetrics = true, emphasize = false }) {
+function MetricRow({ title, seg, showEntryMetrics = true, emphasize = false, onMetricClick }) {
   if (!seg) return null;
   const review = seg.exceptions?.review_required ?? seg.exceptions?.total ?? 0;
+  const click = (metric, label) => () => onMetricClick?.(metric, `${title} · ${label}`);
   return (
     <Box sx={{ mb: emphasize ? 0 : 1.5 }}>
       <Typography
@@ -126,15 +140,33 @@ function MetricRow({ title, seg, showEntryMetrics = true, emphasize = false }) {
       >
         {showEntryMetrics ? (
           <>
-            <ShiftCountCard label="New Today" value={seg.new_today} size="kpi" />
-            <ShiftCountCard label="Carryover" value={seg.carryover} size="kpi" />
+            <ShiftCountCard label="New Today" value={seg.new_today} size="kpi" onClick={click("new_today", "New Today")} />
+            <ShiftCountCard label="Carryover" value={seg.carryover} size="kpi" onClick={click("carryover", "Carryover")} />
           </>
         ) : (
-          <ShiftCountCard label="Active Workload" value={seg.active_workload} size="kpi" variant="wf" />
+          <ShiftCountCard
+            label="Active Workload"
+            value={seg.active_workload}
+            size="kpi"
+            variant="wf"
+            onClick={click("active_workload", "Active Workload")}
+          />
         )}
-        <ShiftCountCard label="Completed" value={seg.completed} size="kpi" />
-        <ShiftCountCard label="Pending" value={seg.pending} size="kpi" variant="pending" />
-        <ShiftCountCard label="Review Required" value={review} size="kpi" warn={review > 0} />
+        <ShiftCountCard label="Completed" value={seg.completed} size="kpi" onClick={click("completed", "Completed")} />
+        <ShiftCountCard
+          label="Pending"
+          value={seg.pending}
+          size="kpi"
+          variant="pending"
+          onClick={click("pending", "Pending")}
+        />
+        <ShiftCountCard
+          label="Review Required"
+          value={review}
+          size="kpi"
+          warn={review > 0}
+          onClick={click("review_required", "Review Required")}
+        />
       </Box>
       {showEntryMetrics ? (
         <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
@@ -151,8 +183,15 @@ function MetricRow({ title, seg, showEntryMetrics = true, emphasize = false }) {
   );
 }
 
-export default function VeeWashStep1Section({ summary, segment = "all", onRushChange }) {
+export default function VeeWashStep1Section({
+  summary,
+  segment = "all",
+  onRushChange,
+  selectedDateEt,
+  onRefresh,
+}) {
   const [serviceFilter, setServiceFilter] = useState("all");
+  const [drawer, setDrawer] = useState({ open: false, metric: null, title: "" });
   const rushFilter = segment || "all";
   const segments = summary?.segments || {};
 
@@ -169,8 +208,17 @@ export default function VeeWashStep1Section({ summary, segment = "all", onRushCh
     || totalSeg.bag_ids?.disappeared_without_completion
     || [];
   const reviewCount = totalSeg.exceptions?.review_required ?? reviewIds.length ?? 0;
+  const reviewByReason = summary?.review_by_reason || {};
+
+  const openMetric = (metric, title) => {
+    setDrawer({ open: true, metric, title });
+  };
 
   if (!summary) return null;
+
+  const otherReasonIds = Object.entries(reviewByReason)
+    .filter(([k]) => !REASON_GROUPS.some((g) => g.key === k))
+    .flatMap(([, ids]) => ids || []);
 
   return (
     <Box sx={{ mb: 2.5 }}>
@@ -211,7 +259,7 @@ export default function VeeWashStep1Section({ summary, segment = "all", onRushCh
             />
           </Stack>
           <Typography variant="caption" sx={{ mt: 0.35, opacity: 0.9, display: "block", maxWidth: 640 }}>
-            WF and HD enter on Dirty scan. Completion is canonical. Review Required needs attention.
+            WF/HD Dirty entry · Completion canonical · Review Required includes CWO, zero-weight WF, and disappearances.
           </Typography>
         </Box>
 
@@ -237,8 +285,8 @@ export default function VeeWashStep1Section({ summary, segment = "all", onRushCh
             </Box>
           </Stack>
 
-          {wfSeg ? <MetricRow title="WF" seg={wfSeg} showEntryMetrics /> : null}
-          {hdSeg ? <MetricRow title="HD" seg={hdSeg} showEntryMetrics /> : null}
+          {wfSeg ? <MetricRow title="WF" seg={wfSeg} showEntryMetrics onMetricClick={openMetric} /> : null}
+          {hdSeg ? <MetricRow title="HD" seg={hdSeg} showEntryMetrics onMetricClick={openMetric} /> : null}
 
           <Box
             sx={{
@@ -248,7 +296,7 @@ export default function VeeWashStep1Section({ summary, segment = "all", onRushCh
               borderColor: "divider",
             }}
           >
-            <MetricRow title="TOTAL" seg={totalSeg} showEntryMetrics={false} emphasize />
+            <MetricRow title="TOTAL" seg={totalSeg} showEntryMetrics={false} emphasize onMetricClick={openMetric} />
           </Box>
         </Box>
       </Paper>
@@ -277,6 +325,7 @@ export default function VeeWashStep1Section({ summary, segment = "all", onRushCh
           <AccordionSummary
             expandIcon={reviewCount > 0 ? <ExpandMoreIcon /> : null}
             sx={{ px: 0, minHeight: 36, "&.Mui-disabled": { opacity: 1 } }}
+            onClick={() => reviewCount > 0 && openMetric("review_required", "Review Required")}
           >
             <Typography variant="subtitle2" fontWeight={800} sx={{ color: reviewCount > 0 ? "#991b1b" : "text.primary" }}>
               Review Required · {reviewCount}
@@ -284,14 +333,44 @@ export default function VeeWashStep1Section({ summary, segment = "all", onRushCh
           </AccordionSummary>
           {reviewCount > 0 ? (
             <AccordionDetails sx={{ px: 0, pt: 0, pb: 0.5 }}>
-              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>
-                Entered workload, no canonical completion, confirmed absent from At-Vendor.
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                One count per bag. Click a group or open the drawer for chronology and corrections.
               </Typography>
-              <BagList ids={reviewIds} />
+              {REASON_GROUPS.map(({ key, label }) => {
+                const ids = reviewByReason[key] || [];
+                if (!ids.length) return null;
+                return (
+                  <Box key={key} sx={{ mb: 1 }}>
+                    <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.35 }}>
+                      {label} · {ids.length}
+                    </Typography>
+                    <BagList ids={ids} onBagClick={() => openMetric("review_required", label)} />
+                  </Box>
+                );
+              })}
+              {otherReasonIds.length > 0 ? (
+                <Box sx={{ mb: 1 }}>
+                  <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.35 }}>
+                    Other discrepancies · {otherReasonIds.length}
+                  </Typography>
+                  <BagList ids={otherReasonIds} onBagClick={() => openMetric("review_required", "Other discrepancies")} />
+                </Box>
+              ) : null}
             </AccordionDetails>
           ) : null}
         </Accordion>
       </Paper>
+
+      <Step1MetricDrawer
+        open={drawer.open}
+        onClose={() => setDrawer((d) => ({ ...d, open: false }))}
+        selectedDateEt={selectedDateEt || summary.selected_date_et}
+        metric={drawer.metric}
+        title={drawer.title}
+        serviceFilter={serviceFilter}
+        rushFilter={rushFilter}
+        onCorrected={onRefresh}
+      />
     </Box>
   );
 }
