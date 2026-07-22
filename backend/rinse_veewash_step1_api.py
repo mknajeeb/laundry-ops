@@ -159,12 +159,14 @@ def _filter_bag_ids(
         "completed": "completed",
         "pending": "pending",
         "review_required": "review_required",
+        "active": None,
         "active_workload": None,
         "washed": "completed",  # HD stage alias until separate stage model
         "folded": "completed",
     }.get(metric, metric)
 
     if metric_key is None:
+        # Active = New + Carryover (includes CWO bags added via Review expand).
         ids = list(bags.get("new_today") or []) + list(bags.get("carryover") or [])
     else:
         ids = list(bags.get(metric_key) or [])

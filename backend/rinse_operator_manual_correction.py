@@ -8,10 +8,13 @@ from typing import Any
 
 from backend.rinse_bag_completion import (
     COMPLETION_COMPLETED,
-    REASON_OPERATOR_APPROVED_MANUAL_CORRECTION,
-    TRIGGER_KIND_OPERATOR_APPROVED_MANUAL_CORRECTION,
     normalize_bag_id,
 )
+
+# Keep these local so Step-1 corrections deploy without depending on
+# unreleased rinse_bag_completion constants.
+REASON_OPERATOR_APPROVED_MANUAL_CORRECTION = "OPERATOR_APPROVED_MANUAL_CORRECTION"
+TRIGGER_KIND_OPERATOR_APPROVED_MANUAL_CORRECTION = "OPERATOR_MANUAL_CORRECTION"
 
 
 def write_operator_audit_log(
