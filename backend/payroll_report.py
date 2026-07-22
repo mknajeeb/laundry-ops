@@ -99,6 +99,8 @@ HOUR_TOTAL_KEYS = ("regular_hours", "ot_hours")
 MONEY_TOTAL_KEYS = (
     "base_earnings",
     "ot_premium",
+    "regular_earnings",
+    "ot_earnings",
     "other_earnings",
     "gross_pay",
     "employee_tax_deductions",
@@ -400,6 +402,8 @@ def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = No
         "ot_rate": breakdown["ot_rate"],
         "base_earnings": breakdown["base_earnings"],
         "ot_premium": breakdown["ot_premium"],
+        "regular_earnings": breakdown.get("regular_earnings", 0.0),
+        "ot_earnings": breakdown.get("ot_earnings", 0.0),
         "other_earnings": breakdown["other_earnings"],
         "gross_pay": gross_pay,
         "earned_gross": gross_pay,
@@ -510,6 +514,7 @@ def query_payroll_report(
     year: Optional[int] = None,
     comparison_range: Optional[int] = None,
     include_analytics: bool = True,
+    include_employee_detail: bool = True,
 ) -> dict[str, Any]:
     """Return filtered payroll report rows + totals across categories/periods."""
     from backend.payroll_operations import ensure_payout_batches_tables
@@ -777,6 +782,7 @@ def query_payroll_report(
         "payment_status": payment_status or "all",
         "date_match_rule": match_rule,
         "comparison_range": cmp_range,
+        "include_employee_detail": bool(include_employee_detail),
     }
     out: dict[str, Any] = {
         "rows": rows,
@@ -829,6 +835,21 @@ def query_payroll_report(
         out["summary"] = merged_summary
         out["analytics"] = analytics
         out["groups"] = analytics.get("groups") or []
+    if not include_employee_detail:
+        # Dashboard-only: keep category analytics; hide employee-identifiable rows.
+        out["rows"] = []
+        out["groups"] = []
+        out["employee_detail_restricted"] = True
+        out["employee_detail_message"] = (
+            "You do not have permission to view employee payroll details."
+        )
+        if out.get("analytics"):
+            out["analytics"]["groups"] = []
+            out["analytics"]["employee_summaries_by_category"] = {}
+            out["analytics"]["access"] = {
+                **(out["analytics"].get("access") or {}),
+                "can_view_employee_detail": False,
+            }
     return json_safe(out)
 
 
@@ -1070,16 +1091,18 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
             [
                 "Category",
                 "Head Count",
-                "Total Hours",
+                "Regular Hours",
                 "OT Hours",
-                "Base Earnings",
-                "OT Premium",
+                "Regular Earnings",
+                "OT Earnings",
                 "Other Earnings",
                 "Gross Payroll",
                 "Employer Tax",
                 "Total Payroll Cost",
                 "Avg Pay Rate",
-                "Cost / Hour",
+                "Avg Employer Cost / Hour",
+                "Base Earnings (recon)",
+                "OT Premium (recon)",
             ]
         )
         for cell in ws_wf[ws_wf.max_row]:
@@ -1097,16 +1120,18 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
             return [
                 c.get("label") or c.get("worker_category"),
                 c.get("head_count") or c.get("worker_count") or 0,
-                round(_money(c.get("total_hours")), 2),
+                round(_money(c.get("regular_hours")), 2),
                 round(_money(c.get("ot_hours")), 2),
-                round(_money(c.get("base_earnings")), 2),
-                round(_money(c.get("ot_premium")), 2),
+                round(_money(c.get("regular_earnings")), 2),
+                round(_money(c.get("ot_earnings")), 2),
                 round(_money(c.get("other_earnings")), 2),
                 round(_money(c.get("gross_pay")), 2),
                 round(_money(c.get("employer_taxes")), 2),
                 round(_money(c.get("total_payroll_cost")), 2),
                 _rate_cell(avg_pay),
                 _rate_cell(c.get("avg_cost_per_hour")),
+                round(_money(c.get("base_earnings")), 2),
+                round(_money(c.get("ot_premium")), 2),
             ]
 
         for c in categories:
@@ -1375,15 +1400,10 @@ def build_payroll_report_html(report: dict) -> str:
     if ot:
         ot_html = f"""
 <div class="ot-card">
-  <div class="kpi-label">OT Insight</div>
-  <div class="kpi-value">{fmt_hours(ot.get('ot_hours') if ot.get('ot_hours') is not None else ot.get('value'))} OT Hours</div>
-  <div class="kpi-prev">{_money(ot.get('ot_pct_of_hours')):.2f}% of Total Hours</div>
-  <div class="kpi-prev"><strong>OT Premium {fmt_money(ot.get('ot_premium'))}</strong></div>
-  <div class="kpi-prev">{_money(ot.get('ot_premium_pct_of_gross')):.2f}% of Gross Payroll</div>
-  <div class="kpi-prev">Previous OT Hours: {fmt_hours(ot.get('previous_ot_hours') if ot.get('previous_ot_hours') is not None else ot.get('previous'))}</div>
-  <div class="kpi-delta">Hours {fmt_delta(ot.get('ot_hours_diff') if ot.get('ot_hours_diff') is not None else ot.get('diff'), ot.get('ot_hours_pct') if ot.get('ot_hours_pct') is not None else ot.get('pct'))}</div>
-  <div class="kpi-prev">Previous OT Premium: {fmt_money(ot.get('previous_ot_premium'))}</div>
-  <div class="kpi-delta">Premium {fmt_delta(ot.get('ot_premium_diff'), ot.get('ot_premium_pct'))}</div>
+  <div class="kpi-label">OT</div>
+  <div class="kpi-value">{fmt_hours(ot.get('ot_hours') if ot.get('ot_hours') is not None else ot.get('value'))}</div>
+  <div class="kpi-prev">{_money(ot.get('ot_pct_of_hours')):.2f}% of hours</div>
+  <div class="kpi-prev">OT Earnings {fmt_money(ot.get('ot_earnings'))}</div>
 </div>"""
 
     def _fmt_rate(val):
@@ -1410,10 +1430,10 @@ def build_payroll_report_html(report: dict) -> str:
         return (
             f"<td>{b}{c.get('label') or c.get('worker_category') or ''}{e}</td>"
             + cell(c.get("head_count") or c.get("worker_count") or 0)
-            + cell(c.get("total_hours"), hrs=True)
+            + cell(c.get("regular_hours"), hrs=True)
             + cell(c.get("ot_hours"), hrs=True)
-            + cell(c.get("base_earnings"), money=True)
-            + cell(c.get("ot_premium"), money=True)
+            + cell(c.get("regular_earnings"), money=True)
+            + cell(c.get("ot_earnings"), money=True)
             + f"<td class='num'>{b}{fmt_money(c.get('gross_pay'))}{other_note}{e}</td>"
             + cell(c.get("employer_taxes"), money=True)
             + cell(c.get("total_payroll_cost"), money=True)
@@ -1434,10 +1454,10 @@ def build_payroll_report_html(report: dict) -> str:
     workforce_table = f"""
 <table class="cmp">
 <thead><tr>
-  <th>Category</th><th>Head Count</th><th>Total Hours</th><th>OT Hours</th>
-  <th>Base Earnings</th><th>OT Premium</th><th>Gross Payroll</th>
-  <th>Employer Tax</th><th>Total Payroll Cost</th>
-  <th>Avg Pay Rate</th><th>Cost / Hour</th>
+  <th>Category</th><th>HC</th><th>Regular Hrs</th><th>OT Hrs</th>
+  <th>Regular Earnings</th><th>OT Earnings</th><th>Gross</th>
+  <th>Employer Tax</th><th>Total Cost</th>
+  <th>Avg Pay Rate</th><th>Avg Employer Cost</th>
 </tr></thead>
 <tbody>{"".join(wf_rows) if wf_rows else "<tr><td colspan='11'>No category data</td></tr>"}</tbody>
 </table>"""

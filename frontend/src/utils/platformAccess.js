@@ -18,6 +18,7 @@ export const TENANT_PORTAL_ROLES = [
   "ACCOUNTANT",
   "RINSE",
   "FINANCE",
+  "PAYROLL_ANALYTICS",
 ];
 
 /** Platform operators: manage tenants and entitlements (not operational laundry UI). */
@@ -63,9 +64,18 @@ export function isFinanceOnlyUser(user) {
   return !r.some((role) => elevated.includes(role));
 }
 
+/** True when the user only has PAYROLL_ANALYTICS (dashboard summary, no employee detail). */
+export function isPayrollAnalyticsOnlyUser(user) {
+  const r = normalizedRoles(user);
+  if (!r.includes("PAYROLL_ANALYTICS")) return false;
+  if (hasPlatformAdminRole(user)) return false;
+  const elevated = TENANT_PORTAL_ROLES.filter((role) => role !== "PAYROLL_ANALYTICS");
+  return !r.some((role) => elevated.includes(role));
+}
+
 /** Payroll management workspace only — no dashboard, checkout, clock, etc. */
 export function isPayrollManagementOnlyUser(user) {
-  return isAccountantOnlyUser(user) || isFinanceOnlyUser(user);
+  return isAccountantOnlyUser(user) || isFinanceOnlyUser(user) || isPayrollAnalyticsOnlyUser(user);
 }
 
 /** Post-login / blocked-route landing path for tenant users. */

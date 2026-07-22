@@ -3,6 +3,7 @@ import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "./tenantNav";
 import {
   isAccountantOnlyUser,
   isFinanceOnlyUser,
+  isPayrollAnalyticsOnlyUser,
   isPayrollManagementOnlyUser,
   isRinseScheduleOnlyUser,
   tenantDefaultRoute,
@@ -66,6 +67,30 @@ describe("finance-only navigation", () => {
   it("shows only payroll in sidebar nav", () => {
     const visible = TENANT_NAV_ITEMS.filter((item) => tenantNavItemVisible(financeOnly, item));
     expect(visible.map((item) => item.to)).toEqual(["/payroll"]);
+  });
+});
+
+describe("payroll-analytics-only navigation", () => {
+  const analyticsOnly = { id: 11, roles: ["PAYROLL_ANALYTICS"] };
+  const adminAnalytics = { id: 12, roles: ["ADMIN", "PAYROLL_ANALYTICS"] };
+
+  it("detects pure payroll analytics role", () => {
+    expect(isPayrollAnalyticsOnlyUser(analyticsOnly)).toBe(true);
+    expect(isPayrollAnalyticsOnlyUser(adminAnalytics)).toBe(false);
+    expect(isPayrollManagementOnlyUser(analyticsOnly)).toBe(true);
+  });
+
+  it("uses payroll as default route for analytics-only users", () => {
+    expect(tenantDefaultRoute(analyticsOnly)).toBe("/payroll");
+  });
+
+  it("shows only payroll in sidebar nav", () => {
+    const visible = TENANT_NAV_ITEMS.filter((item) => tenantNavItemVisible(analyticsOnly, item));
+    expect(visible.map((item) => item.to)).toEqual(["/payroll"]);
+  });
+
+  it("blocks kiosk lock for analytics-only users", () => {
+    expect(userMayUseKioskLock(analyticsOnly)).toBe(false);
   });
 });
 

@@ -142,7 +142,8 @@ const EMPTY_FILTERS = {
   comparisonRange: 4,
 };
 
-export default function PayrollReportPanel() {
+export default function PayrollReportPanel({ viewMode = "dashboard" }) {
+  const dashboardPrimary = viewMode !== "report";
   const [meta, setMeta] = useState({ employees: [], periods: [], date_match_rule: "" });
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [applied, setApplied] = useState(EMPTY_FILTERS);
@@ -150,7 +151,7 @@ export default function PayrollReportPanel() {
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState("");
   const [error, setError] = useState("");
-  const [showDashboard, setShowDashboard] = useState(true);
+  const [showDashboard, setShowDashboard] = useState(dashboardPrimary);
 
   useEffect(() => {
     getPayrollReportMeta()
@@ -427,7 +428,7 @@ export default function PayrollReportPanel() {
         sx={{ p: 2, borderTop: `3px solid ${VEEWASH_BRAND.primary}` }}
       >
         <Typography variant="h6" fontWeight={700} sx={{ color: VEEWASH_BRAND.primaryDark, mb: 0.5 }}>
-          Payroll Reports
+          {dashboardPrimary ? "Payroll Dashboard" : "Payroll Reports"}
         </Typography>
         <Typography
           variant="subtitle1"
@@ -437,9 +438,9 @@ export default function PayrollReportPanel() {
           {dynamicHeading}
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Accounting payroll reports (W-2, 1099, temp). Monthly Payroll Paid uses Official Pay Date
-          only. Custom ranges default to Pay Date basis. Labor Cost Analysis is a separate future
-          module. Period end is never shown as a confirmed Pay Date.
+          {dashboardPrimary
+            ? "Executive labor-cost view. Click a workforce category to drill into employee summary when permitted."
+            : "Accounting payroll reports (W-2, 1099, temp). Monthly Payroll Paid uses Official Pay Date only."}
         </Typography>
 
         <Stack spacing={2}>
@@ -669,7 +670,10 @@ export default function PayrollReportPanel() {
           variant="outlined"
           startIcon={<DownloadIcon />}
           onClick={downloadExcel}
-          disabled={!rows.length || Boolean(exporting)}
+          disabled={
+            Boolean(exporting) ||
+            (!rows.length && !report?.employee_detail_restricted && !report?.analytics)
+          }
         >
           {exporting === "xlsx" ? "Exporting…" : "Download Excel"}
         </Button>
@@ -677,7 +681,10 @@ export default function PayrollReportPanel() {
           variant="outlined"
           startIcon={<PictureAsPdfIcon />}
           onClick={downloadPdf}
-          disabled={!rows.length || Boolean(exporting)}
+          disabled={
+            Boolean(exporting) ||
+            (!rows.length && !report?.employee_detail_restricted && !report?.analytics)
+          }
         >
           {exporting === "pdf" ? "Exporting…" : "Download PDF"}
         </Button>
@@ -712,6 +719,11 @@ export default function PayrollReportPanel() {
         </Paper>
       ) : null}
 
+      {report?.employee_detail_restricted ? (
+        <Alert severity="info">{report.employee_detail_message || "You do not have permission to view employee payroll details."}</Alert>
+      ) : null}
+
+      {!dashboardPrimary || !showDashboard ? (
       <Paper variant="outlined">
         <Box sx={{ px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
           <Typography variant="subtitle2" fontWeight={700}>
@@ -927,6 +939,7 @@ export default function PayrollReportPanel() {
           </TableContainer>
         )}
       </Paper>
+      ) : null}
     </Stack>
   );
 }

@@ -19,8 +19,8 @@ KPI_DEFS = (
     ("gross_pay", "Gross Payroll", "money"),
     ("total_hours", "Total Hours", "hours"),
     ("worker_count", "Head Count", "count"),
-    ("avg_cost_per_hour", "Average Cost / Hour", "money"),
     ("avg_pay_rate", "Average Pay Rate", "money"),
+    ("avg_cost_per_hour", "Average Employer Cost / Hour", "money"),
 )
 
 # Period-comparison delta keys (broader than executive KPIs).
@@ -33,6 +33,8 @@ COMPARISON_DELTA_KEYS = (
     "worker_count",
     "base_earnings",
     "ot_premium",
+    "regular_earnings",
+    "ot_earnings",
     "employee_tax_deductions",
     "net_pay",
     "employer_taxes",
@@ -47,6 +49,7 @@ NEUTRAL_TREND_KEYS = frozenset(
     {
         "ot_hours",
         "ot_premium",
+        "ot_earnings",
         "employer_taxes",
         "total_payroll_cost",
         "gross_pay",
@@ -97,17 +100,34 @@ def aggregate_period_metrics(rows: list[dict]) -> dict[str, Any]:
     """Roll up filtered report rows into one period metrics blob."""
     from backend.payroll_report import _sum_totals
 
-    totals = _sum_totals(rows)
-    user_ids = {r.get("user_id") for r in rows if r.get("user_id") is not None}
+    # Ensure management earnings fields exist (derive from hours × rates when missing).
+    normalized = []
+    for row in rows or []:
+        r = dict(row)
+        if r.get("regular_earnings") is None or r.get("ot_earnings") is None:
+            reg_h = _money(r.get("regular_hours"))
+            ot_h = _money(r.get("ot_hours"))
+            rate = _money(r.get("regular_rate"))
+            ot_rate = _money(r.get("ot_rate"))
+            if ot_rate <= 0 and rate > 0 and ot_h > 0:
+                ot_rate = round(rate * 1.5, 2)
+            if r.get("regular_earnings") is None:
+                r["regular_earnings"] = round(reg_h * rate, 2) if rate > 0 else 0.0
+            if r.get("ot_earnings") is None:
+                r["ot_earnings"] = round(ot_h * ot_rate, 2) if ot_h > 0 and ot_rate > 0 else 0.0
+        normalized.append(r)
+
+    totals = _sum_totals(normalized)
+    user_ids = {r.get("user_id") for r in normalized if r.get("user_id") is not None}
     names = {
         " ".join(str(r.get("employee_name") or "").split())
-        for r in rows
+        for r in normalized
         if str(r.get("employee_name") or "").strip()
     }
     pay_dates = sorted(
         {
             str(r.get("pay_date") or r.get("official_pay_date") or "")[:10]
-            for r in rows
+            for r in normalized
             if str(r.get("pay_date") or r.get("official_pay_date") or "").strip()
         }
     )
@@ -119,8 +139,13 @@ def aggregate_period_metrics(rows: list[dict]) -> dict[str, Any]:
     avg_cost = round(cost / total_hours, 2) if total_hours > 0.005 else None
     avg_pay = round(gross / total_hours, 2) if total_hours > 0.005 else None
     ot_pct_hours = round((ot / total_hours) * 100.0, 2) if total_hours > 0.005 else 0.0
+    ot_earnings = _money(totals.get("ot_earnings"))
+    ot_premium = _money(totals.get("ot_premium"))
     ot_pct_gross = (
-        round((_money(totals.get("ot_premium")) / gross) * 100.0, 2) if gross > 0.005 else 0.0
+        round((ot_earnings / gross) * 100.0, 2) if gross > 0.005 else 0.0
+    )
+    ot_premium_pct_of_gross = (
+        round((ot_premium / gross) * 100.0, 2) if gross > 0.005 else 0.0
     )
     return {
         **totals,
@@ -131,8 +156,9 @@ def aggregate_period_metrics(rows: list[dict]) -> dict[str, Any]:
         "avg_cost_per_hour": avg_cost,
         "avg_pay_rate": avg_pay,
         "ot_pct_of_hours": ot_pct_hours,
-        "ot_premium_pct_of_gross": ot_pct_gross,
-        "line_count": len(rows),
+        "ot_earnings_pct_of_gross": ot_pct_gross,
+        "ot_premium_pct_of_gross": ot_premium_pct_of_gross,
+        "line_count": len(normalized),
     }
 
 
@@ -212,18 +238,25 @@ def build_kpi_cards(
 def build_ot_summary(
     current: dict[str, Any], previous: Optional[dict[str, Any]]
 ) -> dict[str, Any]:
-    """OT insight: hours, premium, shares of totals, and vs prior period."""
+    """Compact OT insight: hours, share of hours, full OT earnings, vs prior."""
     ot = _money(current.get("ot_hours"))
     pct = _money(current.get("ot_pct_of_hours"))
+    ot_earnings = _money(current.get("ot_earnings"))
     premium = _money(current.get("ot_premium"))
     gross = _money(current.get("gross_pay"))
+    if current.get("ot_earnings_pct_of_gross") is not None:
+        earnings_pct = _money(current.get("ot_earnings_pct_of_gross"))
+    else:
+        earnings_pct = round((ot_earnings / gross) * 100.0, 2) if gross > 0.005 else 0.0
     if current.get("ot_premium_pct_of_gross") is not None:
         premium_pct = _money(current.get("ot_premium_pct_of_gross"))
     else:
         premium_pct = round((premium / gross) * 100.0, 2) if gross > 0.005 else 0.0
     prev_ot = _money(previous.get("ot_hours")) if previous else None
+    prev_earnings = _money(previous.get("ot_earnings")) if previous else None
     prev_premium = _money(previous.get("ot_premium")) if previous else None
     hours_delta = _delta(ot, prev_ot)
+    earnings_delta = _delta(ot_earnings, prev_earnings)
     premium_delta = _delta(premium, prev_premium)
     return {
         "key": "ot_hours",
@@ -233,16 +266,20 @@ def build_ot_summary(
         "current": ot,
         "ot_hours": ot,
         "ot_pct_of_hours": pct,
+        "ot_earnings": ot_earnings,
+        "ot_earnings_pct_of_gross": earnings_pct,
         "ot_premium": premium,
         "ot_premium_pct_of_gross": premium_pct,
         "previous_ot_hours": prev_ot,
+        "previous_ot_earnings": prev_earnings,
         "previous_ot_premium": prev_premium,
         "ot_hours_diff": hours_delta["diff"],
         "ot_hours_pct": hours_delta["pct"],
+        "ot_earnings_diff": earnings_delta["diff"],
+        "ot_earnings_pct": earnings_delta["pct"],
         "ot_premium_diff": premium_delta["diff"],
         "ot_premium_pct": premium_delta["pct"],
         "neutral_trend": True,
-        # Primary delta (hours) kept for existing UI helpers.
         **hours_delta,
     }
 
@@ -331,9 +368,13 @@ def category_breakdown(rows: list[dict]) -> list[dict[str, Any]]:
             employer_cost = _money(metrics.get("gross_pay"))
         base = _money(metrics.get("base_earnings"))
         prem = _money(metrics.get("ot_premium"))
+        reg_earn = _money(metrics.get("regular_earnings"))
+        ot_earn = _money(metrics.get("ot_earnings"))
         other = _money(metrics.get("other_earnings"))
         gross = _money(metrics.get("gross_pay"))
+        # Premium model still reconciles; management model uses regular+ot full.
         recon_diff = round(gross - base - prem - other, 2)
+        mgmt_diff = round(gross - reg_earn - ot_earn - other, 2)
         avg_pay = metrics.get("avg_pay_rate")
         avg_cost = metrics.get("avg_cost_per_hour")
         out.append(
@@ -342,22 +383,79 @@ def category_breakdown(rows: list[dict]) -> list[dict[str, Any]]:
                 "label": CATEGORY_LABELS.get(cat, cat),
                 **metrics,
                 "head_count": metrics.get("worker_count", 0),
+                "regular_hours": _money(metrics.get("regular_hours")),
+                "ot_hours": _money(metrics.get("ot_hours")),
+                "regular_earnings": reg_earn,
+                "ot_earnings": ot_earn,
                 "base_earnings": base,
                 "ot_premium": prem,
                 "other_earnings": other,
                 "gross_pay": gross,
-                # Avg Pay Rate = Gross ÷ Hours; Cost/Hour = Total Payroll Cost ÷ Hours.
                 "avg_pay_rate": avg_pay,
                 "avg_cost_per_hour": avg_cost,
-                # Legacy alias (Avg Rate) — same as avg_pay_rate.
                 "avg_rate": avg_pay,
                 "employer_cost": employer_cost,
-                # Gross = Base + OT Premium + Other (must be $0.00).
                 "gross_reconciliation_diff": recon_diff,
                 "gross_reconciles": abs(recon_diff) < 0.005,
+                "mgmt_reconciliation_diff": mgmt_diff,
+                "mgmt_reconciles": abs(mgmt_diff) < 0.005,
                 "has_other_earnings": abs(other) >= 0.005,
             }
         )
+    return out
+
+
+def employee_summaries_by_category(
+    rows: list[dict], *, include_identities: bool = True
+) -> dict[str, list[dict[str, Any]]]:
+    """Per-category employee rollups for dashboard drill-down.
+
+    When include_identities is False, returns an empty mapping (no names, rates,
+    or line-level employee payroll data).
+    """
+    if not include_identities:
+        return {}
+
+    by_cat: dict[str, dict[Any, list[dict]]] = defaultdict(lambda: defaultdict(list))
+    for row in rows or []:
+        cat = str(row.get("worker_category") or "unknown")
+        uid = row.get("user_id")
+        key = uid if uid is not None else (
+            " ".join(str(row.get("employee_name") or "").split()).lower() or id(row)
+        )
+        by_cat[cat][key].append(row)
+
+    out: dict[str, list[dict[str, Any]]] = {}
+    for cat, employees in by_cat.items():
+        summaries = []
+        for key, emp_rows in employees.items():
+            metrics = aggregate_period_metrics(emp_rows)
+            name = emp_rows[0].get("employee_name") or "Employee"
+            summaries.append(
+                {
+                    "user_id": emp_rows[0].get("user_id"),
+                    "employee_name": name,
+                    "worker_category": cat,
+                    "line_count": len(emp_rows),
+                    "regular_hours": metrics.get("regular_hours"),
+                    "ot_hours": metrics.get("ot_hours"),
+                    "total_hours": metrics.get("total_hours"),
+                    "regular_earnings": metrics.get("regular_earnings"),
+                    "ot_earnings": metrics.get("ot_earnings"),
+                    "base_earnings": metrics.get("base_earnings"),
+                    "ot_premium": metrics.get("ot_premium"),
+                    "other_earnings": metrics.get("other_earnings"),
+                    "gross_pay": metrics.get("gross_pay"),
+                    "employer_taxes": metrics.get("employer_taxes"),
+                    "total_payroll_cost": metrics.get("total_payroll_cost"),
+                    "avg_pay_rate": metrics.get("avg_pay_rate"),
+                    "avg_cost_per_hour": metrics.get("avg_cost_per_hour"),
+                }
+            )
+        summaries.sort(
+            key=lambda s: (str(s.get("employee_name") or "").lower(), int(s.get("user_id") or 0))
+        )
+        out[cat] = summaries
     return out
 
 
@@ -399,7 +497,10 @@ def workforce_breakdown_totals(categories: list[dict]) -> dict[str, Any]:
     keys = (
         "worker_count",
         "total_hours",
+        "regular_hours",
         "ot_hours",
+        "regular_earnings",
+        "ot_earnings",
         "base_earnings",
         "ot_premium",
         "other_earnings",
@@ -427,12 +528,21 @@ def workforce_breakdown_totals(categories: list[dict]) -> dict[str, Any]:
         - tot["other_earnings"],
         2,
     )
+    mgmt_diff = round(
+        tot["gross_pay"]
+        - tot["regular_earnings"]
+        - tot["ot_earnings"]
+        - tot["other_earnings"],
+        2,
+    )
     tot["avg_pay_rate"] = avg_pay
     tot["avg_cost_per_hour"] = avg_cost
     tot["avg_rate"] = avg_pay  # legacy alias
     tot["head_count"] = int(tot["worker_count"])
     tot["gross_reconciliation_diff"] = recon_diff
     tot["gross_reconciles"] = abs(recon_diff) < 0.005
+    tot["mgmt_reconciliation_diff"] = mgmt_diff
+    tot["mgmt_reconciles"] = abs(mgmt_diff) < 0.005
     tot["has_other_earnings"] = abs(tot["other_earnings"]) >= 0.005
     return tot
 
@@ -661,10 +771,13 @@ def build_report_analytics(
             "pay_period_end": e["pay_period_end"],
             "ot_hours": e.get("ot_hours", 0),
             "ot_premium": e.get("ot_premium", 0),
+            "ot_earnings": e.get("ot_earnings", 0),
+            "regular_earnings": e.get("regular_earnings", 0),
             "base_earnings": e.get("base_earnings", 0),
             "other_earnings": e.get("other_earnings", 0),
             "ot_pct_of_hours": e.get("ot_pct_of_hours", 0),
             "ot_premium_pct_of_gross": e.get("ot_premium_pct_of_gross", 0),
+            "ot_earnings_pct_of_gross": e.get("ot_earnings_pct_of_gross", 0),
             "total_hours": e.get("total_hours", 0),
             "gross_pay": e.get("gross_pay", 0),
             "avg_cost_per_hour": e.get("avg_cost_per_hour"),
@@ -679,6 +792,11 @@ def build_report_analytics(
             for r in detail_rows
             if str(r.get("pay_date") or r.get("official_pay_date") or "").strip()
         }
+    )
+
+    include_identities = bool(filters.get("include_employee_detail", True))
+    employee_summaries = employee_summaries_by_category(
+        detail_rows, include_identities=include_identities
     )
 
     summary = {
@@ -702,11 +820,16 @@ def build_report_analytics(
         "category_breakdown": categories,
         "workforce_totals": workforce_totals,
         "employment_mix": employment_mix,
+        "employee_summaries_by_category": employee_summaries,
+        "access": {
+            "can_view_employee_detail": include_identities,
+            "layout": "executive_v3",
+        },
         "overtime_analysis": overtime_analysis,
-        "groups": groups,
+        "groups": groups if include_identities else [],
         "comparison_range": n,
         "comparison_range_options": list(COMPARISON_RANGE_OPTIONS),
-        "layout": "executive_v2",
+        "layout": "executive_v3",
     }
 
 from backend.payroll_report_analytics_charts import build_analytics_chart_svgs  # noqa: E402

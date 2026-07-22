@@ -1,5 +1,11 @@
+import { useState } from "react";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
+  Alert,
   Box,
+  Button,
   FormControl,
   InputLabel,
   MenuItem,
@@ -12,9 +18,10 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  Tooltip as MuiTooltip,
   Typography,
 } from "@mui/material";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import TrendingDownIcon from "@mui/icons-material/TrendingDown";
 import TrendingFlatIcon from "@mui/icons-material/TrendingFlat";
 import TrendingUpIcon from "@mui/icons-material/TrendingUp";
@@ -48,6 +55,13 @@ function hours(v) {
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function pct(v) {
+  if (v == null || v === "") return "—";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return `${n.toFixed(2)}%`;
+}
+
 function formatValue(kind, v) {
   if (kind === "money") return money(v);
   if (kind === "hours") return hours(v);
@@ -56,9 +70,9 @@ function formatValue(kind, v) {
 }
 
 function TrendIcon({ direction }) {
-  if (direction === "up") return <TrendingUpIcon sx={{ fontSize: 16, color: VEEWASH_BRAND.inkMuted }} />;
-  if (direction === "down") return <TrendingDownIcon sx={{ fontSize: 16, color: VEEWASH_BRAND.inkMuted }} />;
-  return <TrendingFlatIcon sx={{ fontSize: 16, color: VEEWASH_BRAND.inkSoft }} />;
+  if (direction === "up") return <TrendingUpIcon sx={{ fontSize: 14, color: VEEWASH_BRAND.inkMuted }} />;
+  if (direction === "down") return <TrendingDownIcon sx={{ fontSize: 14, color: VEEWASH_BRAND.inkMuted }} />;
+  return <TrendingFlatIcon sx={{ fontSize: 14, color: VEEWASH_BRAND.inkSoft }} />;
 }
 
 function deltaLine(card) {
@@ -70,27 +84,33 @@ function deltaLine(card) {
   return `${signed} (${sign}${Number(card.pct).toFixed(1)}%)`;
 }
 
-function ExecKpiCard({ card }) {
+function directionFor(diff) {
+  if (diff == null || Math.abs(diff) < 0.005) return "flat";
+  return diff > 0 ? "up" : "down";
+}
+
+/** Compact KPI card — no giant panels, just the number + a one-line delta. */
+function KpiCard({ card }) {
   return (
     <Paper
       variant="outlined"
       sx={{
-        p: 1.5,
+        p: 1.25,
         height: "100%",
         borderColor: VEEWASH_BRAND.borderSoft,
         background: "linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)",
       }}
     >
-      <Typography variant="caption" sx={{ color: VEEWASH_BRAND.inkSoft, letterSpacing: 0.3, textTransform: "uppercase" }}>
+      <Typography
+        variant="caption"
+        sx={{ color: VEEWASH_BRAND.inkSoft, letterSpacing: 0.3, textTransform: "uppercase" }}
+      >
         {card.label}
       </Typography>
-      <Typography variant="h5" fontWeight={800} sx={{ color: VEEWASH_BRAND.ink, mt: 0.25, lineHeight: 1.15 }}>
+      <Typography variant="h6" fontWeight={800} sx={{ color: VEEWASH_BRAND.ink, mt: 0.25, lineHeight: 1.15 }}>
         {formatValue(card.kind, card.current ?? card.value)}
       </Typography>
-      <Typography variant="caption" display="block" sx={{ color: VEEWASH_BRAND.inkMuted, mt: 0.75 }}>
-        Previous: {formatValue(card.kind, card.previous)}
-      </Typography>
-      <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.25 }}>
+      <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.5 }}>
         <TrendIcon direction={card.direction} />
         <Typography variant="caption" fontWeight={600} sx={{ color: VEEWASH_BRAND.inkMuted }}>
           {deltaLine(card)}
@@ -100,97 +120,42 @@ function ExecKpiCard({ card }) {
   );
 }
 
-function OtInsightCard({ ot }) {
-  if (!ot) return null;
-  const premiumDelta = {
-    diff: ot.ot_premium_diff,
-    pct: ot.ot_premium_pct,
-    kind: "money",
-  };
+/** Small OT chip-card used in the compact OT row (not a giant blue panel). */
+function OtChip({ label, value, previous, kind, diff, diffPct }) {
+  const direction = directionFor(diff);
   return (
     <Paper
       variant="outlined"
-      sx={{ p: 1.5, borderColor: VEEWASH_BRAND.borderSoft, background: VEEWASH_BRAND.primaryLight }}
+      sx={{
+        p: 1.1,
+        flex: 1,
+        minWidth: 0,
+        borderColor: VEEWASH_BRAND.borderSoft,
+        background: VEEWASH_BRAND.primaryLight,
+      }}
     >
       <Typography variant="caption" sx={{ color: VEEWASH_BRAND.inkSoft, textTransform: "uppercase" }}>
-        OT Insight
+        {label}
       </Typography>
-      <Typography variant="h5" fontWeight={800} sx={{ color: VEEWASH_BRAND.ink, mt: 0.25 }}>
-        {hours(ot.ot_hours ?? ot.value)} OT Hours
+      <Typography variant="subtitle1" fontWeight={800} sx={{ color: VEEWASH_BRAND.ink, lineHeight: 1.2 }}>
+        {kind === "pct" ? pct(value) : kind === "money" ? money(value) : hours(value)}
       </Typography>
-      <Typography variant="body2" sx={{ color: VEEWASH_BRAND.inkMuted, mt: 0.5 }}>
-        {Number(ot.ot_pct_of_hours || 0).toFixed(2)}% of Total Hours
-      </Typography>
-      <Typography variant="body2" fontWeight={700} sx={{ color: VEEWASH_BRAND.ink, mt: 0.75 }}>
-        OT Premium {money(ot.ot_premium)}
-      </Typography>
-      <Typography variant="caption" display="block" sx={{ color: VEEWASH_BRAND.inkMuted }}>
-        {Number(ot.ot_premium_pct_of_gross || 0).toFixed(2)}% of Gross Payroll
-      </Typography>
-      <Typography variant="caption" display="block" sx={{ color: VEEWASH_BRAND.inkMuted, mt: 0.75 }}>
-        Previous OT Hours: {hours(ot.previous_ot_hours ?? ot.previous)}
-      </Typography>
-      <Stack direction="row" spacing={0.5} alignItems="center">
-        <TrendIcon direction={ot.direction} />
-        <Typography variant="caption" fontWeight={600} sx={{ color: VEEWASH_BRAND.inkMuted }}>
-          Hours {deltaLine({ ...ot, kind: "hours" })}
-        </Typography>
-      </Stack>
-      <Typography variant="caption" display="block" sx={{ color: VEEWASH_BRAND.inkMuted, mt: 0.5 }}>
-        Previous OT Premium: {money(ot.previous_ot_premium)}
-      </Typography>
-      <Stack direction="row" spacing={0.5} alignItems="center">
-        <TrendIcon
-          direction={
-            premiumDelta.diff == null || Math.abs(premiumDelta.diff) < 0.005
-              ? "flat"
-              : premiumDelta.diff > 0
-                ? "up"
-                : "down"
-          }
-        />
-        <Typography variant="caption" fontWeight={600} sx={{ color: VEEWASH_BRAND.inkMuted }}>
-          Premium {deltaLine(premiumDelta)}
-        </Typography>
-      </Stack>
+      {previous != null ? (
+        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.25 }}>
+          <TrendIcon direction={direction} />
+          <Typography variant="caption" sx={{ color: VEEWASH_BRAND.inkMuted }}>
+            {deltaLine({ diff, pct: diffPct, kind: kind === "pct" ? "hours" : kind })}
+          </Typography>
+        </Stack>
+      ) : null}
     </Paper>
   );
 }
 
-function GrossCell({ row }) {
-  const other = Number(row?.other_earnings || 0);
-  const hasOther = Math.abs(other) >= 0.005 || row?.has_other_earnings;
-  const reconciles = row?.gross_reconciles !== false;
-  const tip = [
-    `Gross Payroll = Base + OT Premium + Other`,
-    `Base ${money(row?.base_earnings)}`,
-    `OT Premium ${money(row?.ot_premium)}`,
-    `Other ${money(row?.other_earnings)}`,
-    reconciles ? "Reconciliation: $0.00" : `Difference: ${money(row?.gross_reconciliation_diff)}`,
-  ].join(" · ");
+function ChartCard({ title, children, height = 220 }) {
   return (
-    <MuiTooltip title={tip} arrow>
-      <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-        {money(row?.gross_pay)}
-        {hasOther ? (
-          <Typography component="span" variant="caption" sx={{ ml: 0.5, color: VEEWASH_BRAND.inkSoft }}>
-            +other
-          </Typography>
-        ) : null}
-        {!reconciles ? (
-          <Typography component="span" variant="caption" sx={{ ml: 0.5, color: "#b45309" }}>
-            !
-          </Typography>
-        ) : null}
-      </TableCell>
-    </MuiTooltip>
-  );
-}
-
-function ChartCard({ title, children, height = 230 }) {
-  return (
-    <Paper variant="outlined" sx={{ p: 1.5, height: "100%", borderColor: VEEWASH_BRAND.borderSoft }}>
-      <Typography variant="subtitle2" fontWeight={700} sx={{ color: VEEWASH_BRAND.primaryDark, mb: 1 }}>
+    <Paper variant="outlined" sx={{ p: 1.25, height: "100%", borderColor: VEEWASH_BRAND.borderSoft }}>
+      <Typography variant="subtitle2" fontWeight={700} sx={{ color: VEEWASH_BRAND.primaryDark, mb: 0.75 }}>
         {title}
       </Typography>
       <Box sx={{ width: "100%", height }}>
@@ -210,33 +175,46 @@ function SectionTitle({ children }) {
 
 const WORKFORCE_HEADERS = [
   "Category",
-  "Head Count",
-  "Total Hours",
-  "OT Hours",
-  "Base Earnings",
-  "OT Premium",
-  "Gross Payroll",
+  "HC",
+  "Regular Hrs",
+  "OT Hrs",
+  "Regular Earnings",
+  "OT Earnings",
+  "Gross",
   "Employer Tax",
-  "Total Payroll Cost",
+  "Total Cost",
   "Avg Pay Rate",
-  "Cost / Hour",
+  "Avg Employer Cost",
 ];
 
+const RECON_HEADERS = ["Category", "Base Earnings", "OT Premium"];
+
+const EMPLOYEE_HEADERS = ["Employee", "Reg Hrs", "OT Hrs", "Regular Earnings", "OT Earnings", "Gross", "Total Cost"];
+
+const PERIOD_HEADERS = ["Payroll Period", "Workers", "Hours", "OT", "Gross", "Total cost", "Avg Pay", "Avg Employer Cost", "Δ cost"];
+
 /**
- * Slim management dashboard: Executive Summary → Workforce Breakdown → Trends.
+ * Payroll Dashboard v3 — compact executive management dashboard.
+ * KPI row → OT chips → Workforce Breakdown (drill-down) → reconciliation
+ * accordion → four trend charts → compact period comparison.
  */
 export default function PayrollReportAnalyticsDashboard({
   analytics,
   summary,
   comparisonRange,
   onComparisonRangeChange,
+  onSelectEmployee,
 }) {
+  const [drillCategory, setDrillCategory] = useState(null);
+  const [permissionNotice, setPermissionNotice] = useState(false);
+
   const kpis = analytics?.kpis || [];
   const ot = analytics?.ot_summary;
   const categories = analytics?.category_breakdown || [];
-  const workforceTotals = analytics?.workforce_totals || {};
   const periods = analytics?.period_comparison || [];
   const mix = analytics?.employment_mix || [];
+  const employeeSummariesByCategory = analytics?.employee_summaries_by_category || {};
+  const canViewDetail = analytics?.access?.can_view_employee_detail !== false;
 
   const chartData = periods.map((p) => ({
     ...p,
@@ -260,8 +238,32 @@ export default function PayrollReportAnalyticsDashboard({
     return [money(value), name];
   };
 
+  const drillCategoryLabel =
+    categories.find((c) => c.worker_category === drillCategory)?.label || drillCategory;
+  const drillEmployees = drillCategory ? employeeSummariesByCategory[drillCategory] || [] : [];
+
+  const handleCategoryClick = (categoryKey) => {
+    if (!canViewDetail) {
+      setPermissionNotice(true);
+      return;
+    }
+    setPermissionNotice(false);
+    setDrillCategory(categoryKey);
+  };
+
+  const handleBack = () => {
+    setDrillCategory(null);
+    setPermissionNotice(false);
+  };
+
+  const handleEmployeeClick = (emp) => {
+    if (typeof onSelectEmployee === "function") {
+      onSelectEmployee(emp.user_id, emp.employee_name);
+    }
+  };
+
   return (
-    <Stack spacing={2.5} sx={{ mb: 1 }}>
+    <Stack spacing={2} sx={{ mb: 1 }}>
       <Stack
         direction={{ xs: "column", sm: "row" }}
         justifyContent="space-between"
@@ -270,7 +272,7 @@ export default function PayrollReportAnalyticsDashboard({
       >
         <Box>
           <Typography variant="h6" fontWeight={700} sx={{ color: VEEWASH_BRAND.primaryDark }}>
-            Payroll Analytics
+            Payroll Dashboard
           </Typography>
           <Typography variant="body2" color="text.secondary">
             Focus: {summary?.focus_period || "selected report"}
@@ -291,191 +293,305 @@ export default function PayrollReportAnalyticsDashboard({
         </FormControl>
       </Stack>
 
-      {/* 1. Executive Summary */}
-      <Box>
-        <SectionTitle>Executive Summary</SectionTitle>
-        <Box
-          sx={{
-            mt: 1,
-            display: "grid",
-            gap: 1.25,
-            gridTemplateColumns: { xs: "1fr 1fr", md: "repeat(3, 1fr)", lg: "repeat(6, 1fr) 1.2fr" },
-          }}
-        >
-          {kpis.map((card) => (
-            <ExecKpiCard key={card.key} card={card} />
-          ))}
-          <OtInsightCard ot={ot} />
-        </Box>
+      {/* 1. KPI row — six cards only */}
+      <Box
+        sx={{
+          display: "grid",
+          gap: 1,
+          gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", md: "repeat(6, 1fr)" },
+        }}
+      >
+        {kpis.map((card) => (
+          <KpiCard key={card.key} card={card} />
+        ))}
       </Box>
 
-      {/* 2. Workforce Breakdown */}
-      <Box>
-        <SectionTitle>Workforce Breakdown</SectionTitle>
-        <Paper variant="outlined" sx={{ mt: 1, borderColor: VEEWASH_BRAND.borderSoft }}>
-          <TableContainer sx={{ overflowX: "auto" }}>
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  {WORKFORCE_HEADERS.map((h) => (
-                    <TableCell key={h} sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark, fontWeight: 700 }}>
-                      {h}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {categories.map((c) => (
-                  <TableRow key={c.worker_category} hover>
-                    <TableCell>{c.label || c.worker_category}</TableCell>
-                    <TableCell align="right">{c.head_count ?? c.worker_count ?? 0}</TableCell>
-                    <TableCell align="right">{hours(c.total_hours)}</TableCell>
-                    <TableCell align="right">{hours(c.ot_hours)}</TableCell>
-                    <TableCell align="right">{money(c.base_earnings)}</TableCell>
-                    <TableCell align="right">{money(c.ot_premium)}</TableCell>
-                    <GrossCell row={c} />
-                    <TableCell align="right">{money(c.employer_taxes)}</TableCell>
-                    <TableCell align="right">{money(c.total_payroll_cost)}</TableCell>
-                    <TableCell align="right">{money(c.avg_pay_rate ?? c.avg_rate)}</TableCell>
-                    <TableCell align="right">{money(c.avg_cost_per_hour)}</TableCell>
+      {/* 2. Compact OT row — three small chips, not a giant panel */}
+      {ot ? (
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+          <OtChip
+            label="OT Hours"
+            value={ot.ot_hours}
+            kind="hours"
+            previous={ot.previous_ot_hours}
+            diff={ot.diff ?? ot.ot_hours_diff}
+            diffPct={ot.pct ?? ot.ot_hours_pct}
+          />
+          <OtChip label="OT % of Hours" value={ot.ot_pct_of_hours} kind="pct" previous={null} />
+          <OtChip
+            label="OT Earnings"
+            value={ot.ot_earnings}
+            kind="money"
+            previous={ot.previous_ot_earnings}
+            diff={ot.ot_earnings_diff}
+            diffPct={ot.ot_earnings_pct}
+          />
+        </Stack>
+      ) : null}
+
+      {drillCategory ? (
+        <Box>
+          <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+            <Button
+              size="small"
+              startIcon={<ArrowBackIcon />}
+              onClick={handleBack}
+              sx={{ color: VEEWASH_BRAND.primaryDark }}
+            >
+              Back
+            </Button>
+            <SectionTitle>Employee Summary — {drillCategoryLabel}</SectionTitle>
+          </Stack>
+          {!canViewDetail ? (
+            <Alert severity="warning">You do not have permission to view employee payroll details.</Alert>
+          ) : (
+            <Paper variant="outlined" sx={{ borderColor: VEEWASH_BRAND.borderSoft }}>
+              <TableContainer sx={{ overflowX: "auto" }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      {EMPLOYEE_HEADERS.map((h) => (
+                        <TableCell key={h} sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark, fontWeight: 700 }}>
+                          {h}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {drillEmployees.map((emp) => (
+                      <TableRow
+                        key={emp.user_id ?? emp.employee_name}
+                        hover
+                        onClick={() => handleEmployeeClick(emp)}
+                        sx={{ cursor: typeof onSelectEmployee === "function" ? "pointer" : "default" }}
+                      >
+                        <TableCell>{emp.employee_name}</TableCell>
+                        <TableCell align="right">{hours(emp.regular_hours)}</TableCell>
+                        <TableCell align="right">{hours(emp.ot_hours)}</TableCell>
+                        <TableCell align="right">{money(emp.regular_earnings)}</TableCell>
+                        <TableCell align="right">{money(emp.ot_earnings)}</TableCell>
+                        <TableCell align="right">{money(emp.gross_pay)}</TableCell>
+                        <TableCell align="right">{money(emp.total_payroll_cost)}</TableCell>
+                      </TableRow>
+                    ))}
+                    {drillEmployees.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={EMPLOYEE_HEADERS.length} sx={{ color: VEEWASH_BRAND.inkSoft }}>
+                          No employees in this category.
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Paper>
+          )}
+        </Box>
+      ) : (
+        <>
+          {permissionNotice ? (
+            <Alert severity="warning" onClose={() => setPermissionNotice(false)}>
+              You do not have permission to view employee payroll details.
+            </Alert>
+          ) : null}
+
+          {/* 3. Workforce Breakdown */}
+          <Box>
+            <SectionTitle>Workforce Breakdown</SectionTitle>
+            <Paper variant="outlined" sx={{ mt: 1, borderColor: VEEWASH_BRAND.borderSoft }}>
+              <TableContainer sx={{ overflowX: "auto" }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      {WORKFORCE_HEADERS.map((h) => (
+                        <TableCell key={h} sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark, fontWeight: 700 }}>
+                          {h}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {categories.map((c) => (
+                      <TableRow
+                        key={c.worker_category}
+                        hover
+                        onClick={() => handleCategoryClick(c.worker_category)}
+                        sx={{ cursor: "pointer" }}
+                      >
+                        <TableCell sx={{ color: VEEWASH_BRAND.primaryDark, fontWeight: 600 }}>
+                          {c.label || c.worker_category}
+                        </TableCell>
+                        <TableCell align="right">{c.head_count ?? c.worker_count ?? 0}</TableCell>
+                        <TableCell align="right">{hours(c.regular_hours)}</TableCell>
+                        <TableCell align="right">{hours(c.ot_hours)}</TableCell>
+                        <TableCell align="right">{money(c.regular_earnings)}</TableCell>
+                        <TableCell align="right">{money(c.ot_earnings)}</TableCell>
+                        <TableCell align="right">{money(c.gross_pay)}</TableCell>
+                        <TableCell align="right">{money(c.employer_taxes)}</TableCell>
+                        <TableCell align="right">{money(c.total_payroll_cost)}</TableCell>
+                        <TableCell align="right">{money(c.avg_pay_rate ?? c.avg_rate)}</TableCell>
+                        <TableCell align="right">{money(c.avg_cost_per_hour)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Paper>
+          </Box>
+
+          {/* 4. Earnings reconciliation — collapsed by default, for auditors */}
+          <Accordion
+            disableGutters
+            variant="outlined"
+            sx={{ borderColor: VEEWASH_BRAND.borderSoft, "&:before": { display: "none" } }}
+          >
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Typography variant="subtitle2" fontWeight={700} sx={{ color: VEEWASH_BRAND.primaryDark }}>
+                Earnings reconciliation (straight-time + OT premium)
+              </Typography>
+            </AccordionSummary>
+            <AccordionDetails sx={{ pt: 0 }}>
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      {RECON_HEADERS.map((h) => (
+                        <TableCell key={h} sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark, fontWeight: 700 }}>
+                          {h}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {categories.map((c) => (
+                      <TableRow key={c.worker_category}>
+                        <TableCell>{c.label || c.worker_category}</TableCell>
+                        <TableCell align="right">{money(c.base_earnings)}</TableCell>
+                        <TableCell align="right">{money(c.ot_premium)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </AccordionDetails>
+          </Accordion>
+
+          {/* 5. Trends — four charts only */}
+          <Box>
+            <SectionTitle>Trends</SectionTitle>
+            <Box
+              sx={{
+                mt: 1,
+                display: "grid",
+                gap: 1.25,
+                gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+              }}
+            >
+              <ChartCard title="Payroll cost trend">
+                <AreaChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${Number(v) / 1000}k`} />
+                  <Tooltip formatter={costTooltip} labelFormatter={(_, p) => p?.[0]?.payload?.fullLabel} />
+                  <Legend />
+                  <Area type="monotone" dataKey="total_payroll_cost" name="Total cost" stroke="#007a91" fill="#0097b233" />
+                  <Area type="monotone" dataKey="gross_pay" name="Gross Payroll" stroke="#0097b2" fill="transparent" />
+                </AreaChart>
+              </ChartCard>
+              <ChartCard title="Workforce hours">
+                <BarChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip
+                    formatter={(v, name) => [hours(v), name]}
+                    labelFormatter={(_, p) => p?.[0]?.payload?.fullLabel}
+                  />
+                  <Legend />
+                  <Bar dataKey="regular_hours" name="Regular" stackId="h" fill="#0097b2" />
+                  <Bar dataKey="ot_hours" name="OT" stackId="h" fill="#c4a052" />
+                </BarChart>
+              </ChartCard>
+              <ChartCard title="Employment mix">
+                <BarChart data={mixData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${Number(v) / 1000}k`} />
+                  <Tooltip formatter={(v) => money(v)} labelFormatter={(_, p) => p?.[0]?.payload?.fullLabel} />
+                  <Legend />
+                  <Bar dataKey="w2_gross" name="W-2 gross" stackId="m" fill="#007a91" />
+                  <Bar dataKey="w2_employer_taxes" name="ER taxes" stackId="m" fill="#64748b" />
+                  <Bar dataKey="temp_cost" name="Temp" stackId="m" fill="#c4a052" />
+                  <Bar dataKey="contractor_1099_cost" name="1099" stackId="m" fill="#94a3b8" />
+                </BarChart>
+              </ChartCard>
+              <ChartCard title="Average cost / hour trend">
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => money(v)} />
+                  <Tooltip formatter={(v) => money(v)} labelFormatter={(_, p) => p?.[0]?.payload?.fullLabel} />
+                  <Legend />
+                  <Line type="monotone" dataKey="avg_pay_rate" name="Avg Pay Rate" stroke="#0097b2" strokeWidth={2} dot />
+                  <Line
+                    type="monotone"
+                    dataKey="avg_cost_per_hour"
+                    name="Avg Employer Cost"
+                    stroke="#007a91"
+                    strokeWidth={2}
+                    dot
+                  />
+                </LineChart>
+              </ChartCard>
+            </Box>
+          </Box>
+
+          {/* 6. Compact period comparison */}
+          <Paper variant="outlined" sx={{ borderColor: VEEWASH_BRAND.borderSoft }}>
+            <Box sx={{ px: 1.5, py: 1 }}>
+              <Typography variant="subtitle2" fontWeight={700} sx={{ color: VEEWASH_BRAND.primaryDark }}>
+                Period comparison
+              </Typography>
+            </Box>
+            <TableContainer sx={{ overflowX: "auto" }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    {PERIOD_HEADERS.map((h) => (
+                      <TableCell key={h} sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark }}>
+                        {h}
+                      </TableCell>
+                    ))}
                   </TableRow>
-                ))}
-                <TableRow sx={{ background: "#f8fafc" }}>
-                  <TableCell sx={{ fontWeight: 700 }}>Total</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>
-                    {workforceTotals.head_count ?? workforceTotals.worker_count ?? 0}
-                  </TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>{hours(workforceTotals.total_hours)}</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>{hours(workforceTotals.ot_hours)}</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>{money(workforceTotals.base_earnings)}</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>{money(workforceTotals.ot_premium)}</TableCell>
-                  <GrossCell row={workforceTotals} />
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>{money(workforceTotals.employer_taxes)}</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>{money(workforceTotals.total_payroll_cost)}</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>
-                    {money(workforceTotals.avg_pay_rate ?? workforceTotals.avg_rate)}
-                  </TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>
-                    {money(workforceTotals.avg_cost_per_hour)}
-                  </TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </Paper>
-      </Box>
-
-      {/* 3. Trends — four charts */}
-      <Box>
-        <SectionTitle>Trends</SectionTitle>
-        <Box
-          sx={{
-            mt: 1,
-            display: "grid",
-            gap: 1.5,
-            gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-          }}
-        >
-          <ChartCard title="Payroll cost trend">
-            <AreaChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${Number(v) / 1000}k`} />
-              <Tooltip formatter={costTooltip} labelFormatter={(_, p) => p?.[0]?.payload?.fullLabel} />
-              <Legend />
-              <Area type="monotone" dataKey="total_payroll_cost" name="Total cost" stroke="#007a91" fill="#0097b233" />
-              <Area type="monotone" dataKey="gross_pay" name="Gross Payroll" stroke="#0097b2" fill="transparent" />
-            </AreaChart>
-          </ChartCard>
-          <ChartCard title="Hours trend">
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip
-                formatter={(v, name) => [hours(v), name]}
-                labelFormatter={(_, p) => p?.[0]?.payload?.fullLabel}
-              />
-              <Legend />
-              <Bar dataKey="regular_hours" name="Regular" stackId="h" fill="#0097b2" />
-              <Bar dataKey="ot_hours" name="OT" stackId="h" fill="#c4a052" />
-            </BarChart>
-          </ChartCard>
-          <ChartCard title="Employment mix">
-            <BarChart data={mixData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${Number(v) / 1000}k`} />
-              <Tooltip formatter={(v) => money(v)} labelFormatter={(_, p) => p?.[0]?.payload?.fullLabel} />
-              <Legend />
-              <Bar dataKey="w2_gross" name="W-2 gross" stackId="m" fill="#007a91" />
-              <Bar dataKey="w2_employer_taxes" name="ER taxes" stackId="m" fill="#64748b" />
-              <Bar dataKey="temp_cost" name="Temp" stackId="m" fill="#c4a052" />
-              <Bar dataKey="contractor_1099_cost" name="1099" stackId="m" fill="#94a3b8" />
-            </BarChart>
-          </ChartCard>
-          <ChartCard title="Pay rate vs cost / hour">
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => money(v)} />
-              <Tooltip formatter={(v) => money(v)} labelFormatter={(_, p) => p?.[0]?.payload?.fullLabel} />
-              <Legend />
-              <Line type="monotone" dataKey="avg_pay_rate" name="Avg Pay Rate" stroke="#0097b2" strokeWidth={2} dot />
-              <Line type="monotone" dataKey="avg_cost_per_hour" name="Cost / Hour" stroke="#007a91" strokeWidth={2} dot />
-            </LineChart>
-          </ChartCard>
-        </Box>
-      </Box>
-
-      {/* Compact period comparison (kept for reconciliation) */}
-      <Paper variant="outlined" sx={{ borderColor: VEEWASH_BRAND.borderSoft }}>
-        <Box sx={{ px: 1.5, py: 1 }}>
-          <Typography variant="subtitle2" fontWeight={700} sx={{ color: VEEWASH_BRAND.primaryDark }}>
-            Period comparison
-          </Typography>
-        </Box>
-        <TableContainer sx={{ overflowX: "auto" }}>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                {["Payroll Period", "Workers", "Hours", "OT", "Base", "OT Prem", "Gross", "ER taxes", "Total cost", "$/hr", "Δ cost"].map(
-                  (h) => (
-                    <TableCell key={h} sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark }}>
-                      {h}
-                    </TableCell>
-                  ),
-                )}
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {periods.map((p) => {
-                const dCost = p.delta_from_previous?.total_payroll_cost;
-                const pCost = p.pct_from_previous?.total_payroll_cost;
-                return (
-                  <TableRow key={p.payroll_period} hover>
-                    <TableCell sx={{ whiteSpace: "nowrap" }}>{p.payroll_period}</TableCell>
-                    <TableCell align="right">{p.worker_count}</TableCell>
-                    <TableCell align="right">{hours(p.total_hours)}</TableCell>
-                    <TableCell align="right">{hours(p.ot_hours)}</TableCell>
-                    <TableCell align="right">{money(p.base_earnings)}</TableCell>
-                    <TableCell align="right">{money(p.ot_premium)}</TableCell>
-                    <TableCell align="right">{money(p.gross_pay)}</TableCell>
-                    <TableCell align="right">{money(p.employer_taxes)}</TableCell>
-                    <TableCell align="right">{money(p.total_payroll_cost)}</TableCell>
-                    <TableCell align="right">{money(p.avg_cost_per_hour)}</TableCell>
-                    <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                      {dCost == null
-                        ? "—"
-                        : `${dCost >= 0 ? "+" : ""}${money(dCost)}${pCost == null ? "" : ` (${pCost >= 0 ? "+" : ""}${Number(pCost).toFixed(1)}%)`}`}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </Paper>
+                </TableHead>
+                <TableBody>
+                  {periods.map((p) => {
+                    const dCost = p.delta_from_previous?.total_payroll_cost;
+                    const pCost = p.pct_from_previous?.total_payroll_cost;
+                    return (
+                      <TableRow key={p.payroll_period} hover>
+                        <TableCell sx={{ whiteSpace: "nowrap" }}>{p.payroll_period}</TableCell>
+                        <TableCell align="right">{p.worker_count}</TableCell>
+                        <TableCell align="right">{hours(p.total_hours)}</TableCell>
+                        <TableCell align="right">{hours(p.ot_hours)}</TableCell>
+                        <TableCell align="right">{money(p.gross_pay)}</TableCell>
+                        <TableCell align="right">{money(p.total_payroll_cost)}</TableCell>
+                        <TableCell align="right">{money(p.avg_pay_rate)}</TableCell>
+                        <TableCell align="right">{money(p.avg_cost_per_hour)}</TableCell>
+                        <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                          {dCost == null
+                            ? "—"
+                            : `${dCost >= 0 ? "+" : ""}${money(dCost)}${pCost == null ? "" : ` (${pCost >= 0 ? "+" : ""}${Number(pCost).toFixed(1)}%)`}`}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Paper>
+        </>
+      )}
     </Stack>
   );
 }

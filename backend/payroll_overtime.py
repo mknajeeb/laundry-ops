@@ -164,6 +164,15 @@ def compute_earnings_breakdown(
     if ot_premium < 0:
         ot_premium = Decimal("0.00")
         other_earnings = _q2(gross - base_earnings - ot_premium)
+    # Management-dashboard presentation (full OT rate, not premium-only):
+    # Regular Earnings = regular hours × regular rate
+    # OT Earnings = OT hours × full OT rate
+    if rate <= 0:
+        regular_earnings = Decimal("0.00")
+        ot_earnings = Decimal("0.00")
+    else:
+        regular_earnings = _q2(reg_h * rate)
+        ot_earnings = _q2(ot_h * ot_r) if ot_h > 0 and ot_r > 0 else Decimal("0.00")
     return {
         "regular_hours": float(_q2(reg_h)),
         "ot_hours": float(_q2(ot_h)),
@@ -171,6 +180,8 @@ def compute_earnings_breakdown(
         "ot_rate": float(_q2(ot_r)),
         "base_earnings": float(base_earnings),
         "ot_premium": float(max(Decimal("0.00"), ot_premium)),
+        "regular_earnings": float(regular_earnings),
+        "ot_earnings": float(ot_earnings),
         "other_earnings": float(other_earnings),
         "gross_pay": float(gross),
     }

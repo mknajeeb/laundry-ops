@@ -23,6 +23,8 @@ import PayrollWorkerPaymentsPanel from "../components/PayrollWorkerPaymentsPanel
 import PayrollVendorsPanel from "../components/PayrollVendorsPanel";
 import PayrollTaxSettingsPanel from "../components/PayrollTaxSettingsPanel";
 import PayrollTimeRecordsPanel from "../components/PayrollTimeRecordsPanel";
+import TaskMaintenancePage from "../pages/TaskMaintenancePage";
+import ShiftTaskHistoryPanel from "../components/ShiftTaskHistoryPanel";
 import PayrollSchedulingPanel from "../components/PayrollSchedulingPanel";
 import PayrollPeriodSearchBar from "../components/PayrollPeriodSearchBar";
 import PayrollReportPanel from "../components/PayrollReportPanel";
@@ -43,32 +45,61 @@ export default function PayrollManagementPage() {
   const isPayrollAdmin = rolesUpper.includes("PAYROLL_ADMIN");
   const isSuperAdmin = rolesUpper.includes("SUPER_ADMIN");
   const isAccountantRole = rolesUpper.includes("ACCOUNTANT");
+  const isPayrollAnalyticsRole = rolesUpper.includes("PAYROLL_ANALYTICS");
   const canTime = hasPerm("ta.monitor") || hasPerm("ta.settings") || isAdmin;
   const canPayout = hasPerm("ta.settings") || hasPerm("users.edit") || isAdmin || isPayrollAdmin;
   const canContractors = hasPerm("users.edit") || hasPerm("ta.settings") || isAdmin;
   const canAccountant = hasPerm("users.view") || hasPerm("ta.settings") || isAdmin;
+  const canAnalytics =
+    hasPerm("payroll.analytics.view") || hasPerm("users.view") || hasPerm("ta.settings") || isAdmin;
   const canPayoutDetails = canPayout || (isAccountantRole && canAccountant);
 
   const readOnlyAccountant =
     isAccountantRole && !canPayout && !canTime && !isAdmin && !isPayrollAdmin && !isSuperAdmin;
+  const dashboardOnly =
+    isPayrollAnalyticsRole &&
+    !canPayout &&
+    !canTime &&
+    !canAccountant &&
+    !isAdmin &&
+    !isPayrollAdmin &&
+    !isSuperAdmin;
 
   const accountantTabs = useMemo(
     () => [
-      { key: "accountant_payroll", label: "For Accountant" },
+      { key: "reports", label: "Dashboard" },
+      { key: "reports_detail", label: "Reports" },
+      { key: "accountant_employee", label: "Employee Detail" },
+      { key: "accountant_payroll", label: "By Batch" },
       { key: "accountant_documents", label: "Documents" },
-      { key: "accountant_employee", label: "By Employee" },
-      { key: "reports", label: "Payroll Reports" },
     ],
     [],
   );
 
   const sections = useMemo(() => {
     const out = [];
+    if (dashboardOnly) {
+      return [
+        { key: "reports", label: "Dashboard" },
+        { key: "reports_detail", label: "Reports" },
+        { key: "accountant_employee", label: "Employee Detail" },
+        { key: "batches", label: "By Batch" },
+      ];
+    }
     if (readOnlyAccountant) return [...accountantTabs];
+    if (canAnalytics || canPayout || (isAccountantRole && canAccountant)) {
+      out.push(...accountantTabs.filter((t) => t.key === "reports" || t.key === "reports_detail"));
+    }
     if (canTime) out.push({ key: "time", label: "Time Records" });
-    if (canPayout) out.push({ key: "batches", label: "Payout Batches" });
+    if (canTime && hasPerm("ta.settings")) out.push({ key: "tasks", label: "Task Maintenance" });
+    if (canTime) out.push({ key: "shift_task_history", label: "Shift Task History" });
+    if (canPayout) out.push({ key: "batches", label: "By Batch" });
     if (canPayout || (isAccountantRole && canAccountant)) {
-      out.push(...accountantTabs);
+      out.push(
+        ...accountantTabs.filter(
+          (t) => t.key !== "reports" && t.key !== "reports_detail",
+        ),
+      );
     }
     if (canPayoutDetails) {
       out.push({ key: "payout_details", label: canPayout ? "Finalize Payroll" : "Payment & Details" });
@@ -86,7 +117,9 @@ export default function PayrollManagementPage() {
     canPayout,
     canContractors,
     canPayoutDetails,
+    canAnalytics,
     readOnlyAccountant,
+    dashboardOnly,
     isAccountantRole,
     canAccountant,
     hasPerm,
@@ -258,21 +291,38 @@ export default function PayrollManagementPage() {
             onPayPeriodChange={setPayPeriod}
           />
         ) : null}
+        {active?.key === "tasks" ? <TaskMaintenancePage /> : null}
+        {active?.key === "shift_task_history" ? <ShiftTaskHistoryPanel /> : null}
         {active?.key === "schedule" ? <PayrollSchedulingPanel /> : null}
         {active?.key === "batches" ? (
-          <PayoutBatchesPanel
-            payPeriodStart={payPeriod.start}
-            payPeriodEnd={payPeriod.end}
-            onPayPeriodChange={setPayPeriod}
-            onNavigateTab={goToTab}
-            onBatchesChange={refreshBatches}
-          />
+          dashboardOnly ? (
+            <Alert severity="warning">
+              You do not have permission to view employee payroll details.
+            </Alert>
+          ) : (
+            <PayoutBatchesPanel
+              payPeriodStart={payPeriod.start}
+              payPeriodEnd={payPeriod.end}
+              onPayPeriodChange={setPayPeriod}
+              onNavigateTab={goToTab}
+              onBatchesChange={refreshBatches}
+            />
+          )
         ) : null}
         {active?.key === "payout_details" ? (
           <PayoutDetailsPanel initialBatchId={detailsBatchId} />
         ) : null}
         {active?.key === "accountant_payroll" ? <AccountantPayrollPanel /> : null}
-        {active?.key === "reports" ? <PayrollReportPanel /> : null}
+        {active?.key === "reports" ? <PayrollReportPanel viewMode="dashboard" /> : null}
+        {active?.key === "reports_detail" ? (
+          dashboardOnly ? (
+            <Alert severity="warning">
+              You do not have permission to view employee payroll details.
+            </Alert>
+          ) : (
+            <PayrollReportPanel viewMode="report" />
+          )
+        ) : null}
         {active?.key === "accountant_documents" ? (
           readOnlyAccountant ? (
             <AccountantW2DocumentsPanel />
@@ -280,7 +330,15 @@ export default function PayrollManagementPage() {
             <PayrollWorkerDocumentsPanel />
           )
         ) : null}
-        {active?.key === "accountant_employee" ? <AccountantEmployeePaystubsPanel /> : null}
+        {active?.key === "accountant_employee" ? (
+          dashboardOnly ? (
+            <Alert severity="warning">
+              You do not have permission to view employee payroll details.
+            </Alert>
+          ) : (
+            <AccountantEmployeePaystubsPanel />
+          )
+        ) : null}
         {active?.key === "contractors" ? <ContractorManagementPanel /> : null}
         {active?.key === "w2forms" ? <W2EmployeeFormsPanel /> : null}
         {active?.key === "vendors" ? <PayrollVendorsPanel /> : null}

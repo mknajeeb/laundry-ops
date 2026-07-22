@@ -6780,9 +6780,23 @@ def _payroll_report_query_kwargs():
     )
 
 
+def _can_view_employee_payroll_detail(conn, user_id: int) -> bool:
+    """Full employee payroll rows / drill-down — not analytics-summary alone."""
+    return any(
+        user_has_perm(conn, int(user_id), k)
+        for k in ("users.view", "users.edit", "ta.settings", "payroll.update")
+    )
+
+
+_EMPLOYEE_PAYROLL_DETAIL_FORBIDDEN = {
+    "error": "Forbidden",
+    "detail": "You do not have permission to view employee payroll details.",
+}
+
+
 @ta_bp.route("/payroll/report", methods=["GET"])
 @require_auth
-@require_any_perm("ta.settings", "users.view", "users.edit")
+@require_any_perm("ta.settings", "users.view", "users.edit", "payroll.analytics.view")
 def payroll_report():
     """Comprehensive payroll report across periods and employee categories."""
     conn = get_db()
@@ -6790,7 +6804,12 @@ def payroll_report():
         from backend.payroll_report import query_payroll_report
 
         oid = _tenant_id()
-        report = query_payroll_report(conn, oid, **_payroll_report_query_kwargs())
+        kwargs = _payroll_report_query_kwargs()
+        can_detail = _can_view_employee_payroll_detail(conn, g.ta_user["id"])
+        if kwargs.get("user_id") and not can_detail:
+            return jsonify(_EMPLOYEE_PAYROLL_DETAIL_FORBIDDEN), 403
+        kwargs["include_employee_detail"] = can_detail
+        report = query_payroll_report(conn, oid, **kwargs)
         return jsonify(report)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -6803,17 +6822,19 @@ def payroll_report():
 
 @ta_bp.route("/payroll/report/meta", methods=["GET"])
 @require_auth
-@require_any_perm("ta.settings", "users.view", "users.edit")
+@require_any_perm("ta.settings", "users.view", "users.edit", "payroll.analytics.view")
 def payroll_report_meta():
     conn = get_db()
     try:
         from backend.payroll_report import list_report_employees, list_report_periods
 
         oid = _tenant_id()
+        can_detail = _can_view_employee_payroll_detail(conn, g.ta_user["id"])
         return jsonify(
             {
-                "employees": list_report_employees(conn, oid),
+                "employees": list_report_employees(conn, oid) if can_detail else [],
                 "periods": list_report_periods(conn, oid),
+                "can_view_employee_detail": can_detail,
                 "date_match_rule": (
                     "Choose a report type. Custom Date Range defaults to Official Pay Date "
                     "(not period overlap). Monthly Payroll Paid uses official_pay_date only."
@@ -6846,14 +6867,32 @@ def payroll_report_meta():
 
 @ta_bp.route("/payroll/report/export.xlsx", methods=["GET"])
 @require_auth
-@require_any_perm("ta.settings", "users.view", "users.edit")
+@require_any_perm("ta.settings", "users.view", "users.edit", "payroll.analytics.view")
 def payroll_report_export_xlsx():
     conn = get_db()
     try:
         from backend.payroll_report import build_payroll_report_xlsx, query_payroll_report
 
         oid = _tenant_id()
-        report = query_payroll_report(conn, oid, **_payroll_report_query_kwargs())
+        kwargs = _payroll_report_query_kwargs()
+        can_detail = _can_view_employee_payroll_detail(conn, g.ta_user["id"])
+        if kwargs.get("user_id") and not can_detail:
+            return jsonify(_EMPLOYEE_PAYROLL_DETAIL_FORBIDDEN), 403
+        kwargs["include_employee_detail"] = can_detail
+        report = query_payroll_report(conn, oid, **kwargs)
+        if not can_detail:
+            report = {
+                **report,
+                "rows": [],
+                "groups": [],
+                "analytics_only_export": True,
+            }
+            if report.get("analytics"):
+                report["analytics"] = {
+                    **report["analytics"],
+                    "groups": [],
+                    "employee_summaries_by_category": {},
+                }
         data = build_payroll_report_xlsx(report)
         return (
             data,
@@ -6862,7 +6901,7 @@ def payroll_report_export_xlsx():
                 "Content-Type": (
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 ),
-                "Content-Disposition": 'attachment; filename="payroll-report.xlsx"',
+                "Content-Disposition": 'attachment; filename="payroll-dashboard.xlsx"',
             },
         )
     except ValueError as e:
@@ -6876,7 +6915,7 @@ def payroll_report_export_xlsx():
 
 @ta_bp.route("/payroll/report/export.pdf", methods=["GET"])
 @require_auth
-@require_any_perm("ta.settings", "users.view", "users.edit")
+@require_any_perm("ta.settings", "users.view", "users.edit", "payroll.analytics.view")
 def payroll_report_export_pdf():
     """Returns HTML for client-side PDF rendering (same pattern as paystubs)."""
     conn = get_db()
@@ -6884,7 +6923,25 @@ def payroll_report_export_pdf():
         from backend.payroll_report import build_payroll_report_html, query_payroll_report
 
         oid = _tenant_id()
-        report = query_payroll_report(conn, oid, **_payroll_report_query_kwargs())
+        kwargs = _payroll_report_query_kwargs()
+        can_detail = _can_view_employee_payroll_detail(conn, g.ta_user["id"])
+        if kwargs.get("user_id") and not can_detail:
+            return jsonify(_EMPLOYEE_PAYROLL_DETAIL_FORBIDDEN), 403
+        kwargs["include_employee_detail"] = can_detail
+        report = query_payroll_report(conn, oid, **kwargs)
+        if not can_detail:
+            report = {
+                **report,
+                "rows": [],
+                "groups": [],
+                "dashboard_only": True,
+            }
+            if report.get("analytics"):
+                report["analytics"] = {
+                    **report["analytics"],
+                    "groups": [],
+                    "employee_summaries_by_category": {},
+                }
         html = build_payroll_report_html(report)
         return html, 200, {"Content-Type": "text/html; charset=utf-8"}
     except ValueError as e:

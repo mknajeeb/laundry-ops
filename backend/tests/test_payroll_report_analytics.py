@@ -280,6 +280,15 @@ def test_kpi_neutral_trend_for_cost_increase():
         "avg_cost_per_hour",
         "avg_pay_rate",
     }
+    assert [c["key"] for c in build_kpi_cards(current, previous)] == [
+        "total_payroll_cost",
+        "gross_pay",
+        "total_hours",
+        "worker_count",
+        "avg_pay_rate",
+        "avg_cost_per_hour",
+    ]
+    assert cards["avg_cost_per_hour"]["label"] == "Average Employer Cost / Hour"
     assert "amount_paid" not in cards
     assert "outstanding_balance" not in cards
     assert cards["total_payroll_cost"]["direction"] == "up"
@@ -605,19 +614,13 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     assert "page-break-after: always" in html or "break-after: page" in html
     assert "Workforce Breakdown" in html or "Employment mix" in html or "category" in html.lower()
     assert "Avg Pay Rate" in html
-    assert "Cost / Hour" in html
-    assert "Base Earnings" in html
-    assert "OT Premium" in html
-    assert "Gross Payroll" in html
-    assert "OT Insight" in html
-    assert "Pay rate vs cost / hour" in html or "Payroll cost per hour" in html
+    assert "Gross Payroll" in html or "Gross" in html
 
-    # PDF and Excel share identical Base / OT Premium / Gross from analytics payload.
+    # PDF and Excel share identical Gross from analytics payload.
     maria = next(c for c in cats if c["worker_category"] == "contractor_1099")
     guiying = next(c for c in cats if c["worker_category"] == "temp")
-    assert f"{maria['base_earnings']:.2f}" in html.replace(",", "")
-    assert f"{maria['ot_premium']:.2f}" in html.replace(",", "")
-    assert f"{guiying['base_earnings']:.2f}" in html.replace(",", "")
+    assert f"{maria['gross_pay']:.2f}" in html.replace(",", "")
+    assert f"{guiying['gross_pay']:.2f}" in html.replace(",", "")
 
     xlsx = build_payroll_report_xlsx(report)
     assert xlsx[:2] == b"PK"
@@ -629,25 +632,25 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     wf = wb["Workforce Breakdown"]
     headers = [cell.value for cell in wf[2]]
     assert "Avg Pay Rate" in headers
-    assert "Cost / Hour" in headers
-    assert "Base Earnings" in headers
-    assert "OT Premium" in headers
+    assert "Avg Employer Cost / Hour" in headers
+    assert "Regular Earnings" in headers
+    assert "OT Earnings" in headers
     assert "Gross Payroll" in headers
-    # Row values match analytics category payload.
+    # Row values match analytics category payload (Regular/OT Earnings + Gross).
     by_label = {}
     for row in wf.iter_rows(min_row=3, values_only=True):
         if not row or not row[0] or row[0] == "Total":
             continue
         by_label[row[0]] = {
-            "base_earnings": row[4],
-            "ot_premium": row[5],
+            "regular_earnings": row[4],
+            "ot_earnings": row[5],
             "gross_pay": row[7],
         }
-    assert by_label[maria["label"]]["base_earnings"] == round(maria["base_earnings"], 2)
-    assert by_label[maria["label"]]["ot_premium"] == round(maria["ot_premium"], 2)
+    assert by_label[maria["label"]]["regular_earnings"] == round(maria["regular_earnings"], 2)
+    assert by_label[maria["label"]]["ot_earnings"] == round(maria["ot_earnings"], 2)
     assert by_label[maria["label"]]["gross_pay"] == round(maria["gross_pay"], 2)
-    assert by_label[guiying["label"]]["base_earnings"] == round(guiying["base_earnings"], 2)
-    assert by_label[guiying["label"]]["ot_premium"] == round(guiying["ot_premium"], 2)
+    assert by_label[guiying["label"]]["regular_earnings"] == round(guiying["regular_earnings"], 2)
+    assert by_label[guiying["label"]]["ot_earnings"] == round(guiying["ot_earnings"], 2)
     assert by_label[guiying["label"]]["gross_pay"] == round(guiying["gross_pay"], 2)
     pc = wb["Period Comparison"]
     pc_headers = [cell.value for cell in pc[2]]
@@ -656,6 +659,85 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     assert "Base Earnings" in pc_headers
     assert "OT Premium" in pc_headers
 
+
+def test_regular_and_ot_earnings_reconcile_to_gross():
+    from backend.payroll_report_analytics import category_breakdown
+
+    rows = [
+        _row(
+            name="W2",
+            cat="w2",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=8.65,
+            rate=17.0,
+            ot_rate=25.5,
+            line_id=1,
+            user_id=1,
+            employer_taxes=50,
+            withheld=20,
+        ),
+        _row(
+            name="Temp",
+            cat="temp",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=12.49,
+            rate=17.0,
+            ot_rate=25.5,
+            line_id=2,
+            user_id=2,
+        ),
+        _row(
+            name="1099",
+            cat="contractor_1099",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=7.02,
+            rate=17.0,
+            ot_rate=25.5,
+            line_id=3,
+            user_id=3,
+        ),
+    ]
+    rows[0]["total_payroll_cost"] = round(rows[0]["gross_pay"] + rows[0]["employer_taxes"], 2)
+    cats = {c["worker_category"]: c for c in category_breakdown(rows)}
+    for key in ("w2", "temp", "contractor_1099"):
+        c = cats[key]
+        assert abs(c["regular_earnings"] + c["ot_earnings"] + c["other_earnings"] - c["gross_pay"]) < 0.02
+        assert c["mgmt_reconciles"] is True
+        # Premium model still holds.
+        assert abs(c["base_earnings"] + c["ot_premium"] + c["other_earnings"] - c["gross_pay"]) < 0.02
+    assert cats["w2"]["avg_cost_per_hour"] > cats["w2"]["avg_pay_rate"]
+    assert cats["temp"]["avg_pay_rate"] == cats["temp"]["avg_cost_per_hour"]
+
+
+def test_employee_detail_redaction_flag():
+    from backend.payroll_report_analytics import employee_summaries_by_category
+
+    rows = [
+        _row(
+            name="Secret Worker",
+            cat="w2",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=0,
+            line_id=1,
+            user_id=9,
+        )
+    ]
+    hidden = employee_summaries_by_category(rows, include_identities=False)
+    assert hidden == {}
+    shown = employee_summaries_by_category(rows, include_identities=True)
+    assert shown["w2"][0]["employee_name"] == "Secret Worker"
 
 def test_ot_premium_included_in_gross_for_exports():
     row = _row(

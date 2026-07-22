@@ -115,7 +115,7 @@ export const TENANT_NAV_ITEMS = [
   { to: "/maintenance/machine-configuration", labelKey: "nav.machineConfiguration", roles: OPS, moduleKey: "maintenance" },
   { to: "/employees", labelKey: "nav.people", roles: ["ADMIN"], moduleKey: "people" },
   { to: "/documents", labelKey: "nav.documents", roles: ["ADMIN"], moduleKey: "people" },
-  { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS", "FINANCE", "ACCOUNTANT"], permissionsAnyOf: ["users.view", "payroll.view"], moduleKey: "payroll" },
+  { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS", "FINANCE", "ACCOUNTANT", "PAYROLL_ANALYTICS"], permissionsAnyOf: ["users.view", "payroll.view", "payroll.analytics.view"], moduleKey: "payroll" },
   { to: "/finance/daily-revenue-cost", labelKey: "nav.dailyRevenueCost", roles: ["ADMIN"], moduleKey: "finance" },
   { to: "/organization", labelKey: "nav.organization", roles: ["ADMIN"], moduleKey: "organization" },
   { to: "/notifications", labelKey: "nav.notifications", roles: PORTAL, moduleKey: "notifications" },
