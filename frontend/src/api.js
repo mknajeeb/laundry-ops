@@ -581,19 +581,8 @@ export const postVeewashStep1Correction = (body) =>
     timeout: 60000,
   });
 
-/** VeeWash Step 1 — bag-level drilldown for a metric card (segments, review reasons). */
-export const getVeewashStep1Drilldown = (params = {}) =>
-  axios.get(`${API_BASE}/rinse/shift-analysis/veewash-step1/drilldown`, {
-    params: { ...params, _t: Date.now() },
-    timeout: 60000,
-    headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
-  });
-
-/** VeeWash Step 1 — manager correction on a single bag (mark completed, return to pending, etc). */
-export const correctVeewashStep1Bag = (body) =>
-  axios.post(`${API_BASE}/rinse/shift-analysis/veewash-step1/correct`, body, {
-    timeout: 30000,
-  });
+/** Alias used by Step1MetricDrawer. */
+export const correctVeewashStep1Bag = postVeewashStep1Correction;
 
 /** Phase 2 — employee productivity section only (full bag drilldown, single ET day). */
 export const getEmployeeProductivityDashboard = (params = {}) =>
