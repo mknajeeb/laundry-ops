@@ -120,8 +120,15 @@ function buildQueryParams(filters) {
   if (filters.paymentStatus && filters.paymentStatus !== "all") {
     params.payment_status = filters.paymentStatus;
   }
-  if (filters.comparisonRange) {
+  if (filters.trendRange) {
+    params.trend_range = filters.trendRange;
+    params.comparison_range = filters.trendRange;
+  } else if (filters.comparisonRange) {
     params.comparison_range = filters.comparisonRange;
+    params.trend_range = filters.comparisonRange;
+  }
+  if (filters.compareWith) {
+    params.compare_with = filters.compareWith;
   }
   return params;
 }
@@ -140,7 +147,16 @@ const EMPTY_FILTERS = {
   payrollStatus: "all",
   paymentStatus: "all",
   comparisonRange: 4,
+  trendRange: 4,
+  compareWith: "previous_period",
 };
+
+function defaultsForReportMode(rangeMode) {
+  if (rangeMode === "monthly_paid") {
+    return { compareWith: "previous_month", trendRange: 4, comparisonRange: 4 };
+  }
+  return { compareWith: "previous_period", trendRange: 4, comparisonRange: 4 };
+}
 
 export default function PayrollReportPanel({ viewMode = "dashboard" }) {
   const dashboardPrimary = viewMode !== "report";
@@ -473,7 +489,7 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
                 onChange={(e) => {
                   const v = e.target.value;
                   if (v === "labor_cost" || v === "date_range") return;
-                  const next = { ...filters, rangeMode: v };
+                  const next = { ...filters, rangeMode: v, ...defaultsForReportMode(v) };
                   setFilters(next);
                   if (v === "monthly_paid" || v === "all_history") {
                     loadReport(next);
@@ -692,9 +708,15 @@ export default function PayrollReportPanel({ viewMode = "dashboard" }) {
           <PayrollReportAnalyticsDashboard
             analytics={report.analytics}
             summary={report.summary}
-            comparisonRange={applied.comparisonRange || 4}
-            onComparisonRangeChange={(n) => {
-              const next = { ...filters, comparisonRange: n };
+            compareWith={applied.compareWith}
+            trendRange={applied.trendRange || applied.comparisonRange || 4}
+            onCompareWithChange={(v) => {
+              const next = { ...filters, compareWith: v };
+              setFilters(next);
+              loadReport(next);
+            }}
+            onTrendRangeChange={(n) => {
+              const next = { ...filters, trendRange: n, comparisonRange: n };
               setFilters(next);
               loadReport(next);
             }}

@@ -103,7 +103,7 @@ def test_select_comparison_periods_includes_selected_and_prior():
 
 
 def test_monthly_paid_comparison_excludes_prior_month_pay_date_periods(monkeypatch):
-    """July Monthly Paid must not chart June-paid weeks (e.g. Jun 15–21 paid Jun 27)."""
+    """July Monthly Paid charts months, not June-paid payroll weeks."""
     july_rows = [
         _row(
             name="A",
@@ -130,72 +130,57 @@ def test_monthly_paid_comparison_excludes_prior_month_pay_date_periods(monkeypat
         _row(
             name="C",
             cat="contractor_1099",
-            ps="2026-06-22",
-            pe="2026-06-28",
-            pay_date="2026-07-04",
-            reg=40,
-            ot=0,
-            line_id=3,
-            user_id=3,
-        ),
-        _row(
-            name="D",
-            cat="w2",
             ps="2026-07-06",
             pe="2026-07-12",
             pay_date="2026-07-18",
             reg=40,
             ot=2,
-            line_id=4,
-            user_id=4,
-        ),
-        _row(
-            name="E",
-            cat="temp",
-            ps="2026-07-06",
-            pe="2026-07-12",
-            pay_date="2026-07-18",
-            reg=40,
-            ot=0,
-            line_id=5,
-            user_id=5,
-        ),
-        _row(
-            name="F",
-            cat="contractor_1099",
-            ps="2026-07-06",
-            pe="2026-07-12",
-            pay_date="2026-07-18",
-            reg=40,
-            ot=0,
-            line_id=6,
-            user_id=6,
+            line_id=3,
+            user_id=3,
         ),
     ]
-    # Org has an earlier June-paid complete week that must not appear.
-    all_complete = [
-        ("2026-06-15", "2026-06-21"),
-        ("2026-06-22", "2026-06-28"),
-        ("2026-07-06", "2026-07-12"),
-    ]
+
+    def _fake_monthly(conn, oid, *, month, year, **kwargs):
+        if (year, month) == (2026, 6):
+            return [
+                _row(
+                    name="J",
+                    cat="w2",
+                    ps="2026-06-01",
+                    pe="2026-06-07",
+                    pay_date="2026-06-13",
+                    reg=40,
+                    ot=0,
+                    line_id=10,
+                    user_id=10,
+                )
+            ]
+        if (year, month) == (2026, 7):
+            return july_rows
+        return []
+
     monkeypatch.setattr(
         "backend.payroll_report_analytics.list_org_periods_asc",
-        lambda *a, **k: list(all_complete),
+        lambda *a, **k: [
+            ("2026-06-01", "2026-06-07"),
+            ("2026-06-22", "2026-06-28"),
+            ("2026-07-06", "2026-07-12"),
+        ],
+    )
+    monkeypatch.setattr(
+        "backend.payroll_report_analytics._fetch_monthly_paid_rows",
+        _fake_monthly,
     )
     monkeypatch.setattr(
         "backend.payroll_report_analytics.fetch_rows_for_periods",
         lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("monthly_paid must not fetch outside-month periods")
+            AssertionError("monthly mode must not fetch period rows for trend")
         ),
-    )
-    monkeypatch.setattr(
-        "backend.payroll_report_analytics._fetch_monthly_paid_rows",
-        lambda *a, **k: [],
     )
 
     class _Conn:
         def cursor(self, dictionary=False):
-            raise AssertionError("monthly analytics test should not hit DB cursor")
+            raise AssertionError("should not hit DB cursor")
 
     analytics = build_report_analytics(
         _Conn(),
@@ -203,18 +188,90 @@ def test_monthly_paid_comparison_excludes_prior_month_pay_date_periods(monkeypat
         detail_rows=july_rows,
         report_type="monthly_paid",
         filters={"month": 7, "year": 2026, "include_employee_detail": True},
-        comparison_range=4,
+        trend_range=4,
+        compare_with="previous_month",
     )
-    pc_periods = [
-        (e["pay_period_start"], e["pay_period_end"])
-        for e in analytics["period_comparison"]
+    assert analytics["comparison_mode"] == "month"
+    assert analytics["compare_with"] == "previous_month"
+    assert analytics["summary"]["focus_period"].startswith("July 2026")
+    assert analytics["summary"]["previous_period"] == "June 2026"
+    months = [e["month"] for e in analytics["month_comparison"]]
+    assert "2026-07" in months
+    assert all(len(m) == 7 for m in months)  # YYYY-MM buckets
+    # No payroll-period rows in month_comparison
+    assert analytics["period_comparison"] == []
+    july = next(e for e in analytics["month_comparison"] if e["month"] == "2026-07")
+    assert july["worker_count"] == 3  # distinct user ids
+    assert july["avg_cost_per_hour"] == round(
+        july["total_payroll_cost"] / july["total_hours"], 2
+    )
+    assert analytics["executive_narrative"]["headline"]
+    assert any(c["key"] == "avg_hours_per_worker" for c in analytics["kpis"])
+
+
+def test_period_trend_options_counts():
+    from backend.payroll_report_analytics import normalize_trend_range, PERIOD_TREND_OPTIONS
+
+    assert PERIOD_TREND_OPTIONS == (3, 4, 5, 8)
+    for n in PERIOD_TREND_OPTIONS:
+        assert normalize_trend_range(n, mode="period") == n
+
+
+def test_same_month_last_year_compare(monkeypatch):
+    rows = [
+        _row(
+            name="A",
+            cat="w2",
+            ps="2026-07-06",
+            pe="2026-07-12",
+            pay_date="2026-07-18",
+            reg=40,
+            ot=0,
+            line_id=1,
+            user_id=1,
+        )
     ]
-    assert ("2026-06-15", "2026-06-21") not in pc_periods
-    assert ("2026-06-22", "2026-06-28") in pc_periods
-    assert ("2026-07-06", "2026-07-12") in pc_periods
-    assert analytics["summary"]["focus_period"] == "July 2026"
-    # No June month prior rows mocked → no previous label / no bogus week delta.
-    assert analytics["summary"]["previous_period"] is None
+
+    def _fake_monthly(conn, oid, *, month, year, **kwargs):
+        if (year, month) == (2025, 7):
+            return [
+                _row(
+                    name="Old",
+                    cat="w2",
+                    ps="2025-07-07",
+                    pe="2025-07-13",
+                    pay_date="2025-07-19",
+                    reg=20,
+                    ot=0,
+                    line_id=9,
+                    user_id=9,
+                )
+            ]
+        return []
+
+    monkeypatch.setattr(
+        "backend.payroll_report_analytics.list_org_periods_asc", lambda *a, **k: []
+    )
+    monkeypatch.setattr(
+        "backend.payroll_report_analytics._fetch_monthly_paid_rows", _fake_monthly
+    )
+
+    class _Conn:
+        def cursor(self, dictionary=False):
+            raise AssertionError("no cursor")
+
+    analytics = build_report_analytics(
+        _Conn(),
+        3,
+        detail_rows=rows,
+        report_type="monthly_paid",
+        filters={"month": 7, "year": 2026},
+        compare_with="same_month_last_year",
+        trend_range=3,
+    )
+    assert analytics["compare_with"] == "same_month_last_year"
+    assert analytics["summary"]["previous_period"] == "July 2025"
+    assert analytics["kpis"][0]["previous"] is not None
 
 
 def test_monthly_groups_period_then_pay_date():
@@ -375,6 +432,7 @@ def test_kpi_neutral_trend_for_cost_increase():
         "worker_count": 5,
         "avg_cost_per_hour": 20.5,
         "avg_pay_rate": 20.0,
+        "avg_hours_per_worker": 20.0,
         "ot_pct_of_hours": 10.0,
     }
     previous = {
@@ -384,6 +442,7 @@ def test_kpi_neutral_trend_for_cost_increase():
         "ot_premium": 40,
         "avg_cost_per_hour": 18.0,
         "avg_pay_rate": 18.0,
+        "avg_hours_per_worker": 18.0,
         "ot_pct_of_hours": 5.0,
     }
     cards = {c["key"]: c for c in build_kpi_cards(current, previous)}
@@ -392,6 +451,7 @@ def test_kpi_neutral_trend_for_cost_increase():
         "gross_pay",
         "total_hours",
         "worker_count",
+        "avg_hours_per_worker",
         "avg_cost_per_hour",
     }
     assert [c["key"] for c in build_kpi_cards(current, previous)] == [
@@ -399,6 +459,7 @@ def test_kpi_neutral_trend_for_cost_increase():
         "gross_pay",
         "total_hours",
         "worker_count",
+        "avg_hours_per_worker",
         "avg_cost_per_hour",
     ]
     assert cards["avg_cost_per_hour"]["label"] == "Average Employer Cost / Hour"
@@ -774,9 +835,11 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     assert "Avg Pay Rate" not in pc_headers
     assert "Amount Paid" not in pc_headers
     assert "Outstanding" not in pc_headers
-    assert "Cost / Hour" in pc_headers
-    assert "Base Earnings" in pc_headers
-    assert "OT Premium" in pc_headers
+    assert "Avg Employer Cost / Hour" in pc_headers
+    assert "Regular Earnings" in pc_headers
+    assert "OT Earnings" in pc_headers
+    assert "% Δ Total Cost" in pc_headers
+    assert "% Δ Hours" in pc_headers
 
     detail = wb["Payroll Reports"]
     detail_headers = [cell.value for cell in detail[5]]

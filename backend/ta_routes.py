@@ -6779,7 +6779,15 @@ def _payroll_report_query_kwargs():
         year=int(year) if year not in (None, "") else None,
         comparison_range=int(request.args["comparison_range"])
         if request.args.get("comparison_range") not in (None, "")
+        else (
+            int(request.args["trend_range"])
+            if request.args.get("trend_range") not in (None, "")
+            else None
+        ),
+        trend_range=int(request.args["trend_range"])
+        if request.args.get("trend_range") not in (None, "")
         else None,
+        compare_with=request.args.get("compare_with") or None,
     )
 
 

@@ -509,6 +509,8 @@ def query_payroll_report(
     month: Optional[int] = None,
     year: Optional[int] = None,
     comparison_range: Optional[int] = None,
+    compare_with: Optional[str] = None,
+    trend_range: Optional[int] = None,
     include_analytics: bool = True,
     include_employee_detail: bool = True,
 ) -> dict[str, Any]:
@@ -758,10 +760,14 @@ def query_payroll_report(
     summary = _build_summary(rows, totals)
     from backend.payroll_report_analytics import (
         build_report_analytics,
-        normalize_comparison_range,
+        normalize_trend_range,
     )
 
-    cmp_range = normalize_comparison_range(comparison_range)
+    mode = "month" if resolved_type == "monthly_paid" else "period"
+    cmp_range = normalize_trend_range(
+        trend_range if trend_range is not None else comparison_range,
+        mode=mode,
+    )
     filters = {
         "report_type": resolved_type,
         "date_basis": basis if resolved_type == "custom_range" else "",
@@ -778,6 +784,8 @@ def query_payroll_report(
         "payment_status": payment_status or "all",
         "date_match_rule": match_rule,
         "comparison_range": cmp_range,
+        "trend_range": cmp_range,
+        "compare_with": compare_with or "",
         "include_employee_detail": bool(include_employee_detail),
     }
     out: dict[str, Any] = {
@@ -820,6 +828,8 @@ def query_payroll_report(
             report_type=resolved_type,
             filters=filters,
             comparison_range=cmp_range,
+            compare_with=compare_with,
+            trend_range=cmp_range,
         )
         # Prefer analytics summary enrichment while keeping batch_count from detail.
         merged_summary = {
@@ -1123,47 +1133,55 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
         for cell in ws_wf[ws_wf.max_row]:
             cell.font = Font(bold=True)
 
+    mc = analytics.get("month_comparison") or []
     pc = analytics.get("period_comparison") or []
-    if pc:
-        ws2 = wb.create_sheet("Period Comparison")
-        ws2.append([heading, "Period comparison"])
+    mode = analytics.get("comparison_mode") or ("month" if mc else "period")
+    compare_with = analytics.get("compare_with") or filters.get("compare_with") or ""
+    trend_n = analytics.get("trend_range") or analytics.get("comparison_range") or 4
+
+    if mc and mode == "month":
+        ws2 = wb.create_sheet("Month Comparison")
+        ws2.append(
+            [
+                heading,
+                f"Month comparison · compare_with={compare_with} · show_trend=last {trend_n} months",
+            ]
+        )
         headers2 = [
-            "Payroll Period",
-            "Pay Date(s)",
-            "Workers",
+            "Month",
+            "Pay Dates",
+            "Distinct Head Count",
             "Regular Hours",
             "OT Hours",
-            "Total Hours",
-            "Base Earnings",
-            "OT Premium",
+            "Regular Earnings",
+            "OT Earnings",
             "Gross",
-            "EE Taxes",
-            "Net",
-            "ER Taxes",
+            "Employer Tax",
             "Total Payroll Cost",
-            "Cost / Hour",
+            "Avg Employer Cost / Hour",
             "Δ Total Cost",
             "% Δ Total Cost",
+            "Δ Hours",
+            "% Δ Hours",
         ]
         ws2.append(headers2)
         for cell in ws2[ws2.max_row]:
             cell.font = Font(bold=True)
-        for e in pc:
+        for e in mc:
             delta = (e.get("delta_from_previous") or {}).get("total_payroll_cost")
             pct = (e.get("pct_from_previous") or {}).get("total_payroll_cost")
+            d_hrs = (e.get("delta_from_previous") or {}).get("total_hours")
+            p_hrs = (e.get("pct_from_previous") or {}).get("total_hours")
             ws2.append(
                 [
-                    e.get("payroll_period"),
+                    e.get("label") or e.get("month"),
                     e.get("pay_dates_label"),
-                    e.get("worker_count"),
+                    e.get("worker_count") or e.get("head_count"),
                     round(_money(e.get("regular_hours")), 2),
                     round(_money(e.get("ot_hours")), 2),
-                    round(_money(e.get("total_hours")), 2),
-                    round(_money(e.get("base_earnings")), 2),
-                    round(_money(e.get("ot_premium")), 2),
+                    round(_money(e.get("regular_earnings")), 2),
+                    round(_money(e.get("ot_earnings")), 2),
                     round(_money(e.get("gross_pay")), 2),
-                    round(_money(e.get("employee_tax_deductions")), 2),
-                    round(_money(e.get("net_pay")), 2),
                     round(_money(e.get("employer_taxes")), 2),
                     round(_money(e.get("total_payroll_cost")), 2),
                     round(_money(e.get("avg_cost_per_hour")), 2)
@@ -1171,6 +1189,62 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
                     else None,
                     round(_money(delta), 2) if delta is not None else None,
                     round(_money(pct), 2) if pct is not None else None,
+                    round(_money(d_hrs), 2) if d_hrs is not None else None,
+                    round(_money(p_hrs), 2) if p_hrs is not None else None,
+                ]
+            )
+    elif pc:
+        ws2 = wb.create_sheet("Period Comparison")
+        ws2.append(
+            [
+                heading,
+                f"Period comparison · compare_with={compare_with} · show_trend=last {trend_n} periods",
+            ]
+        )
+        headers2 = [
+            "Payroll Period",
+            "Pay Date(s)",
+            "Head Count",
+            "Regular Hours",
+            "OT Hours",
+            "Regular Earnings",
+            "OT Earnings",
+            "Gross",
+            "Employer Tax",
+            "Total Payroll Cost",
+            "Avg Employer Cost / Hour",
+            "Δ Total Cost",
+            "% Δ Total Cost",
+            "Δ Hours",
+            "% Δ Hours",
+        ]
+        ws2.append(headers2)
+        for cell in ws2[ws2.max_row]:
+            cell.font = Font(bold=True)
+        for e in pc:
+            delta = (e.get("delta_from_previous") or {}).get("total_payroll_cost")
+            pct = (e.get("pct_from_previous") or {}).get("total_payroll_cost")
+            d_hrs = (e.get("delta_from_previous") or {}).get("total_hours")
+            p_hrs = (e.get("pct_from_previous") or {}).get("total_hours")
+            ws2.append(
+                [
+                    e.get("payroll_period"),
+                    e.get("pay_dates_label"),
+                    e.get("worker_count"),
+                    round(_money(e.get("regular_hours")), 2),
+                    round(_money(e.get("ot_hours")), 2),
+                    round(_money(e.get("regular_earnings")), 2),
+                    round(_money(e.get("ot_earnings")), 2),
+                    round(_money(e.get("gross_pay")), 2),
+                    round(_money(e.get("employer_taxes")), 2),
+                    round(_money(e.get("total_payroll_cost")), 2),
+                    round(_money(e.get("avg_cost_per_hour")), 2)
+                    if e.get("avg_cost_per_hour") is not None
+                    else None,
+                    round(_money(delta), 2) if delta is not None else None,
+                    round(_money(pct), 2) if pct is not None else None,
+                    round(_money(d_hrs), 2) if d_hrs is not None else None,
+                    round(_money(p_hrs), 2) if p_hrs is not None else None,
                 ]
             )
 
@@ -1637,7 +1711,7 @@ def build_payroll_report_html(report: dict) -> str:
     <div class="meta" style="text-align:right">
       <div>Payroll Analytics</div>
       <div>Generated {generated}</div>
-      <div>Comparison: last {analytics.get('comparison_range') or filters.get('comparison_range') or 4} periods</div>
+      <div>Comparison: {analytics.get('comparison_mode') or 'period'} · {analytics.get('compare_with') or ''} · show trend last {analytics.get('trend_range') or analytics.get('comparison_range') or filters.get('comparison_range') or 4}</div>
     </div>
   </div>
   {summary_block("Report summary", summary)}

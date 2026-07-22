@@ -11,8 +11,19 @@ from typing import Any, Optional
 
 from backend.payroll_operations import CATEGORY_LABELS
 
-COMPARISON_RANGE_OPTIONS = (4, 8, 12)
+COMPARISON_RANGE_OPTIONS = (3, 4, 5, 6, 8, 12)  # union; mode-specific below
 DEFAULT_COMPARISON_RANGE = 4
+MONTH_TREND_OPTIONS = (3, 4, 6, 12)
+PERIOD_TREND_OPTIONS = (3, 4, 5, 8)
+
+COMPARE_WITH_MONTH = (
+    ("previous_month", "Previous month"),
+    ("same_month_last_year", "Same month last year"),
+)
+COMPARE_WITH_PERIOD = (
+    ("previous_period", "Previous payroll period"),
+    ("same_period_4_weeks_earlier", "Same period 4 weeks earlier"),
+)
 
 # Executive Summary KPIs only (management scan).
 KPI_DEFS = (
@@ -20,6 +31,7 @@ KPI_DEFS = (
     ("gross_pay", "Gross Payroll", "money"),
     ("total_hours", "Total Hours", "hours"),
     ("worker_count", "Head Count", "count"),
+    ("avg_hours_per_worker", "Average Hours / Worker", "hours"),
     ("avg_cost_per_hour", "Average Employer Cost / Hour", "money"),
 )
 
@@ -59,6 +71,7 @@ NEUTRAL_TREND_KEYS = frozenset(
         "total_payroll_cost",
         "gross_pay",
         "avg_cost_per_hour",
+        "avg_hours_per_worker",
         "avg_pay_rate",
         "employee_tax_deductions",
         "outstanding_balance",
@@ -76,17 +89,31 @@ def _money(val: Any) -> float:
 
 
 def normalize_comparison_range(value: Any) -> int:
+    """Legacy alias — prefers period trend options, falls back to month options."""
+    return normalize_trend_range(value, mode="period")
+
+
+def normalize_trend_range(value: Any, *, mode: str = "period") -> int:
+    options = MONTH_TREND_OPTIONS if mode == "month" else PERIOD_TREND_OPTIONS
     try:
         n = int(value)
     except (TypeError, ValueError):
         return DEFAULT_COMPARISON_RANGE
-    if n in COMPARISON_RANGE_OPTIONS:
+    if n in options:
         return n
-    if n <= 4:
-        return 4
-    if n <= 8:
-        return 8
-    return 12
+    # Snap to nearest allowed option.
+    return min(options, key=lambda o: abs(o - n))
+
+
+def normalize_compare_with(value: Any, *, mode: str) -> str:
+    if mode == "month":
+        allowed = {k for k, _ in COMPARE_WITH_MONTH}
+        default = "previous_month"
+    else:
+        allowed = {k for k, _ in COMPARE_WITH_PERIOD}
+        default = "previous_period"
+    v = str(value or "").strip().lower()
+    return v if v in allowed else default
 
 
 def period_key_from_row(row: dict) -> tuple[str, str]:
@@ -152,14 +179,19 @@ def aggregate_period_metrics(rows: list[dict]) -> dict[str, Any]:
     ot_premium_pct_of_gross = (
         round((ot_premium / gross) * 100.0, 2) if gross > 0.005 else 0.0
     )
+    worker_count = len(user_ids) if user_ids else len(names)
+    avg_hours_per_worker = (
+        round(total_hours / worker_count, 2) if worker_count > 0 and total_hours > 0.005 else None
+    )
     return {
         **totals,
         "total_hours": total_hours,
-        "worker_count": len(user_ids) if user_ids else len(names),
+        "worker_count": worker_count,
         "pay_dates": pay_dates,
         "pay_date_count": len(pay_dates),
         "avg_cost_per_hour": avg_cost,
         "avg_pay_rate": avg_pay,
+        "avg_hours_per_worker": avg_hours_per_worker,
         "ot_pct_of_hours": ot_pct_hours,
         "ot_earnings_pct_of_gross": ot_pct_gross,
         "ot_premium_pct_of_gross": ot_premium_pct_of_gross,
@@ -203,7 +235,11 @@ def build_kpi_cards(
     for key, label, kind in KPI_DEFS:
         if kind == "count":
             cur_val = int(current.get(key) or 0)
-        elif current.get(key) is None and key in ("avg_cost_per_hour", "avg_pay_rate"):
+        elif current.get(key) is None and key in (
+            "avg_cost_per_hour",
+            "avg_pay_rate",
+            "avg_hours_per_worker",
+        ):
             cur_val = None
         else:
             cur_val = _money(current.get(key))
@@ -211,7 +247,11 @@ def build_kpi_cards(
         if previous is not None:
             if kind == "count":
                 prev_val = int(previous.get(key) or 0)
-            elif previous.get(key) is None and key in ("avg_cost_per_hour", "avg_pay_rate"):
+            elif previous.get(key) is None and key in (
+                "avg_cost_per_hour",
+                "avg_pay_rate",
+                "avg_hours_per_worker",
+            ):
                 prev_val = None
             else:
                 prev_val = _money(previous.get(key))
@@ -287,6 +327,195 @@ def build_ot_summary(
         "neutral_trend": True,
         **hours_delta,
     }
+
+
+def month_label(year: int, month: int) -> str:
+    return f"{calendar.month_name[int(month)]} {int(year)}"
+
+
+def shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
+    idx = int(year) * 12 + (int(month) - 1) + int(delta)
+    return idx // 12, (idx % 12) + 1
+
+
+def select_trend_months(
+    focus_year: int, focus_month: int, trend_range: int
+) -> list[tuple[int, int]]:
+    n = normalize_trend_range(trend_range, mode="month")
+    out: list[tuple[int, int]] = []
+    for i in range(n - 1, -1, -1):
+        out.append(shift_month(focus_year, focus_month, -i))
+    return out
+
+
+def format_focus_period_label(ps: str, pe: str) -> str:
+    """Human focus label: Jul 6–12, 2026."""
+    try:
+        from datetime import date as _date
+
+        s = _date.fromisoformat(str(ps)[:10])
+        e = _date.fromisoformat(str(pe)[:10])
+    except ValueError:
+        return period_label(ps, pe)
+    if s.year == e.year and s.month == e.month:
+        return f"{s.strftime('%b')} {s.day}–{e.day}, {s.year}"
+    if s.year == e.year:
+        return f"{s.strftime('%b')} {s.day}–{e.strftime('%b')} {e.day}, {s.year}"
+    return f"{s.strftime('%b')} {s.day}, {s.year}–{e.strftime('%b')} {e.day}, {e.year}"
+
+
+def build_executive_narrative(
+    current: dict[str, Any], previous: Optional[dict[str, Any]], categories: list[dict]
+) -> dict[str, Any]:
+    """One-sentence story + drivers for executives."""
+    if not previous:
+        return {
+            "headline": "No prior period available for comparison.",
+            "drivers": [],
+            "text": "No prior period available for comparison.",
+        }
+    cost_d = _delta(
+        _money(current.get("total_payroll_cost")),
+        _money(previous.get("total_payroll_cost")),
+    )
+    hours_d = _delta(_money(current.get("total_hours")), _money(previous.get("total_hours")))
+    ot_d = _delta(_money(current.get("ot_hours")), _money(previous.get("ot_hours")))
+    hc_d = _delta(
+        float(current.get("worker_count") or 0),
+        float(previous.get("worker_count") or 0),
+    )
+    avg_h_d = _delta(
+        _money(current.get("avg_hours_per_worker") or 0),
+        _money(previous.get("avg_hours_per_worker") or 0)
+        if previous.get("avg_hours_per_worker") is not None
+        else None,
+    )
+
+    direction_word = "unchanged"
+    if cost_d["direction"] == "up":
+        direction_word = "increased"
+    elif cost_d["direction"] == "down":
+        direction_word = "decreased"
+
+    if cost_d["diff"] is None:
+        headline = "Payroll cost comparison unavailable."
+    elif cost_d["direction"] == "flat":
+        headline = f"Payroll cost was flat at ${_money(current.get('total_payroll_cost')):,.2f}."
+    else:
+        pct_txt = f"{cost_d['pct']:+.1f}%" if cost_d["pct"] is not None else ""
+        diff_txt = f"{cost_d['diff']:+,.2f}"
+        headline = f"Payroll cost {direction_word} {pct_txt} (${diff_txt})".replace("  ", " ")
+
+    drivers = []
+    if hours_d["pct"] is not None and abs(hours_d["pct"]) >= 0.05:
+        drivers.append(f"Hours {hours_d['pct']:+.1f}%")
+    if ot_d["pct"] is not None and abs(ot_d["pct"]) >= 0.05:
+        drivers.append(f"OT {ot_d['pct']:+.1f}%")
+    if hc_d["diff"] is not None:
+        if abs(hc_d["diff"]) < 0.5:
+            drivers.append("Headcount unchanged")
+        else:
+            drivers.append(f"Headcount {hc_d['diff']:+.0f}")
+    if avg_h_d["pct"] is not None and abs(avg_h_d["pct"]) >= 0.05:
+        drivers.append(f"Hours/worker {avg_h_d['pct']:+.1f}%")
+
+    # Which employment type moved cost the most (by absolute $ change vs prior mix not available
+    # at category prior — use share of focus cost as secondary signal).
+    total_cost = _money(current.get("total_payroll_cost"))
+    if total_cost > 0.005 and categories:
+        top = max(categories, key=lambda c: _money(c.get("total_payroll_cost")))
+        share = round(100.0 * _money(top.get("total_payroll_cost")) / total_cost, 1)
+        drivers.append(f"{top.get('label') or top.get('worker_category')} {share}% of cost")
+
+    text = headline
+    if drivers:
+        text = f"{headline} primarily due to " + "; ".join(drivers[:4]) + "."
+    return {"headline": headline, "drivers": drivers[:4], "text": text}
+
+
+def attach_category_cost_shares(categories: list[dict]) -> list[dict]:
+    total = sum(_money(c.get("total_payroll_cost")) for c in categories)
+    out = []
+    for c in categories:
+        row = dict(c)
+        if total > 0.005:
+            row["pct_of_total_cost"] = round(
+                100.0 * _money(c.get("total_payroll_cost")) / total, 1
+            )
+        else:
+            row["pct_of_total_cost"] = None
+        out.append(row)
+    return out
+
+
+def build_month_comparison_entries(
+    month_metrics: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach deltas between consecutive monthly buckets."""
+    out = []
+    prev = None
+    for m in month_metrics:
+        entry = dict(m)
+        deltas = {}
+        pcts = {}
+        if prev is not None:
+            for key in COMPARISON_DELTA_KEYS:
+                if key in ("avg_cost_per_hour", "avg_pay_rate", "avg_hours_per_worker"):
+                    if m.get(key) is None or prev.get(key) is None:
+                        continue
+                d = _delta(_money(m.get(key) or 0), _money(prev.get(key) or 0))
+                deltas[key] = d["diff"]
+                pcts[key] = d["pct"]
+        entry["delta_from_previous"] = deltas
+        entry["pct_from_previous"] = pcts
+        out.append(entry)
+        prev = m
+    return out
+
+
+def chart_titles_for_mode(mode: str) -> dict[str, str]:
+    if mode == "month":
+        return {
+            "cost": "Monthly Payroll Cost Trend",
+            "hours": "Monthly Hours Trend",
+            "mix": "Monthly Employment Mix",
+            "cost_per_hour": "Monthly Average Employer Cost/Hour",
+        }
+    return {
+        "cost": "Payroll Cost by Period",
+        "hours": "Hours by Period",
+        "mix": "Employment Mix by Period",
+        "cost_per_hour": "Average Employer Cost/Hour by Period",
+    }
+
+
+def find_period_4_weeks_earlier(
+    all_periods_asc: list[tuple[str, str]], anchor: tuple[str, str]
+) -> Optional[tuple[str, str]]:
+    """Nearest complete period whose end is ~28 days before the anchor end."""
+    try:
+        from datetime import date as _date, timedelta
+
+        anchor_end = _date.fromisoformat(str(anchor[1])[:10])
+        target = anchor_end - timedelta(days=28)
+    except ValueError:
+        return None
+    best = None
+    best_dist = None
+    for ps, pe in all_periods_asc:
+        if (ps, pe) == anchor:
+            continue
+        try:
+            end = _date.fromisoformat(str(pe)[:10])
+        except ValueError:
+            continue
+        if end >= anchor_end:
+            continue
+        dist = abs((end - target).days)
+        if best_dist is None or dist < best_dist:
+            best = (ps, pe)
+            best_dist = dist
+    return best
 
 
 def group_rows_by_period_then_pay_date(rows: list[dict]) -> list[dict[str, Any]]:
@@ -769,150 +998,179 @@ def build_report_analytics(
     report_type: str,
     filters: dict,
     comparison_range: int = DEFAULT_COMPARISON_RANGE,
+    compare_with: Optional[str] = None,
+    trend_range: Optional[int] = None,
 ) -> dict[str, Any]:
-    """Build analytics payload from detail rows + preceding payroll periods."""
-    n = normalize_comparison_range(comparison_range)
+    """Build analytics payload — month mode for Monthly Paid, period mode otherwise."""
     groups = group_rows_by_period_then_pay_date(detail_rows)
     detail_metrics = aggregate_period_metrics(detail_rows)
+    comparison_mode = "month" if report_type == "monthly_paid" else "period"
+    n = normalize_trend_range(
+        trend_range if trend_range is not None else comparison_range,
+        mode=comparison_mode,
+    )
+    compare_key = normalize_compare_with(
+        compare_with or filters.get("compare_with"), mode=comparison_mode
+    )
 
-    anchor_periods = [
-        (g["pay_period_start"], g["pay_period_end"])
-        for g in groups
-        if g.get("pay_period_start") and g.get("pay_period_end")
-    ]
-    # For monthly_paid / custom / all_history, anchors are periods present in detail.
-    # For payroll_period, anchors are the selected periods.
-    if report_type == "payroll_period":
-        starts = filters.get("period_starts") or []
-        ends = filters.get("period_ends") or []
-        if starts and ends and len(starts) == len(ends):
-            anchor_periods = list(zip(
-                [str(s)[:10] for s in starts],
-                [str(e)[:10] for e in ends],
-            ))
+    common_filters = dict(
+        user_id=filters.get("user_id"),
+        worker_category=filters.get("worker_category"),
+        payroll_status=filters.get("payroll_status"),
+        payment_status=filters.get("payment_status"),
+    )
 
-    # Only fully processed periods enter comparison / focus (any category mix).
     all_periods = list_org_periods_asc(conn, organization_id, require_complete=True)
     complete_set = set(all_periods)
-    complete_anchors = [p for p in anchor_periods if p in complete_set]
 
-    # Monthly Paid: compare only among periods paid in the selected month.
-    # Do not pull prior-month pay-date periods into July charts just because
-    # they are chronologically adjacent work weeks.
-    if report_type == "monthly_paid":
-        month_periods_asc = sorted(
-            complete_anchors, key=lambda t: (t[0] or "", t[1] or "")
+    period_comparison: list[dict] = []
+    month_comparison: list[dict] = []
+    employment_mix: list[dict] = []
+    focus_label = None
+    previous_label = None
+    focus_is_partial = False
+    focus_metrics = detail_metrics
+    prev_metrics = None
+    analytics_rows = list(detail_rows)
+
+    if comparison_mode == "month":
+        try:
+            month_i = int(filters.get("month"))
+            year_i = int(filters.get("year"))
+        except (TypeError, ValueError):
+            month_i, year_i = None, None
+        if not (month_i and year_i and 1 <= month_i <= 12):
+            month_i = year_i = None
+
+        from datetime import date as _date
+
+        today = _date.today()
+        focus_is_partial = bool(
+            month_i and year_i and (year_i, month_i) >= (today.year, today.month)
         )
-        selected = select_comparison_periods(
-            month_periods_asc,
-            anchor_periods=complete_anchors,
-            comparison_range=n,
-        )
+        if month_i and year_i:
+            focus_label = month_label(year_i, month_i)
+            if focus_is_partial:
+                focus_label = f"{focus_label} (month to date)"
+
+            # Trend: one bucket per calendar month (Official Pay Date membership).
+            trend_months = select_trend_months(year_i, month_i, n)
+            month_buckets = []
+            for y, m in trend_months:
+                if (y, m) == (year_i, month_i):
+                    rows_m = list(detail_rows)
+                else:
+                    rows_m = _fetch_monthly_paid_rows(
+                        conn, organization_id, month=m, year=y, **common_filters
+                    )
+                metrics = aggregate_period_metrics(rows_m)
+                partial = (y, m) >= (today.year, today.month)
+                month_buckets.append(
+                    {
+                        **metrics,
+                        "month": f"{y:04d}-{m:02d}",
+                        "year": y,
+                        "month_num": m,
+                        "label": month_label(y, m)
+                        + (" (month to date)" if partial else ""),
+                        "pay_dates_label": ", ".join(metrics.get("pay_dates") or []),
+                        "is_partial": partial,
+                        "worker_count": metrics.get("worker_count", 0),
+                        "head_count": metrics.get("worker_count", 0),
+                    }
+                )
+            month_comparison = build_month_comparison_entries(month_buckets)
+
+            # Employment mix by month (reuse period helper shape with synthetic keys).
+            mix_map: dict[tuple[str, str], list[dict]] = {}
+            ordered_keys: list[tuple[str, str]] = []
+            for y, m in trend_months:
+                key = (f"{y:04d}-{m:02d}-01", f"{y:04d}-{m:02d}-28")
+                ordered_keys.append(key)
+                if (y, m) == (year_i, month_i):
+                    mix_map[key] = list(detail_rows)
+                else:
+                    mix_map[key] = _fetch_monthly_paid_rows(
+                        conn, organization_id, month=m, year=y, **common_filters
+                    )
+            employment_mix = employment_mix_by_period(mix_map, ordered_keys)
+            for i, e in enumerate(employment_mix):
+                y, m = trend_months[i]
+                e["month"] = f"{y:04d}-{m:02d}"
+                e["label"] = month_label(y, m)
+                e["payroll_period"] = month_label(y, m)
+
+            # Compare With target month
+            if compare_key == "same_month_last_year":
+                cy, cm = year_i - 1, month_i
+            else:
+                cy, cm = shift_month(year_i, month_i, -1)
+            previous_label = month_label(cy, cm)
+            prev_rows = _fetch_monthly_paid_rows(
+                conn, organization_id, month=cm, year=cy, **common_filters
+            )
+            if prev_rows:
+                prev_metrics = aggregate_period_metrics(prev_rows)
+            else:
+                previous_label = None
+            focus_metrics = aggregate_period_metrics(detail_rows)
+            analytics_rows = list(detail_rows)
     else:
+        # Period mode
+        anchor_periods = [
+            (g["pay_period_start"], g["pay_period_end"])
+            for g in groups
+            if g.get("pay_period_start") and g.get("pay_period_end")
+        ]
+        if report_type == "payroll_period":
+            starts = filters.get("period_starts") or []
+            ends = filters.get("period_ends") or []
+            if starts and ends and len(starts) == len(ends):
+                anchor_periods = list(
+                    zip(
+                        [str(s)[:10] for s in starts],
+                        [str(e)[:10] for e in ends],
+                    )
+                )
+        complete_anchors = [p for p in anchor_periods if p in complete_set]
         selected = select_comparison_periods(
             all_periods, anchor_periods=complete_anchors, comparison_range=n
         )
+        analytics_rows = [
+            r
+            for r in detail_rows
+            if (period_key_from_row(r) in complete_set)
+            or (not period_key_from_row(r)[0] and not period_key_from_row(r)[1])
+        ]
+        if not analytics_rows and detail_rows and not complete_anchors:
+            analytics_rows = []
 
-    # Analytics KPIs / workforce ignore incomplete-period rows (detail export
-    # may still include them for monthly paid / custom filters).
-    analytics_rows = [
-        r
-        for r in detail_rows
-        if (period_key_from_row(r) in complete_set)
-        or (not period_key_from_row(r)[0] and not period_key_from_row(r)[1])
-    ]
-    if not analytics_rows and detail_rows and not complete_anchors:
-        # No complete periods in selection — empty analytics rather than half-baked.
-        analytics_rows = []
-    analytics_metrics = aggregate_period_metrics(analytics_rows)
-
-    period_rows_map: dict[tuple[str, str], list[dict]] = defaultdict(list)
-    detail_period_set = set(complete_anchors)
-    for row in analytics_rows:
-        key = period_key_from_row(row)
-        if key[0] and key[1]:
-            period_rows_map[key].append(row)
-
-    # Periods in comparison window but outside detail filter window need a fetch.
-    # Monthly Paid never fetches outside the month's paid periods.
-    fetch_periods = (
-        []
-        if report_type == "monthly_paid"
-        else [p for p in selected if p not in detail_period_set]
-    )
-    if fetch_periods:
-        extra = fetch_rows_for_periods(
-            conn,
-            organization_id,
-            fetch_periods,
-            user_id=filters.get("user_id"),
-            worker_category=filters.get("worker_category"),
-            payroll_status=filters.get("payroll_status"),
-            payment_status=filters.get("payment_status"),
-        )
-        for row in extra:
+        period_rows_map: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        detail_period_set = set(complete_anchors)
+        for row in analytics_rows:
             key = period_key_from_row(row)
-            period_rows_map[key].append(row)
-
-    for p in selected:
-        period_rows_map.setdefault(p, [])
-
-    period_comparison = build_period_comparison_entries(period_rows_map, selected)
-
-    # Focus / KPI deltas
-    focus = None
-    focus_label = None
-    previous_label = None
-    focus_metrics = analytics_metrics
-    prev_metrics = None
-
-    if report_type == "monthly_paid":
-        # Month-level focus (not a single week vs a June-paid prior week).
-        month = filters.get("month")
-        year = filters.get("year")
-        try:
-            month_i = int(month) if month not in (None, "") else None
-            year_i = int(year) if year not in (None, "") else None
-        except (TypeError, ValueError):
-            month_i, year_i = None, None
-        if month_i and year_i and 1 <= month_i <= 12:
-            focus_label = f"{calendar.month_name[month_i]} {year_i}"
-            prev_month, prev_year = (
-                (month_i - 1, year_i) if month_i > 1 else (12, year_i - 1)
+            if key[0] and key[1]:
+                period_rows_map[key].append(row)
+        fetch_periods = [p for p in selected if p not in detail_period_set]
+        if fetch_periods:
+            extra = fetch_rows_for_periods(
+                conn, organization_id, fetch_periods, **common_filters
             )
-            previous_label = f"{calendar.month_name[prev_month]} {prev_year}"
-            prev_rows = _fetch_monthly_paid_rows(
-                conn,
-                organization_id,
-                month=prev_month,
-                year=prev_year,
-                user_id=filters.get("user_id"),
-                worker_category=filters.get("worker_category"),
-                payroll_status=filters.get("payroll_status"),
-                payment_status=filters.get("payment_status"),
-            )
-            prev_complete = [
-                r
-                for r in prev_rows
-                if period_key_from_row(r) in complete_set
-                or (
-                    not period_key_from_row(r)[0] and not period_key_from_row(r)[1]
-                )
-            ]
-            if prev_complete:
-                prev_metrics = aggregate_period_metrics(prev_complete)
-            else:
-                previous_label = None
-        if complete_anchors:
-            focus = max(complete_anchors, key=lambda t: (t[1] or "", t[0] or ""))
-    else:
+            for row in extra:
+                key = period_key_from_row(row)
+                period_rows_map[key].append(row)
+        for p in selected:
+            period_rows_map.setdefault(p, [])
+        period_comparison = build_period_comparison_entries(period_rows_map, selected)
+        employment_mix = employment_mix_by_period(period_rows_map, selected)
+
+        focus = None
         if complete_anchors:
             focus = max(complete_anchors, key=lambda t: (t[1] or "", t[0] or ""))
         elif selected:
             focus = selected[-1]
         if focus:
-            focus_label = period_label(focus[0], focus[1])
-        if focus and period_comparison:
+            focus_label = format_focus_period_label(focus[0], focus[1])
             idx = next(
                 (
                     i
@@ -922,43 +1180,48 @@ def build_report_analytics(
                 ),
                 None,
             )
-            if idx is not None and idx > 0:
-                prev_metrics = period_comparison[idx - 1]
-                previous_label = prev_metrics.get("payroll_period")
-            if (
-                report_type == "payroll_period"
-                and len(complete_anchors) == 1
-                and idx is not None
-            ):
+            if report_type == "payroll_period" and len(complete_anchors) == 1 and idx is not None:
                 focus_metrics = period_comparison[idx]
+            else:
+                focus_metrics = aggregate_period_metrics(analytics_rows)
 
+            if compare_key == "same_period_4_weeks_earlier":
+                prior = find_period_4_weeks_earlier(all_periods, focus)
+                if prior:
+                    prior_rows = period_rows_map.get(prior) or fetch_rows_for_periods(
+                        conn, organization_id, [prior], **common_filters
+                    )
+                    if prior_rows:
+                        prev_metrics = aggregate_period_metrics(prior_rows)
+                        previous_label = format_focus_period_label(prior[0], prior[1])
+            else:
+                if idx is not None and idx > 0:
+                    prev_metrics = period_comparison[idx - 1]
+                    previous_label = format_focus_period_label(
+                        prev_metrics.get("pay_period_start") or "",
+                        prev_metrics.get("pay_period_end") or "",
+                    )
+                elif focus in complete_set:
+                    try:
+                        fi = all_periods.index(focus)
+                    except ValueError:
+                        fi = -1
+                    if fi > 0:
+                        prior = all_periods[fi - 1]
+                        prior_rows = fetch_rows_for_periods(
+                            conn, organization_id, [prior], **common_filters
+                        )
+                        if prior_rows:
+                            prev_metrics = aggregate_period_metrics(prior_rows)
+                            previous_label = format_focus_period_label(prior[0], prior[1])
+
+    categories = attach_category_cost_shares(category_breakdown(analytics_rows))
+    workforce_totals = workforce_breakdown_totals(categories)
     kpis = build_kpi_cards(focus_metrics, prev_metrics)
     ot_summary = build_ot_summary(focus_metrics, prev_metrics)
+    narrative = build_executive_narrative(focus_metrics, prev_metrics, categories)
 
-    categories = category_breakdown(analytics_rows)
-    workforce_totals = workforce_breakdown_totals(categories)
-    employment_mix = employment_mix_by_period(period_rows_map, selected)
-
-    overtime_analysis = [
-        {
-            "payroll_period": e["payroll_period"],
-            "pay_period_start": e["pay_period_start"],
-            "pay_period_end": e["pay_period_end"],
-            "ot_hours": e.get("ot_hours", 0),
-            "ot_premium": e.get("ot_premium", 0),
-            "ot_earnings": e.get("ot_earnings", 0),
-            "regular_earnings": e.get("regular_earnings", 0),
-            "base_earnings": e.get("base_earnings", 0),
-            "other_earnings": e.get("other_earnings", 0),
-            "ot_pct_of_hours": e.get("ot_pct_of_hours", 0),
-            "ot_premium_pct_of_gross": e.get("ot_premium_pct_of_gross", 0),
-            "ot_earnings_pct_of_gross": e.get("ot_earnings_pct_of_gross", 0),
-            "total_hours": e.get("total_hours", 0),
-            "gross_pay": e.get("gross_pay", 0),
-            "avg_cost_per_hour": e.get("avg_cost_per_hour"),
-        }
-        for e in period_comparison
-    ]
+    overtime_analysis = month_comparison if comparison_mode == "month" else period_comparison
 
     pay_date_count = len(
         {
@@ -973,6 +1236,15 @@ def build_report_analytics(
         detail_rows, include_identities=include_identities
     )
 
+    compare_options = (
+        [{"value": k, "label": lab} for k, lab in COMPARE_WITH_MONTH]
+        if comparison_mode == "month"
+        else [{"value": k, "label": lab} for k, lab in COMPARE_WITH_PERIOD]
+    )
+    trend_options = list(
+        MONTH_TREND_OPTIONS if comparison_mode == "month" else PERIOD_TREND_OPTIONS
+    )
+
     summary = {
         **detail_metrics,
         "payroll_period_count": len(groups),
@@ -980,28 +1252,42 @@ def build_report_analytics(
         "unique_employees": detail_metrics.get("worker_count", 0),
         "head_count": detail_metrics.get("worker_count", 0),
         "comparison_range": n,
+        "trend_range": n,
+        "compare_with": compare_key,
+        "comparison_mode": comparison_mode,
         "focus_period": focus_label,
         "previous_period": previous_label,
+        "focus_kind": comparison_mode,
+        "focus_is_partial": focus_is_partial,
     }
 
     return {
         "summary": summary,
         "kpis": kpis,
         "ot_summary": ot_summary,
+        "executive_narrative": narrative,
         "period_comparison": period_comparison,
+        "month_comparison": month_comparison,
         "category_breakdown": categories,
         "workforce_totals": workforce_totals,
         "employment_mix": employment_mix,
         "employee_summaries_by_category": employee_summaries,
         "access": {
             "can_view_employee_detail": include_identities,
-            "layout": "executive_v3",
+            "layout": "executive_v4",
         },
         "overtime_analysis": overtime_analysis,
         "groups": groups if include_identities else [],
+        "comparison_mode": comparison_mode,
+        "compare_with": compare_key,
+        "compare_with_options": compare_options,
+        "trend_range": n,
+        "trend_range_options": trend_options,
         "comparison_range": n,
-        "comparison_range_options": list(COMPARISON_RANGE_OPTIONS),
-        "layout": "executive_v3",
+        "comparison_range_options": trend_options,
+        "chart_titles": chart_titles_for_mode(comparison_mode),
+        "layout": "executive_v4",
     }
+
 
 from backend.payroll_report_analytics_charts import build_analytics_chart_svgs  # noqa: E402

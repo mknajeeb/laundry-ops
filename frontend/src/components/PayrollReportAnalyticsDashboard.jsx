@@ -176,6 +176,7 @@ function SectionTitle({ children }) {
 const WORKFORCE_HEADERS = [
   "Category",
   "HC",
+  "% Cost",
   "Regular Hrs",
   "OT Hrs",
   "Regular Earnings",
@@ -190,40 +191,56 @@ const RECON_HEADERS = ["Category", "Base Earnings", "OT Premium"];
 
 const EMPLOYEE_HEADERS = ["Employee", "Reg Hrs", "OT Hrs", "Regular Earnings", "OT Earnings", "Gross", "Total Cost"];
 
-const PERIOD_HEADERS = ["Payroll Period", "Workers", "Hours", "OT", "Gross", "Total cost", "Avg Employer Cost", "Δ cost"];
+function pctDelta(v) {
+  if (v == null || !Number.isFinite(Number(v))) return "—";
+  const n = Number(v);
+  return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+}
 
 /**
- * Payroll Dashboard v3 — compact executive management dashboard.
- * KPI row → OT chips → Workforce Breakdown (drill-down) → reconciliation
- * accordion → four trend charts → compact period comparison.
+ * Payroll Dashboard v4 — report-aware month vs period comparison.
  */
 export default function PayrollReportAnalyticsDashboard({
   analytics,
   summary,
-  comparisonRange,
-  onComparisonRangeChange,
+  compareWith,
+  trendRange,
+  onCompareWithChange,
+  onTrendRangeChange,
   onSelectEmployee,
 }) {
   const [drillCategory, setDrillCategory] = useState(null);
   const [permissionNotice, setPermissionNotice] = useState(false);
 
+  const mode = analytics?.comparison_mode || (analytics?.month_comparison?.length ? "month" : "period");
+  const isMonth = mode === "month";
   const kpis = analytics?.kpis || [];
   const ot = analytics?.ot_summary;
+  const narrative = analytics?.executive_narrative;
   const categories = analytics?.category_breakdown || [];
-  const periods = analytics?.period_comparison || [];
+  const trendRows = isMonth
+    ? analytics?.month_comparison || []
+    : analytics?.period_comparison || [];
   const mix = analytics?.employment_mix || [];
+  const chartTitles = analytics?.chart_titles || {};
+  const compareOptions = analytics?.compare_with_options || [];
+  const trendOptions = analytics?.trend_range_options || (isMonth ? [3, 4, 6, 12] : [3, 4, 5, 8]);
   const employeeSummariesByCategory = analytics?.employee_summaries_by_category || {};
   const canViewDetail = analytics?.access?.can_view_employee_detail !== false;
 
-  const chartData = periods.map((p) => ({
+  const chartData = trendRows.map((p) => ({
     ...p,
-    label: String(p.pay_period_end || p.payroll_period || "").slice(5),
-    fullLabel: p.payroll_period,
+    label: isMonth
+      ? String(p.label || p.month || "").replace(/ \(month to date\)/, "").slice(0, 8)
+      : String(p.pay_period_end || p.payroll_period || "").slice(5),
+    fullLabel: p.label || p.payroll_period,
   }));
   const mixData = mix.map((p) => ({
     ...p,
-    label: String(p.pay_period_end || p.payroll_period || "").slice(5),
-    fullLabel: p.payroll_period,
+    label: isMonth
+      ? String(p.label || p.month || "").slice(0, 8)
+      : String(p.pay_period_end || p.payroll_period || "").slice(5),
+    fullLabel: p.label || p.payroll_period,
   }));
 
   const costTooltip = (value, name, item) => {
@@ -261,6 +278,9 @@ export default function PayrollReportAnalyticsDashboard({
     }
   };
 
+  const compareValue = compareWith || analytics?.compare_with || (isMonth ? "previous_month" : "previous_period");
+  const trendValue = trendRange || analytics?.trend_range || 4;
+
   return (
     <Stack spacing={2} sx={{ mb: 1 }}>
       <Stack
@@ -276,31 +296,85 @@ export default function PayrollReportAnalyticsDashboard({
           <Typography variant="body2" color="text.secondary">
             {summary?.focus_period
               ? `Focus: ${summary.focus_period}${
-                  summary?.previous_period ? ` · vs ${summary.previous_period}` : ""
+                  summary?.previous_period ? ` · Previous: ${summary.previous_period}` : ""
                 }`
-              : "No complete payroll period in selection (all batches must be paid or finalized)."}
+              : isMonth
+                ? "Select a month with Official Pay Date payroll."
+                : "No complete payroll period in selection (all batches must be paid or finalized)."}
           </Typography>
         </Box>
-        <FormControl size="small" sx={{ minWidth: 180 }}>
-          <InputLabel>Comparison range</InputLabel>
-          <Select
-            label="Comparison range"
-            value={comparisonRange || analytics?.comparison_range || 4}
-            onChange={(e) => onComparisonRangeChange?.(Number(e.target.value))}
-          >
-            <MenuItem value={4}>Last 4 periods</MenuItem>
-            <MenuItem value={8}>Last 8 periods</MenuItem>
-            <MenuItem value={12}>Last 12 periods</MenuItem>
-          </Select>
-        </FormControl>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+          <FormControl size="small" sx={{ minWidth: 200 }}>
+            <InputLabel>Compare</InputLabel>
+            <Select
+              label="Compare"
+              value={compareValue}
+              onChange={(e) => onCompareWithChange?.(e.target.value)}
+            >
+              {(compareOptions.length
+                ? compareOptions
+                : isMonth
+                  ? [
+                      { value: "previous_month", label: "Previous month" },
+                      { value: "same_month_last_year", label: "Same month last year" },
+                    ]
+                  : [
+                      { value: "previous_period", label: "Previous payroll period" },
+                      { value: "same_period_4_weeks_earlier", label: "Same period 4 weeks earlier" },
+                    ]
+              ).map((o) => (
+                <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl size="small" sx={{ minWidth: 180 }}>
+            <InputLabel>Show Trend</InputLabel>
+            <Select
+              label="Show Trend"
+              value={trendValue}
+              onChange={(e) => onTrendRangeChange?.(Number(e.target.value))}
+            >
+              {trendOptions.map((n) => (
+                <MenuItem key={n} value={n}>
+                  {isMonth ? `Last ${n} Months` : `Last ${n} Periods`}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </Stack>
       </Stack>
 
-      {/* 1. KPI row — six cards only */}
+      {narrative?.text ? (
+        <Paper
+          variant="outlined"
+          sx={{ p: 1.5, borderColor: VEEWASH_BRAND.borderSoft, background: VEEWASH_BRAND.primaryLight }}
+        >
+          <Typography variant="subtitle2" fontWeight={700} sx={{ color: VEEWASH_BRAND.primaryDark }}>
+            {narrative.headline}
+          </Typography>
+          {narrative.drivers?.length ? (
+            <Stack component="ul" sx={{ m: 0, pl: 2.5, mt: 0.5 }}>
+              {narrative.drivers.map((d) => (
+                <Typography component="li" key={d} variant="body2" color="text.secondary">
+                  {d}
+                </Typography>
+              ))}
+            </Stack>
+          ) : null}
+        </Paper>
+      ) : null}
+
+      {/* 1. KPI row */}
       <Box
         sx={{
           display: "grid",
           gap: 1,
-          gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", md: "repeat(5, 1fr)" },
+          gridTemplateColumns: {
+            xs: "1fr 1fr",
+            sm: "repeat(3, 1fr)",
+            md: "repeat(3, 1fr)",
+            lg: "repeat(6, 1fr)",
+          },
         }}
       >
         {kpis.map((card) => (
@@ -424,6 +498,9 @@ export default function PayrollReportAnalyticsDashboard({
                           {c.label || c.worker_category}
                         </TableCell>
                         <TableCell align="right">{c.head_count ?? c.worker_count ?? 0}</TableCell>
+                        <TableCell align="right">
+                          {c.pct_of_total_cost == null ? "—" : `${Number(c.pct_of_total_cost).toFixed(1)}%`}
+                        </TableCell>
                         <TableCell align="right">{hours(c.regular_hours)}</TableCell>
                         <TableCell align="right">{hours(c.ot_hours)}</TableCell>
                         <TableCell align="right">{money(c.regular_earnings)}</TableCell>
@@ -488,7 +565,7 @@ export default function PayrollReportAnalyticsDashboard({
                 gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
               }}
             >
-              <ChartCard title="Payroll cost trend">
+              <ChartCard title={chartTitles.cost || (isMonth ? "Monthly Payroll Cost Trend" : "Payroll Cost by Period")}>
                 <AreaChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                   <XAxis dataKey="label" tick={{ fontSize: 11 }} />
@@ -499,7 +576,7 @@ export default function PayrollReportAnalyticsDashboard({
                   <Area type="monotone" dataKey="gross_pay" name="Gross Payroll" stroke="#0097b2" fill="transparent" />
                 </AreaChart>
               </ChartCard>
-              <ChartCard title="Workforce hours">
+              <ChartCard title={chartTitles.hours || (isMonth ? "Monthly Hours Trend" : "Hours by Period")}>
                 <BarChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                   <XAxis dataKey="label" tick={{ fontSize: 11 }} />
@@ -513,7 +590,7 @@ export default function PayrollReportAnalyticsDashboard({
                   <Bar dataKey="ot_hours" name="OT" stackId="h" fill="#c4a052" />
                 </BarChart>
               </ChartCard>
-              <ChartCard title="Employment mix">
+              <ChartCard title={chartTitles.mix || (isMonth ? "Monthly Employment Mix" : "Employment Mix by Period")}>
                 <BarChart data={mixData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                   <XAxis dataKey="label" tick={{ fontSize: 11 }} />
@@ -526,7 +603,7 @@ export default function PayrollReportAnalyticsDashboard({
                   <Bar dataKey="contractor_1099_cost" name="1099" stackId="m" fill="#94a3b8" />
                 </BarChart>
               </ChartCard>
-              <ChartCard title="Average cost / hour trend">
+              <ChartCard title={chartTitles.cost_per_hour || (isMonth ? "Monthly Average Employer Cost/Hour" : "Average Employer Cost/Hour by Period")}>
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                   <XAxis dataKey="label" tick={{ fontSize: 11 }} />
@@ -546,42 +623,51 @@ export default function PayrollReportAnalyticsDashboard({
             </Box>
           </Box>
 
-          {/* 6. Compact period comparison */}
+          {/* Comparison table with deltas */}
           <Paper variant="outlined" sx={{ borderColor: VEEWASH_BRAND.borderSoft }}>
             <Box sx={{ px: 1.5, py: 1 }}>
               <Typography variant="subtitle2" fontWeight={700} sx={{ color: VEEWASH_BRAND.primaryDark }}>
-                Period comparison
+                {isMonth ? "Month comparison" : "Period comparison"}
               </Typography>
             </Box>
             <TableContainer sx={{ overflowX: "auto" }}>
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    {PERIOD_HEADERS.map((h) => (
-                      <TableCell key={h} sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark }}>
-                        {h}
-                      </TableCell>
-                    ))}
+                    <TableCell sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark }}>
+                      {isMonth ? "Month" : "Payroll Period"}
+                    </TableCell>
+                    <TableCell align="right" sx={{ color: VEEWASH_BRAND.primaryDark }}>Cost</TableCell>
+                    <TableCell align="right" sx={{ color: VEEWASH_BRAND.primaryDark }}>Δ</TableCell>
+                    <TableCell align="right" sx={{ color: VEEWASH_BRAND.primaryDark }}>Hours</TableCell>
+                    <TableCell align="right" sx={{ color: VEEWASH_BRAND.primaryDark }}>Δ</TableCell>
+                    <TableCell align="right" sx={{ color: VEEWASH_BRAND.primaryDark }}>HC</TableCell>
+                    <TableCell align="right" sx={{ color: VEEWASH_BRAND.primaryDark }}>OT</TableCell>
+                    <TableCell align="right" sx={{ color: VEEWASH_BRAND.primaryDark }}>Gross</TableCell>
+                    <TableCell align="right" sx={{ color: VEEWASH_BRAND.primaryDark }}>Avg $/hr</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {periods.map((p) => {
-                    const dCost = p.delta_from_previous?.total_payroll_cost;
-                    const pCost = p.pct_from_previous?.total_payroll_cost;
+                  {trendRows.map((p) => {
+                    const costPct = p.pct_from_previous?.total_payroll_cost;
+                    const hrsPct = p.pct_from_previous?.total_hours;
                     return (
-                      <TableRow key={p.payroll_period} hover>
-                        <TableCell sx={{ whiteSpace: "nowrap" }}>{p.payroll_period}</TableCell>
-                        <TableCell align="right">{p.worker_count}</TableCell>
+                      <TableRow key={p.label || p.payroll_period || p.month} hover>
+                        <TableCell sx={{ whiteSpace: "nowrap" }}>
+                          {p.label || p.payroll_period}
+                        </TableCell>
+                        <TableCell align="right">{money(p.total_payroll_cost)}</TableCell>
+                        <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                          {pctDelta(costPct)}
+                        </TableCell>
                         <TableCell align="right">{hours(p.total_hours)}</TableCell>
+                        <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                          {pctDelta(hrsPct)}
+                        </TableCell>
+                        <TableCell align="right">{p.worker_count ?? p.head_count ?? 0}</TableCell>
                         <TableCell align="right">{hours(p.ot_hours)}</TableCell>
                         <TableCell align="right">{money(p.gross_pay)}</TableCell>
-                        <TableCell align="right">{money(p.total_payroll_cost)}</TableCell>
                         <TableCell align="right">{money(p.avg_cost_per_hour)}</TableCell>
-                        <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                          {dCost == null
-                            ? "—"
-                            : `${dCost >= 0 ? "+" : ""}${money(dCost)}${pCost == null ? "" : ` (${pCost >= 0 ? "+" : ""}${Number(pCost).toFixed(1)}%)`}`}
-                        </TableCell>
                       </TableRow>
                     );
                   })}
