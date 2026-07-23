@@ -156,27 +156,35 @@ function isPartnerRosterRoute(path) {
   return p.startsWith("/roster/");
 }
 
+/** Collapse accidental //path (e.g. …net//pin/veewash) so public PIN routes match. */
+function normalizePathname(path) {
+  const raw = String(path || "");
+  if (!raw) return "/";
+  const collapsed = raw.replace(/\/{2,}/g, "/");
+  return collapsed.startsWith("/") ? collapsed : `/${collapsed}`;
+}
+
 /** Public login: /login or /login/:orgSlug (tenant-specific bookmark URL). */
 function isLoginRoute(path) {
-  const p = path || "";
+  const p = normalizePathname(path);
   return p === "/login" || p.startsWith("/login/");
 }
 
 /** Shared-tablet PIN lock: /kiosk/:orgSlug (no session until PIN succeeds). */
 function isKioskRoute(path) {
-  const p = path || "";
+  const p = normalizePathname(path);
   return p === "/kiosk" || p.startsWith("/kiosk/");
 }
 
 /** Phone PIN hub: switch role / checklist / inventory (permission-gated). */
 function isPinHubRoute(path) {
-  const p = path || "";
+  const p = normalizePathname(path);
   return p === "/pin" || p.startsWith("/pin/");
 }
 
 /** Kiosk clock in/out only: /attendance or /attendance/:orgSlug (no app session). */
 function isAttendanceRoute(path) {
-  const p = path || "";
+  const p = normalizePathname(path);
   return p === "/attendance" || p.startsWith("/attendance/");
 }
 
@@ -294,9 +302,16 @@ function AppShell() {
   const mainScrollRef = useRef(null);
 
   const pathname = location.pathname || "/";
+  const normalizedPathname = normalizePathname(pathname);
   const isWeeklyScheduleRoute =
-    pathname === "/performance/weekly-schedule" ||
-    pathname.startsWith("/performance/weekly-schedule/");
+    normalizedPathname === "/performance/weekly-schedule" ||
+    normalizedPathname.startsWith("/performance/weekly-schedule/");
+
+  /** Fix …//pin/veewash (and similar) so public PIN routes match React Router. */
+  useLayoutEffect(() => {
+    if (pathname === normalizedPathname) return;
+    navigate(`${normalizedPathname}${location.search || ""}${location.hash || ""}`, { replace: true });
+  }, [pathname, normalizedPathname, navigate, location.search, location.hash]);
 
   /** iOS PWA: keep main content in its own scroller; reset on navigation (fixes mid-page load + header overlap). */
   useLayoutEffect(() => {
@@ -306,7 +321,7 @@ function AppShell() {
       el.scrollLeft = 0;
     }
     window.scrollTo(0, 0);
-  }, [pathname]);
+  }, [normalizedPathname]);
 
   const doLogout = async () => {
     try { await authLogout(); } catch { /* ignore */ }
