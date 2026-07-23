@@ -500,7 +500,7 @@ def build_drilldown(
             item["bulk_workitems"] = lines
             edit_meta = last_edits.get(bid) or {}
             item.update(edit_meta)
-            # Overlay live scan-row provenance onto Pre/Post (day snapshot may lag).
+            # Overlay live scan-row Pre/Post + provenance (day snapshot may lag).
             from backend.rinse_scan_purpose import is_weight_entry_purpose
             from backend.rinse_veewash_review import resolve_weight_entry_pair
 
@@ -511,6 +511,11 @@ def build_drilldown(
             ]
             live = resolve_weight_entry_pair(weight_events)
             for key in (
+                "pre_weight_lbs",
+                "post_weight_lbs",
+                "post_weight_value",
+                "post_weight_event_exists",
+                "weight_entry_count",
                 "pre_weight_source",
                 "pre_weight_observed_at",
                 "pre_weight_attach_batch_id",
@@ -524,6 +529,15 @@ def build_drilldown(
             ):
                 if live.get(key) is not None:
                     item[key] = live.get(key)
+            # Explicit nulls from a real empty pre still win over stale snapshot
+            # when live chronology has weight-entry rows.
+            if weight_events:
+                item["pre_weight_lbs"] = live.get("pre_weight_lbs")
+                item["post_weight_lbs"] = live.get("post_weight_lbs")
+                item["post_weight_value"] = live.get("post_weight_value")
+                item["post_weight_event_exists"] = live.get("post_weight_event_exists")
+                item["weight_entry_count"] = live.get("weight_entry_count")
+
         else:
             item["scans"] = []
             item["corrections"] = []
