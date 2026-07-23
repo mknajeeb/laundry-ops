@@ -237,11 +237,16 @@ def expand_review_required(
     create-workitem-bulk is WF-only for review UI.
 
     Service signal from scan purposes:
-      - Hang Dry: workitems-added (and typically also create-workitem-bulk)
-      - WF with work items: create-workitem-bulk only (no workitems-added)
+      - Hang Dry: workitems-added at/after first weight-entry (often with
+        create-workitem-bulk too)
+      - WF with work items: create-workitem-bulk only (no classification-
+        relevant workitems-added)
+      - workitems-added *before* the first weight-entry is ignored (false HD
+        signal from upstream tagging; e.g. 04FRSEC71H)
 
-    So bulk does not redefine a bag that has workitems-added + HD portal/registry.
-    Bulk without workitems-added forces WF. Registry WF still overrides portal HD.
+    So bulk does not redefine a bag that has relevant workitems-added + HD
+    portal/registry. Bulk without relevant WIA forces WF. Registry WF still
+    overrides portal HD.
 
     WF_ZERO_OR_MISSING_POST_WEIGHT only when the bag is canonically completed
     and exactly one weight-entry scan exists (no second event). Recorded post=0
@@ -298,21 +303,34 @@ def expand_review_required(
     def has_valid_entry(bid: str, row: Mapping[str, Any]) -> bool:
         if entry_by_bag.get(bid):
             return True
-        if wia_map.get(bid):
+        if has_workitems_added(bid):
             return True
         return bool(row.get("entry_source") or row.get("original_entry_date") or row.get("first_entry_at"))
 
     def has_workitems_added(bid: str) -> bool:
-        return bool(wia_map.get(bid))
+        """True only for classification-relevant WIA (not before first weight-entry)."""
+        wia = wia_map.get(bid)
+        if not wia:
+            return False
+        wia_at = wia.get("first_entry_at") or wia.get("scanned_at_parsed") or wia.get("scanned_at")
+        wt_info = weight_map.get(bid) if bid in weight_map else None
+        first_wt = None
+        if isinstance(wt_info, Mapping):
+            first_wt = wt_info.get("pre_weight_at")
+        if first_wt is not None and wia_at is not None and wia_at < first_wt:
+            return False
+        return True
 
     def resolve_service(bid: str, pres: Mapping[str, Any], row: Mapping[str, Any]) -> tuple[str, bool]:
         """
         Effective Step-1 service from portal/registry + scan purposes.
 
         - Registry WF overrides portal HD (explicit WF identity).
-        - Hang Dry always has workitems-added (often with create-workitem-bulk too).
-        - WF with work items has create-workitem-bulk only — no workitems-added.
-        - Therefore: bulk + HD portal/registry + WIA → keep HD; bulk without WIA → WF.
+        - Hang Dry has classification-relevant workitems-added (often with
+          create-workitem-bulk too). WIA before first weight-entry is ignored.
+        - WF with work items has create-workitem-bulk only — no relevant WIA.
+        - Therefore: bulk + HD portal/registry + relevant WIA → keep HD;
+          bulk without relevant WIA → WF.
         - Facility racks never determine service.
         """
         portal = (
@@ -330,10 +348,10 @@ def expand_review_required(
 
         portal_or_reg_hd = portal == SERVICE_HD or reg == SERVICE_HD
         if has_bulk and portal_or_reg_hd:
-            # True Hang Dry: workitems-added is present (bulk may coexist).
+            # True Hang Dry: relevant workitems-added is present (bulk may coexist).
             if has_wia:
                 return SERVICE_HD, False
-            # WF with work items: create-workitem-bulk only.
+            # WF with work items: create-workitem-bulk only (or only early WIA).
             return SERVICE_WF, True
 
         if has_bulk:

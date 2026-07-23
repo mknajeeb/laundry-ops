@@ -118,7 +118,7 @@ def test_hd_same_day_wia_with_bulk_stays_hd_not_wf_bulk_review():
 
 
 def test_hd_with_wia_and_bulk_stays_hd_even_if_wia_prior_day():
-    """Any workitems-added means Hang Dry pattern — prior-day WIA still keeps HD."""
+    """Relevant WIA (at/after first weight-entry) keeps HD even if that day is prior."""
     presence = {"BAGHD2": _pres("HD")}
     entry = {"BAGHD2": _entry()}
     raw = classify_veewash_workload(
@@ -139,9 +139,18 @@ def test_hd_with_wia_and_bulk_stays_hd_even_if_wia_prior_day():
         entry_by_bag=entry,
         wia_by_bag={
             "BAGHD2": {
+                # WIA after first weight-entry (prior calendar day is fine).
                 "first_entry_at": datetime(2026, 7, 21, 20, 0),
                 "entry_date": date(2026, 7, 21),
                 "entry_source": "workitems-added",
+            }
+        },
+        weight_by_bag={
+            "BAGHD2": {
+                "pre_weight_lbs": 4.0,
+                "pre_weight_at": datetime(2026, 7, 21, 18, 0),
+                "post_weight_event_exists": False,
+                "weight_entry_count": 1,
             }
         },
         bulk_scan_by_bag={
@@ -153,6 +162,269 @@ def test_hd_with_wia_and_bulk_stays_hd_even_if_wia_prior_day():
     assert REASON_WF_BULK_WORKITEM_REVIEW not in (reasons.get("BAGHD2") or [])
     row = next(r for r in out["rows"] if r["bag_id"] == "BAGHD2")
     assert row["service_type"] == "HD"
+
+
+def test_early_wia_before_first_weight_ignored_04frsec71h():
+    """
+    04FRSEC71H pattern: workitems-added at pickup *before* first weight-entry
+    must not classify the bag as Hang Dry when create-workitem-bulk is present.
+    """
+    bag = "04FRSEC71H"
+    presence = {bag: _pres("HD")}
+    entry = {bag: _entry()}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={},
+    )
+    if bag not in (raw.get("new_today") or []) and bag not in (raw.get("carryover") or []):
+        raw.setdefault("new_today", []).append(bag)
+        raw.setdefault("rows", []).append(
+            {"bag_id": bag, "service_type": "HD", "outcome": "pending", "rush_flag": "RUSH"}
+        )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        wia_by_bag={
+            bag: {
+                "first_entry_at": datetime(2026, 7, 21, 20, 57),
+                "entry_date": date(2026, 7, 21),
+                "entry_source": "workitems-added",
+            }
+        },
+        weight_by_bag={
+            bag: {
+                "pre_weight_lbs": None,
+                "pre_weight_at": datetime(2026, 7, 22, 5, 48),
+                "post_weight_lbs": 0.0,
+                "post_weight_at": datetime(2026, 7, 22, 10, 18),
+                "post_weight_event_exists": True,
+                "post_weight_value": 0.0,
+                "weight_entry_count": 2,
+            }
+        },
+        bulk_scan_by_bag={
+            bag: {"count": 1, "first_at": datetime(2026, 7, 22, 6, 54), "employee": "Francis"}
+        },
+        registry_service_by_bag={bag: "HD"},
+    )
+    row = next(r for r in out["rows"] if r["bag_id"] == bag)
+    assert row["service_type"] == "WF"
+    reasons = out.get("review_reasons_by_bag") or {}
+    assert REASON_WF_BULK_WORKITEM_REVIEW in (reasons.get(bag) or [])
+    assert "SERVICE_CLASSIFICATION_MISMATCH" in (reasons.get(bag) or [])
+    assert bag in (out.get("review_required") or [])
+
+
+def test_wia_before_first_weight_with_bulk_classifies_wf():
+    """Rule 1: early WIA + later WF bulk → WF."""
+    presence = {"EARLY1": _pres("HD")}
+    entry = {"EARLY1": _entry()}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={},
+    )
+    raw.setdefault("new_today", []).append("EARLY1")
+    raw.setdefault("rows", []).append(
+        {"bag_id": "EARLY1", "service_type": "HD", "outcome": "pending", "rush_flag": "RUSH"}
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        wia_by_bag={
+            "EARLY1": {
+                "first_entry_at": datetime(2026, 7, 22, 5, 0),
+                "entry_date": D1,
+                "entry_source": "workitems-added",
+            }
+        },
+        weight_by_bag={
+            "EARLY1": {
+                "pre_weight_at": datetime(2026, 7, 22, 6, 0),
+                "weight_entry_count": 1,
+                "post_weight_event_exists": False,
+            }
+        },
+        bulk_scan_by_bag={
+            "EARLY1": {"count": 1, "first_at": datetime(2026, 7, 22, 7, 0), "employee": "Maria"}
+        },
+        registry_service_by_bag={"EARLY1": "HD"},
+    )
+    row = next(r for r in out["rows"] if r["bag_id"] == "EARLY1")
+    assert row["service_type"] == "WF"
+
+
+def test_wia_after_first_weight_keeps_hd():
+    """Rule 2: WIA after first weight-entry → HD."""
+    presence = {"AFTER1": _pres("HD")}
+    entry = {"AFTER1": _entry()}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={},
+    )
+    raw.setdefault("new_today", []).append("AFTER1")
+    raw.setdefault("rows", []).append(
+        {"bag_id": "AFTER1", "service_type": "HD", "outcome": "pending", "rush_flag": "RUSH"}
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        wia_by_bag={
+            "AFTER1": {
+                "first_entry_at": datetime(2026, 7, 22, 8, 0),
+                "entry_date": D1,
+                "entry_source": "workitems-added",
+            }
+        },
+        weight_by_bag={
+            "AFTER1": {
+                "pre_weight_at": datetime(2026, 7, 22, 7, 0),
+                "weight_entry_count": 1,
+                "post_weight_event_exists": False,
+            }
+        },
+        bulk_scan_by_bag={
+            "AFTER1": {"count": 1, "first_at": datetime(2026, 7, 22, 8, 0), "employee": "Maria"}
+        },
+        registry_service_by_bag={"AFTER1": "HD"},
+    )
+    row = next(r for r in out["rows"] if r["bag_id"] == "AFTER1")
+    assert row["service_type"] == "HD"
+    assert REASON_WF_BULK_WORKITEM_REVIEW not in (
+        (out.get("review_reasons_by_bag") or {}).get("AFTER1") or []
+    )
+
+
+def test_wia_with_no_weight_entry_yet_keeps_hd():
+    """Rule 3: WIA with no weight-entry yet may still classify as HD."""
+    presence = {"NOWGT1": _pres("HD")}
+    entry = {"NOWGT1": _entry()}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={},
+    )
+    raw.setdefault("new_today", []).append("NOWGT1")
+    raw.setdefault("rows", []).append(
+        {"bag_id": "NOWGT1", "service_type": "HD", "outcome": "pending", "rush_flag": "RUSH"}
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        wia_by_bag={
+            "NOWGT1": {
+                "first_entry_at": datetime(2026, 7, 22, 7, 0),
+                "entry_date": D1,
+                "entry_source": "workitems-added",
+            }
+        },
+        weight_by_bag={
+            "NOWGT1": {
+                "pre_weight_lbs": None,
+                "pre_weight_at": None,
+                "weight_entry_count": 0,
+                "post_weight_event_exists": False,
+            }
+        },
+        bulk_scan_by_bag={
+            "NOWGT1": {"count": 1, "first_at": datetime(2026, 7, 22, 7, 0), "employee": "Maria"}
+        },
+        registry_service_by_bag={"NOWGT1": "HD"},
+    )
+    row = next(r for r in out["rows"] if r["bag_id"] == "NOWGT1")
+    assert row["service_type"] == "HD"
+
+
+def test_only_early_pickup_wia_ignored_for_classification():
+    """Rule 4: only early pickup-time WIA exists → ignored; bulk remaps to WF."""
+    presence = {"PICKUP1": _pres("HD")}
+    entry = {"PICKUP1": _entry()}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={},
+    )
+    raw.setdefault("new_today", []).append("PICKUP1")
+    raw.setdefault("rows", []).append(
+        {"bag_id": "PICKUP1", "service_type": "HD", "outcome": "pending", "rush_flag": "NON-RUSH"}
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        wia_by_bag={
+            "PICKUP1": {
+                "first_entry_at": datetime(2026, 7, 21, 20, 57),
+                "entry_date": date(2026, 7, 21),
+                "entry_source": "workitems-added",
+            }
+        },
+        weight_by_bag={
+            "PICKUP1": {
+                "pre_weight_at": datetime(2026, 7, 22, 5, 48),
+                "weight_entry_count": 2,
+                "post_weight_event_exists": True,
+                "post_weight_value": 0.0,
+            }
+        },
+        bulk_scan_by_bag={
+            "PICKUP1": {"count": 1, "first_at": datetime(2026, 7, 22, 6, 54), "employee": "Francis"}
+        },
+        registry_service_by_bag={"PICKUP1": "HD"},
+    )
+    row = next(r for r in out["rows"] if r["bag_id"] == "PICKUP1")
+    assert row["service_type"] == "WF"
+
+
+def test_load_first_wia_skips_before_first_weight_entry(monkeypatch):
+    """Loader ignores pickup WIA before first weight-entry; keeps post-weight WIA."""
+    from backend import rinse_veewash_workload as mod
+
+    monkeypatch.setattr(mod, "table_exists", lambda *_a, **_k: True)
+
+    class _Cur:
+        def __init__(self):
+            self._rows = []
+
+        def execute(self, sql, params=None):
+            s = " ".join(str(sql).lower().split())
+            if "weight-entry" in s and "min(scanned_at_parsed)" in s:
+                self._rows = [
+                    {"bag_id": "A", "first_weight_at": datetime(2026, 7, 22, 5, 48)},
+                    {"bag_id": "B", "first_weight_at": datetime(2026, 7, 22, 7, 0)},
+                ]
+            elif "workitems-added" in s:
+                self._rows = [
+                    {"bag_id": "A", "scanned_at_parsed": datetime(2026, 7, 21, 20, 57)},
+                    {"bag_id": "B", "scanned_at_parsed": datetime(2026, 7, 22, 8, 0)},
+                    {"bag_id": "C", "scanned_at_parsed": datetime(2026, 7, 22, 9, 0)},
+                ]
+            else:
+                self._rows = []
+
+        def fetchall(self):
+            return list(self._rows)
+
+    out = mod.load_first_workitems_added_scans(_Cur(), 3)
+    assert "A" not in out
+    assert out["B"]["first_entry_at"] == datetime(2026, 7, 22, 8, 0)
+    assert out["C"]["first_entry_at"] == datetime(2026, 7, 22, 9, 0)
 
 
 def test_portal_hd_bulk_without_wia_remaps_to_wf_review():

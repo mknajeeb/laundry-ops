@@ -264,29 +264,65 @@ def load_first_entry_scans(
 def load_first_workitems_added_scans(
     cursor, organization_id: int
 ) -> dict[str, dict[str, Any]]:
-    """First workitems-added scan per bag — HD recognized workload entry."""
+    """
+    First *classification-relevant* workitems-added scan per bag.
+
+    Hang Dry identity uses workitems-added, but a workitems-added that occurs
+    *before* the bag's first weight-entry is ignored (common false HD signal
+    from upstream pickup tagging — e.g. 04FRSEC71H). When no weight-entry
+    exists yet, workitems-added still counts.
+    """
     if not table_exists(cursor, "rinse_bag_scan_events"):
         return {}
+
+    org = int(organization_id)
+    first_weight_at: dict[str, Any] = {}
     cursor.execute(
         """
-        SELECT bag_id, MIN(scanned_at_parsed) AS first_scan
+        SELECT bag_id, MIN(scanned_at_parsed) AS first_weight_at
+        FROM rinse_bag_scan_events
+        WHERE organization_id = %s
+          AND scanned_at_parsed IS NOT NULL
+          AND bag_id IS NOT NULL AND TRIM(bag_id) != ''
+          AND LOWER(REPLACE(TRIM(COALESCE(purpose, '')), ' ', '-')) = 'weight-entry'
+        GROUP BY bag_id
+        """,
+        (org,),
+    )
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        bid = _norm_bag(row.get("bag_id"))
+        ts = row.get("first_weight_at")
+        if bid and ts is not None:
+            first_weight_at[bid] = ts
+
+    cursor.execute(
+        """
+        SELECT bag_id, scanned_at_parsed
         FROM rinse_bag_scan_events
         WHERE organization_id = %s
           AND scanned_at_parsed IS NOT NULL
           AND bag_id IS NOT NULL AND TRIM(bag_id) != ''
           AND LOWER(TRIM(COALESCE(purpose, ''))) IN ('workitems-added', 'workitems_added')
-        GROUP BY bag_id
+        ORDER BY scanned_at_parsed ASC, id ASC
         """,
-        (int(organization_id),),
+        (org,),
     )
     out: dict[str, dict[str, Any]] = {}
     for row in cursor.fetchall() or []:
         if not isinstance(row, dict):
             continue
         bid = _norm_bag(row.get("bag_id"))
-        ts = row.get("first_scan")
+        ts = row.get("scanned_at_parsed")
+        if not bid or ts is None or bid in out:
+            continue
+        wt_at = first_weight_at.get(bid)
+        # Ignore workitems-added that precede the first weight-entry.
+        if wt_at is not None and ts < wt_at:
+            continue
         d = _scan_et_date(ts)
-        if bid and d is not None:
+        if d is not None:
             out[bid] = {"first_entry_at": ts, "entry_date": d}
     return out
 
