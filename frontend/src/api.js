@@ -250,6 +250,84 @@ export const attendancePinSwitchRole = (organization_slug, pin, options = {}) =>
   );
 };
 
+/** PIN open for Maintenance Task List (short-lived session token, not full login). */
+export const attendancePinMaintenanceTasks = (organization_slug, pin) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-maintenance-tasks`,
+    {
+      organization_slug: String(organization_slug || "").trim().toLowerCase(),
+      pin: String(pin || "").trim(),
+    },
+    {
+      timeout: ATTENDANCE_PIN_PUNCH_TIMEOUT_MS,
+      validateStatus: (status) => status >= 200 && status < 600,
+    },
+  );
+
+function mtlPinHeaders(sessionToken) {
+  const token = String(sessionToken || "").trim();
+  return token
+    ? { Authorization: `Bearer ${token}`, "X-Maintenance-Session": token }
+    : {};
+}
+
+export const getPublicMaintenanceTaskListToday = (sessionToken) =>
+  axios.get(`${API_BASE}/api/public/maintenance-task-list/today`, {
+    headers: mtlPinHeaders(sessionToken),
+    validateStatus: (status) => status >= 200 && status < 600,
+  });
+
+export const savePublicMaintenanceTaskList = (sessionToken, listId, body) =>
+  axios.post(`${API_BASE}/api/public/maintenance-task-list/${listId}/save`, body, {
+    headers: mtlPinHeaders(sessionToken),
+    validateStatus: (status) => status >= 200 && status < 600,
+  });
+
+export const patchPublicMaintenanceTaskItem = (sessionToken, listId, itemId, body) =>
+  axios.patch(
+    `${API_BASE}/api/public/maintenance-task-list/${listId}/items/${itemId}`,
+    body,
+    {
+      headers: mtlPinHeaders(sessionToken),
+      validateStatus: (status) => status >= 200 && status < 600,
+    },
+  );
+
+export const submitPublicMaintenanceTaskList = (sessionToken, listId, body = {}) =>
+  axios.post(`${API_BASE}/api/public/maintenance-task-list/${listId}/submit`, body, {
+    headers: mtlPinHeaders(sessionToken),
+    validateStatus: (status) => status >= 200 && status < 600,
+  });
+
+export const getMaintenanceTaskListMeta = () =>
+  axios.get(`${API_BASE}/api/maintenance-task-list/meta`);
+
+export const getMaintenanceTaskListReports = (params) =>
+  axios.get(`${API_BASE}/api/maintenance-task-list/reports`, { params });
+
+export const getMaintenanceTaskListDetail = (listId) =>
+  axios.get(`${API_BASE}/api/maintenance-task-list/${listId}`);
+
+export const saveMaintenanceTaskList = (listId, body) =>
+  axios.post(`${API_BASE}/api/maintenance-task-list/${listId}/save`, body);
+
+export const getMaintenanceTaskDefinitions = (params) =>
+  axios.get(`${API_BASE}/api/maintenance-task-list/definitions`, { params });
+
+export const createMaintenanceTaskDefinition = (body) =>
+  axios.post(`${API_BASE}/api/maintenance-task-list/definitions`, body);
+
+export const updateMaintenanceTaskDefinition = (body) =>
+  axios.put(`${API_BASE}/api/maintenance-task-list/definitions`, body);
+
+export const setMaintenanceTaskDefinitionActive = (definitionId, is_active) =>
+  axios.post(`${API_BASE}/api/maintenance-task-list/definitions/${definitionId}/active`, {
+    is_active,
+  });
+
+export const reorderMaintenanceTaskDefinitions = (ordered_ids) =>
+  axios.post(`${API_BASE}/api/maintenance-task-list/definitions/reorder`, { ordered_ids });
+
 /** Public: active tenants for /attendance picker */
 export const getPublicOrganizationsForAttendance = () =>
   axios.get(`${API_BASE}/api/public/organizations/for-attendance`, {

@@ -62,6 +62,9 @@ import LoginPage from "./pages/LoginPage";
 import KioskUnlockPage from "./pages/KioskUnlockPage";
 import AttendancePinPage from "./pages/AttendancePinPage";
 import AttendanceRoleSwitchPage from "./pages/AttendanceRoleSwitchPage";
+import MaintenanceTaskListPinPage from "./pages/MaintenanceTaskListPinPage";
+import MaintenanceTaskListReportsPage from "./pages/MaintenanceTaskListReportsPage";
+import MaintenanceTaskSettingsPage from "./pages/MaintenanceTaskSettingsPage";
 import PartnerRosterPage from "./pages/PartnerRosterPage";
 import InventoryPage from "./pages/InventoryPage";
 import DiscrepanciesPage from "./pages/DiscrepanciesPage";
@@ -522,6 +525,8 @@ function AppShell() {
       <Routes>
         <Route path="/attendance/role/:orgSlug" element={<AttendanceRoleSwitchPage />} />
         <Route path="/attendance/role" element={<AttendanceRoleSwitchPage />} />
+        <Route path="/attendance/maintenance/:orgSlug" element={<MaintenanceTaskListPinPage />} />
+        <Route path="/attendance/maintenance" element={<MaintenanceTaskListPinPage />} />
         <Route path="/attendance/:orgSlug" element={<AttendancePinPage />} />
         <Route path="/attendance" element={<AttendancePinPage />} />
       </Routes>
@@ -940,6 +945,26 @@ function AppShell() {
               }
             />
             <Route path="/maintenance" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><MaintenancePage /></GuardedRoute></TenantOnlyRoute>} />
+            <Route
+              path="/maintenance/task-lists"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                    <MaintenanceTaskListReportsPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/maintenance/task-settings"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN"]}>
+                    <MaintenanceTaskSettingsPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
             <Route
               path="/maintenance/supply-usage"
               element={

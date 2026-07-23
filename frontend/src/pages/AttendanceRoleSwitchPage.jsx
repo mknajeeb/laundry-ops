@@ -819,6 +819,28 @@ export default function AttendanceRoleSwitchPage() {
                   <Backspace fontSize="small" />
                 </IconButton>
               </Box>
+
+              <Button
+                component={Link}
+                to={
+                  slug
+                    ? `/attendance/maintenance/${encodeURIComponent(slug)}`
+                    : "/attendance/maintenance"
+                }
+                fullWidth
+                variant="contained"
+                disabled={!slug}
+                sx={{
+                  mt: 1,
+                  textTransform: "none",
+                  fontWeight: 800,
+                  minHeight: 48,
+                  borderRadius: 2.5,
+                  maxWidth: 300,
+                }}
+              >
+                {t("attendance.maintenanceTasks")}
+              </Button>
             </>
           ) : null}
         </Stack>

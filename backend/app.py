@@ -62,6 +62,7 @@ from backend.rinse_shift_analysis_routes import register_rinse_shift_analysis_ro
 from backend.supply_usage_routes import register_supply_usage_routes
 from backend.daily_revenue_cost_routes import register_daily_revenue_cost_routes
 from backend.inventory_routes import register_inventory_routes
+from backend.maintenance_task_list_routes import register_maintenance_task_list_routes
 from backend.machine_configuration_routes import register_machine_configuration_routes
 from backend.ta_routes import (
     _build_permission_hierarchy,
@@ -10600,6 +10601,18 @@ register_inventory_routes(
     require_admin_or_ops=require_admin_or_ops,
     user_org_id=user_org_id,
     parse_date_value=parse_date_value,
+)
+register_maintenance_task_list_routes(
+    app,
+    require_user=require_user,
+    require_admin=require_admin,
+    require_admin_or_ops=require_admin_or_ops,
+    user_org_id=user_org_id,
+    parse_date_value=parse_date_value,
+    fetch_user_roles=fetch_user_roles,
+    get_request_ip=get_request_ip,
+    effective_washpro_permission_keys=effective_washpro_permission_keys,
+    write_audit=write_audit,
 )
 register_rinse_presence_routes(
     app,
