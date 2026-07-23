@@ -1,10 +1,9 @@
 """
-Employee phone PIN hub: one PIN → permission-gated feature menu.
+Employee phone PIN hub: one PIN → assignable feature menu buttons.
 
-Features (v1):
-- switch_role: org flags (shared device + category/role tracking)
-- checklist: maintenance.tasks.* (or FRONT_DESK/OPS role fallback) + shared device
-- inventory: inventory.* (or FRONT_DESK/OPS role fallback) + inventory module on
+Org assigns which buttons exist (pin_menu in clock_payroll_ui_json).
+Permissions still gate who can open checklist / inventory.
+Add new features to PIN_HUB_FEATURE_DEFS later.
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ from backend.attendance_pin_punch import (
     is_rate_limited,
     record_pin_attempt,
     resolve_user_by_attendance_pin,
-    shared_device_attendance_enabled,
 )
 from backend.category_role_tracking_settings import is_category_role_tracking_enabled
 from backend.maintenance_task_list_pin import issue_pin_session_token
@@ -45,6 +43,25 @@ CHECKLIST_PERM_KEYS = (
     "maintenance.tasks.update",
     "maintenance.tasks.submit",
     "maintenance.tasks.manage",
+)
+
+# Extensible registry — add entries here for new mobile PIN buttons.
+PIN_HUB_FEATURE_DEFS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "switch_role",
+        "label": "Switch Role",
+        "path": "/attendance/role",
+    },
+    {
+        "id": "checklist",
+        "label": "End-of-day checklist",
+        "path": "/attendance/maintenance",
+    },
+    {
+        "id": "inventory",
+        "label": "Inventory",
+        "path": "/inventory",
+    },
 )
 
 
@@ -98,7 +115,6 @@ def _role_set(matched: dict) -> set[str]:
 
 
 def _tenant_module_enabled(conn, org_id: int, module_key: str) -> bool:
-    """Empty entitlements table / no rows ⇒ all modules on (same as app.load_tenant_modules_map)."""
     from backend.ta_helpers import table_exists
 
     c = conn.cursor(dictionary=True)
@@ -117,7 +133,7 @@ def _tenant_module_enabled(conn, org_id: int, module_key: str) -> bool:
         )
         row = c.fetchone()
         if row is None:
-            return True  # module not listed ⇒ default on
+            return True
         return bool(row.get("enabled"))
     finally:
         c.close()
@@ -140,6 +156,59 @@ def _has_prefix(keys: set[str], prefix: str) -> bool:
     return any(str(k).startswith(prefix) for k in keys)
 
 
+def load_pin_menu_settings(conn, org_id: int) -> dict:
+    from backend.ta_routes import load_clock_payroll_ui
+
+    ui = load_clock_payroll_ui(conn, int(org_id))
+    pm = ui.get("pin_menu") if isinstance(ui, dict) else None
+    if not isinstance(pm, dict):
+        return {"enabled": True, "features": {d["id"]: True for d in PIN_HUB_FEATURE_DEFS}}
+    feats = pm.get("features") if isinstance(pm.get("features"), dict) else {}
+    return {
+        "enabled": bool(pm.get("enabled", True)),
+        "features": {str(k): bool(v) for k, v in feats.items()},
+    }
+
+
+def _org_feature_enabled(pin_menu: dict, feature_id: str) -> bool:
+    if not pin_menu.get("enabled", True):
+        return False
+    feats = pin_menu.get("features") or {}
+    if feature_id not in feats:
+        # Unknown / newly added feature defaults on until admin turns it off.
+        return True
+    return bool(feats.get(feature_id))
+
+
+def _user_may_use_feature(
+    conn,
+    *,
+    org_id: int,
+    matched: dict,
+    feature_id: str,
+    keys: set[str],
+    roles: set[str],
+) -> bool:
+    floor_or_ops = bool(roles & {"FRONT_DESK", "OPS"})
+
+    if feature_id == "switch_role":
+        return bool(is_category_role_tracking_enabled(conn, org_id))
+
+    if feature_id == "checklist":
+        if _has_prefix(keys, "maintenance.tasks."):
+            return _has_any_perm(keys, CHECKLIST_PERM_KEYS)
+        return floor_or_ops
+
+    if feature_id == "inventory":
+        if not _tenant_module_enabled(conn, org_id, "inventory"):
+            return False
+        if _has_prefix(keys, "inventory."):
+            return _has_any_perm(keys, INVENTORY_PERM_KEYS)
+        return floor_or_ops
+
+    return False
+
+
 def resolve_hub_features(
     conn,
     *,
@@ -148,49 +217,37 @@ def resolve_hub_features(
     effective_keys_fn: Optional[Callable] = None,
 ) -> dict[str, Any]:
     """
-    Return feature tiles the employee may open from the hub.
+    Return feature tiles for the mobile PIN menu.
+    Org pin_menu assigns which buttons exist; permissions gate who can open them.
     """
     roles = _role_set(matched)
     keys = _permission_keys(conn, int(matched["id"]), effective_keys_fn)
-    shared = shared_device_attendance_enabled(conn, org_id)
-    tracking = is_category_role_tracking_enabled(conn, org_id)
-    floor_or_ops = bool(roles & {"FRONT_DESK", "OPS"})
+    pin_menu = load_pin_menu_settings(conn, org_id)
 
-    # Switch role — org feature flags (clocked-in enforced when opening the feature).
-    switch_role = bool(shared and tracking)
-
-    # Checklist — prefer explicit maintenance.tasks.*; else FRONT_DESK/OPS fallback.
-    if _has_prefix(keys, "maintenance.tasks."):
-        checklist = _has_any_perm(keys, CHECKLIST_PERM_KEYS)
-    else:
-        checklist = floor_or_ops
-    checklist = bool(checklist and shared)
-
-    # Inventory — module on + inventory.* or FRONT_DESK/OPS.
-    inventory_module = _tenant_module_enabled(conn, org_id, "inventory")
-    if _has_prefix(keys, "inventory."):
-        inventory = _has_any_perm(keys, INVENTORY_PERM_KEYS)
-    else:
-        inventory = floor_or_ops
-    inventory = bool(inventory and inventory_module)
-
-    return {
-        "switch_role": {
-            "id": "switch_role",
-            "allowed": switch_role,
-            "path": "/attendance/role",
-        },
-        "checklist": {
-            "id": "checklist",
-            "allowed": checklist,
-            "path": "/attendance/maintenance",
-        },
-        "inventory": {
-            "id": "inventory",
-            "allowed": inventory,
-            "path": "/inventory",
-        },
-    }
+    out: dict[str, Any] = {}
+    for defn in PIN_HUB_FEATURE_DEFS:
+        fid = defn["id"]
+        org_on = _org_feature_enabled(pin_menu, fid)
+        user_ok = (
+            _user_may_use_feature(
+                conn,
+                org_id=org_id,
+                matched=matched,
+                feature_id=fid,
+                keys=keys,
+                roles=roles,
+            )
+            if org_on
+            else False
+        )
+        out[fid] = {
+            "id": fid,
+            "label": defn["label"],
+            "path": defn["path"],
+            "org_enabled": org_on,
+            "allowed": bool(org_on and user_ok),
+        }
+    return out
 
 
 def perform_pin_hub_open(
@@ -225,6 +282,11 @@ def perform_pin_hub_open(
     if is_rate_limited(conn, org_id, ip_address):
         return {"ok": False, "error": "Too many attempts. Please try again later."}, 429
 
+    pin_menu = load_pin_menu_settings(conn, org_id)
+    if not pin_menu.get("enabled", True):
+        record_pin_attempt(conn, org_id, ip_address, False)
+        return {"ok": False, "error": "Mobile PIN menu is disabled for this organization."}, 403
+
     matched = resolve_user_by_attendance_pin(conn, org_id, pin_clean, fetch_roles_fn)
     if not matched:
         record_pin_attempt(conn, org_id, ip_address, False)
@@ -236,13 +298,16 @@ def perform_pin_hub_open(
         matched=matched,
         effective_keys_fn=effective_keys_fn,
     )
-    allowed = [f for f in features.values() if f.get("allowed")]
+    # Stable button order for the client.
+    feature_order = [d["id"] for d in PIN_HUB_FEATURE_DEFS]
+    allowed = [features[fid] for fid in feature_order if features.get(fid, {}).get("allowed")]
     if not allowed:
         record_pin_attempt(conn, org_id, ip_address, True)
         return {
             "ok": False,
-            "error": "No PIN features are available for your account.",
+            "error": "No PIN menu buttons are available for your account.",
             "features": features,
+            "feature_order": feature_order,
         }, 403
 
     record_pin_attempt(conn, org_id, ip_address, True)
@@ -250,7 +315,7 @@ def perform_pin_hub_open(
     hub_token = issue_hub_session_token(organization_id=org_id, employee_id=employee_id)
 
     maintenance_token = None
-    if features["checklist"]["allowed"]:
+    if features.get("checklist", {}).get("allowed"):
         maintenance_token = issue_pin_session_token(
             organization_id=org_id, employee_id=employee_id
         )
@@ -272,5 +337,6 @@ def perform_pin_hub_open(
         "employee_first_name": first,
         "expires_in_seconds": HUB_SESSION_MAX_AGE_SECONDS,
         "features": features,
+        "feature_order": feature_order,
         "maintenance_token": maintenance_token,
     }, 200

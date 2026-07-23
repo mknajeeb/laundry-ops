@@ -141,7 +141,10 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
 
   const allowedFeatures = useMemo(() => {
     const features = hub?.features || {};
-    return ["switch_role", "checklist", "inventory"].filter((id) => features?.[id]?.allowed);
+    const order = Array.isArray(hub?.feature_order)
+      ? hub.feature_order
+      : ["switch_role", "checklist", "inventory"];
+    return order.filter((id) => features?.[id]?.allowed);
   }, [hub]);
 
   useLayoutEffect(() => {
@@ -241,6 +244,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
             employee_name: body.employee_name,
             employee_first_name: body.employee_first_name,
             features: body.features || {},
+            feature_order: Array.isArray(body.feature_order) ? body.feature_order : undefined,
             maintenance_token: body.maintenance_token || null,
             expires_in_seconds: body.expires_in_seconds,
           };
@@ -483,9 +487,15 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
           {phase === "menu" && (
             <Stack spacing={1.25} sx={{ width: "100%" }}>
               {allowedFeatures.map((id) => {
-                const meta = FEATURE_META[id];
+                const meta = FEATURE_META[id] || {
+                  title: hub?.features?.[id]?.label || id,
+                  subtitle: "",
+                  icon: AssignmentTurnedIn,
+                  color: VW.blue,
+                };
                 const Icon = meta.icon;
                 const busy = featureLoading === id;
+                const title = hub?.features?.[id]?.label || meta.title;
                 return (
                   <Button
                     key={id}
@@ -517,10 +527,12 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
                     }
                   >
                     <Box>
-                      <Typography sx={{ fontWeight: 700, lineHeight: 1.2 }}>{meta.title}</Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {meta.subtitle}
-                      </Typography>
+                      <Typography sx={{ fontWeight: 700, lineHeight: 1.2 }}>{title}</Typography>
+                      {meta.subtitle ? (
+                        <Typography variant="caption" color="text.secondary">
+                          {meta.subtitle}
+                        </Typography>
+                      ) : null}
                     </Box>
                   </Button>
                 );

@@ -30,6 +30,7 @@ import { useStreetAutocomplete } from "../components/GooglePlacesAutocomplete";
 import { useI18n } from "../i18n/I18nContext";
 import { isValidEmail, isValidUsPhone10, normalizeUsPhoneDigits } from "../utils/validation";
 import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
+import MobilePinMenuSettingsPanel from "../components/MobilePinMenuSettingsPanel";
 
 function normalizeEin(s) {
   const d = String(s || "").replace(/\D/g, "").slice(0, 9);
@@ -499,6 +500,8 @@ function OrganizationSettingsPage() {
           </TableBody>
         </Table>
       </Paper>
+
+      <MobilePinMenuSettingsPanel />
     </Box>
   );
 }

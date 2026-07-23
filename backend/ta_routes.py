@@ -191,9 +191,25 @@ def _default_payroll_screen_dict() -> dict:
     }
 
 
+def _default_pin_menu_dict() -> dict:
+    """Mobile /pin hub: which buttons are offered (permission still required per user)."""
+    return {
+        "enabled": True,
+        "features": {
+            "switch_role": True,
+            "checklist": True,
+            "inventory": True,
+        },
+    }
+
+
 def load_clock_payroll_ui(conn, organization_id: int) -> dict:
     raw = get_setting(conn, organization_id, _CLOCK_PAYROLL_UI_KEY, None)
-    out = {"clock": _default_clock_ui_dict(), "payroll": _default_payroll_screen_dict()}
+    out = {
+        "clock": _default_clock_ui_dict(),
+        "payroll": _default_payroll_screen_dict(),
+        "pin_menu": _default_pin_menu_dict(),
+    }
     if not raw:
         return out
     try:
@@ -202,6 +218,17 @@ def load_clock_payroll_ui(conn, organization_id: int) -> dict:
             out["clock"] = {**_default_clock_ui_dict(), **parsed["clock"]}
         if isinstance(parsed.get("payroll"), dict):
             out["payroll"] = {**_default_payroll_screen_dict(), **parsed["payroll"]}
+        if isinstance(parsed.get("pin_menu"), dict):
+            base = _default_pin_menu_dict()
+            pm = parsed["pin_menu"]
+            feats = dict(base["features"])
+            if isinstance(pm.get("features"), dict):
+                for k, v in pm["features"].items():
+                    feats[str(k)] = bool(v)
+            out["pin_menu"] = {
+                "enabled": bool(pm["enabled"]) if "enabled" in pm else base["enabled"],
+                "features": feats,
+            }
     except Exception:
         pass
     return out
@@ -5114,10 +5141,13 @@ def clock_payroll_ui_put():
         return jsonify({"error": "Invalid body"}), 400
     clock = data.get("clock")
     payroll = data.get("payroll")
+    pin_menu = data.get("pin_menu")
     if clock is not None and not isinstance(clock, dict):
         return jsonify({"error": "clock must be an object"}), 400
     if payroll is not None and not isinstance(payroll, dict):
         return jsonify({"error": "payroll must be an object"}), 400
+    if pin_menu is not None and not isinstance(pin_menu, dict):
+        return jsonify({"error": "pin_menu must be an object"}), 400
     conn = get_db()
     try:
         cur = load_clock_payroll_ui(conn, _tenant_id())
@@ -5125,6 +5155,16 @@ def clock_payroll_ui_put():
             cur["clock"] = {**_default_clock_ui_dict(), **clock}
         if isinstance(payroll, dict):
             cur["payroll"] = {**_default_payroll_screen_dict(), **payroll}
+        if isinstance(pin_menu, dict):
+            base = _default_pin_menu_dict()
+            feats = dict(base["features"])
+            if isinstance(pin_menu.get("features"), dict):
+                for k, v in pin_menu["features"].items():
+                    feats[str(k)] = bool(v)
+            cur["pin_menu"] = {
+                "enabled": bool(pin_menu["enabled"]) if "enabled" in pin_menu else base["enabled"],
+                "features": feats,
+            }
         c = conn.cursor()
         c.execute(
             """
