@@ -242,11 +242,11 @@ export const attendancePinSwitchRole = (organization_slug, pin, options = {}) =>
       pin: String(pin || "").trim(),
       ...(options.category_id != null ? { category_id: options.category_id } : {}),
       ...(options.role_id != null ? { role_id: options.role_id } : {}),
+      // Body only — do not send Idempotency-Key header (CORS preflight blocks it on older API).
       ...(idempotency_key ? { idempotency_key } : {}),
     },
     {
       timeout: ATTENDANCE_PIN_PUNCH_TIMEOUT_MS,
-      headers: idempotency_key ? { "Idempotency-Key": idempotency_key } : undefined,
       /** Same as pin-punch: surface 4xx/5xx bodies in UI instead of throwing first. */
       validateStatus: (status) => status >= 200 && status < 600,
     },

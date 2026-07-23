@@ -117,6 +117,8 @@ CORS(
         "X-Hr-Form-Format",
         # Employee Maintenance Task List PIN session (public MTL APIs).
         "X-Maintenance-Session",
+        # Public PIN role-switch confirm (also accepted in JSON body).
+        "Idempotency-Key",
     ],
     expose_headers=["Content-Type", "Content-Disposition", "Content-Length"],
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],

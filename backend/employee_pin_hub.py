@@ -161,12 +161,16 @@ def load_pin_menu_settings(conn, org_id: int) -> dict:
 
     ui = load_clock_payroll_ui(conn, int(org_id))
     pm = ui.get("pin_menu") if isinstance(ui, dict) else None
+    base_feats = {d["id"]: True for d in PIN_HUB_FEATURE_DEFS}
     if not isinstance(pm, dict):
-        return {"enabled": True, "features": {d["id"]: True for d in PIN_HUB_FEATURE_DEFS}}
-    feats = pm.get("features") if isinstance(pm.get("features"), dict) else {}
+        return {"enabled": True, "features": base_feats}
+    feats = dict(base_feats)
+    raw_feats = pm.get("features") if isinstance(pm.get("features"), dict) else {}
+    for k, v in raw_feats.items():
+        feats[str(k)] = bool(v)
     return {
         "enabled": bool(pm.get("enabled", True)),
-        "features": {str(k): bool(v) for k, v in feats.items()},
+        "features": feats,
     }
 
 
