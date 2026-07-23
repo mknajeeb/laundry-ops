@@ -36,7 +36,7 @@ import { PayrollDateTimeField } from "../PayrollDateTimeField";
 import BulkWorkitemEntrySection from "./BulkWorkitemEntrySection";
 import CopyableBagId from "../CopyableBagId";
 import EditBagPanel from "./EditBagPanel";
-import { mergeBagListRow } from "./editBagHelpers";
+import { formatWeightObservedEt, mergeBagListRow } from "./editBagHelpers";
 import { actionsForBagStatus } from "./step1BagActions";
 
 /** Session-scoped maintenance catalog (fetched once per browser session). */
@@ -293,6 +293,7 @@ export default function Step1MetricDrawer({
 
   const startAction = (bag, action) => {
     if (action === "edit_bag") {
+      setError("");
       setEditingBag(bag.bag_id);
       setActionBag(null);
       if (!bag._detailsLoaded) loadBagDetail(bag.bag_id, { force: true });
@@ -750,6 +751,7 @@ export default function Step1MetricDrawer({
                           <TableCell>Rack</TableCell>
                           <TableCell>Employee</TableCell>
                           <TableCell>Wt</TableCell>
+                          <TableCell>Weight source</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
@@ -762,16 +764,98 @@ export default function Step1MetricDrawer({
                             <TableCell>{s.rack || "—"}</TableCell>
                             <TableCell>{s.user_name || "—"}</TableCell>
                             <TableCell>{s.weight_lbs ?? "—"}</TableCell>
+                            <TableCell
+                              title={
+                                [
+                                  s.weight_source,
+                                  s.weight_attach_batch_id != null
+                                    ? `Batch ${s.weight_attach_batch_id}`
+                                    : "",
+                                  s.weight_attach_reason,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" · ") || undefined
+                              }
+                            >
+                              {s.weight_source
+                                ? [
+                                    s.weight_source === "portal_weight_num_historical"
+                                      ? "Historical portal"
+                                      : s.weight_source === "portal_weight_num"
+                                        ? "Portal"
+                                        : s.weight_source,
+                                    formatWeightObservedEt(s.weight_observed_at),
+                                    s.weight_attach_batch_id != null
+                                      ? `Batch ${s.weight_attach_batch_id}`
+                                      : "",
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" · ")
+                                : "—"}
+                            </TableCell>
                           </TableRow>
                         ))}
                         {(bag.scans || []).length === 0 ? (
                           <TableRow>
-                            <TableCell colSpan={5}>No scans</TableCell>
+                            <TableCell colSpan={6}>No scans</TableCell>
                           </TableRow>
                         ) : null}
                       </TableBody>
                     </Table>
                   )}
+
+                  {!loadingDetail &&
+                  (bag.pre_weight_source ||
+                    bag.post_weight_source ||
+                    bag.pre_weight_observed_at ||
+                    bag.post_weight_observed_at) ? (
+                    <Box sx={{ mt: 1.25 }}>
+                      <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
+                        Weight enrichment (audit)
+                      </Typography>
+                      {bag.pre_weight_lbs != null || bag.pre_weight_source ? (
+                        <Typography variant="caption" display="block">
+                          Pre {bag.pre_weight_lbs ?? "—"} lbs
+                          {bag.pre_weight_source
+                            ? ` · ${
+                                bag.pre_weight_source === "portal_weight_num_historical"
+                                  ? "Recovered from historical portal"
+                                  : bag.pre_weight_source === "portal_weight_num"
+                                    ? "Captured from portal"
+                                    : bag.pre_weight_source
+                              }`
+                            : ""}
+                          {bag.pre_weight_observed_at
+                            ? ` · ${formatWeightObservedEt(bag.pre_weight_observed_at)}`
+                            : ""}
+                          {bag.pre_weight_attach_batch_id != null
+                            ? ` · Batch ${bag.pre_weight_attach_batch_id}`
+                            : ""}
+                        </Typography>
+                      ) : null}
+                      {(bag.post_weight_value ?? bag.post_weight_lbs) != null ||
+                      bag.post_weight_source ? (
+                        <Typography variant="caption" display="block">
+                          Post {bag.post_weight_value ?? bag.post_weight_lbs ?? "—"} lbs
+                          {bag.post_weight_source
+                            ? ` · ${
+                                bag.post_weight_source === "portal_weight_num_historical"
+                                  ? "Recovered from historical portal"
+                                  : bag.post_weight_source === "portal_weight_num"
+                                    ? "Captured from portal"
+                                    : bag.post_weight_source
+                              }`
+                            : ""}
+                          {bag.post_weight_observed_at
+                            ? ` · ${formatWeightObservedEt(bag.post_weight_observed_at)}`
+                            : ""}
+                          {bag.post_weight_attach_batch_id != null
+                            ? ` · Batch ${bag.post_weight_attach_batch_id}`
+                            : ""}
+                        </Typography>
+                      ) : null}
+                    </Box>
+                  ) : null}
 
                   {!loadingDetail &&
                   (bag.last_edit_id || (bag.corrections || []).length > 0) ? (

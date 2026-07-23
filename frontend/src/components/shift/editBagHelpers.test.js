@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildEditBagPayloadDraft,
+  describeWeightProvenance,
+  formatWeightObservedEt,
   mergeBagListRow,
   parseWeightInput,
   validateEditBagDraft,
@@ -39,6 +41,48 @@ describe("validateEditBagDraft", () => {
         isHd: true,
       })
     ).toBe("");
+  });
+});
+
+describe("describeWeightProvenance", () => {
+  it("labels historical pre recovery with observed time", () => {
+    const d = describeWeightProvenance({
+      role: "pre",
+      weightLbs: 23.6,
+      source: "portal_weight_num_historical",
+      observedAt: "2026-07-22 06:24:00",
+      attachBatchId: 2807,
+    });
+    expect(d.helperText).toContain("Recovered from historical portal");
+    expect(d.helperText).toContain("06:24");
+    expect(d.title).toContain("Batch 2807");
+  });
+
+  it("labels current portal post capture", () => {
+    const d = describeWeightProvenance({
+      role: "post",
+      weightLbs: 22.6,
+      source: "portal_weight_num",
+      observedAt: "2026-07-22T16:45:00",
+      attachBatchId: 2815,
+    });
+    expect(d.helperText).toContain("Captured from portal");
+    expect(d.helperText).toContain("16:45");
+  });
+
+  it("explains missing pre when post exists", () => {
+    const d = describeWeightProvenance({
+      role: "pre",
+      weightLbs: null,
+      needsManagerCorrection: true,
+    });
+    expect(d.helperText).toMatch(/no recoverable historical portal/i);
+  });
+});
+
+describe("formatWeightObservedEt", () => {
+  it("formats to MM/DD HH:MM ET", () => {
+    expect(formatWeightObservedEt("2026-07-22 06:24:11")).toBe("07/22 06:24 ET");
   });
 });
 

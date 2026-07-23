@@ -36,6 +36,78 @@ export function validateEditBagDraft({
   return "";
 }
 
+/** Format portal observation time for managers (ET label; values already ET). */
+export function formatWeightObservedEt(raw) {
+  if (!raw) return "";
+  const s = String(raw).trim().replace("T", " ");
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!m) return s.slice(0, 16);
+  const [, , mo, d, hh, mm] = m;
+  return `${mo}/${d} ${hh}:${mm} ET`;
+}
+
+/**
+ * Human label + tooltip for a Pre/Post weight enrichment source.
+ * @returns {{ helperText: string, title: string }}
+ */
+export function describeWeightProvenance({
+  role, // "pre" | "post"
+  weightLbs,
+  source,
+  observedAt,
+  attachBatchId,
+  attachReason,
+  needsManagerCorrection = false,
+}) {
+  const blank = "Blank = null · 0 is valid";
+  if (role === "pre" && needsManagerCorrection) {
+    return {
+      helperText: "Missing — no recoverable historical portal observation",
+      title: "Manager correction required to set Pre Weight",
+    };
+  }
+  if (weightLbs === null || weightLbs === undefined || weightLbs === "") {
+    return { helperText: blank, title: "" };
+  }
+
+  const when = formatWeightObservedEt(observedAt);
+  const batchBit =
+    attachBatchId != null && attachBatchId !== ""
+      ? `Batch ${attachBatchId}`
+      : "";
+  const src = String(source || "");
+
+  if (
+    src === "portal_weight_num_historical" ||
+    attachReason === "RECOVERED_FROM_HISTORICAL_PORTAL_OBSERVATION"
+  ) {
+    return {
+      helperText: when
+        ? `Recovered from historical portal · ${when}`
+        : "Recovered from historical portal",
+      title: ["Source: Historical Portal Observation", batchBit]
+        .filter(Boolean)
+        .join(" · "),
+    };
+  }
+  if (
+    src === "portal_weight_num" ||
+    attachReason === "CURRENT_WEIGHT_ATTACHED_TO_LATEST_EVENT"
+  ) {
+    return {
+      helperText: when ? `Captured from portal · ${when}` : "Captured from portal",
+      title: ["Source: Portal Observation", batchBit].filter(Boolean).join(" · "),
+    };
+  }
+  if (src || when || batchBit) {
+    return {
+      helperText: [src || "Weight source recorded", when].filter(Boolean).join(" · "),
+      title: [src, batchBit, attachReason].filter(Boolean).join(" · "),
+    };
+  }
+  return { helperText: blank, title: "" };
+}
+
 export function buildEditBagPayloadDraft({
   draft,
   lines,

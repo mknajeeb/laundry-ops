@@ -110,6 +110,37 @@ def test_resolve_weight_entry_pair_keeps_employee_and_timestamp():
     assert d["post_weight_at"] == datetime(2026, 7, 22, 9, 44)
 
 
+def test_resolve_weight_entry_pair_carries_enrichment_provenance():
+    from backend.rinse_veewash_review import resolve_weight_entry_pair
+
+    d = resolve_weight_entry_pair(
+        [
+            {
+                "weight_lbs": 23.6,
+                "scanned_at_parsed": datetime(2026, 7, 22, 6, 16),
+                "weight_source": "portal_weight_num_historical",
+                "weight_observed_at": datetime(2026, 7, 22, 6, 24),
+                "weight_attach_batch_id": 2807,
+                "weight_attach_reason": "RECOVERED_FROM_HISTORICAL_PORTAL_OBSERVATION",
+            },
+            {
+                "weight_lbs": 22.6,
+                "scanned_at_parsed": datetime(2026, 7, 22, 16, 42),
+                "weight_source": "portal_weight_num",
+                "weight_observed_at": datetime(2026, 7, 22, 16, 45),
+                "weight_attach_batch_id": 2815,
+                "weight_attach_reason": "CURRENT_WEIGHT_ATTACHED_TO_LATEST_EVENT",
+            },
+        ]
+    )
+    assert d["pre_weight_lbs"] == 23.6
+    assert d["pre_weight_source"] == "portal_weight_num_historical"
+    assert d["pre_weight_attach_batch_id"] == 2807
+    assert d["post_weight_lbs"] == 22.6
+    assert d["post_weight_source"] == "portal_weight_num"
+    assert d["post_weight_attach_batch_id"] == 2815
+
+
 def test_cwo_bag_appears_in_review_required_not_completed():
     presence = {"62MRUIXOGF": _pres(service="WF", rush="RUSH")}
     entry = {}  # no Dirty

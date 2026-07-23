@@ -24,6 +24,7 @@ import { PayrollDateTimeField } from "../PayrollDateTimeField";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import {
   buildEditBagPayloadDraft,
+  describeWeightProvenance,
   validateEditBagDraft,
 } from "./editBagHelpers";
 
@@ -95,6 +96,7 @@ export default function EditBagPanel({
   const [qty, setQty] = useState(initialQty);
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState("");
+  const [saveAttempted, setSaveAttempted] = useState(false);
   const [outcomeOpen, setOutcomeOpen] = useState(false);
   const [pendingSave, setPendingSave] = useState(null);
   const [undoToast, setUndoToast] = useState(null);
@@ -115,6 +117,24 @@ export default function EditBagPanel({
     (bag?.post_weight_value ?? bag?.post_weight_lbs) !== null &&
     (bag?.post_weight_value ?? bag?.post_weight_lbs) !== undefined;
   const preWeightNeedsManagerCorrection = preWeightMissing && postWeightPresent;
+
+  const preProvenance = describeWeightProvenance({
+    role: "pre",
+    weightLbs: bag?.pre_weight_lbs,
+    source: bag?.pre_weight_source,
+    observedAt: bag?.pre_weight_observed_at || bag?.pre_weight_at,
+    attachBatchId: bag?.pre_weight_attach_batch_id,
+    attachReason: bag?.pre_weight_attach_reason,
+    needsManagerCorrection: preWeightNeedsManagerCorrection,
+  });
+  const postProvenance = describeWeightProvenance({
+    role: "post",
+    weightLbs: bag?.post_weight_value ?? bag?.post_weight_lbs,
+    source: bag?.post_weight_source,
+    observedAt: bag?.post_weight_observed_at || bag?.post_weight_at,
+    attachBatchId: bag?.post_weight_attach_batch_id,
+    attachReason: bag?.post_weight_attach_reason,
+  });
 
   const lines = useMemo(() => {
     if (isHd) return [];
@@ -164,6 +184,7 @@ export default function EditBagPanel({
     buildEditBagPayloadDraft({ draft, lines, isHd });
 
   const persist = async (outcomeAction) => {
+    setSaveAttempted(true);
     const err = validateLocal();
     if (err) {
       setLocalError(err);
@@ -215,11 +236,13 @@ export default function EditBagPanel({
   };
 
   const startSave = () => {
+    setSaveAttempted(true);
     const err = validateLocal();
     if (err) {
       setLocalError(err);
       return;
     }
+    setLocalError("");
     setPendingSave(buildPayloadDraft());
     setOutcomeOpen(true);
   };
@@ -335,12 +358,8 @@ export default function EditBagPanel({
             value={draft.pre_weight_lbs}
             onChange={(e) => setDraft((d) => ({ ...d, pre_weight_lbs: e.target.value }))}
             inputProps={{ step: 0.1, min: 0 }}
-            helperText={
-              preWeightNeedsManagerCorrection
-                ? "Missing — manager correction required"
-                : "Blank = null · 0 is valid"
-            }
-            error={preWeightNeedsManagerCorrection}
+            helperText={preProvenance.helperText}
+            FormHelperTextProps={{ title: preProvenance.title || undefined }}
             fullWidth
           />
           <TextField
@@ -350,11 +369,8 @@ export default function EditBagPanel({
             value={draft.post_weight_lbs}
             onChange={(e) => setDraft((d) => ({ ...d, post_weight_lbs: e.target.value }))}
             inputProps={{ step: 0.1, min: 0 }}
-            helperText={
-              preWeightNeedsManagerCorrection
-                ? "Portal captured"
-                : "Blank = null · 0 is valid"
-            }
+            helperText={postProvenance.helperText}
+            FormHelperTextProps={{ title: postProvenance.title || undefined }}
             fullWidth
           />
         </Stack>
@@ -471,13 +487,29 @@ export default function EditBagPanel({
           required
           label="Notes / correction reason"
           value={draft.reason}
-          onChange={(e) => setDraft((d) => ({ ...d, reason: e.target.value }))}
+          onChange={(e) => {
+            const next = e.target.value;
+            setDraft((d) => ({ ...d, reason: next }));
+            if (saveAttempted && String(next || "").trim()) {
+              setLocalError("");
+            }
+          }}
+          error={saveAttempted && !String(draft.reason || "").trim()}
+          helperText={
+            saveAttempted && !String(draft.reason || "").trim()
+              ? "Correction reason is required"
+              : "Required before saving"
+          }
           multiline
           minRows={2}
         />
 
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Button variant="contained" disabled={saving} onClick={startSave}>
+          <Button
+            variant="contained"
+            disabled={saving || !String(draft.reason || "").trim()}
+            onClick={startSave}
+          >
             {saving ? "Saving…" : "Save & Choose Action"}
           </Button>
           <Button onClick={onCancel} disabled={saving}>

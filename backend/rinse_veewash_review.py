@@ -65,7 +65,23 @@ def _empty_weight_info() -> dict[str, Any]:
         "post_weight_event_exists": False,
         "post_weight_value": None,
         "post_weight_valid_for_standard_weight_revenue": False,
+        # Portal enrichment provenance (from rinse_bag_scan_events).
+        "pre_weight_source": None,
+        "pre_weight_observed_at": None,
+        "pre_weight_attach_batch_id": None,
+        "pre_weight_attach_reason": None,
+        "post_weight_source": None,
+        "post_weight_observed_at": None,
+        "post_weight_attach_batch_id": None,
+        "post_weight_attach_reason": None,
     }
+
+
+def _copy_weight_provenance(dest: dict[str, Any], event: Mapping[str, Any], *, prefix: str) -> None:
+    dest[f"{prefix}_weight_source"] = event.get("weight_source")
+    dest[f"{prefix}_weight_observed_at"] = event.get("weight_observed_at")
+    dest[f"{prefix}_weight_attach_batch_id"] = event.get("weight_attach_batch_id")
+    dest[f"{prefix}_weight_attach_reason"] = event.get("weight_attach_reason")
 
 
 def resolve_weight_entry_pair(
@@ -91,6 +107,7 @@ def resolve_weight_entry_pair(
     out["pre_weight_lbs"] = pre_w
     out["pre_weight_at"] = pre.get("scanned_at_parsed", pre.get("scanned_at"))
     out["pre_weight_employee"] = pre.get("user_name", pre.get("employee"))
+    _copy_weight_provenance(out, pre, prefix="pre")
 
     if len(events) < 2:
         return out
@@ -103,6 +120,7 @@ def resolve_weight_entry_pair(
     out["post_weight_at"] = post.get("scanned_at_parsed", post.get("scanned_at"))
     out["post_weight_employee"] = post.get("user_name", post.get("employee"))
     out["post_weight_valid_for_standard_weight_revenue"] = post_w is not None and post_w > 0
+    _copy_weight_provenance(out, post, prefix="post")
     return out
 
 
@@ -173,6 +191,14 @@ def _coerce_weight_info(raw: Any) -> dict[str, Any]:
                 if "post_weight_valid_for_standard_weight_revenue" in raw
                 else (post_value is not None and post_value > 0)
             ),
+            "pre_weight_source": raw.get("pre_weight_source"),
+            "pre_weight_observed_at": raw.get("pre_weight_observed_at"),
+            "pre_weight_attach_batch_id": raw.get("pre_weight_attach_batch_id"),
+            "pre_weight_attach_reason": raw.get("pre_weight_attach_reason"),
+            "post_weight_source": raw.get("post_weight_source"),
+            "post_weight_observed_at": raw.get("post_weight_observed_at"),
+            "post_weight_attach_batch_id": raw.get("post_weight_attach_batch_id"),
+            "post_weight_attach_reason": raw.get("post_weight_attach_reason"),
         }
     post = _parse_weight(raw)
     return {
@@ -530,6 +556,24 @@ def expand_review_required(
             rows_by_id[bid]["pre_weight_employee"] = info.get("pre_weight_employee")
             rows_by_id[bid]["post_weight_at"] = info.get("post_weight_at")
             rows_by_id[bid]["post_weight_employee"] = info.get("post_weight_employee")
+            rows_by_id[bid]["pre_weight_source"] = info.get("pre_weight_source")
+            rows_by_id[bid]["pre_weight_observed_at"] = info.get("pre_weight_observed_at")
+            rows_by_id[bid]["pre_weight_attach_batch_id"] = info.get(
+                "pre_weight_attach_batch_id"
+            )
+            rows_by_id[bid]["pre_weight_attach_reason"] = info.get(
+                "pre_weight_attach_reason"
+            )
+            rows_by_id[bid]["post_weight_source"] = info.get("post_weight_source")
+            rows_by_id[bid]["post_weight_observed_at"] = info.get(
+                "post_weight_observed_at"
+            )
+            rows_by_id[bid]["post_weight_attach_batch_id"] = info.get(
+                "post_weight_attach_batch_id"
+            )
+            rows_by_id[bid]["post_weight_attach_reason"] = info.get(
+                "post_weight_attach_reason"
+            )
             rows_by_id[bid]["post_weight_valid_for_standard_weight_revenue"] = bool(
                 info.get("post_weight_valid_for_standard_weight_revenue")
             )
@@ -701,10 +745,19 @@ def load_bag_weight_map(
     events_by: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
 
     if table_exists(cursor, "rinse_bag_scan_events"):
+        from backend.ta_helpers import table_has_column
+
         placeholders = ",".join(["%s"] * len(ids))
+        provenance_cols = ""
+        if table_has_column(cursor, "rinse_bag_scan_events", "weight_source"):
+            provenance_cols = (
+                ", weight_observed_at, weight_source, "
+                "weight_attach_batch_id, weight_attach_reason"
+            )
         cursor.execute(
             f"""
             SELECT bag_id, weight_lbs, purpose, scanned_at_parsed, user_name, id
+                   {provenance_cols}
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND bag_id IN ({placeholders})
@@ -724,6 +777,10 @@ def load_bag_weight_map(
                     "weight_lbs": row.get("weight_lbs"),
                     "scanned_at_parsed": row.get("scanned_at_parsed"),
                     "user_name": row.get("user_name"),
+                    "weight_source": row.get("weight_source"),
+                    "weight_observed_at": row.get("weight_observed_at"),
+                    "weight_attach_batch_id": row.get("weight_attach_batch_id"),
+                    "weight_attach_reason": row.get("weight_attach_reason"),
                 }
             )
 

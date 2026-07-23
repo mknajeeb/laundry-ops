@@ -186,10 +186,19 @@ def load_scans_for_bags(
     """Load complete persisted chronology for bags (no SQL LIMIT on events)."""
     if not bag_ids or not table_exists(cursor, "rinse_bag_scan_events"):
         return {}
+    from backend.ta_helpers import table_has_column
+
     placeholders = ",".join(["%s"] * len(bag_ids))
+    provenance_cols = ""
+    if table_has_column(cursor, "rinse_bag_scan_events", "weight_source"):
+        provenance_cols = (
+            ", weight_observed_at, weight_source, "
+            "weight_attach_batch_id, weight_attach_reason"
+        )
     cursor.execute(
         f"""
         SELECT id, bag_id, scanned_at_parsed, purpose, rack, user_name, weight_lbs
+               {provenance_cols}
         FROM rinse_bag_scan_events
         WHERE organization_id = %s AND bag_id IN ({placeholders})
         ORDER BY scanned_at_parsed ASC, id ASC
@@ -211,6 +220,10 @@ def load_scans_for_bags(
                     "weight_lbs": float(row["weight_lbs"])
                     if row.get("weight_lbs") is not None
                     else None,
+                    "weight_source": row.get("weight_source"),
+                    "weight_observed_at": row.get("weight_observed_at"),
+                    "weight_attach_batch_id": row.get("weight_attach_batch_id"),
+                    "weight_attach_reason": row.get("weight_attach_reason"),
                     "source_table": "rinse_bag_scan_events",
                 }
             )
@@ -446,6 +459,16 @@ def build_drilldown(
             "pre_weight_lbs": r.get("pre_weight_lbs"),
             "post_weight_lbs": r.get("post_weight_lbs"),
             "post_weight_event_exists": r.get("post_weight_event_exists"),
+            "pre_weight_at": r.get("pre_weight_at"),
+            "post_weight_at": r.get("post_weight_at"),
+            "pre_weight_source": r.get("pre_weight_source"),
+            "pre_weight_observed_at": r.get("pre_weight_observed_at"),
+            "pre_weight_attach_batch_id": r.get("pre_weight_attach_batch_id"),
+            "pre_weight_attach_reason": r.get("pre_weight_attach_reason"),
+            "post_weight_source": r.get("post_weight_source"),
+            "post_weight_observed_at": r.get("post_weight_observed_at"),
+            "post_weight_attach_batch_id": r.get("post_weight_attach_batch_id"),
+            "post_weight_attach_reason": r.get("post_weight_attach_reason"),
             "entry_at": r.get("original_entry_date") or r.get("first_entry_at"),
             "entry_source": r.get("entry_source"),
             "completion_at": r.get("completion_at"),
@@ -477,6 +500,30 @@ def build_drilldown(
             item["bulk_workitems"] = lines
             edit_meta = last_edits.get(bid) or {}
             item.update(edit_meta)
+            # Overlay live scan-row provenance onto Pre/Post (day snapshot may lag).
+            from backend.rinse_scan_purpose import is_weight_entry_purpose
+            from backend.rinse_veewash_review import resolve_weight_entry_pair
+
+            weight_events = [
+                s
+                for s in (item["scans"] or [])
+                if is_weight_entry_purpose(s.get("purpose") or s.get("raw_purpose"))
+            ]
+            live = resolve_weight_entry_pair(weight_events)
+            for key in (
+                "pre_weight_source",
+                "pre_weight_observed_at",
+                "pre_weight_attach_batch_id",
+                "pre_weight_attach_reason",
+                "post_weight_source",
+                "post_weight_observed_at",
+                "post_weight_attach_batch_id",
+                "post_weight_attach_reason",
+                "pre_weight_at",
+                "post_weight_at",
+            ):
+                if live.get(key) is not None:
+                    item[key] = live.get(key)
         else:
             item["scans"] = []
             item["corrections"] = []
