@@ -102,8 +102,8 @@ class TestLoadScansNoLimit:
         assert "ORDER BY scanned_at_parsed ASC" in body
 
 
-class TestStaleChronologyPromotesFromPending:
-    def test_pending_bag_with_stale_scans_moves_to_review(self):
+class TestStaleChronologyDoesNotPromoteFromPending:
+    def test_pending_bag_with_stale_scans_stays_pending(self):
         from datetime import date
 
         from backend.rinse_veewash_review import expand_review_required
@@ -127,7 +127,7 @@ class TestStaleChronologyPromotesFromPending:
         }
         out = expand_review_required(
             result,
-            selected_date_et=date(2026, 7, 22),
+            selected_date_et=date(2026, 7, 23),
             presence_by_bag={
                 "15M7MCEK4J": {
                     "service_type": "WF",
@@ -139,6 +139,8 @@ class TestStaleChronologyPromotesFromPending:
             entry_by_bag={},
             last_scan_at_by_bag={"15M7MCEK4J": T_EARLY},
         )
-        assert "15M7MCEK4J" in out["review_required"]
-        assert "15M7MCEK4J" not in out["pending_end_of_date"]
-        assert REASON_SCAN_CHRONOLOGY_STALE in (out["review_reasons_by_bag"].get("15M7MCEK4J") or [])
+        assert "15M7MCEK4J" in out["pending_end_of_date"]
+        assert "15M7MCEK4J" not in out["review_required"]
+        assert REASON_SCAN_CHRONOLOGY_STALE not in (
+            out["review_reasons_by_bag"].get("15M7MCEK4J") or []
+        )

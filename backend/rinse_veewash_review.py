@@ -384,8 +384,8 @@ def expand_review_required(
         add_reason(bid, REASON_DISAPPEARED_WITHOUT_COMPLETION)
         review.add(bid)
 
-    # Stale scan chronology vs portal last_seen: do not trust Pending from
-    # missing completion evidence when the scan scrape lags portal activity.
+    # SCAN_CHRONOLOGY_STALE is warning-only (data_freshness banner).
+    # Do not move ordinary in-process Pending bags into Review Required.
     from backend.rinse_scan_freshness import bag_scan_chronology_is_stale
 
     last_scan_map = {
@@ -393,6 +393,7 @@ def expand_review_required(
         for k, v in (last_scan_at_by_bag or {}).items()
         if _norm_bag(k)
     }
+    stale_scan_chronology_bag_ids: list[str] = []
     for bid in list(pending):
         bid = _norm_bag(bid)
         if not bid or bid in review or bid in completed:
@@ -402,16 +403,7 @@ def expand_review_required(
             last_scan_at=last_scan_map.get(bid),
             portal_last_seen_at=pres.get("last_seen_at"),
         ):
-            add_reason(bid, REASON_SCAN_CHRONOLOGY_STALE)
-            review.add(bid)
-            pending.discard(bid)
-            row = rows_by_id.get(bid) or {"bag_id": bid}
-            rows_by_id[bid] = {
-                **row,
-                "outcome": OUTCOME_REVIEW_REQUIRED,
-                "final_bucket": "review_required",
-                "reason_codes": list(reasons.get(bid) or []),
-            }
+            stale_scan_chronology_bag_ids.append(bid)
 
     # --- CWO + HD missing WIA while completed ---------------------------------
     for bid, pres in presence_by_bag.items():
@@ -689,6 +681,7 @@ def expand_review_required(
     result["completed_without_recognized_entry"] = cwo_l
     result["completed_without_entry_scan"] = cwo_l
     result["review_reasons_by_bag"] = {b: list(reasons[b]) for b in sorted(reasons)}
+    result["stale_scan_chronology_bag_ids"] = sorted(set(stale_scan_chronology_bag_ids))
     result["rows"] = [rows_by_id[b] for b in sorted(rows_by_id)]
     result["counts"] = {
         **(result.get("counts") or {}),

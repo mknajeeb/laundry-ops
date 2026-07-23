@@ -16,7 +16,7 @@ from backend.rinse_veewash_shift_day import (
 from backend.rinse_veewash_step1_api import apply_step1_correction
 
 
-D1 = date(2026, 7, 21)
+D1 = date(2026, 7, 23)
 
 
 def _summary(*, review=0, completed=72, pending=9, active=90):
@@ -177,7 +177,7 @@ def test_prior_open_day_loads_snapshot_not_live():
         patch("backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables"),
         patch("backend.rinse_veewash_shift_day.get_step1_activation_date", return_value=D1),
         patch("backend.rinse_veewash_shift_day.get_day_record", return_value=day),
-        patch("backend.rinse_veewash_shift_day.today_et", return_value=date(2026, 7, 22)),
+        patch("backend.rinse_veewash_shift_day.today_et", return_value=date(2026, 7, 24)),
         patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=bags),
         patch("backend.rinse_veewash_shift_day.build_veewash_daily_workload") as live,
     ):
@@ -203,7 +203,7 @@ def test_prior_reopened_day_keeps_snapshot():
         patch("backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables"),
         patch("backend.rinse_veewash_shift_day.get_step1_activation_date", return_value=D1),
         patch("backend.rinse_veewash_shift_day.get_day_record", return_value=day),
-        patch("backend.rinse_veewash_shift_day.today_et", return_value=date(2026, 7, 22)),
+        patch("backend.rinse_veewash_shift_day.today_et", return_value=date(2026, 7, 24)),
         patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=bags),
         patch("backend.rinse_veewash_shift_day.build_veewash_daily_workload") as live,
         patch("backend.rinse_veewash_shift_day.persist_day_snapshot") as persist,

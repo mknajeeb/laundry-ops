@@ -11,9 +11,11 @@ from backend.rinse_veewash_workload import (
     OUTCOME_COMPLETED,
     OUTCOME_PENDING,
     OUTCOME_REVIEW_REQUIRED,
+    STEP1_AUTHORITATIVE_START_ET,
     VEEWASH_ORG_ID,
     build_step1_headline_summary,
     build_veewash_daily_workload,
+    build_veewash_daily_workload_from_membership,
     get_step1_activation_date,
     today_et,
 )
@@ -30,6 +32,90 @@ DISPOSITION_EXCLUDE = "EXCLUDE"
 DISPOSITION_HISTORICAL_REVIEW_ONLY = "HISTORICAL_REVIEW_ONLY"
 
 _SHIFT_MONITOR_TABLES_READY = False
+
+_HISTORY_UNAVAILABLE_MSG = (
+    "Step-1 history before the authoritative start date is unavailable. "
+    f"VeeWash Step-1 starts {STEP1_AUTHORITATIVE_START_ET.isoformat()} ET."
+)
+
+
+def _step1_cutover_date(organization_id: int, activation: date | None) -> date | None:
+    """Earliest ET date Step-1 may serve for this org."""
+    org = int(organization_id)
+    if org == VEEWASH_ORG_ID:
+        floor = STEP1_AUTHORITATIVE_START_ET
+        if activation and activation > floor:
+            return activation
+        return floor
+    return activation
+
+
+def _unavailable_step1_payload(
+    selected_date_et: date,
+    *,
+    message: str = _HISTORY_UNAVAILABLE_MSG,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    wl = {
+        "selected_date_et": selected_date_et.isoformat(),
+        "rows": [],
+        "new_today": [],
+        "carryover": [],
+        "completed_on_date": [],
+        "pending_end_of_date": [],
+        "review_required": [],
+        "review_reasons_by_bag": {},
+        "step1_history_unavailable": True,
+        "message": message,
+        "total_workload": 0,
+    }
+    summary = {
+        "selected_date_et": selected_date_et.isoformat(),
+        "active_workload": 0,
+        "total_workload": 0,
+        "completed": 0,
+        "pending": 0,
+        "new_today": 0,
+        "carryover": 0,
+        "exceptions": {"review_required": 0, "total": 0},
+        "step1_history_unavailable": True,
+        "message": message,
+        "segments": {
+            "all": {
+                "active_workload": 0,
+                "total_workload": 0,
+                "completed": 0,
+                "pending": 0,
+                "new_today": 0,
+                "carryover": 0,
+                "exceptions": {"review_required": 0, "total": 0},
+            }
+        },
+    }
+    day_meta = {
+        "status": None,
+        "shift_date_et": selected_date_et,
+        "step1_history_unavailable": True,
+        "message": message,
+    }
+    return wl, summary, day_meta
+
+
+def _build_step1_workload_for_date(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+):
+    """Use append-only membership rebuild on/after VeeWash cutover."""
+    if (
+        int(organization_id) == VEEWASH_ORG_ID
+        and selected_date_et >= STEP1_AUTHORITATIVE_START_ET
+    ):
+        return build_veewash_daily_workload_from_membership(
+            cursor, organization_id, selected_date_et=selected_date_et
+        )
+    return build_veewash_daily_workload(
+        cursor, organization_id, selected_date_et=selected_date_et
+    )
 
 
 def _json_dump(value: Any) -> str | None:
@@ -133,10 +219,33 @@ def ensure_shift_monitor_day_tables(cursor) -> None:
           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
           UNIQUE KEY uq_shift_monitor_day_bag (organization_id, shift_date_et, bag_id),
-          KEY idx_shift_monitor_day_bag_status (organization_id, shift_date_et, effective_status)
+          KEY idx_shift_monitor_day_bag_status (organization_id, shift_date_et, effective_status),
+          KEY idx_shift_monitor_day_bag_svc (organization_id, shift_date_et, service_type)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    # Productivity projection columns (additive; safe on existing tables).
+    for col_sql in (
+        "ADD COLUMN productivity_employee_name VARCHAR(255) NULL",
+        "ADD COLUMN productivity_completed_at DATETIME NULL",
+        "ADD COLUMN productivity_weight_lbs DECIMAL(10,4) NULL",
+        "ADD COLUMN productivity_credit_eligible TINYINT(1) NULL",
+        "ADD COLUMN productivity_exclusion_reason VARCHAR(128) NULL",
+    ):
+        try:
+            cursor.execute(f"ALTER TABLE rinse_shift_monitor_day_bags {col_sql}")
+        except Exception:
+            pass
+    try:
+        cursor.execute(
+            """
+            ALTER TABLE rinse_shift_monitor_day_bags
+              ADD KEY idx_shift_monitor_day_bag_prod_emp
+                (organization_id, shift_date_et, productivity_credit_eligible, productivity_employee_name)
+            """
+        )
+    except Exception:
+        pass
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS rinse_shift_monitor_close_audit (
@@ -225,7 +334,12 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
         bid = normalize_bag_id(row.get("bag_id"))
         if not bid:
             continue
-        entry_class = row.get("entry_class")
+        entry_class = row.get("entry_class") or row.get("inclusion_source") or "new_today"
+        if entry_class in ("carryover", "FIRST_SCRAPE_BASELINE", "ADDED_LATER_IN_DAY"):
+            # Persist operational membership without carryover classification.
+            entry_class = "new_today" if entry_class != "carryover" else "new_today"
+        if entry_class == "carryover":
+            entry_class = "new_today"
         eff = _effective_status_for_row(row, review_ids)
         # Only persist bags that are part of the day's operational set.
         if entry_class not in ("new_today", "carryover") and bid not in review_ids:
@@ -237,7 +351,7 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
                 "bag_id": bid,
                 "service_type": row.get("service_type"),
                 "rush_status": row.get("rush_flag"),
-                "new_or_carryover": entry_class,
+                "new_or_carryover": "workload" if entry_class else None,
                 "workload_entry_type": row.get("entry_source"),
                 "workload_entry_timestamp": row.get("first_entry_at") or row.get("original_entry_date"),
                 "pre_weight_lbs": row.get("pre_weight_lbs"),
@@ -319,7 +433,10 @@ def persist_day_snapshot(
     )
 
     bags = _bag_rows_from_workload(workload, summary)
+    from backend.rinse_step1_productivity_fast import project_productivity_fields_for_day_bag
+
     for b in bags:
+        proj = project_productivity_fields_for_day_bag(b)
         cursor.execute(
             """
             INSERT INTO rinse_shift_monitor_day_bags (
@@ -330,9 +447,13 @@ def persist_day_snapshot(
               canonical_completion_employee, effective_status,
               review_reason_codes_json, portal_status_at_sync,
               last_present_scrape, first_confirmed_absent_scrape, disposition,
-              bag_snapshot_json
+              bag_snapshot_json,
+              productivity_employee_name, productivity_completed_at,
+              productivity_weight_lbs, productivity_credit_eligible,
+              productivity_exclusion_reason
             ) VALUES (
-              %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+              %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+              %s,%s,%s,%s,%s
             )
             ON DUPLICATE KEY UPDATE
               service_type=VALUES(service_type),
@@ -353,6 +474,11 @@ def persist_day_snapshot(
               first_confirmed_absent_scrape=VALUES(first_confirmed_absent_scrape),
               disposition=COALESCE(VALUES(disposition), disposition),
               bag_snapshot_json=VALUES(bag_snapshot_json),
+              productivity_employee_name=VALUES(productivity_employee_name),
+              productivity_completed_at=VALUES(productivity_completed_at),
+              productivity_weight_lbs=VALUES(productivity_weight_lbs),
+              productivity_credit_eligible=VALUES(productivity_credit_eligible),
+              productivity_exclusion_reason=VALUES(productivity_exclusion_reason),
               updated_at=CURRENT_TIMESTAMP
             """,
             (
@@ -377,8 +503,19 @@ def persist_day_snapshot(
                 _dt(b.get("first_confirmed_absent_scrape")),
                 b.get("disposition"),
                 _json_dump(b.get("bag_snapshot")),
+                proj.get("productivity_employee_name"),
+                _dt(proj.get("productivity_completed_at")),
+                proj.get("productivity_weight_lbs"),
+                proj.get("productivity_credit_eligible"),
+                proj.get("productivity_exclusion_reason"),
             ),
         )
+    try:
+        from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
+
+        clear_step1_productivity_cache(organization_id, shift_date_et)
+    except Exception:
+        pass
     return get_day_record(cursor, organization_id, shift_date_et) or {}
 
 
@@ -513,6 +650,15 @@ def build_or_load_step1_for_date(
     """
     ensure_shift_monitor_day_tables(cursor)
     activation = get_step1_activation_date(cursor, organization_id) or selected_date_et
+    cutover = _step1_cutover_date(organization_id, activation)
+    if cutover and selected_date_et < cutover:
+        return _unavailable_step1_payload(selected_date_et)
+    if (
+        int(organization_id) == VEEWASH_ORG_ID
+        and selected_date_et < STEP1_AUTHORITATIVE_START_ET
+    ):
+        return _unavailable_step1_payload(selected_date_et)
+
     day = get_day_record(cursor, organization_id, selected_date_et)
     today = today_et()
     status = (day or {}).get("status")
@@ -577,9 +723,8 @@ def build_or_load_step1_for_date(
                 return wl, summary, day_out
 
     # Live / reconstruct path (today, or missing prior-day snapshot).
-    wl = build_veewash_daily_workload(
-        cursor, organization_id, selected_date_et=selected_date_et
-    )
+    # On/after VeeWash Jul 23 cutover: append-only membership rebuild (not live presence rewrite).
+    wl = _build_step1_workload_for_date(cursor, organization_id, selected_date_et)
     summary = build_step1_headline_summary(
         wl, selected_date_et=selected_date_et, activation_date=activation
     )
@@ -810,7 +955,9 @@ def close_shift_day(
     )
 
     # Seed next-day carryover bag stubs from pending + explicit carry-forward dispositions.
-    _seed_next_day_carryover(cursor, organization_id, shift_date_et)
+    # Cutover 2026-07-23: next day starts from its own after-midnight scrape.
+    # Do not seed carryover rows into the following ET day.
+    # _seed_next_day_carryover(cursor, organization_id, shift_date_et)
 
     _commit(cursor)
     return {
@@ -965,10 +1112,26 @@ def list_close_audit(
 def backfill_day_from_live(
     cursor, organization_id: int, shift_date_et: date, *, force: bool = False
 ) -> dict[str, Any]:
-    """Rebuild and persist a day from source (activation onward)."""
+    """Rebuild and persist a day from source (activation / cutover onward)."""
     activation = get_step1_activation_date(cursor, organization_id)
-    if activation and shift_date_et < activation:
-        return {"ok": False, "error": "before_activation"}
+    cutover = _step1_cutover_date(organization_id, activation)
+    if cutover and shift_date_et < cutover:
+        return {
+            "ok": False,
+            "error": "before_cutover",
+            "cutover_date_et": cutover.isoformat(),
+            "message": _HISTORY_UNAVAILABLE_MSG,
+        }
+    if (
+        int(organization_id) == VEEWASH_ORG_ID
+        and shift_date_et < STEP1_AUTHORITATIVE_START_ET
+    ):
+        return {
+            "ok": False,
+            "error": "before_cutover",
+            "cutover_date_et": STEP1_AUTHORITATIVE_START_ET.isoformat(),
+            "message": _HISTORY_UNAVAILABLE_MSG,
+        }
     day = get_day_record(cursor, organization_id, shift_date_et)
     if day and day.get("status") == STATUS_CLOSED and not force:
         return {"ok": False, "error": "day_closed", "day": day}
@@ -981,10 +1144,8 @@ def backfill_day_from_live(
             actor_display_name="system_backfill",
             reason="force backfill of closed day",
         )
-    # Explicit source rebuild + persist even for prior dates.
-    wl = build_veewash_daily_workload(
-        cursor, organization_id, selected_date_et=shift_date_et
-    )
+    # On/after cutover: same-day membership rebuild (not live presence rewrite).
+    wl = _build_step1_workload_for_date(cursor, organization_id, shift_date_et)
     summary = build_step1_headline_summary(
         wl,
         selected_date_et=shift_date_et,
@@ -1006,9 +1167,11 @@ def backfill_day_from_live(
         "day": day,
         "summary_totals": {
             "active": summary.get("active_workload"),
+            "total_workload": summary.get("total_workload"),
             "completed": summary.get("completed"),
             "pending": summary.get("pending"),
             "review_required": (summary.get("exceptions") or {}).get("review_required"),
         },
+        "membership": wl.get("membership"),
         "bag_count": len(load_day_bags(cursor, organization_id, shift_date_et)),
     }

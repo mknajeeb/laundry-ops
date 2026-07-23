@@ -33,17 +33,25 @@ export default function ShiftMonitorDateBar({
   onDateEndChange,
   onApply,
   loading,
+  minDateEt = "2026-07-23",
 }) {
+  const clamp = (ymd) => (minDateEt && ymd && ymd < minDateEt ? minDateEt : ymd);
+
   const handlePreset = (_, value) => {
     if (!value) return;
     onPresetChange(value);
     const range = rangeForPreset(value);
     if (range) {
-      onDateStartChange(range.start);
-      onDateEndChange(range.end);
-      onApply?.({ start: range.start, end: range.end });
+      const start = clamp(range.start);
+      const end = clamp(range.end);
+      onDateStartChange(start);
+      onDateEndChange(end);
+      onApply?.({ start, end });
     }
   };
+
+  const yesterdayDisabled =
+    Boolean(minDateEt) && yesterdayRange().start < minDateEt;
 
   return (
     <Box
@@ -85,7 +93,11 @@ export default function ShiftMonitorDateBar({
         }}
       >
         {PRESETS.map(({ id, label }) => (
-          <ToggleButton key={id} value={id} disabled={loading}>
+          <ToggleButton
+            key={id}
+            value={id}
+            disabled={loading || (id === "yesterday" && yesterdayDisabled)}
+          >
             {label}
           </ToggleButton>
         ))}
@@ -98,7 +110,8 @@ export default function ShiftMonitorDateBar({
             size="small"
             label="From"
             value={dateStart}
-            onChange={(e) => onDateStartChange(e.target.value)}
+            onChange={(e) => onDateStartChange(clamp(e.target.value))}
+            inputProps={minDateEt ? { min: minDateEt } : undefined}
             InputLabelProps={{ shrink: true }}
             sx={{ minWidth: 140 }}
           />
@@ -107,12 +120,13 @@ export default function ShiftMonitorDateBar({
             size="small"
             label="To"
             value={dateEnd}
-            onChange={(e) => onDateEndChange(e.target.value)}
+            onChange={(e) => onDateEndChange(clamp(e.target.value))}
+            inputProps={minDateEt ? { min: minDateEt } : undefined}
             InputLabelProps={{ shrink: true }}
             sx={{ minWidth: 140 }}
           />
           <Typography variant="caption" color="text.secondary" sx={{ alignSelf: "center" }}>
-            Custom ranges use Reporting Mode
+            Step-1 starts {minDateEt} · earlier dates unavailable
           </Typography>
         </Stack>
       </Collapse>

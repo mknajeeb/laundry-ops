@@ -46,6 +46,9 @@ from backend.ta_helpers import table_exists
 
 VEEWASH_ORG_ID = 3
 
+# Hard cutover: append-only daily membership starts this ET date for org 3.
+STEP1_AUTHORITATIVE_START_ET = date(2026, 7, 23)
+
 KEY_STEP1_ENABLED = "veewash_step1_enabled"
 KEY_STEP1_ACTIVATION_DATE = "veewash_step1_activation_date"
 ENV_STEP1_ENABLED = "VEEWASH_STEP1_ENABLED"
@@ -957,6 +960,305 @@ def build_veewash_daily_workload(
     )
     result["rush_split"] = _rush_split(result["rows"])
     result["service_split"] = _service_split(result)
+    counts = result.get("counts") or {}
+    if "total_workload" not in counts:
+        counts = dict(counts)
+        counts["total_workload"] = int(
+            counts.get("total_active_workload")
+            or (len(result.get("new_today") or []) + len(result.get("carryover") or []))
+        )
+        result["counts"] = counts
+    result.setdefault("total_workload", counts.get("total_workload"))
+    return result
+
+
+def build_veewash_daily_workload_from_membership(
+    cursor,
+    organization_id: int = VEEWASH_ORG_ID,
+    *,
+    selected_date_et: date,
+    entry_racks: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Step-1 daily workload using append-only same-day scrape membership.
+
+    Membership (baseline + later additions) defines which bags are in the day.
+    Classification / review still run on those bags; disappearing from later
+    scrapes does not remove membership.
+    """
+    from backend.rinse_cleaner_ticket_presence import load_presence_run_snapshot_by_bag
+    from backend.rinse_veewash_day_membership import (
+        build_append_only_membership,
+        membership_bag_ids,
+    )
+
+    membership = build_append_only_membership(
+        cursor, organization_id, selected_date_et
+    )
+    member_ids = membership_bag_ids(membership)
+    member_set = set(member_ids)
+
+    racks = list(entry_racks) if entry_racks else None
+    if racks is None:
+        try:
+            from backend.rinse_processing_settings import get_processing_settings
+
+            racks = get_processing_settings(cursor, organization_id).get(
+                "facility_entry_racks"
+            ) or list(DEFAULT_FACILITY_ENTRY_RACKS)
+        except Exception:
+            racks = list(DEFAULT_FACILITY_ENTRY_RACKS)
+
+    live_presence = load_presence_orders(cursor, organization_id, at_vendor_only=True)
+    presence: dict[str, dict[str, Any]] = {}
+    for bid in member_ids:
+        if bid in live_presence:
+            presence[bid] = dict(live_presence[bid])
+
+    # Reconstruct minimal presence for membership bags missing from live table.
+    run_ids: list[int] = []
+    baseline_id = membership.get("baseline_presence_run_id")
+    if baseline_id:
+        run_ids.append(int(baseline_id))
+    for sid in membership.get("later_scrape_ids") or []:
+        run_ids.append(int(sid))
+    for added in membership.get("added_later") or []:
+        sid = added.get("source_scrape_id") if isinstance(added, dict) else None
+        if sid is not None:
+            run_ids.append(int(sid))
+    # Deduplicate while preserving order
+    seen_runs: set[int] = set()
+    uniq_runs: list[int] = []
+    for rid in run_ids:
+        if rid in seen_runs:
+            continue
+        seen_runs.add(rid)
+        uniq_runs.append(rid)
+
+    mem_rows = membership.get("membership") or {}
+    if isinstance(mem_rows, dict):
+        for bid, mrow in mem_rows.items():
+            bid = _norm_bag(bid)
+            if not bid or bid in presence:
+                continue
+            presence[bid] = {
+                "bag_id": bid,
+                "active": 1,
+                "portal_status": PORTAL_AT_VENDOR,
+                "customer_name": (mrow or {}).get("customer_name"),
+                "service_type": (
+                    str((mrow or {}).get("service_type_portal") or "").upper() or None
+                ),
+                "rush_flag": (mrow or {}).get("rush_flag"),
+                "estimated_delivery_date": None,
+                "first_seen_at": (mrow or {}).get("first_seen_portal_at"),
+                "last_seen_at": (mrow or {}).get("last_seen_during_day"),
+                "source_batch_id": None,
+                "from_membership_meta": True,
+            }
+
+    for run_id in uniq_runs:
+        try:
+            snap = load_presence_run_snapshot_by_bag(
+                cursor, organization_id, presence_run_id=run_id
+            )
+        except Exception:
+            snap = {}
+        for bid, row in (snap or {}).items():
+            bid = _norm_bag(bid)
+            if bid not in member_set:
+                continue
+            if bid in presence and not presence[bid].get("from_membership_meta"):
+                continue
+            # Prefer snapshot fields when reconstructing / enriching stubs.
+            if bid not in presence or presence[bid].get("from_membership_meta"):
+                presence[bid] = {
+                    "bag_id": bid,
+                    "active": 1,
+                    "portal_status": row.get("portal_status") or PORTAL_AT_VENDOR,
+                    "customer_name": row.get("customer_name")
+                    or (presence.get(bid) or {}).get("customer_name"),
+                    "service_type": (
+                        str(row.get("service_type") or "").upper()
+                        or (presence.get(bid) or {}).get("service_type")
+                    ),
+                    "rush_flag": row.get("rush_flag")
+                    or (presence.get(bid) or {}).get("rush_flag"),
+                    "estimated_delivery_date": row.get("estimated_delivery_date"),
+                    "first_seen_at": (presence.get(bid) or {}).get("first_seen_at"),
+                    "last_seen_at": (presence.get(bid) or {}).get("last_seen_at"),
+                    "source_batch_id": row.get("source_batch_id"),
+                    "from_membership_snapshot": True,
+                }
+
+    for bid in member_ids:
+        if bid not in presence:
+            presence[bid] = {
+                "bag_id": bid,
+                "active": 1,
+                "portal_status": PORTAL_AT_VENDOR,
+                "customer_name": None,
+                "service_type": None,
+                "rush_flag": None,
+                "estimated_delivery_date": None,
+                "first_seen_at": None,
+                "last_seen_at": None,
+                "source_batch_id": None,
+                "from_membership_stub": True,
+            }
+
+    dirty = load_first_dirty_scans(cursor, organization_id, entry_racks=racks)
+    wia = load_first_workitems_added_scans(cursor, organization_id)
+    entry = build_service_entry_map(
+        presence, dirty_by_bag=dirty, wia_by_bag=wia
+    )
+    # Membership bags are in-day regardless of recognized entry: synthesize a
+    # same-day entry so classify keeps them in the operational set.
+    for bid in member_ids:
+        if bid not in entry:
+            entry[bid] = {
+                "entry_date": selected_date_et,
+                "entry_source": ENTRY_SOURCE_MANUAL_REVIEW,
+                "entry_at": None,
+                "membership_synthetic_entry": True,
+            }
+
+    completion = load_canonical_completions_v2(cursor, organization_id, presence.keys())
+    candidate_absent = [
+        bid
+        for bid, p in presence.items()
+        if int(p.get("active") or 0) == 0 and bid not in completion
+    ]
+    disappearance_state = build_disappearance_confirmation(
+        cursor, organization_id, candidate_absent, portal_status=PORTAL_AT_VENDOR
+    )
+    disappearance_state_by_bag = {
+        bid: info.get("state") for bid, info in disappearance_state.items()
+    }
+
+    result = classify_veewash_workload(
+        selected_date_et=selected_date_et,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag=completion,
+        disappearance_state_by_bag=disappearance_state_by_bag,
+    )
+
+    from backend.rinse_veewash_review import (
+        expand_review_required,
+        load_bag_weight_map,
+        load_registry_service_map,
+    )
+
+    weight_ids = sorted(member_set | set(presence.keys()))
+    weights = load_bag_weight_map(cursor, organization_id, weight_ids)
+    registry_services = load_registry_service_map(cursor, organization_id, weight_ids)
+
+    from backend.rinse_bulk_workitems import (
+        load_bag_bulk_lines,
+        load_bulk_resolutions,
+        load_bulk_workitem_scan_map,
+    )
+
+    bulk_scans = load_bulk_workitem_scan_map(cursor, organization_id, weight_ids)
+    bulk_resolutions = load_bulk_resolutions(
+        cursor, organization_id, selected_date_et, weight_ids
+    )
+    bulk_lines = load_bag_bulk_lines(cursor, organization_id, selected_date_et, weight_ids)
+
+    from backend.rinse_scan_freshness import (
+        freshness_from_day_and_presence,
+        load_last_scan_at_by_bag,
+    )
+
+    last_scans = load_last_scan_at_by_bag(cursor, organization_id, weight_ids)
+
+    result = expand_review_required(
+        result,
+        selected_date_et=selected_date_et,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        wia_by_bag=wia,
+        weight_by_bag=weights,
+        bulk_scan_by_bag=bulk_scans,
+        bulk_resolution_by_bag=bulk_resolutions,
+        bulk_lines_by_bag=bulk_lines,
+        registry_service_by_bag=registry_services,
+        last_scan_at_by_bag=last_scans,
+    )
+
+    # Append-only model: no carryover; membership size is the authoritative total.
+    total = len(member_ids)
+    prior_carry = list(result.get("carryover") or [])
+    result["carryover"] = []
+    result["new_today"] = sorted(set(member_ids))
+
+    # Membership bags must never remain "not_in_workload" — they are in today's set.
+    not_in = set(result.get("not_in_workload") or [])
+    if not_in:
+        result["not_in_workload"] = sorted(not_in - member_set)
+    pending = set(result.get("pending_end_of_date") or [])
+    completed = set(result.get("completed_on_date") or [])
+    review = set(result.get("review_required") or [])
+    for bid in member_ids:
+        if bid in completed or bid in review or bid in pending:
+            continue
+        pending.add(bid)
+    result["pending_end_of_date"] = sorted(pending)
+
+    for row in result.get("rows") or []:
+        bid = row.get("bag_id")
+        if bid not in member_set:
+            continue
+        row["entry_class"] = "new_today"
+        incl = (membership.get("membership") or {}).get(bid) or {}
+        row["inclusion_source"] = incl.get("inclusion_source")
+        if row.get("outcome") == "not_in_workload" or row.get("final_bucket") == "not_in_workload":
+            if bid in completed:
+                row["outcome"] = "completed"
+                row["final_bucket"] = "new_today_completed"
+            elif bid in review:
+                row["outcome"] = "review_required"
+                row["final_bucket"] = "review_required"
+            else:
+                row["outcome"] = "pending"
+                row["final_bucket"] = "new_today_pending"
+        if "carryover" in str(row.get("final_bucket") or ""):
+            row["final_bucket"] = str(row["final_bucket"]).replace("carryover", "new_today")
+
+    _ = prior_carry
+
+    counts = dict(result.get("counts") or {})
+    counts["carryover"] = 0
+    counts["new_today"] = len(result.get("new_today") or [])
+    counts["not_in_workload"] = len(result.get("not_in_workload") or [])
+    counts["pending"] = len(result.get("pending_end_of_date") or [])
+    counts["total_workload"] = total
+    counts["total_active_workload"] = total
+    counts["established_workload"] = total
+    counts["total_operational"] = total
+    result["counts"] = counts
+    result["total_workload"] = total
+    result["membership"] = membership
+    result["data_freshness"] = freshness_from_day_and_presence(
+        cursor,
+        organization_id,
+        selected_date_et,
+        sample_bag_ids=weight_ids,
+    )
+    result["disappearance_confirmation"] = disappearance_state
+    result["organization_id"] = int(organization_id)
+    result["entry_racks"] = racks
+    result["eligible_presence_orders"] = len(presence)
+    result["active_presence_orders"] = sum(
+        1 for p in presence.values() if int(p.get("active") or 0) == 1
+    )
+    result["rfv_excluded"] = []
+    result["rfv_excluded_count"] = 0
+    result["excluded_not_presence_backed"] = []
+    result["rush_split"] = _rush_split(result["rows"])
+    result["service_split"] = _service_split(result)
+    result["workload_source"] = "append_only_membership"
     return result
 
 
@@ -990,9 +1292,14 @@ def get_step1_activation_date(cursor, organization_id: int = VEEWASH_ORG_ID) -> 
 
         raw = _get_setting(cursor, organization_id, KEY_STEP1_ACTIVATION_DATE)
         if raw and str(raw).strip():
-            return date.fromisoformat(str(raw)[:10])
+            parsed = date.fromisoformat(str(raw)[:10])
+            if int(organization_id) == VEEWASH_ORG_ID and parsed < STEP1_AUTHORITATIVE_START_ET:
+                return STEP1_AUTHORITATIVE_START_ET
+            return parsed
     except Exception:
         pass
+    if int(organization_id) == VEEWASH_ORG_ID:
+        return STEP1_AUTHORITATIVE_START_ET
     return None
 
 
@@ -1127,11 +1434,13 @@ def build_step1_headline_summary(
         return sorted(out)
 
     def _seg(ids_new, ids_carry, ids_completed, ids_pending, ids_review) -> dict[str, Any]:
+        # Prefer membership/total when present; keep new+carryover for compat.
         active = len(ids_new) + len(ids_carry)
         return {
             "new_today": len(ids_new),
             "carryover": len(ids_carry),
             "active_workload": active,
+            "total_workload": active,
             "completed": len(ids_completed),
             "pending": len(ids_pending),
             "exceptions": {
@@ -1237,12 +1546,30 @@ def build_step1_headline_summary(
     wf = segments["wf"]
     hd = segments["hd"]
     exc = a["exceptions"]
+    # Prefer explicit membership / total_workload when the builder attached it.
+    total_workload = result.get("total_workload")
+    if total_workload is None:
+        counts = result.get("counts") or {}
+        total_workload = counts.get("total_workload")
+    if total_workload is not None:
+        try:
+            total_workload = int(total_workload)
+        except (TypeError, ValueError):
+            total_workload = a["active_workload"]
+        a["active_workload"] = total_workload
+        a["total_workload"] = total_workload
+        a["total_operational_orders"] = total_workload
+    else:
+        total_workload = a["active_workload"]
+        a["total_workload"] = total_workload
+
     return {
         "selected_date_et": selected_date_et.isoformat(),
         "activation_date_et": activation_date.isoformat(),
         "new_today": a["new_today"],
         "carryover": a["carryover"],
         "active_workload": a["active_workload"],
+        "total_workload": total_workload,
         "completed": a["completed"],
         "pending": a["pending"],
         "exceptions": exc,
@@ -1258,6 +1585,7 @@ def build_step1_headline_summary(
         "data_freshness": result.get("data_freshness"),
         "rfv_excluded": len(result.get("rfv_excluded") or []),
         "rfv_excluded_bag_ids": list(result.get("rfv_excluded") or []),
+        "membership": result.get("membership"),
         "segments": segments,
         "reconciliation_lines": {
             "new_today": (
@@ -1268,6 +1596,7 @@ def build_step1_headline_summary(
                 f" + Pending {a['pending']}"
                 f" + Review Required {exc['review_required']}"
             ),
+            "total_workload": f"Total Workload {total_workload}",
         },
     }
 

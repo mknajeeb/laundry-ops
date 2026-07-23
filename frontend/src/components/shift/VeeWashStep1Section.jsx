@@ -3,6 +3,7 @@ import {
   Accordion,
   AccordionDetails,
   AccordionSummary,
+  Alert,
   Box,
   Chip,
   Paper,
@@ -120,9 +121,17 @@ function ServiceFilterChips({ value, onChange }) {
   );
 }
 
-function MetricRow({ title, seg, showEntryMetrics = true, emphasize = false, onMetricClick }) {
+function MetricRow({ title, seg, emphasize = false, onMetricClick, membershipHelper = null }) {
   if (!seg) return null;
   const review = seg.exceptions?.review_required ?? seg.exceptions?.total ?? 0;
+  const isHd = String(title || "").toUpperCase().startsWith("HD");
+  const total =
+    seg.total_workload ??
+    seg.active_workload ??
+    Number(seg.completed || 0) + Number(seg.pending || 0) + Number(review || 0);
+  const totalLabel = isHd ? "Total HD Available" : "Total Workload";
+  const doneLabel = isHd ? "Production Recorded" : "Completed";
+  const pendingLabel = isHd ? "Production Missing" : "Pending";
   const click = (metric, label) => () => onMetricClick?.(metric, `${title} · ${label}`);
   return (
     <Box sx={{ mb: emphasize ? 0 : 1.5 }}>
@@ -142,33 +151,26 @@ function MetricRow({ title, seg, showEntryMetrics = true, emphasize = false, onM
           display: "grid",
           gridTemplateColumns: {
             xs: "repeat(2, 1fr)",
-            sm: showEntryMetrics ? "repeat(3, 1fr)" : "repeat(2, 1fr)",
-            md: showEntryMetrics ? "repeat(5, 1fr)" : "repeat(4, 1fr)",
+            sm: "repeat(4, 1fr)",
+            md: "repeat(4, 1fr)",
           },
           gap: 1,
         }}
       >
-        {showEntryMetrics ? (
-          <>
-            <ShiftCountCard label="New Today" value={seg.new_today} size="kpi" onClick={click("new_today", "New Today")} />
-            <ShiftCountCard label="Carryover" value={seg.carryover} size="kpi" onClick={click("carryover", "Carryover")} />
-          </>
-        ) : (
-          <ShiftCountCard
-            label="Active Workload"
-            value={seg.active_workload}
-            size="kpi"
-            variant="wf"
-            onClick={click("active_workload", "Active Workload")}
-          />
-        )}
-        <ShiftCountCard label="Completed" value={seg.completed} size="kpi" onClick={click("completed", "Completed")} />
         <ShiftCountCard
-          label="Pending"
+          label={totalLabel}
+          value={total}
+          size="kpi"
+          variant="wf"
+          onClick={click("active_workload", totalLabel)}
+        />
+        <ShiftCountCard label={doneLabel} value={seg.completed} size="kpi" onClick={click("completed", doneLabel)} />
+        <ShiftCountCard
+          label={pendingLabel}
           value={seg.pending}
           size="kpi"
           variant="pending"
-          onClick={click("pending", "Pending")}
+          onClick={click("pending", pendingLabel)}
         />
         <ShiftCountCard
           label="Review Required"
@@ -178,17 +180,10 @@ function MetricRow({ title, seg, showEntryMetrics = true, emphasize = false, onM
           onClick={click("review_required", "Review Required")}
         />
       </Box>
-      {showEntryMetrics ? (
-        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
-          Active {seg.active_workload} = New {seg.new_today} + Carryover {seg.carryover}
-          {" · "}
-          Outcomes {seg.active_workload} = Completed {seg.completed} + Pending {seg.pending} + Review {review}
-        </Typography>
-      ) : (
-        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
-          Active {seg.active_workload} = Completed {seg.completed} + Pending {seg.pending} + Review {review}
-        </Typography>
-      )}
+      <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
+        Total {total} = {doneLabel} {seg.completed} + {pendingLabel} {seg.pending} + Review {review}
+        {membershipHelper ? ` · ${membershipHelper}` : ""}
+      </Typography>
     </Box>
   );
 }
@@ -255,24 +250,29 @@ export default function VeeWashStep1Section({
             pending: totalSeg.pending,
             review_required: reviewCount,
             wf: {
-              new_today: wfSeg?.new_today,
-              carryover: wfSeg?.carryover,
+              total: wfSeg?.total_workload ?? wfSeg?.active_workload,
               completed: wfSeg?.completed,
               pending: wfSeg?.pending,
               review_required: wfSeg?.exceptions?.review_required,
             },
             hd: {
-              new_today: hdSeg?.new_today,
-              carryover: hdSeg?.carryover,
+              total: hdSeg?.total_workload ?? hdSeg?.active_workload,
               completed: hdSeg?.completed,
               pending: hdSeg?.pending,
               review_required: hdSeg?.exceptions?.review_required,
             },
+            membership: summary?.membership || dayMeta?.membership || null,
           },
         }}
         isToday={isToday}
         onChanged={onRefresh}
       />
+      {summary?.step1_history_unavailable ? (
+        <Alert severity="info" sx={{ mb: 1.5 }}>
+          {summary.message ||
+            "Step-1 daily workload tracking started July 23, 2026. Earlier operational snapshots were retired."}
+        </Alert>
+      ) : null}
       <Paper
         elevation={0}
         sx={{
@@ -310,8 +310,18 @@ export default function VeeWashStep1Section({
             />
           </Stack>
           <Typography variant="caption" sx={{ mt: 0.35, opacity: 0.9, display: "block", maxWidth: 640 }}>
-            WF/HD Dirty entry · Completion canonical · Review Required includes CWO, zero-weight WF, and disappearances.
+            WF/HD append-only daily membership · Completion canonical · Review Required is for genuine exceptions only.
           </Typography>
+          {summary?.membership ? (
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+              Baseline {summary.membership.baseline_count ?? "—"}
+              {summary.membership.baseline_delayed ? " (delayed)" : ""} · Added During Day{" "}
+              {summary.membership.added_later_count ?? "—"} · Total {summary.membership.total_count ?? "—"}
+              {summary.membership.baseline_presence_run_id
+                ? ` · scrape #${summary.membership.baseline_presence_run_id}`
+                : ""}
+            </Typography>
+          ) : null}
         </Box>
 
         <Box sx={{ p: { xs: 1.25, sm: 1.75 } }}>
@@ -336,8 +346,8 @@ export default function VeeWashStep1Section({
             </Box>
           </Stack>
 
-          {wfSeg ? <MetricRow title="WF" seg={wfSeg} showEntryMetrics onMetricClick={openMetric} /> : null}
-          {hdSeg ? <MetricRow title="HD" seg={hdSeg} showEntryMetrics onMetricClick={openMetric} /> : null}
+          {wfSeg ? <MetricRow title="WF" seg={wfSeg} onMetricClick={openMetric} /> : null}
+          {hdSeg ? <MetricRow title="HD" seg={hdSeg} onMetricClick={openMetric} /> : null}
 
           <Box
             sx={{
@@ -347,7 +357,17 @@ export default function VeeWashStep1Section({
               borderColor: "divider",
             }}
           >
-            <MetricRow title="TOTAL" seg={totalSeg} showEntryMetrics={false} emphasize onMetricClick={openMetric} />
+            <MetricRow
+              title="TOTAL"
+              seg={totalSeg}
+              emphasize
+              onMetricClick={openMetric}
+              membershipHelper={
+                summary?.membership
+                  ? `Baseline ${summary.membership.baseline_count ?? "—"} · Added During Day ${summary.membership.added_later_count ?? "—"} · Total ${summary.membership.total_count ?? totalSeg.active_workload ?? "—"}`
+                  : null
+              }
+            />
           </Box>
         </Box>
       </Paper>

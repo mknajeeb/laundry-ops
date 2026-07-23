@@ -26,7 +26,6 @@ const CHECKLIST_ITEMS = [
   ["completed_without_entry_resolved", "Completed-without-entry issues resolved"],
   ["disappeared_reviewed", "Disappeared bags reviewed"],
   ["bulk_workitems_reviewed", "Bulk Workitems Reviewed"],
-  ["carryover_confirmed", "Carryover confirmed"],
 ];
 
 function fmtTs(v) {
@@ -213,14 +212,12 @@ export default function ShiftDayStatusBar({
               {totals.pending ?? "—"} · Review {totals.review_required ?? reviewN}
             </Typography>
             <Typography variant="caption" display="block">
-              WF New {totals.wf?.new_today ?? "—"} / Carry {totals.wf?.carryover ?? "—"} / Done{" "}
-              {totals.wf?.completed ?? "—"} / Pending {totals.wf?.pending ?? "—"} / Review{" "}
-              {totals.wf?.review_required ?? "—"}
+              WF Total {totals.wf?.total ?? "—"} / Done {totals.wf?.completed ?? "—"} / Pending{" "}
+              {totals.wf?.pending ?? "—"} / Review {totals.wf?.review_required ?? "—"}
             </Typography>
             <Typography variant="caption" display="block">
-              HD New {totals.hd?.new_today ?? "—"} / Carry {totals.hd?.carryover ?? "—"} / Done{" "}
-              {totals.hd?.completed ?? "—"} / Pending {totals.hd?.pending ?? "—"} / Review{" "}
-              {totals.hd?.review_required ?? "—"}
+              HD Available {totals.hd?.total ?? "—"} / Recorded {totals.hd?.completed ?? "—"} / Missing{" "}
+              {totals.hd?.pending ?? "—"} / Review {totals.hd?.review_required ?? "—"}
             </Typography>
           </Box>
           {reviewN > 0 ? (
