@@ -122,7 +122,7 @@ export default function EditBagPanel({
     role: "pre",
     weightLbs: bag?.pre_weight_lbs,
     source: bag?.pre_weight_source,
-    observedAt: bag?.pre_weight_observed_at || bag?.pre_weight_at,
+    observedAt: bag?.pre_weight_observed_at,
     attachBatchId: bag?.pre_weight_attach_batch_id,
     attachReason: bag?.pre_weight_attach_reason,
     needsManagerCorrection: preWeightNeedsManagerCorrection,
@@ -131,7 +131,7 @@ export default function EditBagPanel({
     role: "post",
     weightLbs: bag?.post_weight_value ?? bag?.post_weight_lbs,
     source: bag?.post_weight_source,
-    observedAt: bag?.post_weight_observed_at || bag?.post_weight_at,
+    observedAt: bag?.post_weight_observed_at,
     attachBatchId: bag?.post_weight_attach_batch_id,
     attachReason: bag?.post_weight_attach_reason,
   });

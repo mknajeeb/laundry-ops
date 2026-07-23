@@ -99,7 +99,7 @@ export function describeWeightProvenance({
       title: ["Source: Portal Observation", batchBit].filter(Boolean).join(" · "),
     };
   }
-  if (src || when || batchBit) {
+  if (src || batchBit) {
     return {
       helperText: [src || "Weight source recorded", when].filter(Boolean).join(" · "),
       title: [src, batchBit, attachReason].filter(Boolean).join(" · "),

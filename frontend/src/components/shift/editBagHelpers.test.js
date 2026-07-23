@@ -78,6 +78,17 @@ describe("describeWeightProvenance", () => {
     });
     expect(d.helperText).toMatch(/no recoverable historical portal/i);
   });
+
+  it("does not invent a portal source when weight has no enrichment provenance", () => {
+    const d = describeWeightProvenance({
+      role: "pre",
+      weightLbs: 9.2,
+      source: null,
+      observedAt: null,
+    });
+    expect(d.helperText).toBe("Blank = null · 0 is valid");
+    expect(d.title).toBe("");
+  });
 });
 
 describe("formatWeightObservedEt", () => {
