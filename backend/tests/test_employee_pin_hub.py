@@ -16,6 +16,28 @@ def _matched(roles=None, uid=10):
     }
 
 
+def test_resolve_hub_features_org_assign_shows_checklist_without_floor_role():
+    conn = MagicMock()
+    matched = _matched([])  # no FRONT_DESK/OPS
+    with patch(
+        "backend.employee_pin_hub.load_pin_menu_settings",
+        return_value={
+            "enabled": True,
+            "features": {"switch_role": True, "checklist": True, "inventory": True},
+        },
+    ), patch(
+        "backend.employee_pin_hub.is_category_role_tracking_enabled", return_value=True
+    ), patch(
+        "backend.employee_pin_hub._tenant_module_enabled", return_value=True
+    ), patch(
+        "backend.employee_pin_hub._permission_keys", return_value=set()
+    ):
+        features = resolve_hub_features(conn, org_id=3, matched=matched)
+    assert features["checklist"]["allowed"] is True
+    assert features["inventory"]["allowed"] is True
+    assert features["switch_role"]["allowed"] is True
+
+
 def test_resolve_hub_features_respects_org_pin_menu_off():
     conn = MagicMock()
     matched = _matched(["FRONT_DESK"])
@@ -37,28 +59,6 @@ def test_resolve_hub_features_respects_org_pin_menu_off():
     assert features["switch_role"]["org_enabled"] is False
     assert features["checklist"]["allowed"] is True
     assert features["inventory"]["allowed"] is False
-
-
-def test_resolve_hub_features_floor_role_when_org_enables_all():
-    conn = MagicMock()
-    matched = _matched(["FRONT_DESK"])
-    with patch(
-        "backend.employee_pin_hub.load_pin_menu_settings",
-        return_value={
-            "enabled": True,
-            "features": {"switch_role": True, "checklist": True, "inventory": True},
-        },
-    ), patch(
-        "backend.employee_pin_hub.is_category_role_tracking_enabled", return_value=True
-    ), patch(
-        "backend.employee_pin_hub._tenant_module_enabled", return_value=True
-    ), patch(
-        "backend.employee_pin_hub._permission_keys", return_value=set()
-    ):
-        features = resolve_hub_features(conn, org_id=3, matched=matched)
-    assert features["switch_role"]["allowed"] is True
-    assert features["checklist"]["allowed"] is True
-    assert features["inventory"]["allowed"] is True
 
 
 def test_resolve_hub_features_inventory_module_off():

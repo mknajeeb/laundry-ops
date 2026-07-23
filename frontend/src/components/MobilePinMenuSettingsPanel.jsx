@@ -30,12 +30,12 @@ export const PIN_MENU_FEATURE_OPTIONS = [
   {
     id: "checklist",
     label: "End-of-day checklist",
-    help: "Maintenance task list. Who can open it is still controlled by Permissions.",
+    help: "Maintenance task list for anyone with an attendance PIN.",
   },
   {
     id: "inventory",
     label: "Inventory",
-    help: "Open inventory after PIN unlock. Who can open it is still controlled by Permissions.",
+    help: "Open inventory after PIN unlock (inventory module must be on).",
   },
 ];
 

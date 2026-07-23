@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -297,16 +297,6 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
     prevPinLenRef.current = 0;
   };
 
-  const lockAgain = () => {
-    clearPinHubSession();
-    setHub(null);
-    setPhase("pin");
-    setPin("");
-    setError("");
-    setFeatureLoading("");
-    prevPinLenRef.current = 0;
-  };
-
   const openFeature = async (featureId) => {
     if (!hub || !slug || featureLoading) return;
     setError("");
@@ -537,19 +527,8 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
                   </Button>
                 );
               })}
-
-              <Button onClick={lockAgain} color="inherit" sx={{ textTransform: "none", mt: 0.5 }}>
-                Lock / switch person
-              </Button>
             </Stack>
           )}
-
-          <Typography variant="caption" color="text.secondary" textAlign="center">
-            Shared-tablet clock in/out stays on the attendance kiosk.
-          </Typography>
-          <Button component={Link} to={slug ? `/attendance/${slug}` : "/attendance"} size="small" sx={{ textTransform: "none" }}>
-            Tablet attendance
-          </Button>
         </Stack>
       </Paper>
     </Box>

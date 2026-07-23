@@ -189,22 +189,19 @@ def _user_may_use_feature(
     keys: set[str],
     roles: set[str],
 ) -> bool:
-    floor_or_ops = bool(roles & {"FRONT_DESK", "OPS"})
-
+    """
+    Extra gates beyond org pin_menu assignment.
+    Checklist/inventory: any employee with a valid attendance PIN (org toggle is the assigner).
+    Switch role: still requires category/role tracking.
+    """
     if feature_id == "switch_role":
         return bool(is_category_role_tracking_enabled(conn, org_id))
 
     if feature_id == "checklist":
-        if _has_prefix(keys, "maintenance.tasks."):
-            return _has_any_perm(keys, CHECKLIST_PERM_KEYS)
-        return floor_or_ops
+        return True
 
     if feature_id == "inventory":
-        if not _tenant_module_enabled(conn, org_id, "inventory"):
-            return False
-        if _has_prefix(keys, "inventory."):
-            return _has_any_perm(keys, INVENTORY_PERM_KEYS)
-        return floor_or_ops
+        return bool(_tenant_module_enabled(conn, org_id, "inventory"))
 
     return False
 
@@ -218,7 +215,7 @@ def resolve_hub_features(
 ) -> dict[str, Any]:
     """
     Return feature tiles for the mobile PIN menu.
-    Org pin_menu assigns which buttons exist; permissions gate who can open them.
+    Org pin_menu assigns which buttons exist; feature defs add small extra gates.
     """
     roles = _role_set(matched)
     keys = _permission_keys(conn, int(matched["id"]), effective_keys_fn)
