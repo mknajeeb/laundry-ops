@@ -6,7 +6,12 @@
       "/api/*",
       "/*.webmanifest",
       "/attendance.manifest.webmanifest",
-      "/attendance-manifests/*"
+      "/attendance-maintenance.manifest.webmanifest",
+      "/attendance-role.manifest.webmanifest",
+      "/pin.manifest.webmanifest",
+      "/attendance-manifests/*",
+      "/pin-manifests/*",
+      "/kiosk-manifests/*"
     ]
   }
 }

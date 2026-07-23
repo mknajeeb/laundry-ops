@@ -63,6 +63,7 @@ import KioskUnlockPage from "./pages/KioskUnlockPage";
 import AttendancePinPage from "./pages/AttendancePinPage";
 import AttendanceRoleSwitchPage from "./pages/AttendanceRoleSwitchPage";
 import MaintenanceTaskListPinPage from "./pages/MaintenanceTaskListPinPage";
+import EmployeePinHubPage from "./pages/EmployeePinHubPage";
 import MaintenanceTaskListReportsPage from "./pages/MaintenanceTaskListReportsPage";
 import MaintenanceTaskSettingsPage from "./pages/MaintenanceTaskSettingsPage";
 import PartnerRosterPage from "./pages/PartnerRosterPage";
@@ -167,10 +168,20 @@ function isKioskRoute(path) {
   return p === "/kiosk" || p.startsWith("/kiosk/");
 }
 
+/** Phone PIN hub: switch role / checklist / inventory (permission-gated). */
+function isPinHubRoute(path) {
+  const p = path || "";
+  return p === "/pin" || p.startsWith("/pin/");
+}
+
 /** Kiosk clock in/out only: /attendance or /attendance/:orgSlug (no app session). */
 function isAttendanceRoute(path) {
   const p = path || "";
   return p === "/attendance" || p.startsWith("/attendance/");
+}
+
+function isPublicPinSurface(path) {
+  return isKioskRoute(path) || isAttendanceRoute(path) || isPinHubRoute(path);
 }
 
 /** Same rules as LoginPage — kept in sync for tenant bookmark URLs. */
@@ -308,10 +319,10 @@ function AppShell() {
     if (!user) washproSessionSyncedRef.current = false;
   }, [user]);
 
-  /** Kiosk / attendance are anonymous: drop stale session once so PIN flows stay stateless. */
+  /** Kiosk / attendance / pin hub are anonymous: drop stale session once so PIN flows stay stateless. */
   const kioskStripRef = useRef(false);
   useEffect(() => {
-    if (!isKioskRoute(pathname) && !isAttendanceRoute(pathname)) {
+    if (!isPublicPinSurface(pathname)) {
       kioskStripRef.current = false;
       return;
     }
@@ -329,7 +340,7 @@ function AppShell() {
 
   useEffect(() => {
     async function bootstrap() {
-      if (isLoginRoute(pathname) || isKioskRoute(pathname) || isAttendanceRoute(pathname)) {
+      if (isLoginRoute(pathname) || isPublicPinSurface(pathname)) {
         setAuthLoading(false);
         return;
       }
@@ -501,7 +512,7 @@ function AppShell() {
     []
   );
 
-  if (authLoading && !isLoginRoute(pathname) && !isKioskRoute(pathname) && !isAttendanceRoute(pathname) && !isPartnerRosterRoute(pathname)) {
+  if (authLoading && !isLoginRoute(pathname) && !isPublicPinSurface(pathname) && !isPartnerRosterRoute(pathname)) {
     return (
       <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "grid", placeItems: "center" }}>
         <Typography>Loading...</Typography>
@@ -515,6 +526,16 @@ function AppShell() {
       <Routes>
         <Route path="/kiosk/:orgSlug" element={<KioskUnlockPage onLoggedIn={setUser} />} />
         <Route path="/kiosk" element={<Navigate to="/login" replace />} />
+      </Routes>
+    );
+  }
+
+  /** Phone PIN hub: permission-gated Switch Role / Checklist / Inventory. */
+  if (isPinHubRoute(pathname)) {
+    return (
+      <Routes>
+        <Route path="/pin/:orgSlug" element={<EmployeePinHubPage onLoggedIn={setUser} />} />
+        <Route path="/pin" element={<EmployeePinHubPage onLoggedIn={setUser} />} />
       </Routes>
     );
   }
@@ -542,7 +563,7 @@ function AppShell() {
     );
   }
 
-  if (!user && !isLoginRoute(pathname) && !isKioskRoute(pathname) && !isAttendanceRoute(pathname) && !isPartnerRosterRoute(pathname)) {
+  if (!user && !isLoginRoute(pathname) && !isPublicPinSurface(pathname) && !isPartnerRosterRoute(pathname)) {
     return <Navigate to="/login" replace />;
   }
 

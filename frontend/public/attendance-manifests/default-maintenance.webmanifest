@@ -1,0 +1,19 @@
+{
+  "name": "Checklist",
+  "short_name": "Checklist",
+  "description": "Complete end-of-day checklist with your attendance PIN.",
+  "start_url": "/attendance/maintenance",
+  "scope": "/attendance/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f3f6fa",
+  "theme_color": "#2d3d9c",
+  "icons": [
+    {
+      "src": "/neutral-app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

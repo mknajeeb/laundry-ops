@@ -8,7 +8,43 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Laundry Ops" />
-    <link rel="manifest" href="/manifest.webmanifest" />
+    <link id="app-manifest" rel="manifest" href="/manifest.webmanifest" />
+    <!--
+      Override manifest BEFORE React boots so "Add to Home Screen" does not
+      capture Laundry Ops (start_url / → username/password login).
+    -->
+    <script>
+      (function () {
+        try {
+          var p = location.pathname || "";
+          var href = "/manifest.webmanifest";
+          if (/^\/attendance\/maintenance\/veewash\/?$/i.test(p)) {
+            href = "/attendance-maintenance.manifest.webmanifest";
+          } else if (/^\/attendance\/role\/veewash\/?$/i.test(p)) {
+            href = "/attendance-role.manifest.webmanifest";
+          } else if (/^\/pin\/veewash\/?$/i.test(p)) {
+            href = "/pin.manifest.webmanifest";
+          } else if (/^\/attendance\/veewash\/?$/i.test(p)) {
+            href = "/attendance.manifest.webmanifest";
+          } else if (/^\/attendance\/maintenance\/([^/]+)\/?$/i.test(p)) {
+            href = "/attendance-manifests/" + RegExp.$1.toLowerCase() + "-maintenance.webmanifest";
+          } else if (/^\/attendance\/role\/([^/]+)\/?$/i.test(p)) {
+            href = "/attendance-manifests/" + RegExp.$1.toLowerCase() + "-role.webmanifest";
+          } else if (/^\/pin\/([^/]+)\/?$/i.test(p)) {
+            href = "/pin-manifests/" + RegExp.$1.toLowerCase() + ".webmanifest";
+          } else if (/^\/attendance\/([^/]+)\/?$/i.test(p)) {
+            var slug = RegExp.$1.toLowerCase();
+            if (slug !== "role" && slug !== "maintenance") {
+              href = slug === "veewash"
+                ? "/attendance.manifest.webmanifest"
+                : "/attendance-manifests/" + slug + ".webmanifest";
+            }
+          }
+          var link = document.getElementById("app-manifest") || document.querySelector('link[rel="manifest"]');
+          if (link) link.setAttribute("href", href);
+        } catch (e) { /* ignore */ }
+      })();
+    </script>
     <link id="app-icon-svg" rel="icon" href="/neutral-app-icon.svg" type="image/svg+xml" />
     <link id="app-icon-png" rel="icon" type="image/svg+xml" sizes="192x192" href="/neutral-app-icon.svg" />
     <link id="app-icon-apple" rel="apple-touch-icon" href="/neutral-app-icon.svg" />

@@ -1,0 +1,19 @@
+{
+  "name": "VeeWash Switch Role",
+  "short_name": "Switch Role",
+  "description": "Switch your shift role with your attendance PIN.",
+  "start_url": "/attendance/role/veewash",
+  "scope": "/attendance/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#eef2ff",
+  "theme_color": "#2d3d9c",
+  "icons": [
+    {
+      "src": "/veewash-attendance-logo.png",
+      "sizes": "500x500",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

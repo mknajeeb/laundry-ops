@@ -1,0 +1,19 @@
+{
+  "name": "PIN Menu",
+  "short_name": "PIN Menu",
+  "description": "Switch role, checklist, and inventory with your attendance PIN.",
+  "start_url": "/pin",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f3f6fa",
+  "theme_color": "#2d3d9c",
+  "icons": [
+    {
+      "src": "/neutral-app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

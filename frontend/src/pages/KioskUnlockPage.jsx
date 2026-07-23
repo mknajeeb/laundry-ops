@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Alert,
   Avatar,
@@ -25,6 +25,7 @@ import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { tenantDefaultRoute } from "../utils/platformAccess";
+import { applyKioskPwaManifest } from "../utils/kioskPwaManifest";
 
 const PIN_LEN = 4;
 
@@ -123,14 +124,28 @@ function displayInitials(name) {
   return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
 }
 
+/** Allow only same-origin app paths (e.g. /inventory) after PIN unlock. */
+function safeNextPath(raw) {
+  if (!raw || typeof raw !== "string") return "";
+  const path = raw.trim();
+  if (!path.startsWith("/") || path.startsWith("//") || path.includes("://")) return "";
+  if (path.includes("\\") || path.includes("\n") || path.includes("\r")) return "";
+  const allowed = new Set(["/inventory"]);
+  const bare = path.split("?")[0].split("#")[0];
+  return allowed.has(bare) ? bare : "";
+}
+
 /**
  * Public lock screen after shared-device clock actions: employee enters payroll PIN to resume session.
+ * Optional ?next=/inventory deep-links into Inventory after unlock (phone PIN PWA).
  */
 export default function KioskUnlockPage({ onLoggedIn }) {
   const { t, locale } = useI18n();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { orgSlug: orgSlugParam } = useParams();
   const slug = useMemo(() => sanitizeSlug(orgSlugParam), [orgSlugParam]);
+  const nextPath = useMemo(() => safeNextPath(searchParams.get("next")), [searchParams]);
   const [pin, setPin] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -141,6 +156,11 @@ export default function KioskUnlockPage({ onLoggedIn }) {
   const prevPinLenRef = useRef(0);
   const [teamCanScrollUp, setTeamCanScrollUp] = useState(false);
   const [teamCanScrollDown, setTeamCanScrollDown] = useState(false);
+
+  useLayoutEffect(() => {
+    if (nextPath !== "/inventory") return undefined;
+    return applyKioskPwaManifest(slug, "inventory");
+  }, [slug, nextPath]);
 
   const localeTag = locale === "es" ? "es-US" : "en-US";
 
@@ -275,7 +295,7 @@ export default function KioskUnlockPage({ onLoggedIn }) {
         }
         setAuthSession(payload);
         onLoggedIn?.(payload.user);
-        navigate(tenantDefaultRoute(payload.user), { replace: true });
+        navigate(nextPath || tenantDefaultRoute(payload.user), { replace: true });
       } catch (e) {
         console.error(e);
         const data = e?.response?.data;
@@ -293,7 +313,7 @@ export default function KioskUnlockPage({ onLoggedIn }) {
         setLoading(false);
       }
     },
-    [slug, navigate, onLoggedIn, t],
+    [slug, navigate, onLoggedIn, t, nextPath],
   );
 
   useEffect(() => {

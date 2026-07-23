@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -105,6 +105,8 @@ function digitKeySx() {
 export default function MaintenanceTaskListPinPage() {
   const { t } = useI18n();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const fromHub = searchParams.get("from") === "hub";
   const { orgSlug: orgSlugParam } = useParams();
   const routeSlug = useMemo(() => sanitizeSlug(orgSlugParam), [orgSlugParam]);
 
@@ -141,7 +143,7 @@ export default function MaintenanceTaskListPinPage() {
   };
 
   useLayoutEffect(() => {
-    return applyAttendancePwaManifest(routeSlug || selectedSlug);
+    return applyAttendancePwaManifest(routeSlug || selectedSlug, "maintenance");
   }, [routeSlug, selectedSlug]);
 
   useEffect(() => {
@@ -451,11 +453,19 @@ export default function MaintenanceTaskListPinPage() {
           ) : null}
           <Button
             component={Link}
-            to={slug ? `/attendance/role/${encodeURIComponent(slug)}` : "/attendance/role"}
+            to={
+              fromHub
+                ? slug
+                  ? `/pin/${encodeURIComponent(slug)}`
+                  : "/pin"
+                : slug
+                  ? `/attendance/role/${encodeURIComponent(slug)}`
+                  : "/attendance/role"
+            }
             size="small"
             sx={{ textTransform: "none" }}
           >
-            Switch Role
+            {fromHub ? "PIN Menu" : "Switch Role"}
           </Button>
         </Stack>
 

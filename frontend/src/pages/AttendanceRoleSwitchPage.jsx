@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -34,6 +34,7 @@ import { VEEWASH_LOGO_URL } from "../theme/veewashBrand";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
 import { roleChoiceButtonSx } from "../utils/roleChoiceButtonSx";
+import { takePinHubPinForSlug } from "../utils/pinHubSession";
 
 const PIN_LEN = 4;
 const SUCCESS_RESET_MS = 3500;
@@ -215,6 +216,8 @@ function mapSwitchRoleError(body, status, t) {
 export default function AttendanceRoleSwitchPage() {
   const { t, locale, setLocale } = useI18n();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const fromHub = searchParams.get("from") === "hub";
   const { orgSlug: orgSlugParam } = useParams();
   const routeSlug = useMemo(() => sanitizeSlug(orgSlugParam), [orgSlugParam]);
 
@@ -239,6 +242,7 @@ export default function AttendanceRoleSwitchPage() {
   const prevPinLenRef = useRef(0);
   const idempotencyKeyRef = useRef(null);
   const resetTimerRef = useRef(null);
+  const hubPinUsedRef = useRef(false);
 
   const pinDigits = useMemo(() => String(pin || "").replace(/\D/g, "").slice(0, PIN_LEN), [pin]);
   const isVeeWash = sanitizeSlug(slug) === "veewash";
@@ -273,7 +277,7 @@ export default function AttendanceRoleSwitchPage() {
   }, []);
 
   useLayoutEffect(() => {
-    return applyAttendancePwaManifest(routeSlug || selectedSlug);
+    return applyAttendancePwaManifest(routeSlug || selectedSlug, "role");
   }, [routeSlug, selectedSlug]);
 
   useEffect(() => {
@@ -411,6 +415,15 @@ export default function AttendanceRoleSwitchPage() {
       void openPickerFromPin(pinDigits);
     }
   }, [slug, pinDigits, openPickerFromPin, phase, loading]);
+
+  /** From /pin hub: reuse the PIN already entered (no second keypad). */
+  useEffect(() => {
+    if (!fromHub || !slug || phase !== "pin" || hubPinUsedRef.current) return;
+    const hubPin = takePinHubPinForSlug(slug);
+    if (!hubPin || hubPin.length !== PIN_LEN) return;
+    hubPinUsedRef.current = true;
+    void openPickerFromPin(hubPin);
+  }, [fromHub, slug, phase, openPickerFromPin]);
 
   const confirmRole = async (categoryId, roleId) => {
     if (!pendingPin || !categoryId || !roleId || punchInFlightRef.current) return;
@@ -823,9 +836,13 @@ export default function AttendanceRoleSwitchPage() {
               <Button
                 component={Link}
                 to={
-                  slug
-                    ? `/attendance/maintenance/${encodeURIComponent(slug)}`
-                    : "/attendance/maintenance"
+                  fromHub
+                    ? slug
+                      ? `/pin/${encodeURIComponent(slug)}`
+                      : "/pin"
+                    : slug
+                      ? `/attendance/maintenance/${encodeURIComponent(slug)}`
+                      : "/attendance/maintenance"
                 }
                 fullWidth
                 variant="contained"
@@ -839,7 +856,7 @@ export default function AttendanceRoleSwitchPage() {
                   maxWidth: 300,
                 }}
               >
-                {t("attendance.maintenanceTasks")}
+                {fromHub ? "PIN Menu" : t("attendance.maintenanceTasks")}
               </Button>
             </>
           ) : null}

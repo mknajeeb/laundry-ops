@@ -1,0 +1,19 @@
+{
+  "name": "VeeWash Checklist",
+  "short_name": "Checklist",
+  "description": "Complete end-of-day checklist with your attendance PIN.",
+  "start_url": "/attendance/maintenance/veewash",
+  "scope": "/attendance/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#eef2ff",
+  "theme_color": "#2d3d9c",
+  "icons": [
+    {
+      "src": "/veewash-attendance-logo.png",
+      "sizes": "500x500",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

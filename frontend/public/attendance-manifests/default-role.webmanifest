@@ -1,0 +1,19 @@
+{
+  "name": "Switch Role",
+  "short_name": "Switch Role",
+  "description": "Switch your shift role with your attendance PIN.",
+  "start_url": "/attendance/role",
+  "scope": "/attendance/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f3f6fa",
+  "theme_color": "#2d3d9c",
+  "icons": [
+    {
+      "src": "/neutral-app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

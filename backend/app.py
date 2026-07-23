@@ -5070,6 +5070,50 @@ def public_attendance_pin_switch_role():
             pass
 
 
+@app.route("/api/public/attendance/pin-hub", methods=["POST"])
+def public_attendance_pin_hub():
+    """
+    Phone PIN hub: one PIN → permission-gated feature menu (role / checklist / inventory).
+    Does not clock in/out. Inventory still mints a full session when opened.
+    """
+    from backend.employee_pin_hub import perform_pin_hub_open
+
+    data = request.json or {}
+    org_slug = (data.get("organization_slug") or data.get("organization") or "").strip().lower()
+    pin = data.get("pin")
+    conn = get_db()
+    try:
+        body, status = perform_pin_hub_open(
+            conn,
+            org_slug,
+            pin,
+            fetch_user_roles,
+            get_request_ip(),
+            effective_keys_fn=effective_washpro_permission_keys,
+        )
+        if body.get("ok"):
+            conn.commit()
+        else:
+            try:
+                conn.commit()
+            except Exception:
+                pass
+        return jsonify(body), status
+    except Exception:
+        logger = __import__("logging").getLogger(__name__)
+        logger.exception("public_attendance_pin_hub failed")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": "PIN hub open failed"}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @app.route("/api/public/organizations/for-attendance", methods=["GET"])
 def public_organizations_for_attendance():
     """Active tenants for /attendance tenant picker."""

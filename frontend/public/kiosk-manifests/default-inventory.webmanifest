@@ -1,0 +1,19 @@
+{
+  "name": "Inventory",
+  "short_name": "Inventory",
+  "description": "Open inventory with your attendance PIN.",
+  "start_url": "/kiosk?next=%2Finventory",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ecfeff",
+  "theme_color": "#0e7490",
+  "icons": [
+    {
+      "src": "/neutral-app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

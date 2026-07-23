@@ -264,6 +264,20 @@ export const attendancePinMaintenanceTasks = (organization_slug, pin) =>
     },
   );
 
+/** Phone PIN hub: one PIN → permission-gated feature menu. */
+export const attendancePinHub = (organization_slug, pin) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-hub`,
+    {
+      organization_slug: String(organization_slug || "").trim().toLowerCase(),
+      pin: String(pin || "").trim(),
+    },
+    {
+      timeout: ATTENDANCE_PIN_PUNCH_TIMEOUT_MS,
+      validateStatus: (status) => status >= 200 && status < 600,
+    },
+  );
+
 function mtlPinHeaders(sessionToken) {
   const token = String(sessionToken || "").trim();
   return token

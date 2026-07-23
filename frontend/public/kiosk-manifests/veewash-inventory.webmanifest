@@ -1,0 +1,19 @@
+{
+  "name": "VeeWash Inventory",
+  "short_name": "Inventory",
+  "description": "Open inventory with your attendance PIN.",
+  "start_url": "/kiosk/veewash?next=%2Finventory",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ecfeff",
+  "theme_color": "#0e7490",
+  "icons": [
+    {
+      "src": "/veewash-attendance-logo.png",
+      "sizes": "500x500",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
