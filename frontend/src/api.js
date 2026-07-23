@@ -72,10 +72,13 @@ export const getSavedUser = () => {
 
 axios.interceptors.request.use((config) => {
   const url = String(config.url || "");
-  /** Public PIN unlock / kiosk punch — never send another user's Bearer token. */
+  /** Public PIN surfaces — never send another user's Bearer token. */
   if (
     url.includes("/auth/attendance-pin-unlock") ||
-    url.includes("/api/public/attendance/pin-punch")
+    url.includes("/api/public/attendance/pin-punch") ||
+    url.includes("/api/public/attendance/pin-switch-role") ||
+    url.includes("/api/public/attendance/pin-maintenance-tasks") ||
+    url.includes("/api/public/attendance/pin-hub")
   ) {
     return config;
   }

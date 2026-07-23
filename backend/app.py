@@ -115,6 +115,8 @@ CORS(
         "Cache-Control",
         "Pragma",
         "X-Hr-Form-Format",
+        # Employee Maintenance Task List PIN session (public MTL APIs).
+        "X-Maintenance-Session",
     ],
     expose_headers=["Content-Type", "Content-Disposition", "Content-Length"],
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
