@@ -102,6 +102,42 @@ def prepare_orders_df(orders_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _attach_portal_weights_after_draft_merge(
+    cursor,
+    tenant_oid: int,
+    upload_batch_id: int,
+    orders_df: pd.DataFrame,
+) -> None:
+    """
+    Best-effort draft-time attach of portal Weight_Num onto the latest
+    eligible null weight-entry scan for each ticket row. Guarded per-row and
+    never raises — a failure here must not fail the draft upload; the
+    confirm-time attach in apply_registry_from_accepted_portal_rows is
+    authoritative.
+    """
+    if "ticket_id" not in orders_df.columns or "Weight_Num" not in orders_df.columns:
+        return
+    from backend.rinse_bag_completion import normalize_bag_id
+    from backend.rinse_scan_weight_enrichment import attach_portal_weight_to_latest_eligible
+    from backend.rinse_wf_weight_events import normalize_scan_weight_lbs
+
+    for _, row in orders_df.iterrows():
+        try:
+            bag_id = normalize_bag_id(row.get("ticket_id"))
+            lbs = normalize_scan_weight_lbs(row.get("Weight_Num"))
+            if not bag_id or lbs is None:
+                continue
+            attach_portal_weight_to_latest_eligible(
+                cursor,
+                tenant_oid,
+                bag_id,
+                weight_lbs=lbs,
+                upload_batch_id=upload_batch_id,
+            )
+        except Exception:
+            continue
+
+
 def close_prior_draft_batches(
     cursor, tenant_oid: int, batch_date: date, schema: UploadBatchSchema
 ) -> None:
@@ -763,6 +799,12 @@ def commit_rinse_combined_upload(
             replace_existing=True,
             credential_sourced=True,
         )
+        # Best-effort: attach portal Weight_Num onto the latest eligible
+        # weight-entry immediately after the draft merge, so enrichment isn't
+        # only available once the batch is confirmed. Never raises — the
+        # confirm-time apply_registry_from_accepted_portal_rows path is the
+        # authoritative attach and must work even if this is skipped.
+        _attach_portal_weights_after_draft_merge(cursor, tenant_oid, upload_batch_id, orders_df)
 
     finalize_upload_batch_row_counts(
         cursor, tenant_oid, upload_batch_id, counts["rows_inserted"], schema

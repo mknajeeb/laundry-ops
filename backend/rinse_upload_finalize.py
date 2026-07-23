@@ -171,17 +171,26 @@ def apply_registry_from_accepted_portal_rows(
         # Events CSV never carries Weight. Portal weight_num (incl. 0) must be
         # re-attached after every confirm merge, including HD rows — otherwise
         # replace_existing scan imports wipe prior weight_lbs and leave nulls.
+        # attach_portal_weight_to_latest_eligible attaches to the chronologically
+        # latest eligible weight-entry that is still null (never re-attributing a
+        # later/current value onto an earlier scan), and records provenance
+        # (weight_observed_at/weight_source/weight_attach_batch_id/reason).
+        from backend.rinse_scan_weight_enrichment import attach_portal_weight_to_latest_eligible
         from backend.rinse_wf_weight_events import normalize_scan_weight_lbs
-        from backend.rinse_workload_bag_weight import attach_portal_weight_to_post_processing_scan
 
         lbs = normalize_scan_weight_lbs(row.get("weight_num"))
-        if lbs is not None and isinstance(row_date, date):
-            attach_portal_weight_to_post_processing_scan(
+        if lbs is not None:
+            portal_observed_at = row.get("confirmed_at")
+            if not isinstance(portal_observed_at, datetime):
+                portal_observed_at = datetime.utcnow()
+            attach_portal_weight_to_latest_eligible(
                 cursor,
                 organization_id,
                 tid,
                 weight_lbs=lbs,
-                selected_date_et=row_date,
+                portal_observed_at=portal_observed_at,
+                upload_batch_id=upload_batch_id,
+                selected_date_et=row_date if isinstance(row_date, date) else None,
             )
         n += 1
     return n

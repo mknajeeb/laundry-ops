@@ -106,6 +106,16 @@ export default function EditBagPanel({
 
   const isHd = String(draft.service_type || "").toUpperCase() === "HD";
 
+  // Heuristic hint only — post weight present (from portal) while pre weight is
+  // still missing means the earlier weight-entry scan has no recoverable
+  // portal evidence and needs a manager correction (see
+  // backend/rinse_scan_weight_enrichment.py classify_and_backfill_bag).
+  const preWeightMissing = bag?.pre_weight_lbs === null || bag?.pre_weight_lbs === undefined;
+  const postWeightPresent =
+    (bag?.post_weight_value ?? bag?.post_weight_lbs) !== null &&
+    (bag?.post_weight_value ?? bag?.post_weight_lbs) !== undefined;
+  const preWeightNeedsManagerCorrection = preWeightMissing && postWeightPresent;
+
   const lines = useMemo(() => {
     if (isHd) return [];
     const out = catalog.map((wi) => {
@@ -325,7 +335,12 @@ export default function EditBagPanel({
             value={draft.pre_weight_lbs}
             onChange={(e) => setDraft((d) => ({ ...d, pre_weight_lbs: e.target.value }))}
             inputProps={{ step: 0.1, min: 0 }}
-            helperText="Blank = null · 0 is valid"
+            helperText={
+              preWeightNeedsManagerCorrection
+                ? "Missing — manager correction required"
+                : "Blank = null · 0 is valid"
+            }
+            error={preWeightNeedsManagerCorrection}
             fullWidth
           />
           <TextField
@@ -335,7 +350,11 @@ export default function EditBagPanel({
             value={draft.post_weight_lbs}
             onChange={(e) => setDraft((d) => ({ ...d, post_weight_lbs: e.target.value }))}
             inputProps={{ step: 0.1, min: 0 }}
-            helperText="Blank = null · 0 is valid"
+            helperText={
+              preWeightNeedsManagerCorrection
+                ? "Portal captured"
+                : "Blank = null · 0 is valid"
+            }
             fullWidth
           />
         </Stack>

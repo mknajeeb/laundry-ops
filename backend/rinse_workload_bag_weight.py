@@ -307,12 +307,31 @@ def attach_portal_weight_to_post_processing_scan(
     if trace.get("scan_weight_lbs_parsed") is not None:
         return {"updated": False, "reason": "scan_already_has_weight", "trace": trace}
 
-    ensure_scan_events_weight_lbs_column(cursor)
+    # Delegate schema/provenance to rinse_scan_weight_enrichment so every caller of
+    # this legacy entry point also gets weight_observed_at/weight_source/
+    # weight_attach_reason populated. SQL params intentionally stay (lbs, org,
+    # scan_id, bid) — unchanged from the pre-enrichment version — so this remains
+    # a pure additive change for existing callers/tests.
+    from backend.rinse_scan_weight_enrichment import (
+        WEIGHT_SOURCE_PORTAL_CURRENT,
+        ensure_scan_weight_enrichment_columns,
+    )
+
+    ensure_scan_weight_enrichment_columns(cursor)
+    attach_reason_literal = (
+        "post_processing_weight_entry_repair"
+        if attach_target == "post_processing_weight_entry"
+        else "last_weight_entry_on_day_repair"
+    )
     cursor.execute(
-        """
+        f"""
         UPDATE rinse_bag_scan_events
-        SET weight_lbs = %s, updated_at = NOW()
-        WHERE organization_id = %s AND id = %s AND bag_id = %s
+        SET weight_lbs = %s,
+            weight_observed_at = COALESCE(weight_observed_at, NOW()),
+            weight_source = COALESCE(NULLIF(weight_source, ''), '{WEIGHT_SOURCE_PORTAL_CURRENT}'),
+            weight_attach_reason = COALESCE(NULLIF(weight_attach_reason, ''), '{attach_reason_literal}'),
+            updated_at = NOW()
+        WHERE organization_id = %s AND id = %s AND bag_id = %s AND weight_lbs IS NULL
         """,
         (lbs, org, int(scan_id), bid),
     )

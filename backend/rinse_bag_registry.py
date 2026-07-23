@@ -844,6 +844,7 @@ def merge_scan_events_from_upload(
     events_deleted = 0
     bags_replace: list[str] = []
     bags_preserve_existing: list[str] = []
+    preserved_weight_enrichment: dict[tuple[str, str], dict[str, Any]] = {}
     if replace_existing and bag_ids:
         # Never wipe a richer persisted timeline with a truncated scrape export.
         # Additive upsert still runs for preserved bags so new rows can land.
@@ -862,6 +863,13 @@ def merge_scan_events_from_upload(
             else:
                 bags_preserve_existing.append(bag_id)
         if bags_replace:
+            # Events CSV never carries Weight — a full timeline replace deletes
+            # the rows that previously had portal weight_num attached. Snapshot
+            # before delete and restore after the upsert loop so enrichment
+            # (weight_lbs + provenance) survives the rebuild.
+            from backend.rinse_scan_weight_enrichment import snapshot_weight_enrichment
+
+            preserved_weight_enrichment = snapshot_weight_enrichment(cursor, org, bags_replace)
             events_deleted = delete_persistent_scan_events_for_bags(cursor, org, bags_replace)
     inserted = 0
     metadata_updated = 0
@@ -951,6 +959,14 @@ def merge_scan_events_from_upload(
             (org, bag_id, batch_id),
         )
 
+    weight_enrichment_restored = 0
+    if preserved_weight_enrichment:
+        from backend.rinse_scan_weight_enrichment import restore_weight_enrichment
+
+        weight_enrichment_restored = restore_weight_enrichment(
+            cursor, org, preserved_weight_enrichment
+        )
+
     return {
         "bags_merged": len(bag_ids),
         "events_inserted": inserted,
@@ -965,6 +981,8 @@ def merge_scan_events_from_upload(
         "bags_replaced": bags_replace if replace_existing else list(bag_ids),
         "bags_preserve_existing_timeline": bags_preserve_existing,
         "bag_ids": bag_ids,
+        "weight_enrichment_preserved": len(preserved_weight_enrichment),
+        "weight_enrichment_restored": weight_enrichment_restored,
     }
 
 
