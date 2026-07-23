@@ -1,10 +1,10 @@
 """
-Portal weight enrichment: preserve/restore across timeline rebuild + latest-eligible attach.
+Portal weight enrichment: preserve/restore across timeline rebuild + interval attach.
 
-Events CSV never carries Weight. Portal weight_num arrives later and must attach
-to the latest eligible null weight-entry — never to an earlier one, and never
-overwriting an already-populated weight_lbs. A timeline rebuild (delete +
-reinsert) must not erase previously attached enrichment.
+Events CSV never carries Weight. Portal weight_num arrives later (Presence Run
+Rows / confirm) and must attach via chronological intervals (PRE / POST /
+WEIGHT_RECHECK). A timeline rebuild (delete + reinsert) must not erase
+previously attached enrichment; restore reports unmatched dedupe keys.
 """
 
 from __future__ import annotations
@@ -16,6 +16,10 @@ from backend.rinse_scan_weight_enrichment import (
     OUTCOME_CURRENT_LATEST,
     OUTCOME_PRE_NOT_RECOVERABLE,
     OUTCOME_RECOVERED,
+    WEIGHT_ROLE_PRE,
+    WEIGHT_ROLE_POST,
+    WEIGHT_ROLE_RECHECK,
+    attach_observations_to_weight_events,
     attach_portal_weight_to_latest_eligible,
     classify_and_backfill_bag,
     restore_weight_enrichment,
@@ -27,13 +31,12 @@ BAG = "42EN4J3VRB"
 T0 = datetime(2026, 7, 22, 8, 0, 0)
 T1 = datetime(2026, 7, 22, 9, 0, 0)
 T2 = datetime(2026, 7, 22, 14, 0, 0)
+T3 = datetime(2026, 7, 22, 16, 0, 0)
 
 
 # ---------------------------------------------------------------------------
 # FakeCursor — simulates rinse_bag_scan_events (list of dict rows) plus the
 # INFORMATION_SCHEMA probes ensure_scan_weight_enrichment_columns performs.
-# Follows the dispatch-by-normalized-sql pattern used elsewhere in the suite
-# (test_step1_edit_bag.py / test_scan_timeline_merge_safety.py).
 # ---------------------------------------------------------------------------
 
 
@@ -77,9 +80,38 @@ class _FakeCursor:
             self._result = rows
             return
 
+        # restore: lookup by dedupe_key
+        if (
+            "from rinse_bag_scan_events" in s
+            and "dedupe_key = %s" in s
+            and "select id, weight_lbs" in s
+        ):
+            org, bag_id, dedupe_key = params
+            rows = [
+                dict(r)
+                for r in self.scan_events
+                if r["organization_id"] == int(org)
+                and r["bag_id"] == bag_id
+                and r.get("dedupe_key") == dedupe_key
+            ]
+            self._result = rows[:1]
+            return
+
         # restore_weight_enrichment (COALESCE update, keyed by dedupe_key)
         if s.startswith("update rinse_bag_scan_events") and "coalesce(weight_lbs" in s:
-            lbs, observed_at, source, batch_id, reason, org, bag_id, dedupe_key = params
+            (
+                lbs,
+                observed_at,
+                source,
+                batch_id,
+                reason,
+                presence_run_id,
+                presence_run_row_id,
+                weight_role,
+                org,
+                bag_id,
+                dedupe_key,
+            ) = params
             matched = 0
             for r in self.scan_events:
                 if (
@@ -93,14 +125,33 @@ class _FakeCursor:
                     r["weight_source"] = r.get("weight_source") or source
                     r["weight_attach_batch_id"] = r.get("weight_attach_batch_id") or batch_id
                     r["weight_attach_reason"] = r.get("weight_attach_reason") or reason
+                    r["weight_presence_run_id"] = (
+                        r.get("weight_presence_run_id") or presence_run_id
+                    )
+                    r["weight_presence_run_row_id"] = (
+                        r.get("weight_presence_run_row_id") or presence_run_row_id
+                    )
+                    r["weight_role"] = r.get("weight_role") or weight_role
                     matched += 1
             self.rowcount = matched
             self._result = []
             return
 
-        # attach_portal_weight_to_latest_eligible / _apply_backfill_weight (direct set, keyed by id)
+        # attach / interval apply (direct set, keyed by id)
         if s.startswith("update rinse_bag_scan_events") and "weight_lbs is null" in s:
-            lbs, observed_at, source, batch_id, reason, scan_id, org, bag_id = params
+            (
+                lbs,
+                observed_at,
+                source,
+                batch_id,
+                reason,
+                presence_run_id,
+                presence_run_row_id,
+                weight_role,
+                scan_id,
+                org,
+                bag_id,
+            ) = params
             matched = 0
             for r in self.scan_events:
                 if (
@@ -114,6 +165,9 @@ class _FakeCursor:
                     r["weight_source"] = source
                     r["weight_attach_batch_id"] = batch_id
                     r["weight_attach_reason"] = reason
+                    r["weight_presence_run_id"] = presence_run_id
+                    r["weight_presence_run_row_id"] = presence_run_row_id
+                    r["weight_role"] = weight_role
                     matched += 1
             self.rowcount = matched
             self._result = []
@@ -128,10 +182,18 @@ class _FakeCursor:
                 for r in self.scan_events
                 if r["organization_id"] == org and r["bag_id"] in bag_ids
             ]
-            rows.sort(key=lambda r: (r["bag_id"], r.get("scanned_at_parsed"), r.get("scan_index") or 0, r["id"]))
+            rows.sort(
+                key=lambda r: (
+                    r["bag_id"],
+                    r.get("scanned_at_parsed"),
+                    r.get("scan_index") or 0,
+                    r["id"],
+                )
+            )
             self._result = rows
             return
 
+        # manager-correction / presence observation probes → empty
         self._result = []
 
     def fetchall(self):
@@ -155,13 +217,16 @@ def _row(scan_id, bag_id, ts, *, purpose="weight-entry", weight_lbs=None, dedupe
         "weight_source": None,
         "weight_attach_batch_id": None,
         "weight_attach_reason": None,
+        "weight_presence_run_id": None,
+        "weight_presence_run_row_id": None,
+        "weight_role": None,
     }
     row.update(extra)
     return row
 
 
 # ---------------------------------------------------------------------------
-# 1) First event null, portal confirm 13.2 -> first becomes 13.2
+# Confirm-path / interval attach
 # ---------------------------------------------------------------------------
 
 
@@ -170,44 +235,66 @@ def test_first_event_null_gets_attached_on_portal_confirm():
     events = [_row(1, BAG, T0)]
 
     result = attach_portal_weight_to_latest_eligible(
-        cur, ORG, BAG, weight_lbs=13.2, events=events
+        cur, ORG, BAG, weight_lbs=13.2, events=events, portal_observed_at=T1
     )
 
     assert result["updated"] is True
     assert result["scan_event_id"] == 1
     assert result["weight_lbs"] == 13.2
+    assert result["weight_role"] == WEIGHT_ROLE_PRE
     assert cur.scan_events[0]["weight_lbs"] == 13.2
     assert cur.scan_events[0]["weight_source"] == "portal_weight_num"
-
-
-# ---------------------------------------------------------------------------
-# 2) Timeline rebuild with the same event coming back null -> 13.2 preserved
-# ---------------------------------------------------------------------------
 
 
 def test_timeline_rebuild_preserves_attached_weight_via_snapshot_restore():
     cur = _FakeCursor(
-        [_row(1, BAG, T0, weight_lbs=13.2, weight_source="portal_weight_num", dedupe_key="dkA")]
+        [
+            _row(
+                1,
+                BAG,
+                T0,
+                weight_lbs=13.2,
+                weight_source="portal_weight_num",
+                weight_role=WEIGHT_ROLE_PRE,
+                weight_presence_run_id=10,
+                weight_presence_run_row_id=100,
+                dedupe_key="dkA",
+            )
+        ]
     )
 
     preserved = snapshot_weight_enrichment(cur, ORG, [BAG])
     assert preserved[(BAG, "dkA")]["weight_lbs"] == 13.2
+    assert preserved[(BAG, "dkA")]["weight_role"] == WEIGHT_ROLE_PRE
+    assert preserved[(BAG, "dkA")]["weight_presence_run_id"] == 10
 
-    # Simulate delete + reinsert: same dedupe_key, weight_lbs comes back null
-    # because the Events CSV export never carries Weight.
     cur.scan_events = [_row(2, BAG, T0, weight_lbs=None, dedupe_key="dkA")]
 
     restored = restore_weight_enrichment(cur, ORG, preserved)
 
-    assert restored == 1
+    assert restored["updated"] == 1
+    assert restored["unmatched"] == []
     assert cur.scan_events[0]["weight_lbs"] == 13.2
     assert cur.scan_events[0]["weight_source"] == "portal_weight_num"
+    assert cur.scan_events[0]["weight_role"] == WEIGHT_ROLE_PRE
+    assert cur.scan_events[0]["weight_presence_run_id"] == 10
 
 
-# ---------------------------------------------------------------------------
-# 3) + 4) Second weight-entry appears; later portal value goes to the
-#         second event only, and the first is left untouched.
-# ---------------------------------------------------------------------------
+def test_restore_reports_unmatched_when_dedupe_key_missing():
+    cur = _FakeCursor([_row(1, BAG, T0, weight_lbs=None, dedupe_key="dkOther")])
+    preserved = {
+        (BAG, "dkMissing"): {
+            "weight_lbs": 13.2,
+            "weight_source": "presence_run_weight_num",
+            "weight_role": WEIGHT_ROLE_PRE,
+        }
+    }
+    restored = restore_weight_enrichment(cur, ORG, preserved)
+    assert restored["updated"] == 0
+    assert len(restored["unmatched"]) == 1
+    assert restored["unmatched"][0]["reason"] == "dedupe_key_not_found"
+    assert restored["unmatched"][0]["weight_lbs"] == 13.2
+    assert cur.scan_events[0]["weight_lbs"] is None
 
 
 def test_second_weight_entry_created_first_stays_attached_second_null():
@@ -228,35 +315,29 @@ def test_later_portal_value_attaches_to_second_event_first_untouched():
     ]
     cur = _FakeCursor(list(events))
 
-    result = attach_portal_weight_to_latest_eligible(cur, ORG, BAG, weight_lbs=22.6, events=events)
+    result = attach_portal_weight_to_latest_eligible(
+        cur, ORG, BAG, weight_lbs=22.6, events=events, portal_observed_at=T2
+    )
 
     assert result["updated"] is True
     assert result["scan_event_id"] == 2
+    assert result["weight_role"] == WEIGHT_ROLE_POST
     first, second = cur.scan_events
     assert first["weight_lbs"] == 13.2
     assert second["weight_lbs"] == 22.6
-
-
-# ---------------------------------------------------------------------------
-# 5) Populated weight + attempted overwrite -> populated value remains
-# ---------------------------------------------------------------------------
 
 
 def test_populated_weight_is_never_overwritten():
     events = [_row(1, BAG, T0, weight_lbs=13.2, dedupe_key="dkA")]
     cur = _FakeCursor(list(events))
 
-    result = attach_portal_weight_to_latest_eligible(cur, ORG, BAG, weight_lbs=99.0, events=events)
+    result = attach_portal_weight_to_latest_eligible(
+        cur, ORG, BAG, weight_lbs=99.0, events=events, portal_observed_at=T1
+    )
 
     assert result["updated"] is False
     assert result["reason"] == "scan_already_has_weight"
     assert cur.scan_events[0]["weight_lbs"] == 13.2
-
-
-# ---------------------------------------------------------------------------
-# 6) Two null events + only the current portal value -> attaches only to the
-#    latest (the 42EN4J3VRB "do not attach 22.6 to the first event" rule).
-# ---------------------------------------------------------------------------
 
 
 def test_two_null_events_attach_only_to_latest_never_first():
@@ -266,7 +347,10 @@ def test_two_null_events_attach_only_to_latest_never_first():
     ]
     cur = _FakeCursor(list(events))
 
-    result = attach_portal_weight_to_latest_eligible(cur, ORG, BAG, weight_lbs=22.6, events=events)
+    # Observation at/after POST timestamp must not backfill PRE.
+    result = attach_portal_weight_to_latest_eligible(
+        cur, ORG, BAG, weight_lbs=22.6, events=events, portal_observed_at=T1
+    )
 
     assert result["updated"] is True
     assert result["scan_event_id"] == 2
@@ -275,9 +359,49 @@ def test_two_null_events_attach_only_to_latest_never_first():
     assert second["weight_lbs"] == 22.6
 
 
+def test_interval_attach_same_numeric_to_pre_and_post_from_different_obs():
+    events = [
+        _row(1, BAG, T0, weight_lbs=None, dedupe_key="dkA"),
+        _row(2, BAG, T2, weight_lbs=None, dedupe_key="dkB"),
+    ]
+    cur = _FakeCursor([dict(e) for e in events])
+    observations = [
+        {"weight_num": 23.6, "observed_at": T1, "presence_run_id": 1, "presence_run_row_id": 11},
+        {"weight_num": 23.6, "observed_at": T3, "presence_run_id": 2, "presence_run_row_id": 22},
+    ]
+    result = attach_observations_to_weight_events(
+        cur, ORG, BAG, observations=observations, events=events, dry_run=False
+    )
+    assert result["updated_count"] == 2
+    assert cur.scan_events[0]["weight_lbs"] == 23.6
+    assert cur.scan_events[0]["weight_role"] == WEIGHT_ROLE_PRE
+    assert cur.scan_events[1]["weight_lbs"] == 23.6
+    assert cur.scan_events[1]["weight_role"] == WEIGHT_ROLE_POST
+
+
+def test_third_weight_entry_is_weight_recheck_not_post():
+    events = [
+        _row(1, BAG, T0, weight_lbs=None, dedupe_key="dkA"),
+        _row(2, BAG, T1, weight_lbs=None, dedupe_key="dkB"),
+        _row(3, BAG, T2, weight_lbs=None, dedupe_key="dkC"),
+    ]
+    cur = _FakeCursor([dict(e) for e in events])
+    observations = [
+        {"weight_num": 10.0, "observed_at": T0, "presence_run_id": 1, "presence_run_row_id": 1},
+        {"weight_num": 20.0, "observed_at": T1, "presence_run_id": 2, "presence_run_row_id": 2},
+        {"weight_num": 30.0, "observed_at": T3, "presence_run_id": 3, "presence_run_row_id": 3},
+    ]
+    result = attach_observations_to_weight_events(
+        cur, ORG, BAG, observations=observations, events=events, dry_run=False
+    )
+    roles = [a["weight_role"] for a in result["attached"]]
+    assert roles == [WEIGHT_ROLE_PRE, WEIGHT_ROLE_POST, WEIGHT_ROLE_RECHECK]
+    assert cur.scan_events[2]["weight_role"] == WEIGHT_ROLE_RECHECK
+    assert cur.scan_events[2]["weight_lbs"] == 30.0
+
+
 # ---------------------------------------------------------------------------
-# 7) No historical evidence for the first event -> stays null, manager
-#    correction required (classify_and_backfill_bag / production 42EN4J3VRB).
+# classify_and_backfill_bag (presence observations + interval attach)
 # ---------------------------------------------------------------------------
 
 
@@ -288,11 +412,8 @@ def test_classify_backfill_no_historical_evidence_requires_manager_correction():
     ]
     cur = _FakeCursor(list(weight_events))
 
-    # Only the current/final portal observation exists, confirmed after the
-    # second (latest) weight-entry scan — there is no historical observation
-    # between W1 and W2 to recover W1 from.
     observations = [
-        {"weight_num": 22.6, "observed_at": T2, "upload_batch_id": 501},
+        {"weight_num": 22.6, "observed_at": T2, "presence_run_id": 501, "presence_run_row_id": 1},
     ]
 
     with patch(
@@ -308,7 +429,6 @@ def test_classify_backfill_no_historical_evidence_requires_manager_correction():
     assert events_by_pos[0]["manager_correction_required"] is True
     assert result["manager_correction_required_count"] == 1
 
-    # Applied (dry_run=False): second event gets 22.6, first stays null.
     first, second = cur.scan_events
     assert first["weight_lbs"] is None, "22.6 must never attach to the first event of 42EN4J3VRB"
     assert second["weight_lbs"] == 22.6
@@ -321,11 +441,9 @@ def test_classify_backfill_recovers_first_event_from_historical_observation():
     ]
     cur = _FakeCursor(list(weight_events))
 
-    # A historical portal batch confirmed 13.2 strictly between W1 (T0) and
-    # W2 (T2) — that's real evidence for the pre-clean weight.
     observations = [
-        {"weight_num": 13.2, "observed_at": T1, "upload_batch_id": 500},
-        {"weight_num": 22.6, "observed_at": T2, "upload_batch_id": 501},
+        {"weight_num": 13.2, "observed_at": T1, "presence_run_id": 500, "presence_run_row_id": 1},
+        {"weight_num": 22.6, "observed_at": T2, "presence_run_id": 501, "presence_run_row_id": 2},
     ]
 
     with patch(
@@ -343,8 +461,8 @@ def test_classify_backfill_recovers_first_event_from_historical_observation():
     first, second = cur.scan_events
     assert first["weight_lbs"] == 13.2
     assert second["weight_lbs"] == 22.6
-    assert first["weight_source"] == "portal_weight_num_historical"
-    assert second["weight_source"] == "portal_weight_num"
+    assert first["weight_source"] == "presence_run_weight_num"
+    assert second["weight_source"] == "presence_run_weight_num"
 
 
 def test_classify_backfill_dry_run_performs_no_writes():
@@ -353,7 +471,9 @@ def test_classify_backfill_dry_run_performs_no_writes():
         _row(2, BAG, T2, weight_lbs=None, dedupe_key="dkB"),
     ]
     cur = _FakeCursor(list(weight_events))
-    observations = [{"weight_num": 22.6, "observed_at": T2, "upload_batch_id": 501}]
+    observations = [
+        {"weight_num": 22.6, "observed_at": T2, "presence_run_id": 501, "presence_run_row_id": 1}
+    ]
 
     with patch(
         "backend.rinse_scan_weight_enrichment._load_portal_weight_observations_for_bag",
@@ -362,15 +482,8 @@ def test_classify_backfill_dry_run_performs_no_writes():
         result = classify_and_backfill_bag(cur, ORG, BAG, dry_run=True)
 
     assert result["dry_run"] is True
-    # No mutation happened — dry_run only classifies.
     assert cur.scan_events[0]["weight_lbs"] is None
     assert cur.scan_events[1]["weight_lbs"] is None
-
-
-# ---------------------------------------------------------------------------
-# 8) Midnight rebuild simulation: preserve map survives delete+reinsert for
-#    multiple bags/rows at once.
-# ---------------------------------------------------------------------------
 
 
 def test_midnight_rebuild_preserve_map_survives_multi_row_delete_reinsert():
@@ -386,9 +499,6 @@ def test_midnight_rebuild_preserve_map_survives_multi_row_delete_reinsert():
     preserved = snapshot_weight_enrichment(cur, ORG, [BAG, bag2])
     assert len(preserved) == 3
 
-    # Simulate the nightly portal export rebuild: delete all rows for both
-    # bags, then reinsert the same logical rows (same dedupe_key) with a null
-    # weight — exactly what happens because the Events CSV has no Weight col.
     cur.scan_events = [
         _row(10, BAG, T0, weight_lbs=None, dedupe_key="dkA"),
         _row(11, BAG, T2, weight_lbs=None, dedupe_key="dkB"),
@@ -397,16 +507,12 @@ def test_midnight_rebuild_preserve_map_survives_multi_row_delete_reinsert():
 
     restored = restore_weight_enrichment(cur, ORG, preserved)
 
-    assert restored == 3
+    assert restored["updated"] == 3
+    assert restored["unmatched"] == []
     by_dk = {r["dedupe_key"]: r for r in cur.scan_events}
     assert by_dk["dkA"]["weight_lbs"] == 13.2
     assert by_dk["dkB"]["weight_lbs"] == 22.6
     assert by_dk["dkC"]["weight_lbs"] == 9.0
-
-
-# ---------------------------------------------------------------------------
-# 9) Day snapshot pre/post from the two enriched events (resolve_weight_entry_pair)
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_weight_entry_pair_reflects_enriched_pre_post():
@@ -419,11 +525,6 @@ def test_resolve_weight_entry_pair_reflects_enriched_pre_post():
     out = resolve_weight_entry_pair(events)
     assert out["pre_weight_lbs"] == 13.2
     assert out["post_weight_lbs"] == 22.6
-
-
-# ---------------------------------------------------------------------------
-# merge_scan_events_from_upload wires snapshot/restore around the delete
-# ---------------------------------------------------------------------------
 
 
 def test_merge_scan_events_from_upload_invokes_snapshot_and_restore():
@@ -454,7 +555,7 @@ def test_merge_scan_events_from_upload_invokes_snapshot_and_restore():
 
     def _fake_restore(cursor, org, preserved):
         calls["restore_args"] = (org, dict(preserved))
-        return 1
+        return {"updated": 1, "unmatched": [], "skipped_already_populated": 0}
 
     with patch("backend.rinse_bag_registry.ensure_rinse_bag_tables"), patch(
         "backend.rinse_bag_registry.ensure_rinse_bag_scan_events_dedupe_schema"
@@ -488,3 +589,4 @@ def test_merge_scan_events_from_upload_invokes_snapshot_and_restore():
     assert calls["restore_args"][1] == {(BAG, "dkA"): {"weight_lbs": 13.2}}
     assert result["weight_enrichment_preserved"] == 1
     assert result["weight_enrichment_restored"] == 1
+    assert result["weight_enrichment_restore_stats"]["updated"] == 1

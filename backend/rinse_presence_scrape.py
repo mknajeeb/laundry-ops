@@ -457,6 +457,49 @@ def run_presence_scrape_for_org(
             if len(rows) == 0:
                 stats["empty_result_validated"] = empty_validated
                 stats["empty_result_checks"] = empty_checks
+            # Downstream evidence (membership + interval weight attach) after a
+            # successful at_vendor board apply. Best-effort: evidence commit still
+            # happens even if downstream fails (failed stage recorded on the run).
+            if (
+                not dry_run
+                and stats.get("board_applied")
+                and str(result.portal_status or "") == PORTAL_STATUS_AT_VENDOR
+                and stats.get("run_id")
+            ):
+                try:
+                    from backend.rinse_presence_evidence_pipeline import (
+                        continue_presence_run_downstream,
+                    )
+
+                    downstream = continue_presence_run_downstream(
+                        cursor, org, int(stats["run_id"])
+                    )
+                    stats["evidence_downstream"] = downstream
+                except Exception as downstream_exc:
+                    stats["evidence_downstream"] = {
+                        "ok": False,
+                        "error": str(downstream_exc),
+                    }
+                    try:
+                        from backend.rinse_cleaner_ticket_presence import (
+                            EVIDENCE_STAGE_BOARD_APPLIED,
+                            set_presence_run_processing_stage,
+                        )
+
+                        set_presence_run_processing_stage(
+                            cursor,
+                            org,
+                            int(stats["run_id"]),
+                            stage=str(
+                                stats.get("evidence_processing_stage")
+                                or EVIDENCE_STAGE_BOARD_APPLIED
+                            ),
+                            failed_stage="evidence_downstream",
+                            error=str(downstream_exc),
+                        )
+                    except Exception:
+                        pass
+
             if not dry_run:
                 conn.commit()
             else:

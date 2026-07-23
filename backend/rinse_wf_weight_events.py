@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -31,7 +32,7 @@ def normalize_scan_weight_lbs(raw: Any, *, allow_unit_suffix: bool = False) -> f
     Shared scan/portal weight normalization.
 
     - numeric / numeric-string → float (0 preserved)
-    - blank / null / "(None)" → None
+    - blank / null / "(None)" / NaN → None
     - non-numeric garbage → None
     - "13 lbs" only when allow_unit_suffix=True
     """
@@ -39,6 +40,12 @@ def normalize_scan_weight_lbs(raw: Any, *, allow_unit_suffix: bool = False) -> f
         return None
     if isinstance(raw, bool):
         return None
+    # pandas / numpy blank cells often arrive as float NaN.
+    try:
+        if isinstance(raw, float) and math.isnan(raw):
+            return None
+    except TypeError:
+        pass
     if isinstance(raw, str):
         s = raw.strip().replace(",", "")
         if not s or s in ("(None)", "None", "null", "nan", "NaN"):
@@ -56,7 +63,10 @@ def normalize_scan_weight_lbs(raw: Any, *, allow_unit_suffix: bool = False) -> f
             except (TypeError, ValueError):
                 return None
     try:
-        return round(float(raw), 4)
+        val = float(raw)
+        if math.isnan(val) or math.isinf(val):
+            return None
+        return round(val, 4)
     except (TypeError, ValueError):
         return None
 

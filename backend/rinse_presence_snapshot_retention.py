@@ -1,15 +1,32 @@
-"""Retain latest immutable presence snapshots; protect midnight baseline runs."""
+"""Presence snapshot retention — retain authoritative scrape evidence.
+
+Historical note (pre evidence-first):
+  KEEP_LATEST_SUCCESSFUL_SNAPSHOTS = 3
+  prune_presence_run_snapshots deleted older successful run_rows + orphan runs
+  after every successful apply_presence_scrape.
+
+That deleted same-day baselines (e.g. Jul 23 org3 run #3472) and broke
+membership / Pre-Post rebuild. Authoritative evidence is never pruned by
+latest-N.
+"""
 
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
-from backend.rinse_shift_monitor_baseline import select_daily_at_vendor_baseline_scrape
 from backend.ta_helpers import table_exists
 
-KEEP_LATEST_SUCCESSFUL_SNAPSHOTS = 3
+# Deprecated: retained only so imports/tests that reference the symbol still resolve.
+# Do not use for pruning authoritative evidence.
+KEEP_LATEST_SUCCESSFUL_SNAPSHOTS = 0
+
+# Org 3 (VeeWash) cutover: retain every valid run/row from this date forward.
+EVIDENCE_RETENTION_FLOOR_ET = date(2026, 7, 23)
+EVIDENCE_RETENTION_ORG_IDS = frozenset({3})
+
+RETENTION_POLICY = "retain_all_authoritative_evidence"
 
 
 def _is_successful_presence_run(run: Mapping[str, Any]) -> bool:
@@ -62,22 +79,14 @@ def resolve_protected_presence_run_ids(
     portal_status: str,
     selected_date_et: date | None = None,
 ) -> set[int]:
-    """Runs that must not be pruned (latest N + required midnight baseline)."""
+    """
+    All successful runs are protected under retain-all policy.
+
+    selected_date_et is accepted for call-site compatibility.
+    """
+    del selected_date_et
     runs = _list_successful_presence_runs(cursor, organization_id, portal_status=portal_status)
-    keep: set[int] = set()
-    for row in runs[:KEEP_LATEST_SUCCESSFUL_SNAPSHOTS]:
-        rid = int(row.get("id") or 0)
-        if rid:
-            keep.add(rid)
-    if portal_status == PORTAL_STATUS_AT_VENDOR and selected_date_et is not None:
-        baseline_run, _ = select_daily_at_vendor_baseline_scrape(
-            cursor, organization_id, selected_date_et
-        )
-        if baseline_run:
-            bid = int(baseline_run.get("id") or 0)
-            if bid:
-                keep.add(bid)
-    return keep
+    return {int(r.get("id") or 0) for r in runs if int(r.get("id") or 0)}
 
 
 def prune_presence_run_snapshots(
@@ -87,63 +96,56 @@ def prune_presence_run_snapshots(
     portal_status: str,
     rinse_vendor: str | None = None,
     selected_date_et: date | None = None,
-    keep_latest: int = KEEP_LATEST_SUCCESSFUL_SNAPSHOTS,
+    keep_latest: int | None = None,
 ) -> dict[str, Any]:
     """
-    Keep latest `keep_latest` successful snapshot runs (+ protected baseline) per org/status/vendor.
-    Deletes older run_rows only; never deletes scan events, registry, staging, or current presence.
+    No-op prune for authoritative evidence.
+
+    Never deletes presence run headers or run rows used for membership / Pre-Post.
+    Long-term storage should archive offline rather than delete.
     """
-    if not table_exists(cursor, "rinse_cleaner_ticket_presence_run_rows"):
-        return {"deleted_run_rows": 0, "deleted_runs": 0, "kept_run_ids": [], "pruned_run_ids": []}
-
-    runs = _list_successful_presence_runs(
-        cursor, organization_id, portal_status=portal_status, rinse_vendor=rinse_vendor
-    )
-    keep_ids = resolve_protected_presence_run_ids(
-        cursor,
-        organization_id,
-        portal_status=portal_status,
-        selected_date_et=selected_date_et,
-    )
-    for row in runs[: max(1, int(keep_latest))]:
-        rid = int(row.get("id") or 0)
-        if rid:
-            keep_ids.add(rid)
-
-    all_ids = [int(r.get("id") or 0) for r in runs if int(r.get("id") or 0)]
-    prune_ids = [rid for rid in all_ids if rid not in keep_ids]
-    deleted_rows = 0
-    deleted_runs = 0
-    for rid in prune_ids:
-        cursor.execute(
-            "DELETE FROM rinse_cleaner_ticket_presence_run_rows WHERE presence_run_id = %s",
-            (rid,),
+    del keep_latest  # latest-N pruning removed
+    runs = []
+    if table_exists(cursor, "rinse_cleaner_ticket_presence_run_rows"):
+        runs = _list_successful_presence_runs(
+            cursor, organization_id, portal_status=portal_status, rinse_vendor=rinse_vendor
         )
-        deleted_rows += int(cursor.rowcount or 0)
-        cursor.execute(
-            """
-            SELECT COUNT(*) AS c FROM rinse_cleaner_ticket_presence_run_rows
-            WHERE presence_run_id = %s
-            """,
-            (rid,),
-        )
-        remaining = int((cursor.fetchone() or {}).get("c") or 0)
-        if remaining == 0:
-            cursor.execute(
-                "DELETE FROM rinse_cleaner_ticket_presence_runs WHERE id = %s AND organization_id = %s",
-                (rid, int(organization_id)),
-            )
-            deleted_runs += int(cursor.rowcount or 0)
-
+    keep_ids = sorted(int(r.get("id") or 0) for r in runs if int(r.get("id") or 0))
     return {
         "portal_status": portal_status,
         "rinse_vendor": rinse_vendor,
-        "runs_before": len(all_ids),
-        "kept_run_ids": sorted(keep_ids),
-        "pruned_run_ids": prune_ids,
-        "deleted_run_rows": deleted_rows,
-        "deleted_runs": deleted_runs,
-        "protected_baseline_run_ids": sorted(
-            keep_ids - set(all_ids[: max(1, int(keep_latest))])
+        "selected_date_et": selected_date_et.isoformat() if selected_date_et else None,
+        "policy": RETENTION_POLICY,
+        "evidence_floor_et": EVIDENCE_RETENTION_FLOOR_ET.isoformat(),
+        "protected_org_ids": sorted(EVIDENCE_RETENTION_ORG_IDS),
+        "runs_before": len(keep_ids),
+        "kept_run_ids": keep_ids,
+        "pruned_run_ids": [],
+        "deleted_run_rows": 0,
+        "deleted_runs": 0,
+        "protected_baseline_run_ids": [],
+        "note": (
+            "Authoritative presence evidence is retained indefinitely. "
+            f"Org {sorted(EVIDENCE_RETENTION_ORG_IDS)} floor "
+            f"{EVIDENCE_RETENTION_FLOOR_ET.isoformat()}; no latest-N deletion."
         ),
     }
+
+
+# Re-export for callers that imported baseline helper through this module historically.
+def select_daily_at_vendor_baseline_scrape(*args, **kwargs):
+    from backend.rinse_shift_monitor_baseline import select_daily_at_vendor_baseline_scrape as _sel
+
+    return _sel(*args, **kwargs)
+
+
+__all__ = [
+    "KEEP_LATEST_SUCCESSFUL_SNAPSHOTS",
+    "EVIDENCE_RETENTION_FLOOR_ET",
+    "EVIDENCE_RETENTION_ORG_IDS",
+    "RETENTION_POLICY",
+    "PORTAL_STATUS_AT_VENDOR",
+    "prune_presence_run_snapshots",
+    "resolve_protected_presence_run_ids",
+    "select_daily_at_vendor_baseline_scrape",
+]

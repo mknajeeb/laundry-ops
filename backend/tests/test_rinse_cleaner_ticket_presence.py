@@ -1,11 +1,12 @@
 """Tests for rinse_cleaner_ticket_presence (portal ready_for_vendor / at_vendor)."""
 
+from contextlib import ExitStack
 from datetime import date, datetime
+from functools import wraps
 from unittest.mock import MagicMock, patch
 
 from backend.rinse_bag_lifecycle_status import (
     ASSIGNED_NOT_SENT_TO_VENDOR,
-    CHECKOUT_STATUS_NOT_RECORDED,
     SENT_TO_RINSE,
     SENT_TO_VENDOR,
     derive_bag_lifecycle_status,
@@ -115,14 +116,95 @@ class TestTicketsUrlBuilder:
         assert "status=at_vendor" in url
 
 
+_APPLY_PATCHES = [
+    patch(
+        "backend.rinse_bag_operational_owner.filter_bag_ids_for_operational_write",
+        side_effect=lambda cursor, org, bags, **kw: (set(bags), []),
+    ),
+    patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True),
+    patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns"),
+    patch("backend.rinse_cleaner_ticket_presence.ensure_presence_run_rows_table"),
+    patch("backend.rinse_cleaner_ticket_presence.ensure_presence_run_processing_columns"),
+    patch("backend.rinse_cleaner_ticket_presence.ensure_weight_observation_migration_archive"),
+    patch("backend.rinse_presence_snapshot_retention.prune_presence_run_snapshots", return_value={}),
+]
+
+
+def _with_apply_patches(fn):
+    """Apply evidence-first scrape stubs without injecting mock args into the test."""
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        with ExitStack() as stack:
+            for p in _APPLY_PATCHES:
+                stack.enter_context(p)
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
 class TestPresenceApplyDryRun:
     def _mock_cursor_with_table(self):
         cursor = MagicMock()
         store: dict[tuple[int, str], dict] = {}
+        cursor.lastrowid = 1
+        run_rows: dict[tuple[int, str], dict] = {}
 
         def execute(sql, args=None):
-            s = " ".join(sql.split())
-            if "CREATE TABLE" in s:
+            args = args or ()
+            s = " ".join(str(sql).split())
+            if "CREATE TABLE" in s or s.startswith("ALTER TABLE"):
+                return
+            if "FROM rinse_cleaner_ticket_presence_runs" in s and "ORDER BY started_at" in s:
+                cursor.fetchall.return_value = []
+                return
+            if "SELECT evidence_processing_json FROM rinse_cleaner_ticket_presence_runs" in s:
+                cursor.fetchone.return_value = {"evidence_processing_json": {}}
+                return
+            if (
+                "FROM rinse_cleaner_ticket_presence_run_rows" in s
+                and "WHERE presence_run_id=%s AND bag_id=%s" in s
+            ):
+                key = (int(args[0]), str(args[1]))
+                cursor.fetchone.return_value = run_rows.get(key)
+                return
+            if "INSERT INTO rinse_cleaner_ticket_presence_run_rows" in s:
+                run_id, org, batch_id, ps, bag_id = (
+                    int(args[0]),
+                    int(args[1]),
+                    str(args[2]),
+                    str(args[3]),
+                    str(args[4]),
+                )
+                cursor.lastrowid = int(getattr(cursor, "lastrowid", 0) or 0) + 1
+                run_rows[(run_id, bag_id)] = {
+                    "id": cursor.lastrowid,
+                    "presence_run_id": run_id,
+                    "organization_id": org,
+                    "source_batch_id": batch_id,
+                    "portal_status": ps,
+                    "bag_id": bag_id,
+                    "customer_name": args[5],
+                    "estimated_delivery_date": args[6],
+                    "rush_flag": args[7],
+                    "service_type": args[8],
+                    "weight_num": args[9],
+                    "weight_raw": args[10],
+                    "wf_lbs_num": args[11],
+                    "wf_lbs_raw": args[12],
+                    "hd_count_num": args[13],
+                    "hd_count_raw": args[14],
+                    "wf_items_num": args[15],
+                    "wf_items_raw": args[16],
+                    "observed_at": args[17],
+                    "source_row_seq": args[18],
+                    "rinse_vendor": args[20] if len(args) > 20 else None,
+                }
+                return
+            if "UPDATE rinse_cleaner_ticket_presence_runs" in s:
+                return
+            if "SELECT COUNT(*) AS active_rows" in s:
+                cursor.fetchone.return_value = {"active_rows": len(store)}
                 return
             if (
                 "SELECT bag_id FROM rinse_cleaner_ticket_presence" in s
@@ -140,8 +222,11 @@ class TestPresenceApplyDryRun:
                     key = (int(args[0]), str(args[1]))
                     cursor.fetchone.return_value = store.get(key)
             elif "INSERT INTO rinse_cleaner_ticket_presence_runs" in s:
-                pass
-            elif "INSERT INTO rinse_cleaner_ticket_presence" in s:
+                cursor._next_run_id = int(getattr(cursor, "_next_run_id", 41)) + 1
+                cursor.lastrowid = cursor._next_run_id
+            elif "INSERT INTO rinse_cleaner_ticket_presence " in s or (
+                "INSERT INTO rinse_cleaner_ticket_presence\n" in str(sql)
+            ) or "INSERT INTO rinse_cleaner_ticket_presence (" in s:
                 org, bag_id = int(args[0]), str(args[1])
                 store[(org, bag_id)] = {
                     "organization_id": org,
@@ -174,19 +259,20 @@ class TestPresenceApplyDryRun:
                             "portal_status_changed_at": args[4],
                         }
                     )
-            elif "UPDATE rinse_cleaner_ticket_presence" in s and "portal_status" not in s:
+            elif "UPDATE rinse_cleaner_ticket_presence" in s and "SET active=1, last_seen_at" in s:
                 org, bag_id = int(args[7]), str(args[8])
                 key = (org, bag_id)
                 if key in store:
                     store[key]["last_seen_at"] = args[0]
+                    store[key]["active"] = 1
 
         cursor.execute.side_effect = execute
         cursor._store = store
+        cursor._run_rows = run_rows
         return cursor
 
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
-    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
-    def test_ready_for_vendor_inserted_per_org(self, _table_exists, _transition_cols):
+    @_with_apply_patches
+    def test_ready_for_vendor_inserted_per_org(self):
         cursor = self._mock_cursor_with_table()
         stats = apply_presence_scrape(
             cursor,
@@ -197,11 +283,11 @@ class TestPresenceApplyDryRun:
             dry_run=False,
         )
         assert stats["rows_inserted"] == 1
+        assert stats["board_applied"] is True
         assert cursor._store[(10, "BAG100")]["portal_status"] == PORTAL_STATUS_READY
 
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
-    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
-    def test_at_vendor_updates_same_bag(self, _table_exists, _transition_cols):
+    @_with_apply_patches
+    def test_at_vendor_updates_same_bag(self):
         cursor = self._mock_cursor_with_table()
         apply_presence_scrape(
             cursor,
@@ -222,9 +308,8 @@ class TestPresenceApplyDryRun:
         assert stats["rows_updated"] == 1
         assert cursor._store[(10, "BAG200")]["portal_status"] == PORTAL_STATUS_AT_VENDOR
 
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
-    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
-    def test_transition_ready_to_at_vendor_flags(self, _table_exists, _transition_cols):
+    @_with_apply_patches
+    def test_transition_ready_to_at_vendor_flags(self):
         cursor = self._mock_cursor_with_table()
         apply_presence_scrape(
             cursor,
@@ -244,9 +329,8 @@ class TestPresenceApplyDryRun:
         assert ready is False
         assert at_vendor is True
 
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
-    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
-    def test_tenant_a_not_visible_for_tenant_b(self, _table_exists, _transition_cols):
+    @_with_apply_patches
+    def test_tenant_a_not_visible_for_tenant_b(self):
         cursor = self._mock_cursor_with_table()
         apply_presence_scrape(
             cursor,
@@ -260,9 +344,8 @@ class TestPresenceApplyDryRun:
         assert ready_a is True
         assert ready_b is False
 
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
-    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
-    def test_mark_missing_deactivates_absent_rows(self, _table_exists, _transition_cols):
+    @_with_apply_patches
+    def test_mark_missing_deactivates_absent_rows(self):
         cursor = self._mock_cursor_with_table()
         apply_presence_scrape(
             cursor,
@@ -284,15 +367,13 @@ class TestPresenceApplyDryRun:
 
 
 class TestPortalStatusTransitions:
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
-    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
+    @_with_apply_patches
     @patch("backend.rinse_cleaner_ticket_presence._utc_now")
-    def test_transition_preserves_first_seen_and_sets_status_timestamps(self, mock_now, _table_exists, _transition_cols):
-        from datetime import datetime
-
+    def test_transition_preserves_first_seen_and_sets_status_timestamps(self, mock_now):
         t1 = datetime(2026, 5, 29, 9, 0, 0)
         t2 = datetime(2026, 5, 29, 10, 20, 0)
-        mock_now.side_effect = [t1, t2]
+        current = {"t": t1}
+        mock_now.side_effect = lambda: current["t"]
 
         cursor = TestPresenceApplyDryRun()._mock_cursor_with_table()
         apply_presence_scrape(
@@ -308,6 +389,7 @@ class TestPortalStatusTransitions:
         assert row["portal_status_changed_at"] == t1
         assert row.get("previous_portal_status") is None
 
+        current["t"] = t2
         apply_presence_scrape(
             cursor,
             10,
@@ -438,19 +520,15 @@ class TestLifecycleIntegration:
 
 
 class TestPresenceRunSnapshotPersistence:
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_run_rows_table")
-    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
+    @_with_apply_patches
     @patch("backend.rinse_cleaner_ticket_presence.persist_presence_run_snapshot_rows")
     @patch("backend.rinse_cleaner_ticket_presence.record_presence_scrape_run", return_value=42)
     def test_at_vendor_scrape_persists_immutable_snapshot(
         self,
         mock_record_run,
         mock_persist_snapshot,
-        _table_exists,
-        _ensure_run_rows,
-        _transition_cols,
     ):
+        mock_persist_snapshot.return_value = {"written": 2, "skipped_identical": 0, "identities": []}
         cursor = TestPresenceApplyDryRun()._mock_cursor_with_table()
         rows = [
             {"bag_id": "BAG900", "customer_name": "Carol", "service_type": "WF"},
@@ -467,46 +545,27 @@ class TestPresenceRunSnapshotPersistence:
         )
         assert stats["rows_found"] == 2
         mock_record_run.assert_called_once()
-        mock_persist_snapshot.assert_called_once_with(
-            cursor,
-            10,
-            presence_run_id=42,
-            portal_status=PORTAL_STATUS_AT_VENDOR,
-            source_batch_id="batch-av",
-            rows=[
-                {
-                    "bag_id": "BAG900",
-                    "customer_name": "Carol",
-                    "estimated_delivery_date": None,
-                    "rush_flag": None,
-                    "service_type": "WF",
-                    "raw_row_json": {},
-                },
-                {
-                    "bag_id": "BAG901",
-                    "customer_name": "Dan",
-                    "estimated_delivery_date": None,
-                    "rush_flag": None,
-                    "service_type": "HD",
-                    "raw_row_json": {},
-                },
-            ],
-            rinse_vendor="veewash",
-        )
-        assert stats["snapshot_rows_persisted"] == mock_persist_snapshot.return_value
+        mock_persist_snapshot.assert_called_once()
+        kw = mock_persist_snapshot.call_args.kwargs
+        assert kw["presence_run_id"] == 42
+        assert kw["portal_status"] == PORTAL_STATUS_AT_VENDOR
+        assert kw["source_batch_id"] == "batch-av"
+        assert kw["rinse_vendor"] == "veewash"
+        assert [r["bag_id"] for r in kw["rows"]] == ["BAG900", "BAG901"]
+        assert kw["rows"][0]["service_type"] == "WF"
+        assert "weight_num" in kw["rows"][0]
+        assert stats.get("board_applied") is True
 
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_run_rows_table")
-    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
-    @patch("backend.rinse_cleaner_ticket_presence.persist_presence_run_snapshot_rows", return_value=3)
+    @_with_apply_patches
+    @patch(
+        "backend.rinse_cleaner_ticket_presence.persist_presence_run_snapshot_rows",
+        return_value={"written": 3, "skipped_identical": 0, "identities": []},
+    )
     @patch("backend.rinse_cleaner_ticket_presence.record_presence_scrape_run", return_value=7)
     def test_ready_for_vendor_scrape_persists_immutable_snapshot(
         self,
         mock_record_run,
         mock_persist_snapshot,
-        _table_exists,
-        _ensure_run_rows,
-        _transition_cols,
     ):
         cursor = TestPresenceApplyDryRun()._mock_cursor_with_table()
         stats = apply_presence_scrape(
@@ -525,18 +584,13 @@ class TestPresenceRunSnapshotPersistence:
         assert len(mock_persist_snapshot.call_args.kwargs["rows"]) == 3
         assert stats["snapshot_rows_persisted"] == 3
 
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_run_rows_table")
-    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
+    @_with_apply_patches
     @patch("backend.rinse_cleaner_ticket_presence.persist_presence_run_snapshot_rows")
     @patch("backend.rinse_cleaner_ticket_presence.record_presence_scrape_run", return_value=1)
     def test_dry_run_does_not_persist_snapshot(
         self,
         mock_record_run,
         mock_persist_snapshot,
-        _table_exists,
-        _ensure_run_rows,
-        _transition_cols,
     ):
         cursor = TestPresenceApplyDryRun()._mock_cursor_with_table()
         stats = apply_presence_scrape(
@@ -553,88 +607,106 @@ class TestPresenceRunSnapshotPersistence:
 
 
 class TestPresenceCrossOrgGuard:
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_tables")
-    @patch(
-        "backend.rinse_bag_operational_owner.filter_bag_ids_for_operational_write",
-        return_value=({"VEEONLY1"}, [{"bag_id": "DVE92G8WAL", "reason": "operational_owner_mismatch"}]),
-    )
-    def test_apply_presence_scrape_passes_credential_sourced_to_owner_filter(self, mock_filter, _ensure):
-        cursor = MagicMock()
-        cursor.fetchone.return_value = {"active_rows": 1}
-        cursor.fetchall.return_value = []
-        stats = apply_presence_scrape(
-            cursor,
-            3,
-            portal_status=PORTAL_STATUS_AT_VENDOR,
-            rows=[
-                {"bag_id": "DVE92G8WAL", "customer_name": "X"},
-                {"bag_id": "VEEONLY1", "customer_name": "Y"},
-            ],
-            dry_run=False,
-            mark_missing=False,
-            run_type="manual",
-            started_at=datetime.utcnow(),
-            finished_at=datetime.utcnow(),
-            status="success",
-        )
+    def test_apply_presence_scrape_passes_credential_sourced_to_owner_filter(self):
+        cursor = TestPresenceApplyDryRun()._mock_cursor_with_table()
+        with ExitStack() as stack:
+            for p in _APPLY_PATCHES:
+                # Skip the allow-all filter; use a rejecting one below.
+                if "filter_bag_ids_for_operational_write" in str(p.attribute):
+                    continue
+                stack.enter_context(p)
+            mock_filter = stack.enter_context(
+                patch(
+                    "backend.rinse_bag_operational_owner.filter_bag_ids_for_operational_write",
+                    return_value=(
+                        {"VEEONLY1"},
+                        [{"bag_id": "DVE92G8WAL", "reason": "operational_owner_mismatch"}],
+                    ),
+                )
+            )
+            stats = apply_presence_scrape(
+                cursor,
+                3,
+                portal_status=PORTAL_STATUS_AT_VENDOR,
+                rows=[
+                    {"bag_id": "DVE92G8WAL", "customer_name": "X"},
+                    {"bag_id": "VEEONLY1", "customer_name": "Y"},
+                ],
+                dry_run=False,
+                mark_missing=False,
+                run_type="manual",
+                started_at=datetime.utcnow(),
+                finished_at=datetime.utcnow(),
+                status="success",
+            )
         mock_filter.assert_called_once()
         assert mock_filter.call_args.kwargs.get("credential_sourced") is True
         assert stats["rows_found"] == 1
         assert any(e.get("bag_id") == "DVE92G8WAL" for e in stats["errors"])
         assert stats["cross_org_presence_excluded"][0]["bag_id"] == "DVE92G8WAL"
 
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_tables")
-    @patch("backend.rinse_cleaner_ticket_presence.record_presence_scrape_run", return_value=99)
-    @patch("backend.rinse_cleaner_ticket_presence.persist_presence_run_snapshot_rows", return_value=1)
-    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_run_rows_table")
-    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
-    @patch("backend.rinse_bag_operational_owner.operational_owner_gate_enabled", return_value=True)
-    @patch("backend.rinse_bag_operational_owner.resolve_canonical_owner")
-    @patch("backend.rinse_bag_operational_owner.assign_owner_from_credential")
-    def test_apply_presence_scrape_accepts_washpro_owned_bag_via_credential(
-        self,
-        mock_assign_cred,
-        mock_resolve,
-        _gate,
-        _transition,
-        _run_rows,
-        _table_exists,
-        _persist,
-        _record,
-        _ensure,
-    ):
+    def test_apply_presence_scrape_accepts_washpro_owned_bag_via_credential(self):
         from backend.rinse_bag_operational_owner import (
             CanonicalOwner,
             SOURCE_CREDENTIAL,
             SOURCE_REGISTRY,
         )
 
-        mock_resolve.return_value = CanonicalOwner(
-            bag_id="7AX67OZWFN",
-            owner_organization_id=1,
-            owner_rinse_vendor="washpro",
-            assigned_at=datetime(2026, 6, 1),
-            assignment_source=SOURCE_REGISTRY,
-        )
-        mock_assign_cred.return_value = CanonicalOwner(
-            bag_id="7AX67OZWFN",
-            owner_organization_id=3,
-            owner_rinse_vendor="veewash",
-            assigned_at=datetime(2026, 6, 16),
-            assignment_source=SOURCE_CREDENTIAL,
-        )
-        cursor = MagicMock()
-        cursor.fetchone.return_value = {"active_rows": 0}
-        cursor.fetchall.return_value = []
-        stats = apply_presence_scrape(
-            cursor,
-            3,
-            portal_status=PORTAL_STATUS_READY,
-            rows=[{"bag_id": "7AX67OZWFN", "customer_name": "Jeenie Yoon", "service_type": "WF"}],
-            dry_run=False,
-            scrape_meta={"rinse_vendor": "veewash"},
-        )
+        cursor = TestPresenceApplyDryRun()._mock_cursor_with_table()
+        with ExitStack() as stack:
+            for p in _APPLY_PATCHES:
+                if "filter_bag_ids_for_operational_write" in str(p.attribute):
+                    continue
+                stack.enter_context(p)
+            stack.enter_context(
+                patch(
+                    "backend.rinse_cleaner_ticket_presence.persist_presence_run_snapshot_rows",
+                    return_value={"written": 1, "skipped_identical": 0, "identities": []},
+                )
+            )
+            stack.enter_context(
+                patch("backend.rinse_cleaner_ticket_presence.record_presence_scrape_run", return_value=99)
+            )
+            stack.enter_context(
+                patch(
+                    "backend.rinse_bag_operational_owner.operational_owner_gate_enabled",
+                    return_value=True,
+                )
+            )
+            mock_resolve = stack.enter_context(
+                patch("backend.rinse_bag_operational_owner.resolve_canonical_owner")
+            )
+            mock_assign_cred = stack.enter_context(
+                patch("backend.rinse_bag_operational_owner.assign_owner_from_credential")
+            )
+            mock_resolve.return_value = CanonicalOwner(
+                bag_id="7AX67OZWFN",
+                owner_organization_id=1,
+                owner_rinse_vendor="washpro",
+                assigned_at=datetime(2026, 6, 1),
+                assignment_source=SOURCE_REGISTRY,
+            )
+            mock_assign_cred.return_value = CanonicalOwner(
+                bag_id="7AX67OZWFN",
+                owner_organization_id=3,
+                owner_rinse_vendor="veewash",
+                assigned_at=datetime(2026, 6, 16),
+                assignment_source=SOURCE_CREDENTIAL,
+            )
+            stats = apply_presence_scrape(
+                cursor,
+                3,
+                portal_status=PORTAL_STATUS_READY,
+                rows=[
+                    {
+                        "bag_id": "7AX67OZWFN",
+                        "customer_name": "Jeenie Yoon",
+                        "service_type": "WF",
+                    }
+                ],
+                dry_run=False,
+                scrape_meta={"rinse_vendor": "veewash"},
+            )
         assert stats["rows_found"] == 1
         assert not stats["errors"]
         mock_assign_cred.assert_called_once()

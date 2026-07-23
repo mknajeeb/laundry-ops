@@ -1,0 +1,46 @@
+{
+  "organization_id": 3,
+  "date_et": "2026-07-23",
+  "jul23_runs": [
+    {
+      "id": 3476,
+      "status": "success",
+      "rows_found": 115,
+      "finished_et": "2026-07-23 10:42:43.636586"
+    },
+    {
+      "id": 3478,
+      "status": "success",
+      "rows_found": 115,
+      "finished_et": "2026-07-23 11:43:18.238451"
+    },
+    {
+      "id": 3480,
+      "status": "success",
+      "rows_found": 114,
+      "finished_et": "2026-07-23 12:43:07.485454"
+    }
+  ],
+  "total_valid_jul23_runs": 3,
+  "baseline_3472_exists": false,
+  "membership_ok": true,
+  "membership_error": null,
+  "membership_baseline_run_id": 3476,
+  "membership_baseline_exists": true,
+  "membership_delayed_baseline": true,
+  "membership_bags_missing_source_run": [],
+  "total_jul23_run_rows": 347,
+  "run_rows_with_weight_num": 229,
+  "weight_num_column_present": true,
+  "wf_bags_with_pre": 47,
+  "wf_bags_with_post": 38,
+  "wf_bags_with_both": 0,
+  "wf_missing_pre": 38,
+  "wf_missing_post": 0,
+  "third_or_later_weight_events": 0,
+  "manager_corrected_weights_seen": 0,
+  "migration_by_status": {
+    "applied": 286,
+    "conflict": 18
+  }
+}

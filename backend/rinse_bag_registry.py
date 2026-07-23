@@ -960,11 +960,15 @@ def merge_scan_events_from_upload(
         )
 
     weight_enrichment_restored = 0
+    weight_enrichment_restore_stats: dict = {}
     if preserved_weight_enrichment:
         from backend.rinse_scan_weight_enrichment import restore_weight_enrichment
 
-        weight_enrichment_restored = restore_weight_enrichment(
+        weight_enrichment_restore_stats = restore_weight_enrichment(
             cursor, org, preserved_weight_enrichment
+        )
+        weight_enrichment_restored = int(
+            weight_enrichment_restore_stats.get("updated") or 0
         )
 
     return {
@@ -983,6 +987,7 @@ def merge_scan_events_from_upload(
         "bag_ids": bag_ids,
         "weight_enrichment_preserved": len(preserved_weight_enrichment),
         "weight_enrichment_restored": weight_enrichment_restored,
+        "weight_enrichment_restore_stats": weight_enrichment_restore_stats,
     }
 
 
