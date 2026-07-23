@@ -46,12 +46,12 @@ function ClockPage({ user: washproUser }) {
 
   const [selectionTree, setSelectionTree] = useState([]);
   const [pickOpen, setPickOpen] = useState(false);
-  const [pickStep, setPickStep] = useState("category");
+  const [pickMode, setPickMode] = useState("switch"); // switch | break_resume
   const [pendingCategoryId, setPendingCategoryId] = useState(null);
-  const [pendingRoleId, setPendingRoleId] = useState(null);
   const [switchBusy, setSwitchBusy] = useState(false);
   const [needsRefreshBeforeSwitch, setNeedsRefreshBeforeSwitch] = useState(false);
   const switchIdempotencyKeyRef = useRef(null);
+  const breakResumeAttemptedRef = useRef(null);
 
   const session = sessionRes?.session;
   const trackingEnabled = !!(
@@ -119,20 +119,40 @@ function ClockPage({ user: washproUser }) {
   }, [authLoading, trackingEnabled, loadSelectionTree]);
 
   useEffect(() => {
-    if (!session?.open_break) return undefined;
+    if (!session?.open_break) {
+      breakResumeAttemptedRef.current = null;
+      return undefined;
+    }
+    const breakKey = `${session.id}:${session.open_break.id || session.open_break.break_start_at}`;
+    if (breakResumeAttemptedRef.current === breakKey) return undefined;
+    breakResumeAttemptedRef.current = breakKey;
     let cancelled = false;
     (async () => {
       try {
         await taBreakEnd();
         if (!cancelled) await loadSession(true);
       } catch (e) {
+        const data = e?.response?.data;
+        if (data?.needs_category_role && Array.isArray(data.selection_tree)) {
+          if (cancelled) return;
+          setSelectionTree(data.selection_tree);
+          const curCat = taskTracking?.current_category_id;
+          const hasCur =
+            curCat != null &&
+            data.selection_tree.some((c) => Number(c.id) === Number(curCat));
+          setPendingCategoryId(hasCur ? Number(curCat) : data.selection_tree[0]?.id ?? null);
+          setPickMode("break_resume");
+          setPickOpen(true);
+          setActionError("");
+          return;
+        }
         console.error(e);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [session?.id, session?.open_break, loadSession]);
+  }, [session?.id, session?.open_break, loadSession, taskTracking?.current_category_id]);
 
   useEffect(() => {
     if (authLoading || !isClockedIn) return undefined;
@@ -142,12 +162,11 @@ function ClockPage({ user: washproUser }) {
 
   const openPicker = () => {
     if (needsRefreshBeforeSwitch) return;
-    setPickStep("category");
+    setPickMode("switch");
     const curCat = taskTracking?.current_category_id;
     const hasCur =
       curCat != null && selectionTree.some((c) => Number(c.id) === Number(curCat));
     setPendingCategoryId(hasCur ? Number(curCat) : selectionTree[0]?.id ?? null);
-    setPendingRoleId(hasCur ? Number(taskTracking?.current_role_id) : null);
     switchIdempotencyKeyRef.current = null;
     setPickOpen(true);
   };
@@ -159,18 +178,26 @@ function ClockPage({ user: washproUser }) {
     switchIdempotencyKeyRef.current = null;
   };
 
-  const confirmRoleChange = async () => {
-    if (!pendingCategoryId || !pendingRoleId || switchBusy || needsRefreshBeforeSwitch) return;
+  const confirmRoleSelection = async (categoryId, roleId) => {
+    if (!categoryId || !roleId || switchBusy) return;
+    if (pickMode === "switch" && needsRefreshBeforeSwitch) return;
     setSwitchBusy(true);
     setActionError("");
-    if (!switchIdempotencyKeyRef.current) {
-      switchIdempotencyKeyRef.current = createTaskTrackingSwitchIdempotencyKey();
-    }
-    const idempotency_key = switchIdempotencyKeyRef.current;
     try {
+      if (pickMode === "break_resume") {
+        await taBreakEnd({ category_id: categoryId, role_id: roleId });
+        setPickOpen(false);
+        setPickMode("switch");
+        await loadSession(true);
+        return;
+      }
+      if (!switchIdempotencyKeyRef.current) {
+        switchIdempotencyKeyRef.current = createTaskTrackingSwitchIdempotencyKey();
+      }
+      const idempotency_key = switchIdempotencyKeyRef.current;
       await postTaskTrackingSwitchTask({
-        category_id: pendingCategoryId,
-        role_id: pendingRoleId,
+        category_id: categoryId,
+        role_id: roleId,
         idempotency_key,
       });
       switchIdempotencyKeyRef.current = null;
@@ -178,7 +205,7 @@ function ClockPage({ user: washproUser }) {
       setPickOpen(false);
       await loadSession(true);
     } catch (e) {
-      if (e?.code === "ECONNABORTED") {
+      if (pickMode === "switch" && e?.code === "ECONNABORTED") {
         setNeedsRefreshBeforeSwitch(true);
         setActionError(SWITCH_TIMEOUT_MESSAGE);
         try {
@@ -187,7 +214,11 @@ function ClockPage({ user: washproUser }) {
           /* keep timeout guidance even if refresh fails */
         }
       } else {
-        setActionError(e?.response?.data?.error || e?.message || "Could not change role");
+        setActionError(
+          e?.response?.data?.error ||
+            e?.message ||
+            (pickMode === "break_resume" ? "Could not resume from break" : "Could not change role"),
+        );
       }
     } finally {
       setSwitchBusy(false);
@@ -338,70 +369,63 @@ function ClockPage({ user: washproUser }) {
         )}
       </Paper>
 
-      <Dialog open={pickOpen} onClose={() => !switchBusy && setPickOpen(false)} fullWidth maxWidth="xs">
+      <Dialog
+        open={pickOpen}
+        onClose={() => !switchBusy && pickMode !== "break_resume" && setPickOpen(false)}
+        fullWidth
+        maxWidth="xs"
+      >
         <DialogTitle sx={{ fontWeight: 800 }}>
-          {pickStep === "category" ? "Select category" : "Select role"}
+          {pickMode === "break_resume" ? "Select role to resume" : "Change role"}
         </DialogTitle>
         <DialogContent>
-          {pickStep === "category" ? (
-            <Stack spacing={1} sx={{ pt: 1 }}>
+          <Stack spacing={1.5} sx={{ pt: 1 }}>
+            <Typography variant="subtitle2" fontWeight={800}>
+              Category
+            </Typography>
+            <Grid container spacing={1}>
               {selectionTree.map((cat) => (
-                <Button
-                  key={cat.id}
-                  variant={Number(pendingCategoryId) === Number(cat.id) ? "contained" : "outlined"}
-                  onClick={() => {
-                    setPendingCategoryId(cat.id);
-                    setPendingRoleId(null);
-                    setPickStep("role");
-                  }}
-                  sx={{ justifyContent: "flex-start", textTransform: "none", fontWeight: 700, py: 1.5 }}
-                >
-                  {cat.name}
-                </Button>
+                <Grid item xs={6} key={cat.id}>
+                  <Button
+                    fullWidth
+                    variant={Number(pendingCategoryId) === Number(cat.id) ? "contained" : "outlined"}
+                    disabled={switchBusy}
+                    onClick={() => {
+                      setPendingCategoryId(cat.id);
+                    }}
+                    sx={{ textTransform: "none", fontWeight: 700, py: 1.5 }}
+                  >
+                    {cat.name}
+                  </Button>
+                </Grid>
               ))}
-            </Stack>
-          ) : (
-            <Stack spacing={1} sx={{ pt: 1 }}>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-                {selectedCategory?.name}
-              </Typography>
-              <Grid container spacing={1}>
-                {rolesForCategory.map((role) => (
-                  <Grid item xs={6} key={role.role_id || role.id}>
-                    <Button
-                      fullWidth
-                      variant={Number(pendingRoleId) === Number(role.role_id) ? "contained" : "outlined"}
-                      onClick={() => setPendingRoleId(role.role_id)}
-                      sx={{ textTransform: "none", fontWeight: 700, py: 1.5 }}
-                    >
-                      {role.role_name}
-                    </Button>
-                  </Grid>
-                ))}
-              </Grid>
-            </Stack>
-          )}
+            </Grid>
+            <Typography variant="subtitle2" fontWeight={800}>
+              Role
+            </Typography>
+            <Grid container spacing={1}>
+              {rolesForCategory.map((role) => (
+                <Grid item xs={6} key={role.role_id || role.id}>
+                  <Button
+                    fullWidth
+                    variant="contained"
+                    disabled={switchBusy || !pendingCategoryId || needsRefreshBeforeSwitch}
+                    onClick={() => confirmRoleSelection(pendingCategoryId, role.role_id)}
+                    sx={{ textTransform: "none", fontWeight: 700, py: 1.6 }}
+                  >
+                    {switchBusy ? <CircularProgress size={20} color="inherit" /> : role.role_name}
+                  </Button>
+                </Grid>
+              ))}
+            </Grid>
+          </Stack>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          {pickStep === "role" ? (
-            <Button onClick={() => setPickStep("category")} disabled={switchBusy}>
-              Back
-            </Button>
-          ) : (
+          {pickMode === "break_resume" ? null : (
             <Button onClick={() => setPickOpen(false)} disabled={switchBusy}>
               {t("clock.cancel")}
             </Button>
           )}
-          {pickStep === "role" ? (
-            <Button
-              variant="contained"
-              onClick={confirmRoleChange}
-              disabled={switchBusy || needsRefreshBeforeSwitch || !pendingRoleId}
-              size="large"
-            >
-              {switchBusy ? <CircularProgress size={22} color="inherit" /> : "Confirm"}
-            </Button>
-          ) : null}
         </DialogActions>
       </Dialog>
     </Box>

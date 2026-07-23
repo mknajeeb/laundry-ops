@@ -11,6 +11,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
+  Grid,
   IconButton,
   InputLabel,
   MenuItem,
@@ -430,7 +431,7 @@ export default function AttendancePinPage() {
           setSelectionTree(body.selection_tree);
           setPendingCategoryId(body.selection_tree[0]?.id ?? null);
           setPendingRoleId(null);
-          setPickStep("category");
+          setPickStep("pick");
           setPin("");
           prevPinLenRef.current = 0;
           return;
@@ -496,12 +497,14 @@ export default function AttendancePinPage() {
     selectionTree.find((c) => Number(c.id) === Number(pendingCategoryId)) || null;
   const pickRoles = selectedPickCategory?.roles || [];
 
-  const confirmCategoryRolePunch = () => {
-    if (!pendingPin || !pendingCategoryId || !pendingRoleId) return;
+  const confirmCategoryRolePunch = (categoryId, roleId) => {
+    const catId = categoryId ?? pendingCategoryId;
+    const rId = roleId ?? pendingRoleId;
+    if (!pendingPin || !catId || !rId) return;
     setPickStep(null);
     void performPunch(pendingPin, {
-      category_id: pendingCategoryId,
-      role_id: pendingRoleId,
+      category_id: catId,
+      role_id: rId,
     });
   };
 
@@ -768,6 +771,7 @@ export default function AttendancePinPage() {
       <Dialog
         open={Boolean(pickStep)}
         onClose={() => {
+          if (loading) return;
           setPickStep(null);
           setPendingPin("");
           setSelectionTree([]);
@@ -777,76 +781,65 @@ export default function AttendancePinPage() {
         fullWidth
         maxWidth="xs"
       >
-        <DialogTitle>
-          {pickStep === "role" ? "Select role" : "Select category"}
-        </DialogTitle>
+        <DialogTitle sx={{ fontWeight: 800 }}>Select your role</DialogTitle>
         <DialogContent>
-          {pickStep === "category" ? (
-            <Stack spacing={1} sx={{ pt: 1 }}>
+          <Stack spacing={1.5} sx={{ pt: 1 }}>
+            <Typography variant="subtitle2" fontWeight={800}>
+              Category
+            </Typography>
+            <Grid container spacing={1}>
               {selectionTree.map((cat) => (
-                <Button
-                  key={cat.id}
-                  variant={Number(pendingCategoryId) === Number(cat.id) ? "contained" : "outlined"}
-                  onClick={() => {
-                    setPendingCategoryId(cat.id);
-                    setPendingRoleId(null);
-                    setPickStep("role");
-                  }}
-                  sx={{ justifyContent: "flex-start", textTransform: "none" }}
-                >
-                  {cat.display_name || cat.name}
-                </Button>
+                <Grid item xs={6} key={cat.id}>
+                  <Button
+                    fullWidth
+                    variant={Number(pendingCategoryId) === Number(cat.id) ? "contained" : "outlined"}
+                    disabled={loading}
+                    onClick={() => {
+                      setPendingCategoryId(cat.id);
+                      setPendingRoleId(null);
+                    }}
+                    sx={{ textTransform: "none", fontWeight: 700, py: 1.5 }}
+                  >
+                    {cat.display_name || cat.name}
+                  </Button>
+                </Grid>
               ))}
-            </Stack>
-          ) : null}
-          {pickStep === "role" ? (
-            <Stack spacing={1} sx={{ pt: 1 }}>
-              <Typography variant="body2" color="text.secondary">
-                {selectedPickCategory?.display_name || selectedPickCategory?.name || "Category"}
-              </Typography>
+            </Grid>
+            <Typography variant="subtitle2" fontWeight={800}>
+              Role
+            </Typography>
+            <Grid container spacing={1}>
               {pickRoles.map((role) => (
-                <Button
-                  key={role.role_id || role.id}
-                  variant={Number(pendingRoleId) === Number(role.role_id) ? "contained" : "outlined"}
-                  onClick={() => setPendingRoleId(role.role_id)}
-                  sx={{ justifyContent: "flex-start", textTransform: "none" }}
-                >
-                  {role.role_name || role.display_name || role.name}
-                </Button>
+                <Grid item xs={6} key={role.role_id || role.id}>
+                  <Button
+                    fullWidth
+                    variant="contained"
+                    disabled={loading || !pendingCategoryId}
+                    onClick={() => confirmCategoryRolePunch(pendingCategoryId, role.role_id)}
+                    sx={{ textTransform: "none", fontWeight: 700, py: 1.6 }}
+                  >
+                    {loading ? (
+                      <CircularProgress size={20} color="inherit" />
+                    ) : (
+                      role.role_name || role.display_name || role.name
+                    )}
+                  </Button>
+                </Grid>
               ))}
-            </Stack>
-          ) : null}
+            </Grid>
+          </Stack>
         </DialogContent>
         <DialogActions>
-          {pickStep === "role" ? (
-            <Button
-              onClick={() => {
-                setPickStep("category");
-                setPendingRoleId(null);
-              }}
-            >
-              Back
-            </Button>
-          ) : (
-            <Button
-              onClick={() => {
-                setPickStep(null);
-                setPendingPin("");
-                setSelectionTree([]);
-              }}
-            >
-              Cancel
-            </Button>
-          )}
-          {pickStep === "role" ? (
-            <Button
-              variant="contained"
-              disabled={!pendingCategoryId || !pendingRoleId || loading}
-              onClick={confirmCategoryRolePunch}
-            >
-              Check In
-            </Button>
-          ) : null}
+          <Button
+            disabled={loading}
+            onClick={() => {
+              setPickStep(null);
+              setPendingPin("");
+              setSelectionTree([]);
+            }}
+          >
+            Cancel
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>

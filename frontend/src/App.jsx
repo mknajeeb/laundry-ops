@@ -61,6 +61,7 @@ import HomePage from "./pages/HomePage";
 import LoginPage from "./pages/LoginPage";
 import KioskUnlockPage from "./pages/KioskUnlockPage";
 import AttendancePinPage from "./pages/AttendancePinPage";
+import AttendanceRoleSwitchPage from "./pages/AttendanceRoleSwitchPage";
 import PartnerRosterPage from "./pages/PartnerRosterPage";
 import InventoryPage from "./pages/InventoryPage";
 import DiscrepanciesPage from "./pages/DiscrepanciesPage";
@@ -519,6 +520,8 @@ function AppShell() {
   if (isAttendanceRoute(pathname)) {
     return (
       <Routes>
+        <Route path="/attendance/role/:orgSlug" element={<AttendanceRoleSwitchPage />} />
+        <Route path="/attendance/role" element={<AttendanceRoleSwitchPage />} />
         <Route path="/attendance/:orgSlug" element={<AttendancePinPage />} />
         <Route path="/attendance" element={<AttendancePinPage />} />
       </Routes>

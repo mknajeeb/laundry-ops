@@ -318,7 +318,58 @@ def list_time_records(
         if status_filter and status_filter != "all" and rec["status"] != status_filter:
             continue
         out.append(json_safe(rec))
+    _attach_role_segments_to_time_records(conn, out)
     return out
+
+
+def _attach_role_segments_to_time_records(conn, items: list[dict]) -> None:
+    """Attach role_segments + role_label for Time Records Role column (no payroll math change)."""
+    if not items:
+        return
+
+    c = conn.cursor(dictionary=True)
+    if not table_exists(c, "shift_job_segments"):
+        for it in items:
+            it["role_segments"] = []
+            it["role_label"] = None
+        return
+    ids = [int(it["id"]) for it in items]
+    ph = ",".join(["%s"] * len(ids))
+    c.execute(
+        f"""
+        SELECT id, shift_session_id, category_id, role_id,
+               category_name_snapshot, role_name_snapshot,
+               started_at, ended_at, change_source
+        FROM shift_job_segments
+        WHERE shift_session_id IN ({ph})
+        ORDER BY shift_session_id ASC, started_at ASC, id ASC
+        """,
+        tuple(ids),
+    )
+    by_session: dict[int, list] = {}
+    for row in c.fetchall() or []:
+        sid = int(row["shift_session_id"])
+        cat = row.get("category_name_snapshot")
+        role = row.get("role_name_snapshot")
+        label = f"{cat} — {role}" if cat and role else None
+        by_session.setdefault(sid, []).append(
+            json_safe(
+                {
+                    "id": row["id"],
+                    "category_id": row.get("category_id"),
+                    "role_id": row.get("role_id"),
+                    "display_label": label,
+                    "started_at": row.get("started_at"),
+                    "ended_at": row.get("ended_at"),
+                    "change_source": row.get("change_source"),
+                }
+            )
+        )
+    for it in items:
+        segs = by_session.get(int(it["id"]), [])
+        it["role_segments"] = segs
+        # Current/last role for the session summary column
+        it["role_label"] = segs[-1]["display_label"] if segs else None
 
 
 def _sum_break_seconds(conn, shift_id: int) -> int:

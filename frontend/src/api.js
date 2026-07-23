@@ -199,6 +199,13 @@ export const getPublicActiveClockIns = (slug) =>
     validateStatus: (status) => status === 200 || status === 404 || status === 400,
   });
 
+export function createTaskTrackingSwitchIdempotencyKey() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `switch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 /** Kiosk attendance: clock in/out with PIN only (no session). */
 export const ATTENDANCE_PIN_PUNCH_TIMEOUT_MS = 25000;
 
@@ -217,6 +224,30 @@ export const attendancePinPunch = (organization_slug, pin, options = {}) =>
       validateStatus: (status) => status >= 200 && status < 600,
     },
   );
+
+/** Mobile PIN role switch (no clock in/out). Employee must already be clocked in. */
+export const attendancePinSwitchRole = (organization_slug, pin, options = {}) => {
+  const idempotency_key =
+    (options.idempotency_key || "").trim() ||
+    (options.category_id != null && options.role_id != null
+      ? createTaskTrackingSwitchIdempotencyKey()
+      : undefined);
+  return axios.post(
+    `${API_BASE}/api/public/attendance/pin-switch-role`,
+    {
+      organization_slug: String(organization_slug || "").trim().toLowerCase(),
+      pin: String(pin || "").trim(),
+      ...(options.category_id != null ? { category_id: options.category_id } : {}),
+      ...(options.role_id != null ? { role_id: options.role_id } : {}),
+      ...(idempotency_key ? { idempotency_key } : {}),
+    },
+    {
+      timeout: 15000,
+      headers: idempotency_key ? { "Idempotency-Key": idempotency_key } : undefined,
+      validateStatus: (status) => status >= 200 && status < 600,
+    },
+  );
+};
 
 /** Public: active tenants for /attendance picker */
 export const getPublicOrganizationsForAttendance = () =>
@@ -1261,8 +1292,8 @@ export const taClockOut = (body) =>
 export const taBreakStart = () =>
   axios.post(`${API_BASE}/api/ta/sessions/break/start`);
 
-export const taBreakEnd = () =>
-  axios.post(`${API_BASE}/api/ta/sessions/break/end`);
+export const taBreakEnd = (body = {}) =>
+  axios.post(`${API_BASE}/api/ta/sessions/break/end`, body);
 
 export const getTaskTrackingTasks = (params = {}) =>
   axios.get(`${API_BASE}/api/ta/job-tracking/job-names`, { params });
@@ -1320,13 +1351,6 @@ export const deleteTaskTrackingRole = (roleId) =>
 
 export const postTaskTrackingRolesReorder = (body) =>
   axios.post(`${API_BASE}/api/ta/job-tracking/roles/reorder`, body);
-
-export function createTaskTrackingSwitchIdempotencyKey() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `switch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
 
 /**
  * Switch category/role.

@@ -1,11 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
-  Box,
   Button,
   Card,
   CardContent,
   Chip,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Grid,
   MenuItem,
   Select,
   FormControl,
@@ -40,8 +45,15 @@ function TimeClockPage() {
   const [tick, setTick] = useState(0);
   const [categories, setCategories] = useState([]);
   const [categoryId, setCategoryId] = useState("");
+  const [resumeOpen, setResumeOpen] = useState(false);
+  const [resumeTree, setResumeTree] = useState([]);
+  const [resumeCategoryId, setResumeCategoryId] = useState(null);
 
   const canClock = hasPerm("ta.clock");
+  const resumeRoles = useMemo(() => {
+    const cat = resumeTree.find((c) => Number(c.id) === Number(resumeCategoryId));
+    return cat?.roles || [];
+  }, [resumeTree, resumeCategoryId]);
 
   const refresh = useCallback(async () => {
     if (!canClock) return;
@@ -170,13 +182,26 @@ function TimeClockPage() {
     }
   }
 
-  async function endBreak() {
+  async function endBreak(assignment) {
     setBusy(true);
+    setError("");
     try {
-      await taBreakEnd();
+      const body = {};
+      if (assignment?.category_id != null) body.category_id = assignment.category_id;
+      if (assignment?.role_id != null) body.role_id = assignment.role_id;
+      await taBreakEnd(body);
+      setResumeOpen(false);
+      setResumeTree([]);
       await refresh();
     } catch (e) {
-      setError(e.response?.data?.error || "Could not end break");
+      const data = e?.response?.data;
+      if (data?.needs_category_role && Array.isArray(data.selection_tree)) {
+        setResumeTree(data.selection_tree);
+        setResumeCategoryId(data.selection_tree[0]?.id ?? null);
+        setResumeOpen(true);
+      } else {
+        setError(data?.error || e?.message || "Could not end break");
+      }
     } finally {
       setBusy(false);
     }
@@ -286,7 +311,7 @@ function TimeClockPage() {
                     Start break
                   </Button>
                 ) : (
-                  <Button variant="contained" color="warning" disabled={busy} onClick={endBreak}>
+                  <Button variant="contained" color="warning" disabled={busy} onClick={() => endBreak()}>
                     End break
                   </Button>
                 )}
@@ -302,6 +327,57 @@ function TimeClockPage() {
           </Typography>
         </CardContent>
       </Card>
+
+      <Dialog open={resumeOpen} onClose={() => !busy && setResumeOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle sx={{ fontWeight: 800 }}>Select role to resume</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 1 }}>
+            <Typography variant="subtitle2" fontWeight={800}>
+              Category
+            </Typography>
+            <Grid container spacing={1}>
+              {resumeTree.map((cat) => (
+                <Grid item xs={6} key={cat.id}>
+                  <Button
+                    fullWidth
+                    variant={Number(resumeCategoryId) === Number(cat.id) ? "contained" : "outlined"}
+                    disabled={busy}
+                    onClick={() => setResumeCategoryId(cat.id)}
+                    sx={{ textTransform: "none", fontWeight: 700, py: 1.5 }}
+                  >
+                    {cat.name}
+                  </Button>
+                </Grid>
+              ))}
+            </Grid>
+            <Typography variant="subtitle2" fontWeight={800}>
+              Role
+            </Typography>
+            <Grid container spacing={1}>
+              {resumeRoles.map((role) => (
+                <Grid item xs={6} key={role.role_id || role.id}>
+                  <Button
+                    fullWidth
+                    variant="contained"
+                    disabled={busy || !resumeCategoryId}
+                    onClick={() =>
+                      endBreak({ category_id: resumeCategoryId, role_id: role.role_id })
+                    }
+                    sx={{ textTransform: "none", fontWeight: 700, py: 1.6 }}
+                  >
+                    {busy ? <CircularProgress size={20} color="inherit" /> : role.role_name}
+                  </Button>
+                </Grid>
+              ))}
+            </Grid>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setResumeOpen(false)} disabled={busy}>
+            Cancel
+          </Button>
+        </DialogActions>
+      </Dialog>
     </div>
   );
 }

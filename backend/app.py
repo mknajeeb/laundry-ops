@@ -5026,6 +5026,47 @@ def public_attendance_pin_punch():
             pass
 
 
+@app.route("/api/public/attendance/pin-switch-role", methods=["POST"])
+def public_attendance_pin_switch_role():
+    """
+    Mobile PIN role switch (no clock in/out, no Bearer token).
+    Employee must already be clocked in. Feature flag must be enabled.
+    """
+    from backend.attendance_pin_role_switch import perform_pin_role_switch
+
+    data = request.json or {}
+    org_slug = (data.get("organization_slug") or data.get("organization") or "").strip().lower()
+    pin = data.get("pin")
+    idempotency_key = (
+        (data.get("idempotency_key") or "").strip()
+        or (request.headers.get("Idempotency-Key") or "").strip()
+    )
+    conn = get_db()
+    try:
+        body, status = perform_pin_role_switch(
+            conn,
+            org_slug,
+            pin,
+            fetch_user_roles,
+            get_request_ip(),
+            category_id=data.get("category_id"),
+            role_id=data.get("role_id"),
+            idempotency_key=idempotency_key or None,
+        )
+        return jsonify(body), status
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": "Invalid PIN. Please try again."}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @app.route("/api/public/organizations/for-attendance", methods=["GET"])
 def public_organizations_for_attendance():
     """Active tenants for /attendance tenant picker."""

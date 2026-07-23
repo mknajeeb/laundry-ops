@@ -2182,8 +2182,22 @@ def break_start():
 @require_auth
 @require_perm("ta.clock")
 def break_end():
+    """
+    End the open break. When Category & Role Tracking is enabled, require a
+    category/role selection so resume creates a clear role segment entry.
+    """
+    data = request.json or {}
+    category_id = data.get("category_id")
+    role_id = data.get("role_id")
     conn = get_db()
     try:
+        from backend.category_role_tracking_settings import is_category_role_tracking_enabled
+        from backend.shift_job_tracking import (
+            list_active_selection_tree,
+            seed_default_categories_and_roles,
+            start_category_role_segment,
+        )
+
         c = conn.cursor(dictionary=True)
         c.execute(
             """
@@ -2199,6 +2213,22 @@ def break_end():
         if not ob:
             return jsonify({"error": "No active break"}), 400
 
+        oid = _tenant_id()
+        tracking_on = is_category_role_tracking_enabled(conn, oid)
+        if tracking_on and (not category_id or not role_id):
+            seed_default_categories_and_roles(c, oid)
+            tree = list_active_selection_tree(c, oid)
+            return (
+                jsonify(
+                    {
+                        "error": "Select a category and role to resume work",
+                        "needs_category_role": True,
+                        "selection_tree": tree,
+                    }
+                ),
+                400,
+            )
+
         now = eastern_now_naive()
         c2 = conn.cursor()
         c2.execute(
@@ -2207,9 +2237,31 @@ def break_end():
             """,
             (now, ob["id"]),
         )
+        segment = None
+        if tracking_on and category_id and role_id:
+            segment = start_category_role_segment(
+                conn,
+                int(sess["id"]),
+                oid,
+                int(g.ta_user["id"]),
+                int(category_id),
+                int(role_id),
+                started_at=now,
+                change_source="break_resume",
+            )
         conn.commit()
         c.execute("SELECT * FROM shift_breaks WHERE id=%s", (ob["id"],))
-        return jsonify(json_safe(c.fetchone()))
+        body = json_safe(c.fetchone()) or {}
+        if segment:
+            body["segment"] = segment
+            body["task_tracking"] = {"current_display_label": segment.get("display_label")}
+        return jsonify(body)
+    except ValueError as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 400
     finally:
         conn.close()
 

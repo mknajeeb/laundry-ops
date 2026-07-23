@@ -596,6 +596,7 @@ export default function PayrollTimeRecordsPanel({
               <TableCell>Date</TableCell>
               <TableCell>Worker</TableCell>
               <TableCell>Cat.</TableCell>
+              <TableCell>Role</TableCell>
               <TableCell>In</TableCell>
               <TableCell>Out</TableCell>
               <TableCell align="right">Hrs</TableCell>
@@ -607,7 +608,10 @@ export default function PayrollTimeRecordsPanel({
             </TableRow>
           </TableHead>
           <TableBody>
-            {displayRows.map((r) => (
+            {displayRows.flatMap((r) => {
+              const segs = Array.isArray(r.role_segments) ? r.role_segments : [];
+              const showSegRows = segs.length > 1;
+              const parent = (
               <TableRow
                 key={r.id}
                 hover
@@ -626,6 +630,17 @@ export default function PayrollTimeRecordsPanel({
                 </TableCell>
                 <TableCell sx={{ whiteSpace: "nowrap" }}>
                   {CATEGORY_SHORT[r.worker_category] || r.worker_category_label}
+                </TableCell>
+                <TableCell
+                  sx={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  title={r.role_label || undefined}
+                >
+                  {r.role_label || (segs.length === 1 ? segs[0].display_label : null) || "—"}
+                  {showSegRows ? (
+                    <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
+                      ({segs.length})
+                    </Typography>
+                  ) : null}
                 </TableCell>
                 <TableCell sx={{ whiteSpace: "nowrap" }}>{formatEasternTimeShort(r.clock_in_at)}</TableCell>
                 <TableCell sx={{ whiteSpace: "nowrap" }}>{formatEasternTimeShort(r.clock_out_at)}</TableCell>
@@ -693,10 +708,40 @@ export default function PayrollTimeRecordsPanel({
                   </Tooltip>
                 </TableCell>
               </TableRow>
-            ))}
+              );
+              if (!showSegRows) return [parent];
+              const segRows = segs.map((seg, idx) => (
+                <TableRow
+                  key={`${r.id}-seg-${seg.id || idx}`}
+                  sx={{ bgcolor: alpha(theme.palette.info.main, 0.04) }}
+                >
+                  <TableCell />
+                  <TableCell />
+                  <TableCell />
+                  <TableCell sx={{ pl: 2, whiteSpace: "nowrap", fontSize: "0.8125rem" }}>
+                    <Typography variant="body2" component="span" sx={{ fontWeight: 600 }}>
+                      {seg.display_label || "—"}
+                    </Typography>
+                    {seg.change_source ? (
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        {String(seg.change_source).replace(/_/g, " ")}
+                      </Typography>
+                    ) : null}
+                  </TableCell>
+                  <TableCell sx={{ whiteSpace: "nowrap", fontSize: "0.8125rem" }}>
+                    {formatEasternTimeShort(seg.started_at)}
+                  </TableCell>
+                  <TableCell sx={{ whiteSpace: "nowrap", fontSize: "0.8125rem" }}>
+                    {formatEasternTimeShort(seg.ended_at)}
+                  </TableCell>
+                  <TableCell colSpan={6} />
+                </TableRow>
+              ));
+              return [parent, ...segRows];
+            })}
             {!displayRows.length && !loading ? (
               <TableRow>
-                <TableCell colSpan={11}>
+                <TableCell colSpan={12}>
                   <Typography color="text.secondary">No records for these filters.</Typography>
                 </TableCell>
               </TableRow>
