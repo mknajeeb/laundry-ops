@@ -12,27 +12,54 @@
     <!--
       Override manifest BEFORE React boots so "Add to Home Screen" does not
       capture Laundry Ops (start_url / → username/password login).
+
+      Also collapse …net//pin/… → /pin/… immediately: Safari A2HS saves the
+      current URL, and //pin never matches the PIN manifest regex.
     -->
     <script>
       (function () {
         try {
-          var p = location.pathname || "";
+          var raw = location.pathname || "/";
+          var path = String(raw).replace(/\/{2,}/g, "/");
+          if (!path) path = "/";
+          if (path.charAt(0) !== "/") path = "/" + path;
+
+          if (path !== raw) {
+            history.replaceState(
+              null,
+              "",
+              path + (location.search || "") + (location.hash || "")
+            );
+          }
+
           var href = "/manifest.webmanifest";
-          if (/^\/attendance\/maintenance\/veewash\/?$/i.test(p)) {
+          var appleTitle = "";
+
+          if (/^\/attendance\/maintenance\/veewash\/?$/i.test(path)) {
             href = "/attendance-maintenance.manifest.webmanifest";
-          } else if (/^\/attendance\/role\/veewash\/?$/i.test(p)) {
+            appleTitle = "Checklist";
+          } else if (/^\/attendance\/role\/veewash\/?$/i.test(path)) {
             href = "/attendance-role.manifest.webmanifest";
-          } else if (/^\/pin\/veewash\/?$/i.test(p)) {
+            appleTitle = "Switch Role";
+          } else if (/^\/pin\/veewash\/?$/i.test(path)) {
             href = "/pin.manifest.webmanifest";
-          } else if (/^\/attendance\/veewash\/?$/i.test(p)) {
+            appleTitle = "PIN Menu";
+          } else if (/^\/attendance\/veewash\/?$/i.test(path)) {
             href = "/attendance.manifest.webmanifest";
-          } else if (/^\/attendance\/maintenance\/([^/]+)\/?$/i.test(p)) {
+            appleTitle = "Attendance";
+          } else if (/^\/attendance\/maintenance\/([^/]+)\/?$/i.test(path)) {
             href = "/attendance-manifests/" + RegExp.$1.toLowerCase() + "-maintenance.webmanifest";
-          } else if (/^\/attendance\/role\/([^/]+)\/?$/i.test(p)) {
+            appleTitle = "Checklist";
+          } else if (/^\/attendance\/role\/([^/]+)\/?$/i.test(path)) {
             href = "/attendance-manifests/" + RegExp.$1.toLowerCase() + "-role.webmanifest";
-          } else if (/^\/pin\/([^/]+)\/?$/i.test(p)) {
+            appleTitle = "Switch Role";
+          } else if (/^\/pin\/([^/]+)\/?$/i.test(path)) {
             href = "/pin-manifests/" + RegExp.$1.toLowerCase() + ".webmanifest";
-          } else if (/^\/attendance\/([^/]+)\/?$/i.test(p)) {
+            appleTitle = "PIN Menu";
+          } else if (/^\/pin\/?$/i.test(path)) {
+            href = "/pin-manifests/default.webmanifest";
+            appleTitle = "PIN Menu";
+          } else if (/^\/attendance\/([^/]+)\/?$/i.test(path)) {
             var slug = RegExp.$1.toLowerCase();
             if (slug !== "role" && slug !== "maintenance") {
               href = slug === "veewash"
@@ -40,8 +67,27 @@
                 : "/attendance-manifests/" + slug + ".webmanifest";
             }
           }
+
           var link = document.getElementById("app-manifest") || document.querySelector('link[rel="manifest"]');
           if (link) link.setAttribute("href", href);
+
+          if (appleTitle) {
+            var apple = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+            if (apple) apple.setAttribute("content", appleTitle);
+            document.title = appleTitle;
+          }
+
+          // Prefer org logo on home-screen icon for PIN surfaces (Safari uses apple-touch-icon).
+          if (/^\/pin\//i.test(path) || /^\/attendance\//i.test(path)) {
+            var icon = "/veewash-attendance-logo.png";
+            if (/^\/pin\/washpro/i.test(path) || /\/washpro/i.test(path)) {
+              icon = "/neutral-app-icon.svg";
+            }
+            ["app-icon-apple", "app-icon-png"].forEach(function (id) {
+              var el = document.getElementById(id);
+              if (el) el.setAttribute("href", icon);
+            });
+          }
         } catch (e) { /* ignore */ }
       })();
     </script>

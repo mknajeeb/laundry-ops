@@ -176,7 +176,9 @@ export function applyAttendancePwaManifest(orgSlug, mode = "punch") {
  * Exported for tests / reuse.
  */
 export function manifestHrefForPathname(pathname) {
-  const p = String(pathname || "");
+  let p = String(pathname || "").replace(/\/{2,}/g, "/");
+  if (!p) p = "/";
+  if (!p.startsWith("/")) p = `/${p}`;
   const m = p.match(/^\/attendance\/maintenance\/([^/]+)\/?$/i);
   if (m) return attendanceManifestHref(m[1], "maintenance");
   const r = p.match(/^\/attendance\/role\/([^/]+)\/?$/i);

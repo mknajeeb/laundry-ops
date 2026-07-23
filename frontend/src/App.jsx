@@ -557,6 +557,16 @@ function AppShell() {
     );
   }
 
+  // …net//pin/… must become /pin/… before <Routes> match (else empty tree → falls to login).
+  if (pathname !== normalizedPathname && isPublicPinSurface(normalizedPathname)) {
+    return (
+      <Navigate
+        to={`${normalizedPathname}${location.search || ""}${location.hash || ""}`}
+        replace
+      />
+    );
+  }
+
   /** Full-screen lock screen: never wrap with sidebar / gates / previous user's session. */
   if (isKioskRoute(pathname)) {
     return (
@@ -573,6 +583,7 @@ function AppShell() {
       <Routes>
         <Route path="/pin/:orgSlug" element={<EmployeePinHubPage onLoggedIn={setUser} />} />
         <Route path="/pin" element={<EmployeePinHubPage onLoggedIn={setUser} />} />
+        <Route path="*" element={<Navigate to="/pin" replace />} />
       </Routes>
     );
   }
