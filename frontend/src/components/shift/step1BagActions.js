@@ -10,12 +10,14 @@ export function actionsForBagStatus(status) {
   const isReview = s.includes("review");
   const isCompleted = s === "completed" || s.includes("completed");
   return {
+    editBag: true,
     markCompleted: !isCompleted,
     returnPending: isReview || isCompleted,
     moveToReview: isPending,
-    correctEntry: true,
-    correctWeight: true,
-    correctCompletion: isCompleted,
+    // Legacy separate correction flows replaced by Edit Bag.
+    correctEntry: false,
+    correctWeight: false,
+    correctCompletion: false,
     exclude: true,
     isPending,
     isReview,

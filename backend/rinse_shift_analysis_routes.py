@@ -469,7 +469,10 @@ def register_rinse_shift_analysis_routes(
             )
             if not out.get("ok"):
                 conn.rollback()
-                return jsonify(out), 400
+                status = int(out.get("status") or 400)
+                if status not in (400, 409, 422):
+                    status = 400
+                return jsonify(out), status
             conn.commit()
             return jsonify(json_safe_rinse(out))
         except Exception as exc:

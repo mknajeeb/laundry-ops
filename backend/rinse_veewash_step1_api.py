@@ -333,6 +333,8 @@ def build_drilldown(
             "entry_source": snap.get("entry_source") or sb.get("workload_entry_type"),
             "portal_status": snap.get("portal_status") or sb.get("portal_status_at_sync"),
             "post_weight_event_exists": snap.get("post_weight_event_exists"),
+            "updated_at": sb.get("updated_at"),
+            "day_bag_updated_at": sb.get("updated_at"),
         }
 
     reasons = wl.get("review_reasons_by_bag") or (summary or {}).get("review_reasons_by_bag") or {}
@@ -365,6 +367,7 @@ def build_drilldown(
     scans: dict[str, list] = {b: [] for b in page_ids}
     corrections: dict[str, list] = {b: [] for b in page_ids}
     bulk_audits: dict[str, list] = {b: [] for b in page_ids}
+    last_edits: dict[str, dict] = {}
     detail_ms = 0.0
     if include_details and page_ids:
         t_detail = time.perf_counter()
@@ -395,6 +398,30 @@ def build_drilldown(
                             "created_at": row.get("created_at"),
                         }
                     )
+        if table_exists(cursor, "rinse_step1_bag_edits"):
+            placeholders = ",".join(["%s"] * len(page_ids))
+            cursor.execute(
+                f"""
+                SELECT id, bag_id, reason, is_undo, created_at
+                FROM rinse_step1_bag_edits
+                WHERE organization_id = %s
+                  AND shift_date_et = %s
+                  AND bag_id IN ({placeholders})
+                ORDER BY id DESC
+                """,
+                (int(organization_id), selected_date_et, *page_ids),
+            )
+            for row in cursor.fetchall() or []:
+                bid = normalize_bag_id(row.get("bag_id"))
+                if not bid or bid in last_edits:
+                    continue
+                last_edits[bid] = {
+                    "last_edit_id": int(row["id"]),
+                    "last_edit_reason": row.get("reason"),
+                    "last_edit_is_undo": bool(row.get("is_undo")),
+                    "last_edit_undoable": not bool(row.get("is_undo")),
+                    "last_edit_at": row.get("created_at"),
+                }
         for bid in page_ids:
             bulk_audits[bid] = load_bag_bulk_audits(
                 cursor, organization_id, selected_date_et, bid
@@ -425,6 +452,8 @@ def build_drilldown(
             "completed_by": r.get("completed_by"),
             "portal_status": r.get("portal_status"),
             "last_seen_at": r.get("last_seen_date"),
+            "updated_at": r.get("updated_at") or r.get("day_bag_updated_at"),
+            "day_bag_updated_at": r.get("day_bag_updated_at") or r.get("updated_at"),
             "bulk_workitem_scan": scan_info,
             "bulk_workitems": lines if include_details else [],
             "bulk_resolution": bulk_resolutions.get(bid) or r.get("bulk_resolution"),
@@ -446,6 +475,8 @@ def build_drilldown(
             item["corrections"] = corrections.get(bid) or []
             item["bulk_audits"] = bulk_audits.get(bid) or []
             item["bulk_workitems"] = lines
+            edit_meta = last_edits.get(bid) or {}
+            item.update(edit_meta)
         else:
             item["scans"] = []
             item["corrections"] = []
@@ -536,6 +567,12 @@ def apply_step1_correction(
             actor_display_name=actor_display_name,
         )
         if out.get("ok"):
+            try:
+                from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
+
+                clear_step1_productivity_cache(organization_id, day)
+            except Exception:
+                pass
             # Refresh live snapshot so Review totals update immediately.
             try:
                 from backend.rinse_veewash_shift_day import (
@@ -564,7 +601,7 @@ def apply_step1_correction(
                 pass
         return out
 
-    if not reason:
+    if not reason and action != "undo_bag_edit":
         return {"ok": False, "error": "reason_required"}
 
     day_raw = body.get("selected_date_et") or body.get("date")
@@ -585,6 +622,12 @@ def apply_step1_correction(
             "day_status": STATUS_CLOSED,
         }
 
+    try:
+        from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
+
+        clear_step1_productivity_cache(organization_id, day)
+    except Exception:
+        pass
     # Snapshot prior row from workload
     payload = build_step1_payload(cursor, organization_id, day)
     prior = next(
@@ -751,6 +794,55 @@ def apply_step1_correction(
             actor_display_name=actor_display_name,
         )
         return {"ok": True, "action": action, "entry_at": ts.isoformat(), "service_type": svc}
+
+    if action == "edit_bag":
+        from backend.rinse_step1_edit_bag import apply_unified_bag_edit
+
+        out = apply_unified_bag_edit(
+            cursor,
+            organization_id,
+            bag_id=bid,
+            selected_date_et=day,
+            reason=reason,
+            draft=dict(body.get("draft") or {}),
+            expected_updated_at=body.get("expected_updated_at"),
+            outcome_action=body.get("outcome_action"),
+            actor_user_id=actor_user_id,
+            actor_display_name=actor_display_name,
+        )
+        if out.get("ok"):
+            try:
+                from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
+
+                clear_step1_productivity_cache(organization_id, day)
+            except Exception:
+                pass
+        return out
+
+    if action == "undo_bag_edit":
+        from backend.rinse_step1_edit_bag import undo_bag_edit
+
+        edit_id_raw = body.get("edit_id")
+        try:
+            edit_id = int(edit_id_raw)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "edit_id_required"}
+        out = undo_bag_edit(
+            cursor,
+            organization_id,
+            edit_id=edit_id,
+            reason=body.get("reason") or reason or None,
+            actor_user_id=actor_user_id,
+            actor_display_name=actor_display_name,
+        )
+        if out.get("ok"):
+            try:
+                from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
+
+                clear_step1_productivity_cache(organization_id, day)
+            except Exception:
+                pass
+        return out
 
     if action in ("return_pending", "exclude", "move_to_review"):
         _record_correction(

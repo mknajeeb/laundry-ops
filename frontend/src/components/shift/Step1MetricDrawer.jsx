@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Accordion,
   AccordionDetails,
@@ -35,6 +35,8 @@ import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { PayrollDateTimeField } from "../PayrollDateTimeField";
 import BulkWorkitemEntrySection from "./BulkWorkitemEntrySection";
 import CopyableBagId from "../CopyableBagId";
+import EditBagPanel from "./EditBagPanel";
+import { mergeBagListRow } from "./editBagHelpers";
 import { actionsForBagStatus } from "./step1BagActions";
 
 /** Session-scoped maintenance catalog (fetched once per browser session). */
@@ -120,15 +122,27 @@ export default function Step1MetricDrawer({
   const [expanded, setExpanded] = useState(null);
   const [detailLoading, setDetailLoading] = useState({});
   const [actionBag, setActionBag] = useState(null);
+  const [editingBag, setEditingBag] = useState(null);
+  const editingBagRef = useRef(null);
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
 
+  useEffect(() => {
+    editingBagRef.current = editingBag;
+  }, [editingBag]);
+
   const load = useCallback(
-    async (nextPage = 1, signal) => {
+    async (nextPage = 1, signal, opts = {}) => {
       if (!open || !selectedDateEt || !metric) return;
+      const preserveExpanded = Boolean(opts.preserveExpanded);
+      const openEditId = editingBagRef.current;
+      const skipCacheMerge = Boolean(opts.skipCacheMerge) || Boolean(openEditId);
       setLoading(true);
       setError("");
-      setExpanded(null);
+      if (!preserveExpanded) {
+        setExpanded(null);
+        setEditingBag(null);
+      }
       try {
         const res = await getVeewashStep1Drilldown({
           date: selectedDateEt,
@@ -143,20 +157,18 @@ export default function Step1MetricDrawer({
         });
         if (signal?.aborted) return;
         const data = res?.data || {};
-        setBags(
-          (data.bags || []).map((b) => {
-            const cached = bagDetailCache.get(detailCacheKey(selectedDateEt, b.bag_id));
-            return cached
-              ? {
-                  ...b,
-                  ...cached,
-                  scans: cached.scans || [],
-                  corrections: cached.corrections || [],
-                  _detailsLoaded: true,
-                }
-              : b;
-          })
-        );
+        setBags((prev) => {
+          const prevById = Object.fromEntries((prev || []).map((b) => [b.bag_id, b]));
+          return (data.bags || []).map((b) =>
+            mergeBagListRow({
+              listBag: b,
+              previousBag: prevById[b.bag_id],
+              cachedDetail: bagDetailCache.get(detailCacheKey(selectedDateEt, b.bag_id)),
+              editingBagId: openEditId,
+              skipCacheMerge,
+            })
+          );
+        });
         if (Array.isArray(data.active_bulk_workitems) && data.active_bulk_workitems.length) {
           setCatalog(data.active_bulk_workitems);
         } else if (metric === "review_required" || reasonCode === "WF_BULK_WORKITEM_REVIEW") {
@@ -186,25 +198,32 @@ export default function Step1MetricDrawer({
     return () => controller.abort();
   }, [load]);
 
-  const loadBagDetail = async (bagId) => {
+  const loadBagDetail = async (bagId, { force = false } = {}) => {
     if (!bagId || !selectedDateEt || !metric) return;
     const cacheKey = detailCacheKey(selectedDateEt, bagId);
-    const cached = bagDetailCache.get(cacheKey);
-    if (cached) {
-      setBags((prev) =>
-        prev.map((b) =>
-          b.bag_id === bagId
-            ? {
-                ...b,
-                ...cached,
-                scans: cached.scans || [],
-                corrections: cached.corrections || [],
-                _detailsLoaded: true,
-              }
-            : b
-        )
-      );
-      return;
+    if (!force) {
+      const cached = bagDetailCache.get(cacheKey);
+      if (cached) {
+        // Don't clobber an open Edit Bag draft with a cache hit.
+        if (editingBag === bagId) return;
+        setBags((prev) =>
+          prev.map((b) =>
+            b.bag_id === bagId
+              ? {
+                  ...b,
+                  ...cached,
+                  scans: cached.scans || [],
+                  corrections: cached.corrections || [],
+                  bulk_workitems: cached.bulk_workitems || [],
+                  _detailsLoaded: true,
+                }
+              : b
+          )
+        );
+        return;
+      }
+    } else {
+      bagDetailCache.delete(cacheKey);
     }
     setDetailLoading((m) => ({ ...m, [bagId]: true }));
     try {
@@ -218,26 +237,33 @@ export default function Step1MetricDrawer({
         reason_code: reasonCode || undefined,
       });
       const detail = (res?.data?.bags || [])[0];
-      if (!detail) return;
-      bagDetailCache.set(cacheKey, detail);
-      if (Array.isArray(res?.data?.active_bulk_workitems) && res.data.active_bulk_workitems.length) {
-        setCatalog(res.data.active_bulk_workitems);
-      }
-      setBags((prev) =>
-        prev.map((b) =>
-          b.bag_id === bagId
-            ? {
+      if (detail) {
+        if (Array.isArray(res?.data?.active_bulk_workitems) && res.data.active_bulk_workitems.length) {
+          setCatalog(res.data.active_bulk_workitems);
+        }
+        bagDetailCache.set(cacheKey, detail);
+        setBags((prev) =>
+          prev.map((b) => {
+            if (b.bag_id !== bagId) return b;
+            // After save we force-refresh; while drafting, keep local bag shell
+            // but still attach scans/corrections/bulk for editor seed if first load.
+            if (editingBag === bagId && !force) {
+              return {
                 ...b,
-                ...detail,
-                scans: detail.scans || [],
-                corrections: detail.corrections || [],
+                scans: detail.scans || b.scans || [],
+                corrections: detail.corrections || b.corrections || [],
+                bulk_workitems: detail.bulk_workitems || b.bulk_workitems || [],
+                updated_at: detail.updated_at || b.updated_at,
+                day_bag_updated_at: detail.day_bag_updated_at || b.day_bag_updated_at,
                 _detailsLoaded: true,
-              }
-            : b
-        )
-      );
+              };
+            }
+            return { ...b, ...detail, _detailsLoaded: true };
+          })
+        );
+      }
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || `Failed to load details for ${bagId}`);
+      setError(e?.response?.data?.error || e?.message || "Failed to load bag detail");
     } finally {
       setDetailLoading((m) => ({ ...m, [bagId]: false }));
     }
@@ -246,14 +272,33 @@ export default function Step1MetricDrawer({
   const onExpand = (bagId) => {
     const next = expanded === bagId ? null : bagId;
     setExpanded(next);
-    if (!next) return;
+    if (!next) {
+      setEditingBag(null);
+      return;
+    }
     const bag = bags.find((b) => b.bag_id === bagId);
     if (bag && !bag._detailsLoaded) {
       loadBagDetail(bagId);
     }
   };
 
+  const refreshBagAfterEdit = async (bagId, { closeEditor = false } = {}) => {
+    bagDetailCache.delete(detailCacheKey(selectedDateEt, bagId));
+    setExpanded(bagId);
+    if (closeEditor) setEditingBag(null);
+    // Force refetch so persisted bulk_workitems replace any stale cache.
+    await loadBagDetail(bagId, { force: true });
+    onCorrected?.();
+  };
+
   const startAction = (bag, action) => {
+    if (action === "edit_bag") {
+      setEditingBag(bag.bag_id);
+      setActionBag(null);
+      if (!bag._detailsLoaded) loadBagDetail(bag.bag_id, { force: true });
+      return;
+    }
+    setEditingBag(null);
     setActionBag(bag.bag_id);
     setForm({
       action,
@@ -296,11 +341,13 @@ export default function Step1MetricDrawer({
         setError(res?.data?.error || "Correction failed");
         return;
       }
+      const bagId = actionBag;
       setActionBag(null);
-      if (actionBag) {
-        bagDetailCache.delete(detailCacheKey(selectedDateEt, actionBag));
+      if (bagId) {
+        bagDetailCache.delete(detailCacheKey(selectedDateEt, bagId));
+        setExpanded(bagId);
+        await loadBagDetail(bagId, { force: true });
       }
-      await load(page);
       onCorrected?.();
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Correction failed");
@@ -459,6 +506,16 @@ export default function Step1MetricDrawer({
                             </Typography>
                           ) : (
                             <>
+                              {acts.editBag ? (
+                                <Button
+                                  size="small"
+                                  variant="contained"
+                                  data-testid="edit-bag-button"
+                                  onClick={() => startAction(bag, "edit_bag")}
+                                >
+                                  Edit Bag
+                                </Button>
+                              ) : null}
                               {acts.markCompleted ? (
                                 <Button
                                   size="small"
@@ -530,6 +587,23 @@ export default function Step1MetricDrawer({
                       </Box>
                     );
                   })()}
+
+                  {!readOnly && editingBag === bag.bag_id ? (
+                    <EditBagPanel
+                      bag={bag}
+                      selectedDateEt={selectedDateEt}
+                      catalog={catalog}
+                      readOnly={readOnly}
+                      onCancel={() => setEditingBag(null)}
+                      onError={(msg) => setError(msg)}
+                      onSaved={async () => {
+                        await refreshBagAfterEdit(bag.bag_id, { closeEditor: false });
+                      }}
+                      onUndo={async () => {
+                        await refreshBagAfterEdit(bag.bag_id, { closeEditor: false });
+                      }}
+                    />
+                  ) : null}
 
                   {!readOnly && actionBag === bag.bag_id ? (
                     <Box
@@ -645,10 +719,12 @@ export default function Step1MetricDrawer({
                     bag={bag}
                     selectedDateEt={selectedDateEt}
                     catalog={catalog}
-                    readOnly={readOnly}
+                    readOnly
                     onError={(msg) => setError(msg)}
                     onSaved={async () => {
-                      await load(page);
+                      bagDetailCache.delete(detailCacheKey(selectedDateEt, bag.bag_id));
+                      setExpanded(bag.bag_id);
+                      await loadBagDetail(bag.bag_id, { force: true });
                       onCorrected?.();
                     }}
                   />
@@ -697,17 +773,64 @@ export default function Step1MetricDrawer({
                     </Table>
                   )}
 
-                  {!loadingDetail && (bag.corrections || []).length > 0 ? (
+                  {!loadingDetail &&
+                  (bag.last_edit_id || (bag.corrections || []).length > 0) ? (
                     <>
-                      <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 1.5, mb: 0.5 }}>
-                        Manager corrections
-                      </Typography>
+                      <Stack
+                        direction="row"
+                        alignItems="center"
+                        justifyContent="space-between"
+                        sx={{ mt: 1.5, mb: 0.5 }}
+                      >
+                        <Typography variant="subtitle2" fontWeight={700}>
+                          Manager corrections / Edit history
+                        </Typography>
+                        {!readOnly && bag.last_edit_id && bag.last_edit_undoable !== false ? (
+                          <Button
+                            size="small"
+                            data-testid="undo-last-change"
+                            disabled={saving}
+                            onClick={async () => {
+                              setSaving(true);
+                              setError("");
+                              try {
+                                const res = await postVeewashStep1Correction({
+                                  action: "undo_bag_edit",
+                                  bag_id: bag.bag_id,
+                                  selected_date_et: selectedDateEt,
+                                  edit_id: bag.last_edit_id,
+                                  reason: "Undo last Edit Bag change",
+                                });
+                                if (!res?.data?.ok) {
+                                  setError(res?.data?.error || "Undo failed");
+                                  return;
+                                }
+                                await refreshBagAfterEdit(bag.bag_id, { closeEditor: false });
+                              } catch (e) {
+                                setError(
+                                  e?.response?.data?.error || e?.message || "Undo failed"
+                                );
+                              } finally {
+                                setSaving(false);
+                              }
+                            }}
+                          >
+                            Undo Last Change
+                          </Button>
+                        ) : null}
+                      </Stack>
                       {(bag.corrections || []).slice(0, 5).map((c, i) => (
                         <Typography key={i} variant="caption" display="block">
                           {fmtTs(c.created_at)} · {c.action} · {c.actor_display_name || "—"} ·{" "}
                           {c.reason_text}
                         </Typography>
                       ))}
+                      {bag.last_edit_id ? (
+                        <Typography variant="caption" display="block" color="text.secondary">
+                          Last Edit Bag #{bag.last_edit_id}
+                          {bag.last_edit_reason ? ` · ${bag.last_edit_reason}` : ""}
+                        </Typography>
+                      ) : null}
                     </>
                   ) : null}
                 </AccordionDetails>

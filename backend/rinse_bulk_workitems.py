@@ -585,11 +585,14 @@ def save_bag_bulk_workitems(
     actor_user_id: int | None = None,
     actor_display_name: str | None = None,
     allow_closed: bool = False,
+    allow_empty_clear: bool = False,
 ) -> dict[str, Any]:
     """
     Save bulk workitem quantities for a bag, or mark no-chargeable.
 
     Clears WF_BULK_WORKITEM_REVIEW only (other reasons untouched).
+    When ``allow_empty_clear`` is True, an empty ``items`` list clears all bag
+    bulk lines (used by Edit Bag undo restore to an empty prior state).
     """
     from backend.rinse_veewash_shift_day import STATUS_CLOSED, get_day_record
 
@@ -717,81 +720,103 @@ def save_bag_bulk_workitems(
                 }
             )
         if not built:
-            return {"ok": False, "error": "items_or_no_charge_required"}
-        if not audit_reason:
-            return {"ok": False, "error": "reason_required"}
+            if allow_empty_clear:
+                cursor.execute(
+                    """
+                    DELETE FROM rinse_bag_bulk_workitems
+                    WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+                    """,
+                    (int(organization_id), shift_date_et, bid),
+                )
+                cursor.execute(
+                    """
+                    DELETE FROM rinse_bag_bulk_workitem_resolutions
+                    WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+                    """,
+                    (int(organization_id), shift_date_et, bid),
+                )
+                new_lines = []
+                new_total = 0.0
+                resolution_type = RESOLUTION_ITEMS
+                if not audit_reason:
+                    audit_reason = "clear_bulk_workitems"
+            else:
+                return {"ok": False, "error": "items_or_no_charge_required"}
+        else:
+            if not audit_reason:
+                return {"ok": False, "error": "reason_required"}
 
-        cursor.execute(
-            """
-            DELETE FROM rinse_bag_bulk_workitems
-            WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
-            """,
-            (int(organization_id), shift_date_et, bid),
-        )
-        new_total_d = Decimal("0.00")
-        for line in built:
             cursor.execute(
                 """
-                INSERT INTO rinse_bag_bulk_workitems (
-                  organization_id, shift_date_et, bag_id, workitem_id,
-                  workitem_name_snapshot, unit_price_snapshot, quantity, line_total,
-                  entered_by_user_id, entered_by_display_name,
-                  updated_by_user_id, updated_by_display_name
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                DELETE FROM rinse_bag_bulk_workitems
+                WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+                """,
+                (int(organization_id), shift_date_et, bid),
+            )
+            new_total_d = Decimal("0.00")
+            for line in built:
+                cursor.execute(
+                    """
+                    INSERT INTO rinse_bag_bulk_workitems (
+                      organization_id, shift_date_et, bag_id, workitem_id,
+                      workitem_name_snapshot, unit_price_snapshot, quantity, line_total,
+                      entered_by_user_id, entered_by_display_name,
+                      updated_by_user_id, updated_by_display_name
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        int(organization_id),
+                        shift_date_et,
+                        bid,
+                        line["workitem_id"],
+                        line["workitem_name_snapshot"],
+                        str(line["unit_price_snapshot"]),
+                        int(line["quantity"]),
+                        str(line["line_total"]),
+                        actor_user_id,
+                        actor_display_name,
+                        actor_user_id,
+                        actor_display_name,
+                    ),
+                )
+                new_total_d += line["line_total"]
+            new_total = float(new_total_d)
+            cursor.execute(
+                """
+                INSERT INTO rinse_bag_bulk_workitem_resolutions (
+                  organization_id, shift_date_et, bag_id, resolution_type, no_charge_reason,
+                  items_total, resolved_by_user_id, resolved_by_display_name, resolved_at
+                ) VALUES (%s, %s, %s, %s, NULL, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                  resolution_type = VALUES(resolution_type),
+                  no_charge_reason = NULL,
+                  items_total = VALUES(items_total),
+                  resolved_by_user_id = VALUES(resolved_by_user_id),
+                  resolved_by_display_name = VALUES(resolved_by_display_name),
+                  resolved_at = VALUES(resolved_at)
                 """,
                 (
                     int(organization_id),
                     shift_date_et,
                     bid,
-                    line["workitem_id"],
-                    line["workitem_name_snapshot"],
-                    str(line["unit_price_snapshot"]),
-                    int(line["quantity"]),
-                    str(line["line_total"]),
+                    RESOLUTION_ITEMS,
+                    str(_money(new_total)),
                     actor_user_id,
                     actor_display_name,
-                    actor_user_id,
-                    actor_display_name,
+                    datetime.utcnow(),
                 ),
             )
-            new_total_d += line["line_total"]
-        new_total = float(new_total_d)
-        cursor.execute(
-            """
-            INSERT INTO rinse_bag_bulk_workitem_resolutions (
-              organization_id, shift_date_et, bag_id, resolution_type, no_charge_reason,
-              items_total, resolved_by_user_id, resolved_by_display_name, resolved_at
-            ) VALUES (%s, %s, %s, %s, NULL, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-              resolution_type = VALUES(resolution_type),
-              no_charge_reason = NULL,
-              items_total = VALUES(items_total),
-              resolved_by_user_id = VALUES(resolved_by_user_id),
-              resolved_by_display_name = VALUES(resolved_by_display_name),
-              resolved_at = VALUES(resolved_at)
-            """,
-            (
-                int(organization_id),
-                shift_date_et,
-                bid,
-                RESOLUTION_ITEMS,
-                str(_money(new_total)),
-                actor_user_id,
-                actor_display_name,
-                datetime.utcnow(),
-            ),
-        )
-        new_lines = [
-            {
-                "workitem_id": x["workitem_id"],
-                "workitem_name": x["workitem_name_snapshot"],
-                "unit_price": float(x["unit_price_snapshot"]),
-                "quantity": x["quantity"],
-                "line_total": float(x["line_total"]),
-            }
-            for x in built
-        ]
-        resolution_type = RESOLUTION_ITEMS
+            new_lines = [
+                {
+                    "workitem_id": x["workitem_id"],
+                    "workitem_name": x["workitem_name_snapshot"],
+                    "unit_price": float(x["unit_price_snapshot"]),
+                    "quantity": x["quantity"],
+                    "line_total": float(x["line_total"]),
+                }
+                for x in built
+            ]
+            resolution_type = RESOLUTION_ITEMS
 
     cursor.execute(
         """
