@@ -7,14 +7,15 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="Laundry Ops" />
-    <link id="app-manifest" rel="manifest" href="/manifest.webmanifest" />
+    <meta id="apple-app-title" name="apple-mobile-web-app-title" content="Laundry Ops" />
+    <link id="app-icon-svg" rel="icon" href="/neutral-app-icon.svg" type="image/svg+xml" />
+    <link id="app-icon-png" rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link id="app-icon-apple" rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <!--
-      Override manifest BEFORE React boots so "Add to Home Screen" does not
-      capture Laundry Ops (start_url / → username/password login).
-
-      Also collapse …net//pin/… → /pin/… immediately: Safari A2HS saves the
-      current URL, and //pin never matches the PIN manifest regex.
+      CRITICAL for iOS Add to Home Screen:
+      Do NOT put <link rel="manifest" href="/manifest.webmanifest"> in static HTML.
+      Safari captures that file's start_url ("/") and home-screen opens login,
+      even if a later script swaps the href. Inject only the correct manifest here.
     -->
     <script>
       (function () {
@@ -33,67 +34,92 @@
           }
 
           var href = "/manifest.webmanifest";
-          var appleTitle = "";
+          var appleTitle = "Laundry Ops";
+          var icon = "";
+          var pinSurface = false;
 
           if (/^\/attendance\/maintenance\/veewash\/?$/i.test(path)) {
             href = "/attendance-maintenance.manifest.webmanifest";
             appleTitle = "Checklist";
+            icon = "/veewash-attendance-logo.png";
+            pinSurface = true;
           } else if (/^\/attendance\/role\/veewash\/?$/i.test(path)) {
             href = "/attendance-role.manifest.webmanifest";
             appleTitle = "Switch Role";
+            icon = "/veewash-attendance-logo.png";
+            pinSurface = true;
           } else if (/^\/pin\/veewash\/?$/i.test(path)) {
             href = "/pin.manifest.webmanifest";
             appleTitle = "PIN Menu";
+            icon = "/veewash-attendance-logo.png";
+            pinSurface = true;
           } else if (/^\/attendance\/veewash\/?$/i.test(path)) {
             href = "/attendance.manifest.webmanifest";
             appleTitle = "Attendance";
+            icon = "/veewash-attendance-logo.png";
+            pinSurface = true;
           } else if (/^\/attendance\/maintenance\/([^/]+)\/?$/i.test(path)) {
             href = "/attendance-manifests/" + RegExp.$1.toLowerCase() + "-maintenance.webmanifest";
             appleTitle = "Checklist";
+            pinSurface = true;
           } else if (/^\/attendance\/role\/([^/]+)\/?$/i.test(path)) {
             href = "/attendance-manifests/" + RegExp.$1.toLowerCase() + "-role.webmanifest";
             appleTitle = "Switch Role";
+            pinSurface = true;
           } else if (/^\/pin\/([^/]+)\/?$/i.test(path)) {
             href = "/pin-manifests/" + RegExp.$1.toLowerCase() + ".webmanifest";
             appleTitle = "PIN Menu";
+            pinSurface = true;
+            if (RegExp.$1.toLowerCase() === "veewash") icon = "/veewash-attendance-logo.png";
           } else if (/^\/pin\/?$/i.test(path)) {
             href = "/pin-manifests/default.webmanifest";
             appleTitle = "PIN Menu";
+            pinSurface = true;
+          } else if (/^\/kiosk\/([^/]+)\/?$/i.test(path)) {
+            href = "/kiosk-manifests/" + RegExp.$1.toLowerCase() + ".webmanifest";
+            pinSurface = true;
           } else if (/^\/attendance\/([^/]+)\/?$/i.test(path)) {
             var slug = RegExp.$1.toLowerCase();
             if (slug !== "role" && slug !== "maintenance") {
               href = slug === "veewash"
                 ? "/attendance.manifest.webmanifest"
                 : "/attendance-manifests/" + slug + ".webmanifest";
+              pinSurface = true;
+              if (slug === "veewash") icon = "/veewash-attendance-logo.png";
             }
           }
 
-          var link = document.getElementById("app-manifest") || document.querySelector('link[rel="manifest"]');
-          if (link) link.setAttribute("href", href);
-
-          if (appleTitle) {
-            var apple = document.querySelector('meta[name="apple-mobile-web-app-title"]');
-            if (apple) apple.setAttribute("content", appleTitle);
-            document.title = appleTitle;
+          // Remember last PIN path (diagnostics / future recovery only — do not auto-redirect
+          // standalone "/" here; that would break the main Laundry Ops home-screen app).
+          if (/^\/pin\//i.test(path)) {
+            try {
+              localStorage.setItem("washpro_ios_homescreen_start", path.replace(/\/$/, "") || path);
+            } catch (e) { /* ignore */ }
           }
 
-          // Prefer org logo on home-screen icon for PIN surfaces (Safari uses apple-touch-icon).
-          if (/^\/pin\//i.test(path) || /^\/attendance\//i.test(path)) {
-            var icon = "/veewash-attendance-logo.png";
-            if (/^\/pin\/washpro/i.test(path) || /\/washpro/i.test(path)) {
-              icon = "/neutral-app-icon.svg";
-            }
+          var link = document.createElement("link");
+          link.id = "app-manifest";
+          link.rel = "manifest";
+          link.href = href;
+          document.head.appendChild(link);
+
+          var apple = document.getElementById("apple-app-title");
+          if (apple) apple.setAttribute("content", appleTitle);
+          document.title = appleTitle;
+
+          if (icon) {
             ["app-icon-apple", "app-icon-png"].forEach(function (id) {
               var el = document.getElementById(id);
               if (el) el.setAttribute("href", icon);
             });
           }
+
+          if (pinSurface) {
+            window.__laundryOpsPinSurface = true;
+          }
         } catch (e) { /* ignore */ }
       })();
     </script>
-    <link id="app-icon-svg" rel="icon" href="/neutral-app-icon.svg" type="image/svg+xml" />
-    <link id="app-icon-png" rel="icon" type="image/svg+xml" sizes="192x192" href="/neutral-app-icon.svg" />
-    <link id="app-icon-apple" rel="apple-touch-icon" href="/neutral-app-icon.svg" />
     <title>Laundry Ops</title>
     <!-- OneSignal Web SDK v16 (init + worker path in src/main.jsx) -->
     <script

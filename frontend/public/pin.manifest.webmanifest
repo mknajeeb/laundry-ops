@@ -2,6 +2,7 @@
   "name": "VeeWash PIN Menu",
   "short_name": "PIN Menu",
   "description": "Switch role, checklist, and inventory with your attendance PIN.",
+  "id": "/pin/veewash",
   "start_url": "/pin/veewash",
   "scope": "/",
   "display": "standalone",
@@ -12,6 +13,18 @@
     {
       "src": "/veewash-attendance-logo.png",
       "sizes": "500x500",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     }

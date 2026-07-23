@@ -80,9 +80,25 @@ syncAppIconFromSavedSession();
 window.addEventListener("washpro-session-changed", syncAppIconFromSavedSession);
 
 // PWA shell updates: register SW when not using OneSignal (OneSignal.init registers /service-worker.js).
+// Skip on phone PIN / attendance / kiosk surfaces so iOS home-screen installs are not tied to the main app shell.
 if ("serviceWorker" in navigator && import.meta.env.PROD && !ONESIGNAL_APP_ID) {
   window.addEventListener("load", async () => {
     try {
+      const path = String(location.pathname || "").replace(/\/{2,}/g, "/");
+      const pinSurface =
+        window.__laundryOpsPinSurface ||
+        path === "/pin" ||
+        path.startsWith("/pin/") ||
+        path === "/attendance" ||
+        path.startsWith("/attendance/") ||
+        path === "/kiosk" ||
+        path.startsWith("/kiosk/");
+      if (pinSurface) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+        return;
+      }
+
       const registration = await navigator.serviceWorker.register("/service-worker.js");
 
       const notifyUpdateReady = () => {

@@ -13,5 +13,8 @@
       "/pin-manifests/*",
       "/kiosk-manifests/*"
     ]
+  },
+  "mimeTypes": {
+    ".webmanifest": "application/manifest+json"
   }
 }

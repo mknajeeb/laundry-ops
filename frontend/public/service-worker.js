@@ -1,5 +1,5 @@
 // Bump when fetch strategy changes so clients pick up new worker.
-const CACHE_NAME = "laundry-ops-shell-v9";
+const CACHE_NAME = "laundry-ops-shell-v10";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -36,15 +36,39 @@ self.addEventListener("message", (event) => {
   }
 });
 
+function isPinPublicPath(pathname) {
+  const p = String(pathname || "");
+  return (
+    p === "/pin" ||
+    p.startsWith("/pin/") ||
+    p === "/attendance" ||
+    p.startsWith("/attendance/") ||
+    p === "/kiosk" ||
+    p.startsWith("/kiosk/")
+  );
+}
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
 
   if (request.method !== "GET") return;
 
+  let url;
   try {
-    const u = new URL(request.url);
-    if (u.protocol !== "http:" && u.protocol !== "https:") return;
+    url = new URL(request.url);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return;
   } catch {
+    return;
+  }
+
+  // Never cache-first PIN / attendance / kiosk shells — stale start_url installs break iOS A2HS.
+  if (request.mode === "navigate" && isPinPublicPath(url.pathname)) {
+    event.respondWith(fetch(request).catch(() => caches.match("/index.html")));
+    return;
+  }
+
+  if (/\.webmanifest$/i.test(url.pathname)) {
+    event.respondWith(fetch(request));
     return;
   }
 
@@ -64,7 +88,6 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  const url = new URL(request.url);
   if (url.origin !== self.location.origin) {
     return;
   }
