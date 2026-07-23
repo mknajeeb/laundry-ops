@@ -86,6 +86,14 @@ def main() -> None:
         cur = conn.cursor()
         for stmt in _statements(sql):
             cur.execute(stmt)
+            # Consume result sets (e.g. final SELECT note) so commit does not fail.
+            try:
+                while True:
+                    _ = cur.fetchall()
+                    if not cur.nextset():
+                        break
+            except Exception:
+                pass
         conn.commit()
     finally:
         conn.close()

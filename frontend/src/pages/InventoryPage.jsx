@@ -14,6 +14,7 @@ import SettingsTab from "../components/inventory/SettingsTab";
 import { LoadingBlock, StatusAlert } from "../components/inventory/InventoryShared";
 import { INV_NAV_SX } from "../utils/inventoryHelpers";
 import { canAccessInventoryTab, getInventoryRoleTier } from "../utils/inventoryRoleHelpers";
+import { useAuth } from "../context/AuthContext";
 
 const ALL_TABS = [
   { key: "dashboard", label: "Dashboard", icon: DashboardIcon },
@@ -24,10 +25,11 @@ const ALL_TABS = [
 ];
 
 export default function InventoryPage({ user }) {
+  const { hasPerm } = useAuth();
   const roleTier = useMemo(() => getInventoryRoleTier(user), [user]);
   const visibleTabs = useMemo(
-    () => ALL_TABS.filter((t) => canAccessInventoryTab(roleTier, t.key)),
-    [roleTier]
+    () => ALL_TABS.filter((t) => canAccessInventoryTab(roleTier, t.key, hasPerm)),
+    [roleTier, hasPerm]
   );
 
   const [tabKey, setTabKey] = useState("dashboard");
@@ -107,7 +109,7 @@ export default function InventoryPage({ user }) {
   }
 
   return (
-    <Box className="page" sx={{ maxWidth: 960, mx: "auto", width: "100%", pb: { xs: 2, md: 0 } }}>
+    <Box className="page" sx={{ maxWidth: 960, mx: "auto", width: "100%", px: { xs: 1.5, sm: 2 }, pb: { xs: 2, md: 0 } }}>
       <Typography variant="h5" fontWeight={800} sx={{ mb: 0.5, fontSize: { xs: "1.35rem", sm: "1.5rem" } }}>
         Inventory
       </Typography>
@@ -124,16 +126,24 @@ export default function InventoryPage({ user }) {
           variant="scrollable"
           scrollButtons="auto"
           allowScrollButtonsMobile
+          sx={{
+            minHeight: 52,
+            "& .MuiTab-root": {
+              minHeight: 52,
+              minWidth: "auto",
+              px: { xs: 1.25, sm: 2 },
+              fontSize: { xs: "0.72rem", sm: "0.875rem" },
+            },
+          }}
         >
           {visibleTabs.map((t) => {
             const Icon = t.icon;
             return (
               <Tab
                 key={t.key}
-                icon={<Icon sx={{ fontSize: 20 }} />}
+                icon={<Icon sx={{ fontSize: { xs: 18, sm: 20 } }} />}
                 iconPosition="start"
                 label={t.label}
-                sx={{ minHeight: 48, fontSize: { xs: "0.75rem", sm: "0.875rem" } }}
               />
             );
           })}
@@ -158,6 +168,7 @@ export default function InventoryPage({ user }) {
           varianceThreshold={varianceThreshold}
           onRefresh={load}
           onMessage={handleMessage}
+          onGoDashboard={() => setTabKey("dashboard")}
         />
       ) : null}
 
@@ -183,6 +194,7 @@ export default function InventoryPage({ user }) {
           bagPrice={bagPrice}
           varianceThreshold={varianceThreshold}
           roleTier={roleTier}
+          hasPerm={hasPerm}
           onRefresh={load}
           onMessage={handleMessage}
         />

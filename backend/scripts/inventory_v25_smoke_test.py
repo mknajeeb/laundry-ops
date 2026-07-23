@@ -297,10 +297,12 @@ def main() -> int:
         stock_tab = (ROOT / "frontend/src/components/inventory/StockCheckTab.jsx").read_text(encoding="utf-8")
         mobile_ok = "pb: { xs: 14" in stock_tab and "StickyActionBar" in (ROOT / "frontend/src/components/inventory/InventoryShared.jsx").read_text(encoding="utf-8")
         inv_page = (ROOT / "frontend/src/pages/InventoryPage.jsx").read_text(encoding="utf-8")
-        floor_tabs_ok = 'canAccessInventoryTab(roleTier, t.key)' in inv_page and '"dashboard"' in inv_page and '"check"' in inv_page
+        floor_tabs_ok = 'canAccessInventoryTab(roleTier, t.key, hasPerm)' in inv_page and '"dashboard"' in inv_page and '"check"' in inv_page
+        qty_stepper_ok = "QtyStepper" in (ROOT / "frontend/src/components/inventory/InventoryShared.jsx").read_text(encoding="utf-8")
         log("Mobile Stock Check bottom padding (xs:14)", mobile_ok, "")
         log("FRONT_DESK UI tabs: dashboard + check only (code)", floor_tabs_ok, "canAccessInventoryTab gates orders/reports/settings")
-        results.append(("mobile + UI role tabs", mobile_ok and floor_tabs_ok, ""))
+        log("QtyStepper +/- on stock check", qty_stepper_ok, "")
+        results.append(("mobile + UI role tabs", mobile_ok and floor_tabs_ok and qty_stepper_ok, ""))
 
     except SmokeFailure as e:
         log("SMOKE TEST", False, str(e))

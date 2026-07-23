@@ -209,6 +209,87 @@ class InventoryHardeningTests(unittest.TestCase):
         self.assertEqual(metrics["status_updates"], 1)
 
     @patch("backend.inventory_module.list_reorder_suggestions", return_value=[])
+    @patch("backend.inventory_module.get_item")
+    @patch("backend.inventory_module.get_draft_stock_check")
+    @patch("backend.inventory_module.save_stock_check_draft")
+    @patch("backend.inventory_module.get_variance_threshold", return_value=5)
+    @patch("backend.inventory_module._column_exists", return_value=True)
+    @patch("backend.inventory_module.ensure_inventory_tables")
+    def test_recount_flag_does_not_change_on_hand(
+        self, _ensure, _col, _threshold, _save_draft, get_draft, get_item, _reorder
+    ):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {"status": STOCK_CHECK_DRAFT}
+        cursor.rowcount = 1
+        get_draft.return_value = {
+            "id": 9,
+            "lines": {1: {"item_id": 1, "counted_qty": 0, "needs_recount": True}},
+        }
+        get_item.return_value = {"id": 1, "name": "Bleach", "current_on_hand": 20, "tracking_mode": "QUANTITY"}
+        out = submit_stock_check(
+            cursor,
+            3,
+            {"lines": [{"item_id": 1, "counted_qty": 0, "needs_recount": True}], "oneshot": True},
+            1,
+            "Jennifer",
+        )
+        self.assertEqual(out["recount_flagged"], 1)
+        on_hand_updates = [
+            c for c in cursor.execute.call_args_list
+            if "UPDATE inventory_items SET on_hand_qty" in str(c[0][0])
+        ]
+        self.assertEqual(len(on_hand_updates), 0)
+        flag_updates = [
+            c for c in cursor.execute.call_args_list
+            if "needs_recount = 1" in str(c[0][0])
+        ]
+        self.assertEqual(len(flag_updates), 1)
+
+    @patch("backend.inventory_module.list_reorder_suggestions", return_value=[])
+    @patch("backend.inventory_module.get_item")
+    @patch("backend.inventory_module.get_draft_stock_check")
+    @patch("backend.inventory_module.save_stock_check_draft")
+    @patch("backend.inventory_module.get_variance_threshold", return_value=5)
+    @patch("backend.inventory_module._column_exists", return_value=True)
+    @patch("backend.inventory_module.ensure_inventory_tables")
+    def test_recount_resolve_records_actor_and_timestamp(
+        self, _ensure, _col, _threshold, _save_draft, get_draft, get_item, _reorder
+    ):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {"status": STOCK_CHECK_DRAFT}
+        cursor.rowcount = 1
+        get_draft.return_value = {
+            "id": 10,
+            "lines": {1: {"item_id": 1, "counted_qty": 20, "needs_recount": False}},
+        }
+        get_item.return_value = {
+            "id": 1,
+            "name": "Bleach",
+            "current_on_hand": 20,
+            "tracking_mode": "QUANTITY",
+            "needs_recount": True,
+        }
+        out = submit_stock_check(
+            cursor,
+            3,
+            {"lines": [{"item_id": 1, "counted_qty": 20}], "oneshot": True},
+            2,
+            "Joshua",
+        )
+        self.assertEqual(out["lines_submitted"], 1)
+        resolve_updates = [
+            c for c in cursor.execute.call_args_list
+            if "UPDATE inventory_items SET on_hand_qty" in str(c[0][0])
+            and "last_counted_by" in str(c[0][0])
+            and "needs_recount = 0" in str(c[0][0])
+        ]
+        self.assertEqual(len(resolve_updates), 1)
+        params = resolve_updates[0][0][1]
+        self.assertEqual(params[0], 20.0)  # counted qty
+        self.assertEqual(params[1], "Joshua")  # actor
+        self.assertEqual(params[2], 1)  # item id
+
+    @patch("backend.inventory_module.list_reorder_suggestions", return_value=[])
     @patch("backend.inventory_module.get_draft_stock_check")
     @patch("backend.inventory_module.save_stock_check_draft")
     @patch("backend.inventory_module.get_variance_threshold", return_value=5)

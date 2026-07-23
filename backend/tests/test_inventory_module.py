@@ -39,6 +39,22 @@ class InventoryModuleTests(unittest.TestCase):
         self.assertEqual(row["reorder_level"], 2.0)
         self.assertEqual(row["current_on_hand"], 3.0)
         self.assertTrue(row["track_weekly_check"])
+        self.assertEqual(row["tracking_mode"], "QUANTITY")
+        self.assertIsNone(row["status_level"])
+
+    def test_item_row_status_tracking(self):
+        row = _item_row({
+            "id": 3,
+            "item_name": "Hand Soap",
+            "on_hand_qty": Decimal("0"),
+            "tracking_mode": "STATUS",
+            "status_level": "LOW",
+            "reorder_threshold": 0,
+            "active": True,
+            "track_weekly_check": 1,
+        })
+        self.assertEqual(row["tracking_mode"], "STATUS")
+        self.assertEqual(row["status_level"], "LOW")
 
     def test_item_estimated_value_prefers_average_cost(self):
         row = _item_row({

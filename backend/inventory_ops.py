@@ -42,6 +42,36 @@ def build_dashboard(cursor, org_id: int, *, include_financials: bool = True) -> 
 
     inventory_value = _money(sum(_d(i.get("estimated_value")) for i in items))
 
+    items_out = 0
+    items_low = 0
+    recently_counted = 0
+    needs_recount = 0
+    week_ago = datetime.now() - timedelta(days=7)
+    for item in items:
+        mode = str(item.get("tracking_mode") or "QUANTITY").upper()
+        if mode == "STATUS":
+            level = str(item.get("status_level") or "OK").upper()
+            if level == "OUT":
+                items_out += 1
+            elif level == "LOW":
+                items_low += 1
+        else:
+            on_hand = _float(item.get("current_on_hand"))
+            if on_hand <= 0:
+                items_out += 1
+            elif on_hand <= _float(item.get("reorder_level")):
+                items_low += 1
+        if item.get("needs_recount"):
+            needs_recount += 1
+        lca = item.get("last_count_at")
+        if lca:
+            try:
+                dt = lca if isinstance(lca, datetime) else datetime.fromisoformat(str(lca).replace("Z", ""))
+                if dt >= week_ago:
+                    recently_counted += 1
+            except Exception:
+                pass
+
     cursor.execute(
         """
         SELECT COUNT(*) AS c FROM inventory_orders
@@ -74,6 +104,11 @@ def build_dashboard(cursor, org_id: int, *, include_financials: bool = True) -> 
     kpis = {
         "inventory_value": inventory_value if include_financials else None,
         "items_below_reorder": len(low_stock),
+        "items_low": items_low,
+        "items_out": items_out,
+        "need_ordering": len(low_stock),
+        "recently_counted": recently_counted,
+        "needs_recount": needs_recount,
         "pending_purchase_orders": pending_pos,
         "this_week_purchases": this_week if include_financials else None,
         "this_month_purchases": this_month if include_financials else None,
@@ -89,6 +124,8 @@ def build_dashboard(cursor, org_id: int, *, include_financials: bool = True) -> 
             "name": i.get("name"),
             "category": i.get("category_name"),
             "on_hand": i.get("current_on_hand"),
+            "status_level": i.get("status_level"),
+            "tracking_mode": i.get("tracking_mode"),
             "reorder_level": i.get("reorder_level"),
             "suggested_qty": i.get("suggested_qty") or i.get("suggested_order_qty"),
             "vendor": i.get("vendor_name") or i.get("default_vendor_name"),
@@ -98,10 +135,15 @@ def build_dashboard(cursor, org_id: int, *, include_financials: bool = True) -> 
     ]
 
     activity = get_recent_activity(cursor, org_id, limit=15)
+    recount_items = [
+        {"id": i["id"], "name": i.get("name"), "category": i.get("category_name")}
+        for i in items if i.get("needs_recount")
+    ]
 
     return {
         "kpis": kpis,
         "low_stock": low_stock_rows,
+        "needs_recount": recount_items,
         "category_value_totals": [
             {"category": k, "value": _money(v)} for k, v in sorted(category_totals.items(), key=lambda x: -x[1])
         ],
@@ -211,9 +253,39 @@ def get_item_history(cursor, org_id: int, item_id: int, *, limit: int = 100) -> 
             "event_label": "Weekly Count",
             "qty_change": change,
             "display_qty": counted,
+            "previous_qty": prev,
             "actor": r.get("actor"),
-            "note": r.get("variance_reason") or r.get("variance_reason"),
+            "note": r.get("variance_reason"),
         })
+
+    # Status-only checks (counted_qty may be null)
+    try:
+        cursor.execute(
+            """
+            SELECT sc.submitted_at AS event_at, 'Status Check' AS event_label,
+                   scl.status_level, scl.previous_on_hand, scl.note,
+                   sc.checked_by_name AS actor
+            FROM inventory_stock_check_lines scl
+            JOIN inventory_stock_checks sc ON sc.id = scl.stock_check_id
+            WHERE sc.organization_id = %s AND scl.item_id = %s AND sc.status = %s
+              AND scl.status_level IS NOT NULL AND scl.counted_qty IS NULL
+            ORDER BY sc.submitted_at DESC LIMIT %s
+            """,
+            (org_id, item_id, STOCK_CHECK_SUBMITTED, limit),
+        )
+        for r in cursor.fetchall() or []:
+            history.append({
+                "event_at": r.get("event_at"),
+                "event_label": f"Status → {r.get('status_level')}",
+                "qty_change": 0,
+                "display_qty": None,
+                "previous_qty": _float(r.get("previous_on_hand")),
+                "actor": r.get("actor"),
+                "note": r.get("note"),
+                "status_level": r.get("status_level"),
+            })
+    except Exception:
+        pass
 
     cursor.execute(
         """

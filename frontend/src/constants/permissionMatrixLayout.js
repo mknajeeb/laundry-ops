@@ -26,6 +26,12 @@ export const MODULE_ROUTE_ORDER = [
 /** Tab/function order within Time & attendance and globally when merging. */
 export const FUNCTIONALITY_SECTION_ORDER = [
   "Module access",
+  "Dashboard",
+  "Stock Check",
+  "Purchase Orders",
+  "Reports",
+  "Settings",
+  "Task List",
   "User accounts",
   "Overrides & corrections",
   "Clock / sessions",
@@ -86,6 +92,12 @@ export function sectionLabelForPermKey(permKey) {
   if (pk === "ta.monitor") return "Live monitor";
   if (pk === "finance.payments") return "Payroll payments";
   if (pk === "ta.reports") return "Reports & exports";
+  if (pk.startsWith("inventory.dashboard.")) return "Dashboard";
+  if (pk.startsWith("inventory.check.")) return "Stock Check";
+  if (pk.startsWith("inventory.orders.")) return "Purchase Orders";
+  if (pk.startsWith("inventory.reports.")) return "Reports";
+  if (pk.startsWith("inventory.settings.")) return "Settings";
+  if (pk.startsWith("maintenance.tasks.")) return "Task List";
   const prefix = pk.split(".")[0] || "";
   if (TENANT_MODULE_ROUTE_PREFIXES.has(prefix)) return "Module access";
   return null;

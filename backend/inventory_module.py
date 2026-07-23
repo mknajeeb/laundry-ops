@@ -20,8 +20,15 @@ from backend.inventory_constants import (
     ORDER_ORDERED,
     ORDER_PARTIALLY_RECEIVED,
     ORDER_RECEIVED,
+    STATUS_LEVELS,
+    STATUS_LOW,
+    STATUS_OK,
+    STATUS_OUT,
     STOCK_CHECK_DRAFT,
     STOCK_CHECK_SUBMITTED,
+    TRACKING_MODES,
+    TRACKING_QUANTITY,
+    TRACKING_STATUS,
     VARIANCE_REASONS,
     VARIANCE_THRESHOLD_KEY,
     ADJUSTMENT_REASONS,
@@ -262,6 +269,11 @@ def _ensure_v2_5_extensions(cursor) -> None:
             ("average_unit_cost", "DECIMAL(12,4) NOT NULL DEFAULT 0"),
             ("last_count_date", "DATE NULL"),
             ("last_purchase_date", "DATE NULL"),
+            ("tracking_mode", "VARCHAR(20) NOT NULL DEFAULT 'QUANTITY'"),
+            ("status_level", "VARCHAR(20) NULL"),
+            ("needs_recount", "TINYINT(1) NOT NULL DEFAULT 0"),
+            ("last_counted_by", "VARCHAR(150) NULL"),
+            ("last_count_at", "DATETIME NULL"),
         ]
         for col, ddl in item_cols:
             if not _column_exists(cursor, "inventory_items", col):
@@ -281,6 +293,8 @@ def _ensure_v2_5_extensions(cursor) -> None:
         line_cols = [
             ("variance_qty", "DECIMAL(10,2) NULL"),
             ("variance_reason", "VARCHAR(50) NULL"),
+            ("status_level", "VARCHAR(20) NULL"),
+            ("needs_recount", "TINYINT(1) NOT NULL DEFAULT 0"),
         ]
         for col, ddl in line_cols:
             if not _column_exists(cursor, "inventory_stock_check_lines", col):
@@ -575,6 +589,26 @@ def _refresh_item_average_cost(cursor, org_id: int, item_id: int) -> None:
         )
 
 
+def _normalize_tracking_mode(raw: Any) -> str:
+    mode = str(raw or TRACKING_QUANTITY).strip().upper()
+    return mode if mode in TRACKING_MODES else TRACKING_QUANTITY
+
+
+def _normalize_status_level(raw: Any) -> str | None:
+    if raw in (None, ""):
+        return None
+    level = str(raw).strip().upper()
+    return level if level in STATUS_LEVELS else None
+
+
+def _item_needs_reorder(item: dict) -> bool:
+    if _normalize_tracking_mode(item.get("tracking_mode")) == TRACKING_STATUS:
+        return _normalize_status_level(item.get("status_level")) in (STATUS_LOW, STATUS_OUT)
+    on_hand = _float(item.get("current_on_hand"))
+    reorder = _float(item.get("reorder_level"))
+    return on_hand <= reorder
+
+
 def _item_row(row: dict | None, *, usage: dict | None = None) -> dict | None:
     if not row:
         return None
@@ -588,6 +622,12 @@ def _item_row(row: dict | None, *, usage: dict | None = None) -> dict | None:
         weeks_remaining = round(on_hand / avg_weekly, 1)
     lcd = row.get("last_count_date")
     lpd = row.get("last_purchase_date")
+    lca = row.get("last_count_at") or row.get("last_count_at_derived")
+    tracking_mode = _normalize_tracking_mode(row.get("tracking_mode"))
+    status_level = _normalize_status_level(row.get("status_level"))
+    if tracking_mode == TRACKING_STATUS and not status_level:
+        status_level = STATUS_OK
+    last_counted_by = row.get("last_counted_by") or row.get("last_counted_by_derived")
     return {
         "id": row["id"],
         "name": row.get("item_name"),
@@ -613,6 +653,9 @@ def _item_row(row: dict | None, *, usage: dict | None = None) -> dict | None:
         "estimated_value": _money(_d(on_hand) * _d(avg_cost or default_cost)),
         "current_on_hand": on_hand,
         "on_hand_qty": on_hand,
+        "tracking_mode": tracking_mode,
+        "status_level": status_level,
+        "needs_recount": bool(row.get("needs_recount", 0)),
         "track_weekly_check": bool(row.get("track_weekly_check", 1)),
         "track_inventory": bool(row.get("track_weekly_check", 1)),
         "track_retail_sale": bool(row.get("track_retail_sale", 0)),
@@ -622,6 +665,8 @@ def _item_row(row: dict | None, *, usage: dict | None = None) -> dict | None:
         "notes": row.get("notes"),
         "last_counted_qty": _float(row.get("last_counted_qty")) if row.get("last_counted_qty") is not None else None,
         "last_count_date": lcd.isoformat() if hasattr(lcd, "isoformat") else (str(lcd)[:10] if lcd else None),
+        "last_count_at": lca.isoformat(sep=" ") if hasattr(lca, "isoformat") else (str(lca) if lca else None),
+        "last_counted_by": last_counted_by,
         "last_purchase_date": lpd.isoformat() if hasattr(lpd, "isoformat") else (str(lpd)[:10] if lpd else None),
         "avg_weekly_usage": avg_weekly,
         "weeks_remaining": weeks_remaining,
@@ -646,7 +691,27 @@ def _items_base_sql() -> str:
                   AND sc.organization_id = i.organization_id
                 ORDER BY sc.submitted_at DESC
                 LIMIT 1
-            ) AS last_counted_qty
+            ) AS last_counted_qty,
+            (
+                SELECT sc.checked_by_name
+                FROM inventory_stock_check_lines scl
+                JOIN inventory_stock_checks sc ON sc.id = scl.stock_check_id
+                WHERE scl.item_id = i.id
+                  AND sc.status = 'SUBMITTED'
+                  AND sc.organization_id = i.organization_id
+                ORDER BY sc.submitted_at DESC
+                LIMIT 1
+            ) AS last_counted_by_derived,
+            (
+                SELECT sc.submitted_at
+                FROM inventory_stock_check_lines scl
+                JOIN inventory_stock_checks sc ON sc.id = scl.stock_check_id
+                WHERE scl.item_id = i.id
+                  AND sc.status = 'SUBMITTED'
+                  AND sc.organization_id = i.organization_id
+                ORDER BY sc.submitted_at DESC
+                LIMIT 1
+            ) AS last_count_at_derived
         FROM inventory_items i
         LEFT JOIN inventory_categories c ON c.id = i.category_id
         LEFT JOIN inventory_vendors v ON v.id = i.default_vendor_id
@@ -862,9 +927,17 @@ def save_item(cursor, org_id: int, data: dict) -> dict:
     track_retail_sale = _bool(data.get("track_retail_sale") if data.get("track_retail_sale") is not None else data.get("retail_item"), False)
     is_active = _bool(data.get("is_active") if data.get("is_active") is not None else data.get("active"), True)
     notes = (data.get("notes") or "").strip() or None
+    item_id = data.get("id")
+    tracking_mode = _normalize_tracking_mode(data.get("tracking_mode"))
+    status_level = _normalize_status_level(data.get("status_level"))
+    if tracking_mode == TRACKING_STATUS:
+        status_level = status_level or STATUS_OK
+        if not item_id:
+            current_on_hand = 0.0
+    else:
+        status_level = None
 
     legacy_category = "BAG" if track_retail_sale else "SUPPLY"
-    item_id = data.get("id")
     if item_id:
         cursor.execute(
             """
@@ -873,6 +946,7 @@ def save_item(cursor, org_id: int, data: dict) -> dict:
                 vendor_name = %s, unit_label = %s, sku = %s, barcode = %s, pack_size = %s,
                 reorder_threshold = %s, target_stock = %s, suggested_order_qty = %s,
                 default_unit_cost = %s, track_weekly_check = %s, track_retail_sale = %s,
+                tracking_mode = %s, status_level = %s,
                 active = %s, notes = %s, updated_at = NOW()
             WHERE id = %s AND organization_id = %s
             """,
@@ -880,6 +954,7 @@ def save_item(cursor, org_id: int, data: dict) -> dict:
                 name, int(category_id), legacy_category, default_vendor_id, vendor_name, unit,
                 sku, barcode, pack_size, reorder_level, target_stock, suggested_order_qty,
                 default_unit_cost, 1 if track_weekly_check else 0, 1 if track_retail_sale else 0,
+                tracking_mode, status_level,
                 is_active, notes, int(item_id), org_id,
             ),
         )
@@ -889,13 +964,15 @@ def save_item(cursor, org_id: int, data: dict) -> dict:
         INSERT INTO inventory_items
         (organization_id, item_name, category, category_id, default_vendor_id, vendor_name, unit_label,
          sku, barcode, pack_size, reorder_threshold, target_stock, suggested_order_qty, default_unit_cost,
-         on_hand_qty, track_weekly_check, track_retail_sale, active, notes, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+         on_hand_qty, track_weekly_check, track_retail_sale, tracking_mode, status_level,
+         active, notes, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
         """,
         (
             org_id, name, legacy_category, int(category_id), default_vendor_id, vendor_name, unit,
             sku, barcode, pack_size, reorder_level, target_stock, suggested_order_qty, default_unit_cost,
-            current_on_hand, 1 if track_weekly_check else 0, 1 if track_retail_sale else 0, is_active, notes,
+            current_on_hand, 1 if track_weekly_check else 0, 1 if track_retail_sale else 0,
+            tracking_mode, status_level, is_active, notes,
         ),
     )
     new_id = cursor.lastrowid
@@ -1009,9 +1086,14 @@ def get_draft_stock_check(cursor, org_id: int) -> dict | None:
     check = cursor.fetchone()
     if not check:
         return None
+    line_cols = "item_id, counted_qty, previous_on_hand, note, variance_qty, variance_reason"
+    if _column_exists(cursor, "inventory_stock_check_lines", "status_level"):
+        line_cols += ", status_level"
+    if _column_exists(cursor, "inventory_stock_check_lines", "needs_recount"):
+        line_cols += ", needs_recount"
     cursor.execute(
-        """
-        SELECT item_id, counted_qty, previous_on_hand, note, variance_qty, variance_reason
+        f"""
+        SELECT {line_cols}
         FROM inventory_stock_check_lines
         WHERE stock_check_id = %s
         """,
@@ -1067,19 +1149,35 @@ def save_stock_check_draft(cursor, org_id: int, data: dict, user_id: int | None,
         counted_raw = line.get("counted_qty")
         counted_qty = None if counted_raw in (None, "") else _float(counted_raw)
         note = (line.get("note") or "").strip() or None
+        status_level = _normalize_status_level(line.get("status_level"))
+        needs_recount = 1 if _bool(line.get("needs_recount"), False) else 0
+        if item.get("tracking_mode") == TRACKING_STATUS:
+            counted_qty = None
+            status_level = status_level or _normalize_status_level(item.get("status_level")) or STATUS_OK
         prev = item["current_on_hand"]
         variance_qty = None
         if counted_qty is not None:
             variance_qty = counted_qty - prev
         variance_reason = (line.get("variance_reason") or "").strip() or None
-        cursor.execute(
-            """
-            INSERT INTO inventory_stock_check_lines
-            (stock_check_id, item_id, counted_qty, previous_on_hand, note, variance_qty, variance_reason)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (check_id, int(item_id), counted_qty, prev, note, variance_qty, variance_reason),
-        )
+        has_recount_col = _column_exists(cursor, "inventory_stock_check_lines", "needs_recount")
+        if has_recount_col:
+            cursor.execute(
+                """
+                INSERT INTO inventory_stock_check_lines
+                (stock_check_id, item_id, counted_qty, previous_on_hand, note, variance_qty, variance_reason, status_level, needs_recount)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (check_id, int(item_id), counted_qty, prev, note, variance_qty, variance_reason, status_level, needs_recount),
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO inventory_stock_check_lines
+                (stock_check_id, item_id, counted_qty, previous_on_hand, note, variance_qty, variance_reason, status_level)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (check_id, int(item_id), counted_qty, prev, note, variance_qty, variance_reason, status_level),
+            )
 
     return {"id": check_id, "status": "draft_saved"}
 
@@ -1120,10 +1218,19 @@ def submit_stock_check(cursor, org_id: int, data: dict, user_id: int | None, use
     threshold = get_variance_threshold(cursor, org_id)
     lines_in = data.get("lines") or []
     for line in lines_in:
-        if line.get("counted_qty") in (None, ""):
-            continue
-        item = get_item(cursor, org_id, int(line["item_id"]))
+        item = get_item(cursor, org_id, int(line["item_id"])) if line.get("item_id") else None
         if not item:
+            continue
+        if _bool(line.get("needs_recount"), False):
+            continue
+        if item.get("tracking_mode") == TRACKING_STATUS:
+            level = _normalize_status_level(line.get("status_level"))
+            if level is None and line.get("counted_qty") in (None, ""):
+                continue
+            if level is not None and level not in STATUS_LEVELS:
+                raise ValueError(f"Invalid status for {item['name']}")
+            continue
+        if line.get("counted_qty") in (None, ""):
             continue
         counted = _float(line["counted_qty"])
         prev = _float(item["current_on_hand"])
@@ -1157,18 +1264,76 @@ def submit_stock_check(cursor, org_id: int, data: dict, user_id: int | None, use
 
     lines = list((draft.get("lines") or {}).values())
     submitted = 0
+    recount_flagged = 0
     for line in lines:
-        if line.get("counted_qty") is None:
-            continue
         item_id = int(line["item_id"])
-        counted_qty = _float(line["counted_qty"])
         item = get_item(cursor, org_id, item_id)
         if not item:
             continue
+
+        needs_recount = bool(line.get("needs_recount"))
+        if needs_recount:
+            if _column_exists(cursor, "inventory_items", "needs_recount"):
+                cursor.execute(
+                    "UPDATE inventory_items SET needs_recount = 1, updated_at = NOW() WHERE id = %s AND organization_id = %s",
+                    (item_id, org_id),
+                )
+            # Audit only — do not change on_hand_qty / status_level.
+            cursor.execute(
+                """
+                INSERT INTO inventory_adjustments
+                (organization_id, item_id, adjustment_type, qty_change, reason, reason_code, reference_type, reference_id,
+                 created_by_user_id, created_by_name, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                """,
+                (
+                    org_id, item_id, ADJUSTMENT_STOCK_CHECK, 0,
+                    "Marked for recount — quantity not applied", "COUNT_CORRECTION",
+                    "stock_check", check_id, user_id, user_name,
+                ),
+            )
+            recount_flagged += 1
+            submitted += 1
+            continue
+
+        if item.get("tracking_mode") == TRACKING_STATUS:
+            status_level = _normalize_status_level(line.get("status_level"))
+            if status_level is None:
+                continue
+            cursor.execute(
+                """
+                UPDATE inventory_items
+                SET status_level = %s, last_count_date = CURDATE(), last_count_at = NOW(),
+                    last_counted_by = %s, needs_recount = 0, updated_at = NOW()
+                WHERE id = %s AND organization_id = %s
+                """,
+                (status_level, user_name, item_id, org_id),
+            )
+            cursor.execute(
+                """
+                INSERT INTO inventory_adjustments
+                (organization_id, item_id, adjustment_type, qty_change, reason, reason_code, reference_type, reference_id,
+                 created_by_user_id, created_by_name, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                """,
+                (
+                    org_id, item_id, ADJUSTMENT_STOCK_CHECK, 0,
+                    f"Weekly stock check status → {status_level}", "COUNT_CORRECTION",
+                    "stock_check", check_id, user_id, user_name,
+                ),
+            )
+            submitted += 1
+            continue
+
+        if line.get("counted_qty") is None:
+            continue
+        counted_qty = _float(line["counted_qty"])
         prev = _float(item["current_on_hand"])
         cursor.execute(
-            "UPDATE inventory_items SET on_hand_qty = %s, last_count_date = CURDATE(), updated_at = NOW() WHERE id = %s AND organization_id = %s",
-            (counted_qty, item_id, org_id),
+            "UPDATE inventory_items SET on_hand_qty = %s, last_count_date = CURDATE(), last_count_at = NOW(), "
+            "last_counted_by = %s, needs_recount = 0, updated_at = NOW() "
+            "WHERE id = %s AND organization_id = %s",
+            (counted_qty, user_name, item_id, org_id),
         )
         qty_change = counted_qty - prev
         cursor.execute(
@@ -1197,22 +1362,32 @@ def submit_stock_check(cursor, org_id: int, data: dict, user_id: int | None, use
         raise StockCheckConflictError("Stock check already submitted")
 
     reorder_suggestions = list_reorder_suggestions(cursor, org_id)
-    return {"id": check_id, "status": "submitted", "lines_submitted": submitted, "reorder_suggestions": reorder_suggestions}
+    return {
+        "id": check_id,
+        "status": "submitted",
+        "lines_submitted": submitted,
+        "recount_flagged": recount_flagged,
+        "reorder_suggestions": reorder_suggestions,
+    }
 
 
 def list_reorder_suggestions(cursor, org_id: int) -> list[dict]:
     items = list_items(cursor, org_id, active_only=True, weekly_check_only=True)
     out = []
     for item in items:
-        on_hand = _float(item["current_on_hand"])
-        reorder = _float(item["reorder_level"])
-        if on_hand <= reorder:
+        if not _item_needs_reorder(item):
+            continue
+        if item.get("tracking_mode") == TRACKING_STATUS:
+            suggested = _float(item["suggested_order_qty"]) or 1
+        else:
+            on_hand = _float(item["current_on_hand"])
+            reorder = _float(item["reorder_level"])
             suggested = _float(item["suggested_order_qty"]) or max(reorder - on_hand, 1)
-            out.append({
-                **item,
-                "suggested_qty": suggested,
-                "estimated_total": _money(suggested * _d(item["default_unit_cost"])),
-            })
+        out.append({
+            **item,
+            "suggested_qty": suggested,
+            "estimated_total": _money(_d(suggested) * _d(item["default_unit_cost"])),
+        })
     return out
 
 
@@ -1299,7 +1474,7 @@ def list_orders(cursor, org_id: int, *, status: str | None = None, limit: int = 
     for order in orders:
         cursor.execute(
             """
-            SELECT ol.*, i.item_name
+            SELECT ol.*, i.item_name, i.on_hand_qty AS current_on_hand
             FROM inventory_order_lines ol
             JOIN inventory_items i ON i.id = ol.item_id
             WHERE ol.order_id = %s
@@ -1315,6 +1490,7 @@ def list_orders(cursor, org_id: int, *, status: str | None = None, limit: int = 
                 "qty_outstanding": max(_float(ln.get("qty_ordered")) - _float(ln.get("qty_received")), 0),
                 "unit_cost": _money(ln.get("unit_cost")),
                 "line_total": _money(ln.get("line_total")),
+                "current_on_hand": _float(ln.get("current_on_hand")),
             }
             for ln in (cursor.fetchall() or [])
         ]

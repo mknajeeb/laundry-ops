@@ -3,6 +3,7 @@ import {
   Box,
   Button,
   Checkbox,
+  Chip,
   FormControlLabel,
   Grid,
   MenuItem,
@@ -20,6 +21,7 @@ import {
   createInventoryVendor,
   getBagSales,
   getInventoryItemHistory,
+  getInventoryItems,
   removeInventoryItem,
   saveInventoryBagPrice,
   saveInventoryVarianceThreshold,
@@ -27,9 +29,14 @@ import {
   updateInventoryItem,
   updateInventoryVendor,
 } from "../../api";
-import { ADJUSTMENT_REASON_LABELS } from "../../utils/inventoryRoleHelpers";
-import { CurrencyField, SectionCard } from "./InventoryShared";
-import { emptyItemForm, formatCurrency, INV_INPUT_SX } from "../../utils/inventoryHelpers";
+import {
+  ADJUSTMENT_REASON_LABELS,
+  STATUS_LEVEL_LABELS,
+  TRACKING_MODE_LABELS,
+  canManageInventorySettings,
+} from "../../utils/inventoryRoleHelpers";
+import { CurrencyField, QtyStepper, SectionCard } from "./InventoryShared";
+import { emptyItemForm, formatCurrency, formatDateTime, INV_INPUT_SX } from "../../utils/inventoryHelpers";
 
 function CategoriesPanel({ categories, onRefresh, onMessage }) {
   const [form, setForm] = useState({ name: "", sort_order: "", is_active: true });
@@ -133,25 +140,52 @@ function VendorsPanel({ vendors, onRefresh, onMessage }) {
 function ItemsPanel({ items, categories, vendors, onRefresh, onMessage }) {
   const [form, setForm] = useState(emptyItemForm());
   const [edit, setEdit] = useState(null);
+  const [allItems, setAllItems] = useState(items || []);
+  const [showInactive, setShowInactive] = useState(true);
+
+  const loadItems = async () => {
+    try {
+      const res = await getInventoryItems({ active_only: "0" });
+      setAllItems(res?.data || []);
+    } catch (e) {
+      console.error(e);
+      setAllItems(items || []);
+    }
+  };
+
+  useEffect(() => {
+    loadItems();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
 
   const onSave = async () => {
     try {
+      const src = edit || form;
+      const isStatus = String(src.tracking_mode || "QUANTITY").toUpperCase() === "STATUS";
       const payload = {
-        ...(edit || form),
+        ...src,
         id: edit?.id,
-        name: edit?.name ?? form.name,
-        category_id: Number(edit?.category_id ?? form.category_id),
-        default_vendor_id: (edit?.default_vendor_id ?? form.default_vendor_id) || null,
-        reorder_level: Number(edit?.reorder_level ?? form.reorder_level ?? 0),
-        suggested_order_qty: Number(edit?.suggested_order_qty ?? form.suggested_order_qty ?? 0),
-        default_unit_cost: Number(edit?.default_unit_cost ?? form.default_unit_cost ?? 0),
-        current_on_hand: Number(edit?.current_on_hand ?? form.current_on_hand ?? 0),
+        name: src.name,
+        category_id: Number(src.category_id),
+        default_vendor_id: src.default_vendor_id || null,
+        reorder_level: Number(src.reorder_level || 0),
+        suggested_order_qty: Number(src.suggested_order_qty || 0),
+        default_unit_cost: Number(src.default_unit_cost || 0),
+        current_on_hand: isStatus ? 0 : Number(src.current_on_hand || 0),
+        target_stock: Number(src.target_stock || 0),
+        pack_size: Number(src.pack_size || 1),
+        tracking_mode: isStatus ? "STATUS" : "QUANTITY",
+        status_level: isStatus ? (src.status_level || "OK") : null,
+        is_active: Boolean(src.is_active !== false),
+        track_weekly_check: Boolean(src.track_weekly_check),
+        track_retail_sale: Boolean(src.track_retail_sale),
       };
       if (edit) await updateInventoryItem(payload);
       else await createInventoryItem(payload);
       setForm(emptyItemForm());
       setEdit(null);
       onMessage?.({ type: "success", text: "Item saved." });
+      await loadItems();
       onRefresh?.();
     } catch (e) {
       onMessage?.({ type: "error", text: e?.response?.data?.error || "Save failed." });
@@ -161,7 +195,8 @@ function ItemsPanel({ items, categories, vendors, onRefresh, onMessage }) {
   const onRemove = async (id) => {
     try {
       await removeInventoryItem(id);
-      onMessage?.({ type: "success", text: "Item removed." });
+      onMessage?.({ type: "success", text: "Item deactivated." });
+      await loadItems();
       onRefresh?.();
     } catch (e) {
       onMessage?.({ type: "error", text: e?.response?.data?.error || "Remove failed." });
@@ -170,51 +205,111 @@ function ItemsPanel({ items, categories, vendors, onRefresh, onMessage }) {
 
   const f = edit || form;
   const setF = edit ? setEdit : setForm;
+  const isStatus = String(f.tracking_mode || "QUANTITY").toUpperCase() === "STATUS";
+  const visibleItems = (allItems || []).filter((i) => showInactive || i.is_active !== false);
 
   return (
     <SectionCard title="Items">
       <Grid container spacing={1.5} sx={{ mb: 2 }}>
-        <Grid item xs={12} sm={4}>
+        <Grid item xs={12}>
           <TextField label="Item name" fullWidth value={f.name} onChange={(e) => setF((p) => ({ ...p, name: e.target.value }))} sx={INV_INPUT_SX} />
         </Grid>
-        <Grid item xs={6} sm={3}>
+        <Grid item xs={12} sm={6}>
           <TextField select label="Category" fullWidth value={f.category_id} onChange={(e) => setF((p) => ({ ...p, category_id: e.target.value }))} sx={INV_INPUT_SX}>
             <MenuItem value="">Select</MenuItem>
             {(categories || []).map((c) => <MenuItem key={c.id} value={String(c.id)}>{c.name}</MenuItem>)}
           </TextField>
         </Grid>
-        <Grid item xs={6} sm={2}>
+        <Grid item xs={6} sm={3}>
           <TextField label="Unit" fullWidth value={f.unit} onChange={(e) => setF((p) => ({ ...p, unit: e.target.value }))} sx={INV_INPUT_SX} />
         </Grid>
         <Grid item xs={6} sm={3}>
+          <TextField label="SKU" fullWidth value={f.sku || ""} onChange={(e) => setF((p) => ({ ...p, sku: e.target.value }))} sx={INV_INPUT_SX} />
+        </Grid>
+        <Grid item xs={12} sm={6}>
           <TextField select label="Default vendor" fullWidth value={f.default_vendor_id || ""} onChange={(e) => setF((p) => ({ ...p, default_vendor_id: e.target.value }))} sx={INV_INPUT_SX}>
             <MenuItem value="">None</MenuItem>
             {(vendors || []).map((v) => <MenuItem key={v.id} value={String(v.id)}>{v.name}</MenuItem>)}
           </TextField>
         </Grid>
-        <Grid item xs={6} sm={2}>
-          <TextField label="SKU" fullWidth value={f.sku || ""} onChange={(e) => setF((p) => ({ ...p, sku: e.target.value }))} sx={INV_INPUT_SX} />
+        <Grid item xs={12} sm={6}>
+          <TextField
+            select
+            label="Tracking"
+            fullWidth
+            value={f.tracking_mode || "QUANTITY"}
+            onChange={(e) => setF((p) => ({
+              ...p,
+              tracking_mode: e.target.value,
+              status_level: e.target.value === "STATUS" ? (p.status_level || "OK") : p.status_level,
+            }))}
+            sx={INV_INPUT_SX}
+            helperText={isStatus ? "No count — pick OK / Low / Out on stock check" : "Count on-hand quantity"}
+          >
+            {Object.entries(TRACKING_MODE_LABELS).map(([k, lbl]) => (
+              <MenuItem key={k} value={k}>{lbl}</MenuItem>
+            ))}
+          </TextField>
         </Grid>
-        <Grid item xs={6} sm={2}>
-          <TextField label="Pack size" type="number" fullWidth value={f.pack_size ?? 1} onChange={(e) => setF((p) => ({ ...p, pack_size: e.target.value }))} sx={INV_INPUT_SX} />
-        </Grid>
-        <Grid item xs={6} sm={2}>
-          <TextField label="Target stock" type="number" fullWidth value={f.target_stock ?? ""} onChange={(e) => setF((p) => ({ ...p, target_stock: e.target.value }))} sx={INV_INPUT_SX} />
-        </Grid>
-        <Grid item xs={4} sm={2}>
-          <TextField label="Reorder at" type="number" fullWidth value={f.reorder_level} onChange={(e) => setF((p) => ({ ...p, reorder_level: e.target.value }))} sx={INV_INPUT_SX} />
-        </Grid>
-        <Grid item xs={4} sm={2}>
-          <TextField label="Suggested qty" type="number" fullWidth value={f.suggested_order_qty} onChange={(e) => setF((p) => ({ ...p, suggested_order_qty: e.target.value }))} sx={INV_INPUT_SX} />
-        </Grid>
-        <Grid item xs={4} sm={2}>
-          <TextField label="Unit cost" type="number" fullWidth value={f.default_unit_cost} onChange={(e) => setF((p) => ({ ...p, default_unit_cost: e.target.value }))} sx={INV_INPUT_SX} />
-        </Grid>
-        <Grid item xs={4} sm={2}>
-          <TextField label="On hand" type="number" fullWidth value={f.current_on_hand} onChange={(e) => setF((p) => ({ ...p, current_on_hand: e.target.value }))} sx={INV_INPUT_SX} />
-        </Grid>
-        <Grid item xs={12} sm={4}>
-          <Stack direction="row" spacing={1} flexWrap="wrap">
+
+        {isStatus ? (
+          <>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                select
+                label="Current status"
+                fullWidth
+                value={f.status_level || "OK"}
+                onChange={(e) => setF((p) => ({ ...p, status_level: e.target.value }))}
+                sx={INV_INPUT_SX}
+              >
+                {Object.entries(STATUS_LEVEL_LABELS).map(([k, lbl]) => (
+                  <MenuItem key={k} value={k}>{lbl}</MenuItem>
+                ))}
+              </TextField>
+            </Grid>
+            <Grid item xs={6} sm={3}>
+              <TextField label="Suggested qty" type="number" fullWidth value={f.suggested_order_qty} onChange={(e) => setF((p) => ({ ...p, suggested_order_qty: e.target.value }))} sx={INV_INPUT_SX} helperText="Used when Low/Out" />
+            </Grid>
+            <Grid item xs={6} sm={3}>
+              <TextField label="Unit cost" type="number" fullWidth value={f.default_unit_cost} onChange={(e) => setF((p) => ({ ...p, default_unit_cost: e.target.value }))} sx={INV_INPUT_SX} />
+            </Grid>
+          </>
+        ) : (
+          <>
+            <Grid item xs={6} sm={3}>
+              <TextField label="Pack size" type="number" fullWidth value={f.pack_size ?? 1} onChange={(e) => setF((p) => ({ ...p, pack_size: e.target.value }))} sx={INV_INPUT_SX} />
+            </Grid>
+            <Grid item xs={6} sm={3}>
+              <TextField label="Target stock" type="number" fullWidth value={f.target_stock ?? ""} onChange={(e) => setF((p) => ({ ...p, target_stock: e.target.value }))} sx={INV_INPUT_SX} />
+            </Grid>
+            <Grid item xs={6} sm={3}>
+              <TextField label="Reorder at" type="number" fullWidth value={f.reorder_level} onChange={(e) => setF((p) => ({ ...p, reorder_level: e.target.value }))} sx={INV_INPUT_SX} />
+            </Grid>
+            <Grid item xs={6} sm={3}>
+              <TextField label="Suggested qty" type="number" fullWidth value={f.suggested_order_qty} onChange={(e) => setF((p) => ({ ...p, suggested_order_qty: e.target.value }))} sx={INV_INPUT_SX} />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField label="Unit cost" type="number" fullWidth value={f.default_unit_cost} onChange={(e) => setF((p) => ({ ...p, default_unit_cost: e.target.value }))} sx={INV_INPUT_SX} />
+            </Grid>
+            {!edit ? (
+              <Grid item xs={12} sm={6}>
+                <QtyStepper
+                  label="On hand"
+                  value={f.current_on_hand === "" || f.current_on_hand == null ? "0" : String(f.current_on_hand)}
+                  onChange={(v) => setF((p) => ({ ...p, current_on_hand: v }))}
+                />
+              </Grid>
+            ) : null}
+          </>
+        )}
+
+        <Grid item xs={12}>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <FormControlLabel
+              control={<Checkbox checked={f.is_active !== false} onChange={(e) => setF((p) => ({ ...p, is_active: e.target.checked }))} />}
+              label="Active"
+            />
             <FormControlLabel control={<Checkbox checked={f.track_weekly_check} onChange={(e) => setF((p) => ({ ...p, track_weekly_check: e.target.checked }))} />} label="Weekly check" />
             <FormControlLabel control={<Checkbox checked={f.track_retail_sale} onChange={(e) => setF((p) => ({ ...p, track_retail_sale: e.target.checked }))} />} label="Retail sale" />
           </Stack>
@@ -223,38 +318,80 @@ function ItemsPanel({ items, categories, vendors, onRefresh, onMessage }) {
           <TextField label="Notes" fullWidth value={f.notes} onChange={(e) => setF((p) => ({ ...p, notes: e.target.value }))} sx={INV_INPUT_SX} />
         </Grid>
         <Grid item xs={12}>
-          <Stack direction="row" spacing={1}>
-            <Button variant="contained" onClick={onSave}>{edit ? "Update Item" : "Add Item"}</Button>
-            {edit ? <Button onClick={() => setEdit(null)}>Cancel</Button> : null}
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+            <Button variant="contained" size="large" fullWidth={false} sx={{ minHeight: 48, width: { xs: "100%", sm: "auto" } }} onClick={onSave}>
+              {edit ? "Update Item" : "Add Item"}
+            </Button>
+            {edit ? <Button size="large" sx={{ minHeight: 48 }} onClick={() => setEdit(null)}>Cancel</Button> : null}
           </Stack>
         </Grid>
       </Grid>
 
-      {(items || []).map((i) => (
-        <Stack key={i.id} direction="row" justifyContent="space-between" alignItems="center" sx={{ py: 1, borderBottom: "1px solid", borderColor: "divider" }}>
-          <Box>
-            <Typography variant="body2" fontWeight={600}>{i.name || i.item_name}</Typography>
-            <Typography variant="caption" color="text.secondary">
-              {i.category_name} · {i.unit} · Qty {Number(i.current_on_hand ?? 0)}
-              {i.avg_weekly_usage ? ` · ~${i.avg_weekly_usage}/wk` : ""}
-              {i.weeks_remaining != null ? ` · ${i.weeks_remaining} wk left` : ""}
-            </Typography>
-          </Box>
-          <Stack direction="row" spacing={1}>
-            <Button size="small" onClick={() => setEdit({
-              ...i,
-              name: i.name || i.item_name,
-              category_id: String(i.category_id || ""),
-              default_vendor_id: i.default_vendor_id ? String(i.default_vendor_id) : "",
-              reorder_level: i.reorder_level ?? "",
-              suggested_order_qty: i.suggested_order_qty ?? "",
-              default_unit_cost: i.default_unit_cost ?? "",
-              current_on_hand: i.current_on_hand ?? "",
-            })}>Edit</Button>
-            <Button size="small" color="error" onClick={() => onRemove(i.id)}>Remove</Button>
+      <FormControlLabel
+        sx={{ mb: 1 }}
+        control={<Checkbox checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />}
+        label="Show inactive items"
+      />
+
+      {visibleItems.map((i) => {
+        const inactive = i.is_active === false;
+        const statusMode = String(i.tracking_mode || "QUANTITY").toUpperCase() === "STATUS";
+        return (
+          <Stack
+            key={i.id}
+            direction={{ xs: "column", sm: "row" }}
+            justifyContent="space-between"
+            alignItems={{ xs: "stretch", sm: "center" }}
+            spacing={1}
+            sx={{ py: 1.25, borderBottom: "1px solid", borderColor: "divider", opacity: inactive ? 0.65 : 1 }}
+          >
+            <Box>
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Typography variant="body2" fontWeight={600}>{i.name || i.item_name}</Typography>
+                {inactive ? <Chip size="small" label="Inactive" /> : null}
+                {statusMode ? <Chip size="small" color="info" variant="outlined" label="Status" /> : null}
+              </Stack>
+              <Typography variant="caption" color="text.secondary">
+                {i.category_name} · {i.unit}
+                {statusMode
+                  ? ` · ${STATUS_LEVEL_LABELS[String(i.status_level || "OK").toUpperCase()] || i.status_level}`
+                  : ` · Qty ${Number(i.current_on_hand ?? 0)}`}
+                {i.avg_weekly_usage ? ` · ~${i.avg_weekly_usage}/wk` : ""}
+              </Typography>
+            </Box>
+            <Stack direction="row" spacing={1}>
+              <Button
+                size="large"
+                sx={{ minHeight: 44, flex: { xs: 1, sm: "none" } }}
+                onClick={() => setEdit({
+                  ...i,
+                  name: i.name || i.item_name,
+                  category_id: String(i.category_id || ""),
+                  default_vendor_id: i.default_vendor_id ? String(i.default_vendor_id) : "",
+                  reorder_level: i.reorder_level ?? "",
+                  suggested_order_qty: i.suggested_order_qty ?? "",
+                  default_unit_cost: i.default_unit_cost ?? "",
+                  current_on_hand: i.current_on_hand ?? "",
+                  target_stock: i.target_stock ?? "",
+                  pack_size: i.pack_size ?? 1,
+                  tracking_mode: i.tracking_mode || "QUANTITY",
+                  status_level: i.status_level || "OK",
+                  is_active: i.is_active !== false,
+                  track_weekly_check: i.track_weekly_check !== false,
+                  track_retail_sale: Boolean(i.track_retail_sale),
+                })}
+              >
+                Edit
+              </Button>
+              {!inactive ? (
+                <Button size="large" color="error" sx={{ minHeight: 44, flex: { xs: 1, sm: "none" } }} onClick={() => onRemove(i.id)}>
+                  Deactivate
+                </Button>
+              ) : null}
+            </Stack>
           </Stack>
-        </Stack>
-      ))}
+        );
+      })}
     </SectionCard>
   );
 }
@@ -410,20 +547,26 @@ function ItemHistoryPanel({ items }) {
         <MenuItem value="">Select item</MenuItem>
         {(items || []).map((i) => <MenuItem key={i.id} value={String(i.id)}>{i.name || i.item_name}</MenuItem>)}
       </TextField>
-      {history.map((h, idx) => (
-        <Typography key={idx} variant="body2" sx={{ py: 0.5 }}>
-          {String(h.event_at).slice(0, 10)} · {h.event_label} · {h.qty_change > 0 ? "+" : ""}{h.qty_change}
-          {h.note ? ` · ${h.note}` : ""}
-        </Typography>
-      ))}
+      {history.map((h, idx) => {
+        const prev = h.previous_qty;
+        const next = h.display_qty;
+        const trail = prev != null && next != null ? `${prev} → ${next}` : null;
+        return (
+          <Typography key={idx} variant="body2" sx={{ py: 0.75, borderBottom: "1px solid", borderColor: "divider" }}>
+            {formatDateTime(h.event_at)} · {h.actor || "Someone"} · {h.event_label}
+            {trail ? ` · ${trail}` : (h.qty_change != null ? ` · ${h.qty_change > 0 ? "+" : ""}${h.qty_change}` : "")}
+            {h.note ? ` · ${h.note}` : ""}
+          </Typography>
+        );
+      })}
     </SectionCard>
   );
 }
 
-export default function SettingsTab({ items, categories, vendors, bagPrice, varianceThreshold, roleTier, onRefresh, onMessage, user }) {
+export default function SettingsTab({ items, categories, vendors, bagPrice, varianceThreshold, roleTier, onRefresh, onMessage, user, hasPerm }) {
   const [subTab, setSubTab] = useState(0);
   const [threshold, setThreshold] = useState(varianceThreshold ?? 5);
-  const isAdmin = roleTier === "admin";
+  const isAdmin = canManageInventorySettings(roleTier, hasPerm);
 
   const onSaveThreshold = async () => {
     try {

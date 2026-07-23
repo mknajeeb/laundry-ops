@@ -32,6 +32,7 @@ import {
   EstimatedLineTotal,
   LoadingBlock,
   OrderStatusBadge,
+  QtyStepper,
   SectionCard,
   StatusAlert,
   SummaryStatCard,
@@ -295,7 +296,7 @@ function CreateOrderDialog({ open, onClose, vendors, suggestions, onSaved }) {
   );
 }
 
-function ReceiveOrderDialog({ order, open, onClose, onSaved }) {
+function ReceiveOrderDialog({ order, open, onClose, onSaved, onMessage }) {
   const [lines, setLines] = useState([]);
   const [receivedDate, setReceivedDate] = useState(new Date().toISOString().slice(0, 10));
   const [saving, setSaving] = useState(false);
@@ -308,6 +309,7 @@ function ReceiveOrderDialog({ order, open, onClose, onSaved }) {
           item_name: ln.item_name,
           qty_ordered: ln.qty_ordered,
           qty_received: ln.qty_ordered,
+          current_on_hand: Number(ln.current_on_hand ?? 0),
           notes: "",
         }))
       );
@@ -325,10 +327,11 @@ function ReceiveOrderDialog({ order, open, onClose, onSaved }) {
           notes: ln.notes || null,
         })),
       });
+      onMessage?.({ type: "success", text: "Order received." });
       onSaved?.();
       onClose();
     } catch (e) {
-      console.error(e);
+      onMessage?.({ type: "error", text: e?.response?.data?.error || "Receive failed." });
     } finally {
       setSaving(false);
     }
@@ -349,33 +352,61 @@ function ReceiveOrderDialog({ order, open, onClose, onSaved }) {
           onChange={(e) => setReceivedDate(e.target.value)}
           sx={{ mb: 2, ...INV_INPUT_SX }}
         />
-        {lines.map((ln, idx) => (
-          <Stack key={ln.line_id} spacing={1} sx={{ mb: 2, p: 1.5, border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
-            <Typography fontWeight={600}>{ln.item_name}</Typography>
-            <Typography variant="body2" color="text.secondary">Ordered: {ln.qty_ordered}</Typography>
-            <TextField
-              label="Qty received"
-              type="number"
-              value={ln.qty_received}
-              onChange={(e) => {
-                const next = [...lines];
-                next[idx] = { ...ln, qty_received: e.target.value };
-                setLines(next);
-              }}
-              sx={INV_INPUT_SX}
-            />
-            <TextField
-              label="Difference note"
-              value={ln.notes}
-              onChange={(e) => {
-                const next = [...lines];
-                next[idx] = { ...ln, notes: e.target.value };
-                setLines(next);
-              }}
-              sx={INV_INPUT_SX}
-            />
-          </Stack>
-        ))}
+        {lines.map((ln, idx) => {
+          const received = Number(ln.qty_received || 0);
+          const current = Number(ln.current_on_hand || 0);
+          const next = current + received;
+          return (
+            <Stack key={ln.line_id} spacing={1.25} sx={{ mb: 2, p: 1.75, border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
+              <Typography fontWeight={700}>{ln.item_name}</Typography>
+              <Typography variant="body2" color="text.secondary">Ordered: {ln.qty_ordered}</Typography>
+              <Grid container spacing={1}>
+                <Grid item xs={4}>
+                  <Typography variant="caption" color="text.secondary">Current</Typography>
+                  <Typography fontWeight={700}>{current}</Typography>
+                </Grid>
+                <Grid item xs={4}>
+                  <Typography variant="caption" color="text.secondary">Received</Typography>
+                  <Typography fontWeight={700} color="success.main">+{received}</Typography>
+                </Grid>
+                <Grid item xs={4}>
+                  <Typography variant="caption" color="text.secondary">New</Typography>
+                  <Typography fontWeight={800}>{next}</Typography>
+                </Grid>
+              </Grid>
+              <QtyStepper
+                label="Qty received"
+                value={String(ln.qty_received ?? "")}
+                onChange={(v) => {
+                  const nextLines = [...lines];
+                  nextLines[idx] = { ...ln, qty_received: v };
+                  setLines(nextLines);
+                }}
+              />
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => {
+                  const nextLines = [...lines];
+                  nextLines[idx] = { ...ln, qty_received: String(ln.qty_ordered) };
+                  setLines(nextLines);
+                }}
+              >
+                Receive full order qty ({ln.qty_ordered})
+              </Button>
+              <TextField
+                label="Note (optional)"
+                value={ln.notes}
+                onChange={(e) => {
+                  const nextLines = [...lines];
+                  nextLines[idx] = { ...ln, notes: e.target.value };
+                  setLines(nextLines);
+                }}
+                sx={INV_INPUT_SX}
+              />
+            </Stack>
+          );
+        })}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
@@ -666,8 +697,8 @@ export default function PurchaseOrdersTab({ suggestions, vendors, categories, it
         order={receiveOrder}
         open={Boolean(receiveOrder)}
         onClose={() => setReceiveOrder(null)}
+        onMessage={onMessage}
         onSaved={async () => {
-          onMessage?.({ type: "success", text: "Order received." });
           await load();
           onRefresh?.();
         }}
