@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -429,9 +429,9 @@ export default function AttendancePinPage() {
         if (body.needs_category_role && Array.isArray(body.selection_tree)) {
           setPendingPin(clean);
           setSelectionTree(body.selection_tree);
-          setPendingCategoryId(body.selection_tree[0]?.id ?? null);
+          setPendingCategoryId(null);
           setPendingRoleId(null);
-          setPickStep("pick");
+          setPickStep("category");
           setPin("");
           prevPinLenRef.current = 0;
           return;
@@ -522,6 +522,11 @@ export default function AttendancePinPage() {
     return () => link.remove();
   }, [logoSrc]);
 
+  // Reserved path: never treat "role" as a company slug on the punch screen.
+  if (routeSlug === "role") {
+    return <Navigate to="/attendance/role" replace />;
+  }
+
   return (
     <Box
       sx={{
@@ -599,9 +604,10 @@ export default function AttendancePinPage() {
                 objectFit: "contain",
                 display: "block",
                 mt: isVeeWash ? 0.5 : 0,
-                filter: isVeeWash
-                  ? `drop-shadow(0 10px 28px ${alpha(VW.blue, 0.22)})`
-                  : "none",
+                backgroundColor: "transparent",
+                // Hide any residual white plate in the PNG against the card.
+                mixBlendMode: isVeeWash ? "multiply" : "normal",
+                filter: "none",
               }}
             />
           ) : (
@@ -769,7 +775,7 @@ export default function AttendancePinPage() {
       </Stack>
 
       <Dialog
-        open={Boolean(pickStep)}
+        open={pickStep === "category"}
         onClose={() => {
           if (loading) return;
           setPickStep(null);
@@ -781,53 +787,27 @@ export default function AttendancePinPage() {
         fullWidth
         maxWidth="xs"
       >
-        <DialogTitle sx={{ fontWeight: 800 }}>Select your role</DialogTitle>
+        <DialogTitle sx={{ fontWeight: 800 }}>{t("attendance.selectCategoryTitle")}</DialogTitle>
         <DialogContent>
-          <Stack spacing={1.5} sx={{ pt: 1 }}>
-            <Typography variant="subtitle2" fontWeight={800}>
-              Category
-            </Typography>
-            <Grid container spacing={1}>
-              {selectionTree.map((cat) => (
-                <Grid item xs={6} key={cat.id}>
-                  <Button
-                    fullWidth
-                    variant={Number(pendingCategoryId) === Number(cat.id) ? "contained" : "outlined"}
-                    disabled={loading}
-                    onClick={() => {
-                      setPendingCategoryId(cat.id);
-                      setPendingRoleId(null);
-                    }}
-                    sx={{ textTransform: "none", fontWeight: 700, py: 1.5 }}
-                  >
-                    {cat.display_name || cat.name}
-                  </Button>
-                </Grid>
-              ))}
-            </Grid>
-            <Typography variant="subtitle2" fontWeight={800}>
-              Role
-            </Typography>
-            <Grid container spacing={1}>
-              {pickRoles.map((role) => (
-                <Grid item xs={6} key={role.role_id || role.id}>
-                  <Button
-                    fullWidth
-                    variant="contained"
-                    disabled={loading || !pendingCategoryId}
-                    onClick={() => confirmCategoryRolePunch(pendingCategoryId, role.role_id)}
-                    sx={{ textTransform: "none", fontWeight: 700, py: 1.6 }}
-                  >
-                    {loading ? (
-                      <CircularProgress size={20} color="inherit" />
-                    ) : (
-                      role.role_name || role.display_name || role.name
-                    )}
-                  </Button>
-                </Grid>
-              ))}
-            </Grid>
-          </Stack>
+          <Grid container spacing={1} sx={{ pt: 1 }}>
+            {selectionTree.map((cat) => (
+              <Grid item xs={6} key={cat.id}>
+                <Button
+                  fullWidth
+                  variant="outlined"
+                  disabled={loading}
+                  onClick={() => {
+                    setPendingCategoryId(cat.id);
+                    setPendingRoleId(null);
+                    setPickStep("role");
+                  }}
+                  sx={{ textTransform: "none", fontWeight: 700, py: 1.6 }}
+                >
+                  {cat.display_name || cat.name}
+                </Button>
+              </Grid>
+            ))}
+          </Grid>
         </DialogContent>
         <DialogActions>
           <Button
@@ -836,9 +816,71 @@ export default function AttendancePinPage() {
               setPickStep(null);
               setPendingPin("");
               setSelectionTree([]);
+              setPendingCategoryId(null);
+              setPendingRoleId(null);
             }}
           >
-            Cancel
+            {t("attendance.switchRoleCancel") || "Cancel"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={pickStep === "role"}
+        onClose={() => {
+          if (loading) return;
+          setPickStep("category");
+          setPendingRoleId(null);
+        }}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle sx={{ fontWeight: 800 }}>{t("attendance.selectRoleTitle")}</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5, pt: 0.5 }}>
+            {selectedPickCategory?.display_name || selectedPickCategory?.name || ""}
+          </Typography>
+          <Grid container spacing={1}>
+            {pickRoles.map((role) => (
+              <Grid item xs={6} key={role.role_id || role.id}>
+                <Button
+                  fullWidth
+                  variant="contained"
+                  disabled={loading || !pendingCategoryId}
+                  onClick={() => confirmCategoryRolePunch(pendingCategoryId, role.role_id)}
+                  sx={{ textTransform: "none", fontWeight: 700, py: 1.6 }}
+                >
+                  {loading ? (
+                    <CircularProgress size={20} color="inherit" />
+                  ) : (
+                    role.role_name || role.display_name || role.name
+                  )}
+                </Button>
+              </Grid>
+            ))}
+          </Grid>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            disabled={loading}
+            onClick={() => {
+              setPickStep("category");
+              setPendingRoleId(null);
+            }}
+          >
+            Back
+          </Button>
+          <Button
+            disabled={loading}
+            onClick={() => {
+              setPickStep(null);
+              setPendingPin("");
+              setSelectionTree([]);
+              setPendingCategoryId(null);
+              setPendingRoleId(null);
+            }}
+          >
+            {t("attendance.switchRoleCancel") || "Cancel"}
           </Button>
         </DialogActions>
       </Dialog>

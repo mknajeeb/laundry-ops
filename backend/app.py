@@ -5055,11 +5055,13 @@ def public_attendance_pin_switch_role():
         )
         return jsonify(body), status
     except Exception:
+        logger = __import__("logging").getLogger(__name__)
+        logger.exception("public_attendance_pin_switch_role failed")
         try:
             conn.rollback()
         except Exception:
             pass
-        return jsonify({"ok": False, "error": "Invalid PIN. Please try again."}), 500
+        return jsonify({"ok": False, "error": "Attendance service error. Contact your manager."}), 500
     finally:
         try:
             conn.close()

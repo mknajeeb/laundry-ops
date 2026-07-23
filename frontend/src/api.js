@@ -242,8 +242,9 @@ export const attendancePinSwitchRole = (organization_slug, pin, options = {}) =>
       ...(idempotency_key ? { idempotency_key } : {}),
     },
     {
-      timeout: 15000,
+      timeout: ATTENDANCE_PIN_PUNCH_TIMEOUT_MS,
       headers: idempotency_key ? { "Idempotency-Key": idempotency_key } : undefined,
+      /** Same as pin-punch: surface 4xx/5xx bodies in UI instead of throwing first. */
       validateStatus: (status) => status >= 200 && status < 600,
     },
   );

@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Alert,
   Box,
   Button,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
   IconButton,
   InputLabel,
@@ -67,13 +71,14 @@ function attendanceLogoSrc(orgSlug, brandingLogoUrl) {
   return trimmed ? resolveOrgLogoUrl(trimmed) : null;
 }
 
+/** Same wordmark as /attendance. */
 function VeeWashWordmark() {
   return (
     <Typography
       component="div"
       sx={{
         fontWeight: 800,
-        fontSize: { xs: "1.85rem", sm: "2.1rem" },
+        fontSize: { xs: "2rem", sm: "2.25rem" },
         letterSpacing: "-0.03em",
         lineHeight: 1.1,
         textAlign: "center",
@@ -106,47 +111,108 @@ function VeeWashWordmark() {
 }
 
 function digitKeySx(veewash) {
+  if (veewash) {
+    return {
+      minHeight: { xs: 56, sm: 52 },
+      fontSize: "1.4rem",
+      fontWeight: 700,
+      borderRadius: 2.5,
+      color: VW.navy,
+      py: 0.5,
+      borderWidth: 2,
+      borderStyle: "solid",
+      borderColor: alpha(VW.cobalt, 0.35),
+      bgcolor: "#fff",
+      boxShadow: `0 4px 14px -6px ${alpha(VW.blue, 0.28)}`,
+      "&:hover": {
+        borderColor: VW.cobalt,
+        bgcolor: alpha(VW.cobalt, 0.08),
+        boxShadow: `0 8px 20px -6px ${alpha(VW.cobalt, 0.35)}`,
+      },
+      "&.Mui-disabled": { opacity: 0.45 },
+    };
+  }
   return {
     minHeight: { xs: 56, sm: 52 },
     fontSize: "1.35rem",
-    fontWeight: 700,
-    borderRadius: 2.5,
-    color: VW.navy,
+    fontWeight: 600,
+    borderRadius: 2,
+    color: "#0f172a",
     py: 0.5,
-    borderWidth: veewash ? 2 : 1,
+    borderWidth: 1,
     borderStyle: "solid",
-    borderColor: alpha(VW.cobalt, veewash ? 0.35 : 0.25),
+    borderColor: alpha("#2d3d9c", 0.25),
     bgcolor: "#fff",
     "&:hover": {
-      borderColor: VW.cobalt,
-      bgcolor: alpha(VW.cobalt, 0.08),
+      borderColor: alpha("#4865ee", 0.55),
+      bgcolor: alpha("#4865ee", 0.06),
     },
     "&.Mui-disabled": { opacity: 0.45 },
   };
 }
 
-function utilityKeySx() {
+function utilityKeySx(veewash) {
+  if (veewash) {
+    return {
+      minHeight: { xs: 56, sm: 52 },
+      fontSize: "0.8rem",
+      fontWeight: 700,
+      borderRadius: 2.5,
+      color: VW.gold,
+      py: 0.5,
+      borderWidth: 2,
+      borderStyle: "solid",
+      borderColor: alpha(VW.goldMid, 0.55),
+      bgcolor: alpha(VW.cream, 0.85),
+      textTransform: "none",
+      "&:hover": {
+        borderColor: VW.goldMid,
+        bgcolor: VW.cream,
+      },
+    };
+  }
   return {
     minHeight: { xs: 56, sm: 52 },
-    fontSize: "0.8rem",
-    fontWeight: 700,
-    borderRadius: 2.5,
-    color: VW.gold,
+    fontSize: "0.85rem",
+    fontWeight: 600,
+    borderRadius: 2,
+    color: "#334155",
     py: 0.5,
-    borderWidth: 2,
+    borderWidth: 1,
     borderStyle: "solid",
-    borderColor: alpha(VW.goldMid, 0.55),
-    bgcolor: alpha(VW.cream, 0.85),
+    borderColor: alpha("#94a3b8", 0.5),
+    bgcolor: "#f8fafc",
     textTransform: "none",
+    "&:hover": { bgcolor: "#f1f5f9" },
   };
 }
 
+function mapSwitchRoleError(body, status, t) {
+  const raw = (body?.error || "").toString();
+  const lower = raw.toLowerCase();
+  if (status === 429 || lower.includes("too many")) return t("attendance.rateLimited");
+  if (lower.includes("clocked in") || lower.includes("fichado")) {
+    return t("attendance.switchRoleNotClockedIn");
+  }
+  if (lower.includes("disabled") || lower.includes("desactiv")) {
+    return t("attendance.switchRoleDisabled");
+  }
+  if (lower.includes("kiosk") || lower.includes("not enabled")) {
+    return t("attendance.kioskDisabled");
+  }
+  if (status === 401 || lower.includes("invalid pin") || lower.includes("pin no válido")) {
+    return t("attendance.invalidPin");
+  }
+  if (status >= 500) return t("attendance.serverError");
+  return raw || t("attendance.punchFailed");
+}
+
 /**
- * Mobile PIN role switch — same attendance look, modern one-screen Category + Role picker.
- * Does not clock in/out. Route: /attendance/role/:orgSlug
+ * Mobile PIN role switch — same chrome as /attendance, Switch Role copy + EN/ESP.
+ * Route: /attendance/role/:orgSlug
  */
 export default function AttendanceRoleSwitchPage() {
-  const { t } = useI18n();
+  const { t, locale, setLocale } = useI18n();
   const navigate = useNavigate();
   const { orgSlug: orgSlugParam } = useParams();
   const routeSlug = useMemo(() => sanitizeSlug(orgSlugParam), [orgSlugParam]);
@@ -158,7 +224,7 @@ export default function AttendanceRoleSwitchPage() {
 
   const [pin, setPin] = useState("");
   const [pendingPin, setPendingPin] = useState("");
-  const [phase, setPhase] = useState("pin"); // pin | pick | success
+  const [phase, setPhase] = useState("pin"); // pin | pick | role | success
   const [selectionTree, setSelectionTree] = useState([]);
   const [pendingCategoryId, setPendingCategoryId] = useState(null);
   const [currentLabel, setCurrentLabel] = useState("");
@@ -176,7 +242,7 @@ export default function AttendanceRoleSwitchPage() {
   const pinDigits = useMemo(() => String(pin || "").replace(/\D/g, "").slice(0, PIN_LEN), [pin]);
   const isVeeWash = sanitizeSlug(slug) === "veewash";
   const logoSrc = attendanceLogoSrc(slug, branding?.logo_url);
-  const tenantTitle = branding?.display_name || slug || "Role switch";
+  const tenantTitle = branding?.display_name || slug || t("attendance.switchRoleTitle");
 
   const selectedCategory =
     selectionTree.find((c) => Number(c.id) === Number(pendingCategoryId)) || null;
@@ -206,19 +272,21 @@ export default function AttendanceRoleSwitchPage() {
   }, []);
 
   useLayoutEffect(() => {
-    applyAttendancePwaManifest();
-  }, []);
+    return applyAttendancePwaManifest(routeSlug || selectedSlug);
+  }, [routeSlug, selectedSlug]);
 
   useEffect(() => {
-    if (!routeSlug) {
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved) setSelectedSlug(sanitizeSlug(saved));
-      } catch {
-        /* ignore */
+    if (routeSlug) return;
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      const s = sanitizeSlug(saved);
+      if (s && s !== "role") {
+        navigate(`/attendance/role/${encodeURIComponent(s)}`, { replace: true });
       }
+    } catch {
+      /* ignore */
     }
-  }, [routeSlug]);
+  }, [routeSlug, navigate]);
 
   useEffect(() => {
     if (routeSlug) {
@@ -283,28 +351,43 @@ export default function AttendanceRoleSwitchPage() {
       try {
         const res = await attendancePinSwitchRole(slug, clean);
         const status = res?.status ?? 0;
-        const body = res?.data && typeof res.data === "object" ? res.data : {};
+        const data = res?.data;
+        if (typeof data === "string" && data.trim().startsWith("<")) {
+          console.error("[role-switch] Non-JSON response", {
+            status,
+            apiBase: getWashproApiBase(),
+            slug,
+          });
+          setError(t("attendance.serverError"));
+          setPin("");
+          prevPinLenRef.current = 0;
+          return;
+        }
+        const body = data && typeof data === "object" ? data : {};
         if (status >= 200 && status < 300 && body.ok && body.needs_selection) {
           setPendingPin(clean);
           setSelectionTree(Array.isArray(body.selection_tree) ? body.selection_tree : []);
           setFirstName(body.employee_first_name || "");
           setCurrentLabel(body.current_display_label || "");
-          const curCat = body.current_category_id;
-          const tree = Array.isArray(body.selection_tree) ? body.selection_tree : [];
-          const hasCur = tree.some((c) => Number(c.id) === Number(curCat));
-          setPendingCategoryId(hasCur ? Number(curCat) : tree[0]?.id ?? null);
+          setPendingCategoryId(null);
           idempotencyKeyRef.current = createTaskTrackingSwitchIdempotencyKey();
           setPhase("pick");
           setPin("");
           prevPinLenRef.current = 0;
           return;
         }
-        setError(body.error || "Could not start role change");
+        setError(mapSwitchRoleError(body, status, t));
         setPin("");
         prevPinLenRef.current = 0;
       } catch (e) {
         console.error("[role-switch] open failed", e?.message, getWashproApiBase());
-        setError(e?.response?.data?.error || e?.message || "Could not start role change");
+        if (e?.code === "ECONNABORTED") {
+          setError(t("attendance.timeout"));
+        } else if (!e?.response) {
+          setError(t("attendance.networkError"));
+        } else {
+          setError(mapSwitchRoleError(e?.response?.data, e?.response?.status, t));
+        }
         setPin("");
         prevPinLenRef.current = 0;
       } finally {
@@ -312,7 +395,7 @@ export default function AttendanceRoleSwitchPage() {
         setLoading(false);
       }
     },
-    [slug],
+    [slug, t],
   );
 
   useEffect(() => {
@@ -346,19 +429,23 @@ export default function AttendanceRoleSwitchPage() {
       const status = res?.status ?? 0;
       const body = res?.data && typeof res.data === "object" ? res.data : {};
       if (status >= 200 && status < 300 && body.ok) {
-        setSuccessLabel(body.display_label || body.segment?.display_label || "Role updated");
+        setSuccessLabel(
+          body.display_label || body.segment?.display_label || t("attendance.switchRoleSuccess"),
+        );
         setPhase("success");
         clearResetTimer();
         resetTimerRef.current = setTimeout(() => resetToPin(), SUCCESS_RESET_MS);
         return;
       }
-      setError(body.error || "Could not change role");
+      setError(mapSwitchRoleError(body, status, t));
     } catch (e) {
-      const msg =
-        e?.code === "ECONNABORTED"
-          ? "The role change is taking longer than expected and may already have completed. Wait a moment, then try again if needed."
-          : e?.response?.data?.error || e?.message || "Could not change role";
-      setError(msg);
+      if (e?.code === "ECONNABORTED") {
+        setError(t("attendance.timeout"));
+      } else if (!e?.response) {
+        setError(t("attendance.networkError"));
+      } else {
+        setError(mapSwitchRoleError(e?.response?.data, e?.response?.status, t));
+      }
     } finally {
       punchInFlightRef.current = false;
       setLoading(false);
@@ -368,7 +455,7 @@ export default function AttendanceRoleSwitchPage() {
   const appendDigit = (d) => {
     if (loading || phase !== "pin") return;
     setError("");
-    setPin((prev) => `${prev}${d}`.replace(/\D/g, "").slice(0, PIN_LEN));
+    setPin((prev) => `${String(prev).replace(/\D/g, "")}${d}`.slice(0, PIN_LEN));
   };
 
   const pinBackspace = () => {
@@ -403,57 +490,135 @@ export default function AttendanceRoleSwitchPage() {
         background: isVeeWash
           ? `linear-gradient(155deg, #ffffff 0%, ${VW.mist} 42%, ${VW.cream} 100%)`
           : "linear-gradient(180deg, #fafbfd 0%, #f3f6fa 50%, #eef2f8 100%)",
+        "&::before": isVeeWash
+          ? {
+              content: '""',
+              position: "absolute",
+              top: "-12%",
+              right: "-18%",
+              width: "55%",
+              height: "45%",
+              borderRadius: "50%",
+              background: `radial-gradient(circle, ${alpha(VW.cobalt, 0.2)} 0%, transparent 70%)`,
+              pointerEvents: "none",
+            }
+          : undefined,
+        "&::after": isVeeWash
+          ? {
+              content: '""',
+              position: "absolute",
+              bottom: "-8%",
+              left: "-15%",
+              width: "50%",
+              height: "40%",
+              borderRadius: "50%",
+              background: `radial-gradient(circle, ${alpha(VW.goldMid, 0.22)} 0%, transparent 72%)`,
+              pointerEvents: "none",
+            }
+          : undefined,
       }}
     >
+      <Box sx={{ position: "absolute", top: 12, right: 12, zIndex: 2 }}>
+        <Stack direction="row" spacing={0.5} alignItems="center">
+          {["en", "es"].map((code) => {
+            const selected = locale === code;
+            return (
+              <Button
+                key={code}
+                size="small"
+                onClick={() => setLocale(code)}
+                sx={{
+                  minWidth: 40,
+                  px: 1,
+                  py: 0.4,
+                  fontSize: 11,
+                  fontWeight: 800,
+                  lineHeight: 1.2,
+                  borderRadius: 1.5,
+                  textTransform: "uppercase",
+                  boxShadow: "none",
+                  ...(selected
+                    ? {
+                        bgcolor: VW.cobalt,
+                        color: "#fff",
+                        "&:hover": { bgcolor: VW.blue },
+                      }
+                    : {
+                        bgcolor: alpha("#fff", 0.9),
+                        color: alpha(VW.navy, 0.55),
+                        border: `1px solid ${alpha(VW.cobalt, 0.25)}`,
+                        "&:hover": { bgcolor: alpha(VW.cobalt, 0.08) },
+                      }),
+                }}
+              >
+                {code === "en" ? t("attendance.localeEn") : t("attendance.localeEs")}
+              </Button>
+            );
+          })}
+        </Stack>
+      </Box>
+
       <Paper
         elevation={0}
         sx={{
           position: "relative",
           zIndex: 1,
           width: "100%",
-          maxWidth: 440,
+          maxWidth: 420,
           p: { xs: 2.5, sm: 3 },
           borderRadius: 4,
           border: "1px solid",
           borderColor: isVeeWash ? alpha(VW.cobalt, 0.22) : alpha("#2d3d9c", 0.12),
           boxShadow: isVeeWash
-            ? `0 28px 64px -24px ${alpha(VW.blue, 0.35)}`
+            ? `0 28px 64px -24px ${alpha(VW.blue, 0.35)}, 0 0 0 1px ${alpha(VW.goldMid, 0.12)} inset`
             : "0 24px 60px -28px rgba(45, 61, 156, 0.28)",
-          background: "#fff",
+          background: isVeeWash
+            ? "linear-gradient(180deg, rgba(255,255,255,0.97) 0%, rgba(255,255,255,0.92) 100%)"
+            : undefined,
+          backdropFilter: isVeeWash ? "blur(12px)" : undefined,
         }}
       >
-        <Stack spacing={1.5} alignItems="center" sx={{ width: "100%" }}>
+        <Stack spacing={isVeeWash ? 1.25 : 2} alignItems="center" sx={{ width: "100%" }}>
           {logoSrc ? (
             <Box
               component="img"
               src={logoSrc}
-              alt=""
+              alt="VeeWash"
               sx={{
-                width: "min(180px, 52vw)",
+                width: isVeeWash ? "min(200px, 58vw)" : "min(240px, 78vw)",
                 height: "auto",
-                maxHeight: 96,
+                maxHeight: isVeeWash ? 112 : 100,
                 objectFit: "contain",
+                display: "block",
+                mt: isVeeWash ? 0.5 : 0,
+                backgroundColor: "transparent",
+                // Hide any residual white plate in the PNG against the card.
+                mixBlendMode: isVeeWash ? "multiply" : "normal",
+                filter: "none",
               }}
             />
           ) : (
-            <TenantLogo logoUrl={branding?.logo_url} sx={{ width: 80, height: 80 }} />
+            <TenantLogo logoUrl={branding?.logo_url} sx={{ width: 96, height: 96 }} />
           )}
-          {isVeeWash ? <VeeWashWordmark /> : (
-            <Typography variant="h6" fontWeight={800} textAlign="center">
+          {isVeeWash ? (
+            <VeeWashWordmark />
+          ) : (
+            <Typography variant="h6" fontWeight={700} textAlign="center" color="#152238">
               {tenantTitle}
             </Typography>
           )}
           <Typography
-            variant="subtitle2"
-            fontWeight={700}
+            variant="subtitle1"
+            fontWeight={600}
+            textAlign="center"
             sx={{
-              color: alpha(VW.blue, 0.8),
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              fontSize: "0.7rem",
+              color: isVeeWash ? alpha(VW.blue, 0.75) : "#64748b",
+              letterSpacing: isVeeWash ? "0.06em" : undefined,
+              textTransform: isVeeWash ? "uppercase" : undefined,
+              fontSize: isVeeWash ? "0.72rem" : undefined,
             }}
           >
-            Change role
+            {phase === "pin" ? t("attendance.switchRoleTitle") : t("attendance.enterPin")}
           </Typography>
 
           {!routeSlug && phase === "pin" ? (
@@ -461,11 +626,11 @@ export default function AttendanceRoleSwitchPage() {
               {orgsLoading ? (
                 <CircularProgress size={24} />
               ) : (
-                <FormControl fullWidth size="small">
-                  <InputLabel id="role-switch-org">Company</InputLabel>
+                <FormControl fullWidth size="small" sx={{ maxWidth: 360 }}>
+                  <InputLabel id="role-switch-org">{t("attendance.selectCompany")}</InputLabel>
                   <Select
                     labelId="role-switch-org"
-                    label="Company"
+                    label={t("attendance.selectCompany")}
                     value={selectedSlug || ""}
                     onChange={(e) => {
                       const s = String(e.target.value);
@@ -485,26 +650,27 @@ export default function AttendanceRoleSwitchPage() {
             </Box>
           ) : null}
 
-          {error ? (
-            <Alert severity="warning" sx={{ width: "100%" }} onClose={() => setError("")}>
-              {error}
-            </Alert>
-          ) : null}
-
           {phase === "success" ? (
-            <Stack spacing={1.25} alignItems="center" sx={{ py: 2, width: "100%" }}>
+            <Stack spacing={1.5} alignItems="center" sx={{ py: 2, width: "100%" }}>
               <CheckCircle sx={{ fontSize: 56, color: "#059669" }} />
-              <Typography variant="h6" fontWeight={800} textAlign="center">
-                {firstName ? `Got it, ${firstName}` : "Role updated"}
+              <Typography variant="h6" fontWeight={700} textAlign="center" color="#152238">
+                {firstName
+                  ? t("attendance.switchRoleHi").replace("{name}", firstName)
+                  : t("attendance.switchRoleSuccess")}
               </Typography>
-              <Typography color="text.secondary" textAlign="center" fontWeight={600}>
+              <Typography variant="body2" color="text.secondary" textAlign="center">
                 {successLabel}
               </Typography>
             </Stack>
           ) : null}
 
-          {phase === "pick" ? (
+          {phase === "pick" || phase === "role" ? (
             <Stack spacing={1.75} sx={{ width: "100%" }}>
+              {error && phase === "pick" ? (
+                <Alert severity="error" sx={{ width: "100%" }} onClose={() => setError("")}>
+                  {error}
+                </Alert>
+              ) : null}
               <Box
                 sx={{
                   p: 1.5,
@@ -514,70 +680,43 @@ export default function AttendanceRoleSwitchPage() {
                 }}
               >
                 <Typography variant="caption" color="text.secondary" fontWeight={700}>
-                  {firstName ? `Hi ${firstName}` : "Current assignment"}
+                  {firstName
+                    ? t("attendance.switchRoleHi").replace("{name}", firstName)
+                    : t("attendance.switchRoleCurrent")}
                 </Typography>
                 <Typography fontWeight={800} sx={{ mt: 0.25 }}>
-                  {currentLabel || "No role selected yet"}
+                  {currentLabel || "—"}
                 </Typography>
               </Box>
 
-              <Typography fontWeight={800}>Category</Typography>
-              <Box
-                sx={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: 1,
-                }}
-              >
-                {selectionTree.map((cat) => {
-                  const selected = Number(pendingCategoryId) === Number(cat.id);
-                  return (
-                    <Button
-                      key={cat.id}
-                      disabled={loading}
-                      onClick={() => setPendingCategoryId(cat.id)}
-                      sx={{
-                        textTransform: "none",
-                        fontWeight: 800,
-                        py: 1.6,
-                        borderRadius: 2.5,
-                        border: "2px solid",
-                        borderColor: selected ? VW.cobalt : alpha(VW.cobalt, 0.2),
-                        bgcolor: selected ? alpha(VW.cobalt, 0.12) : "#fff",
-                        color: VW.navy,
-                      }}
-                    >
-                      {cat.name}
-                    </Button>
-                  );
-                })}
-              </Box>
-
-              <Typography fontWeight={800}>Role</Typography>
-              <Box
-                sx={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: 1,
-                }}
-              >
-                {rolesForCategory.map((role) => (
+              <Typography fontWeight={800}>{t("attendance.selectCategoryTitle")}</Typography>
+              <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1 }}>
+                {selectionTree.map((cat) => (
                   <Button
-                    key={role.role_id || role.id}
-                    disabled={loading || !pendingCategoryId}
-                    onClick={() => confirmRole(pendingCategoryId, role.role_id)}
-                    variant="contained"
-                    disableElevation
+                    key={cat.id}
+                    disabled={loading}
+                    onClick={() => {
+                      setPendingCategoryId(cat.id);
+                      setPhase("role");
+                    }}
                     sx={{
                       textTransform: "none",
                       fontWeight: 800,
-                      py: 1.8,
+                      py: 1.6,
                       borderRadius: 2.5,
-                      bgcolor: VW.cobalt,
-                      "&:hover": { bgcolor: VW.blue },
+                      border: "2px solid",
+                      borderColor:
+                        Number(pendingCategoryId) === Number(cat.id)
+                          ? VW.cobalt
+                          : alpha(VW.cobalt, 0.2),
+                      bgcolor:
+                        Number(pendingCategoryId) === Number(cat.id)
+                          ? alpha(VW.cobalt, 0.12)
+                          : "#fff",
+                      color: VW.navy,
                     }}
                   >
-                    {loading ? <CircularProgress size={22} color="inherit" /> : role.role_name}
+                    {cat.name}
                   </Button>
                 ))}
               </Box>
@@ -587,17 +726,22 @@ export default function AttendanceRoleSwitchPage() {
                 disabled={loading}
                 sx={{ textTransform: "none", fontWeight: 700 }}
               >
-                Cancel
+                {t("attendance.switchRoleCancel")}
               </Button>
             </Stack>
           ) : null}
 
           {phase === "pin" ? (
-            <Stack spacing={1.5} alignItems="center" sx={{ width: "100%" }}>
-              <Typography color="text.secondary" textAlign="center">
-                Enter your attendance PIN to change category and role.
-              </Typography>
-              <Stack direction="row" spacing={1.25} sx={{ my: 0.5 }}>
+            <>
+              <Box
+                sx={{
+                  display: "flex",
+                  gap: 1,
+                  justifyContent: "center",
+                  minHeight: 28,
+                }}
+                aria-label={t("attendance.pinLabel")}
+              >
                 {Array.from({ length: PIN_LEN }).map((_, i) => (
                   <Box
                     key={i}
@@ -605,59 +749,144 @@ export default function AttendanceRoleSwitchPage() {
                       width: 14,
                       height: 14,
                       borderRadius: "50%",
-                      bgcolor: i < pinDigits.length ? VW.cobalt : alpha(VW.cobalt, 0.2),
+                      bgcolor: i < pinDigits.length
+                        ? isVeeWash
+                          ? VW.cobalt
+                          : "#2d3d9c"
+                        : alpha(isVeeWash ? VW.cobalt : "#2d3d9c", 0.15),
+                      boxShadow:
+                        i < pinDigits.length && isVeeWash
+                          ? `0 0 12px ${alpha(VW.cobalt, 0.45)}`
+                          : "none",
+                      transition: "background-color 0.15s",
                     }}
                   />
                 ))}
-              </Stack>
+              </Box>
+
+              {loading ? (
+                <Stack spacing={0.5} alignItems="center" sx={{ width: "100%", py: 0.5 }}>
+                  <CircularProgress
+                    size={36}
+                    aria-label={t("attendance.checkingPin")}
+                    sx={isVeeWash ? { color: VW.cobalt } : undefined}
+                  />
+                  <Typography variant="body2" color="text.secondary">
+                    {t("attendance.checkingPin")}
+                  </Typography>
+                </Stack>
+              ) : null}
+
+              {error ? (
+                <Alert severity="error" sx={{ width: "100%" }} onClose={() => setError("")}>
+                  {error}
+                </Alert>
+              ) : null}
+
               <Box
                 sx={{
-                  width: "100%",
                   display: "grid",
                   gridTemplateColumns: "repeat(3, 1fr)",
                   gap: 1,
+                  width: "100%",
+                  maxWidth: 300,
+                  opacity: loading || !slug ? 0.55 : 1,
+                  pointerEvents: loading || !slug ? "none" : "auto",
                 }}
               >
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => (
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
                   <Button
-                    key={d}
+                    key={n}
                     variant="outlined"
-                    disabled={loading || !slug}
-                    onClick={() => appendDigit(d)}
+                    onClick={() => appendDigit(n)}
                     sx={digitKeySx(isVeeWash)}
                   >
-                    {d}
+                    {n}
                   </Button>
                 ))}
-                <IconButton
-                  disabled={loading || !pinDigits.length}
-                  onClick={pinBackspace}
-                  sx={{ ...utilityKeySx(), borderRadius: 2.5 }}
-                >
-                  <Backspace />
-                </IconButton>
-                <Button
-                  variant="outlined"
-                  disabled={loading || !slug}
-                  onClick={() => appendDigit(0)}
-                  sx={digitKeySx(isVeeWash)}
-                >
+                <Button variant="outlined" onClick={pinClear} sx={utilityKeySx(isVeeWash)}>
+                  {t("attendance.clearPin")}
+                </Button>
+                <Button variant="outlined" onClick={() => appendDigit(0)} sx={digitKeySx(isVeeWash)}>
                   0
                 </Button>
-                <Button
-                  variant="outlined"
-                  disabled={loading || !pinDigits.length}
-                  onClick={pinClear}
-                  sx={utilityKeySx()}
+                <IconButton
+                  onClick={pinBackspace}
+                  sx={utilityKeySx(isVeeWash)}
+                  aria-label={t("attendance.backspace")}
                 >
-                  {t("kiosk.clearPin") || "Clear"}
-                </Button>
+                  <Backspace fontSize="small" />
+                </IconButton>
               </Box>
-              {loading ? <CircularProgress size={28} /> : null}
-            </Stack>
+            </>
           ) : null}
         </Stack>
       </Paper>
+
+      <Stack direction="row" spacing={2} sx={{ mt: 3 }} flexWrap="wrap" justifyContent="center">
+        {slug ? (
+          <Button
+            component={Link}
+            to={`/login/${encodeURIComponent(slug)}`}
+            size="small"
+            color="inherit"
+            sx={{ color: isVeeWash ? alpha(VW.blue, 0.65) : "#64748b" }}
+          >
+            {t("attendance.adminLogin")}
+          </Button>
+        ) : null}
+      </Stack>
+
+      <Dialog
+        open={phase === "role"}
+        onClose={() => {
+          if (loading) return;
+          setPhase("pick");
+        }}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle sx={{ fontWeight: 800 }}>{t("attendance.selectRoleTitle")}</DialogTitle>
+        <DialogContent>
+          {error ? (
+            <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setError("")}>
+              {error}
+            </Alert>
+          ) : null}
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5, pt: 0.5 }}>
+            {selectedCategory?.name || ""}
+          </Typography>
+          <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1 }}>
+            {rolesForCategory.map((role) => (
+              <Button
+                key={role.role_id || role.id}
+                disabled={loading || !pendingCategoryId}
+                onClick={() => confirmRole(pendingCategoryId, role.role_id)}
+                variant="contained"
+                disableElevation
+                sx={{
+                  textTransform: "none",
+                  fontWeight: 800,
+                  py: 1.8,
+                  borderRadius: 2.5,
+                  bgcolor: VW.cobalt,
+                  "&:hover": { bgcolor: VW.blue },
+                }}
+              >
+                {loading ? <CircularProgress size={22} color="inherit" /> : role.role_name}
+              </Button>
+            ))}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button disabled={loading} onClick={() => setPhase("pick")}>
+            Back
+          </Button>
+          <Button disabled={loading} onClick={resetToPin}>
+            {t("attendance.switchRoleCancel")}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
