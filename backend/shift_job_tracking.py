@@ -7,6 +7,7 @@ Performance Dashboard. No productivity or payroll calculations here.
 from __future__ import annotations
 
 import re
+import threading
 from datetime import date, datetime, time, timedelta
 from typing import Any, Optional
 
@@ -62,7 +63,13 @@ _SEGMENT_COLS = (
     ("role_name_snapshot", "VARCHAR(128) NULL"),
     ("change_source", "VARCHAR(64) NULL"),
     ("close_source", "VARCHAR(64) NULL"),
+    ("idempotency_key", "VARCHAR(64) NULL"),
 )
+
+# Process-local gate: avoid re-running DDL (especially ALTER) on every request.
+# Unconditional MODIFY COLUMN under load can wait on metadata locks for minutes.
+_SCHEMA_ENSURED = False
+_SCHEMA_ENSURE_LOCK = threading.Lock()
 
 
 def _parse_dt(val: Any) -> Optional[datetime]:
@@ -93,20 +100,88 @@ def _slug_code(name: str) -> str:
     return raw[:64] or "CATEGORY"
 
 
-def _add_column_if_missing(cursor, table: str, column: str, ddl: str) -> None:
+def _add_column_if_missing(cursor, table: str, column: str, ddl: str) -> bool:
+    """Return True when a column was added."""
     if not table_exists(cursor, table):
-        return
+        return False
     if table_has_column(cursor, table, column):
-        return
+        return False
     try:
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
     except Exception as exc:
         if getattr(exc, "args", (None,))[0] != 1060:
             raise
+        return False
     invalidate_schema_cache()
+    return True
+
+
+def _column_is_not_null(cursor, table: str, column: str) -> bool:
+    cursor.execute(
+        """
+        SELECT IS_NULLABLE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+          AND COLUMN_NAME = %s
+        LIMIT 1
+        """,
+        (table, column),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return False
+    val = row.get("IS_NULLABLE") if isinstance(row, dict) else row[0]
+    return str(val or "").upper() == "NO"
+
+
+def _add_index_if_missing(cursor, table: str, index_name: str, create_sql: str) -> bool:
+    if not table_exists(cursor, table):
+        return False
+    cursor.execute(
+        """
+        SELECT 1
+        FROM INFORMATION_SCHEMA.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+          AND INDEX_NAME = %s
+        LIMIT 1
+        """,
+        (table, index_name),
+    )
+    if cursor.fetchone():
+        return False
+    try:
+        cursor.execute(create_sql)
+    except Exception as exc:
+        # 1061 duplicate key name
+        if getattr(exc, "args", (None,))[0] != 1061:
+            raise
+        return False
+    return True
+
+
+def reset_shift_job_tracking_schema_gate_for_tests() -> None:
+    """Test helper: allow ensure_shift_job_tracking_schema to run again."""
+    global _SCHEMA_ENSURED
+    with _SCHEMA_ENSURE_LOCK:
+        _SCHEMA_ENSURED = False
 
 
 def ensure_shift_job_tracking_schema(cursor) -> None:
+    """Idempotent DDL. Safe to call often; runs at most once per process after success."""
+    global _SCHEMA_ENSURED
+    if _SCHEMA_ENSURED:
+        return
+    with _SCHEMA_ENSURE_LOCK:
+        if _SCHEMA_ENSURED:
+            return
+        _ensure_shift_job_tracking_schema_unlocked(cursor)
+        _SCHEMA_ENSURED = True
+
+
+def _ensure_shift_job_tracking_schema_unlocked(cursor) -> None:
+    changed = False
     if not table_exists(cursor, "ta_task_categories"):
         cursor.execute(
             """
@@ -124,6 +199,7 @@ def ensure_shift_job_tracking_schema(cursor) -> None:
             ) ENGINE=InnoDB
             """
         )
+        changed = True
     if not table_exists(cursor, "ta_task_roles"):
         cursor.execute(
             """
@@ -141,6 +217,7 @@ def ensure_shift_job_tracking_schema(cursor) -> None:
             ) ENGINE=InnoDB
             """
         )
+        changed = True
     if not table_exists(cursor, "ta_task_category_roles"):
         cursor.execute(
             """
@@ -161,6 +238,7 @@ def ensure_shift_job_tracking_schema(cursor) -> None:
             ) ENGINE=InnoDB
             """
         )
+        changed = True
     # Keep legacy flat table for any historical FKs; new orgs use category/role.
     if not table_exists(cursor, "ta_job_names"):
         cursor.execute(
@@ -177,6 +255,7 @@ def ensure_shift_job_tracking_schema(cursor) -> None:
             ) ENGINE=InnoDB
             """
         )
+        changed = True
     if not table_exists(cursor, "shift_job_segments"):
         cursor.execute(
             """
@@ -196,31 +275,50 @@ def ensure_shift_job_tracking_schema(cursor) -> None:
               ended_at DATETIME NULL,
               change_source VARCHAR(64) NULL,
               close_source VARCHAR(64) NULL,
+              idempotency_key VARCHAR(64) NULL,
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               INDEX idx_sjs_session (shift_session_id, started_at),
+              UNIQUE KEY uq_sjs_session_idempotency (shift_session_id, idempotency_key),
               CONSTRAINT fk_sjs_session FOREIGN KEY (shift_session_id)
                 REFERENCES shift_sessions(id) ON DELETE CASCADE
             ) ENGINE=InnoDB
             """
         )
+        changed = True
     else:
-        # Legacy table may have NOT NULL job_name_id — make nullable if present.
-        if table_has_column(cursor, "shift_job_segments", "job_name_id"):
+        # Legacy table may have NOT NULL job_name_id — only MODIFY when required.
+        # Unconditional MODIFY acquires metadata locks and can hang requests for minutes.
+        if table_has_column(cursor, "shift_job_segments", "job_name_id") and _column_is_not_null(
+            cursor, "shift_job_segments", "job_name_id"
+        ):
             try:
                 cursor.execute(
                     "ALTER TABLE shift_job_segments MODIFY COLUMN job_name_id INT NULL"
                 )
+                changed = True
             except Exception:
                 pass
         for col, ddl in _SEGMENT_COLS:
-            _add_column_if_missing(cursor, "shift_job_segments", col, ddl)
+            if _add_column_if_missing(cursor, "shift_job_segments", col, ddl):
+                changed = True
+        if _add_index_if_missing(
+            cursor,
+            "shift_job_segments",
+            "uq_sjs_session_idempotency",
+            "ALTER TABLE shift_job_segments "
+            "ADD UNIQUE KEY uq_sjs_session_idempotency (shift_session_id, idempotency_key)",
+        ):
+            changed = True
 
     for col, ddl in _SESSION_COLS:
-        _add_column_if_missing(cursor, "shift_sessions", col, ddl)
-    _add_column_if_missing(
+        if _add_column_if_missing(cursor, "shift_sessions", col, ddl):
+            changed = True
+    if _add_column_if_missing(
         cursor, "payroll_profiles", "force_checkout_waiver", "TINYINT(1) NOT NULL DEFAULT 0"
-    )
-    invalidate_schema_cache()
+    ):
+        changed = True
+    if changed:
+        invalidate_schema_cache()
 
 
 def seed_default_categories_and_roles(cursor, organization_id: int) -> None:
@@ -880,6 +978,73 @@ def close_open_job_segment(
         )
 
 
+class IdempotencyConflictError(ValueError):
+    """Same idempotency key reused with a conflicting category/role payload."""
+
+
+def _lock_shift_session_for_switch(cursor, session_id: int) -> None:
+    """Serialize concurrent switches on one attendance shift (InnoDB row lock)."""
+    cursor.execute(
+        "SELECT id FROM shift_sessions WHERE id=%s FOR UPDATE",
+        (int(session_id),),
+    )
+    cursor.fetchone()
+
+
+def _segment_response_from_row(
+    row: dict,
+    *,
+    assignment: Optional[dict] = None,
+    replayed: bool = False,
+    noop: bool = False,
+) -> dict:
+    r = json_safe(row) if row else {}
+    cat = (assignment or {}).get("category_name") or r.get("category_name_snapshot")
+    role = (assignment or {}).get("role_name") or r.get("role_name_snapshot")
+    label = None
+    if cat and role:
+        label = f"{cat} — {role}"
+    started = r.get("started_at")
+    if isinstance(started, datetime):
+        started = started.isoformat()
+    return {
+        "id": r.get("id"),
+        "shift_session_id": r.get("shift_session_id"),
+        "category_id": r.get("category_id"),
+        "role_id": r.get("role_id"),
+        "category_role_id": r.get("category_role_id"),
+        "category_code": r.get("category_code") or (assignment or {}).get("category_code"),
+        "role_code": r.get("role_code") or (assignment or {}).get("role_code"),
+        "category_name": cat,
+        "role_name": role,
+        "display_label": label or (assignment or {}).get("display_label"),
+        "started_at": started,
+        "ended_at": r.get("ended_at"),
+        "change_source": r.get("change_source"),
+        "idempotency_key": r.get("idempotency_key"),
+        "replayed": bool(replayed),
+        "noop": bool(noop),
+        "unchanged": bool(noop or replayed),
+    }
+
+
+def _find_segment_by_idempotency_key(
+    cursor, session_id: int, idempotency_key: str
+) -> Optional[dict]:
+    if not table_has_column(cursor, "shift_job_segments", "idempotency_key"):
+        return None
+    cursor.execute(
+        """
+        SELECT * FROM shift_job_segments
+        WHERE shift_session_id=%s AND idempotency_key=%s
+        ORDER BY id ASC
+        LIMIT 1
+        """,
+        (int(session_id), idempotency_key),
+    )
+    return cursor.fetchone()
+
+
 def start_category_role_segment(
     conn,
     session_id: int,
@@ -890,24 +1055,54 @@ def start_category_role_segment(
     *,
     started_at: Optional[datetime] = None,
     change_source: str = "switch",
+    idempotency_key: Optional[str] = None,
 ) -> dict:
     c = conn.cursor(dictionary=True)
     ensure_shift_job_tracking_schema(c)
+    key = (idempotency_key or "").strip()[:64] or None
+
+    # Hold the attendance session row for the rest of the transaction so concurrent
+    # switches cannot create overlapping opens or double-close races.
+    _lock_shift_session_for_switch(c, session_id)
+
+    if key:
+        existing = _find_segment_by_idempotency_key(c, session_id, key)
+        if existing:
+            if int(existing.get("category_id") or 0) != int(category_id) or int(
+                existing.get("role_id") or 0
+            ) != int(role_id):
+                raise IdempotencyConflictError(
+                    "idempotency_key already used for a different category/role on this shift"
+                )
+            return _segment_response_from_row(existing, replayed=True, noop=False)
+
     assignment = resolve_active_assignment(
         c, organization_id, category_id=int(category_id), role_id=int(role_id)
     )
+
+    # Same open assignment: no-op (must not close/reopen; start time unchanged).
+    open_seg = get_open_job_segment(conn, session_id)
+    if (
+        open_seg
+        and int(open_seg.get("category_id") or 0) == int(assignment["category_id"])
+        and int(open_seg.get("role_id") or 0) == int(assignment["role_id"])
+    ):
+        return _segment_response_from_row(
+            open_seg, assignment=assignment, replayed=False, noop=True
+        )
+
     started = started_at or eastern_now_naive()
     close_open_job_segment(conn, session_id, started)
     ins = conn.cursor()
-    ins.execute(
-        """
-        INSERT INTO shift_job_segments (
-          shift_session_id, user_id, category_id, role_id, category_role_id,
-          category_code, role_code, category_name_snapshot, role_name_snapshot,
-          started_at, change_source
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        """,
-        (
+    has_idem_col = table_has_column(ins, "shift_job_segments", "idempotency_key")
+    if has_idem_col and key:
+        cols = (
+            "shift_session_id, user_id, category_id, role_id, category_role_id, "
+            "category_code, role_code, category_name_snapshot, role_name_snapshot, "
+            "started_at, change_source, idempotency_key"
+        )
+        placeholders = "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s"
+        values = (
             int(session_id),
             int(user_id),
             int(assignment["category_id"]),
@@ -919,8 +1114,42 @@ def start_category_role_segment(
             assignment.get("role_name"),
             started,
             change_source,
-        ),
-    )
+            key,
+        )
+    else:
+        cols = (
+            "shift_session_id, user_id, category_id, role_id, category_role_id, "
+            "category_code, role_code, category_name_snapshot, role_name_snapshot, "
+            "started_at, change_source"
+        )
+        placeholders = "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s"
+        values = (
+            int(session_id),
+            int(user_id),
+            int(assignment["category_id"]),
+            int(assignment["role_id"]),
+            int(assignment["id"]),
+            assignment.get("category_code"),
+            assignment.get("role_code"),
+            assignment.get("category_name"),
+            assignment.get("role_name"),
+            started,
+            change_source,
+        )
+    try:
+        ins.execute(
+            f"INSERT INTO shift_job_segments ({cols}) VALUES ({placeholders})",
+            values,
+        )
+    except Exception as exc:
+        # Concurrent retry with the same key: return the winner's row.
+        if key and getattr(exc, "args", (None,))[0] == 1062:
+            raced = _find_segment_by_idempotency_key(c, session_id, key)
+            if raced:
+                return _segment_response_from_row(
+                    raced, assignment=assignment, replayed=True, noop=False
+                )
+        raise
     seg_id = ins.lastrowid
     upd = []
     vals: list[Any] = []
@@ -949,6 +1178,10 @@ def start_category_role_segment(
         "display_label": assignment.get("display_label"),
         "started_at": started.isoformat() if isinstance(started, datetime) else started,
         "change_source": change_source,
+        "idempotency_key": key,
+        "replayed": False,
+        "noop": False,
+        "unchanged": False,
     }
 
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -14,6 +14,7 @@ import {
   Typography,
 } from "@mui/material";
 import {
+  createTaskTrackingSwitchIdempotencyKey,
   getTaskTrackingSelectionTree,
   getTaSessionCurrent,
   postTaskTrackingSwitchTask,
@@ -21,6 +22,9 @@ import {
 } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
+
+const SWITCH_TIMEOUT_MESSAGE =
+  "The role change is taking longer than expected and may already have completed. Refresh your current assignment before trying again.";
 
 function formatTimeLabel(iso) {
   if (!iso) return null;
@@ -46,6 +50,8 @@ function ClockPage({ user: washproUser }) {
   const [pendingCategoryId, setPendingCategoryId] = useState(null);
   const [pendingRoleId, setPendingRoleId] = useState(null);
   const [switchBusy, setSwitchBusy] = useState(false);
+  const [needsRefreshBeforeSwitch, setNeedsRefreshBeforeSwitch] = useState(false);
+  const switchIdempotencyKeyRef = useRef(null);
 
   const session = sessionRes?.session;
   const trackingEnabled = !!(
@@ -135,28 +141,54 @@ function ClockPage({ user: washproUser }) {
   }, [authLoading, isClockedIn, loadSession]);
 
   const openPicker = () => {
+    if (needsRefreshBeforeSwitch) return;
     setPickStep("category");
     const curCat = taskTracking?.current_category_id;
     const hasCur =
       curCat != null && selectionTree.some((c) => Number(c.id) === Number(curCat));
     setPendingCategoryId(hasCur ? Number(curCat) : selectionTree[0]?.id ?? null);
     setPendingRoleId(hasCur ? Number(taskTracking?.current_role_id) : null);
+    switchIdempotencyKeyRef.current = null;
     setPickOpen(true);
   };
 
+  const refreshAssignment = async () => {
+    setActionError("");
+    await loadSession(true);
+    setNeedsRefreshBeforeSwitch(false);
+    switchIdempotencyKeyRef.current = null;
+  };
+
   const confirmRoleChange = async () => {
-    if (!pendingCategoryId || !pendingRoleId) return;
+    if (!pendingCategoryId || !pendingRoleId || switchBusy || needsRefreshBeforeSwitch) return;
     setSwitchBusy(true);
     setActionError("");
+    if (!switchIdempotencyKeyRef.current) {
+      switchIdempotencyKeyRef.current = createTaskTrackingSwitchIdempotencyKey();
+    }
+    const idempotency_key = switchIdempotencyKeyRef.current;
     try {
       await postTaskTrackingSwitchTask({
         category_id: pendingCategoryId,
         role_id: pendingRoleId,
+        idempotency_key,
       });
+      switchIdempotencyKeyRef.current = null;
+      setNeedsRefreshBeforeSwitch(false);
       setPickOpen(false);
       await loadSession(true);
     } catch (e) {
-      setActionError(e?.response?.data?.error || e?.message || "Could not change role");
+      if (e?.code === "ECONNABORTED") {
+        setNeedsRefreshBeforeSwitch(true);
+        setActionError(SWITCH_TIMEOUT_MESSAGE);
+        try {
+          await loadSession(true);
+        } catch {
+          /* keep timeout guidance even if refresh fails */
+        }
+      } else {
+        setActionError(e?.response?.data?.error || e?.message || "Could not change role");
+      }
     } finally {
       setSwitchBusy(false);
     }
@@ -207,6 +239,16 @@ function ClockPage({ user: washproUser }) {
             {actionError}
           </Alert>
         ) : null}
+        {needsRefreshBeforeSwitch ? (
+          <Button
+            fullWidth
+            variant="outlined"
+            onClick={refreshAssignment}
+            sx={{ mb: 2, textTransform: "none", fontWeight: 700 }}
+          >
+            Refresh current assignment
+          </Button>
+        ) : null}
 
         {!isClockedIn ? (
           <Stack spacing={2} alignItems="center">
@@ -251,7 +293,9 @@ function ClockPage({ user: washproUser }) {
                     <Button
                       fullWidth
                       variant="contained"
-                      disabled={switchBusy || selectionTree.length === 0}
+                      disabled={
+                        switchBusy || needsRefreshBeforeSwitch || selectionTree.length === 0
+                      }
                       onClick={openPicker}
                       sx={{ textTransform: "none", fontWeight: 700, py: 1.5 }}
                     >
@@ -274,7 +318,9 @@ function ClockPage({ user: washproUser }) {
                     <Button
                       fullWidth
                       variant="contained"
-                      disabled={switchBusy || selectionTree.length === 0}
+                      disabled={
+                        switchBusy || needsRefreshBeforeSwitch || selectionTree.length === 0
+                      }
                       onClick={openPicker}
                       sx={{ textTransform: "none", fontWeight: 700, py: 1.5 }}
                     >
@@ -350,7 +396,7 @@ function ClockPage({ user: washproUser }) {
             <Button
               variant="contained"
               onClick={confirmRoleChange}
-              disabled={switchBusy || !pendingRoleId}
+              disabled={switchBusy || needsRefreshBeforeSwitch || !pendingRoleId}
               size="large"
             >
               {switchBusy ? <CircularProgress size={22} color="inherit" /> : "Confirm"}

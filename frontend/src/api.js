@@ -1274,7 +1274,7 @@ export const getCategoryRoleTrackingFeatureFlag = () =>
   axios.get(`${API_BASE}/api/ta/job-tracking/feature-flag`);
 
 export const putCategoryRoleTrackingFeatureFlag = (body) =>
-  axios.put(`${API_BASE}/api/ta/job-tracking/feature-flag`, body);
+  axios.put(`${API_BASE}/api/ta/job-tracking/feature-flag`, body, { timeout: 15000 });
 
 export const getTaskTrackingCategories = (params = {}) =>
   axios.get(`${API_BASE}/api/ta/job-tracking/categories`, { params });
@@ -1321,8 +1321,27 @@ export const deleteTaskTrackingRole = (roleId) =>
 export const postTaskTrackingRolesReorder = (body) =>
   axios.post(`${API_BASE}/api/ta/job-tracking/roles/reorder`, body);
 
-export const postTaskTrackingSwitchTask = (body) =>
-  axios.post(`${API_BASE}/api/ta/job-tracking/sessions/current/switch-task`, body);
+export function createTaskTrackingSwitchIdempotencyKey() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `switch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Switch category/role.
+ * Caller should generate one UUID per user action and reuse it on retry of that same action.
+ * If idempotency_key is omitted, a new key is generated for this single request only.
+ */
+export const postTaskTrackingSwitchTask = (body = {}) => {
+  const idempotency_key =
+    (body.idempotency_key || "").trim() || createTaskTrackingSwitchIdempotencyKey();
+  return axios.post(
+    `${API_BASE}/api/ta/job-tracking/sessions/current/switch-task`,
+    { ...body, idempotency_key },
+    { headers: { "Idempotency-Key": idempotency_key }, timeout: 15000 }
+  );
+};
 
 export const getTaskTrackingReports = (params) =>
   axios.get(`${API_BASE}/api/ta/job-tracking/reports`, { params });

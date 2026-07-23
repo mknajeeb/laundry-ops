@@ -60,9 +60,11 @@ CREATE TABLE IF NOT EXISTS shift_job_segments (
   ended_at DATETIME NULL,
   change_source VARCHAR(64) NULL,
   close_source VARCHAR(64) NULL,
+  idempotency_key VARCHAR(64) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_sjs_session (shift_session_id, started_at),
   INDEX idx_sjs_category_role (category_id, role_id),
+  UNIQUE KEY uq_sjs_session_idempotency (shift_session_id, idempotency_key),
   CONSTRAINT fk_sjs_session FOREIGN KEY (shift_session_id) REFERENCES shift_sessions(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 

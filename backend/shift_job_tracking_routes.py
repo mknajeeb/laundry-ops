@@ -524,10 +524,26 @@ def job_tracking_switch_job():
     role_id = data.get("role_id")
     if not category_id or not role_id:
         return jsonify({"error": "category_id and role_id required"}), 400
+    idempotency_key = (
+        (data.get("idempotency_key") or "").strip()
+        or (request.headers.get("Idempotency-Key") or "").strip()
+    )
+    if not idempotency_key:
+        return jsonify(
+            {
+                "error": "idempotency_key required "
+                "(body.idempotency_key or Idempotency-Key header)"
+            }
+        ), 400
+    if len(idempotency_key) > 64:
+        return jsonify({"error": "idempotency_key must be at most 64 characters"}), 400
     conn = get_db()
     try:
         from backend.category_role_tracking_settings import is_category_role_tracking_enabled
-        from backend.shift_job_tracking import start_category_role_segment
+        from backend.shift_job_tracking import (
+            IdempotencyConflictError,
+            start_category_role_segment,
+        )
 
         if not is_category_role_tracking_enabled(conn, _tenant_id()):
             return jsonify(
@@ -555,31 +571,63 @@ def job_tracking_switch_job():
             int(category_id),
             int(role_id),
             change_source=change_source,
+            idempotency_key=idempotency_key,
         )
-        write_audit(
-            conn,
-            g.ta_user["id"],
-            "shift_task_segment",
-            seg.get("id"),
-            change_source if change_source == "assignment_selected_after_enable" else "task_changed",
-            old={
-                "category_id": old_seg.get("category_id") if old_seg else None,
-                "role_id": old_seg.get("role_id") if old_seg else None,
-                "display_label": old_seg.get("display_label") if old_seg else None,
-            },
-            new={
-                "category_id": category_id,
-                "role_id": role_id,
-                "display_label": seg.get("display_label"),
-                "shift_session_id": sess["id"],
-                "change_source": change_source,
-            },
-        )
-        conn.commit()
+        # Build response payload before commit so the HTTP response does not wait
+        # on post-commit reads. Commit is the last DB step before return.
         tracking = enrich_session_job_tracking(conn, sess, g.ta_user["id"])
-        return jsonify({"segment": seg, "task_tracking": tracking, "job_tracking": tracking})
+        if not seg.get("replayed") and not seg.get("noop"):
+            write_audit(
+                conn,
+                g.ta_user["id"],
+                "shift_task_segment",
+                seg.get("id"),
+                change_source
+                if change_source == "assignment_selected_after_enable"
+                else "task_changed",
+                old={
+                    "category_id": old_seg.get("category_id") if old_seg else None,
+                    "role_id": old_seg.get("role_id") if old_seg else None,
+                    "display_label": old_seg.get("display_label") if old_seg else None,
+                },
+                new={
+                    "category_id": category_id,
+                    "role_id": role_id,
+                    "display_label": seg.get("display_label"),
+                    "shift_session_id": sess["id"],
+                    "change_source": change_source,
+                    "idempotency_key": idempotency_key,
+                },
+            )
+        conn.commit()
+        return jsonify(
+            {
+                "segment": seg,
+                "task_tracking": tracking,
+                "job_tracking": tracking,
+                "replayed": bool(seg.get("replayed")),
+                "noop": bool(seg.get("noop")),
+                "unchanged": bool(seg.get("unchanged") or seg.get("noop") or seg.get("replayed")),
+            }
+        )
+    except IdempotencyConflictError as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": str(e), "code": "idempotency_conflict"}), 409
     except ValueError as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return jsonify({"error": str(e)}), 400
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 

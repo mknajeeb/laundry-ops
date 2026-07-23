@@ -12,6 +12,9 @@ import {
   putCategoryRoleTrackingFeatureFlag,
 } from "../api";
 
+const FEATURE_FLAG_TIMEOUT_MESSAGE =
+  "The setting update is taking longer than expected and may already have completed. Refreshing the saved value before allowing another change.";
+
 /**
  * Payroll Management control for enabling Category & Role Tracking.
  */
@@ -28,8 +31,10 @@ export default function CategoryRoleTrackingSettingsPanel({ onChanged }) {
     try {
       const res = await getCategoryRoleTrackingFeatureFlag();
       setEnabled(!!res.data?.category_role_tracking_enabled);
+      return res.data;
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Could not load setting");
+      return null;
     } finally {
       setLoading(false);
     }
@@ -40,6 +45,7 @@ export default function CategoryRoleTrackingSettingsPanel({ onChanged }) {
   }, [load]);
 
   const onToggle = async (next) => {
+    if (saving || loading) return;
     setSaving(true);
     setError("");
     setInfo("");
@@ -62,7 +68,14 @@ export default function CategoryRoleTrackingSettingsPanel({ onChanged }) {
       }
       if (typeof onChanged === "function") onChanged(res.data);
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Could not save setting");
+      if (e?.code === "ECONNABORTED") {
+        setError(FEATURE_FLAG_TIMEOUT_MESSAGE);
+        // Never auto-toggle again after timeout; re-read the persisted value first.
+        await load();
+      } else {
+        setError(e?.response?.data?.error || e?.message || "Could not save setting");
+        await load();
+      }
     } finally {
       setSaving(false);
     }

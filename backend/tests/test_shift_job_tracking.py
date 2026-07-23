@@ -216,3 +216,339 @@ def test_enrich_session_job_tracking_payload():
     assert out["current_role_id"] == 2
     assert "force_checkout_blocked" not in out
     assert "effective_force_checkout_at" not in out
+
+
+def test_ensure_schema_skips_modify_when_job_name_id_nullable():
+    from backend.shift_job_tracking import (
+        ensure_shift_job_tracking_schema,
+        reset_shift_job_tracking_schema_gate_for_tests,
+    )
+
+    reset_shift_job_tracking_schema_gate_for_tests()
+    cursor = MagicMock()
+
+    def table_exists_side(cur, name):
+        return name in {
+            "ta_task_categories",
+            "ta_task_roles",
+            "ta_task_category_roles",
+            "ta_job_names",
+            "shift_job_segments",
+            "shift_sessions",
+            "payroll_profiles",
+        }
+
+    with patch(
+        "backend.shift_job_tracking.table_exists", side_effect=table_exists_side
+    ), patch(
+        "backend.shift_job_tracking.table_has_column", return_value=True
+    ), patch(
+        "backend.shift_job_tracking._column_is_not_null", return_value=False
+    ), patch(
+        "backend.shift_job_tracking._add_index_if_missing", return_value=False
+    ), patch(
+        "backend.shift_job_tracking.invalidate_schema_cache"
+    ) as inv:
+        ensure_shift_job_tracking_schema(cursor)
+        # Second call must be a no-op (process gate)
+        ensure_shift_job_tracking_schema(cursor)
+
+    modify_calls = [
+        c
+        for c in cursor.execute.call_args_list
+        if c.args and "MODIFY COLUMN job_name_id" in str(c.args[0])
+    ]
+    assert modify_calls == []
+    inv.assert_not_called()
+    reset_shift_job_tracking_schema_gate_for_tests()
+
+
+def test_ensure_schema_modifies_job_name_id_only_when_not_null():
+    from backend.shift_job_tracking import (
+        ensure_shift_job_tracking_schema,
+        reset_shift_job_tracking_schema_gate_for_tests,
+    )
+
+    reset_shift_job_tracking_schema_gate_for_tests()
+    cursor = MagicMock()
+
+    def table_exists_side(cur, name):
+        return name in {
+            "ta_task_categories",
+            "ta_task_roles",
+            "ta_task_category_roles",
+            "ta_job_names",
+            "shift_job_segments",
+            "shift_sessions",
+            "payroll_profiles",
+        }
+
+    with patch(
+        "backend.shift_job_tracking.table_exists", side_effect=table_exists_side
+    ), patch(
+        "backend.shift_job_tracking.table_has_column", return_value=True
+    ), patch(
+        "backend.shift_job_tracking._column_is_not_null", return_value=True
+    ), patch(
+        "backend.shift_job_tracking._add_index_if_missing", return_value=False
+    ), patch(
+        "backend.shift_job_tracking.invalidate_schema_cache"
+    ) as inv:
+        ensure_shift_job_tracking_schema(cursor)
+
+    modify_calls = [
+        c
+        for c in cursor.execute.call_args_list
+        if c.args and "MODIFY COLUMN job_name_id" in str(c.args[0])
+    ]
+    assert len(modify_calls) == 1
+    inv.assert_called_once()
+    reset_shift_job_tracking_schema_gate_for_tests()
+
+
+def test_ensure_schema_failed_is_retryable():
+    from backend import shift_job_tracking as sjt
+
+    sjt.reset_shift_job_tracking_schema_gate_for_tests()
+    cursor = MagicMock()
+    calls = {"n": 0}
+
+    def flaky_ensure(cur):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("ddl failed")
+
+    with patch.object(sjt, "_ensure_shift_job_tracking_schema_unlocked", side_effect=flaky_ensure):
+        with pytest.raises(RuntimeError, match="ddl failed"):
+            sjt.ensure_shift_job_tracking_schema(cursor)
+        # Gate must remain unset so a later request can retry.
+        sjt.ensure_shift_job_tracking_schema(cursor)
+        sjt.ensure_shift_job_tracking_schema(cursor)
+
+    assert calls["n"] == 2
+    sjt.reset_shift_job_tracking_schema_gate_for_tests()
+
+
+def test_start_category_role_segment_idempotent_by_key():
+    from backend.shift_job_tracking import start_category_role_segment
+
+    conn = MagicMock()
+    existing = {
+        "id": 44,
+        "shift_session_id": 9,
+        "category_id": 3,
+        "role_id": 7,
+        "category_role_id": 12,
+        "category_code": "DHS",
+        "role_code": "OPERATOR",
+        "category_name_snapshot": "DHS",
+        "role_name_snapshot": "Operator",
+        "started_at": datetime(2026, 7, 1, 9, 0),
+        "change_source": "switch",
+        "idempotency_key": "key-1",
+    }
+    cur = MagicMock()
+    cur.fetchone.side_effect = [
+        {"id": 9},  # FOR UPDATE lock
+        existing,  # idempotency lookup
+    ]
+    conn.cursor.return_value = cur
+
+    with patch("backend.shift_job_tracking.ensure_shift_job_tracking_schema"), patch(
+        "backend.shift_job_tracking.table_has_column", return_value=True
+    ), patch("backend.shift_job_tracking.json_safe", side_effect=lambda x: x), patch(
+        "backend.shift_job_tracking.resolve_active_assignment"
+    ) as resolve_fn, patch(
+        "backend.shift_job_tracking.close_open_job_segment"
+    ) as close_fn:
+        out = start_category_role_segment(
+            conn, 9, 1, 10, 3, 7, idempotency_key="key-1"
+        )
+
+    assert out["id"] == 44
+    assert out["replayed"] is True
+    assert out["unchanged"] is True
+    resolve_fn.assert_not_called()
+    close_fn.assert_not_called()
+
+
+def test_start_category_role_segment_noop_when_same_open_assignment():
+    from backend.shift_job_tracking import start_category_role_segment
+
+    conn = MagicMock()
+    open_seg = {
+        "id": 50,
+        "shift_session_id": 9,
+        "category_id": 3,
+        "role_id": 7,
+        "category_role_id": 12,
+        "category_name_snapshot": "DHS",
+        "role_name_snapshot": "Operator",
+        "started_at": datetime(2026, 7, 1, 9, 0),
+        "change_source": "switch",
+    }
+    lock_cur = MagicMock()
+    lock_cur.fetchone.return_value = {"id": 9}
+    conn.cursor.return_value = lock_cur
+    with patch("backend.shift_job_tracking.ensure_shift_job_tracking_schema"), patch(
+        "backend.shift_job_tracking.resolve_active_assignment",
+        return_value={
+            "id": 12,
+            "category_id": 3,
+            "role_id": 7,
+            "category_code": "DHS",
+            "role_code": "OPERATOR",
+            "category_name": "DHS",
+            "role_name": "Operator",
+            "display_label": "DHS — Operator",
+        },
+    ), patch(
+        "backend.shift_job_tracking.get_open_job_segment", return_value=open_seg
+    ), patch(
+        "backend.shift_job_tracking._find_segment_by_idempotency_key", return_value=None
+    ), patch("backend.shift_job_tracking.json_safe", side_effect=lambda x: x), patch(
+        "backend.shift_job_tracking.close_open_job_segment"
+    ) as close_fn:
+        out = start_category_role_segment(
+            conn, 9, 1, 10, 3, 7, idempotency_key="key-new"
+        )
+
+    assert out["id"] == 50
+    assert out["noop"] is True
+    assert out["unchanged"] is True
+    assert out["started_at"] == "2026-07-01T09:00:00"
+    close_fn.assert_not_called()
+
+
+def test_start_category_role_segment_rejects_key_reuse_for_different_assignment():
+    from backend.shift_job_tracking import (
+        IdempotencyConflictError,
+        start_category_role_segment,
+    )
+
+    conn = MagicMock()
+    existing = {
+        "id": 44,
+        "shift_session_id": 9,
+        "category_id": 3,
+        "role_id": 7,
+        "idempotency_key": "key-1",
+    }
+    with patch("backend.shift_job_tracking.ensure_shift_job_tracking_schema"), patch(
+        "backend.shift_job_tracking._lock_shift_session_for_switch"
+    ), patch(
+        "backend.shift_job_tracking._find_segment_by_idempotency_key",
+        return_value=existing,
+    ):
+        with pytest.raises(IdempotencyConflictError, match="already used"):
+            start_category_role_segment(
+                conn, 9, 1, 10, 1, 2, idempotency_key="key-1"
+            )
+
+
+def test_start_category_role_segment_real_switch_same_transition_timestamp():
+    from backend.shift_job_tracking import start_category_role_segment
+
+    conn = MagicMock()
+    lock_cur = MagicMock()
+    lock_cur.fetchone.return_value = {"id": 9}
+    ins = MagicMock()
+    ins.lastrowid = 77
+    conn.cursor.side_effect = [lock_cur, ins]
+    transition = datetime(2026, 7, 1, 10, 15, 30)
+    closed = {}
+
+    def close_side(conn_, session_id, ended_at, **kwargs):
+        closed["ended_at"] = ended_at
+
+    with patch("backend.shift_job_tracking.ensure_shift_job_tracking_schema"), patch(
+        "backend.shift_job_tracking._find_segment_by_idempotency_key", return_value=None
+    ), patch(
+        "backend.shift_job_tracking.resolve_active_assignment",
+        return_value={
+            "id": 20,
+            "category_id": 1,
+            "role_id": 2,
+            "category_code": "RINSE_WF",
+            "role_code": "FOLDER",
+            "category_name": "Rinse WF",
+            "role_name": "Folder",
+            "display_label": "Rinse WF — Folder",
+        },
+    ), patch(
+        "backend.shift_job_tracking.get_open_job_segment",
+        return_value={
+            "id": 50,
+            "category_id": 1,
+            "role_id": 1,
+            "started_at": datetime(2026, 7, 1, 9, 0),
+        },
+    ), patch(
+        "backend.shift_job_tracking.close_open_job_segment", side_effect=close_side
+    ), patch(
+        "backend.shift_job_tracking.table_has_column", return_value=True
+    ), patch(
+        "backend.shift_job_tracking.eastern_now_naive", return_value=transition
+    ):
+        out = start_category_role_segment(
+            conn, 9, 1, 10, 1, 2, idempotency_key="switch-1"
+        )
+
+    assert out["id"] == 77
+    assert out["noop"] is False
+    assert closed["ended_at"] == transition
+    assert out["started_at"] == transition.isoformat()
+    insert_args = ins.execute.call_args_list[0].args[1]
+    assert transition in insert_args
+
+
+def test_concurrent_same_key_returns_winner_on_duplicate():
+    from backend.shift_job_tracking import start_category_role_segment
+
+    conn = MagicMock()
+    lock_cur = MagicMock()
+    lock_cur.fetchone.return_value = {"id": 9}
+    ins = MagicMock()
+
+    class Dup(Exception):
+        def __init__(self):
+            self.args = (1062, "Duplicate entry")
+
+    ins.execute.side_effect = Dup()
+    conn.cursor.side_effect = [lock_cur, ins]
+    winner = {
+        "id": 88,
+        "shift_session_id": 9,
+        "category_id": 1,
+        "role_id": 2,
+        "category_name_snapshot": "Rinse WF",
+        "role_name_snapshot": "Folder",
+        "started_at": datetime(2026, 7, 1, 10, 0),
+        "idempotency_key": "same-key",
+    }
+    with patch("backend.shift_job_tracking.ensure_shift_job_tracking_schema"), patch(
+        "backend.shift_job_tracking._find_segment_by_idempotency_key",
+        side_effect=[None, winner],
+    ), patch(
+        "backend.shift_job_tracking.resolve_active_assignment",
+        return_value={
+            "id": 20,
+            "category_id": 1,
+            "role_id": 2,
+            "category_code": "RINSE_WF",
+            "role_code": "FOLDER",
+            "category_name": "Rinse WF",
+            "role_name": "Folder",
+            "display_label": "Rinse WF — Folder",
+        },
+    ), patch(
+        "backend.shift_job_tracking.get_open_job_segment",
+        return_value={"id": 1, "category_id": 9, "role_id": 9},
+    ), patch("backend.shift_job_tracking.close_open_job_segment"), patch(
+        "backend.shift_job_tracking.table_has_column", return_value=True
+    ), patch("backend.shift_job_tracking.json_safe", side_effect=lambda x: x):
+        out = start_category_role_segment(
+            conn, 9, 1, 10, 1, 2, idempotency_key="same-key"
+        )
+    assert out["id"] == 88
+    assert out["replayed"] is True
