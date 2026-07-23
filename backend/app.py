@@ -61,6 +61,7 @@ from backend.rinse_processing_routes import register_rinse_processing_routes
 from backend.rinse_shift_analysis_routes import register_rinse_shift_analysis_routes
 from backend.supply_usage_routes import register_supply_usage_routes
 from backend.daily_revenue_cost_routes import register_daily_revenue_cost_routes
+from backend.daily_operations_routes import register_daily_operations_routes
 from backend.inventory_routes import register_inventory_routes
 from backend.maintenance_task_list_routes import register_maintenance_task_list_routes
 from backend.machine_configuration_routes import register_machine_configuration_routes
@@ -10639,6 +10640,12 @@ register_daily_revenue_cost_routes(
     app,
     require_user=require_user,
     require_admin=require_admin,
+    user_org_id=user_org_id,
+    parse_date_value=parse_date_value,
+)
+register_daily_operations_routes(
+    app,
+    require_user=require_user,
     user_org_id=user_org_id,
     parse_date_value=parse_date_value,
 )

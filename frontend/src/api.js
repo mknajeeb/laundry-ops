@@ -2170,4 +2170,13 @@ export const getDrcDashboard = (params) =>
 export const postDrcEntryWorkflow = (entryDate, body) =>
   axios.post(`${API_BASE}/finance/daily-revenue-cost/entries/${entryDate}/workflow`, body);
 
+export const getDailyOperationsMeta = () =>
+  axios.get(`${API_BASE}/api/daily-operations/meta`);
+
+export const getDailyOperationsDay = (opsDate, params) =>
+  axios.get(`${API_BASE}/api/daily-operations/days/${opsDate}`, { params });
+
+export const getDailyOperationsCompareFinance = (opsDate) =>
+  axios.get(`${API_BASE}/api/daily-operations/days/${opsDate}/compare-finance`);
+
 export { API_BASE };

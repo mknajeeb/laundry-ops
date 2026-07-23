@@ -75,7 +75,11 @@ from backend.daily_revenue_cost_schema import (
 )
 from backend.ta_helpers import table_exists
 
-MONEY_Q = Decimal("0.01")
+from backend.wf_mtd_pricing import (
+    MONEY_Q,
+    allocate_wf_day_revenue_from_mtd,
+    cumulative_wf_revenue as shared_cumulative_wf_revenue,
+)
 
 
 def _d(val: Any) -> Decimal:
@@ -548,34 +552,12 @@ def get_rinse_wf_tiers(cursor, org_id: int, *, as_of: date | None = None) -> lis
     return tiers
 
 
-# ── WF tier revenue math ───────────────────────────────────────────────────
+# ── WF tier revenue math (shared with Daily Operations via wf_mtd_pricing) ─
 
 
 def cumulative_wf_revenue(total_lbs: Any, tiers: list[dict]) -> Decimal:
-    lbs = _d(total_lbs)
-    if lbs <= 0 or not tiers:
-        return Decimal("0")
-    sorted_tiers = sorted(tiers, key=lambda t: int(t.get("tier_number") or 0))
-    processed = Decimal("0")
-    revenue = Decimal("0")
-    prev_cap = Decimal("0")
-    for tier in sorted_tiers:
-        if processed >= lbs:
-            break
-        cap_raw = tier.get("max_lbs")
-        rate = _d(tier.get("rate_per_lb"))
-        if cap_raw is None:
-            lbs_here = lbs - processed
-        else:
-            cap = _d(cap_raw)
-            tier_span = cap - prev_cap
-            lbs_here = min(lbs - processed, tier_span)
-            prev_cap = cap
-        if lbs_here <= 0:
-            continue
-        revenue += lbs_here * rate
-        processed += lbs_here
-    return revenue.quantize(MONEY_Q, rounding=ROUND_HALF_UP)
+    """Compatibility wrapper — single implementation lives in wf_mtd_pricing."""
+    return shared_cumulative_wf_revenue(total_lbs, tiers)
 
 
 def _mtd_wf_pounds(cursor, org_id: int, entry_date: date, *, exclude_entry_id: int | None = None) -> Decimal:
@@ -607,49 +589,17 @@ def wf_revenue_for_day(
     if tiers is None:
         _, tiers = get_wf_schedule_for_date(cursor, org_id, entry_date)
     mtd_before = _mtd_wf_pounds(cursor, org_id, entry_date, exclude_entry_id=exclude_entry_id)
-    day_lbs = _d(day_pounds)
-    mtd_after = mtd_before + day_lbs
-    rev_before = cumulative_wf_revenue(mtd_before, tiers)
-    rev_after = cumulative_wf_revenue(mtd_after, tiers)
-    day_rev = (rev_after - rev_before).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
-
-    applied = []
-    remaining = day_lbs
-    pos_before = mtd_before
-    sorted_tiers = sorted(tiers, key=lambda t: int(t.get("tier_number") or 0))
-    prev_cap = Decimal("0")
-    for tier in sorted_tiers:
-        if remaining <= 0:
-            break
-        cap_raw = tier.get("max_lbs")
-        rate = _d(tier.get("rate_per_lb"))
-        if cap_raw is None:
-            lbs_in_tier = remaining
-        else:
-            cap = _d(cap_raw)
-            if pos_before >= cap:
-                prev_cap = cap
-                continue
-            space = cap - max(pos_before, prev_cap)
-            lbs_in_tier = min(remaining, space)
-            prev_cap = cap
-        if lbs_in_tier <= 0:
-            continue
-        applied.append({
-            "tier_number": int(tier.get("tier_number") or 0),
-            "rate_per_lb": _money(rate),
-            "max_lbs": int(cap_raw) if cap_raw is not None else None,
-            "pounds_applied": _money(lbs_in_tier),
-            "tier_revenue": _money(lbs_in_tier * rate),
-        })
-        remaining -= lbs_in_tier
-        pos_before += lbs_in_tier
-
-    return _money(day_rev), {
-        "mtd_pounds_before": _money(mtd_before),
-        "mtd_pounds_after": _money(mtd_after),
-        "day_pounds": _money(day_lbs),
-        "applied_tiers": applied,
+    allocated = allocate_wf_day_revenue_from_mtd(mtd_before, day_pounds, tiers)
+    return float(allocated["weight_revenue_today"]), {
+        "mtd_pounds_before": allocated["mtd_pounds_before"],
+        "mtd_pounds_after": allocated["mtd_pounds_after"],
+        "day_pounds": allocated["day_pounds"],
+        "applied_tiers": allocated["applied_tiers"],
+        "tier1_pounds_today": allocated["tier1_pounds_today"],
+        "tier2_pounds_today": allocated["tier2_pounds_today"],
+        "tier1_revenue_today": allocated["tier1_revenue_today"],
+        "tier2_revenue_today": allocated["tier2_revenue_today"],
+        "weight_revenue_today": allocated["weight_revenue_today"],
     }
 
 
@@ -875,11 +825,103 @@ def update_commercial_account(cursor, org_id: int, account_id: int, payload: dic
 # ── WF pricing schedules ───────────────────────────────────────────────────
 
 
+def ensure_veewash_aug1_2026_wf_schedule(cursor, org_id: int, user_id: int | None = None) -> dict[str, Any]:
+    """
+    Ensure the approved Aug 1, 2026 WF tier schedule exists for org 3.
+
+    Does not rewrite historical schedules. Safe to call repeatedly.
+    """
+    from backend.wf_mtd_pricing import (
+        VEEWASH_WF_SCHEDULE_EFFECTIVE_FROM,
+        VEEWASH_WF_SCHEDULE_NAME,
+    )
+
+    ensure_daily_revenue_cost_tables(cursor)
+    org = int(org_id)
+    eff = VEEWASH_WF_SCHEDULE_EFFECTIVE_FROM
+    cursor.execute(
+        """
+        SELECT id FROM dr_rinse_wf_pricing_schedules
+        WHERE organization_id = %s AND effective_from = %s
+        LIMIT 1
+        """,
+        (org, eff),
+    )
+    existing = cursor.fetchone()
+    if existing:
+        return {"created": False, "schedule_id": int(existing["id"]), "effective_from": eff.isoformat()}
+
+    # Close any open-ended schedule that would overlap Aug 1+.
+    cursor.execute(
+        """
+        SELECT id, effective_from, effective_to
+        FROM dr_rinse_wf_pricing_schedules
+        WHERE organization_id = %s
+          AND effective_from < %s
+          AND (effective_to IS NULL OR effective_to >= %s)
+        ORDER BY effective_from DESC
+        """,
+        (org, eff, eff),
+    )
+    for row in cursor.fetchall() or []:
+        close_schedule_before(
+            cursor,
+            table="dr_rinse_wf_pricing_schedules",
+            id_column="id",
+            schedule_id=int(row["id"]),
+            new_effective_from=eff,
+        )
+
+    assert_no_overlapping_schedules(
+        cursor,
+        table="dr_rinse_wf_pricing_schedules",
+        scope_column="organization_id",
+        scope_id=org,
+        effective_from=eff,
+    )
+    cursor.execute(
+        """
+        INSERT INTO dr_rinse_wf_pricing_schedules
+          (organization_id, effective_from, name, created_by)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (org, eff, VEEWASH_WF_SCHEDULE_NAME, user_id),
+    )
+    sched_id = int(cursor.lastrowid)
+    for tier in DEFAULT_WF_TIERS:
+        cursor.execute(
+            """
+            INSERT INTO dr_rinse_wf_tier_lines (schedule_id, tier_number, max_lbs, rate_per_lb)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (sched_id, tier["tier_number"], tier["max_lbs"], tier["rate_per_lb"]),
+        )
+    _log_schedule_audit(
+        cursor,
+        None,
+        "pricing_schedule_changed",
+        user_id=user_id,
+        notes=f"seeded {VEEWASH_WF_SCHEDULE_NAME} id={sched_id}",
+    )
+    return {"created": True, "schedule_id": sched_id, "effective_from": eff.isoformat()}
+
+
 def _seed_wf_pricing(cursor, org_id: int, user_id: int | None = None) -> None:
     cursor.execute("SELECT COUNT(*) AS c FROM dr_rinse_wf_pricing_schedules WHERE organization_id = %s", (org_id,))
     if int((cursor.fetchone() or {}).get("c") or 0) > 0:
+        # Org 3 always ensures the approved Aug 1 schedule exists alongside any history.
+        if int(org_id) == 3:
+            ensure_veewash_aug1_2026_wf_schedule(cursor, org_id, user_id=user_id)
         return
+    from backend.wf_mtd_pricing import VEEWASH_WF_SCHEDULE_EFFECTIVE_FROM, VEEWASH_WF_SCHEDULE_NAME
+
+    # Org 3: seed the approved Aug 1 plan (not today), so Jul 23–31 remain without this rate.
+    if int(org_id) == 3:
+        ensure_veewash_aug1_2026_wf_schedule(cursor, org_id, user_id=user_id)
+        return
+
     from backend.business_time import business_today
+
     eff = business_today()
     cursor.execute(
         "INSERT INTO dr_rinse_wf_pricing_schedules (organization_id, effective_from, name, created_by) VALUES (%s, %s, 'Default', %s)",
