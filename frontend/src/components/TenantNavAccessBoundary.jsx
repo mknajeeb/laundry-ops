@@ -2,6 +2,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { tenantNavItemForPath, tenantNavItemVisible } from "../constants/tenantNav";
 import { isPayrollManagementOnlyUser, isRinseScheduleOnlyUser, tenantDefaultRoute, userSatisfiesRoleGate } from "../utils/platformAccess";
+import { isPinHubAppSessionActive } from "../utils/pinHubSession";
 
 function isLoginPath(path) {
   const p = path || "";
@@ -18,6 +19,14 @@ export default function TenantNavAccessBoundary({ user, payrollNavVisible = true
   const p = pathname || "/";
 
   if (!user || isLoginPath(p)) return children;
+
+  // Phone PIN menu inventory: org assigned the tile; do not apply sidebar role gates.
+  if (
+    isPinHubAppSessionActive() &&
+    (p === "/inventory" || p.startsWith("/inventory/"))
+  ) {
+    return children;
+  }
 
   if (isPayrollManagementOnlyUser(user)) {
     const onPayroll = p === "/payroll" || p.startsWith("/payroll/");

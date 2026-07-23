@@ -91,6 +91,12 @@ import { useAuth } from "./context/AuthContext";
 import { formatSystemDateLong } from "./utils/formatDateLocal";
 import { applyAppIconFromOrganizationLogo } from "./utils/appIcon";
 import { lockSessionToKiosk } from "./utils/kioskLockNavigation";
+import {
+  clearPinHubAppSession,
+  isPinHubAppSessionActive,
+  loadPinHubAppSession,
+  pinHubMenuPath,
+} from "./utils/pinHubSession";
 
 function MobileTopBar({ pathname, user, onOpenNav, onLogout, showKioskLock, onKioskLock }) {
   const navigate = useNavigate();
@@ -180,6 +186,11 @@ function isKioskRoute(path) {
 function isPinHubRoute(path) {
   const p = normalizePathname(path);
   return p === "/pin" || p.startsWith("/pin/");
+}
+
+function isInventoryRoute(path) {
+  const p = normalizePathname(path);
+  return p === "/inventory" || p.startsWith("/inventory/");
 }
 
 /** Kiosk clock in/out only: /attendance or /attendance/:orgSlug (no app session). */
@@ -307,12 +318,6 @@ function AppShell() {
     normalizedPathname === "/performance/weekly-schedule" ||
     normalizedPathname.startsWith("/performance/weekly-schedule/");
 
-  /** Fix …//pin/veewash (and similar) so public PIN routes match React Router. */
-  useLayoutEffect(() => {
-    if (pathname === normalizedPathname) return;
-    navigate(`${normalizedPathname}${location.search || ""}${location.hash || ""}`, { replace: true });
-  }, [pathname, normalizedPathname, navigate, location.search, location.hash]);
-
   /** iOS PWA: keep main content in its own scroller; reset on navigation (fixes mid-page load + header overlap). */
   useLayoutEffect(() => {
     const el = mainScrollRef.current;
@@ -322,6 +327,12 @@ function AppShell() {
     }
     window.scrollTo(0, 0);
   }, [normalizedPathname]);
+
+  /** Accidental //pin/… must become /pin/… (else falls through to /login). */
+  useLayoutEffect(() => {
+    if (pathname === normalizedPathname) return;
+    navigate(`${normalizedPathname}${location.search || ""}${location.hash || ""}`, { replace: true });
+  }, [pathname, normalizedPathname, navigate, location.search, location.hash]);
 
   const doLogout = async () => {
     try { await authLogout(); } catch { /* ignore */ }
@@ -337,10 +348,12 @@ function AppShell() {
   /** Kiosk / attendance / pin hub are anonymous: drop stale session once so PIN flows stay stateless. */
   const kioskStripRef = useRef(false);
   useEffect(() => {
-    if (!isPublicPinSurface(pathname)) {
+    if (!isPublicPinSurface(normalizedPathname)) {
       kioskStripRef.current = false;
       return;
     }
+    // Inventory unlock mints a Washpro session on /pin before navigating away — keep it.
+    if (isPinHubAppSessionActive()) return;
     if (kioskStripRef.current) return;
     kioskStripRef.current = true;
     clearAuthSession();
@@ -351,12 +364,17 @@ function AppShell() {
     }
     setUser(null);
     washproSessionSyncedRef.current = false;
-  }, [pathname]);
+  }, [normalizedPathname]);
 
   useEffect(() => {
     async function bootstrap() {
       if (isLoginRoute(pathname) || isPublicPinSurface(pathname)) {
         setAuthLoading(false);
+        return;
+      }
+      if (isPinHubAppSessionActive() && isInventoryRoute(pathname) && user) {
+        setAuthLoading(false);
+        washproSessionSyncedRef.current = true;
         return;
       }
       if (washproSessionSyncedRef.current) {
@@ -378,7 +396,7 @@ function AppShell() {
       }
     }
     bootstrap();
-  }, [pathname]);
+  }, [pathname, user]);
 
   useEffect(() => {
     const onRefresh = () => {
@@ -436,7 +454,9 @@ function AppShell() {
     clockKiosk.sharedDevice &&
     !kioskRoleExcluded &&
     !isRinseScheduleOnlyUser(user) &&
-    !isPlatformOnlyUser(user);
+    !isPlatformOnlyUser(user) &&
+    // Phone /pin menu inventory session must not fall into shared-tablet kiosk lock.
+    !isPinHubAppSessionActive();
 
   const handleKioskLock = useCallback(() => {
     lockSessionToKiosk(user?.organization_slug);
@@ -453,7 +473,9 @@ function AppShell() {
       clockKiosk.idleLockEnabled &&
       clockKiosk.idleLockSeconds > 0 &&
       !isLoginRoute(pathname) &&
-      !isKioskRoute(pathname);
+      !isKioskRoute(pathname) &&
+      !isPinHubRoute(pathname) &&
+      !isAttendanceRoute(pathname);
     if (!idleOn) return undefined;
     const ms = clockKiosk.idleLockSeconds * 1000;
     const arm = () => {
@@ -527,7 +549,7 @@ function AppShell() {
     []
   );
 
-  if (authLoading && !isLoginRoute(pathname) && !isPublicPinSurface(pathname) && !isPartnerRosterRoute(pathname)) {
+  if (authLoading && !isLoginRoute(pathname) && !isPublicPinSurface(pathname) && !isPartnerRosterRoute(pathname) && !(isPinHubAppSessionActive() && isInventoryRoute(pathname))) {
     return (
       <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "grid", placeItems: "center" }}>
         <Typography>Loading...</Typography>
@@ -552,6 +574,52 @@ function AppShell() {
         <Route path="/pin/:orgSlug" element={<EmployeePinHubPage onLoggedIn={setUser} />} />
         <Route path="/pin" element={<EmployeePinHubPage onLoggedIn={setUser} />} />
       </Routes>
+    );
+  }
+
+  /**
+   * Phone PIN menu → Inventory: fullscreen feature (no sidebar / idle kiosk lock).
+   * Shared-tablet /kiosk idle lock must never claim this session.
+   */
+  if (isPinHubAppSessionActive() && isInventoryRoute(pathname)) {
+    if (authLoading) {
+      return (
+        <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "grid", placeItems: "center" }}>
+          <Typography>Loading...</Typography>
+        </Box>
+      );
+    }
+    if (!user) {
+      const slug = loadPinHubAppSession()?.organization_slug || "";
+      clearPinHubAppSession();
+      return <Navigate to={pinHubMenuPath(slug)} replace />;
+    }
+    return (
+      <Box
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          width: "100%",
+          overflowY: "auto",
+          WebkitOverflowScrolling: "touch",
+          background: shellBackground,
+        }}
+      >
+        <Routes>
+          <Route
+            path="/inventory"
+            element={
+              <InventoryPage
+                user={user}
+                onPinHubDone={() => {
+                  washproSessionSyncedRef.current = false;
+                  setUser(null);
+                }}
+              />
+            }
+          />
+        </Routes>
+      </Box>
     );
   }
 

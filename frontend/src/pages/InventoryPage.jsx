@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Box, Tab, Tabs, Typography } from "@mui/material";
+import { Box, Button, Stack, Tab, Tabs, Typography } from "@mui/material";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import FactCheckIcon from "@mui/icons-material/FactCheck";
 import LocalShippingIcon from "@mui/icons-material/LocalShipping";
 import AssessmentIcon from "@mui/icons-material/Assessment";
 import SettingsIcon from "@mui/icons-material/Settings";
-import { getInventoryBootstrap, getInventoryBagPrice } from "../api";
+import { useNavigate } from "react-router-dom";
+import { authLogout, clearAuthSession, getInventoryBootstrap, getInventoryBagPrice } from "../api";
 import DashboardTab from "../components/inventory/DashboardTab";
 import StockCheckTab from "../components/inventory/StockCheckTab";
 import PurchaseOrdersTab from "../components/inventory/OrdersTab";
@@ -15,6 +16,11 @@ import { LoadingBlock, StatusAlert } from "../components/inventory/InventoryShar
 import { INV_NAV_SX } from "../utils/inventoryHelpers";
 import { canAccessInventoryTab, getInventoryRoleTier } from "../utils/inventoryRoleHelpers";
 import { useAuth } from "../context/AuthContext";
+import {
+  clearPinHubAppSession,
+  loadPinHubAppSession,
+  pinHubMenuPath,
+} from "../utils/pinHubSession";
 
 const ALL_TABS = [
   { key: "dashboard", label: "Dashboard", icon: DashboardIcon },
@@ -24,8 +30,10 @@ const ALL_TABS = [
   { key: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
-export default function InventoryPage({ user }) {
+export default function InventoryPage({ user, onPinHubDone }) {
+  const navigate = useNavigate();
   const { hasPerm } = useAuth();
+  const pinHubApp = useMemo(() => loadPinHubAppSession(), []);
   const roleTier = useMemo(() => getInventoryRoleTier(user), [user]);
   const visibleTabs = useMemo(
     () => ALL_TABS.filter((t) => canAccessInventoryTab(roleTier, t.key, hasPerm)),
@@ -98,6 +106,24 @@ export default function InventoryPage({ user }) {
     if (msg?.type === "success") setTimeout(() => setMessage({ type: "", text: "" }), 4000);
   };
 
+  const returnToPinMenu = async () => {
+    const slug = pinHubApp?.organization_slug || user?.organization_slug || "";
+    clearPinHubAppSession();
+    try {
+      await authLogout();
+    } catch {
+      /* ignore */
+    }
+    clearAuthSession();
+    try {
+      localStorage.removeItem("ta_token");
+    } catch {
+      /* ignore */
+    }
+    onPinHubDone?.();
+    navigate(pinHubMenuPath(slug), { replace: true });
+  };
+
   const tabIndex = Math.max(0, visibleTabs.findIndex((t) => t.key === tabKey));
 
   if (loading && !dashboard) {
@@ -110,6 +136,22 @@ export default function InventoryPage({ user }) {
 
   return (
     <Box className="page" sx={{ maxWidth: 960, mx: "auto", width: "100%", px: { xs: 1.5, sm: 2 }, pb: { xs: 2, md: 0 } }}>
+      {pinHubApp ? (
+        <Stack
+          direction="row"
+          alignItems="center"
+          justifyContent="space-between"
+          spacing={1}
+          sx={{ mb: 1.5 }}
+        >
+          <Typography variant="body2" color="text.secondary">
+            PIN menu · Inventory
+          </Typography>
+          <Button variant="contained" onClick={returnToPinMenu} sx={{ textTransform: "none", fontWeight: 700 }}>
+            Done · back to menu
+          </Button>
+        </Stack>
+      ) : null}
       <Typography variant="h5" fontWeight={800} sx={{ mb: 0.5, fontSize: { xs: "1.35rem", sm: "1.5rem" } }}>
         Inventory
       </Typography>

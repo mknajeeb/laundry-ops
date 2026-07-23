@@ -158,6 +158,17 @@ export default function ClockInGate({ user, children }) {
 
   if (!user || isLoginPath(path)) return children;
 
+  // Phone PIN menu → Inventory: skip clock-in gate (not a shared-tablet shift session).
+  if (path === "/inventory" || path.startsWith("/inventory/")) {
+    try {
+      if (sessionStorage.getItem("washpro_pin_hub_app_session")) {
+        return children;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   if (authLoading) {
     return (
       <Box sx={{ display: "grid", placeItems: "center", minHeight: "40vh" }}>

@@ -404,6 +404,12 @@ export default function MaintenanceTaskListPinPage() {
           res.data.message || "Maintenance task list completed successfully.",
         );
         setPhase("success");
+        if (fromHub && slug) {
+          window.setTimeout(() => {
+            clearMtlPinSession();
+            navigate(`/pin/${encodeURIComponent(slug)}`, { replace: true });
+          }, 1600);
+        }
       } else {
         setError(res.data?.error || "Could not submit");
       }
@@ -422,6 +428,9 @@ export default function MaintenanceTaskListPinPage() {
     setSuccessMessage("");
     setError("");
     setPin("");
+    if (fromHub && slug) {
+      navigate(`/pin/${encodeURIComponent(slug)}`, { replace: true });
+    }
   };
 
   const employeeLabel =
@@ -563,12 +572,20 @@ export default function MaintenanceTaskListPinPage() {
             <Typography variant="h6" fontWeight={700} textAlign="center">
               {successMessage}
             </Typography>
-            <Button variant="contained" onClick={() => setPhase("list")} sx={{ textTransform: "none" }}>
-              View submitted list
-            </Button>
-            <Button onClick={resetToPin} sx={{ textTransform: "none" }}>
-              Done
-            </Button>
+            {fromHub ? (
+              <Typography variant="body2" color="text.secondary" textAlign="center">
+                Returning to PIN menu…
+              </Typography>
+            ) : (
+              <>
+                <Button variant="contained" onClick={() => setPhase("list")} sx={{ textTransform: "none" }}>
+                  View submitted list
+                </Button>
+                <Button onClick={resetToPin} sx={{ textTransform: "none" }}>
+                  Done
+                </Button>
+              </>
+            )}
           </Stack>
         ) : null}
 

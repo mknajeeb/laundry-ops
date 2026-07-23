@@ -41,8 +41,8 @@ import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
 import { saveMtlPinSession } from "../utils/maintenanceTaskListHelpers";
 import {
-  clearPinHubSession,
   loadPinHubSession,
+  markPinHubAppSession,
   savePinHubSession,
 } from "../utils/pinHubSession";
 import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
@@ -361,6 +361,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         if (!payload?.token || !payload?.user) {
           throw new Error(payload?.error || "Could not unlock inventory");
         }
+        markPinHubAppSession(slug);
         setAuthSession(payload);
         onLoggedIn?.(payload.user);
         navigate("/inventory", { replace: true });
@@ -401,7 +402,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       setRoleSuccessLabel(body.display_label || body.segment?.display_label || "Role updated");
       setRolePhase("success");
       roleIdempotencyRef.current = null;
-      window.setTimeout(() => closeRoleDialog(), 2200);
+      window.setTimeout(() => closeRoleDialog(), 1400);
     } catch (e) {
       setError(
         e?.response?.data?.error ||
