@@ -18,7 +18,7 @@ import {
   Typography,
 } from "@mui/material";
 import { Link as RouterLink } from "react-router-dom";
-import { getDailyOperationsDay, getDailyOperationsMeta } from "../api";
+import { getDailyOperationsCompareFinance, getDailyOperationsDay, getDailyOperationsMeta } from "../api";
 
 function money(v) {
   if (v == null || Number.isNaN(Number(v))) return "—";
@@ -49,10 +49,13 @@ export default function DailyOperationsPage() {
   const [day, setDay] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [compare, setCompare] = useState(null);
+  const [compareLoading, setCompareLoading] = useState(false);
 
   const load = useCallback(async (d) => {
     setLoading(true);
     setError("");
+    setCompare(null);
     try {
       const [m, payload] = await Promise.all([
         getDailyOperationsMeta().then((r) => r.data),
@@ -67,6 +70,20 @@ export default function DailyOperationsPage() {
       setLoading(false);
     }
   }, []);
+
+  const loadCompare = useCallback(async () => {
+    setCompareLoading(true);
+    setError("");
+    try {
+      const payload = (await getDailyOperationsCompareFinance(dateEt)).data;
+      setCompare(payload);
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || "Failed to load Finance comparison");
+      setCompare(null);
+    } finally {
+      setCompareLoading(false);
+    }
+  }, [dateEt]);
 
   useEffect(() => {
     load(dateEt);
@@ -113,6 +130,11 @@ export default function DailyOperationsPage() {
           <Button size="small" variant="outlined" onClick={() => load(dateEt)} disabled={loading}>
             Refresh
           </Button>
+          {day?.available ? (
+            <Button size="small" variant="contained" onClick={loadCompare} disabled={compareLoading || loading}>
+              {compareLoading ? "Reconciling…" : "Finance pound reconciliation"}
+            </Button>
+          ) : null}
           {loading ? <CircularProgress size={20} /> : null}
         </Stack>
       </Paper>
@@ -233,9 +255,93 @@ export default function DailyOperationsPage() {
 
           <DrillTable title={`Included WF bags (${included.length})`} rows={included} missing={false} />
           <DrillTable title={`Missing POST weight (${missing.length})`} rows={missing} missing />
+
+          {compare?.pound_reconciliation ? (
+            <PoundReconciliationPanel reconciliation={compare.pound_reconciliation} />
+          ) : null}
         </>
       ) : null}
     </Box>
+  );
+}
+
+function PoundReconciliationPanel({ reconciliation: rec }) {
+  return (
+    <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+      <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
+        Finance → Daily Operations pound reconciliation
+      </Typography>
+      <Stack spacing={0.75} sx={{ mb: 1.5 }}>
+        <Row label="Finance Suggested Pounds" value={lbs(rec.finance_suggested_pounds)} strong />
+      </Stack>
+      <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
+        Excluded
+      </Typography>
+      <Stack spacing={0.5} sx={{ mb: 1.5 }}>
+        {(rec.excluded || []).map((row) => (
+          <Row
+            key={row.reason}
+            label={`${row.label} (${row.bag_count})`}
+            value={lbs(row.pounds)}
+          />
+        ))}
+        <Divider />
+        <Row label="Excluded total" value={lbs(rec.excluded_pounds_total)} strong />
+      </Stack>
+      <Stack spacing={0.75}>
+        <Row
+          label="Included from Finance (at Finance weights)"
+          value={lbs(rec.included_from_finance?.finance_pounds)}
+        />
+        <Row
+          label="Only in Daily Operations"
+          value={lbs(rec.only_in_daily_operations?.pounds)}
+        />
+        <Divider />
+        <Row label="Daily Operations Eligible Pounds" value={lbs(rec.daily_operations_eligible_pounds)} strong />
+      </Stack>
+      {!rec.identity?.finance_equals_included_plus_excluded ? (
+        <Alert severity="error" sx={{ mt: 1.5 }}>
+          Identity check failed: Finance pounds do not equal included + excluded.
+        </Alert>
+      ) : (
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1.5 }}>
+          Identity OK — every Finance pound is included or excluded once. Each excluded bag has exactly one
+          reason.
+        </Typography>
+      )}
+      {(rec.excluded || [])
+        .filter((r) => r.bag_count > 0)
+        .map((r) => (
+          <Box key={`bags-${r.reason}`} sx={{ mt: 2, overflowX: "auto" }}>
+            <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
+              {r.label} — bags
+            </Typography>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Bag</TableCell>
+                  <TableCell align="right">Finance lb</TableCell>
+                  <TableCell>Service</TableCell>
+                  <TableCell>Completion</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {(r.bags || []).slice(0, 200).map((b) => (
+                  <TableRow key={b.bag_id}>
+                    <TableCell>{b.bag_id}</TableCell>
+                    <TableCell align="right">
+                      {b.finance_weight_lbs == null ? "—" : Number(b.finance_weight_lbs).toFixed(2)}
+                    </TableCell>
+                    <TableCell>{b.service_type || "—"}</TableCell>
+                    <TableCell>{b.canonical_completion_status || "—"}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Box>
+        ))}
+    </Paper>
   );
 }
 

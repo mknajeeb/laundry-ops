@@ -203,3 +203,127 @@ def test_missing_post_is_exception():
         out = resolve_authoritative_post_weight(cursor, 3, "BAG1", operations_date_et=date(2026, 7, 23))
     assert out["missing"] is True
     assert out["weight_lbs"] is None
+
+
+def test_classify_exclusion_reasons_are_exclusive():
+    from backend.daily_operations import (
+        EXCL_INCOMPLETE,
+        EXCL_MISSING_MEMBERSHIP,
+        EXCL_MISSING_POST,
+        EXCL_WRONG_WORKFLOW,
+        classify_finance_bag_vs_daily_operations,
+    )
+
+    ops = date(2026, 7, 23)
+    base = dict(
+        finance_weight_lbs=10.0,
+        operations_date_et=ops,
+        membership_ids={"A", "B", "C", "D"},
+        manual_exclusions=set(),
+        do_included_ids=set(),
+        do_missing_post_ids={"D"},
+    )
+    assert (
+        classify_finance_bag_vs_daily_operations(
+            bag_id="A",
+            day_bag={"service_type": "HD", "canonical_completion_status": "completed"},
+            **base,
+        )["exclusion_reason"]
+        == EXCL_WRONG_WORKFLOW
+    )
+    assert (
+        classify_finance_bag_vs_daily_operations(
+            bag_id="Z",
+            day_bag=None,
+            **base,
+        )["exclusion_reason"]
+        == EXCL_MISSING_MEMBERSHIP
+    )
+    assert (
+        classify_finance_bag_vs_daily_operations(
+            bag_id="B",
+            day_bag={"service_type": "WF", "canonical_completion_status": "pending"},
+            **base,
+        )["exclusion_reason"]
+        == EXCL_INCOMPLETE
+    )
+    assert (
+        classify_finance_bag_vs_daily_operations(
+            bag_id="D",
+            day_bag={"service_type": "WF", "canonical_completion_status": "completed"},
+            **base,
+        )["exclusion_reason"]
+        == EXCL_MISSING_POST
+    )
+    included = classify_finance_bag_vs_daily_operations(
+        bag_id="C",
+        day_bag={"service_type": "WF", "canonical_completion_status": "completed"},
+        finance_weight_lbs=10.0,
+        operations_date_et=ops,
+        membership_ids={"C"},
+        manual_exclusions=set(),
+        do_included_ids={"C"},
+        do_missing_post_ids=set(),
+    )
+    assert included["fate"] == "included"
+    assert included["exclusion_reason"] is None
+
+
+def test_reconciliation_assigns_one_reason_and_balances():
+    from backend.daily_operations import reconcile_finance_wf_pounds_to_daily_operations
+
+    do_day = {
+        "revenue": {"wf_completed_pounds": 20.0},
+        "drilldowns": {
+            "included_wf_bags": [
+                {"bag_id": "IN1", "post_weight_lbs": 20.0, "post_weight_source": "scan_weight_role_post"}
+            ],
+            "missing_post_weight_bags": [
+                {"bag_id": "MP1", "post_weight_lbs": None}
+            ],
+        },
+    }
+    finance = {
+        "available": True,
+        "error": None,
+        "quantity": 100.0,
+        "records": [
+            {"bag_id": "IN1", "weight_lbs": 20.0, "completion_timestamp": "2026-07-23T12:00:00"},
+            {"bag_id": "MP1", "weight_lbs": 30.0, "completion_timestamp": "2026-07-23T12:00:00"},
+            {"bag_id": "HD1", "weight_lbs": 25.0, "completion_timestamp": "2026-07-23T12:00:00"},
+            {"bag_id": "OUT1", "weight_lbs": 25.0, "completion_timestamp": "2026-07-22T12:00:00"},
+        ],
+        "counts": {},
+    }
+    day_bags = {
+        "IN1": {"service_type": "WF", "canonical_completion_status": "completed"},
+        "MP1": {"service_type": "WF", "canonical_completion_status": "completed"},
+        "HD1": {"service_type": "HD", "canonical_completion_status": "completed"},
+    }
+    with patch(
+        "backend.daily_operations.fetch_finance_wf_suggestion_records", return_value=finance
+    ), patch(
+        "backend.daily_operations.load_day_bag_index", return_value=day_bags
+    ), patch(
+        "backend.daily_operations.load_day_membership_bag_ids",
+        return_value={"IN1", "MP1", "HD1"},
+    ), patch(
+        "backend.daily_operations.load_manual_daily_ops_exclusions", return_value=set()
+    ):
+        out = reconcile_finance_wf_pounds_to_daily_operations(
+            MagicMock(), 3, date(2026, 7, 23), do_day=do_day
+        )
+
+    assert out["finance_suggested_pounds"] == 100.0
+    assert out["identity"]["finance_equals_included_plus_excluded"] is True
+    assert out["identity"]["every_excluded_bag_has_one_reason"] is True
+    by_reason = {r["reason"]: r for r in out["excluded"]}
+    assert by_reason["missing_post"]["pounds"] == 30.0
+    assert by_reason["wrong_workflow"]["pounds"] == 25.0
+    assert by_reason["completed_outside_selected_et_day"]["pounds"] == 25.0
+    assert out["included_from_finance"]["finance_pounds"] == 20.0
+    assert out["daily_operations_eligible_pounds"] == 20.0
+    excluded_bags = [b for r in out["excluded"] for b in r["bags"]]
+    assert len(excluded_bags) == 3
+    assert len({b["bag_id"] for b in excluded_bags}) == 3
+    assert all(b.get("exclusion_reason") for b in excluded_bags)
