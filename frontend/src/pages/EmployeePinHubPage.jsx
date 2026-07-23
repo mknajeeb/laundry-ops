@@ -5,10 +5,6 @@ import {
   Box,
   Button,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   FormControl,
   IconButton,
   InputLabel,
@@ -30,9 +26,7 @@ import {
 } from "@mui/icons-material";
 import {
   attendancePinHub,
-  attendancePinSwitchRole,
   authAttendancePinUnlock,
-  createTaskTrackingSwitchIdempotencyKey,
   getPublicOrgBranding,
   getPublicOrganizationsForAttendance,
   setAuthSession,
@@ -59,7 +53,6 @@ import {
   savePinHubSession,
 } from "../utils/pinHubSession";
 import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
-import { roleChoiceButtonSx } from "../utils/roleChoiceButtonSx";
 
 const PIN_LEN = 4;
 const STORAGE_KEY = "washpro_attendance_org_slug";
@@ -148,14 +141,6 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
   const [featureLoading, setFeatureLoading] = useState("");
   const [error, setError] = useState("");
   const [branding, setBranding] = useState(null);
-
-  /** Inline switch-role (stay on /pin — full-screen role cards land in a later phase). */
-  const [rolePhase, setRolePhase] = useState(null); // null | pick | role | success
-  const [selectionTree, setSelectionTree] = useState([]);
-  const [pendingCategoryId, setPendingCategoryId] = useState(null);
-  const [currentLabel, setCurrentLabel] = useState("");
-  const [roleSuccessLabel, setRoleSuccessLabel] = useState("");
-  const roleIdempotencyRef = useRef(null);
 
   const punchInFlightRef = useRef(false);
   const prevPinLenRef = useRef(0);
@@ -347,16 +332,6 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
     prevPinLenRef.current = 0;
   };
 
-  const closeRoleDialog = () => {
-    setRolePhase(null);
-    setSelectionTree([]);
-    setPendingCategoryId(null);
-    setCurrentLabel("");
-    setRoleSuccessLabel("");
-    roleIdempotencyRef.current = null;
-    setFeatureLoading("");
-  };
-
   const lockSession = () => {
     // Clears PIN hub unlock only — does not call punch APIs or change shift data.
     clearPinHubSession();
@@ -367,7 +342,6 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
     setError("");
     prevPinLenRef.current = 0;
     sessionRefreshRef.current = false;
-    closeRoleDialog();
   };
 
   const openFeature = async (tile) => {
@@ -381,17 +355,8 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         return;
       }
       if (featureId === "switch_role") {
-        const res = await attendancePinSwitchRole(slug, hub.pin);
-        const body = res?.data && typeof res.data === "object" ? res.data : {};
-        if (!(res?.status >= 200 && res?.status < 300 && body.ok && body.needs_selection)) {
-          throw new Error(body.error || "Could not open Switch Role");
-        }
-        setSelectionTree(Array.isArray(body.selection_tree) ? body.selection_tree : []);
-        setCurrentLabel(body.current_display_label || "");
-        setPendingCategoryId(null);
-        roleIdempotencyRef.current = createTaskTrackingSwitchIdempotencyKey();
-        setRolePhase("pick");
-        setFeatureLoading("");
+        // Full-screen shared flow on /attendance/role (not an in-hub dialog).
+        navigate(`/attendance/role/${encodeURIComponent(slug)}?from=hub`);
         return;
       }
       if (featureId === "checklist") {
@@ -426,43 +391,6 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
           e?.message ||
           (!e?.response ? t("attendance.networkError") : "Could not open feature"),
       );
-    } finally {
-      setFeatureLoading("");
-    }
-  };
-
-  const selectedCategory =
-    selectionTree.find((c) => Number(c.id) === Number(pendingCategoryId)) || null;
-  const rolesForCategory = selectedCategory?.roles || [];
-
-  const confirmRole = async (categoryId, roleId) => {
-    if (!hub?.pin || !categoryId || !roleId || featureLoading) return;
-    setFeatureLoading("switch_role");
-    setError("");
-    if (!roleIdempotencyRef.current) {
-      roleIdempotencyRef.current = createTaskTrackingSwitchIdempotencyKey();
-    }
-    try {
-      const res = await attendancePinSwitchRole(slug, hub.pin, {
-        category_id: categoryId,
-        role_id: roleId,
-        idempotency_key: roleIdempotencyRef.current,
-      });
-      const body = res?.data && typeof res.data === "object" ? res.data : {};
-      if (!(res?.status >= 200 && res?.status < 300 && body.ok)) {
-        throw new Error(body.error || "Role switch failed");
-      }
-      setRoleSuccessLabel(body.display_label || body.segment?.display_label || "Role updated");
-      setRolePhase("success");
-      roleIdempotencyRef.current = null;
-      window.setTimeout(() => closeRoleDialog(), 1400);
-    } catch (e) {
-      setError(
-        e?.response?.data?.error ||
-          e?.message ||
-          (!e?.response ? t("attendance.networkError") : "Role switch failed"),
-      );
-      setRolePhase("pick");
     } finally {
       setFeatureLoading("");
     }
@@ -623,85 +551,6 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
             ))}
         </Stack>
       </Paper>
-
-      <Dialog open={!!rolePhase} onClose={closeRoleDialog} fullWidth maxWidth="xs">
-        <DialogTitle sx={{ fontWeight: 800 }}>
-          {rolePhase === "success" ? "Role updated" : rolePhase === "role" ? "Select role" : "Select category"}
-        </DialogTitle>
-        <DialogContent>
-          {error ? (
-            <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setError("")}>
-              {error}
-            </Alert>
-          ) : null}
-          {rolePhase === "success" ? (
-            <Typography fontWeight={700}>{roleSuccessLabel || "Done"}</Typography>
-          ) : null}
-          {rolePhase === "pick" || rolePhase === "role" ? (
-            <Stack spacing={1.5} sx={{ pt: 0.5 }}>
-              {currentLabel ? (
-                <Typography variant="body2" color="text.secondary">
-                  Current: <strong>{currentLabel}</strong>
-                </Typography>
-              ) : null}
-              {rolePhase === "pick" ? (
-                <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1 }}>
-                  {selectionTree.map((cat) => (
-                    <Button
-                      key={cat.id}
-                      disabled={!!featureLoading}
-                      onClick={() => {
-                        setPendingCategoryId(cat.id);
-                        setRolePhase("role");
-                      }}
-                      sx={{
-                        textTransform: "none",
-                        fontWeight: 800,
-                        py: 1.5,
-                        borderRadius: 2,
-                        border: "2px solid",
-                        borderColor: alpha(VW.blue, 0.25),
-                      }}
-                    >
-                      {cat.name}
-                    </Button>
-                  ))}
-                </Box>
-              ) : null}
-              {rolePhase === "role" ? (
-                <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1 }}>
-                  {rolesForCategory.map((role) => (
-                    <Button
-                      key={role.id}
-                      disabled={!!featureLoading}
-                      onClick={() => confirmRole(pendingCategoryId, role.id)}
-                      sx={{
-                        textTransform: "none",
-                        fontWeight: 800,
-                        py: 1.5,
-                        borderRadius: 2,
-                        ...roleChoiceButtonSx(role.name),
-                      }}
-                    >
-                      {role.name}
-                    </Button>
-                  ))}
-                </Box>
-              ) : null}
-            </Stack>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          {rolePhase === "role" ? (
-            <Button onClick={() => setRolePhase("pick")} sx={{ textTransform: "none" }}>
-              Back
-            </Button>
-          ) : null}
-          <Button onClick={closeRoleDialog} sx={{ textTransform: "none" }}>
-            Cancel
-          </Button>
-        </DialogActions>
-      </Dialog>
     </OpsMobileShell>
   );
 }

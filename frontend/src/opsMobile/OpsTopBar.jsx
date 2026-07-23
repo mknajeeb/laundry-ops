@@ -5,11 +5,12 @@ import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import { OPS_MOBILE } from "./tokens";
 
 /**
- * Compact ops top bar: small mark + optional identity + Lock.
- * Back is a separate control (see OpsBackToPin) — never label Back as Lock.
+ * Compact ops top bar: Back / title / identity / Lock.
+ * Back and Lock stay distinct actions.
  */
 export default function OpsTopBar({
   identity = "",
+  title = "",
   logoSrc = null,
   onLock,
   lockLabel = "Lock",
@@ -70,6 +71,20 @@ export default function OpsTopBar({
         />
       ) : null}
 
+      {title ? (
+        <Typography
+          sx={{
+            fontWeight: 900,
+            fontSize: "1.2rem",
+            color: OPS_MOBILE.navy,
+            flexShrink: 0,
+            letterSpacing: "-0.02em",
+          }}
+        >
+          {title}
+        </Typography>
+      ) : null}
+
       <Box sx={{ flex: 1, minWidth: 0 }}>
         {identity ? (
           <Typography
@@ -81,6 +96,7 @@ export default function OpsTopBar({
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
+              textAlign: title || onBack ? "right" : "left",
             }}
           >
             {identity}
