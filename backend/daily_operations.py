@@ -188,13 +188,14 @@ def _latest_manager_post_correction(
 ) -> dict[str, Any] | None:
     if not table_exists(cursor, "rinse_step1_corrections"):
         return None
+    # Latest weight-correction action wins. An undo clears authority without deleting audits.
     cursor.execute(
         """
-        SELECT id, new_values, reason_text, created_at, actor_user_id
+        SELECT id, action, new_values, reason_text, created_at, actor_user_id
         FROM rinse_step1_corrections
         WHERE organization_id = %s
           AND bag_id = %s
-          AND action = 'correct_weight'
+          AND action IN ('correct_weight', 'undo_correct_weight')
         ORDER BY created_at DESC, id DESC
         LIMIT 1
         """,
@@ -202,6 +203,8 @@ def _latest_manager_post_correction(
     )
     row = cursor.fetchone()
     if not row:
+        return None
+    if str(row.get("action") or "") == "undo_correct_weight":
         return None
     raw = _json_load(row.get("new_values")) or {}
     if not isinstance(raw, dict):
@@ -218,6 +221,46 @@ def _latest_manager_post_correction(
         "reason": row.get("reason_text"),
         "corrected_at": row.get("created_at"),
         "scan_event_id": None,
+    }
+
+
+def resolve_evidence_post_weight(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    operations_date_et: date,
+) -> dict[str, Any]:
+    """Evidence POST only (never manager correction overlay). Does not mutate scans."""
+    bid = _norm_bag(bag_id)
+    post_events = _post_role_scan_events(cursor, organization_id, bid)
+    if post_events:
+        chosen = post_events[-1]
+        weight = _parse_weight(chosen.get("weight_lbs"))
+        if weight is not None:
+            return {
+                "bag_id": bid,
+                "weight_lbs": weight,
+                "source": POST_SOURCE_WEIGHT_ROLE_POST,
+                "scan_event_id": int(chosen["id"]) if chosen.get("id") is not None else None,
+                "weight_role": "POST",
+                "weight_source": chosen.get("weight_source"),
+                "observed_at": chosen.get("weight_observed_at") or chosen.get("scanned_at_parsed"),
+                "presence_run_id": chosen.get("weight_presence_run_id"),
+                "presence_run_row_id": chosen.get("weight_presence_run_row_id"),
+                "missing": False,
+            }
+    canonical = _canonical_post_processing_event(
+        cursor, organization_id, bid, operations_date_et=operations_date_et
+    )
+    if canonical:
+        return {**canonical, "bag_id": bid, "missing": False}
+    return {
+        "bag_id": bid,
+        "weight_lbs": None,
+        "source": POST_SOURCE_MISSING,
+        "scan_event_id": None,
+        "missing": True,
     }
 
 
@@ -353,6 +396,30 @@ def count_outstanding_wf_workitem_reviews(
     organization_id: int,
     operations_date_et: date,
 ) -> int:
+    """
+    Outstanding WF reviews for Daily Ops KPIs.
+
+    Phase 1B: count bags in the WF review queue with review_required
+    (explicit billable / no-billable / missing POST — not “empty lines”).
+    Falls back to legacy bulk-workitem reason codes when review module unavailable.
+    """
+    try:
+        from backend.daily_operations_wf_review import (
+            FILTER_REVIEW_REQUIRED,
+            build_wf_review_queue,
+        )
+
+        q = build_wf_review_queue(
+            cursor,
+            organization_id,
+            operations_date_et,
+            filter_key=FILTER_REVIEW_REQUIRED,
+        )
+        if q.get("available"):
+            return int(q.get("count") or 0)
+    except Exception:
+        pass
+
     if not table_exists(cursor, "rinse_shift_monitor_day_bags"):
         return 0
     from backend.rinse_bulk_workitems import (
@@ -398,11 +465,45 @@ def compute_day_wf_pound_totals(
     included: list[dict[str, Any]] = []
     missing: list[dict[str, Any]] = []
     total = Decimal("0")
+    # Prefer Phase 1B resolver when review tables exist (manager correction / accepted missing).
+    try:
+        from backend.daily_operations_wf_review import (
+            STATUS_ACCEPTED_EXCEPTION,
+            get_wf_day_bag_revenue_row,
+            resolve_post_weight_for_daily_ops,
+        )
+
+        use_review_resolver = True
+    except Exception:
+        use_review_resolver = False
+
     for row in bags:
         bid = _norm_bag(row.get("bag_id"))
-        post = resolve_authoritative_post_weight(
-            cursor, organization_id, bid, operations_date_et=operations_date_et
-        )
+        if use_review_resolver:
+            post = resolve_post_weight_for_daily_ops(
+                cursor, organization_id, bid, operations_date_et=operations_date_et
+            )
+            fact = get_wf_day_bag_revenue_row(cursor, organization_id, operations_date_et, bid)
+            if fact and str(fact.get("review_status") or "") == STATUS_ACCEPTED_EXCEPTION:
+                missing.append(
+                    {
+                        "bag_id": bid,
+                        "day_bag_id": row.get("day_bag_id"),
+                        "canonical_completion_status": row.get("canonical_completion_status"),
+                        "canonical_completion_timestamp": row.get("canonical_completion_timestamp"),
+                        "post_weight_lbs": None,
+                        "post_weight_source": "accepted_missing_post",
+                        "post_weight_scan_event_id": None,
+                        "post_weight_corrected": False,
+                        "reviewable_zero": False,
+                        "accepted_exception": True,
+                    }
+                )
+                continue
+        else:
+            post = resolve_authoritative_post_weight(
+                cursor, organization_id, bid, operations_date_et=operations_date_et
+            )
         entry = {
             "bag_id": bid,
             "day_bag_id": row.get("day_bag_id"),
@@ -411,7 +512,8 @@ def compute_day_wf_pound_totals(
             "post_weight_lbs": post.get("weight_lbs"),
             "post_weight_source": post.get("source"),
             "post_weight_scan_event_id": post.get("scan_event_id"),
-            "post_weight_corrected": post.get("source") == POST_SOURCE_MANAGER_CORRECTED,
+            "post_weight_corrected": post.get("source") == POST_SOURCE_MANAGER_CORRECTED
+            or bool(post.get("corrected")),
             "reviewable_zero": post.get("weight_lbs") == 0,
         }
         if post.get("missing") or post.get("weight_lbs") is None:

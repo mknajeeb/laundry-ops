@@ -2179,4 +2179,28 @@ export const getDailyOperationsDay = (opsDate, params) =>
 export const getDailyOperationsCompareFinance = (opsDate) =>
   axios.get(`${API_BASE}/api/daily-operations/days/${opsDate}/compare-finance`);
 
+export const getDailyOperationsWfReviewQueue = (opsDate, params = {}) =>
+  axios.get(`${API_BASE}/api/daily-operations/days/${opsDate}/wf-review`, { params });
+
+export const getDailyOperationsWfReviewDetail = (opsDate, bagId) =>
+  axios.get(`${API_BASE}/api/daily-operations/days/${opsDate}/wf-review/${encodeURIComponent(bagId)}`);
+
+export const previewDailyOperationsWfReview = (opsDate, bagId, body) =>
+  axios.post(
+    `${API_BASE}/api/daily-operations/days/${opsDate}/wf-review/${encodeURIComponent(bagId)}/preview`,
+    body
+  );
+
+export const saveDailyOperationsWfReview = (opsDate, bagId, body) =>
+  axios.put(
+    `${API_BASE}/api/daily-operations/days/${opsDate}/wf-review/${encodeURIComponent(bagId)}`,
+    body
+  );
+
+export const undoDailyOperationsWfReview = (opsDate, bagId, body) =>
+  axios.post(
+    `${API_BASE}/api/daily-operations/days/${opsDate}/wf-review/${encodeURIComponent(bagId)}/undo`,
+    body
+  );
+
 export { API_BASE };

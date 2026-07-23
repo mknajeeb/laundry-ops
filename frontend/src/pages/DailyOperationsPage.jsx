@@ -19,6 +19,7 @@ import {
 } from "@mui/material";
 import { Link as RouterLink } from "react-router-dom";
 import { getDailyOperationsCompareFinance, getDailyOperationsDay, getDailyOperationsMeta } from "../api";
+import WfReviewPanel from "../components/dailyOps/WfReviewPanel";
 
 function money(v) {
   if (v == null || Number.isNaN(Number(v))) return "—";
@@ -107,7 +108,7 @@ export default function DailyOperationsPage() {
           Daily Operations
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          Phase 1A — WF completed pounds and month-to-date weight revenue. Labor, HD, and close come later.
+          Phase 1B — WF pounds, MTD weight revenue, and unified bag review. Labor, HD, and close come later.
         </Typography>
       </Stack>
 
@@ -252,6 +253,8 @@ export default function DailyOperationsPage() {
               Labor / HD / combined profitability: Coming in later phase
             </Typography>
           </Paper>
+
+          <WfReviewPanel dateEt={dateEt} onSaved={() => load(dateEt)} />
 
           <DrillTable title={`Included WF bags (${included.length})`} rows={included} missing={false} />
           <DrillTable title={`Missing POST weight (${missing.length})`} rows={missing} missing />
