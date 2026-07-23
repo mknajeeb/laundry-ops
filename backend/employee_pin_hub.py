@@ -17,10 +17,12 @@ from backend.attendance_pin_punch import (
     INVALID_PIN_MESSAGE,
     KIOSK_DISABLED_MESSAGE,
     PIN_LEN_KIOSK,
+    _active_shift,
     fetch_organization_by_slug,
     is_rate_limited,
     record_pin_attempt,
     resolve_user_by_attendance_pin,
+    shared_device_attendance_enabled,
 )
 from backend.category_role_tracking_settings import is_category_role_tracking_enabled
 from backend.maintenance_task_list_pin import issue_pin_session_token
@@ -154,6 +156,42 @@ def _has_any_perm(keys: set[str], wanted: tuple[str, ...]) -> bool:
 
 def _has_prefix(keys: set[str], prefix: str) -> bool:
     return any(str(k).startswith(prefix) for k in keys)
+
+
+def attendance_snapshot_for_hub(conn, org_id: int, user_id: int) -> dict[str, Any]:
+    """
+    Read-only punch state for PIN Menu tile labels/visibility.
+    Does not change clock/break rules — presentation metadata only.
+    """
+    shared = bool(shared_device_attendance_enabled(conn, int(org_id)))
+    active = _active_shift(conn, int(user_id))
+    on_break = False
+    if active:
+        from backend.ta_routes import get_open_break
+
+        on_break = bool(get_open_break(conn, active["id"]))
+    return {
+        "shared_device_enabled": shared,
+        "clocked_in": bool(active),
+        "on_break": on_break,
+    }
+
+
+def apply_attendance_gates_to_features(
+    features: dict[str, Any], attendance: dict[str, Any]
+) -> dict[str, Any]:
+    """
+    Hide Switch Role when not clocked in (API already rejects that case).
+    Returns a shallow-copied features map.
+    """
+    out = {k: dict(v) if isinstance(v, dict) else v for k, v in (features or {}).items()}
+    role = out.get("switch_role")
+    if isinstance(role, dict) and role.get("allowed") and not attendance.get("clocked_in"):
+        role = dict(role)
+        role["allowed"] = False
+        role["blocked_reason"] = "not_clocked_in"
+        out["switch_role"] = role
+    return out
 
 
 def load_pin_menu_settings(conn, org_id: int) -> dict:
@@ -299,20 +337,25 @@ def perform_pin_hub_open(
         matched=matched,
         effective_keys_fn=effective_keys_fn,
     )
+    employee_id = int(matched["id"])
+    attendance = attendance_snapshot_for_hub(conn, org_id, employee_id)
+    features = apply_attendance_gates_to_features(features, attendance)
+
     # Stable button order for the client.
     feature_order = [d["id"] for d in PIN_HUB_FEATURE_DEFS]
     allowed = [features[fid] for fid in feature_order if features.get(fid, {}).get("allowed")]
-    if not allowed:
+    # Clock tile is built client-side from attendance.shared_device_enabled.
+    if not allowed and not attendance.get("shared_device_enabled"):
         record_pin_attempt(conn, org_id, ip_address, True)
         return {
             "ok": False,
             "error": "No PIN menu buttons are available for your account.",
             "features": features,
             "feature_order": feature_order,
+            "attendance": attendance,
         }, 403
 
     record_pin_attempt(conn, org_id, ip_address, True)
-    employee_id = int(matched["id"])
     hub_token = issue_hub_session_token(organization_id=org_id, employee_id=employee_id)
 
     maintenance_token = None
@@ -340,4 +383,5 @@ def perform_pin_hub_open(
         "features": features,
         "feature_order": feature_order,
         "maintenance_token": maintenance_token,
+        "attendance": attendance,
     }, 200

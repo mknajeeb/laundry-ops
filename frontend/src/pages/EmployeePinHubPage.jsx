@@ -20,9 +20,12 @@ import {
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import {
+  AccessTime,
   AssignmentTurnedIn,
   Backspace,
   Inventory2,
+  Login,
+  Logout,
   SwapHoriz,
 } from "@mui/icons-material";
 import {
@@ -36,11 +39,21 @@ import {
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
+import {
+  OpsLauncherEmpty,
+  OpsLauncherGrid,
+  OpsMobileShell,
+  OpsTopBar,
+  OPS_MOBILE,
+  buildPinLauncherTiles,
+} from "../opsMobile";
 import { VEEWASH_LOGO_URL } from "../theme/veewashBrand";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
 import { saveMtlPinSession } from "../utils/maintenanceTaskListHelpers";
 import {
+  clearPinHubAppSession,
+  clearPinHubSession,
   loadPinHubSession,
   markPinHubAppSession,
   savePinHubSession,
@@ -53,11 +66,19 @@ const STORAGE_KEY = "washpro_attendance_org_slug";
 const VEEWASH_ATTENDANCE_LOGO = VEEWASH_LOGO_URL;
 
 const VW = {
-  navy: "#16192b",
-  blue: "#2d3d9c",
-  cobalt: "#4865ee",
-  cream: "#faf6e9",
-  mist: "#eef2ff",
+  navy: OPS_MOBILE.navy,
+  blue: OPS_MOBILE.blue,
+  cobalt: OPS_MOBILE.cobalt,
+  mist: OPS_MOBILE.mist,
+};
+
+const TILE_ICONS = {
+  clock: AccessTime,
+  clock_in: Login,
+  clock_out: Logout,
+  role: SwapHoriz,
+  tasks: AssignmentTurnedIn,
+  stock: Inventory2,
 };
 
 function sanitizeSlug(raw) {
@@ -96,29 +117,17 @@ function digitKeySx() {
   };
 }
 
-const FEATURE_META = {
-  switch_role: {
-    title: "Switch Role",
-    subtitle: "Change category & role while clocked in",
-    icon: SwapHoriz,
-    color: "#2d3d9c",
-  },
-  checklist: {
-    title: "End-of-day checklist",
-    subtitle: "Maintenance task list",
-    icon: AssignmentTurnedIn,
-    color: "#0f766e",
-  },
-  inventory: {
-    title: "Inventory",
-    subtitle: "Open inventory with your PIN",
-    icon: Inventory2,
-    color: "#0e7490",
-  },
-};
+function iconForTile(tile) {
+  if (tile.id === "clock") {
+    if (tile.label === "Clock Out") return TILE_ICONS.clock_out;
+    if (tile.label === "Clock In") return TILE_ICONS.clock_in;
+    return TILE_ICONS.clock;
+  }
+  return TILE_ICONS[tile.iconKey] || TILE_ICONS.tasks;
+}
 
 /**
- * Phone PIN hub — one route for Switch Role, Checklist, Inventory (permission-gated).
+ * Phone PIN hub — launcher for Clock, Role, Tasks, Stock (permission/state gated).
  * Route: /pin/:orgSlug
  */
 export default function EmployeePinHubPage({ onLoggedIn }) {
@@ -140,7 +149,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
   const [error, setError] = useState("");
   const [branding, setBranding] = useState(null);
 
-  /** Inline switch-role (stay on /pin — no second PIN page). */
+  /** Inline switch-role (stay on /pin — full-screen role cards land in a later phase). */
   const [rolePhase, setRolePhase] = useState(null); // null | pick | role | success
   const [selectionTree, setSelectionTree] = useState([]);
   const [pendingCategoryId, setPendingCategoryId] = useState(null);
@@ -150,16 +159,21 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
 
   const punchInFlightRef = useRef(false);
   const prevPinLenRef = useRef(0);
+  const sessionRefreshRef = useRef(false);
 
   const pinClean = useMemo(() => String(pin || "").replace(/\D/g, "").slice(0, PIN_LEN), [pin]);
   const logoSrc = attendanceLogoSrc(slug, branding?.logo_url);
 
-  const allowedFeatures = useMemo(() => {
-    const features = hub?.features || {};
-    const order = Array.isArray(hub?.feature_order)
-      ? hub.feature_order
-      : ["switch_role", "checklist", "inventory"];
-    return order.filter((id) => features?.[id]?.allowed);
+  const launcherTiles = useMemo(() => {
+    const built = buildPinLauncherTiles({
+      features: hub?.features,
+      featureOrder: hub?.feature_order,
+      attendance: hub?.attendance,
+    });
+    return built.map((tile) => ({
+      ...tile,
+      icon: iconForTile(tile),
+    }));
   }, [hub]);
 
   useLayoutEffect(() => {
@@ -230,13 +244,30 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
     };
   }, [slug]);
 
-  useEffect(() => {
-    if (!slug) return;
-    const existing = loadPinHubSession();
-    if (!existing || existing.organization_slug !== slug) return;
-    setHub(existing);
-    setPhase("menu");
-  }, [slug]);
+  const applyHubBody = useCallback(
+    (body, cleanPin) => {
+      const sess = {
+        token: body.token,
+        pin: cleanPin,
+        organization_slug: body.organization_slug || slug,
+        organization_id: body.organization_id,
+        employee_id: body.employee_id,
+        employee_name: body.employee_name,
+        employee_first_name: body.employee_first_name,
+        features: body.features || {},
+        feature_order: Array.isArray(body.feature_order) ? body.feature_order : undefined,
+        maintenance_token: body.maintenance_token || null,
+        expires_in_seconds: body.expires_in_seconds,
+        attendance: body.attendance || null,
+      };
+      savePinHubSession(sess);
+      setHub(sess);
+      setPhase("menu");
+      setPin("");
+      prevPinLenRef.current = 0;
+    },
+    [slug],
+  );
 
   const openHubFromPin = useCallback(
     async (digits) => {
@@ -250,24 +281,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         const res = await attendancePinHub(slug, clean);
         const body = res?.data && typeof res.data === "object" ? res.data : {};
         if (res?.status >= 200 && res?.status < 300 && body.ok) {
-          const sess = {
-            token: body.token,
-            pin: clean,
-            organization_slug: body.organization_slug || slug,
-            organization_id: body.organization_id,
-            employee_id: body.employee_id,
-            employee_name: body.employee_name,
-            employee_first_name: body.employee_first_name,
-            features: body.features || {},
-            feature_order: Array.isArray(body.feature_order) ? body.feature_order : undefined,
-            maintenance_token: body.maintenance_token || null,
-            expires_in_seconds: body.expires_in_seconds,
-          };
-          savePinHubSession(sess);
-          setHub(sess);
-          setPhase("menu");
-          setPin("");
-          prevPinLenRef.current = 0;
+          applyHubBody(body, clean);
           return;
         }
         setError(body.error || t("attendance.invalidPin") || "Invalid PIN");
@@ -282,8 +296,29 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         setLoading(false);
       }
     },
-    [slug, t],
+    [slug, t, applyHubBody],
   );
+
+  useEffect(() => {
+    if (!slug) return;
+    const existing = loadPinHubSession();
+    if (!existing || existing.organization_slug !== slug) return;
+    setHub(existing);
+    setPhase("menu");
+    if (sessionRefreshRef.current || !existing.pin) return;
+    sessionRefreshRef.current = true;
+    (async () => {
+      try {
+        const res = await attendancePinHub(slug, existing.pin);
+        const body = res?.data && typeof res.data === "object" ? res.data : {};
+        if (res?.status >= 200 && res?.status < 300 && body.ok) {
+          applyHubBody(body, existing.pin);
+        }
+      } catch {
+        /* keep cached session */
+      }
+    })();
+  }, [slug, applyHubBody]);
 
   useEffect(() => {
     if (phase !== "pin") return;
@@ -322,11 +357,29 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
     setFeatureLoading("");
   };
 
-  const openFeature = async (featureId) => {
+  const lockSession = () => {
+    // Clears PIN hub unlock only — does not call punch APIs or change shift data.
+    clearPinHubSession();
+    clearPinHubAppSession();
+    setHub(null);
+    setPhase("pin");
+    setPin("");
+    setError("");
+    prevPinLenRef.current = 0;
+    sessionRefreshRef.current = false;
+    closeRoleDialog();
+  };
+
+  const openFeature = async (tile) => {
+    const featureId = tile?.id || tile;
     if (!hub || !slug || featureLoading) return;
     setError("");
     setFeatureLoading(featureId);
     try {
+      if (featureId === "clock") {
+        navigate(`/attendance/${encodeURIComponent(slug)}?from=hub`);
+        return;
+      }
       if (featureId === "switch_role") {
         const res = await attendancePinSwitchRole(slug, hub.pin);
         const body = res?.data && typeof res.data === "object" ? res.data : {};
@@ -421,49 +474,55 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
     navigate(`/pin/${encodeURIComponent(clean)}`, { replace: true });
   };
 
+  const identity =
+    phase === "menu"
+      ? (hub?.employee_first_name || hub?.employee_name || "").trim()
+      : "";
+
   return (
-    <Box
-      sx={{
-        minHeight: "100dvh",
-        bgcolor: VW.mist,
-        background: `linear-gradient(165deg, ${VW.mist} 0%, #e8eeff 45%, ${alpha(VW.cobalt, 0.12)} 100%)`,
-        px: 2,
-        py: { xs: 2.5, sm: 4 },
-        display: "flex",
-        justifyContent: "center",
-      }}
-    >
+    <OpsMobileShell>
       <Paper
         elevation={0}
         sx={{
           width: "100%",
-          maxWidth: 420,
-          borderRadius: 3,
-          p: { xs: 2.5, sm: 3 },
-          border: `1px solid ${alpha(VW.blue, 0.14)}`,
-          bgcolor: alpha("#fff", 0.94),
+          borderRadius: `${OPS_MOBILE.radius.card}px`,
+          p: { xs: 2, sm: 2.5 },
+          bgcolor: alpha("#fff", 0.96),
+          boxShadow: `0 8px 28px -16px ${alpha(VW.navy, 0.35)}`,
         }}
       >
-        <Stack spacing={2.25} alignItems="center">
-          {logoSrc ? (
-            <Box
-              component="img"
-              src={logoSrc}
-              alt=""
-              sx={{ height: 56, width: "auto", maxWidth: "70%", objectFit: "contain" }}
+        <Stack spacing={2} alignItems="stretch">
+          {phase === "menu" ? (
+            <OpsTopBar
+              identity={identity}
+              logoSrc={logoSrc}
+              onLock={lockSession}
+              lockLabel="Lock"
             />
           ) : (
-            <TenantLogo size={56} />
+            <Stack spacing={1.25} alignItems="center">
+              {logoSrc ? (
+                <Box
+                  component="img"
+                  src={logoSrc}
+                  alt=""
+                  sx={{ height: 48, width: "auto", maxWidth: "70%", objectFit: "contain" }}
+                />
+              ) : (
+                <TenantLogo size={48} />
+              )}
+              <Typography
+                sx={{
+                  fontWeight: 800,
+                  fontSize: OPS_MOBILE.type.title,
+                  color: VW.navy,
+                  textAlign: "center",
+                }}
+              >
+                PIN
+              </Typography>
+            </Stack>
           )}
-
-          <Typography variant="h5" sx={{ fontWeight: 800, color: VW.navy, textAlign: "center" }}>
-            {phase === "menu" ? `Hi${hub?.employee_first_name ? `, ${hub.employee_first_name}` : ""}` : "PIN Menu"}
-          </Typography>
-          <Typography variant="body2" color="text.secondary" textAlign="center">
-            {phase === "menu"
-              ? "Choose a feature you have access to"
-              : "Enter your attendance PIN"}
-          </Typography>
 
           {!routeSlug && (
             <FormControl fullWidth size="small">
@@ -491,7 +550,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
           ) : null}
 
           {phase === "pin" && (
-            <>
+            <Stack spacing={2} alignItems="center">
               <Stack direction="row" spacing={1.25} justifyContent="center">
                 {Array.from({ length: PIN_LEN }).map((_, i) => (
                   <Box
@@ -548,64 +607,20 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
                 })}
               </Box>
               {loading ? <CircularProgress size={28} /> : null}
-            </>
-          )}
-
-          {phase === "menu" && (
-            <Stack spacing={1.25} sx={{ width: "100%" }}>
-              {allowedFeatures.map((id) => {
-                const meta = FEATURE_META[id] || {
-                  title: hub?.features?.[id]?.label || id,
-                  subtitle: "",
-                  icon: AssignmentTurnedIn,
-                  color: VW.blue,
-                };
-                const Icon = meta.icon;
-                const busy = featureLoading === id;
-                const title = hub?.features?.[id]?.label || meta.title;
-                return (
-                  <Button
-                    key={id}
-                    fullWidth
-                    variant="outlined"
-                    disabled={!!featureLoading}
-                    onClick={() => openFeature(id)}
-                    sx={{
-                      justifyContent: "flex-start",
-                      textAlign: "left",
-                      py: 1.5,
-                      px: 1.75,
-                      borderRadius: 2,
-                      borderColor: alpha(meta.color, 0.35),
-                      bgcolor: alpha(meta.color, 0.06),
-                      color: VW.navy,
-                      textTransform: "none",
-                      "&:hover": {
-                        borderColor: meta.color,
-                        bgcolor: alpha(meta.color, 0.12),
-                      },
-                    }}
-                    startIcon={
-                      busy ? (
-                        <CircularProgress size={22} />
-                      ) : (
-                        <Icon sx={{ color: meta.color }} />
-                      )
-                    }
-                  >
-                    <Box>
-                      <Typography sx={{ fontWeight: 700, lineHeight: 1.2 }}>{title}</Typography>
-                      {meta.subtitle ? (
-                        <Typography variant="caption" color="text.secondary">
-                          {meta.subtitle}
-                        </Typography>
-                      ) : null}
-                    </Box>
-                  </Button>
-                );
-              })}
             </Stack>
           )}
+
+          {phase === "menu" &&
+            (launcherTiles.length > 0 ? (
+              <OpsLauncherGrid
+                tiles={launcherTiles}
+                busyId={featureLoading}
+                disabled={!!featureLoading}
+                onSelect={openFeature}
+              />
+            ) : (
+              <OpsLauncherEmpty onLock={lockSession} />
+            ))}
         </Stack>
       </Paper>
 
@@ -687,6 +702,6 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
           </Button>
         </DialogActions>
       </Dialog>
-    </Box>
+    </OpsMobileShell>
   );
 }
