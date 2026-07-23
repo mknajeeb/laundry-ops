@@ -33,6 +33,7 @@ import TenantLogo from "../components/TenantLogo";
 import { VEEWASH_LOGO_URL } from "../theme/veewashBrand";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
+import { roleChoiceButtonSx } from "../utils/roleChoiceButtonSx";
 
 const PIN_LEN = 4;
 const SUCCESS_RESET_MS = 3500;
@@ -862,15 +863,13 @@ export default function AttendanceRoleSwitchPage() {
                 key={role.role_id || role.id}
                 disabled={loading || !pendingCategoryId}
                 onClick={() => confirmRole(pendingCategoryId, role.role_id)}
-                variant="contained"
-                disableElevation
+                variant="outlined"
                 sx={{
                   textTransform: "none",
                   fontWeight: 800,
                   py: 1.8,
                   borderRadius: 2.5,
-                  bgcolor: VW.cobalt,
-                  "&:hover": { bgcolor: VW.blue },
+                  ...roleChoiceButtonSx(role.role_name),
                 }}
               >
                 {loading ? <CircularProgress size={22} color="inherit" /> : role.role_name}

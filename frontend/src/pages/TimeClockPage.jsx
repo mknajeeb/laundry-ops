@@ -27,6 +27,7 @@ import {
   taClockOut,
 } from "../api";
 import { useAuth } from "../context/AuthContext";
+import { roleChoiceButtonSx } from "../utils/roleChoiceButtonSx";
 
 function formatDuration(sec) {
   if (sec == null || sec < 0) return "—";
@@ -358,12 +359,17 @@ function TimeClockPage() {
                 <Grid item xs={6} key={role.role_id || role.id}>
                   <Button
                     fullWidth
-                    variant="contained"
+                    variant="outlined"
                     disabled={busy || !resumeCategoryId}
                     onClick={() =>
                       endBreak({ category_id: resumeCategoryId, role_id: role.role_id })
                     }
-                    sx={{ textTransform: "none", fontWeight: 700, py: 1.6 }}
+                    sx={{
+                      textTransform: "none",
+                      fontWeight: 700,
+                      py: 1.6,
+                      ...roleChoiceButtonSx(role.role_name),
+                    }}
                   >
                     {busy ? <CircularProgress size={20} color="inherit" /> : role.role_name}
                   </Button>

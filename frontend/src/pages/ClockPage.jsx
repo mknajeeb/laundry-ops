@@ -22,6 +22,7 @@ import {
 } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
+import { roleChoiceButtonSx } from "../utils/roleChoiceButtonSx";
 
 const SWITCH_TIMEOUT_MESSAGE =
   "The role change is taking longer than expected and may already have completed. Refresh your current assignment before trying again.";
@@ -408,10 +409,15 @@ function ClockPage({ user: washproUser }) {
                 <Grid item xs={6} key={role.role_id || role.id}>
                   <Button
                     fullWidth
-                    variant="contained"
+                    variant="outlined"
                     disabled={switchBusy || !pendingCategoryId || needsRefreshBeforeSwitch}
                     onClick={() => confirmRoleSelection(pendingCategoryId, role.role_id)}
-                    sx={{ textTransform: "none", fontWeight: 700, py: 1.6 }}
+                    sx={{
+                      textTransform: "none",
+                      fontWeight: 700,
+                      py: 1.6,
+                      ...roleChoiceButtonSx(role.role_name),
+                    }}
                   >
                     {switchBusy ? <CircularProgress size={20} color="inherit" /> : role.role_name}
                   </Button>

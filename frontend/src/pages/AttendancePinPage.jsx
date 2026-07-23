@@ -33,6 +33,7 @@ import TenantLogo from "../components/TenantLogo";
 import { VEEWASH_LOGO_URL } from "../theme/veewashBrand";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
+import { roleChoiceButtonSx } from "../utils/roleChoiceButtonSx";
 
 const PIN_LEN = 4;
 const SUCCESS_RESET_MS = 4000;
@@ -841,23 +842,31 @@ export default function AttendancePinPage() {
             {selectedPickCategory?.display_name || selectedPickCategory?.name || ""}
           </Typography>
           <Grid container spacing={1}>
-            {pickRoles.map((role) => (
+            {pickRoles.map((role) => {
+              const label = role.role_name || role.display_name || role.name;
+              return (
               <Grid item xs={6} key={role.role_id || role.id}>
                 <Button
                   fullWidth
-                  variant="contained"
+                  variant="outlined"
                   disabled={loading || !pendingCategoryId}
                   onClick={() => confirmCategoryRolePunch(pendingCategoryId, role.role_id)}
-                  sx={{ textTransform: "none", fontWeight: 700, py: 1.6 }}
+                  sx={{
+                    textTransform: "none",
+                    fontWeight: 800,
+                    py: 1.8,
+                    ...roleChoiceButtonSx(label),
+                  }}
                 >
                   {loading ? (
                     <CircularProgress size={20} color="inherit" />
                   ) : (
-                    role.role_name || role.display_name || role.name
+                    label
                   )}
                 </Button>
               </Grid>
-            ))}
+              );
+            })}
           </Grid>
         </DialogContent>
         <DialogActions>
