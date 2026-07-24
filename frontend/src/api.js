@@ -325,6 +325,12 @@ export const getMaintenanceTaskListReports = (params) =>
 export const getMaintenanceTaskListDetail = (listId) =>
   axios.get(`${API_BASE}/api/maintenance-task-list/${listId}`);
 
+export const getMaintenanceWeekdayAssignments = () =>
+  axios.get(`${API_BASE}/api/maintenance-task-list/weekday-assignments`);
+
+export const putMaintenanceWeekdayAssignments = (assignments) =>
+  axios.put(`${API_BASE}/api/maintenance-task-list/weekday-assignments`, { assignments });
+
 export const saveMaintenanceTaskList = (listId, body) =>
   axios.post(`${API_BASE}/api/maintenance-task-list/${listId}/save`, body);
 

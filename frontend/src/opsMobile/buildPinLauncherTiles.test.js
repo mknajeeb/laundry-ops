@@ -90,11 +90,20 @@ describe("buildPinLauncherTiles", () => {
     ]);
   });
 
-  it("does not invent a Break tile", () => {
+  it("disables Tasks tile when checklist is not assigned today", () => {
     const tiles = buildPinLauncherTiles({
-      features: { switch_role: { allowed: true } },
-      attendance: { shared_device_enabled: true, clocked_in: true, on_break: true },
+      features: {
+        checklist: {
+          allowed: true,
+          disabled: true,
+          disabled_helper: "No maintenance checklist assigned today.",
+        },
+        inventory: { allowed: false },
+      },
+      attendance: { shared_device_enabled: true, clocked_in: false, allow_clock_from_hub: true },
     });
-    expect(tiles.some((t) => t.id === "break")).toBe(false);
+    const tasks = tiles.find((t) => t.id === "checklist");
+    expect(tasks?.disabled).toBe(true);
+    expect(tasks?.disabledHelper).toBe("No maintenance checklist assigned today.");
   });
 });

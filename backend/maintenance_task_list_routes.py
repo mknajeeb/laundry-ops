@@ -15,13 +15,16 @@ from backend.maintenance_task_list_module import (
     get_task_list,
     list_submission_summaries,
     list_task_definitions,
+    list_weekday_assignments,
     reopen_task_list,
     reorder_definitions,
     save_progress,
     save_task_item,
+    save_weekday_assignments,
     set_definition_active,
     submit_task_list,
 )
+from backend.maintenance_task_list_constants import SUGGESTED_CATEGORIES, WEEKDAY_ROWS
 from backend.maintenance_task_list_pin import (
     perform_pin_maintenance_open,
     verify_pin_session_token,
@@ -315,6 +318,8 @@ def register_maintenance_task_list_routes(
                     "can_reports": _perm_or_fallback(conn, me, "maintenance.tasks.reports", allow_ops=True),
                     "can_reopen": False,
                     "role_tier": "admin" if _is_admin(rs) else ("ops" if _is_ops(rs) else "floor"),
+                    "suggested_categories": list(SUGGESTED_CATEGORIES),
+                    "weekday_labels": [{"weekday": w, "label": label} for w, label in WEEKDAY_ROWS],
                 }
             )
         except Exception as e:
@@ -593,6 +598,51 @@ def register_maintenance_task_list_routes(
                 )
             )
         except MaintenanceTaskListError as e:
+            return jsonify({"error": str(e)}), e.status
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/maintenance-task-list/weekday-assignments", methods=["GET", "PUT"])
+    def mtl_weekday_assignments():
+        """Manager: recurring weekday checklist assignee (one employee per day, optional)."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code, org_id = _me(cursor)
+            if err_resp:
+                return err_resp, err_code
+            ensure_maintenance_task_list_tables(cursor)
+            if request.method == "GET":
+                if not (
+                    _perm_or_fallback(conn, me, "maintenance.tasks.manage")
+                    or _perm_or_fallback(conn, me, "maintenance.tasks.reports", allow_ops=True)
+                ):
+                    return jsonify({"error": "Forbidden"}), 403
+                rows = list_weekday_assignments(cursor, org_id)
+                return jsonify(_safe({"assignments": rows}))
+            if not _perm_or_fallback(conn, me, "maintenance.tasks.manage"):
+                return jsonify({"error": "Forbidden"}), 403
+            data = request.json or {}
+            rows = save_weekday_assignments(
+                cursor,
+                org_id,
+                data.get("assignments") or [],
+                actor_user_id=int(me["user_id"]),
+            )
+            conn.commit()
+            return jsonify(_safe({"ok": True, "assignments": rows}))
+        except MaintenanceTaskListError as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             return jsonify({"error": str(e)}), e.status
         except Exception as e:
             try:

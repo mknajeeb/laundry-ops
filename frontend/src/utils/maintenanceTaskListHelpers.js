@@ -58,7 +58,7 @@ export function isCompletedStatus(status) {
 }
 
 export function statusLabel(status) {
-  if (isCompletedStatus(status)) return "Completed";
+  if (isCompletedStatus(status)) return "Submitted";
   if (status === MTL_STATUS.IN_PROGRESS) return "In Progress";
   if (status === MTL_STATUS.NOT_STARTED) return "Not Started";
   return status || "—";
@@ -135,6 +135,68 @@ export function formatDateShort(isoDate) {
   } catch {
     return String(isoDate);
   }
+}
+
+/** Full weekday date for submitted confirmation, e.g. Friday, July 24. */
+export function formatDateLong(isoDate) {
+  if (!isoDate) return "—";
+  try {
+    const [y, m, d] = String(isoDate).slice(0, 10).split("-").map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d, 12));
+    return dt.toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      timeZone: "UTC",
+    });
+  } catch {
+    return String(isoDate);
+  }
+}
+
+/** Manager collapsed row date, e.g. Friday Jul 24. */
+export function formatDateWeekdayShort(isoDate) {
+  if (!isoDate) return "—";
+  try {
+    const [y, m, d] = String(isoDate).slice(0, 10).split("-").map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d, 12));
+    const weekday = dt.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
+    const rest = dt.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    });
+    return `${weekday} ${rest}`;
+  } catch {
+    return String(isoDate);
+  }
+}
+
+/**
+ * Copy one weekday's employee_id onto every weekday row (local UI helper).
+ * sourceWeekday: Python weekday int (Mon=0 … Sun=6).
+ */
+export function copyWeekdayAssigneeToAll(assignments, sourceWeekday) {
+  const list = Array.isArray(assignments) ? assignments : [];
+  const src = list.find((a) => Number(a.weekday) === Number(sourceWeekday));
+  const eid = src?.employee_id ?? null;
+  return list.map((row) => ({ ...row, employee_id: eid }));
+}
+
+/** Group checklist items by category_snapshot for compact employee/manager display. */
+export function groupTasksByCategory(items) {
+  const list = Array.isArray(items) ? items : [];
+  const order = [];
+  const map = new Map();
+  for (const item of list) {
+    const cat = String(item?.category_snapshot || item?.category || "").trim() || "General";
+    if (!map.has(cat)) {
+      map.set(cat, []);
+      order.push(cat);
+    }
+    map.get(cat).push(item);
+  }
+  return order.map((category) => ({ category, items: map.get(category) }));
 }
 
 /** Mobile layout guard: sticky footer + content padding must avoid horizontal overflow. */

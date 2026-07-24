@@ -3,7 +3,6 @@ import {
   Alert,
   Box,
   Button,
-  Checkbox,
   Dialog,
   DialogActions,
   DialogContent,
@@ -20,27 +19,35 @@ import {
 } from "@mui/material";
 import {
   createMaintenanceTaskDefinition,
+  getEmployees,
   getMaintenanceTaskDefinitions,
+  getMaintenanceWeekdayAssignments,
+  putMaintenanceWeekdayAssignments,
   reorderMaintenanceTaskDefinitions,
   setMaintenanceTaskDefinitionActive,
   updateMaintenanceTaskDefinition,
 } from "../api";
-import { MTL_FREQUENCIES, MTL_WEEKDAYS, reorderIds } from "../utils/maintenanceTaskListHelpers";
+import { copyWeekdayAssigneeToAll, reorderIds } from "../utils/maintenanceTaskListHelpers";
 
 const emptyForm = {
   id: null,
   name: "",
   description: "",
+  category: "Closing",
   frequency: "daily",
   days_of_week: [],
   is_required: true,
-  require_note_if_incomplete: true,
+  require_note_if_incomplete: false,
   is_active: true,
   display_order: 0,
 };
 
+const SUGGESTED = ["Opening", "During Shift", "Closing", "Cleaning", "Safety", "Equipment"];
+
 export default function MaintenanceTaskSettingsPage() {
   const [definitions, setDefinitions] = useState([]);
+  const [assignments, setAssignments] = useState([]);
+  const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -51,8 +58,15 @@ export default function MaintenanceTaskSettingsPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await getMaintenanceTaskDefinitions({ include_inactive: 1 });
-      setDefinitions(res.data?.definitions || []);
+      const [defs, week, people] = await Promise.all([
+        getMaintenanceTaskDefinitions({ include_inactive: 1 }),
+        getMaintenanceWeekdayAssignments().catch(() => ({ data: { assignments: [] } })),
+        getEmployees().catch(() => ({ data: [] })),
+      ]);
+      setDefinitions(defs.data?.definitions || []);
+      setAssignments(week.data?.assignments || []);
+      const raw = people.data?.employees || people.data || [];
+      setEmployees(Array.isArray(raw) ? raw : []);
     } catch (e) {
       setError(e?.response?.data?.error || "Failed to load task settings");
     } finally {
@@ -74,6 +88,7 @@ export default function MaintenanceTaskSettingsPage() {
       id: row.id,
       name: row.name || "",
       description: row.description || "",
+      category: row.category || "",
       frequency: row.frequency || "daily",
       days_of_week: row.days_of_week || [],
       is_required: !!row.is_required,
@@ -100,6 +115,68 @@ export default function MaintenanceTaskSettingsPage() {
     }
   };
 
+  const saveAssignments = async () => {
+    setError("");
+    try {
+      const res = await putMaintenanceWeekdayAssignments(
+        assignments.map((a) => ({
+          weekday: a.weekday,
+          employee_id: a.employee_id || null,
+        })),
+      );
+      setAssignments(res.data?.assignments || assignments);
+      setMessage("Weekday assignments saved.");
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to save assignments");
+    }
+  };
+
+  const setAssignmentEmployee = (weekday, employeeId) => {
+    setAssignments((prev) => {
+      const base =
+        prev.length > 0
+          ? prev
+          : [6, 0, 1, 2, 3, 4, 5].map((w, i) => ({
+              weekday: w,
+              label: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][i],
+              employee_id: null,
+            }));
+      return base.map((row) =>
+        Number(row.weekday) === Number(weekday)
+          ? { ...row, employee_id: employeeId === "" ? null : Number(employeeId) }
+          : row,
+      );
+    });
+  };
+
+  const copyMondayToAllDays = () => {
+    setAssignments((prev) => {
+      const base =
+        prev.length > 0
+          ? prev
+          : [6, 0, 1, 2, 3, 4, 5].map((w, i) => ({
+              weekday: w,
+              label: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][i],
+              employee_id: null,
+            }));
+      return copyWeekdayAssigneeToAll(base, 0);
+    });
+  };
+
+  const assignmentRows =
+    assignments.length > 0
+      ? assignments
+      : [
+          { weekday: 6, label: "Sunday", employee_id: null },
+          { weekday: 0, label: "Monday", employee_id: null },
+          { weekday: 1, label: "Tuesday", employee_id: null },
+          { weekday: 2, label: "Wednesday", employee_id: null },
+          { weekday: 3, label: "Thursday", employee_id: null },
+          { weekday: 4, label: "Friday", employee_id: null },
+          { weekday: 5, label: "Saturday", employee_id: null },
+        ];
+  const unassignedDays = assignmentRows.filter((r) => r.employee_id == null);
+
   const toggleActive = async (row) => {
     try {
       await setMaintenanceTaskDefinitionActive(row.id, !row.is_active);
@@ -122,15 +199,22 @@ export default function MaintenanceTaskSettingsPage() {
     }
   };
 
+  const employeeLabel = (emp) =>
+    emp.display_name ||
+    emp.name ||
+    [emp.first_name, emp.last_name].filter(Boolean).join(" ") ||
+    emp.username ||
+    `Employee ${emp.id}`;
+
   return (
     <Box sx={{ p: { xs: 1.5, md: 2 }, maxWidth: 900, mx: "auto", width: "100%", overflowX: "hidden" }}>
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
         <Box>
           <Typography variant="h5" fontWeight={800}>
-            Maintenance Task Settings
+            Maintenance Tasks
           </Typography>
           <Typography color="text.secondary">
-            Configure daily, weekly, and as-needed maintenance tasks
+            Daily checklist template and weekday assignee
           </Typography>
         </Box>
         <Button variant="contained" onClick={openCreate} sx={{ textTransform: "none" }}>
@@ -149,6 +233,71 @@ export default function MaintenanceTaskSettingsPage() {
         </Alert>
       ) : null}
 
+      <Box sx={{ mb: 3, p: 2, borderRadius: 2, border: "1px solid", borderColor: "divider" }}>
+        <Typography fontWeight={800} sx={{ mb: 0.5 }}>
+          Weekday assignment
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          One employee per day. Empty days have no floor checklist. Assignments are always
+          authoritative on the PIN Tasks tile.
+        </Typography>
+        {unassignedDays.length ? (
+          <Alert severity="warning" sx={{ mb: 1.5 }}>
+            {unassignedDays.length === 1
+              ? `No employee assigned for ${unassignedDays[0].label}.`
+              : `No employee assigned for: ${unassignedDays.map((d) => d.label).join(", ")}.`}
+          </Alert>
+        ) : null}
+        <Stack spacing={1.25}>
+          {assignmentRows.map((row) => (
+            <Stack
+              key={row.weekday}
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1}
+              alignItems={{ sm: "center" }}
+            >
+              <Typography sx={{ minWidth: 110, fontWeight: 700 }}>{row.label}</Typography>
+              <FormControl size="small" fullWidth>
+                <InputLabel>Employee</InputLabel>
+                <Select
+                  label="Employee"
+                  value={row.employee_id == null ? "" : String(row.employee_id)}
+                  onChange={(e) => setAssignmentEmployee(row.weekday, e.target.value)}
+                >
+                  <MenuItem value="">None</MenuItem>
+                  {employees.map((emp) => (
+                    <MenuItem key={emp.id} value={String(emp.id)}>
+                      {employeeLabel(emp)}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              {!row.employee_id ? (
+                <Typography variant="caption" color="warning.main" sx={{ minWidth: 160 }}>
+                  No employee assigned for {row.label}.
+                </Typography>
+              ) : null}
+            </Stack>
+          ))}
+        </Stack>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1.5 }}>
+          <Button variant="outlined" onClick={copyMondayToAllDays} sx={{ textTransform: "none" }}>
+            Copy Monday to All Days
+          </Button>
+          <Button
+            variant="contained"
+            onClick={saveAssignments}
+            disabled={loading}
+            sx={{ textTransform: "none" }}
+          >
+            Save weekday assignments
+          </Button>
+        </Stack>
+      </Box>
+
+      <Typography fontWeight={800} sx={{ mb: 1 }}>
+        Checklist template
+      </Typography>
       <Stack spacing={1.25}>
         {definitions.map((row, index) => (
           <Box
@@ -164,14 +313,12 @@ export default function MaintenanceTaskSettingsPage() {
           >
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between">
               <Box sx={{ minWidth: 0 }}>
-                <Typography fontWeight={700}>{row.name}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {MTL_FREQUENCIES.find((f) => f.value === row.frequency)?.label || row.frequency}
-                  {row.is_required ? " · Required" : " · Optional"}
-                  {!row.is_active ? " · Inactive" : ""}
+                <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                  {row.category || "General"}
                 </Typography>
+                <Typography fontWeight={700}>{row.name}</Typography>
                 {row.description ? (
-                  <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  <Typography variant="body2" sx={{ mt: 0.5 }} color="text.secondary">
                     {row.description}
                   </Typography>
                 ) : null}
@@ -212,78 +359,25 @@ export default function MaintenanceTaskSettingsPage() {
         <DialogContent dividers>
           <Stack spacing={1.5} sx={{ pt: 0.5 }}>
             <TextField
-              label="Name"
+              label="Category"
+              fullWidth
+              value={form.category}
+              onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
+              helperText={`Examples: ${SUGGESTED.join(", ")}`}
+            />
+            <TextField
+              label="Heading"
               fullWidth
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
             />
             <TextField
-              label="Instructions / description"
+              label="Description"
               fullWidth
               multiline
               minRows={2}
               value={form.description}
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-            />
-            <FormControl fullWidth>
-              <InputLabel>Frequency</InputLabel>
-              <Select
-                label="Frequency"
-                value={form.frequency}
-                onChange={(e) => setForm((f) => ({ ...f, frequency: e.target.value }))}
-              >
-                {MTL_FREQUENCIES.map((f) => (
-                  <MenuItem key={f.value} value={f.value}>
-                    {f.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            {form.frequency === "weekly" ? (
-              <Box>
-                <Typography variant="body2" sx={{ mb: 0.5 }}>
-                  Days of week
-                </Typography>
-                <Stack direction="row" flexWrap="wrap" useFlexGap spacing={0.5}>
-                  {MTL_WEEKDAYS.map((d) => (
-                    <FormControlLabel
-                      key={d.value}
-                      control={
-                        <Checkbox
-                          checked={(form.days_of_week || []).includes(d.value)}
-                          onChange={(e) => {
-                            const set = new Set(form.days_of_week || []);
-                            if (e.target.checked) set.add(d.value);
-                            else set.delete(d.value);
-                            setForm((f) => ({ ...f, days_of_week: [...set].sort((a, b) => a - b) }));
-                          }}
-                        />
-                      }
-                      label={d.label}
-                    />
-                  ))}
-                </Stack>
-              </Box>
-            ) : null}
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={!!form.is_required}
-                  onChange={(e) => setForm((f) => ({ ...f, is_required: e.target.checked }))}
-                />
-              }
-              label="Required"
-            />
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={!!form.require_note_if_incomplete}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, require_note_if_incomplete: e.target.checked }))
-                  }
-                />
-              }
-              label="Require a note when left incomplete"
             />
             <FormControlLabel
               control={

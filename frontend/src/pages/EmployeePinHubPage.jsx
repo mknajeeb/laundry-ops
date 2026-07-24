@@ -363,6 +363,9 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         return;
       }
       if (featureId === "checklist") {
+        if (tile?.disabled || hub?.features?.checklist?.disabled) {
+          return;
+        }
         if (hub.maintenance_token) {
           saveMtlPinSession({
             token: hub.maintenance_token,

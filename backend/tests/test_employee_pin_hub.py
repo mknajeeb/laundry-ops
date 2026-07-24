@@ -160,6 +160,11 @@ def test_perform_pin_hub_open_success_returns_menu():
         "backend.employee_pin_hub.issue_hub_session_token", return_value="hub-token"
     ), patch(
         "backend.employee_pin_hub.issue_pin_session_token", return_value="mtl-token"
+    ), patch(
+        "backend.maintenance_task_list_module.ensure_maintenance_task_list_tables"
+    ), patch(
+        "backend.maintenance_task_list_module.employee_assigned_for_date",
+        return_value=True,
     ):
         body, status = perform_pin_hub_open(
             conn, "veewash", "1234", lambda *_: ["FRONT_DESK"], "127.0.0.1"
@@ -170,8 +175,63 @@ def test_perform_pin_hub_open_success_returns_menu():
     assert body["maintenance_token"] == "mtl-token"
     assert body["feature_order"] == ["switch_role", "checklist", "inventory"]
     assert body["features"]["switch_role"]["allowed"] is True
+    assert body["features"]["checklist"].get("disabled") is not True
     assert body["attendance"]["clocked_in"] is True
     assert body["attendance"]["shared_device_enabled"] is True
+
+
+def test_perform_pin_hub_open_disables_checklist_when_unassigned():
+    conn = MagicMock()
+    matched = _matched(["FRONT_DESK"])
+    with patch(
+        "backend.employee_pin_hub.payroll_profiles_active", return_value=True
+    ), patch(
+        "backend.employee_pin_hub.fetch_organization_by_slug",
+        return_value={"id": 3, "slug": "veewash"},
+    ), patch(
+        "backend.employee_pin_hub.is_rate_limited", return_value=False
+    ), patch(
+        "backend.employee_pin_hub.load_pin_menu_settings",
+        return_value={"enabled": True, "features": {"checklist": True}},
+    ), patch(
+        "backend.employee_pin_hub.resolve_user_by_attendance_pin", return_value=matched
+    ), patch(
+        "backend.employee_pin_hub.record_pin_attempt"
+    ), patch(
+        "backend.employee_pin_hub.resolve_hub_features",
+        return_value={
+            "switch_role": {"id": "switch_role", "allowed": False},
+            "checklist": {
+                "id": "checklist",
+                "allowed": True,
+                "path": "/attendance/maintenance",
+                "label": "End-of-day checklist",
+                "org_enabled": True,
+            },
+            "inventory": {"id": "inventory", "allowed": False},
+        },
+    ), patch(
+        "backend.employee_pin_hub.attendance_snapshot_for_hub",
+        return_value={"shared_device_enabled": True, "clocked_in": True, "on_break": False},
+    ), patch(
+        "backend.employee_pin_hub.issue_hub_session_token", return_value="hub-token"
+    ), patch(
+        "backend.employee_pin_hub.issue_pin_session_token", return_value="mtl-token"
+    ), patch(
+        "backend.maintenance_task_list_module.ensure_maintenance_task_list_tables"
+    ), patch(
+        "backend.maintenance_task_list_module.employee_assigned_for_date",
+        return_value=False,
+    ):
+        body, status = perform_pin_hub_open(
+            conn, "veewash", "1234", lambda *_: ["FRONT_DESK"], "127.0.0.1"
+        )
+    assert status == 200
+    assert body["maintenance_token"] is None
+    assert body["features"]["checklist"]["disabled"] is True
+    assert body["features"]["checklist"]["disabled_helper"] == (
+        "No maintenance checklist assigned today."
+    )
 
 
 def test_perform_pin_hub_open_clock_only_when_features_gated_off():

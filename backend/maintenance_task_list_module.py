@@ -24,11 +24,14 @@ from backend.maintenance_task_list_constants import (
     FREQUENCY_AS_NEEDED,
     FREQUENCY_DAILY,
     FREQUENCY_WEEKLY,
+    NOTIFY_CHECKLIST_SUBMITTED,
     STATUS_COMPLETED,
     STATUS_IN_PROGRESS,
     STATUS_NOT_STARTED,
     STATUS_SUBMITTED,
+    SUGGESTED_CATEGORIES,
     TERMINAL_STATUSES,
+    WEEKDAY_ROWS,
 )
 from backend.ta_helpers import table_exists
 
@@ -83,95 +86,319 @@ def _naive_now() -> datetime:
     return business_now().replace(tzinfo=None)
 
 
+def _column_exists(cursor, table: str, column: str) -> bool:
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = %s
+          AND column_name = %s
+        """,
+        (table, column),
+    )
+    row = cursor.fetchone() or {}
+    return int(row.get("c") or 0) > 0
+
+
 def ensure_maintenance_task_list_tables(cursor) -> None:
-    """Idempotent DDL for environments that have not run the SQL migration yet."""
-    if table_exists(cursor, "maintenance_task_definitions"):
+    """Idempotent DDL for environments that have not run SQL migrations yet."""
+    if not table_exists(cursor, "maintenance_task_definitions"):
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS maintenance_task_definitions (
+              id INT AUTO_INCREMENT PRIMARY KEY,
+              organization_id INT NOT NULL,
+              task_key VARCHAR(80) NOT NULL,
+              name VARCHAR(255) NOT NULL,
+              description TEXT NULL,
+              category VARCHAR(80) NULL,
+              frequency VARCHAR(20) NOT NULL DEFAULT 'daily',
+              days_of_week_json JSON NULL,
+              is_required TINYINT(1) NOT NULL DEFAULT 1,
+              require_note_if_incomplete TINYINT(1) NOT NULL DEFAULT 1,
+              display_order INT NOT NULL DEFAULT 0,
+              is_active TINYINT(1) NOT NULL DEFAULT 1,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+              created_by_user_id INT NULL,
+              updated_by_user_id INT NULL,
+              UNIQUE KEY uq_mtl_def_org_key (organization_id, task_key),
+              INDEX idx_mtl_def_org_active_order (organization_id, is_active, display_order)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+    elif not _column_exists(cursor, "maintenance_task_definitions", "category"):
+        try:
+            cursor.execute(
+                "ALTER TABLE maintenance_task_definitions "
+                "ADD COLUMN category VARCHAR(80) NULL AFTER description"
+            )
+        except Exception:
+            pass
+
+    if not table_exists(cursor, "maintenance_task_lists"):
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS maintenance_task_lists (
+              id INT AUTO_INCREMENT PRIMARY KEY,
+              organization_id INT NOT NULL,
+              employee_id INT NOT NULL,
+              task_date DATE NOT NULL,
+              status VARCHAR(20) NOT NULL DEFAULT 'in_progress',
+              notes TEXT NULL,
+              submitted_at DATETIME NULL,
+              submitted_by_user_id INT NULL,
+              reopened_at DATETIME NULL,
+              reopened_by_user_id INT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY uq_mtl_org_emp_date (organization_id, employee_id, task_date),
+              INDEX idx_mtl_org_date_status (organization_id, task_date, status),
+              INDEX idx_mtl_org_employee (organization_id, employee_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+
+    if not table_exists(cursor, "maintenance_task_list_items"):
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS maintenance_task_list_items (
+              id INT AUTO_INCREMENT PRIMARY KEY,
+              maintenance_task_list_id INT NOT NULL,
+              maintenance_task_definition_id INT NULL,
+              task_name_snapshot VARCHAR(255) NOT NULL,
+              task_description_snapshot TEXT NULL,
+              category_snapshot VARCHAR(80) NULL,
+              is_required_snapshot TINYINT(1) NOT NULL DEFAULT 1,
+              require_note_if_incomplete_snapshot TINYINT(1) NOT NULL DEFAULT 1,
+              completed TINYINT(1) NOT NULL DEFAULT 0,
+              completed_at DATETIME NULL,
+              completed_by_user_id INT NULL,
+              note TEXT NULL,
+              display_order_snapshot INT NOT NULL DEFAULT 0,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+              INDEX idx_mtl_items_list (maintenance_task_list_id),
+              INDEX idx_mtl_items_def (maintenance_task_definition_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+    elif not _column_exists(cursor, "maintenance_task_list_items", "category_snapshot"):
+        try:
+            cursor.execute(
+                "ALTER TABLE maintenance_task_list_items "
+                "ADD COLUMN category_snapshot VARCHAR(80) NULL AFTER task_description_snapshot"
+            )
+        except Exception:
+            pass
+
+    if not table_exists(cursor, "maintenance_task_list_events"):
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS maintenance_task_list_events (
+              id BIGINT AUTO_INCREMENT PRIMARY KEY,
+              organization_id INT NOT NULL,
+              maintenance_task_list_id INT NULL,
+              actor_user_id INT NULL,
+              action VARCHAR(60) NOT NULL,
+              entity_type VARCHAR(40) NULL,
+              entity_id INT NULL,
+              old_value JSON NULL,
+              new_value JSON NULL,
+              remarks TEXT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              INDEX idx_mtl_events_list (maintenance_task_list_id, created_at),
+              INDEX idx_mtl_events_org (organization_id, created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+
+    if not table_exists(cursor, "maintenance_weekday_assignments"):
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS maintenance_weekday_assignments (
+              id INT AUTO_INCREMENT PRIMARY KEY,
+              organization_id INT NOT NULL,
+              weekday TINYINT NOT NULL,
+              employee_id INT NULL,
+              updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+              updated_by_user_id INT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE KEY uq_mtl_weekday_org_day (organization_id, weekday),
+              INDEX idx_mtl_weekday_org_emp (organization_id, employee_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+
+
+def weekday_assignment_configured(cursor, organization_id: int) -> bool:
+    """True once a manager has saved weekday assignments for this org."""
+    if not table_exists(cursor, "maintenance_weekday_assignments"):
+        return False
+    cursor.execute(
+        "SELECT COUNT(*) AS c FROM maintenance_weekday_assignments WHERE organization_id = %s",
+        (int(organization_id),),
+    )
+    row = cursor.fetchone() or {}
+    return int(row.get("c") or 0) > 0
+
+
+def get_weekday_assignee_id(cursor, organization_id: int, task_date: Any) -> Optional[int]:
+    """Assigned employee for the operating date's weekday, or None if empty/missing."""
+    if not table_exists(cursor, "maintenance_weekday_assignments"):
+        return None
+    d = _parse_date(task_date)
+    cursor.execute(
+        """
+        SELECT employee_id
+        FROM maintenance_weekday_assignments
+        WHERE organization_id = %s AND weekday = %s
+        LIMIT 1
+        """,
+        (int(organization_id), int(d.weekday())),
+    )
+    row = cursor.fetchone()
+    if not row or row.get("employee_id") is None:
+        return None
+    return int(row["employee_id"])
+
+
+def employee_assigned_for_date(
+    cursor,
+    organization_id: int,
+    employee_id: int,
+    task_date: Optional[Any] = None,
+) -> bool:
+    """
+    Whether this employee may open/submit the daily checklist for task_date.
+    Weekday assignments are always authoritative: no assignee → nobody gets Tasks.
+    """
+    assignee = get_weekday_assignee_id(cursor, organization_id, task_date)
+    if assignee is None:
+        return False
+    return int(assignee) == int(employee_id)
+
+
+def list_weekday_assignments(cursor, organization_id: int) -> list[dict]:
+    """Sunday-first rows for manager UI. Missing weekdays appear as unassigned."""
+    ensure_maintenance_task_list_tables(cursor)
+    by_day: dict[int, Optional[int]] = {}
+    if table_exists(cursor, "maintenance_weekday_assignments"):
+        cursor.execute(
+            """
+            SELECT weekday, employee_id
+            FROM maintenance_weekday_assignments
+            WHERE organization_id = %s
+            """,
+            (int(organization_id),),
+        )
+        for r in cursor.fetchall() or []:
+            by_day[int(r["weekday"])] = (
+                int(r["employee_id"]) if r.get("employee_id") is not None else None
+            )
+    out = []
+    for weekday, label in WEEKDAY_ROWS:
+        eid = by_day.get(weekday)
+        out.append(
+            {
+                "weekday": weekday,
+                "label": label,
+                "employee_id": eid,
+                "employee_name": _employee_display_name(cursor, eid) if eid else None,
+            }
+        )
+    return out
+
+
+def save_weekday_assignments(
+    cursor,
+    organization_id: int,
+    assignments: list[dict],
+    actor_user_id: Optional[int] = None,
+) -> list[dict]:
+    """
+    Persist Mon–Sun assignees (employee_id may be null).
+    Writing rows enables assignment enforcement for the org.
+    """
+    ensure_maintenance_task_list_tables(cursor)
+    now = _naive_now()
+    by_day: dict[int, Optional[int]] = {w: None for w, _ in WEEKDAY_ROWS}
+    for row in assignments or []:
+        try:
+            wd = int(row.get("weekday"))
+        except (TypeError, ValueError):
+            continue
+        if wd not in by_day:
+            continue
+        raw = row.get("employee_id")
+        by_day[wd] = int(raw) if raw not in (None, "", False) else None
+    for wd, eid in by_day.items():
+        cursor.execute(
+            """
+            INSERT INTO maintenance_weekday_assignments
+              (organization_id, weekday, employee_id, created_at, updated_at, updated_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              employee_id = VALUES(employee_id),
+              updated_at = VALUES(updated_at),
+              updated_by_user_id = VALUES(updated_by_user_id)
+            """,
+            (int(organization_id), int(wd), eid, now, now, actor_user_id),
+        )
+    return list_weekday_assignments(cursor, organization_id)
+
+
+def _ensure_checklist_submitted_event(cursor, organization_id: int) -> None:
+    if not table_exists(cursor, "notification_event_definitions"):
         return
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS maintenance_task_definitions (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          organization_id INT NOT NULL,
-          task_key VARCHAR(80) NOT NULL,
-          name VARCHAR(255) NOT NULL,
-          description TEXT NULL,
-          frequency VARCHAR(20) NOT NULL DEFAULT 'daily',
-          days_of_week_json JSON NULL,
-          is_required TINYINT(1) NOT NULL DEFAULT 1,
-          require_note_if_incomplete TINYINT(1) NOT NULL DEFAULT 1,
-          display_order INT NOT NULL DEFAULT 0,
-          is_active TINYINT(1) NOT NULL DEFAULT 1,
-          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
-          created_by_user_id INT NULL,
-          updated_by_user_id INT NULL,
-          UNIQUE KEY uq_mtl_def_org_key (organization_id, task_key),
-          INDEX idx_mtl_def_org_active_order (organization_id, is_active, display_order)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS maintenance_task_lists (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          organization_id INT NOT NULL,
-          employee_id INT NOT NULL,
-          task_date DATE NOT NULL,
-          status VARCHAR(20) NOT NULL DEFAULT 'in_progress',
-          notes TEXT NULL,
-          submitted_at DATETIME NULL,
-          submitted_by_user_id INT NULL,
-          reopened_at DATETIME NULL,
-          reopened_by_user_id INT NULL,
-          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
-          UNIQUE KEY uq_mtl_org_emp_date (organization_id, employee_id, task_date),
-          INDEX idx_mtl_org_date_status (organization_id, task_date, status),
-          INDEX idx_mtl_org_employee (organization_id, employee_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS maintenance_task_list_items (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          maintenance_task_list_id INT NOT NULL,
-          maintenance_task_definition_id INT NULL,
-          task_name_snapshot VARCHAR(255) NOT NULL,
-          task_description_snapshot TEXT NULL,
-          is_required_snapshot TINYINT(1) NOT NULL DEFAULT 1,
-          require_note_if_incomplete_snapshot TINYINT(1) NOT NULL DEFAULT 1,
-          completed TINYINT(1) NOT NULL DEFAULT 0,
-          completed_at DATETIME NULL,
-          completed_by_user_id INT NULL,
-          note TEXT NULL,
-          display_order_snapshot INT NOT NULL DEFAULT 0,
-          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
-          INDEX idx_mtl_items_list (maintenance_task_list_id),
-          INDEX idx_mtl_items_def (maintenance_task_definition_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS maintenance_task_list_events (
-          id BIGINT AUTO_INCREMENT PRIMARY KEY,
-          organization_id INT NOT NULL,
-          maintenance_task_list_id INT NULL,
-          actor_user_id INT NULL,
-          action VARCHAR(60) NOT NULL,
-          entity_type VARCHAR(40) NULL,
-          entity_id INT NULL,
-          old_value JSON NULL,
-          new_value JSON NULL,
-          remarks TEXT NULL,
-          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          INDEX idx_mtl_events_list (maintenance_task_list_id, created_at),
-          INDEX idx_mtl_events_org (organization_id, created_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
+    try:
+        cursor.execute(
+            """
+            INSERT IGNORE INTO notification_event_definitions
+              (organization_id, event_key, display_name, description, is_active)
+            VALUES (%s, %s, %s, %s, 1)
+            """,
+            (
+                int(organization_id),
+                NOTIFY_CHECKLIST_SUBMITTED,
+                "Maintenance Checklist Submitted",
+                "Fired when an employee submits the daily maintenance checklist.",
+            ),
+        )
+    except Exception:
+        pass
+
+
+def _notify_checklist_submitted(cursor, organization_id: int, list_payload: dict) -> None:
+    try:
+        _ensure_checklist_submitted_event(cursor, organization_id)
+        from backend.notification_service import dispatch_notification_event
+
+        name = list_payload.get("employee_name") or "Employee"
+        date_s = list_payload.get("task_date") or ""
+        list_id = list_payload.get("id")
+        open_path = "/maintenance/task-lists"
+        if date_s:
+            open_path = f"{open_path}?task_date={date_s}"
+            if list_id is not None:
+                open_path = f"{open_path}&list_id={int(list_id)}"
+        dispatch_notification_event(
+            cursor,
+            organization_id=int(organization_id),
+            event_key=NOTIFY_CHECKLIST_SUBMITTED,
+            title="Maintenance Checklist Submitted",
+            body=f"{name} submitted today's maintenance checklist.",
+            data={
+                "list_id": list_id,
+                "employee_id": list_payload.get("employee_id"),
+                "task_date": date_s,
+                "submitted_at": str(list_payload.get("submitted_at") or ""),
+                "open_path": open_path,
+            },
+        )
+    except Exception:
+        pass
 
 
 def record_event(
@@ -261,16 +488,17 @@ def ensure_default_task_definitions(
         cursor.execute(
             """
             INSERT INTO maintenance_task_definitions
-              (organization_id, task_key, name, description, frequency, days_of_week_json,
+              (organization_id, task_key, name, description, category, frequency, days_of_week_json,
                is_required, require_note_if_incomplete, display_order, is_active,
                created_at, created_by_user_id, updated_by_user_id)
-            VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, %s, 1, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, 1, %s, %s, %s)
             """,
             (
                 int(organization_id),
                 spec["task_key"],
                 spec["name"],
                 spec.get("description"),
+                (spec.get("category") or "").strip() or None,
                 spec["frequency"],
                 1 if spec.get("is_required", True) else 0,
                 1 if spec.get("require_note_if_incomplete", True) else 0,
@@ -348,6 +576,7 @@ def create_or_update_definition(
     is_active = 1 if _as_bool(payload.get("is_active"), True) else 0
     display_order = int(payload.get("display_order") or 0)
     description = (payload.get("description") or "").strip() or None
+    category = (payload.get("category") or "").strip() or None
 
     if def_id:
         cursor.execute(
@@ -366,6 +595,7 @@ def create_or_update_definition(
             UPDATE maintenance_task_definitions
             SET name = %s,
                 description = %s,
+                category = %s,
                 frequency = %s,
                 days_of_week_json = %s,
                 is_required = %s,
@@ -379,6 +609,7 @@ def create_or_update_definition(
             (
                 name,
                 description,
+                category,
                 frequency,
                 days_json,
                 is_required,
@@ -400,7 +631,7 @@ def create_or_update_definition(
             entity_type="maintenance_task_definition",
             entity_id=int(def_id),
             old={"name": existing.get("name"), "is_active": existing.get("is_active")},
-            new={"name": name, "is_active": is_active, "frequency": frequency},
+            new={"name": name, "is_active": is_active, "frequency": frequency, "category": category},
             write_audit_fn=write_audit_fn,
         )
         return get_definition(cursor, organization_id, int(def_id))
@@ -408,16 +639,17 @@ def create_or_update_definition(
     cursor.execute(
         """
         INSERT INTO maintenance_task_definitions
-          (organization_id, task_key, name, description, frequency, days_of_week_json,
+          (organization_id, task_key, name, description, category, frequency, days_of_week_json,
            is_required, require_note_if_incomplete, display_order, is_active,
            created_at, created_by_user_id, updated_by_user_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             int(organization_id),
             task_key,
             name,
             description,
+            category,
             frequency,
             days_json,
             is_required,
@@ -687,6 +919,11 @@ def get_or_create_task_list(
     """Idempotent: returns existing list for org/employee/date or creates from active definitions."""
     ensure_default_task_definitions(cursor, organization_id, actor_user_id)
     d = _parse_date(task_date)
+    if not employee_assigned_for_date(cursor, organization_id, employee_id, d):
+        raise MaintenanceTaskListError(
+            "You are not assigned to the maintenance checklist for today.",
+            403,
+        )
     existing = _fetch_list_by_employee_date(cursor, organization_id, employee_id, d)
     if existing:
         return serialize_list(cursor, existing)
@@ -706,26 +943,50 @@ def get_or_create_task_list(
         (int(organization_id), int(employee_id), d, STATUS_IN_PROGRESS, now, now),
     )
     list_id = int(cursor.lastrowid)
+    has_category_col = _column_exists(cursor, "maintenance_task_list_items", "category_snapshot")
     for defn in defs:
-        cursor.execute(
-            """
-            INSERT INTO maintenance_task_list_items
-              (maintenance_task_list_id, maintenance_task_definition_id,
-               task_name_snapshot, task_description_snapshot, is_required_snapshot,
-               require_note_if_incomplete_snapshot, completed, display_order_snapshot, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s)
-            """,
-            (
-                list_id,
-                int(defn["id"]),
-                defn["name"],
-                defn.get("description"),
-                1 if defn.get("is_required") else 0,
-                1 if defn.get("require_note_if_incomplete") else 0,
-                int(defn.get("display_order") or 0),
-                now,
-            ),
-        )
+        if has_category_col:
+            cursor.execute(
+                """
+                INSERT INTO maintenance_task_list_items
+                  (maintenance_task_list_id, maintenance_task_definition_id,
+                   task_name_snapshot, task_description_snapshot, category_snapshot,
+                   is_required_snapshot, require_note_if_incomplete_snapshot,
+                   completed, display_order_snapshot, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 0, %s, %s)
+                """,
+                (
+                    list_id,
+                    int(defn["id"]),
+                    defn["name"],
+                    defn.get("description"),
+                    (defn.get("category") or "").strip() or None,
+                    1 if defn.get("is_required") else 0,
+                    1 if defn.get("require_note_if_incomplete") else 0,
+                    int(defn.get("display_order") or 0),
+                    now,
+                ),
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO maintenance_task_list_items
+                  (maintenance_task_list_id, maintenance_task_definition_id,
+                   task_name_snapshot, task_description_snapshot, is_required_snapshot,
+                   require_note_if_incomplete_snapshot, completed, display_order_snapshot, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s)
+                """,
+                (
+                    list_id,
+                    int(defn["id"]),
+                    defn["name"],
+                    defn.get("description"),
+                    1 if defn.get("is_required") else 0,
+                    1 if defn.get("require_note_if_incomplete") else 0,
+                    int(defn.get("display_order") or 0),
+                    now,
+                ),
+            )
     record_event(
         cursor,
         organization_id=organization_id,
@@ -994,11 +1255,13 @@ def submit_task_list(
         },
         write_audit_fn=write_audit_fn,
     )
-    return serialize_list(
+    payload = serialize_list(
         cursor,
         _fetch_list_row(cursor, organization_id, list_id),
         include_events=True,
     )
+    _notify_checklist_submitted(cursor, organization_id, payload)
+    return payload
 
 
 def reopen_task_list(
@@ -1103,6 +1366,7 @@ def list_submission_summaries(
 
     if include_not_started_employees and (not status_filter or status_filter == STATUS_NOT_STARTED):
         try:
+            assigned_only = get_weekday_assignee_id(cursor, organization_id, d)
             cursor.execute(
                 """
                 SELECT u.id AS employee_id,
@@ -1119,6 +1383,11 @@ def list_submission_summaries(
             )
             for emp in cursor.fetchall() or []:
                 eid = int(emp["employee_id"])
+                if assigned_only is None:
+                    # No weekday assignee — skip not-started padding.
+                    continue
+                if eid != int(assigned_only):
+                    continue
                 if eid in seen_employees:
                     continue
                 if employee_id is not None and eid != int(employee_id):

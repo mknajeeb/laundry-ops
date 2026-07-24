@@ -17,7 +17,6 @@ import {
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import { Backspace } from "@mui/icons-material";
-import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import {
   attendancePinMaintenanceTasks,
   getPublicMaintenanceTaskListToday,
@@ -31,7 +30,6 @@ import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
 import {
   OpsMobileShell,
-  OpsStatusChip,
   OpsStickyActionBar,
   OpsTaskCard,
   OpsTopBar,
@@ -47,6 +45,9 @@ import {
   allTasksChecked,
   clearMtlPinSession,
   compactTaskContext,
+  formatDateLong,
+  formatTimeEt,
+  groupTasksByCategory,
   isCompletedStatus,
   loadMtlPinSession,
   saveMtlPinSession,
@@ -115,7 +116,7 @@ export default function MaintenanceTaskListPinPage() {
   const slug = routeSlug || selectedSlug;
 
   const [pin, setPin] = useState("");
-  const [phase, setPhase] = useState("pin"); // pin | list | unavailable
+  const [phase, setPhase] = useState("pin"); // pin | list | submitted | unavailable
   const [session, setSession] = useState(null);
   const [list, setList] = useState(null);
   const [dateDisplay, setDateDisplay] = useState("");
@@ -256,7 +257,9 @@ export default function MaintenanceTaskListPinPage() {
     }
     setList(res.data.list);
     setDateDisplay(res.data.task_date_display || "");
-    setPhase("list");
+    const done =
+      isCompletedStatus(res.data.list?.status) || !!res.data.list?.read_only;
+    setPhase(done ? "submitted" : "list");
     return res.data.list;
   }, []);
 
@@ -379,15 +382,77 @@ export default function MaintenanceTaskListPinPage() {
     setError("");
     try {
       await submitRef.current.submit();
+      setPhase("submitted");
     } finally {
       setSubmitting(false);
     }
   };
 
   const items = list?.items || [];
+  const grouped = useMemo(() => groupTasksByCategory(items), [items]);
   void pendingTick;
 
-  // ——— List / completed / empty / unavailable ———
+  // ——— Compact submitted confirmation (no full checklist) ———
+  if (phase === "submitted") {
+    const submittedAt = formatTimeEt(list?.submitted_at);
+    const dateLine = formatDateLong(list?.task_date) || dateDisplay || "Today";
+    return (
+      <OpsMobileShell contentSx={{ gap: 1.25 }}>
+        <Box
+          sx={{
+            width: "100%",
+            borderRadius: `${OPS_MOBILE.radius.card}px`,
+            bgcolor: alpha("#fff", 0.96),
+            boxShadow: `0 8px 28px -16px ${alpha(OPS_MOBILE.navy, 0.35)}`,
+            p: { xs: 1.5, sm: 2 },
+            display: "flex",
+            flexDirection: "column",
+            gap: 1.5,
+          }}
+        >
+          <OpsTopBar title="Tasks" onBack={onBack} backLabel="PIN" onLock={onLock} sticky />
+          <Stack spacing={0.5} alignItems="center" sx={{ py: 1.5, textAlign: "center" }}>
+            <Typography sx={{ fontWeight: 900, fontSize: "1.15rem", color: OPS_MOBILE.navy }}>
+              Maintenance Checklist Submitted
+            </Typography>
+            <Typography sx={{ fontWeight: 700, color: OPS_MOBILE.muted, fontSize: "0.95rem" }}>
+              {dateLine}
+            </Typography>
+            <Typography sx={{ fontWeight: 700, color: OPS_MOBILE.muted, fontSize: "0.95rem" }}>
+              {submittedAt}
+            </Typography>
+          </Stack>
+          <Button
+            fullWidth
+            variant="contained"
+            onClick={onDone}
+            sx={{
+              minHeight: 52,
+              textTransform: "none",
+              fontWeight: 900,
+              bgcolor: OPS_MOBILE.navy,
+            }}
+          >
+            Done
+          </Button>
+          <Button
+            fullWidth
+            onClick={onLock}
+            sx={{
+              minHeight: 48,
+              textTransform: "none",
+              fontWeight: 800,
+              bgcolor: alpha(OPS_MOBILE.navy, 0.08),
+            }}
+          >
+            Lock
+          </Button>
+        </Box>
+      </OpsMobileShell>
+    );
+  }
+
+  // ——— List / empty / unavailable ———
   if (phase === "list" || phase === "unavailable") {
     const emptyAssigned = phase === "list" && list && items.length === 0;
     const showUnavailable = phase === "unavailable";
@@ -462,46 +527,49 @@ export default function MaintenanceTaskListPinPage() {
                   </Typography>
                 ) : null}
                 <Box sx={{ flex: 1 }} />
-                {readOnly ? (
-                  <OpsStatusChip label="Completed" tone="success" />
-                ) : (
-                  <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-                    {progress.done} of {progress.total}
-                  </Typography>
-                )}
+                <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
+                  {progress.done} of {progress.total}
+                </Typography>
               </Box>
-              {!readOnly ? (
-                <LinearProgress
-                  variant="determinate"
-                  value={progress.total ? (100 * progress.done) / progress.total : 0}
-                  sx={{
-                    height: 6,
-                    borderRadius: 99,
-                    bgcolor: alpha(OPS_MOBILE.navy, 0.08),
-                    "& .MuiLinearProgress-bar": { bgcolor: OPS_MOBILE.cobalt, borderRadius: 99 },
-                  }}
-                />
-              ) : (
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 0.5 }}>
-                  <CheckCircleOutlineIcon sx={{ color: OPS_MOBILE.success }} />
-                  <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-                    Checklist completed
-                  </Typography>
-                </Stack>
-              )}
+              <LinearProgress
+                variant="determinate"
+                value={progress.total ? (100 * progress.done) / progress.total : 0}
+                sx={{
+                  height: 6,
+                  borderRadius: 99,
+                  bgcolor: alpha(OPS_MOBILE.navy, 0.08),
+                  "& .MuiLinearProgress-bar": { bgcolor: OPS_MOBILE.cobalt, borderRadius: 99 },
+                }}
+              />
 
               <Stack spacing={1.25}>
-                {items.map((item) => (
-                  <OpsTaskCard
-                    key={item.id}
-                    title={item.task_name_snapshot || "Task"}
-                    instruction={item.task_description_snapshot || ""}
-                    completed={!!item.completed}
-                    readOnly={readOnly}
-                    busy={!!toggleRef.current?.isPending(item.id) || submitting}
-                    onComplete={() => toggleRef.current?.toggle(item)}
-                    onUndo={() => toggleRef.current?.toggle(item)}
-                  />
+                {grouped.map((group) => (
+                  <Box key={group.category}>
+                    <Typography
+                      sx={{
+                        fontWeight: 800,
+                        fontSize: "0.75rem",
+                        color: OPS_MOBILE.muted,
+                        mb: 0.35,
+                      }}
+                    >
+                      {group.category}
+                    </Typography>
+                    <Stack spacing={0.75}>
+                      {group.items.map((item) => (
+                        <OpsTaskCard
+                          key={item.id}
+                          title={item.task_name_snapshot || "Task"}
+                          instruction={item.task_description_snapshot || ""}
+                          completed={!!item.completed}
+                          readOnly={false}
+                          busy={!!toggleRef.current?.isPending(item.id) || submitting}
+                          onComplete={() => toggleRef.current?.toggle(item)}
+                          onUndo={() => toggleRef.current?.toggle(item)}
+                        />
+                      ))}
+                    </Stack>
+                  </Box>
                 ))}
               </Stack>
             </>
@@ -542,37 +610,6 @@ export default function MaintenanceTaskListPinPage() {
               }}
             >
               {submitting ? "Submitting…" : "Submit Checklist"}
-            </Button>
-          </OpsStickyActionBar>
-        ) : null}
-
-        {phase === "list" && readOnly ? (
-          <OpsStickyActionBar
-            sx={{
-              position: "fixed",
-              left: 0,
-              right: 0,
-              bottom: 0,
-              px: 2,
-              maxWidth: 420,
-              mx: "auto",
-              borderTop: `1px solid ${alpha(OPS_MOBILE.navy, 0.08)}`,
-            }}
-          >
-            <Button
-              fullWidth
-              variant="contained"
-              onClick={onDone}
-              sx={{
-                minHeight: 56,
-                textTransform: "none",
-                fontWeight: 900,
-                fontSize: "1.05rem",
-                borderRadius: `${OPS_MOBILE.radius.button}px`,
-                bgcolor: OPS_MOBILE.navy,
-              }}
-            >
-              Done
             </Button>
           </OpsStickyActionBar>
         ) : null}

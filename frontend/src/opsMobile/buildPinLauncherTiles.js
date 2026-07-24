@@ -105,12 +105,17 @@ export function buildPinLauncherTiles({ features = {}, featureOrder = null, atte
       color: "#2d3d9c",
       iconKey: "tasks",
     };
-    tiles.push({
+    const tile = {
       id,
       label: meta.label || feat.label || id,
       color: meta.color,
       iconKey: meta.iconKey,
-    });
+    };
+    if (feat.disabled) {
+      tile.disabled = true;
+      tile.disabledHelper = feat.disabled_helper || feat.disabledHelper || "";
+    }
+    tiles.push(tile);
   }
 
   return tiles;

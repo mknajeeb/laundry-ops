@@ -107,8 +107,31 @@ def perform_pin_maintenance_open(
         record_pin_attempt(conn, org_id, ip_address, False)
         return {"ok": False, "error": INVALID_PIN_MESSAGE}, 401
 
-    record_pin_attempt(conn, org_id, ip_address, True)
     employee_id = int(matched["id"])
+    try:
+        from backend.maintenance_task_list_module import (
+            employee_assigned_for_date,
+            ensure_maintenance_task_list_tables,
+        )
+
+        cursor = conn.cursor(dictionary=True)
+        try:
+            ensure_maintenance_task_list_tables(cursor)
+            if not employee_assigned_for_date(cursor, org_id, employee_id):
+                record_pin_attempt(conn, org_id, ip_address, True)
+                return {
+                    "ok": False,
+                    "error": "You are not assigned to the maintenance checklist for today.",
+                }, 403
+        finally:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    record_pin_attempt(conn, org_id, ip_address, True)
     token = issue_pin_session_token(organization_id=org_id, employee_id=employee_id)
     first = _employee_first_name(matched)
     display = (

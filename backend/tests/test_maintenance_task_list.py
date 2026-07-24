@@ -34,6 +34,7 @@ class FakeCursor:
         self.lists = []
         self.items = []
         self.events = []
+        self.weekday_assignments = []
         self._next_def = 1
         self._next_list = 1
         self._next_item = 1
@@ -42,12 +43,74 @@ class FakeCursor:
         self._result = None
         self._results = []
 
+    def assign_weekday(self, organization_id: int, weekday: int, employee_id: int | None):
+        self.weekday_assignments = [
+            a
+            for a in self.weekday_assignments
+            if not (a["organization_id"] == organization_id and int(a["weekday"]) == int(weekday))
+        ]
+        self.weekday_assignments.append(
+            {
+                "organization_id": int(organization_id),
+                "weekday": int(weekday),
+                "employee_id": int(employee_id) if employee_id is not None else None,
+            }
+        )
+
     def execute(self, sql, params=None):
         sql_n = " ".join(str(sql).split())
         params = params or ()
 
         if "FROM information_schema" in sql_n or "information_schema.columns" in sql_n:
-            self._result = {"c": 0}
+            # Pretend category / category_snapshot columns exist so ALTER is skipped.
+            self._result = {"c": 1}
+            return
+
+        if "FROM maintenance_weekday_assignments WHERE organization_id" in sql_n and "COUNT(*)" in sql_n:
+            org = int(params[0])
+            self._result = {
+                "c": sum(1 for a in getattr(self, "weekday_assignments", []) if a["organization_id"] == org)
+            }
+            return
+
+        if "FROM maintenance_weekday_assignments" in sql_n and "weekday =" in sql_n:
+            org, wd = int(params[0]), int(params[1])
+            row = next(
+                (
+                    a
+                    for a in getattr(self, "weekday_assignments", [])
+                    if a["organization_id"] == org and int(a["weekday"]) == wd
+                ),
+                None,
+            )
+            self._result = {"employee_id": row["employee_id"]} if row else None
+            return
+
+        if "FROM maintenance_weekday_assignments" in sql_n and "SELECT weekday" in sql_n:
+            org = int(params[0])
+            self._results = [
+                dict(a)
+                for a in getattr(self, "weekday_assignments", [])
+                if a["organization_id"] == org
+            ]
+            self._result = None
+            return
+
+        if sql_n.startswith("INSERT INTO maintenance_weekday_assignments"):
+            if not hasattr(self, "weekday_assignments"):
+                self.weekday_assignments = []
+            org, wd, eid = int(params[0]), int(params[1]), params[2]
+            existing = next(
+                (a for a in self.weekday_assignments if a["organization_id"] == org and a["weekday"] == wd),
+                None,
+            )
+            if existing:
+                existing["employee_id"] = eid
+            else:
+                self.weekday_assignments.append(
+                    {"organization_id": org, "weekday": wd, "employee_id": eid}
+                )
+            self._result = None
             return
 
         if sql_n.startswith("CREATE TABLE"):
@@ -60,15 +123,34 @@ class FakeCursor:
             return
 
         if sql_n.startswith("INSERT INTO maintenance_task_definitions"):
-            # Seed: org, key, name, desc, freq, is_required, require_note, order, now, created_by, updated_by
-            # Create: org, key, name, desc, freq, days, is_required, require_note, order, is_active, now, created_by, updated_by
-            if len(params) == 11:
+            # Seed: org, key, name, desc, category, freq, is_required, require_note, order, now, created_by, updated_by
+            # Create: org, key, name, desc, category, freq, days, is_required, require_note, order, is_active, now, created_by, updated_by
+            if len(params) == 12:
                 row = {
                     "id": self._next_def,
                     "organization_id": int(params[0]),
                     "task_key": params[1],
                     "name": params[2],
                     "description": params[3],
+                    "category": params[4],
+                    "frequency": params[5],
+                    "days_of_week_json": None,
+                    "is_required": params[6],
+                    "require_note_if_incomplete": params[7],
+                    "display_order": params[8],
+                    "is_active": 1,
+                    "created_at": params[9],
+                    "created_by_user_id": params[10],
+                    "updated_by_user_id": params[11],
+                }
+            elif len(params) == 11:
+                row = {
+                    "id": self._next_def,
+                    "organization_id": int(params[0]),
+                    "task_key": params[1],
+                    "name": params[2],
+                    "description": params[3],
+                    "category": None,
                     "frequency": params[4],
                     "days_of_week_json": None,
                     "is_required": params[5],
@@ -86,16 +168,28 @@ class FakeCursor:
                     "task_key": params[1],
                     "name": params[2],
                     "description": params[3],
-                    "frequency": params[4],
-                    "days_of_week_json": params[5],
-                    "is_required": params[6],
-                    "require_note_if_incomplete": params[7],
-                    "display_order": params[8],
-                    "is_active": params[9],
-                    "created_at": params[10],
-                    "created_by_user_id": params[11],
-                    "updated_by_user_id": params[12],
+                    "category": params[4] if len(params) > 13 else None,
+                    "frequency": params[5] if len(params) > 13 else params[4],
+                    "days_of_week_json": params[6] if len(params) > 13 else params[5],
+                    "is_required": params[7] if len(params) > 13 else params[6],
+                    "require_note_if_incomplete": params[8] if len(params) > 13 else params[7],
+                    "display_order": params[9] if len(params) > 13 else params[8],
+                    "is_active": params[10] if len(params) > 13 else params[9],
+                    "created_at": params[11] if len(params) > 13 else params[10],
+                    "created_by_user_id": params[12] if len(params) > 13 else params[11],
+                    "updated_by_user_id": params[13] if len(params) > 13 else params[12],
                 }
+                if len(params) == 14:
+                    row["category"] = params[4]
+                    row["frequency"] = params[5]
+                    row["days_of_week_json"] = params[6]
+                    row["is_required"] = params[7]
+                    row["require_note_if_incomplete"] = params[8]
+                    row["display_order"] = params[9]
+                    row["is_active"] = params[10]
+                    row["created_at"] = params[11]
+                    row["created_by_user_id"] = params[12]
+                    row["updated_by_user_id"] = params[13]
             self.definitions.append(row)
             self.lastrowid = row["id"]
             self._next_def += 1
@@ -207,21 +301,40 @@ class FakeCursor:
             return
 
         if sql_n.startswith("INSERT INTO maintenance_task_list_items"):
-            row = {
-                "id": self._next_item,
-                "maintenance_task_list_id": int(params[0]),
-                "maintenance_task_definition_id": params[1],
-                "task_name_snapshot": params[2],
-                "task_description_snapshot": params[3],
-                "is_required_snapshot": params[4],
-                "require_note_if_incomplete_snapshot": params[5],
-                "completed": 0,
-                "display_order_snapshot": params[6],
-                "created_at": params[7],
-                "completed_at": None,
-                "completed_by_user_id": None,
-                "note": None,
-            }
+            if len(params) >= 9 and "category_snapshot" in sql_n:
+                row = {
+                    "id": self._next_item,
+                    "maintenance_task_list_id": int(params[0]),
+                    "maintenance_task_definition_id": params[1],
+                    "task_name_snapshot": params[2],
+                    "task_description_snapshot": params[3],
+                    "category_snapshot": params[4],
+                    "is_required_snapshot": params[5],
+                    "require_note_if_incomplete_snapshot": params[6],
+                    "completed": 0,
+                    "display_order_snapshot": params[7],
+                    "created_at": params[8],
+                    "completed_at": None,
+                    "completed_by_user_id": None,
+                    "note": None,
+                }
+            else:
+                row = {
+                    "id": self._next_item,
+                    "maintenance_task_list_id": int(params[0]),
+                    "maintenance_task_definition_id": params[1],
+                    "task_name_snapshot": params[2],
+                    "task_description_snapshot": params[3],
+                    "category_snapshot": None,
+                    "is_required_snapshot": params[4],
+                    "require_note_if_incomplete_snapshot": params[5],
+                    "completed": 0,
+                    "display_order_snapshot": params[6],
+                    "created_at": params[7],
+                    "completed_at": None,
+                    "completed_by_user_id": None,
+                    "note": None,
+                }
             self.items.append(row)
             self.lastrowid = row["id"]
             self._next_item += 1
@@ -368,6 +481,7 @@ class TestMaintenanceTaskListModule(unittest.TestCase):
     @patch("backend.maintenance_task_list_module._employee_display_name", return_value="Jennifer")
     def test_idempotent_list_creation_and_active_defs(self, _name, _exists):
         cur = FakeCursor()
+        cur.assign_weekday(3, 3, 10)  # Thursday 2026-07-23
         with patch("backend.maintenance_task_list_module.business_today", return_value=date(2026, 7, 23)):
             first = get_or_create_task_list(cur, 3, 10, "2026-07-23", actor_user_id=10)
             second = get_or_create_task_list(cur, 3, 10, "2026-07-23", actor_user_id=10)
@@ -380,15 +494,17 @@ class TestMaintenanceTaskListModule(unittest.TestCase):
     @patch("backend.maintenance_task_list_module._employee_display_name", return_value="Jennifer")
     def test_inactive_excluded_from_new_list_history_preserved(self, _name, _exists):
         cur = FakeCursor()
+        cur.assign_weekday(3, 3, 10)  # Thu
+        cur.assign_weekday(3, 4, 11)  # Fri
         with patch("backend.maintenance_task_list_module.business_today", return_value=date(2026, 7, 23)):
             created = get_or_create_task_list(cur, 3, 10, "2026-07-23", actor_user_id=10)
         # Deactivate a definition after list creation
         cur.definitions[0]["is_active"] = 0
         historical_names = {i["task_name_snapshot"] for i in created["items"]}
         self.assertIn(cur.definitions[0]["name"], historical_names)
-        # New employee list should not include inactive def
-        with patch("backend.maintenance_task_list_module.business_today", return_value=date(2026, 7, 23)):
-            other = get_or_create_task_list(cur, 3, 11, "2026-07-23", actor_user_id=11)
+        # New employee list on another weekday should not include inactive def
+        with patch("backend.maintenance_task_list_module.business_today", return_value=date(2026, 7, 24)):
+            other = get_or_create_task_list(cur, 3, 11, "2026-07-24", actor_user_id=11)
         other_names = {i["task_name_snapshot"] for i in other["items"]}
         self.assertNotIn(cur.definitions[0]["name"], other_names)
         # Original list items unchanged
@@ -397,8 +513,10 @@ class TestMaintenanceTaskListModule(unittest.TestCase):
 
     @patch("backend.maintenance_task_list_module.table_exists", return_value=True)
     @patch("backend.maintenance_task_list_module._employee_display_name", return_value="Jennifer")
-    def test_completion_persists_and_submit_requires_all_checked(self, _name, _exists):
+    @patch("backend.maintenance_task_list_module._notify_checklist_submitted")
+    def test_completion_persists_and_submit_requires_all_checked(self, _notify, _name, _exists):
         cur = FakeCursor()
+        cur.assign_weekday(3, 3, 10)
         with patch("backend.maintenance_task_list_module.business_today", return_value=date(2026, 7, 23)):
             payload = get_or_create_task_list(cur, 3, 10, "2026-07-23", actor_user_id=10)
         item_id = payload["items"][0]["id"]
@@ -431,9 +549,15 @@ class TestMaintenanceTaskListModule(unittest.TestCase):
             reopen_task_list(cur, 3, payload["id"], 99, remarks="manager fix")
         self.assertIn("not available", str(reopen_ctx.exception).lower())
 
+        # Reopen Tasks / refresh: same day returns submitted immutable list
+        again = get_or_create_task_list(cur, 3, 10, "2026-07-23", actor_user_id=10)
+        self.assertEqual(again["status"], STATUS_COMPLETED)
+        self.assertTrue(again["read_only"])
+
     @patch("backend.maintenance_task_list_module.table_exists", return_value=True)
     def test_reorder_definitions_preserved(self, _exists):
         cur = FakeCursor()
+        cur.assign_weekday(3, 3, 10)
         # seed via ensure path
         with patch("backend.maintenance_task_list_module.business_today", return_value=date(2026, 7, 23)):
             get_or_create_task_list(cur, 3, 10, "2026-07-23", actor_user_id=10)
@@ -468,6 +592,7 @@ class TestMaintenanceTaskListModule(unittest.TestCase):
 class TestOrgIsolationGuards(unittest.TestCase):
     def test_list_lookup_requires_matching_org(self):
         cur = FakeCursor()
+        cur.assign_weekday(3, 3, 10)
         with patch("backend.maintenance_task_list_module.table_exists", return_value=True), patch(
             "backend.maintenance_task_list_module._employee_display_name", return_value="Jennifer"
         ), patch("backend.maintenance_task_list_module.business_today", return_value=date(2026, 7, 23)):

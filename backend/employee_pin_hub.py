@@ -345,6 +345,30 @@ def perform_pin_hub_open(
     attendance = attendance_snapshot_for_hub(conn, org_id, employee_id)
     features = apply_attendance_gates_to_features(features, attendance)
 
+    # Weekday checklist assignment: tile stays visible when org-enabled; disable if not assigned.
+    checklist = features.get("checklist")
+    if isinstance(checklist, dict) and checklist.get("allowed"):
+        from backend.maintenance_task_list_module import (
+            employee_assigned_for_date,
+            ensure_maintenance_task_list_tables,
+        )
+
+        cursor = conn.cursor(dictionary=True)
+        try:
+            ensure_maintenance_task_list_tables(cursor)
+            assigned = employee_assigned_for_date(cursor, org_id, employee_id)
+        finally:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+        checklist = dict(checklist)
+        checklist["assigned_today"] = bool(assigned)
+        if not assigned:
+            checklist["disabled"] = True
+            checklist["disabled_helper"] = "No maintenance checklist assigned today."
+        features["checklist"] = checklist
+
     # Stable button order for the client.
     feature_order = [d["id"] for d in PIN_HUB_FEATURE_DEFS]
 
@@ -352,7 +376,9 @@ def perform_pin_hub_open(
     hub_token = issue_hub_session_token(organization_id=org_id, employee_id=employee_id)
 
     maintenance_token = None
-    if features.get("checklist", {}).get("allowed"):
+    if features.get("checklist", {}).get("allowed") and not features.get("checklist", {}).get(
+        "disabled"
+    ):
         maintenance_token = issue_pin_session_token(
             organization_id=org_id, employee_id=employee_id
         )

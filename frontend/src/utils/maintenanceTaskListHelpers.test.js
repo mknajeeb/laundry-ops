@@ -15,8 +15,8 @@ import {
 
 describe("maintenanceTaskListHelpers", () => {
   it("labels statuses for manager summary", () => {
-    expect(statusLabel("completed")).toBe("Completed");
-    expect(statusLabel("submitted")).toBe("Completed");
+    expect(statusLabel("completed")).toBe("Submitted");
+    expect(statusLabel("submitted")).toBe("Submitted");
     expect(statusLabel("in_progress")).toBe("In Progress");
     expect(statusLabel("not_started")).toBe("Not Started");
     expect(isCompletedStatus("completed")).toBe(true);
