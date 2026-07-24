@@ -57,6 +57,8 @@ POST_SOURCE_MANAGER_CORRECTED = "manager_corrected_post"
 POST_SOURCE_WEIGHT_ROLE_POST = "scan_weight_role_post"
 POST_SOURCE_CANONICAL_POST_EVENT = "canonical_post_processing_post_event"
 POST_SOURCE_MISSING = "missing_post_weight"
+PRE_SOURCE_WEIGHT_ROLE_PRE = "scan_weight_role_pre"
+PRE_SOURCE_MISSING = "missing_pre_weight"
 
 SQL_SCHEMA_PATH = "backend/sql/daily_operations_v1.sql"
 
@@ -224,6 +226,48 @@ def _latest_manager_post_correction(
     }
 
 
+def resolve_evidence_pre_weight(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+) -> dict[str, Any]:
+    """
+    Evidence PRE only (immutable; never manager-corrected).
+
+    Prefers earliest weight_role=PRE scan observation. Does not invent PRE
+    events and does not use live portal weight.
+    """
+    bid = _norm_bag(bag_id)
+    pre_events = _pre_role_scan_events(cursor, organization_id, bid)
+    if pre_events:
+        # Earliest PRE observation = intake evidence.
+        chosen = pre_events[0]
+        weight = _parse_weight(chosen.get("weight_lbs"))
+        if weight is not None:
+            return {
+                "bag_id": bid,
+                "weight_lbs": weight,
+                "source": PRE_SOURCE_WEIGHT_ROLE_PRE,
+                "scan_event_id": int(chosen["id"]) if chosen.get("id") is not None else None,
+                "weight_role": "PRE",
+                "weight_source": chosen.get("weight_source"),
+                "observed_at": chosen.get("weight_observed_at") or chosen.get("scanned_at_parsed"),
+                "presence_run_id": chosen.get("weight_presence_run_id"),
+                "presence_run_row_id": chosen.get("weight_presence_run_row_id"),
+                "missing": False,
+                "editable": False,
+            }
+    return {
+        "bag_id": bid,
+        "weight_lbs": None,
+        "source": PRE_SOURCE_MISSING,
+        "scan_event_id": None,
+        "observed_at": None,
+        "missing": True,
+        "editable": False,
+    }
+
+
 def resolve_evidence_post_weight(
     cursor,
     organization_id: int,
@@ -262,6 +306,31 @@ def resolve_evidence_post_weight(
         "scan_event_id": None,
         "missing": True,
     }
+
+
+def _pre_role_scan_events(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+) -> list[dict[str, Any]]:
+    if not table_exists(cursor, "rinse_bag_scan_events"):
+        return []
+    if not table_has_column(cursor, "rinse_bag_scan_events", "weight_role"):
+        return []
+    cursor.execute(
+        """
+        SELECT id, bag_id, weight_lbs, weight_role, weight_source, weight_observed_at,
+               scanned_at_parsed, purpose, weight_presence_run_id, weight_presence_run_row_id
+        FROM rinse_bag_scan_events
+        WHERE organization_id = %s
+          AND bag_id = %s
+          AND UPPER(COALESCE(weight_role, '')) = 'PRE'
+          AND weight_lbs IS NOT NULL
+        ORDER BY COALESCE(weight_observed_at, scanned_at_parsed) ASC, id ASC
+        """,
+        (int(organization_id), bag_id),
+    )
+    return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
 
 
 def _post_role_scan_events(

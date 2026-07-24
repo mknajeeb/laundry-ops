@@ -500,3 +500,95 @@ def test_portal_weight_not_in_evidence_path():
     assert out["missing"] is True
     # canonical helper is the only fallback; portal is not consulted here
     canon.assert_called_once()
+
+
+def test_evidence_pre_is_immutable_and_uses_earliest_pre_role():
+    from backend.daily_operations import PRE_SOURCE_WEIGHT_ROLE_PRE, resolve_evidence_pre_weight
+
+    cursor = MagicMock()
+    with patch(
+        "backend.daily_operations._pre_role_scan_events",
+        return_value=[
+            {"id": 1, "weight_lbs": 18.7, "weight_observed_at": "2026-07-23T08:00:00", "weight_source": "presence"},
+            {"id": 2, "weight_lbs": 19.0, "weight_observed_at": "2026-07-23T09:00:00"},
+        ],
+    ):
+        out = resolve_evidence_pre_weight(cursor, 3, "BAG1")
+    assert out["weight_lbs"] == 18.7
+    assert out["source"] == PRE_SOURCE_WEIGHT_ROLE_PRE
+    assert out["editable"] is False
+    assert out["scan_event_id"] == 1
+
+
+def test_weight_summary_shape_on_detail():
+    cursor = MagicMock()
+    bag = {
+        "bag_id": "BAG1",
+        "day_bag_id": 1,
+        "canonical_completion_status": "completed",
+        "canonical_completion_timestamp": "2026-07-23T12:00:00",
+        "review_reason_codes_json": "[]",
+    }
+    with patch("backend.daily_operations_wf_review.ensure_wf_review_tables"), patch(
+        "backend.daily_operations_wf_review.list_wf_completed_day_bags", return_value=[bag]
+    ), patch(
+        "backend.daily_operations_wf_review.resolve_post_weight_for_daily_ops",
+        return_value={
+            "weight_lbs": 20.5,
+            "source": POST_SOURCE_WEIGHT_ROLE_POST,
+            "missing": False,
+            "corrected": False,
+            "scan_event_id": 9,
+        },
+    ), patch(
+        "backend.daily_operations_wf_review.resolve_evidence_post_weight",
+        return_value={
+            "weight_lbs": 20.5,
+            "source": POST_SOURCE_WEIGHT_ROLE_POST,
+            "observed_at": "2026-07-23T11:00:00",
+            "scan_event_id": 9,
+            "missing": False,
+        },
+    ), patch(
+        "backend.daily_operations_wf_review.resolve_evidence_pre_weight",
+        return_value={
+            "weight_lbs": 18.7,
+            "source": "scan_weight_role_pre",
+            "observed_at": "2026-07-23T08:00:00",
+            "scan_event_id": 3,
+            "missing": False,
+            "editable": False,
+        },
+    ), patch(
+        "backend.daily_operations_wf_review.get_wf_day_bag_revenue_row", return_value=None
+    ), patch(
+        "backend.rinse_bulk_workitems.list_workitems", return_value=[]
+    ), patch(
+        "backend.rinse_bulk_workitems.load_bag_bulk_audits", return_value={}
+    ), patch(
+        "backend.rinse_bulk_workitems.load_bag_bulk_lines", return_value={}
+    ), patch(
+        "backend.rinse_bulk_workitems.load_bulk_resolutions", return_value={}
+    ), patch(
+        "backend.rinse_bulk_workitems.load_bulk_workitem_scan_map", return_value={}
+    ), patch(
+        "backend.daily_operations_wf_review._queue_flags_for_bag",
+        return_value={
+            "review_required": False,
+            "missing_post": False,
+            "work_items_detected": False,
+            "review_status": "REVIEW_REQUIRED",
+            "review_resolution": None,
+        },
+    ), patch("backend.daily_operations_wf_review.table_exists", return_value=False):
+        from backend.daily_operations_wf_review import get_wf_review_detail
+
+        out = get_wf_review_detail(cursor, 3, DAY, "BAG1")
+    assert out["ok"] is True
+    assert out["weight_summary"]["pre_weight"] == 18.7
+    assert out["weight_summary"]["pre_timestamp"] == "2026-07-23T08:00:00"
+    assert out["weight_summary"]["pre_source"] == "scan_weight_role_pre"
+    assert out["weight_summary"]["post_weight"] == 20.5
+    assert out["weight_summary"]["manager_corrected_post"] is None
+    assert out["pre_weight"]["editable"] is False
+    assert out["weight_summary"]["pre_editable"] is False

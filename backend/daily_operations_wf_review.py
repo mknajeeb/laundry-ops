@@ -15,6 +15,7 @@ from backend.daily_operations import (
     list_wf_completed_day_bags,
     resolve_authoritative_post_weight,
     resolve_evidence_post_weight,
+    resolve_evidence_pre_weight,
     POST_SOURCE_MANAGER_CORRECTED,
     POST_SOURCE_MISSING,
     _norm_bag,
@@ -355,6 +356,7 @@ def build_wf_review_queue(
         post = resolve_post_weight_for_daily_ops(cursor, org, bid, operations_date_et=operations_date_et)
         fact = get_wf_day_bag_revenue_row(cursor, org, operations_date_et, bid)
         flags = _queue_flags_for_bag(cursor, org, operations_date_et, row, post, fact)
+        pre = resolve_evidence_pre_weight(cursor, org, bid)
         # Queue includes bags that need review OR already have a fact/reviewed state for filters.
         include = (
             flags["review_required"]
@@ -371,6 +373,9 @@ def build_wf_review_queue(
             "service_type": "WF",
             "canonical_completion_status": row.get("canonical_completion_status"),
             "canonical_completion_timestamp": row.get("canonical_completion_timestamp"),
+            "pre_weight_lbs": pre.get("weight_lbs"),
+            "pre_weight_source": pre.get("source"),
+            "pre_weight_at": pre.get("observed_at"),
             "post_weight_lbs": post.get("weight_lbs"),
             "post_weight_source": post.get("source"),
             "post_weight_corrected": flags["post_corrected"],
@@ -443,10 +448,24 @@ def get_wf_review_detail(
     evidence_post = resolve_evidence_post_weight(
         cursor, org, bid, operations_date_et=operations_date_et
     )
+    evidence_pre = resolve_evidence_pre_weight(cursor, org, bid)
     fact = get_wf_day_bag_revenue_row(cursor, org, operations_date_et, bid)
     evidence_weight = evidence_post.get("weight_lbs")
     if fact and fact.get("original_post_weight_lbs") is not None:
         evidence_weight = float(fact["original_post_weight_lbs"])
+    evidence_post_ts = evidence_post.get("observed_at")
+    if evidence_post.get("scan_event_id") and not evidence_post_ts and table_exists(
+        cursor, "rinse_bag_scan_events"
+    ):
+        cursor.execute(
+            """
+            SELECT COALESCE(weight_observed_at, scanned_at_parsed) AS observed_at
+            FROM rinse_bag_scan_events WHERE id = %s LIMIT 1
+            """,
+            (int(evidence_post["scan_event_id"]),),
+        )
+        ts_row = cursor.fetchone() or {}
+        evidence_post_ts = ts_row.get("observed_at")
 
     lines = load_bag_bulk_lines(cursor, org, operations_date_et, [bid]).get(bid) or []
     resolution = load_bulk_resolutions(cursor, org, operations_date_et, [bid]).get(bid)
@@ -507,9 +526,21 @@ def get_wf_review_detail(
             "membership_source": "rinse_shift_monitor_day_bags + rinse_et_day_workload_ledger",
             "rush_status": row.get("rush_flag") or row.get("rush_status"),
         },
+        "pre_weight": {
+            "weight_lbs": evidence_pre.get("weight_lbs"),
+            "timestamp": evidence_pre.get("observed_at"),
+            "source": evidence_pre.get("source"),
+            "scan_event_id": evidence_pre.get("scan_event_id"),
+            "presence_run_id": evidence_pre.get("presence_run_id"),
+            "presence_run_row_id": evidence_pre.get("presence_run_row_id"),
+            "weight_source": evidence_pre.get("weight_source"),
+            "missing": bool(evidence_pre.get("missing")),
+            "editable": False,
+        },
         "post_weight": {
             "evidence_post_weight_lbs": evidence_weight,
             "evidence_source": evidence_post.get("source"),
+            "evidence_timestamp": evidence_post_ts or evidence_post.get("observed_at"),
             "authoritative_post_weight_lbs": post.get("weight_lbs"),
             "authoritative_source": post.get("source"),
             "scan_event_id": post.get("scan_event_id") or evidence_post.get("scan_event_id"),
@@ -521,6 +552,21 @@ def get_wf_review_detail(
             else evidence_weight,
             "correction_reason": post.get("correction_reason"),
             "missing": bool(post.get("missing") or evidence_post.get("missing")),
+        },
+        # Compact PRE/POST visibility for operational dashboards (PRE immutable).
+        "weight_summary": {
+            "pre_weight": evidence_pre.get("weight_lbs"),
+            "pre_timestamp": evidence_pre.get("observed_at"),
+            "pre_source": evidence_pre.get("source"),
+            "post_weight": evidence_weight,
+            "post_timestamp": evidence_post_ts or evidence_post.get("observed_at"),
+            "post_source": evidence_post.get("source"),
+            "manager_corrected_post": float(post["weight_lbs"])
+            if post.get("corrected") and post.get("weight_lbs") is not None
+            else None,
+            "authoritative_post_weight": post.get("weight_lbs"),
+            "pre_editable": False,
+            "post_editable": True,
         },
         "workitems": {
             "catalog": catalog,
@@ -547,6 +593,7 @@ def get_wf_review_detail(
         },
         "audits": do_audits,
         "labels": {
+            "evidence_pre": "Evidence PRE Weight",
             "evidence_post": "Evidence POST Weight",
             "manager_corrected_post": "Manager-Corrected POST Weight",
             "estimated_bag_weight_revenue": "Estimated Bag Weight Revenue",
@@ -554,6 +601,7 @@ def get_wf_review_detail(
             "estimated_bag_total": "Estimated Bag Total",
             "day_level_impact": "Day-Level Revenue Impact",
             "estimated_allocation_note": "Estimated allocation for reporting only",
+            "pre_immutable": "PRE is evidence-only and not editable",
         },
     }
 

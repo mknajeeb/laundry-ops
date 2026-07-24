@@ -8,6 +8,7 @@ import {
   CircularProgress,
   DialogContent,
   DialogTitle,
+  Divider,
   Drawer,
   FormControlLabel,
   IconButton,
@@ -284,9 +285,22 @@ export default function WfReviewPanel({ dateEt, onSaved }) {
 
         <Paper variant="outlined" sx={{ p: 1.5 }}>
           <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
-            POST Weight
+            PRE / POST Weight
           </Typography>
           <Stack spacing={0.75}>
+            <Row
+              label={labels.evidence_pre || "Evidence PRE Weight"}
+              value={lbs(detail.pre_weight?.weight_lbs ?? detail.weight_summary?.pre_weight)}
+            />
+            <Row
+              label="PRE timestamp"
+              value={detail.pre_weight?.timestamp || detail.weight_summary?.pre_timestamp || "—"}
+            />
+            <Row label="PRE source" value={detail.pre_weight?.source || detail.weight_summary?.pre_source || "—"} />
+            <Typography variant="caption" color="text.secondary">
+              {labels.pre_immutable || "PRE is evidence-only and not editable"}
+            </Typography>
+            <Divider />
             <Row
               label={labels.evidence_post || "Evidence POST Weight"}
               value={lbs(detail.post_weight?.evidence_post_weight_lbs)}
