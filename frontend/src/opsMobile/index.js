@@ -27,3 +27,9 @@ export {
 export { createSwitchRoleController } from "./createSwitchRoleController";
 export { createTaskToggleController } from "./createTaskToggleController";
 export { createTaskSubmitController } from "./createTaskSubmitController";
+export {
+  createStockDraftAutosave,
+  createStockSubmitController,
+} from "./createStockDraftAutosave";
+export { default as OpsFloorStockCard } from "./OpsFloorStockCard";
+export { default as OpsFloorStockFlow } from "./OpsFloorStockFlow";

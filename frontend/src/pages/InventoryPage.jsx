@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Box, Button, Stack, Tab, Tabs, Typography } from "@mui/material";
+import { Box, Tab, Tabs, Typography } from "@mui/material";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import FactCheckIcon from "@mui/icons-material/FactCheck";
 import LocalShippingIcon from "@mui/icons-material/LocalShipping";
@@ -13,11 +13,14 @@ import PurchaseOrdersTab from "../components/inventory/OrdersTab";
 import ReportsTab from "../components/inventory/ReportsTab";
 import SettingsTab from "../components/inventory/SettingsTab";
 import { LoadingBlock, StatusAlert } from "../components/inventory/InventoryShared";
+import OpsFloorStockFlow from "../opsMobile/OpsFloorStockFlow";
 import { INV_NAV_SX } from "../utils/inventoryHelpers";
+import { isFloorInventoryWorkflow } from "../utils/inventoryFloorHelpers";
 import { canAccessInventoryTab, getInventoryRoleTier } from "../utils/inventoryRoleHelpers";
 import { useAuth } from "../context/AuthContext";
 import {
   clearPinHubAppSession,
+  clearPinHubSession,
   loadPinHubAppSession,
   pinHubMenuPath,
 } from "../utils/pinHubSession";
@@ -34,10 +37,14 @@ export default function InventoryPage({ user, onPinHubDone }) {
   const navigate = useNavigate();
   const { hasPerm } = useAuth();
   const pinHubApp = useMemo(() => loadPinHubAppSession(), []);
+  const floorWorkflow = useMemo(
+    () => isFloorInventoryWorkflow({ pinHubApp }),
+    [pinHubApp],
+  );
   const roleTier = useMemo(() => getInventoryRoleTier(user), [user]);
   const visibleTabs = useMemo(
     () => ALL_TABS.filter((t) => canAccessInventoryTab(roleTier, t.key, hasPerm)),
-    [roleTier, hasPerm]
+    [roleTier, hasPerm],
   );
 
   const [tabKey, setTabKey] = useState("dashboard");
@@ -52,7 +59,6 @@ export default function InventoryPage({ user, onPinHubDone }) {
   const [dashboard, setDashboard] = useState(null);
   const [bagPrice, setBagPrice] = useState(10);
   const [varianceThreshold, setVarianceThreshold] = useState(5);
-  const [poSeedOpen, setPoSeedOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -66,15 +72,19 @@ export default function InventoryPage({ user, onPinHubDone }) {
       setCategories(boot.categories || []);
       setLatestCheck(boot.latest_check);
       setDashboard(boot.dashboard);
-      setSuggestions(boot.dashboard?.low_stock?.length ? boot.dashboard.low_stock.map((r) => ({
-        ...r,
-        id: r.id,
-        name: r.name,
-        suggested_qty: r.suggested_qty,
-      })) : []);
+      setSuggestions(
+        boot.dashboard?.low_stock?.length
+          ? boot.dashboard.low_stock.map((r) => ({
+              ...r,
+              id: r.id,
+              name: r.name,
+              suggested_qty: r.suggested_qty,
+            }))
+          : [],
+      );
       setVarianceThreshold(boot.dashboard?.kpis?.variance_threshold ?? 5);
       setBagPrice(Number(priceRes?.data?.bag_default_price || 0));
-      if (roleTier !== "floor") {
+      if (roleTier !== "floor" && !floorWorkflow) {
         const { getInventoryVendors, getInventoryReorderSuggestions } = await import("../api");
         const [vRes, sRes] = await Promise.all([
           getInventoryVendors({ with_stats: roleTier === "admin" ? "1" : "0" }).catch(() => ({ data: [] })),
@@ -89,26 +99,25 @@ export default function InventoryPage({ user, onPinHubDone }) {
     } finally {
       setLoading(false);
     }
-  }, [roleTier]);
+  }, [roleTier, floorWorkflow]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   useEffect(() => {
+    if (floorWorkflow) return;
     if (!visibleTabs.some((t) => t.key === tabKey)) {
       setTabKey(visibleTabs[0]?.key || "dashboard");
     }
-  }, [visibleTabs, tabKey]);
+  }, [visibleTabs, tabKey, floorWorkflow]);
 
   const handleMessage = (msg) => {
     setMessage(msg);
     if (msg?.type === "success") setTimeout(() => setMessage({ type: "", text: "" }), 4000);
   };
 
-  const returnToPinMenu = async () => {
-    const slug = pinHubApp?.organization_slug || user?.organization_slug || "";
-    clearPinHubAppSession();
+  const clearWashproSession = async () => {
     try {
       await authLogout();
     } catch {
@@ -121,12 +130,28 @@ export default function InventoryPage({ user, onPinHubDone }) {
       /* ignore */
     }
     onPinHubDone?.();
+  };
+
+  /** Back / Done — leave inventory app session, keep PIN hub unlock. */
+  const returnToPinMenu = async () => {
+    const slug = pinHubApp?.organization_slug || user?.organization_slug || "";
+    clearPinHubAppSession();
+    await clearWashproSession();
+    navigate(pinHubMenuPath(slug), { replace: true });
+  };
+
+  /** Lock — clear hub unlock + inventory session; no punch / no submit. */
+  const lockToPinEntry = async () => {
+    const slug = pinHubApp?.organization_slug || user?.organization_slug || "";
+    clearPinHubAppSession();
+    clearPinHubSession();
+    await clearWashproSession();
     navigate(pinHubMenuPath(slug), { replace: true });
   };
 
   const tabIndex = Math.max(0, visibleTabs.findIndex((t) => t.key === tabKey));
 
-  if (loading && !dashboard) {
+  if (loading && !dashboard && !items.length) {
     return (
       <Box className="page" sx={{ maxWidth: 960, mx: "auto", width: "100%" }}>
         <LoadingBlock />
@@ -134,24 +159,23 @@ export default function InventoryPage({ user, onPinHubDone }) {
     );
   }
 
+  if (floorWorkflow) {
+    return (
+      <OpsFloorStockFlow
+        user={user}
+        items={items}
+        categories={categories}
+        varianceThreshold={varianceThreshold}
+        onRefresh={load}
+        onBack={returnToPinMenu}
+        onDone={returnToPinMenu}
+        onLock={lockToPinEntry}
+      />
+    );
+  }
+
   return (
     <Box className="page" sx={{ maxWidth: 960, mx: "auto", width: "100%", px: { xs: 1.5, sm: 2 }, pb: { xs: 2, md: 0 } }}>
-      {pinHubApp ? (
-        <Stack
-          direction="row"
-          alignItems="center"
-          justifyContent="space-between"
-          spacing={1}
-          sx={{ mb: 1.5 }}
-        >
-          <Typography variant="body2" color="text.secondary">
-            PIN menu · Inventory
-          </Typography>
-          <Button variant="contained" onClick={returnToPinMenu} sx={{ textTransform: "none", fontWeight: 700 }}>
-            Done · back to menu
-          </Button>
-        </Stack>
-      ) : null}
       <Typography variant="h5" fontWeight={800} sx={{ mb: 0.5, fontSize: { xs: "1.35rem", sm: "1.5rem" } }}>
         Inventory
       </Typography>
