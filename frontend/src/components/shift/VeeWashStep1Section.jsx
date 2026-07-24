@@ -121,7 +121,14 @@ function ServiceFilterChips({ value, onChange }) {
   );
 }
 
-function MetricRow({ title, seg, emphasize = false, onMetricClick, membershipHelper = null }) {
+function MetricRow({
+  title,
+  seg,
+  emphasize = false,
+  onMetricClick,
+  membershipHelper = null,
+  pendingTrusted = true,
+}) {
   if (!seg) return null;
   const review = seg.exceptions?.review_required ?? seg.exceptions?.total ?? 0;
   const isHd = String(title || "").toUpperCase().startsWith("HD");
@@ -131,7 +138,12 @@ function MetricRow({ title, seg, emphasize = false, onMetricClick, membershipHel
     Number(seg.completed || 0) + Number(seg.pending || 0) + Number(review || 0);
   const totalLabel = isHd ? "Total HD Available" : "Total Workload";
   const doneLabel = isHd ? "Production Recorded" : "Completed";
-  const pendingLabel = isHd ? "Production Missing" : "Pending";
+  const basePending = isHd ? "Production Missing" : "Pending";
+  const pendingLabel = pendingTrusted
+    ? basePending
+    : isHd
+      ? "Production Missing — provisional"
+      : "Pending — provisional";
   const click = (metric, label) => () => onMetricClick?.(metric, `${title} · ${label}`);
   return (
     <Box sx={{ mb: emphasize ? 0 : 1.5 }}>
@@ -167,9 +179,11 @@ function MetricRow({ title, seg, emphasize = false, onMetricClick, membershipHel
         <ShiftCountCard label={doneLabel} value={seg.completed} size="kpi" onClick={click("completed", doneLabel)} />
         <ShiftCountCard
           label={pendingLabel}
-          value={seg.pending}
+          value={pendingTrusted ? seg.pending : seg.pending}
+          sub={pendingTrusted ? undefined : "Pending count may be incomplete"}
           size="kpi"
           variant="pending"
+          warn={!pendingTrusted}
           onClick={click("pending", pendingLabel)}
         />
         <ShiftCountCard
@@ -181,8 +195,9 @@ function MetricRow({ title, seg, emphasize = false, onMetricClick, membershipHel
         />
       </Box>
       <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
-        Total {total} = {doneLabel} {seg.completed} + {pendingLabel} {seg.pending} + Review {review}
+        Total {total} = {doneLabel} {seg.completed} + {basePending} {seg.pending} + Review {review}
         {membershipHelper ? ` · ${membershipHelper}` : ""}
+        {!pendingTrusted ? " · Pending provisional" : ""}
       </Typography>
     </Box>
   );
@@ -235,13 +250,22 @@ export default function VeeWashStep1Section({
     .flatMap(([, ids]) => ids || []);
 
   const dayLabel = isToday ? "Today's Workload" : `Workload · ${selectedDateEt || summary.selected_date_et || ""}`;
+  const dataFreshness = summary?.data_freshness || dayMeta?.data_freshness || null;
+  const pendingTrusted = !(
+    dataFreshness
+    && (
+      dataFreshness.trust_pending_from_missing_completion === false
+      || dataFreshness.pending_trust === "provisional"
+      || (dataFreshness.status && dataFreshness.status !== "ok")
+    )
+  );
 
   return (
     <Box sx={{ mb: 2.5 }}>
       <ShiftDayStatusBar
         selectedDateEt={selectedDateEt || summary.selected_date_et}
         shiftDay={dayMeta}
-        dataFreshness={summary.data_freshness || dayMeta.data_freshness || null}
+        dataFreshness={dataFreshness}
         validation={{
           review_required_count: reviewCount,
           totals: {
@@ -346,8 +370,12 @@ export default function VeeWashStep1Section({
             </Box>
           </Stack>
 
-          {wfSeg ? <MetricRow title="WF" seg={wfSeg} onMetricClick={openMetric} /> : null}
-          {hdSeg ? <MetricRow title="HD" seg={hdSeg} onMetricClick={openMetric} /> : null}
+          {wfSeg ? (
+            <MetricRow title="WF" seg={wfSeg} onMetricClick={openMetric} pendingTrusted={pendingTrusted} />
+          ) : null}
+          {hdSeg ? (
+            <MetricRow title="HD" seg={hdSeg} onMetricClick={openMetric} pendingTrusted={pendingTrusted} />
+          ) : null}
 
           <Box
             sx={{
@@ -362,6 +390,7 @@ export default function VeeWashStep1Section({
               seg={totalSeg}
               emphasize
               onMetricClick={openMetric}
+              pendingTrusted={pendingTrusted}
               membershipHelper={
                 summary?.membership
                   ? `Baseline ${summary.membership.baseline_count ?? "—"} · Added During Day ${summary.membership.added_later_count ?? "—"} · Total ${summary.membership.total_count ?? totalSeg.active_workload ?? "—"}`

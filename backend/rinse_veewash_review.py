@@ -386,23 +386,22 @@ def expand_review_required(
 
     # SCAN_CHRONOLOGY_STALE is warning-only (data_freshness banner).
     # Do not move ordinary in-process Pending bags into Review Required.
-    from backend.rinse_scan_freshness import bag_scan_chronology_is_stale
-
+    # Presence.last_seen_at is scrape wall-clock — only flag pending bags with
+    # zero persisted scan events (failed association), not idle in-process bags.
+    stale_scan_chronology_bag_ids: list[str] = []
     last_scan_map = {
         _norm_bag(k): v
         for k, v in (last_scan_at_by_bag or {}).items()
         if _norm_bag(k)
     }
-    stale_scan_chronology_bag_ids: list[str] = []
     for bid in list(pending):
         bid = _norm_bag(bid)
         if not bid or bid in review or bid in completed:
             continue
         pres = presence_by_bag.get(bid) or {}
-        if bag_scan_chronology_is_stale(
-            last_scan_at=last_scan_map.get(bid),
-            portal_last_seen_at=pres.get("last_seen_at"),
-        ):
+        if int(pres.get("active") or 0) != 1:
+            continue
+        if last_scan_map.get(bid) is None:
             stale_scan_chronology_bag_ids.append(bid)
 
     # --- CWO + HD missing WIA while completed ---------------------------------

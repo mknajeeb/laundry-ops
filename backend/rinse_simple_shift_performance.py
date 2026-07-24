@@ -3008,6 +3008,37 @@ def _try_build_step1_lightweight_summary(
         )
     s1["today_validation"] = build_today_validation(s1, selected_date_et=period_end)
     s1["activation_date_et"] = activation.isoformat()
+    # Recompute data freshness on read so scrape-touch last_seen false positives
+    # clear without rewriting immutable day membership.
+    try:
+        from backend.rinse_scan_freshness import freshness_from_day_and_presence
+
+        pending_ids = list(
+            ((summary or {}).get("segments") or {}).get("all", {}).get("bag_ids", {}).get("pending")
+            or []
+        )
+        sample_ids = list(
+            dict.fromkeys(
+                list(((summary or {}).get("segments") or {}).get("all", {}).get("bag_ids", {}).get("new_today") or [])
+                + list(((summary or {}).get("segments") or {}).get("all", {}).get("bag_ids", {}).get("carryover") or [])
+            )
+        )
+        live_freshness = freshness_from_day_and_presence(
+            cursor,
+            org,
+            period_end,
+            day_meta=day_meta,
+            sample_bag_ids=sample_ids,
+            pending_bag_ids=pending_ids,
+        )
+        if isinstance(summary, dict):
+            summary = dict(summary)
+            summary["data_freshness"] = live_freshness
+        if isinstance(s1, dict):
+            s1 = dict(s1)
+            s1["data_freshness"] = live_freshness
+    except Exception:
+        pass
     s1_ms = (time.perf_counter() - t_s1) * 1000
 
     # Settings-only baseline banner (no scrape hunting on every page open).

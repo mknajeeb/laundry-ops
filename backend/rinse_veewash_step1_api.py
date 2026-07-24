@@ -552,12 +552,16 @@ def build_drilldown(
     }
     from backend.rinse_scan_freshness import freshness_from_day_and_presence
 
+    pending_ids = list(((summary or {}).get("segments") or {}).get("all", {}).get("bag_ids", {}).get("pending") or [])
+    if not pending_ids and metric == "pending":
+        pending_ids = list(page_ids or [])
     data_freshness = freshness_from_day_and_presence(
         cursor,
         organization_id,
         selected_date_et,
         day_meta=day_rec,
         sample_bag_ids=page_ids,
+        pending_bag_ids=pending_ids,
     )
     if summary is not None:
         summary = dict(summary)

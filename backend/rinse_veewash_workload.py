@@ -945,6 +945,7 @@ def build_veewash_daily_workload(
         organization_id,
         selected_date_et,
         sample_bag_ids=weight_ids,
+        pending_bag_ids=result.get("pending_end_of_date") or result.get("pending") or [],
     )
     result["disappearance_confirmation"] = disappearance_state
     result["organization_id"] = int(organization_id)
@@ -1245,6 +1246,7 @@ def build_veewash_daily_workload_from_membership(
         organization_id,
         selected_date_et,
         sample_bag_ids=weight_ids,
+        pending_bag_ids=result.get("pending_end_of_date") or result.get("pending") or [],
     )
     result["disappearance_confirmation"] = disappearance_state
     result["organization_id"] = int(organization_id)

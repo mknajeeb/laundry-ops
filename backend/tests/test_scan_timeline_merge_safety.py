@@ -86,6 +86,18 @@ class TestScanFreshness:
         )
         assert out["status"] == "scan_chronology_stale"
         assert out["trust_pending_from_missing_completion"] is False
+        assert out["pending_trust"] == "provisional"
+
+    def test_import_lag_disables_pending_trust(self):
+        out = build_scan_data_freshness(
+            selected_date_et=T_EARLY.date(),
+            shift_last_sync_at=T_PORTAL,
+            most_recent_persisted_scan_at=T_EARLY,
+            scan_import_lagging=True,
+        )
+        assert out["status"] == "scan_chronology_stale"
+        assert out["trust_pending_from_missing_completion"] is False
+        assert "scan_import_lagging_portal_scrape" in out["reasons"]
 
 
 class TestLoadScansNoLimit:
@@ -103,7 +115,7 @@ class TestLoadScansNoLimit:
 
 
 class TestStaleChronologyDoesNotPromoteFromPending:
-    def test_pending_bag_with_stale_scans_stays_pending(self):
+    def test_pending_bag_with_idle_scans_stays_pending_and_not_stale(self):
         from datetime import date
 
         from backend.rinse_veewash_review import expand_review_required
@@ -144,3 +156,4 @@ class TestStaleChronologyDoesNotPromoteFromPending:
         assert REASON_SCAN_CHRONOLOGY_STALE not in (
             out["review_reasons_by_bag"].get("15M7MCEK4J") or []
         )
+        assert "15M7MCEK4J" not in (out.get("stale_scan_chronology_bag_ids") or [])

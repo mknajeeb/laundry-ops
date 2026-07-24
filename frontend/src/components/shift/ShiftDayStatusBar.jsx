@@ -148,15 +148,26 @@ export default function ShiftDayStatusBar({
               : ""}
           </Typography>
           {dataFreshness && dataFreshness.status && dataFreshness.status !== "ok" ? (
-            <Typography variant="caption" color="warning.main" display="block">
-              Scan data freshness: {String(dataFreshness.status).replaceAll("_", " ")}
-              {dataFreshness.stale_chronology_bag_count
-                ? ` · ${dataFreshness.stale_chronology_bag_count} bag(s) behind portal last-seen`
-                : ""}
-              {!dataFreshness.trust_pending_from_missing_completion
-                ? " · Pending not trusted from missing completion"
-                : ""}
-            </Typography>
+            <Box sx={{ mt: 0.35 }}>
+              <Typography variant="caption" color="warning.main" display="block" fontWeight={700}>
+                Scan data freshness: {String(dataFreshness.status).replaceAll("_", " ")}
+              </Typography>
+              <Typography variant="caption" color="warning.main" display="block">
+                Last scan refresh: {fmtTs(dataFreshness.last_scan_refresh_at || dataFreshness.most_recent_persisted_scan_at)}
+                {" · "}
+                Last portal scrape: {fmtTs(dataFreshness.last_portal_scrape_at || dataFreshness.portal_last_seen_at)}
+              </Typography>
+              <Typography variant="caption" color="warning.main" display="block">
+                Portal ahead by:{" "}
+                {dataFreshness.portal_ahead_bag_count ?? dataFreshness.stale_chronology_bag_count ?? 0}{" "}
+                bag(s)
+                {" · "}
+                Pending count may be incomplete
+              </Typography>
+              <Typography variant="caption" color="text.secondary" display="block">
+                Retry / Refresh Portal Sync to update status. Pending is provisional until freshness is ok.
+              </Typography>
+            </Box>
           ) : null}
         </Stack>
         <Stack direction="row" spacing={1}>

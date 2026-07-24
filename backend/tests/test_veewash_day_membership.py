@@ -223,7 +223,51 @@ def test_stale_chronology_does_not_promote_to_review():
     assert REASON_SCAN_CHRONOLOGY_STALE not in (
         out.get("review_reasons_by_bag") or {}
     ).get("15M7MCEK4J", [])
-    assert "15M7MCEK4J" in (out.get("stale_scan_chronology_bag_ids") or [])
+    # Idle pending bags with scan history are not chronology-stale.
+    assert "15M7MCEK4J" not in (out.get("stale_scan_chronology_bag_ids") or [])
+
+
+def test_pending_without_scans_is_stale_association_warning():
+    from backend.rinse_veewash_review import expand_review_required
+    from backend.rinse_veewash_workload import REASON_SCAN_CHRONOLOGY_STALE
+
+    t_portal = datetime(2026, 7, 23, 14, 0, 0)
+    result = {
+        "new_today": ["NOSCANBAG01"],
+        "carryover": [],
+        "completed_on_date": [],
+        "pending_end_of_date": ["NOSCANBAG01"],
+        "review_required": [],
+        "disappeared_without_completion_exceptions": [],
+        "rows": [
+            {
+                "bag_id": "NOSCANBAG01",
+                "service_type": "WF",
+                "outcome": "pending",
+                "final_bucket": "pending",
+            }
+        ],
+    }
+    out = expand_review_required(
+        result,
+        selected_date_et=D,
+        presence_by_bag={
+            "NOSCANBAG01": {
+                "service_type": "WF",
+                "active": 1,
+                "last_seen_at": t_portal,
+                "rush_flag": "Rush",
+            }
+        },
+        entry_by_bag={},
+        last_scan_at_by_bag={},
+    )
+    assert "NOSCANBAG01" in out["pending_end_of_date"]
+    assert "NOSCANBAG01" not in out["review_required"]
+    assert REASON_SCAN_CHRONOLOGY_STALE not in (
+        out.get("review_reasons_by_bag") or {}
+    ).get("NOSCANBAG01", [])
+    assert "NOSCANBAG01" in (out.get("stale_scan_chronology_bag_ids") or [])
 
 
 def test_pre_cutover_date_returns_unavailable():
