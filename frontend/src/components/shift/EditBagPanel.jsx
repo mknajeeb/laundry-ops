@@ -25,6 +25,7 @@ import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import {
   buildEditBagPayloadDraft,
   classifyEditReasonRequirements,
+  classifyEditSavePath,
   describeWeightProvenance,
   diffEditBagDraftVsLatest,
   EDIT_BAG_REASON_CODES,
@@ -53,13 +54,13 @@ const NO_CHARGE_REASONS = ["Customer cancelled", "False alarm", "Duplicate scan"
 const OUTCOME_OPTIONS = [
   { id: "mark_completed", label: "Mark Completed" },
   { id: "return_pending", label: "Return to Pending" },
-  { id: "keep_review", label: "Keep in Review Required" },
   { id: "exclude", label: "Exclude" },
-  { id: "decide_later", label: "Decide Later" },
 ];
 
 /**
- * Unified Edit Bag draft panel — local draft only until Save & Choose Action.
+ * Unified Edit Bag draft panel.
+ * Routine Review Save persists immediately (no reason dialog).
+ * Manager Action… opens the override dialog (status / exclude / etc.).
  */
 export default function EditBagPanel({
   bag,
@@ -295,16 +296,19 @@ export default function EditBagPanel({
         String(draft.reason_code || policy.suggestedReasonCode || "").trim().toUpperCase() ||
         null;
       const reasonNote = String(draft.reason_note || draft.reason || "").trim() || null;
+      // Routine Review Save: no manager reason. Manager Override: structured reason.
       const body = {
         action: "edit_bag",
         bag_id: bag.bag_id,
         selected_date_et: selectedDateEt,
-        reason: reasonNote || "",
-        reason_code: policy.reasonRequired ? reasonCode : reasonCode,
-        reason_note: reasonNote,
+        reason: policy.reasonRequired ? reasonNote || "" : "",
+        reason_code: policy.reasonRequired ? reasonCode : null,
+        reason_note: policy.reasonRequired ? reasonNote : null,
         expected_updated_at: lockUpdatedAt || bag.updated_at || bag.day_bag_updated_at || null,
         outcome_action:
-          outcomeAction && outcomeAction !== "decide_later" ? outcomeAction : null,
+          outcomeAction && outcomeAction !== "decide_later" && outcomeAction !== "keep_review"
+            ? outcomeAction
+            : null,
         draft: buildPayloadDraft(),
       };
       const res = await postVeewashStep1Correction(body);
@@ -342,12 +346,52 @@ export default function EditBagPanel({
     }
   };
 
-  const startSave = () => {
+  const startRoutineSave = () => {
     setSaveAttempted(true);
+    const path = classifyEditSavePath({ draft, baselineBag, outcome: null });
+    if (path.isManagerOverride) {
+      // Weight correction in draft — stay on this screen and require reason, then save review.
+      const err = validateLocal(null);
+      if (err) {
+        setLocalError(err);
+        if (path.suggestedReasonCode && !draft.reason_code) {
+          setDraft((d) => ({ ...d, reason_code: path.suggestedReasonCode }));
+        }
+        return;
+      }
+      persist(null);
+      return;
+    }
     const err = validateLocal(null);
     if (err) {
       setLocalError(err);
       return;
+    }
+    // Routine Review Save — immediate, no action dialog, no reason.
+    persist(null);
+  };
+
+  const openManagerActions = () => {
+    setSaveAttempted(true);
+    const err = validateLocal(null);
+    // Allow opening manager actions even if weight reason not filled yet —
+    // exceptional outcomes will collect reason in the dialog.
+    if (err && !classifyEditSavePath({ draft, baselineBag }).isManagerOverride) {
+      // Still block on bulk validation errors
+      const bulkErr = validateEditBagDraft({
+        reason: "",
+        reasonCode: "",
+        reasonNote: "",
+        noChargeable: draft.no_chargeable,
+        noChargeReason: draft.no_charge_reason,
+        lines,
+        isHd,
+        reasonRequired: false,
+      });
+      if (bulkErr) {
+        setLocalError(bulkErr);
+        return;
+      }
     }
     setLocalError("");
     setPendingSave(buildPayloadDraft());
@@ -362,15 +406,12 @@ export default function EditBagPanel({
       outcome: optId,
       lines,
     });
-    if (policy.reasonRequired) {
-      setPendingOutcome(optId);
-      if (policy.suggestedReasonCode && !draft.reason_code) {
-        setDraft((d) => ({ ...d, reason_code: policy.suggestedReasonCode }));
-      }
-      setLocalError("");
-      return;
+    // Manager override outcomes always require structured reason.
+    setPendingOutcome(optId);
+    if (policy.suggestedReasonCode && !draft.reason_code) {
+      setDraft((d) => ({ ...d, reason_code: policy.suggestedReasonCode }));
     }
-    persist(optId);
+    setLocalError("");
   };
 
   const handleUndo = async () => {
@@ -653,21 +694,22 @@ export default function EditBagPanel({
           const basePolicy = classifyEditReasonRequirements({
             draft,
             baselineBag,
-            outcome: pendingOutcome,
+            outcome: null,
             lines,
           });
-          if (!basePolicy.reasonRequired) {
+          if (!basePolicy.isManagerOverride) {
             return (
               <Typography variant="caption" color="text.secondary">
-                Routine work-item and review saves do not require a reason. A system audit
-                code ({basePolicy.systemAction}) is recorded automatically.
+                Routine review saves (work items, completion fields) do not require a reason.
+                Audit uses {basePolicy.systemAction} automatically.
               </Typography>
             );
           }
           return (
             <Stack spacing={1}>
               <Alert severity="info">
-                This action needs a structured reason ({(basePolicy.triggers || []).join(", ")}).
+                Weight correction requires a structured reason before Save Review (
+                {(basePolicy.triggers || []).join(", ")}).
               </Alert>
               <TextField
                 select
@@ -703,12 +745,11 @@ export default function EditBagPanel({
         })()}
 
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Button
-            variant="contained"
-            disabled={saving}
-            onClick={startSave}
-          >
-            {saving ? "Saving…" : "Save & Choose Action"}
+          <Button variant="contained" disabled={saving} onClick={startRoutineSave}>
+            {saving ? "Saving…" : "Save Review"}
+          </Button>
+          <Button variant="outlined" disabled={saving} onClick={openManagerActions}>
+            Manager Action…
           </Button>
           <Button onClick={onCancel} disabled={saving}>
             Cancel
@@ -717,17 +758,17 @@ export default function EditBagPanel({
       </Stack>
 
       <Dialog open={outcomeOpen} onClose={() => !saving && setOutcomeOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle>Changes ready. What should happen to this bag?</DialogTitle>
+        <DialogTitle>Manager override action</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-            Your draft{pendingSave ? " (including bulk items and weights)" : ""} will save
-            together with the action you choose.
+            These actions change bag status and require a structured reason. Routine work-item
+            edits should use Save Review instead — they do not need this dialog.
           </Typography>
           {pendingOutcome ? (
             <Stack spacing={1} sx={{ mb: 1.5 }}>
               <Alert severity="warning">
                 {OUTCOME_OPTIONS.find((o) => o.id === pendingOutcome)?.label || pendingOutcome}{" "}
-                requires a reason code before save.
+                requires a reason code.
               </Alert>
               <TextField
                 select

@@ -31,6 +31,45 @@ function weightsDiffer(a, b) {
 }
 
 /**
+ * Classify whether the current draft is a routine review save or a manager override.
+ * Routine path: work items, no-charge, completion fields, service/rush/entry — no reason.
+ * Override path: PRE/POST weight correction, or exceptional bag outcomes.
+ */
+export function classifyEditSavePath({ draft, baselineBag, outcome = null }) {
+  const triggers = [];
+  if (EXCEPTIONAL_OUTCOMES.has(outcome)) triggers.push(String(outcome));
+  if (
+    baselineBag &&
+    weightsDiffer(draft?.post_weight_lbs, baselineBag.post_weight_value ?? baselineBag.post_weight_lbs)
+  ) {
+    triggers.push("post_weight_correction");
+  }
+  if (baselineBag && weightsDiffer(draft?.pre_weight_lbs, baselineBag.pre_weight_lbs)) {
+    triggers.push("pre_weight_correction");
+  }
+  if (draft?.manual_status_override) triggers.push("status_override");
+
+  const isManagerOverride = triggers.length > 0;
+  let suggestedReasonCode = null;
+  if (triggers.includes("post_weight_correction")) suggestedReasonCode = "POST_CORRECTION";
+  else if (triggers.includes("pre_weight_correction")) suggestedReasonCode = "PRE_CORRECTION";
+  else if (outcome === "exclude") suggestedReasonCode = "EXCLUDE";
+  else if (outcome === "mark_completed") suggestedReasonCode = "MARK_COMPLETED";
+  else if (outcome === "return_pending") suggestedReasonCode = "RETURN_PENDING";
+  else if (triggers.includes("status_override")) suggestedReasonCode = "STATUS_OVERRIDE";
+
+  return {
+    path: isManagerOverride ? "manager_override" : "routine_review",
+    isRoutineReview: !isManagerOverride,
+    isManagerOverride,
+    reasonRequired: isManagerOverride,
+    triggers,
+    suggestedReasonCode,
+    systemAction: "WORKITEMS_UPDATED",
+  };
+}
+
+/**
  * Mirror of backend classify_edit_reason_requirements for UI gating.
  */
 export function classifyEditReasonRequirements({
@@ -39,27 +78,16 @@ export function classifyEditReasonRequirements({
   outcome,
   lines,
 }) {
-  const triggers = [];
-  if (EXCEPTIONAL_OUTCOMES.has(outcome)) triggers.push(outcome);
-  if (baselineBag && weightsDiffer(draft?.post_weight_lbs, baselineBag.post_weight_value ?? baselineBag.post_weight_lbs)) {
-    triggers.push("post_weight_correction");
-  }
-  if (baselineBag && weightsDiffer(draft?.pre_weight_lbs, baselineBag.pre_weight_lbs)) {
-    triggers.push("pre_weight_correction");
-  }
-  let suggested = null;
-  if (triggers.includes("post_weight_correction")) suggested = "POST_CORRECTION";
-  else if (triggers.includes("pre_weight_correction")) suggested = "PRE_CORRECTION";
-  else if (outcome === "exclude") suggested = "EXCLUDE";
-  else if (outcome === "mark_completed") suggested = "MARK_COMPLETED";
-  else if (outcome === "return_pending") suggested = "RETURN_PENDING";
-
+  const path = classifyEditSavePath({ draft, baselineBag, outcome });
   const bulkTouched = (lines || []).some((l) => Number(l.quantity) > 0) || draft?.no_chargeable;
   return {
-    reasonRequired: triggers.length > 0,
-    triggers,
-    suggestedReasonCode: suggested,
-    systemAction: bulkTouched ? "WORKITEMS_UPDATED" : "REVIEW_SAVED",
+    reasonRequired: path.reasonRequired,
+    triggers: path.triggers,
+    suggestedReasonCode: path.suggestedReasonCode,
+    systemAction: bulkTouched ? "WORKITEMS_UPDATED" : "REVIEW_UPDATED",
+    path: path.path,
+    isRoutineReview: path.isRoutineReview,
+    isManagerOverride: path.isManagerOverride,
   };
 }
 

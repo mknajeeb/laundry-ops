@@ -53,7 +53,9 @@ REASON_CODE_OPTIONS = (
 )
 
 SYSTEM_ACTION_WORKITEMS_UPDATED = "WORKITEMS_UPDATED"
-SYSTEM_ACTION_REVIEW_SAVED = "REVIEW_SAVED"
+SYSTEM_ACTION_REVIEW_UPDATED = "REVIEW_UPDATED"
+# Legacy alias kept for older audits / callers
+SYSTEM_ACTION_REVIEW_SAVED = SYSTEM_ACTION_REVIEW_UPDATED
 
 # Fields tracked for before/after delta rows on every edit.
 _TRACKED_FIELDS = (
@@ -150,13 +152,14 @@ def classify_edit_reason_requirements(
 
     bulk_changed = "bulk_items" in draft or "no_chargeable" in draft
     system_action = (
-        SYSTEM_ACTION_WORKITEMS_UPDATED if bulk_changed else SYSTEM_ACTION_REVIEW_SAVED
+        SYSTEM_ACTION_WORKITEMS_UPDATED if bulk_changed else SYSTEM_ACTION_REVIEW_UPDATED
     )
     return {
         "reason_required": required,
         "triggers": reasons,
         "suggested_reason_code": suggested,
         "system_action": system_action,
+        "save_path": "manager_override" if required else "routine_review",
         "reason_codes": list(REASON_CODE_OPTIONS),
     }
 

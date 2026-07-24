@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildEditBagPayloadDraft,
+  classifyEditSavePath,
   describeWeightProvenance,
   formatWeightObservedEt,
   mergeBagListRow,
@@ -14,6 +15,40 @@ describe("parseWeightInput", () => {
     expect(parseWeightInput("   ")).toBeNull();
     expect(parseWeightInput("0")).toBe(0);
     expect(parseWeightInput("12.5")).toBe(12.5);
+  });
+});
+
+describe("classifyEditSavePath", () => {
+  it("treats work-item-only edits as routine review", () => {
+    const path = classifyEditSavePath({
+      draft: { post_weight_lbs: "12", pre_weight_lbs: "10", no_chargeable: false },
+      baselineBag: { post_weight_lbs: 12, pre_weight_lbs: 10 },
+      outcome: null,
+    });
+    expect(path.isRoutineReview).toBe(true);
+    expect(path.reasonRequired).toBe(false);
+    expect(path.path).toBe("routine_review");
+  });
+
+  it("treats POST weight change as manager override", () => {
+    const path = classifyEditSavePath({
+      draft: { post_weight_lbs: "15", pre_weight_lbs: "10" },
+      baselineBag: { post_weight_lbs: 12, pre_weight_lbs: 10 },
+      outcome: null,
+    });
+    expect(path.isManagerOverride).toBe(true);
+    expect(path.reasonRequired).toBe(true);
+    expect(path.suggestedReasonCode).toBe("POST_CORRECTION");
+  });
+
+  it("treats exclude outcome as manager override", () => {
+    const path = classifyEditSavePath({
+      draft: { post_weight_lbs: "12", pre_weight_lbs: "10" },
+      baselineBag: { post_weight_lbs: 12, pre_weight_lbs: 10 },
+      outcome: "exclude",
+    });
+    expect(path.isManagerOverride).toBe(true);
+    expect(path.suggestedReasonCode).toBe("EXCLUDE");
   });
 });
 
