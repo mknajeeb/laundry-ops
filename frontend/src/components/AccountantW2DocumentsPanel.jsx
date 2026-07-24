@@ -254,7 +254,6 @@ export default function AccountantW2DocumentsPanel({ embedded = false }) {
 
   useEffect(() => {
     setSelected(null);
-    setDetailTab("documents");
   }, [category, viewMode, selectedBatchId]);
 
   const workerOptions =
