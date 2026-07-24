@@ -106,6 +106,7 @@ export default function Step1MetricDrawer({
   onClose,
   selectedDateEt,
   metric,
+  queue = null,
   serviceFilter = "all",
   rushFilter = "all",
   title,
@@ -127,6 +128,7 @@ export default function Step1MetricDrawer({
   const editingBagRef = useRef(null);
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
+  const resolvedMetric = queue || metric;
 
   useEffect(() => {
     editingBagRef.current = editingBag;
@@ -134,7 +136,7 @@ export default function Step1MetricDrawer({
 
   const load = useCallback(
     async (nextPage = 1, signal, opts = {}) => {
-      if (!open || !selectedDateEt || !metric) return;
+      if (!open || !selectedDateEt || !resolvedMetric) return;
       const preserveExpanded = Boolean(opts.preserveExpanded);
       const openEditId = editingBagRef.current;
       const skipCacheMerge = Boolean(opts.skipCacheMerge) || Boolean(openEditId);
@@ -143,11 +145,14 @@ export default function Step1MetricDrawer({
       if (!preserveExpanded) {
         setExpanded(null);
         setEditingBag(null);
+        setBags([]);
+        setTotal(0);
       }
       try {
         const res = await getVeewashStep1Drilldown({
           date: selectedDateEt,
-          metric,
+          metric: resolvedMetric,
+          queue: resolvedMetric,
           service: serviceFilter,
           rush: rushFilter,
           page: nextPage,
@@ -172,7 +177,7 @@ export default function Step1MetricDrawer({
         });
         if (Array.isArray(data.active_bulk_workitems) && data.active_bulk_workitems.length) {
           setCatalog(data.active_bulk_workitems);
-        } else if (metric === "review_required" || reasonCode === "WF_BULK_WORKITEM_REVIEW") {
+        } else if (resolvedMetric === "review_required" || reasonCode === "WF_BULK_WORKITEM_REVIEW") {
           loadBulkCatalogOnce().then((rows) => {
             if (!signal?.aborted && rows.length) setCatalog(rows);
           });
@@ -190,7 +195,7 @@ export default function Step1MetricDrawer({
         if (!signal?.aborted) setLoading(false);
       }
     },
-    [open, selectedDateEt, metric, serviceFilter, rushFilter, reasonCode]
+    [open, selectedDateEt, resolvedMetric, serviceFilter, rushFilter, reasonCode]
   );
 
   useEffect(() => {
@@ -200,7 +205,7 @@ export default function Step1MetricDrawer({
   }, [load]);
 
   const loadBagDetail = async (bagId, { force = false } = {}) => {
-    if (!bagId || !selectedDateEt || !metric) return;
+    if (!bagId || !selectedDateEt || !resolvedMetric) return;
     const cacheKey = detailCacheKey(selectedDateEt, bagId);
     if (!force) {
       const cached = bagDetailCache.get(cacheKey);
@@ -230,7 +235,8 @@ export default function Step1MetricDrawer({
     try {
       const res = await getVeewashStep1BagDetail({
         date: selectedDateEt,
-        metric,
+        metric: resolvedMetric,
+        queue: resolvedMetric,
         service: serviceFilter,
         rush: rushFilter,
         bag_id: bagId,
@@ -377,7 +383,8 @@ export default function Step1MetricDrawer({
             {title || metric}
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            {selectedDateEt} · service={serviceFilter} · rush={rushFilter}
+            {selectedDateEt} · filter={resolvedMetric || "—"} · service={serviceFilter} · rush={rushFilter}
+            {total != null ? ` · ${total} bag${total === 1 ? "" : "s"}` : ""}
           </Typography>
         </Box>
         <Button onClick={onClose}>Close</Button>
@@ -412,6 +419,11 @@ export default function Step1MetricDrawer({
               Refresh
             </Button>
           </Stack>
+          {total === 0 ? (
+            <Alert severity="info" sx={{ py: 1 }}>
+              No bags in this queue for the selected filters.
+            </Alert>
+          ) : null}
           {bags.map((bag) => {
             const openRow = expanded === bag.bag_id;
             const loadingDetail = Boolean(detailLoading[bag.bag_id]);

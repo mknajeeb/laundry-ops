@@ -128,6 +128,7 @@ function MetricRow({
   onMetricClick,
   membershipHelper = null,
   pendingTrusted = true,
+  rowService = "all",
 }) {
   if (!seg) return null;
   const review = seg.exceptions?.review_required ?? seg.exceptions?.total ?? 0;
@@ -144,7 +145,9 @@ function MetricRow({
     : isHd
       ? "Production Missing — provisional"
       : "Pending — provisional";
-  const click = (metric, label) => () => onMetricClick?.(metric, `${title} · ${label}`);
+  // Bind drawer service to the KPI row (WF/HD/TOTAL), not the page Service chip alone.
+  const click = (metric, label) => () =>
+    onMetricClick?.(metric, `${title} · ${label}`, { service: rowService, queue: metric });
   return (
     <Box sx={{ mb: emphasize ? 0 : 1.5 }}>
       <Typography
@@ -213,7 +216,14 @@ export default function VeeWashStep1Section({
   shiftDay,
 }) {
   const [serviceFilter, setServiceFilter] = useState("all");
-  const [drawer, setDrawer] = useState({ open: false, metric: null, title: "", reasonCode: null });
+  const [drawer, setDrawer] = useState({
+    open: false,
+    metric: null,
+    title: "",
+    reasonCode: null,
+    service: "all",
+    queue: null,
+  });
   const rushFilter = segment || "all";
   const segments = summary?.segments || {};
   const dayMeta = shiftDay || summary?.shift_day || {};
@@ -234,8 +244,31 @@ export default function VeeWashStep1Section({
   const reviewCount = totalSeg.exceptions?.review_required ?? reviewIds.length ?? 0;
   const reviewByReason = summary?.review_by_reason || {};
 
-  const openMetric = (metric, title, reasonCode = null) => {
-    setDrawer({ open: true, metric, title, reasonCode });
+  const openMetric = (metric, title, opts = null) => {
+    const options = typeof opts === "string" || opts == null ? { reasonCode: opts } : opts;
+    const svc = String(options?.service || "all").toLowerCase();
+    setDrawer({
+      open: true,
+      metric,
+      title,
+      reasonCode: options?.reasonCode ?? null,
+      service: svc === "wf" || svc === "hd" ? svc : "all",
+      queue: options?.queue || metric,
+    });
+  };
+
+  const onServiceFilterChange = (next) => {
+    setServiceFilter(next);
+    if (drawer.open) {
+      setDrawer({ open: false, metric: null, title: "", reasonCode: null, service: "all", queue: null });
+    }
+  };
+
+  const onRushFilterChange = (next) => {
+    if (drawer.open) {
+      setDrawer({ open: false, metric: null, title: "", reasonCode: null, service: "all", queue: null });
+    }
+    onRushChange?.(next);
   };
 
   if (!summary) return null;
@@ -345,9 +378,10 @@ export default function VeeWashStep1Section({
           ) : null}
           {summary?.membership ? (
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-              Opening scrape admits {summary.membership.opening_scrape_admit_count ?? summary.membership.baseline_count ?? "—"}
-              {summary.membership.baseline_delayed ? " (delayed)" : ""} · Added during day{" "}
-              {summary.membership.added_during_day_count ?? summary.membership.added_later_count ?? "—"} · Total{" "}
+              Opening scrape admits:{" "}
+              {summary.membership.opening_scrape_admit_count ?? summary.membership.baseline_count ?? "—"}
+              {summary.membership.baseline_delayed ? " (delayed)" : ""} · Added during day:{" "}
+              {summary.membership.added_during_day_count ?? summary.membership.added_later_count ?? "—"} · Total:{" "}
               {summary.membership.total_count ?? "—"}
               {summary.membership.excluded_prior_day_carryin_count
                 ? ` · Excluded prior-day portal carry-in ${summary.membership.excluded_prior_day_carryin_count}`
@@ -371,21 +405,33 @@ export default function VeeWashStep1Section({
               <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
                 Service
               </Typography>
-              <ServiceFilterChips value={serviceFilter} onChange={setServiceFilter} />
+              <ServiceFilterChips value={serviceFilter} onChange={onServiceFilterChange} />
             </Box>
             <Box>
               <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
                 Rush
               </Typography>
-              <RushFilterChips value={rushFilter} onChange={onRushChange} />
+              <RushFilterChips value={rushFilter} onChange={onRushFilterChange} />
             </Box>
           </Stack>
 
           {wfSeg ? (
-            <MetricRow title="WF" seg={wfSeg} onMetricClick={openMetric} pendingTrusted={pendingTrusted} />
+            <MetricRow
+              title="WF"
+              seg={wfSeg}
+              rowService="wf"
+              onMetricClick={openMetric}
+              pendingTrusted={pendingTrusted}
+            />
           ) : null}
           {hdSeg ? (
-            <MetricRow title="HD" seg={hdSeg} onMetricClick={openMetric} pendingTrusted={pendingTrusted} />
+            <MetricRow
+              title="HD"
+              seg={hdSeg}
+              rowService="hd"
+              onMetricClick={openMetric}
+              pendingTrusted={pendingTrusted}
+            />
           ) : null}
 
           <Box
@@ -400,6 +446,7 @@ export default function VeeWashStep1Section({
               title="TOTAL"
               seg={totalSeg}
               emphasize
+              rowService={serviceFilter === "wf" || serviceFilter === "hd" ? serviceFilter : "all"}
               onMetricClick={openMetric}
               pendingTrusted={pendingTrusted}
               membershipHelper={
@@ -408,11 +455,11 @@ export default function VeeWashStep1Section({
                       summary.membership.fresh_start_no_prior_day_carryover
                         ? "Fresh start — no prior-day carryover · "
                         : ""
-                    }Opening scrape admits ${
+                    }Opening scrape admits: ${
                       summary.membership.opening_scrape_admit_count ?? summary.membership.baseline_count ?? "—"
-                    } · Added during day ${
+                    } · Added during day: ${
                       summary.membership.added_during_day_count ?? summary.membership.added_later_count ?? "—"
-                    } · Total ${summary.membership.total_count ?? totalSeg.active_workload ?? "—"}`
+                    } · Total: ${summary.membership.total_count ?? totalSeg.active_workload ?? "—"}`
                   : null
               }
             />
@@ -444,7 +491,13 @@ export default function VeeWashStep1Section({
           <AccordionSummary
             expandIcon={reviewCount > 0 ? <ExpandMoreIcon /> : null}
             sx={{ px: 0, minHeight: 36, "&.Mui-disabled": { opacity: 1 } }}
-            onClick={() => reviewCount > 0 && openMetric("review_required", "Review Required")}
+            onClick={() =>
+              reviewCount > 0 &&
+              openMetric("review_required", "Review Required", {
+                service: serviceFilter === "wf" || serviceFilter === "hd" ? serviceFilter : "all",
+                queue: "review_required",
+              })
+            }
           >
             <Typography variant="subtitle2" fontWeight={800} sx={{ color: reviewCount > 0 ? "#991b1b" : "text.primary" }}>
               Review Required · {reviewCount}
@@ -470,7 +523,13 @@ export default function VeeWashStep1Section({
                     </Typography>
                     <BagList
                       ids={ids}
-                      onBagClick={() => openMetric("review_required", label, key)}
+                      onBagClick={() =>
+                        openMetric("review_required", label, {
+                          service: serviceFilter === "wf" || serviceFilter === "hd" ? serviceFilter : "all",
+                          reasonCode: key,
+                          queue: "review_required",
+                        })
+                      }
                     />
                   </Box>
                 );
@@ -490,12 +549,15 @@ export default function VeeWashStep1Section({
 
       <Step1MetricDrawer
         open={drawer.open}
-        onClose={() => setDrawer((d) => ({ ...d, open: false }))}
+        onClose={() =>
+          setDrawer({ open: false, metric: null, title: "", reasonCode: null, service: "all", queue: null })
+        }
         selectedDateEt={selectedDateEt || summary.selected_date_et}
         metric={drawer.metric}
+        queue={drawer.queue || drawer.metric}
         title={drawer.title}
         reasonCode={drawer.reasonCode}
-        serviceFilter={serviceFilter}
+        serviceFilter={drawer.service || "all"}
         rushFilter={rushFilter}
         onCorrected={onRefresh}
         readOnly={readOnly}

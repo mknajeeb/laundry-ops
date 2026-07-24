@@ -117,6 +117,36 @@ def build_step1_payload(cursor, organization_id: int, selected_date_et: date) ->
     return {"workload": wl, "summary": summary, "day": day}
 
 
+def normalize_step1_queue_metric(raw: str | None) -> str:
+    """
+    Map KPI queue aliases onto headline bag_ids keys.
+
+    HD Production Recorded / Missing are UI labels for completed / pending.
+    """
+    key = str(raw or "").strip().lower().replace("-", "_")
+    aliases = {
+        "all": "active_workload",
+        "total": "active_workload",
+        "total_workload": "active_workload",
+        "active": "active_workload",
+        "active_workload": "active_workload",
+        "completed": "completed",
+        "production_recorded": "completed",
+        "pending": "pending",
+        "production_missing": "pending",
+        "review": "review_required",
+        "review_required": "review_required",
+        "new_today": "new_today",
+        "carryover": "carryover",
+        "washed": "completed",
+        "folded": "completed",
+    }
+    if key in aliases:
+        return aliases[key]
+    # Unknown queue → safe default (empty review is better than leaking all bags).
+    return "review_required"
+
+
 def _filter_bag_ids(
     summary: dict[str, Any],
     *,
@@ -150,19 +180,23 @@ def _filter_bag_ids(
     else:
         key = "all"
 
-    seg = segs.get(key) or segs.get("all") or {}
+    seg = segs.get(key) or {}
+    # Do not silently fall back to "all" when a specific service segment is missing —
+    # that would open the full queue for a WF/HD card.
+    if not seg and key != "all":
+        return []
+    if not seg:
+        seg = segs.get("all") or {}
     bags = seg.get("bag_ids") or {}
+    metric_norm = normalize_step1_queue_metric(metric)
     metric_key = {
         "new_today": "new_today",
         "carryover": "carryover",
         "completed": "completed",
         "pending": "pending",
         "review_required": "review_required",
-        "active": None,
         "active_workload": None,
-        "washed": "completed",  # HD stage alias until separate stage model
-        "folded": "completed",
-    }.get(metric, metric)
+    }.get(metric_norm, metric_norm)
 
     if metric_key is None:
         # Active = New + Carryover (includes CWO bags added via Review expand).

@@ -13,6 +13,16 @@ from backend.rinse_employee_workload_productivity import (
 )
 
 UNKNOWN_EMPLOYEE = "Unknown"
+CREDITED_WEIGHT_SOURCE_EVIDENCE_PRE = "EVIDENCE_PRE"
+
+
+def _parse_weight(raw: Any) -> float | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _rush_bucket_from_status(rush_status: Any) -> str:
@@ -34,16 +44,51 @@ def _normalize_employee(name: Any) -> str:
 
 
 def _weight_lbs(row: Mapping[str, Any]) -> float | None:
+    """
+    Credited pounds for Employee Performance.
+
+    WF: immutable Evidence PRE only (never POST / canonical / manager correction).
+    HD and other services: preserve prior snapshot chain.
+    """
+    svc = str(row.get("service_type") or row.get("service_bucket") or "").upper()
+    if svc == "WF":
+        return _parse_weight(row.get("pre_weight_lbs"))
     for key in ("productivity_weight_lbs", "weight_lbs", "post_weight_lbs", "pre_weight_lbs"):
-        raw = row.get(key)
-        if raw is None or raw == "":
-            continue
-        try:
-            return float(raw)
-        except (TypeError, ValueError):
-            continue
+        lbs = _parse_weight(row.get(key))
+        if lbs is not None:
+            return lbs
     return None
 
+
+def _wf_credited_weight_fields(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Bag-level Evidence PRE credit fields for WF Employee Performance."""
+    pre = _parse_weight(row.get("pre_weight_lbs"))
+    # If projection already stored PRE into productivity_weight_lbs, prefer that
+    # only when pre_weight_lbs is also present / equal — never invent from POST.
+    projected = _parse_weight(row.get("productivity_weight_lbs"))
+    credited = pre if pre is not None else None
+    # Guard: if pre missing, do not use projected value that may be stale POST.
+    if credited is None:
+        return {
+            "credited_weight_lbs": None,
+            "credited_weight_source": None,
+            "missing_production_credit_weight": True,
+            "pre_weight_lbs": None,
+            "pre_weight_at": None,
+            "pre_weight_source": None,
+        }
+    # Prefer pre; projected may equal pre after re-sync.
+    if projected is not None and abs(projected - credited) > 1e-6:
+        # Prefer immutable pre_weight_lbs column over a stale projection.
+        pass
+    return {
+        "credited_weight_lbs": credited,
+        "credited_weight_source": CREDITED_WEIGHT_SOURCE_EVIDENCE_PRE,
+        "missing_production_credit_weight": False,
+        "pre_weight_lbs": credited,
+        "pre_weight_at": row.get("pre_weight_at") or row.get("productivity_pre_weight_at"),
+        "pre_weight_source": row.get("pre_weight_source") or CREDITED_WEIGHT_SOURCE_EVIDENCE_PRE,
+    }
 
 def _parse_ts(raw: Any) -> datetime | None:
     if raw is None:
@@ -187,13 +232,26 @@ def load_completed_productivity_day_bags(
         if employee and emp != str(employee).strip():
             continue
         ts = _parse_ts(raw.get("productivity_completed_at") or raw.get("canonical_completion_timestamp"))
-        lbs = _weight_lbs(raw)
+        svc = str(raw.get("service_type") or "").upper()
+        if svc == "WF":
+            credit = _wf_credited_weight_fields(raw)
+            lbs = credit["credited_weight_lbs"]
+        else:
+            credit = {
+                "credited_weight_lbs": _weight_lbs(raw),
+                "credited_weight_source": None,
+                "missing_production_credit_weight": False,
+                "pre_weight_lbs": _parse_weight(raw.get("pre_weight_lbs")),
+                "pre_weight_at": None,
+                "pre_weight_source": None,
+            }
+            lbs = credit["credited_weight_lbs"]
         bucket = _rush_bucket_from_status(raw.get("rush_status"))
         out.append(
             {
                 "bag_id": str(raw.get("bag_id") or "").strip().upper(),
-                "service_type": str(raw.get("service_type") or "").upper(),
-                "service_bucket": str(raw.get("service_type") or "").upper(),
+                "service_type": svc,
+                "service_bucket": svc,
                 "rush_status": raw.get("rush_status"),
                 "rush_bucket": bucket,
                 "rush_label": "Rush" if bucket == AV_RUSH else ("Non-Rush" if bucket == AV_NON_RUSH else None),
@@ -203,13 +261,25 @@ def load_completed_productivity_day_bags(
                 "completion_time": ts.isoformat(sep=" ") if ts else None,
                 "completion_timestamp": ts.isoformat(sep=" ") if ts else None,
                 "processed_time": ts.isoformat(sep=" ") if ts else None,
+                # Display / totals: WF uses Evidence PRE only (null when missing).
                 "weight_lbs": lbs,
                 "completed_lbs": lbs,
                 "credited_lbs": lbs,
                 "processed_lbs": lbs,
-                "pre_weight_lbs": float(raw["pre_weight_lbs"])
-                if raw.get("pre_weight_lbs") is not None
-                else None,
+                "credited_weight_lbs": credit.get("credited_weight_lbs"),
+                "credited_weight_source": credit.get("credited_weight_source"),
+                "missing_production_credit_weight": bool(
+                    credit.get("missing_production_credit_weight")
+                ),
+                "pre_weight_lbs": credit.get("pre_weight_lbs")
+                if svc == "WF"
+                else (
+                    float(raw["pre_weight_lbs"])
+                    if raw.get("pre_weight_lbs") is not None
+                    else None
+                ),
+                "pre_weight_at": credit.get("pre_weight_at"),
+                "pre_weight_source": credit.get("pre_weight_source"),
                 "post_weight_lbs": float(raw["post_weight_lbs"])
                 if raw.get("post_weight_lbs") is not None
                 else None,
@@ -406,6 +476,21 @@ def build_step1_snapshot_productivity_section(
     credited_total = len(bags)
     unassigned = sum(1 for b in bags if b.get("employee") == UNASSIGNED_EMPLOYEE)
     attributed = credited_total - unassigned
+    missing_pre = sum(
+        1
+        for b in bags
+        if str(b.get("service_type") or "").upper() == "WF"
+        and b.get("missing_production_credit_weight")
+    )
+    wf_credited_lbs = round(
+        sum(
+            float(b["credited_weight_lbs"])
+            for b in bags
+            if str(b.get("service_type") or "").upper() == "WF"
+            and b.get("credited_weight_lbs") is not None
+        ),
+        2,
+    )
     recon = {
         "ok": True,
         "selected_date_et": selected_date_et.isoformat(),
@@ -416,6 +501,9 @@ def build_step1_snapshot_productivity_section(
         "employee_attributed_bag_count": attributed,
         "employee_credited_unique_bags": attributed,
         "unassigned_count": unassigned,
+        "wf_credited_weight_source": CREDITED_WEIGHT_SOURCE_EVIDENCE_PRE,
+        "wf_missing_production_credit_weight_count": missing_pre,
+        "wf_credited_lbs_evidence_pre": wf_credited_lbs,
         "source": "shift_monitor_day_bags_snapshot",
     }
     banner = {
@@ -481,14 +569,24 @@ def build_employee_productivity_bags_page(
 
 
 def project_productivity_fields_for_day_bag(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Compute productivity projection columns for snapshot upsert."""
+    """Compute productivity projection columns for snapshot upsert.
+
+    WF credited pounds = immutable Evidence PRE only.
+    HD / other services keep prior weight_lbs → post → pre chain.
+    """
     eff = str(row.get("effective_status") or "").lower()
     eligible = eff == "completed"
     emp = row.get("canonical_completion_employee") or row.get("completed_by")
     ts = row.get("canonical_completion_timestamp") or row.get("completion_at")
-    lbs = row.get("weight_lbs")
-    if lbs is None:
-        lbs = row.get("post_weight_lbs")
+    svc = str(row.get("service_type") or "").upper()
+    if svc == "WF":
+        lbs = _parse_weight(row.get("pre_weight_lbs"))
+    else:
+        lbs = _parse_weight(row.get("weight_lbs"))
+        if lbs is None:
+            lbs = _parse_weight(row.get("post_weight_lbs"))
+        if lbs is None:
+            lbs = _parse_weight(row.get("pre_weight_lbs"))
     return {
         "productivity_employee_name": (str(emp).strip() if emp else None) or None,
         "productivity_completed_at": ts,

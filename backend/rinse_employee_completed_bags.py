@@ -1046,6 +1046,38 @@ def _enrich_credited_bag_weights(
             repair_scan_from_portal=True,
         )
 
+        # WF Employee Performance credit = immutable Evidence PRE only.
+        # Does not change Daily Ops authoritative POST / revenue resolvers.
+        svc = str(bag.get("service_type") or row.get("service_type") or "").upper()
+        if svc == "WF" and hasattr(cursor, "execute"):
+            from backend.daily_operations import resolve_evidence_pre_weight
+
+            pre = resolve_evidence_pre_weight(cursor, organization_id, bid) or {}
+            pre_lbs = pre.get("weight_lbs")
+            bag["pre_weight_lbs"] = pre_lbs
+            bag["pre_weight_at"] = pre.get("observed_at")
+            bag["pre_weight_source"] = pre.get("source")
+            if pre_lbs is not None:
+                _apply_bag_weight_fields(bag, float(pre_lbs))
+                bag["weight_lbs"] = float(pre_lbs)
+                bag["credited_weight_lbs"] = float(pre_lbs)
+                bag["credited_weight_source"] = "EVIDENCE_PRE"
+                bag["missing_production_credit_weight"] = False
+                bag["weight_source"] = "EVIDENCE_PRE"
+                bag["weight_missing"] = False
+                bag["weight_status"] = "resolved"
+                bag["weight_integrity_failure"] = None
+            else:
+                bag["completed_lbs"] = None
+                bag["processed_lbs"] = None
+                bag["credited_lbs"] = None
+                bag["weight"] = None
+                bag["weight_lbs"] = None
+                bag["credited_weight_lbs"] = None
+                bag["credited_weight_source"] = None
+                bag["missing_production_credit_weight"] = True
+                bag["weight_missing"] = True
+
         for key in weight_row_keys:
             if row.get(key) is not None and bag.get(key) is None:
                 bag[key] = row[key]

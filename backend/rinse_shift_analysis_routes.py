@@ -428,13 +428,19 @@ def register_rinse_shift_analysis_routes(
             day = parse_date_value(raw_day) if raw_day else date.today()
             if not isinstance(day, date):
                 day = date.today()
-            from backend.rinse_veewash_step1_api import build_drilldown
+            from backend.rinse_veewash_step1_api import (
+                build_drilldown,
+                normalize_step1_queue_metric,
+            )
 
+            # Prefer explicit queue=; fall back to metric= for compatibility.
+            raw_queue = request.args.get("queue") or request.args.get("metric") or "review_required"
+            metric = normalize_step1_queue_metric(raw_queue)
             out = build_drilldown(
                 cursor,
                 org,
                 selected_date_et=day,
-                metric=str(request.args.get("metric") or "review_required"),
+                metric=metric,
                 service=str(request.args.get("service") or "all"),
                 rush=str(request.args.get("rush") or "all"),
                 include_details=str(request.args.get("include_details") or "").lower()
@@ -444,6 +450,10 @@ def register_rinse_shift_analysis_routes(
                 page_size=int(request.args.get("page_size") or 25),
                 reason_code=request.args.get("reason_code") or request.args.get("reason"),
             )
+            if isinstance(out, dict):
+                out["queue"] = metric
+                out["service"] = str(request.args.get("service") or "all")
+                out["rush"] = str(request.args.get("rush") or "all")
             return jsonify(json_safe_rinse(out))
         except Exception as exc:
             return _public_server_error("Unable to load workload details.", exc)
