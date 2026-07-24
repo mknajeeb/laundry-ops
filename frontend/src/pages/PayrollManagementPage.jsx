@@ -51,8 +51,15 @@ export default function PayrollManagementPage() {
   const canPayout = hasPerm("ta.settings") || hasPerm("users.edit") || isAdmin || isPayrollAdmin;
   const canContractors = hasPerm("users.edit") || hasPerm("ta.settings") || isAdmin;
   const canAccountant = hasPerm("users.view") || hasPerm("ta.settings") || isAdmin;
+  // Dashboard/Reports require analytics (or payroll admin) — not bare users.view.
+  // External ACCOUNTANT is intentionally excluded from these tabs.
   const canAnalytics =
-    hasPerm("payroll.analytics.view") || hasPerm("users.view") || hasPerm("ta.settings") || isAdmin;
+    hasPerm("payroll.analytics.view") ||
+    hasPerm("ta.settings") ||
+    isAdmin ||
+    isPayrollAdmin ||
+    isSuperAdmin ||
+    isPayrollAnalyticsRole;
   const canPayoutDetails = canPayout || (isAccountantRole && canAccountant);
 
   const readOnlyAccountant =
@@ -66,10 +73,16 @@ export default function PayrollManagementPage() {
     !isPayrollAdmin &&
     !isSuperAdmin;
 
-  const accountantTabs = useMemo(
+  const analyticsTabs = useMemo(
     () => [
       { key: "reports", label: "Dashboard" },
       { key: "reports_detail", label: "Reports" },
+    ],
+    [],
+  );
+
+  const accountantTabs = useMemo(
+    () => [
       { key: "accountant_employee", label: "Employee Detail" },
       { key: "accountant_payroll", label: "By Batch" },
       { key: "accountant_documents", label: "Documents" },
@@ -81,15 +94,14 @@ export default function PayrollManagementPage() {
     const out = [];
     if (dashboardOnly) {
       return [
-        { key: "reports", label: "Dashboard" },
-        { key: "reports_detail", label: "Reports" },
+        ...analyticsTabs,
         { key: "accountant_employee", label: "Employee Detail" },
         { key: "batches", label: "By Batch" },
       ];
     }
     if (readOnlyAccountant) return [...accountantTabs];
-    if (canAnalytics || canPayout || (isAccountantRole && canAccountant)) {
-      out.push(...accountantTabs.filter((t) => t.key === "reports" || t.key === "reports_detail"));
+    if (canAnalytics || canPayout) {
+      out.push(...analyticsTabs);
     }
     if (canTime) out.push({ key: "time", label: "Time Records" });
     if (canTime && hasPerm("ta.settings")) {
@@ -98,11 +110,7 @@ export default function PayrollManagementPage() {
     if (canTime) out.push({ key: "shift_task_history", label: "Shift Task History" });
     if (canPayout) out.push({ key: "batches", label: "By Batch" });
     if (canPayout || (isAccountantRole && canAccountant)) {
-      out.push(
-        ...accountantTabs.filter(
-          (t) => t.key !== "reports" && t.key !== "reports_detail",
-        ),
-      );
+      out.push(...accountantTabs);
     }
     if (canPayoutDetails) {
       out.push({ key: "payout_details", label: canPayout ? "Finalize Payroll" : "Payment & Details" });
@@ -116,6 +124,7 @@ export default function PayrollManagementPage() {
     return out;
   }, [
     accountantTabs,
+    analyticsTabs,
     canTime,
     canPayout,
     canContractors,
@@ -344,7 +353,7 @@ export default function PayrollManagementPage() {
               You do not have permission to view employee payroll details.
             </Alert>
           ) : (
-            <AccountantEmployeePaystubsPanel />
+            <AccountantEmployeePaystubsPanel w2Only={readOnlyAccountant} />
           )
         ) : null}
         {active?.key === "contractors" ? <ContractorManagementPanel /> : null}

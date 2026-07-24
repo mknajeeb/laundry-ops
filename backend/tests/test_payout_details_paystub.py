@@ -259,6 +259,25 @@ def test_is_accountant_batch_list_view():
         assert is_accountant_batch_list_view(conn, 1) is False
 
 
+def test_accountant_may_access_batch_w2_only():
+    from backend.payroll_payout_details import accountant_may_access_batch
+
+    conn = MagicMock()
+    with patch(
+        "backend.payroll_payout_details.user_role_codes",
+        return_value={"ACCOUNTANT"},
+    ):
+        assert accountant_may_access_batch(conn, 1, {"worker_category": "w2"}) is True
+        assert accountant_may_access_batch(conn, 1, {"worker_category": "temp"}) is False
+        assert accountant_may_access_batch(conn, 1, {"worker_category": "contractor_1099"}) is False
+
+    with patch(
+        "backend.payroll_payout_details.user_role_codes",
+        return_value={"ADMIN"},
+    ):
+        assert accountant_may_access_batch(conn, 1, {"worker_category": "temp"}) is True
+
+
 def test_can_process_accountant_batch_role():
     conn = MagicMock()
     with patch(

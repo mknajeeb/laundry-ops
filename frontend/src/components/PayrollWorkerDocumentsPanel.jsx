@@ -37,8 +37,8 @@ export default function PayrollWorkerDocumentsPanel() {
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Signed handbook and compliance files, plus internal HR Timeline (coaching, warnings,
-          separation notes). Accountants are limited to W-2 employees; admins can manage all payroll
-          worker categories.
+          separation notes). Accountants see W-2 signed documents only (no HR Timeline); admins
+          can manage all payroll worker categories.
         </Typography>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "center" }}>
           <FormControl size="small" sx={{ minWidth: 220 }}>

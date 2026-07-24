@@ -183,6 +183,20 @@ def is_accountant_batch_list_view(conn, user_id: int) -> bool:
     return not codes & ACCOUNTANT_BATCH_ADMIN_ROLES
 
 
+def accountant_w2_only_scope(conn, user_id: int) -> bool:
+    """External accountants are restricted to W-2 payroll data (no 1099/temp)."""
+    return is_accountant_batch_list_view(conn, user_id)
+
+
+def accountant_may_access_batch(conn, user_id: int, batch: Optional[dict]) -> bool:
+    """Deny external accountants access to non-W-2 batches."""
+    if not batch:
+        return False
+    if not accountant_w2_only_scope(conn, user_id):
+        return True
+    return str(batch.get("worker_category") or "").strip() == "w2"
+
+
 def can_process_accountant_batch(conn, user_id: int) -> bool:
     from backend.ta_routes import user_has_perm
 

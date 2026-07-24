@@ -3644,6 +3644,10 @@ def hr_timeline_meta_route():
     try:
         if not user_has_perm(conn, g.ta_user["id"], "users.view"):
             return jsonify({"error": "Forbidden"}), 403
+        from backend.payroll_payout_details import accountant_w2_only_scope
+
+        if accountant_w2_only_scope(conn, int(g.ta_user["id"])):
+            return jsonify({"error": "Forbidden"}), 403
         return jsonify(hr_timeline_meta())
     finally:
         conn.close()
@@ -3664,6 +3668,10 @@ def user_hr_timeline(user_id):
         oid = int(u.get("organization_id") or _tenant_id())
         if request.method == "GET":
             if not user_has_perm(conn, g.ta_user["id"], "users.view"):
+                return jsonify({"error": "Forbidden"}), 403
+            from backend.payroll_payout_details import accountant_w2_only_scope
+
+            if accountant_w2_only_scope(conn, int(g.ta_user["id"])):
                 return jsonify({"error": "Forbidden"}), 403
             return jsonify({"items": list_hr_timeline_entries(conn, oid, user_id)})
         if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
@@ -5977,12 +5985,15 @@ def payroll_payout_batches():
 
             uid = int(g.ta_user["id"])
             accountant_visible_only = is_accountant_batch_list_view(conn, uid)
+            worker_category = request.args.get("worker_category")
+            if accountant_visible_only:
+                worker_category = "w2"
             return jsonify(
                 {
                     "items": list_payout_batches(
                         conn,
                         oid,
-                        worker_category=request.args.get("worker_category"),
+                        worker_category=worker_category,
                         accountant_visible_only=accountant_visible_only,
                     )
                 }
@@ -6026,6 +6037,10 @@ def payroll_payout_batch_detail(batch_id):
         if request.method == "GET":
             row = get_payout_batch(conn, oid, batch_id)
             if not row:
+                return jsonify({"error": "Not found"}), 404
+            from backend.payroll_payout_details import accountant_may_access_batch
+
+            if not accountant_may_access_batch(conn, int(g.ta_user["id"]), row):
                 return jsonify({"error": "Not found"}), 404
             sync = str(request.args.get("sync") or "").lower()
             if sync in ("1", "true", "yes") and str(row.get("status") or "") in (
@@ -6163,6 +6178,7 @@ def payroll_payout_batch_details(batch_id: int):
     conn = get_db()
     try:
         from backend.payroll_payout_details import (
+            accountant_may_access_batch,
             can_edit_payout_details,
             get_payout_batch_details,
             update_payout_batch_details,
@@ -6173,6 +6189,8 @@ def payroll_payout_batch_details(batch_id: int):
         if request.method == "GET":
             row = get_payout_batch_details(conn, oid, batch_id)
             if not row:
+                return jsonify({"error": "Not found"}), 404
+            if not accountant_may_access_batch(conn, uid, row):
                 return jsonify({"error": "Not found"}), 404
             return jsonify(row)
         if not can_edit_payout_details(conn, uid):

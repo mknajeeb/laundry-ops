@@ -51,12 +51,51 @@ def test_accountant_only_sees_accountant_tab_logic():
     assert 'isAccountantRole = rolesUpper.includes("ACCOUNTANT")' in page
     assert "canContractors = hasPerm(\"users.edit\")" in page
     assert 'key: "accountant_payroll"' in page
-    assert 'key: "accountant_payroll"' in page
     assert 'key: "accountant_documents"' in page
     assert 'key: "accountant_employee"' in page
-    assert 'label: "For Accountant"' in page
-    assert 'key: "accountant_reports"' not in page
     assert "readOnlyAccountant" in page
+    # External accountants: Employee Detail / By Batch / Documents only — no Dashboard/Reports
+    assert "if (readOnlyAccountant) return [...accountantTabs];" in page
+    assert "analyticsTabs" in page
+    accountant_tabs_block = page.split("const accountantTabs = useMemo(")[1].split(
+        "const sections = useMemo"
+    )[0]
+    assert 'key: "reports"' not in accountant_tabs_block
+    assert 'key: "reports_detail"' not in accountant_tabs_block
+    assert 'key: "accountant_employee"' in accountant_tabs_block
+    # users.view alone must not unlock analytics tabs
+    assert 'hasPerm("payroll.analytics.view")' in page
+    assert 'hasPerm("users.view") || hasPerm("ta.settings") || isAdmin;' in page
+    can_analytics = page.split("const canAnalytics =")[1].split("const canPayoutDetails")[0]
+    assert 'hasPerm("users.view")' not in can_analytics
+
+
+def test_accountant_documents_hides_hr_timeline():
+    panel = _read("frontend/src/components/AccountantW2DocumentsPanel.jsx")
+    assert "PayrollHrTimelinePanel" not in panel
+    assert 'label="HR Timeline"' not in panel
+
+
+def test_accountant_employee_detail_w2_only():
+    panel = _read("frontend/src/components/AccountantEmployeePaystubsPanel.jsx")
+    page = _read("frontend/src/pages/PayrollManagementPage.jsx")
+    assert "w2Only = false" in panel or "w2Only=false" in panel or "{ w2Only = false }" in panel
+    assert "w2Only={readOnlyAccountant}" in page
+    assert "categoryOptions = w2Only ? []" in panel
+
+
+def test_accountant_api_scopes_w2_and_blocks_hr_timeline():
+    details = _read("backend/payroll_payout_details.py")
+    routes = _read("backend/ta_routes.py")
+    assert "def accountant_w2_only_scope" in details
+    assert "def accountant_may_access_batch" in details
+    assert "accountant_w2_only_scope" in routes
+    assert 'worker_category = "w2"' in routes
+    assert "accountant_may_access_batch" in routes
+    hr_get = routes.split("def user_hr_timeline(user_id):")[1].split(
+        "def user_hr_timeline_item"
+    )[0]
+    assert "accountant_w2_only_scope" in hr_get
 
 
 def test_upload_gated_on_users_edit():
@@ -137,9 +176,11 @@ def test_accountant_panel_uses_authenticated_document_file_api():
 def test_accountant_documents_has_system_users_category():
     panel = _read("frontend/src/components/AccountantW2DocumentsPanel.jsx")
     users = _read("frontend/src/payroll/accountantDocumentUsers.js")
-    assert "ACCOUNTANT_DOC_CATEGORY_OPTIONS" in panel
-    assert 'value: "system_users"' in users
+    assert "ACCOUNTANT_DOC_CATEGORY_OPTIONS" in users
     assert "Alliance Business Consultant" in users or "alliance business consultant" in users
     assert "New VeeWash Admin" in users or "new veewash admin" in users
     assert "filterAccountantDocumentUsers" in panel
     assert "isW2EmployeeForDocuments" in users
+    # Documents panel is W-2 scoped (no category picker / HR timeline)
+    assert 'useState("w2")' in panel or 'category, setCategory] = useState("w2")' in panel
+    assert 'label="HR Timeline"' not in panel

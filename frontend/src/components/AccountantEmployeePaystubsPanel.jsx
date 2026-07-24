@@ -119,9 +119,9 @@ function filterBatchesByRange(batches, range) {
   return list;
 }
 
-export default function AccountantEmployeePaystubsPanel() {
+export default function AccountantEmployeePaystubsPanel({ w2Only = false }) {
   const [viewMode, setViewMode] = useState("employee");
-  const [category, setCategory] = useState("all");
+  const [category, setCategory] = useState(w2Only ? "w2" : "all");
   const [range, setRange] = useState("this_year");
   const [batches, setBatches] = useState([]);
   const [profileWorkers, setProfileWorkers] = useState([]);
@@ -137,7 +137,13 @@ export default function AccountantEmployeePaystubsPanel() {
   const [busyKey, setBusyKey] = useState("");
 
   useEffect(() => {
-    const params = category === "all" ? {} : { worker_category: category };
+    if (w2Only && category !== "w2") setCategory("w2");
+  }, [w2Only, category]);
+
+  useEffect(() => {
+    const effectiveCategory = w2Only ? "w2" : category;
+    const params =
+      effectiveCategory === "all" ? {} : { worker_category: effectiveCategory };
     getPayoutBatches(params)
       .then((res) => {
         const list = (res.data?.items || []).filter((b) => ACCOUNTANT_BATCH_STATUSES.has(b.status));
@@ -150,11 +156,11 @@ export default function AccountantEmployeePaystubsPanel() {
     getTaUsers()
       .then((res) => {
         setProfileWorkers(
-          workerOptionsForCategory(res.data?.users || res.data || [], category),
+          workerOptionsForCategory(res.data?.users || res.data || [], effectiveCategory),
         );
       })
       .catch(() => setProfileWorkers([]));
-  }, [category]);
+  }, [category, w2Only]);
 
   const loadRows = useCallback(async () => {
     setLoading(true);
@@ -273,7 +279,7 @@ export default function AccountantEmployeePaystubsPanel() {
   );
 
   // Labels: driven by the concrete rows (batch view) or the category filter (employee view).
-  const labelCategory = viewMode === "batch" ? "all" : category;
+  const labelCategory = viewMode === "batch" ? "all" : w2Only ? "w2" : category;
   const finalColumnLabel = documentColumnLabel(labelCategory, visibleRows);
   const netLabel = netColumnLabel(visibleRows);
   const bulkLabel = downloadAllLabel(labelCategory, visibleRows);
@@ -348,10 +354,14 @@ export default function AccountantEmployeePaystubsPanel() {
   };
 
   const handleCategoryChange = (value) => {
+    if (w2Only) return;
     setCategory(value);
     setSelectedWorker(null);
     setSelectedBatchId("");
   };
+
+  const scopeCategory = w2Only ? "w2" : category;
+  const categoryOptions = w2Only ? [] : DOC_HISTORY_CATEGORY_OPTIONS;
 
   return (
     <Stack spacing={1.5}>
@@ -397,10 +407,10 @@ export default function AccountantEmployeePaystubsPanel() {
         workers={viewMode === "batch" ? batchWorkers : employeeWorkerOptions}
         selectedWorker={selectedWorker}
         onWorkerChange={setSelectedWorker}
-        workerLabel={category === "w2" ? "Employee" : "Worker"}
-        category={category}
+        workerLabel={scopeCategory === "w2" ? "Employee" : "Worker"}
+        category={scopeCategory}
         onCategoryChange={handleCategoryChange}
-        categoryOptions={DOC_HISTORY_CATEGORY_OPTIONS}
+        categoryOptions={categoryOptions}
         range={range}
         onRangeChange={setRange}
         rangeOptions={RANGE_OPTIONS}
