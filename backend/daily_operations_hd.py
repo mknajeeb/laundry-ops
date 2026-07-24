@@ -1144,7 +1144,7 @@ def export_hd_production_csv(
             "Operations Date ET",
             "Bag ID",
             "Rush Type",
-            "First Available",
+            "Workload Entry Timestamp",
             "Status",
             "Washed By",
             "Folded By",
