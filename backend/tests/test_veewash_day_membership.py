@@ -270,7 +270,63 @@ def test_pending_without_scans_is_stale_association_warning():
     assert "NOSCANBAG01" in (out.get("stale_scan_chronology_bag_ids") or [])
 
 
-def test_pre_cutover_date_returns_unavailable():
+def test_prior_day_portal_carryin_excluded_without_same_day_scan():
+    """Jul 24+ must not auto-admit Jul 23 membership bags with no Jul 24 scans."""
+    from backend.rinse_veewash_day_membership import exclude_prior_day_portal_carryins
+
+    membership = {
+        "OLD1": {"bag_id": "OLD1", "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE},
+        "NEW1": {"bag_id": "NEW1", "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE},
+        "REWORK1": {"bag_id": "REWORK1", "inclusion_source": INCLUSION_ADDED_LATER_IN_DAY},
+        "OLDSCAN": {
+            "bag_id": "OLDSCAN",
+            "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE,
+        },
+    }
+    cursor = MagicMock()
+
+    def execute(sql, params=None):
+        pass
+
+    # prior day bags via day_bags query, then same-day scans query
+    calls = {"n": 0}
+
+    def fetchall():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [{"bag_id": "OLD1"}, {"bag_id": "REWORK1"}, {"bag_id": "OLDSCAN"}]
+        return [{"bag_id": "REWORK1"}, {"bag_id": "OLDSCAN"}]
+
+    cursor.execute.side_effect = execute
+    cursor.fetchall.side_effect = fetchall
+
+    with (
+        patch("backend.ta_helpers.table_exists", return_value=True),
+    ):
+        kept, excluded = exclude_prior_day_portal_carryins(
+            cursor, 3, date(2026, 7, 24), membership
+        )
+    assert excluded == ["OLD1"]
+    assert "OLD1" not in kept
+    assert "NEW1" in kept
+    assert "REWORK1" in kept
+    assert "OLDSCAN" in kept
+    assert kept["NEW1"]["inclusion_source"] == INCLUSION_FIRST_SCRAPE_BASELINE
+    assert kept["REWORK1"]["inclusion_source"] == INCLUSION_ADDED_LATER_IN_DAY
+    assert kept["OLDSCAN"]["inclusion_source"] == INCLUSION_ADDED_LATER_IN_DAY
+    assert kept["OLDSCAN"].get("requalified_from_prior_day") is True
+
+
+def test_cutover_day_does_not_filter_prior_portal_bags():
+    from backend.rinse_veewash_day_membership import exclude_prior_day_portal_carryins
+
+    membership = {"OLD1": {"bag_id": "OLD1", "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE}}
+    kept, excluded = exclude_prior_day_portal_carryins(
+        MagicMock(), 3, date(2026, 7, 23), membership
+    )
+    assert excluded == []
+    assert kept == membership
+
     from backend.rinse_veewash_shift_day import build_or_load_step1_for_date
 
     cursor = MagicMock()

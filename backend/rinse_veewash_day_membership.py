@@ -4,8 +4,11 @@ Jul 23+ append-only daily workload membership from same-day presence scrapes.
 Daily membership =
   first valid at_vendor scrape finished after ET midnight
   + bags first seen in later same-day scrapes
+  − prior-day membership bags with no same-day scan evidence (no portal carry-in)
 
-Never removes bags. Never uses next-day portal state. No carryover.
+Never removes bags mid-day once admitted. Never uses next-day portal state.
+Does not import unresolved prior-day bags as today's operational membership unless
+they produce independent same-day scan evidence.
 """
 
 from __future__ import annotations
@@ -235,10 +238,124 @@ def load_run_bag_rows(cursor, presence_run_id: int) -> list[dict[str, Any]]:
     return out
 
 
+def _load_prior_day_membership_ids(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+) -> set[str]:
+    """Prior ET-day membership ids from persisted day bags (preferred) or rebuild."""
+    from backend.ta_helpers import table_exists
+
+    prior = selected_date_et - timedelta(days=1)
+    org = int(organization_id)
+    out: set[str] = set()
+    if table_exists(cursor, "rinse_shift_monitor_day_bags"):
+        cursor.execute(
+            """
+            SELECT bag_id
+            FROM rinse_shift_monitor_day_bags
+            WHERE organization_id = %s AND shift_date_et = %s
+            """,
+            (org, prior),
+        )
+        for r in cursor.fetchall() or []:
+            bid = str((r.get("bag_id") if isinstance(r, dict) else r[0]) or "").strip().upper()
+            if bid:
+                out.add(bid)
+        if out:
+            return out
+    # Fallback: recompute prior-day scrape membership without re-applying the
+    # carry-in filter recursively beyond one day (prior of cutover is empty).
+    if prior < STEP1_AUTHORITATIVE_START_ET:
+        return set()
+    prior_mem = build_append_only_membership(
+        cursor, organization_id, prior, apply_prior_day_filter=False
+    )
+    return set(membership_bag_ids(prior_mem))
+
+
+def _bags_with_same_day_scan_evidence(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    bag_ids: list[str],
+) -> set[str]:
+    """Bags that have at least one persisted facility scan on the ET calendar day."""
+    from backend.ta_helpers import table_exists
+
+    ids = sorted({str(b).strip().upper() for b in bag_ids if str(b).strip()})
+    if not ids or not table_exists(cursor, "rinse_bag_scan_events"):
+        return set()
+    org = int(organization_id)
+    found: set[str] = set()
+    chunk = 200
+    for i in range(0, len(ids), chunk):
+        part = ids[i : i + chunk]
+        ph = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT DISTINCT bag_id
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND bag_id IN ({ph})
+              AND scanned_at_parsed >= %s
+              AND scanned_at_parsed < DATE_ADD(%s, INTERVAL 1 DAY)
+            """,
+            (org, *part, selected_date_et, selected_date_et),
+        )
+        for r in cursor.fetchall() or []:
+            bid = str((r.get("bag_id") if isinstance(r, dict) else r[0]) or "").strip().upper()
+            if bid:
+                found.add(bid)
+    return found
+
+
+def exclude_prior_day_portal_carryins(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    membership: dict[str, dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """
+    After the cutover day, do not auto-admit prior-day membership bags that only
+    remain on the portal overnight. They need independent same-day scan evidence.
+
+    Prior-day bags that *do* have same-day scan evidence stay in membership, but
+    are reclassified away from FIRST_SCRAPE_BASELINE so opening-scrape admits
+    never imply prior-day carryover.
+    """
+    if selected_date_et <= STEP1_AUTHORITATIVE_START_ET:
+        return membership, []
+    if not membership:
+        return membership, []
+    prior_ids = _load_prior_day_membership_ids(cursor, organization_id, selected_date_et)
+    if not prior_ids:
+        return membership, []
+    same_day = _bags_with_same_day_scan_evidence(
+        cursor, organization_id, selected_date_et, list(membership.keys())
+    )
+    kept: dict[str, dict[str, Any]] = {}
+    excluded: list[str] = []
+    for bid, row in membership.items():
+        if bid in prior_ids and bid not in same_day:
+            excluded.append(bid)
+            continue
+        next_row = dict(row)
+        if bid in prior_ids and bid in same_day:
+            # Qualify on independent Jul N evidence — not as midnight carry-in.
+            next_row["inclusion_source"] = INCLUSION_ADDED_LATER
+            next_row["requalified_from_prior_day"] = True
+            next_row["membership_note"] = "prior_day_requalified_by_same_day_scan"
+        kept[bid] = next_row
+    return kept, sorted(excluded)
+
+
 def build_append_only_membership(
     cursor,
     organization_id: int,
     selected_date_et: date,
+    *,
+    apply_prior_day_filter: bool = True,
 ) -> dict[str, Any]:
     """
     Append-only daily membership for one ET date from same-day scrapes only.
@@ -257,6 +374,10 @@ def build_append_only_membership(
             "baseline_count": 0,
             "added_later_count": 0,
             "total_count": 0,
+            "excluded_prior_day_carryin_count": 0,
+            "excluded_prior_day_carryin_bag_ids": [],
+            "fresh_start_no_prior_day_carryover": selected_date_et
+            >= STEP1_AUTHORITATIVE_START_ET,
         }
 
     baseline_id = int(baseline["id"])
@@ -311,8 +432,29 @@ def build_append_only_membership(
             }
             added_later_ids.append(bid)
 
+    excluded_carryin: list[str] = []
+    if apply_prior_day_filter:
+        membership, excluded_carryin = exclude_prior_day_portal_carryins(
+            cursor, organization_id, selected_date_et, membership
+        )
+        if excluded_carryin:
+            excluded_set = set(excluded_carryin)
+            added_later_ids = [b for b in added_later_ids if b not in excluded_set]
+        # Bags requalified from prior-day via same-day scan must count as added.
+        for bid, row in membership.items():
+            if row.get("requalified_from_prior_day") and bid not in added_later_ids:
+                added_later_ids.append(bid)
+
     baseline_ids = sorted(
         b for b, m in membership.items() if m["inclusion_source"] == INCLUSION_BASELINE
+    )
+    # Rebuild added list from membership so requalified bags are included once.
+    added_later_ids = sorted(
+        {
+            bid
+            for bid, m in membership.items()
+            if m.get("inclusion_source") == INCLUSION_ADDED_LATER
+        }
     )
     added_later = [
         {
@@ -323,9 +465,14 @@ def build_append_only_membership(
                 if isinstance(membership[bid].get("first_included_at"), datetime)
                 else membership[bid].get("first_included_at")
             ),
+            "requalified_from_prior_day": bool(
+                membership[bid].get("requalified_from_prior_day")
+            ),
         }
-        for bid in sorted(added_later_ids)
+        for bid in added_later_ids
+        if bid in membership
     ]
+    post_cutover = selected_date_et > STEP1_AUTHORITATIVE_START_ET
     return {
         "ok": True,
         "selected_date_et": selected_date_et.isoformat(),
@@ -337,12 +484,23 @@ def build_append_only_membership(
         "baseline_delayed": delayed,
         "later_scrape_ids": [int(r["id"]) for r in later],
         "baseline_bag_ids": baseline_ids,
-        "added_later_bag_ids": sorted(added_later_ids),
+        "added_later_bag_ids": added_later_ids,
         "added_later": added_later,
         "membership": membership,
         "baseline_count": len(baseline_ids),
         "added_later_count": len(added_later_ids),
         "total_count": len(membership),
+        "excluded_prior_day_carryin_count": len(excluded_carryin),
+        "excluded_prior_day_carryin_bag_ids": excluded_carryin,
+        # Post-cutover days never treat prior-day unresolved bags as carryover.
+        # Opening scrape admits are same-day portal first-seens only (not carry-in).
+        "fresh_start_no_prior_day_carryover": post_cutover or (
+            selected_date_et == STEP1_AUTHORITATIVE_START_ET
+        ),
+        # Opening scrape admits after carry-in filter (not prior-day carryover).
+        "opening_scrape_admit_count": len(baseline_ids),
+        "added_during_day_count": len(added_later_ids),
+        "prior_day_carryover_count": 0 if post_cutover else None,
     }
 
 

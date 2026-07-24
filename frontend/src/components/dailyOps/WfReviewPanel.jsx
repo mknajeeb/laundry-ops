@@ -39,7 +39,7 @@ function money(v) {
 }
 
 function lbs(v) {
-  if (v == null || Number.isNaN(Number(v))) return "—";
+  if (v == null || v === "" || Number.isNaN(Number(v))) return "Not captured";
   return `${Number(v).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 2 })} lb`;
 }
 
@@ -305,7 +305,7 @@ export default function WfReviewPanel({ dateEt, onSaved }) {
               label={labels.evidence_post || "Evidence POST Weight"}
               value={lbs(detail.post_weight?.evidence_post_weight_lbs)}
             />
-            <Row label="Source" value={detail.post_weight?.evidence_source || "—"} />
+            <Row label="Evidence POST source" value={detail.post_weight?.evidence_source || "Not captured"} />
             <Row label="Scan event ID" value={detail.post_weight?.scan_event_id ?? "—"} />
             <Row
               label="Presence Run"
@@ -320,13 +320,34 @@ export default function WfReviewPanel({ dateEt, onSaved }) {
               }
             />
             <Row
-              label={labels.manager_corrected_post || "Manager-Corrected POST Weight"}
+              label={labels.manager_corrected_post || "Manager-Corrected POST"}
               value={
                 detail.post_weight?.manager_corrected
                   ? lbs(detail.post_weight?.authoritative_post_weight_lbs)
                   : "—"
               }
             />
+            <Row
+              label="Authoritative POST"
+              value={
+                detail.post_weight?.authoritative_post_weight_lbs != null ||
+                detail.weight_summary?.post_weight != null
+                  ? lbs(
+                      detail.post_weight?.authoritative_post_weight_lbs ??
+                        detail.weight_summary?.post_weight
+                    )
+                  : "—"
+              }
+            />
+            <Row
+              label="Authoritative POST source"
+              value={detail.post_weight?.source || detail.weight_summary?.post_source || "—"}
+            />
+            {String(detail.post_weight?.source || "").includes("canonical") ? (
+              <Typography variant="caption" color="text.secondary">
+                Authoritative POST uses canonical fallback — not a captured Evidence POST.
+              </Typography>
+            ) : null}
             <TextField
               label="Corrected POST Weight (lbs)"
               size="small"
