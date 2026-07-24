@@ -5,7 +5,6 @@ import FactCheckIcon from "@mui/icons-material/FactCheck";
 import LocalShippingIcon from "@mui/icons-material/LocalShipping";
 import AssessmentIcon from "@mui/icons-material/Assessment";
 import SettingsIcon from "@mui/icons-material/Settings";
-import { useNavigate } from "react-router-dom";
 import { authLogout, clearAuthSession, getInventoryBootstrap, getInventoryBagPrice } from "../api";
 import DashboardTab from "../components/inventory/DashboardTab";
 import StockCheckTab from "../components/inventory/StockCheckTab";
@@ -19,10 +18,8 @@ import { isFloorInventoryWorkflow } from "../utils/inventoryFloorHelpers";
 import { canAccessInventoryTab, getInventoryRoleTier } from "../utils/inventoryRoleHelpers";
 import { useAuth } from "../context/AuthContext";
 import {
-  clearPinHubAppSession,
   clearPinHubSession,
   loadPinHubAppSession,
-  pinHubMenuPath,
 } from "../utils/pinHubSession";
 
 const ALL_TABS = [
@@ -34,7 +31,6 @@ const ALL_TABS = [
 ];
 
 export default function InventoryPage({ user, onPinHubDone }) {
-  const navigate = useNavigate();
   const { hasPerm } = useAuth();
   const pinHubApp = useMemo(() => loadPinHubAppSession(), []);
   const floorWorkflow = useMemo(
@@ -132,21 +128,23 @@ export default function InventoryPage({ user, onPinHubDone }) {
     onPinHubDone?.();
   };
 
-  /** Back / Done — leave inventory app session, keep PIN hub unlock. */
+  /**
+   * Back / Done — leave inventory Washpro session, keep PIN hub unlock.
+   * Keep pin-hub *app* session until App.jsx sees !user on /inventory and
+   * Navigates to /pin (clearing app session there). Clearing app session first
+   * races the global auth gate and incorrectly sends employees to /login.
+   */
   const returnToPinMenu = async () => {
-    const slug = pinHubApp?.organization_slug || user?.organization_slug || "";
-    clearPinHubAppSession();
     await clearWashproSession();
-    navigate(pinHubMenuPath(slug), { replace: true });
   };
 
-  /** Lock — clear hub unlock + inventory session; no punch / no submit. */
+  /**
+   * Lock — clear hub unlock; App.jsx redirects to /pin when Washpro user clears
+   * while the inventory pin-hub app session is still active.
+   */
   const lockToPinEntry = async () => {
-    const slug = pinHubApp?.organization_slug || user?.organization_slug || "";
-    clearPinHubAppSession();
     clearPinHubSession();
     await clearWashproSession();
-    navigate(pinHubMenuPath(slug), { replace: true });
   };
 
   const tabIndex = Math.max(0, visibleTabs.findIndex((t) => t.key === tabKey));

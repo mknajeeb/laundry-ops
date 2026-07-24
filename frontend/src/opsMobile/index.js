@@ -14,15 +14,22 @@ export { default as OpsTaskCard } from "./OpsTaskCard";
 export {
   buildPinLauncherTiles,
   clockTileLabel,
+  CLOCK_DISABLED_HELPER,
+  isClockAllowedFromHub,
   PIN_LAUNCHER_META,
 } from "./buildPinLauncherTiles";
 export {
   autoSelectCategoryId,
+  categoriesForRole,
+  displayRoleLabel,
   initialCategoryId,
+  initialRoleId,
   isCurrentRoleAssignment,
   resolveRoleId,
+  roleHelperText,
   shouldCallRoleSwitchApi,
   switchRoleEmployeeError,
+  uniqueRolesFromTree,
 } from "./switchRoleFlowHelpers";
 export { createSwitchRoleController } from "./createSwitchRoleController";
 export { createTaskToggleController } from "./createTaskToggleController";

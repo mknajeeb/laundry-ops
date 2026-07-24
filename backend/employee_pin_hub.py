@@ -164,6 +164,8 @@ def attendance_snapshot_for_hub(conn, org_id: int, user_id: int) -> dict[str, An
     Does not change clock/break rules — presentation metadata only.
     """
     shared = bool(shared_device_attendance_enabled(conn, int(org_id)))
+    pin_menu = load_pin_menu_settings(conn, int(org_id))
+    allow_clock = bool(pin_menu.get("allow_clock_from_hub", True))
     active = _active_shift(conn, int(user_id))
     on_break = False
     if active:
@@ -172,6 +174,7 @@ def attendance_snapshot_for_hub(conn, org_id: int, user_id: int) -> dict[str, An
         on_break = bool(get_open_break(conn, active["id"]))
     return {
         "shared_device_enabled": shared,
+        "allow_clock_from_hub": allow_clock,
         "clocked_in": bool(active),
         "on_break": on_break,
     }
@@ -201,13 +204,14 @@ def load_pin_menu_settings(conn, org_id: int) -> dict:
     pm = ui.get("pin_menu") if isinstance(ui, dict) else None
     base_feats = {d["id"]: True for d in PIN_HUB_FEATURE_DEFS}
     if not isinstance(pm, dict):
-        return {"enabled": True, "features": base_feats}
+        return {"enabled": True, "allow_clock_from_hub": True, "features": base_feats}
     feats = dict(base_feats)
     raw_feats = pm.get("features") if isinstance(pm.get("features"), dict) else {}
     for k, v in raw_feats.items():
         feats[str(k)] = bool(v)
     return {
         "enabled": bool(pm.get("enabled", True)),
+        "allow_clock_from_hub": bool(pm.get("allow_clock_from_hub", True)),
         "features": feats,
     }
 
@@ -343,17 +347,6 @@ def perform_pin_hub_open(
 
     # Stable button order for the client.
     feature_order = [d["id"] for d in PIN_HUB_FEATURE_DEFS]
-    allowed = [features[fid] for fid in feature_order if features.get(fid, {}).get("allowed")]
-    # Clock tile is built client-side from attendance.shared_device_enabled.
-    if not allowed and not attendance.get("shared_device_enabled"):
-        record_pin_attempt(conn, org_id, ip_address, True)
-        return {
-            "ok": False,
-            "error": "No PIN menu buttons are available for your account.",
-            "features": features,
-            "feature_order": feature_order,
-            "attendance": attendance,
-        }, 403
 
     record_pin_attempt(conn, org_id, ip_address, True)
     hub_token = issue_hub_session_token(organization_id=org_id, employee_id=employee_id)

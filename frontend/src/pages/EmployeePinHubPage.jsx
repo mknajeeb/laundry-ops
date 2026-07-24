@@ -351,6 +351,9 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
     setFeatureLoading(featureId);
     try {
       if (featureId === "clock") {
+        if (tile?.disabled || hub?.attendance?.allow_clock_from_hub === false) {
+          return;
+        }
         navigate(`/attendance/${encodeURIComponent(slug)}?from=hub`);
         return;
       }

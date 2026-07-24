@@ -195,6 +195,8 @@ def _default_pin_menu_dict() -> dict:
     """Mobile /pin hub: which buttons are offered (permission still required per user)."""
     return {
         "enabled": True,
+        # Controls Clock tile interactivity on /pin only — not shared tablet, punches, or payroll.
+        "allow_clock_from_hub": True,
         "features": {
             "switch_role": True,
             "checklist": True,
@@ -227,6 +229,11 @@ def load_clock_payroll_ui(conn, organization_id: int) -> dict:
                     feats[str(k)] = bool(v)
             out["pin_menu"] = {
                 "enabled": bool(pm["enabled"]) if "enabled" in pm else base["enabled"],
+                "allow_clock_from_hub": (
+                    bool(pm["allow_clock_from_hub"])
+                    if "allow_clock_from_hub" in pm
+                    else base["allow_clock_from_hub"]
+                ),
                 "features": feats,
             }
     except Exception:
@@ -5163,6 +5170,11 @@ def clock_payroll_ui_put():
                     feats[str(k)] = bool(v)
             cur["pin_menu"] = {
                 "enabled": bool(pin_menu["enabled"]) if "enabled" in pin_menu else base["enabled"],
+                "allow_clock_from_hub": (
+                    bool(pin_menu["allow_clock_from_hub"])
+                    if "allow_clock_from_hub" in pin_menu
+                    else base["allow_clock_from_hub"]
+                ),
                 "features": feats,
             }
         c = conn.cursor()

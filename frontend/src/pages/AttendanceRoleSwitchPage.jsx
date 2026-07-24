@@ -29,7 +29,7 @@ import {
 } from "../opsMobile";
 import { createSwitchRoleController } from "../opsMobile/createSwitchRoleController";
 import {
-  initialCategoryId,
+  initialRoleId,
   openRoleFlowEmployeeError,
 } from "../opsMobile/switchRoleFlowHelpers";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
@@ -105,6 +105,8 @@ export default function AttendanceRoleSwitchPage() {
   const [pendingPin, setPendingPin] = useState("");
   const [phase, setPhase] = useState("pin"); // pin | select | success | unavailable
   const [selectionTree, setSelectionTree] = useState([]);
+  const [flowStep, setFlowStep] = useState("role"); // role | category
+  const [roleId, setRoleId] = useState(null);
   const [categoryId, setCategoryId] = useState(null);
   const [currentCategoryId, setCurrentCategoryId] = useState(null);
   const [currentRoleId, setCurrentRoleId] = useState(null);
@@ -113,7 +115,7 @@ export default function AttendanceRoleSwitchPage() {
   const [error, setError] = useState("");
   const [flowError, setFlowError] = useState("");
   const [pending, setPending] = useState(false);
-  const [pendingRoleId, setPendingRoleId] = useState(null);
+  const [pendingCategoryId, setPendingCategoryId] = useState(null);
   const [successLabel, setSuccessLabel] = useState("");
   const [branding, setBranding] = useState(null);
   const [unavailableMessage, setUnavailableMessage] = useState(
@@ -225,10 +227,13 @@ export default function AttendanceRoleSwitchPage() {
       body.current_category_id != null ? Number(body.current_category_id) : null,
     );
     setCurrentRoleId(body.current_role_id != null ? Number(body.current_role_id) : null);
-    setCategoryId(initialCategoryId(tree, body.current_category_id));
+    const rid = initialRoleId(tree, body.current_role_id);
+    setRoleId(rid);
+    setCategoryId(null);
+    setFlowStep(rid != null ? "category" : "role");
     setFlowError("");
     setPending(false);
-    setPendingRoleId(null);
+    setPendingCategoryId(null);
     setSuccessLabel("");
     setPhase("select");
     setPin("");
@@ -326,20 +331,26 @@ export default function AttendanceRoleSwitchPage() {
       },
     });
     controllerRef.current = controller;
-    if (categoryId != null) controller.setCategory(categoryId);
     const unsub = controller.subscribe((snap) => {
+      setFlowStep(snap.step);
+      setRoleId(snap.roleId);
       setCategoryId(snap.categoryId);
       setPending(snap.pending);
-      setPendingRoleId(snap.pendingRoleId);
+      setPendingCategoryId(snap.pendingCategoryId);
       setFlowError(snap.error);
       setSuccessLabel(snap.successLabel);
       if (snap.phase === "success") setPhase("success");
     });
+    // Sync initial controller snapshot (may start on category when role is known).
+    const snap0 = controller.getState();
+    setFlowStep(snap0.step);
+    setRoleId(snap0.roleId);
+    setCategoryId(snap0.categoryId);
     return () => {
       unsub();
       controllerRef.current = null;
     };
-    // Recreate when assignment context changes; category taps go through setCategory.
+    // Recreate when assignment context changes; role/category taps go through controller.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     phase,
@@ -371,21 +382,20 @@ export default function AttendanceRoleSwitchPage() {
       <OpsSwitchRoleFlow
         employeeName={firstName}
         selectionTree={selectionTree}
-        categoryId={categoryId}
-        onSelectCategory={(id) => {
-          setCategoryId(id);
-          controllerRef.current?.setCategory(id);
-        }}
+        step={flowStep}
+        roleId={roleId}
+        onSelectRole={(role) => controllerRef.current?.setRole(role)}
+        onSelectCategory={(cat) => controllerRef.current?.selectCategory(cat)}
+        onBackToRoles={() => controllerRef.current?.backToRoles()}
         currentCategoryId={currentCategoryId}
         currentRoleId={currentRoleId}
         pending={pending}
-        pendingRoleId={pendingRoleId}
+        pendingCategoryId={pendingCategoryId}
         error={flowError}
         onClearError={() => {
           setFlowError("");
           controllerRef.current?.clearError();
         }}
-        onSelectRole={(role) => controllerRef.current?.selectRole(role)}
         onRetry={() => controllerRef.current?.clearError()}
         onBack={onBack}
         onLock={onLock}

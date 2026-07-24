@@ -6,27 +6,33 @@ import OpsMobileShell from "./OpsMobileShell";
 import OpsTopBar from "./OpsTopBar";
 import { OPS_MOBILE } from "./tokens";
 import {
+  categoriesForRole,
+  displayRoleLabel,
   resolveCategoryId,
+  resolveCategoryName,
   resolveRoleId,
-  resolveRoleName,
-  rolesForCategory,
+  roleHelperText,
+  uniqueRolesFromTree,
 } from "./switchRoleFlowHelpers";
 
 /**
  * Shared full-screen Switch Role UI (hub + /attendance/role).
+ * Step 1 — Role · Step 2 — Category · then confirm (API) / return to PIN.
  */
 export default function OpsSwitchRoleFlow({
   employeeName = "",
   selectionTree = [],
-  categoryId = null,
+  step = "role", // "role" | "category"
+  roleId = null,
+  onSelectRole,
   onSelectCategory,
+  onBackToRoles,
   currentCategoryId = null,
   currentRoleId = null,
   pending = false,
-  pendingRoleId = null,
+  pendingCategoryId = null,
   error = "",
   onClearError,
-  onSelectRole,
   onRetry,
   onBack,
   onLock,
@@ -36,9 +42,10 @@ export default function OpsSwitchRoleFlow({
   successLabel = "",
 }) {
   const tree = Array.isArray(selectionTree) ? selectionTree : [];
-  const multiCategory = tree.length > 1;
-  const roles = rolesForCategory(tree, categoryId);
-  const selectedCat = tree.find((c) => Number(resolveCategoryId(c)) === Number(categoryId));
+  const roles = uniqueRolesFromTree(tree);
+  const categories = categoriesForRole(tree, roleId);
+  const showRoleStep = !success && !unavailable && step !== "category";
+  const showCategoryStep = !success && !unavailable && step === "category";
 
   return (
     <OpsMobileShell contentSx={{ gap: 1.5 }}>
@@ -57,8 +64,12 @@ export default function OpsSwitchRoleFlow({
         <OpsTopBar
           title="Role"
           identity={employeeName || ""}
-          onBack={onBack}
-          backLabel="PIN"
+          onBack={
+            showCategoryStep && roles.length > 1
+              ? () => onBackToRoles?.()
+              : onBack
+          }
+          backLabel={showCategoryStep && roles.length > 1 ? "Role" : "PIN"}
           onLock={onLock}
           lockLabel="Lock"
           sticky
@@ -120,89 +131,98 @@ export default function OpsSwitchRoleFlow({
               </Box>
             ) : null}
 
-            {multiCategory ? (
-              <Stack spacing={1}>
-                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-                  {tree.map((cat) => {
-                    const cid = resolveCategoryId(cat);
-                    const selected = Number(cid) === Number(categoryId);
-                    return (
-                      <Button
-                        key={cid}
-                        disabled={pending}
-                        onClick={() => onSelectCategory?.(cid)}
-                        sx={{
-                          textTransform: "none",
-                          fontWeight: 800,
-                          minHeight: OPS_MOBILE.touchMin,
-                          px: 2,
-                          borderRadius: 999,
-                          bgcolor: selected
-                            ? alpha(OPS_MOBILE.cobalt, 0.16)
-                            : alpha(OPS_MOBILE.navy, 0.05),
-                          color: OPS_MOBILE.navy,
-                          border: selected
-                            ? `2px solid ${OPS_MOBILE.cobalt}`
-                            : "2px solid transparent",
-                        }}
-                      >
-                        {cat.name}
-                      </Button>
-                    );
-                  })}
-                </Box>
-                {selectedCat?.name ? (
-                  <Typography sx={{ fontWeight: 800, fontSize: "0.95rem", color: OPS_MOBILE.muted }}>
-                    {selectedCat.name}
+            {showRoleStep ? (
+              <Stack spacing={1.25} sx={{ width: "100%" }}>
+                <Typography sx={{ fontWeight: 800, fontSize: "0.95rem", color: OPS_MOBILE.muted }}>
+                  Select role
+                </Typography>
+                {roles.map((role) => {
+                  const rid = resolveRoleId(role);
+                  const label = displayRoleLabel(role);
+                  const helper = roleHelperText(role);
+                  const isCurrent = Number(rid) === Number(currentRoleId) && currentRoleId != null;
+                  return (
+                    <OpsChoiceCard
+                      key={`role-${rid}`}
+                      title={label || "Role"}
+                      subtitle={helper}
+                      current={isCurrent}
+                      busy={false}
+                      disabled={pending}
+                      onClick={() => {
+                        if (pending) return;
+                        onSelectRole?.(role);
+                      }}
+                      aria-label={isCurrent ? `${label}, current` : label}
+                      sx={{
+                        opacity: pending ? 0.55 : 1,
+                        ...(isCurrent
+                          ? {
+                              bgcolor: alpha(OPS_MOBILE.success, 0.1),
+                              border: `2px solid ${alpha(OPS_MOBILE.success, 0.45)}`,
+                            }
+                          : null),
+                      }}
+                    />
+                  );
+                })}
+                {!roles.length ? (
+                  <Typography sx={{ fontWeight: 700, color: OPS_MOBILE.muted, textAlign: "center" }}>
+                    Role change isn’t available right now.
                   </Typography>
                 ) : null}
               </Stack>
             ) : null}
 
-            <Stack spacing={1.25} sx={{ width: "100%" }}>
-              {roles.map((role) => {
-                const rid = resolveRoleId(role);
-                const name = resolveRoleName(role);
-                const isCurrent =
-                  Number(categoryId) === Number(currentCategoryId) &&
-                  Number(rid) === Number(currentRoleId);
-                const isBusy = pending && Number(pendingRoleId) === Number(rid);
-                return (
-                  <OpsChoiceCard
-                    key={`${categoryId}-${rid}`}
-                    title={name || "Role"}
-                    current={isCurrent}
-                    busy={isBusy}
-                    disabled={pending && !isBusy}
-                    onClick={() => {
-                      if (isCurrent || pending) return;
-                      onSelectRole?.(role);
-                    }}
-                    aria-label={isCurrent ? `${name}, current` : name}
-                    sx={{
-                      opacity: pending && !isBusy ? 0.55 : 1,
-                      cursor: isCurrent ? "default" : "pointer",
-                      ...(isCurrent
-                        ? {
-                            bgcolor: alpha(OPS_MOBILE.success, 0.1),
-                            border: `2px solid ${alpha(OPS_MOBILE.success, 0.45)}`,
-                          }
-                        : null),
-                    }}
-                  />
-                );
-              })}
-              {!roles.length && categoryId != null ? (
-                <Typography sx={{ fontWeight: 700, color: OPS_MOBILE.muted, textAlign: "center" }}>
-                  Role change isn’t available right now.
+            {showCategoryStep ? (
+              <Stack spacing={1.25} sx={{ width: "100%" }}>
+                <Typography sx={{ fontWeight: 800, fontSize: "0.95rem", color: OPS_MOBILE.muted }}>
+                  Select category
                 </Typography>
-              ) : null}
-              {pending && pendingRoleId == null ? (
-                <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
-                  <CircularProgress size={28} />
-                </Box>
-              ) : null}
-            </Stack>
+                {categories.map((cat) => {
+                  const cid = resolveCategoryId(cat);
+                  const name = resolveCategoryName(cat);
+                  const isCurrent =
+                    Number(cid) === Number(currentCategoryId) &&
+                    Number(roleId) === Number(currentRoleId);
+                  const isBusy = pending && Number(pendingCategoryId) === Number(cid);
+                  return (
+                    <OpsChoiceCard
+                      key={`cat-${cid}`}
+                      title={name || "Category"}
+                      current={isCurrent}
+                      busy={isBusy}
+                      disabled={pending && !isBusy}
+                      onClick={() => {
+                        if (isCurrent || pending) return;
+                        onSelectCategory?.(cat);
+                      }}
+                      aria-label={isCurrent ? `${name}, current` : name}
+                      sx={{
+                        opacity: pending && !isBusy ? 0.55 : 1,
+                        cursor: isCurrent ? "default" : "pointer",
+                        ...(isCurrent
+                          ? {
+                              bgcolor: alpha(OPS_MOBILE.success, 0.1),
+                              border: `2px solid ${alpha(OPS_MOBILE.success, 0.45)}`,
+                            }
+                          : null),
+                      }}
+                    />
+                  );
+                })}
+                {!categories.length && roleId != null ? (
+                  <Typography sx={{ fontWeight: 700, color: OPS_MOBILE.muted, textAlign: "center" }}>
+                    Role change isn’t available right now.
+                  </Typography>
+                ) : null}
+                {pending && pendingCategoryId == null ? (
+                  <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
+                    <CircularProgress size={28} />
+                  </Box>
+                ) : null}
+              </Stack>
+            ) : null}
           </>
         ) : null}
       </Box>

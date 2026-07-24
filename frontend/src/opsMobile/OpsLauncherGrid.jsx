@@ -19,18 +19,25 @@ export default function OpsLauncherGrid({ tiles = [], busyId = "", disabled = fa
         width: "100%",
       }}
     >
-      {tiles.map((tile) => (
-        <OpsLauncherTile
-          key={tile.id}
-          label={tile.label}
-          icon={tile.icon}
-          color={tile.color}
-          busy={busyId === tile.id}
-          disabled={disabled}
-          onClick={() => onSelect?.(tile)}
-          aria-label={tile.ariaLabel || tile.label}
-        />
-      ))}
+      {tiles.map((tile) => {
+        const tileDisabled = disabled || !!tile.disabled;
+        return (
+          <OpsLauncherTile
+            key={tile.id}
+            label={tile.label}
+            icon={tile.icon}
+            color={tile.color}
+            busy={busyId === tile.id}
+            disabled={tileDisabled}
+            disabledHelper={tile.disabledHelper || ""}
+            onClick={() => {
+              if (tile.disabled) return;
+              onSelect?.(tile);
+            }}
+            aria-label={tile.ariaLabel || tile.label}
+          />
+        );
+      })}
     </Box>
   );
 }

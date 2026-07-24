@@ -28,6 +28,8 @@ export const PIN_LAUNCHER_META = {
   },
 };
 
+export const CLOCK_DISABLED_HELPER = "Use the shared attendance tablet.";
+
 /** Clock label from reliable attendance state only. */
 export function clockTileLabel(attendance) {
   const att = attendance && typeof attendance === "object" ? attendance : {};
@@ -37,11 +39,33 @@ export function clockTileLabel(attendance) {
 }
 
 /**
+ * Whether mobile PIN hub Clock In/Out is interactive.
+ * Defaults on when the field is absent (backward compatible).
+ */
+export function isClockAllowedFromHub(attendance) {
+  const att = attendance && typeof attendance === "object" ? attendance : {};
+  return att.allow_clock_from_hub !== false;
+}
+
+/**
  * @param {object} opts
  * @param {Record<string, { allowed?: boolean, label?: string }>|null} opts.features
  * @param {string[]|null} opts.featureOrder
- * @param {{ shared_device_enabled?: boolean, clocked_in?: boolean|null, on_break?: boolean }|null} opts.attendance
- * @returns {Array<{ id: string, label: string, color: string, iconKey: string, href?: string }>}
+ * @param {{
+ *   shared_device_enabled?: boolean,
+ *   allow_clock_from_hub?: boolean,
+ *   clocked_in?: boolean|null,
+ *   on_break?: boolean
+ * }|null} opts.attendance
+ * @returns {Array<{
+ *   id: string,
+ *   label: string,
+ *   color: string,
+ *   iconKey: string,
+ *   href?: string,
+ *   disabled?: boolean,
+ *   disabledHelper?: string
+ * }>}
  */
 export function buildPinLauncherTiles({ features = {}, featureOrder = null, attendance = null } = {}) {
   const feats = features && typeof features === "object" ? features : {};
@@ -49,16 +73,17 @@ export function buildPinLauncherTiles({ features = {}, featureOrder = null, atte
 
   const tiles = [];
 
-  // Clock deep-links to /attendance — only when shared-device punch is enabled.
-  if (att.shared_device_enabled === true) {
-    tiles.push({
-      id: "clock",
-      label: clockTileLabel(att),
-      color: PIN_LAUNCHER_META.clock.color,
-      iconKey: PIN_LAUNCHER_META.clock.iconKey,
-      href: "attendance",
-    });
-  }
+  // Clock is always visible on the PIN hub; allow_clock_from_hub controls interactivity only.
+  const clockAllowed = isClockAllowedFromHub(att);
+  tiles.push({
+    id: "clock",
+    label: clockTileLabel(att),
+    color: PIN_LAUNCHER_META.clock.color,
+    iconKey: PIN_LAUNCHER_META.clock.iconKey,
+    href: "attendance",
+    disabled: !clockAllowed,
+    disabledHelper: clockAllowed ? "" : CLOCK_DISABLED_HELPER,
+  });
 
   const order =
     Array.isArray(featureOrder) && featureOrder.length

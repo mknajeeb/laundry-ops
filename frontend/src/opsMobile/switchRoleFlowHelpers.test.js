@@ -1,12 +1,17 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   autoSelectCategoryId,
+  categoriesForRole,
+  displayRoleLabel,
   initialCategoryId,
+  initialRoleId,
   isCurrentRoleAssignment,
   resolveRoleId,
   resolveRoleName,
+  roleHelperText,
   shouldCallRoleSwitchApi,
   switchRoleEmployeeError,
+  uniqueRolesFromTree,
 } from "./switchRoleFlowHelpers";
 import { createSwitchRoleController } from "./createSwitchRoleController";
 
@@ -22,6 +27,30 @@ const tree = [
   },
 ];
 
+const multiCatTree = [
+  {
+    id: 10,
+    name: "Rinse WF",
+    roles: [
+      { role_id: 1, role_name: "Operator" },
+      { role_id: 2, role_name: "Folder" },
+    ],
+  },
+  {
+    id: 20,
+    name: "Rinse HD",
+    roles: [
+      { role_id: 1, role_name: "Operator" },
+      { role_id: 2, role_name: "Folder" },
+    ],
+  },
+  {
+    id: 30,
+    name: "DHS",
+    roles: [{ role_id: 1, role_name: "Operator" }],
+  },
+];
+
 describe("switchRoleFlowHelpers", () => {
   it("marks current role by category + role ids", () => {
     expect(isCurrentRoleAssignment(10, 1, 10, 1)).toBe(true);
@@ -32,6 +61,25 @@ describe("switchRoleFlowHelpers", () => {
   it("resolves role_id from selection-tree shape", () => {
     expect(resolveRoleId({ role_id: 2, id: 99 })).toBe(2);
     expect(resolveRoleName({ role_name: "Operator" })).toBe("Operator");
+  });
+
+  it("shows Folding for stored Folder and role helpers", () => {
+    expect(displayRoleLabel({ role_name: "Folder" })).toBe("Folding");
+    expect(displayRoleLabel("Folder")).toBe("Folding");
+    expect(displayRoleLabel({ role_name: "Operator" })).toBe("Operator");
+    expect(roleHelperText("Operator")).toBe("Weighing, Sorting, Washing & Drying");
+    expect(roleHelperText("Folder")).toBe("Folding completed laundry orders");
+  });
+
+  it("dedupes roles and lists categories for a role", () => {
+    const roles = uniqueRolesFromTree(multiCatTree);
+    expect(roles.map((r) => resolveRoleId(r))).toEqual([1, 2]);
+    expect(categoriesForRole(multiCatTree, 1).map((c) => c.name)).toEqual([
+      "Rinse WF",
+      "Rinse HD",
+      "DHS",
+    ]);
+    expect(categoriesForRole(multiCatTree, 2).map((c) => c.name)).toEqual(["Rinse WF", "Rinse HD"]);
   });
 
   it("auto-selects the only category", () => {
@@ -45,6 +93,11 @@ describe("switchRoleFlowHelpers", () => {
       { id: 2, name: "B", roles: [{ role_id: 2, role_name: "Y" }] },
     ];
     expect(initialCategoryId(multi, 2)).toBe(2);
+  });
+
+  it("prefers current role for role-first start", () => {
+    expect(initialRoleId(multiCatTree, 2)).toBe(2);
+    expect(initialRoleId(tree, null)).toBe(null);
   });
 
   it("skips API for current role and while pending", () => {
@@ -101,7 +154,7 @@ describe("createSwitchRoleController", () => {
     vi.useRealTimers();
   });
 
-  it("does not call API when tapping the current role", async () => {
+  it("does not call API when confirming the current category+role", async () => {
     const switchRoleApi = vi.fn();
     const controller = createSwitchRoleController({
       selectionTree: tree,
@@ -113,12 +166,13 @@ describe("createSwitchRoleController", () => {
       createIdempotencyKey: () => "key-1",
       onSuccess: vi.fn(),
     });
-    const result = await controller.selectRole({ role_id: 1, role_name: "Operator" });
+    expect(controller.getState().step).toBe("category");
+    const result = await controller.selectCategory({ id: 10, name: "Floor" });
     expect(result.called).toBe(false);
     expect(switchRoleApi).not.toHaveBeenCalled();
   });
 
-  it("calls role-switch API once for a different role and blocks duplicates while pending", async () => {
+  it("role then category calls API once and blocks duplicates while pending", async () => {
     let resolveApi;
     const switchRoleApi = vi.fn(
       () =>
@@ -128,7 +182,7 @@ describe("createSwitchRoleController", () => {
     );
     const onSuccess = vi.fn();
     const controller = createSwitchRoleController({
-      selectionTree: tree,
+      selectionTree: multiCatTree,
       currentCategoryId: 10,
       currentRoleId: 1,
       pin: "1234",
@@ -139,24 +193,50 @@ describe("createSwitchRoleController", () => {
       successDelayMs: 100,
     });
 
-    const p1 = controller.selectRole({ role_id: 2, role_name: "Folder" });
-    const p2 = controller.selectRole({ role_id: 2, role_name: "Folder" });
+    controller.setRole({ role_id: 2, role_name: "Folder" });
+    expect(controller.getState().step).toBe("category");
+    const p1 = controller.selectCategory({ id: 20, name: "Rinse HD" });
+    const p2 = controller.selectCategory({ id: 20, name: "Rinse HD" });
     expect(switchRoleApi).toHaveBeenCalledTimes(1);
     expect(switchRoleApi.mock.calls[0][2]).toMatchObject({
-      category_id: 10,
+      category_id: 20,
       role_id: 2,
       idempotency_key: "key-1",
     });
 
     resolveApi({
       status: 200,
-      data: { ok: true, display_label: "Floor — Folder" },
+      data: { ok: true, display_label: "Rinse HD — Folder" },
     });
     await p1;
     await p2;
     expect(controller.getState().phase).toBe("success");
     vi.advanceTimersByTime(100);
     expect(onSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("legacy selectRole still works on single-category trees", async () => {
+    const switchRoleApi = vi.fn(async () => ({
+      status: 200,
+      data: { ok: true, display_label: "Floor — Folder" },
+    }));
+    const controller = createSwitchRoleController({
+      selectionTree: tree,
+      currentCategoryId: 10,
+      currentRoleId: 1,
+      pin: "1234",
+      slug: "veewash",
+      switchRoleApi,
+      createIdempotencyKey: () => "key-1",
+      onSuccess: vi.fn(),
+      successDelayMs: 0,
+    });
+    await controller.selectRole({ role_id: 2, role_name: "Folder" });
+    expect(switchRoleApi).toHaveBeenCalledWith(
+      "veewash",
+      "1234",
+      expect.objectContaining({ category_id: 10, role_id: 2 }),
+    );
   });
 
   it("stays on select phase with employee error on failure", async () => {
@@ -174,7 +254,9 @@ describe("createSwitchRoleController", () => {
       createIdempotencyKey: () => "key-1",
       onSuccess: vi.fn(),
     });
-    await controller.selectRole({ role_id: 2, role_name: "Folder" });
+    await controller.selectCategory({ id: 10, name: "Floor" }); // current → skip
+    await controller.setRole({ role_id: 2, role_name: "Folder" });
+    await controller.selectCategory({ id: 10, name: "Floor" });
     const state = controller.getState();
     expect(state.phase).toBe("select");
     expect(state.error).toBe("Couldn’t change role. Try again.");
@@ -184,7 +266,6 @@ describe("createSwitchRoleController", () => {
 
 describe("hub opens full-screen role route", () => {
   it("documents Role tile navigation target (not dialog)", () => {
-    // Integration contract: EmployeePinHubPage navigates to /attendance/role/:slug?from=hub
     const slug = "veewash";
     const href = `/attendance/role/${encodeURIComponent(slug)}?from=hub`;
     expect(href).toBe("/attendance/role/veewash?from=hub");

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildPinLauncherTiles, clockTileLabel } from "./buildPinLauncherTiles";
+import {
+  buildPinLauncherTiles,
+  clockTileLabel,
+  CLOCK_DISABLED_HELPER,
+  isClockAllowedFromHub,
+} from "./buildPinLauncherTiles";
 
 describe("clockTileLabel", () => {
   it("uses reliable clocked state only", () => {
@@ -11,9 +16,18 @@ describe("clockTileLabel", () => {
   });
 });
 
+describe("isClockAllowedFromHub", () => {
+  it("defaults on when field is absent", () => {
+    expect(isClockAllowedFromHub({})).toBe(true);
+    expect(isClockAllowedFromHub(null)).toBe(true);
+    expect(isClockAllowedFromHub({ allow_clock_from_hub: true })).toBe(true);
+    expect(isClockAllowedFromHub({ allow_clock_from_hub: false })).toBe(false);
+  });
+});
+
 describe("buildPinLauncherTiles", () => {
-  it("shows Clock In when shared device is on and clocked out", () => {
-    const tiles = buildPinLauncherTiles({
+  it("always shows Clock; disables when allow_clock_from_hub is false", () => {
+    const enabled = buildPinLauncherTiles({
       features: {
         switch_role: { allowed: true },
         checklist: { allowed: true },
@@ -22,10 +36,34 @@ describe("buildPinLauncherTiles", () => {
       featureOrder: ["switch_role", "checklist", "inventory"],
       attendance: { shared_device_enabled: true, clocked_in: false, on_break: false },
     });
-    expect(tiles.map((t) => t.id)).toEqual(["clock", "checklist", "inventory"]);
-    expect(tiles[0].label).toBe("Clock In");
-    expect(tiles.find((t) => t.id === "inventory")?.label).toBe("Stock");
-    expect(tiles.find((t) => t.id === "checklist")?.label).toBe("Tasks");
+    expect(enabled.map((t) => t.id)).toEqual(["clock", "checklist", "inventory"]);
+    expect(enabled[0].label).toBe("Clock In");
+    expect(enabled[0].disabled).toBe(false);
+    expect(enabled.find((t) => t.id === "inventory")?.label).toBe("Stock");
+    expect(enabled.find((t) => t.id === "checklist")?.label).toBe("Tasks");
+
+    const disabled = buildPinLauncherTiles({
+      features: { inventory: { allowed: true } },
+      attendance: {
+        shared_device_enabled: true,
+        allow_clock_from_hub: false,
+        clocked_in: false,
+      },
+    });
+    const clock = disabled.find((t) => t.id === "clock");
+    expect(clock).toBeTruthy();
+    expect(clock.disabled).toBe(true);
+    expect(clock.disabledHelper).toBe(CLOCK_DISABLED_HELPER);
+    expect(disabled.map((t) => t.id)).toEqual(["clock", "inventory"]);
+  });
+
+  it("keeps Clock visible even when shared-device attendance is off", () => {
+    const tiles = buildPinLauncherTiles({
+      features: { inventory: { allowed: true } },
+      attendance: { shared_device_enabled: false, clocked_in: false },
+    });
+    expect(tiles.map((t) => t.id)).toEqual(["clock", "inventory"]);
+    expect(tiles[0].disabled).toBe(false);
   });
 
   it("hides Role unless confirmed clocked in", () => {
@@ -50,15 +88,6 @@ describe("buildPinLauncherTiles", () => {
       ["clock", "Clock Out"],
       ["switch_role", "Role"],
     ]);
-  });
-
-  it("omits Clock when shared device attendance is disabled", () => {
-    const tiles = buildPinLauncherTiles({
-      features: { inventory: { allowed: true } },
-      attendance: { shared_device_enabled: false, clocked_in: false },
-    });
-    expect(tiles.map((t) => t.id)).toEqual(["inventory"]);
-    expect(tiles[0].label).toBe("Stock");
   });
 
   it("does not invent a Break tile", () => {

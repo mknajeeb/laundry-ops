@@ -13,6 +13,7 @@ import { getClockPayrollUiSettings, getOrganization, putClockPayrollUiSettings }
 
 export const DEFAULT_PIN_MENU = {
   enabled: true,
+  allow_clock_from_hub: true,
   features: {
     switch_role: true,
     checklist: true,
@@ -72,6 +73,7 @@ export default function MobilePinMenuSettingsPanel() {
         const pm = d.pin_menu && typeof d.pin_menu === "object" ? d.pin_menu : {};
         setPinMenu({
           enabled: pm.enabled !== false,
+          allow_clock_from_hub: pm.allow_clock_from_hub !== false,
           features: {
             ...DEFAULT_PIN_MENU.features,
             ...(pm.features && typeof pm.features === "object" ? pm.features : {}),
@@ -102,6 +104,7 @@ export default function MobilePinMenuSettingsPanel() {
       const body = {
         pin_menu: {
           enabled: !!pinMenu.enabled,
+          allow_clock_from_hub: pinMenu.allow_clock_from_hub !== false,
           features: { ...pinMenu.features },
         },
       };
@@ -113,6 +116,7 @@ export default function MobilePinMenuSettingsPanel() {
       if (d.pin_menu) {
         setPinMenu({
           enabled: d.pin_menu.enabled !== false,
+          allow_clock_from_hub: d.pin_menu.allow_clock_from_hub !== false,
           features: {
             ...DEFAULT_PIN_MENU.features,
             ...(d.pin_menu.features || {}),
@@ -181,6 +185,23 @@ export default function MobilePinMenuSettingsPanel() {
           }
           label="Enable mobile PIN menu (/pin)"
         />
+
+        <FormControlLabel
+          disabled={!pinMenu.enabled}
+          control={
+            <Checkbox
+              checked={pinMenu.allow_clock_from_hub !== false}
+              onChange={(e) =>
+                setPinMenu((p) => ({ ...p, allow_clock_from_hub: e.target.checked }))
+              }
+            />
+          }
+          label="Allow Clock In/Out from Mobile PIN Hub"
+        />
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: 4, mt: -0.5 }}>
+          When off, the Clock tile stays visible but disabled with “Use the shared attendance
+          tablet.” Does not affect /attendance/veewash, punch rules, payroll, or role switching.
+        </Typography>
 
         <Typography variant="subtitle2" sx={{ pt: 0.5 }}>
           Buttons on the menu

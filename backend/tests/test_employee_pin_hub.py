@@ -203,6 +203,7 @@ def test_perform_pin_hub_open_clock_only_when_features_gated_off():
         "backend.employee_pin_hub.attendance_snapshot_for_hub",
         return_value={
             "shared_device_enabled": True,
+            "allow_clock_from_hub": True,
             "clocked_in": False,
             "on_break": False,
         },
@@ -215,6 +216,50 @@ def test_perform_pin_hub_open_clock_only_when_features_gated_off():
     assert status == 200
     assert body["ok"] is True
     assert body["attendance"]["shared_device_enabled"] is True
+
+
+def test_perform_pin_hub_open_when_all_features_off_still_ok():
+    """Clock tile is always on the hub, so empty feature lists still open."""
+    conn = MagicMock()
+    matched = _matched(["FRONT_DESK"])
+    with patch(
+        "backend.employee_pin_hub.payroll_profiles_active", return_value=True
+    ), patch(
+        "backend.employee_pin_hub.fetch_organization_by_slug",
+        return_value={"id": 3, "slug": "veewash"},
+    ), patch(
+        "backend.employee_pin_hub.is_rate_limited", return_value=False
+    ), patch(
+        "backend.employee_pin_hub.load_pin_menu_settings",
+        return_value={"enabled": True, "allow_clock_from_hub": False, "features": {}},
+    ), patch(
+        "backend.employee_pin_hub.resolve_user_by_attendance_pin", return_value=matched
+    ), patch(
+        "backend.employee_pin_hub.record_pin_attempt"
+    ), patch(
+        "backend.employee_pin_hub.resolve_hub_features",
+        return_value={
+            "switch_role": {"id": "switch_role", "allowed": False},
+            "checklist": {"id": "checklist", "allowed": False},
+            "inventory": {"id": "inventory", "allowed": False},
+        },
+    ), patch(
+        "backend.employee_pin_hub.attendance_snapshot_for_hub",
+        return_value={
+            "shared_device_enabled": False,
+            "allow_clock_from_hub": False,
+            "clocked_in": False,
+            "on_break": False,
+        },
+    ), patch(
+        "backend.employee_pin_hub.issue_hub_session_token", return_value="hub-token"
+    ):
+        body, status = perform_pin_hub_open(
+            conn, "veewash", "1234", lambda *_: ["FRONT_DESK"], "127.0.0.1"
+        )
+    assert status == 200
+    assert body["ok"] is True
+    assert body["attendance"]["allow_clock_from_hub"] is False
 
 
 def test_perform_pin_hub_open_menu_disabled():

@@ -12,6 +12,7 @@ export default function OpsLauncherTile({
   color = OPS_MOBILE.blue,
   busy = false,
   disabled = false,
+  disabledHelper = "",
   onClick,
   "aria-label": ariaLabel,
 }) {
@@ -40,7 +41,7 @@ export default function OpsLauncherTile({
           bgcolor: alpha(color, 0.14),
         },
         "&.Mui-disabled": {
-          opacity: 0.5,
+          opacity: 0.55,
         },
       }}
     >
@@ -78,6 +79,22 @@ export default function OpsLauncherTile({
       >
         {label}
       </Typography>
+      {disabled && disabledHelper ? (
+        <Typography
+          component="span"
+          sx={{
+            fontWeight: 700,
+            fontSize: "0.72rem",
+            lineHeight: 1.25,
+            textAlign: "center",
+            color: OPS_MOBILE.muted,
+            maxWidth: "100%",
+            px: 0.25,
+          }}
+        >
+          {disabledHelper}
+        </Typography>
+      ) : null}
     </Button>
   );
 }
