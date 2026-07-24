@@ -1,5 +1,5 @@
 /**
- * Pure helpers for unified Edit Bag draft + drawer cache merge.
+ * Pure helpers for unified Edit Bag / one-shot WF Review draft + drawer cache merge.
  */
 
 export function parseWeightInput(raw) {
@@ -9,6 +9,7 @@ export function parseWeightInput(raw) {
   return Number.isFinite(n) ? n : null;
 }
 
+/** @deprecated Prefer reasonOptionsForTriggers / context-specific lists. */
 export const EDIT_BAG_REASON_CODES = [
   { code: "POST_CORRECTION", label: "POST weight correction" },
   { code: "PRE_CORRECTION", label: "PRE weight correction" },
@@ -16,6 +17,47 @@ export const EDIT_BAG_REASON_CODES = [
   { code: "MARK_COMPLETED", label: "Manually mark completed" },
   { code: "RETURN_PENDING", label: "Return to pending" },
   { code: "ACCEPT_EXCEPTION", label: "Accept exception" },
+  { code: "STATUS_OVERRIDE", label: "Manual status override" },
+  { code: "OTHER", label: "Other" },
+];
+
+export const REASON_CODES_POST_CORRECTION = [
+  { code: "INCORRECT_CAPTURED_WEIGHT", label: "Incorrect captured weight" },
+  { code: "SCALE_ISSUE", label: "Scale issue" },
+  { code: "WRONG_BAG_ASSOCIATION", label: "Wrong bag association" },
+  { code: "OTHER", label: "Other" },
+];
+
+export const REASON_CODES_PRE_CORRECTION = [
+  { code: "INCORRECT_CAPTURED_WEIGHT", label: "Incorrect captured weight" },
+  { code: "SCALE_ISSUE", label: "Scale issue" },
+  { code: "MISSING_PRE_EVIDENCE", label: "Missing PRE evidence" },
+  { code: "OTHER", label: "Other" },
+];
+
+export const REASON_CODES_RETURN_PENDING = [
+  { code: "COMPLETION_ASSIGNED_INCORRECTLY", label: "Completion assigned incorrectly" },
+  { code: "BAG_NOT_ACTUALLY_COMPLETED", label: "Bag not actually completed" },
+  { code: "COMPLETION_EVIDENCE_INVALID", label: "Completion evidence invalid" },
+  { code: "OTHER", label: "Other" },
+];
+
+export const REASON_CODES_EXCLUDE = [
+  { code: "NOT_VEEWASH_BAG", label: "Not a VeeWash bag" },
+  { code: "DUPLICATE_RECORD", label: "Duplicate record" },
+  { code: "TEST_RECORD", label: "Test record" },
+  { code: "WRONG_SERVICE_DAY", label: "Wrong service/day" },
+  { code: "OTHER", label: "Other" },
+];
+
+export const REASON_CODES_COMPLETION_CHANGE = [
+  { code: "COMPLETION_ASSIGNED_INCORRECTLY", label: "Completion assigned incorrectly" },
+  { code: "CORRECT_COMPLETION_DETAILS", label: "Correct completion details" },
+  { code: "OTHER", label: "Other" },
+];
+
+export const REASON_CODES_MANUAL_MARK_COMPLETED = [
+  { code: "MARK_COMPLETED", label: "Manually mark completed" },
   { code: "STATUS_OVERRIDE", label: "Manual status override" },
   { code: "OTHER", label: "Other" },
 ];
@@ -30,42 +72,121 @@ function weightsDiffer(a, b) {
   return Number(na) !== Number(nb);
 }
 
+function normalizeCompletionKey(raw) {
+  if (raw == null || raw === "") return "";
+  const text = String(raw).trim().replace("Z", "").replace(" ", "T");
+  if (text.length >= 16 && text.includes("T")) return text.slice(0, 16).toLowerCase();
+  return text.toLowerCase();
+}
+
+export function hasCanonicalCompletion(bag) {
+  const emp = String(bag?.completed_by || bag?.canonical_completion_employee || "").trim();
+  const ts = bag?.completion_at ?? bag?.canonical_completion_timestamp;
+  if (emp && ts != null && ts !== "") return true;
+  const status = String(bag?.dashboard_status || bag?.outcome || "").trim().toLowerCase();
+  return ["completed", "complete", "done"].includes(status) && Boolean(emp || ts);
+}
+
+export function reasonOptionsForTriggers(triggers = []) {
+  if (triggers.includes("post_weight_correction")) return REASON_CODES_POST_CORRECTION;
+  if (triggers.includes("pre_weight_correction")) return REASON_CODES_PRE_CORRECTION;
+  if (triggers.includes("return_pending")) return REASON_CODES_RETURN_PENDING;
+  if (triggers.includes("exclude")) return REASON_CODES_EXCLUDE;
+  if (
+    triggers.includes("completion_employee_changed") ||
+    triggers.includes("completion_timestamp_changed")
+  ) {
+    return REASON_CODES_COMPLETION_CHANGE;
+  }
+  if (triggers.includes("mark_completed") || triggers.includes("status_override")) {
+    return REASON_CODES_MANUAL_MARK_COMPLETED;
+  }
+  return EDIT_BAG_REASON_CODES;
+}
+
 /**
- * Classify whether the current draft is a routine review save or a manager override.
- * Routine path: work items, no-charge, completion fields, service/rush/entry — no reason.
- * Override path: PRE/POST weight correction, or exceptional bag outcomes.
+ * Classify whether the current draft is a routine review save, confirm-completed,
+ * or a manager override that needs a structured reason.
  */
 export function classifyEditSavePath({ draft, baselineBag, outcome = null }) {
   const triggers = [];
-  if (EXCEPTIONAL_OUTCOMES.has(outcome)) triggers.push(String(outcome));
-  if (
-    baselineBag &&
-    weightsDiffer(draft?.post_weight_lbs, baselineBag.post_weight_value ?? baselineBag.post_weight_lbs)
-  ) {
+  const baselinePost = baselineBag?.post_weight_value ?? baselineBag?.post_weight_lbs;
+  if (baselineBag && weightsDiffer(draft?.post_weight_lbs, baselinePost)) {
     triggers.push("post_weight_correction");
   }
   if (baselineBag && weightsDiffer(draft?.pre_weight_lbs, baselineBag.pre_weight_lbs)) {
     triggers.push("pre_weight_correction");
   }
+
+  const draftEmp = String(draft?.completed_by || draft?.completion_employee || "")
+    .trim()
+    .toLowerCase();
+  const beforeEmp = String(baselineBag?.completed_by || "").trim().toLowerCase();
+  const empChanged = draftEmp !== beforeEmp;
+  const tsChanged =
+    normalizeCompletionKey(draft?.completion_at) !==
+    normalizeCompletionKey(baselineBag?.completion_at);
+  if (empChanged) triggers.push("completion_employee_changed");
+  if (tsChanged) triggers.push("completion_timestamp_changed");
+
+  const weightOverride =
+    triggers.includes("post_weight_correction") || triggers.includes("pre_weight_correction");
+  let confirmCompleted = false;
+  if (outcome === "mark_completed") {
+    if (
+      hasCanonicalCompletion(baselineBag) &&
+      !empChanged &&
+      !tsChanged &&
+      !weightOverride &&
+      !draft?.manual_status_override
+    ) {
+      confirmCompleted = true;
+    } else {
+      triggers.push("mark_completed");
+    }
+  } else if (outcome === "return_pending" || outcome === "exclude") {
+    triggers.push(String(outcome));
+  }
+
   if (draft?.manual_status_override) triggers.push("status_override");
 
-  const isManagerOverride = triggers.length > 0;
+  const reasonRequired = triggers.length > 0;
   let suggestedReasonCode = null;
-  if (triggers.includes("post_weight_correction")) suggestedReasonCode = "POST_CORRECTION";
-  else if (triggers.includes("pre_weight_correction")) suggestedReasonCode = "PRE_CORRECTION";
-  else if (outcome === "exclude") suggestedReasonCode = "EXCLUDE";
-  else if (outcome === "mark_completed") suggestedReasonCode = "MARK_COMPLETED";
-  else if (outcome === "return_pending") suggestedReasonCode = "RETURN_PENDING";
-  else if (triggers.includes("status_override")) suggestedReasonCode = "STATUS_OVERRIDE";
+  if (triggers.includes("post_weight_correction") || triggers.includes("pre_weight_correction")) {
+    suggestedReasonCode = "INCORRECT_CAPTURED_WEIGHT";
+  } else if (outcome === "exclude" || triggers.includes("exclude")) {
+    suggestedReasonCode = "NOT_VEEWASH_BAG";
+  } else if (outcome === "return_pending" || triggers.includes("return_pending")) {
+    suggestedReasonCode = "BAG_NOT_ACTUALLY_COMPLETED";
+  } else if (
+    triggers.includes("completion_employee_changed") ||
+    triggers.includes("completion_timestamp_changed")
+  ) {
+    suggestedReasonCode = "CORRECT_COMPLETION_DETAILS";
+  } else if (triggers.includes("mark_completed")) {
+    suggestedReasonCode = "MARK_COMPLETED";
+  } else if (triggers.includes("status_override")) {
+    suggestedReasonCode = "STATUS_OVERRIDE";
+  }
+
+  const path = confirmCompleted && !reasonRequired
+    ? "confirm_completed"
+    : reasonRequired
+      ? "manager_override"
+      : "routine_review";
 
   return {
-    path: isManagerOverride ? "manager_override" : "routine_review",
-    isRoutineReview: !isManagerOverride,
-    isManagerOverride,
-    reasonRequired: isManagerOverride,
+    path,
+    isRoutineReview: path === "routine_review",
+    isManagerOverride: path === "manager_override",
+    confirmCompleted,
+    reasonRequired,
     triggers,
     suggestedReasonCode,
-    systemAction: "WORKITEMS_UPDATED",
+    reasonCodes: reasonRequired ? reasonOptionsForTriggers(triggers) : [],
+    systemAction: confirmCompleted && !reasonRequired
+      ? "REVIEW_CONFIRMED_COMPLETED"
+      : "WORKITEMS_UPDATED",
   };
 }
 
@@ -80,14 +201,22 @@ export function classifyEditReasonRequirements({
 }) {
   const path = classifyEditSavePath({ draft, baselineBag, outcome });
   const bulkTouched = (lines || []).some((l) => Number(l.quantity) > 0) || draft?.no_chargeable;
+  let systemAction = path.systemAction;
+  if (path.confirmCompleted && !path.reasonRequired) {
+    systemAction = "REVIEW_CONFIRMED_COMPLETED";
+  } else if (!path.reasonRequired) {
+    systemAction = bulkTouched ? "WORKITEMS_UPDATED" : "REVIEW_UPDATED";
+  }
   return {
     reasonRequired: path.reasonRequired,
     triggers: path.triggers,
     suggestedReasonCode: path.suggestedReasonCode,
-    systemAction: bulkTouched ? "WORKITEMS_UPDATED" : "REVIEW_UPDATED",
+    reasonCodes: path.reasonCodes,
+    systemAction,
     path: path.path,
     isRoutineReview: path.isRoutineReview,
     isManagerOverride: path.isManagerOverride,
+    confirmCompleted: path.confirmCompleted,
   };
 }
 
@@ -105,10 +234,12 @@ export function validateEditBagDraft({
     const code = String(reasonCode || "").trim().toUpperCase();
     const note = String(reasonNote || reason || "").trim();
     if (!code && !note) return "A reason code is required for this action";
-    if ((code === "OTHER" || (!code && note)) && !note) {
-      return "Add a short note when reason is Other";
-    }
     if (code === "OTHER" && !note) return "Add a short note when reason is Other";
+    if (!code && note) {
+      /* free-text alone ok as Other */
+    } else if (!code) {
+      return "A reason code is required for this action";
+    }
   }
   if (noChargeable) {
     if ((lines || []).some((l) => Number(l.quantity) > 0)) {

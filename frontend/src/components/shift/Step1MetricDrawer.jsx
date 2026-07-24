@@ -125,6 +125,7 @@ export default function Step1MetricDrawer({
   const [detailLoading, setDetailLoading] = useState({});
   const [actionBag, setActionBag] = useState(null);
   const [editingBag, setEditingBag] = useState(null);
+  const [reviewInitialOutcome, setReviewInitialOutcome] = useState(null);
   const editingBagRef = useRef(null);
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
@@ -301,14 +302,21 @@ export default function Step1MetricDrawer({
   };
 
   const startAction = (bag, action) => {
-    if (action === "edit_bag") {
+    if (
+      action === "edit_bag" ||
+      action === "mark_completed" ||
+      action === "return_pending" ||
+      action === "exclude"
+    ) {
       setError("");
-      setEditingBag(bag.bag_id);
       setActionBag(null);
+      setReviewInitialOutcome(action === "edit_bag" ? null : action);
+      setEditingBag(bag.bag_id);
       if (!bag._detailsLoaded) loadBagDetail(bag.bag_id, { force: true });
       return;
     }
     setEditingBag(null);
+    setReviewInitialOutcome(null);
     setActionBag(bag.bag_id);
     setForm({
       action,
@@ -499,7 +507,7 @@ export default function Step1MetricDrawer({
                     {(bag.system_result?.reason_codes || bag.reason_codes || []).join(", ") || "—"}
                   </Typography>
 
-                  {(() => {
+                  {editingBag === bag.bag_id ? null : (() => {
                     const acts = actionsForBagStatus(bag.dashboard_status || bag.outcome);
                     return (
                       <Box
@@ -529,16 +537,7 @@ export default function Step1MetricDrawer({
                                   data-testid="edit-bag-button"
                                   onClick={() => startAction(bag, "edit_bag")}
                                 >
-                                  Edit Bag
-                                </Button>
-                              ) : null}
-                              {acts.markCompleted ? (
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  onClick={() => startAction(bag, "mark_completed")}
-                                >
-                                  Mark completed
+                                  Review
                                 </Button>
                               ) : null}
                               {acts.moveToReview ? (
@@ -548,15 +547,6 @@ export default function Step1MetricDrawer({
                                   onClick={() => startAction(bag, "move_to_review")}
                                 >
                                   Move to Review Required
-                                </Button>
-                              ) : null}
-                              {acts.returnPending ? (
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  onClick={() => startAction(bag, "return_pending")}
-                                >
-                                  {acts.isCompleted ? "Reopen / Return to pending" : "Return to pending"}
                                 </Button>
                               ) : null}
                               {acts.correctEntry ? (
@@ -586,17 +576,6 @@ export default function Step1MetricDrawer({
                                   Correct completion
                                 </Button>
                               ) : null}
-                              {acts.exclude ? (
-                                <Button
-                                  size="small"
-                                  color="error"
-                                  variant="outlined"
-                                  sx={{ ml: { xs: 0, sm: "auto" } }}
-                                  onClick={() => startAction(bag, "exclude")}
-                                >
-                                  Exclude
-                                </Button>
-                              ) : null}
                             </>
                           )}
                         </Stack>
@@ -610,11 +589,16 @@ export default function Step1MetricDrawer({
                       selectedDateEt={selectedDateEt}
                       catalog={catalog}
                       readOnly={readOnly}
-                      onCancel={() => setEditingBag(null)}
+                      initialOutcome={reviewInitialOutcome}
+                      onCancel={() => {
+                        setEditingBag(null);
+                        setReviewInitialOutcome(null);
+                      }}
                       onError={(msg) => setError(msg)}
                       onReloadLatest={async (bagId) => loadBagDetail(bagId, { force: true })}
                       onSaved={async () => {
-                        await refreshBagAfterEdit(bag.bag_id, { closeEditor: false });
+                        setReviewInitialOutcome(null);
+                        await refreshBagAfterEdit(bag.bag_id, { closeEditor: true });
                       }}
                       onUndo={async () => {
                         await refreshBagAfterEdit(bag.bag_id, { closeEditor: false });

@@ -34,13 +34,56 @@ VALID_OUTCOME_ACTIONS = {
     OUTCOME_EXCLUDE,
 }
 
-# Outcomes that require a structured reason (reason_code).
+# Outcomes that always require a structured reason.
+ALWAYS_REASONED_OUTCOMES = {
+    OUTCOME_RETURN_PENDING,
+    OUTCOME_EXCLUDE,
+}
+
+# Legacy alias — mark_completed is conditional (see classify_edit_reason_requirements).
 EXCEPTIONAL_OUTCOME_ACTIONS = {
     OUTCOME_MARK_COMPLETED,
     OUTCOME_RETURN_PENDING,
     OUTCOME_EXCLUDE,
 }
 
+REASON_CODES_POST_CORRECTION = (
+    {"code": "INCORRECT_CAPTURED_WEIGHT", "label": "Incorrect captured weight"},
+    {"code": "SCALE_ISSUE", "label": "Scale issue"},
+    {"code": "WRONG_BAG_ASSOCIATION", "label": "Wrong bag association"},
+    {"code": "OTHER", "label": "Other"},
+)
+REASON_CODES_PRE_CORRECTION = (
+    {"code": "INCORRECT_CAPTURED_WEIGHT", "label": "Incorrect captured weight"},
+    {"code": "SCALE_ISSUE", "label": "Scale issue"},
+    {"code": "MISSING_PRE_EVIDENCE", "label": "Missing PRE evidence"},
+    {"code": "OTHER", "label": "Other"},
+)
+REASON_CODES_RETURN_PENDING = (
+    {"code": "COMPLETION_ASSIGNED_INCORRECTLY", "label": "Completion assigned incorrectly"},
+    {"code": "BAG_NOT_ACTUALLY_COMPLETED", "label": "Bag not actually completed"},
+    {"code": "COMPLETION_EVIDENCE_INVALID", "label": "Completion evidence invalid"},
+    {"code": "OTHER", "label": "Other"},
+)
+REASON_CODES_EXCLUDE = (
+    {"code": "NOT_VEEWASH_BAG", "label": "Not a VeeWash bag"},
+    {"code": "DUPLICATE_RECORD", "label": "Duplicate record"},
+    {"code": "TEST_RECORD", "label": "Test record"},
+    {"code": "WRONG_SERVICE_DAY", "label": "Wrong service/day"},
+    {"code": "OTHER", "label": "Other"},
+)
+REASON_CODES_COMPLETION_CHANGE = (
+    {"code": "COMPLETION_ASSIGNED_INCORRECTLY", "label": "Completion assigned incorrectly"},
+    {"code": "CORRECT_COMPLETION_DETAILS", "label": "Correct completion details"},
+    {"code": "OTHER", "label": "Other"},
+)
+REASON_CODES_MANUAL_MARK_COMPLETED = (
+    {"code": "MARK_COMPLETED", "label": "Manually mark completed"},
+    {"code": "STATUS_OVERRIDE", "label": "Manual status override"},
+    {"code": "OTHER", "label": "Other"},
+)
+
+# Flat union for label lookup / backward-compatible codes.
 REASON_CODE_OPTIONS = (
     {"code": "POST_CORRECTION", "label": "POST weight correction"},
     {"code": "PRE_CORRECTION", "label": "PRE weight correction"},
@@ -49,11 +92,24 @@ REASON_CODE_OPTIONS = (
     {"code": "RETURN_PENDING", "label": "Return to pending"},
     {"code": "ACCEPT_EXCEPTION", "label": "Accept exception"},
     {"code": "STATUS_OVERRIDE", "label": "Manual status override"},
+    {"code": "INCORRECT_CAPTURED_WEIGHT", "label": "Incorrect captured weight"},
+    {"code": "SCALE_ISSUE", "label": "Scale issue"},
+    {"code": "WRONG_BAG_ASSOCIATION", "label": "Wrong bag association"},
+    {"code": "MISSING_PRE_EVIDENCE", "label": "Missing PRE evidence"},
+    {"code": "COMPLETION_ASSIGNED_INCORRECTLY", "label": "Completion assigned incorrectly"},
+    {"code": "BAG_NOT_ACTUALLY_COMPLETED", "label": "Bag not actually completed"},
+    {"code": "COMPLETION_EVIDENCE_INVALID", "label": "Completion evidence invalid"},
+    {"code": "NOT_VEEWASH_BAG", "label": "Not a VeeWash bag"},
+    {"code": "DUPLICATE_RECORD", "label": "Duplicate record"},
+    {"code": "TEST_RECORD", "label": "Test record"},
+    {"code": "WRONG_SERVICE_DAY", "label": "Wrong service/day"},
+    {"code": "CORRECT_COMPLETION_DETAILS", "label": "Correct completion details"},
     {"code": "OTHER", "label": "Other"},
 )
 
 SYSTEM_ACTION_WORKITEMS_UPDATED = "WORKITEMS_UPDATED"
 SYSTEM_ACTION_REVIEW_UPDATED = "REVIEW_UPDATED"
+SYSTEM_ACTION_REVIEW_CONFIRMED_COMPLETED = "REVIEW_CONFIRMED_COMPLETED"
 # Legacy alias kept for older audits / callers
 SYSTEM_ACTION_REVIEW_SAVED = SYSTEM_ACTION_REVIEW_UPDATED
 
@@ -104,6 +160,64 @@ def _weight_changed(before_val: Any, draft_val: Any) -> bool:
     return float(b) != float(d)
 
 
+def _normalize_completion_key(raw: Any) -> str:
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if not text:
+        return ""
+    text = text.replace("Z", "").replace(" ", "T", 1)
+    # Compare to minute precision so picker truncation doesn't force a reason.
+    m = text[:16] if len(text) >= 16 and "T" in text else text
+    return m.lower()
+
+
+def _completion_employee_changed(draft: Mapping[str, Any], before: Mapping[str, Any]) -> bool:
+    if "completed_by" not in draft and "completion_employee" not in draft:
+        return False
+    draft_emp = str(
+        draft.get("completion_employee")
+        if draft.get("completion_employee") is not None
+        else draft.get("completed_by")
+        or ""
+    ).strip().lower()
+    before_emp = str(before.get("completed_by") or "").strip().lower()
+    return draft_emp != before_emp
+
+
+def _completion_timestamp_changed(draft: Mapping[str, Any], before: Mapping[str, Any]) -> bool:
+    if "completion_at" not in draft:
+        return False
+    return _normalize_completion_key(draft.get("completion_at")) != _normalize_completion_key(
+        before.get("completion_at")
+    )
+
+
+def _has_canonical_completion(before: Mapping[str, Any]) -> bool:
+    emp = str(before.get("completed_by") or "").strip()
+    ts = before.get("completion_at")
+    if emp and ts not in (None, ""):
+        return True
+    status = str(before.get("dashboard_status") or before.get("outcome") or "").strip().lower()
+    return status in {"completed", "complete", "done"} and bool(emp or ts)
+
+
+def _reason_options_for_triggers(triggers: list[str]) -> list[dict[str, str]]:
+    if "post_weight_correction" in triggers:
+        return list(REASON_CODES_POST_CORRECTION)
+    if "pre_weight_correction" in triggers:
+        return list(REASON_CODES_PRE_CORRECTION)
+    if "return_pending" in triggers or OUTCOME_RETURN_PENDING in triggers:
+        return list(REASON_CODES_RETURN_PENDING)
+    if "exclude" in triggers or OUTCOME_EXCLUDE in triggers:
+        return list(REASON_CODES_EXCLUDE)
+    if "completion_employee_changed" in triggers or "completion_timestamp_changed" in triggers:
+        return list(REASON_CODES_COMPLETION_CHANGE)
+    if "mark_completed" in triggers or "status_override" in triggers:
+        return list(REASON_CODES_MANUAL_MARK_COMPLETED)
+    return list(REASON_CODE_OPTIONS)
+
+
 def classify_edit_reason_requirements(
     draft: Mapping[str, Any],
     before: Mapping[str, Any],
@@ -112,55 +226,95 @@ def classify_edit_reason_requirements(
     """
     Decide whether a manager reason_code is required for this Edit Bag save.
 
-    Routine work-item / review saves do not require a free-text reason.
-    Exceptional actions (weight correction, exclude, status overrides) do.
+    Routine work-item / review saves and confirming an existing canonical
+    completion do not require a reason. Weight corrections, return/exclude,
+    completion-field changes from source, and manual mark-completed without
+    canonical evidence do.
     """
     draft = dict(draft or {})
     before = dict(before or {})
-    reasons: list[str] = []
-
-    if outcome in EXCEPTIONAL_OUTCOME_ACTIONS:
-        reasons.append(str(outcome))
+    triggers: list[str] = []
 
     if "post_weight_lbs" in draft and _weight_changed(
         before.get("post_weight_lbs"), draft.get("post_weight_lbs")
     ):
-        reasons.append("post_weight_correction")
+        triggers.append("post_weight_correction")
     if "pre_weight_lbs" in draft and _weight_changed(
         before.get("pre_weight_lbs"), draft.get("pre_weight_lbs")
     ):
-        reasons.append("pre_weight_correction")
+        triggers.append("pre_weight_correction")
 
-    # Explicit status override fields on draft (rare)
+    emp_changed = _completion_employee_changed(draft, before)
+    ts_changed = _completion_timestamp_changed(draft, before)
+    if emp_changed:
+        triggers.append("completion_employee_changed")
+    if ts_changed:
+        triggers.append("completion_timestamp_changed")
+
+    confirm_completed = False
+    weight_override = any(
+        t in triggers for t in ("post_weight_correction", "pre_weight_correction")
+    )
+    if outcome == OUTCOME_MARK_COMPLETED:
+        has_canonical = _has_canonical_completion(before)
+        if (
+            has_canonical
+            and not emp_changed
+            and not ts_changed
+            and not weight_override
+            and not draft.get("manual_status_override")
+        ):
+            # Confirming existing completion evidence — not a manual override.
+            confirm_completed = True
+        else:
+            triggers.append("mark_completed")
+    elif outcome in ALWAYS_REASONED_OUTCOMES:
+        triggers.append(str(outcome))
+
     if draft.get("manual_status_override"):
-        reasons.append("status_override")
+        triggers.append("status_override")
 
-    required = bool(reasons)
+    required = bool(triggers)
     suggested = None
-    if "post_weight_correction" in reasons:
-        suggested = "POST_CORRECTION"
-    elif "pre_weight_correction" in reasons:
-        suggested = "PRE_CORRECTION"
-    elif outcome == OUTCOME_EXCLUDE:
-        suggested = "EXCLUDE"
-    elif outcome == OUTCOME_MARK_COMPLETED:
+    if "post_weight_correction" in triggers:
+        suggested = "INCORRECT_CAPTURED_WEIGHT"
+    elif "pre_weight_correction" in triggers:
+        suggested = "INCORRECT_CAPTURED_WEIGHT"
+    elif outcome == OUTCOME_EXCLUDE or "exclude" in triggers:
+        suggested = "NOT_VEEWASH_BAG"
+    elif outcome == OUTCOME_RETURN_PENDING or "return_pending" in triggers:
+        suggested = "BAG_NOT_ACTUALLY_COMPLETED"
+    elif "completion_employee_changed" in triggers or "completion_timestamp_changed" in triggers:
+        suggested = "CORRECT_COMPLETION_DETAILS"
+    elif "mark_completed" in triggers:
         suggested = "MARK_COMPLETED"
-    elif outcome == OUTCOME_RETURN_PENDING:
-        suggested = "RETURN_PENDING"
-    elif "status_override" in reasons:
+    elif "status_override" in triggers:
         suggested = "STATUS_OVERRIDE"
 
     bulk_changed = "bulk_items" in draft or "no_chargeable" in draft
-    system_action = (
-        SYSTEM_ACTION_WORKITEMS_UPDATED if bulk_changed else SYSTEM_ACTION_REVIEW_UPDATED
-    )
+    if confirm_completed and not required:
+        system_action = SYSTEM_ACTION_REVIEW_CONFIRMED_COMPLETED
+        save_path = "confirm_completed"
+    elif required:
+        system_action = (
+            SYSTEM_ACTION_WORKITEMS_UPDATED if bulk_changed else SYSTEM_ACTION_REVIEW_UPDATED
+        )
+        save_path = "manager_override"
+    else:
+        system_action = (
+            SYSTEM_ACTION_WORKITEMS_UPDATED if bulk_changed else SYSTEM_ACTION_REVIEW_UPDATED
+        )
+        save_path = "routine_review"
+
+    reason_codes = _reason_options_for_triggers(triggers) if required else []
     return {
         "reason_required": required,
-        "triggers": reasons,
+        "triggers": triggers,
         "suggested_reason_code": suggested,
         "system_action": system_action,
-        "save_path": "manager_override" if required else "routine_review",
-        "reason_codes": list(REASON_CODE_OPTIONS),
+        "save_path": save_path,
+        "confirm_completed": confirm_completed,
+        "reason_codes": reason_codes,
     }
 
 
@@ -178,6 +332,18 @@ def resolve_edit_audit_reason(
     code = str(reason_code or "").strip().upper() or None
     note = str(reason_note or reason or "").strip() or None
     legacy_reason = str(reason or "").strip() or None
+    allowed = {str(x["code"]).upper() for x in (policy.get("reason_codes") or [])}
+    # Accept legacy generic codes when context list is active.
+    legacy_aliases = {
+        "POST_CORRECTION",
+        "PRE_CORRECTION",
+        "EXCLUDE",
+        "RETURN_PENDING",
+        "MARK_COMPLETED",
+        "STATUS_OVERRIDE",
+        "ACCEPT_EXCEPTION",
+        "OTHER",
+    }
 
     if policy["reason_required"]:
         if not code and legacy_reason:
@@ -188,6 +354,12 @@ def resolve_edit_audit_reason(
             return {
                 "ok": False,
                 "error": "reason_code_required",
+                "policy": policy,
+            }
+        if allowed and code not in allowed and code not in legacy_aliases:
+            return {
+                "ok": False,
+                "error": "reason_code_not_allowed_for_action",
                 "policy": policy,
             }
         if code == "OTHER" and not note:
@@ -209,7 +381,7 @@ def resolve_edit_audit_reason(
             "policy": policy,
         }
 
-    # Routine save — system action description; optional note preserved.
+    # Routine / confirm-completed — system action; optional note preserved.
     system = policy["system_action"]
     if note:
         audit = f"{system}: {note}"
@@ -218,7 +390,7 @@ def resolve_edit_audit_reason(
     return {
         "ok": True,
         "reason": audit,
-        "reason_code": code,
+        "reason_code": None if policy.get("confirm_completed") or not code else code,
         "reason_note": note,
         "policy": policy,
     }

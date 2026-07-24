@@ -182,6 +182,8 @@ def test_routine_wf_review_save_uses_system_audit_reason():
 
 
 def test_edit_bag_classify_routine_vs_exceptional():
+    from backend.rinse_step1_edit_bag import SYSTEM_ACTION_REVIEW_CONFIRMED_COMPLETED
+
     before = {"pre_weight_lbs": 10.0, "post_weight_lbs": 12.0}
     routine = classify_edit_reason_requirements(
         {"bulk_items": [{"workitem_id": 1, "quantity": 1}], "post_weight_lbs": 12.0},
@@ -197,7 +199,8 @@ def test_edit_bag_classify_routine_vs_exceptional():
         outcome="exclude",
     )
     assert exclude["reason_required"] is True
-    assert exclude["suggested_reason_code"] == "EXCLUDE"
+    assert exclude["suggested_reason_code"] == "NOT_VEEWASH_BAG"
+    assert any(x["code"] == "DUPLICATE_RECORD" for x in exclude["reason_codes"])
 
     post = classify_edit_reason_requirements(
         {"post_weight_lbs": 15.0},
@@ -205,7 +208,60 @@ def test_edit_bag_classify_routine_vs_exceptional():
         outcome="keep_review",
     )
     assert post["reason_required"] is True
-    assert post["suggested_reason_code"] == "POST_CORRECTION"
+    assert post["suggested_reason_code"] == "INCORRECT_CAPTURED_WEIGHT"
+    assert any(x["code"] == "SCALE_ISSUE" for x in post["reason_codes"])
+
+
+def test_edit_bag_confirm_canonical_completion_no_reason():
+    from backend.rinse_step1_edit_bag import SYSTEM_ACTION_REVIEW_CONFIRMED_COMPLETED
+
+    before = {
+        "pre_weight_lbs": 10.0,
+        "post_weight_lbs": 12.0,
+        "completed_by": "Ada",
+        "completion_at": "2026-07-24T14:00:00",
+        "dashboard_status": "review_required",
+    }
+    draft = {
+        "bulk_items": [{"workitem_id": 1, "quantity": 1}],
+        "post_weight_lbs": 12.0,
+        "completed_by": "Ada",
+        "completion_at": "2026-07-24T14:00",
+    }
+    confirmed = classify_edit_reason_requirements(draft, before, outcome="mark_completed")
+    assert confirmed["reason_required"] is False
+    assert confirmed["confirm_completed"] is True
+    assert confirmed["system_action"] == SYSTEM_ACTION_REVIEW_CONFIRMED_COMPLETED
+    assert confirmed["save_path"] == "confirm_completed"
+
+    resolved = resolve_edit_audit_reason(
+        reason=None,
+        reason_code=None,
+        reason_note=None,
+        draft=draft,
+        before=before,
+        outcome="mark_completed",
+    )
+    assert resolved["ok"] is True
+    assert resolved["reason"] == SYSTEM_ACTION_REVIEW_CONFIRMED_COMPLETED
+
+
+def test_edit_bag_completion_employee_change_requires_reason():
+    before = {
+        "pre_weight_lbs": 10.0,
+        "post_weight_lbs": 12.0,
+        "completed_by": "Ada",
+        "completion_at": "2026-07-24T14:00:00",
+    }
+    draft = {
+        "post_weight_lbs": 12.0,
+        "completed_by": "Grace",
+        "completion_at": "2026-07-24T14:00",
+    }
+    policy = classify_edit_reason_requirements(draft, before, outcome="mark_completed")
+    assert policy["reason_required"] is True
+    assert "completion_employee_changed" in policy["triggers"]
+    assert policy["suggested_reason_code"] == "CORRECT_COMPLETION_DETAILS"
 
 
 def test_edit_bag_resolve_other_requires_note():

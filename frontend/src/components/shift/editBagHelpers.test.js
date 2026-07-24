@@ -38,7 +38,7 @@ describe("classifyEditSavePath", () => {
     });
     expect(path.isManagerOverride).toBe(true);
     expect(path.reasonRequired).toBe(true);
-    expect(path.suggestedReasonCode).toBe("POST_CORRECTION");
+    expect(path.suggestedReasonCode).toBe("INCORRECT_CAPTURED_WEIGHT");
   });
 
   it("treats exclude outcome as manager override", () => {
@@ -48,7 +48,49 @@ describe("classifyEditSavePath", () => {
       outcome: "exclude",
     });
     expect(path.isManagerOverride).toBe(true);
-    expect(path.suggestedReasonCode).toBe("EXCLUDE");
+    expect(path.suggestedReasonCode).toBe("NOT_VEEWASH_BAG");
+  });
+
+  it("confirms canonical completion without reason", () => {
+    const path = classifyEditSavePath({
+      draft: {
+        post_weight_lbs: "12",
+        pre_weight_lbs: "10",
+        completed_by: "Ada",
+        completion_at: "2026-07-24T14:00",
+      },
+      baselineBag: {
+        post_weight_lbs: 12,
+        pre_weight_lbs: 10,
+        completed_by: "Ada",
+        completion_at: "2026-07-24T14:00:00",
+      },
+      outcome: "mark_completed",
+    });
+    expect(path.confirmCompleted).toBe(true);
+    expect(path.reasonRequired).toBe(false);
+    expect(path.path).toBe("confirm_completed");
+    expect(path.systemAction).toBe("REVIEW_CONFIRMED_COMPLETED");
+  });
+
+  it("requires reason when completion employee changes", () => {
+    const path = classifyEditSavePath({
+      draft: {
+        post_weight_lbs: "12",
+        pre_weight_lbs: "10",
+        completed_by: "Grace",
+        completion_at: "2026-07-24T14:00",
+      },
+      baselineBag: {
+        post_weight_lbs: 12,
+        pre_weight_lbs: 10,
+        completed_by: "Ada",
+        completion_at: "2026-07-24T14:00:00",
+      },
+      outcome: "mark_completed",
+    });
+    expect(path.reasonRequired).toBe(true);
+    expect(path.suggestedReasonCode).toBe("CORRECT_COMPLETION_DETAILS");
   });
 });
 

@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -18,17 +21,16 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { postVeewashStep1Correction } from "../../api";
 import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { PayrollDateTimeField } from "../PayrollDateTimeField";
-import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import {
   buildEditBagPayloadDraft,
   classifyEditReasonRequirements,
-  classifyEditSavePath,
   describeWeightProvenance,
   diffEditBagDraftVsLatest,
-  EDIT_BAG_REASON_CODES,
+  hasCanonicalCompletion,
   validateEditBagDraft,
 } from "./editBagHelpers";
 
@@ -51,22 +53,23 @@ function weightFieldValue(v) {
 
 const NO_CHARGE_REASONS = ["Customer cancelled", "False alarm", "Duplicate scan", "Other"];
 
-const OUTCOME_OPTIONS = [
-  { id: "mark_completed", label: "Mark Completed" },
-  { id: "return_pending", label: "Return to Pending" },
-  { id: "exclude", label: "Exclude" },
+const FINAL_ACTIONS = [
+  { id: null, label: "Save Review", variant: "contained", color: "primary" },
+  { id: "mark_completed", label: "Save & Mark Completed", variant: "contained", color: "success" },
+  { id: "return_pending", label: "Save & Return to Pending", variant: "outlined", color: "primary" },
+  { id: "exclude", label: "Save & Exclude", variant: "outlined", color: "error" },
 ];
 
 /**
- * Unified Edit Bag draft panel.
- * Routine Review Save persists immediately (no reason dialog).
- * Manager Action… opens the override dialog (status / exclude / etc.).
+ * One-shot Review WF Bag modal — evidence, work items, completion, and final
+ * outcome in a single atomic save.
  */
 export default function EditBagPanel({
   bag,
   selectedDateEt,
   catalog = [],
   readOnly = false,
+  initialOutcome = null,
   onCancel,
   onSaved,
   onError,
@@ -89,13 +92,11 @@ export default function EditBagPanel({
     entry_at: toPickerValue(bag?.entry_at),
     rack: bag?.entry_rack || bag?.rack || "VeeWash Dirty",
     pre_weight_lbs: weightFieldValue(bag?.pre_weight_lbs),
-    post_weight_lbs: weightFieldValue(
-      bag?.post_weight_value ?? bag?.post_weight_lbs
-    ),
+    post_weight_lbs: weightFieldValue(bag?.post_weight_value ?? bag?.post_weight_lbs),
     no_chargeable: String(bag?.bulk_resolution?.resolution_type || "") === "no_charge",
     no_charge_reason: bag?.bulk_resolution?.no_charge_reason || "",
-    completion_at: toPickerValue(bag?.completion_at),
-    completed_by: bag?.completed_by || "",
+    completion_at: toPickerValue(bag?.completion_at || bag?.canonical_completion_timestamp),
+    completed_by: bag?.completed_by || bag?.canonical_completion_employee || "",
     reason: "",
     reason_code: "",
     reason_note: "",
@@ -103,28 +104,33 @@ export default function EditBagPanel({
   const [qty, setQty] = useState(initialQty);
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState("");
-  const [saveAttempted, setSaveAttempted] = useState(false);
-  const [outcomeOpen, setOutcomeOpen] = useState(false);
-  const [pendingSave, setPendingSave] = useState(null);
-  const [pendingOutcome, setPendingOutcome] = useState(null);
+  const [pendingOutcome, setPendingOutcome] = useState(initialOutcome || null);
+  const [showCompare, setShowCompare] = useState(false);
   const [undoToast, setUndoToast] = useState(null);
   const [conflict, setConflict] = useState(null);
   const [lockUpdatedAt, setLockUpdatedAt] = useState(
     () => bag?.updated_at || bag?.day_bag_updated_at || null
   );
   const [baselineBag, setBaselineBag] = useState(bag);
+  const [correctPost, setCorrectPost] = useState(false);
 
-  // Keep draft stable while editing — do not reset from bag prop refreshes.
   useEffect(() => {
     setQty(initialQty);
   }, [bag?.bag_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isHd = String(draft.service_type || "").toUpperCase() === "HD";
+  useEffect(() => {
+    if (initialOutcome) setPendingOutcome(initialOutcome);
+  }, [initialOutcome]);
 
-  // Heuristic hint only — post weight present (from portal) while pre weight is
-  // still missing means the earlier weight-entry scan has no recoverable
-  // portal evidence and needs a manager correction (see
-  // backend/rinse_scan_weight_enrichment.py classify_and_backfill_bag).
+  const isHd = String(draft.service_type || "").toUpperCase() === "HD";
+  const reviewStatus = bag?.dashboard_status || bag?.outcome || "—";
+  const customer =
+    bag?.customer_name || bag?.customer || bag?.portal_customer_name || bag?.account_name || "—";
+  const rushLabel = String(draft.rush_flag || "").toUpperCase().includes("NON")
+    ? "Non-Rush"
+    : "Rush";
+  const canonicalOk = hasCanonicalCompletion(baselineBag || bag);
+
   const preWeightMissing = bag?.pre_weight_lbs === null || bag?.pre_weight_lbs === undefined;
   const postWeightPresent =
     (bag?.post_weight_value ?? bag?.post_weight_lbs) !== null &&
@@ -184,8 +190,16 @@ export default function EditBagPanel({
     setQty((q) => ({ ...q, [id]: Math.max(0, Number(q[id] || 0) + delta) }));
   };
 
+  const activeOutcome = pendingOutcome;
+  const policy = classifyEditReasonRequirements({
+    draft,
+    baselineBag,
+    outcome: activeOutcome,
+    lines,
+  });
+
   const validateLocal = (outcome = null) => {
-    const policy = classifyEditReasonRequirements({
+    const p = classifyEditReasonRequirements({
       draft,
       baselineBag,
       outcome,
@@ -193,23 +207,38 @@ export default function EditBagPanel({
     });
     return validateEditBagDraft({
       reason: draft.reason,
-      reasonCode: draft.reason_code || policy.suggestedReasonCode,
+      reasonCode: draft.reason_code || p.suggestedReasonCode,
       reasonNote: draft.reason_note || draft.reason,
       noChargeable: draft.no_chargeable,
       noChargeReason: draft.no_charge_reason,
       lines,
       isHd,
-      reasonRequired: policy.reasonRequired,
+      reasonRequired: p.reasonRequired,
     });
   };
 
-  const buildPayloadDraft = () =>
-    buildEditBagPayloadDraft({ draft, lines, isHd });
+  const buildPayloadDraft = () => {
+    const payload = buildEditBagPayloadDraft({ draft, lines, isHd });
+    // PRE is evidence-locked in the modal unless explicitly corrected later.
+    if (!correctPost) {
+      /* post may still equal baseline */
+    }
+    payload.pre_weight_lbs = parseFloatOrNull(baselineBag?.pre_weight_lbs ?? bag?.pre_weight_lbs);
+    if (!correctPost) {
+      payload.post_weight_lbs = parseFloatOrNull(
+        baselineBag?.post_weight_value ??
+          baselineBag?.post_weight_lbs ??
+          bag?.post_weight_value ??
+          bag?.post_weight_lbs
+      );
+    }
+    return payload;
+  };
 
   const enterConflict = (data) => {
     const latest = data?.latest || null;
     setConflict({
-      message: "This bag was updated after you opened it.",
+      message: "This bag was updated while you were reviewing it.",
       currentVersion: data?.current_version || latest?.updated_at || null,
       latest,
       unsavedDraft: { ...draft },
@@ -230,37 +259,27 @@ export default function EditBagPanel({
           : null,
       }),
     });
-    setLocalError("This bag was updated after you opened it.");
+    setShowCompare(false);
   };
 
   const reloadLatest = async () => {
     setSaving(true);
     setLocalError("");
     try {
-      const latestBag = onReloadLatest
-        ? await onReloadLatest(bag.bag_id)
-        : null;
+      const latestBag = onReloadLatest ? await onReloadLatest(bag.bag_id) : null;
       const next = latestBag || bag;
       const lock = next?.updated_at || next?.day_bag_updated_at || conflict?.currentVersion;
       setLockUpdatedAt(lock || null);
       setBaselineBag(next);
-      const diffs = diffEditBagDraftVsLatest({
-        draft: conflict?.unsavedDraft || draft,
-        lines: conflict?.unsavedLines || lines,
-        latest: next,
-      });
-      setConflict((c) =>
-        c
-          ? {
-              ...c,
-              latest: next,
-              fieldDiffs: diffs,
-              reloaded: true,
-              message:
-                "Latest saved values loaded. Your unsaved edits were not applied automatically.",
-            }
-          : null
-      );
+      setDraft((d) => ({
+        ...d,
+        pre_weight_lbs: weightFieldValue(next?.pre_weight_lbs),
+        post_weight_lbs: weightFieldValue(next?.post_weight_value ?? next?.post_weight_lbs),
+        completion_at: toPickerValue(next?.completion_at || next?.canonical_completion_timestamp),
+        completed_by: next?.completed_by || next?.canonical_completion_employee || "",
+      }));
+      setConflict(null);
+      setShowCompare(false);
     } catch (e) {
       setLocalError(e?.response?.data?.error || e?.message || "Reload failed");
     } finally {
@@ -268,42 +287,41 @@ export default function EditBagPanel({
     }
   };
 
-  const dismissConflict = () => {
-    setConflict(null);
-    setLocalError("");
-  };
-
   const persist = async (outcomeAction) => {
-    setSaveAttempted(true);
     const err = validateLocal(outcomeAction);
     if (err) {
       setLocalError(err);
+      setPendingOutcome(outcomeAction);
+      const p = classifyEditReasonRequirements({
+        draft,
+        baselineBag,
+        outcome: outcomeAction,
+        lines,
+      });
+      if (p.reasonRequired && !draft.reason_code && p.suggestedReasonCode) {
+        setDraft((d) => ({ ...d, reason_code: p.suggestedReasonCode }));
+      }
       return;
     }
-    const policy = classifyEditReasonRequirements({
+    const p = classifyEditReasonRequirements({
       draft,
       baselineBag,
       outcome: outcomeAction,
       lines,
     });
-    if (policy.reasonRequired && !draft.reason_code && policy.suggestedReasonCode) {
-      setDraft((d) => ({ ...d, reason_code: policy.suggestedReasonCode }));
-    }
     setSaving(true);
     setLocalError("");
     try {
       const reasonCode =
-        String(draft.reason_code || policy.suggestedReasonCode || "").trim().toUpperCase() ||
-        null;
+        String(draft.reason_code || p.suggestedReasonCode || "").trim().toUpperCase() || null;
       const reasonNote = String(draft.reason_note || draft.reason || "").trim() || null;
-      // Routine Review Save: no manager reason. Manager Override: structured reason.
       const body = {
         action: "edit_bag",
         bag_id: bag.bag_id,
         selected_date_et: selectedDateEt,
-        reason: policy.reasonRequired ? reasonNote || "" : "",
-        reason_code: policy.reasonRequired ? reasonCode : null,
-        reason_note: policy.reasonRequired ? reasonNote : null,
+        reason: p.reasonRequired ? reasonNote || "" : "",
+        reason_code: p.reasonRequired ? reasonCode : null,
+        reason_note: p.reasonRequired ? reasonNote : null,
         expected_updated_at: lockUpdatedAt || bag.updated_at || bag.day_bag_updated_at || null,
         outcome_action:
           outcomeAction && outcomeAction !== "decide_later" && outcomeAction !== "keep_review"
@@ -322,15 +340,9 @@ export default function EditBagPanel({
         return;
       }
       const editId = res.data.edit_id;
-      setOutcomeOpen(false);
-      setPendingSave(null);
-      setPendingOutcome(null);
       setConflict(null);
-      setUndoToast({
-        editId,
-        message: "Changes saved — Undo",
-      });
-      onSaved?.(res.data, { keepExpanded: true });
+      setUndoToast({ editId, message: "Review saved — Undo" });
+      onSaved?.(res.data, { keepExpanded: true, closeEditor: true });
     } catch (e) {
       const status = e?.response?.status;
       const data = e?.response?.data || {};
@@ -346,72 +358,39 @@ export default function EditBagPanel({
     }
   };
 
-  const startRoutineSave = () => {
-    setSaveAttempted(true);
-    const path = classifyEditSavePath({ draft, baselineBag, outcome: null });
-    if (path.isManagerOverride) {
-      // Weight correction in draft — stay on this screen and require reason, then save review.
-      const err = validateLocal(null);
-      if (err) {
-        setLocalError(err);
-        if (path.suggestedReasonCode && !draft.reason_code) {
-          setDraft((d) => ({ ...d, reason_code: path.suggestedReasonCode }));
+  const requestFinalAction = (outcomeAction) => {
+    setLocalError("");
+    setPendingOutcome(outcomeAction);
+    const p = classifyEditReasonRequirements({
+      draft,
+      baselineBag,
+      outcome: outcomeAction,
+      lines,
+    });
+    if (p.reasonRequired) {
+      // First click: surface context-specific reasons. Second click / Confirm saves.
+      if (!String(draft.reason_code || "").trim()) {
+        if (p.suggestedReasonCode) {
+          setDraft((d) => ({ ...d, reason_code: p.suggestedReasonCode }));
         }
         return;
       }
-      persist(null);
-      return;
-    }
-    const err = validateLocal(null);
-    if (err) {
-      setLocalError(err);
-      return;
-    }
-    // Routine Review Save — immediate, no action dialog, no reason.
-    persist(null);
-  };
-
-  const openManagerActions = () => {
-    setSaveAttempted(true);
-    const err = validateLocal(null);
-    // Allow opening manager actions even if weight reason not filled yet —
-    // exceptional outcomes will collect reason in the dialog.
-    if (err && !classifyEditSavePath({ draft, baselineBag }).isManagerOverride) {
-      // Still block on bulk validation errors
-      const bulkErr = validateEditBagDraft({
-        reason: "",
-        reasonCode: "",
-        reasonNote: "",
+      const err = validateEditBagDraft({
+        reason: draft.reason,
+        reasonCode: draft.reason_code,
+        reasonNote: draft.reason_note || draft.reason,
         noChargeable: draft.no_chargeable,
         noChargeReason: draft.no_charge_reason,
         lines,
         isHd,
-        reasonRequired: false,
+        reasonRequired: true,
       });
-      if (bulkErr) {
-        setLocalError(bulkErr);
+      if (err) {
+        setLocalError(err);
         return;
       }
     }
-    setLocalError("");
-    setPendingSave(buildPayloadDraft());
-    setPendingOutcome(null);
-    setOutcomeOpen(true);
-  };
-
-  const chooseOutcome = (optId) => {
-    const policy = classifyEditReasonRequirements({
-      draft,
-      baselineBag,
-      outcome: optId,
-      lines,
-    });
-    // Manager override outcomes always require structured reason.
-    setPendingOutcome(optId);
-    if (policy.suggestedReasonCode && !draft.reason_code) {
-      setDraft((d) => ({ ...d, reason_code: policy.suggestedReasonCode }));
-    }
-    setLocalError("");
+    persist(outcomeAction);
   };
 
   const handleUndo = async () => {
@@ -423,7 +402,6 @@ export default function EditBagPanel({
         bag_id: bag.bag_id,
         selected_date_et: selectedDateEt,
         edit_id: undoToast.editId,
-        reason: "Undo last Edit Bag change",
       });
       if (!res?.data?.ok) {
         const msg = res?.data?.error || "Undo failed";
@@ -445,390 +423,392 @@ export default function EditBagPanel({
   if (readOnly) {
     return (
       <Alert severity="info" sx={{ mb: 1 }}>
-        Shift is closed — reopen to edit this bag.
+        Shift is closed — reopen to review this bag.
       </Alert>
     );
   }
 
+  const reasonCodes = policy.reasonCodes || [];
+  const reasonNeededForPending = Boolean(
+    pendingOutcome !== undefined &&
+      classifyEditReasonRequirements({
+        draft,
+        baselineBag,
+        outcome: pendingOutcome,
+        lines,
+      }).reasonRequired
+  );
+
   return (
-    <Box
-      data-testid="edit-bag-panel"
-      sx={{
-        mb: 1.5,
-        p: 1.25,
-        bgcolor: VEEWASH_DASHBOARD.primaryBlueLight,
-        borderRadius: 1,
-        border: "1px solid",
-        borderColor: "divider",
-      }}
-    >
-      <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>
-        Edit Bag
-      </Typography>
-      {localError && !conflict ? (
-        <Alert severity="error" sx={{ mb: 1 }} onClose={() => setLocalError("")}>
-          {localError}
-        </Alert>
-      ) : null}
-      {conflict ? (
-        <Alert
-          severity="warning"
-          sx={{ mb: 1 }}
-          action={
-            <Stack direction="row" spacing={0.5}>
-              <Button color="inherit" size="small" onClick={reloadLatest} disabled={saving}>
-                Reload Latest
-              </Button>
-              <Button color="inherit" size="small" onClick={dismissConflict}>
-                Cancel
-              </Button>
-            </Stack>
-          }
-        >
-          <Typography variant="body2" fontWeight={700}>
-            {conflict.message}
+    <>
+      <Dialog
+        open
+        fullWidth
+        maxWidth="md"
+        onClose={() => !saving && onCancel?.()}
+        data-testid="review-wf-bag-modal"
+        PaperProps={{
+          sx: {
+            m: { xs: 0, sm: 2 },
+            maxHeight: { xs: "100%", sm: "92vh" },
+            height: { xs: "100%", sm: "auto" },
+            borderRadius: { xs: 0, sm: 2 },
+          },
+        }}
+      >
+        <DialogTitle sx={{ pb: 1 }}>
+          <Typography variant="h6" fontWeight={800} component="div">
+            Review WF Bag
           </Typography>
-          {conflict.currentVersion ? (
-            <Typography variant="caption" display="block">
-              Current version: {String(conflict.currentVersion)}
-            </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {bag?.bag_id} · {customer} · {draft.service_type || "WF"} / {rushLabel} · {reviewStatus}
+          </Typography>
+        </DialogTitle>
+        <DialogContent dividers sx={{ px: { xs: 1.5, sm: 3 } }}>
+          {localError && !conflict ? (
+            <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setLocalError("")}>
+              {localError}
+            </Alert>
           ) : null}
-          {(conflict.fieldDiffs || []).length > 0 ? (
-            <Box sx={{ mt: 1 }}>
-              <Typography variant="caption" fontWeight={700} display="block">
-                Your unsaved values vs latest saved
+
+          <Stack spacing={2}>
+            <Box>
+              <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
+                Evidence
               </Typography>
-              {(conflict.fieldDiffs || []).slice(0, 8).map((d) => (
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+                <Box sx={{ flex: 1, p: 1, bgcolor: "grey.50", borderRadius: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Evidence PRE (read-only)
+                  </Typography>
+                  <Typography fontWeight={700}>
+                    {draft.pre_weight_lbs !== "" && draft.pre_weight_lbs != null
+                      ? `${draft.pre_weight_lbs} lb`
+                      : "—"}
+                  </Typography>
+                </Box>
+                <Box sx={{ flex: 1, p: 1, bgcolor: "grey.50", borderRadius: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Evidence POST
+                  </Typography>
+                  <Typography fontWeight={700}>
+                    {(bag?.post_weight_value ?? bag?.post_weight_lbs) != null
+                      ? `${bag?.post_weight_value ?? bag?.post_weight_lbs} lb`
+                      : "—"}
+                  </Typography>
+                </Box>
+                <Box sx={{ flex: 1, p: 1, bgcolor: "grey.50", borderRadius: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Authoritative POST
+                  </Typography>
+                  <Typography fontWeight={700}>
+                    {correctPost && draft.post_weight_lbs !== ""
+                      ? `${draft.post_weight_lbs} lb (corrected)`
+                      : (bag?.post_weight_value ?? bag?.post_weight_lbs) != null
+                        ? `${bag?.post_weight_value ?? bag?.post_weight_lbs} lb`
+                        : "—"}
+                  </Typography>
+                </Box>
+              </Stack>
+              <Accordion disableGutters elevation={0} sx={{ mt: 0.5, bgcolor: "transparent" }}>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: 0, minHeight: 36 }}>
+                  <Typography variant="caption">Evidence details</Typography>
+                </AccordionSummary>
+                <AccordionDetails sx={{ px: 0, pt: 0 }}>
+                  <Typography variant="caption" display="block">
+                    PRE: {preProvenance.helperText || "—"}
+                  </Typography>
+                  <Typography variant="caption" display="block">
+                    POST: {postProvenance.helperText || "—"}
+                  </Typography>
+                </AccordionDetails>
+              </Accordion>
+              <FormControlLabel
+                sx={{ mt: 0.5 }}
+                control={
+                  <Checkbox
+                    checked={correctPost}
+                    onChange={(e) => {
+                      setCorrectPost(e.target.checked);
+                      if (!e.target.checked) {
+                        setDraft((d) => ({
+                          ...d,
+                          post_weight_lbs: weightFieldValue(
+                            baselineBag?.post_weight_value ?? baselineBag?.post_weight_lbs
+                          ),
+                        }));
+                      }
+                    }}
+                  />
+                }
+                label="Correct POST weight"
+              />
+              {correctPost ? (
+                <TextField
+                  size="small"
+                  type="number"
+                  label="Corrected POST lbs"
+                  value={draft.post_weight_lbs}
+                  onChange={(e) => setDraft((d) => ({ ...d, post_weight_lbs: e.target.value }))}
+                  inputProps={{ step: 0.1, min: 0 }}
+                  fullWidth
+                  sx={{ mt: 0.5 }}
+                />
+              ) : null}
+            </Box>
+
+            {!isHd ? (
+              <Box>
+                <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
+                  Work items
+                </Typography>
+                {!draft.no_chargeable
+                  ? lines.map((line) => (
+                      <Stack
+                        key={line.workitem_id}
+                        direction="row"
+                        spacing={1}
+                        alignItems="center"
+                        sx={{ mb: 0.75 }}
+                      >
+                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                          <Typography fontWeight={700} noWrap>
+                            {line.name}
+                          </Typography>
+                          <Typography variant="caption">${money(line.unit_price)}</Typography>
+                        </Box>
+                        <Button size="small" variant="outlined" onClick={() => bump(line.workitem_id, -1)}>
+                          −
+                        </Button>
+                        <Typography fontFamily="monospace" sx={{ minWidth: 24, textAlign: "center" }}>
+                          {line.quantity}
+                        </Typography>
+                        <Button size="small" variant="outlined" onClick={() => bump(line.workitem_id, 1)}>
+                          +
+                        </Button>
+                        <Typography variant="caption" sx={{ minWidth: 56, textAlign: "right" }}>
+                          ${money(line.line_total)}
+                        </Typography>
+                      </Stack>
+                    ))
+                  : null}
+                {!draft.no_chargeable ? (
+                  <Typography fontWeight={800} sx={{ mb: 0.5 }}>
+                    Bulk total ${money(bulkTotal)}
+                  </Typography>
+                ) : null}
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={draft.no_chargeable}
+                      onChange={(e) =>
+                        setDraft((d) => ({ ...d, no_chargeable: e.target.checked }))
+                      }
+                    />
+                  }
+                  label="No chargeable bulk items"
+                />
+                {draft.no_chargeable ? (
+                  <FormControl size="small" fullWidth sx={{ mt: 0.5 }}>
+                    <InputLabel>No-charge reason</InputLabel>
+                    <Select
+                      label="No-charge reason"
+                      value={
+                        NO_CHARGE_REASONS.includes(draft.no_charge_reason)
+                          ? draft.no_charge_reason
+                          : draft.no_charge_reason
+                            ? "Other"
+                            : ""
+                      }
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setDraft((d) => ({
+                          ...d,
+                          no_charge_reason: v === "Other" ? "Other" : v,
+                        }));
+                      }}
+                    >
+                      {NO_CHARGE_REASONS.map((r) => (
+                        <MenuItem key={r} value={r}>
+                          {r}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                ) : null}
+                {draft.no_chargeable &&
+                (draft.no_charge_reason === "Other" ||
+                  (draft.no_charge_reason &&
+                    !NO_CHARGE_REASONS.includes(draft.no_charge_reason))) ? (
+                  <TextField
+                    size="small"
+                    fullWidth
+                    sx={{ mt: 1 }}
+                    label="Other reason"
+                    value={
+                      NO_CHARGE_REASONS.includes(draft.no_charge_reason)
+                        ? ""
+                        : draft.no_charge_reason
+                    }
+                    onChange={(e) =>
+                      setDraft((d) => ({ ...d, no_charge_reason: e.target.value }))
+                    }
+                  />
+                ) : null}
+              </Box>
+            ) : (
+              <Typography variant="caption" color="text.secondary">
+                WF bulk workitems are hidden for Hang Dry.
+              </Typography>
+            )}
+
+            <Box>
+              <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
+                Completion details
+              </Typography>
+              {canonicalOk ? (
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>
+                  Canonical completion evidence is present. Confirming completion does not require a
+                  reason unless you change employee or time.
+                </Typography>
+              ) : null}
+              <FoldingUserSelect
+                label="Completion employee"
+                value={draft.completed_by || ""}
+                onChange={(name) => setDraft((d) => ({ ...d, completed_by: name }))}
+                allowEmpty
+                sx={{ width: "100%", minWidth: 0, mb: 1 }}
+              />
+              <PayrollDateTimeField
+                label="Completion date & time (ET)"
+                value={draft.completion_at || ""}
+                onChange={(v) => setDraft((d) => ({ ...d, completion_at: v }))}
+              />
+            </Box>
+
+            {reasonNeededForPending || policy.reasonRequired ? (
+              <Box
+                data-testid="review-reason-fields"
+                sx={{ p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: 1 }}
+              >
+                <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
+                  Reason required
+                </Typography>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                  {(policy.triggers || []).join(", ") || "manager override"}
+                </Typography>
+                <TextField
+                  select
+                  size="small"
+                  required
+                  fullWidth
+                  label="Reason"
+                  value={draft.reason_code || policy.suggestedReasonCode || ""}
+                  onChange={(e) => setDraft((d) => ({ ...d, reason_code: e.target.value }))}
+                  sx={{ mb: 1 }}
+                >
+                  {(reasonCodes.length ? reasonCodes : policy.reasonCodes || []).map((r) => (
+                    <MenuItem key={r.code} value={r.code}>
+                      {r.label}
+                    </MenuItem>
+                  ))}
+                </TextField>
+                <TextField
+                  size="small"
+                  fullWidth
+                  label={
+                    String(draft.reason_code || policy.suggestedReasonCode) === "OTHER"
+                      ? "Note (required for Other)"
+                      : "Note (optional)"
+                  }
+                  value={draft.reason_note || draft.reason}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setDraft((d) => ({ ...d, reason_note: next, reason: next }));
+                  }}
+                  multiline
+                  minRows={2}
+                />
+                <Button
+                  sx={{ mt: 1 }}
+                  variant="contained"
+                  color={pendingOutcome === "exclude" ? "error" : "primary"}
+                  disabled={saving}
+                  onClick={() => persist(pendingOutcome)}
+                  data-testid="review-confirm-reasoned-save"
+                >
+                  Confirm{" "}
+                  {FINAL_ACTIONS.find((a) => a.id === pendingOutcome)?.label || "Save Review"}
+                </Button>
+              </Box>
+            ) : (
+              <Typography variant="caption" color="text.secondary">
+                Ordinary work-item review and confirming existing completion do not require a reason.
+              </Typography>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions
+          sx={{
+            px: 2,
+            py: 1.5,
+            flexWrap: "wrap",
+            gap: 1,
+            justifyContent: "flex-start",
+            position: "sticky",
+            bottom: 0,
+            bgcolor: "background.paper",
+          }}
+        >
+          {FINAL_ACTIONS.map((a) => (
+            <Button
+              key={String(a.id)}
+              variant={a.variant}
+              color={a.color}
+              disabled={saving}
+              onClick={() => requestFinalAction(a.id)}
+              data-testid={`review-action-${a.id || "save_review"}`}
+            >
+              {saving && pendingOutcome === a.id ? "Saving…" : a.label}
+            </Button>
+          ))}
+          <Button onClick={onCancel} disabled={saving} sx={{ ml: { sm: "auto" } }}>
+            Cancel
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(conflict)}
+        onClose={() => !saving && setConflict(null)}
+        fullWidth
+        maxWidth="xs"
+        data-testid="review-conflict-dialog"
+      >
+        <DialogTitle>Bag updated</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            {conflict?.message || "This bag was updated while you were reviewing it."}
+          </Typography>
+          {showCompare && (conflict?.fieldDiffs || []).length > 0 ? (
+            <Stack spacing={0.5} sx={{ mt: 1 }}>
+              {(conflict.fieldDiffs || []).map((d) => (
                 <Typography key={d.label} variant="caption" display="block">
                   {d.label}: unsaved {d.unsaved} · latest {d.latest}
                 </Typography>
               ))}
-            </Box>
-          ) : (
-            <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
-              Reload Latest to refresh the editor lock without closing the queue.
-            </Typography>
-          )}
-        </Alert>
-      ) : null}
-
-      <Stack spacing={1.25}>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-          <FormControl size="small" fullWidth>
-            <InputLabel>Service</InputLabel>
-            <Select
-              label="Service"
-              value={draft.service_type}
-              onChange={(e) =>
-                setDraft((d) => ({
-                  ...d,
-                  service_type: e.target.value,
-                  rack: e.target.value === "HD" ? d.rack : d.rack || "VeeWash Dirty",
-                }))
-              }
-            >
-              <MenuItem value="WF">WF</MenuItem>
-              <MenuItem value="HD">HD</MenuItem>
-            </Select>
-          </FormControl>
-          <FormControl size="small" fullWidth>
-            <InputLabel>Rush</InputLabel>
-            <Select
-              label="Rush"
-              value={String(draft.rush_flag || "").toUpperCase().includes("NON") ? "NON-RUSH" : "RUSH"}
-              onChange={(e) => setDraft((d) => ({ ...d, rush_flag: e.target.value }))}
-            >
-              <MenuItem value="RUSH">Rush</MenuItem>
-              <MenuItem value="NON-RUSH">Non-Rush</MenuItem>
-            </Select>
-          </FormControl>
-        </Stack>
-
-        <PayrollDateTimeField
-          label="Workload entry (ET)"
-          value={draft.entry_at || ""}
-          onChange={(v) => setDraft((d) => ({ ...d, entry_at: v }))}
-        />
-        {!isHd ? (
-          <TextField
-            size="small"
-            label="Entry rack"
-            value={draft.rack || ""}
-            onChange={(e) => setDraft((d) => ({ ...d, rack: e.target.value }))}
-          />
-        ) : null}
-
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-          <TextField
-            size="small"
-            type="number"
-            label="Pre Weight lbs"
-            value={draft.pre_weight_lbs}
-            onChange={(e) => setDraft((d) => ({ ...d, pre_weight_lbs: e.target.value }))}
-            inputProps={{ step: 0.1, min: 0 }}
-            helperText={preProvenance.helperText}
-            FormHelperTextProps={{ title: preProvenance.title || undefined }}
-            fullWidth
-          />
-          <TextField
-            size="small"
-            type="number"
-            label="Post Weight lbs"
-            value={draft.post_weight_lbs}
-            onChange={(e) => setDraft((d) => ({ ...d, post_weight_lbs: e.target.value }))}
-            inputProps={{ step: 0.1, min: 0 }}
-            helperText={postProvenance.helperText}
-            FormHelperTextProps={{ title: postProvenance.title || undefined }}
-            fullWidth
-          />
-        </Stack>
-
-        {!isHd ? (
-          <Box sx={{ p: 1, border: "1px solid #e2e8f0", borderRadius: 1, bgcolor: "#fff" }}>
-            <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.75 }}>
-              WF Bulk Workitems
-            </Typography>
-            {!draft.no_chargeable
-              ? lines.map((line) => (
-                  <Box key={line.workitem_id} sx={{ mb: 1 }}>
-                    <Typography fontWeight={700}>{line.name}</Typography>
-                    <Typography variant="caption" display="block">
-                      Price: ${money(line.unit_price)}
-                    </Typography>
-                    <Stack direction="row" spacing={1} alignItems="center" sx={{ my: 0.5 }}>
-                      <Button size="small" variant="outlined" onClick={() => bump(line.workitem_id, -1)}>
-                        −
-                      </Button>
-                      <Typography fontFamily="monospace" sx={{ minWidth: 24, textAlign: "center" }}>
-                        {line.quantity}
-                      </Typography>
-                      <Button size="small" variant="outlined" onClick={() => bump(line.workitem_id, 1)}>
-                        +
-                      </Button>
-                    </Stack>
-                    <Typography variant="caption">Line Total: ${money(line.line_total)}</Typography>
-                  </Box>
-                ))
-              : null}
-            {!draft.no_chargeable ? (
-              <Typography fontWeight={800}>Bulk Item Total ${money(bulkTotal)}</Typography>
-            ) : null}
-            <FormControlLabel
-              control={
-                <Checkbox
-                  checked={draft.no_chargeable}
-                  onChange={(e) =>
-                    setDraft((d) => ({ ...d, no_chargeable: e.target.checked }))
-                  }
-                />
-              }
-              label="No Chargeable Bulk Items"
-            />
-            {draft.no_chargeable ? (
-              <FormControl size="small" fullWidth sx={{ mt: 0.5 }}>
-                <InputLabel>No-charge reason</InputLabel>
-                <Select
-                  label="No-charge reason"
-                  value={
-                    NO_CHARGE_REASONS.includes(draft.no_charge_reason)
-                      ? draft.no_charge_reason
-                      : draft.no_charge_reason
-                        ? "Other"
-                        : ""
-                  }
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setDraft((d) => ({
-                      ...d,
-                      no_charge_reason: v === "Other" ? "Other" : v,
-                    }));
-                  }}
-                >
-                  {NO_CHARGE_REASONS.map((r) => (
-                    <MenuItem key={r} value={r}>
-                      {r}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            ) : null}
-            {draft.no_chargeable &&
-            (draft.no_charge_reason === "Other" ||
-              (draft.no_charge_reason && !NO_CHARGE_REASONS.includes(draft.no_charge_reason))) ? (
-              <TextField
-                size="small"
-                fullWidth
-                sx={{ mt: 1 }}
-                label="Other reason"
-                value={
-                  NO_CHARGE_REASONS.includes(draft.no_charge_reason)
-                    ? ""
-                    : draft.no_charge_reason
-                }
-                onChange={(e) =>
-                  setDraft((d) => ({ ...d, no_charge_reason: e.target.value }))
-                }
-              />
-            ) : null}
-          </Box>
-        ) : (
-          <Typography variant="caption" color="text.secondary">
-            WF bulk workitems are hidden for Hang Dry.
-          </Typography>
-        )}
-
-        <FoldingUserSelect
-          label="Completion employee (optional)"
-          value={draft.completed_by || ""}
-          onChange={(name) => setDraft((d) => ({ ...d, completed_by: name }))}
-          allowEmpty
-          sx={{ width: "100%", minWidth: 0 }}
-        />
-        <PayrollDateTimeField
-          label="Completion date & time (ET, optional)"
-          value={draft.completion_at || ""}
-          onChange={(v) => setDraft((d) => ({ ...d, completion_at: v }))}
-        />
-
-        {(() => {
-          const basePolicy = classifyEditReasonRequirements({
-            draft,
-            baselineBag,
-            outcome: null,
-            lines,
-          });
-          if (!basePolicy.isManagerOverride) {
-            return (
-              <Typography variant="caption" color="text.secondary">
-                Routine review saves (work items, completion fields) do not require a reason.
-                Audit uses {basePolicy.systemAction} automatically.
-              </Typography>
-            );
-          }
-          return (
-            <Stack spacing={1}>
-              <Alert severity="info">
-                Weight correction requires a structured reason before Save Review (
-                {(basePolicy.triggers || []).join(", ")}).
-              </Alert>
-              <TextField
-                select
-                size="small"
-                required
-                label="Reason code"
-                value={draft.reason_code || basePolicy.suggestedReasonCode || ""}
-                onChange={(e) => setDraft((d) => ({ ...d, reason_code: e.target.value }))}
-              >
-                {EDIT_BAG_REASON_CODES.map((r) => (
-                  <MenuItem key={r.code} value={r.code}>
-                    {r.label}
-                  </MenuItem>
-                ))}
-              </TextField>
-              <TextField
-                size="small"
-                label={
-                  String(draft.reason_code || basePolicy.suggestedReasonCode) === "OTHER"
-                    ? "Reason note (required for Other)"
-                    : "Reason note (optional)"
-                }
-                value={draft.reason_note || draft.reason}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setDraft((d) => ({ ...d, reason_note: next, reason: next }));
-                }}
-                multiline
-                minRows={2}
-              />
             </Stack>
-          );
-        })()}
-
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Button variant="contained" disabled={saving} onClick={startRoutineSave}>
-            {saving ? "Saving…" : "Save Review"}
-          </Button>
-          <Button variant="outlined" disabled={saving} onClick={openManagerActions}>
-            Manager Action…
-          </Button>
-          <Button onClick={onCancel} disabled={saving}>
-            Cancel
-          </Button>
-        </Stack>
-      </Stack>
-
-      <Dialog open={outcomeOpen} onClose={() => !saving && setOutcomeOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle>Manager override action</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-            These actions change bag status and require a structured reason. Routine work-item
-            edits should use Save Review instead — they do not need this dialog.
-          </Typography>
-          {pendingOutcome ? (
-            <Stack spacing={1} sx={{ mb: 1.5 }}>
-              <Alert severity="warning">
-                {OUTCOME_OPTIONS.find((o) => o.id === pendingOutcome)?.label || pendingOutcome}{" "}
-                requires a reason code.
-              </Alert>
-              <TextField
-                select
-                size="small"
-                label="Reason code"
-                value={draft.reason_code || ""}
-                onChange={(e) => setDraft((d) => ({ ...d, reason_code: e.target.value }))}
-              >
-                {EDIT_BAG_REASON_CODES.map((r) => (
-                  <MenuItem key={r.code} value={r.code}>
-                    {r.label}
-                  </MenuItem>
-                ))}
-              </TextField>
-              <TextField
-                size="small"
-                label={
-                  draft.reason_code === "OTHER"
-                    ? "Reason note (required for Other)"
-                    : "Reason note (optional)"
-                }
-                value={draft.reason_note || draft.reason}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setDraft((d) => ({ ...d, reason_note: next, reason: next }));
-                }}
-                multiline
-                minRows={2}
-              />
-              <Button
-                variant="contained"
-                color={pendingOutcome === "exclude" ? "error" : "primary"}
-                disabled={saving}
-                onClick={() => persist(pendingOutcome)}
-              >
-                Confirm {OUTCOME_OPTIONS.find((o) => o.id === pendingOutcome)?.label}
-              </Button>
-              <Button onClick={() => setPendingOutcome(null)} disabled={saving}>
-                Back to actions
-              </Button>
-            </Stack>
-          ) : (
-            <Stack spacing={1}>
-              {OUTCOME_OPTIONS.map((opt) => (
-                <Button
-                  key={opt.id}
-                  variant={opt.id === "mark_completed" ? "contained" : "outlined"}
-                  color={opt.id === "exclude" ? "error" : "primary"}
-                  disabled={saving}
-                  onClick={() => chooseOutcome(opt.id)}
-                >
-                  {opt.label}
-                </Button>
-              ))}
-            </Stack>
-          )}
+          ) : null}
         </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setOutcomeOpen(false)} disabled={saving}>
-            Back to editor
+        <DialogActions sx={{ flexWrap: "wrap", gap: 0.5 }}>
+          <Button onClick={() => setShowCompare(true)} disabled={saving}>
+            Compare Changes
+          </Button>
+          <Button onClick={reloadLatest} disabled={saving} variant="contained">
+            Reload Latest
+          </Button>
+          <Button onClick={() => setConflict(null)} disabled={saving}>
+            Cancel
           </Button>
         </DialogActions>
       </Dialog>
@@ -844,6 +824,12 @@ export default function EditBagPanel({
           </Button>
         }
       />
-    </Box>
+    </>
   );
+}
+
+function parseFloatOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
