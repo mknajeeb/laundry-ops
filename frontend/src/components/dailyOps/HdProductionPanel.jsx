@@ -267,7 +267,7 @@ export default function HdProductionPanel({ dateEt, onSaved }) {
             Bag {detail.bag_id}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Service = HD · Rush {detail.membership?.rush_status || "—"} · First available{" "}
+            Service = HD · Rush {detail.membership?.rush_status || "—"} · Workload entry{" "}
             {detail.membership?.first_available || "—"}
           </Typography>
           <Chip size="small" sx={{ mt: 0.5 }} label={detail.production?.status || "NOT_RECORDED"} />
