@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from flask import jsonify, request
@@ -19,6 +20,14 @@ from backend.rinse_shift_analysis import (
 )
 from backend.rinse_scan_time import json_safe_rinse
 from backend.shift_capacity_planner import simulate_shift_capacity
+
+logger = logging.getLogger(__name__)
+
+
+def _public_server_error(user_message: str, exc: BaseException):
+    """Log full traceback; never expose raw exception text to clients."""
+    logger.exception("%s", user_message, exc_info=exc)
+    return jsonify({"error": user_message}), 500
 
 
 def register_rinse_shift_analysis_routes(
@@ -437,7 +446,7 @@ def register_rinse_shift_analysis_routes(
             )
             return jsonify(json_safe_rinse(out))
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 500
+            return _public_server_error("Unable to load workload details.", exc)
         finally:
             cursor.close()
             conn.close()
@@ -1073,7 +1082,7 @@ def register_rinse_shift_analysis_routes(
             )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 500
+            return _public_server_error("Unable to load employee productivity.", exc)
         finally:
             cursor.close()
             conn.close()

@@ -38,6 +38,7 @@ import CopyableBagId from "../CopyableBagId";
 import EditBagPanel from "./EditBagPanel";
 import { formatWeightObservedEt, mergeBagListRow } from "./editBagHelpers";
 import { actionsForBagStatus } from "./step1BagActions";
+import { friendlyApiError } from "../../utils/shiftMonitorHelpers";
 
 /** Session-scoped maintenance catalog (fetched once per browser session). */
 let cachedBulkCatalog = null;
@@ -181,7 +182,7 @@ export default function Step1MetricDrawer({
         setHasMore(Boolean(data.pagination?.has_more));
       } catch (e) {
         if (signal?.aborted || e?.code === "ERR_CANCELED" || e?.name === "CanceledError") return;
-        setError(e?.response?.data?.error || e?.message || "Failed to load drill-down");
+        setError(friendlyApiError(e?.response?.data?.error || e?.message, "Unable to load workload details."));
         setBags([]);
         setTotal(0);
         setHasMore(false);
@@ -263,8 +264,8 @@ export default function Step1MetricDrawer({
         );
       }
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Failed to load bag detail");
-    } finally {
+        setError(friendlyApiError(e?.response?.data?.error || e?.message, "Unable to load workload details."));
+      } finally {
       setDetailLoading((m) => ({ ...m, [bagId]: false }));
     }
   };

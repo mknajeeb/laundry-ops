@@ -7,6 +7,23 @@ export function currentEtIsoDate() {
 }
 
 /**
+ * Prefer API error text, but never surface raw Python/traceback strings in the UI.
+ */
+export function friendlyApiError(raw, fallback = "Unable to load workload details.") {
+  const msg = String(raw || "").trim();
+  if (!msg) return fallback;
+  if (
+    /no module named\b/i.test(msg) ||
+    /\btraceback\b/i.test(msg) ||
+    /file ".*", line \d+/i.test(msg) ||
+    /ModuleNotFoundError/i.test(msg)
+  ) {
+    return fallback;
+  }
+  return msg;
+}
+
+/**
  * Operations Mode: single ET day selected and that day is today.
  * Custom ranges (even if they include today) are Reporting Mode.
  */

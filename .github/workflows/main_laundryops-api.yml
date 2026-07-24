@@ -42,6 +42,7 @@ jobs:
       - name: Verify files that must reach Azure
         run: |
           test -f backend/app.py
+          test -f backend/rinse_step1_productivity_fast.py
           test -f startup.sh
           test -f requirements.txt
           test -f scripts/rinse-cleanertickets/scrape.mjs

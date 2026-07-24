@@ -42,6 +42,7 @@ import EmployeeProductivityLaborSection from "./EmployeeProductivityLaborSection
 import RushFilterChips from "./RushFilterChips";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import MetricCardGrid from "./MetricCardGrid";
+import { friendlyApiError } from "../../utils/shiftMonitorHelpers";
 
 const DATE_PRESETS = [
   { id: "today", label: "Today" },
@@ -227,7 +228,9 @@ export default function EmployeeProductivityDashboard({
       );
       setActiveDateEt(dateEt);
     } catch (e) {
-      setFetchError(e?.response?.data?.error || "Failed to load employee productivity");
+      setFetchError(
+        friendlyApiError(e?.response?.data?.error, "Unable to load employee productivity."),
+      );
       if (
         initialSection
         && !initialSection.bags_stripped_for_summary
