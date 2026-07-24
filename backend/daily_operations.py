@@ -12,6 +12,7 @@ from backend.ta_helpers import table_exists, table_has_column
 from backend.wf_mtd_pricing import (
     allocate_wf_day_revenue_from_mtd,
     lbs as money_lbs,
+    money,
 )
 
 # Exclusion reasons for Finance → Daily Operations pound reconciliation.
@@ -635,7 +636,7 @@ def build_daily_operations_day(
             "operations_date_et": operations_date_et.isoformat(),
             "status": STATUS_UNAVAILABLE,
             "reason": "daily_operations_not_enabled_for_organization",
-            "message": "Daily Operations is enabled for organization 3 only in Phase 1A.",
+            "message": "Daily Operations is enabled for organization 3 only in Phase 1.",
         }
 
     if operations_date_et < STEP1_AUTHORITATIVE_START_ET:
@@ -678,6 +679,31 @@ def build_daily_operations_day(
     outstanding_reviews = count_outstanding_wf_workitem_reviews(
         cursor, org, operations_date_et
     )
+
+    from backend.daily_operations_hd import (
+        compute_hd_day_revenue_totals,
+        ensure_hd_production_tables,
+        sum_reviewed_wf_workitem_revenue,
+    )
+
+    ensure_hd_production_tables(cursor)
+    wf_workitem_revenue = sum_reviewed_wf_workitem_revenue(cursor, org, operations_date_et)
+    hd_totals = compute_hd_day_revenue_totals(cursor, org, operations_date_et)
+    hd_revenue = hd_totals.get("complete_hd_revenue") or 0.0
+    partial_hd_revenue = hd_totals.get("partial_hd_revenue_entered") or 0.0
+
+    total_revenue = None
+    if weight_revenue is not None:
+        total_revenue = money(
+            Decimal(str(weight_revenue))
+            + Decimal(str(wf_workitem_revenue or 0))
+            + Decimal(str(hd_revenue or 0))
+        )
+    else:
+        # Weight pricing incomplete — still sum WI + HD when present.
+        total_revenue = money(
+            Decimal(str(wf_workitem_revenue or 0)) + Decimal(str(hd_revenue or 0))
+        )
 
     schedule_snapshot = None
     if schedule_id is not None:
@@ -732,13 +758,25 @@ def build_daily_operations_day(
         "kpis": {
             "wf_completed_pounds": pound_totals["today_wf_completed_pounds"],
             "wf_weight_revenue": weight_revenue,
+            "wf_workitem_revenue": wf_workitem_revenue,
+            "hd_revenue": hd_revenue,
+            "partial_hd_revenue_entered": partial_hd_revenue,
+            "total_revenue": total_revenue,
             "missing_post_weights": pound_totals["missing_post_weight_count"],
             "outstanding_wf_workitem_reviews": outstanding_reviews,
+            "hd_orders_available": hd_totals.get("hd_orders_available"),
+            "hd_not_recorded": hd_totals.get("not_recorded"),
+            "hd_partially_recorded": hd_totals.get("partially_recorded"),
+            "hd_complete": hd_totals.get("complete"),
             "pricing_incomplete": pricing_incomplete,
         },
         "revenue": {
             "wf_completed_pounds": pound_totals["today_wf_completed_pounds"],
             "wf_weight_revenue": weight_revenue,
+            "wf_workitem_revenue": wf_workitem_revenue,
+            "hd_revenue": hd_revenue,
+            "partial_hd_revenue_entered": partial_hd_revenue,
+            "total_revenue": total_revenue,
             "mtd_pounds_before": allocation["mtd_pounds_before"],
             "mtd_pounds_after": allocation["mtd_pounds_after"],
             "tier1_pounds_today": allocation["tier1_pounds_today"] if not pricing_incomplete else None,
@@ -748,6 +786,7 @@ def build_daily_operations_day(
             "applied_tiers": allocation["applied_tiers"] if not pricing_incomplete else [],
             "pricing_incomplete": pricing_incomplete,
             "pricing_schedule": schedule_snapshot,
+            "hd_summary": hd_totals,
         },
         "drilldowns": {
             "included_wf_bags": pound_totals["included_bags"],
@@ -758,6 +797,8 @@ def build_daily_operations_day(
             "included_with_post": pound_totals["included_count"],
             "missing_post_weight": pound_totals["missing_post_weight_count"],
             "outstanding_workitem_reviews": outstanding_reviews,
+            "hd_orders_available": hd_totals.get("hd_orders_available"),
+            "hd_complete": hd_totals.get("complete"),
         },
         "links": {
             "workitem_maintenance": "/performance/settings",
@@ -767,7 +808,6 @@ def build_daily_operations_day(
         },
         "placeholders": {
             "labor": "Coming in later phase",
-            "hd_revenue": "Coming in later phase",
             "combined_profitability": "Coming in later phase",
         },
         "diagnostics": diagnostics,

@@ -117,6 +117,23 @@ def test_jul23_membership_not_rebuilt():
     ), patch(
         "backend.daily_revenue_cost.get_wf_schedule_for_date",
         return_value=(None, []),
+    ), patch(
+        "backend.daily_operations_hd.ensure_hd_production_tables"
+    ), patch(
+        "backend.daily_operations_hd.sum_reviewed_wf_workitem_revenue", return_value=0.0
+    ), patch(
+        "backend.daily_operations_hd.compute_hd_day_revenue_totals",
+        return_value={
+            "hd_orders_available": 0,
+            "not_recorded": 0,
+            "partially_recorded": 0,
+            "complete": 0,
+            "complete_total_items": 0,
+            "complete_hd_revenue": 0.0,
+            "partial_hd_revenue_entered": 0.0,
+            "total_hd_revenue": 0.0,
+            "orphan_production_facts": [],
+        },
     ):
         out = build_daily_operations_day(cursor, 3, date(2026, 7, 23), persist=False)
     assert out["available"] is True
@@ -155,10 +172,31 @@ def test_missing_pricing_marks_incomplete():
     ), patch(
         "backend.daily_revenue_cost.get_wf_schedule_for_date",
         return_value=(None, []),
+    ), patch(
+        "backend.daily_operations_hd.ensure_hd_production_tables"
+    ), patch(
+        "backend.daily_operations_hd.sum_reviewed_wf_workitem_revenue", return_value=12.5
+    ), patch(
+        "backend.daily_operations_hd.compute_hd_day_revenue_totals",
+        return_value={
+            "hd_orders_available": 2,
+            "not_recorded": 1,
+            "partially_recorded": 0,
+            "complete": 1,
+            "complete_total_items": 3,
+            "complete_hd_revenue": 40.0,
+            "partial_hd_revenue_entered": 5.0,
+            "total_hd_revenue": 40.0,
+            "orphan_production_facts": [],
+        },
     ):
         out = build_daily_operations_day(cursor, 3, date(2026, 7, 23), persist=False)
     assert out["kpis"]["pricing_incomplete"] is True
     assert out["kpis"]["wf_weight_revenue"] is None
+    assert out["kpis"]["wf_workitem_revenue"] == 12.5
+    assert out["kpis"]["hd_revenue"] == 40.0
+    assert out["kpis"]["partial_hd_revenue_entered"] == 5.0
+    assert out["kpis"]["total_revenue"] == 52.5
 
 
 def test_manager_corrected_post_priority():

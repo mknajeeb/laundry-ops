@@ -12,6 +12,13 @@ from backend.daily_operations import (
     compare_daily_operations_to_finance_drc,
     daily_operations_enabled_for_org,
 )
+from backend.daily_operations_hd import (
+    build_hd_production_queue,
+    export_hd_production_csv,
+    get_hd_production_detail,
+    save_hd_production,
+    undo_hd_production,
+)
 from backend.daily_operations_wf_review import (
     build_wf_review_queue,
     get_wf_review_detail,
@@ -76,7 +83,7 @@ def register_daily_operations_routes(
                         "organization_id": oid,
                         "tracking_started_et": "2026-07-23",
                         "message": "Daily Operations tracking started July 23, 2026.",
-                        "phase": "1B",
+                        "phase": "1C",
                         "links": {
                             "workitem_maintenance": "/performance/settings",
                             "wf_rate_maintenance": "/finance/daily-revenue-cost",
@@ -282,6 +289,188 @@ def register_daily_operations_routes(
             day = _parse_ops_date(ops_date)
             payload = request.get_json(silent=True) or {}
             out = undo_wf_review(
+                cursor,
+                oid,
+                day,
+                bag_id,
+                reason=str(payload.get("reason") or ""),
+                actor_user_id=int(me["user_id"]) if me.get("user_id") else None,
+                actor_display_name=_actor_name(me),
+            )
+            if not out.get("ok"):
+                conn.rollback()
+                return jsonify(json_safe_rinse(out)), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
+        except ValueError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    def _can_undo(me: dict) -> bool:
+        return bool(_role_set(me) & DAILY_OPS_UNDO_ROLES)
+
+    @app.route("/api/daily-operations/days/<ops_date>/hd-production", methods=["GET"])
+    def daily_operations_hd_production_queue(ops_date: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            forbidden = _require_roles(me, DAILY_OPS_READ_ROLES)
+            if forbidden[0]:
+                return forbidden
+            oid = int(user_org_id(me))
+            day = _parse_ops_date(ops_date)
+            washed = request.args.get("washed_by_user_id")
+            folded = request.args.get("folded_by_user_id")
+            out = build_hd_production_queue(
+                cursor,
+                oid,
+                day,
+                status=request.args.get("status"),
+                rush_type=request.args.get("rush_type"),
+                washed_by_user_id=int(washed) if washed not in (None, "") else None,
+                folded_by_user_id=int(folded) if folded not in (None, "") else None,
+                search=request.args.get("search"),
+                can_undo=_can_undo(me),
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
+        except ValueError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/daily-operations/days/<ops_date>/hd-production/export", methods=["GET"])
+    def daily_operations_hd_production_export(ops_date: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            forbidden = _require_roles(me, DAILY_OPS_READ_ROLES)
+            if forbidden[0]:
+                return forbidden
+            oid = int(user_org_id(me))
+            day = _parse_ops_date(ops_date)
+            filename, body = export_hd_production_csv(cursor, oid, day)
+            conn.commit()
+            from flask import Response
+
+            return Response(
+                body,
+                mimetype="text/csv",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+        except ValueError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/daily-operations/days/<ops_date>/hd-production/<bag_id>", methods=["GET"])
+    def daily_operations_hd_production_detail(ops_date: str, bag_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            forbidden = _require_roles(me, DAILY_OPS_READ_ROLES)
+            if forbidden[0]:
+                return forbidden
+            oid = int(user_org_id(me))
+            day = _parse_ops_date(ops_date)
+            out = get_hd_production_detail(
+                cursor, oid, day, bag_id, can_undo=_can_undo(me)
+            )
+            status = 404 if not out.get("ok") else 200
+            conn.commit()
+            return jsonify(json_safe_rinse(out)), status
+        except ValueError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/daily-operations/days/<ops_date>/hd-production/<bag_id>", methods=["PUT"])
+    def daily_operations_hd_production_save(ops_date: str, bag_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            forbidden = _require_roles(me, DAILY_OPS_SAVE_ROLES)
+            if forbidden[0]:
+                return forbidden
+            oid = int(user_org_id(me))
+            day = _parse_ops_date(ops_date)
+            payload = request.get_json(silent=True) or {}
+            payload = {k: v for k, v in payload.items() if k != "status"}
+            out = save_hd_production(
+                cursor,
+                oid,
+                day,
+                bag_id,
+                payload,
+                actor_user_id=int(me["user_id"]) if me.get("user_id") else None,
+                actor_display_name=_actor_name(me),
+            )
+            if not out.get("ok"):
+                conn.rollback()
+                status = int(out.get("status") or 400)
+                if out.get("error") == "conflict":
+                    status = 409
+                return jsonify(json_safe_rinse(out)), status
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
+        except ValueError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/daily-operations/days/<ops_date>/hd-production/<bag_id>/undo", methods=["POST"])
+    def daily_operations_hd_production_undo(ops_date: str, bag_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            forbidden = _require_roles(me, DAILY_OPS_UNDO_ROLES)
+            if forbidden[0]:
+                return forbidden
+            oid = int(user_org_id(me))
+            day = _parse_ops_date(ops_date)
+            payload = request.get_json(silent=True) or {}
+            out = undo_hd_production(
                 cursor,
                 oid,
                 day,

@@ -20,6 +20,7 @@ import {
 import { Link as RouterLink } from "react-router-dom";
 import { getDailyOperationsCompareFinance, getDailyOperationsDay, getDailyOperationsMeta } from "../api";
 import WfReviewPanel from "../components/dailyOps/WfReviewPanel";
+import HdProductionPanel from "../components/dailyOps/HdProductionPanel";
 
 function money(v) {
   if (v == null || Number.isNaN(Number(v))) return "—";
@@ -108,7 +109,7 @@ export default function DailyOperationsPage() {
           Daily Operations
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          Phase 1B — WF pounds, MTD weight revenue, and unified bag review. Labor, HD, and close come later.
+          Phase 1C — WF revenue, unified WF review, and HD production. Labor and close come later.
         </Typography>
       </Stack>
 
@@ -172,8 +173,12 @@ export default function DailyOperationsPage() {
             {[
               ["WF Completed Pounds", lbs(kpis.wf_completed_pounds)],
               ["WF Weight Revenue", money(kpis.wf_weight_revenue)],
+              ["WF Work-Item Revenue", money(kpis.wf_workitem_revenue)],
+              ["HD Revenue (Complete)", money(kpis.hd_revenue)],
+              ["Total Revenue", money(kpis.total_revenue)],
               ["Missing POST Weights", String(kpis.missing_post_weights ?? 0)],
-              ["Outstanding WF Work-Item Reviews", String(kpis.outstanding_wf_workitem_reviews ?? 0)],
+              ["Outstanding WF Reviews", String(kpis.outstanding_wf_workitem_reviews ?? 0)],
+              ["HD Not Recorded", String(kpis.hd_not_recorded ?? 0)],
             ].map(([label, value]) => (
               <Paper key={label} variant="outlined" sx={{ p: 1.5 }}>
                 <Typography variant="caption" color="text.secondary">
@@ -198,7 +203,17 @@ export default function DailyOperationsPage() {
               <Row label="Tier 1 revenue today" value={money(revenue.tier1_revenue_today)} />
               <Row label="Tier 2 revenue today" value={money(revenue.tier2_revenue_today)} />
               <Divider />
-              <Row label="WF Weight Revenue" value={money(revenue.wf_weight_revenue)} strong />
+              <Row label="WF Weight Revenue" value={money(revenue.wf_weight_revenue)} />
+              <Row label="WF Work-Item Revenue" value={money(revenue.wf_workitem_revenue)} />
+              <Row label="HD Revenue (Complete)" value={money(revenue.hd_revenue)} />
+              {revenue.partial_hd_revenue_entered ? (
+                <Row
+                  label="Partial HD Revenue Entered (excluded)"
+                  value={money(revenue.partial_hd_revenue_entered)}
+                />
+              ) : null}
+              <Divider />
+              <Row label="Total Revenue" value={money(revenue.total_revenue)} strong />
               <Row label="MTD pounds after day" value={lbs(revenue.mtd_pounds_after)} />
             </Stack>
 
@@ -255,6 +270,7 @@ export default function DailyOperationsPage() {
           </Paper>
 
           <WfReviewPanel dateEt={dateEt} onSaved={() => load(dateEt)} />
+          <HdProductionPanel dateEt={dateEt} onSaved={() => load(dateEt)} />
 
           <DrillTable title={`Included WF bags (${included.length})`} rows={included} missing={false} />
           <DrillTable title={`Missing POST weight (${missing.length})`} rows={missing} missing />

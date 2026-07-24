@@ -2203,4 +2203,27 @@ export const undoDailyOperationsWfReview = (opsDate, bagId, body) =>
     body
   );
 
+export const getDailyOperationsHdProduction = (opsDate, params = {}) =>
+  axios.get(`${API_BASE}/api/daily-operations/days/${opsDate}/hd-production`, { params });
+
+export const getDailyOperationsHdProductionDetail = (opsDate, bagId) =>
+  axios.get(
+    `${API_BASE}/api/daily-operations/days/${opsDate}/hd-production/${encodeURIComponent(bagId)}`
+  );
+
+export const saveDailyOperationsHdProduction = (opsDate, bagId, body) =>
+  axios.put(
+    `${API_BASE}/api/daily-operations/days/${opsDate}/hd-production/${encodeURIComponent(bagId)}`,
+    body
+  );
+
+export const undoDailyOperationsHdProduction = (opsDate, bagId, body) =>
+  axios.post(
+    `${API_BASE}/api/daily-operations/days/${opsDate}/hd-production/${encodeURIComponent(bagId)}/undo`,
+    body
+  );
+
+export const exportDailyOperationsHdProductionUrl = (opsDate) =>
+  `${API_BASE}/api/daily-operations/days/${opsDate}/hd-production/export`;
+
 export { API_BASE };
