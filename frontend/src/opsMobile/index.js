@@ -10,6 +10,7 @@ export { default as OpsChoiceCard } from "./OpsChoiceCard";
 export { default as OpsStickyActionBar } from "./OpsStickyActionBar";
 export { default as OpsStatusChip } from "./OpsStatusChip";
 export { default as OpsSwitchRoleFlow } from "./OpsSwitchRoleFlow";
+export { default as OpsTaskCard } from "./OpsTaskCard";
 export {
   buildPinLauncherTiles,
   clockTileLabel,
@@ -24,3 +25,5 @@ export {
   switchRoleEmployeeError,
 } from "./switchRoleFlowHelpers";
 export { createSwitchRoleController } from "./createSwitchRoleController";
+export { createTaskToggleController } from "./createTaskToggleController";
+export { createTaskSubmitController } from "./createTaskSubmitController";

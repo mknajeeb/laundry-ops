@@ -1,22 +1,23 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Alert,
   Box,
   Button,
-  Checkbox,
   CircularProgress,
   FormControl,
-  FormControlLabel,
   IconButton,
   InputLabel,
+  LinearProgress,
   MenuItem,
+  Paper,
   Select,
   Stack,
   Typography,
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
-import { Backspace, CheckCircle } from "@mui/icons-material";
+import { Backspace } from "@mui/icons-material";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import {
   attendancePinMaintenanceTasks,
   getPublicMaintenanceTaskListToday,
@@ -24,37 +25,41 @@ import {
   getPublicOrganizationsForAttendance,
   getWashproApiBase,
   patchPublicMaintenanceTaskItem,
-  savePublicMaintenanceTaskList,
   submitPublicMaintenanceTaskList,
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
+import {
+  OpsMobileShell,
+  OpsStatusChip,
+  OpsStickyActionBar,
+  OpsTaskCard,
+  OpsTopBar,
+  OPS_MOBILE,
+} from "../opsMobile";
+import { createTaskSubmitController } from "../opsMobile/createTaskSubmitController";
+import { createTaskToggleController } from "../opsMobile/createTaskToggleController";
 import { VEEWASH_LOGO_URL } from "../theme/veewashBrand";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
 import {
-  clearMtlPinSession,
   allTasksChecked,
+  clearMtlPinSession,
+  compactTaskContext,
   isCompletedStatus,
   loadMtlPinSession,
-  mtlEmployeePageSx,
   saveMtlPinSession,
-  statusLabel,
+  taskProgress,
 } from "../utils/maintenanceTaskListHelpers";
+import {
+  clearPinHubAppSession,
+  clearPinHubSession,
+  pinHubMenuPath,
+} from "../utils/pinHubSession";
 
 const PIN_LEN = 4;
 const STORAGE_KEY = "washpro_attendance_org_slug";
-const VEEWASH_ATTENDANCE_LOGO = VEEWASH_LOGO_URL;
-
-const VW = {
-  navy: "#16192b",
-  blue: "#2d3d9c",
-  cobalt: "#4865ee",
-  gold: "#9a7209",
-  goldMid: "#d4a84b",
-  cream: "#faf6e9",
-};
 
 function sanitizeSlug(raw) {
   if (!raw) return "";
@@ -70,7 +75,7 @@ function sanitizeSlug(raw) {
 
 function attendanceLogoSrc(orgSlug, brandingLogoUrl) {
   const slug = sanitizeSlug(orgSlug);
-  if (slug === "veewash") return VEEWASH_ATTENDANCE_LOGO;
+  if (slug === "veewash") return VEEWASH_LOGO_URL;
   const trimmed =
     brandingLogoUrl != null && String(brandingLogoUrl).trim()
       ? String(brandingLogoUrl).trim()
@@ -80,27 +85,21 @@ function attendanceLogoSrc(orgSlug, brandingLogoUrl) {
 
 function digitKeySx() {
   return {
-    minHeight: { xs: 56, sm: 52 },
-    fontSize: "1.35rem",
-    fontWeight: 600,
+    minHeight: { xs: 52, sm: 48 },
+    fontSize: "1.25rem",
+    fontWeight: 700,
     borderRadius: 2,
-    color: "#0f172a",
-    py: 0.5,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: alpha("#2d3d9c", 0.25),
-    bgcolor: "#fff",
-    "&:hover": {
-      borderColor: alpha("#4865ee", 0.55),
-      bgcolor: alpha("#4865ee", 0.06),
-    },
+    color: OPS_MOBILE.navy,
+    border: `1px solid ${alpha(OPS_MOBILE.blue, 0.22)}`,
+    bgcolor: alpha("#fff", 0.92),
+    "&:hover": { bgcolor: alpha(OPS_MOBILE.cobalt, 0.12) },
     "&.Mui-disabled": { opacity: 0.45 },
   };
 }
 
 /**
- * PIN employee Maintenance Task List — mobile-first checklist.
- * Route: /attendance/maintenance/:orgSlug
+ * PIN employee Tasks checklist — mobile-first completion flow.
+ * Routes: /attendance/maintenance, /attendance/maintenance/:orgSlug
  */
 export default function MaintenanceTaskListPinPage() {
   const { t } = useI18n();
@@ -116,31 +115,64 @@ export default function MaintenanceTaskListPinPage() {
   const slug = routeSlug || selectedSlug;
 
   const [pin, setPin] = useState("");
-  const [phase, setPhase] = useState("pin"); // pin | list | success
+  const [phase, setPhase] = useState("pin"); // pin | list | unavailable
   const [session, setSession] = useState(null);
   const [list, setList] = useState(null);
   const [dateDisplay, setDateDisplay] = useState("");
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [branding, setBranding] = useState(null);
-  const [successMessage, setSuccessMessage] = useState("");
+  const [pendingTick, setPendingTick] = useState(0);
+  const [unavailableMessage, setUnavailableMessage] = useState(
+    "Tasks aren’t available right now.",
+  );
 
   const punchInFlightRef = useRef(false);
   const prevPinLenRef = useRef(0);
-  const saveTimerRef = useRef(null);
+  const listRef = useRef(null);
+  const toggleRef = useRef(null);
+  const submitRef = useRef(null);
 
   const pinClean = useMemo(() => String(pin || "").replace(/\D/g, "").slice(0, PIN_LEN), [pin]);
   const logoSrc = attendanceLogoSrc(slug, branding?.logo_url);
   const isCompleted = isCompletedStatus(list?.status) || !!list?.read_only;
   const readOnly = isCompleted;
   const canSubmit = !readOnly && allTasksChecked(list);
+  const progress = taskProgress(list);
+  const employeeLabel =
+    session?.employee_first_name ||
+    (session?.employee_name || "").split(/\s+/)[0] ||
+    "";
+  const contextLine = compactTaskContext(employeeLabel, dateDisplay || "Today");
 
-  const goToSlugRoute = (s) => {
-    const clean = sanitizeSlug(s);
-    if (!clean) return;
-    navigate(`/attendance/maintenance/${encodeURIComponent(clean)}`, { replace: true });
-  };
+  listRef.current = list;
+
+  const goPinLauncher = useCallback(
+    ({ lock = false } = {}) => {
+      if (lock) {
+        clearMtlPinSession();
+        clearPinHubSession();
+        clearPinHubAppSession();
+      }
+      navigate(pinHubMenuPath(slug), { replace: true });
+    },
+    [navigate, slug],
+  );
+
+  const onBack = useCallback(() => {
+    // Preserve hub unlock; checklist MTL session stays so Tasks can reopen.
+    navigate(pinHubMenuPath(slug), { replace: true });
+  }, [navigate, slug]);
+
+  const onLock = useCallback(() => {
+    goPinLauncher({ lock: true });
+  }, [goPinLauncher]);
+
+  const onDone = useCallback(() => {
+    clearMtlPinSession();
+    navigate(pinHubMenuPath(slug), { replace: true });
+  }, [navigate, slug]);
 
   useLayoutEffect(() => {
     return applyAttendancePwaManifest(routeSlug || selectedSlug, "maintenance");
@@ -215,8 +247,8 @@ export default function MaintenanceTaskListPinPage() {
     if (res.status === 401) {
       clearMtlPinSession();
       setSession(null);
-      setPhase("pin");
-      setError("Session expired. Enter your PIN again.");
+      setUnavailableMessage("Tasks aren’t available right now.");
+      setPhase("unavailable");
       return null;
     }
     if (!(res.status >= 200 && res.status < 300 && res.data?.ok)) {
@@ -229,8 +261,37 @@ export default function MaintenanceTaskListPinPage() {
   }, []);
 
   useEffect(() => {
+    toggleRef.current = createTaskToggleController({
+      getList: () => listRef.current,
+      setList: (next) => {
+        setList(next);
+        setPendingTick((n) => n + 1);
+      },
+      isReadOnly: () => isCompletedStatus(listRef.current?.status) || !!listRef.current?.read_only,
+      patchItem: async ({ listId, itemId, completed }) => {
+        const sess = loadMtlPinSession() || session;
+        return patchPublicMaintenanceTaskItem(sess.token, listId, itemId, { completed });
+      },
+      onError: (msg) => setError(msg || "Couldn’t save. Try again."),
+    });
+    submitRef.current = createTaskSubmitController({
+      getList: () => listRef.current,
+      setList: (next) => setList(next),
+      getSessionToken: () => (loadMtlPinSession() || session)?.token,
+      submitList: async ({ token, listId }) => submitPublicMaintenanceTaskList(token, listId, {}),
+      onError: (msg) => setError(msg || "Couldn’t submit. Try again."),
+    });
+  }, [session]);
+
+  useEffect(() => {
     const existing = loadMtlPinSession();
-    if (!existing || !slug) return;
+    if (!existing || !slug) {
+      if (fromHub && slug && !existing) {
+        setUnavailableMessage("Tasks aren’t available right now.");
+        setPhase("unavailable");
+      }
+      return;
+    }
     if (existing.organization_slug && existing.organization_slug !== slug) return;
     let cancelled = false;
     (async () => {
@@ -242,7 +303,8 @@ export default function MaintenanceTaskListPinPage() {
         if (!cancelled) {
           clearMtlPinSession();
           setSession(null);
-          setPhase("pin");
+          setUnavailableMessage("Tasks aren’t available right now.");
+          setPhase("unavailable");
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -251,7 +313,7 @@ export default function MaintenanceTaskListPinPage() {
     return () => {
       cancelled = true;
     };
-  }, [slug, loadTodayList]);
+  }, [slug, loadTodayList, fromHub]);
 
   const openFromPin = useCallback(
     async (digits) => {
@@ -291,13 +353,8 @@ export default function MaintenanceTaskListPinPage() {
         prevPinLenRef.current = 0;
         await loadTodayList(sess);
       } catch (e) {
-        setError(
-          e?.code === "ECONNABORTED"
-            ? t("attendance.timeout")
-            : !e?.response
-              ? t("attendance.networkError")
-              : e?.response?.data?.error || t("attendance.invalidPin"),
-        );
+        setUnavailableMessage("Tasks aren’t available right now.");
+        setPhase("unavailable");
         setPin("");
         prevPinLenRef.current = 0;
       } finally {
@@ -316,400 +373,349 @@ export default function MaintenanceTaskListPinPage() {
     prevPinLenRef.current = pinClean.length;
   }, [pinClean, phase, openFromPin]);
 
-  const scheduleAutosave = useCallback(
-    (nextList) => {
-      if (!session?.token || !nextList?.id || isCompletedStatus(nextList.status) || nextList.read_only) {
-        return;
-      }
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = setTimeout(async () => {
-        try {
-          setSaving(true);
-          const res = await savePublicMaintenanceTaskList(session.token, nextList.id, {
-            items: (nextList.items || []).map((i) => ({
-              id: i.id,
-              completed: !!i.completed,
-              note: i.note || "",
-            })),
-          });
-          if (res.status >= 200 && res.status < 300 && res.data?.list) {
-            setList(res.data.list);
-          }
-        } catch {
-          /* keep local state */
-        } finally {
-          setSaving(false);
-        }
-      }, 450);
-    },
-    [session],
-  );
-
-  const toggleItem = async (item) => {
-    if (readOnly || !session?.token || !list?.id) return;
-    const completed = !item.completed;
-    const nextItems = (list.items || []).map((i) =>
-      i.id === item.id ? { ...i, completed } : i,
-    );
-    const nextList = { ...list, items: nextItems };
-    setList(nextList);
-    try {
-      const res = await patchPublicMaintenanceTaskItem(session.token, list.id, item.id, {
-        completed,
-      });
-      if (res.status >= 200 && res.status < 300 && res.data?.list) {
-        setList(res.data.list);
-      } else if (res.status === 409) {
-        setError(res.data?.error || "List is submitted");
-        await loadTodayList(session);
-      }
-    } catch {
-      scheduleAutosave(nextList);
-    }
-  };
-
-  const handleSaveProgress = async () => {
-    if (!session?.token || !list?.id || readOnly) return;
-    setSaving(true);
-    setError("");
-    try {
-      const res = await savePublicMaintenanceTaskList(session.token, list.id, {
-        items: (list.items || []).map((i) => ({
-          id: i.id,
-          completed: !!i.completed,
-          note: i.note || "",
-        })),
-      });
-      if (res.status >= 200 && res.status < 300 && res.data?.list) {
-        setList(res.data.list);
-      } else {
-        setError(res.data?.error || "Could not save progress");
-      }
-    } catch (e) {
-      setError(e?.response?.data?.error || "Could not save progress");
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const handleSubmit = async () => {
-    if (!session?.token || !list?.id || readOnly || !allTasksChecked(list)) return;
-    setLoading(true);
+    if (!submitRef.current?.canSubmit() || submitting) return;
+    setSubmitting(true);
     setError("");
     try {
-      const res = await submitPublicMaintenanceTaskList(session.token, list.id, {});
-      if (res.status >= 200 && res.status < 300 && res.data?.ok) {
-        setList(res.data.list);
-        setSuccessMessage(
-          res.data.message || "Maintenance task list completed successfully.",
-        );
-        setPhase("success");
-        if (fromHub && slug) {
-          window.setTimeout(() => {
-            clearMtlPinSession();
-            navigate(`/pin/${encodeURIComponent(slug)}`, { replace: true });
-          }, 1600);
-        }
-      } else {
-        setError(res.data?.error || "Could not submit");
-      }
-    } catch (e) {
-      setError(e?.response?.data?.error || "Could not submit");
+      await submitRef.current.submit();
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
-  const resetToPin = () => {
-    clearMtlPinSession();
-    setSession(null);
-    setList(null);
-    setPhase("pin");
-    setSuccessMessage("");
-    setError("");
-    setPin("");
-    if (fromHub && slug) {
-      navigate(`/pin/${encodeURIComponent(slug)}`, { replace: true });
-    }
-  };
+  const items = list?.items || [];
+  void pendingTick;
 
-  const employeeLabel =
-    session?.employee_first_name ||
-    (session?.employee_name || "").split(/\s+/)[0] ||
-    "Employee";
+  // ——— List / completed / empty / unavailable ———
+  if (phase === "list" || phase === "unavailable") {
+    const emptyAssigned = phase === "list" && list && items.length === 0;
+    const showUnavailable = phase === "unavailable";
 
+    return (
+      <OpsMobileShell
+        contentSx={{
+          gap: 1.5,
+          // Keep sticky Submit/Done from covering the last task card.
+          pb: phase === "list" && list && items.length > 0 ? 10 : 2,
+        }}
+      >
+        <Box
+          sx={{
+            width: "100%",
+            borderRadius: `${OPS_MOBILE.radius.card}px`,
+            bgcolor: alpha("#fff", 0.96),
+            boxShadow: `0 8px 28px -16px ${alpha(OPS_MOBILE.navy, 0.35)}`,
+            p: { xs: 1.75, sm: 2.25 },
+            display: "flex",
+            flexDirection: "column",
+            gap: 1.5,
+          }}
+        >
+          <OpsTopBar
+            title="Tasks"
+            onBack={onBack}
+            backLabel="PIN"
+            onLock={onLock}
+            sticky
+          />
+
+          {error ? (
+            <Alert severity="error" onClose={() => setError("")} sx={{ borderRadius: 2 }}>
+              {error}
+            </Alert>
+          ) : null}
+
+          {showUnavailable ? (
+            <Stack spacing={2.5} sx={{ py: 2 }}>
+              <Typography sx={{ fontWeight: 800, fontSize: "1.15rem", textAlign: "center", color: OPS_MOBILE.navy }}>
+                {unavailableMessage}
+              </Typography>
+              <Button
+                fullWidth
+                onClick={onLock}
+                sx={{
+                  minHeight: 64,
+                  textTransform: "none",
+                  fontWeight: 800,
+                  fontSize: "1.1rem",
+                  bgcolor: alpha(OPS_MOBILE.navy, 0.08),
+                }}
+              >
+                Lock
+              </Button>
+            </Stack>
+          ) : null}
+
+          {emptyAssigned ? (
+            <Typography sx={{ fontWeight: 800, fontSize: "1.15rem", textAlign: "center", py: 3, color: OPS_MOBILE.navy }}>
+              No tasks assigned
+            </Typography>
+          ) : null}
+
+          {phase === "list" && list && items.length > 0 ? (
+            <>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                {contextLine ? (
+                  <Typography sx={{ fontWeight: 700, color: OPS_MOBILE.muted, fontSize: "0.95rem" }}>
+                    {contextLine}
+                  </Typography>
+                ) : null}
+                <Box sx={{ flex: 1 }} />
+                {readOnly ? (
+                  <OpsStatusChip label="Completed" tone="success" />
+                ) : (
+                  <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
+                    {progress.done} of {progress.total}
+                  </Typography>
+                )}
+              </Box>
+              {!readOnly ? (
+                <LinearProgress
+                  variant="determinate"
+                  value={progress.total ? (100 * progress.done) / progress.total : 0}
+                  sx={{
+                    height: 6,
+                    borderRadius: 99,
+                    bgcolor: alpha(OPS_MOBILE.navy, 0.08),
+                    "& .MuiLinearProgress-bar": { bgcolor: OPS_MOBILE.cobalt, borderRadius: 99 },
+                  }}
+                />
+              ) : (
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 0.5 }}>
+                  <CheckCircleOutlineIcon sx={{ color: OPS_MOBILE.success }} />
+                  <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
+                    Checklist completed
+                  </Typography>
+                </Stack>
+              )}
+
+              <Stack spacing={1.25}>
+                {items.map((item) => (
+                  <OpsTaskCard
+                    key={item.id}
+                    title={item.task_name_snapshot || "Task"}
+                    instruction={item.task_description_snapshot || ""}
+                    completed={!!item.completed}
+                    readOnly={readOnly}
+                    busy={!!toggleRef.current?.isPending(item.id) || submitting}
+                    onComplete={() => toggleRef.current?.toggle(item)}
+                    onUndo={() => toggleRef.current?.toggle(item)}
+                  />
+                ))}
+              </Stack>
+            </>
+          ) : null}
+
+          {loading && phase === "list" && !list ? (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+              <CircularProgress size={32} />
+            </Box>
+          ) : null}
+        </Box>
+
+        {phase === "list" && list && items.length > 0 && !readOnly ? (
+          <OpsStickyActionBar
+            sx={{
+              position: "fixed",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              px: 2,
+              maxWidth: 420,
+              mx: "auto",
+              borderTop: `1px solid ${alpha(OPS_MOBILE.navy, 0.08)}`,
+            }}
+          >
+            <Button
+              fullWidth
+              variant="contained"
+              disabled={submitting || !canSubmit}
+              onClick={handleSubmit}
+              sx={{
+                minHeight: 56,
+                textTransform: "none",
+                fontWeight: 900,
+                fontSize: "1.05rem",
+                borderRadius: `${OPS_MOBILE.radius.button}px`,
+                bgcolor: OPS_MOBILE.cobalt,
+              }}
+            >
+              {submitting ? "Submitting…" : "Submit Checklist"}
+            </Button>
+          </OpsStickyActionBar>
+        ) : null}
+
+        {phase === "list" && readOnly ? (
+          <OpsStickyActionBar
+            sx={{
+              position: "fixed",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              px: 2,
+              maxWidth: 420,
+              mx: "auto",
+              borderTop: `1px solid ${alpha(OPS_MOBILE.navy, 0.08)}`,
+            }}
+          >
+            <Button
+              fullWidth
+              variant="contained"
+              onClick={onDone}
+              sx={{
+                minHeight: 56,
+                textTransform: "none",
+                fontWeight: 900,
+                fontSize: "1.05rem",
+                borderRadius: `${OPS_MOBILE.radius.button}px`,
+                bgcolor: OPS_MOBILE.navy,
+              }}
+            >
+              Done
+            </Button>
+          </OpsStickyActionBar>
+        ) : null}
+      </OpsMobileShell>
+    );
+  }
+
+  // ——— Direct PIN entry ———
   return (
-    <Box sx={mtlEmployeePageSx()}>
-      <Box sx={{ px: 2, pt: 2, pb: 1, maxWidth: 480, mx: "auto", width: "100%" }}>
-        <Stack spacing={1.5} alignItems="center">
+    <OpsMobileShell>
+      <Paper
+        elevation={0}
+        sx={{
+          width: "100%",
+          borderRadius: `${OPS_MOBILE.radius.card}px`,
+          p: { xs: 2, sm: 2.5 },
+          bgcolor: alpha("#fff", 0.96),
+          boxShadow: `0 8px 28px -16px ${alpha(OPS_MOBILE.navy, 0.35)}`,
+        }}
+      >
+        <Stack spacing={2} alignItems="center">
           {logoSrc ? (
             <Box
               component="img"
               src={logoSrc}
               alt=""
-              sx={{ width: "min(160px, 48vw)", height: "auto", objectFit: "contain" }}
+              sx={{ height: 40, width: "auto", maxWidth: "60%", objectFit: "contain" }}
             />
           ) : (
-            <TenantLogo logoUrl={branding?.logo_url} sx={{ width: 72, height: 72 }} />
+            <TenantLogo size={40} />
           )}
-          <Typography variant="h5" fontWeight={800} textAlign="center" color={VW.navy}>
-            Maintenance Task List
+          <Typography sx={{ fontWeight: 900, fontSize: "1.35rem", color: OPS_MOBILE.navy }}>
+            Tasks
           </Typography>
-          {phase === "pin" ? (
-            <Typography color="text.secondary" textAlign="center">
-              Enter your PIN to continue
-            </Typography>
-          ) : null}
-          <Button
-            component={Link}
-            to={
-              fromHub
-                ? slug
-                  ? `/pin/${encodeURIComponent(slug)}`
-                  : "/pin"
-                : slug
-                  ? `/attendance/role/${encodeURIComponent(slug)}`
-                  : "/attendance/role"
-            }
-            size="small"
-            sx={{ textTransform: "none" }}
-          >
-            {fromHub ? "PIN Menu" : "Switch Role"}
-          </Button>
-        </Stack>
 
-        {error ? (
-          <Alert severity="error" sx={{ mt: 2 }} onClose={() => setError("")}>
-            {error}
-          </Alert>
-        ) : null}
-
-        {phase === "pin" ? (
-          <Stack spacing={2} alignItems="center" sx={{ mt: 2 }}>
-            {!routeSlug ? (
-              orgsLoading ? (
-                <CircularProgress size={24} />
-              ) : (
-                <FormControl fullWidth size="small">
-                  <InputLabel id="mtl-org">{t("attendance.selectCompany")}</InputLabel>
-                  <Select
-                    labelId="mtl-org"
-                    label={t("attendance.selectCompany")}
-                    value={selectedSlug || ""}
-                    onChange={(e) => {
-                      setSelectedSlug(String(e.target.value));
-                      goToSlugRoute(e.target.value);
-                    }}
-                  >
-                    {orgs.map((o) => (
-                      <MenuItem key={o.slug} value={o.slug}>
-                        {o.display_name || o.slug}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-              )
-            ) : null}
-
-            <Stack direction="row" spacing={1}>
-              {Array.from({ length: PIN_LEN }).map((_, i) => (
-                <Box
-                  key={i}
-                  sx={{
-                    width: 14,
-                    height: 14,
-                    borderRadius: "50%",
-                    bgcolor: i < pinClean.length ? VW.cobalt : alpha(VW.navy, 0.15),
+          {!routeSlug ? (
+            orgsLoading ? (
+              <CircularProgress size={24} />
+            ) : (
+              <FormControl fullWidth size="small">
+                <InputLabel id="mtl-org">{t("attendance.selectCompany")}</InputLabel>
+                <Select
+                  labelId="mtl-org"
+                  label={t("attendance.selectCompany")}
+                  value={selectedSlug || ""}
+                  onChange={(e) => {
+                    const s = sanitizeSlug(e.target.value);
+                    setSelectedSlug(s);
+                    if (s) {
+                      navigate(`/attendance/maintenance/${encodeURIComponent(s)}`, { replace: true });
+                    }
                   }}
-                />
-              ))}
-            </Stack>
+                >
+                  {orgs.map((o) => (
+                    <MenuItem key={o.slug} value={o.slug}>
+                      {o.display_name || o.slug}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )
+          ) : null}
 
-            <Box
-              sx={{
-                display: "grid",
-                gridTemplateColumns: "repeat(3, 1fr)",
-                gap: 1,
-                width: "100%",
-                maxWidth: 320,
-              }}
-            >
-              {["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "back"].map((key) => {
-                if (key === "") return <Box key="spacer" />;
-                if (key === "back") {
-                  return (
-                    <IconButton
-                      key="back"
-                      disabled={loading}
-                      onClick={() => setPin((p) => p.slice(0, -1))}
-                      sx={digitKeySx()}
-                    >
-                      <Backspace />
-                    </IconButton>
-                  );
-                }
+          {error ? (
+            <Alert severity="error" sx={{ width: "100%" }} onClose={() => setError("")}>
+              {error}
+            </Alert>
+          ) : null}
+
+          <Stack direction="row" spacing={1.25}>
+            {Array.from({ length: PIN_LEN }).map((_, i) => (
+              <Box
+                key={i}
+                sx={{
+                  width: 14,
+                  height: 14,
+                  borderRadius: "50%",
+                  bgcolor: i < pinClean.length ? OPS_MOBILE.blue : alpha(OPS_MOBILE.navy, 0.15),
+                }}
+              />
+            ))}
+          </Stack>
+
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3, 1fr)",
+              gap: 1,
+              width: "100%",
+              maxWidth: 280,
+            }}
+          >
+            {["1", "2", "3", "4", "5", "6", "7", "8", "9", "C", "0", "⌫"].map((key) => {
+              if (key === "C") {
                 return (
                   <Button
                     key={key}
-                    disabled={loading || !slug}
-                    onClick={() =>
-                      setPin((p) => (p.replace(/\D/g, "").length >= PIN_LEN ? p : `${p}${key}`))
-                    }
+                    disabled={loading || !pinClean}
+                    onClick={() => {
+                      setPin("");
+                      prevPinLenRef.current = 0;
+                    }}
                     sx={digitKeySx()}
                   >
-                    {key}
+                    C
                   </Button>
                 );
-              })}
-            </Box>
-            {loading ? <CircularProgress size={28} /> : null}
-          </Stack>
-        ) : null}
-
-        {phase === "success" ? (
-          <Stack spacing={2} alignItems="center" sx={{ mt: 3, py: 2 }}>
-            <CheckCircle sx={{ fontSize: 64, color: "#059669" }} />
-            <Typography variant="h6" fontWeight={700} textAlign="center">
-              {successMessage}
-            </Typography>
-            {fromHub ? (
-              <Typography variant="body2" color="text.secondary" textAlign="center">
-                Returning to PIN menu…
-              </Typography>
-            ) : (
-              <>
-                <Button variant="contained" onClick={() => setPhase("list")} sx={{ textTransform: "none" }}>
-                  View submitted list
-                </Button>
-                <Button onClick={resetToPin} sx={{ textTransform: "none" }}>
-                  Done
-                </Button>
-              </>
-            )}
-          </Stack>
-        ) : null}
-
-        {phase === "list" && list ? (
-          <Box sx={{ mt: 2 }}>
-            <Typography fontWeight={700} color="text.secondary">
-              {dateDisplay || list.task_date}
-            </Typography>
-            <Typography sx={{ mb: 1 }}>
-              Employee: <strong>{employeeLabel}</strong>
-              {saving ? (
-                <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                  Saving…
-                </Typography>
-              ) : null}
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-              Status: {statusLabel(list.status)}
-            </Typography>
-
-            <Stack spacing={1.25}>
-              {(list.items || []).map((item) => (
-                <Box
-                  key={item.id}
-                  sx={{
-                    p: 1.25,
-                    borderRadius: 2,
-                    bgcolor: "#fff",
-                    border: `1px solid ${alpha(VW.navy, 0.08)}`,
-                  }}
+              }
+              if (key === "⌫") {
+                return (
+                  <IconButton
+                    key={key}
+                    disabled={loading || !pinClean}
+                    onClick={() => setPin((p) => String(p || "").slice(0, -1))}
+                    sx={digitKeySx()}
+                  >
+                    <Backspace fontSize="small" />
+                  </IconButton>
+                );
+              }
+              return (
+                <Button
+                  key={key}
+                  disabled={loading || !slug}
+                  onClick={() =>
+                    setPin((p) => `${String(p || "").replace(/\D/g, "")}${key}`.slice(0, PIN_LEN))
+                  }
+                  sx={digitKeySx()}
                 >
-                  <FormControlLabel
-                    sx={{
-                      m: 0,
-                      alignItems: "flex-start",
-                      width: "100%",
-                      "& .MuiFormControlLabel-label": {
-                        fontSize: "1.05rem",
-                        fontWeight: 600,
-                        lineHeight: 1.35,
-                        pt: 0.85,
-                      },
-                    }}
-                    control={
-                      <Checkbox
-                        checked={!!item.completed}
-                        disabled={readOnly || loading}
-                        onChange={() => toggleItem(item)}
-                        sx={{
-                          p: 1,
-                          "& .MuiSvgIcon-root": { fontSize: 32 },
-                        }}
-                      />
-                    }
-                    label={item.task_name_snapshot}
-                  />
-                </Box>
-              ))}
-            </Stack>
+                  {key}
+                </Button>
+              );
+            })}
           </Box>
-        ) : null}
-      </Box>
-
-      {phase === "list" && list && !readOnly ? (
-        <Box
-          sx={{
-            position: "fixed",
-            bottom: 0,
-            left: 0,
-            right: 0,
-            zIndex: 1100,
-            p: 2,
-            pb: "calc(16px + env(safe-area-inset-bottom))",
-            bgcolor: "#fff",
-            borderTop: "1px solid",
-            borderColor: "divider",
-            boxShadow: "0 -4px 12px rgba(0,0,0,0.08)",
-            maxWidth: "100vw",
-            overflowX: "hidden",
-          }}
-        >
-          <Stack direction="row" spacing={1.5} sx={{ maxWidth: 480, mx: "auto" }}>
-            <Button
-              fullWidth
-              variant="outlined"
-              disabled={loading || saving}
-              onClick={handleSaveProgress}
-              sx={{ textTransform: "none", fontWeight: 700, minHeight: 48 }}
-            >
-              Save Progress
-            </Button>
-            <Button
-              fullWidth
-              variant="contained"
-              disabled={loading || saving || !canSubmit}
-              onClick={handleSubmit}
-              sx={{ textTransform: "none", fontWeight: 700, minHeight: 48 }}
-            >
-              Submit Checklist
-            </Button>
-          </Stack>
-        </Box>
-      ) : null}
-
-      {phase === "list" && readOnly ? (
-        <Box
-          sx={{
-            position: "fixed",
-            bottom: 0,
-            left: 0,
-            right: 0,
-            zIndex: 1100,
-            p: 2,
-            pb: "calc(16px + env(safe-area-inset-bottom))",
-            bgcolor: "#fff",
-            borderTop: "1px solid",
-            borderColor: "divider",
-          }}
-        >
-          <Button fullWidth variant="outlined" onClick={resetToPin} sx={{ textTransform: "none", minHeight: 48 }}>
-            Done
+          {loading ? <CircularProgress size={28} /> : null}
+          <Button
+            onClick={onBack}
+            sx={{ textTransform: "none", fontWeight: 800, minHeight: OPS_MOBILE.touchMin }}
+          >
+            PIN
           </Button>
-        </Box>
-      ) : null}
-    </Box>
+        </Stack>
+      </Paper>
+    </OpsMobileShell>
   );
 }

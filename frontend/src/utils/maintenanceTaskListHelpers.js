@@ -71,6 +71,42 @@ export function allTasksChecked(list) {
   return items.every((i) => !!i.completed);
 }
 
+/** Compact progress for employee mobile checklist. */
+export function taskProgress(list) {
+  const items = Array.isArray(list?.items) ? list.items : [];
+  const total = items.length;
+  const done = items.filter((i) => !!i.completed).length;
+  return { done, total };
+}
+
+/** One-line instruction preview; empty when no description. */
+export function instructionPreview(text, maxLen = 72) {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+  if (raw.length <= maxLen) return raw;
+  return `${raw.slice(0, maxLen).trim()}…`;
+}
+
+/** Compact context: "Maria · Today" or "Maria · Jul 23". */
+export function compactTaskContext(employeeFirstName, dateDisplay) {
+  const name = String(employeeFirstName || "").trim();
+  const date = String(dateDisplay || "").trim();
+  if (name && date) return `${name} · ${date}`;
+  return name || date || "";
+}
+
+/**
+ * Apply a confirmed toggle to a list snapshot (immutable).
+ * Used by UI + tests — does not call APIs.
+ */
+export function applyTaskCompletionLocal(list, itemId, completed) {
+  if (!list) return list;
+  const items = (list.items || []).map((i) =>
+    Number(i.id) === Number(itemId) ? { ...i, completed: !!completed } : i,
+  );
+  return { ...list, items };
+}
+
 export function formatTimeEt(value) {
   if (!value) return "—";
   try {

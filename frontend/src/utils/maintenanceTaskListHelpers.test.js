@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   allTasksChecked,
+  applyTaskCompletionLocal,
   canAccessMaintenanceTaskReports,
   canManageMaintenanceTaskSettings,
+  compactTaskContext,
+  instructionPreview,
   isCompletedStatus,
   mtlEmployeePageSx,
   reorderIds,
   statusLabel,
+  taskProgress,
 } from "./maintenanceTaskListHelpers";
 
 describe("maintenanceTaskListHelpers", () => {
@@ -30,6 +34,31 @@ describe("maintenanceTaskListHelpers", () => {
         items: [{ completed: true }, { completed: true }],
       }),
     ).toBe(true);
+  });
+
+  it("tracks progress without changing status meanings", () => {
+    expect(
+      taskProgress({ items: [{ completed: true }, { completed: false }, { completed: false }] }),
+    ).toEqual({ done: 1, total: 3 });
+  });
+
+  it("keeps long task names as full strings (no forced truncation helper)", () => {
+    const name = "Sanitize all folding tables after final bag of the night";
+    expect(name.length).toBeGreaterThan(20);
+    expect(instructionPreview(name, 20)).toContain("…");
+    expect(instructionPreview("Short", 72)).toBe("Short");
+  });
+
+  it("builds compact employee context", () => {
+    expect(compactTaskContext("Maria", "Today")).toBe("Maria · Today");
+    expect(compactTaskContext("Maria", "")).toBe("Maria");
+  });
+
+  it("applies local completion immutably", () => {
+    const list = { id: 1, items: [{ id: 9, completed: false, task_name_snapshot: "A" }] };
+    const next = applyTaskCompletionLocal(list, 9, true);
+    expect(next.items[0].completed).toBe(true);
+    expect(list.items[0].completed).toBe(false);
   });
 
   it("preserves reorder", () => {
