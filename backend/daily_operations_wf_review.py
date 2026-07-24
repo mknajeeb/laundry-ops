@@ -743,23 +743,32 @@ def _validate_save_payload(payload: Mapping[str, Any], *, current_post: Any) -> 
     no_billable = bool(payload.get("no_billable_items") or payload.get("no_chargeable"))
     items = list(payload.get("items") or [])
     reason = str(payload.get("reason") or "").strip()
+    reason_code = str(payload.get("reason_code") or "").strip().upper()
+    reason_note = str(payload.get("reason_note") or reason).strip()
+    corr_reason = str(payload.get("post_weight_correction_reason") or reason_note or reason).strip()
 
     corrected_raw = payload.get("corrected_post_weight_lbs", payload.get("post_weight_lbs"))
     correcting = corrected_raw not in (None, "")
+    post_materially_changed = False
     if correcting:
         lbs_v = _parse_weight(corrected_raw)
         if lbs_v is None:
             errors.append("invalid_post_weight")
         elif lbs_v < 0:
             errors.append("negative_post_weight_rejected")
-        elif lbs_v == 0 and not str(payload.get("post_weight_correction_reason") or reason).strip():
-            errors.append("zero_post_requires_reason")
-        elif current_post is None or (lbs_v is not None and float(lbs_v) != float(current_post)):
-            if not str(payload.get("post_weight_correction_reason") or reason).strip():
-                errors.append("post_correction_reason_required")
+        else:
+            post_materially_changed = current_post is None or float(lbs_v) != float(current_post)
+            if lbs_v == 0 and not (reason_code or corr_reason):
+                errors.append("zero_post_requires_reason")
+            elif post_materially_changed and not (reason_code or corr_reason):
+                errors.append("post_correction_reason_code_required")
+            elif post_materially_changed and reason_code == "OTHER" and not reason_note and not corr_reason:
+                errors.append("reason_note_required_for_other")
     elif accept_missing:
-        if not reason:
-            errors.append("accepted_missing_post_reason_required")
+        if not (reason_code or reason):
+            errors.append("accepted_missing_post_reason_code_required")
+        elif reason_code == "OTHER" and not reason_note:
+            errors.append("reason_note_required_for_other")
     else:
         if current_post is None and not correcting:
             errors.append("missing_post_requires_correction_or_accept")
@@ -773,10 +782,7 @@ def _validate_save_payload(payload: Mapping[str, Any], *, current_post: Any) -> 
         if not positive:
             errors.append("explicit_workitem_resolution_required")
 
-    if correcting and not reason and not str(payload.get("post_weight_correction_reason") or "").strip():
-        lbs_v = _parse_weight(corrected_raw)
-        if current_post is None or (lbs_v is not None and float(lbs_v) != float(current_post)):
-            errors.append("reason_required")
+    # Routine work-item / review saves do NOT require a free-text reason.
     return errors
 
 
@@ -809,6 +815,7 @@ def save_wf_review(
             "ok": False,
             "error": "conflict",
             "status": 409,
+            "current_version": current_version,
             "current": detail,
         }
 
@@ -818,7 +825,8 @@ def save_wf_review(
     if errors:
         return {"ok": False, "error": "validation_failed", "errors": errors}
 
-    reason = str(payload.get("reason") or "").strip()
+    reason_code = str(payload.get("reason_code") or "").strip().upper() or None
+    reason_note = str(payload.get("reason_note") or payload.get("reason") or "").strip() or None
     notes = str(payload.get("notes") or "").strip() or None
     accept_missing = bool(payload.get("accept_missing_post"))
     no_billable = bool(payload.get("no_billable_items") or payload.get("no_chargeable"))
@@ -826,8 +834,19 @@ def save_wf_review(
     correcting = corrected_raw not in (None, "")
     corrected_lbs = _parse_weight(corrected_raw) if correcting else None
     corr_reason = str(
-        payload.get("post_weight_correction_reason") or reason
+        payload.get("post_weight_correction_reason") or reason_note or reason_code or ""
     ).strip()
+
+    # System action codes for routine saves (audit still recorded).
+    post_changed = correcting and corrected_lbs is not None and (
+        current_post is None or float(corrected_lbs) != float(current_post)
+    )
+    if post_changed or accept_missing:
+        reason = corr_reason or (
+            f"{reason_code}: {reason_note}" if reason_code and reason_note else (reason_code or reason_note or "")
+        )
+    else:
+        reason = reason_note or ("WORKITEMS_UPDATED" if not no_billable else "REVIEW_SAVED")
 
     before_state = {
         "fact": fact,
@@ -853,6 +872,7 @@ def save_wf_review(
             actor_user_id=actor_user_id,
             actor_display_name=actor_display_name,
             allow_closed=True,
+            allow_system_audit_reason=True,
         )
         if not wi_out.get("ok"):
             return {"ok": False, "error": "workitem_save_failed", "detail": wi_out}
@@ -877,6 +897,7 @@ def save_wf_review(
             actor_user_id=actor_user_id,
             actor_display_name=actor_display_name,
             allow_closed=True,
+            allow_system_audit_reason=True,
         )
         if not wi_out.get("ok"):
             return {"ok": False, "error": "workitem_save_failed", "detail": wi_out}

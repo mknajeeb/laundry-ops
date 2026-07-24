@@ -205,13 +205,13 @@ export default function Step1MetricDrawer({
   }, [load]);
 
   const loadBagDetail = async (bagId, { force = false } = {}) => {
-    if (!bagId || !selectedDateEt || !resolvedMetric) return;
+    if (!bagId || !selectedDateEt || !resolvedMetric) return null;
     const cacheKey = detailCacheKey(selectedDateEt, bagId);
     if (!force) {
       const cached = bagDetailCache.get(cacheKey);
       if (cached) {
         // Don't clobber an open Edit Bag draft with a cache hit.
-        if (editingBag === bagId) return;
+        if (editingBag === bagId) return cached;
         setBags((prev) =>
           prev.map((b) =>
             b.bag_id === bagId
@@ -226,7 +226,7 @@ export default function Step1MetricDrawer({
               : b
           )
         );
-        return;
+        return cached;
       }
     } else {
       bagDetailCache.delete(cacheKey);
@@ -269,8 +269,10 @@ export default function Step1MetricDrawer({
           })
         );
       }
+      return detail || null;
     } catch (e) {
         setError(friendlyApiError(e?.response?.data?.error || e?.message, "Unable to load workload details."));
+        return null;
       } finally {
       setDetailLoading((m) => ({ ...m, [bagId]: false }));
     }
@@ -610,6 +612,7 @@ export default function Step1MetricDrawer({
                       readOnly={readOnly}
                       onCancel={() => setEditingBag(null)}
                       onError={(msg) => setError(msg)}
+                      onReloadLatest={async (bagId) => loadBagDetail(bagId, { force: true })}
                       onSaved={async () => {
                         await refreshBagAfterEdit(bag.bag_id, { closeEditor: false });
                       }}

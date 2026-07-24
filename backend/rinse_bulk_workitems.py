@@ -586,6 +586,7 @@ def save_bag_bulk_workitems(
     actor_display_name: str | None = None,
     allow_closed: bool = False,
     allow_empty_clear: bool = False,
+    allow_system_audit_reason: bool = False,
 ) -> dict[str, Any]:
     """
     Save bulk workitem quantities for a bag, or mark no-chargeable.
@@ -593,6 +594,8 @@ def save_bag_bulk_workitems(
     Clears WF_BULK_WORKITEM_REVIEW only (other reasons untouched).
     When ``allow_empty_clear`` is True, an empty ``items`` list clears all bag
     bulk lines (used by Edit Bag undo restore to an empty prior state).
+    When ``allow_system_audit_reason`` is True, routine item saves may omit a
+    free-text reason and use ``WORKITEMS_UPDATED`` for the audit trail.
     """
     from backend.rinse_veewash_shift_day import STATUS_CLOSED, get_day_record
 
@@ -744,7 +747,10 @@ def save_bag_bulk_workitems(
                 return {"ok": False, "error": "items_or_no_charge_required"}
         else:
             if not audit_reason:
-                return {"ok": False, "error": "reason_required"}
+                if allow_system_audit_reason:
+                    audit_reason = "WORKITEMS_UPDATED"
+                else:
+                    return {"ok": False, "error": "reason_required"}
 
             cursor.execute(
                 """

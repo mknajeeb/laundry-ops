@@ -34,6 +34,27 @@ VALID_OUTCOME_ACTIONS = {
     OUTCOME_EXCLUDE,
 }
 
+# Outcomes that require a structured reason (reason_code).
+EXCEPTIONAL_OUTCOME_ACTIONS = {
+    OUTCOME_MARK_COMPLETED,
+    OUTCOME_RETURN_PENDING,
+    OUTCOME_EXCLUDE,
+}
+
+REASON_CODE_OPTIONS = (
+    {"code": "POST_CORRECTION", "label": "POST weight correction"},
+    {"code": "PRE_CORRECTION", "label": "PRE weight correction"},
+    {"code": "EXCLUDE", "label": "Exclude bag"},
+    {"code": "MARK_COMPLETED", "label": "Manually mark completed"},
+    {"code": "RETURN_PENDING", "label": "Return to pending"},
+    {"code": "ACCEPT_EXCEPTION", "label": "Accept exception"},
+    {"code": "STATUS_OVERRIDE", "label": "Manual status override"},
+    {"code": "OTHER", "label": "Other"},
+)
+
+SYSTEM_ACTION_WORKITEMS_UPDATED = "WORKITEMS_UPDATED"
+SYSTEM_ACTION_REVIEW_SAVED = "REVIEW_SAVED"
+
 # Fields tracked for before/after delta rows on every edit.
 _TRACKED_FIELDS = (
     "service_type",
@@ -69,6 +90,135 @@ def _json_load(raw: Any) -> Any:
         return json.loads(raw)
     except Exception:
         return None
+
+
+def _weight_changed(before_val: Any, draft_val: Any) -> bool:
+    b = normalize_scan_weight_lbs(before_val)
+    d = normalize_scan_weight_lbs(draft_val)
+    if b is None and d is None:
+        return False
+    if b is None or d is None:
+        return True
+    return float(b) != float(d)
+
+
+def classify_edit_reason_requirements(
+    draft: Mapping[str, Any],
+    before: Mapping[str, Any],
+    outcome: str | None,
+) -> dict[str, Any]:
+    """
+    Decide whether a manager reason_code is required for this Edit Bag save.
+
+    Routine work-item / review saves do not require a free-text reason.
+    Exceptional actions (weight correction, exclude, status overrides) do.
+    """
+    draft = dict(draft or {})
+    before = dict(before or {})
+    reasons: list[str] = []
+
+    if outcome in EXCEPTIONAL_OUTCOME_ACTIONS:
+        reasons.append(str(outcome))
+
+    if "post_weight_lbs" in draft and _weight_changed(
+        before.get("post_weight_lbs"), draft.get("post_weight_lbs")
+    ):
+        reasons.append("post_weight_correction")
+    if "pre_weight_lbs" in draft and _weight_changed(
+        before.get("pre_weight_lbs"), draft.get("pre_weight_lbs")
+    ):
+        reasons.append("pre_weight_correction")
+
+    # Explicit status override fields on draft (rare)
+    if draft.get("manual_status_override"):
+        reasons.append("status_override")
+
+    required = bool(reasons)
+    suggested = None
+    if "post_weight_correction" in reasons:
+        suggested = "POST_CORRECTION"
+    elif "pre_weight_correction" in reasons:
+        suggested = "PRE_CORRECTION"
+    elif outcome == OUTCOME_EXCLUDE:
+        suggested = "EXCLUDE"
+    elif outcome == OUTCOME_MARK_COMPLETED:
+        suggested = "MARK_COMPLETED"
+    elif outcome == OUTCOME_RETURN_PENDING:
+        suggested = "RETURN_PENDING"
+    elif "status_override" in reasons:
+        suggested = "STATUS_OVERRIDE"
+
+    bulk_changed = "bulk_items" in draft or "no_chargeable" in draft
+    system_action = (
+        SYSTEM_ACTION_WORKITEMS_UPDATED if bulk_changed else SYSTEM_ACTION_REVIEW_SAVED
+    )
+    return {
+        "reason_required": required,
+        "triggers": reasons,
+        "suggested_reason_code": suggested,
+        "system_action": system_action,
+        "reason_codes": list(REASON_CODE_OPTIONS),
+    }
+
+
+def resolve_edit_audit_reason(
+    *,
+    reason: str | None,
+    reason_code: str | None,
+    reason_note: str | None,
+    draft: Mapping[str, Any],
+    before: Mapping[str, Any],
+    outcome: str | None,
+) -> dict[str, Any]:
+    """Validate + resolve audit reason text for Edit Bag (server-side policy)."""
+    policy = classify_edit_reason_requirements(draft, before, outcome)
+    code = str(reason_code or "").strip().upper() or None
+    note = str(reason_note or reason or "").strip() or None
+    legacy_reason = str(reason or "").strip() or None
+
+    if policy["reason_required"]:
+        if not code and legacy_reason:
+            # Backward compatible: free-text reason alone is accepted as OTHER note.
+            code = "OTHER"
+            note = legacy_reason
+        if not code:
+            return {
+                "ok": False,
+                "error": "reason_code_required",
+                "policy": policy,
+            }
+        if code == "OTHER" and not note:
+            return {
+                "ok": False,
+                "error": "reason_note_required_for_other",
+                "policy": policy,
+            }
+        label = next(
+            (x["label"] for x in REASON_CODE_OPTIONS if x["code"] == code),
+            code,
+        )
+        audit = f"{code}: {note}" if note else f"{code}: {label}"
+        return {
+            "ok": True,
+            "reason": audit,
+            "reason_code": code,
+            "reason_note": note,
+            "policy": policy,
+        }
+
+    # Routine save — system action description; optional note preserved.
+    system = policy["system_action"]
+    if note:
+        audit = f"{system}: {note}"
+    else:
+        audit = system
+    return {
+        "ok": True,
+        "reason": audit,
+        "reason_code": code,
+        "reason_note": note,
+        "policy": policy,
+    }
 
 
 def _stringify(value: Any) -> str | None:
@@ -452,6 +602,8 @@ def apply_unified_bag_edit(
     outcome_action: str | None = None,
     actor_user_id: int | None = None,
     actor_display_name: str | None = None,
+    reason_code: str | None = None,
+    reason_note: str | None = None,
 ) -> dict[str, Any]:
     """Apply a unified Edit Bag draft as one atomic edit with a single audit row.
 
@@ -461,11 +613,8 @@ def apply_unified_bag_edit(
     """
     ensure_step1_bag_edit_tables(cursor)
     bid = normalize_bag_id(bag_id)
-    reason_text = str(reason or "").strip()
     if not bid:
         return {"ok": False, "error": "invalid_bag_id"}
-    if not reason_text:
-        return {"ok": False, "error": "reason_required"}
 
     draft = dict(draft or {})
     outcome = _normalize_outcome_action(outcome_action)
@@ -482,8 +631,25 @@ def apply_unified_bag_edit(
                 "ok": False,
                 "error": "conflict",
                 "status": 409,
+                "current_version": before.get("updated_at"),
                 "latest": before,
             }
+
+    resolved = resolve_edit_audit_reason(
+        reason=reason,
+        reason_code=reason_code,
+        reason_note=reason_note,
+        draft=draft,
+        before=before,
+        outcome=outcome,
+    )
+    if not resolved.get("ok"):
+        return {
+            "ok": False,
+            "error": resolved.get("error") or "reason_required",
+            "policy": resolved.get("policy"),
+        }
+    reason_text = str(resolved["reason"])
 
     effective_service = str(draft.get("service_type") or before.get("service_type") or "").strip().upper()
     errors = validate_edit_draft(draft, service_type=effective_service)
@@ -547,6 +713,7 @@ def apply_unified_bag_edit(
             actor_display_name=actor_display_name,
             allow_closed=False,
             allow_empty_clear=True,
+            allow_system_audit_reason=True,
         )
         if not bulk_out.get("ok"):
             return {

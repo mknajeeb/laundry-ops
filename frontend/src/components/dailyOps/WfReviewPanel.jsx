@@ -74,20 +74,31 @@ function emptyDraft(detail) {
     })),
     notes: detail?.review?.notes || "",
     reason: "",
+    reason_code: "",
+    reason_note: "",
     version: detail?.review?.version || 1,
   };
 }
 
-function buildSaveBody(draft) {
-  const correcting = String(draft.corrected_post_weight_lbs || "").trim() !== "";
+function buildSaveBody(draft, detail) {
+  const currentPost = detail?.post_weight?.authoritative_post_weight_lbs;
+  const raw = String(draft.corrected_post_weight_lbs || "").trim();
+  const correcting =
+    raw !== "" &&
+    (currentPost == null || Number(raw) !== Number(currentPost));
+  const exceptional = Boolean(draft.accept_missing_post || correcting);
   return {
     version: draft.version,
-    reason: draft.reason,
+    reason: exceptional ? draft.reason_note || draft.reason || draft.post_weight_correction_reason : "",
+    reason_code: exceptional ? draft.reason_code || (correcting ? "POST_CORRECTION" : "ACCEPT_EXCEPTION") : null,
+    reason_note: exceptional ? draft.reason_note || draft.reason || null : null,
     notes: draft.notes,
     accept_missing_post: Boolean(draft.accept_missing_post),
     no_billable_items: Boolean(draft.no_billable_items),
     no_billable_reason: draft.no_billable_reason,
-    post_weight_correction_reason: draft.post_weight_correction_reason || draft.reason,
+    post_weight_correction_reason: correcting
+      ? draft.post_weight_correction_reason || draft.reason_note || draft.reason
+      : null,
     ...(correcting && !draft.accept_missing_post
       ? { corrected_post_weight_lbs: Number(draft.corrected_post_weight_lbs) }
       : {}),
@@ -125,6 +136,8 @@ export default function WfReviewPanel({ dateEt, onSaved }) {
   const [preview, setPreview] = useState(null);
   const [saving, setSaving] = useState(false);
   const [undoReason, setUndoReason] = useState("");
+  const [conflict, setConflict] = useState(null);
+  const [unsavedDraft, setUnsavedDraft] = useState(null);
 
   const loadQueue = useCallback(async () => {
     setLoading(true);
@@ -192,7 +205,7 @@ export default function WfReviewPanel({ dateEt, onSaved }) {
     if (!draft || !selectedBag) return;
     setError("");
     try {
-      const body = buildSaveBody(draft);
+      const body = buildSaveBody(draft, detail);
       const payload = (await previewDailyOperationsWfReview(dateEt, selectedBag, body)).data;
       setPreview(payload);
     } catch (e) {
@@ -200,22 +213,60 @@ export default function WfReviewPanel({ dateEt, onSaved }) {
     }
   };
 
+  const reloadLatestDetail = async () => {
+    if (!selectedBag) return;
+    setError("");
+    try {
+      const payload = (await getDailyOperationsWfReviewDetail(dateEt, selectedBag)).data;
+      setDetail(payload);
+      setDraft((d) => ({
+        ...emptyDraft(payload),
+        // Keep unsaved edits visible separately; do not auto-reapply.
+        version: payload?.review?.version || 1,
+      }));
+      setConflict((c) =>
+        c
+          ? {
+              ...c,
+              reloaded: true,
+              latest: payload,
+              message:
+                "Latest saved values loaded. Your unsaved edits were not applied automatically — re-enter what you still want.",
+            }
+          : null
+      );
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || "Reload failed");
+    }
+  };
+
   const saveReview = async () => {
     if (!draft || !selectedBag) return;
+    const body = buildSaveBody(draft, detail);
+    const correcting = body.corrected_post_weight_lbs != null;
+    if ((correcting || draft.accept_missing_post) && !String(body.reason_code || body.reason || "").trim()) {
+      setError("A reason code is required for POST correction or accepted-missing actions.");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      const body = buildSaveBody(draft);
       const payload = (await saveDailyOperationsWfReview(dateEt, selectedBag, body)).data;
       if (!payload?.ok) {
         if (payload?.error === "conflict") {
-          setError("Conflict — another manager changed this bag. Reloading…");
-          await openBag(selectedBag);
-        } else {
-          setError(payload?.error || (payload?.errors || []).join(", ") || "Save failed");
+          setUnsavedDraft(draft);
+          setConflict({
+            message: "This bag was updated after you opened it.",
+            currentVersion: payload.current_version,
+            current: payload.current,
+          });
+          return;
         }
+        setError(payload?.error || (payload?.errors || []).join(", ") || "Save failed");
         return;
       }
+      setConflict(null);
+      setUnsavedDraft(null);
       setDetail(payload.detail);
       setDraft(emptyDraft(payload.detail));
       setPreview(null);
@@ -224,11 +275,12 @@ export default function WfReviewPanel({ dateEt, onSaved }) {
     } catch (e) {
       const data = e?.response?.data;
       if (e?.response?.status === 409 || data?.error === "conflict") {
-        setError("Conflict — reload required");
-        if (data?.current) {
-          setDetail(data.current);
-          setDraft(emptyDraft(data.current));
-        }
+        setUnsavedDraft(draft);
+        setConflict({
+          message: "This bag was updated after you opened it.",
+          currentVersion: data?.current_version,
+          current: data?.current,
+        });
       } else {
         setError(data?.error || (data?.errors || []).join(", ") || e?.message || "Save failed");
       }
@@ -357,15 +409,26 @@ export default function WfReviewPanel({ dateEt, onSaved }) {
               inputProps={{ step: "0.01", min: "0" }}
               disabled={draft.accept_missing_post}
             />
-            <TextField
-              label="Correction reason"
-              size="small"
-              value={draft.post_weight_correction_reason}
-              onChange={(e) =>
-                setDraft((d) => ({ ...d, post_weight_correction_reason: e.target.value }))
-              }
-              disabled={draft.accept_missing_post}
-            />
+            {String(draft.corrected_post_weight_lbs || "").trim() !== "" &&
+            Number(draft.corrected_post_weight_lbs) !==
+              Number(detail.post_weight?.authoritative_post_weight_lbs) ? (
+              <TextField
+                label="POST correction reason code / note"
+                size="small"
+                required
+                value={draft.post_weight_correction_reason || draft.reason_note}
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    post_weight_correction_reason: e.target.value,
+                    reason_note: e.target.value,
+                    reason_code: d.reason_code || "POST_CORRECTION",
+                  }))
+                }
+                helperText="Required only when changing authoritative POST weight"
+                disabled={draft.accept_missing_post}
+              />
+            ) : null}
             <FormControlLabel
               control={
                 <Checkbox
@@ -550,14 +613,29 @@ export default function WfReviewPanel({ dateEt, onSaved }) {
           value={draft.notes}
           onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
         />
-        <TextField
-          label="Save reason"
-          size="small"
-          fullWidth
-          required
-          value={draft.reason}
-          onChange={(e) => setDraft((d) => ({ ...d, reason: e.target.value }))}
-        />
+        {draft.accept_missing_post ? (
+          <TextField
+            label="Accepted-missing reason"
+            size="small"
+            fullWidth
+            required
+            value={draft.reason_note || draft.reason}
+            onChange={(e) =>
+              setDraft((d) => ({
+                ...d,
+                reason_note: e.target.value,
+                reason: e.target.value,
+                reason_code: d.reason_code || "ACCEPT_EXCEPTION",
+              }))
+            }
+            helperText="Required for accept-missing-POST exception"
+          />
+        ) : (
+          <Typography variant="caption" color="text.secondary">
+            Routine work-item review saves do not require a reason. Audit uses WORKITEMS_UPDATED /
+            REVIEW_SAVED automatically.
+          </Typography>
+        )}
 
         {(detail.audits || []).length > 0 ? (
           <Paper variant="outlined" sx={{ p: 1.5 }}>
@@ -629,6 +707,44 @@ export default function WfReviewPanel({ dateEt, onSaved }) {
       {error ? (
         <Alert severity="error" sx={{ mb: 1.5 }}>
           {error}
+        </Alert>
+      ) : null}
+      {conflict ? (
+        <Alert
+          severity="warning"
+          sx={{ mb: 1.5 }}
+          action={
+            <Stack direction="row" spacing={0.5}>
+              <Button color="inherit" size="small" onClick={reloadLatestDetail}>
+                Reload Latest
+              </Button>
+              <Button
+                color="inherit"
+                size="small"
+                onClick={() => {
+                  setConflict(null);
+                  setUnsavedDraft(null);
+                }}
+              >
+                Cancel
+              </Button>
+            </Stack>
+          }
+        >
+          <Typography variant="body2" fontWeight={700}>
+            {conflict.message}
+          </Typography>
+          {conflict.currentVersion != null ? (
+            <Typography variant="caption" display="block">
+              Current version: {String(conflict.currentVersion)}
+            </Typography>
+          ) : null}
+          {unsavedDraft ? (
+            <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
+              Your unsaved values were kept locally. Reload Latest refreshes the version lock without
+              closing the queue; re-enter any edits you still want.
+            </Typography>
+          ) : null}
         </Alert>
       ) : null}
 

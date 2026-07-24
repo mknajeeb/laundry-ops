@@ -24,7 +24,10 @@ import { PayrollDateTimeField } from "../PayrollDateTimeField";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import {
   buildEditBagPayloadDraft,
+  classifyEditReasonRequirements,
   describeWeightProvenance,
+  diffEditBagDraftVsLatest,
+  EDIT_BAG_REASON_CODES,
   validateEditBagDraft,
 } from "./editBagHelpers";
 
@@ -67,6 +70,7 @@ export default function EditBagPanel({
   onSaved,
   onError,
   onUndo,
+  onReloadLatest,
 }) {
   const existing = bag?.bulk_workitems || [];
   const initialQty = useMemo(() => {
@@ -92,6 +96,8 @@ export default function EditBagPanel({
     completion_at: toPickerValue(bag?.completion_at),
     completed_by: bag?.completed_by || "",
     reason: "",
+    reason_code: "",
+    reason_note: "",
   }));
   const [qty, setQty] = useState(initialQty);
   const [saving, setSaving] = useState(false);
@@ -99,7 +105,13 @@ export default function EditBagPanel({
   const [saveAttempted, setSaveAttempted] = useState(false);
   const [outcomeOpen, setOutcomeOpen] = useState(false);
   const [pendingSave, setPendingSave] = useState(null);
+  const [pendingOutcome, setPendingOutcome] = useState(null);
   const [undoToast, setUndoToast] = useState(null);
+  const [conflict, setConflict] = useState(null);
+  const [lockUpdatedAt, setLockUpdatedAt] = useState(
+    () => bag?.updated_at || bag?.day_bag_updated_at || null
+  );
+  const [baselineBag, setBaselineBag] = useState(bag);
 
   // Keep draft stable while editing — do not reset from bag prop refreshes.
   useEffect(() => {
@@ -171,51 +183,145 @@ export default function EditBagPanel({
     setQty((q) => ({ ...q, [id]: Math.max(0, Number(q[id] || 0) + delta) }));
   };
 
-  const validateLocal = () =>
-    validateEditBagDraft({
+  const validateLocal = (outcome = null) => {
+    const policy = classifyEditReasonRequirements({
+      draft,
+      baselineBag,
+      outcome,
+      lines,
+    });
+    return validateEditBagDraft({
       reason: draft.reason,
+      reasonCode: draft.reason_code || policy.suggestedReasonCode,
+      reasonNote: draft.reason_note || draft.reason,
       noChargeable: draft.no_chargeable,
       noChargeReason: draft.no_charge_reason,
       lines,
       isHd,
+      reasonRequired: policy.reasonRequired,
     });
+  };
 
   const buildPayloadDraft = () =>
     buildEditBagPayloadDraft({ draft, lines, isHd });
 
+  const enterConflict = (data) => {
+    const latest = data?.latest || null;
+    setConflict({
+      message: "This bag was updated after you opened it.",
+      currentVersion: data?.current_version || latest?.updated_at || null,
+      latest,
+      unsavedDraft: { ...draft },
+      unsavedLines: lines,
+      fieldDiffs: diffEditBagDraftVsLatest({
+        draft,
+        lines,
+        latest: latest
+          ? {
+              ...latest,
+              post_weight_value: latest.post_weight_lbs,
+              bulk_workitems: (latest.bulk_items || []).map((x) => ({
+                workitem_id: x.workitem_id,
+                quantity: x.quantity,
+                workitem_name: x.name,
+              })),
+            }
+          : null,
+      }),
+    });
+    setLocalError("This bag was updated after you opened it.");
+  };
+
+  const reloadLatest = async () => {
+    setSaving(true);
+    setLocalError("");
+    try {
+      const latestBag = onReloadLatest
+        ? await onReloadLatest(bag.bag_id)
+        : null;
+      const next = latestBag || bag;
+      const lock = next?.updated_at || next?.day_bag_updated_at || conflict?.currentVersion;
+      setLockUpdatedAt(lock || null);
+      setBaselineBag(next);
+      const diffs = diffEditBagDraftVsLatest({
+        draft: conflict?.unsavedDraft || draft,
+        lines: conflict?.unsavedLines || lines,
+        latest: next,
+      });
+      setConflict((c) =>
+        c
+          ? {
+              ...c,
+              latest: next,
+              fieldDiffs: diffs,
+              reloaded: true,
+              message:
+                "Latest saved values loaded. Your unsaved edits were not applied automatically.",
+            }
+          : null
+      );
+    } catch (e) {
+      setLocalError(e?.response?.data?.error || e?.message || "Reload failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const dismissConflict = () => {
+    setConflict(null);
+    setLocalError("");
+  };
+
   const persist = async (outcomeAction) => {
     setSaveAttempted(true);
-    const err = validateLocal();
+    const err = validateLocal(outcomeAction);
     if (err) {
       setLocalError(err);
       return;
     }
+    const policy = classifyEditReasonRequirements({
+      draft,
+      baselineBag,
+      outcome: outcomeAction,
+      lines,
+    });
+    if (policy.reasonRequired && !draft.reason_code && policy.suggestedReasonCode) {
+      setDraft((d) => ({ ...d, reason_code: policy.suggestedReasonCode }));
+    }
     setSaving(true);
     setLocalError("");
     try {
+      const reasonCode =
+        String(draft.reason_code || policy.suggestedReasonCode || "").trim().toUpperCase() ||
+        null;
+      const reasonNote = String(draft.reason_note || draft.reason || "").trim() || null;
       const body = {
         action: "edit_bag",
         bag_id: bag.bag_id,
         selected_date_et: selectedDateEt,
-        reason: draft.reason.trim(),
-        expected_updated_at: bag.updated_at || bag.day_bag_updated_at || null,
+        reason: reasonNote || "",
+        reason_code: policy.reasonRequired ? reasonCode : reasonCode,
+        reason_note: reasonNote,
+        expected_updated_at: lockUpdatedAt || bag.updated_at || bag.day_bag_updated_at || null,
         outcome_action:
           outcomeAction && outcomeAction !== "decide_later" ? outcomeAction : null,
         draft: buildPayloadDraft(),
       };
       const res = await postVeewashStep1Correction(body);
       if (!res?.data?.ok) {
-        const msg =
-          res?.data?.error === "conflict"
-            ? "This bag changed since you opened the editor. Reload and try again."
-            : res?.data?.error || res?.data?.message || "Save failed";
-        setLocalError(msg);
-        onError?.(msg);
+        if (res?.data?.error === "conflict") {
+          enterConflict(res.data);
+          return;
+        }
+        setLocalError(res?.data?.error || res?.data?.message || "Save failed");
+        onError?.(res?.data?.error || "Save failed");
         return;
       }
       const editId = res.data.edit_id;
       setOutcomeOpen(false);
       setPendingSave(null);
+      setPendingOutcome(null);
+      setConflict(null);
       setUndoToast({
         editId,
         message: "Changes saved — Undo",
@@ -224,12 +330,13 @@ export default function EditBagPanel({
     } catch (e) {
       const status = e?.response?.status;
       const data = e?.response?.data || {};
-      const msg =
-        status === 409 || data.error === "conflict"
-          ? "This bag changed since you opened the editor. Reload and try again."
-          : data.error || e?.message || "Save failed";
-      setLocalError(msg);
-      onError?.(msg);
+      if (status === 409 || data.error === "conflict") {
+        enterConflict(data);
+      } else {
+        const msg = data.error || e?.message || "Save failed";
+        setLocalError(msg);
+        onError?.(msg);
+      }
     } finally {
       setSaving(false);
     }
@@ -237,14 +344,33 @@ export default function EditBagPanel({
 
   const startSave = () => {
     setSaveAttempted(true);
-    const err = validateLocal();
+    const err = validateLocal(null);
     if (err) {
       setLocalError(err);
       return;
     }
     setLocalError("");
     setPendingSave(buildPayloadDraft());
+    setPendingOutcome(null);
     setOutcomeOpen(true);
+  };
+
+  const chooseOutcome = (optId) => {
+    const policy = classifyEditReasonRequirements({
+      draft,
+      baselineBag,
+      outcome: optId,
+      lines,
+    });
+    if (policy.reasonRequired) {
+      setPendingOutcome(optId);
+      if (policy.suggestedReasonCode && !draft.reason_code) {
+        setDraft((d) => ({ ...d, reason_code: policy.suggestedReasonCode }));
+      }
+      setLocalError("");
+      return;
+    }
+    persist(optId);
   };
 
   const handleUndo = async () => {
@@ -298,9 +424,50 @@ export default function EditBagPanel({
       <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>
         Edit Bag
       </Typography>
-      {localError ? (
+      {localError && !conflict ? (
         <Alert severity="error" sx={{ mb: 1 }} onClose={() => setLocalError("")}>
           {localError}
+        </Alert>
+      ) : null}
+      {conflict ? (
+        <Alert
+          severity="warning"
+          sx={{ mb: 1 }}
+          action={
+            <Stack direction="row" spacing={0.5}>
+              <Button color="inherit" size="small" onClick={reloadLatest} disabled={saving}>
+                Reload Latest
+              </Button>
+              <Button color="inherit" size="small" onClick={dismissConflict}>
+                Cancel
+              </Button>
+            </Stack>
+          }
+        >
+          <Typography variant="body2" fontWeight={700}>
+            {conflict.message}
+          </Typography>
+          {conflict.currentVersion ? (
+            <Typography variant="caption" display="block">
+              Current version: {String(conflict.currentVersion)}
+            </Typography>
+          ) : null}
+          {(conflict.fieldDiffs || []).length > 0 ? (
+            <Box sx={{ mt: 1 }}>
+              <Typography variant="caption" fontWeight={700} display="block">
+                Your unsaved values vs latest saved
+              </Typography>
+              {(conflict.fieldDiffs || []).slice(0, 8).map((d) => (
+                <Typography key={d.label} variant="caption" display="block">
+                  {d.label}: unsaved {d.unsaved} · latest {d.latest}
+                </Typography>
+              ))}
+            </Box>
+          ) : (
+            <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
+              Reload Latest to refresh the editor lock without closing the queue.
+            </Typography>
+          )}
         </Alert>
       ) : null}
 
@@ -482,32 +649,63 @@ export default function EditBagPanel({
           onChange={(v) => setDraft((d) => ({ ...d, completion_at: v }))}
         />
 
-        <TextField
-          size="small"
-          required
-          label="Notes / correction reason"
-          value={draft.reason}
-          onChange={(e) => {
-            const next = e.target.value;
-            setDraft((d) => ({ ...d, reason: next }));
-            if (saveAttempted && String(next || "").trim()) {
-              setLocalError("");
-            }
-          }}
-          error={saveAttempted && !String(draft.reason || "").trim()}
-          helperText={
-            saveAttempted && !String(draft.reason || "").trim()
-              ? "Correction reason is required"
-              : "Required before saving"
+        {(() => {
+          const basePolicy = classifyEditReasonRequirements({
+            draft,
+            baselineBag,
+            outcome: pendingOutcome,
+            lines,
+          });
+          if (!basePolicy.reasonRequired) {
+            return (
+              <Typography variant="caption" color="text.secondary">
+                Routine work-item and review saves do not require a reason. A system audit
+                code ({basePolicy.systemAction}) is recorded automatically.
+              </Typography>
+            );
           }
-          multiline
-          minRows={2}
-        />
+          return (
+            <Stack spacing={1}>
+              <Alert severity="info">
+                This action needs a structured reason ({(basePolicy.triggers || []).join(", ")}).
+              </Alert>
+              <TextField
+                select
+                size="small"
+                required
+                label="Reason code"
+                value={draft.reason_code || basePolicy.suggestedReasonCode || ""}
+                onChange={(e) => setDraft((d) => ({ ...d, reason_code: e.target.value }))}
+              >
+                {EDIT_BAG_REASON_CODES.map((r) => (
+                  <MenuItem key={r.code} value={r.code}>
+                    {r.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <TextField
+                size="small"
+                label={
+                  String(draft.reason_code || basePolicy.suggestedReasonCode) === "OTHER"
+                    ? "Reason note (required for Other)"
+                    : "Reason note (optional)"
+                }
+                value={draft.reason_note || draft.reason}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setDraft((d) => ({ ...d, reason_note: next, reason: next }));
+                }}
+                multiline
+                minRows={2}
+              />
+            </Stack>
+          );
+        })()}
 
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
           <Button
             variant="contained"
-            disabled={saving || !String(draft.reason || "").trim()}
+            disabled={saving}
             onClick={startSave}
           >
             {saving ? "Saving…" : "Save & Choose Action"}
@@ -525,19 +723,67 @@ export default function EditBagPanel({
             Your draft{pendingSave ? " (including bulk items and weights)" : ""} will save
             together with the action you choose.
           </Typography>
-          <Stack spacing={1}>
-            {OUTCOME_OPTIONS.map((opt) => (
-              <Button
-                key={opt.id}
-                variant={opt.id === "mark_completed" ? "contained" : "outlined"}
-                color={opt.id === "exclude" ? "error" : "primary"}
-                disabled={saving}
-                onClick={() => persist(opt.id)}
+          {pendingOutcome ? (
+            <Stack spacing={1} sx={{ mb: 1.5 }}>
+              <Alert severity="warning">
+                {OUTCOME_OPTIONS.find((o) => o.id === pendingOutcome)?.label || pendingOutcome}{" "}
+                requires a reason code before save.
+              </Alert>
+              <TextField
+                select
+                size="small"
+                label="Reason code"
+                value={draft.reason_code || ""}
+                onChange={(e) => setDraft((d) => ({ ...d, reason_code: e.target.value }))}
               >
-                {opt.label}
+                {EDIT_BAG_REASON_CODES.map((r) => (
+                  <MenuItem key={r.code} value={r.code}>
+                    {r.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <TextField
+                size="small"
+                label={
+                  draft.reason_code === "OTHER"
+                    ? "Reason note (required for Other)"
+                    : "Reason note (optional)"
+                }
+                value={draft.reason_note || draft.reason}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setDraft((d) => ({ ...d, reason_note: next, reason: next }));
+                }}
+                multiline
+                minRows={2}
+              />
+              <Button
+                variant="contained"
+                color={pendingOutcome === "exclude" ? "error" : "primary"}
+                disabled={saving}
+                onClick={() => persist(pendingOutcome)}
+              >
+                Confirm {OUTCOME_OPTIONS.find((o) => o.id === pendingOutcome)?.label}
               </Button>
-            ))}
-          </Stack>
+              <Button onClick={() => setPendingOutcome(null)} disabled={saving}>
+                Back to actions
+              </Button>
+            </Stack>
+          ) : (
+            <Stack spacing={1}>
+              {OUTCOME_OPTIONS.map((opt) => (
+                <Button
+                  key={opt.id}
+                  variant={opt.id === "mark_completed" ? "contained" : "outlined"}
+                  color={opt.id === "exclude" ? "error" : "primary"}
+                  disabled={saving}
+                  onClick={() => chooseOutcome(opt.id)}
+                >
+                  {opt.label}
+                </Button>
+              ))}
+            </Stack>
+          )}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOutcomeOpen(false)} disabled={saving}>

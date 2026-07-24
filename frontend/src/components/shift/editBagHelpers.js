@@ -9,14 +9,79 @@ export function parseWeightInput(raw) {
   return Number.isFinite(n) ? n : null;
 }
 
+export const EDIT_BAG_REASON_CODES = [
+  { code: "POST_CORRECTION", label: "POST weight correction" },
+  { code: "PRE_CORRECTION", label: "PRE weight correction" },
+  { code: "EXCLUDE", label: "Exclude bag" },
+  { code: "MARK_COMPLETED", label: "Manually mark completed" },
+  { code: "RETURN_PENDING", label: "Return to pending" },
+  { code: "ACCEPT_EXCEPTION", label: "Accept exception" },
+  { code: "STATUS_OVERRIDE", label: "Manual status override" },
+  { code: "OTHER", label: "Other" },
+];
+
+export const EXCEPTIONAL_OUTCOMES = new Set(["mark_completed", "return_pending", "exclude"]);
+
+function weightsDiffer(a, b) {
+  const na = parseWeightInput(a);
+  const nb = parseWeightInput(b);
+  if (na == null && nb == null) return false;
+  if (na == null || nb == null) return true;
+  return Number(na) !== Number(nb);
+}
+
+/**
+ * Mirror of backend classify_edit_reason_requirements for UI gating.
+ */
+export function classifyEditReasonRequirements({
+  draft,
+  baselineBag,
+  outcome,
+  lines,
+}) {
+  const triggers = [];
+  if (EXCEPTIONAL_OUTCOMES.has(outcome)) triggers.push(outcome);
+  if (baselineBag && weightsDiffer(draft?.post_weight_lbs, baselineBag.post_weight_value ?? baselineBag.post_weight_lbs)) {
+    triggers.push("post_weight_correction");
+  }
+  if (baselineBag && weightsDiffer(draft?.pre_weight_lbs, baselineBag.pre_weight_lbs)) {
+    triggers.push("pre_weight_correction");
+  }
+  let suggested = null;
+  if (triggers.includes("post_weight_correction")) suggested = "POST_CORRECTION";
+  else if (triggers.includes("pre_weight_correction")) suggested = "PRE_CORRECTION";
+  else if (outcome === "exclude") suggested = "EXCLUDE";
+  else if (outcome === "mark_completed") suggested = "MARK_COMPLETED";
+  else if (outcome === "return_pending") suggested = "RETURN_PENDING";
+
+  const bulkTouched = (lines || []).some((l) => Number(l.quantity) > 0) || draft?.no_chargeable;
+  return {
+    reasonRequired: triggers.length > 0,
+    triggers,
+    suggestedReasonCode: suggested,
+    systemAction: bulkTouched ? "WORKITEMS_UPDATED" : "REVIEW_SAVED",
+  };
+}
+
 export function validateEditBagDraft({
   reason,
+  reasonCode,
+  reasonNote,
   noChargeable,
   noChargeReason,
   lines,
   isHd,
+  reasonRequired = false,
 }) {
-  if (!String(reason || "").trim()) return "Correction reason is required";
+  if (reasonRequired) {
+    const code = String(reasonCode || "").trim().toUpperCase();
+    const note = String(reasonNote || reason || "").trim();
+    if (!code && !note) return "A reason code is required for this action";
+    if ((code === "OTHER" || (!code && note)) && !note) {
+      return "Add a short note when reason is Other";
+    }
+    if (code === "OTHER" && !note) return "Add a short note when reason is Other";
+  }
   if (noChargeable) {
     if ((lines || []).some((l) => Number(l.quantity) > 0)) {
       return "No Chargeable Bulk Items cannot coexist with positive quantities";
@@ -132,6 +197,46 @@ export function buildEditBagPayloadDraft({
             .filter((l) => Number(l.quantity) > 0)
             .map((l) => ({ workitem_id: l.workitem_id, quantity: l.quantity })),
   };
+}
+
+/** Compare unsaved draft fields to latest saved bag for conflict recovery UI. */
+export function diffEditBagDraftVsLatest({ draft, lines, latest }) {
+  if (!latest) return [];
+  const changes = [];
+  const pairs = [
+    ["Service", draft?.service_type, latest.service_type],
+    ["Rush", draft?.rush_flag, latest.rush_flag || latest.rush_status],
+    ["PRE lbs", draft?.pre_weight_lbs, latest.pre_weight_lbs],
+    ["POST lbs", draft?.post_weight_lbs, latest.post_weight_value ?? latest.post_weight_lbs],
+    ["Entry", draft?.entry_at, latest.entry_at],
+    ["Completion", draft?.completion_at, latest.completion_at],
+    ["Completed by", draft?.completed_by, latest.completed_by],
+  ];
+  for (const [label, unsaved, saved] of pairs) {
+    const a = unsaved == null || unsaved === "" ? "—" : String(unsaved);
+    const b = saved == null || saved === "" ? "—" : String(saved);
+    if (a !== b) changes.push({ label, unsaved: a, latest: b });
+  }
+  const latestLines = latest.bulk_workitems || [];
+  const unsavedMap = Object.fromEntries(
+    (lines || []).filter((l) => Number(l.quantity) > 0).map((l) => [l.workitem_id, Number(l.quantity)])
+  );
+  const latestMap = Object.fromEntries(
+    latestLines.map((l) => [l.workitem_id, Number(l.quantity) || 0])
+  );
+  const ids = new Set([...Object.keys(unsavedMap), ...Object.keys(latestMap)]);
+  for (const id of ids) {
+    const u = unsavedMap[id] || 0;
+    const s = latestMap[id] || 0;
+    if (u !== s) {
+      const name =
+        (lines || []).find((l) => String(l.workitem_id) === String(id))?.name ||
+        latestLines.find((l) => String(l.workitem_id) === String(id))?.workitem_name ||
+        `Item ${id}`;
+      changes.push({ label: `Work item · ${name}`, unsaved: String(u), latest: String(s) });
+    }
+  }
+  return changes;
 }
 
 /**

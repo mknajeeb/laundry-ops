@@ -18,6 +18,31 @@ describe("parseWeightInput", () => {
 });
 
 describe("validateEditBagDraft", () => {
+  it("allows routine save without reason", () => {
+    expect(
+      validateEditBagDraft({
+        reason: "",
+        noChargeable: false,
+        lines: [{ workitem_id: 1, quantity: 1 }],
+        isHd: false,
+        reasonRequired: false,
+      })
+    ).toBe("");
+  });
+
+  it("requires reason code when exceptional", () => {
+    expect(
+      validateEditBagDraft({
+        reason: "",
+        reasonCode: "",
+        noChargeable: false,
+        lines: [],
+        isHd: false,
+        reasonRequired: true,
+      })
+    ).toMatch(/reason code/i);
+  });
+
   it("preserves draft on validation failure (returns error, does not mutate)", () => {
     const draftSections = {
       reason: "try save",
@@ -25,6 +50,7 @@ describe("validateEditBagDraft", () => {
       noChargeReason: "",
       lines: [{ workitem_id: 1, quantity: 1 }],
       isHd: false,
+      reasonRequired: false,
     };
     const before = structuredClone(draftSections);
     const err = validateEditBagDraft(draftSections);
@@ -39,6 +65,7 @@ describe("validateEditBagDraft", () => {
         noChargeable: false,
         lines: [],
         isHd: true,
+        reasonRequired: false,
       })
     ).toBe("");
   });

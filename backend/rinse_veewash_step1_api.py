@@ -700,7 +700,7 @@ def apply_step1_correction(
                 pass
         return out
 
-    if not reason and action != "undo_bag_edit":
+    if not reason and action not in ("undo_bag_edit", "edit_bag", "save_bulk_workitems"):
         return {"ok": False, "error": "reason_required"}
 
     day_raw = body.get("selected_date_et") or body.get("date")
@@ -908,6 +908,8 @@ def apply_step1_correction(
             outcome_action=body.get("outcome_action"),
             actor_user_id=actor_user_id,
             actor_display_name=actor_display_name,
+            reason_code=body.get("reason_code"),
+            reason_note=body.get("reason_note") or body.get("reason") or None,
         )
         if out.get("ok"):
             try:
