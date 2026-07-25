@@ -1773,6 +1773,20 @@ def backfill_day_from_live(
     if isinstance(wl.get("membership"), dict) and "membership" not in (summary or {}):
         summary = dict(summary)
         summary["membership"] = wl.get("membership")
+    # Match live rebuild: HD EDD presentation + specialty KPI packs before persist.
+    from backend.rinse_hd_day_presentation import finalize_hd_step1_summary
+    from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
+
+    summary = finalize_hd_step1_summary(
+        summary,
+        selected_date_et=shift_date_et,
+        membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
+        cursor=cursor,
+        organization_id=organization_id,
+    )
+    summary = attach_specialty_metrics_to_summary(
+        cursor, organization_id, shift_date_et, summary
+    )
     review_n = int((summary.get("exceptions") or {}).get("review_required") or 0)
     day = persist_day_snapshot(
         cursor,
