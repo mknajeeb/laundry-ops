@@ -24,6 +24,30 @@ from backend.rinse_veewash_workload import (
 from backend.ta_helpers import table_exists
 
 
+def _refresh_step1_day_snapshot_after_mutation(
+    cursor, organization_id: int, selected_date_et: date
+) -> None:
+    """Rebuild persisted day headline/bags AFTER a successful mutation.
+
+    Call only after the edit/undo lock path has already succeeded. This must not
+    run before the optimistic-lock check (that caused false conflicts). Persist
+    preserves ``manager_edit_version`` / day-bag ``updated_at``.
+    """
+    from backend.rinse_veewash_shift_day import persist_day_snapshot, _commit
+
+    wl = build_veewash_daily_workload(
+        cursor, organization_id, selected_date_et=selected_date_et
+    )
+    activation = get_step1_activation_date(cursor, organization_id) or selected_date_et
+    summary = build_step1_headline_summary(
+        wl, selected_date_et=selected_date_et, activation_date=activation
+    )
+    persist_day_snapshot(
+        cursor, organization_id, selected_date_et, workload=wl, summary=summary
+    )
+    _commit(cursor)
+
+
 def ensure_step1_correction_table(cursor) -> None:
     cursor.execute(
         """
@@ -694,28 +718,7 @@ def apply_step1_correction(
                 pass
             # Refresh live snapshot so Review totals update immediately.
             try:
-                from backend.rinse_veewash_shift_day import (
-                    build_or_load_step1_for_date,
-                    persist_day_snapshot,
-                    _commit,
-                )
-                from backend.rinse_veewash_workload import (
-                    build_step1_headline_summary,
-                    build_veewash_daily_workload,
-                    get_step1_activation_date,
-                )
-
-                wl = build_veewash_daily_workload(
-                    cursor, organization_id, selected_date_et=day
-                )
-                activation = get_step1_activation_date(cursor, organization_id) or day
-                summary = build_step1_headline_summary(
-                    wl, selected_date_et=day, activation_date=activation
-                )
-                persist_day_snapshot(
-                    cursor, organization_id, day, workload=wl, summary=summary
-                )
-                _commit(cursor)
+                _refresh_step1_day_snapshot_after_mutation(cursor, organization_id, day)
             except Exception:
                 pass
         return out
@@ -741,10 +744,10 @@ def apply_step1_correction(
             "day_status": STATUS_CLOSED,
         }
 
-    # edit_bag / undo must NOT call build_step1_payload(persist_live=True).
-    # That live rebuild persists every day_bag and can bump updated_at before the
-    # optimistic-lock check — causing false "bag updated while reviewing" conflicts
-    # for a sole editor.
+    # edit_bag / undo must NOT rebuild the day BEFORE the optimistic-lock check
+    # (that caused false "bag updated while reviewing" conflicts). After a
+    # successful mutation, refresh the persisted day so Review Required / Completed
+    # membership matches registry + bulk resolution.
     if action == "edit_bag":
         from backend.rinse_step1_edit_bag import apply_unified_bag_edit
 
@@ -770,6 +773,13 @@ def apply_step1_correction(
                 clear_step1_productivity_cache(organization_id, day)
             except Exception:
                 pass
+            try:
+                _refresh_step1_day_snapshot_after_mutation(cursor, organization_id, day)
+            except Exception:
+                out = {
+                    **out,
+                    "warning": "day_snapshot_refresh_failed",
+                }
         return out
 
     if action == "undo_bag_edit":
@@ -795,6 +805,13 @@ def apply_step1_correction(
                 clear_step1_productivity_cache(organization_id, day)
             except Exception:
                 pass
+            try:
+                _refresh_step1_day_snapshot_after_mutation(cursor, organization_id, day)
+            except Exception:
+                out = {
+                    **out,
+                    "warning": "day_snapshot_refresh_failed",
+                }
         return out
 
     try:

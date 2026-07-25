@@ -440,7 +440,9 @@ def test_edit_bag_action_skips_live_day_rebuild_before_lock_check():
     ) as build_payload, patch(
         "backend.rinse_step1_edit_bag.apply_unified_bag_edit",
         return_value={"ok": True, "edit_id": 1},
-    ) as apply_edit:
+    ) as apply_edit, patch(
+        "backend.rinse_veewash_step1_api._refresh_step1_day_snapshot_after_mutation"
+    ) as refresh_day:
         out = apply_step1_correction(
             cursor,
             ORG,
@@ -455,6 +457,40 @@ def test_edit_bag_action_skips_live_day_rebuild_before_lock_check():
     assert out["ok"] is True
     build_payload.assert_not_called()
     apply_edit.assert_called_once()
+    refresh_day.assert_called_once_with(cursor, ORG, DAY)
+
+
+def test_edit_bag_conflict_skips_day_snapshot_refresh():
+    """Failed lock must not rebuild the day (would race other editors)."""
+    from backend.rinse_veewash_step1_api import apply_step1_correction
+
+    cursor = MagicMock()
+    day_rec = {"status": "OPEN"}
+    with patch(
+        "backend.rinse_veewash_shift_day.get_day_record", return_value=day_rec
+    ), patch(
+        "backend.rinse_step1_edit_bag.apply_unified_bag_edit",
+        return_value={
+            "ok": False,
+            "error": "conflict",
+            "current_manager_edit_version": 3,
+        },
+    ), patch(
+        "backend.rinse_veewash_step1_api._refresh_step1_day_snapshot_after_mutation"
+    ) as refresh_day:
+        out = apply_step1_correction(
+            cursor,
+            ORG,
+            bag_id=BAG,
+            action="edit_bag",
+            body={
+                "selected_date_et": DAY.isoformat(),
+                "draft": {},
+                "expected_manager_edit_version": 2,
+            },
+        )
+    assert out["ok"] is False
+    refresh_day.assert_not_called()
 
 
 def test_persist_day_snapshot_never_bumps_day_bag_updated_at():
