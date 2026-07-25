@@ -56,6 +56,10 @@ def test_normalize_queue_aliases():
     assert normalize_step1_queue_metric("production_recorded") == "completed"
     assert normalize_step1_queue_metric("production_missing") == "pending"
     assert normalize_step1_queue_metric("all") == "active_workload"
+    assert normalize_step1_queue_metric("comforter_orders") == "comforter_orders"
+    assert normalize_step1_queue_metric("bath_mat_orders") == "bath_mat_orders"
+    assert normalize_step1_queue_metric("rejected_orders") == "rejected_orders"
+    assert normalize_step1_queue_metric("split_orders") == "split_orders"
     assert normalize_step1_queue_metric("bogus") == "review_required"
 
 

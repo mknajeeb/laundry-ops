@@ -483,7 +483,7 @@ export default function VeeWashStep1Section({
               hdDashboardTotals={summary?.hd_dashboard_totals || null}
               membershipHelper={
                 summary?.hd_policy?.no_carryover
-                  ? "Date-scoped · opening scrape membership · no HD carryover"
+                  ? "Date-scoped · estimated delivery date · no HD carryover"
                   : null
               }
             />

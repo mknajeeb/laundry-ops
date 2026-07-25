@@ -164,6 +164,8 @@ def normalize_step1_queue_metric(raw: str | None) -> str:
     Map KPI queue aliases onto headline bag_ids keys.
 
     HD Production Recorded / Missing are UI labels for completed / pending.
+    Specialty cards (comforter / bath mat / rejected / split) pass through
+    unchanged so the drilldown route does not collapse them to review_required.
     """
     key = str(raw or "").strip().lower().replace("-", "_")
     aliases = {
@@ -182,6 +184,17 @@ def normalize_step1_queue_metric(raw: str | None) -> str:
         "carryover": "carryover",
         "washed": "completed",
         "folded": "completed",
+        # Specialty KPIs — canonical keys shared by card count and drawer.
+        "comforter_orders": "comforter_orders",
+        "comforters": "comforter_orders",
+        "comforter": "comforter_orders",
+        "bath_mat_orders": "bath_mat_orders",
+        "bath_mats": "bath_mat_orders",
+        "bath_mat": "bath_mat_orders",
+        "rejected_orders": "rejected_orders",
+        "rejected": "rejected_orders",
+        "split_orders": "split_orders",
+        "split": "split_orders",
     }
     if key in aliases:
         return aliases[key]

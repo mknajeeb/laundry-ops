@@ -999,6 +999,18 @@ def build_veewash_daily_workload_from_membership(
     membership = build_append_only_membership(
         cursor, organization_id, selected_date_et
     )
+    # HD-only: Estimated Delivery Date must equal the selected ET day.
+    # WF scrape membership is unchanged; future-EDD HD (e.g. Nicole Jul 28)
+    # is dropped and same-day EDD HD excluded only as prior-day carry-in
+    # (e.g. Victoria) is re-admitted from active presence.
+    try:
+        from backend.rinse_hd_edd_membership import apply_hd_edd_day_membership_gate
+
+        membership = apply_hd_edd_day_membership_gate(
+            cursor, organization_id, selected_date_et, membership
+        )
+    except Exception:
+        pass
     member_ids = membership_bag_ids(membership)
     member_set = set(member_ids)
 
@@ -1054,7 +1066,7 @@ def build_veewash_daily_workload_from_membership(
                     str((mrow or {}).get("service_type_portal") or "").upper() or None
                 ),
                 "rush_flag": (mrow or {}).get("rush_flag"),
-                "estimated_delivery_date": None,
+                "estimated_delivery_date": (mrow or {}).get("estimated_delivery_date"),
                 "first_seen_at": (mrow or {}).get("first_seen_portal_at"),
                 "last_seen_at": (mrow or {}).get("last_seen_during_day"),
                 "source_batch_id": None,

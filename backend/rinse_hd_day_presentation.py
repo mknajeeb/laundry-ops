@@ -247,6 +247,43 @@ def finalize_hd_step1_summary(
 
     if cursor is not None and organization_id is not None:
         try:
+            from backend.rinse_hd_edd_membership import load_active_hd_presence_edd_map
+
+            presence_hd = load_active_hd_presence_edd_map(cursor, int(organization_id))
+            remove_edd: set[str] = set()
+            for key in _HD_SEGMENT_KEYS:
+                seg = (out.get("segments") or {}).get(key) or {}
+                bags = seg.get("bag_ids") or {}
+                for bucket in ("new_today", "carryover", "completed", "pending", "review_required"):
+                    for raw in bags.get(bucket) or []:
+                        bid = normalize_bag_id(raw)
+                        if not bid:
+                            continue
+                        prow = presence_hd.get(bid)
+                        if not prow:
+                            continue
+                        edd = prow.get("estimated_delivery_date")
+                        if edd is not None and edd != selected_date_et:
+                            remove_edd.add(bid)
+            if remove_edd:
+                segments = dict(out.get("segments") or {})
+                for key in list(_HD_SEGMENT_KEYS) + list(_COMBINED_SEGMENT_KEYS):
+                    if key not in segments:
+                        continue
+                    # Only strip mismatched-EDD HD ids from combined segments.
+                    segments[key] = _strip_ids_from_seg(segments[key], remove_edd)
+                out["segments"] = segments
+                out["hd_policy"] = {
+                    **dict(out.get("hd_policy") or {}),
+                    "edd_authoritative_field": "estimated_delivery_date",
+                    "edd_mismatched_removed_count": len(remove_edd),
+                    "edd_mismatched_removed_bag_ids": sorted(remove_edd),
+                }
+        except Exception:
+            pass
+
+    if cursor is not None and organization_id is not None:
+        try:
             from backend.rinse_hd_step1_review import (
                 apply_hd_review_status_to_summary,
                 build_hd_dashboard_totals,
