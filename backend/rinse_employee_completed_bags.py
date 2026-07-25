@@ -1061,7 +1061,12 @@ def _enrich_credited_bag_weights(
             auth = resolve_authoritative_post_weight(
                 cursor, organization_id, bid, operations_date_et=selected_date_et
             ) or {}
-            evidence_post = resolve_evidence_post_weight(cursor, organization_id, bid) or {}
+            evidence_post = (
+                resolve_evidence_post_weight(
+                    cursor, organization_id, bid, operations_date_et=selected_date_et
+                )
+                or {}
+            )
             output_lbs = auth.get("weight_lbs")
             if output_lbs is None:
                 # Fall back to finalize's POST-scan resolution if authority chain is empty.
