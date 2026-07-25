@@ -499,7 +499,7 @@ def register_rinse_shift_analysis_routes(
             return jsonify(json_safe_rinse(out))
         except Exception as exc:
             conn.rollback()
-            return jsonify({"error": str(exc)}), 500
+            return _public_server_error("Unable to save WF Review right now.", exc)
         finally:
             cursor.close()
             conn.close()
