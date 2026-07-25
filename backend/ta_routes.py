@@ -5723,6 +5723,8 @@ def payroll_time_records():
                     clock_in_at=body.get("clock_in_at"),
                     clock_out_at=body.get("clock_out_at"),
                     remarks=(body.get("remarks") or body.get("notes") or "").strip(),
+                    category_id=body.get("category_id"),
+                    role_id=body.get("role_id"),
                 )
                 return jsonify(rec), 201
             except ValueError as e:
@@ -5756,6 +5758,10 @@ def _payroll_time_record_update(conn, oid: int, rid: int, body: dict):
         patch_kwargs["remarks"] = (body.get("remarks") or "").strip()
     elif "notes" in body:
         patch_kwargs["remarks"] = (body.get("notes") or "").strip()
+    if "category_id" in body:
+        patch_kwargs["category_id"] = body.get("category_id")
+    if "role_id" in body:
+        patch_kwargs["role_id"] = body.get("role_id")
     rec = update_time_record(conn, oid, rid, **patch_kwargs)
     write_audit(
         conn,

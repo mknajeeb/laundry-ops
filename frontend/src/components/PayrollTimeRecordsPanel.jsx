@@ -40,6 +40,7 @@ import {
   getPayrollScheduleWorkers,
   getPayrollTimeRecords,
   getTaUsers,
+  getTaskTrackingSelectionTree,
   patchPayrollTimeRecord,
   postApprovePayrollTimeRecord,
   postBulkApprovePayrollTimeRecords,
@@ -56,6 +57,7 @@ import {
   formatPayrollMoney,
   formatPayrollRate,
 } from "../payroll/timeRecordPayroll";
+import { displayRoleLabel } from "../opsMobile/switchRoleFlowHelpers";
 import { PayrollDateField, PayrollDateTimeField } from "./PayrollDateTimeField";
 
 const CATEGORY_SHORT = {
@@ -109,6 +111,8 @@ function toApiDateTime(local) {
 
 const emptyForm = () => ({
   user_id: "",
+  category_id: "",
+  role_id: "",
   clock_in_at: "",
   clock_out_at: "",
   notes: "",
@@ -190,6 +194,7 @@ export default function PayrollTimeRecordsPanel({
   const [status, setStatus] = useState("all");
   const [userId, setUserId] = useState("");
   const [users, setUsers] = useState([]);
+  const [selectionTree, setSelectionTree] = useState([]);
   const [workers, setWorkers] = useState([]);
   const [scheduleSettings, setScheduleSettings] = useState(null);
   const [calendarSettings, setCalendarSettings] = useState(null);
@@ -199,6 +204,7 @@ export default function PayrollTimeRecordsPanel({
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorMode, setEditorMode] = useState("add");
   const [form, setForm] = useState(emptyForm);
+  const [initialRoleKey, setInitialRoleKey] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -207,6 +213,9 @@ export default function PayrollTimeRecordsPanel({
   useEffect(() => {
     getTaUsers()
       .then((r) => setUsers(r.data?.users || r.data || []))
+      .catch(() => {});
+    getTaskTrackingSelectionTree()
+      .then((r) => setSelectionTree(Array.isArray(r.data) ? r.data : []))
       .catch(() => {});
     getPayrollScheduleWorkers()
       .then((r) => setWorkers(r.data?.items || []))
@@ -292,6 +301,7 @@ export default function PayrollTimeRecordsPanel({
   const openAdd = () => {
     setEditorMode("add");
     setEditingId(null);
+    setInitialRoleKey("");
     setForm(emptyForm());
     setEditorOpen(true);
   };
@@ -299,8 +309,15 @@ export default function PayrollTimeRecordsPanel({
   const openEdit = (row) => {
     setEditorMode("edit");
     setEditingId(row.id);
+    const segs = Array.isArray(row.role_segments) ? row.role_segments : [];
+    const lastSeg = segs.length ? segs[segs.length - 1] : null;
+    const categoryId = lastSeg?.category_id != null ? String(lastSeg.category_id) : "";
+    const roleId = lastSeg?.role_id != null ? String(lastSeg.role_id) : "";
+    setInitialRoleKey(`${categoryId}:${roleId}`);
     setForm({
       user_id: String(row.user_id || ""),
+      category_id: categoryId,
+      role_id: roleId,
       clock_in_at: toDatetimeLocal(row.clock_in_at),
       clock_out_at: toDatetimeLocal(row.clock_out_at),
       notes: row.notes || "",
@@ -318,6 +335,14 @@ export default function PayrollTimeRecordsPanel({
       setError("Clock out must be after clock in.");
       return;
     }
+    const hasCategory = form.category_id !== "" && form.category_id != null;
+    const hasRole = form.role_id !== "" && form.role_id != null;
+    if (hasCategory !== hasRole) {
+      setError("Select both category and role to tag a role, or leave both blank.");
+      return;
+    }
+    const roleKey = `${form.category_id || ""}:${form.role_id || ""}`;
+    const roleChanged = editorMode === "add" || roleKey !== initialRoleKey;
     setSaving(true);
     setError("");
     try {
@@ -327,6 +352,10 @@ export default function PayrollTimeRecordsPanel({
         clock_out_at: clockOutApi,
         remarks: editorMode === "add" ? remarks : form.notes || "",
       };
+      if (roleChanged && hasCategory && hasRole) {
+        payload.category_id = Number(form.category_id);
+        payload.role_id = Number(form.role_id);
+      }
       if (editorMode === "add") {
         await postPayrollTimeRecord({
           user_id: Number(form.user_id),
@@ -769,6 +798,55 @@ export default function PayrollTimeRecordsPanel({
                 ))}
               </Select>
             </FormControl>
+            <FormControl fullWidth size="small">
+              <InputLabel>Category (optional)</InputLabel>
+              <Select
+                label="Category (optional)"
+                value={form.category_id}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    category_id: e.target.value,
+                    role_id: "",
+                  }))
+                }
+              >
+                <MenuItem value="">
+                  <em>No role tag</em>
+                </MenuItem>
+                {selectionTree.map((cat) => (
+                  <MenuItem key={cat.id} value={String(cat.id)}>
+                    {cat.name || cat.category_name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <FormControl fullWidth size="small" disabled={!form.category_id}>
+              <InputLabel>Role (optional)</InputLabel>
+              <Select
+                label="Role (optional)"
+                value={form.role_id}
+                onChange={(e) => setForm((f) => ({ ...f, role_id: e.target.value }))}
+              >
+                <MenuItem value="">
+                  <em>Select role</em>
+                </MenuItem>
+                {(
+                  selectionTree.find((c) => String(c.id) === String(form.category_id))?.roles || []
+                ).map((role) => (
+                  <MenuItem
+                    key={role.role_id ?? role.id}
+                    value={String(role.role_id ?? role.id)}
+                  >
+                    {displayRoleLabel(role)}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <Typography variant="caption" color="text.secondary">
+              Tag the category and role for this shift. Leave blank if unknown — you can set it later
+              while editing.
+            </Typography>
             <PayrollDateTimeField
               label="Clock in"
               value={form.clock_in_at}

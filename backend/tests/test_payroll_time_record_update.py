@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from backend.payroll_operations import create_manual_time_record, update_time_record
+from backend.payroll_operations import (
+    _apply_time_record_role_tag,
+    create_manual_time_record,
+    update_time_record,
+)
 
 
 @pytest.fixture
@@ -20,6 +24,7 @@ def test_update_clock_in_only_keeps_active_session(conn):
     connection = conn
     select_cur = MagicMock()
     select_cur.fetchone.return_value = {
+        "user_id": 7,
         "clock_in_at": datetime(2026, 6, 18, 8, 0),
         "clock_out_at": None,
     }
@@ -91,3 +96,98 @@ def test_create_clock_in_only_rejects_existing_active_shift(conn):
             clock_in_at="2026-06-25 14:00:00",
             clock_out_at="",
         )
+
+
+def test_create_requires_category_and_role_together(conn):
+    with pytest.raises(ValueError, match="required together"):
+        create_manual_time_record(
+            conn,
+            3,
+            user_id=7,
+            clock_in_at="2026-06-25 14:00:00",
+            clock_out_at="2026-06-25 18:00:00",
+            category_id=1,
+        )
+
+
+def test_apply_time_record_role_tag_inserts_segment(conn):
+    schema_cur = MagicMock()
+    write_cur = MagicMock()
+    conn.cursor.side_effect = [schema_cur, write_cur]
+    assignment = {
+        "id": 55,
+        "category_id": 1,
+        "role_id": 2,
+        "category_code": "RINSE_WF",
+        "role_code": "OPERATOR",
+        "category_name": "Rinse WF",
+        "role_name": "Operator",
+    }
+    started = datetime(2026, 6, 25, 14, 0)
+    ended = datetime(2026, 6, 25, 18, 0)
+
+    with patch("backend.shift_job_tracking.ensure_shift_job_tracking_schema"), patch(
+        "backend.shift_job_tracking.resolve_active_assignment", return_value=assignment
+    ), patch("backend.payroll_operations.table_exists", return_value=True), patch(
+        "backend.payroll_operations.table_has_column", return_value=False
+    ):
+        _apply_time_record_role_tag(
+            conn,
+            3,
+            session_id=42,
+            user_id=7,
+            category_id=1,
+            role_id=2,
+            started_at=started,
+            ended_at=ended,
+        )
+
+    assert write_cur.execute.call_args_list[0] == call(
+        "DELETE FROM shift_job_segments WHERE shift_session_id=%s",
+        (42,),
+    )
+    insert_sql, insert_params = write_cur.execute.call_args_list[1][0]
+    assert "INSERT INTO shift_job_segments" in insert_sql
+    assert insert_params[0] == 42
+    assert insert_params[2] == 1
+    assert insert_params[3] == 2
+    assert insert_params[4] == 55
+    assert insert_params[-1] == "payroll_manual"
+
+
+def test_update_tags_role_when_category_and_role_provided(conn):
+    select_cur = MagicMock()
+    select_cur.fetchone.return_value = {
+        "user_id": 7,
+        "clock_in_at": datetime(2026, 6, 18, 8, 0),
+        "clock_out_at": datetime(2026, 6, 18, 16, 0),
+    }
+    update_cur = MagicMock()
+    update_cur.rowcount = 1
+    conn.cursor.side_effect = [MagicMock(), select_cur, update_cur]
+
+    with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
+        "backend.payroll_operations.table_has_column", return_value=False
+    ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
+        "backend.payroll_operations._apply_time_record_role_tag"
+    ) as tag, patch(
+        "backend.payroll_operations.list_time_records",
+        return_value=[{"id": 9, "role_label": "Rinse WF — Operator"}],
+    ):
+        rec = update_time_record(
+            conn,
+            3,
+            9,
+            clock_in_at="2026-06-18 08:00:00",
+            clock_out_at="2026-06-18 16:00:00",
+            category_id=1,
+            role_id=2,
+        )
+
+    assert rec["id"] == 9
+    tag.assert_called_once()
+    kwargs = tag.call_args.kwargs
+    assert kwargs["session_id"] == 9
+    assert kwargs["user_id"] == 7
+    assert kwargs["category_id"] == 1
+    assert kwargs["role_id"] == 2

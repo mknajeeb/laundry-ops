@@ -500,6 +500,101 @@ def _user_has_active_shift(conn, user_id: int) -> bool:
     return c.fetchone() is not None
 
 
+def _parse_optional_id(val: Any) -> Optional[int]:
+    if val is None or val == "":
+        return None
+    if isinstance(val, str) and not val.strip():
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        raise ValueError("category_id and role_id must be integers") from None
+
+
+def _apply_time_record_role_tag(
+    conn,
+    organization_id: int,
+    *,
+    session_id: int,
+    user_id: int,
+    category_id: int,
+    role_id: int,
+    started_at: datetime,
+    ended_at: Optional[datetime] = None,
+) -> None:
+    """Tag a payroll time record with a single category/role for the shift window.
+
+    Manager correction path: replaces prior segments for this session with one
+    span so the Role column matches the tagged assignment. Does not enforce
+    employee allowed-work-assignment rules.
+    """
+    from backend.shift_job_tracking import (
+        ensure_shift_job_tracking_schema,
+        resolve_active_assignment,
+    )
+
+    c = conn.cursor(dictionary=True)
+    ensure_shift_job_tracking_schema(c)
+    if not table_exists(c, "shift_job_segments"):
+        raise ValueError("Role tracking is not available")
+
+    assignment = resolve_active_assignment(
+        c, int(organization_id), category_id=int(category_id), role_id=int(role_id)
+    )
+    started = started_at
+    ended = ended_at
+    if ended is not None and ended <= started:
+        raise ValueError("Clock out must be after clock in")
+
+    ins = conn.cursor()
+    ins.execute(
+        "DELETE FROM shift_job_segments WHERE shift_session_id=%s",
+        (int(session_id),),
+    )
+    cols = (
+        "shift_session_id, user_id, category_id, role_id, category_role_id, "
+        "category_code, role_code, category_name_snapshot, role_name_snapshot, "
+        "started_at, ended_at, change_source"
+    )
+    values = (
+        int(session_id),
+        int(user_id),
+        int(assignment["category_id"]),
+        int(assignment["role_id"]),
+        int(assignment["id"]),
+        assignment.get("category_code"),
+        assignment.get("role_code"),
+        assignment.get("category_name"),
+        assignment.get("role_name"),
+        started,
+        ended,
+        "payroll_manual",
+    )
+    if table_has_column(ins, "shift_job_segments", "close_source") and ended is not None:
+        cols += ", close_source"
+        values = values + ("payroll_manual",)
+    placeholders = ", ".join(["%s"] * len(values))
+    ins.execute(
+        f"INSERT INTO shift_job_segments ({cols}) VALUES ({placeholders})",
+        values,
+    )
+
+    upd: list[str] = []
+    vals: list[Any] = []
+    if table_has_column(ins, "shift_sessions", "current_category_id"):
+        upd.append("current_category_id=%s")
+        vals.append(int(assignment["category_id"]) if ended is None else None)
+    if table_has_column(ins, "shift_sessions", "current_role_id"):
+        upd.append("current_role_id=%s")
+        vals.append(int(assignment["role_id"]) if ended is None else None)
+    if table_has_column(ins, "shift_sessions", "current_category_role_id"):
+        upd.append("current_category_role_id=%s")
+        vals.append(int(assignment["id"]) if ended is None else None)
+    if upd:
+        vals.append(int(session_id))
+        ins.execute(f"UPDATE shift_sessions SET {', '.join(upd)} WHERE id=%s", vals)
+
+
 def create_manual_time_record(
     conn,
     organization_id: int,
@@ -508,6 +603,8 @@ def create_manual_time_record(
     clock_in_at: Any,
     clock_out_at: Any = None,
     remarks: str = "",
+    category_id: Any = None,
+    role_id: Any = None,
 ) -> dict:
     ci = _parse_clock_dt(clock_in_at)
     co_raw = clock_out_at
@@ -516,6 +613,10 @@ def create_manual_time_record(
         raise ValueError("Clock in is required")
     if co is not None and co <= ci:
         raise ValueError("Clock out must be after clock in")
+    cat_id = _parse_optional_id(category_id)
+    rol_id = _parse_optional_id(role_id)
+    if (cat_id is None) ^ (rol_id is None):
+        raise ValueError("category_id and role_id are required together to tag a role")
     uid = int(user_id)
     oid = int(organization_id)
     if co is None and _user_has_active_shift(conn, uid):
@@ -565,6 +666,17 @@ def create_manual_time_record(
         tuple(vals),
     )
     sid = c.lastrowid
+    if cat_id is not None and rol_id is not None:
+        _apply_time_record_role_tag(
+            conn,
+            oid,
+            session_id=sid,
+            user_id=uid,
+            category_id=cat_id,
+            role_id=rol_id,
+            started_at=ci,
+            ended_at=co,
+        )
     conn.commit()
     items = list_time_records(conn, organization_id, limit=2000)
     for rec in items:
@@ -581,6 +693,8 @@ def update_time_record(
     clock_in_at: Any = None,
     clock_out_at: Any = None,
     remarks: Optional[str] = None,
+    category_id: Any = None,
+    role_id: Any = None,
 ) -> dict:
     sid = int(session_id)
     if not _session_in_org(conn, organization_id, sid):
@@ -593,9 +707,24 @@ def update_time_record(
 
     ci = _parse_clock_dt(clock_in_at) if clock_in_at is not None else None
     co = _parse_clock_dt(clock_out_at) if clock_out_at is not None else None
+    # Retag only when the client sends a complete category+role pair.
+    cat_provided = category_id is not None and str(category_id).strip() != ""
+    rol_provided = role_id is not None and str(role_id).strip() != ""
+    wants_role_tag = cat_provided or rol_provided
+    cat_id = rol_id = None
+    if wants_role_tag:
+        if not cat_provided or not rol_provided:
+            raise ValueError("category_id and role_id are required together to tag a role")
+        cat_id = _parse_optional_id(category_id)
+        rol_id = _parse_optional_id(role_id)
+        if cat_id is None or rol_id is None:
+            raise ValueError("category_id and role_id are required together to tag a role")
 
     c = conn.cursor(dictionary=True)
-    c.execute("SELECT clock_in_at, clock_out_at FROM shift_sessions WHERE id=%s", (sid,))
+    c.execute(
+        "SELECT user_id, clock_in_at, clock_out_at FROM shift_sessions WHERE id=%s",
+        (sid,),
+    )
     cur = c.fetchone()
     if not cur:
         raise ValueError("Time record not found")
@@ -649,6 +778,18 @@ def update_time_record(
     c2.execute(f"UPDATE shift_sessions SET {', '.join(updates)} WHERE {where}", tuple(params))
     if c2.rowcount < 1:
         raise ValueError("Time record not found")
+
+    if wants_role_tag and cat_id is not None and rol_id is not None:
+        _apply_time_record_role_tag(
+            conn,
+            int(organization_id),
+            session_id=sid,
+            user_id=int(cur["user_id"]),
+            category_id=cat_id,
+            role_id=rol_id,
+            started_at=new_ci,
+            ended_at=new_co,
+        )
     conn.commit()
 
     items = list_time_records(conn, organization_id, limit=2000)
