@@ -14,6 +14,7 @@ Do not treat Rinse times as UTC. Do not apply server local timezone when parsing
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -33,6 +34,12 @@ _PARSE_FORMATS = (
     "%Y-%m-%d %H:%M",
     "%m/%d/%Y %I:%M %p",
 )
+
+_OFFSET_RE = re.compile(r"([+-]\d{2}:\d{2}|[+-]\d{4})$")
+
+
+def _has_numeric_offset(s: str) -> bool:
+    return bool(_OFFSET_RE.search(s.strip()))
 
 
 def normalize_rack_value(rack: Any) -> str | None:
@@ -134,6 +141,49 @@ def serialize_system_datetime_for_api(dt: datetime | None) -> str | None:
     return utc_dt.astimezone(_ET).isoformat(timespec="seconds")
 
 
+def serialize_weight_observation_for_api(raw: Any) -> str | None:
+    """
+    Scrape first-observed time for weight enrichment (UTC system DATETIME).
+
+    Never treat as Rinse portal wall time — callers must not use
+    ``serialize_rinse_scan_datetime_for_api`` for ``weight_observed_at``.
+    """
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None
+        if s.endswith(("Z", "z")) or _has_numeric_offset(s):
+            return s
+        try:
+            raw = datetime.fromisoformat(s.replace(" ", "T", 1))
+        except ValueError:
+            return s
+    if not isinstance(raw, datetime):
+        return None
+    return serialize_system_datetime_for_api(raw)
+
+
+def serialize_portal_event_for_api(raw: Any) -> str | None:
+    """Portal weight-entry / scan chronology wall time (naive America/New_York)."""
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None
+        if s.endswith(("Z", "z")) or _has_numeric_offset(s):
+            return s
+        try:
+            raw = datetime.fromisoformat(s.replace(" ", "T", 1))
+        except ValueError:
+            return s
+    if not isinstance(raw, datetime):
+        return None
+    return serialize_rinse_scan_datetime_for_api(raw)
+
+
 def system_datetime_to_et(dt: datetime | None) -> datetime | None:
     """Interpret naive system DB time as UTC; return aware America/New_York."""
     if dt is None or not isinstance(dt, datetime):
@@ -152,20 +202,43 @@ def naive_system_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(_UTC).replace(tzinfo=None)
 
 
-def json_safe_rinse(obj: Any) -> Any:
-    """Recursively serialize Rinse scan/bag payloads (scan wall-time datetimes)."""
+# Keys whose naive DATETIME values are system/UTC (scrape observation), not Rinse ET wall.
+_SYSTEM_UTC_DATETIME_KEYS = frozenset(
+    {
+        "weight_observed_at",
+        "pre_weight_observed_at",
+        "post_weight_observed_at",
+        "observed_at",
+        "finished_at",
+        "created_at",
+        "updated_at",
+        "last_sync_at",
+        "scraped_at",
+        "portal_observed_at",
+    }
+)
+
+
+def json_safe_rinse(obj: Any, *, _key: str | None = None) -> Any:
+    """Recursively serialize Rinse scan/bag payloads.
+
+    Naive datetimes default to America/New_York portal wall time, except known
+    system/UTC observation keys (weight_observed_at, scrape finished_at, …).
+    """
     if obj is None:
         return None
     if isinstance(obj, Decimal):
         return float(obj)
     if isinstance(obj, datetime):
+        if _key in _SYSTEM_UTC_DATETIME_KEYS:
+            return serialize_system_datetime_for_api(obj)
         return serialize_rinse_scan_datetime_for_api(obj)
     if isinstance(obj, date):
         return obj.isoformat()
     if isinstance(obj, dict):
-        return {k: json_safe_rinse(v) for k, v in obj.items()}
+        return {k: json_safe_rinse(v, _key=str(k)) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return [json_safe_rinse(x) for x in obj]
+        return [json_safe_rinse(x, _key=_key) for x in obj]
     return obj
 
 

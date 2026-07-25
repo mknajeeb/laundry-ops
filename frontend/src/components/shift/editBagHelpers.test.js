@@ -154,24 +154,27 @@ describe("describeWeightProvenance", () => {
       role: "pre",
       weightLbs: 23.6,
       source: "portal_weight_num_historical",
-      observedAt: "2026-07-22 06:24:00",
+      observedAt: "2026-07-22T10:24:00Z",
+      portalEventAt: "2026-07-22T06:24:00-04:00",
       attachBatchId: 2807,
     });
-    expect(d.helperText).toContain("Recovered from historical portal");
-    expect(d.helperText).toContain("06:24");
+    expect(d.helperText).toMatch(/Weight entered/i);
+    expect(d.helperText).toMatch(/First observed/i);
     expect(d.title).toContain("Batch 2807");
   });
 
-  it("labels current portal post capture", () => {
+  it("labels current portal post capture with separate times", () => {
     const d = describeWeightProvenance({
       role: "post",
       weightLbs: 22.6,
       source: "portal_weight_num",
-      observedAt: "2026-07-22T16:45:00",
+      observedAt: "2026-07-22T20:45:00Z",
+      portalEventAt: "2026-07-22T16:45:00-04:00",
       attachBatchId: 2815,
     });
-    expect(d.helperText).toContain("Captured from portal");
-    expect(d.helperText).toContain("16:45");
+    expect(d.lines.some((l) => /Weight entered/i.test(l))).toBe(true);
+    expect(d.lines.some((l) => /First observed/i.test(l))).toBe(true);
+    expect(d.helperText).not.toMatch(/^Captured from portal/i);
   });
 
   it("explains missing pre when post exists", () => {
@@ -196,7 +199,11 @@ describe("describeWeightProvenance", () => {
 });
 
 describe("formatWeightObservedEt", () => {
-  it("formats to MM/DD HH:MM ET", () => {
+  it("formats timezone-aware UTC to ET compact", () => {
+    expect(formatWeightObservedEt("2026-07-22T10:24:00Z")).toBe("07/22 06:24 ET");
+  });
+
+  it("formats naive portal wall without shifting", () => {
     expect(formatWeightObservedEt("2026-07-22 06:24:11")).toBe("07/22 06:24 ET");
   });
 });

@@ -157,6 +157,7 @@ export default function EditBagPanel({
     weightLbs: bag?.pre_weight_lbs,
     source: bag?.pre_weight_source,
     observedAt: bag?.pre_weight_observed_at,
+    portalEventAt: bag?.pre_weight_at,
     attachBatchId: bag?.pre_weight_attach_batch_id,
     attachReason: bag?.pre_weight_attach_reason,
     needsManagerCorrection: preWeightNeedsManagerCorrection,
@@ -166,6 +167,7 @@ export default function EditBagPanel({
     weightLbs: bag?.post_weight_value ?? bag?.post_weight_lbs,
     source: bag?.post_weight_source,
     observedAt: bag?.post_weight_observed_at,
+    portalEventAt: bag?.post_weight_at,
     attachBatchId: bag?.post_weight_attach_batch_id,
     attachReason: bag?.post_weight_attach_reason,
   });
@@ -516,6 +518,11 @@ export default function EditBagPanel({
                       ? `${draft.pre_weight_lbs} lb`
                       : "—"}
                   </Typography>
+                  {(preProvenance.lines || []).map((line) => (
+                    <Typography key={line} variant="caption" display="block" color="text.secondary">
+                      {line}
+                    </Typography>
+                  ))}
                 </Box>
                 <Box sx={{ flex: 1, p: 1, bgcolor: "grey.50", borderRadius: 1 }}>
                   <Typography variant="caption" color="text.secondary">
@@ -526,6 +533,11 @@ export default function EditBagPanel({
                       ? `${bag?.post_weight_value ?? bag?.post_weight_lbs} lb`
                       : "—"}
                   </Typography>
+                  {(postProvenance.lines || []).map((line) => (
+                    <Typography key={line} variant="caption" display="block" color="text.secondary">
+                      {line}
+                    </Typography>
+                  ))}
                 </Box>
                 <Box sx={{ flex: 1, p: 1, bgcolor: "grey.50", borderRadius: 1 }}>
                   <Typography variant="caption" color="text.secondary">
@@ -545,11 +557,11 @@ export default function EditBagPanel({
                   <Typography variant="caption">Evidence details</Typography>
                 </AccordionSummary>
                 <AccordionDetails sx={{ px: 0, pt: 0 }}>
-                  <Typography variant="caption" display="block">
-                    PRE: {preProvenance.helperText || "—"}
+                  <Typography variant="caption" display="block" title={preProvenance.title || undefined}>
+                    PRE: {(preProvenance.lines || [preProvenance.helperText || "—"]).join(" · ")}
                   </Typography>
-                  <Typography variant="caption" display="block">
-                    POST: {postProvenance.helperText || "—"}
+                  <Typography variant="caption" display="block" title={postProvenance.title || undefined}>
+                    POST: {(postProvenance.lines || [postProvenance.helperText || "—"]).join(" · ")}
                   </Typography>
                 </AccordionDetails>
               </Accordion>

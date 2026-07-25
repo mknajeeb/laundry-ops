@@ -260,25 +260,121 @@ export function validateEditBagDraft({
   return "";
 }
 
-/** Format portal observation time for managers (ET label; values already ET). */
+/** Format portal observation / event time for managers in America/New_York. */
 export function formatWeightObservedEt(raw) {
   if (!raw) return "";
-  const s = String(raw).trim().replace("T", " ");
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  const s = String(raw).trim();
+  if (!s) return "";
+
+  // Timezone-aware ISO (Z or offset) — convert with DST-aware America/New_York.
+  if (/Z$/i.test(s) || /[+-]\d{2}:\d{2}$/.test(s) || /[+-]\d{4}$/.test(s)) {
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).formatToParts(d);
+      const pick = (t) => parts.find((p) => p.type === t)?.value ?? "";
+      return `${pick("month")}/${pick("day")} ${pick("hour")}:${pick("minute")} ET`;
+    }
+  }
+
+  // Legacy naive wall string — treat as already-Eastern portal chronology.
+  const m = s.replace("T", " ").match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
   if (!m) return s.slice(0, 16);
   const [, , mo, d, hh, mm] = m;
   return `${mo}/${d} ${hh}:${mm} ET`;
 }
 
+/** Friendly clock for evidence cards: "8:24 AM ET". */
+export function formatEvidenceClockEt(raw) {
+  if (!raw) return "";
+  const s = String(raw).trim();
+  if (!s) return "";
+
+  if (/Z$/i.test(s) || /[+-]\d{2}:\d{2}$/.test(s) || /[+-]\d{4}$/.test(s)) {
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) {
+      return `${d.toLocaleString("en-US", {
+        timeZone: "America/New_York",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      })} ET`;
+    }
+  }
+
+  const m = s.replace("T", " ").match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (m) {
+    const hour24 = Number(m[4]);
+    const hour12 = hour24 % 12 || 12;
+    const ampm = hour24 >= 12 ? "PM" : "AM";
+    return `${hour12}:${m[5]} ${ampm} ET`;
+  }
+  return formatWeightObservedEt(raw);
+}
+
+/**
+ * Capture lag in whole minutes (first observed − portal weight-entry).
+ * Prefers timezone-aware ISO from the API.
+ */
+export function captureLagMinutes(portalEventAt, observedAt) {
+  const toMs = (raw) => {
+    if (raw == null || raw === "") return null;
+    const s = String(raw).trim();
+    if (!s) return null;
+    if (/Z$/i.test(s) || /[+-]\d{2}:\d{2}$/.test(s) || /[+-]\d{4}$/.test(s)) {
+      const t = Date.parse(s);
+      return Number.isFinite(t) ? t : null;
+    }
+    // Naive portal ET wall: attach America/New_York offset for that calendar day.
+    const m = s.replace("T", " ").match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+    if (!m) return null;
+    const wall = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6] || "00"}`;
+    // Probe noon UTC on that date to learn EDT vs EST offset, then apply to wall.
+    const probe = new Date(`${m[1]}-${m[2]}-${m[3]}T16:00:00Z`);
+    const offsetLabel = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      timeZoneName: "shortOffset",
+      hour: "2-digit",
+    })
+      .formatToParts(probe)
+      .find((p) => p.type === "timeZoneName")?.value;
+    // GMT-4 / GMT-5 / UTC-4
+    const om = String(offsetLabel || "").match(/([+-])(\d{1,2})(?::?(\d{2}))?/);
+    let offsetHours = -4;
+    if (om) {
+      offsetHours = Number(`${om[1]}${om[2]}`);
+      if (om[3]) offsetHours += (Number(om[3]) / 60) * (om[1] === "-" ? -1 : 1);
+    }
+    const sign = offsetHours <= 0 ? "-" : "+";
+    const absH = String(Math.abs(Math.trunc(offsetHours))).padStart(2, "0");
+    const absM = String(Math.round((Math.abs(offsetHours) % 1) * 60)).padStart(2, "0");
+    const t = Date.parse(`${wall}${sign}${absH}:${absM}`);
+    return Number.isFinite(t) ? t : null;
+  };
+
+  const eventMs = toMs(portalEventAt);
+  const obsMs = toMs(observedAt);
+  if (eventMs == null || obsMs == null) return null;
+  return Math.round((obsMs - eventMs) / 60000);
+}
+
 /**
  * Human label + tooltip for a Pre/Post weight enrichment source.
- * @returns {{ helperText: string, title: string }}
+ * Separates portal weight-entry time from scrape first-observed time.
+ * @returns {{ helperText: string, title: string, lines: string[] }}
  */
 export function describeWeightProvenance({
   role, // "pre" | "post"
   weightLbs,
   source,
   observedAt,
+  portalEventAt,
   attachBatchId,
   attachReason,
   needsManagerCorrection = false,
@@ -288,48 +384,59 @@ export function describeWeightProvenance({
     return {
       helperText: "Missing — no recoverable historical portal observation",
       title: "Manager correction required to set Pre Weight",
+      lines: ["Missing — no recoverable historical portal observation"],
     };
   }
   if (weightLbs === null || weightLbs === undefined || weightLbs === "") {
-    return { helperText: blank, title: "" };
+    return { helperText: blank, title: "", lines: [blank] };
   }
 
-  const when = formatWeightObservedEt(observedAt);
+  const entered = formatEvidenceClockEt(portalEventAt);
+  const observed = formatEvidenceClockEt(observedAt);
+  const lag = captureLagMinutes(portalEventAt, observedAt);
+  const lines = [];
+  if (entered) lines.push(`Weight entered: ${entered}`);
+  if (observed) {
+    lines.push(
+      entered
+        ? `First observed: ${observed}`
+        : `First observed by scrape: ${observed}`
+    );
+  }
+  if (lag != null && lag >= 0) lines.push(`Capture lag: ${lag} min`);
+
   const batchBit =
     attachBatchId != null && attachBatchId !== ""
       ? `Batch ${attachBatchId}`
       : "";
   const src = String(source || "");
-
+  const titleBits = [];
   if (
     src === "portal_weight_num_historical" ||
     attachReason === "RECOVERED_FROM_HISTORICAL_PORTAL_OBSERVATION"
   ) {
-    return {
-      helperText: when
-        ? `Recovered from historical portal · ${when}`
-        : "Recovered from historical portal",
-      title: ["Source: Historical Portal Observation", batchBit]
-        .filter(Boolean)
-        .join(" · "),
-    };
-  }
-  if (
+    titleBits.push("Source: Historical Portal Observation");
+  } else if (
     src === "portal_weight_num" ||
     attachReason === "CURRENT_WEIGHT_ATTACHED_TO_LATEST_EVENT"
   ) {
-    return {
-      helperText: when ? `Captured from portal · ${when}` : "Captured from portal",
-      title: ["Source: Portal Observation", batchBit].filter(Boolean).join(" · "),
-    };
+    titleBits.push("Source: Portal scrape observation");
+  } else if (src) {
+    titleBits.push(src);
   }
-  if (src || batchBit) {
-    return {
-      helperText: [src || "Weight source recorded", when].filter(Boolean).join(" · "),
-      title: [src, batchBit, attachReason].filter(Boolean).join(" · "),
-    };
+  if (batchBit) titleBits.push(batchBit);
+  if (attachReason && !titleBits.some((t) => t.includes(attachReason))) {
+    titleBits.push(String(attachReason));
   }
-  return { helperText: blank, title: "" };
+
+  if (!lines.length) {
+    return { helperText: blank, title: titleBits.join(" · "), lines: [blank] };
+  }
+  return {
+    helperText: lines.join(" · "),
+    title: titleBits.join(" · "),
+    lines,
+  };
 }
 
 export function buildEditBagPayloadDraft({

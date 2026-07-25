@@ -833,8 +833,8 @@ export default function Step1MetricDrawer({
                                     : bag.pre_weight_source
                               }`
                             : ""}
-                          {bag.pre_weight_observed_at
-                            ? ` · ${formatWeightObservedEt(bag.pre_weight_observed_at)}`
+                          {bag.pre_weight_observed_at || bag.pre_weight_at
+                            ? ` · entered ${formatWeightObservedEt(bag.pre_weight_at) || "—"} · observed ${formatWeightObservedEt(bag.pre_weight_observed_at) || "—"}`
                             : ""}
                           {bag.pre_weight_attach_batch_id != null
                             ? ` · Batch ${bag.pre_weight_attach_batch_id}`
@@ -854,8 +854,8 @@ export default function Step1MetricDrawer({
                                     : bag.post_weight_source
                               }`
                             : ""}
-                          {bag.post_weight_observed_at
-                            ? ` · ${formatWeightObservedEt(bag.post_weight_observed_at)}`
+                          {bag.post_weight_observed_at || bag.post_weight_at
+                            ? ` · entered ${formatWeightObservedEt(bag.post_weight_at) || "—"} · observed ${formatWeightObservedEt(bag.post_weight_observed_at) || "—"}`
                             : ""}
                           {bag.post_weight_attach_batch_id != null
                             ? ` · Batch ${bag.post_weight_attach_batch_id}`
