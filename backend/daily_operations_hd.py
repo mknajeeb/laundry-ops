@@ -832,10 +832,15 @@ def save_hd_production(
             "revenue": float(rev_v) if rev_v is not None else None,
         }
     )
+    # Step-1 "Save Review" may pass defer_complete so full fields stay
+    # PARTIALLY_RECORDED until an explicit Mark Completed confirm.
+    if bool(payload.get("defer_complete")) and status == STATUS_COMPLETE:
+        status = STATUS_PARTIALLY_RECORDED
     # If attempting COMPLETE-looking payload but status partial due to validation,
     # re-check with require_complete for clearer errors when all fields present.
     if (
-        _has_worker(fields.get("washed_by_user_id"), fields.get("washed_by_override_name"))
+        not bool(payload.get("defer_complete"))
+        and _has_worker(fields.get("washed_by_user_id"), fields.get("washed_by_override_name"))
         and _has_worker(fields.get("folded_by_user_id"), fields.get("folded_by_override_name"))
         and items_v is not None
         and rev_v is not None

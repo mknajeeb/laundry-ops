@@ -231,6 +231,17 @@ def _filter_bag_ids(
         seg = segs.get("all") or {}
     bags = seg.get("bag_ids") or {}
     metric_norm = normalize_step1_queue_metric(metric)
+    if metric_norm in (
+        "comforter_orders",
+        "bath_mat_orders",
+        "rejected_orders",
+        "split_orders",
+    ):
+        from backend.rinse_hd_day_metrics import specialty_order_ids_from_summary
+
+        return specialty_order_ids_from_summary(
+            summary, metric=metric_norm, service=svc
+        )
     metric_key = {
         "new_today": "new_today",
         "carryover": "carryover",
@@ -348,7 +359,17 @@ def build_drilldown(
     t0 = time.perf_counter()
     t_snap = time.perf_counter()
     day_rec = get_day_headline(cursor, organization_id, selected_date_et)
-    summary = summary_from_day_record(day_rec) if day_rec else None
+    summary = summary_from_day_record(
+        day_rec, cursor=cursor, organization_id=organization_id
+    ) if day_rec else None
+    if summary and not ((summary.get("specialty_metrics") or {}).get("all") or {}).get(
+        "split_orders"
+    ):
+        from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
+
+        summary = attach_specialty_metrics_to_summary(
+            cursor, organization_id, selected_date_et, summary
+        )
     snap_ms = (time.perf_counter() - t_snap) * 1000.0
 
     # Read path only: never call build_step1_payload(persist_live=True). Opening a
@@ -550,19 +571,50 @@ def build_drilldown(
         detail_ms = (time.perf_counter() - t_detail) * 1000.0
 
     bags = []
+    specialty_by_id: dict[str, dict] = {}
+    metric_norm_for_specialty = normalize_step1_queue_metric(metric)
+    if metric_norm_for_specialty in (
+        "comforter_orders",
+        "bath_mat_orders",
+        "rejected_orders",
+        "split_orders",
+    ):
+        svc = (service or "all").lower()
+        root = (summary or {}).get("specialty_metrics") or {}
+        pack_root = root.get(svc) if svc in ("wf", "hd", "all") else None
+        if not isinstance(pack_root, dict):
+            pack_root = root.get("all") or {}
+        pack = (pack_root or {}).get(metric_norm_for_specialty) or {}
+        for order in pack.get("orders") or []:
+            if isinstance(order, dict) and order.get("bag_id"):
+                specialty_by_id[normalize_bag_id(order["bag_id"])] = order
+
     for bid in page_ids:
         r = rows_by_id.get(bid) or {}
         lines = bulk_lines.get(bid) or r.get("bulk_workitems") or []
         scan_info = bulk_scans.get(bid) or r.get("bulk_workitem_scan") or {}
+        spec = specialty_by_id.get(bid) or {}
         item = {
             "bag_id": bid,
-            "customer_name": r.get("customer_name"),
-            "service_type": r.get("service_type"),
-            "rush_flag": r.get("rush_flag"),
+            "customer_name": r.get("customer_name") or spec.get("customer_name"),
+            "service_type": r.get("service_type") or spec.get("service"),
+            "rush_flag": r.get("rush_flag") or spec.get("rush"),
             "entry_class": r.get("entry_class"),
-            "dashboard_status": r.get("outcome") or r.get("final_bucket"),
+            "dashboard_status": r.get("outcome")
+            or r.get("final_bucket")
+            or spec.get("status"),
             "canonical_status": r.get("canonical_status"),
             "reason_codes": list(reasons.get(bid) or r.get("reason_codes") or []),
+            "specialty_quantity": spec.get("quantity"),
+            "specialty_item_class": spec.get("item_class"),
+            "rejection_status": spec.get("rejection_status"),
+            "rejection_reason": spec.get("rejection_reason"),
+            "rejection_at": spec.get("rejection_at"),
+            "split_order": spec.get("split_order"),
+            "split_status": spec.get("split_status"),
+            "split_confirmed": spec.get("split_confirmed"),
+            "washer_load_count": spec.get("washer_load_count"),
+            "washer_racks": spec.get("washer_racks"),
             "weight_lbs": r.get("weight_lbs"),
             "pre_weight_lbs": r.get("pre_weight_lbs"),
             "post_weight_lbs": r.get("post_weight_lbs"),
@@ -657,6 +709,39 @@ def build_drilldown(
             item["bulk_audits"] = []
         bags.append(item)
 
+    # Attach HD manager review facts (items/revenue/washed/folded) for HD rows.
+    hd_page_ids = [
+        normalize_bag_id(b.get("bag_id"))
+        for b in bags
+        if str(b.get("service_type") or "").upper() == "HD" and normalize_bag_id(b.get("bag_id"))
+    ]
+    if hd_page_ids:
+        try:
+            from backend.rinse_hd_step1_review import (
+                load_hd_production_status_map,
+                public_hd_review_fact,
+            )
+
+            prod_map = load_hd_production_status_map(
+                cursor, organization_id, selected_date_et, hd_page_ids
+            )
+            for b in bags:
+                if str(b.get("service_type") or "").upper() != "HD":
+                    continue
+                bid = normalize_bag_id(b.get("bag_id"))
+                b["hd_review"] = public_hd_review_fact(prod_map.get(bid))
+                if b["hd_review"].get("review_status") == "COMPLETED":
+                    b["dashboard_status"] = "completed"
+                elif b["hd_review"].get("review_status") == "REVIEW_REQUIRED":
+                    # New HD orders always start review-required until manager completes.
+                    b["dashboard_status"] = "review_required"
+        except Exception:
+            from backend.rinse_hd_step1_review import public_hd_review_fact
+
+            for b in bags:
+                if str(b.get("service_type") or "").upper() == "HD" and "hd_review" not in b:
+                    b["hd_review"] = public_hd_review_fact(None)
+
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     # Drawer list needs reason counts, not full bag-id maps (keeps payload small).
     review_counts = {
@@ -722,16 +807,73 @@ def apply_step1_correction(
     if not bid:
         return {"ok": False, "error": "invalid_bag_id"}
 
+    day_raw = body.get("selected_date_et") or body.get("date")
+    day = today_et()
+    if day_raw:
+        try:
+            day = date.fromisoformat(str(day_raw)[:10])
+        except ValueError:
+            pass
+
+    if action in ("save_hd_review", "mark_hd_completed", "undo_hd_review"):
+        from backend.rinse_hd_step1_review import (
+            save_step1_hd_review,
+            undo_step1_hd_review,
+        )
+
+        if action == "undo_hd_review":
+            out = undo_step1_hd_review(
+                cursor,
+                organization_id,
+                day,
+                bid,
+                actor_user_id=actor_user_id,
+                actor_display_name=actor_display_name,
+                reason=reason or None,
+            )
+        else:
+            out = save_step1_hd_review(
+                cursor,
+                organization_id,
+                day,
+                bid,
+                body,
+                actor_user_id=actor_user_id,
+                actor_display_name=actor_display_name,
+                require_complete=(action == "mark_hd_completed"),
+            )
+        if out.get("ok"):
+            try:
+                from backend.rinse_veewash_shift_day import apply_manager_edit_day_bag_patch
+                from backend.rinse_hd_step1_review import REASON_HD_COMPLETION_DETAILS_MISSING
+
+                completed = out.get("step1_outcome") == "completed"
+                apply_manager_edit_day_bag_patch(
+                    cursor,
+                    organization_id,
+                    day,
+                    bid,
+                    previous_effective_status=None,
+                    previous_reason_codes=(
+                        [] if completed else [REASON_HD_COMPLETION_DETAILS_MISSING]
+                    ),
+                    outcome_action="mark_completed" if completed else None,
+                )
+            except Exception:
+                pass
+            try:
+                from backend.rinse_veewash_shift_day import build_or_load_step1_for_date
+
+                build_or_load_step1_for_date(
+                    cursor, organization_id, day, persist_live=True, include_bag_rows=False
+                )
+            except Exception:
+                pass
+        return out
+
     if action == "save_bulk_workitems":
         from backend.rinse_bulk_workitems import save_bag_bulk_workitems
 
-        day_raw = body.get("selected_date_et") or body.get("date")
-        day = today_et()
-        if day_raw:
-            try:
-                day = date.fromisoformat(str(day_raw)[:10])
-            except ValueError:
-                pass
         out = save_bag_bulk_workitems(
             cursor,
             organization_id,
@@ -766,14 +908,6 @@ def apply_step1_correction(
 
     if not reason and action not in ("undo_bag_edit", "edit_bag", "save_bulk_workitems"):
         return {"ok": False, "error": "reason_required"}
-
-    day_raw = body.get("selected_date_et") or body.get("date")
-    day = today_et()
-    if day_raw:
-        try:
-            day = date.fromisoformat(str(day_raw)[:10])
-        except ValueError:
-            pass
 
     from backend.rinse_veewash_shift_day import STATUS_CLOSED, get_day_record
 

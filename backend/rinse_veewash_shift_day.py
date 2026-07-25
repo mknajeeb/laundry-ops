@@ -1080,7 +1080,36 @@ def day_bag_count(cursor, organization_id: int, shift_date_et: date) -> int:
     return int(row.get("n") or 0)
 
 
-def summary_from_day_record(day: Mapping[str, Any]) -> dict[str, Any] | None:
+def _ensure_specialty_metrics(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Attach specialty metrics when missing (read path). Does not alter WF counts."""
+    out = dict(summary or {})
+    packs = out.get("specialty_metrics")
+    if isinstance(packs, dict) and packs:
+        all_pack = packs.get("all") or {}
+        # Rebuild when older snapshots lack Split Orders.
+        if isinstance(all_pack.get("split_orders"), dict):
+            return out
+    try:
+        from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
+
+        return attach_specialty_metrics_to_summary(
+            cursor, organization_id, selected_date_et, out
+        )
+    except Exception:
+        return out
+
+
+def summary_from_day_record(
+    day: Mapping[str, Any],
+    *,
+    cursor=None,
+    organization_id: int | None = None,
+) -> dict[str, Any] | None:
     headline = day.get("headline")
     if isinstance(headline, dict) and headline:
         out = dict(headline)
@@ -1097,6 +1126,41 @@ def summary_from_day_record(day: Mapping[str, Any]) -> dict[str, Any] | None:
             "review_required_count": day.get("review_required_count") or 0,
             "read_only": day.get("status") == STATUS_CLOSED,
         }
+        # Live ET day only: heal HD carryover in the response without rewriting WF.
+        try:
+            shift_date = day.get("shift_date_et")
+            if isinstance(shift_date, str):
+                shift_date = date.fromisoformat(str(shift_date)[:10])
+            from backend.rinse_hd_day_presentation import (
+                finalize_hd_step1_summary,
+                should_apply_hd_presentation_on_read,
+            )
+
+            if (
+                isinstance(shift_date, date)
+                and should_apply_hd_presentation_on_read(
+                    selected_date_et=shift_date,
+                    today=today_et(),
+                    day_status=day.get("status"),
+                )
+            ):
+                org = organization_id
+                if org is None:
+                    try:
+                        org = int(day.get("organization_id")) if day.get("organization_id") is not None else None
+                    except Exception:
+                        org = None
+                out = finalize_hd_step1_summary(
+                    out,
+                    selected_date_et=shift_date,
+                    membership=out.get("membership")
+                    if isinstance(out.get("membership"), dict)
+                    else None,
+                    cursor=cursor,
+                    organization_id=org,
+                )
+        except Exception:
+            pass
         return out
     return None
 
@@ -1160,7 +1224,9 @@ def build_or_load_step1_for_date(
     status = (day or {}).get("status")
 
     def _summary_shell(day_rec: Mapping[str, Any], *, status_value: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-        summary = summary_from_day_record(day_rec)
+        summary = summary_from_day_record(
+            day_rec, cursor=cursor, organization_id=organization_id
+        )
         if not summary:
             return {}, {}, dict(day_rec)
         if not include_bag_rows:
@@ -1187,6 +1253,9 @@ def build_or_load_step1_for_date(
     if day and status == STATUS_CLOSED:
         wl, summary, day_out = _summary_shell(day, status_value=STATUS_CLOSED)
         if summary:
+            summary = _ensure_specialty_metrics(
+                cursor, organization_id, selected_date_et, summary
+            )
             return wl, summary, day_out
 
     # Snapshot-first read path (dashboard cards + drawers): serve persisted headline
@@ -1208,6 +1277,9 @@ def build_or_load_step1_for_date(
         if has_bags or not include_bag_rows:
             wl, summary, day_out = _summary_shell(day, status_value=str(status))
             if summary:
+                summary = _ensure_specialty_metrics(
+                    cursor, organization_id, selected_date_et, summary
+                )
                 return wl, summary, day_out
 
     # Historical OPEN/READY/REOPENED/NOT_STARTED snapshots stay stable after first persist.
@@ -1228,6 +1300,9 @@ def build_or_load_step1_for_date(
         if has_bags:
             wl, summary, day_out = _summary_shell(day, status_value=str(status))
             if summary:
+                summary = _ensure_specialty_metrics(
+                    cursor, organization_id, selected_date_et, summary
+                )
                 return wl, summary, day_out
 
     # Live / reconstruct path (today, or missing prior-day snapshot).
@@ -1236,11 +1311,23 @@ def build_or_load_step1_for_date(
     summary = build_step1_headline_summary(
         wl, selected_date_et=selected_date_et, activation_date=activation
     )
+    # HD-only post-process: no carryover + opening-scrape membership. WF untouched.
+    from backend.rinse_hd_day_presentation import finalize_hd_step1_summary
+    from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
 
-    # Ensure membership is available for admitted-workload status derivation.
     if isinstance(wl.get("membership"), dict) and "membership" not in (summary or {}):
         summary = dict(summary)
         summary["membership"] = wl.get("membership")
+    summary = finalize_hd_step1_summary(
+        summary,
+        selected_date_et=selected_date_et,
+        membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
+        cursor=cursor,
+        organization_id=organization_id,
+    )
+    summary = attach_specialty_metrics_to_summary(
+        cursor, organization_id, selected_date_et, summary
+    )
 
     review_n = int((summary.get("exceptions") or {}).get("review_required") or 0)
     next_status = derive_shift_day_status(
@@ -1277,7 +1364,9 @@ def build_or_load_step1_for_date(
         _commit(cursor)
 
     if day:
-        summary = summary_from_day_record(day) or summary
+        summary = summary_from_day_record(
+            day, cursor=cursor, organization_id=organization_id
+        ) or summary
     else:
         summary["shift_day"] = {
             "status": next_status,
