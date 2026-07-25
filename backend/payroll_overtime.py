@@ -164,9 +164,8 @@ def compute_earnings_breakdown(
     if ot_premium < 0:
         ot_premium = Decimal("0.00")
         other_earnings = _q2(gross - base_earnings - ot_premium)
-    # Management-dashboard presentation (full OT rate, not premium-only):
-    # Regular Earnings = regular hours × regular rate
-    # OT Earnings = OT hours × full OT rate
+    # Full OT earnings (ot_hours × ot_rate) retained for vendor/invoice math only.
+    # Dashboards and payroll reports use base_earnings + ot_premium.
     if rate <= 0:
         regular_earnings = Decimal("0.00")
         ot_earnings = Decimal("0.00")

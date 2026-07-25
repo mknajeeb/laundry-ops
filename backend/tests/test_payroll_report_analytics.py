@@ -806,6 +806,8 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     assert "Avg Pay Rate" not in html
     assert "Avg Employer Cost" in html
     assert "Gross Payroll" in html or "Gross" in html
+    assert "OT Premium" in html
+    assert "OT Earnings" not in html
     assert ">Paid:" not in html and "Paid: $" not in html
     assert "Outstanding" not in html
     assert "Amount paid" not in html
@@ -827,24 +829,25 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     headers = [cell.value for cell in wf[2]]
     assert "Avg Pay Rate" not in headers
     assert "Avg Employer Cost / Hour" in headers
-    assert "Regular Earnings" in headers
-    assert "OT Earnings" in headers
+    assert "Regular/Base Earnings" in headers
+    assert "OT Premium" in headers
+    assert "OT Earnings" not in headers
     assert "Gross Payroll" in headers
-    # Row values match analytics category payload (Regular/OT Earnings + Gross).
+    # Row values match analytics category payload (Base + OT Premium + Gross).
     by_label = {}
     for row in wf.iter_rows(min_row=3, values_only=True):
         if not row or not row[0] or row[0] == "Total":
             continue
         by_label[row[0]] = {
-            "regular_earnings": row[4],
-            "ot_earnings": row[5],
+            "base_earnings": row[4],
+            "ot_premium": row[5],
             "gross_pay": row[7],
         }
-    assert by_label[maria["label"]]["regular_earnings"] == round(maria["regular_earnings"], 2)
-    assert by_label[maria["label"]]["ot_earnings"] == round(maria["ot_earnings"], 2)
+    assert by_label[maria["label"]]["base_earnings"] == round(maria["base_earnings"], 2)
+    assert by_label[maria["label"]]["ot_premium"] == round(maria["ot_premium"], 2)
     assert by_label[maria["label"]]["gross_pay"] == round(maria["gross_pay"], 2)
-    assert by_label[guiying["label"]]["regular_earnings"] == round(guiying["regular_earnings"], 2)
-    assert by_label[guiying["label"]]["ot_earnings"] == round(guiying["ot_earnings"], 2)
+    assert by_label[guiying["label"]]["base_earnings"] == round(guiying["base_earnings"], 2)
+    assert by_label[guiying["label"]]["ot_premium"] == round(guiying["ot_premium"], 2)
     assert by_label[guiying["label"]]["gross_pay"] == round(guiying["gross_pay"], 2)
     pc = wb["Period Comparison"]
     pc_headers = [cell.value for cell in pc[2]]
@@ -852,8 +855,9 @@ def test_pdf_dashboard_before_detail_and_contains_charts():
     assert "Amount Paid" not in pc_headers
     assert "Outstanding" not in pc_headers
     assert "Avg Employer Cost / Hour" in pc_headers
-    assert "Regular Earnings" in pc_headers
-    assert "OT Earnings" in pc_headers
+    assert "Regular/Base Earnings" in pc_headers
+    assert "OT Premium" in pc_headers
+    assert "OT Earnings" not in pc_headers
     assert "% Δ Total Cost" in pc_headers
     assert "% Δ Hours" in pc_headers
 

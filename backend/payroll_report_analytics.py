@@ -287,7 +287,7 @@ def build_kpi_cards(
 def build_ot_summary(
     current: dict[str, Any], previous: Optional[dict[str, Any]]
 ) -> dict[str, Any]:
-    """Compact OT insight: hours, share of hours, full OT earnings, vs prior."""
+    """Compact OT insight: hours, share of hours, OT premium dollars, vs prior."""
     ot = _money(current.get("ot_hours"))
     pct = _money(current.get("ot_pct_of_hours"))
     ot_earnings = _money(current.get("ot_earnings"))
@@ -639,7 +639,8 @@ def category_breakdown(rows: list[dict]) -> list[dict[str, Any]]:
         ot_earn = _money(metrics.get("ot_earnings"))
         other = _money(metrics.get("other_earnings"))
         gross = _money(metrics.get("gross_pay"))
-        # Premium model still reconciles; management model uses regular+ot full.
+        # Premium model reconciles: base + ot_premium + other = gross.
+        # Full ot_earnings retained for vendor/invoice parity checks only.
         recon_diff = round(gross - base - prem - other, 2)
         mgmt_diff = round(gross - reg_earn - ot_earn - other, 2)
         avg_pay = metrics.get("avg_pay_rate")

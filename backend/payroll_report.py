@@ -1093,15 +1093,13 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
                 "Head Count",
                 "Regular Hours",
                 "OT Hours",
-                "Regular Earnings",
-                "OT Earnings",
+                "Regular/Base Earnings",
+                "OT Premium",
                 "Other Earnings",
                 "Gross Payroll",
                 "Employer Tax",
                 "Total Payroll Cost",
                 "Avg Employer Cost / Hour",
-                "Base Earnings (recon)",
-                "OT Premium (recon)",
             ]
         )
         for cell in ws_wf[ws_wf.max_row]:
@@ -1116,15 +1114,13 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
                 c.get("head_count") or c.get("worker_count") or 0,
                 round(_money(c.get("regular_hours")), 2),
                 round(_money(c.get("ot_hours")), 2),
-                round(_money(c.get("regular_earnings")), 2),
-                round(_money(c.get("ot_earnings")), 2),
+                round(_money(c.get("base_earnings")), 2),
+                round(_money(c.get("ot_premium")), 2),
                 round(_money(c.get("other_earnings")), 2),
                 round(_money(c.get("gross_pay")), 2),
                 round(_money(c.get("employer_taxes")), 2),
                 round(_money(c.get("total_payroll_cost")), 2),
                 _rate_cell(c.get("avg_cost_per_hour")),
-                round(_money(c.get("base_earnings")), 2),
-                round(_money(c.get("ot_premium")), 2),
             ]
 
         for c in categories:
@@ -1153,8 +1149,8 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
             "Distinct Head Count",
             "Regular Hours",
             "OT Hours",
-            "Regular Earnings",
-            "OT Earnings",
+            "Regular/Base Earnings",
+            "OT Premium",
             "Gross",
             "Employer Tax",
             "Total Payroll Cost",
@@ -1180,8 +1176,8 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
                     e.get("worker_count") or e.get("head_count"),
                     round(_money(e.get("regular_hours")), 2),
                     round(_money(e.get("ot_hours")), 2),
-                    round(_money(e.get("regular_earnings")), 2),
-                    round(_money(e.get("ot_earnings")), 2),
+                    round(_money(e.get("base_earnings")), 2),
+                    round(_money(e.get("ot_premium")), 2),
                     round(_money(e.get("gross_pay")), 2),
                     round(_money(e.get("employer_taxes")), 2),
                     round(_money(e.get("total_payroll_cost")), 2),
@@ -1204,8 +1200,8 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
                         per.get("worker_count") or per.get("head_count"),
                         round(_money(per.get("regular_hours")), 2),
                         round(_money(per.get("ot_hours")), 2),
-                        round(_money(per.get("regular_earnings")), 2),
-                        round(_money(per.get("ot_earnings")), 2),
+                        round(_money(per.get("base_earnings")), 2),
+                        round(_money(per.get("ot_premium")), 2),
                         round(_money(per.get("gross_pay")), 2),
                         round(_money(per.get("employer_taxes")), 2),
                         round(_money(per.get("total_payroll_cost")), 2),
@@ -1232,8 +1228,8 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
             "Head Count",
             "Regular Hours",
             "OT Hours",
-            "Regular Earnings",
-            "OT Earnings",
+            "Regular/Base Earnings",
+            "OT Premium",
             "Gross",
             "Employer Tax",
             "Total Payroll Cost",
@@ -1258,8 +1254,8 @@ def build_payroll_report_xlsx(report: dict) -> bytes:
                     e.get("worker_count"),
                     round(_money(e.get("regular_hours")), 2),
                     round(_money(e.get("ot_hours")), 2),
-                    round(_money(e.get("regular_earnings")), 2),
-                    round(_money(e.get("ot_earnings")), 2),
+                    round(_money(e.get("base_earnings")), 2),
+                    round(_money(e.get("ot_premium")), 2),
                     round(_money(e.get("gross_pay")), 2),
                     round(_money(e.get("employer_taxes")), 2),
                     round(_money(e.get("total_payroll_cost")), 2),
@@ -1520,7 +1516,7 @@ def build_payroll_report_html(report: dict) -> str:
   <div class="kpi-label">OT</div>
   <div class="kpi-value">{fmt_hours(ot.get('ot_hours') if ot.get('ot_hours') is not None else ot.get('value'))}</div>
   <div class="kpi-prev">{_money(ot.get('ot_pct_of_hours')):.2f}% of hours</div>
-  <div class="kpi-prev">OT Earnings {fmt_money(ot.get('ot_earnings'))}</div>
+  <div class="kpi-prev">OT Premium {fmt_money(ot.get('ot_premium'))}</div>
 </div>"""
 
     def _fmt_rate(val):
@@ -1548,8 +1544,8 @@ def build_payroll_report_html(report: dict) -> str:
             + cell(c.get("head_count") or c.get("worker_count") or 0)
             + cell(c.get("regular_hours"), hrs=True)
             + cell(c.get("ot_hours"), hrs=True)
-            + cell(c.get("regular_earnings"), money=True)
-            + cell(c.get("ot_earnings"), money=True)
+            + cell(c.get("base_earnings"), money=True)
+            + cell(c.get("ot_premium"), money=True)
             + f"<td class='num'>{b}{fmt_money(c.get('gross_pay'))}{other_note}{e}</td>"
             + cell(c.get("employer_taxes"), money=True)
             + cell(c.get("total_payroll_cost"), money=True)
@@ -1570,7 +1566,7 @@ def build_payroll_report_html(report: dict) -> str:
 <table class="cmp">
 <thead><tr>
   <th>Category</th><th>HC</th><th>Regular Hrs</th><th>OT Hrs</th>
-  <th>Regular Earnings</th><th>OT Earnings</th><th>Gross</th>
+  <th>Regular/Base Earnings</th><th>OT Premium</th><th>Gross</th>
   <th>Employer Tax</th><th>Total Cost</th>
   <th>Avg Employer Cost</th>
 </tr></thead>

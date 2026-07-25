@@ -179,8 +179,8 @@ const WORKFORCE_HEADERS = [
   "% Cost",
   "Regular Hrs",
   "OT Hrs",
-  "Regular Earnings",
-  "OT Earnings",
+  "Regular/Base Earnings",
+  "OT Premium",
   "Gross",
   "Employer Tax",
   "Total Cost",
@@ -189,7 +189,15 @@ const WORKFORCE_HEADERS = [
 
 const RECON_HEADERS = ["Category", "Base Earnings", "OT Premium"];
 
-const EMPLOYEE_HEADERS = ["Employee", "Reg Hrs", "OT Hrs", "Regular Earnings", "OT Earnings", "Gross", "Total Cost"];
+const EMPLOYEE_HEADERS = [
+  "Employee",
+  "Reg Hrs",
+  "OT Hrs",
+  "Regular/Base Earnings",
+  "OT Premium",
+  "Gross",
+  "Total Cost",
+];
 
 function pctDelta(v) {
   if (v == null || !Number.isFinite(Number(v))) return "—";
@@ -395,12 +403,12 @@ export default function PayrollReportAnalyticsDashboard({
           />
           <OtChip label="OT % of Hours" value={ot.ot_pct_of_hours} kind="pct" previous={null} />
           <OtChip
-            label="OT Earnings"
-            value={ot.ot_earnings}
+            label="OT Premium"
+            value={ot.ot_premium}
             kind="money"
-            previous={ot.previous_ot_earnings}
-            diff={ot.ot_earnings_diff}
-            diffPct={ot.ot_earnings_pct}
+            previous={ot.previous_ot_premium}
+            diff={ot.ot_premium_diff}
+            diffPct={ot.ot_premium_pct}
           />
         </Stack>
       ) : null}
@@ -444,8 +452,8 @@ export default function PayrollReportAnalyticsDashboard({
                         <TableCell>{emp.employee_name}</TableCell>
                         <TableCell align="right">{hours(emp.regular_hours)}</TableCell>
                         <TableCell align="right">{hours(emp.ot_hours)}</TableCell>
-                        <TableCell align="right">{money(emp.regular_earnings)}</TableCell>
-                        <TableCell align="right">{money(emp.ot_earnings)}</TableCell>
+                        <TableCell align="right">{money(emp.base_earnings)}</TableCell>
+                        <TableCell align="right">{money(emp.ot_premium)}</TableCell>
                         <TableCell align="right">{money(emp.gross_pay)}</TableCell>
                         <TableCell align="right">{money(emp.total_payroll_cost)}</TableCell>
                       </TableRow>
@@ -503,8 +511,8 @@ export default function PayrollReportAnalyticsDashboard({
                         </TableCell>
                         <TableCell align="right">{hours(c.regular_hours)}</TableCell>
                         <TableCell align="right">{hours(c.ot_hours)}</TableCell>
-                        <TableCell align="right">{money(c.regular_earnings)}</TableCell>
-                        <TableCell align="right">{money(c.ot_earnings)}</TableCell>
+                        <TableCell align="right">{money(c.base_earnings)}</TableCell>
+                        <TableCell align="right">{money(c.ot_premium)}</TableCell>
                         <TableCell align="right">{money(c.gross_pay)}</TableCell>
                         <TableCell align="right">{money(c.employer_taxes)}</TableCell>
                         <TableCell align="right">{money(c.total_payroll_cost)}</TableCell>
