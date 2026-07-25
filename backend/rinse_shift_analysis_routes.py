@@ -30,6 +30,24 @@ def _public_server_error(user_message: str, exc: BaseException):
     return jsonify({"error": user_message}), 500
 
 
+def roles_from_user(me) -> set[str]:
+    """Normalize ``me.roles`` / ``me.role`` to an uppercased string set.
+
+    ``roles`` may arrive as a list (portal users) or a comma-separated string.
+    Never put a list into a set literal — that raises ``unhashable type: 'list'``.
+    """
+    if not isinstance(me, dict):
+        return set()
+    raw = me.get("roles")
+    if raw is None or raw == "":
+        raw = me.get("role") or []
+    if isinstance(raw, str):
+        return {part.strip().upper() for part in raw.split(",") if part.strip()}
+    if isinstance(raw, (list, tuple, set)):
+        return {str(r).upper() for r in raw if r is not None and str(r).strip()}
+    return {str(raw).upper()} if raw else set()
+
+
 def register_rinse_shift_analysis_routes(
     app,
     *,
@@ -505,13 +523,7 @@ def register_rinse_shift_analysis_routes(
             conn.close()
 
     def _require_manager_or_admin(me) -> tuple[bool, Any, int | None]:
-        roles = set()
-        if isinstance(me, dict):
-            raw = me.get("roles") or me.get("role") or []
-            if isinstance(raw, str):
-                roles = {raw.upper()}
-            elif isinstance(raw, (list, tuple, set)):
-                roles = {str(r).upper() for r in raw}
+        roles = roles_from_user(me)
         if roles.intersection({"ADMIN", "OPS", "SUPER_ADMIN", "PLATFORM_ADMIN", "MANAGER"}):
             return True, None, None
         role_blob = " ".join(sorted(roles))
@@ -734,16 +746,9 @@ def register_rinse_shift_analysis_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            roles = {(me.get("roles") or me.get("role") or "")} if isinstance(me, dict) else set()
-            if isinstance(me, dict) and isinstance(me.get("roles"), list):
-                roles = {str(r).upper() for r in me.get("roles")}
-            else:
-                roles = {str(x).upper() for x in str(me.get("role") if isinstance(me, dict) else "").split(",") if x}
-            if not roles.intersection({"ADMIN", "OPS", "SUPER_ADMIN", "PLATFORM_ADMIN", "MANAGER"}):
-                # Also allow if username-style admin roles present on me.roles string
-                role_blob = " ".join(sorted(roles)).upper()
-                if "ADMIN" not in role_blob and "OPS" not in role_blob and "MANAGER" not in role_blob:
-                    return jsonify({"error": "forbidden"}), 403
+            ok_roles, role_err, role_code = _require_manager_or_admin(me)
+            if not ok_roles:
+                return role_err, role_code
             org = user_org_id(me)
             body = request.get_json(silent=True) or {}
             raw_day = body.get("date") or body.get("selected_date_et")
