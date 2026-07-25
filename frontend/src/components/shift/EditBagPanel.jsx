@@ -34,6 +34,7 @@ import {
   validateEditBagDraft,
 } from "./editBagHelpers";
 import HdReviewFields, { validateHdReviewDraft } from "./HdReviewFields";
+import HdReviewPanel from "./HdReviewPanel";
 
 function money(v) {
   const n = Number(v);
@@ -577,6 +578,21 @@ export default function EditBagPanel({
       <Alert severity="info" sx={{ mb: 1 }}>
         Shift is closed — reopen to review this bag.
       </Alert>
+    );
+  }
+
+  // HD uses a separate mobile-first review experience — never the WF modal.
+  if (isHd) {
+    return (
+      <HdReviewPanel
+        bag={bag}
+        selectedDateEt={selectedDateEt}
+        readOnly={readOnly}
+        onCancel={onCancel}
+        onSaved={onSaved}
+        onError={onError}
+        onUndo={onUndo}
+      />
     );
   }
 

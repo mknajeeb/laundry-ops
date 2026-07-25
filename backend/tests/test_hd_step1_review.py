@@ -92,17 +92,31 @@ def test_revenue_rules_and_rounding():
 
 
 def test_cannot_complete_without_any_required_field():
+    base = {
+        "item_count": 1,
+        "total_revenue": 1,
+        "washed_by_user_id": 1,
+        "folded_by_user_id": 1,
+        "washed_date_et": "2026-07-25",
+        "folded_date_et": "2026-07-25",
+    }
     assert "item_count_required" in validate_step1_hd_completion_fields(
-        {"total_revenue": 1, "washed_by_user_id": 1, "folded_by_user_id": 1}
+        {**base, "item_count": None}
     )
     assert "total_revenue_required" in validate_step1_hd_completion_fields(
-        {"item_count": 1, "washed_by_user_id": 1, "folded_by_user_id": 1}
+        {**base, "total_revenue": None}
     )
     assert "washed_by_required" in validate_step1_hd_completion_fields(
-        {"item_count": 1, "total_revenue": 1, "folded_by_user_id": 1}
+        {**base, "washed_by_user_id": None}
     )
     assert "folded_by_required" in validate_step1_hd_completion_fields(
-        {"item_count": 1, "total_revenue": 1, "washed_by_user_id": 1}
+        {**base, "folded_by_user_id": None}
+    )
+    assert "washed_date_required" in validate_step1_hd_completion_fields(
+        {**base, "washed_date_et": None}
+    )
+    assert "folded_date_required" in validate_step1_hd_completion_fields(
+        {**base, "folded_date_et": None}
     )
 
 
@@ -114,6 +128,8 @@ def test_zero_item_count_and_zero_revenue_accepted():
                 "total_revenue": Decimal("0.00"),
                 "washed_by_user_id": 3,
                 "folded_by_user_id": 4,
+                "washed_date_et": "2026-07-25",
+                "folded_date_et": "2026-07-25",
             }
         )
         == []
@@ -128,6 +144,8 @@ def test_same_employee_allowed_for_washed_and_folded():
                 "total_revenue": 9.5,
                 "washed_by_user_id": 42,
                 "folded_by_user_id": 42,
+                "washed_date_et": "2026-07-25",
+                "folded_date_et": "2026-07-25",
             }
         )
         == []
@@ -167,6 +185,8 @@ def test_completed_contributes_items_and_revenue_partial_does_not():
             "revenue": 5,
             "washed_by_user_id": 1,
             "folded_by_user_id": 2,
+            "washed_date_et": "2026-07-24",
+            "folded_date_et": "2026-07-24",
         }
     )
     assert complete["included_in_authoritative_totals"] is True
@@ -301,6 +321,8 @@ def test_save_mark_completed_happy_path():
                 "washed_by_name_snapshot": "Ann",
                 "folded_by_user_id": 11,
                 "folded_by_name_snapshot": "Ann",
+                "washed_date_et": "2026-07-24",
+                "folded_date_et": "2026-07-24",
                 "version": 1,
             },
         },
@@ -316,6 +338,8 @@ def test_save_mark_completed_happy_path():
                 "total_revenue": 0,
                 "washed_by_user_id": 11,
                 "folded_by_user_id": 11,
+                "washed_date_et": "2026-07-24",
+                "folded_date_et": "2026-07-24",
                 "reason": "complete",
             },
             require_complete=True,
@@ -328,7 +352,10 @@ def test_save_mark_completed_happy_path():
     assert payload["revenue"] == 0.0
     assert payload["washed_by_user_id"] == 11
     assert payload["folded_by_user_id"] == 11
+    assert payload["washed_date_et"] == "2026-07-24"
+    assert payload["folded_date_et"] == "2026-07-24"
     assert payload["defer_complete"] is False
+    assert payload["require_business_dates"] is True
 
 
 def test_save_review_defers_complete_until_mark_completed():
@@ -426,11 +453,15 @@ def test_completed_review_stores_employee_snapshots():
             "washed_by_name_snapshot": "Washed Name",
             "folded_by_user_id": 8,
             "folded_by_name_snapshot": "Folded Name",
+            "washed_date_et": date(2026, 7, 24),
+            "folded_date_et": date(2026, 7, 24),
             "version": 3,
         }
     )
     assert fact["washed_by_name_snapshot"] == "Washed Name"
     assert fact["folded_by_name_snapshot"] == "Folded Name"
+    assert fact["washed_date_et"] == "2026-07-24"
+    assert fact["folded_date_et"] == "2026-07-24"
     assert fact["included_in_authoritative_totals"] is True
     assert fact["review_status"] == STEP1_COMPLETED
 
@@ -453,6 +484,8 @@ def test_inactive_or_cross_org_employee_rejected_for_new_selection():
                 "total_revenue": 1,
                 "washed_by_user_id": 99,
                 "folded_by_user_id": 99,
+                "washed_date_et": "2026-07-24",
+                "folded_date_et": "2026-07-24",
             },
             require_complete=True,
         )
@@ -468,6 +501,8 @@ def test_inactive_employee_may_be_retained_on_existing_record():
         "revenue": 1.0,
         "washed_by_user_id": 99,
         "folded_by_user_id": 99,
+        "washed_date_et": "2026-07-24",
+        "folded_date_et": "2026-07-24",
         "version": 1,
     }
     with patch(
@@ -497,6 +532,8 @@ def test_inactive_employee_may_be_retained_on_existing_record():
                 "total_revenue": 1,
                 "washed_by_user_id": 99,
                 "folded_by_user_id": 99,
+                "washed_date_et": "2026-07-24",
+                "folded_date_et": "2026-07-24",
             },
             require_complete=True,
         )
@@ -539,6 +576,8 @@ def _valid_completed_hd_record(**overrides):
         "revenue": 12.5,
         "washed_by_user_id": 11,
         "folded_by_user_id": 12,
+        "washed_date_et": "2026-07-24",
+        "folded_date_et": "2026-07-24",
     }
     base.update(overrides)
     return base
@@ -619,6 +658,22 @@ def test_hd_completed_missing_folded_by_fails_invariant():
     assert public["review_status"] == STEP1_REVIEW_REQUIRED
 
 
+def test_hd_completed_missing_washed_date_fails_invariant():
+    record = _valid_completed_hd_record(washed_date_et=None)
+    missing = hd_completed_authoritative_field_violations(record)
+    assert "washed_date_et" in missing
+    with pytest.raises(AssertionError):
+        assert_hd_completed_implies_authoritative_fields(record)
+
+
+def test_hd_completed_missing_folded_date_fails_invariant():
+    record = _valid_completed_hd_record(folded_date_et=None)
+    missing = hd_completed_authoritative_field_violations(record)
+    assert "folded_date_et" in missing
+    with pytest.raises(AssertionError):
+        assert_hd_completed_implies_authoritative_fields(record)
+
+
 def test_hd_valid_completed_record_passes_invariant():
     record = _valid_completed_hd_record()
     assert hd_completed_authoritative_field_violations(record) == []
@@ -631,6 +686,8 @@ def test_hd_valid_completed_record_passes_invariant():
             "revenue": 12.5,
             "washed_by_user_id": 11,
             "folded_by_user_id": 12,
+            "washed_date_et": "2026-07-24",
+            "folded_date_et": "2026-07-24",
         }
     )
     assert public["review_status"] == STEP1_COMPLETED
@@ -654,6 +711,8 @@ def test_hd_partition_incomplete_complete_stays_review_required():
             "revenue": 8.0,
             "washed_by_user_id": 1,
             "folded_by_user_id": 2,
+            "washed_date_et": "2026-07-24",
+            "folded_date_et": "2026-07-24",
         },
         "HDBAD": {
             "status": STATUS_COMPLETE,

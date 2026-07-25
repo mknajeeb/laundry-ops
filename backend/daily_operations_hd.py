@@ -17,7 +17,7 @@ from backend.daily_operations import (
     ensure_daily_operations_tables,
     _norm_bag,
 )
-from backend.ta_helpers import table_exists
+from backend.ta_helpers import table_exists, table_has_column
 from backend.wf_mtd_pricing import money
 
 MONEY_Q = Decimal("0.01")
@@ -55,9 +55,11 @@ def ensure_hd_production_tables(cursor) -> None:
               washed_by_user_id INT NULL,
               washed_by_name_snapshot VARCHAR(255) NULL,
               washed_by_override_name VARCHAR(255) NULL,
+              washed_date_et DATE NULL,
               folded_by_user_id INT NULL,
               folded_by_name_snapshot VARCHAR(255) NULL,
               folded_by_override_name VARCHAR(255) NULL,
+              folded_date_et DATE NULL,
               total_items INT NULL,
               revenue DECIMAL(12,2) NULL,
               zero_items_reason_code VARCHAR(64) NULL,
@@ -76,6 +78,25 @@ def ensure_hd_production_tables(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+    else:
+        from backend.ta_helpers import invalidate_schema_cache, table_has_column
+
+        altered = False
+        for col in ("washed_date_et", "folded_date_et"):
+            if table_has_column(cursor, "hd_day_bag_production", col):
+                continue
+            try:
+                cursor.execute(
+                    f"ALTER TABLE hd_day_bag_production ADD COLUMN {col} DATE NULL"
+                )
+                altered = True
+            except Exception as exc:
+                # Concurrent migrate / stale schema cache: column may already exist.
+                if "Duplicate column" not in str(exc):
+                    raise
+                altered = True
+        if altered:
+            invalidate_schema_cache()
     if not table_exists(cursor, "hd_day_bag_production_audits"):
         cursor.execute(
             """
@@ -203,22 +224,24 @@ def list_org_employee_options(cursor, organization_id: int) -> list[dict[str, An
     except Exception:
         is_portal_system_user = None  # type: ignore
 
-    has_active = False
-    try:
-        from backend.ta_helpers import table_has_column
-
-        has_active = table_has_column(cursor, "users", "active")
-    except Exception:
-        has_active = False
-
-    sql = """
-        SELECT id, username, display_name, email
+    has_active = table_has_column(cursor, "users", "active")
+    has_email = table_has_column(cursor, "users", "email")
+    select_cols = ["id", "username", "display_name"]
+    if has_email:
+        select_cols.append("email")
+    order_expr = (
+        "COALESCE(display_name, username, email)"
+        if has_email
+        else "COALESCE(display_name, username)"
+    )
+    sql = f"""
+        SELECT {", ".join(select_cols)}
         FROM users
         WHERE organization_id = %s
     """
     if has_active:
         sql += " AND COALESCE(active, 1) = 1"
-    sql += " ORDER BY COALESCE(display_name, username, email), id"
+    sql += f" ORDER BY {order_expr}, id"
     cursor.execute(sql, (org,))
     for row in cursor.fetchall() or []:
         uid = int(row["id"])
@@ -254,9 +277,11 @@ def list_org_employee_options(cursor, organization_id: int) -> list[dict[str, An
 
 
 def resolve_employee_display_name(cursor, organization_id: int, user_id: int) -> str:
+    has_email = table_has_column(cursor, "users", "email")
+    cols = "display_name, username, email" if has_email else "display_name, username"
     cursor.execute(
-        """
-        SELECT display_name, username, email FROM users
+        f"""
+        SELECT {cols} FROM users
         WHERE id = %s AND organization_id = %s
         LIMIT 1
         """,
@@ -280,6 +305,20 @@ def _has_worker(user_id: Any, override_name: Any) -> bool:
     return bool(str(override_name or "").strip())
 
 
+def _as_et_date(raw: Any) -> date | None:
+    """Parse ET business date (YYYY-MM-DD). Blank → None."""
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    try:
+        return date.fromisoformat(str(raw).strip()[:10])
+    except ValueError:
+        raise ValueError("invalid_business_date") from None
+
+
 def derive_hd_production_status(fields: Mapping[str, Any]) -> str:
     """Server-derived status from production field presence + validation readiness."""
     washed = _has_worker(fields.get("washed_by_user_id"), fields.get("washed_by_override_name"))
@@ -288,8 +327,13 @@ def derive_hd_production_status(fields: Mapping[str, Any]) -> str:
     revenue = fields.get("revenue")
     has_items = items is not None and str(items) != ""
     has_revenue = revenue is not None and str(revenue) != ""
+    require_dates = bool(fields.get("require_business_dates"))
+    washed_date = fields.get("washed_date_et")
+    folded_date = fields.get("folded_date_et")
+    has_washed_date = washed_date not in (None, "")
+    has_folded_date = folded_date not in (None, "")
 
-    any_entered = washed or folded or has_items or has_revenue
+    any_entered = washed or folded or has_items or has_revenue or has_washed_date or has_folded_date
     if not any_entered and not str(fields.get("notes") or "").strip():
         # Notes alone do not count as production fields for NOT_RECORDED.
         return STATUS_NOT_RECORDED
@@ -297,7 +341,14 @@ def derive_hd_production_status(fields: Mapping[str, Any]) -> str:
         return STATUS_NOT_RECORDED
 
     errors = validate_hd_production_fields(fields, require_complete=True)
-    if not errors and washed and folded and has_items and has_revenue:
+    if (
+        not errors
+        and washed
+        and folded
+        and has_items
+        and has_revenue
+        and (not require_dates or (has_washed_date and has_folded_date))
+    ):
         return STATUS_COMPLETE
     return STATUS_PARTIALLY_RECORDED
 
@@ -442,9 +493,11 @@ def _fact_public(fact: Mapping[str, Any] | None, *, membership: Mapping[str, Any
             "washed_by_user_id": None,
             "washed_by_name_snapshot": None,
             "washed_by_override_name": None,
+            "washed_date_et": None,
             "folded_by_user_id": None,
             "folded_by_name_snapshot": None,
             "folded_by_override_name": None,
+            "folded_date_et": None,
             "total_items": None,
             "revenue": None,
             "zero_items_reason_code": None,
@@ -468,9 +521,19 @@ def _fact_public(fact: Mapping[str, Any] | None, *, membership: Mapping[str, Any
         "washed_by_user_id": fact.get("washed_by_user_id"),
         "washed_by_name_snapshot": fact.get("washed_by_name_snapshot"),
         "washed_by_override_name": fact.get("washed_by_override_name"),
+        "washed_date_et": (
+            fact.get("washed_date_et").isoformat()
+            if isinstance(fact.get("washed_date_et"), date)
+            else (str(fact.get("washed_date_et"))[:10] if fact.get("washed_date_et") else None)
+        ),
         "folded_by_user_id": fact.get("folded_by_user_id"),
         "folded_by_name_snapshot": fact.get("folded_by_name_snapshot"),
         "folded_by_override_name": fact.get("folded_by_override_name"),
+        "folded_date_et": (
+            fact.get("folded_date_et").isoformat()
+            if isinstance(fact.get("folded_date_et"), date)
+            else (str(fact.get("folded_date_et"))[:10] if fact.get("folded_date_et") else None)
+        ),
         "total_items": int(fact["total_items"]) if fact.get("total_items") is not None else None,
         "revenue": float(rev) if rev is not None else None,
         "zero_items_reason_code": fact.get("zero_items_reason_code"),
@@ -804,6 +867,7 @@ def save_hd_production(
         **folded,
         "total_items": payload.get("total_items"),
         "revenue": payload.get("revenue"),
+        "require_business_dates": bool(payload.get("require_business_dates")),
         "zero_items_reason_code": str(payload.get("zero_items_reason_code") or "").strip().upper()
         or None,
         "zero_items_reason_note": str(payload.get("zero_items_reason_note") or "").strip() or None,
@@ -813,6 +877,22 @@ def save_hd_production(
         "notes": str(payload.get("notes") or "").strip() or None,
         "reason": reason,
     }
+    # Preserve existing business dates unless Step-1 (or another caller) sends them.
+    try:
+        if "washed_date_et" in payload:
+            fields["washed_date_et"] = _as_et_date(payload.get("washed_date_et"))
+        elif fact:
+            fields["washed_date_et"] = fact.get("washed_date_et")
+        else:
+            fields["washed_date_et"] = None
+        if "folded_date_et" in payload:
+            fields["folded_date_et"] = _as_et_date(payload.get("folded_date_et"))
+        elif fact:
+            fields["folded_date_et"] = fact.get("folded_date_et")
+        else:
+            fields["folded_date_et"] = None
+    except ValueError as exc:
+        return {"ok": False, "error": "validation_failed", "errors": [str(exc)]}
     errors.extend(validate_hd_production_fields(fields, require_complete=False))
     if errors:
         return {"ok": False, "error": "validation_failed", "errors": errors}
@@ -864,7 +944,9 @@ def save_hd_production(
             UPDATE hd_day_bag_production SET
               day_bag_id=%s,
               washed_by_user_id=%s, washed_by_name_snapshot=%s, washed_by_override_name=%s,
+              washed_date_et=%s,
               folded_by_user_id=%s, folded_by_name_snapshot=%s, folded_by_override_name=%s,
+              folded_date_et=%s,
               total_items=%s, revenue=%s,
               zero_items_reason_code=%s, zero_items_reason_note=%s,
               zero_revenue_reason_code=%s, zero_revenue_reason_note=%s,
@@ -876,9 +958,11 @@ def save_hd_production(
                 fields.get("washed_by_user_id"),
                 fields.get("washed_by_name_snapshot"),
                 fields.get("washed_by_override_name"),
+                fields.get("washed_date_et"),
                 fields.get("folded_by_user_id"),
                 fields.get("folded_by_name_snapshot"),
                 fields.get("folded_by_override_name"),
+                fields.get("folded_date_et"),
                 items_v,
                 float(rev_v) if rev_v is not None else None,
                 fields.get("zero_items_reason_code"),
@@ -899,7 +983,9 @@ def save_hd_production(
             INSERT INTO hd_day_bag_production (
               organization_id, operations_date_et, day_bag_id, bag_id,
               washed_by_user_id, washed_by_name_snapshot, washed_by_override_name,
+              washed_date_et,
               folded_by_user_id, folded_by_name_snapshot, folded_by_override_name,
+              folded_date_et,
               total_items, revenue,
               zero_items_reason_code, zero_items_reason_note,
               zero_revenue_reason_code, zero_revenue_reason_note,
@@ -907,7 +993,9 @@ def save_hd_production(
             ) VALUES (
               %s,%s,%s,%s,
               %s,%s,%s,
+              %s,
               %s,%s,%s,
+              %s,
               %s,%s,
               %s,%s,
               %s,%s,
@@ -922,9 +1010,11 @@ def save_hd_production(
                 fields.get("washed_by_user_id"),
                 fields.get("washed_by_name_snapshot"),
                 fields.get("washed_by_override_name"),
+                fields.get("washed_date_et"),
                 fields.get("folded_by_user_id"),
                 fields.get("folded_by_name_snapshot"),
                 fields.get("folded_by_override_name"),
+                fields.get("folded_date_et"),
                 items_v,
                 float(rev_v) if rev_v is not None else None,
                 fields.get("zero_items_reason_code"),
@@ -1045,7 +1135,9 @@ def undo_hd_production(
             """
             UPDATE hd_day_bag_production SET
               washed_by_user_id=NULL, washed_by_name_snapshot=NULL, washed_by_override_name=NULL,
+              washed_date_et=NULL,
               folded_by_user_id=NULL, folded_by_name_snapshot=NULL, folded_by_override_name=NULL,
+              folded_date_et=NULL,
               total_items=NULL, revenue=NULL,
               zero_items_reason_code=NULL, zero_items_reason_note=NULL,
               zero_revenue_reason_code=NULL, zero_revenue_reason_note=NULL,
@@ -1059,7 +1151,9 @@ def undo_hd_production(
             """
             UPDATE hd_day_bag_production SET
               washed_by_user_id=%s, washed_by_name_snapshot=%s, washed_by_override_name=%s,
+              washed_date_et=%s,
               folded_by_user_id=%s, folded_by_name_snapshot=%s, folded_by_override_name=%s,
+              folded_date_et=%s,
               total_items=%s, revenue=%s,
               zero_items_reason_code=%s, zero_items_reason_note=%s,
               zero_revenue_reason_code=%s, zero_revenue_reason_note=%s,
@@ -1070,9 +1164,11 @@ def undo_hd_production(
                 before.get("washed_by_user_id"),
                 before.get("washed_by_name_snapshot"),
                 before.get("washed_by_override_name"),
+                before.get("washed_date_et"),
                 before.get("folded_by_user_id"),
                 before.get("folded_by_name_snapshot"),
                 before.get("folded_by_override_name"),
+                before.get("folded_date_et"),
                 before.get("total_items"),
                 before.get("revenue"),
                 before.get("zero_items_reason_code"),

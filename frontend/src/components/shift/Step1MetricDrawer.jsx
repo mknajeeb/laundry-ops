@@ -36,6 +36,7 @@ import { PayrollDateTimeField } from "../PayrollDateTimeField";
 import BulkWorkitemEntrySection from "./BulkWorkitemEntrySection";
 import CopyableBagId from "../CopyableBagId";
 import EditBagPanel from "./EditBagPanel";
+import HdReviewPanel from "./HdReviewPanel";
 import { formatWeightObservedEt, mergeBagListRow } from "./editBagHelpers";
 import { actionsForBagStatus } from "./step1BagActions";
 import { friendlyApiError } from "../../utils/shiftMonitorHelpers";
@@ -529,8 +530,14 @@ export default function Step1MetricDrawer({
                         {bag.hd_review.washed_by_name_snapshot
                           ? ` · Washed ${bag.hd_review.washed_by_name_snapshot}`
                           : ""}
+                        {bag.hd_review.washed_date_et
+                          ? ` (${bag.hd_review.washed_date_et})`
+                          : ""}
                         {bag.hd_review.folded_by_name_snapshot
                           ? ` · Folded ${bag.hd_review.folded_by_name_snapshot}`
+                          : ""}
+                        {bag.hd_review.folded_date_et
+                          ? ` (${bag.hd_review.folded_date_et})`
                           : ""}
                       </Typography>
                     ) : null}
@@ -573,8 +580,10 @@ export default function Step1MetricDrawer({
                         {bag.hd_review?.total_revenue != null
                           ? `$${Number(bag.hd_review.total_revenue).toFixed(2)}`
                           : "—"}{" "}
-                        · Washed By {bag.hd_review?.washed_by_name_snapshot || "—"} · Folded By{" "}
-                        {bag.hd_review?.folded_by_name_snapshot || "—"}
+                        · Washed By {bag.hd_review?.washed_by_name_snapshot || "—"}
+                        {bag.hd_review?.washed_date_et ? ` (${bag.hd_review.washed_date_et})` : ""}
+                        · Folded By {bag.hd_review?.folded_by_name_snapshot || "—"}
+                        {bag.hd_review?.folded_date_et ? ` (${bag.hd_review.folded_date_et})` : ""}
                       </Typography>
                     </>
                   ) : null}
@@ -665,26 +674,46 @@ export default function Step1MetricDrawer({
                   })()}
 
                   {!readOnly && editingBag === bag.bag_id ? (
-                    <EditBagPanel
-                      bag={bag}
-                      selectedDateEt={selectedDateEt}
-                      catalog={catalog}
-                      readOnly={readOnly}
-                      initialOutcome={reviewInitialOutcome}
-                      onCancel={() => {
-                        setEditingBag(null);
-                        setReviewInitialOutcome(null);
-                      }}
-                      onError={(msg) => setError(msg)}
-                      onReloadLatest={async (bagId) => loadBagDetail(bagId, { force: true })}
-                      onSaved={async () => {
-                        setReviewInitialOutcome(null);
-                        await refreshBagAfterEdit(bag.bag_id, { closeEditor: true });
-                      }}
-                      onUndo={async () => {
-                        await refreshBagAfterEdit(bag.bag_id, { closeEditor: false });
-                      }}
-                    />
+                    String(bag.service_type || "").toUpperCase() === "HD" ? (
+                      <HdReviewPanel
+                        bag={bag}
+                        selectedDateEt={selectedDateEt}
+                        readOnly={readOnly}
+                        onCancel={() => {
+                          setEditingBag(null);
+                          setReviewInitialOutcome(null);
+                        }}
+                        onError={(msg) => setError(msg)}
+                        onSaved={async () => {
+                          setReviewInitialOutcome(null);
+                          await refreshBagAfterEdit(bag.bag_id, { closeEditor: true });
+                        }}
+                        onUndo={async () => {
+                          await refreshBagAfterEdit(bag.bag_id, { closeEditor: false });
+                        }}
+                      />
+                    ) : (
+                      <EditBagPanel
+                        bag={bag}
+                        selectedDateEt={selectedDateEt}
+                        catalog={catalog}
+                        readOnly={readOnly}
+                        initialOutcome={reviewInitialOutcome}
+                        onCancel={() => {
+                          setEditingBag(null);
+                          setReviewInitialOutcome(null);
+                        }}
+                        onError={(msg) => setError(msg)}
+                        onReloadLatest={async (bagId) => loadBagDetail(bagId, { force: true })}
+                        onSaved={async () => {
+                          setReviewInitialOutcome(null);
+                          await refreshBagAfterEdit(bag.bag_id, { closeEditor: true });
+                        }}
+                        onUndo={async () => {
+                          await refreshBagAfterEdit(bag.bag_id, { closeEditor: false });
+                        }}
+                      />
+                    )
                   ) : null}
 
                   {!readOnly && actionBag === bag.bag_id ? (

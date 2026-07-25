@@ -45,7 +45,9 @@ HD_COMPLETED_REQUIRED_FIELDS = (
     "item_count",
     "total_revenue",
     "washed_by_user_id",
+    "washed_date_et",
     "folded_by_user_id",
+    "folded_date_et",
 )
 
 
@@ -72,7 +74,8 @@ def hd_completed_authoritative_field_violations(
     """
     Business rule: HD COMPLETED ⇒ all authoritative production fields present.
 
-    Required: item_count, total_revenue, washed_by_user_id, folded_by_user_id.
+    Required: item_count, total_revenue, washed_by_user_id, washed_date_et,
+    folded_by_user_id, folded_date_et.
     Blank/missing fails; intentional zeros are valid when the field is present.
 
     Returns missing field names when the record claims COMPLETE/COMPLETED.
@@ -86,14 +89,20 @@ def hd_completed_authoritative_field_violations(
     revenue = record.get("total_revenue", record.get("revenue"))
     washed = record.get("washed_by_user_id")
     folded = record.get("folded_by_user_id")
+    washed_date = record.get("washed_date_et")
+    folded_date = record.get("folded_date_et")
     if items is None:
         missing.append("item_count")
     if revenue is None:
         missing.append("total_revenue")
     if washed in (None, ""):
         missing.append("washed_by_user_id")
+    if washed_date in (None, ""):
+        missing.append("washed_date_et")
     if folded in (None, ""):
         missing.append("folded_by_user_id")
+    if folded_date in (None, ""):
+        missing.append("folded_date_et")
     return missing
 
 
@@ -104,12 +113,12 @@ def assert_hd_completed_implies_authoritative_fields(
     missing = hd_completed_authoritative_field_violations(record)
     assert not missing, (
         "HD COMPLETED requires item_count, total_revenue, washed_by_user_id, "
-        f"and folded_by_user_id; missing={missing}"
+        f"washed_date_et, folded_by_user_id, and folded_date_et; missing={missing}"
     )
 
 
 def is_authoritative_hd_complete(fact: Mapping[str, Any] | None) -> bool:
-    """True only when production status is COMPLETE and all four fields exist."""
+    """True only when production status is COMPLETE and all six fields exist."""
     if not isinstance(fact, Mapping):
         return False
     if str(fact.get("status") or "").strip().upper() != STATUS_COMPLETE:
@@ -270,8 +279,10 @@ def public_hd_review_fact(fact: Mapping[str, Any] | None) -> dict[str, Any]:
             "revenue": None,
             "washed_by_user_id": None,
             "washed_by_name_snapshot": None,
+            "washed_date_et": None,
             "folded_by_user_id": None,
             "folded_by_name_snapshot": None,
+            "folded_date_et": None,
             "version": 0,
             "included_in_authoritative_totals": False,
         }
@@ -288,6 +299,8 @@ def public_hd_review_fact(fact: Mapping[str, Any] | None) -> dict[str, Any]:
                 "revenue": rev,
                 "washed_by_user_id": fact.get("washed_by_user_id"),
                 "folded_by_user_id": fact.get("folded_by_user_id"),
+                "washed_date_et": fact.get("washed_date_et"),
+                "folded_date_et": fact.get("folded_date_et"),
             }
         )
     ):
@@ -303,8 +316,18 @@ def public_hd_review_fact(fact: Mapping[str, Any] | None) -> dict[str, Any]:
         "revenue": float(rev) if rev is not None else None,
         "washed_by_user_id": fact.get("washed_by_user_id"),
         "washed_by_name_snapshot": fact.get("washed_by_name_snapshot"),
+        "washed_date_et": (
+            fact.get("washed_date_et").isoformat()
+            if isinstance(fact.get("washed_date_et"), date)
+            else (str(fact.get("washed_date_et"))[:10] if fact.get("washed_date_et") else None)
+        ),
         "folded_by_user_id": fact.get("folded_by_user_id"),
         "folded_by_name_snapshot": fact.get("folded_by_name_snapshot"),
+        "folded_date_et": (
+            fact.get("folded_date_et").isoformat()
+            if isinstance(fact.get("folded_date_et"), date)
+            else (str(fact.get("folded_date_et"))[:10] if fact.get("folded_date_et") else None)
+        ),
         "notes": fact.get("notes"),
         "version": int(fact.get("version") or 0),
         "included_in_authoritative_totals": status == STATUS_COMPLETE,
@@ -318,6 +341,7 @@ def validate_step1_hd_completion_fields(fields: Mapping[str, Any]) -> list[str]:
 
     Blank = incomplete. Zero is valid when the field is present.
     Washed By / Folded By require org employee user ids (no free-text).
+    Washed Date / Folded Date are ET business dates (YYYY-MM-DD).
     """
     errors: list[str] = []
     try:
@@ -341,6 +365,21 @@ def validate_step1_hd_completion_fields(fields: Mapping[str, Any]) -> list[str]:
         errors.append("item_count_required")
     if rev is None:
         errors.append("total_revenue_required")
+
+    from backend.daily_operations_hd import _as_et_date
+
+    for key, err_key in (
+        ("washed_date_et", "washed_date_required"),
+        ("folded_date_et", "folded_date_required"),
+    ):
+        raw = fields.get(key)
+        if raw in (None, ""):
+            errors.append(err_key)
+            continue
+        try:
+            _as_et_date(raw)
+        except ValueError:
+            errors.append(f"invalid_{key}")
     return errors
 
 
@@ -358,7 +397,7 @@ def save_step1_hd_review(
     """
     Save HD review fields via daily_operations_hd.save_hd_production.
 
-    When ``require_complete`` is True (Mark Completed), all four fields must be set.
+    When ``require_complete`` is True (Mark Completed), all six fields must be set.
     Intentional zeros auto-attach MANAGER_OVERRIDE so existing Phase 1C validators
     accept them without changing shared zero-reason rules.
     """
@@ -394,6 +433,8 @@ def save_step1_hd_review(
                 "total_revenue": rev,
                 "washed_by_user_id": body.get("washed_by_user_id"),
                 "folded_by_user_id": body.get("folded_by_user_id"),
+                "washed_date_et": body.get("washed_date_et"),
+                "folded_date_et": body.get("folded_date_et"),
             }
         )
         if gate:
@@ -431,6 +472,14 @@ def save_step1_hd_review(
                     "errors": [f"{role}_by_inactive_or_cross_org"],
                 }
 
+    # Client sends ET business dates (defaulted to selected day in the UI).
+    washed_date = body.get("washed_date_et") if "washed_date_et" in body else None
+    folded_date = body.get("folded_date_et") if "folded_date_et" in body else None
+    if washed_date == "":
+        washed_date = None
+    if folded_date == "":
+        folded_date = None
+
     save_body = {
         "version": body.get("version", 0),
         "reason": str(body.get("reason") or "").strip()
@@ -438,6 +487,9 @@ def save_step1_hd_review(
         "notes": body.get("notes"),
         "washed_by_user_id": body.get("washed_by_user_id") or None,
         "folded_by_user_id": body.get("folded_by_user_id") or None,
+        "washed_date_et": washed_date,
+        "folded_date_et": folded_date,
+        "require_business_dates": True,
         "washed_by_external": False,
         "folded_by_external": False,
         "total_items": items,

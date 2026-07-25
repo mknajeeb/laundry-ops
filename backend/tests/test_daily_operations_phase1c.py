@@ -14,6 +14,8 @@ from backend.daily_operations_hd import (
     STATUS_PARTIALLY_RECORDED,
     compute_hd_day_revenue_totals,
     derive_hd_production_status,
+    list_org_employee_options,
+    resolve_employee_display_name,
     save_hd_production,
     sum_reviewed_wf_workitem_revenue,
     undo_hd_production,
@@ -21,6 +23,35 @@ from backend.daily_operations_hd import (
 )
 
 DAY = date(2026, 7, 23)
+
+
+def test_list_org_employee_options_works_without_users_email_column():
+    """Prod users table has no email — picker/save must not SELECT it unconditionally."""
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [
+        {"id": 7, "username": "ann", "display_name": "Ann"},
+    ]
+    with patch("backend.daily_operations_hd.table_exists", return_value=True), patch(
+        "backend.daily_operations_hd.table_has_column",
+        side_effect=lambda _c, _t, col: col == "active",
+    ), patch(
+        "backend.portal_system_users.is_portal_system_user", return_value=False
+    ):
+        opts = list_org_employee_options(cursor, 3)
+    sql = cursor.execute.call_args[0][0]
+    assert "email" not in sql.lower()
+    assert any(o.get("user_id") == 7 and o.get("display_name") == "Ann" for o in opts)
+
+
+def test_resolve_employee_display_name_works_without_users_email_column():
+    cursor = MagicMock()
+    cursor.fetchone.return_value = {"display_name": "Ann", "username": "ann"}
+    with patch(
+        "backend.daily_operations_hd.table_has_column", return_value=False
+    ):
+        assert resolve_employee_display_name(cursor, 3, 7) == "Ann"
+    sql = cursor.execute.call_args[0][0]
+    assert "email" not in sql.lower()
 
 
 def test_status_not_recorded_when_empty():
