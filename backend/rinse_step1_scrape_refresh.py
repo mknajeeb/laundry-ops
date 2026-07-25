@@ -179,28 +179,33 @@ def _evidence_watermark(
     """Latest relevant imported evidence timestamp for freshness check."""
     stamps: list[datetime] = []
     if import_batch_id is not None and table_exists(cursor, "upload_batches"):
-        cursor.execute(
-            """
-            SELECT confirmed_at, created_at, updated_at
-            FROM upload_batches
-            WHERE organization_id = %s AND batch_id = %s
-            LIMIT 1
-            """,
-            (int(organization_id), int(import_batch_id)),
-        )
-        row = cursor.fetchone() or {}
-        if isinstance(row, dict):
-            for key in ("confirmed_at", "updated_at", "created_at"):
-                v = row.get(key)
-                if isinstance(v, datetime):
-                    stamps.append(v)
+        # Prod schema uses uploaded_at / confirmed_at / updated_at (no created_at).
+        try:
+            cursor.execute(
+                """
+                SELECT confirmed_at, uploaded_at, updated_at
+                FROM upload_batches
+                WHERE organization_id = %s AND batch_id = %s
+                LIMIT 1
+                """,
+                (int(organization_id), int(import_batch_id)),
+            )
+            row = cursor.fetchone() or {}
+            if isinstance(row, dict):
+                for key in ("confirmed_at", "updated_at", "uploaded_at"):
+                    v = row.get(key)
+                    if isinstance(v, datetime):
+                        stamps.append(v)
+        except Exception:
+            pass
     if import_batch_id is not None and table_exists(cursor, "rinse_bag_scan_events"):
         try:
+            # Prod column is source_upload_batch_id (not upload_batch_id).
             cursor.execute(
                 """
                 SELECT MAX(created_at) AS mx
                 FROM rinse_bag_scan_events
-                WHERE organization_id = %s AND upload_batch_id = %s
+                WHERE organization_id = %s AND source_upload_batch_id = %s
                 """,
                 (int(organization_id), int(import_batch_id)),
             )
