@@ -1,8 +1,10 @@
 """HD-only Step-1 day presentation — isolated from WF / Employee Productivity.
 
 Post-cutover HD rules:
-- No HD carryover (prior-day unresolved orders never enter the new ET day).
-- HD workload membership is the HD orders on the day's first valid portal scrape.
+- No prior-day HD carryover (unresolved yesterday does not seed today).
+- Same-day HD admits are allowed any time during the ET day (opening scrape,
+  later portal scrape, same-day HD workload entry, or other qualifying evidence).
+- Prior completed HD order instances stay excluded on later days.
 - Does not mutate WF / wf_rush / wf_non_rush segments or productivity fields.
 """
 
@@ -156,52 +158,44 @@ def _opening_scrape_bag_ids(membership: Mapping[str, Any] | None) -> set[str] | 
     return out
 
 
-def restrict_hd_to_opening_scrape(
+def apply_hd_same_day_membership_policy(
     summary: Mapping[str, Any],
     membership: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """
-    HD workload membership = HD orders on the first valid portal scrape for the day.
+    Keep all remaining HD bags after prior-day carryover strip.
 
-    Same-day ADDED_LATER HD admits are excluded from HD segments (WF unchanged).
+    Fresh start means no yesterday carryover — not midnight-only membership.
+    Opening-scrape AND later same-day HD admits (ADDED_LATER / workload entry /
+    later portal appearance) stay in HD segments. WF unchanged.
     """
     opening = _opening_scrape_bag_ids(membership)
     out = deepcopy(dict(summary or {}))
-    if opening is None:
-        out["hd_policy"] = {
-            **dict(out.get("hd_policy") or {}),
-            "opening_scrape_restricted": False,
-            "reason": "membership_unavailable",
-        }
-        return out
-
     segments = dict(out.get("segments") or {})
-    hd_seg = segments.get("hd") or {}
-    hd_bags = dict(hd_seg.get("bag_ids") or {})
-    current_hd: set[str] = set()
-    for key in ("new_today", "carryover", "completed", "pending", "review_required"):
-        current_hd |= _as_bag_set(hd_bags.get(key))
-    extra = current_hd - opening
-    if extra:
-        for key in _HD_SEGMENT_KEYS:
-            if key in segments:
-                segments[key] = _strip_ids_from_seg(segments[key], extra)
-        for key in _COMBINED_SEGMENT_KEYS:
-            if key in segments:
-                segments[key] = _strip_ids_from_seg(segments[key], extra)
 
+    # Belt-and-suspenders: carryover lists must stay empty for HD segments.
     for key in _HD_SEGMENT_KEYS:
         if key not in segments:
             continue
         seg = dict(segments[key] or {})
         bags = dict(seg.get("bag_ids") or {})
-        keep = (_as_bag_set(bags.get("new_today")) | _as_bag_set(bags.get("carryover"))) & opening
-        bags["new_today"] = sorted(keep)
         bags["carryover"] = []
-        for outcome in ("completed", "pending", "review_required"):
-            bags[outcome] = sorted(_as_bag_set(bags.get(outcome)) & opening)
+        # Fold any residual carryover ids that still appear under new_today into
+        # new_today only when already present there; strip pure carryover leftovers
+        # was already handled by strip_hd_carryover_from_summary.
         seg["bag_ids"] = bags
+        seg["carryover"] = 0
         segments[key] = _recount_seg(seg)
+
+    hd_seg = segments.get("hd") or {}
+    hd_bags = dict(hd_seg.get("bag_ids") or {})
+    current_hd: set[str] = set()
+    for key in ("new_today", "completed", "pending", "review_required"):
+        current_hd |= _as_bag_set(hd_bags.get(key))
+
+    opening_ids = opening if opening is not None else set()
+    opening_admitted = current_hd & opening_ids
+    same_day_later = current_hd - opening_ids if opening is not None else set(current_hd)
 
     out["segments"] = segments
     all_seg = segments.get("all") or {}
@@ -211,14 +205,26 @@ def restrict_hd_to_opening_scrape(
     out["hd_policy"] = {
         **dict(out.get("hd_policy") or {}),
         "no_carryover": True,
-        "opening_scrape_restricted": True,
-        "opening_scrape_admit_count": len(opening),
-        "removed_non_opening_hd_count": len(extra),
-        "membership_source": "first_valid_portal_scrape",
-        "same_day_adds_allowed": False,
+        "opening_scrape_restricted": False,
+        "same_day_adds_allowed": True,
+        "opening_scrape_admit_count": len(opening_admitted),
+        "same_day_later_admit_count": len(same_day_later),
+        "removed_non_opening_hd_count": 0,
+        "membership_source": "same_day_qualifying_evidence",
+        "same_day_later_bag_ids": sorted(same_day_later),
     }
+    if opening is None:
+        out["hd_policy"]["reason"] = "membership_unavailable"
     out["hd_carryover_enabled"] = False
     return out
+
+
+# Back-compat alias — old name implied opening-scrape-only (incorrect).
+def restrict_hd_to_opening_scrape(
+    summary: Mapping[str, Any],
+    membership: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return apply_hd_same_day_membership_policy(summary, membership)
 
 
 def finalize_hd_step1_summary(
@@ -237,7 +243,7 @@ def finalize_hd_step1_summary(
         return dict(summary or {})
     mem = membership if membership is not None else (summary or {}).get("membership")
     out = strip_hd_carryover_from_summary(summary)
-    out = restrict_hd_to_opening_scrape(out, mem if isinstance(mem, dict) else None)
+    out = apply_hd_same_day_membership_policy(out, mem if isinstance(mem, dict) else None)
 
     if cursor is not None and organization_id is not None:
         try:

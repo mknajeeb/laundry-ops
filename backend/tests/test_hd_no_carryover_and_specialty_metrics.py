@@ -87,11 +87,13 @@ def _summary_with_hd_carryover():
 
 
 def test_a_prior_shift_open_does_not_carry_hd_into_next_day():
-    """Test A — Jul 25 HD membership excludes Jul 24 HD carryover bags."""
+    """Test A — Jul 25 HD membership excludes Jul 24 HD carryover; keeps same-day later admits."""
     summary = _summary_with_hd_carryover()
-    # Simulate an ADDED_LATER HD also present in HD new_today (should be stripped).
+    # Same-day ADDED_LATER HD must stay (not opening-scrape-only).
     summary["segments"]["hd"]["bag_ids"]["new_today"] = ["HDNEW1", "HDADD1"]
+    summary["segments"]["hd"]["bag_ids"]["pending"] = ["HDNEW1", "HDADD1"]
     summary["segments"]["hd"]["new_today"] = 2
+    summary["segments"]["hd"]["pending"] = 2
     summary["segments"]["hd"]["active_workload"] = 4
     out = finalize_hd_step1_summary(
         summary,
@@ -103,11 +105,123 @@ def test_a_prior_shift_open_does_not_carry_hd_into_next_day():
     assert hd["bag_ids"]["carryover"] == []
     assert "HDCARRY1" not in (hd["bag_ids"]["new_today"] + hd["bag_ids"]["review_required"])
     assert "HDCARRY2" not in (hd["bag_ids"]["new_today"] + hd["bag_ids"]["review_required"])
-    assert "HDADD1" not in hd["bag_ids"]["new_today"]
-    assert hd["bag_ids"]["new_today"] == ["HDNEW1"]
+    assert set(hd["bag_ids"]["new_today"]) == {"HDNEW1", "HDADD1"}
+    assert out["hd_policy"]["same_day_adds_allowed"] is True
+    assert out["hd_policy"]["opening_scrape_restricted"] is False
+    assert out["hd_policy"]["removed_non_opening_hd_count"] == 0
+    assert out["hd_policy"]["same_day_later_admit_count"] == 1
     # WF untouched
     assert out["segments"]["wf"]["bag_ids"]["new_today"] == ["WF01", "WF02"]
     assert out["segments"]["wf"]["carryover"] == 0
+
+
+def test_hd_opening_scrape_admit_included():
+    """HD present in opening scrape → included."""
+    summary = _summary_with_hd_carryover()
+    out = finalize_hd_step1_summary(
+        summary,
+        selected_date_et=date(2026, 7, 25),
+        membership=summary["membership"],
+    )
+    assert "HDNEW1" in out["segments"]["hd"]["bag_ids"]["new_today"]
+    assert out["hd_policy"]["opening_scrape_admit_count"] == 1
+
+
+def test_hd_first_appears_later_same_day_included():
+    """HD first appearing after opening scrape → included."""
+    summary = _summary_with_hd_carryover()
+    summary["segments"]["hd"] = _seg(["HDADD1"], [], pending=["HDADD1"])
+    summary["segments"]["hd_non_rush"] = _seg(["HDADD1"], [], pending=["HDADD1"])
+    summary["segments"]["all"] = _seg(["WF01", "WF02", "HDADD1"], [], pending=["HDADD1"])
+    out = finalize_hd_step1_summary(
+        summary,
+        selected_date_et=date(2026, 7, 25),
+        membership=summary["membership"],
+    )
+    assert "HDADD1" in out["segments"]["hd"]["bag_ids"]["new_today"]
+    assert out["hd_policy"]["same_day_later_admit_count"] == 1
+
+
+def test_hd_prior_day_leftover_no_same_day_evidence_excluded():
+    """Prior-day leftover with no same-day evidence (carryover bucket) → excluded."""
+    summary = _summary_with_hd_carryover()
+    # Only carryover HD — no new_today.
+    summary["segments"]["hd"] = _seg([], ["HDCARRY1", "HDCARRY2"], review=["HDCARRY1", "HDCARRY2"])
+    summary["segments"]["hd_rush"] = _seg([], ["HDCARRY1"], review=["HDCARRY1"])
+    summary["segments"]["hd_non_rush"] = _seg([], ["HDCARRY2"], review=["HDCARRY2"])
+    summary["segments"]["all"] = _seg(["WF01", "WF02"], ["HDCARRY1", "HDCARRY2"], review=["HDCARRY1", "HDCARRY2"])
+    out = finalize_hd_step1_summary(
+        summary,
+        selected_date_et=date(2026, 7, 25),
+        membership=summary["membership"],
+    )
+    hd = out["segments"]["hd"]
+    assert hd["bag_ids"]["new_today"] == []
+    assert hd["bag_ids"]["carryover"] == []
+    assert hd["active_workload"] == 0
+    assert out["hd_policy"]["carryover_removed_count"] == 2
+
+
+def test_hd_prior_day_with_same_day_requalification_included():
+    """Prior-day order with same-day requalification (new_today + ADDED_LATER) → included."""
+    summary = _summary_with_hd_carryover()
+    # Requalified order arrives as same-day new_today with ADDED_LATER membership.
+    summary["membership"]["added_later_bag_ids"] = ["HDREQ1"]
+    summary["membership"]["membership"]["HDREQ1"] = {
+        "inclusion_source": INCLUSION_ADDED_LATER,
+        "service_type_portal": "HD",
+    }
+    summary["segments"]["hd"] = _seg(["HDREQ1"], [], pending=["HDREQ1"])
+    summary["segments"]["hd_non_rush"] = _seg(["HDREQ1"], [], pending=["HDREQ1"])
+    summary["segments"]["all"] = _seg(["WF01", "WF02", "HDREQ1"], [], pending=["HDREQ1"])
+    out = finalize_hd_step1_summary(
+        summary,
+        selected_date_et=date(2026, 7, 25),
+        membership=summary["membership"],
+    )
+    assert "HDREQ1" in out["segments"]["hd"]["bag_ids"]["new_today"]
+
+
+def test_hd_prior_completed_visible_next_day_excluded():
+    """Prior completed HD still visible next day → excluded."""
+    from backend.rinse_hd_step1_review import exclude_prior_completed_hd_from_summary
+
+    summary = _summary_with_hd_carryover()
+    summary["segments"]["hd"] = _seg(["HDDONE1"], [], pending=["HDDONE1"])
+    summary["segments"]["all"] = _seg(["WF01", "WF02", "HDDONE1"], [], pending=["HDDONE1"])
+    out = finalize_hd_step1_summary(
+        summary,
+        selected_date_et=date(2026, 7, 25),
+        membership=summary["membership"],
+    )
+    # Presentation path without cursor keeps the bag; prior-complete exclusion is applied
+    # when production ids are known (mirrors finalize + cursor path).
+    out = exclude_prior_completed_hd_from_summary(out, {"HDDONE1"})
+    assert "HDDONE1" not in out["segments"]["hd"]["bag_ids"]["new_today"]
+    assert out["segments"]["hd"]["active_workload"] == 0
+
+
+def test_hd_new_instance_same_display_order_number_included():
+    """New order instance with same display order number → included (distinct bag_id)."""
+    summary = _summary_with_hd_carryover()
+    summary["membership"]["baseline_bag_ids"] = ["WF01", "WF02", "HDNEW1", "ORD-REISSUE-2"]
+    summary["membership"]["membership"]["ORD-REISSUE-2"] = {
+        "inclusion_source": INCLUSION_BASELINE,
+        "service_type_portal": "HD",
+        "display_order_number": "SAME-DISPLAY-99",
+    }
+    summary["segments"]["hd"] = _seg(["ORD-REISSUE-2"], [], pending=["ORD-REISSUE-2"])
+    summary["segments"]["hd_non_rush"] = _seg(["ORD-REISSUE-2"], [], pending=["ORD-REISSUE-2"])
+    summary["segments"]["all"] = _seg(
+        ["WF01", "WF02", "ORD-REISSUE-2"], [], pending=["ORD-REISSUE-2"]
+    )
+    out = finalize_hd_step1_summary(
+        summary,
+        selected_date_et=date(2026, 7, 25),
+        membership=summary["membership"],
+    )
+    assert "ORD-REISSUE-2" in out["segments"]["hd"]["bag_ids"]["new_today"]
+    assert out["hd_policy"]["opening_scrape_admit_count"] == 1
 
 
 def test_b_historical_immutability_presentation_skips_prior_day():
