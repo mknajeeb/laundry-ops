@@ -3,9 +3,9 @@
 export const PRODUCTIVITY_RANK_OPTIONS = [
   { id: "bags", label: "Completed Bags" },
   { id: "bags_hr", label: "Bags / Hour" },
-  { id: "lbs", label: "Completed Lbs" },
-  { id: "avg_lbs_bag", label: "Avg Lbs / Bag" },
-  { id: "lbs_hr", label: "Lbs / Hour" },
+  { id: "lbs", label: "Credited Lbs (PRE)" },
+  { id: "avg_lbs_bag", label: "Avg Credited Lbs / Bag (PRE)" },
+  { id: "lbs_hr", label: "Employee Lbs / Hour (PRE)" },
 ];
 
 export const PERFORMANCE_TIER_STYLES = {
@@ -277,9 +277,13 @@ export function buildExecutiveSummaryCards(summary = {}, scopeLabel = "") {
   cards.push(
     {
       key: "completed_lbs",
-      label: "Completed Lbs",
-      value: fmtSummaryNumber(summary.total_pounds_completed ?? summary.total_credited_lbs, 1),
+      label: "Completed Output Lbs",
+      value: fmtSummaryNumber(
+        summary.total_output_lbs ?? summary.total_pounds_completed ?? summary.total_credited_lbs,
+        1,
+      ),
       variant: "snapshot",
+      sub: "Authoritative POST",
     },
     {
       key: "avg_bags_hr",
@@ -289,15 +293,12 @@ export function buildExecutiveSummaryCards(summary = {}, scopeLabel = "") {
     },
     {
       key: "avg_lbs_hr",
-      label: "Avg Lbs / Hour",
+      label: "Overall Output Lbs / Hour",
       value: fmtSummaryNumber(summary.average_completed_pounds_per_hour ?? summary.average_pounds_per_hour, 2),
       variant: "default",
-      sub: summary.missing_weight_warning
-        || (scopeLabel ? `Scope: ${scopeLabel}` : undefined),
-      warning: Boolean(summary.missing_weight_warning),
+      sub: scopeLabel ? `Scope: ${scopeLabel} · POST output` : "POST output",
     },
-  );
-  return cards;
+  );  return cards;
 }
 
 export function fmtLaborValue(value, { currency = false, digits = 2 } = {}) {

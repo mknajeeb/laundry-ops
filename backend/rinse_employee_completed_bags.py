@@ -1046,17 +1046,48 @@ def _enrich_credited_bag_weights(
             repair_scan_from_portal=True,
         )
 
-        # WF Employee Performance credit = immutable Evidence PRE only.
-        # Does not change Daily Ops authoritative POST / revenue resolvers.
+        # Dual weight semantics for productivity:
+        # - output_weight_lbs = authoritative POST (completed production output)
+        # - credited_weight_lbs = Evidence PRE (employee credit)
+        # Revenue / Daily Ops resolvers are untouched.
         svc = str(bag.get("service_type") or row.get("service_type") or "").upper()
         if svc == "WF" and hasattr(cursor, "execute"):
-            from backend.daily_operations import resolve_evidence_pre_weight
+            from backend.daily_operations import (
+                resolve_authoritative_post_weight,
+                resolve_evidence_post_weight,
+                resolve_evidence_pre_weight,
+            )
+
+            auth = resolve_authoritative_post_weight(
+                cursor, organization_id, bid, operations_date_et=selected_date_et
+            ) or {}
+            evidence_post = resolve_evidence_post_weight(cursor, organization_id, bid) or {}
+            output_lbs = auth.get("weight_lbs")
+            if output_lbs is None:
+                # Fall back to finalize's POST-scan resolution if authority chain is empty.
+                output_lbs = bag.get("completed_lbs") or bag.get("weight_lbs")
+            if output_lbs is not None:
+                bag["output_weight_lbs"] = float(output_lbs)
+                bag["output_weight_source"] = auth.get("source") or bag.get("weight_source")
+                bag["authoritative_post_weight_lbs"] = float(output_lbs)
+                bag["post_weight_lbs"] = float(output_lbs)
+            else:
+                bag["output_weight_lbs"] = None
+                bag["output_weight_source"] = None
+                bag["authoritative_post_weight_lbs"] = None
+            if evidence_post.get("weight_lbs") is not None:
+                bag["evidence_post_weight_lbs"] = float(evidence_post["weight_lbs"])
+                bag["evidence_post_weight_source"] = evidence_post.get("source")
+            else:
+                bag["evidence_post_weight_lbs"] = None
+                bag["evidence_post_weight_source"] = None
 
             pre = resolve_evidence_pre_weight(cursor, organization_id, bid) or {}
             pre_lbs = pre.get("weight_lbs")
             bag["pre_weight_lbs"] = pre_lbs
             bag["pre_weight_at"] = pre.get("observed_at")
             bag["pre_weight_source"] = pre.get("source")
+            bag["evidence_pre_weight_lbs"] = float(pre_lbs) if pre_lbs is not None else None
             if pre_lbs is not None:
                 _apply_bag_weight_fields(bag, float(pre_lbs))
                 bag["weight_lbs"] = float(pre_lbs)
@@ -1077,6 +1108,18 @@ def _enrich_credited_bag_weights(
                 bag["credited_weight_source"] = None
                 bag["missing_production_credit_weight"] = True
                 bag["weight_missing"] = True
+        else:
+            # HD / non-WF: credit and output share the resolved completion weight.
+            shared = bag.get("completed_lbs")
+            if shared is None:
+                shared = bag.get("weight_lbs")
+            if shared is not None:
+                bag["output_weight_lbs"] = float(shared)
+                bag["output_weight_source"] = bag.get("weight_source")
+                bag["credited_weight_lbs"] = float(shared)
+            else:
+                bag["output_weight_lbs"] = None
+                bag["credited_weight_lbs"] = None
 
         for key in weight_row_keys:
             if row.get(key) is not None and bag.get(key) is None:

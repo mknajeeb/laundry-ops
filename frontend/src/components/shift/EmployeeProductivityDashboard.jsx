@@ -56,10 +56,13 @@ function EmployeeSummaryPanel({ emp }) {
   const displayLbs = employeeDisplayLbs(emp);
   const items = [
     { label: "Completed Bags", value: emp.completed_bags ?? 0 },
-    { label: "Completed Lbs", value: displayLbs },
+    { label: "Credited Lbs (PRE)", value: displayLbs },
     { label: "Productive Hours", value: missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2) },
     { label: "Bags / Hr", value: fmtProductivityRate(emp.completed_bags_per_hour ?? emp.bags_per_hour, missingClockIn) },
-    { label: "Lbs / Hr", value: fmtProductivityRate(emp.completed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn) },
+    {
+      label: "Employee Lbs / Hour (PRE)",
+      value: fmtProductivityRate(emp.completed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn),
+    },
     {
       label: "First Completed",
       value: formatFriendlyEtWall(emp.first_completed_time_et || emp.first_completion_time_et || emp.first_completion_time) || "—",
@@ -625,9 +628,9 @@ export default function EmployeeProductivityDashboard({
                   <TableCell sx={{ fontWeight: 700, width: 52, py: 1.25 }}>Rank</TableCell>
                   <TableCell sx={{ fontWeight: 700, py: 1.25 }}>Employee</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Completed Bags</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Completed Lbs</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Credited Lbs (PRE)</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Bags / Hr</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Lbs / Hr</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Employee Lbs / Hour (PRE)</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Productive Hours</TableCell>
                   <TableCell padding="checkbox" sx={{ py: 1.25 }} />
                 </TableRow>

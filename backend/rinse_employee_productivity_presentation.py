@@ -147,9 +147,25 @@ def _recalc_employee_metrics(emp: Mapping[str, Any], scoped_bags: list[dict[str,
     first_comp = min(comp_times) if comp_times else None
     last_comp = max(comp_times) if comp_times else None
 
-    missing_weight_count = sum(1 for b in bags_sorted if b.get("weight_missing"))
+    weight_integrity_failure_count = sum(
+        1 for b in bags_sorted if b.get("weight_status") == "integrity_failure" or b.get("weight_integrity_failure")
+    )
+    # Employee credit = Evidence PRE (completed_lbs / credited_weight_lbs after enrichment).
     total_lbs = round(
-        sum(float(b["completed_lbs"]) for b in bags_sorted if b.get("completed_lbs") is not None),
+        sum(
+            float(b["credited_weight_lbs"] if b.get("credited_weight_lbs") is not None else b["completed_lbs"])
+            for b in bags_sorted
+            if (b.get("credited_weight_lbs") is not None or b.get("completed_lbs") is not None)
+        ),
+        2,
+    )
+    # Completed production output = authoritative POST (may differ from PRE credit).
+    total_output_lbs = round(
+        sum(
+            float(b["output_weight_lbs"])
+            for b in bags_sorted
+            if b.get("output_weight_lbs") is not None
+        ),
         2,
     )
 
@@ -164,7 +180,6 @@ def _recalc_employee_metrics(emp: Mapping[str, Any], scoped_bags: list[dict[str,
         scoped_completed=bags_sorted,
         total_lbs_completed=total_lbs,
     )
-
     from backend.rinse_scan_time import format_rinse_wall_et_display
 
     def _ts_et(raw: datetime | None) -> str | None:
@@ -178,7 +193,9 @@ def _recalc_employee_metrics(emp: Mapping[str, Any], scoped_bags: list[dict[str,
             "bags": bags_sorted,
             "completed_bags": len(bags_sorted),
             "total_completed_lbs": total_lbs,
-            "missing_weight_count": missing_weight_count,
+            "total_output_lbs": total_output_lbs,
+            "weight_integrity_failure_count": weight_integrity_failure_count,
+            "missing_weight_count": weight_integrity_failure_count,
             "first_completion_time": first_comp.isoformat() if first_comp else None,
             "last_completion_time": last_comp.isoformat() if last_comp else None,
             "first_completion_time_et": _ts_et(first_comp),
@@ -223,7 +240,21 @@ def _recalc_employee_metrics(emp: Mapping[str, Any], scoped_bags: list[dict[str,
 def _build_executive_summary(employees: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     active_completed = [e for e in employees if int(e.get("completed_bags") or 0) > 0]
     total_completed = sum(int(e.get("completed_bags") or 0) for e in employees)
-    total_completed_lbs = round(sum(float(e.get("total_completed_lbs") or 0) for e in employees), 2)
+    # Employee credit rollup (Evidence PRE) — may differ from completed output.
+    total_credited_lbs = round(sum(float(e.get("total_completed_lbs") or 0) for e in employees), 2)
+    # Overall completed production output (authoritative POST).
+    total_output_lbs = round(
+        sum(
+            float(
+                e.get("total_output_lbs")
+                if e.get("total_output_lbs") is not None
+                else e.get("total_completed_lbs")
+                or 0
+            )
+            for e in employees
+        ),
+        2,
+    )
     unassigned_count = sum(
         int(e.get("completed_bags") or 0)
         for e in employees
@@ -246,42 +277,39 @@ def _build_executive_summary(employees: Sequence[Mapping[str, Any]]) -> dict[str
         sum(float(e.get("productive_hours") or e.get("worked_hours") or 0) for e in active_completed),
         4,
     )
-    missing_weight_total = sum(int(e.get("missing_weight_count") or 0) for e in employees)
+    weight_integrity_failure_total = sum(int(e.get("weight_integrity_failure_count") or e.get("missing_weight_count") or 0) for e in employees)
 
     def _avg(vals: list[float]) -> float | None:
         if not vals:
             return None
         return round(sum(vals) / len(vals), 2)
 
+    # Overall lbs/hour uses completed OUTPUT (POST), not employee PRE credit.
     global_lbs_per_hour: float | None = None
-    if total_productive_hours > 0 and total_completed_lbs > 0:
-        global_lbs_per_hour = round(total_completed_lbs / total_productive_hours, 2)
-
-    missing_weight_warning: str | None = None
-    if missing_weight_total > 0 and total_completed > 0:
-        missing_weight_warning = (
-            f"{missing_weight_total} of {total_completed} completed bags missing weight; "
-            "lbs/hr may be understated."
-        )
+    if total_productive_hours > 0 and total_output_lbs > 0:
+        global_lbs_per_hour = round(total_output_lbs / total_productive_hours, 2)
 
     return {
         "total_employees_active": len(active_completed),
         "total_bags_completed": total_completed,
-        "total_pounds_completed": total_completed_lbs,
+        "total_pounds_completed": total_output_lbs,
+        "total_output_lbs": total_output_lbs,
         "total_unassigned_bags": unassigned_count,
         "average_completed_bags_per_hour": _avg(completed_rates),
         "average_completed_pounds_per_hour": global_lbs_per_hour or _avg(completed_lbs_rates),
         "total_productive_hours": total_productive_hours if total_productive_hours > 0 else None,
-        "missing_weight_count": missing_weight_total,
-        "missing_weight_warning": missing_weight_warning,
+        "weight_integrity_failure_count": weight_integrity_failure_total,
+        "missing_weight_count": weight_integrity_failure_total,
+        "completed_weight_basis": "AUTHORITATIVE_POST",
+        "employee_credit_weight_basis": "EVIDENCE_PRE",
         # Backward-compatible aliases
         "total_bags_credited": total_completed,
-        "total_credited_lbs": total_completed_lbs,
+        "total_credited_lbs": total_credited_lbs,
         "total_pending_completion": 0,
         "average_bags_per_hour": _avg(completed_rates),
         "average_pounds_per_hour": global_lbs_per_hour or _avg(completed_lbs_rates),
         "total_bags_processed": total_completed,
-        "total_pounds_processed": total_completed_lbs,
+        "total_pounds_processed": total_output_lbs,
         "average_processed_bags_per_hour": _avg(completed_rates),
         "average_processed_pounds_per_hour": _avg(completed_lbs_rates),
     }

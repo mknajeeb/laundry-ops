@@ -31,18 +31,42 @@ function eventTs(bag) {
   );
 }
 
+function fmtLbs(v) {
+  if (v == null || Number.isNaN(Number(v))) return "—";
+  return `${Number(v).toFixed(1)} lb`;
+}
+
 function WeightCell({ bag }) {
-  const lbs = resolveBagWeightLbs(bag);
-  if (lbs != null) {
-    return `${lbs} lbs`;
+  const credited =
+    bag.credited_weight_lbs != null ? Number(bag.credited_weight_lbs) : resolveBagWeightLbs(bag);
+  const tip = [
+    `Credited Weight (PRE): ${fmtLbs(credited)}`,
+    `Evidence PRE: ${fmtLbs(bag.evidence_pre_weight_lbs ?? bag.pre_weight_lbs)}`,
+    `Evidence POST: ${fmtLbs(bag.evidence_post_weight_lbs)}`,
+    `Revenue Weight (POST): ${fmtLbs(bag.output_weight_lbs ?? bag.authoritative_post_weight_lbs ?? bag.post_weight_lbs)}`,
+  ].join("\n");
+  if (credited != null) {
+    return (
+      <Tooltip title={<Box sx={{ whiteSpace: "pre-line" }}>{tip}</Box>} arrow placement="top">
+        <Typography component="span" variant="body2" fontWeight={700}>
+          {`${credited} lbs`}
+        </Typography>
+      </Tooltip>
+    );
   }
   const debugReason = bag.weight_debug_reason;
-  const label = "Missing";
+  const label = "Missing PRE";
   if (!debugReason) {
-    return label;
+    return (
+      <Tooltip title={<Box sx={{ whiteSpace: "pre-line" }}>{tip}</Box>} arrow placement="top">
+        <Typography component="span" variant="body2" color="warning.main" sx={{ fontWeight: 600 }}>
+          {label}
+        </Typography>
+      </Tooltip>
+    );
   }
   return (
-    <Tooltip title={debugReason} arrow placement="top">
+    <Tooltip title={`${tip}\n${debugReason}`} arrow placement="top">
       <Typography component="span" variant="body2" color="warning.main" sx={{ fontWeight: 600 }}>
         {label}
       </Typography>
@@ -105,6 +129,9 @@ function BagMobileCard({ bag, expanded, onToggle, referenceDateEt, statusLabel }
       </Stack>
       <Collapse in={expanded} unmountOnExit>
         <Box sx={{ mt: 1 }} onClick={(e) => e.stopPropagation()}>
+          <Typography variant="caption" display="block" sx={{ mb: 0.5, whiteSpace: "pre-line" }}>
+            {`Credited Weight (PRE): ${fmtLbs(bag.credited_weight_lbs ?? resolveBagWeightLbs(bag))}\nEvidence PRE: ${fmtLbs(bag.evidence_pre_weight_lbs ?? bag.pre_weight_lbs)}\nEvidence POST: ${fmtLbs(bag.evidence_post_weight_lbs)}\nRevenue Weight (POST): ${fmtLbs(bag.output_weight_lbs ?? bag.authoritative_post_weight_lbs ?? bag.post_weight_lbs)}`}
+          </Typography>
           <ShiftBagRecordRow
             row={normalized}
             variant="at_vendor"
@@ -158,7 +185,7 @@ function BagTableSection({
               <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Bag ID</TableCell>
               <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Customer</TableCell>
               <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Service</TableCell>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }} align="right">Weight</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1.1 }} align="right">Credited Lbs (PRE)</TableCell>
               <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Signal</TableCell>
               <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Status</TableCell>
             </TableRow>
@@ -196,6 +223,9 @@ function BagTableSection({
       </TableContainer>
       {expandedBag ? (
         <Box sx={{ mt: 1 }}>
+          <Typography variant="caption" display="block" sx={{ mb: 0.5, whiteSpace: "pre-line" }}>
+            {`Credited Weight (PRE): ${fmtLbs(expandedBag.credited_weight_lbs ?? resolveBagWeightLbs(expandedBag))}\nEvidence PRE: ${fmtLbs(expandedBag.evidence_pre_weight_lbs ?? expandedBag.pre_weight_lbs)}\nEvidence POST: ${fmtLbs(expandedBag.evidence_post_weight_lbs)}\nRevenue Weight (POST): ${fmtLbs(expandedBag.output_weight_lbs ?? expandedBag.authoritative_post_weight_lbs ?? expandedBag.post_weight_lbs)}`}
+          </Typography>
           <ShiftBagRecordRow
             key={expandedBag.bag_id}
             row={normalizeProcessedBag(expandedBag)}
