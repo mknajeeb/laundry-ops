@@ -421,6 +421,65 @@ def _parse_dt(raw: Any) -> datetime | None:
         return None
 
 
+def _parse_manager_edit_version(raw: Any) -> int | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _lock_dt_for_compare(raw: Any) -> datetime | None:
+    """Legacy updated_at compare: strip tz + microseconds (API truncates both)."""
+    dt = _parse_dt(raw)
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt.replace(microsecond=0)
+
+
+def _log_lock_check(
+    *,
+    bag_id: str,
+    organization_id: int,
+    selected_date_et: date,
+    expected_version: int | None,
+    current_version: int,
+    expected_updated_at: Any,
+    current_updated_at: Any,
+    actor_user_id: int | None,
+    actor_display_name: str | None,
+    conflict: bool,
+) -> None:
+    import logging
+
+    try:
+        from flask import g, has_request_context
+
+        request_id = None
+        if has_request_context():
+            request_id = getattr(g, "request_id", None) or getattr(g, "correlation_id", None)
+    except Exception:
+        request_id = None
+    logging.getLogger(__name__).info(
+        "wf_review_lock_check bag_id=%s org=%s date=%s expected_version=%s "
+        "current_version=%s expected_updated_at=%s current_updated_at=%s "
+        "actor_user_id=%s actor=%s request_id=%s conflict=%s",
+        bag_id,
+        int(organization_id),
+        selected_date_et.isoformat(),
+        expected_version,
+        current_version,
+        expected_updated_at,
+        current_updated_at,
+        actor_user_id,
+        actor_display_name,
+        request_id,
+        conflict,
+    )
+
 def _normalize_for_compare(value: Any) -> Any:
     if isinstance(value, (list, dict)):
         return json.dumps(value, sort_keys=True, default=str)
@@ -540,6 +599,10 @@ def capture_bag_edit_state(
     completion_at = day_row.get("canonical_completion_timestamp") or snap.get("completion_at")
     completed_by = day_row.get("canonical_completion_employee") or snap.get("completed_by")
     updated_at = day_row.get("updated_at")
+    try:
+        manager_edit_version = int(day_row.get("manager_edit_version") or 0)
+    except (TypeError, ValueError):
+        manager_edit_version = 0
 
     def _iso(v: Any) -> Any:
         return v.isoformat() if hasattr(v, "isoformat") else v
@@ -564,6 +627,7 @@ def capture_bag_edit_state(
         "completion_at": _iso(completion_at),
         "completed_by": completed_by,
         "updated_at": _iso(updated_at),
+        "manager_edit_version": manager_edit_version,
     }
 
 
@@ -776,6 +840,7 @@ def apply_unified_bag_edit(
     reason: str,
     draft: Mapping[str, Any],
     expected_updated_at: Any = None,
+    expected_manager_edit_version: Any = None,
     outcome_action: str | None = None,
     actor_user_id: int | None = None,
     actor_display_name: str | None = None,
@@ -785,10 +850,16 @@ def apply_unified_bag_edit(
     """Apply a unified Edit Bag draft as one atomic edit with a single audit row.
 
     Returns ``{"ok": False, "error": ...}`` (with ``status: 409`` + ``latest`` on
-    ``updated_at`` conflict) or ``{"ok": True, "edit_id", "before", "after",
+    lock conflict) or ``{"ok": True, "edit_id", "before", "after",
     "undo_token", "bag", "deltas"}``.
+
+    Optimistic lock prefers ``manager_edit_version`` (integer). Legacy
+    ``expected_updated_at`` is second-precision fallback only.
     """
     ensure_step1_bag_edit_tables(cursor)
+    from backend.rinse_veewash_shift_day import ensure_shift_monitor_day_tables
+
+    ensure_shift_monitor_day_tables(cursor)
     bid = normalize_bag_id(bag_id)
     if not bid:
         return {"ok": False, "error": "invalid_bag_id"}
@@ -799,18 +870,42 @@ def apply_unified_bag_edit(
         return {"ok": False, "error": "invalid_outcome_action"}
 
     before = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
+    current_version = int(before.get("manager_edit_version") or 0)
+    expected_version = _parse_manager_edit_version(expected_manager_edit_version)
 
-    if expected_updated_at not in (None, ""):
-        expected_dt = _parse_dt(expected_updated_at)
-        current_dt = _parse_dt(before.get("updated_at"))
-        if expected_dt is not None and current_dt is not None and expected_dt != current_dt:
-            return {
-                "ok": False,
-                "error": "conflict",
-                "status": 409,
-                "current_version": before.get("updated_at"),
-                "latest": before,
-            }
+    conflict = False
+    if expected_version is not None:
+        conflict = expected_version != current_version
+    elif expected_updated_at not in (None, ""):
+        expected_dt = _lock_dt_for_compare(expected_updated_at)
+        current_dt = _lock_dt_for_compare(before.get("updated_at"))
+        conflict = (
+            expected_dt is not None
+            and current_dt is not None
+            and expected_dt != current_dt
+        )
+
+    _log_lock_check(
+        bag_id=bid,
+        organization_id=organization_id,
+        selected_date_et=selected_date_et,
+        expected_version=expected_version,
+        current_version=current_version,
+        expected_updated_at=expected_updated_at,
+        current_updated_at=before.get("updated_at"),
+        actor_user_id=actor_user_id,
+        actor_display_name=actor_display_name,
+        conflict=conflict,
+    )
+    if conflict:
+        return {
+            "ok": False,
+            "error": "conflict",
+            "status": 409,
+            "current_version": current_version,
+            "manager_edit_version": current_version,
+            "latest": before,
+        }
 
     resolved = resolve_edit_audit_reason(
         reason=reason,
@@ -998,18 +1093,45 @@ def apply_unified_bag_edit(
     if outcome:
         deltas.append({"field_name": "outcome_action", "before_value": None, "after_value": outcome})
 
-    # Ensure manager edits bump the lock even when only bulk/outcome changed
-    # (those paths may not UPDATE day_bags columns that trigger ON UPDATE).
-    if deltas:
-        cursor.execute(
-            """
-            UPDATE rinse_shift_monitor_day_bags
-            SET updated_at = CURRENT_TIMESTAMP
-            WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
-            """,
-            (int(organization_id), selected_date_et, bid),
+    # Ensure manager edits bump the dedicated lock once (and only once).
+    # Atomic WHERE guards against a concurrent manager save that raced past
+    # the pre-check. Source/productivity paths never touch this column.
+    lock_from = expected_version if expected_version is not None else current_version
+    cursor.execute(
+        """
+        UPDATE rinse_shift_monitor_day_bags
+        SET manager_edit_version = manager_edit_version + 1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+          AND manager_edit_version = %s
+        """,
+        (int(organization_id), selected_date_et, bid, int(lock_from)),
+    )
+    rowcount = getattr(cursor, "rowcount", None)
+    if rowcount is not None and int(rowcount) == 0:
+        latest = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
+        latest_ver = int(latest.get("manager_edit_version") or 0)
+        _log_lock_check(
+            bag_id=bid,
+            organization_id=organization_id,
+            selected_date_et=selected_date_et,
+            expected_version=lock_from,
+            current_version=latest_ver,
+            expected_updated_at=expected_updated_at,
+            current_updated_at=latest.get("updated_at"),
+            actor_user_id=actor_user_id,
+            actor_display_name=actor_display_name,
+            conflict=True,
         )
-        after = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
+        return {
+            "ok": False,
+            "error": "conflict",
+            "status": 409,
+            "current_version": latest_ver,
+            "manager_edit_version": latest_ver,
+            "latest": latest,
+        }
+    after = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
 
     cursor.execute(
         """

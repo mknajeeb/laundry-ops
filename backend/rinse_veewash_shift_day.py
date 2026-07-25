@@ -218,6 +218,7 @@ def ensure_shift_monitor_day_tables(cursor) -> None:
           bag_snapshot_json LONGTEXT NULL,
           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          manager_edit_version INT NOT NULL DEFAULT 0,
           UNIQUE KEY uq_shift_monitor_day_bag (organization_id, shift_date_et, bag_id),
           KEY idx_shift_monitor_day_bag_status (organization_id, shift_date_et, effective_status),
           KEY idx_shift_monitor_day_bag_svc (organization_id, shift_date_et, service_type)
@@ -231,6 +232,8 @@ def ensure_shift_monitor_day_tables(cursor) -> None:
         "ADD COLUMN productivity_weight_lbs DECIMAL(10,4) NULL",
         "ADD COLUMN productivity_credit_eligible TINYINT(1) NULL",
         "ADD COLUMN productivity_exclusion_reason VARCHAR(128) NULL",
+        # Manager-edit optimistic lock — never bumped by scrape/productivity/source sync.
+        "ADD COLUMN manager_edit_version INT NOT NULL DEFAULT 0",
     ):
         try:
             cursor.execute(f"ALTER TABLE rinse_shift_monitor_day_bags {col_sql}")
@@ -450,10 +453,12 @@ def persist_day_snapshot(
               bag_snapshot_json,
               productivity_employee_name, productivity_completed_at,
               productivity_weight_lbs, productivity_credit_eligible,
-              productivity_exclusion_reason
+              productivity_exclusion_reason,
+              manager_edit_version
             ) VALUES (
               %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-              %s,%s,%s,%s,%s
+              %s,%s,%s,%s,%s,
+              0
             )
             ON DUPLICATE KEY UPDATE
               service_type=VALUES(service_type),
@@ -480,9 +485,9 @@ def persist_day_snapshot(
               productivity_credit_eligible=VALUES(productivity_credit_eligible),
               productivity_exclusion_reason=VALUES(productivity_exclusion_reason),
               -- Source/membership/productivity refresh must never bump the manager-edit
-              -- optimistic-lock token. Only intentional manager UPDATEs bump updated_at
-              -- (via ON UPDATE CURRENT_TIMESTAMP or explicit SET).
-              updated_at=updated_at
+              -- optimistic-lock token (manager_edit_version or updated_at).
+              updated_at=updated_at,
+              manager_edit_version=manager_edit_version
             """,
             (
                 int(organization_id),

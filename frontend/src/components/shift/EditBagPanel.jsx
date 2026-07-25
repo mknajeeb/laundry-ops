@@ -108,6 +108,9 @@ export default function EditBagPanel({
   const [showCompare, setShowCompare] = useState(false);
   const [undoToast, setUndoToast] = useState(null);
   const [conflict, setConflict] = useState(null);
+  const [lockVersion, setLockVersion] = useState(() =>
+    bag?.manager_edit_version != null ? Number(bag.manager_edit_version) : null
+  );
   const [lockUpdatedAt, setLockUpdatedAt] = useState(
     () => bag?.updated_at || bag?.day_bag_updated_at || null
   );
@@ -122,13 +125,17 @@ export default function EditBagPanel({
     if (initialOutcome) setPendingOutcome(initialOutcome);
   }, [initialOutcome]);
 
-  // Adopt the detail-row lock once when the list shell lacked updated_at.
-  // Do not chase later refreshes (that would hide genuine concurrent edits).
+  // Bag detail is the authoritative lock source. Adopt version once details load;
+  // do not keep a stale queue-summary token (prev || next hid concurrent bumps and
+  // also pinned truncated list timestamps that disagreed with DB micros).
   useEffect(() => {
-    const next = bag?.updated_at || bag?.day_bag_updated_at || null;
-    if (!next) return;
-    setLockUpdatedAt((prev) => prev || next);
-  }, [bag?.updated_at, bag?.day_bag_updated_at]);
+    if (!bag?._detailsLoaded) return;
+    if (bag?.manager_edit_version != null) {
+      setLockVersion(Number(bag.manager_edit_version));
+    }
+    const nextTs = bag?.updated_at || bag?.day_bag_updated_at || null;
+    if (nextTs) setLockUpdatedAt(nextTs);
+  }, [bag?._detailsLoaded, bag?.manager_edit_version, bag?.updated_at, bag?.day_bag_updated_at]);
 
   const isHd = String(draft.service_type || "").toUpperCase() === "HD";
   const reviewStatus = bag?.dashboard_status || bag?.outcome || "—";
@@ -193,6 +200,7 @@ export default function EditBagPanel({
   }, [catalog, qty, existing, isHd]);
 
   const bulkTotal = lines.reduce((s, l) => s + (l.line_total || 0), 0);
+  const lockReady = Boolean(bag?._detailsLoaded) && lockVersion != null;
 
   const bump = (id, delta) => {
     setQty((q) => ({ ...q, [id]: Math.max(0, Number(q[id] || 0) + delta) }));
@@ -247,7 +255,12 @@ export default function EditBagPanel({
     const latest = data?.latest || null;
     setConflict({
       message: "This bag was updated while you were reviewing it.",
-      currentVersion: data?.current_version || latest?.updated_at || null,
+      currentVersion:
+        data?.manager_edit_version ??
+        data?.current_version ??
+        latest?.manager_edit_version ??
+        latest?.updated_at ??
+        null,
       latest,
       unsavedDraft: { ...draft },
       unsavedLines: lines,
@@ -276,7 +289,10 @@ export default function EditBagPanel({
     try {
       const latestBag = onReloadLatest ? await onReloadLatest(bag.bag_id) : null;
       const next = latestBag || bag;
-      const lock = next?.updated_at || next?.day_bag_updated_at || conflict?.currentVersion;
+      if (next?.manager_edit_version != null) {
+        setLockVersion(Number(next.manager_edit_version));
+      }
+      const lock = next?.updated_at || next?.day_bag_updated_at || null;
       setLockUpdatedAt(lock || null);
       setBaselineBag(next);
       setDraft((d) => ({
@@ -331,6 +347,12 @@ export default function EditBagPanel({
         reason_code: p.reasonRequired ? reasonCode : null,
         reason_note: p.reasonRequired ? reasonNote : null,
         expected_updated_at: lockUpdatedAt || bag.updated_at || bag.day_bag_updated_at || null,
+        expected_manager_edit_version:
+          lockVersion != null
+            ? Number(lockVersion)
+            : bag.manager_edit_version != null
+              ? Number(bag.manager_edit_version)
+              : null,
         outcome_action:
           outcomeAction && outcomeAction !== "decide_later" && outcomeAction !== "keep_review"
             ? outcomeAction
@@ -741,7 +763,7 @@ export default function EditBagPanel({
                   sx={{ mt: 1 }}
                   variant="contained"
                   color={pendingOutcome === "exclude" ? "error" : "primary"}
-                  disabled={saving}
+                  disabled={saving || !lockReady}
                   onClick={() => persist(pendingOutcome)}
                   data-testid="review-confirm-reasoned-save"
                 >
@@ -773,7 +795,7 @@ export default function EditBagPanel({
               key={String(a.id)}
               variant={a.variant}
               color={a.color}
-              disabled={saving}
+              disabled={saving || !lockReady}
               onClick={() => requestFinalAction(a.id)}
               data-testid={`review-action-${a.id || "save_review"}`}
             >

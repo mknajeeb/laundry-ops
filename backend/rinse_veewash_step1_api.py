@@ -396,6 +396,7 @@ def build_drilldown(
             "post_weight_event_exists": snap.get("post_weight_event_exists"),
             "updated_at": sb.get("updated_at"),
             "day_bag_updated_at": sb.get("updated_at"),
+            "manager_edit_version": int(sb.get("manager_edit_version") or 0),
         }
 
     reasons = wl.get("review_reasons_by_bag") or (summary or {}).get("review_reasons_by_bag") or {}
@@ -525,6 +526,11 @@ def build_drilldown(
             "last_seen_at": r.get("last_seen_date"),
             "updated_at": r.get("updated_at") or r.get("day_bag_updated_at"),
             "day_bag_updated_at": r.get("day_bag_updated_at") or r.get("updated_at"),
+            "manager_edit_version": int(
+                r.get("manager_edit_version")
+                if r.get("manager_edit_version") is not None
+                else 0
+            ),
             "bulk_workitem_scan": scan_info,
             "bulk_workitems": lines if include_details else [],
             "bulk_resolution": bulk_resolutions.get(bid) or r.get("bulk_resolution"),
@@ -750,6 +756,7 @@ def apply_step1_correction(
             reason=reason,
             draft=dict(body.get("draft") or {}),
             expected_updated_at=body.get("expected_updated_at"),
+            expected_manager_edit_version=body.get("expected_manager_edit_version"),
             outcome_action=body.get("outcome_action"),
             actor_user_id=actor_user_id,
             actor_display_name=actor_display_name,

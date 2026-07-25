@@ -115,6 +115,7 @@ def _day_bag_row(**overrides):
         "bag_snapshot_json": None,
         "created_at": datetime(2026, 7, 22, 6, 0, 0),
         "updated_at": datetime(2026, 7, 22, 6, 0, 0),
+        "manager_edit_version": 0,
         "productivity_employee_name": None,
         "productivity_completed_at": None,
         "productivity_weight_lbs": None,
@@ -143,6 +144,7 @@ class _FakeCursor:
         self._delta_id = 1
         self._tick = 0
         self.lastrowid = 0
+        self.rowcount = 0
         self._result = []
         self.connection = SimpleNamespace(commit=lambda: None)
 
@@ -151,15 +153,20 @@ class _FakeCursor:
         self._tick += 1
         row["updated_at"] = datetime(2026, 7, 22, 6, 0, 0) + timedelta(seconds=self._tick)
 
+    def _bump_manager_edit_version(self, row: dict) -> None:
+        row["manager_edit_version"] = int(row.get("manager_edit_version") or 0) + 1
+        self._bump_updated_at(row)
+
     # -- main dispatcher ----------------------------------------------------
     def execute(self, sql, params=None):
         params = params or ()
         s = " ".join(str(sql).split()).lower()
+        self.rowcount = 0
 
         if "information_schema" in s or "show tables" in s:
             self._result = [{"c": 1}]
             return
-        if s.startswith("create table"):
+        if s.startswith("create table") or s.startswith("alter table"):
             self._result = []
             return
 
@@ -180,6 +187,16 @@ class _FakeCursor:
                 row = self.day_bags.get((org, day, bag))
                 self._result = [{"bag_snapshot_json": row.get("bag_snapshot_json")}] if row else []
                 return
+            if s.startswith("update") and "manager_edit_version = manager_edit_version + 1" in s:
+                org, day, bag, expected = params
+                row = self.day_bags.get((int(org), day, bag))
+                if row is not None and int(row.get("manager_edit_version") or 0) == int(expected):
+                    self._bump_manager_edit_version(row)
+                    self.rowcount = 1
+                else:
+                    self.rowcount = 0
+                self._result = []
+                return
             if s.startswith("update") and "set pre_weight_lbs" in s:
                 pre, post, weight, org, day, bag = params
                 row = self.day_bags.get((int(org), day, bag))
@@ -188,6 +205,7 @@ class _FakeCursor:
                     row["post_weight_lbs"] = post
                     row["weight_lbs"] = weight
                     self._bump_updated_at(row)
+                    self.rowcount = 1
                 self._result = []
                 return
             if s.startswith("update") and "set service_type" in s:
@@ -198,6 +216,7 @@ class _FakeCursor:
                     row["rush_status"] = rush
                     row["bag_snapshot_json"] = snap_json
                     self._bump_updated_at(row)
+                    self.rowcount = 1
                 self._result = []
                 return
             if s.startswith("update") and "set productivity_employee_name" in s:
@@ -209,11 +228,19 @@ class _FakeCursor:
                     row["productivity_weight_lbs"] = lbs
                     row["productivity_credit_eligible"] = eligible
                     row["productivity_exclusion_reason"] = excl
+                    self.rowcount = 1
+                self._result = []
+                return
+            if s.startswith("update") and "set updated_at = current_timestamp" in s:
+                org, day, bag = params[:3]
+                row = self.day_bags.get((int(org), day, bag))
+                if row is not None:
+                    self._bump_updated_at(row)
+                    self.rowcount = 1
                 self._result = []
                 return
             self._result = []
             return
-
         # -- rinse_step1_bag_edits / deltas -----------------------------------
         if s.startswith("insert into rinse_step1_bag_edits"):
             (

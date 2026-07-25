@@ -307,12 +307,15 @@ def test_edit_bag_conflict_includes_current_version_and_skips_writes():
         "completion_at": None,
         "completed_by": None,
         "updated_at": "2026-07-22T06:05:00",
+        "manager_edit_version": 0,
     }
     cursor = MagicMock()
     with patch(
         "backend.rinse_step1_edit_bag.capture_bag_edit_state",
         return_value=stale_before,
-    ), patch("backend.rinse_step1_edit_bag.ensure_step1_bag_edit_tables"):
+    ), patch("backend.rinse_step1_edit_bag.ensure_step1_bag_edit_tables"), patch(
+        "backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables"
+    ):
         out = apply_unified_bag_edit(
             cursor,
             ORG,
@@ -325,7 +328,8 @@ def test_edit_bag_conflict_includes_current_version_and_skips_writes():
     assert out["ok"] is False
     assert out["error"] == "conflict"
     assert out["status"] == 409
-    assert out["current_version"] == "2026-07-22T06:05:00"
+    assert out["current_version"] == 0
+    assert out["manager_edit_version"] == 0
     assert out["latest"] is stale_before
 
 
@@ -512,3 +516,4 @@ def test_persist_day_snapshot_never_bumps_day_bag_updated_at():
     assert "updated_at=updated_at" in compact
     assert "updated_at=CURRENT_TIMESTAMP" not in compact
     assert "updated_at=IF" not in compact
+    assert "manager_edit_version=manager_edit_version" in compact
