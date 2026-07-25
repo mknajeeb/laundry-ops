@@ -1311,7 +1311,7 @@ def build_or_load_step1_for_date(
     summary = build_step1_headline_summary(
         wl, selected_date_et=selected_date_et, activation_date=activation
     )
-    # HD-only post-process: no carryover + opening-scrape membership. WF untouched.
+    # HD-only post-process: no prior-day carryover; same-day HD admits allowed. WF untouched.
     from backend.rinse_hd_day_presentation import finalize_hd_step1_summary
     from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
 
