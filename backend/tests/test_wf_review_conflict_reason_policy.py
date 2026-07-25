@@ -457,7 +457,8 @@ def test_edit_bag_action_skips_live_day_rebuild_before_lock_check():
     assert out["ok"] is True
     build_payload.assert_not_called()
     apply_edit.assert_called_once()
-    refresh_day.assert_called_once_with(cursor, ORG, DAY)
+    # Full-day refresh must not run on edit_bag (membership patched inside apply).
+    refresh_day.assert_not_called()
 
 
 def test_edit_bag_conflict_skips_day_snapshot_refresh():
@@ -491,6 +492,66 @@ def test_edit_bag_conflict_skips_day_snapshot_refresh():
         )
     assert out["ok"] is False
     refresh_day.assert_not_called()
+
+
+def test_manager_edit_day_bag_patch_mark_completed_clears_review():
+    from backend.rinse_veewash_shift_day import apply_manager_edit_day_bag_patch
+
+    cursor = MagicMock()
+    day_row = {
+        "bag_id": BAG,
+        "effective_status": "review_required",
+        "review_reason_codes": ["WF_BULK_WORKITEM_REVIEW"],
+        "bag_snapshot": {"bag_id": BAG, "outcome": "review_required"},
+        "canonical_completion_status": "review_required",
+    }
+    day_rec = {
+        "headline": {
+            "segments": {
+                "all": {
+                    "completed": 1,
+                    "pending": 0,
+                    "exceptions": {"review_required": 1, "total": 1},
+                    "bag_ids": {
+                        "completed": ["OTHER"],
+                        "pending": [],
+                        "review_required": [BAG],
+                    },
+                }
+            },
+            "exceptions": {"review_required": 1},
+            "review_reasons_by_bag": {BAG: ["WF_BULK_WORKITEM_REVIEW"]},
+        },
+        "workload_meta": {"review_reasons_by_bag": {BAG: ["WF_BULK_WORKITEM_REVIEW"]}},
+    }
+    with patch(
+        "backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables"
+    ), patch(
+        "backend.rinse_veewash_shift_day.load_day_bags_by_ids", return_value=[day_row]
+    ), patch(
+        "backend.rinse_veewash_shift_day.get_day_record", return_value=day_rec
+    ), patch(
+        "backend.rinse_step1_productivity_fast.project_productivity_fields_for_day_bag",
+        return_value={},
+    ):
+        out = apply_manager_edit_day_bag_patch(
+            cursor,
+            ORG,
+            DAY,
+            BAG,
+            previous_effective_status="review_required",
+            previous_reason_codes=["WF_BULK_WORKITEM_REVIEW"],
+            outcome_action="mark_completed",
+            bulk_cleared=True,
+            completion_at="2026-07-24T14:22:00",
+            completed_by="Amna (Veewash)",
+            post_weight_lbs=13.8,
+        )
+    assert out["ok"] is True
+    assert out["effective_status"] == "completed"
+    assert out["review_reason_codes"] == []
+    # Two UPDATEs: day_bag + day headline
+    assert cursor.execute.call_count >= 2
 
 
 def test_persist_day_snapshot_never_bumps_day_bag_updated_at():

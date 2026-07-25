@@ -1045,42 +1045,59 @@ def apply_unified_bag_edit(
 
     after = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
 
+    # Fast membership sync (no full day rebuild — that hung the Save UI for 60s+).
     try:
-        from backend.rinse_step1_productivity_fast import project_productivity_fields_for_day_bag
+        from backend.rinse_bulk_workitems import bag_bulk_review_cleared
+        from backend.rinse_veewash_shift_day import (
+            apply_manager_edit_day_bag_patch,
+            load_day_bags_by_ids,
+        )
 
-        proj = project_productivity_fields_for_day_bag(
+        before_day = (load_day_bags_by_ids(cursor, organization_id, selected_date_et, [bid]) or [{}])[0]
+        bulk_cleared = bag_bulk_review_cleared(
             {
-                "effective_status": after.get("dashboard_status"),
-                "canonical_completion_employee": after.get("completed_by"),
-                "canonical_completion_timestamp": after.get("completion_at"),
-                "weight_lbs": after.get("post_weight_lbs") or after.get("pre_weight_lbs"),
-                "post_weight_lbs": after.get("post_weight_lbs"),
+                "resolution_type": "no_charge"
+                if after.get("no_chargeable")
+                else ("items" if after.get("bulk_items") else None),
+                "no_charge_reason": after.get("no_charge_reason"),
             }
+            if (after.get("no_chargeable") or after.get("bulk_items"))
+            else None,
+            list(after.get("bulk_items") or []),
         )
-        cursor.execute(
-            """
-            UPDATE rinse_shift_monitor_day_bags
-            SET productivity_employee_name = %s,
-                productivity_completed_at = %s,
-                productivity_weight_lbs = %s,
-                productivity_credit_eligible = %s,
-                productivity_exclusion_reason = %s,
-                updated_at = updated_at
-            WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
-            """,
-            (
-                proj.get("productivity_employee_name"),
-                _parse_dt(proj.get("productivity_completed_at")),
-                proj.get("productivity_weight_lbs"),
-                proj.get("productivity_credit_eligible"),
-                proj.get("productivity_exclusion_reason"),
-                int(organization_id),
-                selected_date_et,
-                bid,
-            ),
+        apply_manager_edit_day_bag_patch(
+            cursor,
+            organization_id,
+            selected_date_et,
+            bid,
+            previous_effective_status=before.get("dashboard_status")
+            or before_day.get("effective_status"),
+            previous_reason_codes=list(before_day.get("review_reason_codes") or []),
+            outcome_action=outcome,
+            bulk_cleared=bool(bulk_cleared),
+            completion_at=(
+                _parse_dt(draft.get("completion_at"))
+                or _parse_dt(after.get("completion_at"))
+            )
+            if outcome == OUTCOME_MARK_COMPLETED
+            else None,
+            completed_by=(
+                str(
+                    draft.get("completion_employee")
+                    or draft.get("completed_by")
+                    or draft.get("employee")
+                    or after.get("completed_by")
+                    or ""
+                ).strip()
+                or None
+            )
+            if outcome == OUTCOME_MARK_COMPLETED
+            else None,
+            pre_weight_lbs=after.get("pre_weight_lbs"),
+            post_weight_lbs=after.get("post_weight_lbs"),
         )
-    except ImportError:
-        pass
+        # Re-capture after membership patch so response/audit after reflects queue status.
+        after = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
     except Exception:
         pass
 

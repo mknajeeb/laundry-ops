@@ -329,13 +329,37 @@ def _effective_status_for_row(row: Mapping[str, Any], review_ids: set[str]) -> s
     return outcome or OUTCOME_PENDING
 
 
+def _operational_membership_ids(wl: Mapping[str, Any]) -> set[str]:
+    """Bags that belong on the persisted day snapshot (never all presence rows)."""
+    ids: set[str] = set()
+    for key in (
+        "new_today",
+        "carryover",
+        "completed_on_date",
+        "pending_end_of_date",
+        "review_required",
+        "disappeared_without_completion_exceptions",
+        "completed_without_recognized_entry",
+        "completed_without_entry_scan",
+    ):
+        for bid in wl.get(key) or []:
+            nb = normalize_bag_id(bid)
+            if nb:
+                ids.add(nb)
+    return ids
+
+
 def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -> list[dict[str, Any]]:
     review_ids = set(wl.get("review_required") or summary.get("segments", {}).get("all", {}).get("bag_ids", {}).get("review_required") or [])
     reasons = wl.get("review_reasons_by_bag") or summary.get("review_reasons_by_bag") or {}
+    member_ids = _operational_membership_ids(wl)
     rows_out: list[dict[str, Any]] = []
     for row in wl.get("rows") or []:
         bid = normalize_bag_id(row.get("bag_id"))
         if not bid:
+            continue
+        # Never persist presence-only / not_in_workload rows onto the day table.
+        if member_ids and bid not in member_ids:
             continue
         entry_class = row.get("entry_class") or row.get("inclusion_source") or "new_today"
         if entry_class in ("carryover", "FIRST_SCRAPE_BASELINE", "ADDED_LATER_IN_DAY"):
@@ -518,6 +542,19 @@ def persist_day_snapshot(
                 proj.get("productivity_exclusion_reason"),
             ),
         )
+    # Drop presence-only / stale orphans left by older persist bugs.
+    keep_ids = sorted({normalize_bag_id(b.get("bag_id")) for b in bags if b.get("bag_id")})
+    if keep_ids:
+        placeholders = ",".join(["%s"] * len(keep_ids))
+        cursor.execute(
+            f"""
+            DELETE FROM rinse_shift_monitor_day_bags
+            WHERE organization_id = %s
+              AND shift_date_et = %s
+              AND bag_id NOT IN ({placeholders})
+            """,
+            (int(organization_id), shift_date_et, *keep_ids),
+        )
     try:
         from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
 
@@ -532,6 +569,261 @@ def _hydrate_day_bag_row(row: Mapping[str, Any]) -> dict[str, Any]:
     d["review_reason_codes"] = _json_load(d.pop("review_reason_codes_json", None)) or []
     d["bag_snapshot"] = _json_load(d.pop("bag_snapshot_json", None)) or {}
     return d
+
+
+def _headline_bucket_for_status(status: str | None) -> str | None:
+    s = str(status or "").strip().lower()
+    if s == OUTCOME_REVIEW_REQUIRED or s == "review_required":
+        return "review_required"
+    if s == OUTCOME_COMPLETED or s == "completed" or s.endswith("_completed"):
+        return "completed"
+    if s == OUTCOME_PENDING or s == "pending" or "pending" in s:
+        return "pending"
+    if s in ("excluded", "exclude"):
+        return "excluded"
+    return None
+
+
+def apply_manager_edit_day_bag_patch(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    bag_id: str,
+    *,
+    previous_effective_status: str | None,
+    previous_reason_codes: list[str] | None = None,
+    outcome_action: str | None = None,
+    bulk_cleared: bool = False,
+    completion_at: Any = None,
+    completed_by: str | None = None,
+    pre_weight_lbs: Any = None,
+    post_weight_lbs: Any = None,
+) -> dict[str, Any]:
+    """Fast post-edit sync: one day_bag + headline counts (no full day rebuild).
+
+    Must run only after the manager edit lock check has already succeeded.
+    Does not bump ``manager_edit_version`` / ``updated_at``.
+    """
+    from backend.rinse_bulk_workitems import REASON_WF_BULK_WORKITEM_REVIEW
+
+    ensure_shift_monitor_day_tables(cursor)
+    bid = normalize_bag_id(bag_id)
+    if not bid:
+        return {"ok": False, "error": "invalid_bag_id"}
+
+    rows = load_day_bags_by_ids(cursor, organization_id, shift_date_et, [bid])
+    day_row = rows[0] if rows else {}
+    prev_status = str(
+        previous_effective_status
+        or day_row.get("effective_status")
+        or ""
+    ).strip().lower() or None
+    reasons = list(previous_reason_codes if previous_reason_codes is not None else (day_row.get("review_reason_codes") or []))
+    if bulk_cleared:
+        reasons = [r for r in reasons if str(r) != REASON_WF_BULK_WORKITEM_REVIEW]
+
+    outcome = str(outcome_action or "").strip().lower() or None
+    if outcome == "mark_completed":
+        new_status = OUTCOME_COMPLETED
+        reasons = []
+        disposition = DISPOSITION_COMPLETED
+    elif outcome == "return_pending":
+        new_status = OUTCOME_PENDING
+        reasons = []
+        disposition = DISPOSITION_CARRY_FORWARD
+    elif outcome == "exclude":
+        new_status = "excluded"
+        reasons = []
+        disposition = DISPOSITION_EXCLUDE
+    else:
+        if reasons:
+            new_status = OUTCOME_REVIEW_REQUIRED
+            disposition = day_row.get("disposition")
+        else:
+            # Bulk/fields-only save cleared the last review reason.
+            canon = str(day_row.get("canonical_completion_status") or "").lower()
+            if completion_at or canon in (OUTCOME_COMPLETED, "completed") or "completed" in canon:
+                new_status = OUTCOME_COMPLETED
+                disposition = DISPOSITION_COMPLETED
+            else:
+                new_status = OUTCOME_PENDING
+                disposition = DISPOSITION_CARRY_FORWARD
+
+    snap = dict(day_row.get("bag_snapshot") or {})
+    snap.update(
+        {
+            "outcome": new_status,
+            "final_bucket": new_status,
+            "reason_codes": list(reasons),
+            "effective_status": new_status,
+        }
+    )
+    if completion_at is not None:
+        snap["completion_at"] = (
+            completion_at.isoformat() if hasattr(completion_at, "isoformat") else completion_at
+        )
+    if completed_by is not None:
+        snap["completed_by"] = completed_by
+    if pre_weight_lbs is not None:
+        snap["pre_weight_lbs"] = pre_weight_lbs
+    if post_weight_lbs is not None:
+        snap["post_weight_lbs"] = post_weight_lbs
+        snap["weight_lbs"] = post_weight_lbs
+
+    weight_lbs = post_weight_lbs if post_weight_lbs is not None else day_row.get("weight_lbs")
+    try:
+        from backend.rinse_step1_productivity_fast import project_productivity_fields_for_day_bag
+
+        proj = project_productivity_fields_for_day_bag(
+            {
+                "effective_status": new_status,
+                "canonical_completion_employee": completed_by
+                if completed_by is not None
+                else day_row.get("canonical_completion_employee"),
+                "canonical_completion_timestamp": completion_at
+                if completion_at is not None
+                else day_row.get("canonical_completion_timestamp"),
+                "weight_lbs": weight_lbs,
+                "post_weight_lbs": post_weight_lbs
+                if post_weight_lbs is not None
+                else day_row.get("post_weight_lbs"),
+            }
+        )
+    except Exception:
+        proj = {}
+
+    cursor.execute(
+        """
+        UPDATE rinse_shift_monitor_day_bags
+        SET effective_status = %s,
+            review_reason_codes_json = %s,
+            canonical_completion_status = %s,
+            canonical_completion_timestamp = COALESCE(%s, canonical_completion_timestamp),
+            canonical_completion_employee = COALESCE(%s, canonical_completion_employee),
+            pre_weight_lbs = COALESCE(%s, pre_weight_lbs),
+            post_weight_lbs = COALESCE(%s, post_weight_lbs),
+            weight_lbs = COALESCE(%s, weight_lbs),
+            disposition = COALESCE(%s, disposition),
+            bag_snapshot_json = %s,
+            productivity_employee_name = %s,
+            productivity_completed_at = %s,
+            productivity_weight_lbs = %s,
+            productivity_credit_eligible = %s,
+            productivity_exclusion_reason = %s,
+            updated_at = updated_at
+        WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+        """,
+        (
+            new_status,
+            _json_dump(reasons),
+            new_status,
+            _dt(completion_at) if completion_at is not None else None,
+            completed_by,
+            pre_weight_lbs,
+            post_weight_lbs,
+            weight_lbs,
+            disposition,
+            _json_dump(snap),
+            proj.get("productivity_employee_name"),
+            _dt(proj.get("productivity_completed_at")),
+            proj.get("productivity_weight_lbs"),
+            proj.get("productivity_credit_eligible"),
+            proj.get("productivity_exclusion_reason"),
+            int(organization_id),
+            shift_date_et,
+            bid,
+        ),
+    )
+
+    # Patch headline counts / bag_id lists for the status transition.
+    day = get_day_record(cursor, organization_id, shift_date_et)
+    if day:
+        headline = dict(day.get("headline") or {})
+        segments = dict(headline.get("segments") or {})
+        all_seg = dict(segments.get("all") or {})
+        bag_ids = dict(all_seg.get("bag_ids") or {})
+        old_bucket = _headline_bucket_for_status(prev_status)
+        new_bucket = _headline_bucket_for_status(new_status)
+        if old_bucket and old_bucket != new_bucket:
+            old_list = [x for x in list(bag_ids.get(old_bucket) or []) if normalize_bag_id(x) != bid]
+            bag_ids[old_bucket] = old_list
+            all_seg[old_bucket] = len(old_list)
+            if old_bucket == "review_required":
+                all_seg["exceptions"] = {
+                    **dict(all_seg.get("exceptions") or {}),
+                    "review_required": len(old_list),
+                    "disappeared_without_completion": len(old_list),
+                    "total": len(old_list),
+                }
+        if new_bucket:
+            new_list = sorted(
+                {
+                    normalize_bag_id(x)
+                    for x in list(bag_ids.get(new_bucket) or [])
+                    if normalize_bag_id(x)
+                }
+                | {bid}
+            )
+            bag_ids[new_bucket] = new_list
+            all_seg[new_bucket] = len(new_list)
+            if new_bucket == "review_required":
+                all_seg["exceptions"] = {
+                    **dict(all_seg.get("exceptions") or {}),
+                    "review_required": len(new_list),
+                    "disappeared_without_completion": len(new_list),
+                    "total": len(new_list),
+                }
+        all_seg["bag_ids"] = bag_ids
+        segments["all"] = all_seg
+        headline["segments"] = segments
+        headline["completed"] = all_seg.get("completed", headline.get("completed"))
+        headline["pending"] = all_seg.get("pending", headline.get("pending"))
+        headline["exceptions"] = dict(all_seg.get("exceptions") or headline.get("exceptions") or {})
+        review_n = int((headline.get("exceptions") or {}).get("review_required") or 0)
+        reasons_by_bag = dict(
+            (day.get("workload_meta") or {}).get("review_reasons_by_bag")
+            or headline.get("review_reasons_by_bag")
+            or {}
+        )
+        if reasons:
+            reasons_by_bag[bid] = list(reasons)
+        else:
+            reasons_by_bag.pop(bid, None)
+        headline["review_reasons_by_bag"] = reasons_by_bag
+        meta = dict(day.get("workload_meta") or {})
+        meta["review_reasons_by_bag"] = reasons_by_bag
+        cursor.execute(
+            """
+            UPDATE rinse_shift_monitor_days
+            SET review_required_count = %s,
+                headline_json = %s,
+                workload_meta_json = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE organization_id = %s AND shift_date_et = %s
+            """,
+            (
+                review_n,
+                _json_dump(headline),
+                _json_dump(meta),
+                int(organization_id),
+                shift_date_et,
+            ),
+        )
+
+    try:
+        from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
+
+        clear_step1_productivity_cache(organization_id, shift_date_et)
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "bag_id": bid,
+        "previous_effective_status": prev_status,
+        "effective_status": new_status,
+        "review_reason_codes": reasons,
+    }
 
 
 def load_day_bags(cursor, organization_id: int, shift_date_et: date) -> list[dict[str, Any]]:

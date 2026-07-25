@@ -25,25 +25,43 @@ from backend.ta_helpers import table_exists
 
 
 def _refresh_step1_day_snapshot_after_mutation(
-    cursor, organization_id: int, selected_date_et: date
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    bag_id: str | None = None,
+    outcome_action: str | None = None,
+    bulk_cleared: bool = False,
 ) -> None:
-    """Rebuild persisted day headline/bags AFTER a successful mutation.
+    """Fast post-mutation sync for one bag (no full-day rebuild).
 
-    Call only after the edit/undo lock path has already succeeded. This must not
-    run before the optimistic-lock check (that caused false conflicts). Persist
-    preserves ``manager_edit_version`` / day-bag ``updated_at``.
+    Full ``build_veewash_daily_workload`` + ``persist_day_snapshot`` can take
+    well over the FE 60s timeout and hung Save on Review Required.
     """
-    from backend.rinse_veewash_shift_day import persist_day_snapshot, _commit
+    from backend.rinse_veewash_shift_day import (
+        apply_manager_edit_day_bag_patch,
+        load_day_bags_by_ids,
+        _commit,
+    )
 
-    wl = build_veewash_daily_workload(
-        cursor, organization_id, selected_date_et=selected_date_et
-    )
-    activation = get_step1_activation_date(cursor, organization_id) or selected_date_et
-    summary = build_step1_headline_summary(
-        wl, selected_date_et=selected_date_et, activation_date=activation
-    )
-    persist_day_snapshot(
-        cursor, organization_id, selected_date_et, workload=wl, summary=summary
+    bid = normalize_bag_id(bag_id) if bag_id else ""
+    if not bid:
+        return
+    rows = load_day_bags_by_ids(cursor, organization_id, selected_date_et, [bid])
+    day_row = rows[0] if rows else {}
+    apply_manager_edit_day_bag_patch(
+        cursor,
+        organization_id,
+        selected_date_et,
+        bid,
+        previous_effective_status=day_row.get("effective_status"),
+        previous_reason_codes=list(day_row.get("review_reason_codes") or []),
+        outcome_action=outcome_action,
+        bulk_cleared=bool(bulk_cleared),
+        completion_at=day_row.get("canonical_completion_timestamp"),
+        completed_by=day_row.get("canonical_completion_employee"),
+        pre_weight_lbs=day_row.get("pre_weight_lbs"),
+        post_weight_lbs=day_row.get("post_weight_lbs"),
     )
     _commit(cursor)
 
@@ -716,9 +734,15 @@ def apply_step1_correction(
                 clear_step1_productivity_cache(organization_id, day)
             except Exception:
                 pass
-            # Refresh live snapshot so Review totals update immediately.
+            # Fast single-bag queue sync (full day rebuild hung Save for 60s+).
             try:
-                _refresh_step1_day_snapshot_after_mutation(cursor, organization_id, day)
+                _refresh_step1_day_snapshot_after_mutation(
+                    cursor,
+                    organization_id,
+                    day,
+                    bag_id=bid,
+                    bulk_cleared=True,
+                )
             except Exception:
                 pass
         return out
@@ -773,13 +797,7 @@ def apply_step1_correction(
                 clear_step1_productivity_cache(organization_id, day)
             except Exception:
                 pass
-            try:
-                _refresh_step1_day_snapshot_after_mutation(cursor, organization_id, day)
-            except Exception:
-                out = {
-                    **out,
-                    "warning": "day_snapshot_refresh_failed",
-                }
+            # Membership already patched inside apply_unified_bag_edit.
         return out
 
     if action == "undo_bag_edit":
@@ -806,7 +824,15 @@ def apply_step1_correction(
             except Exception:
                 pass
             try:
-                _refresh_step1_day_snapshot_after_mutation(cursor, organization_id, day)
+                restored = (out.get("after") or out.get("bag") or {})
+                _refresh_step1_day_snapshot_after_mutation(
+                    cursor,
+                    organization_id,
+                    day,
+                    bag_id=bid,
+                    outcome_action=None,
+                    bulk_cleared=bool(restored.get("bulk_items") or restored.get("no_chargeable")),
+                )
             except Exception:
                 out = {
                     **out,
