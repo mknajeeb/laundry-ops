@@ -22,6 +22,8 @@ CATHERINE = "60UAYQX9JH"
 CHRIS = "30YT9G2QHR"
 MARC = "EFX3SHSDC1"
 GRACE = "EQM0CVJZY8"
+INACTIVE = "INACTHD001"
+COMPLETED = "COMPLHD001"
 
 
 def _presence_rows():
@@ -151,23 +153,98 @@ def _wrong_scrape_membership():
     }
 
 
-def test_edd_gate_includes_victoria_excludes_nicole():
+def _run_gate(presence_rows, membership, *, completed=None):
     cursor = MagicMock()
-    cursor.fetchall.return_value = _presence_rows()
-    with patch("backend.rinse_hd_edd_membership.table_exists", return_value=True):
-        out = apply_hd_edd_day_membership_gate(
-            cursor, 3, DAY, _wrong_scrape_membership()
-        )
+    cursor.fetchall.return_value = presence_rows
+    with patch("backend.rinse_hd_edd_membership.table_exists", return_value=True), patch(
+        "backend.rinse_hd_edd_membership._load_completed_hd_bag_ids",
+        return_value=set(completed or []),
+    ):
+        return apply_hd_edd_day_membership_gate(cursor, 3, DAY, membership)
+
+
+def test_edd_gate_includes_victoria_excludes_nicole():
+    out = _run_gate(_presence_rows(), _wrong_scrape_membership())
     mem = out["membership"]
     assert VICTORIA in mem
     assert NICOLE not in mem
     assert set([CATHERINE, CHRIS, MARC, GRACE, VICTORIA]).issubset(set(mem))
     assert "WFKEEP1" in mem  # WF untouched even with future EDD
     assert out["hd_edd_gate"]["authoritative_field"] == "estimated_delivery_date"
+    assert out["hd_edd_gate"]["admit_requires_active_presence"] is True
     assert NICOLE in out["hd_edd_gate"]["removed_future_edd_bag_ids"]
     assert VICTORIA in out["hd_edd_gate"]["added_edd_day_bag_ids"]
     assert mem[VICTORIA]["hd_membership_reason"] == "edd_day_readmit_from_active_presence"
-    assert mem[CATHERINE]["hd_membership_reason"] == "edd_matches_selected_date"
+    assert mem[CATHERINE]["hd_membership_reason"] == "edd_active_not_completed"
+
+
+def test_edd_jul25_inactive_not_admitted():
+    """EDD == selected day but active=false → not admitted (stale / disappeared)."""
+    rows = [
+        {
+            "bag_id": INACTIVE,
+            "customer_name": "Inactive HD",
+            "estimated_delivery_date": DAY,
+            "rush_flag": 0,
+            "service_type": "HD",
+            "first_seen_at": datetime(2026, 7, 24, 12, 0, 0),
+            "last_seen_at": datetime(2026, 7, 24, 18, 0, 0),
+            "active": 0,
+            "portal_status": "at_vendor",
+        }
+    ]
+    membership = {
+        "membership": {
+            INACTIVE: {
+                "inclusion_source": INCLUSION_ADDED_LATER,
+                "service_type_portal": "HD",
+                "customer_name": "Inactive HD",
+            },
+            "WFKEEP1": {
+                "inclusion_source": INCLUSION_BASELINE,
+                "service_type_portal": "WF",
+            },
+        },
+        "baseline_bag_ids": ["WFKEEP1"],
+        "added_later_bag_ids": [INACTIVE],
+        "added_later": [],
+    }
+    out = _run_gate(rows, membership)
+    assert INACTIVE not in out["membership"]
+    assert "WFKEEP1" in out["membership"]
+    assert INACTIVE in out["hd_edd_gate"]["removed_inactive_bag_ids"]
+
+
+def test_edd_jul25_active_prior_completed_not_admitted():
+    """EDD == selected day, active=true, prior COMPLETE → not admitted (no resurrect)."""
+    rows = [
+        {
+            "bag_id": COMPLETED,
+            "customer_name": "Already Done HD",
+            "estimated_delivery_date": DAY,
+            "rush_flag": 0,
+            "service_type": "HD",
+            "first_seen_at": datetime(2026, 7, 20, 12, 0, 0),
+            "last_seen_at": datetime(2026, 7, 25, 10, 0, 0),
+            "active": 1,
+            "portal_status": "at_vendor",
+        }
+    ]
+    membership = {
+        "membership": {
+            "WFKEEP1": {
+                "inclusion_source": INCLUSION_BASELINE,
+                "service_type_portal": "WF",
+            },
+        },
+        "baseline_bag_ids": ["WFKEEP1"],
+        "added_later_bag_ids": [],
+        "added_later": [],
+    }
+    out = _run_gate(rows, membership, completed={COMPLETED})
+    assert COMPLETED not in out["membership"]
+    assert "WFKEEP1" in out["membership"]
+    assert COMPLETED in out["hd_edd_gate"]["removed_completed_bag_ids"]
 
 
 def test_presentation_strips_future_edd_nicole_from_hd_segment():
@@ -323,12 +400,7 @@ def test_rejected_distinct_order_not_line_count_and_missing_excluded():
 
 def test_expected_jul25_hd_five_without_nicole():
     """Expected Jul 25 HD membership identities after EDD gate."""
-    cursor = MagicMock()
-    cursor.fetchall.return_value = _presence_rows()
-    with patch("backend.rinse_hd_edd_membership.table_exists", return_value=True):
-        out = apply_hd_edd_day_membership_gate(
-            cursor, 3, DAY, _wrong_scrape_membership()
-        )
+    out = _run_gate(_presence_rows(), _wrong_scrape_membership())
     hd_ids = sorted(
         bid
         for bid, row in out["membership"].items()
