@@ -554,11 +554,24 @@ def test_manager_edit_day_bag_patch_mark_completed_clears_review():
                         "completed": ["OTHER"],
                         "pending": [],
                         "review_required": [BAG],
+                        "new_today": [BAG],
                     },
-                }
+                },
+                "wf": {
+                    "completed": 0,
+                    "pending": 0,
+                    "exceptions": {"review_required": 1, "total": 1},
+                    "bag_ids": {
+                        "completed": [],
+                        "pending": [],
+                        "review_required": [BAG],
+                        "new_today": [BAG],
+                    },
+                },
             },
             "exceptions": {"review_required": 1},
             "review_reasons_by_bag": {BAG: ["WF_BULK_WORKITEM_REVIEW"]},
+            "review_by_reason": {"WF_BULK_WORKITEM_REVIEW": [BAG]},
         },
         "workload_meta": {"review_reasons_by_bag": {BAG: ["WF_BULK_WORKITEM_REVIEW"]}},
     }
@@ -588,8 +601,21 @@ def test_manager_edit_day_bag_patch_mark_completed_clears_review():
     assert out["ok"] is True
     assert out["effective_status"] == "completed"
     assert out["review_reason_codes"] == []
-    # Two UPDATEs: day_bag + day headline
+    # day_bag + day headline updates
     assert cursor.execute.call_count >= 2
+    headline_update = None
+    for c in cursor.execute.call_args_list:
+        sql = str(c.args[0]) if c.args else ""
+        if "UPDATE rinse_shift_monitor_days" in sql and "headline_json" in sql:
+            headline_update = c.args[1]
+            break
+    assert headline_update is not None
+    import json
+    headline = json.loads(headline_update[1])
+    assert BAG not in (headline["segments"]["wf"]["bag_ids"]["review_required"])
+    assert BAG in (headline["segments"]["wf"]["bag_ids"]["completed"])
+    assert BAG not in (headline["segments"]["all"]["bag_ids"]["review_required"])
+    assert BAG not in (headline.get("review_by_reason") or {}).get("WF_BULK_WORKITEM_REVIEW", [])
 
 
 def test_persist_day_snapshot_never_bumps_day_bag_updated_at():

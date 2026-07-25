@@ -385,6 +385,23 @@ def build_drilldown(
         bid = normalize_bag_id(bag_id)
         ids = [bid] if bid else []
 
+    # Heal stale headline membership: Review drawers must not show bags already
+    # marked completed/pending on the day_bag row (segment patch lag / older bugs).
+    if (
+        not bag_id
+        and ids
+        and normalize_step1_queue_metric(metric) == "review_required"
+    ):
+        status_rows = load_day_bags_by_ids(
+            cursor, organization_id, selected_date_et, ids
+        )
+        still_review = {
+            normalize_bag_id(r.get("bag_id"))
+            for r in status_rows
+            if str(r.get("effective_status") or "").strip().lower() == "review_required"
+        }
+        ids = [b for b in ids if normalize_bag_id(b) in still_review]
+
     page = max(1, int(page or 1))
     page_size = max(1, min(100, int(page_size or 25)))
     total = len(ids)

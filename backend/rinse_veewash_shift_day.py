@@ -584,6 +584,62 @@ def _headline_bucket_for_status(status: str | None) -> str | None:
     return None
 
 
+def _segment_lists_bag(seg: Mapping[str, Any], bid: str) -> bool:
+    bags = (seg or {}).get("bag_ids") or {}
+    for vals in bags.values():
+        for x in list(vals or []):
+            if normalize_bag_id(x) == bid:
+                return True
+    return False
+
+
+def _move_bag_in_segment_bucket(
+    seg: Mapping[str, Any],
+    bid: str,
+    *,
+    old_bucket: str | None,
+    new_bucket: str | None,
+) -> dict[str, Any]:
+    """Move one bag between completed/pending/review_required lists inside a segment."""
+    out = dict(seg or {})
+    if not _segment_lists_bag(out, bid):
+        return out
+    bag_ids = dict(out.get("bag_ids") or {})
+    if old_bucket and old_bucket != new_bucket:
+        old_list = [
+            x for x in list(bag_ids.get(old_bucket) or []) if normalize_bag_id(x) != bid
+        ]
+        bag_ids[old_bucket] = old_list
+        out[old_bucket] = len(old_list)
+        if old_bucket == "review_required":
+            out["exceptions"] = {
+                **dict(out.get("exceptions") or {}),
+                "review_required": len(old_list),
+                "disappeared_without_completion": len(old_list),
+                "total": len(old_list),
+            }
+    if new_bucket and new_bucket != "excluded":
+        new_list = sorted(
+            {
+                normalize_bag_id(x)
+                for x in list(bag_ids.get(new_bucket) or [])
+                if normalize_bag_id(x)
+            }
+            | {bid}
+        )
+        bag_ids[new_bucket] = new_list
+        out[new_bucket] = len(new_list)
+        if new_bucket == "review_required":
+            out["exceptions"] = {
+                **dict(out.get("exceptions") or {}),
+                "review_required": len(new_list),
+                "disappeared_without_completion": len(new_list),
+                "total": len(new_list),
+            }
+    out["bag_ids"] = bag_ids
+    return out
+
+
 def apply_manager_edit_day_bag_patch(
     cursor,
     organization_id: int,
@@ -736,45 +792,21 @@ def apply_manager_edit_day_bag_patch(
     )
 
     # Patch headline counts / bag_id lists for the status transition.
+    # Must update WF/HD/rush segments too — drawers read those, not only "all".
     day = get_day_record(cursor, organization_id, shift_date_et)
     if day:
         headline = dict(day.get("headline") or {})
         segments = dict(headline.get("segments") or {})
-        all_seg = dict(segments.get("all") or {})
-        bag_ids = dict(all_seg.get("bag_ids") or {})
         old_bucket = _headline_bucket_for_status(prev_status)
         new_bucket = _headline_bucket_for_status(new_status)
-        if old_bucket and old_bucket != new_bucket:
-            old_list = [x for x in list(bag_ids.get(old_bucket) or []) if normalize_bag_id(x) != bid]
-            bag_ids[old_bucket] = old_list
-            all_seg[old_bucket] = len(old_list)
-            if old_bucket == "review_required":
-                all_seg["exceptions"] = {
-                    **dict(all_seg.get("exceptions") or {}),
-                    "review_required": len(old_list),
-                    "disappeared_without_completion": len(old_list),
-                    "total": len(old_list),
-                }
-        if new_bucket:
-            new_list = sorted(
-                {
-                    normalize_bag_id(x)
-                    for x in list(bag_ids.get(new_bucket) or [])
-                    if normalize_bag_id(x)
-                }
-                | {bid}
+        for seg_name, seg in list(segments.items()):
+            segments[seg_name] = _move_bag_in_segment_bucket(
+                seg,
+                bid,
+                old_bucket=old_bucket,
+                new_bucket=new_bucket,
             )
-            bag_ids[new_bucket] = new_list
-            all_seg[new_bucket] = len(new_list)
-            if new_bucket == "review_required":
-                all_seg["exceptions"] = {
-                    **dict(all_seg.get("exceptions") or {}),
-                    "review_required": len(new_list),
-                    "disappeared_without_completion": len(new_list),
-                    "total": len(new_list),
-                }
-        all_seg["bag_ids"] = bag_ids
-        segments["all"] = all_seg
+        all_seg = dict(segments.get("all") or {})
         headline["segments"] = segments
         headline["completed"] = all_seg.get("completed", headline.get("completed"))
         headline["pending"] = all_seg.get("pending", headline.get("pending"))
@@ -790,8 +822,20 @@ def apply_manager_edit_day_bag_patch(
         else:
             reasons_by_bag.pop(bid, None)
         headline["review_reasons_by_bag"] = reasons_by_bag
+        # Drop bag from review_by_reason indexes when leaving review.
+        review_by_reason = dict(headline.get("review_by_reason") or {})
+        if old_bucket == "review_required" and new_bucket != "review_required":
+            cleaned = {}
+            for code, ids in review_by_reason.items():
+                kept = [x for x in list(ids or []) if normalize_bag_id(x) != bid]
+                if kept:
+                    cleaned[code] = kept
+            review_by_reason = cleaned
+            headline["review_by_reason"] = review_by_reason
         meta = dict(day.get("workload_meta") or {})
         meta["review_reasons_by_bag"] = reasons_by_bag
+        if "review_by_reason" in headline:
+            meta["review_by_reason"] = review_by_reason
         cursor.execute(
             """
             UPDATE rinse_shift_monitor_days
