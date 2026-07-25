@@ -111,6 +111,59 @@ def _today_et() -> date:
     return _now_et().date()
 
 
+def _refresh_open_step1_day_after_scrape(
+    conn,
+    cursor,
+    *,
+    org_id: int,
+    log: "_TeeLog",
+) -> dict[str, Any]:
+    """Rebuild today's OPEN Step-1 snapshot after scan import succeeds.
+
+    Shift Monitor Completed/Pending queues read the persisted day snapshot only
+    (drawer opens never live-rebuild). Without this post-scrape hook, new
+    completion scans sit in ``rinse_bag_scan_events`` while the UI stays frozen
+    on the prior snapshot until a manual backfill.
+    """
+    try:
+        from backend.rinse_veewash_shift_day import (
+            STATUS_CLOSED,
+            backfill_day_from_live,
+            get_day_record,
+        )
+
+        day = _today_et()
+        existing = get_day_record(cursor, org_id, day)
+        if existing and str(existing.get("status") or "") == STATUS_CLOSED:
+            log.write(f"Step-1 day {day} CLOSED — skip post-scrape refresh\n")
+            return {
+                "skipped": True,
+                "reason": "day_closed",
+                "shift_date_et": day.isoformat(),
+            }
+        out = backfill_day_from_live(cursor, org_id, day, force=True)
+        try:
+            conn.commit()
+        except Exception:
+            pass
+        log.write(
+            f"Step-1 day snapshot refreshed for {day} ok={out.get('ok')}\n"
+        )
+        return {
+            "ok": bool(out.get("ok")),
+            "shift_date_et": day.isoformat(),
+            "status": (out.get("day") or {}).get("status"),
+            "error": out.get("error"),
+        }
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        log.write(f"Step-1 post-scrape refresh ERROR (non-fatal): {exc}\n")
+        return {"ok": False, "error": str(exc)}
+
+
 def _stamp_et() -> str:
     return _now_et().strftime("%Y%m%d_%H%M%S")
 
@@ -1306,6 +1359,7 @@ def run_scheduled_scrape_for_org(
 
             off_portal_refresh_detail: dict[str, Any] | None = None
             targeted_pending_refresh_detail: dict[str, Any] | None = None
+            step1_refresh_detail: dict[str, Any] | None = None
             if not dry_run and batch_id and final_status in ("success", "needs_attention"):
                 targeted_pending_refresh_detail = _run_targeted_pending_scan_refresh(
                     conn,
@@ -1316,6 +1370,11 @@ def run_scheduled_scrape_for_org(
                     run_type=run_type,
                     targeted_pending_refresh=targeted_pending_refresh,
                     log=log,
+                )
+                # After scans land (confirm + optional targeted refresh), rebuild
+                # today's Step-1 snapshot so Completed/Pending queues catch up.
+                step1_refresh_detail = _refresh_open_step1_day_after_scrape(
+                    conn, cursor, org_id=org_id, log=log
                 )
 
             result.status = final_status
@@ -1334,6 +1393,8 @@ def run_scheduled_scrape_for_org(
                 result.detail["off_portal_scan_refresh"] = off_portal_refresh_detail
             if targeted_pending_refresh_detail is not None:
                 result.detail["targeted_pending_scan_refresh"] = targeted_pending_refresh_detail
+            if step1_refresh_detail is not None:
+                result.detail["step1_day_refresh"] = step1_refresh_detail
 
         except Exception as e:
             conn.rollback()
@@ -1372,6 +1433,10 @@ def run_scheduled_scrape_for_org(
                             targeted_pending_refresh_detail
                         )
                         result.detail["targeted_refresh_after_scrape_failure"] = True
+                        step1_fallback = _refresh_open_step1_day_after_scrape(
+                            conn, cursor, org_id=org_id, log=log
+                        )
+                        result.detail["step1_day_refresh"] = step1_fallback
                 except Exception as refresh_exc:
                     log.write(
                         f"Targeted pending scan refresh after scrape failure "

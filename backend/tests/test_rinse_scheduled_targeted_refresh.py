@@ -74,7 +74,10 @@ def _run_scheduled_with_mocks(*, refresh_side_effect=None, refresh_return=None):
     with patch(
         "backend.rinse_off_portal_scan_refresh.refresh_pending_workload_scans_via_direct_lookup",
         **refresh_kw,
-    ) as mock_refresh:
+    ) as mock_refresh, patch(
+        "backend.rinse_scheduled_scrape._refresh_open_step1_day_after_scrape",
+        return_value={"ok": True, "shift_date_et": "2026-07-25"},
+    ):
         for p in patches:
             p.start()
         try:
@@ -154,6 +157,9 @@ def test_scheduled_scrape_failure_still_runs_targeted_refresh():
         "backend.rinse_scheduled_scrape._run_targeted_pending_scan_refresh",
         return_value=refresh_summary,
     ) as mock_refresh, patch(
+        "backend.rinse_scheduled_scrape._refresh_open_step1_day_after_scrape",
+        return_value={"ok": True, "shift_date_et": "2026-07-25"},
+    ), patch(
         "backend.rinse_scheduled_scrape.finish_scrape_run"
     ), patch(
         "backend.rinse_scheduled_scrape.release_scrape_lock"
