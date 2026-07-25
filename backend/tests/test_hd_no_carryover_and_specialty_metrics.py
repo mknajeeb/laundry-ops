@@ -14,7 +14,7 @@ import pytest
 
 from backend.rinse_hd_day_metrics import (
     build_day_specialty_metrics,
-    is_canonical_rejected,
+    is_create_issue_rejected_scan,
     normalize_specialty_item_name,
     specialty_order_ids_from_summary,
 )
@@ -263,25 +263,28 @@ def test_d_specialty_card_count_equals_distinct_orders():
                 {"bag_id": "COMP02", "workitem_name_snapshot": "Comforters", "quantity": 1},
                 {"bag_id": "BATH01", "workitem_name_snapshot": "Bath Mat", "quantity": 2},
             ]
-        elif "from rinse_bag_registry" in s:
+        elif "from rinse_bag_scan_events" in s:
             cursor.fetchall.return_value = [
                 {
                     "bag_id": "REJ001",
-                    "completion_status": "REJECTED",
-                    "completion_reason": "CREATE_ISSUE_NO_COMPLETION_PORTAL_DEPARTURE",
-                    "completed_at": datetime(2026, 7, 24, 12, 0, 0),
-                    "service_type": "WF",
-                    "name_clean": "Acme",
-                    "rush_type": "RUSH",
+                    "scanned_at_parsed": datetime(2026, 7, 24, 10, 0, 0),
+                    "purpose": "create-issue",
+                    "user_name": "Alex",
+                    "id": 1,
+                },
+                {
+                    "bag_id": "REJ001",
+                    "scanned_at_parsed": datetime(2026, 7, 24, 11, 0, 0),
+                    "purpose": "create-issue",
+                    "user_name": "Alex",
+                    "id": 2,
                 },
                 {
                     "bag_id": "REV001",
-                    "completion_status": "REJECTED",
-                    "completion_reason": "MISSING_FROM_LATEST_PORTAL_SCRAPE",
-                    "completed_at": datetime(2026, 7, 24, 12, 0, 0),
-                    "service_type": "HD",
-                    "name_clean": "Gone",
-                    "rush_type": "NON-RUSH",
+                    "scanned_at_parsed": datetime(2026, 7, 24, 12, 0, 0),
+                    "purpose": "weight-entry",
+                    "user_name": "Sam",
+                    "id": 3,
                 },
             ]
         elif "from rinse_cleaner_ticket_presence" in s:
@@ -325,8 +328,11 @@ def test_d_specialty_card_count_equals_distinct_orders():
     )
     assert metrics["comforter_orders"]["orders"][0]["quantity"] == 3.0  # COMP01 2+1
     assert metrics["bath_mat_orders"]["count"] == 1
+    # Three create-issue events on REJ001 → one distinct rejected order.
     assert metrics["rejected_orders"]["count"] == 1
     assert metrics["rejected_orders"]["order_ids"] == ["REJ001"]
+    assert metrics["rejected_orders"]["orders"][0]["create_issue_by"] == "Alex"
+    assert metrics["rejected_orders"]["orders"][0]["rejection_reason"] == "create-issue"
     assert metrics["split_orders"]["count"] == 1
     assert metrics["split_orders"]["order_ids"] == ["SPLT01"]
     # Drawer id helper matches card.
@@ -339,17 +345,64 @@ def test_d_specialty_card_count_equals_distinct_orders():
     ) == ["SPLT01"]
 
 
-def test_e_review_required_disappearance_not_rejected():
-    """Test E — Review Required disappearance must not appear under Rejected."""
-    assert is_canonical_rejected(
-        completion_status="REJECTED",
-        completion_reason="MISSING_FROM_LATEST_PORTAL_SCRAPE",
-    ) is False
-    assert is_canonical_rejected(
-        completion_status="REJECTED",
-        completion_reason="CREATE_ISSUE_NO_COMPLETION_PORTAL_DEPARTURE",
-    ) is True
-    assert is_canonical_rejected(completion_status="INCOMPLETE") is False
+def test_e_create_issue_is_rejected_not_registry_or_missing():
+    """Rejected = create-issue scan only; registry / missing-portal are irrelevant."""
+    assert is_create_issue_rejected_scan("create-issue") is True
+    assert is_create_issue_rejected_scan("Create Issue") is True
+    assert is_create_issue_rejected_scan("weight-entry") is False
+    assert is_create_issue_rejected_scan("create-workitem") is False
+
+
+def test_e2_multiple_orders_with_create_issue_count_distinct():
+    cursor = MagicMock()
+
+    def execute(sql, params=None):
+        s = " ".join(str(sql).lower().split())
+        if "from rinse_bag_scan_events" in s:
+            cursor.fetchall.return_value = [
+                {
+                    "bag_id": "ORDA01",
+                    "scanned_at_parsed": datetime(2026, 7, 25, 9, 0, 0),
+                    "purpose": "create-issue",
+                    "user_name": "Pat",
+                    "id": 10,
+                },
+                {
+                    "bag_id": "ORDB02",
+                    "scanned_at_parsed": datetime(2026, 7, 25, 10, 0, 0),
+                    "purpose": "create-issue",
+                    "user_name": "Pat",
+                    "id": 11,
+                },
+                {
+                    "bag_id": "ORDA01",
+                    "scanned_at_parsed": datetime(2026, 7, 25, 11, 0, 0),
+                    "purpose": "create-issue",
+                    "user_name": "Pat",
+                    "id": 12,
+                },
+            ]
+        else:
+            cursor.fetchall.return_value = []
+
+    cursor.execute.side_effect = execute
+    with patch("backend.rinse_hd_day_metrics.table_exists", return_value=True), patch(
+        "backend.rinse_hd_day_metrics._load_split_orders_from_supply_usage",
+        return_value={},
+    ):
+        summary = {
+            "segments": {
+                "all": _seg(["ORDA01", "ORDB02", "ORDC03"], []),
+                "wf": _seg(["ORDA01", "ORDB02", "ORDC03"], []),
+                "hd": _seg([], []),
+            }
+        }
+        metrics = build_day_specialty_metrics(
+            cursor, 3, date(2026, 7, 25), summary, service="all"
+        )
+    assert metrics["rejected_orders"]["count"] == 2
+    assert metrics["rejected_orders"]["order_ids"] == ["ORDA01", "ORDB02"]
+    assert "ORDC03" not in metrics["rejected_orders"]["order_ids"]
 
 
 def test_f_next_day_scrape_does_not_flag_prior_day_freshness():

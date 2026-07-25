@@ -494,10 +494,29 @@ export default function VeeWashStep1Section({
             const specialty =
               summary?.specialty_metrics?.[svcKey] || summary?.specialty_metrics?.all || null;
             if (!specialty) return null;
-            const comforter = specialty.comforter_orders || {};
-            const bathMat = specialty.bath_mat_orders || {};
-            const rejected = specialty.rejected_orders || {};
-            const split = specialty.split_orders || {};
+            // KPI count must match drawer: intersect specialty order_ids with the
+            // active service × rush segment membership.
+            const filterSeg =
+              svcKey === "wf" ? wfSeg : svcKey === "hd" ? hdSeg : totalSeg;
+            const memberSet = new Set([
+              ...(filterSeg?.bag_ids?.new_today || []),
+              ...(filterSeg?.bag_ids?.carryover || []),
+              ...(filterSeg?.bag_ids?.completed || []),
+              ...(filterSeg?.bag_ids?.pending || []),
+              ...(filterSeg?.bag_ids?.review_required || []),
+            ]);
+            const scoped = (pack) => {
+              const rawIds = pack?.order_ids || [];
+              const ids =
+                memberSet.size > 0
+                  ? rawIds.filter((id) => memberSet.has(id))
+                  : rawIds;
+              return { ...(pack || {}), order_ids: ids, count: ids.length };
+            };
+            const comforter = scoped(specialty.comforter_orders || {});
+            const bathMat = scoped(specialty.bath_mat_orders || {});
+            const rejected = scoped(specialty.rejected_orders || {});
+            const split = scoped(specialty.split_orders || {});
             return (
               <Box
                 sx={{
@@ -572,7 +591,7 @@ export default function VeeWashStep1Section({
                   />
                 </Box>
                 <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
-                  Distinct orders in current service filter · card count matches drawer list
+                  Distinct orders in current service / rush filter · card count matches drawer list
                 </Typography>
               </Box>
             );

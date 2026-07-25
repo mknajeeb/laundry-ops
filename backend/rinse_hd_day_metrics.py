@@ -3,6 +3,10 @@
 Isolated from WF classify / Employee Productivity. Counts are distinct order IDs.
 Normalized item classes are stored on the day summary snapshot so historical
 numbers do not drift when mapping rules change later.
+
+Rejected Orders are authoritative from scan chronology only:
+an order counts when it has at least one scan/event with purpose create-issue
+on the selected ET day (within the current service/rush membership filter).
 """
 
 from __future__ import annotations
@@ -12,19 +16,13 @@ from datetime import date
 from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_completion import normalize_bag_id
+from backend.rinse_scan_purpose import is_create_issue_purpose
 from backend.ta_helpers import table_exists
 
-CLASSIFICATION_VERSION = 1
+CLASSIFICATION_VERSION = 2
 
 ITEM_CLASS_COMFORTER = "comforter"
 ITEM_CLASS_BATH_MAT = "bath_mat"
-
-# Legacy auto-rejects from portal disappearance — not canonical "Rejected Orders".
-_NON_CANONICAL_REJECTION_REASONS = frozenset(
-    {
-        "MISSING_FROM_LATEST_PORTAL_SCRAPE",
-    }
-)
 
 _COMFORTER_RE = re.compile(r"^comforters?$", re.IGNORECASE)
 _BATH_MAT_RE = re.compile(r"^bath[\s_-]*mats?$", re.IGNORECASE)
@@ -44,19 +42,9 @@ def normalize_specialty_item_name(raw: Any) -> str | None:
     return None
 
 
-def is_canonical_rejected(
-    *,
-    completion_status: Any,
-    completion_reason: Any = None,
-) -> bool:
-    """True only for explicit canonical rejection — not disappearance / review."""
-    status = str(completion_status or "").strip().upper()
-    if status != "REJECTED":
-        return False
-    reason = str(completion_reason or "").strip().upper()
-    if reason in _NON_CANONICAL_REJECTION_REASONS:
-        return False
-    return True
+def is_create_issue_rejected_scan(purpose: Any) -> bool:
+    """Authoritative rejected-order signal: scan purpose create-issue."""
+    return is_create_issue_purpose(purpose)
 
 
 def _membership_ids_from_summary(
@@ -165,31 +153,56 @@ def _load_bulk_specialty_lines(
     return out
 
 
-def _load_registry_rejection_map(
+def _load_create_issue_rejections(
     cursor,
     organization_id: int,
+    selected_date_et: date,
     bag_ids: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
+    """
+    Distinct member orders with at least one create-issue scan on the ET day.
+
+    Returns first create-issue event metadata per order (time + employee).
+    Does not use registry completion, bulk workitems, or disappearance reasons.
+    """
     ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
     out: dict[str, dict[str, Any]] = {}
-    if not ids or not table_exists(cursor, "rinse_bag_registry"):
+    if not ids or not table_exists(cursor, "rinse_bag_scan_events"):
         return out
     ph = ",".join(["%s"] * len(ids))
+    # scanned_at_parsed is naive America/New_York wall time.
     cursor.execute(
         f"""
-        SELECT bag_id, completion_status, completion_reason, completed_at,
-               service_type, name_clean, rush_type
-        FROM rinse_bag_registry
-        WHERE organization_id = %s AND bag_id IN ({ph})
+        SELECT bag_id, scanned_at_parsed, purpose, user_name, id
+        FROM rinse_bag_scan_events
+        WHERE organization_id = %s
+          AND bag_id IN ({ph})
+          AND scanned_at_parsed >= %s
+          AND scanned_at_parsed < DATE_ADD(%s, INTERVAL 1 DAY)
+        ORDER BY scanned_at_parsed ASC, id ASC
         """,
-        (int(organization_id), *ids),
+        (int(organization_id), *ids, selected_date_et, selected_date_et),
     )
     for row in cursor.fetchall() or []:
         if not isinstance(row, dict):
             continue
+        if not is_create_issue_rejected_scan(row.get("purpose")):
+            continue
         bid = normalize_bag_id(row.get("bag_id"))
-        if bid:
-            out[bid] = dict(row)
+        if not bid or bid in out:
+            # First create-issue only (query ordered ascending).
+            continue
+        ts = row.get("scanned_at_parsed")
+        out[bid] = {
+            "bag_id": bid,
+            "create_issue_at": ts,
+            "create_issue_by": (str(row.get("user_name") or "").strip() or None),
+            "create_issue_purpose": "create-issue",
+            "create_issue_event_id": row.get("id"),
+            "completion_status": "REJECTED",
+            "completion_reason": "create-issue",
+            "completed_at": ts,
+        }
     return out
 
 
@@ -269,9 +282,14 @@ def _order_entry(
     if quantity is not None:
         entry["quantity"] = quantity
     if rejection:
-        entry["rejection_status"] = rejection.get("completion_status")
-        entry["rejection_reason"] = rejection.get("completion_reason")
-        entry["rejection_at"] = rejection.get("completed_at")
+        entry["rejection_status"] = rejection.get("completion_status") or "REJECTED"
+        entry["rejection_reason"] = rejection.get("completion_reason") or "create-issue"
+        entry["rejection_at"] = (
+            rejection.get("create_issue_at") or rejection.get("completed_at")
+        )
+        entry["create_issue_at"] = rejection.get("create_issue_at") or entry["rejection_at"]
+        entry["create_issue_by"] = rejection.get("create_issue_by")
+        entry["rejection_by"] = rejection.get("create_issue_by")
         if not entry.get("service") and rejection.get("service_type"):
             entry["service"] = rejection.get("service_type")
         if not entry.get("customer_name") and rejection.get("name_clean"):
@@ -290,16 +308,19 @@ def build_day_specialty_metrics(
     service: str = "all",
 ) -> dict[str, Any]:
     """
-    Build comforter / bath-mat / rejected order cards for the day membership.
+    Build comforter / bath-mat / rejected / split cards for day membership.
 
-    Card counts = distinct order numbers in each orders list.
+    Rejected Orders = distinct member orders with ≥1 create-issue scan on the
+    selected ET day. Card counts = distinct order numbers in each orders list.
     """
     member_ids = _membership_ids_from_summary(summary, service=service)
     ctx = _bag_context_from_summary(summary)
     specialty = _load_bulk_specialty_lines(
         cursor, organization_id, selected_date_et, member_ids
     )
-    registry = _load_registry_rejection_map(cursor, organization_id, member_ids)
+    create_issues = _load_create_issue_rejections(
+        cursor, organization_id, selected_date_et, member_ids
+    )
     customers = _load_customer_names(cursor, organization_id, member_ids)
     split_rows = _load_split_orders_from_supply_usage(
         cursor, organization_id, selected_date_et, member_ids
@@ -337,34 +358,12 @@ def build_day_specialty_metrics(
             bath_mat_orders[bid]["item_class"] = ITEM_CLASS_BATH_MAT
 
     rejected_orders: dict[str, dict[str, Any]] = {}
-    review_ids = set(
-        normalize_bag_id(b)
-        for b in (
-            ((summary.get("segments") or {}).get("all") or {}).get("bag_ids") or {}
-        ).get("review_required")
-        or []
-        if normalize_bag_id(b)
-    )
-    for bid in member_ids:
-        reg = registry.get(bid) or {}
-        if not is_canonical_rejected(
-            completion_status=reg.get("completion_status"),
-            completion_reason=reg.get("completion_reason"),
-        ):
-            continue
-        # Review Required and Rejected remain separate: a bag under review for
-        # disappearance without a canonical rejection reason is already excluded
-        # by is_canonical_rejected. Keep review_ids out when reason is empty-ish.
-        if bid in review_ids and not is_canonical_rejected(
-            completion_status=reg.get("completion_status"),
-            completion_reason=reg.get("completion_reason"),
-        ):
-            continue
+    for bid, issue in create_issues.items():
         rejected_orders[bid] = _order_entry(
             bid,
             ctx=ctx.get(bid) or {"bag_id": bid, "status": "rejected"},
             customer=customers.get(bid),
-            rejection=reg,
+            rejection=issue,
         )
         rejected_orders[bid]["status"] = "rejected"
 
@@ -439,6 +438,7 @@ def specialty_order_ids_from_summary(
     *,
     metric: str,
     service: str = "all",
+    rush: str = "all",
 ) -> list[str]:
     """Resolve drawer bag ids for specialty metric keys from the frozen snapshot."""
     key = str(metric or "").strip().lower().replace("-", "_")
@@ -462,5 +462,27 @@ def specialty_order_ids_from_summary(
         svc = "all"
     root = summary.get("specialty_metrics") or {}
     pack = (root.get(svc) or root.get("all") or {}).get(pack_key) or {}
-    ids = pack.get("order_ids") or [o.get("bag_id") for o in (pack.get("orders") or [])]
-    return sorted({normalize_bag_id(b) for b in ids if normalize_bag_id(b)})
+    ids = {
+        normalize_bag_id(b)
+        for b in (pack.get("order_ids") or [o.get("bag_id") for o in (pack.get("orders") or [])])
+        if normalize_bag_id(b)
+    }
+    r = str(rush or "all").strip().lower().replace("-", "_")
+    if r in ("rush", "non_rush"):
+        # Intersect with the active service×rush segment so KPI/drawer share one list.
+        segs = summary.get("segments") or {}
+        if svc == "wf":
+            seg_key = "wf_rush" if r == "rush" else "wf_non_rush"
+        elif svc == "hd":
+            seg_key = "hd_rush" if r == "rush" else "hd_non_rush"
+        else:
+            seg_key = "rush" if r == "rush" else "non_rush"
+        bags = ((segs.get(seg_key) or {}).get("bag_ids") or {})
+        allowed: set[str] = set()
+        for bucket in ("new_today", "carryover", "completed", "pending", "review_required"):
+            for raw in bags.get(bucket) or []:
+                bid = normalize_bag_id(raw)
+                if bid:
+                    allowed.add(bid)
+        ids &= allowed
+    return sorted(ids)

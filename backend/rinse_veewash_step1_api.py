@@ -253,7 +253,7 @@ def _filter_bag_ids(
         from backend.rinse_hd_day_metrics import specialty_order_ids_from_summary
 
         return specialty_order_ids_from_summary(
-            summary, metric=metric_norm, service=svc
+            summary, metric=metric_norm, service=svc, rush=r
         )
     metric_key = {
         "new_today": "new_today",
@@ -622,7 +622,10 @@ def build_drilldown(
             "specialty_item_class": spec.get("item_class"),
             "rejection_status": spec.get("rejection_status"),
             "rejection_reason": spec.get("rejection_reason"),
-            "rejection_at": spec.get("rejection_at"),
+            "rejection_at": spec.get("rejection_at") or spec.get("create_issue_at"),
+            "rejection_by": spec.get("rejection_by") or spec.get("create_issue_by"),
+            "create_issue_at": spec.get("create_issue_at") or spec.get("rejection_at"),
+            "create_issue_by": spec.get("create_issue_by") or spec.get("rejection_by"),
             "split_order": spec.get("split_order"),
             "split_status": spec.get("split_status"),
             "split_confirmed": spec.get("split_confirmed"),

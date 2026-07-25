@@ -1091,8 +1091,15 @@ def _ensure_specialty_metrics(
     packs = out.get("specialty_metrics")
     if isinstance(packs, dict) and packs:
         all_pack = packs.get("all") or {}
-        # Rebuild when older snapshots lack Split Orders.
-        if isinstance(all_pack.get("split_orders"), dict):
+        # Rebuild when older snapshots lack Split Orders or use pre-create-issue
+        # rejected classification (v1 registry-based).
+        try:
+            from backend.rinse_hd_day_metrics import CLASSIFICATION_VERSION
+
+            ver = int(all_pack.get("classification_version") or 0)
+        except Exception:
+            ver = 0
+        if isinstance(all_pack.get("split_orders"), dict) and ver >= CLASSIFICATION_VERSION:
             return out
     try:
         from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary

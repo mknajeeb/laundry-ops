@@ -499,11 +499,15 @@ export default function Step1MetricDrawer({
                         quantity: {bag.specialty_quantity}
                       </Typography>
                     ) : null}
-                    {bag.rejection_status || bag.rejection_reason ? (
+                    {bag.rejection_status || bag.rejection_reason || bag.create_issue_at ? (
                       <Typography variant="caption" display="block" sx={{ mt: 0.25 }}>
-                        Rejection: {bag.rejection_status || "REJECTED"}
-                        {bag.rejection_reason ? ` · ${bag.rejection_reason}` : ""}
-                        {bag.rejection_at ? ` · ${fmtTs(bag.rejection_at)}` : ""}
+                        Create-issue
+                        {bag.create_issue_at || bag.rejection_at
+                          ? ` · ${fmtTs(bag.create_issue_at || bag.rejection_at)}`
+                          : ""}
+                        {bag.create_issue_by || bag.rejection_by
+                          ? ` · ${bag.create_issue_by || bag.rejection_by}`
+                          : ""}
                       </Typography>
                     ) : null}
                     {bag.split_order || bag.split_status ? (

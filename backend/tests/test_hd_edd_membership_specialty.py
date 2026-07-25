@@ -6,7 +6,7 @@ from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 from backend.rinse_hd_edd_membership import apply_hd_edd_day_membership_gate
-from backend.rinse_hd_day_metrics import is_canonical_rejected
+from backend.rinse_hd_day_metrics import is_create_issue_rejected_scan
 from backend.rinse_hd_day_presentation import finalize_hd_step1_summary
 from backend.rinse_veewash_day_membership import INCLUSION_ADDED_LATER, INCLUSION_BASELINE
 from backend.rinse_veewash_step1_api import _filter_bag_ids, normalize_step1_queue_metric
@@ -387,15 +387,11 @@ def test_specialty_drawer_filter_uses_canonical_order_ids():
 
 
 def test_rejected_distinct_order_not_line_count_and_missing_excluded():
-    assert is_canonical_rejected(
-        completion_status="REJECTED",
-        completion_reason="CREATE_ISSUE_NO_COMPLETION_PORTAL_DEPARTURE",
-    )
-    assert not is_canonical_rejected(
-        completion_status="REJECTED",
-        completion_reason="MISSING_FROM_LATEST_PORTAL_SCRAPE",
-    )
-    assert not is_canonical_rejected(completion_status="INCOMPLETE")
+    assert is_create_issue_rejected_scan("create-issue")
+    assert is_create_issue_rejected_scan("Create Issue")
+    assert not is_create_issue_rejected_scan("weight-entry")
+    assert not is_create_issue_rejected_scan("create-workitem")
+    assert not is_create_issue_rejected_scan("MISSING_FROM_LATEST_PORTAL_SCRAPE")
 
 
 def test_expected_jul25_hd_five_without_nicole():
