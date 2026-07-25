@@ -111,6 +111,20 @@ def _today_et() -> date:
     return _now_et().date()
 
 
+def _combined_cycle_needs_step1_refresh(
+    *,
+    dry_run: bool,
+    status: str | None,
+    detail: Mapping[str, Any] | None,
+) -> bool:
+    """True when combined-cycle finish must run the Step-1 safety-net refresh."""
+    if dry_run:
+        return False
+    if str(status or "") not in ("success", "needs_attention"):
+        return False
+    return not bool((detail or {}).get("step1_day_refresh"))
+
+
 def _refresh_open_step1_day_after_scrape(
     conn,
     cursor,
@@ -837,6 +851,15 @@ def run_rinse_combined_sync_for_org(
         result.detail["sync_cycle"] = sync_cycle
         result.detail["ready_for_vendor_sync"] = rfv_detail
         result.detail["at_vendor_presence_sync"] = av_presence_detail
+        # Safety net: combined-cycle finish must never leave today's OPEN Step-1
+        # snapshot stale when the import path omitted step1_day_refresh.
+        if _combined_cycle_needs_step1_refresh(
+            dry_run=dry_run, status=result.status, detail=result.detail
+        ):
+            result.detail["step1_day_refresh"] = _refresh_open_step1_day_after_scrape(
+                conn, cursor, org_id=org_id, log=log
+            )
+            result.detail["step1_day_refresh_via"] = "combined_cycle_safety_net"
         _finish_combined_cycle_run(
             conn,
             cursor,
@@ -1269,6 +1292,12 @@ def run_scheduled_scrape_for_org(
                 )
                 if targeted_pending_refresh_detail is not None:
                     result.detail["targeted_pending_scan_refresh"] = targeted_pending_refresh_detail
+                # Portal confirm may be gated, but scan-only / targeted imports still
+                # land events — refresh Step-1 so Completed/Pending do not freeze.
+                if not dry_run:
+                    result.detail["step1_day_refresh"] = _refresh_open_step1_day_after_scrape(
+                        conn, cursor, org_id=org_id, log=log
+                    )
                 conn.commit()
                 return result
 

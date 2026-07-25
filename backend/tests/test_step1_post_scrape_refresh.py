@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import date
 from unittest.mock import MagicMock, patch
 
-from backend.rinse_scheduled_scrape import _refresh_open_step1_day_after_scrape
+from backend.rinse_scheduled_scrape import (
+    _combined_cycle_needs_step1_refresh,
+    _refresh_open_step1_day_after_scrape,
+)
 from backend.rinse_veewash_shift_day import STATUS_CLOSED, STATUS_OPEN
 
 
@@ -62,3 +65,28 @@ def test_post_scrape_refresh_failure_is_non_fatal():
         )
     assert out["ok"] is False
     assert "db down" in out["error"]
+
+
+def test_combined_cycle_needs_step1_refresh_when_import_omits_it():
+    assert (
+        _combined_cycle_needs_step1_refresh(
+            dry_run=False,
+            status="success",
+            detail={"confirm": {}, "targeted_pending_scan_refresh": {}},
+        )
+        is True
+    )
+    assert (
+        _combined_cycle_needs_step1_refresh(
+            dry_run=False,
+            status="success",
+            detail={"step1_day_refresh": {"ok": True}},
+        )
+        is False
+    )
+    assert (
+        _combined_cycle_needs_step1_refresh(
+            dry_run=True, status="success", detail={}
+        )
+        is False
+    )
