@@ -202,6 +202,42 @@ def _has_canonical_completion(before: Mapping[str, Any]) -> bool:
     return status in {"completed", "complete", "done"} and bool(emp or ts)
 
 
+def _bulk_qty_map(items: list[Any] | None) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for raw in items or []:
+        if not isinstance(raw, Mapping):
+            continue
+        wid = raw.get("workitem_id")
+        key = str(wid) if wid is not None else str(raw.get("name") or raw.get("workitem_name") or "")
+        if not key:
+            continue
+        try:
+            qty = int(raw.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty > 0:
+            out[key] = qty
+    return out
+
+
+def _bulk_draft_changed(before: Mapping[str, Any], draft: Mapping[str, Any]) -> bool:
+    """True only when bulk quantities / no-charge flag actually change."""
+    if "no_chargeable" in draft or "no_charge_reason" in draft:
+        before_nc = bool(before.get("no_chargeable"))
+        draft_nc = bool(draft.get("no_chargeable"))
+        if before_nc != draft_nc:
+            return True
+        if draft_nc and str(draft.get("no_charge_reason") or "").strip() != str(
+            before.get("no_charge_reason") or ""
+        ).strip():
+            return True
+    if "bulk_items" not in draft:
+        return False
+    return _bulk_qty_map(list(before.get("bulk_items") or [])) != _bulk_qty_map(
+        list(draft.get("bulk_items") or [])
+    )
+
+
 def _reason_options_for_triggers(triggers: list[str]) -> list[dict[str, str]]:
     if "post_weight_correction" in triggers:
         return list(REASON_CODES_POST_CORRECTION)
@@ -922,6 +958,8 @@ def apply_unified_bag_edit(
             "policy": resolved.get("policy"),
         }
     reason_text = str(resolved["reason"])
+    policy = dict(resolved.get("policy") or {})
+    confirm_completed = bool(policy.get("confirm_completed"))
 
     effective_service = str(draft.get("service_type") or before.get("service_type") or "").strip().upper()
     errors = validate_edit_draft(draft, service_type=effective_service)
@@ -930,17 +968,25 @@ def apply_unified_bag_edit(
 
     # a. service / rush ---------------------------------------------------
     if "service_type" in draft or "rush_flag" in draft:
-        _apply_service_rush_update(
-            cursor,
-            organization_id,
-            bid,
-            selected_date_et,
-            service_type=draft.get("service_type", before.get("service_type")),
-            rush_flag=draft.get("rush_flag", before.get("rush_flag")),
-        )
+        next_service = draft.get("service_type", before.get("service_type"))
+        next_rush = draft.get("rush_flag", before.get("rush_flag"))
+        if (
+            str(next_service or "").strip().upper() != str(before.get("service_type") or "").strip().upper()
+            or str(next_rush or "").strip() != str(before.get("rush_flag") or "").strip()
+        ):
+            _apply_service_rush_update(
+                cursor,
+                organization_id,
+                bid,
+                selected_date_et,
+                service_type=next_service,
+                rush_flag=next_rush,
+            )
 
     # b. entry --------------------------------------------------------------
-    if "entry_at" in draft:
+    if "entry_at" in draft and _normalize_completion_key(draft.get("entry_at")) != _normalize_completion_key(
+        before.get("entry_at")
+    ):
         _apply_entry_correction(
             cursor,
             organization_id,
@@ -952,7 +998,13 @@ def apply_unified_bag_edit(
         )
 
     # c. weights --------------------------------------------------------------
-    if "pre_weight_lbs" in draft or "post_weight_lbs" in draft:
+    pre_changed = "pre_weight_lbs" in draft and _weight_changed(
+        before.get("pre_weight_lbs"), draft.get("pre_weight_lbs")
+    )
+    post_changed = "post_weight_lbs" in draft and _weight_changed(
+        before.get("post_weight_lbs"), draft.get("post_weight_lbs")
+    )
+    if pre_changed or post_changed:
         new_pre = normalize_scan_weight_lbs(draft.get("pre_weight_lbs", before.get("pre_weight_lbs")))
         new_post = normalize_scan_weight_lbs(draft.get("post_weight_lbs", before.get("post_weight_lbs")))
         _apply_weight_update(
@@ -969,7 +1021,8 @@ def apply_unified_bag_edit(
         )
 
     # d. bulk workitems -------------------------------------------------------
-    if "bulk_items" in draft or "no_chargeable" in draft or "no_charge_reason" in draft:
+    bulk_changed = _bulk_draft_changed(before, draft)
+    if bulk_changed:
         from backend.rinse_bulk_workitems import save_bag_bulk_workitems
 
         bulk_out = save_bag_bulk_workitems(
@@ -997,35 +1050,54 @@ def apply_unified_bag_edit(
     # e/f. completion + outcome ------------------------------------------------
     outcome_result: dict[str, Any] | None = None
     if outcome == OUTCOME_MARK_COMPLETED:
-        from backend.rinse_operator_manual_correction import apply_operator_approved_manual_completion
+        skip_heavy_completion = False
+        if confirm_completed:
+            try:
+                from backend.rinse_bag_registry import get_registry_row
 
-        emp = str(
-            draft.get("completion_employee")
-            or draft.get("completed_by")
-            or draft.get("employee")
-            or actor_display_name
-            or ""
-        ).strip()
-        if not emp:
-            return {"ok": False, "error": "completion_employee_required"}
-        ts = _parse_dt(draft.get("completion_at")) or datetime.utcnow()
-        weight_for_completion = normalize_scan_weight_lbs(
-            draft.get("post_weight_lbs", before.get("post_weight_lbs"))
-        )
-        if not weight_for_completion or weight_for_completion <= 0:
-            weight_for_completion = 0.1
-        outcome_result = apply_operator_approved_manual_completion(
-            cursor,
-            organization_id,
-            bid,
-            credited_employee=emp,
-            weight_lbs=weight_for_completion,
-            selected_date_et=selected_date_et,
-            completion_timestamp=ts,
-            upload_batch_id=int(draft.get("upload_batch_id") or 0),
-            remarks=reason_text,
-            actor_user_id=actor_user_id,
-        )
+                reg = get_registry_row(cursor, organization_id, bid) or {}
+                skip_heavy_completion = (
+                    str(reg.get("completion_status") or "").strip().upper() == "COMPLETED"
+                )
+            except Exception:
+                skip_heavy_completion = False
+        if skip_heavy_completion:
+            # Confirm existing completion + leave Review — do not rewrite scans.
+            outcome_result = {
+                "applied": True,
+                "skipped_heavy_completion": True,
+                "reason": "confirm_completed_already_registered",
+            }
+        else:
+            from backend.rinse_operator_manual_correction import apply_operator_approved_manual_completion
+
+            emp = str(
+                draft.get("completion_employee")
+                or draft.get("completed_by")
+                or draft.get("employee")
+                or actor_display_name
+                or ""
+            ).strip()
+            if not emp:
+                return {"ok": False, "error": "completion_employee_required"}
+            ts = _parse_dt(draft.get("completion_at")) or datetime.utcnow()
+            weight_for_completion = normalize_scan_weight_lbs(
+                draft.get("post_weight_lbs", before.get("post_weight_lbs"))
+            )
+            if not weight_for_completion or weight_for_completion <= 0:
+                weight_for_completion = 0.1
+            outcome_result = apply_operator_approved_manual_completion(
+                cursor,
+                organization_id,
+                bid,
+                credited_employee=emp,
+                weight_lbs=weight_for_completion,
+                selected_date_et=selected_date_et,
+                completion_timestamp=ts,
+                upload_batch_id=int(draft.get("upload_batch_id") or 0),
+                remarks=reason_text,
+                actor_user_id=actor_user_id,
+            )
     elif outcome in (OUTCOME_RETURN_PENDING, OUTCOME_EXCLUDE):
         from backend.rinse_veewash_step1_api import _record_correction
 
@@ -1054,15 +1126,14 @@ def apply_unified_bag_edit(
         )
 
         before_day = (load_day_bags_by_ids(cursor, organization_id, selected_date_et, [bid]) or [{}])[0]
+        bulk_for_clear = {
+            "resolution_type": "no_charge"
+            if after.get("no_chargeable")
+            else ("items" if after.get("bulk_items") else None),
+            "no_charge_reason": after.get("no_charge_reason"),
+        } if (after.get("no_chargeable") or after.get("bulk_items")) else None
         bulk_cleared = bag_bulk_review_cleared(
-            {
-                "resolution_type": "no_charge"
-                if after.get("no_chargeable")
-                else ("items" if after.get("bulk_items") else None),
-                "no_charge_reason": after.get("no_charge_reason"),
-            }
-            if (after.get("no_chargeable") or after.get("bulk_items"))
-            else None,
+            bulk_for_clear,
             list(after.get("bulk_items") or []),
         )
         apply_manager_edit_day_bag_patch(
@@ -1109,6 +1180,14 @@ def apply_unified_bag_edit(
             deltas.append({"field_name": field, "before_value": b_val, "after_value": a_val})
     if outcome:
         deltas.append({"field_name": "outcome_action", "before_value": None, "after_value": outcome})
+    if confirm_completed and outcome_result and outcome_result.get("skipped_heavy_completion"):
+        deltas.append(
+            {
+                "field_name": "completion_path",
+                "before_value": None,
+                "after_value": "confirm_completed_fast",
+            }
+        )
 
     # Ensure manager edits bump the dedicated lock once (and only once).
     # Atomic WHERE guards against a concurrent manager save that raced past

@@ -333,6 +333,28 @@ def test_edit_bag_conflict_includes_current_version_and_skips_writes():
     assert out["latest"] is stale_before
 
 
+def test_bulk_draft_unchanged_when_quantities_match():
+    from backend.rinse_step1_edit_bag import _bulk_draft_changed
+
+    before = {
+        "bulk_items": [
+            {"workitem_id": 1, "quantity": 1, "name": "Bath Mat"},
+            {"workitem_id": 2, "quantity": 0, "name": "Comforter"},
+        ],
+        "no_chargeable": False,
+        "no_charge_reason": None,
+    }
+    draft = {
+        "bulk_items": [{"workitem_id": 1, "quantity": 1}],
+        "no_chargeable": False,
+        "no_charge_reason": None,
+    }
+    assert _bulk_draft_changed(before, draft) is False
+    draft2 = dict(draft)
+    draft2["bulk_items"] = [{"workitem_id": 1, "quantity": 2}]
+    assert _bulk_draft_changed(before, draft2) is True
+
+
 def test_edit_bag_routine_save_without_reason_succeeds_system_audit():
     before = {
         "bag_id": BAG,
@@ -351,16 +373,24 @@ def test_edit_bag_routine_save_without_reason_succeeds_system_audit():
         "completion_at": None,
         "completed_by": None,
         "updated_at": "2026-07-24T10:00:00",
+        "manager_edit_version": 0,
     }
     after = dict(before)
     after["bulk_items"] = [{"workitem_id": 1, "quantity": 2, "name": "Comforter"}]
     after_bumped = dict(after)
     after_bumped["updated_at"] = "2026-07-24T10:00:01"
+    after_bumped["manager_edit_version"] = 1
     cursor = MagicMock()
     cursor.lastrowid = 77
+
+    def _execute(*_a, **_k):
+        cursor.rowcount = 1
+        return None
+
+    cursor.execute.side_effect = _execute
     with patch("backend.rinse_step1_edit_bag.ensure_step1_bag_edit_tables"), patch(
         "backend.rinse_step1_edit_bag.capture_bag_edit_state",
-        side_effect=[before, after, after_bumped],
+        side_effect=[before, after, after, after_bumped],
     ), patch(
         "backend.rinse_bulk_workitems.save_bag_bulk_workitems",
         return_value={"ok": True, "items_total": 20},
@@ -370,6 +400,14 @@ def test_edit_bag_routine_save_without_reason_succeeds_system_audit():
         "backend.rinse_step1_edit_bag._apply_entry_correction"
     ), patch(
         "backend.rinse_step1_edit_bag._apply_weight_update"
+    ), patch(
+        "backend.rinse_veewash_shift_day.apply_manager_edit_day_bag_patch",
+        return_value={"ok": True},
+    ), patch(
+        "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
+        return_value=[{"effective_status": "review_required", "review_reason_codes": [], "bag_snapshot": {}}],
+    ), patch(
+        "backend.rinse_bulk_workitems.bag_bulk_review_cleared", return_value=True
     ):
         out = apply_unified_bag_edit(
             cursor,

@@ -374,7 +374,14 @@ export default function EditBagPanel({
       const editId = res.data.edit_id;
       setConflict(null);
       setUndoToast({ editId, message: "Review saved — Undo" });
-      onSaved?.(res.data, { keepExpanded: true, closeEditor: true });
+      // Clear Saving immediately; post-save list refresh must not keep the button stuck.
+      setSaving(false);
+      setPendingOutcome(null);
+      try {
+        await onSaved?.(res.data, { keepExpanded: true, closeEditor: true });
+      } catch (_) {
+        /* save succeeded; refresh errors are non-blocking */
+      }
     } catch (e) {
       const status = e?.response?.status;
       const data = e?.response?.data || {};
@@ -387,6 +394,7 @@ export default function EditBagPanel({
       }
     } finally {
       setSaving(false);
+      setPendingOutcome(null);
     }
   };
 
