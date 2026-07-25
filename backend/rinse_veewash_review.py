@@ -755,6 +755,78 @@ def expand_review_required(
     return result
 
 
+def review_required_completion_violations(
+    result: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """
+    Business rule: Review Required implies canonical completion evidence.
+
+    Sole intentional exception: DISAPPEARED_WITHOUT_COMPLETION (incomplete by
+    definition). Every other Review Required bag must have:
+      - completion timestamp (completion_at or completion_date)
+      - completion employee (completed_by)
+      - completion source (completion_source)
+
+    Returns a list of violation dicts (empty when the invariant holds).
+    """
+    review_ids = {_norm_bag(b) for b in (result.get("review_required") or []) if _norm_bag(b)}
+    if not review_ids:
+        return []
+
+    disappeared = {
+        _norm_bag(b)
+        for b in (result.get("disappeared_without_completion_exceptions") or [])
+        if _norm_bag(b)
+    }
+    reasons_by = result.get("review_reasons_by_bag") or {}
+    rows_by = {
+        _norm_bag(r.get("bag_id")): r
+        for r in (result.get("rows") or [])
+        if isinstance(r, Mapping) and _norm_bag(r.get("bag_id"))
+    }
+
+    violations: list[dict[str, Any]] = []
+    for bid in sorted(review_ids):
+        codes = [str(c) for c in (reasons_by.get(bid) or [])]
+        if bid in disappeared or REASON_DISAPPEARED_WITHOUT_COMPLETION in codes:
+            continue
+        row = rows_by.get(bid) or {}
+        completion_at = row.get("completion_at") or row.get("completion_date")
+        completed_by = str(row.get("completed_by") or "").strip() or None
+        completion_source = str(row.get("completion_source") or "").strip() or None
+        missing = []
+        if not completion_at:
+            missing.append("completion_timestamp")
+        if not completed_by:
+            missing.append("completion_employee")
+        if not completion_source:
+            missing.append("completion_source")
+        if missing:
+            violations.append(
+                {
+                    "bag_id": bid,
+                    "missing": missing,
+                    "reason_codes": codes,
+                    "completion_at": row.get("completion_at"),
+                    "completion_date": row.get("completion_date"),
+                    "completed_by": row.get("completed_by"),
+                    "completion_source": row.get("completion_source"),
+                }
+            )
+    return violations
+
+
+def assert_review_required_implies_canonical_completion(
+    result: Mapping[str, Any],
+) -> None:
+    """Raise AssertionError if any Review Required bag lacks canonical completion."""
+    violations = review_required_completion_violations(result)
+    assert not violations, (
+        "Review Required bags must have canonical completion "
+        f"(timestamp + employee + source); violations={violations}"
+    )
+
+
 def build_review_by_reason(result: Mapping[str, Any]) -> dict[str, list[str]]:
     """Group review bag IDs by reason_code (a bag may appear in multiple groups)."""
     out: dict[str, list[str]] = {}

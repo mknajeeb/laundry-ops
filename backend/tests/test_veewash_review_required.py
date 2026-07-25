@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from backend.rinse_veewash_review import (
+    assert_review_required_implies_canonical_completion,
     build_review_by_reason,
     derive_pre_post_weights,
     expand_review_required,
+    review_required_completion_violations,
 )
 from backend.rinse_veewash_workload import (
     REASON_COMPLETED_WITHOUT_RECOGNIZED_ENTRY,
@@ -531,6 +533,8 @@ def _assert_partition_invariants(out: dict) -> None:
         counts.get("total_active_workload")
         == len(completed) + len(pending) + len(review)
     )
+    # Business rule: Review Required ⇒ canonical completion present.
+    assert_review_required_implies_canonical_completion(out)
 
 
 def test_incomplete_bulk_workitem_stays_pending():
@@ -715,3 +719,143 @@ def test_completed_no_exception_stays_completed():
     assert "CMPOK1" not in out["pending_end_of_date"]
     assert not (out["review_reasons_by_bag"].get("CMPOK1") or [])
     _assert_partition_invariants(out)
+
+
+def test_review_required_implies_canonical_completion_invariant():
+    """
+    Lock the business rule: Review Required ⇒ canonical completion present.
+
+    Sole exception: DISAPPEARED_WITHOUT_COMPLETION (incomplete by design).
+    """
+    from backend.rinse_bulk_workitems import REASON_WF_BULK_WORKITEM_REVIEW
+
+    presence = {
+        "REVOK1": _pres(service="WF"),
+        "REVPOST1": _pres(service="WF"),
+        "INCBAD1": _pres(service="WF"),
+    }
+    entry = {
+        "REVOK1": _entry(D1),
+        "REVPOST1": _entry(D1),
+        "INCBAD1": _entry(D1),
+    }
+    completion = {
+        "REVOK1": _comp(D1, by="Yessenia (Veewash)"),
+        "REVPOST1": _comp(D1, by="Francis (Veewash)"),
+    }
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag=completion,
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        weight_by_bag={
+            "REVOK1": {
+                "pre_weight_lbs": 10.0,
+                "post_weight_lbs": 9.0,
+                "post_weight_event_exists": True,
+                "post_weight_value": 9.0,
+                "weight_entry_count": 2,
+            },
+            "REVPOST1": {
+                "pre_weight_lbs": 12.0,
+                "post_weight_lbs": None,
+                "post_weight_event_exists": False,
+                "weight_entry_count": 1,
+            },
+            "INCBAD1": {
+                "pre_weight_lbs": 8.0,
+                "post_weight_lbs": None,
+                "post_weight_event_exists": False,
+                "weight_entry_count": 1,
+            },
+        },
+        bulk_scan_by_bag={
+            "REVOK1": {
+                "count": 1,
+                "first_at": datetime(2026, 7, 21, 9, 0),
+                "employee": "Yessenia",
+            },
+            "INCBAD1": {
+                "count": 1,
+                "first_at": datetime(2026, 7, 21, 9, 30),
+                "employee": "Yessenia",
+            },
+        },
+    )
+    assert "REVOK1" in out["review_required"]
+    assert REASON_WF_BULK_WORKITEM_REVIEW in out["review_reasons_by_bag"]["REVOK1"]
+    assert "REVPOST1" in out["review_required"]
+    assert REASON_WF_ZERO_OR_MISSING_POST_WEIGHT in out["review_reasons_by_bag"]["REVPOST1"]
+    # Incomplete + bulk must never reach Review Required.
+    assert "INCBAD1" not in out["review_required"]
+    assert "INCBAD1" in out["pending_end_of_date"]
+
+    assert_review_required_implies_canonical_completion(out)
+    _assert_partition_invariants(out)
+
+    for bid in ("REVOK1", "REVPOST1"):
+        row = next(r for r in out["rows"] if r["bag_id"] == bid)
+        assert row.get("completion_at") or row.get("completion_date")
+        assert str(row.get("completed_by") or "").strip()
+        assert str(row.get("completion_source") or "").strip()
+
+
+def test_invariant_detects_incomplete_review_required_bag():
+    """Guardrail: helper fails if an incomplete bag is illegally in Review Required."""
+    fake = {
+        "review_required": ["LEAK1"],
+        "disappeared_without_completion_exceptions": [],
+        "review_reasons_by_bag": {"LEAK1": ["WF_BULK_WORKITEM_REVIEW"]},
+        "rows": [
+            {
+                "bag_id": "LEAK1",
+                "outcome": "review_required",
+                "completion_at": None,
+                "completion_date": None,
+                "completed_by": None,
+                "completion_source": None,
+            }
+        ],
+    }
+    violations = review_required_completion_violations(fake)
+    assert len(violations) == 1
+    assert violations[0]["bag_id"] == "LEAK1"
+    assert "completion_timestamp" in violations[0]["missing"]
+    assert "completion_employee" in violations[0]["missing"]
+    assert "completion_source" in violations[0]["missing"]
+    try:
+        assert_review_required_implies_canonical_completion(fake)
+        raised = False
+    except AssertionError:
+        raised = True
+    assert raised
+
+
+def test_disappeared_review_is_sole_incomplete_exception_to_invariant():
+    presence = {"GONE1": _pres(service="WF", active=0, last_seen=D1)}
+    entry = {"GONE1": _entry(D1)}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={},
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+    )
+    assert "GONE1" in out["review_required"]
+    assert REASON_DISAPPEARED_WITHOUT_COMPLETION in (
+        out["review_reasons_by_bag"].get("GONE1") or []
+    )
+    # Incomplete, but allowed solely as disappearance exception.
+    assert review_required_completion_violations(out) == []
+    assert_review_required_implies_canonical_completion(out)
