@@ -309,10 +309,28 @@ def build_drilldown(
     summary = summary_from_day_record(day_rec) if day_rec else None
     snap_ms = (time.perf_counter() - t_snap) * 1000.0
 
+    # Read path only: never call build_step1_payload(persist_live=True). Opening a
+    # drawer/modal must not rebuild the live day. Missing snapshot → empty queue.
     if not (day_rec and summary):
-        payload = build_step1_payload(cursor, organization_id, selected_date_et)
-        summary = payload["summary"]
-        day_rec = payload.get("day") or day_rec
+        return {
+            "selected_date_et": selected_date_et.isoformat(),
+            "metric": metric,
+            "service": service,
+            "rush": rush,
+            "bags": [],
+            "active_bulk_workitems": [],
+            "pagination": {
+                "page": max(1, int(page or 1)),
+                "page_size": max(1, min(100, int(page_size or 25))),
+                "total": 0,
+                "has_more": False,
+            },
+            "snapshot_missing": True,
+            "timing_ms": {
+                "total": round((time.perf_counter() - t0) * 1000.0, 1),
+                "snapshot": round(snap_ms, 1),
+            },
+        }
 
     ids = _filter_bag_ids(
         summary or {},
@@ -339,16 +357,12 @@ def build_drilldown(
     )
     bags_ms = (time.perf_counter() - t_bags) * 1000.0
 
-    if snap_bags or not page_ids:
-        wl = _workload_shell_from_bags(
-            snap_bags,
-            selected_date_et=selected_date_et,
-            status=str((day_rec or {}).get("status") or "OPEN"),
-        )
-    else:
-        payload = build_step1_payload(cursor, organization_id, selected_date_et)
-        wl = payload["workload"]
-        summary = payload["summary"] or summary
+    # Prefer page snapshots; if IDs exist but rows are missing, still do not rebuild.
+    wl = _workload_shell_from_bags(
+        snap_bags,
+        selected_date_et=selected_date_et,
+        status=str((day_rec or {}).get("status") or "OPEN"),
+    )
 
     rows_by_id = {r.get("bag_id"): r for r in (wl.get("rows") or []) if r.get("bag_id")}
     for sb in snap_bags:

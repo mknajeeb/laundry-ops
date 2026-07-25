@@ -1049,49 +1049,73 @@ def _enrich_credited_bag_weights(
         # Dual weight semantics for productivity:
         # - output_weight_lbs = authoritative POST (completed production output)
         # - credited_weight_lbs = Evidence PRE (employee credit)
-        # Revenue / Daily Ops resolvers are untouched.
+        #
+        # CRITICAL: never call per-bag Daily Ops resolvers here (N+1). Prefer
+        # already-loaded day-bag / workload / finalize fields. Step-1 live reads
+        # should use build_step1_snapshot_productivity_section instead.
         svc = str(bag.get("service_type") or row.get("service_type") or "").upper()
-        if svc == "WF" and hasattr(cursor, "execute"):
-            from backend.daily_operations import (
-                resolve_authoritative_post_weight,
-                resolve_evidence_post_weight,
-                resolve_evidence_pre_weight,
-            )
+        if svc == "WF":
+            def _num(v: Any) -> float | None:
+                if v is None or v == "":
+                    return None
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return None
 
-            auth = resolve_authoritative_post_weight(
-                cursor, organization_id, bid, operations_date_et=selected_date_et
-            ) or {}
-            evidence_post = (
-                resolve_evidence_post_weight(
-                    cursor, organization_id, bid, operations_date_et=selected_date_et
-                )
-                or {}
+            output_lbs = (
+                _num(bag.get("output_weight_lbs"))
+                or _num(bag.get("authoritative_post_weight_lbs"))
+                or _num(bag.get("post_weight_lbs"))
+                or _num(row.get("post_weight_lbs"))
+                or _num(bag.get("completed_lbs"))
             )
-            output_lbs = auth.get("weight_lbs")
-            if output_lbs is None:
-                # Fall back to finalize's POST-scan resolution if authority chain is empty.
-                output_lbs = bag.get("completed_lbs") or bag.get("weight_lbs")
             if output_lbs is not None:
                 bag["output_weight_lbs"] = float(output_lbs)
-                bag["output_weight_source"] = auth.get("source") or bag.get("weight_source")
+                bag["output_weight_source"] = (
+                    bag.get("output_weight_source")
+                    or row.get("post_weight_source")
+                    or bag.get("weight_source")
+                    or "day_bag_post_weight"
+                )
                 bag["authoritative_post_weight_lbs"] = float(output_lbs)
                 bag["post_weight_lbs"] = float(output_lbs)
             else:
                 bag["output_weight_lbs"] = None
                 bag["output_weight_source"] = None
                 bag["authoritative_post_weight_lbs"] = None
-            if evidence_post.get("weight_lbs") is not None:
-                bag["evidence_post_weight_lbs"] = float(evidence_post["weight_lbs"])
-                bag["evidence_post_weight_source"] = evidence_post.get("source")
+
+            evidence_post = _num(bag.get("evidence_post_weight_lbs")) or _num(
+                row.get("post_weight_lbs")
+            )
+            if evidence_post is not None:
+                bag["evidence_post_weight_lbs"] = float(evidence_post)
+                bag["evidence_post_weight_source"] = (
+                    bag.get("evidence_post_weight_source")
+                    or row.get("post_weight_source")
+                    or "day_bag_post_weight"
+                )
             else:
                 bag["evidence_post_weight_lbs"] = None
                 bag["evidence_post_weight_source"] = None
 
-            pre = resolve_evidence_pre_weight(cursor, organization_id, bid) or {}
-            pre_lbs = pre.get("weight_lbs")
+            pre_lbs = (
+                _num(bag.get("credited_weight_lbs"))
+                or _num(bag.get("evidence_pre_weight_lbs"))
+                or _num(bag.get("pre_weight_lbs"))
+                or _num(row.get("pre_weight_lbs"))
+            )
             bag["pre_weight_lbs"] = pre_lbs
-            bag["pre_weight_at"] = pre.get("observed_at")
-            bag["pre_weight_source"] = pre.get("source")
+            bag["pre_weight_at"] = (
+                bag.get("pre_weight_at")
+                or row.get("pre_weight_at")
+                or row.get("productivity_pre_weight_at")
+            )
+            bag["pre_weight_source"] = (
+                bag.get("pre_weight_source")
+                or row.get("pre_weight_source")
+                or ("EVIDENCE_PRE" if pre_lbs is not None else None)
+            )
             bag["evidence_pre_weight_lbs"] = float(pre_lbs) if pre_lbs is not None else None
             if pre_lbs is not None:
                 _apply_bag_weight_fields(bag, float(pre_lbs))
@@ -2068,7 +2092,11 @@ def _try_build_step1_employee_productivity_dashboard(
     selected_date_et: date,
     rush_filter: str = "all",
 ) -> dict[str, Any] | None:
-    """Snapshot-first productivity for Step-1 — never rebuilds the legacy at-vendor module."""
+    """Snapshot-first productivity for Step-1 — never rebuilds the legacy at-vendor module.
+
+    Uses day-bag PRE/POST columns only (no per-bag scan resolver N+1). Opening Shift
+    Monitor must not block WF Review on hundreds of weight-evidence queries.
+    """
     import time
 
     try:
@@ -2089,18 +2117,14 @@ def _try_build_step1_employee_productivity_dashboard(
 
     from backend.daily_shift_labor_summary import build_labor_summary
     from backend.daily_shift_roster import list_roster_entries
-    from backend.rinse_employee_productivity_presentation import apply_employee_productivity_scope
     from backend.rinse_employee_productivity_settings import (
         include_hd_in_employee_productivity,
         productivity_scope_label,
     )
     from backend.rinse_employee_workload_productivity import normalize_rush_filter
-    from backend.rinse_simple_shift_performance import _load_bag_metadata, _load_rinse_user_maps
-    from backend.rinse_veewash_shift_day import (
-        get_day_headline,
-        load_day_bags,
-        summary_from_day_record,
-    )
+    from backend.rinse_simple_shift_performance import _load_rinse_user_maps
+    from backend.rinse_step1_productivity_fast import build_step1_snapshot_productivity_section
+    from backend.rinse_veewash_shift_day import get_day_headline, summary_from_day_record
 
     rush = normalize_rush_filter(rush_filter)
     cache_key = (org, selected_date_et.isoformat(), rush)
@@ -2114,45 +2138,26 @@ def _try_build_step1_employee_productivity_dashboard(
     if not summary:
         return None
 
+    include_hd = include_hd_in_employee_productivity(cursor, org)
+    # include_bag_details=True so drill-downs work without a second heavy rebuild.
+    scoped_emp = build_step1_snapshot_productivity_section(
+        cursor,
+        org,
+        selected_date_et=selected_date_et,
+        include_hd=include_hd,
+        rush_filter=rush,
+        include_bag_details=True,
+    )
+
     segs = (summary.get("segments") or {}).get("all") or {}
     bag_ids = segs.get("bag_ids") or {}
     completed_ids = {str(b).strip().upper() for b in (bag_ids.get("completed") or []) if b}
-    pending_ids = {str(b).strip().upper() for b in (bag_ids.get("pending") or []) if b}
-    review_ids = {str(b).strip().upper() for b in (bag_ids.get("review_required") or []) if b}
     active_ids = {
         str(b).strip().upper()
         for b in list(bag_ids.get("new_today") or []) + list(bag_ids.get("carryover") or [])
         if b
     }
 
-    day_bags = load_day_bags(cursor, org, selected_date_et)
-    workload_rows = _workload_rows_from_step1_day_bags(
-        day_bags,
-        completed_ids=completed_ids,
-        pending_ids=pending_ids,
-        review_ids=review_ids,
-        active_ids=active_ids,
-    )
-    completed_rows = [r for r in workload_rows if r.get("at_vendor_status") == "Completed"]
-    meta_ids = [r["bag_id"] for r in workload_rows if r.get("bag_id")]
-    registry_meta = _load_bag_metadata(cursor, org, meta_ids) if meta_ids else {}
-
-    emp = build_employee_completed_bags_today(
-        cursor,
-        org,
-        completed_rows=completed_rows,
-        workload_rows=workload_rows,
-        events_by_bag={},
-        selected_date_et=selected_date_et,
-        registry_meta_by_bag=registry_meta,
-    )
-    include_hd = include_hd_in_employee_productivity(cursor, org)
-    scoped_emp = apply_employee_productivity_scope(
-        emp,
-        include_hd=include_hd,
-        rush_filter=rush,
-        workload_rows=workload_rows,
-    )
     roster_entries = list_roster_entries(cursor, org, roster_date=selected_date_et)
     user_maps = _load_rinse_user_maps(cursor, org)
     labor_summary = build_labor_summary(
@@ -2175,6 +2180,7 @@ def _try_build_step1_employee_productivity_dashboard(
         "productivity_rush_filter": rush,
         "labor_summary": labor_summary,
         "step1_lightweight_productivity": True,
+        "step1_snapshot_productivity": True,
     }
     _STEP1_PROD_CACHE[cache_key] = (now, payload)
     return payload

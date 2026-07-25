@@ -32,22 +32,8 @@ def test_step1_productivity_uses_snapshot_not_at_vendor_module():
             "non_rush": {"completed": 0},
         },
     }
-    day_bags = [
-        {
-            "bag_id": "BAG1",
-            "service_type": "WF",
-            "rush_status": "RUSH",
-            "bag_snapshot": {"bag_id": "BAG1", "customer_name": "A"},
-        },
-        {
-            "bag_id": "BAG2",
-            "service_type": "WF",
-            "rush_status": "RUSH",
-            "bag_snapshot": {"bag_id": "BAG2", "customer_name": "B"},
-        },
-    ]
     emp_payload = {
-        "employees": [{"employee": "Maria", "completed_bags": 1}],
+        "employees": [{"employee": "Maria", "completed_bags": 1, "total_output_lbs": 10.0}],
         "reconciliation": {"ok": True, "credited_total": 1, "workload_completed_today": 1},
     }
     with (
@@ -58,22 +44,16 @@ def test_step1_productivity_uses_snapshot_not_at_vendor_module():
             return_value={"status": "OPEN", "headline": summary},
         ),
         patch("backend.rinse_veewash_shift_day.summary_from_day_record", return_value=summary),
-        patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=day_bags),
         patch(
-            "backend.rinse_simple_shift_performance._load_bag_metadata",
-            return_value={},
-        ),
+            "backend.rinse_step1_productivity_fast.build_step1_snapshot_productivity_section",
+            return_value=emp_payload,
+        ) as snap_build,
         patch(
             "backend.rinse_employee_completed_bags.build_employee_completed_bags_today",
-            return_value=emp_payload,
         ) as build_emp,
         patch(
             "backend.rinse_employee_productivity_settings.include_hd_in_employee_productivity",
             return_value=False,
-        ),
-        patch(
-            "backend.rinse_employee_productivity_presentation.apply_employee_productivity_scope",
-            side_effect=lambda section, **_k: section,
         ),
         patch("backend.daily_shift_roster.list_roster_entries", return_value=[]),
         patch(
@@ -87,7 +67,10 @@ def test_step1_productivity_uses_snapshot_not_at_vendor_module():
             cursor, 3, selected_date_et=D1, rush_filter="all"
         )
     at_vendor.assert_not_called()
-    build_emp.assert_called_once()
+    build_emp.assert_not_called()
+    snap_build.assert_called_once()
+    assert snap_build.call_args.kwargs.get("include_bag_details") is True
     assert out["step1_lightweight_productivity"] is True
+    assert out["step1_snapshot_productivity"] is True
     assert out["employee_completed_bags_today"]["employees"]
     assert out["completed_today_kpi"] == 1

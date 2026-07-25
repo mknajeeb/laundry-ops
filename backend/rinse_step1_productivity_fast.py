@@ -280,9 +280,31 @@ def load_completed_productivity_day_bags(
                 ),
                 "pre_weight_at": credit.get("pre_weight_at"),
                 "pre_weight_source": credit.get("pre_weight_source"),
+                "evidence_pre_weight_lbs": credit.get("pre_weight_lbs")
+                if svc == "WF"
+                else (
+                    float(raw["pre_weight_lbs"])
+                    if raw.get("pre_weight_lbs") is not None
+                    else None
+                ),
                 "post_weight_lbs": float(raw["post_weight_lbs"])
                 if raw.get("post_weight_lbs") is not None
                 else None,
+                # Completed production output (POST) — independent of employee PRE credit.
+                "output_weight_lbs": float(raw["post_weight_lbs"])
+                if raw.get("post_weight_lbs") is not None
+                else (
+                    float(raw["weight_lbs"])
+                    if raw.get("weight_lbs") is not None and svc != "WF"
+                    else None
+                ),
+                "authoritative_post_weight_lbs": float(raw["post_weight_lbs"])
+                if raw.get("post_weight_lbs") is not None
+                else None,
+                "evidence_post_weight_lbs": float(raw["post_weight_lbs"])
+                if raw.get("post_weight_lbs") is not None
+                else None,
+                "output_weight_source": "day_bag_post_weight",
                 "at_vendor_status": "Completed",
                 "included_in_employee_productivity": True,
                 "credit_from_day_snapshot": True,
@@ -440,9 +462,15 @@ def build_step1_snapshot_productivity_section(
             key=lambda b: str(b.get("completion_timestamp") or b.get("bag_id") or ""),
         )
         lbs_vals = [float(b["weight_lbs"]) for b in emp_bags_sorted if b.get("weight_lbs") is not None]
+        output_vals = [
+            float(b["output_weight_lbs"])
+            for b in emp_bags_sorted
+            if b.get("output_weight_lbs") is not None
+        ]
         first = emp_bags_sorted[0].get("completion_timestamp") if emp_bags_sorted else None
         last = emp_bags_sorted[-1].get("completion_timestamp") if emp_bags_sorted else None
         total_lbs = round(sum(lbs_vals), 2) if lbs_vals else 0.0
+        total_output_lbs = round(sum(output_vals), 2) if output_vals else 0.0
         employees.append(
             {
                 "employee": emp_name,
@@ -451,6 +479,7 @@ def build_step1_snapshot_productivity_section(
                 "processed_bags_count": len(emp_bags_sorted),
                 "total_completed_lbs": total_lbs,
                 "total_credited_lbs": total_lbs,
+                "total_output_lbs": total_output_lbs,
                 "total_processed_lbs": total_lbs,
                 "first_completion_time": first,
                 "last_completion_time": last,

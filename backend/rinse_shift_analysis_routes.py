@@ -456,6 +456,9 @@ def register_rinse_shift_analysis_routes(
                 out["rush"] = str(request.args.get("rush") or "all")
             return jsonify(json_safe_rinse(out))
         except Exception as exc:
+            metric = str(request.args.get("queue") or request.args.get("metric") or "")
+            if metric in ("review_required", "review"):
+                return _public_server_error("Unable to load WF Review right now.", exc)
             return _public_server_error("Unable to load workload details.", exc)
         finally:
             cursor.close()
@@ -702,23 +705,23 @@ def register_rinse_shift_analysis_routes(
                 build_or_load_step1_for_date,
             )
 
+            # Read-only status bar: never rebuild/persist the live day.
             _wl, summary, day_rec = build_or_load_step1_for_date(
-                cursor, org, day, persist_live=True
+                cursor, org, day, persist_live=False, include_bag_rows=False
             )
-            conn.commit()
-            validation = validate_close(summary, allow_unresolved_reviews=False)
+            validation = validate_close(summary or {}, allow_unresolved_reviews=False)
             return jsonify(
                 json_safe_rinse(
                     {
                         "day": day_rec or get_day_record(cursor, org, day),
-                        "shift_day": summary.get("shift_day"),
+                        "shift_day": (summary or {}).get("shift_day"),
                         "validation": validation,
                         "audit": list_close_audit(cursor, org, day),
                     }
                 )
             )
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 500
+            return _public_server_error("Unable to load day status.", exc)
         finally:
             cursor.close()
             conn.close()

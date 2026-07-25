@@ -188,7 +188,11 @@ export default function Step1MetricDrawer({
         setHasMore(Boolean(data.pagination?.has_more));
       } catch (e) {
         if (signal?.aborted || e?.code === "ERR_CANCELED" || e?.name === "CanceledError") return;
-        setError(friendlyApiError(e?.response?.data?.error || e?.message, "Unable to load workload details."));
+        const fallback =
+          resolvedMetric === "review_required"
+            ? "Unable to load WF Review right now."
+            : "Unable to load workload details.";
+        setError(friendlyApiError(e?.response?.data?.error || e?.message, fallback));
         setBags([]);
         setTotal(0);
         setHasMore(false);
@@ -272,7 +276,11 @@ export default function Step1MetricDrawer({
       }
       return detail || null;
     } catch (e) {
-        setError(friendlyApiError(e?.response?.data?.error || e?.message, "Unable to load workload details."));
+        const fallback =
+          resolvedMetric === "review_required"
+            ? "Unable to load WF Review right now."
+            : "Unable to load workload details.";
+        setError(friendlyApiError(e?.response?.data?.error || e?.message, fallback));
         return null;
       } finally {
       setDetailLoading((m) => ({ ...m, [bagId]: false }));
