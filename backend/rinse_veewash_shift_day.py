@@ -21,6 +21,7 @@ from backend.rinse_veewash_workload import (
 )
 from backend.ta_helpers import table_exists
 
+STATUS_NOT_STARTED = "NOT_STARTED"
 STATUS_OPEN = "OPEN"
 STATUS_READY_TO_CLOSE = "READY_TO_CLOSE"
 STATUS_CLOSED = "CLOSED"
@@ -98,6 +99,115 @@ def _unavailable_step1_payload(
         "message": message,
     }
     return wl, summary, day_meta
+
+
+def count_admitted_operational_workload(
+    summary: Mapping[str, Any] | None,
+    membership: Mapping[str, Any] | None = None,
+) -> int:
+    """
+    Count of today's admitted operational bags.
+
+    Uses opening scrape admits + added-during-day. Does NOT count
+    excluded_prior_day_carryin_count, historical bags, or future scrapes.
+    """
+    summary = summary or {}
+    mem = membership if isinstance(membership, dict) else summary.get("membership")
+    mem = mem if isinstance(mem, dict) else {}
+
+    opening = int(
+        mem.get("opening_scrape_admit_count")
+        if mem.get("opening_scrape_admit_count") is not None
+        else (mem.get("baseline_count") or 0)
+    )
+    added = int(
+        mem.get("added_during_day_count")
+        if mem.get("added_during_day_count") is not None
+        else (mem.get("added_later_count") or 0)
+    )
+    from_membership = max(0, opening) + max(0, added)
+
+    segs = summary.get("segments") or {}
+    all_seg = segs.get("all") if isinstance(segs.get("all"), dict) else {}
+    total = int(
+        all_seg.get("total_workload")
+        if all_seg.get("total_workload") is not None
+        else (summary.get("total_workload") or 0)
+    )
+    active = int(
+        all_seg.get("active_workload")
+        if all_seg.get("active_workload") is not None
+        else (summary.get("active_workload") or 0)
+    )
+    new_today = int(
+        all_seg.get("new_today")
+        if all_seg.get("new_today") is not None
+        else (summary.get("new_today") or 0)
+    )
+    completed = int(
+        all_seg.get("completed")
+        if all_seg.get("completed") is not None
+        else (summary.get("completed") or 0)
+    )
+
+    # Distinct bags admitted today — do not count carryover-only membership.
+    admitted_ids: set[str] = set()
+    for svc in ("all", "wf", "hd"):
+        bags = ((segs.get(svc) or {}).get("bag_ids") or {})
+        for key in ("new_today", "completed", "pending", "review_required"):
+            for raw in bags.get(key) or []:
+                bid = normalize_bag_id(raw)
+                if bid:
+                    admitted_ids.add(bid)
+
+    return max(from_membership, total, active, new_today, completed, len(admitted_ids))
+
+
+def derive_shift_day_status(
+    summary: Mapping[str, Any] | None,
+    *,
+    current_status: str | None = None,
+    membership: Mapping[str, Any] | None = None,
+) -> str:
+    """
+    Shift Monitor day status from admitted workload + pending/review queues.
+
+    NOT_STARTED  — no operational work admitted today
+    OPEN         — work admitted and pending or review remains
+    READY_TO_CLOSE — work admitted and pending=0 and review=0
+    REOPENED     — preserved while queues remain after reopen
+    CLOSED       — never auto-derived here (manager action only)
+    """
+    cur = str(current_status or "").strip().upper() or None
+    if cur == STATUS_CLOSED:
+        return STATUS_CLOSED
+
+    summary = summary or {}
+    segs = summary.get("segments") or {}
+    all_seg = segs.get("all") if isinstance(segs.get("all"), dict) else {}
+    pending = int(
+        all_seg.get("pending")
+        if all_seg.get("pending") is not None
+        else (summary.get("pending") or 0)
+    )
+    review = int(
+        (all_seg.get("exceptions") or summary.get("exceptions") or {}).get("review_required")
+        or 0
+    )
+    admitted = count_admitted_operational_workload(summary, membership)
+
+    # Reopened days already had a closed shift — never collapse to NOT_STARTED.
+    if cur == STATUS_REOPENED:
+        if pending > 0 or review > 0:
+            return STATUS_REOPENED
+        return STATUS_READY_TO_CLOSE if admitted > 0 else STATUS_REOPENED
+
+    if admitted <= 0:
+        return STATUS_NOT_STARTED
+
+    if pending == 0 and review == 0:
+        return STATUS_READY_TO_CLOSE
+    return STATUS_OPEN
 
 
 def _build_step1_workload_for_date(
@@ -417,13 +527,26 @@ def persist_day_snapshot(
 
     review_n = int((summary.get("exceptions") or {}).get("review_required") or 0)
     now = datetime.utcnow()
-    next_status = status or (
-        STATUS_READY_TO_CLOSE
-        if review_n == 0
-        else (existing or {}).get("status") or STATUS_OPEN
-    )
-    if existing and existing.get("status") == STATUS_REOPENED and status is None:
-        next_status = STATUS_REOPENED if review_n > 0 else STATUS_READY_TO_CLOSE
+    # When caller passes an explicit status (e.g. CLOSED), keep it. Otherwise derive
+    # from admitted workload + pending/review — never READY_TO_CLOSE on empty days.
+    if status is not None:
+        next_status = status
+    else:
+        next_status = derive_shift_day_status(
+            summary,
+            current_status=(existing or {}).get("status"),
+            membership=(
+                summary.get("membership") if isinstance(summary.get("membership"), dict) else None
+            ),
+        )
+    # Stamp opened_at only once the shift actually starts (leaves NOT_STARTED).
+    opened_at = (existing or {}).get("opened_at")
+    if next_status not in (STATUS_NOT_STARTED, None) and not opened_at:
+        opened_at = now
+    elif next_status == STATUS_NOT_STARTED:
+        opened_at = opened_at  # leave null until first admit
+    else:
+        opened_at = opened_at or now
 
     cursor.execute(
         """
@@ -433,6 +556,7 @@ def persist_day_snapshot(
         ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
         ON DUPLICATE KEY UPDATE
           status = VALUES(status),
+          opened_at = COALESCE(rinse_shift_monitor_days.opened_at, VALUES(opened_at)),
           last_sync_at = VALUES(last_sync_at),
           review_required_count = VALUES(review_required_count),
           headline_json = VALUES(headline_json),
@@ -443,7 +567,7 @@ def persist_day_snapshot(
             int(organization_id),
             shift_date_et,
             next_status,
-            (existing or {}).get("opened_at") or now,
+            opened_at,
             now,
             review_n,
             _json_dump(summary),
@@ -1070,7 +1194,13 @@ def build_or_load_step1_for_date(
     # persist_live=True (scrape / backfill / explicit refresh).
     if (
         day
-        and status in (STATUS_OPEN, STATUS_READY_TO_CLOSE, STATUS_REOPENED)
+        and status
+        in (
+            STATUS_OPEN,
+            STATUS_READY_TO_CLOSE,
+            STATUS_REOPENED,
+            STATUS_NOT_STARTED,
+        )
         and day.get("headline")
         and not persist_live
     ):
@@ -1080,12 +1210,18 @@ def build_or_load_step1_for_date(
             if summary:
                 return wl, summary, day_out
 
-    # Historical OPEN/READY/REOPENED snapshots stay stable after first persist (midnight-safe).
+    # Historical OPEN/READY/REOPENED/NOT_STARTED snapshots stay stable after first persist.
     # REOPENED prior days keep the frozen bag set until an explicit backfill/correction rebuild.
     if (
         day
         and selected_date_et < today
-        and status in (STATUS_OPEN, STATUS_READY_TO_CLOSE, STATUS_REOPENED)
+        and status
+        in (
+            STATUS_OPEN,
+            STATUS_READY_TO_CLOSE,
+            STATUS_REOPENED,
+            STATUS_NOT_STARTED,
+        )
         and day.get("headline")
     ):
         has_bags = (not include_bag_rows) or day_bag_count(cursor, organization_id, selected_date_et) > 0
@@ -1101,12 +1237,17 @@ def build_or_load_step1_for_date(
         wl, selected_date_et=selected_date_et, activation_date=activation
     )
 
+    # Ensure membership is available for admitted-workload status derivation.
+    if isinstance(wl.get("membership"), dict) and "membership" not in (summary or {}):
+        summary = dict(summary)
+        summary["membership"] = wl.get("membership")
+
     review_n = int((summary.get("exceptions") or {}).get("review_required") or 0)
-    next_status = status or STATUS_OPEN
-    if next_status in (STATUS_OPEN, STATUS_REOPENED, STATUS_READY_TO_CLOSE, None):
-        next_status = STATUS_READY_TO_CLOSE if review_n == 0 else STATUS_OPEN
-        if status == STATUS_REOPENED and review_n > 0:
-            next_status = STATUS_REOPENED
+    next_status = derive_shift_day_status(
+        summary,
+        current_status=status,
+        membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
+    )
 
     # Never silently rewrite a prior-day snapshot from a partial live rebuild.
     should_persist = persist_live and (
@@ -1114,7 +1255,13 @@ def build_or_load_step1_for_date(
         or day is None
         or (
             selected_date_et < today
-            and status in (STATUS_OPEN, STATUS_READY_TO_CLOSE, STATUS_REOPENED)
+            and status
+            in (
+                STATUS_OPEN,
+                STATUS_READY_TO_CLOSE,
+                STATUS_REOPENED,
+                STATUS_NOT_STARTED,
+            )
             and day_bag_count(cursor, organization_id, selected_date_et) == 0
         )
     )
@@ -1271,6 +1418,17 @@ def close_shift_day(
     )
     if (day or {}).get("status") == STATUS_CLOSED:
         return {"ok": False, "error": "already_closed", "day": day}
+    if (day or {}).get("status") == STATUS_NOT_STARTED or derive_shift_day_status(
+        summary,
+        current_status=(day or {}).get("status"),
+        membership=summary.get("membership") if isinstance(summary.get("membership"), dict) else None,
+    ) == STATUS_NOT_STARTED:
+        return {
+            "ok": False,
+            "error": "shift_not_started",
+            "message": "Shift has not started — nothing to close.",
+            "day": day,
+        }
 
     validation = validate_close(summary, allow_unresolved_reviews=allow_unresolved_reviews)
     if not validation["ok"]:
@@ -1523,6 +1681,9 @@ def backfill_day_from_live(
         selected_date_et=shift_date_et,
         activation_date=activation or shift_date_et,
     )
+    if isinstance(wl.get("membership"), dict) and "membership" not in (summary or {}):
+        summary = dict(summary)
+        summary["membership"] = wl.get("membership")
     review_n = int((summary.get("exceptions") or {}).get("review_required") or 0)
     day = persist_day_snapshot(
         cursor,
@@ -1530,7 +1691,11 @@ def backfill_day_from_live(
         shift_date_et,
         workload=wl,
         summary=summary,
-        status=STATUS_READY_TO_CLOSE if review_n == 0 else STATUS_OPEN,
+        status=derive_shift_day_status(
+            summary,
+            current_status=(day or {}).get("status"),
+            membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
+        ),
         force=True,
     )
     _commit(cursor)

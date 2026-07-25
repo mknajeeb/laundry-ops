@@ -43,8 +43,9 @@ export default function ShiftDayStatusBar({
   dataFreshness = null,
 }) {
   const day = shiftDay || {};
-  const status = String(day.status || "OPEN").toUpperCase();
+  const status = String(day.status || "NOT_STARTED").toUpperCase();
   const readOnly = Boolean(day.read_only || status === "CLOSED");
+  const notStarted = status === "NOT_STARTED";
   const reviewN = day.review_required_count ?? validation?.review_required_count ?? 0;
   const [closeOpen, setCloseOpen] = useState(false);
   const [reopenOpen, setReopenOpen] = useState(false);
@@ -58,10 +59,16 @@ export default function ShiftDayStatusBar({
 
   const statusColor = useMemo(() => {
     if (status === "CLOSED") return "default";
+    if (status === "NOT_STARTED") return "default";
     if (status === "READY_TO_CLOSE") return "success";
     if (status === "REOPENED") return "warning";
     return "info";
   }, [status]);
+
+  const statusLabel =
+    status === "NOT_STARTED"
+      ? "Not Started"
+      : status.replaceAll("_", " ");
 
   const totals = validation?.totals || {};
 
@@ -137,13 +144,25 @@ export default function ShiftDayStatusBar({
             <Typography variant="subtitle2" fontWeight={800}>
               Shift Status
             </Typography>
-            <Chip size="small" color={statusColor} label={status.replaceAll("_", " ")} />
+            <Chip
+              size="small"
+              color={statusColor}
+              label={statusLabel}
+              variant={notStarted ? "outlined" : "filled"}
+              sx={
+                notStarted
+                  ? { bgcolor: "#e2e8f0", color: "#475569", borderColor: "#cbd5e1" }
+                  : undefined
+              }
+            />
             {isToday ? <Chip size="small" variant="outlined" label="Live" /> : null}
             {readOnly ? <Chip size="small" variant="outlined" label="Read-only" /> : null}
           </Stack>
           <Typography variant="caption" color="text.secondary">
-            Opened {fmtTs(day.opened_at)} · Last sync {fmtTs(day.last_sync_at)} · Review Required {reviewN}
-            {day.closed_by_display_name
+            {notStarted
+              ? "Shift has not started."
+              : `Opened ${fmtTs(day.opened_at)} · Last sync ${fmtTs(day.last_sync_at)} · Review Required ${reviewN}`}
+            {!notStarted && day.closed_by_display_name
               ? ` · Closed by ${day.closed_by_display_name} @ ${fmtTs(day.closed_at)}`
               : ""}
           </Typography>
@@ -179,6 +198,7 @@ export default function ShiftDayStatusBar({
             <Button
               size="small"
               variant="contained"
+              disabled={notStarted || busy}
               onClick={() => setCloseOpen(true)}
               sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue }}
             >
