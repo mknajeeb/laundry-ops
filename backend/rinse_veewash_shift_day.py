@@ -1121,10 +1121,24 @@ def summary_from_day_record(
     if isinstance(headline, dict) and headline:
         out = dict(headline)
         out["shift_day_status"] = day.get("status")
+        meta = day.get("workload_meta") if isinstance(day.get("workload_meta"), dict) else {}
+        step1_refresh = (
+            meta.get("step1_refresh") if isinstance(meta.get("step1_refresh"), dict) else {}
+        )
+        # Prefer explicit Step-1 refresh finish time; fall back to last_sync_at
+        # (persist_day_snapshot stamps last_sync_at on every successful rebuild).
+        step1_refreshed_at = (
+            step1_refresh.get("finished_at")
+            or day.get("last_sync_at")
+        )
         out["shift_day"] = {
             "status": day.get("status"),
             "opened_at": day.get("opened_at"),
             "last_sync_at": day.get("last_sync_at"),
+            "step1_refreshed_at": step1_refreshed_at,
+            "step1_refresh_status": step1_refresh.get("status"),
+            "step1_refresh_scrape_batch_id": step1_refresh.get("scrape_batch_id"),
+            "step1_refresh_day_bags_rebuilt": step1_refresh.get("day_bags_rebuilt"),
             "closed_at": day.get("closed_at"),
             "closed_by_display_name": day.get("closed_by_display_name"),
             "close_reason": day.get("close_reason"),

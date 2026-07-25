@@ -161,7 +161,9 @@ export default function ShiftDayStatusBar({
           <Typography variant="caption" color="text.secondary">
             {notStarted
               ? "Shift has not started."
-              : `Opened ${fmtTs(day.opened_at)} · Last sync ${fmtTs(day.last_sync_at)} · Review Required ${reviewN}`}
+              : `Opened ${fmtTs(day.opened_at)} · Step-1 refreshed ${fmtTs(
+                  day.step1_refreshed_at || day.last_sync_at
+                )} · Review Required ${reviewN}`}
             {!notStarted && day.closed_by_display_name
               ? ` · Closed by ${day.closed_by_display_name} @ ${fmtTs(day.closed_at)}`
               : ""}

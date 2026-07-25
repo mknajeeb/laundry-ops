@@ -560,6 +560,14 @@ class TestCombinedSyncOrchestration:
                 organization_id=3,
                 status="success",
                 at_vendor_status="success",
+                detail={
+                    "step1_day_refresh": {
+                        "ok": True,
+                        "status": "ok",
+                        "shift_date_et": "2026-07-25",
+                        "day_bags_rebuilt": 1,
+                    }
+                },
             )
 
         mock_rfv.side_effect = _presence
@@ -572,6 +580,7 @@ class TestCombinedSyncOrchestration:
         assert result.ready_for_vendor_status == "success"
         assert result.status == "success"
         assert (result.detail.get("sync_cycle") or {}).get("cycle_status") == "success"
+        assert result.detail.get("step1_day_refresh", {}).get("ok") is True
 
     @patch("backend.rinse_scheduled_scrape.run_scheduled_scrape_for_org")
     @patch("backend.rinse_presence_scrape.run_presence_scrape_for_org")

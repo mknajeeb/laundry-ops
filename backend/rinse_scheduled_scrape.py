@@ -7,6 +7,7 @@ Designed for Azure Container Apps scheduled jobs (isolated from laundryops-api).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -111,18 +112,84 @@ def _today_et() -> date:
     return _now_et().date()
 
 
+def _step1_refresh_succeeded(detail: Mapping[str, Any] | None) -> bool:
+    """True when Step-1 refresh already succeeded (or intentionally skipped)."""
+    refresh = (detail or {}).get("step1_day_refresh")
+    if not isinstance(refresh, dict):
+        return False
+    if refresh.get("skipped"):
+        return True
+    return bool(refresh.get("ok"))
+
+
 def _combined_cycle_needs_step1_refresh(
     *,
     dry_run: bool,
     status: str | None,
     detail: Mapping[str, Any] | None,
 ) -> bool:
-    """True when combined-cycle finish must run the Step-1 safety-net refresh."""
+    """True when combined-cycle finish must guarantee a Step-1 refresh."""
     if dry_run:
         return False
     if str(status or "") not in ("success", "needs_attention"):
         return False
-    return not bool((detail or {}).get("step1_day_refresh"))
+    # Retry when missing OR prior attempt failed (ok:false must not block retry).
+    return not _step1_refresh_succeeded(detail)
+
+
+def _persist_step1_refresh_diagnostics(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    diagnostics: Mapping[str, Any],
+) -> None:
+    """Merge Step-1 refresh diagnostics into the day workload_meta (no schema change)."""
+    from backend.rinse_veewash_shift_day import get_day_record
+
+    day = get_day_record(cursor, organization_id, shift_date_et)
+    if not day:
+        return
+    meta = dict(day.get("workload_meta") or {})
+    meta["step1_refresh"] = dict(diagnostics)
+    cursor.execute(
+        """
+        UPDATE rinse_shift_monitor_days
+        SET workload_meta_json = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE organization_id = %s AND shift_date_et = %s
+        """,
+        (
+            json.dumps(meta, default=str),
+            int(organization_id),
+            shift_date_et,
+        ),
+    )
+
+
+def _mark_step1_refresh_failed_on_result(
+    result: "ScheduledScrapeResult",
+    refresh_detail: Mapping[str, Any] | None,
+) -> None:
+    """Surface refresh failure on the scrape result — never leave silent stale success."""
+    if _step1_refresh_succeeded({"step1_day_refresh": refresh_detail}):
+        return
+    err = None
+    if isinstance(refresh_detail, dict):
+        err = refresh_detail.get("error") or refresh_detail.get("status")
+    msg = f"Step-1 refresh failed: {err or 'unknown_error'}"
+    result.detail["step1_refresh_failed"] = True
+    result.detail["step1_day_refresh"] = dict(refresh_detail or {})
+    result.detail["step1_day_refresh"]["status"] = (
+        result.detail["step1_day_refresh"].get("status") or "failed"
+    )
+    result.detail["step1_day_refresh"]["ok"] = False
+    if result.error_message:
+        if "Step-1 refresh failed" not in str(result.error_message):
+            result.error_message = f"{result.error_message}; {msg}"
+    else:
+        result.error_message = msg
+    if str(result.status or "") == "success":
+        result.status = "needs_attention"
 
 
 def _refresh_open_step1_day_after_scrape(
@@ -131,14 +198,25 @@ def _refresh_open_step1_day_after_scrape(
     *,
     org_id: int,
     log: "_TeeLog",
+    scrape_batch_id: int | None = None,
+    scrape_run_id: int | None = None,
 ) -> dict[str, Any]:
-    """Rebuild today's OPEN Step-1 snapshot after scan import succeeds.
+    """Rebuild today's OPEN Step-1 snapshot via the production backfill path.
 
-    Shift Monitor Completed/Pending queues read the persisted day snapshot only
-    (drawer opens never live-rebuild). Without this post-scrape hook, new
-    completion scans sit in ``rinse_bag_scan_events`` while the UI stays frozen
-    on the prior snapshot until a manual backfill.
+    Shift Monitor Completed/Pending/Review queues read the persisted day snapshot
+    only (drawer opens never live-rebuild). Every successful At-Vendor scrape that
+    imports data must call this so KPIs/drawers match live portal/scan evidence.
     """
+    started = datetime.utcnow()
+    day = _today_et()
+    base: dict[str, Any] = {
+        "scrape_batch_id": int(scrape_batch_id) if scrape_batch_id is not None else None,
+        "scrape_run_id": int(scrape_run_id) if scrape_run_id is not None else None,
+        "shift_date_et": day.isoformat(),
+        "started_at": started.isoformat(sep=" "),
+        "status": "pending",
+        "ok": False,
+    }
     try:
         from backend.rinse_veewash_shift_day import (
             STATUS_CLOSED,
@@ -146,36 +224,84 @@ def _refresh_open_step1_day_after_scrape(
             get_day_record,
         )
 
-        day = _today_et()
         existing = get_day_record(cursor, org_id, day)
         if existing and str(existing.get("status") or "") == STATUS_CLOSED:
+            finished = datetime.utcnow()
             log.write(f"Step-1 day {day} CLOSED — skip post-scrape refresh\n")
-            return {
+            out = {
+                **base,
                 "skipped": True,
                 "reason": "day_closed",
-                "shift_date_et": day.isoformat(),
+                "status": "skipped",
+                "ok": True,
+                "finished_at": finished.isoformat(sep=" "),
+                "day_bags_rebuilt": 0,
             }
+            try:
+                _persist_step1_refresh_diagnostics(cursor, org_id, day, out)
+                conn.commit()
+            except Exception:
+                pass
+            return out
+
         out = backfill_day_from_live(cursor, org_id, day, force=True)
+        finished = datetime.utcnow()
+        ok = bool(out.get("ok"))
+        bag_count = out.get("bag_count")
+        if bag_count is None:
+            try:
+                from backend.rinse_veewash_shift_day import day_bag_count
+
+                bag_count = day_bag_count(cursor, org_id, day)
+            except Exception:
+                bag_count = None
+        diag: dict[str, Any] = {
+            **base,
+            "finished_at": finished.isoformat(sep=" "),
+            "status": "ok" if ok else "failed",
+            "ok": ok,
+            "day_bags_rebuilt": bag_count,
+            "day_status": (out.get("day") or {}).get("status"),
+            "last_sync_at": (out.get("day") or {}).get("last_sync_at"),
+            "summary_totals": out.get("summary_totals"),
+            "error": out.get("error"),
+        }
+        try:
+            _persist_step1_refresh_diagnostics(cursor, org_id, day, diag)
+        except Exception as stamp_exc:
+            log.write(
+                f"WARNING: Step-1 refresh diagnostics stamp failed: {stamp_exc}\n"
+            )
         try:
             conn.commit()
         except Exception:
             pass
-        log.write(
-            f"Step-1 day snapshot refreshed for {day} ok={out.get('ok')}\n"
-        )
-        return {
-            "ok": bool(out.get("ok")),
-            "shift_date_et": day.isoformat(),
-            "status": (out.get("day") or {}).get("status"),
-            "error": out.get("error"),
-        }
+        if ok:
+            log.write(
+                f"Step-1 day snapshot refreshed for {day} "
+                f"bags={bag_count} batch_id={scrape_batch_id}\n"
+            )
+        else:
+            log.write(
+                f"ERROR: Step-1 post-scrape refresh FAILED for {day}: "
+                f"{out.get('error')}\n"
+            )
+        return diag
     except Exception as exc:
         try:
             conn.rollback()
         except Exception:
             pass
-        log.write(f"Step-1 post-scrape refresh ERROR (non-fatal): {exc}\n")
-        return {"ok": False, "error": str(exc)}
+        finished = datetime.utcnow()
+        log.write(f"ERROR: Step-1 post-scrape refresh FAILED: {exc}\n")
+        return {
+            **base,
+            "finished_at": finished.isoformat(sep=" "),
+            "status": "failed",
+            "ok": False,
+            "error": str(exc),
+            "day_bags_rebuilt": None,
+        }
 
 
 def _stamp_et() -> str:
@@ -851,15 +977,24 @@ def run_rinse_combined_sync_for_org(
         result.detail["sync_cycle"] = sync_cycle
         result.detail["ready_for_vendor_sync"] = rfv_detail
         result.detail["at_vendor_presence_sync"] = av_presence_detail
-        # Safety net: combined-cycle finish must never leave today's OPEN Step-1
-        # snapshot stale when the import path omitted step1_day_refresh.
+        # Guarantee: every successful At-Vendor import rebuilds today's OPEN
+        # Step-1 snapshot via the production backfill path (no duplicate logic).
         if _combined_cycle_needs_step1_refresh(
             dry_run=dry_run, status=result.status, detail=result.detail
         ):
             result.detail["step1_day_refresh"] = _refresh_open_step1_day_after_scrape(
-                conn, cursor, org_id=org_id, log=log
+                conn,
+                cursor,
+                org_id=org_id,
+                log=log,
+                scrape_batch_id=result.batch_id,
+                scrape_run_id=result.run_id or run_id,
             )
-            result.detail["step1_day_refresh_via"] = "combined_cycle_safety_net"
+            result.detail["step1_day_refresh_via"] = "combined_cycle_guarantee"
+        if not dry_run and str(result.status or "") in ("success", "needs_attention"):
+            _mark_step1_refresh_failed_on_result(
+                result, result.detail.get("step1_day_refresh")
+            )
         _finish_combined_cycle_run(
             conn,
             cursor,
@@ -1296,7 +1431,15 @@ def run_scheduled_scrape_for_org(
                 # land events — refresh Step-1 so Completed/Pending do not freeze.
                 if not dry_run:
                     result.detail["step1_day_refresh"] = _refresh_open_step1_day_after_scrape(
-                        conn, cursor, org_id=org_id, log=log
+                        conn,
+                        cursor,
+                        org_id=org_id,
+                        log=log,
+                        scrape_batch_id=result.batch_id,
+                        scrape_run_id=run_id,
+                    )
+                    _mark_step1_refresh_failed_on_result(
+                        result, result.detail.get("step1_day_refresh")
                     )
                 conn.commit()
                 return result
@@ -1403,7 +1546,12 @@ def run_scheduled_scrape_for_org(
                 # After scans land (confirm + optional targeted refresh), rebuild
                 # today's Step-1 snapshot so Completed/Pending queues catch up.
                 step1_refresh_detail = _refresh_open_step1_day_after_scrape(
-                    conn, cursor, org_id=org_id, log=log
+                    conn,
+                    cursor,
+                    org_id=org_id,
+                    log=log,
+                    scrape_batch_id=int(batch_id) if batch_id else None,
+                    scrape_run_id=run_id,
                 )
 
             result.status = final_status
@@ -1424,6 +1572,7 @@ def run_scheduled_scrape_for_org(
                 result.detail["targeted_pending_scan_refresh"] = targeted_pending_refresh_detail
             if step1_refresh_detail is not None:
                 result.detail["step1_day_refresh"] = step1_refresh_detail
+                _mark_step1_refresh_failed_on_result(result, step1_refresh_detail)
 
         except Exception as e:
             conn.rollback()
@@ -1463,13 +1612,29 @@ def run_scheduled_scrape_for_org(
                         )
                         result.detail["targeted_refresh_after_scrape_failure"] = True
                         step1_fallback = _refresh_open_step1_day_after_scrape(
-                            conn, cursor, org_id=org_id, log=log
+                            conn,
+                            cursor,
+                            org_id=org_id,
+                            log=log,
+                            scrape_batch_id=int(fallback_batch_id)
+                            if fallback_batch_id
+                            else None,
+                            scrape_run_id=run_id,
                         )
                         result.detail["step1_day_refresh"] = step1_fallback
+                        _mark_step1_refresh_failed_on_result(result, step1_fallback)
                 except Exception as refresh_exc:
                     log.write(
-                        f"Targeted pending scan refresh after scrape failure "
-                        f"ERROR (non-fatal): {refresh_exc}\n"
+                        f"ERROR: Targeted pending / Step-1 refresh after scrape "
+                        f"failure: {refresh_exc}\n"
+                    )
+                    result.detail["step1_day_refresh"] = {
+                        "ok": False,
+                        "status": "failed",
+                        "error": str(refresh_exc),
+                    }
+                    _mark_step1_refresh_failed_on_result(
+                        result, result.detail.get("step1_day_refresh")
                     )
 
         if rfv_detail is not None:
