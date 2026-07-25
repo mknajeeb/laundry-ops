@@ -350,11 +350,13 @@ def test_edit_bag_routine_save_without_reason_succeeds_system_audit():
     }
     after = dict(before)
     after["bulk_items"] = [{"workitem_id": 1, "quantity": 2, "name": "Comforter"}]
+    after_bumped = dict(after)
+    after_bumped["updated_at"] = "2026-07-24T10:00:01"
     cursor = MagicMock()
     cursor.lastrowid = 77
     with patch("backend.rinse_step1_edit_bag.ensure_step1_bag_edit_tables"), patch(
         "backend.rinse_step1_edit_bag.capture_bag_edit_state",
-        side_effect=[before, after],
+        side_effect=[before, after, after_bumped],
     ), patch(
         "backend.rinse_bulk_workitems.save_bag_bulk_workitems",
         return_value={"ok": True, "items_total": 20},
@@ -419,3 +421,94 @@ def test_edit_bag_exclude_without_reason_code_rejected():
         )
     assert out["ok"] is False
     assert out["error"] == "reason_code_required"
+
+
+def test_edit_bag_action_skips_live_day_rebuild_before_lock_check():
+    """Regression: live persist before edit_bag caused false optimistic-lock conflicts."""
+    from backend.rinse_veewash_step1_api import apply_step1_correction
+
+    cursor = MagicMock()
+    day_rec = {"status": "OPEN"}
+    with patch(
+        "backend.rinse_veewash_shift_day.get_day_record", return_value=day_rec
+    ), patch(
+        "backend.rinse_veewash_step1_api.build_step1_payload"
+    ) as build_payload, patch(
+        "backend.rinse_step1_edit_bag.apply_unified_bag_edit",
+        return_value={"ok": True, "edit_id": 1},
+    ) as apply_edit:
+        out = apply_step1_correction(
+            cursor,
+            ORG,
+            bag_id=BAG,
+            action="edit_bag",
+            body={
+                "selected_date_et": DAY.isoformat(),
+                "draft": {"bulk_items": [{"workitem_id": 1, "quantity": 1}]},
+                "expected_updated_at": "2026-07-24T10:00:00",
+            },
+        )
+    assert out["ok"] is True
+    build_payload.assert_not_called()
+    apply_edit.assert_called_once()
+
+
+def test_persist_day_snapshot_never_bumps_day_bag_updated_at():
+    from backend.rinse_veewash_shift_day import persist_day_snapshot
+
+    cursor = MagicMock()
+    workload = {
+        "rows": [
+            {
+                "bag_id": BAG,
+                "service_type": "WF",
+                "rush_status": "RUSH",
+                "effective_status": "review_required",
+                "pre_weight_lbs": 10,
+                "post_weight_lbs": 12,
+                "weight_lbs": 12,
+                "review_reason_codes": ["WF_BULK_WORKITEM_REVIEW"],
+                "bag_snapshot": {"bag_id": BAG},
+            }
+        ]
+    }
+    summary = {
+        "exceptions": {"review_required": 1},
+        "active_workload": 1,
+        "completed": 0,
+        "pending": 0,
+    }
+    with patch("backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables"), patch(
+        "backend.rinse_veewash_shift_day.get_day_record",
+        side_effect=[
+            {"status": "OPEN", "opened_at": None},
+            {"status": "OPEN", "headline": summary, "shift_date_et": DAY},
+        ],
+    ), patch(
+        "backend.rinse_step1_productivity_fast.project_productivity_fields_for_day_bag",
+        return_value={
+            "productivity_employee_name": None,
+            "productivity_completed_at": None,
+            "productivity_weight_lbs": None,
+            "productivity_credit_eligible": 0,
+            "productivity_exclusion_reason": None,
+        },
+    ):
+        persist_day_snapshot(
+            cursor,
+            ORG,
+            DAY,
+            workload=workload,
+            summary=summary,
+        )
+
+    bag_sqls = [
+        str(c.args[0])
+        for c in cursor.execute.call_args_list
+        if c.args and "INSERT INTO rinse_shift_monitor_day_bags" in str(c.args[0])
+    ]
+    assert bag_sqls
+    compact = bag_sqls[0].replace(" ", "").replace("\n", "")
+    assert "updated_at=updated_at" in compact
+    assert "updated_at=CURRENT_TIMESTAMP" not in compact
+    assert "updated_at=IF" not in compact

@@ -634,7 +634,8 @@ def _apply_service_rush_update(
     cursor.execute(
         """
         UPDATE rinse_shift_monitor_day_bags
-        SET service_type = %s, rush_status = %s, bag_snapshot_json = %s
+        SET service_type = %s, rush_status = %s, bag_snapshot_json = %s,
+            updated_at = CURRENT_TIMESTAMP
         WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
         """,
         (svc, rush_flag, _json_dump(snap), int(organization_id), shift_date_et, bag_id),
@@ -736,7 +737,8 @@ def _apply_weight_update(
     cursor.execute(
         """
         UPDATE rinse_shift_monitor_day_bags
-        SET pre_weight_lbs = %s, post_weight_lbs = %s, weight_lbs = %s
+        SET pre_weight_lbs = %s, post_weight_lbs = %s, weight_lbs = %s,
+            updated_at = CURRENT_TIMESTAMP
         WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
         """,
         (pre_weight_lbs, post_weight_lbs, new_weight, int(organization_id), shift_date_et, bag_id),
@@ -967,7 +969,8 @@ def apply_unified_bag_edit(
                 productivity_completed_at = %s,
                 productivity_weight_lbs = %s,
                 productivity_credit_eligible = %s,
-                productivity_exclusion_reason = %s
+                productivity_exclusion_reason = %s,
+                updated_at = updated_at
             WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
             """,
             (
@@ -994,6 +997,19 @@ def apply_unified_bag_edit(
             deltas.append({"field_name": field, "before_value": b_val, "after_value": a_val})
     if outcome:
         deltas.append({"field_name": "outcome_action", "before_value": None, "after_value": outcome})
+
+    # Ensure manager edits bump the lock even when only bulk/outcome changed
+    # (those paths may not UPDATE day_bags columns that trigger ON UPDATE).
+    if deltas:
+        cursor.execute(
+            """
+            UPDATE rinse_shift_monitor_day_bags
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+            """,
+            (int(organization_id), selected_date_et, bid),
+        )
+        after = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
 
     cursor.execute(
         """

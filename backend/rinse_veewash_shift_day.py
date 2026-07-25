@@ -479,21 +479,10 @@ def persist_day_snapshot(
               productivity_weight_lbs=VALUES(productivity_weight_lbs),
               productivity_credit_eligible=VALUES(productivity_credit_eligible),
               productivity_exclusion_reason=VALUES(productivity_exclusion_reason),
-              -- Source-display / membership refresh must not bump manager-edit lock token
-              -- unless manager-editable values actually changed.
-              updated_at=IF(
-                (pre_weight_lbs <=> VALUES(pre_weight_lbs))
-                AND (post_weight_lbs <=> VALUES(post_weight_lbs))
-                AND (weight_lbs <=> VALUES(weight_lbs))
-                AND (service_type <=> VALUES(service_type))
-                AND (rush_status <=> VALUES(rush_status))
-                AND (canonical_completion_status <=> VALUES(canonical_completion_status))
-                AND (canonical_completion_timestamp <=> VALUES(canonical_completion_timestamp))
-                AND (canonical_completion_employee <=> VALUES(canonical_completion_employee))
-                AND (effective_status <=> VALUES(effective_status)),
-                updated_at,
-                CURRENT_TIMESTAMP
-              )
+              -- Source/membership/productivity refresh must never bump the manager-edit
+              -- optimistic-lock token. Only intentional manager UPDATEs bump updated_at
+              -- (via ON UPDATE CURRENT_TIMESTAMP or explicit SET).
+              updated_at=updated_at
             """,
             (
                 int(organization_id),

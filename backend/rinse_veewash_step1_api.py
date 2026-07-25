@@ -721,13 +721,68 @@ def apply_step1_correction(
             "day_status": STATUS_CLOSED,
         }
 
+    # edit_bag / undo must NOT call build_step1_payload(persist_live=True).
+    # That live rebuild persists every day_bag and can bump updated_at before the
+    # optimistic-lock check — causing false "bag updated while reviewing" conflicts
+    # for a sole editor.
+    if action == "edit_bag":
+        from backend.rinse_step1_edit_bag import apply_unified_bag_edit
+
+        out = apply_unified_bag_edit(
+            cursor,
+            organization_id,
+            bag_id=bid,
+            selected_date_et=day,
+            reason=reason,
+            draft=dict(body.get("draft") or {}),
+            expected_updated_at=body.get("expected_updated_at"),
+            outcome_action=body.get("outcome_action"),
+            actor_user_id=actor_user_id,
+            actor_display_name=actor_display_name,
+            reason_code=body.get("reason_code"),
+            reason_note=body.get("reason_note") or body.get("reason") or None,
+        )
+        if out.get("ok"):
+            try:
+                from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
+
+                clear_step1_productivity_cache(organization_id, day)
+            except Exception:
+                pass
+        return out
+
+    if action == "undo_bag_edit":
+        from backend.rinse_step1_edit_bag import undo_bag_edit
+
+        edit_id_raw = body.get("edit_id")
+        try:
+            edit_id = int(edit_id_raw)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "edit_id_required"}
+        out = undo_bag_edit(
+            cursor,
+            organization_id,
+            edit_id=edit_id,
+            reason=body.get("reason") or reason or None,
+            actor_user_id=actor_user_id,
+            actor_display_name=actor_display_name,
+        )
+        if out.get("ok"):
+            try:
+                from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
+
+                clear_step1_productivity_cache(organization_id, day)
+            except Exception:
+                pass
+        return out
+
     try:
         from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
 
         clear_step1_productivity_cache(organization_id, day)
     except Exception:
         pass
-    # Snapshot prior row from workload
+    # Snapshot prior row from workload (legacy correction actions only).
     payload = build_step1_payload(cursor, organization_id, day)
     prior = next(
         (r for r in (payload["workload"].get("rows") or []) if r.get("bag_id") == bid),
@@ -893,57 +948,6 @@ def apply_step1_correction(
             actor_display_name=actor_display_name,
         )
         return {"ok": True, "action": action, "entry_at": ts.isoformat(), "service_type": svc}
-
-    if action == "edit_bag":
-        from backend.rinse_step1_edit_bag import apply_unified_bag_edit
-
-        out = apply_unified_bag_edit(
-            cursor,
-            organization_id,
-            bag_id=bid,
-            selected_date_et=day,
-            reason=reason,
-            draft=dict(body.get("draft") or {}),
-            expected_updated_at=body.get("expected_updated_at"),
-            outcome_action=body.get("outcome_action"),
-            actor_user_id=actor_user_id,
-            actor_display_name=actor_display_name,
-            reason_code=body.get("reason_code"),
-            reason_note=body.get("reason_note") or body.get("reason") or None,
-        )
-        if out.get("ok"):
-            try:
-                from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
-
-                clear_step1_productivity_cache(organization_id, day)
-            except Exception:
-                pass
-        return out
-
-    if action == "undo_bag_edit":
-        from backend.rinse_step1_edit_bag import undo_bag_edit
-
-        edit_id_raw = body.get("edit_id")
-        try:
-            edit_id = int(edit_id_raw)
-        except (TypeError, ValueError):
-            return {"ok": False, "error": "edit_id_required"}
-        out = undo_bag_edit(
-            cursor,
-            organization_id,
-            edit_id=edit_id,
-            reason=body.get("reason") or reason or None,
-            actor_user_id=actor_user_id,
-            actor_display_name=actor_display_name,
-        )
-        if out.get("ok"):
-            try:
-                from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
-
-                clear_step1_productivity_cache(organization_id, day)
-            except Exception:
-                pass
-        return out
 
     if action in ("return_pending", "exclude", "move_to_review"):
         _record_correction(

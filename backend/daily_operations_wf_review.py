@@ -951,7 +951,8 @@ def save_wf_review(
             cursor.execute(
                 """
                 UPDATE rinse_shift_monitor_day_bags
-                SET post_weight_lbs = %s, weight_lbs = %s
+                SET post_weight_lbs = %s, weight_lbs = %s,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
                 """,
                 (float(corrected_lbs), float(corrected_lbs), org, operations_date_et, bid),

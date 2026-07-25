@@ -122,6 +122,14 @@ export default function EditBagPanel({
     if (initialOutcome) setPendingOutcome(initialOutcome);
   }, [initialOutcome]);
 
+  // Adopt the detail-row lock once when the list shell lacked updated_at.
+  // Do not chase later refreshes (that would hide genuine concurrent edits).
+  useEffect(() => {
+    const next = bag?.updated_at || bag?.day_bag_updated_at || null;
+    if (!next) return;
+    setLockUpdatedAt((prev) => prev || next);
+  }, [bag?.updated_at, bag?.day_bag_updated_at]);
+
   const isHd = String(draft.service_type || "").toUpperCase() === "HD";
   const reviewStatus = bag?.dashboard_status || bag?.outcome || "—";
   const customer =
