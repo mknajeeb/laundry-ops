@@ -32,6 +32,8 @@ import {
   bagsWithMissingPre,
   buildExecutiveSummaryCards,
   employeeDisplayLbs,
+  employeeHasFolderDualProductivity,
+  fmtProductivityPct,
   fmtProductivityRate,
   fmtSummaryNumber,
   isMissingClockIn,
@@ -53,10 +55,90 @@ const DATE_PRESETS = [
   { id: "custom", label: "Custom ET Date" },
 ];
 
+function SummaryMetricGrid({ items }) {
+  return (
+    <Box
+      sx={{
+        display: "grid",
+        gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", sm: "repeat(4, minmax(0, 1fr))" },
+        gap: 1,
+      }}
+    >
+      {items.map((item) => (
+        <Box key={item.label} sx={{ minWidth: 0 }}>
+          <Typography variant="caption" color="text.secondary" fontWeight={700} display="block">
+            {item.label}
+          </Typography>
+          <Typography variant="body2" fontWeight={700} sx={{ wordBreak: "break-word" }}>
+            {item.value ?? "—"}
+          </Typography>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+function FolderSegmentList({ segments }) {
+  if (!Array.isArray(segments) || !segments.length) return null;
+  return (
+    <Box sx={{ mt: 1.25 }}>
+      <Typography variant="caption" fontWeight={800} display="block" sx={{ mb: 0.75 }}>
+        Folder Role Segments
+      </Typography>
+      <Stack spacing={0.75}>
+        {segments.map((seg, idx) => (
+          <Box
+            key={seg.segment_id || `${seg.segment_start}-${idx}`}
+            sx={{
+              p: 1,
+              borderRadius: 1,
+              border: "1px solid",
+              borderColor: "divider",
+              bgcolor: "#fff",
+            }}
+          >
+            <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.5 }}>
+              Segment {idx + 1}
+              {seg.role_status === "open" ? " · Open" : " · Closed"}
+            </Typography>
+            <SummaryMetricGrid
+              items={[
+                { label: "Segment Start", value: formatFriendlyEtWall(seg.segment_start) || "—" },
+                {
+                  label: "Segment End",
+                  value:
+                    seg.segment_end_or_open === "Open"
+                      ? "Open"
+                      : formatFriendlyEtWall(seg.segment_end || seg.effective_role_end) || "—",
+                },
+                { label: "Completed Bags", value: seg.completed_bags ?? 0 },
+                { label: "Credited Lbs", value: fmtSummaryNumber(seg.credited_lbs, 2) },
+                {
+                  label: "Active Completion End",
+                  value: formatFriendlyEtWall(seg.active_completion_end) || "—",
+                },
+                { label: "Role Hours", value: fmtSummaryNumber(seg.role_hours, 2) },
+                {
+                  label: "Active Completion Hours",
+                  value: fmtSummaryNumber(seg.active_completion_hours, 2),
+                },
+                { label: "Idle Time", value: fmtSummaryNumber(seg.idle_time_hours, 2) },
+              ]}
+            />
+          </Box>
+        ))}
+      </Stack>
+    </Box>
+  );
+}
+
+
 function EmployeeSummaryPanel({ emp, onSendForReview, sendingReview = false, missingPreCount = 0 }) {
   const missingClockIn = isMissingClockIn(emp);
+  const dual = employeeHasFolderDualProductivity(emp);
   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
-  const displayLbs = employeeDisplayLbs(emp);
+  const displayLbs =
+    dual && emp.folder_credited_lbs != null ? emp.folder_credited_lbs : employeeDisplayLbs(emp);
   const reviewActions =
     typeof onSendForReview === "function" ? (
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>
@@ -87,6 +169,111 @@ function EmployeeSummaryPanel({ emp, onSendForReview, sendingReview = false, mis
         )}
       </Stack>
     ) : null;
+
+  if (dual) {
+    const roleItems = [
+      { label: "Role Hours", value: fmtSummaryNumber(emp.role_hours ?? productiveHrs, 2) },
+      { label: "Role Bags / Hour", value: fmtProductivityRate(emp.role_bags_per_hour, false) },
+      { label: "Role Lbs / Hour", value: fmtProductivityRate(emp.role_lbs_per_hour, false) },
+      { label: "Role Productivity %", value: fmtProductivityPct(emp.role_productivity_pct) },
+    ];
+    const activeItems = [
+      {
+        label: "Active Completion Hours",
+        value: fmtSummaryNumber(emp.active_completion_hours, 2),
+      },
+      { label: "Active Bags / Hour", value: fmtProductivityRate(emp.active_bags_per_hour, false) },
+      { label: "Active Lbs / Hour", value: fmtProductivityRate(emp.active_lbs_per_hour, false) },
+      { label: "Active Productivity %", value: fmtProductivityPct(emp.active_productivity_pct) },
+    ];
+    const roleStatusLabel =
+      emp.role_status === "open"
+        ? "Open"
+        : emp.role_status === "unresolved" || emp.role_end_missing
+          ? "Unresolved"
+          : "Closed";
+    const metaItems = [
+      { label: "Completed Bags", value: emp.completed_bags ?? 0 },
+      { label: "Credited Lbs (PRE)", value: displayLbs },
+      {
+        label: "Folding Target",
+        value: `${fmtSummaryNumber(emp.folding_lbs_per_hour_target, 1)} lbs/hour`,
+      },
+      {
+        label: "Folder Role Start",
+        value: formatFriendlyEtWall(emp.folder_role_start) || "—",
+      },
+      {
+        label: "Folder Role End",
+        value:
+          emp.role_status === "open" || emp.folder_role_end_display === "Open"
+            ? "Open"
+            : emp.role_end_missing || emp.folder_role_end_display === "Unresolved"
+              ? "Unresolved"
+              : formatFriendlyEtWall(emp.folder_role_end) || "—",
+      },
+      {
+        label: "First Completed",
+        value:
+          formatFriendlyEtWall(
+            emp.folder_first_completed || emp.first_completed_time_et || emp.first_completion_time,
+          ) || "—",
+      },
+      {
+        label: "Last Completed",
+        value:
+          formatFriendlyEtWall(
+            emp.folder_last_completed || emp.last_completed_time_et || emp.last_completion_time,
+          ) || "—",
+      },
+      {
+        label: "Idle Time",
+        value: fmtSummaryNumber(emp.idle_time_hours, 2),
+      },
+      {
+        label: "Role Status",
+        value: roleStatusLabel,
+      },
+    ];
+
+    return (
+      <Box
+        sx={{
+          mb: 1.25,
+          p: 1.25,
+          borderRadius: 1.5,
+          border: "1px solid",
+          borderColor: "divider",
+          bgcolor: "#f8fafc",
+        }}
+      >
+        <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>
+          Employee Summary
+        </Typography>
+        {reviewActions}
+        {emp.rates_provisional || emp.role_end_missing ? (
+          <Alert severity="warning" sx={{ mb: 1, py: 0.5 }}>
+            Role end unresolved — rates marked provisional; unresolved duration excluded from
+            authoritative aggregates.
+          </Alert>
+        ) : null}
+        <Typography variant="caption" fontWeight={800} display="block" sx={{ mb: 0.75 }}>
+          Full Role Performance
+        </Typography>
+        <SummaryMetricGrid items={roleItems} />
+        <Typography variant="caption" fontWeight={800} display="block" sx={{ mt: 1.25, mb: 0.75 }}>
+          Through Last Completion
+        </Typography>
+        <SummaryMetricGrid items={activeItems} />
+        <Typography variant="caption" fontWeight={800} display="block" sx={{ mt: 1.25, mb: 0.75 }}>
+          Role Window
+        </Typography>
+        <SummaryMetricGrid items={metaItems} />
+        <FolderSegmentList segments={emp.folder_role_segments} />
+      </Box>
+    );
+  }
+
   const items = [
     { label: "Completed Bags", value: emp.completed_bags ?? 0 },
     { label: "Credited Lbs (PRE)", value: displayLbs },
@@ -121,27 +308,11 @@ function EmployeeSummaryPanel({ emp, onSendForReview, sendingReview = false, mis
         Employee Summary
       </Typography>
       {reviewActions}
-      <Box
-        sx={{
-          display: "grid",
-          gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", sm: "repeat(4, minmax(0, 1fr))" },
-          gap: 1,
-        }}
-      >
-        {items.map((item) => (
-          <Box key={item.label} sx={{ minWidth: 0 }}>
-            <Typography variant="caption" color="text.secondary" fontWeight={700} display="block">
-              {item.label}
-            </Typography>
-            <Typography variant="body2" fontWeight={700} sx={{ wordBreak: "break-word" }}>
-              {item.value ?? "—"}
-            </Typography>
-          </Box>
-        ))}
-      </Box>
+      <SummaryMetricGrid items={items} />
     </Box>
   );
 }
+
 
 function EmployeeMobileCard({
   emp,
@@ -156,9 +327,19 @@ function EmployeeMobileCard({
   onSendBagForReview,
 }) {
   const missingClockIn = isMissingClockIn(emp);
+  const dual = employeeHasFolderDualProductivity(emp);
   const tier = PERFORMANCE_TIER_STYLES[emp.performance_tier] || PERFORMANCE_TIER_STYLES.middle;
-  const productiveHrs = emp.productive_hours ?? emp.worked_hours;
+  const productiveHrs = emp.role_hours ?? emp.productive_hours ?? emp.worked_hours;
   const displayLbs = employeeDisplayLbs(emp);
+  const bagsHr = dual
+    ? fmtProductivityRate(emp.role_bags_per_hour, false)
+    : fmtProductivityRate(emp.completed_bags_per_hour ?? emp.bags_per_hour, missingClockIn);
+  const lbsHr = dual
+    ? fmtProductivityRate(emp.role_lbs_per_hour, false)
+    : fmtProductivityRate(emp.completed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn);
+  const activeLine = dual
+    ? ` · active ${fmtProductivityRate(emp.active_bags_per_hour, false)} bags/hr · ${fmtProductivityRate(emp.active_lbs_per_hour, false)} lbs/hr · idle ${fmtSummaryNumber(emp.idle_time_hours, 2)}h`
+    : "";
 
   return (
     <Paper
@@ -188,7 +369,9 @@ function EmployeeMobileCard({
               {emp.completed_bags ?? 0} completed · {displayLbs} lbs
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              {fmtProductivityRate(emp.completed_bags_per_hour ?? emp.bags_per_hour, missingClockIn)} bags/hr · {fmtProductivityRate(emp.completed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn)} lbs/hr · {missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2)} hrs
+              {dual
+                ? `${bagsHr} role bags/hr · ${lbsHr} role lbs/hr · ${fmtSummaryNumber(productiveHrs, 2)} role hrs${activeLine}`
+                : `${bagsHr} bags/hr · ${lbsHr} lbs/hr · ${missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2)} hrs`}
             </Typography>
             {emp.missing_weight_warning ? (
               <Typography variant="caption" color="warning.main" display="block" sx={{ mt: 0.35 }}>
@@ -817,9 +1000,12 @@ export default function EmployeeProductivityDashboard({
                   <TableCell sx={{ fontWeight: 700, py: 1.25 }}>Employee</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Completed Bags</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Credited Lbs (PRE)</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Bags / Hr</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Employee Lbs / Hour (PRE)</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Productive Hours</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Role Bags / Hour</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Active Bags / Hour</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Role Lbs / Hour</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Active Lbs / Hour</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Role Hours</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Idle Time</TableCell>
                   <TableCell padding="checkbox" sx={{ py: 1.25 }} />
                 </TableRow>
               </TableHead>
@@ -827,9 +1013,16 @@ export default function EmployeeProductivityDashboard({
                 {rankedEmployees.map((emp) => {
                   const open = expandedEmployee === emp.employee;
                   const missingClockIn = isMissingClockIn(emp);
-                  const productiveHrs = emp.productive_hours ?? emp.worked_hours;
+                  const dual = employeeHasFolderDualProductivity(emp);
+                  const productiveHrs = emp.role_hours ?? emp.productive_hours ?? emp.worked_hours;
                   const tier = PERFORMANCE_TIER_STYLES[emp.performance_tier] || PERFORMANCE_TIER_STYLES.middle;
-                  const colSpan = 8;
+                  const colSpan = 11;
+                  const roleBagsHr = dual
+                    ? fmtProductivityRate(emp.role_bags_per_hour, false)
+                    : fmtProductivityRate(emp.completed_bags_per_hour ?? emp.bags_per_hour, missingClockIn);
+                  const roleLbsHr = dual
+                    ? fmtProductivityRate(emp.role_lbs_per_hour, false)
+                    : fmtProductivityRate(emp.completed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn);
                   return (
                     <Fragment key={emp.employee}>
                       <TableRow
@@ -851,10 +1044,19 @@ export default function EmployeeProductivityDashboard({
                         <TableCell sx={{ fontWeight: 700 }}>{emp.employee}</TableCell>
                         <TableCell align="right">{emp.completed_bags ?? 0}</TableCell>
                         <TableCell align="right">{employeeDisplayLbs(emp)}</TableCell>
-                        <TableCell align="right">{fmtProductivityRate(emp.completed_bags_per_hour ?? emp.bags_per_hour, missingClockIn)}</TableCell>
-                        <TableCell align="right">{fmtProductivityRate(emp.completed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn)}</TableCell>
+                        <TableCell align="right">{roleBagsHr}</TableCell>
                         <TableCell align="right">
-                          {missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2)}
+                          {dual ? fmtProductivityRate(emp.active_bags_per_hour, false) : "—"}
+                        </TableCell>
+                        <TableCell align="right">{roleLbsHr}</TableCell>
+                        <TableCell align="right">
+                          {dual ? fmtProductivityRate(emp.active_lbs_per_hour, false) : "—"}
+                        </TableCell>
+                        <TableCell align="right">
+                          {missingClockIn && !dual ? "N/A" : fmtSummaryNumber(productiveHrs, 2)}
+                        </TableCell>
+                        <TableCell align="right">
+                          {dual ? fmtSummaryNumber(emp.idle_time_hours, 2) : "—"}
                         </TableCell>
                         <TableCell padding="checkbox">
                           <ExpandMoreIcon

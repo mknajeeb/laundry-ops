@@ -2,11 +2,20 @@
 
 export const PRODUCTIVITY_RANK_OPTIONS = [
   { id: "bags", label: "Completed Bags" },
-  { id: "bags_hr", label: "Bags / Hour" },
+  { id: "role_bags_hr", label: "Role Bags / Hour" },
+  { id: "active_bags_hr", label: "Active Bags / Hour" },
   { id: "lbs", label: "Credited Lbs (PRE)" },
   { id: "avg_lbs_bag", label: "Avg Credited Lbs / Bag (PRE)" },
-  { id: "lbs_hr", label: "Employee Lbs / Hour (PRE)" },
+  { id: "role_lbs_hr", label: "Role Lbs / Hour" },
+  { id: "active_lbs_hr", label: "Active Lbs / Hour" },
+  { id: "role_prod_pct", label: "Role Productivity %" },
+  { id: "active_prod_pct", label: "Active Productivity %" },
+  { id: "idle_time", label: "Idle Time" },
 ];
+
+export function employeeHasFolderDualProductivity(emp) {
+  return Boolean(emp?.folder_role_dual_productivity);
+}
 
 export const PERFORMANCE_TIER_STYLES = {
   top: {
@@ -44,18 +53,37 @@ function rankValue(emp, rankBy) {
       return Number(emp.total_completed_lbs) || 0;
     case "avg_lbs_bag":
       return avgLbsPerCompletedBag(emp);
+    case "role_bags_hr":
     case "bags_hr":
+      if (emp.role_bags_per_hour != null) return Number(emp.role_bags_per_hour);
       return emp.completed_bags_per_hour != null
         ? Number(emp.completed_bags_per_hour)
         : (emp.bags_per_hour != null ? Number(emp.bags_per_hour) : null);
+    case "active_bags_hr":
+      return emp.active_bags_per_hour != null ? Number(emp.active_bags_per_hour) : null;
+    case "role_lbs_hr":
     case "lbs_hr":
+      if (emp.role_lbs_per_hour != null) return Number(emp.role_lbs_per_hour);
       return emp.completed_lbs_per_hour != null
         ? Number(emp.completed_lbs_per_hour)
         : (emp.lbs_per_hour != null ? Number(emp.lbs_per_hour) : null);
+    case "active_lbs_hr":
+      return emp.active_lbs_per_hour != null ? Number(emp.active_lbs_per_hour) : null;
+    case "role_prod_pct":
+      return emp.role_productivity_pct != null ? Number(emp.role_productivity_pct) : null;
+    case "active_prod_pct":
+      return emp.active_productivity_pct != null ? Number(emp.active_productivity_pct) : null;
+    case "idle_time":
+      return emp.idle_time_hours != null ? Number(emp.idle_time_hours) : null;
     case "bags":
     default:
       return Number(emp.completed_bags) || 0;
   }
+}
+
+export function fmtProductivityPct(value) {
+  if (value == null || Number.isNaN(Number(value))) return "N/A";
+  return `${Number(value).toFixed(1)}%`;
 }
 
 export function employeeShowsSplitView() {

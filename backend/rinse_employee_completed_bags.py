@@ -2182,6 +2182,17 @@ def _try_build_step1_employee_productivity_dashboard(
 
     roster_entries = list_roster_entries(cursor, org, roster_date=selected_date_et)
     user_maps = _load_rinse_user_maps(cursor, org)
+    from backend.rinse_folding_folder_role_productivity import (
+        apply_folder_dual_productivity_to_section,
+    )
+
+    scoped_emp = apply_folder_dual_productivity_to_section(
+        cursor,
+        org,
+        scoped_emp,
+        selected_date_et=selected_date_et,
+        user_maps=user_maps,
+    )
     labor_summary = build_labor_summary(
         roster_entries,
         productivity_section=scoped_emp,
@@ -2251,8 +2262,19 @@ def build_employee_productivity_dashboard_payload(
     from backend.daily_shift_roster import list_roster_entries
     from backend.rinse_simple_shift_performance import _load_rinse_user_maps
 
+    from backend.rinse_folding_folder_role_productivity import (
+        apply_folder_dual_productivity_to_section,
+    )
+
     roster_entries = list_roster_entries(cursor, org, roster_date=selected_date_et)
     user_maps = _load_rinse_user_maps(cursor, org)
+    scoped_emp = apply_folder_dual_productivity_to_section(
+        cursor,
+        org,
+        scoped_emp,
+        selected_date_et=selected_date_et,
+        user_maps=user_maps,
+    )
     labor_summary = build_labor_summary(
         roster_entries,
         productivity_section=scoped_emp,
