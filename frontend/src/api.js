@@ -782,6 +782,12 @@ export const reopenVeewashStep1Day = (body) =>
 export const backfillVeewashStep1Day = (body) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/veewash-step1/backfill-day`, body, { timeout: 120000 });
 
+/** Stage-B only: rebuild OPEN day snapshot without scraping the portal. */
+export const retryVeewashStep1Refresh = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/veewash-step1/retry-refresh`, body, {
+    timeout: 120000,
+  });
+
 /** Phase 2 — employee productivity section only (full bag drilldown, single ET day). */
 export const getEmployeeProductivityDashboard = (params = {}, config = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/employee-productivity`, {

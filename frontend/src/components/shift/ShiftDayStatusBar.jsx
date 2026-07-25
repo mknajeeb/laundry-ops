@@ -14,7 +14,11 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { closeVeewashStep1Day, reopenVeewashStep1Day } from "../../api";
+import {
+  closeVeewashStep1Day,
+  reopenVeewashStep1Day,
+  retryVeewashStep1Refresh,
+} from "../../api";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
 const CHECKLIST_ITEMS = [
@@ -56,6 +60,11 @@ export default function ShiftDayStatusBar({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [retryMsg, setRetryMsg] = useState("");
+
+  const refreshFailed =
+    Boolean(day.step1_refresh_failed)
+    || String(day.step1_refresh_status || "").toUpperCase() === "FAILED";
 
   const statusColor = useMemo(() => {
     if (status === "CLOSED") return "default";
@@ -122,6 +131,35 @@ export default function ShiftDayStatusBar({
     }
   };
 
+  const submitRetryRefresh = async () => {
+    setBusy(true);
+    setError("");
+    setRetryMsg("");
+    try {
+      const res = await retryVeewashStep1Refresh({
+        date: selectedDateEt,
+        import_batch_id: day.step1_refresh_scrape_batch_id,
+      });
+      if (!res?.data?.ok) {
+        setError(
+          res?.data?.error
+            || "Portal import succeeded, but Shift Monitor refresh failed. Retry refresh.",
+        );
+        return;
+      }
+      setRetryMsg("Shift Monitor refresh succeeded.");
+      onChanged?.();
+    } catch (e) {
+      setError(
+        e?.response?.data?.error
+          || e?.message
+          || "Portal import succeeded, but Shift Monitor refresh failed. Retry refresh.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <Box
       sx={{
@@ -168,6 +206,29 @@ export default function ShiftDayStatusBar({
               ? ` · Closed by ${day.closed_by_display_name} @ ${fmtTs(day.closed_at)}`
               : ""}
           </Typography>
+          {refreshFailed ? (
+            <Alert
+              severity="warning"
+              sx={{ mt: 0.75, py: 0.5 }}
+              action={
+                !readOnly ? (
+                  <Button color="inherit" size="small" disabled={busy} onClick={submitRetryRefresh}>
+                    Retry Shift Monitor Refresh
+                  </Button>
+                ) : null
+              }
+            >
+              Portal import succeeded, but Shift Monitor refresh failed. Retry refresh.
+              {day.step1_refresh_error
+                ? ` (${String(day.step1_refresh_error).slice(0, 120)})`
+                : ""}
+            </Alert>
+          ) : null}
+          {retryMsg ? (
+            <Alert severity="success" sx={{ mt: 0.75, py: 0.5 }} onClose={() => setRetryMsg("")}>
+              {retryMsg}
+            </Alert>
+          ) : null}
           {dataFreshness && dataFreshness.status && dataFreshness.status !== "ok" ? (
             <Box sx={{ mt: 0.35 }}>
               <Typography variant="caption" color="warning.main" display="block" fontWeight={700}>
@@ -191,7 +252,18 @@ export default function ShiftDayStatusBar({
             </Box>
           ) : null}
         </Stack>
-        <Stack direction="row" spacing={1}>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          {!readOnly && isToday ? (
+            <Button
+              size="small"
+              variant="outlined"
+              color={refreshFailed ? "warning" : "primary"}
+              disabled={notStarted || busy}
+              onClick={submitRetryRefresh}
+            >
+              Retry Shift Monitor Refresh
+            </Button>
+          ) : null}
           {readOnly ? (
             <Button size="small" variant="outlined" onClick={() => setReopenOpen(true)}>
               Reopen Shift

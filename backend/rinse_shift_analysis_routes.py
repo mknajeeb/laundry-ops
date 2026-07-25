@@ -847,6 +847,43 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/veewash-step1/retry-refresh", methods=["POST"])
+    def rinse_veewash_step1_retry_refresh():
+        """Manager Stage-B only: rebuild OPEN/REOPENED day without portal scrape."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            org = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            raw_day = body.get("date") or body.get("selected_date_et")
+            day = parse_date_value(raw_day) if raw_day else None
+            if not isinstance(day, date):
+                from backend.rinse_veewash_workload import today_et
+
+                day = today_et()
+            from backend.rinse_step1_scrape_refresh import refresh_step1_after_scrape
+
+            out = refresh_step1_after_scrape(
+                conn,
+                cursor,
+                organization_id=org,
+                operations_date_et=day,
+                scrape_run_id=body.get("scrape_run_id"),
+                import_batch_id=body.get("import_batch_id") or body.get("batch_id"),
+            )
+            if not out.get("ok"):
+                return jsonify(json_safe_rinse({"ok": False, **out})), 400
+            return jsonify(json_safe_rinse({"ok": True, **out}))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/shift-analysis/debug", methods=["GET"])
     def rinse_shift_analysis_debug():
         """Admin-only audit payload for /performance data reconciliation."""

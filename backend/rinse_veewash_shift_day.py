@@ -1131,14 +1131,25 @@ def summary_from_day_record(
             step1_refresh.get("finished_at")
             or day.get("last_sync_at")
         )
+        refresh_status = (
+            step1_refresh.get("step1_refresh_status")
+            or step1_refresh.get("status")
+        )
         out["shift_day"] = {
             "status": day.get("status"),
             "opened_at": day.get("opened_at"),
             "last_sync_at": day.get("last_sync_at"),
             "step1_refreshed_at": step1_refreshed_at,
-            "step1_refresh_status": step1_refresh.get("status"),
-            "step1_refresh_scrape_batch_id": step1_refresh.get("scrape_batch_id"),
+            "step1_refresh_status": refresh_status,
+            "step1_refresh_error": step1_refresh.get("error")
+            or step1_refresh.get("step1_refresh_error"),
+            "step1_refresh_scrape_batch_id": step1_refresh.get("scrape_batch_id")
+            or step1_refresh.get("import_batch_id"),
             "step1_refresh_day_bags_rebuilt": step1_refresh.get("day_bags_rebuilt"),
+            "step1_refresh_failed": (
+                str(refresh_status or "").upper() in ("FAILED", "FAIL", "ERROR")
+                or step1_refresh.get("ok") is False
+            ),
             "closed_at": day.get("closed_at"),
             "closed_by_display_name": day.get("closed_by_display_name"),
             "close_reason": day.get("close_reason"),
