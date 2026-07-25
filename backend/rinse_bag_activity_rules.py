@@ -154,12 +154,21 @@ def _first_add_photos_after(
     return None
 
 
+def _is_synthetic_weight_evidence(ev: Mapping[str, Any]) -> bool:
+    """Synthetic near-complete recovery rows are not portal completion evidence."""
+    from backend.rinse_wf_weight_events import is_synthetic_post_processing_weight_event
+
+    return is_synthetic_post_processing_weight_event(ev)
+
+
 def _all_weight_entries_after_anchor(
     anchored: Sequence[Mapping[str, Any]],
 ) -> list[tuple[Mapping[str, Any], datetime]]:
     out: list[tuple[Mapping[str, Any], datetime]] = []
     for ev in anchored:
         if not is_weight_entry_purpose(ev.get("purpose")):
+            continue
+        if _is_synthetic_weight_evidence(ev):
             continue
         ts = event_ts(ev)
         if ts_valid(ts):
@@ -221,9 +230,12 @@ def find_strong_completion_evidence_v2(
             ts = event_ts(ev)
             if not ts_valid(ts) or ts <= processed_at:
                 continue
-            if is_weight_entry_purpose(ev.get("purpose")):
-                _consider(ts, ev, "weight-entry-after-processed-by-vendor")
-                break
+            if not is_weight_entry_purpose(ev.get("purpose")):
+                continue
+            if _is_synthetic_weight_evidence(ev):
+                continue
+            _consider(ts, ev, "weight-entry-after-processed-by-vendor")
+            break
 
     if best is None:
         return None

@@ -340,6 +340,23 @@ def plan_near_complete_wf_backfill_for_bag(
     if registry_status not in ("", "INCOMPLETE", "REJECTED"):
         plan["skip_reason"] = "unsupported_registry_status"
         return plan
+    # Recovery is only for bags that left the portal board (or were wrongly
+    # rejected as MISSING). Still-active At Vendor bags must not receive a
+    # synthetic second weight — that falsely completes Step-1 as second-weight-entry.
+    cursor.execute(
+        """
+        SELECT active, portal_status
+        FROM rinse_cleaner_ticket_presence
+        WHERE organization_id = %s AND bag_id = %s
+        LIMIT 1
+        """,
+        (org, bid),
+    )
+    presence = cursor.fetchone() or {}
+    if int(presence.get("active") or 0) == 1:
+        plan["skip_reason"] = "still_active_on_portal"
+        plan["portal_status"] = presence.get("portal_status")
+        return plan
     from backend.rinse_portal_departure_completion import detect_confirmed_cancellation
 
     if detect_confirmed_cancellation(events):

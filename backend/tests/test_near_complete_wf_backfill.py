@@ -83,8 +83,12 @@ def _weight_evidence(
     }
 
 
-def _plan(events, evidence=None):
+def _plan(events, evidence=None, *, presence_active: int = 0):
     cursor = MagicMock()
+    cursor.fetchone.return_value = {
+        "active": presence_active,
+        "portal_status": "at_vendor" if presence_active else None,
+    }
     with patch(
         "backend.rinse_near_complete_wf_backfill._registry_weight_evidence",
         return_value=evidence or _weight_evidence(),
@@ -108,6 +112,13 @@ def test_eligible_wf_bag_is_recoverable_with_provenance():
     assert plan["originating_complete_cleaning_dedupe_key"] == "cc-dedupe"
 
 
+def test_still_active_on_portal_is_not_eligible_for_synthetic_weight():
+    """BHLNPU0MJH-class regression: active Dirty bags must not get synthetic POST."""
+    plan = _plan(_eligible_events(), presence_active=1)
+    assert plan["eligible"] is False
+    assert plan["skip_reason"] == "still_active_on_portal"
+
+
 def test_eligible_wf_bag_is_recovered_transactionally():
     before = _eligible_events()
     synthetic = _ev(
@@ -120,6 +131,7 @@ def test_eligible_wf_bag_is_recovered_transactionally():
     conn = MagicMock()
     conn.autocommit = True
     cursor = conn.cursor.return_value
+    cursor.fetchone.return_value = {"active": 0, "portal_status": None}
     with patch(
         "backend.rinse_near_complete_wf_backfill._registry_weight_evidence",
         return_value=_weight_evidence(),

@@ -495,10 +495,14 @@ def _scan_events_timeline_list_sql(*, full_row: bool, limit: int | None = None) 
         cols = """
             id, bag_id, scan_index, rack, user_name, purpose,
             time_scanned_raw, scanned_at_parsed, source_timezone, dedupe_key,
-            source_upload_batch_id, created_at, updated_at, last_seen_at
+            source_upload_batch_id, source_filename, weight_lbs, raw_json,
+            created_at, updated_at, last_seen_at
         """
     else:
-        cols = "id, rack, user_name, scanned_at_parsed, scan_index, purpose"
+        cols = (
+            "id, rack, user_name, scanned_at_parsed, scan_index, purpose, "
+            "source_filename, weight_lbs, raw_json"
+        )
     lim = f" LIMIT {int(limit)}" if limit is not None else ""
     return f"""
         SELECT {cols}

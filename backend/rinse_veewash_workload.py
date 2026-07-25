@@ -393,7 +393,8 @@ def load_canonical_completions_v2(
         placeholders = ",".join(["%s"] * len(chunk))
         cursor.execute(
             f"""
-            SELECT bag_id, rack, purpose, scanned_at_parsed, user_name, weight_lbs
+            SELECT bag_id, rack, purpose, scanned_at_parsed, user_name, weight_lbs,
+                   source_filename, raw_json
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND bag_id IN ({placeholders})
@@ -415,6 +416,8 @@ def load_canonical_completions_v2(
                     "scanned_at_parsed": row.get("scanned_at_parsed"),
                     "user_name": row.get("user_name"),
                     "weight_lbs": row.get("weight_lbs"),
+                    "source_filename": row.get("source_filename"),
+                    "raw_json": row.get("raw_json"),
                 }
             )
 

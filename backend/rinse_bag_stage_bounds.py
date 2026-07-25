@@ -33,11 +33,12 @@ def gaming_events_from_records(records: Sequence[Mapping[str, Any]]) -> list[dic
             "id": r.get("id"),
             "rack": r.get("rack") if "rack" in r else r.get("Rack"),
             "user": r.get("user_name") if "user_name" in r else r.get("User"),
+            "user_name": r.get("user_name") if "user_name" in r else r.get("User"),
             "scanned_at_parsed": r.get("scanned_at_parsed"),
             "scan_index": r.get("scan_index") if "scan_index" in r else r.get("Scan Index"),
             "purpose": r.get("purpose") if "purpose" in r else r.get("Purpose"),
         }
-        for key in ("weight_lbs", "weight_num", "weight"):
+        for key in ("weight_lbs", "weight_num", "weight", "source_filename", "raw_json"):
             if key in r and r[key] is not None:
                 row[key] = r[key]
         out.append(row)
