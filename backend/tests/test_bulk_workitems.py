@@ -52,7 +52,8 @@ def test_purpose_markers():
     assert not purpose_is_bulk_workitem("weight-entry")
 
 
-def test_wf_bulk_scan_enters_review():
+def test_wf_bulk_scan_incomplete_stays_pending():
+    """create-workitem-bulk without canonical completion stays Pending, not Review."""
     presence = {"BAGWF1": _pres("WF")}
     entry = {"BAGWF1": _entry()}
     raw = classify_veewash_workload(
@@ -74,10 +75,55 @@ def test_wf_bulk_scan_enters_review():
             }
         },
     )
-    assert "BAGWF1" in out["review_required"]
-    assert REASON_WF_BULK_WORKITEM_REVIEW in (out["review_reasons_by_bag"].get("BAGWF1") or [])
-    assert out["counts"]["review_required"] == 1
+    assert "BAGWF1" not in out["review_required"]
+    assert "BAGWF1" in out["pending_end_of_date"]
+    assert REASON_WF_BULK_WORKITEM_REVIEW not in (out["review_reasons_by_bag"].get("BAGWF1") or [])
+    assert out["counts"]["review_required"] == 0
+    row = next(r for r in out["rows"] if r["bag_id"] == "BAGWF1")
+    assert (row.get("bulk_workitem_scan") or {}).get("count") == 1
 
+
+def test_wf_bulk_scan_completed_enters_review():
+    presence = {"BAGWF1C": _pres("WF")}
+    entry = {"BAGWF1C": _entry()}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={
+            "BAGWF1C": {
+                "completion_at": datetime(2026, 7, 22, 12, 0),
+                "completion_date": D1,
+                "completed_by": "Maria",
+                "completion_source": "evaluate_bag_completion_v2:clean-rack",
+            }
+        },
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        weight_by_bag={
+            "BAGWF1C": {
+                "pre_weight_lbs": 10.0,
+                "post_weight_lbs": 9.0,
+                "post_weight_event_exists": True,
+                "post_weight_value": 9.0,
+                "weight_entry_count": 2,
+            }
+        },
+        bulk_scan_by_bag={
+            "BAGWF1C": {
+                "count": 1,
+                "first_at": datetime(2026, 7, 22, 9, 0),
+                "employee": "Maria",
+            }
+        },
+    )
+    assert "BAGWF1C" in out["review_required"]
+    assert REASON_WF_BULK_WORKITEM_REVIEW in (out["review_reasons_by_bag"].get("BAGWF1C") or [])
+    assert out["counts"]["review_required"] == 1
 
 def test_hd_same_day_wia_with_bulk_stays_hd_not_wf_bulk_review():
     """Hang Dry has workitems-added + create-workitem-bulk; bulk does not redefine service."""
@@ -214,9 +260,12 @@ def test_early_wia_before_first_weight_ignored_04frsec71h():
     row = next(r for r in out["rows"] if r["bag_id"] == bag)
     assert row["service_type"] == "WF"
     reasons = out.get("review_reasons_by_bag") or {}
-    assert REASON_WF_BULK_WORKITEM_REVIEW in (reasons.get(bag) or [])
-    assert "SERVICE_CLASSIFICATION_MISMATCH" in (reasons.get(bag) or [])
-    assert bag in (out.get("review_required") or [])
+    # Incomplete: remapped to WF but not admitted to Review Required yet.
+    assert bag not in (out.get("review_required") or [])
+    assert bag in (out.get("pending_end_of_date") or [])
+    assert REASON_WF_BULK_WORKITEM_REVIEW not in (reasons.get(bag) or [])
+    assert "SERVICE_CLASSIFICATION_MISMATCH" not in (reasons.get(bag) or [])
+    assert (row.get("bulk_workitem_scan") or {}).get("count") == 1
 
 
 def test_wia_before_first_weight_with_bulk_classifies_wf():
@@ -427,8 +476,8 @@ def test_load_first_wia_skips_before_first_weight_entry(monkeypatch):
     assert out["C"]["first_entry_at"] == datetime(2026, 7, 22, 9, 0)
 
 
-def test_portal_hd_bulk_without_wia_remaps_to_wf_review():
-    """WF with work items: create-workitem-bulk only (no workitems-added) → WF + bulk review."""
+def test_portal_hd_bulk_without_wia_remaps_to_wf_pending_until_complete():
+    """WF with work items: create-workitem-bulk only → WF remap; incomplete stays Pending."""
     presence = {"BAGBULK1": _pres("HD")}
     entry = {"BAGBULK1": _entry()}
     raw = classify_veewash_workload(
@@ -463,7 +512,9 @@ def test_portal_hd_bulk_without_wia_remaps_to_wf_review():
         registry_service_by_bag={"BAGBULK1": "HD"},
     )
     reasons = out.get("review_reasons_by_bag") or {}
-    assert REASON_WF_BULK_WORKITEM_REVIEW in (reasons.get("BAGBULK1") or [])
+    assert REASON_WF_BULK_WORKITEM_REVIEW not in (reasons.get("BAGBULK1") or [])
+    assert "BAGBULK1" not in (out.get("review_required") or [])
+    assert "BAGBULK1" in (out.get("pending_end_of_date") or [])
     row = next(r for r in out["rows"] if r["bag_id"] == "BAGBULK1")
     assert row["service_type"] == "WF"
 
@@ -510,13 +561,29 @@ def test_multiple_bulk_scans_one_review_count():
         selected_date_et=D1,
         presence_by_bag=presence,
         entry_by_bag=entry,
-        completion_by_bag={},
+        completion_by_bag={
+            "BAGWF2": {
+                "completion_at": datetime(2026, 7, 22, 12, 0),
+                "completion_date": D1,
+                "completed_by": "A",
+                "completion_source": "evaluate_bag_completion_v2:clean-rack",
+            }
+        },
     )
     out = expand_review_required(
         raw,
         selected_date_et=D1,
         presence_by_bag=presence,
         entry_by_bag=entry,
+        weight_by_bag={
+            "BAGWF2": {
+                "pre_weight_lbs": 8.0,
+                "post_weight_lbs": 7.5,
+                "post_weight_event_exists": True,
+                "post_weight_value": 7.5,
+                "weight_entry_count": 2,
+            }
+        },
         bulk_scan_by_bag={
             "BAGWF2": {
                 "count": 3,

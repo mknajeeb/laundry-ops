@@ -234,6 +234,14 @@ def expand_review_required(
     Priority: Review > Completed > Pending. One bag → one review count.
     Review never removes bags from Active / service×rush population.
 
+    Review Required is a post-completion queue only:
+      - No canonical completion → PENDING (even with bulk, missing POST,
+        specialty signals, or service-mismatch candidates).
+      - Canonically completed + unresolved review condition → REVIEW_REQUIRED.
+      - Canonically completed + no unresolved condition → COMPLETED.
+    Exception: DISAPPEARED_WITHOUT_COMPLETION may remain in Review without
+    completion (explicit incomplete exception).
+
     create-workitem-bulk is WF-only for review UI.
 
     Service signal from scan purposes:
@@ -248,9 +256,10 @@ def expand_review_required(
     portal/registry. Bulk without relevant WIA forces WF. Registry WF still
     overrides portal HD.
 
-    WF_ZERO_OR_MISSING_POST_WEIGHT only when the bag is canonically completed
-    and exactly one weight-entry scan exists (no second event). Recorded post=0
-    is a real Post Weight event, not missing.
+    WF_ZERO_OR_MISSING_POST_WEIGHT / WF_BULK_WORKITEM_REVIEW only when the bag
+    is canonically completed. Missing POST also requires exactly one
+    weight-entry scan (no second event). Recorded post=0 is a real Post
+    Weight event, not missing.
     """
     _ = shift_closed
     D = selected_date_et
@@ -476,7 +485,7 @@ def expand_review_required(
                 },
             }
 
-    # --- WF create-workitem-bulk → Review Required (before missing-post) ------
+    # --- WF create-workitem-bulk → Review Required (completed bags only) -----
     active = new_today | carryover
     for bid in list(active):
         bid = _norm_bag(bid)
@@ -490,17 +499,23 @@ def expand_review_required(
         svc, _mm = resolve_service(bid, pres, row)
         if svc != SERVICE_WF:
             continue
-        rows_by_id[bid] = {**(rows_by_id.get(bid) or row), "service_type": SERVICE_WF}
+        bulk_payload = {
+            "count": scan_info.get("count"),
+            "first_at": scan_info.get("first_at"),
+            "last_at": scan_info.get("last_at"),
+            "employee": scan_info.get("employee"),
+        }
+        rows_by_id[bid] = {
+            **(rows_by_id.get(bid) or row),
+            "service_type": SERVICE_WF,
+            "bulk_workitem_scan": bulk_payload,
+            "bulk_workitems": list(bulk_lines.get(bid) or []),
+            "bulk_resolution": bulk_resolutions.get(bid),
+        }
         if bag_bulk_review_cleared(bulk_resolutions.get(bid), list(bulk_lines.get(bid) or [])):
-            if bid in rows_by_id:
-                rows_by_id[bid]["bulk_workitem_scan"] = {
-                    "count": scan_info.get("count"),
-                    "first_at": scan_info.get("first_at"),
-                    "last_at": scan_info.get("last_at"),
-                    "employee": scan_info.get("employee"),
-                }
-                rows_by_id[bid]["bulk_workitems"] = list(bulk_lines.get(bid) or [])
-                rows_by_id[bid]["bulk_resolution"] = bulk_resolutions.get(bid)
+            continue
+        # Incomplete operational work stays Pending — Review is post-completion.
+        if not is_canonically_completed(bid, rows_by_id[bid]):
             continue
 
         add_reason(bid, REASON_WF_BULK_WORKITEM_REVIEW)
@@ -516,12 +531,7 @@ def expand_review_required(
             "outcome": OUTCOME_REVIEW_REQUIRED,
             "final_bucket": "review_required",
             "reason_codes": list(reasons.get(bid) or []),
-            "bulk_workitem_scan": {
-                "count": scan_info.get("count"),
-                "first_at": scan_info.get("first_at"),
-                "last_at": scan_info.get("last_at"),
-                "employee": scan_info.get("employee"),
-            },
+            "bulk_workitem_scan": bulk_payload,
             "bulk_workitems": list(bulk_lines.get(bid) or []),
             "bulk_resolution": bulk_resolutions.get(bid),
         }
@@ -624,15 +634,21 @@ def expand_review_required(
             "reason_codes": list(reasons.get(bid) or []),
         }
 
-    # Ensure mismatched classification bags in review when flagged
+    # Ensure mismatched classification bags in review when flagged (completed only)
     for bid, codes in list(reasons.items()):
         if REASON_SERVICE_CLASSIFICATION_MISMATCH in codes and bid in (new_today | carryover):
+            row = rows_by_id.get(bid) or {"bag_id": bid}
+            if not is_canonically_completed(bid, row):
+                # Keep remapped service on the pending bag; do not admit Review yet.
+                reasons[bid] = [c for c in codes if c != REASON_SERVICE_CLASSIFICATION_MISMATCH]
+                if not reasons[bid]:
+                    reasons.pop(bid, None)
+                continue
             review.add(bid)
             if bid in completed:
                 completed.discard(bid)
             if bid in pending:
                 pending.discard(bid)
-            row = rows_by_id.get(bid) or {"bag_id": bid}
             rows_by_id[bid] = {
                 **row,
                 "outcome": OUTCOME_REVIEW_REQUIRED,
@@ -651,6 +667,38 @@ def expand_review_required(
             "outcome": OUTCOME_REVIEW_REQUIRED,
             "final_bucket": "review_required",
             "reason_codes": list(reasons.get(bid) or [REASON_DISAPPEARED_WITHOUT_COMPLETION]),
+        }
+
+    # Safety demotion: incomplete bags never stay in Review (except disappearance).
+    _post_completion_reasons = {
+        REASON_WF_BULK_WORKITEM_REVIEW,
+        REASON_WF_ZERO_OR_MISSING_POST_WEIGHT,
+        REASON_SERVICE_CLASSIFICATION_MISMATCH,
+    }
+    for bid in list(review):
+        bid = _norm_bag(bid)
+        if not bid or bid in disappeared:
+            continue
+        row = rows_by_id.get(bid) or {"bag_id": bid}
+        codes = list(reasons.get(bid) or row.get("reason_codes") or [])
+        if REASON_DISAPPEARED_WITHOUT_COMPLETION in codes:
+            continue
+        if is_canonically_completed(bid, row):
+            continue
+        review.discard(bid)
+        pending.add(bid)
+        completed.discard(bid)
+        kept = [c for c in codes if c not in _post_completion_reasons]
+        if kept:
+            reasons[bid] = kept
+        else:
+            reasons.pop(bid, None)
+        entry_class = row.get("entry_class") or ENTRY_CLASS_NEW
+        rows_by_id[bid] = {
+            **row,
+            "outcome": OUTCOME_PENDING,
+            "final_bucket": f"{entry_class}_{OUTCOME_PENDING}",
+            "reason_codes": list(reasons.get(bid) or []),
         }
 
     # Sync reason_codes onto all review rows

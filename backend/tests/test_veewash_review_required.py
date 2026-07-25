@@ -511,3 +511,207 @@ def test_manager_post_weight_correction_clears_only_weight_reason():
 
 def test_reason_alias_equals_post_weight_code():
     assert REASON_WF_ZERO_OR_MISSING_WEIGHT == REASON_WF_ZERO_OR_MISSING_POST_WEIGHT
+
+
+def _assert_partition_invariants(out: dict) -> None:
+    completed = set(out.get("completed_on_date") or [])
+    pending = set(out.get("pending_end_of_date") or [])
+    review = set(out.get("review_required") or [])
+    assert not (completed & pending)
+    assert not (completed & review)
+    assert not (pending & review)
+    active = set(out.get("new_today") or []) | set(out.get("carryover") or [])
+    # Active members are partitioned across the three statuses.
+    assert active == completed | pending | review
+    counts = out.get("counts") or {}
+    assert counts.get("completed_on_date") == len(completed)
+    assert counts.get("pending_end_of_date") == len(pending)
+    assert counts.get("review_required") == len(review)
+    assert (
+        counts.get("total_active_workload")
+        == len(completed) + len(pending) + len(review)
+    )
+
+
+def test_incomplete_bulk_workitem_stays_pending():
+    from backend.rinse_bulk_workitems import REASON_WF_BULK_WORKITEM_REVIEW
+
+    presence = {"INCBULK1": _pres(service="WF")}
+    entry = {"INCBULK1": _entry(D1)}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={},
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        bulk_scan_by_bag={
+            "INCBULK1": {
+                "count": 1,
+                "first_at": datetime(2026, 7, 21, 9, 40),
+                "employee": "Yessenia",
+            }
+        },
+    )
+    assert "INCBULK1" in out["pending_end_of_date"]
+    assert "INCBULK1" not in out["review_required"]
+    assert REASON_WF_BULK_WORKITEM_REVIEW not in (
+        out["review_reasons_by_bag"].get("INCBULK1") or []
+    )
+    _assert_partition_invariants(out)
+
+
+def test_incomplete_split_load_stays_pending():
+    """Split-load alone (no completion) must not enter Review Required."""
+    presence = {"INCSPLIT1": _pres(service="WF")}
+    entry = {"INCSPLIT1": _entry(D1)}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={},
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        weight_by_bag={"INCSPLIT1": {"pre_weight_lbs": 20.0, "post_weight_lbs": None}},
+    )
+    assert "INCSPLIT1" in out["pending_end_of_date"]
+    assert "INCSPLIT1" not in out["review_required"]
+    _assert_partition_invariants(out)
+
+
+def test_incomplete_missing_post_stays_pending():
+    presence = {"INCPOST1": _pres(service="WF")}
+    entry = {"INCPOST1": _entry(D1)}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={},
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        weight_by_bag={
+            "INCPOST1": {
+                "pre_weight_lbs": 12.0,
+                "post_weight_lbs": None,
+                "post_weight_event_exists": False,
+                "weight_entry_count": 1,
+            }
+        },
+    )
+    assert "INCPOST1" in out["pending_end_of_date"]
+    assert "INCPOST1" not in out["review_required"]
+    assert REASON_WF_ZERO_OR_MISSING_POST_WEIGHT not in (
+        out["review_reasons_by_bag"].get("INCPOST1") or []
+    )
+    _assert_partition_invariants(out)
+
+
+def test_completed_bulk_workitem_goes_review_required():
+    from backend.rinse_bulk_workitems import REASON_WF_BULK_WORKITEM_REVIEW
+
+    presence = {"CMPBULK1": _pres(service="WF")}
+    entry = {"CMPBULK1": _entry(D1)}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={"CMPBULK1": _comp(D1)},
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        weight_by_bag={
+            "CMPBULK1": {
+                "pre_weight_lbs": 10.0,
+                "post_weight_lbs": 9.0,
+                "post_weight_event_exists": True,
+                "post_weight_value": 9.0,
+                "weight_entry_count": 2,
+            }
+        },
+        bulk_scan_by_bag={
+            "CMPBULK1": {
+                "count": 1,
+                "first_at": datetime(2026, 7, 21, 9, 40),
+                "employee": "Yessenia",
+            }
+        },
+    )
+    assert "CMPBULK1" in out["review_required"]
+    assert "CMPBULK1" not in out["pending_end_of_date"]
+    assert "CMPBULK1" not in out["completed_on_date"]
+    assert REASON_WF_BULK_WORKITEM_REVIEW in out["review_reasons_by_bag"]["CMPBULK1"]
+    _assert_partition_invariants(out)
+
+
+def test_completed_missing_post_goes_review_required():
+    presence = {"CMPPOST1": _pres(service="WF")}
+    entry = {"CMPPOST1": _entry(D1)}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={"CMPPOST1": _comp(D1)},
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        weight_by_bag={
+            "CMPPOST1": {
+                "pre_weight_lbs": 12.0,
+                "post_weight_lbs": None,
+                "post_weight_event_exists": False,
+                "weight_entry_count": 1,
+            }
+        },
+    )
+    assert "CMPPOST1" in out["review_required"]
+    assert REASON_WF_ZERO_OR_MISSING_POST_WEIGHT in out["review_reasons_by_bag"]["CMPPOST1"]
+    _assert_partition_invariants(out)
+
+
+def test_completed_no_exception_stays_completed():
+    presence = {"CMPOK1": _pres(service="WF")}
+    entry = {"CMPOK1": _entry(D1)}
+    raw = classify_veewash_workload(
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        completion_by_bag={"CMPOK1": _comp(D1)},
+    )
+    out = expand_review_required(
+        raw,
+        selected_date_et=D1,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        weight_by_bag={
+            "CMPOK1": {
+                "pre_weight_lbs": 12.0,
+                "post_weight_lbs": 11.0,
+                "post_weight_event_exists": True,
+                "post_weight_value": 11.0,
+                "weight_entry_count": 2,
+            }
+        },
+    )
+    assert "CMPOK1" in out["completed_on_date"]
+    assert "CMPOK1" not in out["review_required"]
+    assert "CMPOK1" not in out["pending_end_of_date"]
+    assert not (out["review_reasons_by_bag"].get("CMPOK1") or [])
+    _assert_partition_invariants(out)
