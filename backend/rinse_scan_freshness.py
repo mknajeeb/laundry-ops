@@ -256,6 +256,9 @@ def freshness_from_day_and_presence(
 
     Idle pending/completed bags that remain on the portal after their last
     facility scan are **not** treated as chronology-stale.
+
+    Historical selected dates are date-scoped: next-day live portal scrapes must
+    never produce portal-ahead / provisional-pending warnings for a prior day.
     """
     from backend.ta_helpers import table_exists
 
@@ -264,6 +267,67 @@ def freshness_from_day_and_presence(
     most_recent_scan = None
     portal_last_seen = None
     stale: list[str] = []
+
+    # Resolve "today" in ET without importing the heavy workload module cycle.
+    try:
+        from backend.rinse_veewash_workload import today_et
+
+        is_historical = selected_date_et < today_et()
+    except Exception:
+        is_historical = False
+
+    if is_historical:
+        # Frozen day: evaluate only this date's stored sync + same-day scan window.
+        if table_exists(cursor, "rinse_bag_scan_events"):
+            cursor.execute(
+                """
+                SELECT MAX(scanned_at_parsed) AS mx
+                FROM rinse_bag_scan_events
+                WHERE organization_id = %s
+                  AND scanned_at_parsed >= %s
+                  AND scanned_at_parsed < DATE_ADD(%s, INTERVAL 1 DAY)
+                """,
+                (org, selected_date_et, selected_date_et),
+            )
+            row = cursor.fetchone() or {}
+            most_recent_scan = row.get("mx") if isinstance(row, dict) else (row[0] if row else None)
+        same_day_portal = None
+        if table_exists(cursor, "rinse_cleaner_ticket_presence_runs"):
+            cursor.execute(
+                """
+                SELECT finished_at
+                FROM rinse_cleaner_ticket_presence_runs
+                WHERE organization_id = %s
+                  AND portal_status = 'at_vendor'
+                  AND status = 'success'
+                  AND finished_at IS NOT NULL
+                  AND finished_at >= %s
+                  AND finished_at < DATE_ADD(%s, INTERVAL 1 DAY)
+                ORDER BY finished_at DESC
+                LIMIT 1
+                """,
+                (org, selected_date_et, selected_date_et),
+            )
+            row = cursor.fetchone() or {}
+            same_day_portal = row.get("finished_at") if isinstance(row, dict) else (row[0] if row else None)
+        return build_scan_data_freshness(
+            selected_date_et=selected_date_et,
+            shift_last_sync_at=last_sync if isinstance(last_sync, datetime) else None,
+            most_recent_persisted_scan_at=most_recent_scan
+            if isinstance(most_recent_scan, datetime)
+            else None,
+            portal_last_seen_at=None,
+            last_scan_refresh_at=most_recent_scan
+            if isinstance(most_recent_scan, datetime)
+            else None,
+            last_portal_scrape_at=same_day_portal
+            if isinstance(same_day_portal, datetime)
+            else (last_sync if isinstance(last_sync, datetime) else None),
+            partial_portal_scrape=False,
+            partial_scan_scrape=False,
+            scan_import_lagging=False,
+            bags_with_stale_chronology=[],
+        )
 
     pipeline = _load_pipeline_timestamps(cursor, org)
 

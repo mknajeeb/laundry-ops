@@ -129,22 +129,30 @@ function MetricRow({
   membershipHelper = null,
   pendingTrusted = true,
   rowService = "all",
+  hdDashboardTotals = null,
 }) {
   if (!seg) return null;
   const review = seg.exceptions?.review_required ?? seg.exceptions?.total ?? 0;
   const isHd = String(title || "").toUpperCase().startsWith("HD");
   const total =
+    (isHd && hdDashboardTotals?.total_hd_orders != null
+      ? hdDashboardTotals.total_hd_orders
+      : null) ??
     seg.total_workload ??
     seg.active_workload ??
     Number(seg.completed || 0) + Number(seg.pending || 0) + Number(review || 0);
-  const totalLabel = isHd ? "Total HD Available" : "Total Workload";
-  const doneLabel = isHd ? "Production Recorded" : "Completed";
-  const basePending = isHd ? "Production Missing" : "Pending";
-  const pendingLabel = pendingTrusted
-    ? basePending
-    : isHd
-      ? "Production Missing — provisional"
+  const totalLabel = isHd ? "Total HD Orders" : "Total Workload";
+  const doneLabel = isHd ? "Completed" : "Completed";
+  const basePending = isHd ? "Review Required" : "Pending";
+  const pendingLabel = isHd
+    ? "Review Required"
+    : pendingTrusted
+      ? basePending
       : "Pending — provisional";
+  const pendingValue = isHd ? review : seg.pending;
+  const completedValue = isHd
+    ? hdDashboardTotals?.completed ?? seg.completed
+    : seg.completed;
   // Bind drawer service to the KPI row (WF/HD/TOTAL), not the page Service chip alone.
   const click = (metric, label) => () =>
     onMetricClick?.(metric, `${title} · ${label}`, { service: rowService, queue: metric });
@@ -166,8 +174,8 @@ function MetricRow({
           display: "grid",
           gridTemplateColumns: {
             xs: "repeat(2, 1fr)",
-            sm: "repeat(4, 1fr)",
-            md: "repeat(4, 1fr)",
+            sm: isHd ? "repeat(3, 1fr)" : "repeat(4, 1fr)",
+            md: isHd ? "repeat(5, 1fr)" : "repeat(4, 1fr)",
           },
           gap: 1,
         }}
@@ -179,28 +187,69 @@ function MetricRow({
           variant="wf"
           onClick={click("active_workload", totalLabel)}
         />
-        <ShiftCountCard label={doneLabel} value={seg.completed} size="kpi" onClick={click("completed", doneLabel)} />
+        {isHd ? (
+          <ShiftCountCard
+            label="Review Required"
+            value={pendingValue}
+            size="kpi"
+            warn={pendingValue > 0}
+            onClick={click("review_required", "Review Required")}
+          />
+        ) : (
+          <ShiftCountCard
+            label={pendingLabel}
+            value={pendingTrusted ? seg.pending : seg.pending}
+            sub={pendingTrusted ? undefined : "Pending count may be incomplete"}
+            size="kpi"
+            variant="pending"
+            warn={!pendingTrusted}
+            onClick={click("pending", pendingLabel)}
+          />
+        )}
         <ShiftCountCard
-          label={pendingLabel}
-          value={pendingTrusted ? seg.pending : seg.pending}
-          sub={pendingTrusted ? undefined : "Pending count may be incomplete"}
+          label={doneLabel}
+          value={completedValue}
           size="kpi"
-          variant="pending"
-          warn={!pendingTrusted}
-          onClick={click("pending", pendingLabel)}
+          onClick={click("completed", doneLabel)}
         />
-        <ShiftCountCard
-          label="Review Required"
-          value={review}
-          size="kpi"
-          warn={review > 0}
-          onClick={click("review_required", "Review Required")}
-        />
+        {isHd ? (
+          <>
+            <ShiftCountCard
+              label="Total Items"
+              value={hdDashboardTotals?.total_items ?? 0}
+              size="kpi"
+            />
+            <ShiftCountCard
+              label="HD Revenue"
+              value={
+                (hdDashboardTotals?.hd_revenue ?? hdDashboardTotals?.total_revenue) != null
+                  ? `$${Number(
+                      hdDashboardTotals?.hd_revenue ?? hdDashboardTotals?.total_revenue
+                    ).toLocaleString(undefined, {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}`
+                  : "$0.00"
+              }
+              size="kpi"
+            />
+          </>
+        ) : (
+          <ShiftCountCard
+            label="Review Required"
+            value={review}
+            size="kpi"
+            warn={review > 0}
+            onClick={click("review_required", "Review Required")}
+          />
+        )}
       </Box>
       <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
-        Total {total} = {doneLabel} {seg.completed} + {basePending} {seg.pending} + Review {review}
+        {isHd
+          ? `Total ${total} = Completed ${completedValue} + Review Required ${pendingValue} · Items/HD Revenue from completed reviews only`
+          : `Total ${total} = ${doneLabel} ${seg.completed} + ${basePending} ${seg.pending} + Review ${review}`}
         {membershipHelper ? ` · ${membershipHelper}` : ""}
-        {!pendingTrusted ? " · Pending provisional" : ""}
+        {!pendingTrusted && !isHd ? " · Pending provisional" : ""}
       </Typography>
     </Box>
   );
@@ -431,8 +480,103 @@ export default function VeeWashStep1Section({
               rowService="hd"
               onMetricClick={openMetric}
               pendingTrusted={pendingTrusted}
+              hdDashboardTotals={summary?.hd_dashboard_totals || null}
+              membershipHelper={
+                summary?.hd_policy?.no_carryover
+                  ? "Date-scoped · opening scrape membership · no HD carryover"
+                  : null
+              }
             />
           ) : null}
+
+          {(() => {
+            const svcKey = serviceFilter === "wf" || serviceFilter === "hd" ? serviceFilter : "all";
+            const specialty =
+              summary?.specialty_metrics?.[svcKey] || summary?.specialty_metrics?.all || null;
+            if (!specialty) return null;
+            const comforter = specialty.comforter_orders || {};
+            const bathMat = specialty.bath_mat_orders || {};
+            const rejected = specialty.rejected_orders || {};
+            const split = specialty.split_orders || {};
+            return (
+              <Box
+                sx={{
+                  mt: 1.25,
+                  pt: 1.25,
+                  borderTop: "1px solid",
+                  borderColor: "divider",
+                }}
+              >
+                <Typography
+                  variant="subtitle2"
+                  fontWeight={800}
+                  sx={{ mb: 0.75, letterSpacing: 0.4 }}
+                >
+                  Specialty
+                </Typography>
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: {
+                      xs: "repeat(1, 1fr)",
+                      sm: "repeat(2, 1fr)",
+                      md: "repeat(4, 1fr)",
+                    },
+                    gap: 1,
+                  }}
+                >
+                  <ShiftCountCard
+                    label="# of Comforters"
+                    value={comforter.count ?? 0}
+                    size="kpi"
+                    onClick={() =>
+                      openMetric("comforter_orders", "# of Comforters", {
+                        service: svcKey,
+                        queue: "comforter_orders",
+                      })
+                    }
+                  />
+                  <ShiftCountCard
+                    label="# of Bath Mats"
+                    value={bathMat.count ?? 0}
+                    size="kpi"
+                    onClick={() =>
+                      openMetric("bath_mat_orders", "# of Bath Mats", {
+                        service: svcKey,
+                        queue: "bath_mat_orders",
+                      })
+                    }
+                  />
+                  <ShiftCountCard
+                    label="Rejected Orders"
+                    value={rejected.count ?? 0}
+                    size="kpi"
+                    warn={(rejected.count ?? 0) > 0}
+                    onClick={() =>
+                      openMetric("rejected_orders", "Rejected Orders", {
+                        service: svcKey,
+                        queue: "rejected_orders",
+                      })
+                    }
+                  />
+                  <ShiftCountCard
+                    label="Split Orders"
+                    value={split.count ?? 0}
+                    size="kpi"
+                    onClick={() =>
+                      openMetric("split_orders", "Split Orders", {
+                        service: svcKey,
+                        queue: "split_orders",
+                      })
+                    }
+                  />
+                </Box>
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
+                  Distinct orders in current service filter · card count matches drawer list
+                </Typography>
+              </Box>
+            );
+          })()}
 
           <Box
             sx={{

@@ -489,6 +489,47 @@ export default function Step1MetricDrawer({
                         ? " (recorded 0)"
                         : ""}
                     </Typography>
+                    {bag.specialty_quantity != null ? (
+                      <Typography variant="caption" display="block" sx={{ mt: 0.25 }}>
+                        {bag.specialty_item_class === "bath_mat"
+                          ? "Bath-mat"
+                          : bag.specialty_item_class === "comforter"
+                            ? "Comforter"
+                            : "Specialty"}{" "}
+                        quantity: {bag.specialty_quantity}
+                      </Typography>
+                    ) : null}
+                    {bag.rejection_status || bag.rejection_reason ? (
+                      <Typography variant="caption" display="block" sx={{ mt: 0.25 }}>
+                        Rejection: {bag.rejection_status || "REJECTED"}
+                        {bag.rejection_reason ? ` · ${bag.rejection_reason}` : ""}
+                        {bag.rejection_at ? ` · ${fmtTs(bag.rejection_at)}` : ""}
+                      </Typography>
+                    ) : null}
+                    {bag.split_order || bag.split_status ? (
+                      <Typography variant="caption" display="block" sx={{ mt: 0.25 }}>
+                        Split: {bag.split_status || (bag.split_confirmed ? "confirmed" : "yes")}
+                        {bag.washer_load_count != null ? ` · washer loads ${bag.washer_load_count}` : ""}
+                        {Array.isArray(bag.washer_racks) && bag.washer_racks.length
+                          ? ` · ${bag.washer_racks.join(", ")}`
+                          : ""}
+                      </Typography>
+                    ) : null}
+                    {String(bag.service_type || "").toUpperCase() === "HD" && bag.hd_review ? (
+                      <Typography variant="caption" display="block" sx={{ mt: 0.25 }}>
+                        HD review: {bag.hd_review.review_status || "REVIEW_REQUIRED"}
+                        {bag.hd_review.item_count != null ? ` · Items ${bag.hd_review.item_count}` : ""}
+                        {bag.hd_review.total_revenue != null
+                          ? ` · Revenue $${Number(bag.hd_review.total_revenue).toFixed(2)}`
+                          : ""}
+                        {bag.hd_review.washed_by_name_snapshot
+                          ? ` · Washed ${bag.hd_review.washed_by_name_snapshot}`
+                          : ""}
+                        {bag.hd_review.folded_by_name_snapshot
+                          ? ` · Folded ${bag.hd_review.folded_by_name_snapshot}`
+                          : ""}
+                      </Typography>
+                    ) : null}
                     {(bag.reason_codes || []).length > 0 ? (
                       <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
                         {(bag.reason_codes || []).map((c) => (
@@ -516,6 +557,23 @@ export default function Step1MetricDrawer({
                     {fmtTs(bag.completion_at)} by {bag.completed_by || "—"} · Portal:{" "}
                     {bag.portal_status || "—"} · Last seen: {fmtTs(bag.last_seen_at)}
                   </Typography>
+
+                  {String(bag.service_type || "").toUpperCase() === "HD" ? (
+                    <>
+                      <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 0.5, mb: 0.25 }}>
+                        HD review
+                      </Typography>
+                      <Typography variant="caption" display="block" sx={{ mb: 1 }}>
+                        Review Status {bag.hd_review?.review_status || "REVIEW_REQUIRED"} · Items{" "}
+                        {bag.hd_review?.item_count ?? "—"} · Revenue{" "}
+                        {bag.hd_review?.total_revenue != null
+                          ? `$${Number(bag.hd_review.total_revenue).toFixed(2)}`
+                          : "—"}{" "}
+                        · Washed By {bag.hd_review?.washed_by_name_snapshot || "—"} · Folded By{" "}
+                        {bag.hd_review?.folded_by_name_snapshot || "—"}
+                      </Typography>
+                    </>
+                  ) : null}
 
                   <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 0.5, mb: 0.25 }}>
                     System result

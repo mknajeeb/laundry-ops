@@ -22,7 +22,7 @@ import {
   Typography,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import { postVeewashStep1Correction } from "../../api";
+import { postVeewashStep1Correction, getDailyOperationsHdProductionDetail } from "../../api";
 import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { PayrollDateTimeField } from "../PayrollDateTimeField";
 import {
@@ -33,6 +33,7 @@ import {
   hasCanonicalCompletion,
   validateEditBagDraft,
 } from "./editBagHelpers";
+import HdReviewFields, { validateHdReviewDraft } from "./HdReviewFields";
 
 function money(v) {
   const n = Number(v);
@@ -58,6 +59,11 @@ const FINAL_ACTIONS = [
   { id: "mark_completed", label: "Save & Mark Completed", variant: "contained", color: "success" },
   { id: "return_pending", label: "Save & Return to Pending", variant: "outlined", color: "primary" },
   { id: "exclude", label: "Save & Exclude", variant: "outlined", color: "error" },
+];
+
+const HD_FINAL_ACTIONS = [
+  { id: null, label: "Save Review", variant: "contained", color: "primary" },
+  { id: "mark_completed", label: "Save & Mark Completed", variant: "contained", color: "success" },
 ];
 
 /**
@@ -100,7 +106,15 @@ export default function EditBagPanel({
     reason: "",
     reason_code: "",
     reason_note: "",
+    item_count: bag?.hd_review?.item_count ?? bag?.item_count ?? "",
+    total_revenue: bag?.hd_review?.total_revenue ?? bag?.total_revenue ?? "",
+    washed_by_user_id: bag?.hd_review?.washed_by_user_id ?? "",
+    folded_by_user_id: bag?.hd_review?.folded_by_user_id ?? "",
+    washed_by_name_snapshot: bag?.hd_review?.washed_by_name_snapshot || "",
+    folded_by_name_snapshot: bag?.hd_review?.folded_by_name_snapshot || "",
+    hd_version: bag?.hd_review?.version ?? 0,
   }));
+  const [hdEmployees, setHdEmployees] = useState([]);
   const [qty, setQty] = useState(initialQty);
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState("");
@@ -138,6 +152,34 @@ export default function EditBagPanel({
   }, [bag?._detailsLoaded, bag?.manager_edit_version, bag?.updated_at, bag?.day_bag_updated_at]);
 
   const isHd = String(draft.service_type || "").toUpperCase() === "HD";
+
+  useEffect(() => {
+    if (!isHd || !bag?.bag_id || !selectedDateEt) return undefined;
+    let cancelled = false;
+    getDailyOperationsHdProductionDetail(selectedDateEt, bag.bag_id)
+      .then((res) => {
+        if (cancelled) return;
+        const detail = res?.data || {};
+        const prod = detail.production || {};
+        const opts = (detail.employee_options || []).filter((o) => !o.is_external);
+        setHdEmployees(opts);
+        setDraft((d) => ({
+          ...d,
+          item_count: prod.total_items != null ? String(prod.total_items) : d.item_count,
+          total_revenue: prod.revenue != null ? String(prod.revenue) : d.total_revenue,
+          washed_by_user_id: prod.washed_by_user_id ?? d.washed_by_user_id,
+          folded_by_user_id: prod.folded_by_user_id ?? d.folded_by_user_id,
+          washed_by_name_snapshot: prod.washed_by_name_snapshot || d.washed_by_name_snapshot,
+          folded_by_name_snapshot: prod.folded_by_name_snapshot || d.folded_by_name_snapshot,
+          hd_version: prod.version ?? d.hd_version ?? 0,
+        }));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isHd, bag?.bag_id, selectedDateEt]);
+
   const reviewStatus = bag?.dashboard_status || bag?.outcome || "—";
   const customer =
     bag?.customer_name || bag?.customer || bag?.portal_customer_name || bag?.account_name || "—";
@@ -314,6 +356,63 @@ export default function EditBagPanel({
   };
 
   const persist = async (outcomeAction) => {
+    if (isHd) {
+      const requireComplete = outcomeAction === "mark_completed";
+      const hdErr = validateHdReviewDraft(draft, { requireComplete });
+      if (hdErr) {
+        setLocalError(hdErr);
+        setPendingOutcome(outcomeAction);
+        return;
+      }
+      setSaving(true);
+      setLocalError("");
+      try {
+        const res = await postVeewashStep1Correction({
+          action: requireComplete ? "mark_hd_completed" : "save_hd_review",
+          bag_id: bag.bag_id,
+          selected_date_et: selectedDateEt,
+          version: draft.hd_version ?? 0,
+          item_count: draft.item_count === "" ? null : Number(draft.item_count),
+          total_revenue: draft.total_revenue === "" ? null : Number(draft.total_revenue),
+          washed_by_user_id: draft.washed_by_user_id || null,
+          folded_by_user_id: draft.folded_by_user_id || null,
+          reason: String(draft.reason_note || draft.reason || "step1_hd_review").trim(),
+        });
+        if (!res?.data?.ok) {
+          const msg =
+            (res?.data?.errors || []).join(", ") || res?.data?.error || "HD review save failed";
+          setLocalError(msg);
+          onError?.(msg);
+          return;
+        }
+        const review = res.data.review || {};
+        setDraft((d) => ({
+          ...d,
+          hd_version: review.version ?? d.hd_version,
+          washed_by_user_id: review.washed_by_user_id ?? d.washed_by_user_id,
+          folded_by_user_id: review.folded_by_user_id ?? d.folded_by_user_id,
+          washed_by_name_snapshot: review.washed_by_name_snapshot || d.washed_by_name_snapshot,
+          folded_by_name_snapshot: review.folded_by_name_snapshot || d.folded_by_name_snapshot,
+          item_count: review.item_count != null ? String(review.item_count) : d.item_count,
+          total_revenue: review.total_revenue != null ? String(review.total_revenue) : d.total_revenue,
+        }));
+        setUndoToast({
+          hdUndo: true,
+          message: requireComplete
+            ? "HD order marked completed. Undo restores prior review."
+            : "HD review saved. Undo restores prior values.",
+        });
+        onSaved?.(res.data);
+      } catch (e) {
+        const msg = e?.response?.data?.error || e?.message || "HD review save failed";
+        setLocalError(msg);
+        onError?.(msg);
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
     const err = validateLocal(outcomeAction);
     if (err) {
       setLocalError(err);
@@ -401,6 +500,10 @@ export default function EditBagPanel({
   const requestFinalAction = (outcomeAction) => {
     setLocalError("");
     setPendingOutcome(outcomeAction);
+    if (isHd) {
+      persist(outcomeAction);
+      return;
+    }
     const p = classifyEditReasonRequirements({
       draft,
       baselineBag,
@@ -434,15 +537,24 @@ export default function EditBagPanel({
   };
 
   const handleUndo = async () => {
-    if (!undoToast?.editId) return;
+    if (!undoToast?.editId && !undoToast?.hdUndo) return;
     setSaving(true);
     try {
-      const res = await postVeewashStep1Correction({
-        action: "undo_bag_edit",
-        bag_id: bag.bag_id,
-        selected_date_et: selectedDateEt,
-        edit_id: undoToast.editId,
-      });
+      const res = await postVeewashStep1Correction(
+        undoToast?.hdUndo
+          ? {
+              action: "undo_hd_review",
+              bag_id: bag.bag_id,
+              selected_date_et: selectedDateEt,
+              reason: "step1_hd_review_undo",
+            }
+          : {
+              action: "undo_bag_edit",
+              bag_id: bag.bag_id,
+              selected_date_et: selectedDateEt,
+              edit_id: undoToast.editId,
+            }
+      );
       if (!res?.data?.ok) {
         const msg = res?.data?.error || "Undo failed";
         setLocalError(msg);
@@ -607,6 +719,15 @@ export default function EditBagPanel({
               ) : null}
             </Box>
 
+            {isHd ? (
+              <HdReviewFields
+                draft={draft}
+                employeeOptions={hdEmployees}
+                disabled={saving}
+                onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))}
+              />
+            ) : null}
+
             {!isHd ? (
               <Box>
                 <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
@@ -712,31 +833,33 @@ export default function EditBagPanel({
               </Typography>
             )}
 
-            <Box>
-              <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
-                Completion details
-              </Typography>
-              {canonicalOk ? (
-                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>
-                  Canonical completion evidence is present. Confirming completion does not require a
-                  reason unless you change employee or time.
+            {!isHd ? (
+              <Box>
+                <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
+                  Completion details
                 </Typography>
-              ) : null}
-              <FoldingUserSelect
-                label="Completion employee"
-                value={draft.completed_by || ""}
-                onChange={(name) => setDraft((d) => ({ ...d, completed_by: name }))}
-                allowEmpty
-                sx={{ width: "100%", minWidth: 0, mb: 1 }}
-              />
-              <PayrollDateTimeField
-                label="Completion date & time (ET)"
-                value={draft.completion_at || ""}
-                onChange={(v) => setDraft((d) => ({ ...d, completion_at: v }))}
-              />
-            </Box>
+                {canonicalOk ? (
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>
+                    Canonical completion evidence is present. Confirming completion does not require a
+                    reason unless you change employee or time.
+                  </Typography>
+                ) : null}
+                <FoldingUserSelect
+                  label="Completion employee"
+                  value={draft.completed_by || ""}
+                  onChange={(name) => setDraft((d) => ({ ...d, completed_by: name }))}
+                  allowEmpty
+                  sx={{ width: "100%", minWidth: 0, mb: 1 }}
+                />
+                <PayrollDateTimeField
+                  label="Completion date & time (ET)"
+                  value={draft.completion_at || ""}
+                  onChange={(v) => setDraft((d) => ({ ...d, completion_at: v }))}
+                />
+              </Box>
+            ) : null}
 
-            {reasonNeededForPending || policy.reasonRequired ? (
+            {!isHd && (reasonNeededForPending || policy.reasonRequired) ? (
               <Box
                 data-testid="review-reason-fields"
                 sx={{ p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: 1 }}
@@ -810,12 +933,12 @@ export default function EditBagPanel({
             bgcolor: "background.paper",
           }}
         >
-          {FINAL_ACTIONS.map((a) => (
+          {(isHd ? HD_FINAL_ACTIONS : FINAL_ACTIONS).map((a) => (
             <Button
               key={String(a.id)}
               variant={a.variant}
               color={a.color}
-              disabled={saving || !lockReady}
+              disabled={saving || (!isHd && !lockReady)}
               onClick={() => requestFinalAction(a.id)}
               data-testid={`review-action-${a.id || "save_review"}`}
             >
