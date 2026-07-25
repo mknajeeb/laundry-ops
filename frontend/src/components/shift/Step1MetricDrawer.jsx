@@ -302,10 +302,21 @@ export default function Step1MetricDrawer({
 
   const refreshBagAfterEdit = async (bagId, { closeEditor = false } = {}) => {
     bagDetailCache.delete(detailCacheKey(selectedDateEt, bagId));
-    setExpanded(bagId);
     if (closeEditor) setEditingBag(null);
-    // Force refetch so persisted bulk_workitems replace any stale cache.
-    await loadBagDetail(bagId, { force: true });
+    // Drop completed bags from the open Review list immediately.
+    if (resolvedMetric === "review_required" && bagId) {
+      setBags((prev) => (prev || []).filter((b) => b.bag_id !== bagId));
+      setTotal((t) => Math.max(0, Number(t || 0) - 1));
+      setExpanded(null);
+    } else {
+      setExpanded(bagId);
+    }
+    // Reload drawer membership + parent Step-1 KPIs so counts match without manual refresh.
+    try {
+      await load(1, undefined, { preserveExpanded: true, skipCacheMerge: true });
+    } catch (_) {
+      /* non-blocking */
+    }
     onCorrected?.();
   };
 

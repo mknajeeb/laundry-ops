@@ -618,6 +618,70 @@ def test_manager_edit_day_bag_patch_mark_completed_clears_review():
     assert BAG not in (headline.get("review_by_reason") or {}).get("WF_BULK_WORKITEM_REVIEW", [])
 
 
+def test_manager_edit_patch_strips_review_even_if_day_bag_already_completed():
+    """Stale WF segment membership must clear when confirming an already-completed day_bag."""
+    from backend.rinse_veewash_shift_day import apply_manager_edit_day_bag_patch
+
+    cursor = MagicMock()
+    day_row = {
+        "bag_id": BAG,
+        "effective_status": "completed",
+        "review_reason_codes": [],
+        "bag_snapshot": {"bag_id": BAG, "outcome": "completed"},
+        "canonical_completion_status": "completed",
+    }
+    day_rec = {
+        "headline": {
+            "segments": {
+                "all": {
+                    "completed": 1,
+                    "exceptions": {"review_required": 0, "total": 0},
+                    "bag_ids": {"completed": [BAG], "review_required": [], "new_today": [BAG]},
+                },
+                "wf": {
+                    "completed": 0,
+                    "exceptions": {"review_required": 1, "total": 1},
+                    "bag_ids": {"completed": [], "review_required": [BAG], "new_today": [BAG]},
+                },
+            },
+            "exceptions": {"review_required": 0},
+            "review_by_reason": {"WF_BULK_WORKITEM_REVIEW": [BAG]},
+        },
+        "workload_meta": {},
+    }
+    with patch("backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables"), patch(
+        "backend.rinse_veewash_shift_day.load_day_bags_by_ids", return_value=[day_row]
+    ), patch(
+        "backend.rinse_veewash_shift_day.get_day_record", return_value=day_rec
+    ), patch(
+        "backend.rinse_step1_productivity_fast.project_productivity_fields_for_day_bag",
+        return_value={},
+    ):
+        out = apply_manager_edit_day_bag_patch(
+            cursor,
+            ORG,
+            DAY,
+            BAG,
+            previous_effective_status="completed",
+            previous_reason_codes=[],
+            outcome_action="mark_completed",
+            bulk_cleared=True,
+            completed_by="Evelin (VeeWash)",
+        )
+    assert out["ok"] is True
+    headline_update = next(
+        c.args[1]
+        for c in cursor.execute.call_args_list
+        if c.args and "UPDATE rinse_shift_monitor_days" in str(c.args[0]) and "headline_json" in str(c.args[0])
+    )
+    import json
+
+    headline = json.loads(headline_update[1])
+    assert BAG not in headline["segments"]["wf"]["bag_ids"]["review_required"]
+    assert headline["segments"]["wf"]["exceptions"]["review_required"] == 0
+    assert BAG in headline["segments"]["wf"]["bag_ids"]["completed"]
+
+
 def test_persist_day_snapshot_never_bumps_day_bag_updated_at():
     from backend.rinse_veewash_shift_day import persist_day_snapshot
 

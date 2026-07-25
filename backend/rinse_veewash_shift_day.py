@@ -640,6 +640,26 @@ def _move_bag_in_segment_bucket(
     return out
 
 
+def _strip_bag_from_review_segments(
+    segments: Mapping[str, Any],
+    bid: str,
+    *,
+    new_bucket: str | None,
+) -> dict[str, Any]:
+    """Force-remove bag from every segment's review_required list, then place in new_bucket."""
+    out: dict[str, Any] = {}
+    for name, seg in dict(segments or {}).items():
+        moved = _move_bag_in_segment_bucket(
+            seg, bid, old_bucket="review_required", new_bucket=None
+        )
+        if new_bucket and new_bucket not in (None, "excluded", "review_required"):
+            moved = _move_bag_in_segment_bucket(
+                moved, bid, old_bucket=None, new_bucket=new_bucket
+            )
+        out[name] = moved
+    return out
+
+
 def apply_manager_edit_day_bag_patch(
     cursor,
     organization_id: int,
@@ -799,19 +819,27 @@ def apply_manager_edit_day_bag_patch(
         segments = dict(headline.get("segments") or {})
         old_bucket = _headline_bucket_for_status(prev_status)
         new_bucket = _headline_bucket_for_status(new_status)
-        for seg_name, seg in list(segments.items()):
-            segments[seg_name] = _move_bag_in_segment_bucket(
-                seg,
-                bid,
-                old_bucket=old_bucket,
-                new_bucket=new_bucket,
+        # Always strip from review_required when leaving review — day_bag may already
+        # say "completed" while WF/rush segments still list the bag (stale KPI).
+        if new_bucket != "review_required":
+            segments = _strip_bag_from_review_segments(
+                segments, bid, new_bucket=new_bucket
             )
+        elif old_bucket and old_bucket != new_bucket:
+            for seg_name, seg in list(segments.items()):
+                segments[seg_name] = _move_bag_in_segment_bucket(
+                    seg,
+                    bid,
+                    old_bucket=old_bucket,
+                    new_bucket=new_bucket,
+                )
         all_seg = dict(segments.get("all") or {})
         headline["segments"] = segments
         headline["completed"] = all_seg.get("completed", headline.get("completed"))
         headline["pending"] = all_seg.get("pending", headline.get("pending"))
         headline["exceptions"] = dict(all_seg.get("exceptions") or headline.get("exceptions") or {})
         review_n = int((headline.get("exceptions") or {}).get("review_required") or 0)
+        # Prefer WF-accurate total from all segment after strip.
         reasons_by_bag = dict(
             (day.get("workload_meta") or {}).get("review_reasons_by_bag")
             or headline.get("review_reasons_by_bag")
@@ -824,7 +852,7 @@ def apply_manager_edit_day_bag_patch(
         headline["review_reasons_by_bag"] = reasons_by_bag
         # Drop bag from review_by_reason indexes when leaving review.
         review_by_reason = dict(headline.get("review_by_reason") or {})
-        if old_bucket == "review_required" and new_bucket != "review_required":
+        if new_bucket != "review_required":
             cleaned = {}
             for code, ids in review_by_reason.items():
                 kept = [x for x in list(ids or []) if normalize_bag_id(x) != bid]
