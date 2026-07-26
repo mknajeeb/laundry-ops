@@ -617,19 +617,64 @@ def build_hd_dashboard_totals(
     }
 
 
+def load_hd_workitems_added_bag_ids(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str] | None = None,
+) -> set[str]:
+    """Bag ids among ``bag_ids`` with at least one exact workitems-added purpose scan.
+
+    Source field: ``rinse_bag_scan_events.purpose``.
+    """
+    from backend.rinse_scan_purpose import is_workitems_added_purpose
+    from backend.ta_helpers import table_exists
+
+    ids = sorted({normalize_bag_id(b) for b in (bag_ids or []) if normalize_bag_id(b)})
+    if not ids or not table_exists(cursor, "rinse_bag_scan_events"):
+        return set()
+    found: set[str] = set()
+    chunk = 200
+    org = int(organization_id)
+    for i in range(0, len(ids), chunk):
+        part = ids[i : i + chunk]
+        ph = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT bag_id, purpose
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND bag_id IN ({ph})
+              AND purpose IS NOT NULL
+            """,
+            (org, *part),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            bid = normalize_bag_id(row.get("bag_id"))
+            if bid and is_workitems_added_purpose(row.get("purpose")):
+                found.add(bid)
+    return found
+
+
 def apply_hd_review_status_to_summary(
     summary: Mapping[str, Any],
     *,
     production_by_bag: Mapping[str, Mapping[str, Any]],
+    workitems_added_bag_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """
-    Force HD workload into REVIEW_REQUIRED until production COMPLETE.
+    Place HD members into COMPLETED / REVIEW_REQUIRED / pending.
+
+    Review Required only when purpose workitems-added is present (and not yet
+    manager-COMPLETED). Other HD members stay pending members — not review.
 
     Does not mutate WF / wf_rush / wf_non_rush segments.
     """
     out = deepcopy(dict(summary or {}))
     segments = dict(out.get("segments") or {})
     hd_keys = ("hd", "hd_rush", "hd_non_rush")
+    wia = {normalize_bag_id(b) for b in (workitems_added_bag_ids or set()) if normalize_bag_id(b)}
 
     def _rewrite(seg: Mapping[str, Any]) -> dict[str, Any]:
         s = dict(seg or {})
@@ -642,14 +687,17 @@ def apply_hd_review_status_to_summary(
                     universe.add(bid)
         completed: list[str] = []
         review: list[str] = []
+        pending: list[str] = []
         for bid in sorted(universe):
             fact = production_by_bag.get(bid) or {}
             if is_authoritative_hd_complete(fact):
                 completed.append(bid)
-            else:
+            elif bid in wia:
                 review.append(bid)
+            else:
+                pending.append(bid)
         bags["completed"] = completed
-        bags["pending"] = []
+        bags["pending"] = pending
         bags["review_required"] = review
         bags["disappeared_without_completion"] = list(review)
         # Keep new_today as membership; clear carryover (caller may already have).
@@ -659,7 +707,7 @@ def apply_hd_review_status_to_summary(
         s["new_today"] = len(bags["new_today"])
         s["carryover"] = 0
         s["completed"] = len(completed)
-        s["pending"] = 0
+        s["pending"] = len(pending)
         s["active_workload"] = len(universe)
         s["total_workload"] = len(universe)
         s["exceptions"] = {
@@ -675,10 +723,11 @@ def apply_hd_review_status_to_summary(
             segments[key] = _rewrite(segments[key])
 
     # Rebuild combined all/rush/non_rush HD portions carefully: only adjust HD bags
-    # inside combined segments by moving HD bags between completed/review.
+    # inside combined segments by moving HD bags between completed/review/pending.
     hd_universe = set((segments.get("hd") or {}).get("bag_ids", {}).get("new_today") or [])
     hd_completed = set((segments.get("hd") or {}).get("bag_ids", {}).get("completed") or [])
     hd_review = set((segments.get("hd") or {}).get("bag_ids", {}).get("review_required") or [])
+    hd_pending = set((segments.get("hd") or {}).get("bag_ids", {}).get("pending") or [])
 
     for key in ("all", "rush", "non_rush"):
         if key not in segments:
@@ -700,11 +749,11 @@ def apply_hd_review_status_to_summary(
             {normalize_bag_id(b) for b in (bags.get("review_required") or []) if normalize_bag_id(b)}
             | hd_review
         )
+        bags["pending"] = sorted(
+            {normalize_bag_id(b) for b in (bags.get("pending") or []) if normalize_bag_id(b)}
+            | hd_pending
+        )
         bags["disappeared_without_completion"] = list(bags["review_required"])
-        # Strip HD from pending — HD uses review until complete.
-        bags["pending"] = [
-            b for b in (bags.get("pending") or []) if normalize_bag_id(b) not in hd_universe
-        ]
         seg["bag_ids"] = bags
         seg["completed"] = len(bags["completed"])
         seg["pending"] = len(bags["pending"])
@@ -717,7 +766,8 @@ def apply_hd_review_status_to_summary(
 
     out["segments"] = segments
     out["hd_review_policy"] = {
-        "every_hd_order_starts_review_required": True,
+        "every_hd_order_starts_review_required": False,
+        "review_required_requires_purpose": "workitems-added",
         "completed_requires_manager_fields": [
             "item_count",
             "total_revenue",

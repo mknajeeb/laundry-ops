@@ -21,6 +21,11 @@ def is_weight_entry_purpose(raw: str | None) -> bool:
     return normalize_scan_purpose(raw) == "weight-entry"
 
 
+def is_workitems_added_purpose(raw: str | None) -> bool:
+    """Exact portal purpose workitems-added (casing/spacing/_ normalized; not bulk)."""
+    return normalize_scan_purpose(raw).replace("_", "-") == "workitems-added"
+
+
 def is_split_load_purpose(raw: str | None) -> bool:
     return normalize_scan_purpose(raw) == "split-load"
 

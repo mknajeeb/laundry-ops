@@ -460,7 +460,23 @@ def _operational_membership_ids(wl: Mapping[str, Any]) -> set[str]:
 
 
 def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -> list[dict[str, Any]]:
-    review_ids = set(wl.get("review_required") or summary.get("segments", {}).get("all", {}).get("bag_ids", {}).get("review_required") or [])
+    # Prefer finalized summary review lists (HD WIA-only Review Required) over raw wl.
+    summary_review = (
+        ((summary.get("segments") or {}).get("all") or {}).get("bag_ids") or {}
+    ).get("review_required")
+    review_ids = set(
+        summary_review if summary_review is not None else (wl.get("review_required") or [])
+    )
+    hd_completed = {
+        normalize_bag_id(b)
+        for b in (
+            (((summary.get("segments") or {}).get("hd") or {}).get("bag_ids") or {}).get(
+                "completed"
+            )
+            or []
+        )
+        if normalize_bag_id(b)
+    }
     reasons = wl.get("review_reasons_by_bag") or summary.get("review_reasons_by_bag") or {}
     # Snapshot shells historically only populated review_required list keys. Treat every
     # row on a from_snapshot shell as day membership so a re-persist cannot DELETE
@@ -489,6 +505,15 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
         if entry_class == "carryover":
             entry_class = "new_today"
         eff = _effective_status_for_row(row, review_ids)
+        if bid in hd_completed:
+            eff = OUTCOME_COMPLETED
+        elif (
+            str(row.get("service_type") or "").strip().upper() == "HD"
+            and bid not in review_ids
+            and eff != OUTCOME_COMPLETED
+        ):
+            # Non-WIA HD members stay pending members (not auto Review Required).
+            eff = OUTCOME_PENDING
         # Only persist bags that are part of the day's operational set.
         # Snapshot rows are already the day membership — do not drop by entry_class.
         if (
@@ -1434,6 +1459,9 @@ CLOSE_NOT_READY_ERROR = "shift_not_ready_to_close"
 CLOSE_NOT_READY_MESSAGE = (
     "Complete or review all admitted orders before closing the shift."
 )
+HD_CLOSE_REVIEW_REQUIRED_MESSAGE = (
+    "HD batch cannot be closed while orders require review."
+)
 
 
 def _segment_count(seg: Mapping[str, Any] | None, key: str) -> int:
@@ -1509,6 +1537,7 @@ def compute_close_blocking_counts(
     wf_pending = 0
     wf_review_required = 0
     hd_review_required = 0
+    hd_pending_members = 0
     other_unresolved = 0
     hd_member_ids: set[str] = set()
 
@@ -1531,8 +1560,9 @@ def compute_close_blocking_counts(
                 if svc == "WF":
                     wf_pending += 1
                 elif svc == "HD":
-                    # HD pending is treated as unresolved review work.
-                    hd_review_required += 1
+                    # HD members without workitems-added stay pending members;
+                    # they do not block close (only Review Required does).
+                    hd_pending_members += 1
                 else:
                     other_unresolved += 1
                 continue
@@ -1556,7 +1586,9 @@ def compute_close_blocking_counts(
         )
         wf_pending = _segment_count(wf, "pending")
         wf_review_required = _segment_count(wf, "review_required")
-        hd_review_required = _segment_count(hd, "review_required") + _segment_count(hd, "pending")
+        # HD pending members are not Review Required and do not block close.
+        hd_review_required = _segment_count(hd, "review_required")
+        hd_pending_members = _segment_count(hd, "pending")
         # Bags listed under all.review but not attributed to WF/HD.
         all_review = _segment_count(all_seg, "review_required") or int(
             (summary.get("exceptions") or {}).get("review_required") or 0
@@ -1573,6 +1605,10 @@ def compute_close_blocking_counts(
             if nb:
                 hd_member_ids.add(nb)
         for bid in (hd.get("bag_ids") or {}).get("completed") or []:
+            nb = normalize_bag_id(bid)
+            if nb:
+                hd_member_ids.add(nb)
+        for bid in (hd.get("bag_ids") or {}).get("pending") or []:
             nb = normalize_bag_id(bid)
             if nb:
                 hd_member_ids.add(nb)
@@ -1599,6 +1635,7 @@ def compute_close_blocking_counts(
         + pending_total
         + review_total
         + other_unresolved
+        + hd_pending_members
     )
     headline_active = int(
         all_seg.get("active_workload") or summary.get("active_workload") or 0
@@ -1614,13 +1651,16 @@ def compute_close_blocking_counts(
         "wf_review_required": int(wf_review_required),
         "hd_review_required": int(hd_review_required),
         "hd_partially_recorded": int(hd_partially_recorded),
+        "hd_pending_members": int(hd_pending_members),
         "other_unresolved": int(other_unresolved),
     }
+    # HD pending members (no workitems-added) may remain when closing; they are
+    # not Review Required and must not fail the close identity check.
     identity_ok = (
         pending_total == 0
         and review_total == 0
         and other_unresolved == 0
-        and accounted == completed + approved_excluded
+        and accounted == completed + approved_excluded + hd_pending_members
     )
     return {
         "blocking_counts": blocking_counts,
@@ -1712,12 +1752,18 @@ def validate_close(
         counts["other_unresolved"] = max(counts["other_unresolved"], 1)
 
     ok = not blocking
+    if ok:
+        message = None
+    elif counts["hd_review_required"] > 0 or counts["hd_partially_recorded"] > 0:
+        message = HD_CLOSE_REVIEW_REQUIRED_MESSAGE
+    else:
+        message = CLOSE_NOT_READY_MESSAGE
     return {
         "ok": ok,
         "blocking": blocking,
         "blocking_counts": counts,
         "error": None if ok else CLOSE_NOT_READY_ERROR,
-        "message": None if ok else CLOSE_NOT_READY_MESSAGE,
+        "message": message,
         "checklist": checklist,
         "review_required_count": review_n,
         "bulk_workitem_review_count": bulk_n,
@@ -1738,7 +1784,7 @@ def validate_close(
                 "new_today": hd.get("new_today"),
                 "carryover": hd.get("carryover"),
                 "completed": hd.get("completed"),
-                "pending": 0,
+                "pending": counts.get("hd_pending_members") or 0,
                 "review_required": counts["hd_review_required"],
                 "partially_recorded": counts["hd_partially_recorded"],
             },
@@ -1835,10 +1881,11 @@ def close_shift_day(
     )
     if not validation["ok"]:
         # Rejected close must not mutate status, closed_*, audit, or snapshots.
+        # Rechecked transactionally from persisted day bags (not stale UI counts).
         return {
             "ok": False,
             "error": CLOSE_NOT_READY_ERROR,
-            "message": CLOSE_NOT_READY_MESSAGE,
+            "message": validation.get("message") or CLOSE_NOT_READY_MESSAGE,
             "blocking_counts": validation.get("blocking_counts") or {},
             "validation": validation,
             "day": day,

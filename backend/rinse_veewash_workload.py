@@ -1059,18 +1059,9 @@ def build_veewash_daily_workload_from_membership(
     membership = build_append_only_membership(
         cursor, organization_id, selected_date_et
     )
-    # HD-only: Estimated Delivery Date must equal the selected ET day.
-    # WF scrape membership is unchanged; future-EDD HD (e.g. Nicole Jul 28)
-    # is dropped and same-day EDD HD excluded only as prior-day carry-in
-    # (e.g. Victoria) is re-admitted from active presence.
-    try:
-        from backend.rinse_hd_edd_membership import apply_hd_edd_day_membership_gate
-
-        membership = apply_hd_edd_day_membership_gate(
-            cursor, organization_id, selected_date_et, membership
-        )
-    except Exception:
-        pass
+    # HD membership follows append-only same-day scrape evidence (not EDD).
+    # EDD gate intentionally bypassed — future-EDD HD that appears today stays.
+    # Prior-completed HD exclusion runs in finalize_hd_step1_summary.
     member_ids = membership_bag_ids(membership)
     member_set = set(member_ids)
 

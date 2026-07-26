@@ -58,7 +58,11 @@ def test_partial_hd_review_remains_review_required():
             "washed_by_user_id": 1,
         },
     }
-    out = apply_hd_review_status_to_summary(summary, production_by_bag=prod)
+    out = apply_hd_review_status_to_summary(
+        summary,
+        production_by_bag=prod,
+        workitems_added_bag_ids={"HDNEW1", "HDPART1"},
+    )
     assert out["segments"]["wf"] == before_wf
     hd = out["segments"]["hd"]
     assert set(hd["bag_ids"]["review_required"]) == {"HDNEW1", "HDPART1"}
@@ -722,7 +726,11 @@ def test_hd_partition_incomplete_complete_stays_review_required():
             # folded_by missing
         },
     }
-    out = apply_hd_review_status_to_summary(summary, production_by_bag=prod)
+    out = apply_hd_review_status_to_summary(
+        summary,
+        production_by_bag=prod,
+        workitems_added_bag_ids={"HDBAD"},
+    )
     hd = out["segments"]["hd"]
     assert "HDGOOD" in hd["bag_ids"]["completed"]
     assert "HDBAD" in hd["bag_ids"]["review_required"]

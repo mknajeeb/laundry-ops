@@ -357,6 +357,7 @@ def test_blocking_counts_shape():
         "wf_review_required",
         "hd_review_required",
         "hd_partially_recorded",
+        "hd_pending_members",
         "other_unresolved",
     }
     assert gate["blocking_counts"]["wf_pending"] == 1
