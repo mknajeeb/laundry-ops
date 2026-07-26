@@ -851,6 +851,9 @@ export const setWeeklyScheduleExclusion = (body) =>
 export const bulkSetWeeklyScheduleEmployer = (body) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/bulk-employer`, body, { timeout: 30000 });
 
+export const cascadeWeeklySchedule = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/cascade`, body, { timeout: 60000 });
+
 export const getWeeklyScheduleDisplaySettings = () =>
   axios.get(`${API_BASE}/rinse/shift-analysis/weekly-schedule/display-settings`, { timeout: 30000 });
 

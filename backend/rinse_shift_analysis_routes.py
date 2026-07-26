@@ -1756,6 +1756,57 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/weekly-schedule/cascade", methods=["POST"])
+    def rinse_shift_analysis_weekly_schedule_cascade():
+        from backend.planned_weekly_schedule import (
+            build_week_payload,
+            cascade_week_schedule,
+            normalize_week_start,
+        )
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            source = normalize_week_start((body.get("source_week_start") or "").strip() or None)
+            target = normalize_week_start((body.get("target_week_start") or "").strip() or None)
+            if not isinstance(source, date):
+                return jsonify({"error": "source_week_start required (YYYY-MM-DD)"}), 400
+            if not isinstance(target, date):
+                return jsonify({"error": "target_week_start required (YYYY-MM-DD)"}), 400
+            replace_raw = body.get("replace")
+            replace = True if replace_raw is None else bool(replace_raw)
+            result, err = cascade_week_schedule(
+                conn,
+                cursor,
+                tenant_oid,
+                source_week_start=source,
+                target_week_start=target,
+                replace=replace,
+            )
+            if err:
+                return jsonify({"error": err}), 400
+            conn.commit()
+            payload = build_week_payload(
+                conn, cursor, tenant_oid, week_start=target, user_roles=me.get("roles")
+            )
+            payload["cascade"] = result
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/shift-analysis/weekly-schedule/bulk-employer", methods=["POST"])
     def rinse_shift_analysis_weekly_schedule_bulk_employer():
         from backend.planned_weekly_schedule import (

@@ -1075,6 +1075,84 @@ def find_latest_schedule_week_before(
         return None
 
 
+def clear_week_schedule(
+    cursor,
+    organization_id: int,
+    *,
+    week_start: date,
+) -> dict[str, int]:
+    """Delete all schedule entries and exclusions for a week."""
+    ensure_planned_weekly_schedule_table(cursor)
+    oid = int(organization_id)
+    cursor.execute(
+        """
+        DELETE FROM planned_weekly_schedule_entries
+        WHERE organization_id = %s AND week_start = %s
+        """,
+        (oid, week_start),
+    )
+    entries_deleted = int(cursor.rowcount or 0)
+    cursor.execute(
+        """
+        DELETE FROM planned_weekly_schedule_exclusions
+        WHERE organization_id = %s AND week_start = %s
+        """,
+        (oid, week_start),
+    )
+    exclusions_deleted = int(cursor.rowcount or 0)
+    return {
+        "entries_deleted": entries_deleted,
+        "exclusions_deleted": exclusions_deleted,
+    }
+
+
+def cascade_week_schedule(
+    conn,
+    cursor,
+    organization_id: int,
+    *,
+    source_week_start: date,
+    target_week_start: date,
+    replace: bool = False,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """
+    Copy one week's schedule onto another week.
+
+    When ``replace`` is True, the target week's existing entries/exclusions are
+    cleared first. When False and the target already has content, returns an error.
+    """
+    source = normalize_week_start(source_week_start)
+    target = normalize_week_start(target_week_start)
+    if not isinstance(source, date) or not isinstance(target, date):
+        return None, "source_week_start and target_week_start must be YYYY-MM-DD Sundays"
+    if source == target:
+        return None, "source and target weeks must be different"
+
+    if not list_week_entries(cursor, organization_id, week_start=source) and not list_excluded_user_ids(
+        cursor, organization_id, week_start=source
+    ):
+        return None, "source week has no schedule to cascade"
+
+    cleared = {"entries_deleted": 0, "exclusions_deleted": 0}
+    target_has_content = week_has_schedule_content(cursor, organization_id, week_start=target)
+    if target_has_content and not replace:
+        return None, "target week already has a schedule; set replace=true to overwrite it"
+    if target_has_content and replace:
+        cleared = clear_week_schedule(cursor, organization_id, week_start=target)
+
+    result = carry_forward_week_schedule(
+        conn,
+        cursor,
+        organization_id,
+        target_week_start=target,
+        source_week_start=source,
+    )
+    result["replaced"] = bool(target_has_content and replace)
+    result["entries_deleted"] = int(cleared.get("entries_deleted") or 0)
+    result["exclusions_deleted"] = int(cleared.get("exclusions_deleted") or 0)
+    return result, None
+
+
 def carry_forward_week_schedule(
     conn,
     cursor,

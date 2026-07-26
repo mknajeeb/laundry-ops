@@ -10,6 +10,7 @@ from backend.planned_weekly_schedule import (
     build_week_payload,
     bulk_set_week_entry_employer_affiliation,
     carry_forward_week_schedule,
+    cascade_week_schedule,
     compute_schedule_totals,
     create_entry,
     delete_entry,
@@ -60,6 +61,16 @@ class _FakeCursor:
                 )
             return
         if "delete from planned_weekly_schedule_exclusions" in sql_norm:
+            if len(params) == 2:
+                org_id, week_start = params
+                before = len(self.exclusions)
+                self.exclusions = [
+                    r
+                    for r in self.exclusions
+                    if not (r["organization_id"] == org_id and r["week_start"] == week_start)
+                ]
+                self._rowcount = before - len(self.exclusions)
+                return
             org_id, week_start, user_id = params
             before = len(self.exclusions)
             self.exclusions = [
@@ -141,6 +152,17 @@ class _FakeCursor:
                     )
             return
         if "delete from planned_weekly_schedule_entries" in sql_norm:
+            # Week wipe: ... week_start = %s (not "... AND id = %s")
+            if "week_start" in sql_norm and " id =" not in sql_norm and len(params) == 2:
+                org_id, week_start = params
+                before = len(self.rows)
+                self.rows = [
+                    r
+                    for r in self.rows
+                    if not (r["organization_id"] == org_id and r["week_start"] == week_start)
+                ]
+                self._rowcount = before - len(self.rows)
+                return
             org_id, entry_id = params
             before = len(self.rows)
             self.rows = [r for r in self.rows if not (r["organization_id"] == org_id and r["id"] == entry_id)]
@@ -875,6 +897,105 @@ def test_find_latest_schedule_week_before():
         assert find_latest_schedule_week_before(cursor, 1, before_week_start=date(2026, 6, 21)) == week_b
         assert find_latest_schedule_week_before(cursor, 1, before_week_start=week_b) == week_a
         assert find_latest_schedule_week_before(cursor, 1, before_week_start=week_a) is None
+
+
+def test_cascade_week_schedule_requires_replace_when_target_has_content():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    source = date(2026, 6, 14)
+    target = date(2026, 6, 21)
+    cursor.rows = [
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": source,
+            "user_id": 10,
+            "day_of_week": 1,
+            "role": "wash",
+            "start_time": time(9, 0),
+            "end_time": time(16, 0),
+            "break_minutes": 0,
+        },
+        {
+            "id": 2,
+            "organization_id": 1,
+            "week_start": target,
+            "user_id": 10,
+            "day_of_week": 0,
+            "role": "fold",
+            "start_time": time(8, 0),
+            "end_time": time(12, 0),
+            "break_minutes": 0,
+        },
+    ]
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ):
+        result, err = cascade_week_schedule(
+            conn,
+            cursor,
+            1,
+            source_week_start=source,
+            target_week_start=target,
+            replace=False,
+        )
+        assert result is None
+        assert "replace=true" in err
+
+        result, err = cascade_week_schedule(
+            conn,
+            cursor,
+            1,
+            source_week_start=source,
+            target_week_start=target,
+            replace=True,
+        )
+    assert err is None
+    assert result["replaced"] is True
+    assert result["entries_deleted"] == 1
+    assert result["entries_copied"] == 1
+    copied = list_week_entries(cursor, 1, week_start=target)
+    assert len(copied) == 1
+    assert copied[0]["role"] == "wash"
+    assert copied[0]["day_of_week"] == 1
+
+
+def test_cascade_week_schedule_copies_into_empty_target():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    source = date(2026, 6, 14)
+    target = date(2026, 6, 21)
+    cursor.rows = [
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": source,
+            "user_id": 10,
+            "day_of_week": 2,
+            "role": "pt_folder",
+            "start_time": time(10, 0),
+            "end_time": time(14, 0),
+            "break_minutes": 0,
+            "employer_affiliation": "rinse_exclusive",
+        }
+    ]
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ):
+        result, err = cascade_week_schedule(
+            conn,
+            cursor,
+            1,
+            source_week_start=source,
+            target_week_start=target,
+            replace=False,
+        )
+    assert err is None
+    assert result["entries_copied"] == 1
+    assert result["replaced"] is False
+    copied = list_week_entries(cursor, 1, week_start=target)
+    assert copied[0]["role"] == "pt_folder"
+    assert copied[0]["employer_affiliation"] == "rinse_exclusive"
 
 
 def test_carry_forward_week_schedule_copies_entries_and_exclusions():

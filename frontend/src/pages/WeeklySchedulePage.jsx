@@ -26,6 +26,7 @@ import PersonOffOutlinedIcon from "@mui/icons-material/PersonOffOutlined";
 import PrintIcon from "@mui/icons-material/Print";
 import {
   bulkSetWeeklyScheduleEmployer,
+  cascadeWeeklySchedule,
   createWeeklyScheduleEntry,
   deleteWeeklyScheduleEntry,
   duplicateWeeklyScheduleEntry,
@@ -36,6 +37,7 @@ import {
   updateWeeklyScheduleDisplaySettings,
 } from "../api";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
+import WeeklyScheduleCascadeDialog from "../components/weeklySchedule/WeeklyScheduleCascadeDialog";
 import WeeklyScheduleEntryDialog from "../components/weeklySchedule/WeeklyScheduleEntryDialog";
 import WeeklyScheduleDayHeader from "../components/weeklySchedule/WeeklyScheduleDayHeader";
 import WeeklyScheduleEmployeeCell from "../components/weeklySchedule/WeeklyScheduleEmployeeCell";
@@ -267,6 +269,9 @@ export default function WeeklySchedulePage() {
   const [excludeSavingUserId, setExcludeSavingUserId] = useState(null);
   const [duplicatingId, setDuplicatingId] = useState(null);
   const [bulkEmployerSaving, setBulkEmployerSaving] = useState(false);
+  const [cascadeOpen, setCascadeOpen] = useState(false);
+  const [cascadeSaving, setCascadeSaving] = useState(false);
+  const [cascadeMessage, setCascadeMessage] = useState("");
   const [employerTab, setEmployerTab] = useState(ENTITY_TAB.WASHPRO);
   const [selectedRoleView, setSelectedRoleView] = useState([]);
   const [dayViewTab, setDayViewTab] = useState(SCHEDULE_VIEW_ALL);
@@ -611,6 +616,32 @@ export default function WeeklySchedulePage() {
     }
   };
 
+  const handleCascadeConfirm = async ({ targetWeekStart, replace }) => {
+    setCascadeSaving(true);
+    setError("");
+    setCascadeMessage("");
+    try {
+      const res = await cascadeWeeklySchedule({
+        source_week_start: weekStart,
+        target_week_start: targetWeekStart,
+        replace,
+      });
+      const cascade = res.data?.cascade || {};
+      setCascadeOpen(false);
+      setWeekStart(targetWeekStart);
+      setData(res.data);
+      setCascadeMessage(
+        `Cascaded ${cascade.entries_copied || 0} shift${cascade.entries_copied === 1 ? "" : "s"} to ${formatWeekRange(targetWeekStart)}${
+          cascade.replaced ? " (replaced existing)" : ""
+        }.`,
+      );
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to cascade week schedule");
+    } finally {
+      setCascadeSaving(false);
+    }
+  };
+
   const showToolbarChips =
     (excludedCount > 0 && canManageExclusions) || costAllowed;
 
@@ -769,6 +800,20 @@ export default function WeeklySchedulePage() {
                   {bulkEmployerSaving ? "Moving…" : "All → Rinse Exclusive"}
                 </Button>
               ) : null}
+              {canEdit ? (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={cascadeSaving || !data?.entries?.length}
+                  onClick={() => {
+                    setCascadeMessage("");
+                    setCascadeOpen(true);
+                  }}
+                  sx={{ fontWeight: 700, py: 0.35 }}
+                >
+                  Cascade week
+                </Button>
+              ) : null}
               <Button
                 size="small"
                 variant="outlined"
@@ -925,6 +970,16 @@ export default function WeeklySchedulePage() {
           {error ? (
             <Alert severity="error" sx={{ mb: 1.25, flexShrink: 0 }} className="no-print">
               {error}
+            </Alert>
+          ) : null}
+          {cascadeMessage ? (
+            <Alert
+              severity="success"
+              sx={{ mb: 1.25, flexShrink: 0 }}
+              className="no-print"
+              onClose={() => setCascadeMessage("")}
+            >
+              {cascadeMessage}
             </Alert>
           ) : null}
 
@@ -1158,6 +1213,13 @@ export default function WeeklySchedulePage() {
         defaultUserId={dialogDefaults.userId}
         defaultDay={dialogDefaults.day}
         scheduleEndTimeEnabled={scheduleEndTimeEnabled}
+      />
+      <WeeklyScheduleCascadeDialog
+        open={cascadeOpen && canEdit}
+        onClose={() => setCascadeOpen(false)}
+        onConfirm={handleCascadeConfirm}
+        sourceWeekStart={weekStart}
+        saving={cascadeSaving}
       />
     </Box>
   );
