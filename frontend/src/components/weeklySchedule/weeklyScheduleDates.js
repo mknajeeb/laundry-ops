@@ -1,16 +1,30 @@
+import { businessTodayYmd } from "../../utils/businessTime";
+
 export const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function ymdFromLocalDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 export function normalizeWeekStart(isoDate) {
   const d = new Date(`${isoDate}T12:00:00`);
   const dow = d.getDay();
   d.setDate(d.getDate() - dow);
-  return d.toISOString().slice(0, 10);
+  return ymdFromLocalDate(d);
+}
+
+/** Current Sunday-start week in America/New_York (not UTC). */
+export function currentWeekStart() {
+  return normalizeWeekStart(businessTodayYmd());
 }
 
 export function shiftWeek(isoDate, deltaWeeks) {
   const d = new Date(`${isoDate}T12:00:00`);
   d.setDate(d.getDate() + deltaWeeks * 7);
-  return normalizeWeekStart(d.toISOString().slice(0, 10));
+  return normalizeWeekStart(ymdFromLocalDate(d));
 }
 
 export function formatWeekRange(weekStart) {

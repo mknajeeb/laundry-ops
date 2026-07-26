@@ -16,6 +16,7 @@ import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import WeeklyScheduleShiftCard from "../components/weeklySchedule/WeeklyScheduleShiftCard";
 import {
   DAY_LABELS,
+  currentWeekStart,
   normalizeWeekStart,
 } from "../components/weeklySchedule/weeklyScheduleDates";
 import {
@@ -30,7 +31,7 @@ export default function WeeklyScheduleEmployeeViewPage() {
   const [searchParams] = useSearchParams();
   const weekStartParam = searchParams.get("week_start");
   const [weekStart, setWeekStart] = useState(() =>
-    normalizeWeekStart(weekStartParam || new Date().toISOString().slice(0, 10)),
+    normalizeWeekStart(weekStartParam || currentWeekStart()),
   );
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);

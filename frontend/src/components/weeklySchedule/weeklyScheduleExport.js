@@ -1,5 +1,16 @@
 import { formatTime12 } from "../datetime/scheduleTimeUi";
-import { employeeScheduleRoles, parseEntryRoles, roleLabels, sortRoles, ROLE_STYLES } from "./weeklyScheduleRoles";
+import {
+  computeFilteredDaySummaries,
+  employeeScheduleRoles,
+  formatRoleHoursLabel,
+  HOUR_TRACKED_ROLES,
+  parseEntryRoles,
+  ROLE_COMPACT_LABELS,
+  ROLE_ORDER,
+  ROLE_STYLES,
+  roleLabels,
+  sortRoles,
+} from "./weeklyScheduleRoles";
 import { DAY_LABELS } from "./weeklyScheduleDates";
 
 /** Excel-safe text — no smart quotes, en-dashes, or middle dots. */
@@ -49,16 +60,33 @@ function csvCell(value) {
   return text;
 }
 
-export function exportWeeklyScheduleCsv({
+export function formatDayRoleTotalsText(summary, { daysOnly = false, forExport = false } = {}) {
+  const parts = [];
+  for (const role of ROLE_ORDER) {
+    const count = Number(summary?.[role] || 0);
+    if (count <= 0) continue;
+    const label = ROLE_COMPACT_LABELS[role] || ROLE_STYLES[role]?.label || role;
+    if (!daysOnly && HOUR_TRACKED_ROLES.includes(role)) {
+      const hours = Number(summary?.[`${role}_hours`] || 0);
+      if (hours > 0) {
+        parts.push(`${label} ${count} / ${formatRoleHoursLabel(hours)}`);
+        continue;
+      }
+    }
+    parts.push(`${label} ${count}`);
+  }
+  const text = parts.join("; ");
+  return forExport ? exportAsciiText(text) : text;
+}
+
+export function buildWeeklyScheduleCsvRows({
   employees,
   entries,
-  weekStart,
-  tabLabel,
-  filename,
-  showRoleLabels = true,
   scheduleEndTimeEnabled = true,
+  showRoleLabels = true,
   dayLabels = null,
   dayIndices = null,
+  daySummaries = null,
 }) {
   const columnDays = dayIndices || [0, 1, 2, 3, 4, 5, 6];
   const columnLabels = dayLabels || columnDays.map((dow) => DAY_LABELS[dow]);
@@ -94,6 +122,52 @@ export function exportWeeklyScheduleCsv({
     }
     lines.push(row.join(","));
   }
+
+  const summaries =
+    daySummaries ||
+    computeFilteredDaySummaries(
+      { entries, employees },
+      { entries, includeExcluded: true },
+    );
+  const totalsRow = [
+    csvCell("Day Role Totals"),
+    csvCell(""),
+    ...columnDays.map((dow) =>
+      csvCell(
+        formatDayRoleTotalsText(summaries[dow] || {}, {
+          daysOnly: !scheduleEndTimeEnabled,
+          forExport: true,
+        }),
+      ),
+    ),
+    csvCell(""),
+  ];
+  lines.push(totalsRow.join(","));
+
+  return lines;
+}
+
+export function exportWeeklyScheduleCsv({
+  employees,
+  entries,
+  weekStart,
+  tabLabel,
+  filename,
+  showRoleLabels = true,
+  scheduleEndTimeEnabled = true,
+  dayLabels = null,
+  dayIndices = null,
+  daySummaries = null,
+}) {
+  const lines = buildWeeklyScheduleCsvRows({
+    employees,
+    entries,
+    scheduleEndTimeEnabled,
+    showRoleLabels,
+    dayLabels,
+    dayIndices,
+    daySummaries,
+  });
 
   const safeTab = String(tabLabel || "schedule")
     .toLowerCase()

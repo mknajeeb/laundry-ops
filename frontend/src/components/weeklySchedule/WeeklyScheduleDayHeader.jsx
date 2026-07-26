@@ -1,11 +1,14 @@
 import { Box, Stack, Typography } from "@mui/material";
-import { ROLE_ORDER } from "./weeklyScheduleRoles";
+import { HOUR_TRACKED_ROLES, ROLE_ORDER } from "./weeklyScheduleRoles";
 import ScheduleRoleChip from "./ScheduleRoleChip";
+
+const HOUR_TRACKED = new Set(HOUR_TRACKED_ROLES);
 
 function roleCountLines(summary) {
   return ROLE_ORDER.map((key) => ({
     key,
     count: Number(summary?.[key] || 0),
+    hours: HOUR_TRACKED.has(key) ? Number(summary?.[`${key}_hours`] || 0) : null,
   })).filter((line) => line.count > 0);
 }
 
@@ -17,7 +20,7 @@ export default function WeeklyScheduleDayHeader({ dayLabel, summary, daysOnly = 
 
   if (compact) {
     const statParts = [`${people} emp`];
-    if (!daysOnly) statParts.push(`${hoursLabel} h`);
+    if (!daysOnly) statParts.push(`${hoursLabel} hrs`);
 
     return (
       <Box sx={{ px: 0.85, py: 0.65, minWidth: 0 }}>
@@ -49,8 +52,13 @@ export default function WeeklyScheduleDayHeader({ dayLabel, summary, daysOnly = 
         </Typography>
         {roleLines.length ? (
           <Stack direction="row" spacing={0.35} useFlexGap flexWrap="wrap" sx={{ mt: 0.45 }}>
-            {roleLines.map(({ key, count }) => (
-              <ScheduleRoleChip key={key} roleKey={key} count={count} />
+            {roleLines.map(({ key, count, hours: roleHours }) => (
+              <ScheduleRoleChip
+                key={key}
+                roleKey={key}
+                count={count}
+                hours={daysOnly ? null : roleHours}
+              />
             ))}
           </Stack>
         ) : null}
@@ -89,8 +97,13 @@ export default function WeeklyScheduleDayHeader({ dayLabel, summary, daysOnly = 
       ) : null}
       {roleLines.length ? (
         <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: 0.5 }}>
-          {roleLines.map(({ key, count }) => (
-            <ScheduleRoleChip key={key} roleKey={key} count={count} />
+          {roleLines.map(({ key, count, hours: roleHours }) => (
+            <ScheduleRoleChip
+              key={key}
+              roleKey={key}
+              count={count}
+              hours={daysOnly ? null : roleHours}
+            />
           ))}
         </Stack>
       ) : null}

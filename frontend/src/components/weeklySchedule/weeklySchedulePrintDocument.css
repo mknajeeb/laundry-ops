@@ -63,6 +63,26 @@
   width: 12.28%;
 }
 
+.weekly-schedule-print-day-totals {
+  margin-top: 3px;
+  font-size: 7.5pt;
+  font-weight: 600;
+  color: #334155;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.weekly-schedule-print-day-roles {
+  margin-top: 2px;
+  font-size: 7pt;
+  font-weight: 600;
+  color: #475569;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .weekly-schedule-print-employee-name {
   font-weight: 700;
   font-size: 9pt;

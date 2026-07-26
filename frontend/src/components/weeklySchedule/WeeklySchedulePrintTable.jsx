@@ -1,11 +1,51 @@
-import { employeeScheduleRoles, formatEmployeeWeeklySummary, roleLabels } from "./weeklyScheduleRoles";
+import {
+  employeeScheduleRoles,
+  formatEmployeeWeeklySummary,
+  formatRoleHoursLabel,
+  HOUR_TRACKED_ROLES,
+  ROLE_COMPACT_LABELS,
+  ROLE_ORDER,
+  ROLE_STYLES,
+  roleLabels,
+} from "./weeklyScheduleRoles";
 import { formatDayShiftsText } from "./weeklyScheduleExport";
+
+function DayHeaderTotals({ summary, daysOnly = false }) {
+  if (!summary) return null;
+  const people = Number(summary.people || 0);
+  const hours = Number(summary.hours || 0);
+  const hoursLabel = Number.isInteger(hours) ? `${hours}` : hours.toFixed(1);
+  const roleParts = [];
+  for (const role of ROLE_ORDER) {
+    const count = Number(summary[role] || 0);
+    if (count <= 0) continue;
+    const label = ROLE_COMPACT_LABELS[role] || ROLE_STYLES[role]?.label || role;
+    if (!daysOnly && HOUR_TRACKED_ROLES.includes(role)) {
+      const roleHours = Number(summary[`${role}_hours`] || 0);
+      if (roleHours > 0) {
+        roleParts.push(`${label} ${count} · ${formatRoleHoursLabel(roleHours)}`);
+        continue;
+      }
+    }
+    roleParts.push(`${label} ${count}`);
+  }
+
+  return (
+    <div className="weekly-schedule-print-day-totals">
+      <div>
+        {people} emp{daysOnly ? "" : ` · ${hoursLabel} hrs`}
+      </div>
+      {roleParts.length ? <div className="weekly-schedule-print-day-roles">{roleParts.join(" · ")}</div> : null}
+    </div>
+  );
+}
 
 export default function WeeklySchedulePrintTable({
   employees,
   entries,
   dayLabels,
   dayIndices = null,
+  daySummaries = null,
   showRoleLabels = true,
   daysOnly = false,
 }) {
@@ -17,11 +57,15 @@ export default function WeeklySchedulePrintTable({
       <thead>
         <tr>
           <th className="weekly-schedule-print-th-employee">Employee</th>
-          {labels.map((label) => (
-            <th key={label} className="weekly-schedule-print-th-day">
-              {label}
-            </th>
-          ))}
+          {labels.map((label, index) => {
+            const dow = indices[index] ?? index;
+            return (
+              <th key={label} className="weekly-schedule-print-th-day">
+                <div>{label}</div>
+                <DayHeaderTotals summary={daySummaries?.[dow]} daysOnly={daysOnly} />
+              </th>
+            );
+          })}
         </tr>
       </thead>
       <tbody>
