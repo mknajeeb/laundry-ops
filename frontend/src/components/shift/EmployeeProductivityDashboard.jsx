@@ -3,10 +3,17 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Collapse,
+  FormControl,
+  InputLabel,
+  ListItemText,
+  MenuItem,
+  OutlinedInput,
   Paper,
+  Select,
   Stack,
   Table,
   TableBody,
@@ -14,25 +21,28 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TableSortLabel,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
-  useMediaQuery,
-  useTheme,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import { getBulkWorkitems, getEmployeeProductivityDashboard, getVeewashStep1BagDetail, postVeewashStep1Correction } from "../../api";
+import { getBulkWorkitems, getEmployeeProductivityDashboard, getVeewashStep1BagDetail, postEmployeeBagSessionAssignment, postVeewashStep1Correction } from "../../api";
 import CopyableBagId from "../CopyableBagId";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import { yesterdayRange, todayRange } from "../../utils/foldingDateRange";
 import {
-  PRODUCTIVITY_RANK_OPTIONS,
+  DEFAULT_ROLE_FILTER_KEY,
   PERFORMANCE_TIER_STYLES,
+  PRODUCTIVITY_TABLE_COLUMNS,
   bagsWithMissingPre,
   buildExecutiveSummaryCards,
   employeeDisplayLbs,
   employeeHasFolderDualProductivity,
+  employeeMatchesRoleFilter,
+  filterSessionsByRole,
+  fmtDurationMinutes,
   fmtProductivityPct,
   fmtProductivityRate,
   fmtSummaryNumber,
@@ -60,13 +70,22 @@ function SummaryMetricGrid({ items }) {
     <Box
       sx={{
         display: "grid",
-        gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", sm: "repeat(4, minmax(0, 1fr))" },
+        gridTemplateColumns: {
+          xs: "repeat(2, minmax(0, 1fr))",
+          sm: "repeat(4, minmax(0, 1fr))",
+        },
         gap: 1,
       }}
     >
-      {items.map((item) => (
-        <Box key={item.label} sx={{ minWidth: 0 }}>
-          <Typography variant="caption" color="text.secondary" fontWeight={700} display="block">
+      {items.map((item, idx) => (
+        <Box key={item.key || `${item.label}-${idx}`} sx={{ minWidth: 0, overflow: "hidden" }}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            fontWeight={700}
+            display="block"
+            sx={{ whiteSpace: "normal", wordBreak: "break-word", lineHeight: 1.25 }}
+          >
             {item.label}
           </Typography>
           <Typography variant="body2" fontWeight={700} sx={{ wordBreak: "break-word" }}>
@@ -132,13 +151,13 @@ function FolderSegmentList({ segments }) {
   );
 }
 
-
 function EmployeeSummaryPanel({ emp, onSendForReview, sendingReview = false, missingPreCount = 0 }) {
   const missingClockIn = isMissingClockIn(emp);
   const dual = employeeHasFolderDualProductivity(emp);
   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
   const displayLbs =
     dual && emp.folder_credited_lbs != null ? emp.folder_credited_lbs : employeeDisplayLbs(emp);
+
   const reviewActions =
     typeof onSendForReview === "function" ? (
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>
@@ -227,12 +246,24 @@ function EmployeeSummaryPanel({ emp, onSendForReview, sendingReview = false, mis
           ) || "—",
       },
       {
-        label: "Idle Time",
-        value: fmtSummaryNumber(emp.idle_time_hours, 2),
-      },
-      {
         label: "Role Status",
         value: roleStatusLabel,
+      },
+      { label: "Sessions", value: emp.total_sessions ?? 0 },
+      {
+        label: "Session Time",
+        value: emp.total_session_label || fmtDurationMinutes(emp.total_session_minutes),
+      },
+      {
+        label: "Idle Time",
+        value:
+          emp.total_idle_minutes != null
+            ? (emp.total_idle_label || fmtDurationMinutes(emp.total_idle_minutes))
+            : fmtSummaryNumber(emp.idle_time_hours, 2),
+      },
+      {
+        label: "Idle %",
+        value: emp.session_idle_pct != null ? `${Number(emp.session_idle_pct).toFixed(1)}%` : "—",
       },
     ];
 
@@ -291,6 +322,19 @@ function EmployeeSummaryPanel({ emp, onSendForReview, sendingReview = false, mis
       label: "Last Completed",
       value: formatFriendlyEtWall(emp.last_completed_time_et || emp.last_completion_time_et || emp.last_completion_time) || "—",
     },
+    { label: "Sessions", value: emp.total_sessions ?? 0 },
+    {
+      label: "Session Time",
+      value: emp.total_session_label || fmtDurationMinutes(emp.total_session_minutes),
+    },
+    {
+      label: "Idle Time",
+      value: emp.total_idle_label || fmtDurationMinutes(emp.total_idle_minutes),
+    },
+    {
+      label: "Idle %",
+      value: emp.session_idle_pct != null ? `${Number(emp.session_idle_pct).toFixed(1)}%` : "—",
+    },
   ];
 
   return (
@@ -313,105 +357,6 @@ function EmployeeSummaryPanel({ emp, onSendForReview, sendingReview = false, mis
   );
 }
 
-
-function EmployeeMobileCard({
-  emp,
-  open,
-  onToggle,
-  selectedDate,
-  bagsLoading,
-  onSendForReview,
-  sendingReview,
-  missingPreCount,
-  onReviewBag,
-  onSendBagForReview,
-}) {
-  const missingClockIn = isMissingClockIn(emp);
-  const dual = employeeHasFolderDualProductivity(emp);
-  const tier = PERFORMANCE_TIER_STYLES[emp.performance_tier] || PERFORMANCE_TIER_STYLES.middle;
-  const productiveHrs = emp.role_hours ?? emp.productive_hours ?? emp.worked_hours;
-  const displayLbs = employeeDisplayLbs(emp);
-  const bagsHr = dual
-    ? fmtProductivityRate(emp.role_bags_per_hour, false)
-    : fmtProductivityRate(emp.completed_bags_per_hour ?? emp.bags_per_hour, missingClockIn);
-  const lbsHr = dual
-    ? fmtProductivityRate(emp.role_lbs_per_hour, false)
-    : fmtProductivityRate(emp.completed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn);
-  const activeLine = dual
-    ? ` · active ${fmtProductivityRate(emp.active_bags_per_hour, false)} bags/hr · ${fmtProductivityRate(emp.active_lbs_per_hour, false)} lbs/hr · idle ${fmtSummaryNumber(emp.idle_time_hours, 2)}h`
-    : "";
-
-  return (
-    <Paper
-      variant="outlined"
-      sx={{
-        borderRadius: 2,
-        overflow: "hidden",
-        borderColor: tier.borderColor !== "transparent" ? tier.borderColor : "divider",
-        bgcolor: tier.bgcolor,
-      }}
-    >
-      <Box
-        onClick={onToggle}
-        sx={{ p: 1.25, cursor: "pointer" }}
-      >
-        <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
-          <Box sx={{ minWidth: 0 }}>
-            <Stack direction="row" spacing={1} alignItems="center">
-              <Typography variant="caption" fontWeight={800} sx={{ color: tier.rankColor }}>
-                #{emp.productivity_rank ?? "—"}
-              </Typography>
-              <Typography variant="subtitle1" fontWeight={800} sx={{ wordBreak: "break-word" }}>
-                {emp.employee}
-              </Typography>
-            </Stack>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-              {emp.completed_bags ?? 0} completed · {displayLbs} lbs
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              {dual
-                ? `${bagsHr} role bags/hr · ${lbsHr} role lbs/hr · ${fmtSummaryNumber(productiveHrs, 2)} role hrs${activeLine}`
-                : `${bagsHr} bags/hr · ${lbsHr} lbs/hr · ${missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2)} hrs`}
-            </Typography>
-            {emp.missing_weight_warning ? (
-              <Typography variant="caption" color="warning.main" display="block" sx={{ mt: 0.35 }}>
-                {emp.missing_weight_warning}
-              </Typography>
-            ) : null}
-          </Box>
-          <ExpandMoreIcon
-            fontSize="small"
-            sx={{
-              transform: open ? "rotate(180deg)" : "none",
-              transition: "transform 0.2s",
-              color: "text.secondary",
-              flexShrink: 0,
-            }}
-          />
-        </Stack>
-      </Box>
-      <EmployeeProductivityDrilldownCollapse open={open}>
-        <Box sx={{ px: 1.25, pb: 1.25 }}>
-          <EmployeeSummaryPanel
-            emp={emp}
-            onSendForReview={onSendForReview}
-            sendingReview={sendingReview}
-            missingPreCount={missingPreCount}
-          />
-          <EmployeeProductivityDrilldown
-            bags={emp.bags}
-            referenceDateEt={selectedDate}
-            bagsLoading={bagsLoading}
-            onReviewBag={onReviewBag}
-            onSendBagForReview={onSendBagForReview}
-            sendingReview={sendingReview}
-          />
-        </Box>
-      </EmployeeProductivityDrilldownCollapse>
-    </Paper>
-  );
-}
-
 /**
  * Phase 2 — Employee Productivity Dashboard.
  * Reads frozen Phase 1 `employee_completed_bags_today` only.
@@ -424,12 +369,12 @@ export default function EmployeeProductivityDashboard({
   refreshToken = 0,
   onRushChange,
 }) {
-  const theme = useTheme();
-  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const [expandedEmployee, setExpandedEmployee] = useState(null);
   const [reconOpen, setReconOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
   const [rankBy, setRankBy] = useState("bags");
+  const [sortDir, setSortDir] = useState("desc");
+  const [roleFilterKeys, setRoleFilterKeys] = useState([DEFAULT_ROLE_FILTER_KEY]);
   const [rushFilter, setRushFilter] = useState(rushFilterProp || "all");
   const [datePreset, setDatePreset] = useState(() => resolvePreset(initialDateEt));
   const [customDate, setCustomDate] = useState(initialDateEt || todayRange().start);
@@ -440,6 +385,7 @@ export default function EmployeeProductivityDashboard({
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState("");
   const [sendingReview, setSendingReview] = useState(false);
+  const [assigningSession, setAssigningSession] = useState(false);
   const [reviewError, setReviewError] = useState("");
   const [reviewBag, setReviewBag] = useState(null);
   const [reviewCatalog, setReviewCatalog] = useState([]);
@@ -608,18 +554,62 @@ export default function EmployeeProductivityDashboard({
     [ensureReviewCatalog, selectedDate],
   );
 
-  const rankedEmployees = useMemo(
-    () => rankEmployees(employees, rankBy),
-    [employees, rankBy],
-  );
+  const rankedEmployees = useMemo(() => {
+    const filtered = (employees || []).filter((emp) => employeeMatchesRoleFilter(emp, roleFilterKeys));
+    return rankEmployees(filtered, rankBy, sortDir);
+  }, [employees, rankBy, sortDir, roleFilterKeys]);
   const completedAttributionAudit = section?.completed_attribution_audit || section?.attribution_audit || [];
-  // Fast-path productivity omits the per-bag attribution audit list. Do not show "0 bags".
-  const attributionAuditUnavailableOnFastPath =
-    completedAttributionAudit.length === 0
-    && (
-      Number(creditedTotal) > 0
-      || employees.some((e) => Number(e?.completed_bags || 0) > 0 || e?.bags_stripped_for_summary)
-    );
+  const availableRoleFilters = useMemo(() => {
+    const fromApi = section?.available_role_filters || [];
+    if (fromApi.length) return fromApi;
+    return [
+      {
+        key: DEFAULT_ROLE_FILTER_KEY,
+        label: "Rinse WF — Folder",
+        category: "Rinse WF",
+        role: "Folder",
+      },
+    ];
+  }, [section?.available_role_filters]);
+
+  const handleSortColumn = (columnId) => {
+    if (rankBy === columnId) {
+      setSortDir((prev) => (prev === "desc" ? "asc" : "desc"));
+      return;
+    }
+    setRankBy(columnId);
+    setSortDir(columnId === "employee" ? "asc" : "desc");
+  };
+
+  const assignBagSession = useCallback(
+    async (bag, sessionId) => {
+      if (!bag?.bag_id || !selectedDate) return;
+      setAssigningSession(true);
+      setReviewError("");
+      try {
+        const sessions = filterSessionsByRole(
+          (employees.find((e) => e.employee === expandedEmployee) || {}).sessions || [],
+          roleFilterKeys,
+        );
+        const match = sessions.find((s) => s.session_id === sessionId);
+        await postEmployeeBagSessionAssignment({
+          bag_id: bag.bag_id,
+          date_et: selectedDate,
+          session_id: sessionId,
+          segment_id: match?.segment_id ?? null,
+          employee: expandedEmployee,
+        });
+        await fetchSection(selectedDate, rushFilter);
+      } catch (e) {
+        setReviewError(
+          friendlyApiError(e?.response?.data?.error || e?.message, "Unable to save session assignment."),
+        );
+      } finally {
+        setAssigningSession(false);
+      }
+    },
+    [employees, expandedEmployee, fetchSection, roleFilterKeys, rushFilter, selectedDate],
+  );
 
   const kpiCards = useMemo(
     () => buildExecutiveSummaryCards(executiveSummary, productivityScopeLabel),
@@ -756,6 +746,34 @@ export default function EmployeeProductivityDashboard({
           ) : null}
           {loading ? <CircularProgress size={18} /> : null}
           <RushFilterChips value={rushFilter} onChange={handleRushChange} disabled={loading} />
+          <FormControl size="small" sx={{ minWidth: { xs: "100%", sm: 240 } }}>
+            <InputLabel id="productivity-role-filter-label">Role filter</InputLabel>
+            <Select
+              labelId="productivity-role-filter-label"
+              multiple
+              value={roleFilterKeys}
+              onChange={(e) => {
+                const next = typeof e.target.value === "string"
+                  ? e.target.value.split(",")
+                  : e.target.value;
+                setRoleFilterKeys(next.length ? next : [DEFAULT_ROLE_FILTER_KEY]);
+              }}
+              input={<OutlinedInput label="Role filter" />}
+              renderValue={(selected) =>
+                availableRoleFilters
+                  .filter((r) => selected.includes(r.key))
+                  .map((r) => r.label)
+                  .join(", ") || "Rinse WF — Folder"
+              }
+            >
+              {availableRoleFilters.map((opt) => (
+                <MenuItem key={opt.key} value={opt.key}>
+                  <Checkbox checked={roleFilterKeys.includes(opt.key)} size="small" />
+                  <ListItemText primary={opt.label} />
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
         </Box>
 
         {fetchError ? (
@@ -898,214 +916,203 @@ export default function EmployeeProductivityDashboard({
             Completed attribution debug
             {!auditOpen ? (
               <Typography component="span" variant="caption" color="inherit" sx={{ ml: 0.25 }}>
-                {attributionAuditUnavailableOnFastPath
-                  ? "· Attribution audit unavailable on fast path"
-                  : `· ${completedAttributionAudit.length} bags`}
+                · {completedAttributionAudit.length} bags
               </Typography>
             ) : null}
           </Typography>
           <Collapse in={auditOpen}>
-            {attributionAuditUnavailableOnFastPath ? (
-              <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75, display: "block" }}>
-                Attribution audit unavailable on fast path.
-              </Typography>
-            ) : (
-              <TableContainer sx={{ mt: 0.75, maxHeight: 320, overflow: "auto" }}>
-                <Table size="small" stickyHeader>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell sx={{ fontWeight: 700 }}>Bag</TableCell>
-                      <TableCell sx={{ fontWeight: 700 }}>WF/HD</TableCell>
-                      <TableCell sx={{ fontWeight: 700 }}>Rush</TableCell>
-                      <TableCell sx={{ fontWeight: 700 }}>Employee</TableCell>
-                      <TableCell sx={{ fontWeight: 700 }}>Signal</TableCell>
-                      <TableCell sx={{ fontWeight: 700 }}>Excluded</TableCell>
+            <TableContainer sx={{ mt: 0.75, maxHeight: 320, overflow: "auto" }}>
+              <Table size="small" stickyHeader>
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 700 }}>Bag</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>WF/HD</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Rush</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Employee</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Signal</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Excluded</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {completedAttributionAudit.map((row) => (
+                    <TableRow key={row.bag_id}>
+                      <TableCell>
+                        <CopyableBagId bagId={row.bag_id} />
+                      </TableCell>
+                      <TableCell>{row.workflow || row.service_type || "—"}</TableCell>
+                      <TableCell>{row.rush_label || row.rush_bucket || "—"}</TableCell>
+                      <TableCell>{row.credited_employee || "—"}</TableCell>
+                      <TableCell>{row.credit_signal || row.credit_event_type || "—"}</TableCell>
+                      <TableCell>{row.excluded_reason || (row.included_in_employee_productivity ? "—" : "Unassigned")}</TableCell>
                     </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {completedAttributionAudit.map((row) => (
-                      <TableRow key={row.bag_id}>
-                        <TableCell>
-                          <CopyableBagId bagId={row.bag_id} />
-                        </TableCell>
-                        <TableCell>{row.workflow || row.service_type || "—"}</TableCell>
-                        <TableCell>{row.rush_label || row.rush_bucket || "—"}</TableCell>
-                        <TableCell>{row.credited_employee || "—"}</TableCell>
-                        <TableCell>{row.credit_signal || row.credit_event_type || "—"}</TableCell>
-                        <TableCell>
-                          {row.excluded_reason
-                            || (row.included_in_employee_productivity ? "—" : "Unassigned")}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            )}
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
           </Collapse>
         </Box>
 
         <Box sx={{ mb: 1.25 }}>
-          <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.5 }}>
-            Rank by
+          <Typography variant="caption" color="text.secondary" display="block">
+            Click a column header to sort. Default role filter: Rinse WF — Folder.
           </Typography>
-          <ToggleButtonGroup
-            exclusive
-            size="small"
-            value={rankBy}
-            onChange={(_, v) => v && setRankBy(v)}
-            sx={{ flexWrap: "wrap", gap: 0.5 }}
-          >
-            {PRODUCTIVITY_RANK_OPTIONS.map((opt) => (
-              <ToggleButton key={opt.id} value={opt.id} sx={{ textTransform: "none", fontWeight: 600 }}>
-                {opt.label}
-              </ToggleButton>
-            ))}
-          </ToggleButtonGroup>
         </Box>
 
-        {isMobile ? (
-          <Stack spacing={1}>
-            {rankedEmployees.map((emp) => {
-              const missingPreBags = bagsWithMissingPre(emp.bags);
-              return (
-                <EmployeeMobileCard
-                  key={emp.employee}
-                  emp={emp}
-                  open={expandedEmployee === emp.employee}
-                  onToggle={() => setExpandedEmployee((prev) => (prev === emp.employee ? null : emp.employee))}
-                  selectedDate={selectedDate}
-                  bagsLoading={loading && emp.bags == null}
-                  missingPreCount={missingPreBags.length}
-                  sendingReview={sendingReview}
-                  onSendForReview={() => sendBagsForReview(missingPreBags)}
-                  onReviewBag={openReviewBag}
-                  onSendBagForReview={(bag) =>
-                    sendBagsForReview([bag], {
-                      reasonCode: bagsWithMissingPre([bag]).length
-                        ? "MISSING_PRE_EVIDENCE"
-                        : "MANAGER_SENT_FOR_REVIEW",
-                    })
-                  }
-                />
-              );
-            })}
-          </Stack>
-        ) : (
-          <TableContainer sx={{ overflowX: "auto" }}>
-            <Table size="medium" aria-label="Employee productivity dashboard">
-              <TableHead>
-                <TableRow>
-                  <TableCell sx={{ fontWeight: 700, width: 52, py: 1.25 }}>Rank</TableCell>
-                  <TableCell sx={{ fontWeight: 700, py: 1.25 }}>Employee</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Completed Bags</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Credited Lbs (PRE)</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Role Bags / Hour</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Active Bags / Hour</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Role Lbs / Hour</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Active Lbs / Hour</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Role Hours</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Idle Time</TableCell>
-                  <TableCell padding="checkbox" sx={{ py: 1.25 }} />
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {rankedEmployees.map((emp) => {
-                  const open = expandedEmployee === emp.employee;
-                  const missingClockIn = isMissingClockIn(emp);
-                  const dual = employeeHasFolderDualProductivity(emp);
-                  const productiveHrs = emp.role_hours ?? emp.productive_hours ?? emp.worked_hours;
-                  const tier = PERFORMANCE_TIER_STYLES[emp.performance_tier] || PERFORMANCE_TIER_STYLES.middle;
-                  const colSpan = 11;
-                  const roleBagsHr = dual
-                    ? fmtProductivityRate(emp.role_bags_per_hour, false)
-                    : fmtProductivityRate(emp.completed_bags_per_hour ?? emp.bags_per_hour, missingClockIn);
-                  const roleLbsHr = dual
-                    ? fmtProductivityRate(emp.role_lbs_per_hour, false)
-                    : fmtProductivityRate(emp.completed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn);
-                  return (
-                    <Fragment key={emp.employee}>
-                      <TableRow
-                        hover
-                        onClick={() => setExpandedEmployee((prev) => (prev === emp.employee ? null : emp.employee))}
+        <TableContainer
+          sx={{
+            overflowX: "auto",
+            maxWidth: "100%",
+            WebkitOverflowScrolling: "touch",
+          }}
+        >
+          <Table size="medium" aria-label="Employee productivity dashboard" sx={{ minWidth: { xs: 640, sm: 720 } }}>
+            <TableHead>
+              <TableRow>
+                {PRODUCTIVITY_TABLE_COLUMNS.map((col) => (
+                  <TableCell
+                    key={col.id}
+                    align={col.align || "left"}
+                    sortDirection={rankBy === col.id ? sortDir : false}
+                    sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}
+                  >
+                    <TableSortLabel
+                      active={rankBy === col.id}
+                      direction={rankBy === col.id ? sortDir : "desc"}
+                      onClick={() => handleSortColumn(col.id)}
+                      sx={{
+                        fontSize: { xs: "0.75rem", sm: "0.875rem" },
+                        whiteSpace: "normal",
+                        lineHeight: 1.2,
+                        maxWidth: { xs: 96, sm: "none" },
+                      }}
+                    >
+                      {col.label}
+                    </TableSortLabel>
+                  </TableCell>
+                ))}
+                <TableCell padding="checkbox" sx={{ py: 1.25 }} />
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {rankedEmployees.map((emp) => {
+                const open = expandedEmployee === emp.employee;
+                const missingClockIn = isMissingClockIn(emp);
+                const dual = employeeHasFolderDualProductivity(emp);
+                const productiveHrs = emp.role_hours ?? emp.productive_hours ?? emp.worked_hours;
+                const tier = PERFORMANCE_TIER_STYLES[emp.performance_tier] || PERFORMANCE_TIER_STYLES.middle;
+                const colSpan = PRODUCTIVITY_TABLE_COLUMNS.length + 1;
+                const bagsHr = dual
+                  ? fmtProductivityRate(emp.role_bags_per_hour, false)
+                  : fmtProductivityRate(emp.completed_bags_per_hour ?? emp.bags_per_hour, missingClockIn);
+                const lbsHr = dual
+                  ? fmtProductivityRate(emp.role_lbs_per_hour, false)
+                  : fmtProductivityRate(emp.completed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn);
+                return (
+                  <Fragment key={emp.employee}>
+                    <TableRow
+                      hover
+                      onClick={() => setExpandedEmployee((prev) => (prev === emp.employee ? null : emp.employee))}
+                      sx={{
+                        cursor: "pointer",
+                        bgcolor: tier.bgcolor,
+                        "& td": {
+                          borderBottom: open ? undefined : "1px solid",
+                          borderColor: "divider",
+                          py: 1.35,
+                        },
+                      }}
+                    >
+                      <TableCell
                         sx={{
-                          cursor: "pointer",
-                          bgcolor: tier.bgcolor,
-                          "& td": {
-                            borderBottom: open ? undefined : "1px solid",
-                            borderColor: "divider",
-                            py: 1.35,
-                          },
+                          fontWeight: 700,
+                          position: { xs: "sticky", sm: "static" },
+                          left: 0,
+                          bgcolor: tier.bgcolor !== "transparent" ? tier.bgcolor : "background.paper",
+                          zIndex: 1,
+                          maxWidth: { xs: 120, sm: "none" },
+                          wordBreak: "break-word",
                         }}
                       >
-                        <TableCell sx={{ fontWeight: 800, color: tier.rankColor }}>
-                          {emp.productivity_rank ?? "—"}
-                        </TableCell>
-                        <TableCell sx={{ fontWeight: 700 }}>{emp.employee}</TableCell>
-                        <TableCell align="right">{emp.completed_bags ?? 0}</TableCell>
-                        <TableCell align="right">{employeeDisplayLbs(emp)}</TableCell>
-                        <TableCell align="right">{roleBagsHr}</TableCell>
-                        <TableCell align="right">
-                          {dual ? fmtProductivityRate(emp.active_bags_per_hour, false) : "—"}
-                        </TableCell>
-                        <TableCell align="right">{roleLbsHr}</TableCell>
-                        <TableCell align="right">
-                          {dual ? fmtProductivityRate(emp.active_lbs_per_hour, false) : "—"}
-                        </TableCell>
-                        <TableCell align="right">
-                          {missingClockIn && !dual ? "N/A" : fmtSummaryNumber(productiveHrs, 2)}
-                        </TableCell>
-                        <TableCell align="right">
-                          {dual ? fmtSummaryNumber(emp.idle_time_hours, 2) : "—"}
-                        </TableCell>
-                        <TableCell padding="checkbox">
-                          <ExpandMoreIcon
-                            fontSize="small"
+                        {emp.employee}
+                      </TableCell>
+                      <TableCell align="right">{emp.completed_bags ?? 0}</TableCell>
+                      <TableCell align="right">{bagsHr}</TableCell>
+                      <TableCell align="right">{employeeDisplayLbs(emp)}</TableCell>
+                      <TableCell align="right">{lbsHr}</TableCell>
+                      <TableCell align="right">
+                        {missingClockIn && !dual ? "N/A" : fmtSummaryNumber(productiveHrs, 2)}
+                      </TableCell>
+                      <TableCell padding="checkbox">
+                        <ExpandMoreIcon
+                          fontSize="small"
+                          sx={{
+                            transform: open ? "rotate(180deg)" : "none",
+                            transition: "transform 0.2s",
+                            color: "text.secondary",
+                          }}
+                        />
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell
+                        colSpan={colSpan}
+                        sx={{
+                          py: 0,
+                          borderBottom: open ? undefined : "none",
+                          // Keep expanded content viewport-width on mobile while the ranking
+                          // table itself remains horizontally scrollable.
+                          position: { xs: "relative", sm: "static" },
+                        }}
+                      >
+                        <EmployeeProductivityDrilldownCollapse open={open}>
+                          <Box
                             sx={{
-                              transform: open ? "rotate(180deg)" : "none",
-                              transition: "transform 0.2s",
-                              color: "text.secondary",
+                              py: 1.25,
+                              px: { xs: 0.25, sm: 0.5 },
+                              width: { xs: "min(100vw - 2rem, 100%)", sm: "100%" },
+                              maxWidth: { xs: "calc(100vw - 2rem)", sm: "none" },
+                              position: { xs: "sticky", sm: "static" },
+                              left: 0,
+                              overflowX: "hidden",
+                              boxSizing: "border-box",
                             }}
-                          />
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell colSpan={colSpan} sx={{ py: 0, borderBottom: open ? undefined : "none" }}>
-                          <EmployeeProductivityDrilldownCollapse open={open}>
-                            <Box sx={{ py: 1.25, px: 0.5 }}>
-                              <EmployeeSummaryPanel
-                                emp={emp}
-                                missingPreCount={bagsWithMissingPre(emp.bags).length}
-                                sendingReview={sendingReview}
-                                onSendForReview={() =>
-                                  sendBagsForReview(bagsWithMissingPre(emp.bags))
-                                }
-                              />
-                              <EmployeeProductivityDrilldown
-                                bags={emp.bags}
-                                referenceDateEt={selectedDate}
-                                bagsLoading={loading && emp.bags == null}
-                                onReviewBag={openReviewBag}
-                                onSendBagForReview={(bag) =>
-                                  sendBagsForReview([bag], {
-                                    reasonCode: bagsWithMissingPre([bag]).length
-                                      ? "MISSING_PRE_EVIDENCE"
-                                      : "MANAGER_SENT_FOR_REVIEW",
-                                  })
-                                }
-                                sendingReview={sendingReview || reviewLoadingBagId != null}
-                              />
-                            </Box>
-                          </EmployeeProductivityDrilldownCollapse>
-                        </TableCell>
-                      </TableRow>
-                    </Fragment>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        )}
+                          >
+                            <EmployeeSummaryPanel
+                              emp={emp}
+                              missingPreCount={bagsWithMissingPre(emp.bags).length}
+                              sendingReview={sendingReview}
+                              onSendForReview={() =>
+                                sendBagsForReview(bagsWithMissingPre(emp.bags))
+                              }
+                            />
+                            <EmployeeProductivityDrilldown
+                              bags={emp.bags}
+                              sessions={emp.sessions}
+                              roleFilterKeys={roleFilterKeys}
+                              referenceDateEt={selectedDate}
+                              bagsLoading={loading && emp.bags == null}
+                              onReviewBag={openReviewBag}
+                              onSendBagForReview={(bag) =>
+                                sendBagsForReview([bag], {
+                                  reasonCode: bagsWithMissingPre([bag]).length
+                                    ? "MISSING_PRE_EVIDENCE"
+                                    : "MANAGER_SENT_FOR_REVIEW",
+                                })
+                              }
+                              sendingReview={sendingReview || reviewLoadingBagId != null}
+                              onAssignSession={assignBagSession}
+                              assigning={assigningSession}
+                            />
+                          </Box>
+                        </EmployeeProductivityDrilldownCollapse>
+                      </TableCell>
+                    </TableRow>
+                  </Fragment>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </TableContainer>
       </Box>
       {reviewError ? (
         <Alert severity="error" sx={{ mt: 1.25 }} onClose={() => setReviewError("")}>

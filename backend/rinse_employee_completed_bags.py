@@ -2185,8 +2185,41 @@ def _try_build_step1_employee_productivity_dashboard(
     from backend.rinse_folding_folder_role_productivity import (
         apply_folder_dual_productivity_to_section,
     )
+    from backend.rinse_employee_productivity_sessions import (
+        apply_productivity_session_context_to_section,
+        resolve_customer_names_for_bags,
+    )
 
     scoped_emp = apply_folder_dual_productivity_to_section(
+        cursor,
+        org,
+        scoped_emp,
+        selected_date_et=selected_date_et,
+        user_maps=user_maps,
+    )
+    # One batch customer resolve for all employees (day-bag snapshot → presence → registry).
+    all_bags: list = []
+    for emp in scoped_emp.get("employees") or []:
+        if isinstance(emp, dict) and emp.get("bags"):
+            all_bags.extend(emp["bags"])
+    if all_bags:
+        named = {
+            str(b.get("bag_id") or "").strip().upper(): b
+            for b in resolve_customer_names_for_bags(
+                cursor, org, all_bags, selected_date_et=selected_date_et
+            )
+            if b.get("bag_id")
+        }
+        for emp in scoped_emp.get("employees") or []:
+            if not isinstance(emp, dict) or not emp.get("bags"):
+                continue
+            emp["bags"] = [
+                named.get(str(b.get("bag_id") or "").strip().upper(), b) for b in emp["bags"]
+            ]
+            if "workload_bags" in emp:
+                emp["workload_bags"] = emp["bags"]
+    # Additive session context only — must not change productivity rates.
+    scoped_emp = apply_productivity_session_context_to_section(
         cursor,
         org,
         scoped_emp,
@@ -2265,10 +2298,41 @@ def build_employee_productivity_dashboard_payload(
     from backend.rinse_folding_folder_role_productivity import (
         apply_folder_dual_productivity_to_section,
     )
+    from backend.rinse_employee_productivity_sessions import (
+        apply_productivity_session_context_to_section,
+        resolve_customer_names_for_bags,
+    )
 
     roster_entries = list_roster_entries(cursor, org, roster_date=selected_date_et)
     user_maps = _load_rinse_user_maps(cursor, org)
     scoped_emp = apply_folder_dual_productivity_to_section(
+        cursor,
+        org,
+        scoped_emp,
+        selected_date_et=selected_date_et,
+        user_maps=user_maps,
+    )
+    all_bags: list = []
+    for emp in scoped_emp.get("employees") or []:
+        if isinstance(emp, dict) and emp.get("bags"):
+            all_bags.extend(emp["bags"])
+    if all_bags:
+        named = {
+            str(b.get("bag_id") or "").strip().upper(): b
+            for b in resolve_customer_names_for_bags(
+                cursor, org, all_bags, selected_date_et=selected_date_et
+            )
+            if b.get("bag_id")
+        }
+        for emp in scoped_emp.get("employees") or []:
+            if not isinstance(emp, dict) or not emp.get("bags"):
+                continue
+            emp["bags"] = [
+                named.get(str(b.get("bag_id") or "").strip().upper(), b) for b in emp["bags"]
+            ]
+            if "workload_bags" in emp:
+                emp["workload_bags"] = emp["bags"]
+    scoped_emp = apply_productivity_session_context_to_section(
         cursor,
         org,
         scoped_emp,

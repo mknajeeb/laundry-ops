@@ -4,7 +4,9 @@ import {
   Button,
   Chip,
   Collapse,
-  Paper,
+  FormControl,
+  MenuItem,
+  Select,
   Stack,
   Table,
   TableBody,
@@ -17,9 +19,16 @@ import {
   useMediaQuery,
   useTheme,
 } from "@mui/material";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ShiftBagRecordRow from "./ShiftBagRecordRow";
 import CopyableBagId from "../CopyableBagId";
-import { bagHasMissingPre, resolveBagWeightLbs } from "../../utils/employeeProductivityHelpers";
+import {
+  bagHasMissingPre,
+  displayCustomerName,
+  filterSessionsByRole,
+  fmtDurationMinutes,
+  resolveBagWeightLbs,
+} from "../../utils/employeeProductivityHelpers";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 
 function eventTs(bag) {
@@ -35,6 +44,15 @@ function eventTs(bag) {
 function fmtLbs(v) {
   if (v == null || Number.isNaN(Number(v))) return "—";
   return `${Number(v).toFixed(1)} lb`;
+}
+
+function shortTime(value) {
+  if (value == null || value === "") return "—";
+  const friendly = formatFriendlyEtWall(value);
+  if (!friendly || friendly === "—") return "—";
+  // "Jul 24, 8:00 AM ET" → "8:00 AM"
+  const m = String(friendly).match(/(\d{1,2}:\d{2}\s*[AP]M)/i);
+  return m ? m[1].replace(/\s+/g, " ") : friendly.replace(/\s*ET$/i, "").trim();
 }
 
 function WeightCell({ bag }) {
@@ -55,21 +73,10 @@ function WeightCell({ bag }) {
       </Tooltip>
     );
   }
-  const debugReason = bag.weight_debug_reason;
-  const label = "Missing PRE";
-  if (!debugReason) {
-    return (
-      <Tooltip title={<Box sx={{ whiteSpace: "pre-line" }}>{tip}</Box>} arrow placement="top">
-        <Typography component="span" variant="body2" color="warning.main" sx={{ fontWeight: 600 }}>
-          {label}
-        </Typography>
-      </Tooltip>
-    );
-  }
   return (
-    <Tooltip title={`${tip}\n${debugReason}`} arrow placement="top">
+    <Tooltip title={<Box sx={{ whiteSpace: "pre-line" }}>{tip}</Box>} arrow placement="top">
       <Typography component="span" variant="body2" color="warning.main" sx={{ fontWeight: 600 }}>
-        {label}
+        Missing PRE
       </Typography>
     </Tooltip>
   );
@@ -85,6 +92,35 @@ function normalizeProcessedBag(bag) {
     completed_lbs: completedLbs,
     weight_lbs: completedLbs,
   };
+}
+
+function sessionDisplay(bag) {
+  if (bag?.session_assignment === "needs_review" || bag?.needs_review) return "Needs Review";
+  if (bag?.session_assignment === "unassigned" || !bag?.session_id) return "Unassigned";
+  // Never expose internal session_id in the UI.
+  const code = String(bag.session_code || "").trim();
+  const label = String(bag.session_assignment_label || "").trim();
+  if (code && code !== String(bag.session_id || "")) return code;
+  if (label && label !== String(bag.session_id || "") && label !== "Unassigned" && label !== "Needs Review") {
+    return label;
+  }
+  return "SESSION";
+}
+
+function idleHeaderPhrase(session) {
+  const minutes = session?.idle_minutes;
+  if (minutes == null || Number.isNaN(Number(minutes))) {
+    if (session?.idle_label) return `${session.idle_label} Idle`;
+    return null;
+  }
+  const total = Math.max(0, Math.round(Number(minutes)));
+  if (total >= 60) {
+    const hours = Math.floor(total / 60);
+    const mins = total % 60;
+    if (mins) return `${hours}h ${mins}m Idle`;
+    return `${hours}h Idle`;
+  }
+  return `${total} min Idle`;
 }
 
 function BagActionBar({ bag, onReviewBag, onSendBagForReview, sendingReview }) {
@@ -125,24 +161,84 @@ function BagActionBar({ bag, onReviewBag, onSendBagForReview, sendingReview }) {
   );
 }
 
-function BagMobileCard({
+function SessionAssignSelect({ bag, sessions, onAssignSession, assigning }) {
+  if (typeof onAssignSession !== "function") {
+    return (
+      <Typography variant="body2" sx={{ whiteSpace: "nowrap" }}>
+        {sessionDisplay(bag)}
+      </Typography>
+    );
+  }
+  const value = bag.session_id || "";
+  return (
+    <FormControl size="small" fullWidth sx={{ minWidth: 110 }} onClick={(e) => e.stopPropagation()}>
+      <Select
+        value={value}
+        displayEmpty
+        disabled={assigning}
+        onChange={(e) => onAssignSession(bag, e.target.value || null)}
+        sx={{
+          fontSize: "0.8rem",
+          minHeight: 44,
+          "& .MuiSelect-select": { minHeight: 44, display: "flex", alignItems: "center", py: 1 },
+        }}
+        renderValue={(selected) => {
+          if (!selected) return "Unassigned";
+          const match = (sessions || []).find((s) => s.session_id === selected);
+          if (match?.session_code) return match.session_code;
+          if (bag.session_code && bag.session_code !== selected) return bag.session_code;
+          return "SESSION";
+        }}
+      >
+        <MenuItem value="">
+          <em>Unassigned</em>
+        </MenuItem>
+        {(sessions || []).map((s) => (
+          <MenuItem key={s.session_id} value={s.session_id}>
+            <Box>
+              <Typography variant="body2" fontWeight={700}>
+                {s.session_code || "SESSION"}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {s.time_range_label
+                  || `${shortTime(s.start_time)}–${
+                    s.end_display === "Open" || s.end_display === "Unresolved"
+                      ? s.end_display
+                      : shortTime(s.end_time)
+                  }`}
+              </Typography>
+            </Box>
+          </MenuItem>
+        ))}
+      </Select>
+    </FormControl>
+  );
+}
+
+function BagMobileRow({
   bag,
   expanded,
   onToggle,
   referenceDateEt,
-  statusLabel,
   onReviewBag,
   onSendBagForReview,
   sendingReview,
+  sessions,
+  onAssignSession,
+  assigning,
 }) {
   const normalized = normalizeProcessedBag(bag);
   return (
-    <Paper
-      variant="outlined"
+    <Box
       onClick={onToggle}
-      sx={{ p: 1.1, borderRadius: 1.5, cursor: "pointer" }}
+      sx={{
+        py: 1,
+        borderBottom: "1px solid",
+        borderColor: "divider",
+        cursor: "pointer",
+      }}
     >
-      <Stack spacing={0.5}>
+      <Stack spacing={0.35}>
         <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
           <Box sx={{ minWidth: 0 }}>
             <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
@@ -150,68 +246,75 @@ function BagMobileCard({
                 bagId={bag.bag_id}
                 sx={{ fontSize: "0.95rem", wordBreak: "break-all", color: "primary.main" }}
               />
-              {statusLabel ? (
-                <Chip label={statusLabel} size="small" sx={{ fontWeight: 700, fontSize: "0.7rem" }} />
-              ) : null}
               {bagHasMissingPre(bag) ? (
                 <Chip label="Missing PRE" size="small" color="warning" sx={{ fontWeight: 700, fontSize: "0.7rem" }} />
               ) : null}
             </Stack>
-            <Typography variant="body2" color="text.secondary">
-              {formatFriendlyEtWall(normalized.completion_time_et || normalized.completion_time)}
+            <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
+              {displayCustomerName(bag)}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" display="block">
+              {shortTime(normalized.completion_time_et || normalized.completion_time)}
+              {" · "}
+              {sessionDisplay(bag)}
+              {" · Elapsed "}
+              {bag.elapsed_time_label || fmtDurationMinutes(bag.elapsed_time_minutes)}
             </Typography>
           </Box>
           <Box sx={{ whiteSpace: "nowrap" }}>
-            {resolveBagWeightLbs(bag) != null ? (
-              <Typography variant="body2" fontWeight={700} component="span">
-                {`${resolveBagWeightLbs(bag)} lbs`}
-              </Typography>
-            ) : (
-              <WeightCell bag={bag} />
-            )}
+            <WeightCell bag={bag} />
           </Box>
         </Stack>
-        <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
-          {bag.customer_name || "—"}
-        </Typography>
-        <Typography variant="caption" color="text.secondary">
-          {bag.service_type || bag.service_bucket || "—"} · {normalized.completion_signal || "—"}
-        </Typography>
       </Stack>
       <Collapse in={expanded} unmountOnExit>
         <Box sx={{ mt: 1 }} onClick={(e) => e.stopPropagation()}>
-          <Typography variant="caption" display="block" sx={{ mb: 0.5, whiteSpace: "pre-line" }}>
-            {`Credited Weight (PRE): ${fmtLbs(bag.credited_weight_lbs ?? resolveBagWeightLbs(bag))}\nEvidence PRE: ${fmtLbs(bag.evidence_pre_weight_lbs ?? bag.pre_weight_lbs)}\nEvidence POST: ${fmtLbs(bag.evidence_post_weight_lbs)}\nRevenue Weight (POST): ${fmtLbs(bag.output_weight_lbs ?? bag.authoritative_post_weight_lbs ?? bag.post_weight_lbs)}`}
+          <Typography variant="caption" display="block">
+            Bag Start: {shortTime(bag.bag_start)}
           </Typography>
+          <Typography variant="caption" display="block" sx={{ mb: 0.75 }}>
+            Bag End: {shortTime(bag.bag_end || normalized.completion_time)}
+          </Typography>
+          <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.35 }}>
+            Assign Session
+          </Typography>
+          <SessionAssignSelect
+            bag={bag}
+            sessions={sessions}
+            onAssignSession={onAssignSession}
+            assigning={assigning}
+          />
           <BagActionBar
             bag={bag}
             onReviewBag={onReviewBag}
             onSendBagForReview={onSendBagForReview}
             sendingReview={sendingReview}
           />
-          <ShiftBagRecordRow
-            row={normalized}
-            variant="at_vendor"
-            referenceDateEt={referenceDateEt}
-            defaultOpen
-            friendlyTimeDisplay
-          />
+          <Box sx={{ mt: 1 }}>
+            <ShiftBagRecordRow
+              row={normalized}
+              variant="at_vendor"
+              referenceDateEt={referenceDateEt}
+              defaultOpen
+              friendlyTimeDisplay
+            />
+          </Box>
         </Box>
       </Collapse>
-    </Paper>
+    </Box>
   );
 }
 
-function BagTableSection({
-  title,
+function BagTable({
   bags,
   expandedBagId,
   setExpandedBagId,
   referenceDateEt,
-  statusForBag,
   onReviewBag,
   onSendBagForReview,
   sendingReview,
+  sessions,
+  onAssignSession,
+  assigning,
 }) {
   const sortedBags = useMemo(
     () => [...(bags || [])].sort((a, b) => eventTs(a).localeCompare(eventTs(b))),
@@ -222,61 +325,67 @@ function BagTableSection({
 
   if (!sortedBags.length) {
     return (
-      <Box sx={{ mb: 1.25 }}>
-        <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
-          {title}
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          None
-        </Typography>
-      </Box>
+      <Typography variant="body2" color="text.secondary" sx={{ py: 0.5 }}>
+        No bags in this session.
+      </Typography>
     );
   }
 
   return (
-    <Box sx={{ mb: 1.25 }}>
-      <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
-        {title}
-      </Typography>
-      <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 1.5, overflowX: "auto" }}>
-        <Table size="small" aria-label={title}>
+    <Box>
+      <TableContainer sx={{ overflowX: "auto" }}>
+        <Table size="small" aria-label="Completed bags">
           <TableHead>
             <TableRow>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Time</TableCell>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Bag ID</TableCell>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Customer</TableCell>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Service</TableCell>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }} align="right">Credited Lbs (PRE)</TableCell>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Signal</TableCell>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Status</TableCell>
-              {showActions ? <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Actions</TableCell> : null}
+              <TableCell sx={{ fontWeight: 700, py: 1 }}>Time</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1 }}>Bag ID</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1 }}>Customer</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1 }}>Session</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1 }}>Bag Start</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1 }}>Bag End</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1 }} align="right">Elapsed</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1 }} align="right">PRE Lbs</TableCell>
+              {showActions ? <TableCell sx={{ fontWeight: 700, py: 1 }}>Actions</TableCell> : null}
             </TableRow>
           </TableHead>
           <TableBody>
             {sortedBags.map((bag) => {
               const normalized = normalizeProcessedBag(bag);
-              const statusLabel = statusForBag ? statusForBag(bag) : null;
               return (
                 <TableRow
-                  key={`${title}-${bag.bag_id}`}
+                  key={bag.bag_id}
                   selected={expandedBagId === bag.bag_id}
                   hover
                   onClick={() => setExpandedBagId((prev) => (prev === bag.bag_id ? null : bag.bag_id))}
-                  sx={{ cursor: "pointer", "& td": { py: 1.1 } }}
+                  sx={{ cursor: "pointer", "& td": { py: 1 } }}
                 >
                   <TableCell sx={{ whiteSpace: "nowrap" }}>
-                    {formatFriendlyEtWall(normalized.completion_time_et || normalized.completion_time)}
+                    {shortTime(normalized.completion_time_et || normalized.completion_time)}
                   </TableCell>
                   <TableCell>
                     <CopyableBagId bagId={bag.bag_id} />
                   </TableCell>
-                  <TableCell sx={{ maxWidth: 180, wordBreak: "break-word" }}>{bag.customer_name || "—"}</TableCell>
-                  <TableCell>{bag.service_type || bag.service_bucket || "—"}</TableCell>
+                  <TableCell sx={{ maxWidth: 140, wordBreak: "break-word" }}>
+                    {displayCustomerName(bag)}
+                  </TableCell>
+                  <TableCell sx={{ minWidth: 120 }}>
+                    <SessionAssignSelect
+                      bag={bag}
+                      sessions={sessions}
+                      onAssignSession={onAssignSession}
+                      assigning={assigning}
+                    />
+                  </TableCell>
+                  <TableCell sx={{ whiteSpace: "nowrap" }}>{shortTime(bag.bag_start)}</TableCell>
+                  <TableCell sx={{ whiteSpace: "nowrap" }}>
+                    {shortTime(bag.bag_end || normalized.completion_time)}
+                  </TableCell>
+                  <TableCell align="right">
+                    {bag.elapsed_time_label || fmtDurationMinutes(bag.elapsed_time_minutes)}
+                  </TableCell>
                   <TableCell align="right">
                     <WeightCell bag={normalized} />
                   </TableCell>
-                  <TableCell>{normalized.completion_signal || "—"}</TableCell>
-                  <TableCell>{statusLabel || "—"}</TableCell>
                   {showActions ? (
                     <TableCell onClick={(e) => e.stopPropagation()} sx={{ whiteSpace: "nowrap" }}>
                       <Stack direction="row" spacing={0.5}>
@@ -311,9 +420,6 @@ function BagTableSection({
       </TableContainer>
       {expandedBag ? (
         <Box sx={{ mt: 1 }}>
-          <Typography variant="caption" display="block" sx={{ mb: 0.5, whiteSpace: "pre-line" }}>
-            {`Credited Weight (PRE): ${fmtLbs(expandedBag.credited_weight_lbs ?? resolveBagWeightLbs(expandedBag))}\nEvidence PRE: ${fmtLbs(expandedBag.evidence_pre_weight_lbs ?? expandedBag.pre_weight_lbs)}\nEvidence POST: ${fmtLbs(expandedBag.evidence_post_weight_lbs)}\nRevenue Weight (POST): ${fmtLbs(expandedBag.output_weight_lbs ?? expandedBag.authoritative_post_weight_lbs ?? expandedBag.post_weight_lbs)}`}
-          </Typography>
           <BagActionBar
             bag={expandedBag}
             onReviewBag={onReviewBag}
@@ -334,73 +440,239 @@ function BagTableSection({
   );
 }
 
-/** Drilldown for completed employee production credit. */
+function groupBagsBySession(bags, sessions) {
+  const sessionMap = Object.fromEntries((sessions || []).map((s) => [s.session_id, s]));
+  const byId = {};
+  const orphans = [];
+  for (const bag of [...(bags || [])].sort((a, b) => eventTs(a).localeCompare(eventTs(b)))) {
+    const sid = bag.session_id;
+    if (
+      sid
+      && bag.session_assignment !== "unassigned"
+      && bag.session_assignment !== "needs_review"
+      && sessionMap[sid]
+    ) {
+      if (!byId[sid]) byId[sid] = { session: sessionMap[sid], bags: [] };
+      byId[sid].bags.push(bag);
+    } else {
+      orphans.push(bag);
+    }
+  }
+  const ordered = (sessions || [])
+    .map((s) => byId[s.session_id] || { session: s, bags: [] })
+    .filter((g) => g.bags.length > 0 || g.session);
+  // Prefer sessions that have bags first, then empty sessions still listed
+  const withBags = ordered.filter((g) => g.bags.length);
+  const empty = ordered.filter((g) => !g.bags.length);
+  const result = [...withBags, ...empty];
+  if (orphans.length) result.push({ session: null, bags: orphans });
+  return result;
+}
+
+function SessionGroup({
+  group,
+  expandedBagId,
+  setExpandedBagId,
+  referenceDateEt,
+  onReviewBag,
+  onSendBagForReview,
+  sendingReview,
+  sessions,
+  onAssignSession,
+  assigning,
+  isMobile,
+}) {
+  const [open, setOpen] = useState(true);
+  const session = group.session;
+  const bagCount = session?.completed_bags ?? group.bags.length;
+  const lbs = session?.credited_lbs;
+  const rawCode = String(session?.session_code || "").trim();
+  const code = session
+    ? (rawCode && rawCode !== String(session.session_id || "") ? rawCode : "SESSION")
+    : "Unassigned";
+  const startLabel = session
+    ? shortTime(session.start_time)
+    : null;
+  const endLabel = session
+    ? (session.end_display === "Open" || session.end_display === "Unresolved"
+      ? session.end_display
+      : shortTime(session.end_time))
+    : null;
+  const idlePhrase = session ? idleHeaderPhrase(session) : null;
+  const bagWord = bagCount === 1 ? "Bag" : "Bags";
+
+  return (
+    <Box sx={{ mb: 1.5 }}>
+      <Stack
+        direction="row"
+        spacing={0.5}
+        alignItems="flex-start"
+        onClick={() => setOpen((v) => !v)}
+        sx={{ cursor: "pointer", userSelect: "none", mb: 0.75 }}
+      >
+        <ExpandMoreIcon
+          fontSize="small"
+          sx={{
+            mt: 0.15,
+            transform: open ? "rotate(0deg)" : "rotate(-90deg)",
+            transition: "transform 0.15s",
+            color: "text.secondary",
+            flexShrink: 0,
+          }}
+        />
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography variant="subtitle2" fontWeight={800} sx={{ wordBreak: "break-word" }}>
+              {session ? code : "Unassigned / Needs Review"}
+            </Typography>
+            {session?.timing_conflict ? (
+              <Chip
+                size="small"
+                color="warning"
+                label="Timing conflict"
+                sx={{ fontWeight: 700, fontSize: "0.7rem", height: 22 }}
+              />
+            ) : null}
+          </Stack>
+          {session ? (
+            <>
+              <Typography variant="body2" color="text.secondary" sx={{ wordBreak: "break-word" }}>
+                {startLabel} → {endLabel}
+              </Typography>
+              <Typography variant="body2" fontWeight={600} sx={{ wordBreak: "break-word" }}>
+                {bagCount} {bagWord}
+                {lbs != null ? ` · ${Number(lbs).toFixed(1)} PRE Lbs` : ""}
+                {idlePhrase ? ` · ${idlePhrase}` : ""}
+              </Typography>
+            </>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              {group.bags.length} bag{group.bags.length === 1 ? "" : "s"}
+            </Typography>
+          )}
+        </Box>
+      </Stack>
+      <Collapse in={open}>
+        <Box sx={{ pl: { xs: 0.5, sm: 3 } }}>
+          {isMobile ? (
+            <Box>
+              {group.bags.map((bag) => (
+                <BagMobileRow
+                  key={bag.bag_id}
+                  bag={bag}
+                  expanded={expandedBagId === bag.bag_id}
+                  onToggle={() => setExpandedBagId((prev) => (prev === bag.bag_id ? null : bag.bag_id))}
+                  referenceDateEt={referenceDateEt}
+                  onReviewBag={onReviewBag}
+                  onSendBagForReview={onSendBagForReview}
+                  sendingReview={sendingReview}
+                  sessions={sessions}
+                  onAssignSession={onAssignSession}
+                  assigning={assigning}
+                />
+              ))}
+              {!group.bags.length ? (
+                <Typography variant="body2" color="text.secondary">
+                  No bags in this session.
+                </Typography>
+              ) : null}
+            </Box>
+          ) : (
+            <BagTable
+              bags={group.bags}
+              expandedBagId={expandedBagId}
+              setExpandedBagId={setExpandedBagId}
+              referenceDateEt={referenceDateEt}
+              onReviewBag={onReviewBag}
+              onSendBagForReview={onSendBagForReview}
+              sendingReview={sendingReview}
+              sessions={sessions}
+              onAssignSession={onAssignSession}
+              assigning={assigning}
+            />
+          )}
+        </Box>
+      </Collapse>
+    </Box>
+  );
+}
+
+/** Drilldown: session-grouped completed bags (no separate sessions table). */
 export default function EmployeeProductivityDrilldown({
   bags,
+  sessions = [],
+  roleFilterKeys = null,
   referenceDateEt,
   bagsLoading = false,
   onReviewBag,
   onSendBagForReview,
   sendingReview = false,
+  onAssignSession,
+  assigning = false,
 }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const [expandedBagId, setExpandedBagId] = useState(null);
-  const completed = bags;
+  const visibleSessions = useMemo(
+    () => filterSessionsByRole(sessions, roleFilterKeys),
+    [sessions, roleFilterKeys],
+  );
+  const groups = useMemo(() => {
+    const all = groupBagsBySession(bags || [], sessions || []);
+    if (!roleFilterKeys?.length) return all.filter((g) => g.bags.length || !g.session);
+    const kept = [];
+    const moved = [];
+    for (const g of all) {
+      if (!g.session || roleFilterKeys.includes(g.session.role_filter_key)) {
+        if (g.bags.length || !g.session) kept.push(g);
+        else if (roleFilterKeys.includes(g.session.role_filter_key)) kept.push(g);
+      } else if (g.bags.length) {
+        moved.push(...g.bags);
+      }
+    }
+    if (moved.length) {
+      const orphan = kept.find((g) => !g.session);
+      if (orphan) orphan.bags.push(...moved);
+      else kept.push({ session: null, bags: moved });
+    }
+    return kept.filter((g) => g.bags.length > 0 || (g.session && roleFilterKeys.includes(g.session.role_filter_key)));
+  }, [bags, sessions, roleFilterKeys]);
 
-  if (bagsLoading || completed == null) {
+  if (bagsLoading || bags == null) {
     return (
       <Typography variant="body2" color="text.secondary">
         Loading bag details…
       </Typography>
     );
   }
-  if (!completed.length) {
-    return (
-      <Typography variant="body2" color="text.secondary">
-        No completed bags for this employee.
-      </Typography>
-    );
-  }
-
-  if (isMobile) {
-    return (
-      <Box sx={{ py: 0.5 }}>
-        <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
-          Completed Bags
-        </Typography>
-        <Stack spacing={1}>
-          {[...completed].sort((a, b) => eventTs(a).localeCompare(eventTs(b))).map((bag) => (
-            <BagMobileCard
-              key={`completed-${bag.bag_id}`}
-              bag={bag}
-              expanded={expandedBagId === bag.bag_id}
-              onToggle={() => setExpandedBagId((prev) => (prev === bag.bag_id ? null : bag.bag_id))}
-              referenceDateEt={referenceDateEt}
-              statusLabel="Completed"
-              onReviewBag={onReviewBag}
-              onSendBagForReview={onSendBagForReview}
-              sendingReview={sendingReview}
-            />
-          ))}
-        </Stack>
-      </Box>
-    );
-  }
 
   return (
     <Box sx={{ py: 0.5 }}>
-      <BagTableSection
-        title={`Completed Bags (${completed.length})`}
-        bags={completed}
-        expandedBagId={expandedBagId}
-        setExpandedBagId={setExpandedBagId}
-        referenceDateEt={referenceDateEt}
-        statusForBag={() => "Completed"}
-        onReviewBag={onReviewBag}
-        onSendBagForReview={onSendBagForReview}
-        sendingReview={sendingReview}
-      />
+      <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>
+        Completed Bags ({(bags || []).length})
+      </Typography>
+      {!bags.length ? (
+        <Typography variant="body2" color="text.secondary">
+          No completed bags for this employee.
+        </Typography>
+      ) : (
+        groups.map((group, idx) => (
+          <SessionGroup
+            key={group.session?.session_id || `orphan-${idx}`}
+            group={group}
+            expandedBagId={expandedBagId}
+            setExpandedBagId={setExpandedBagId}
+            referenceDateEt={referenceDateEt}
+            onReviewBag={onReviewBag}
+            onSendBagForReview={onSendBagForReview}
+            sendingReview={sendingReview}
+            sessions={visibleSessions}
+            onAssignSession={onAssignSession}
+            assigning={assigning}
+            isMobile={isMobile}
+          />
+        ))
+      )}
     </Box>
   );
 }

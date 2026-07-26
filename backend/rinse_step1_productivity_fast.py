@@ -258,6 +258,7 @@ def load_completed_productivity_day_bags(
                 "employee": emp,
                 "credited_employee": emp,
                 "completed_by_employee": emp,
+                "customer_name": None,
                 "completion_time": ts.isoformat(sep=" ") if ts else None,
                 "completion_timestamp": ts.isoformat(sep=" ") if ts else None,
                 "processed_time": ts.isoformat(sep=" ") if ts else None,

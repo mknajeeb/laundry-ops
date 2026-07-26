@@ -804,6 +804,13 @@ export const getEmployeeProductivityBags = (params = {}, config = {}) =>
     headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
     ...config,
   });
+export const postEmployeeBagSessionAssignment = (body = {}, config = {}) =>
+  axios.post(
+    `${API_BASE}/rinse/shift-analysis/employee-productivity/bag-session-assignment`,
+    body,
+    { timeout: 30000, ...config },
+  );
+
 
 /** Daily shift roster — end-of-day labor recording. */
 export const getDailyShiftRoster = (params = {}) =>
@@ -2242,3 +2249,6 @@ export const exportDailyOperationsHdProductionUrl = (opsDate) =>
   `${API_BASE}/api/daily-operations/days/${opsDate}/hd-production/export`;
 
 export { API_BASE };
+
+/* Session productivity (ca3eaa8b) */
+

@@ -1151,6 +1151,128 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/employee-productivity/bags", methods=["GET"])
+    def rinse_shift_analysis_employee_productivity_bags():
+        """Lazy employee expand — bags + payroll sessions for one employee."""
+        from backend.rinse_employee_completed_bags import (
+            build_employee_productivity_dashboard_payload,
+        )
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            employee = (request.args.get("employee") or "").strip()
+            if not employee:
+                return jsonify({"error": "employee required"}), 400
+            raw_date = (request.args.get("date_et") or request.args.get("date_start") or "").strip()
+            if not raw_date:
+                from backend.rinse_scheduled_scrape import _today_et
+
+                selected = _today_et()
+            else:
+                selected = parse_date_value(raw_date)
+            if not isinstance(selected, date):
+                return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+            rush_filter = (request.args.get("rush_filter") or "all").strip().lower()
+            payload = build_employee_productivity_dashboard_payload(
+                cursor,
+                tenant_oid,
+                selected_date_et=selected,
+                rush_filter=rush_filter,
+            )
+            section = payload.get("employee_completed_bags_today") or {}
+            match = None
+            for emp in section.get("employees") or []:
+                if str((emp or {}).get("employee") or "").strip() == employee:
+                    match = emp
+                    break
+            if match is None:
+                return jsonify({"error": "Employee not found for date"}), 404
+            return jsonify(
+                json_safe_rinse(
+                    {
+                        "selected_date_et": selected.isoformat(),
+                        "employee": employee,
+                        "sessions": match.get("sessions") or [],
+                        "bags": match.get("bags") or [],
+                        "completed_bags": match.get("bags") or [],
+                        "summary": {
+                            "total_sessions": match.get("total_sessions"),
+                            "total_session_minutes": match.get("total_session_minutes"),
+                            "total_idle_minutes": match.get("total_idle_minutes"),
+                            "idle_pct": match.get("session_idle_pct"),
+                            "first_session": match.get("first_session"),
+                            "last_session": match.get("last_session"),
+                            "completed_bags": match.get("completed_bags"),
+                            "total_completed_lbs": match.get("total_completed_lbs"),
+                        },
+                        "employee_row": match,
+                    }
+                )
+            )
+        except Exception as exc:
+            return _public_server_error("Unable to load employee productivity bags.", exc)
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/rinse/shift-analysis/employee-productivity/bag-session-assignment",
+        methods=["POST"],
+    )
+    def rinse_shift_analysis_bag_session_assignment():
+        """Persist manual bag → payroll session mapping (does not alter ownership/payroll)."""
+        from backend.rinse_employee_productivity_sessions import (
+            upsert_manual_bag_session_assignment,
+        )
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            bag_id = (body.get("bag_id") or "").strip()
+            session_id = body.get("session_id")
+            employee_name = body.get("employee") or body.get("employee_name")
+            segment_id = body.get("segment_id")
+            raw_date = (body.get("date_et") or body.get("selected_date_et") or "").strip()
+            if not bag_id or not raw_date:
+                return jsonify({"error": "bag_id and date_et required"}), 400
+            selected = parse_date_value(raw_date)
+            if not isinstance(selected, date):
+                return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+            try:
+                seg_id = int(segment_id) if segment_id is not None and segment_id != "" else None
+            except (TypeError, ValueError):
+                seg_id = None
+            row = upsert_manual_bag_session_assignment(
+                cursor,
+                tenant_oid,
+                bag_id=bag_id,
+                selected_date_et=selected,
+                session_id=session_id,
+                segment_id=seg_id,
+                employee_name=employee_name,
+                assigned_by_user_id=me.get("id") if isinstance(me, dict) else None,
+                note=body.get("note"),
+            )
+            conn.commit()
+            return jsonify({"ok": True, "assignment": row})
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return _public_server_error("Unable to save bag session assignment.", exc)
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/shift-analysis/workload-productivity-debug", methods=["GET"])
     def rinse_shift_analysis_workload_productivity_debug():
         """Debug — workload ↔ employee productivity reconciliation audit."""

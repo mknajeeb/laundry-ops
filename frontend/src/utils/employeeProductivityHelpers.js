@@ -13,6 +13,18 @@ export const PRODUCTIVITY_RANK_OPTIONS = [
   { id: "idle_time", label: "Idle Time" },
 ];
 
+/** Sortable table columns for the simplified productivity list. */
+export const PRODUCTIVITY_TABLE_COLUMNS = [
+  { id: "employee", label: "Employee", align: "left", sortType: "string" },
+  { id: "bags", label: "Completed Bags", align: "right", sortType: "number" },
+  { id: "bags_hr", label: "Bags / Hr", align: "right", sortType: "number" },
+  { id: "lbs", label: "Credited Lbs (PRE)", align: "right", sortType: "number" },
+  { id: "lbs_hr", label: "Employee Lbs / Hour (PRE)", align: "right", sortType: "number" },
+  { id: "prod_hours", label: "Productive Hours", align: "right", sortType: "number" },
+];
+
+export const DEFAULT_ROLE_FILTER_KEY = "RINSE_WF:FOLDER";
+
 export function employeeHasFolderDualProductivity(emp) {
   return Boolean(emp?.folder_role_dual_productivity);
 }
@@ -49,10 +61,17 @@ export function fmtAvgLbsPerBag(emp) {
 
 function rankValue(emp, rankBy) {
   switch (rankBy) {
+    case "employee":
+      return String(emp?.employee || "").toLowerCase();
     case "lbs":
       return Number(emp.total_completed_lbs) || 0;
     case "avg_lbs_bag":
       return avgLbsPerCompletedBag(emp);
+    case "prod_hours":
+      if (emp.role_hours != null) return Number(emp.role_hours);
+      return emp.productive_hours != null
+        ? Number(emp.productive_hours)
+        : (emp.worked_hours != null ? Number(emp.worked_hours) : null);
     case "role_bags_hr":
     case "bags_hr":
       if (emp.role_bags_per_hour != null) return Number(emp.role_bags_per_hour);
@@ -256,6 +275,24 @@ export function fmtSummaryNumber(value, digits = 0) {
   return Number(value).toFixed(digits);
 }
 
+export function fmtDurationMinutes(minutes) {
+  if (minutes == null || Number.isNaN(Number(minutes))) return "—";
+  const total = Math.max(0, Math.round(Number(minutes)));
+  const hours = Math.floor(total / 60);
+  const mins = total % 60;
+  if (hours && mins) return `${hours}h ${mins}m`;
+  if (hours) return `${hours}h`;
+  return `${mins}m`;
+}
+
+export function displayCustomerName(bag) {
+  const name = String(bag?.customer_name || bag?.name_clean || bag?.portal_customer_name || "").trim();
+  if (!name || name === "—" || name === "-" || name === "–" || name === "null") {
+    return "Unknown Customer";
+  }
+  return name;
+}
+
 /** Top / middle / bottom tier for conditional row highlighting. */
 export function performanceTier(rank, total, { minBags = 1 } = {}) {
   if (!total || !rank) return "middle";
@@ -268,18 +305,26 @@ export function performanceTier(rank, total, { minBags = 1 } = {}) {
 }
 
 /** Sort employees for ranking display; null rates sort last. Client-side only — no API reload. */
-export function rankEmployees(employees, rankBy = "bags") {
+export function rankEmployees(employees, rankBy = "bags", sortDir = "desc") {
   const list = [...(employees || [])];
+  const isString = rankBy === "employee";
   list.sort((a, b) => {
     const aActive = Number(a?.completed_bags) > 0;
     const bActive = Number(b?.completed_bags) > 0;
     if (aActive !== bActive) return aActive ? -1 : 1;
     const av = rankValue(a, rankBy);
     const bv = rankValue(b, rankBy);
+    if (isString) {
+      const cmp = String(av || "").localeCompare(String(bv || ""));
+      if (cmp !== 0) return sortDir === "asc" ? cmp : -cmp;
+      return String(a.employee || "").localeCompare(String(b.employee || ""));
+    }
     if (av == null && bv == null) return String(a.employee || "").localeCompare(String(b.employee || ""));
     if (av == null) return 1;
     if (bv == null) return -1;
-    if (bv !== av) return bv - av;
+    if (Number(bv) !== Number(av)) {
+      return sortDir === "asc" ? Number(av) - Number(bv) : Number(bv) - Number(av);
+    }
     return String(a.employee || "").localeCompare(String(b.employee || ""));
   });
   const activeCount = list.filter((e) => Number(e?.completed_bags) > 0).length;
@@ -295,6 +340,22 @@ export function rankEmployees(employees, rankBy = "bags") {
         : "middle",
     };
   });
+}
+
+export function employeeMatchesRoleFilter(emp, selectedKeys) {
+  const keys = Array.isArray(selectedKeys) ? selectedKeys : [];
+  if (!keys.length) return true;
+  const present = emp?.role_filter_keys_present || [];
+  if (!present.length) {
+    return Number(emp?.completed_bags) > 0;
+  }
+  return keys.some((k) => present.includes(k));
+}
+
+export function filterSessionsByRole(sessions, selectedKeys) {
+  const keys = Array.isArray(selectedKeys) ? selectedKeys : [];
+  if (!keys.length) return sessions || [];
+  return (sessions || []).filter((s) => keys.includes(s?.role_filter_key));
 }
 
 export function buildExecutiveSummaryCards(summary = {}, scopeLabel = "") {
