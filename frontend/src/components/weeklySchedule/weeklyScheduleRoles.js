@@ -2,13 +2,31 @@ import { parseTimeToMinutes } from "../../payroll/schedulePlanner";
 import { normalizeTimeHm } from "../datetime/scheduleTimeUi";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
-export const ROLE_ORDER = ["wash", "sort", "weigher", "fold", "hd_operator", "hd_folder", "non_rinse_folder", "attendant"];
+export const ROLE_ORDER = [
+  "wash",
+  "sort",
+  "weigher",
+  "fold",
+  "pt_washer",
+  "pt_sorter",
+  "pt_folder",
+  "hd_operator",
+  "hd_folder",
+  "non_rinse_folder",
+  "attendant",
+];
+
+/** Roles that show scheduled-hour totals in day/week summaries (PT kept separate). */
+export const HOUR_TRACKED_ROLES = ["wash", "sort", "fold", "pt_washer", "pt_sorter", "pt_folder"];
 
 export const WEEKLY_SCHEDULE_ROLES = [
   { value: "wash", label: "Wash" },
   { value: "sort", label: "Sort" },
   { value: "weigher", label: "Weigher" },
   { value: "fold", label: "Fold" },
+  { value: "pt_washer", label: "PT Washer" },
+  { value: "pt_sorter", label: "PT Sorter" },
+  { value: "pt_folder", label: "PT Folder" },
   { value: "hd_operator", label: "HD Operator" },
   { value: "hd_folder", label: "HD Folder" },
   { value: "non_rinse_folder", label: "Non-Rinse Folder" },
@@ -16,6 +34,7 @@ export const WEEKLY_SCHEDULE_ROLES = [
 ];
 
 const ROLE_ORDER_INDEX = Object.fromEntries(ROLE_ORDER.map((role, index) => [role, index]));
+const HOUR_TRACKED_ROLE_SET = new Set(HOUR_TRACKED_ROLES);
 
 /** Short labels for tight grid cells and day headers. */
 export const ROLE_COMPACT_LABELS = {
@@ -23,6 +42,9 @@ export const ROLE_COMPACT_LABELS = {
   sort: "Sort",
   weigher: "Weigh",
   fold: "Fold",
+  pt_washer: "PT Wash",
+  pt_sorter: "PT Sort",
+  pt_folder: "PT Fold",
   hd_operator: "HD Op",
   hd_folder: "HD Fold",
   non_rinse_folder: "NR Fold",
@@ -67,6 +89,33 @@ export const ROLE_STYLES = {
     cellBg: "#f3faf8",
     border: VEEWASH_DASHBOARD.tealBorder,
     label: "Fold",
+  },
+  pt_washer: {
+    accent: "#c2410c",
+    bg: "#ffedd5",
+    hoverBg: "#fed7aa",
+    chipBg: "#fff7ed",
+    cellBg: "#fffaf5",
+    border: "rgba(194, 65, 12, 0.28)",
+    label: "PT Washer",
+  },
+  pt_sorter: {
+    accent: "#0369a1",
+    bg: "#e0f2fe",
+    hoverBg: "#bae6fd",
+    chipBg: "#f0f9ff",
+    cellBg: "#f8fcff",
+    border: "rgba(3, 105, 161, 0.28)",
+    label: "PT Sorter",
+  },
+  pt_folder: {
+    accent: "#047857",
+    bg: "#d1fae5",
+    hoverBg: "#a7f3d0",
+    chipBg: "#ecfdf5",
+    cellBg: "#f5fdf8",
+    border: "rgba(4, 120, 87, 0.28)",
+    label: "PT Folder",
   },
   weigher: {
     accent: "#6d28d9",
@@ -133,19 +182,166 @@ export const ROLE_STYLES = {
   },
 };
 
+function normalizeFrontendRole(role) {
+  const key = String(role || "").trim().toLowerCase();
+  if (key === "folder") return "fold";
+  if (key === "operator") return "wash";
+  if (key === "pt wash" || key === "pt_wash") return "pt_washer";
+  if (key === "pt sort" || key === "pt_sort") return "pt_sorter";
+  if (key === "pt fold" || key === "pt_fold") return "pt_folder";
+  return key;
+}
+
 export function parseEntryRoles(entry) {
   let roles;
   if (Array.isArray(entry?.roles) && entry.roles.length) {
-    roles = entry.roles.map((r) => (r === "folder" ? "fold" : r));
+    roles = entry.roles.map((r) => normalizeFrontendRole(r));
   } else {
     const raw = String(entry?.role || "fold");
     roles = raw
       .split(",")
-      .map((r) => r.trim())
-      .map((r) => (r === "folder" ? "fold" : r))
+      .map((r) => normalizeFrontendRole(r.trim()))
       .filter(Boolean);
   }
   return sortRoles(roles);
+}
+
+/** Format scheduled hours: whole numbers without decimals, otherwise one decimal. */
+export function formatRoleHoursLabel(hours) {
+  const n = Number(hours || 0);
+  if (!Number.isFinite(n) || n <= 0) return "0h";
+  const rounded = Math.round(n * 10) / 10;
+  return Number.isInteger(rounded) ? `${rounded}h` : `${rounded.toFixed(1)}h`;
+}
+
+function entryIntervalMinutes(entry) {
+  const start = parseTimeToMinutes(normalizeTimeHm(entry?.start_time));
+  let end = parseTimeToMinutes(normalizeTimeHm(entry?.end_time));
+  if (start == null || end == null) return null;
+  if (end <= start) end += 24 * 60;
+  const breakMin = Math.max(0, Number(entry?.break_minutes || 0));
+  const hours = Math.max(0, end - start - breakMin) / 60;
+  return { start, end, breakMin, hours };
+}
+
+function intervalsOverlap(a, b) {
+  return a.start < b.end && b.start < a.end;
+}
+
+function hasOverlappingIntervals(intervals) {
+  for (let i = 0; i < intervals.length; i += 1) {
+    for (let j = i + 1; j < intervals.length; j += 1) {
+      if (intervalsOverlap(intervals[i], intervals[j])) return true;
+    }
+  }
+  return false;
+}
+
+function mergeIntervalHours(intervals) {
+  if (!intervals.length) return 0;
+  const sorted = [...intervals].sort((a, b) => a.start - b.start || a.end - b.end);
+  const merged = [{ start: sorted[0].start, end: sorted[0].end }];
+  for (let i = 1; i < sorted.length; i += 1) {
+    const cur = sorted[i];
+    const last = merged[merged.length - 1];
+    if (cur.start < last.end) {
+      last.end = Math.max(last.end, cur.end);
+    } else {
+      merged.push({ start: cur.start, end: cur.end });
+    }
+  }
+  // Overlap path uses merged wall-clock minutes (breaks already ambiguous across overlaps).
+  return merged.reduce((sum, iv) => sum + Math.max(0, iv.end - iv.start) / 60, 0);
+}
+
+/**
+ * Allocate scheduled hours to hour-tracked roles from role segments.
+ * Multi-role entries split segment hours evenly across their hour-tracked roles.
+ * Overlapping segments for the same employee/day/role are merged (no double-count).
+ */
+export function allocateRoleHoursByDay(entries) {
+  const byDay = Array.from({ length: 7 }, () => {
+    const hours = {};
+    for (const role of HOUR_TRACKED_ROLES) hours[role] = 0;
+    return hours;
+  });
+
+  /** @type {Map<string, Array<{start:number,end:number,hours:number}>>} */
+  const buckets = new Map();
+
+  for (const entry of entries || []) {
+    const uid = Number(entry.user_id);
+    const dow = Number(entry.day_of_week || 0);
+    if (!Number.isInteger(dow) || dow < 0 || dow > 6) continue;
+
+    const roles = parseEntryRoles(entry);
+    const hourRoles = roles.filter((role) => HOUR_TRACKED_ROLE_SET.has(role));
+    if (!hourRoles.length) continue;
+
+    const interval = entryIntervalMinutes(entry);
+    const segmentHours = interval
+      ? interval.hours
+      : Math.max(0, Number(entry.hours || 0));
+    if (segmentHours <= 0) continue;
+
+    const share = segmentHours / hourRoles.length;
+    for (const role of hourRoles) {
+      const key = `${uid}|${dow}|${role}`;
+      const list = buckets.get(key) || [];
+      if (interval) {
+        list.push({ start: interval.start, end: interval.end, hours: share });
+      } else {
+        // No clock range — accumulate share directly via a zero-width placeholder.
+        list.push({ start: 0, end: 0, hours: share, direct: true });
+      }
+      buckets.set(key, list);
+    }
+  }
+
+  for (const [key, list] of buckets.entries()) {
+    const parts = key.split("|");
+    const dow = Number(parts[1]);
+    const role = parts[2];
+    const timed = list.filter((item) => !item.direct);
+    const direct = list.filter((item) => item.direct);
+    let hours = direct.reduce((sum, item) => sum + item.hours, 0);
+    if (timed.length) {
+      if (hasOverlappingIntervals(timed)) {
+        // Preserve multi-role weight when merging overlaps (all shares equal for a role key).
+        const weight = timed[0].hours > 0 && timed[0].end > timed[0].start
+          ? timed[0].hours / ((timed[0].end - timed[0].start) / 60)
+          : 1;
+        hours += mergeIntervalHours(timed) * Math.min(1, weight || 1);
+      } else {
+        hours += timed.reduce((sum, item) => sum + item.hours, 0);
+      }
+    }
+    byDay[dow][role] += hours;
+  }
+
+  return byDay.map((day) => {
+    const out = {};
+    for (const role of HOUR_TRACKED_ROLES) {
+      out[role] = Math.round((day[role] || 0) * 10) / 10;
+    }
+    return out;
+  });
+}
+
+export function emptyRoleHourTotals() {
+  const out = {};
+  for (const role of HOUR_TRACKED_ROLES) out[`${role}_hours`] = 0;
+  return out;
+}
+
+export function sumRoleHoursAcrossDays(dayRoleHours) {
+  const totals = emptyRoleHourTotals();
+  for (const day of dayRoleHours || []) {
+    for (const role of HOUR_TRACKED_ROLES) {
+      totals[`${role}_hours`] = Math.round(((totals[`${role}_hours`] || 0) + Number(day[role] || 0)) * 10) / 10;
+    }
+  }
+  return totals;
 }
 
 export function primaryRoleStyle(entry) {
@@ -300,14 +496,7 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
 
   let totalHours = 0;
   let totalDays = 0;
-  let sortCount = 0;
-  let washCount = 0;
-  let weigherCount = 0;
-  let foldCount = 0;
-  let hdOperatorCount = 0;
-  let hdFolderCount = 0;
-  let nonRinseFolderCount = 0;
-  let attendantCount = 0;
+  const roleCounts = Object.fromEntries(ROLE_ORDER.map((role) => [role, 0]));
   const scheduledUserIds = new Set();
 
   for (const entry of filteredEntries) {
@@ -319,16 +508,12 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
     const roles = parseEntryRoles(entry);
     const countedRoles = roles.length ? roles : ["fold"];
     for (const role of countedRoles) {
-      if (role === "sort") sortCount += 1;
-      else if (role === "wash") washCount += 1;
-      else if (role === "weigher") weigherCount += 1;
-      else if (role === "fold") foldCount += 1;
-      else if (role === "hd_operator") hdOperatorCount += 1;
-      else if (role === "hd_folder") hdFolderCount += 1;
-      else if (role === "non_rinse_folder") nonRinseFolderCount += 1;
-      else if (role === "attendant") attendantCount += 1;
+      if (role in roleCounts) roleCounts[role] += 1;
     }
   }
+
+  const roleHoursByDay = allocateRoleHoursByDay(filteredEntries);
+  const roleHourTotals = sumRoleHoursAcrossDays(roleHoursByDay);
 
   let employeesScheduled = 0;
   let estimatedCost = 0;
@@ -347,14 +532,23 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
     totalHours,
     totalDays,
     daysOnly,
-    sortCount,
-    washCount,
-    weigherCount,
-    foldCount,
-    hdOperatorCount,
-    hdFolderCount,
-    nonRinseFolderCount,
-    attendantCount,
+    sortCount: roleCounts.sort,
+    washCount: roleCounts.wash,
+    weigherCount: roleCounts.weigher,
+    foldCount: roleCounts.fold,
+    ptWasherCount: roleCounts.pt_washer,
+    ptSorterCount: roleCounts.pt_sorter,
+    ptFolderCount: roleCounts.pt_folder,
+    hdOperatorCount: roleCounts.hd_operator,
+    hdFolderCount: roleCounts.hd_folder,
+    nonRinseFolderCount: roleCounts.non_rinse_folder,
+    attendantCount: roleCounts.attendant,
+    washHours: roleHourTotals.wash_hours,
+    sortHours: roleHourTotals.sort_hours,
+    foldHours: roleHourTotals.fold_hours,
+    ptWasherHours: roleHourTotals.pt_washer_hours,
+    ptSorterHours: roleHourTotals.pt_sorter_hours,
+    ptFolderHours: roleHourTotals.pt_folder_hours,
     estimatedCost,
   };
 }
@@ -369,12 +563,22 @@ export function computeFilteredDaySummaries(data, { userIds = null, includeExclu
     wash: 0,
     weigher: 0,
     fold: 0,
+    pt_washer: 0,
+    pt_sorter: 0,
+    pt_folder: 0,
     hd_operator: 0,
     hd_folder: 0,
     non_rinse_folder: 0,
     attendant: 0,
+    wash_hours: 0,
+    sort_hours: 0,
+    fold_hours: 0,
+    pt_washer_hours: 0,
+    pt_sorter_hours: 0,
+    pt_folder_hours: 0,
   }));
   const peopleByDay = Array.from({ length: 7 }, () => new Set());
+  const filteredEntries = [];
 
   for (const entry of sourceEntries) {
     const uid = Number(entry.user_id);
@@ -382,6 +586,7 @@ export function computeFilteredDaySummaries(data, { userIds = null, includeExclu
     const employee = (data?.employees || []).find((e) => Number(e.user_id) === uid);
     if (employee?.excluded && !includeExcluded) continue;
 
+    filteredEntries.push(entry);
     const dow = Number(entry.day_of_week || 0);
     const hours = Number(entry.hours || 0);
     summaries[dow].hours += hours;
@@ -390,22 +595,25 @@ export function computeFilteredDaySummaries(data, { userIds = null, includeExclu
     const roles = parseEntryRoles(entry);
     const countedRoles = roles.length ? roles : ["fold"];
     for (const role of countedRoles) {
-      if (role === "sort") summaries[dow].sort += 1;
-      else if (role === "wash") summaries[dow].wash += 1;
-      else if (role === "weigher") summaries[dow].weigher += 1;
-      else if (role === "fold") summaries[dow].fold += 1;
-      else if (role === "hd_operator") summaries[dow].hd_operator += 1;
-      else if (role === "hd_folder") summaries[dow].hd_folder += 1;
-      else if (role === "non_rinse_folder") summaries[dow].non_rinse_folder += 1;
-      else if (role === "attendant") summaries[dow].attendant += 1;
+      if (role in summaries[dow]) summaries[dow][role] += 1;
     }
   }
 
-  return summaries.map((summary, dow) => ({
-    ...summary,
-    people: peopleByDay[dow].size,
-    hours: summary.hours,
-  }));
+  const roleHoursByDay = allocateRoleHoursByDay(filteredEntries);
+  return summaries.map((summary, dow) => {
+    const roleHours = roleHoursByDay[dow] || {};
+    return {
+      ...summary,
+      people: peopleByDay[dow].size,
+      hours: summary.hours,
+      wash_hours: roleHours.wash || 0,
+      sort_hours: roleHours.sort || 0,
+      fold_hours: roleHours.fold || 0,
+      pt_washer_hours: roleHours.pt_washer || 0,
+      pt_sorter_hours: roleHours.pt_sorter || 0,
+      pt_folder_hours: roleHours.pt_folder || 0,
+    };
+  });
 }
 
 const DROP_TARGET_OVERLAY = "rgba(0, 151, 178, 0.08)";

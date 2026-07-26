@@ -30,6 +30,10 @@ def test_sheet_role_maps_sort_wash_fold():
     assert sheet_role_to_planned_roles("Sort & Fold") == ["sort", "fold"]
     assert sheet_role_to_planned_roles("Wash, Sort & Fold") == ["sort", "wash", "fold"]
     assert sheet_role_to_planned_role("Wash, Sort & Fold") == "sort,wash,fold"
+    assert sheet_role_to_planned_roles("PT Sorter") == ["pt_sorter"]
+    assert sheet_role_to_planned_roles("PT Washer") == ["pt_washer"]
+    assert sheet_role_to_planned_roles("PT Folder") == ["pt_folder"]
+    assert sheet_role_to_planned_role("PT Washer") == "pt_washer"
 
 
 def test_match_worker_name_fuzzy_variants():

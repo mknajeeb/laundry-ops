@@ -85,10 +85,19 @@ function daySummary(day) {
     wash: Number(day?.wash ?? day?.wash_count ?? 0),
     weigher: Number(day?.weigher ?? day?.weigher_count ?? 0),
     fold: Number(day?.fold ?? day?.fold_count ?? 0),
+    pt_washer: Number(day?.pt_washer ?? day?.pt_washer_count ?? 0),
+    pt_sorter: Number(day?.pt_sorter ?? day?.pt_sorter_count ?? 0),
+    pt_folder: Number(day?.pt_folder ?? day?.pt_folder_count ?? 0),
     hd_operator: Number(day?.hd_operator ?? day?.hd_operator_count ?? 0),
     hd_folder: Number(day?.hd_folder ?? day?.hd_folder_count ?? 0),
     attendant: Number(day?.attendant ?? day?.attendant_count ?? 0),
     non_rinse_folder: Number(day?.non_rinse_folder ?? day?.non_rinse_folder_count ?? 0),
+    wash_hours: Number(day?.wash_hours ?? 0),
+    sort_hours: Number(day?.sort_hours ?? 0),
+    fold_hours: Number(day?.fold_hours ?? 0),
+    pt_washer_hours: Number(day?.pt_washer_hours ?? 0),
+    pt_sorter_hours: Number(day?.pt_sorter_hours ?? 0),
+    pt_folder_hours: Number(day?.pt_folder_hours ?? 0),
   };
 }
 
@@ -569,6 +578,7 @@ export default function WeeklySchedulePage() {
       scheduleEndTimeEnabled,
       dayLabels: visibleDayLabels.length === 7 ? undefined : visibleDayLabels,
       dayIndices: visibleDayColumns.length === 7 ? undefined : visibleDayColumns,
+      daySummaries: filteredDaySummaries,
     });
   };
 
@@ -1131,6 +1141,7 @@ export default function WeeklySchedulePage() {
             entries={viewEntries}
             dayLabels={visibleDayLabels}
             dayIndices={visibleDayColumns}
+            daySummaries={filteredDaySummaries}
             showRoleLabels={showRoleLabels}
             daysOnly={daysOnly}
           />

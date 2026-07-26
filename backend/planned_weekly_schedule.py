@@ -9,7 +9,21 @@ from typing import Any, Mapping, Sequence
 from backend.daily_shift_roster import calc_cost, calc_hours, parse_time_value
 from backend.ta_helpers import table_exists
 
-VALID_ROLES = frozenset({"sort", "wash", "fold", "weigher", "hd_operator", "hd_folder", "attendant", "non_rinse_folder"})
+VALID_ROLES = frozenset(
+    {
+        "sort",
+        "wash",
+        "fold",
+        "weigher",
+        "pt_sorter",
+        "pt_washer",
+        "pt_folder",
+        "hd_operator",
+        "hd_folder",
+        "attendant",
+        "non_rinse_folder",
+    }
+)
 LEGACY_ROLE_MAP = {
     "folder": "fold",
     "operator": "wash",
@@ -26,8 +40,36 @@ LEGACY_ROLE_MAP = {
     "non rinse folder": "non_rinse_folder",
     "non_rinse_folder": "non_rinse_folder",
     "non-rinse-folder": "non_rinse_folder",
+    "pt sorter": "pt_sorter",
+    "pt_sorter": "pt_sorter",
+    "pt-sorter": "pt_sorter",
+    "pt sort": "pt_sorter",
+    "pt_sort": "pt_sorter",
+    "pt washer": "pt_washer",
+    "pt_washer": "pt_washer",
+    "pt-washer": "pt_washer",
+    "pt wash": "pt_washer",
+    "pt_wash": "pt_washer",
+    "pt folder": "pt_folder",
+    "pt_folder": "pt_folder",
+    "pt-folder": "pt_folder",
+    "pt fold": "pt_folder",
+    "pt_fold": "pt_folder",
 }
-ROLE_SORT_ORDER = ("sort", "wash", "weigher", "fold", "hd_operator", "hd_folder", "non_rinse_folder", "attendant")
+ROLE_SORT_ORDER = (
+    "sort",
+    "wash",
+    "weigher",
+    "fold",
+    "pt_sorter",
+    "pt_washer",
+    "pt_folder",
+    "hd_operator",
+    "hd_folder",
+    "non_rinse_folder",
+    "attendant",
+)
+HOUR_TRACKED_ROLES = frozenset({"wash", "sort", "fold", "pt_washer", "pt_sorter", "pt_folder"})
 DAY_LABELS = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
 
 
@@ -207,6 +249,99 @@ def _shift_hours_for_entry(entry: Mapping[str, Any]) -> float:
     return calc_hours(start, end, break_min)
 
 
+def _entry_interval_minutes(entry: Mapping[str, Any]) -> tuple[int, int, float] | None:
+    """Return (start_min, end_min, hours) with overnight support, or None."""
+    start = parse_time_value(entry.get("start_time"))
+    end = parse_time_value(entry.get("end_time"))
+    if not start or not end:
+        return None
+    start_min = start.hour * 60 + start.minute
+    end_min = end.hour * 60 + end.minute
+    if end_min <= start_min:
+        end_min += 24 * 60
+    break_min = max(0, int(entry.get("break_minutes") or 0))
+    hours = max(0.0, (end_min - start_min - break_min) / 60.0)
+    return start_min, end_min, hours
+
+
+def _intervals_overlap(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    return a[0] < b[1] and b[0] < a[1]
+
+
+def _merge_interval_hours(intervals: Sequence[tuple[int, int]]) -> float:
+    if not intervals:
+        return 0.0
+    sorted_iv = sorted(intervals, key=lambda item: (item[0], item[1]))
+    merged = [[sorted_iv[0][0], sorted_iv[0][1]]]
+    for start, end in sorted_iv[1:]:
+        last = merged[-1]
+        if start < last[1]:
+            last[1] = max(last[1], end)
+        else:
+            merged.append([start, end])
+    return sum(max(0, end - start) / 60.0 for start, end in merged)
+
+
+def allocate_role_hours_by_day(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, float]]:
+    """
+    Allocate scheduled hours to wash/sort/fold/PT roles from role segments.
+    Multi-role entries split hours evenly across hour-tracked roles on that segment.
+    Overlapping same employee/day/role segments are merged (no double-count).
+    """
+    by_day: list[dict[str, float]] = [{role: 0.0 for role in HOUR_TRACKED_ROLES} for _ in range(7)]
+    buckets: dict[tuple[int, int, str], list[dict[str, Any]]] = defaultdict(list)
+
+    for entry in entries or []:
+        uid = int(entry.get("user_id") or 0)
+        dow = int(entry.get("day_of_week") or 0)
+        if dow < 0 or dow > 6:
+            continue
+        roles = [role for role in parse_weekly_roles(entry.get("role") or entry.get("roles")) if role in HOUR_TRACKED_ROLES]
+        if not roles:
+            continue
+        interval = _entry_interval_minutes(entry)
+        if interval is not None:
+            _start, _end, segment_hours = interval
+        else:
+            segment_hours = float(entry.get("hours") or _shift_hours_for_entry(entry) or 0.0)
+            _start = _end = None
+        if segment_hours <= 0:
+            continue
+        share = segment_hours / len(roles)
+        for role in roles:
+            buckets[(uid, dow, role)].append(
+                {
+                    "start": _start,
+                    "end": _end,
+                    "hours": share,
+                    "direct": _start is None,
+                }
+            )
+
+    for (uid, dow, role), items in buckets.items():
+        timed = [item for item in items if not item["direct"]]
+        direct = [item for item in items if item["direct"]]
+        hours = sum(float(item["hours"]) for item in direct)
+        if timed:
+            pairs = [(int(item["start"]), int(item["end"])) for item in timed]
+            overlaps = any(
+                _intervals_overlap(pairs[i], pairs[j])
+                for i in range(len(pairs))
+                for j in range(i + 1, len(pairs))
+            )
+            if overlaps:
+                wall = _merge_interval_hours(pairs)
+                first = timed[0]
+                span = max(0, int(first["end"]) - int(first["start"])) / 60.0
+                weight = (float(first["hours"]) / span) if span > 0 else 1.0
+                hours += wall * min(1.0, weight)
+            else:
+                hours += sum(float(item["hours"]) for item in timed)
+        by_day[dow][role] = round(float(by_day[dow][role]) + hours, 1)
+
+    return by_day
+
+
 def _entry_employer_affiliation(
     row: Mapping[str, Any],
     *,
@@ -297,21 +432,32 @@ def compute_schedule_totals(
             "wash_count": 0,
             "weigher_count": 0,
             "fold_count": 0,
+            "pt_sorter_count": 0,
+            "pt_washer_count": 0,
+            "pt_folder_count": 0,
             "hd_operator_count": 0,
             "hd_folder_count": 0,
             "attendant_count": 0,
             "non_rinse_folder_count": 0,
             "operator_count": 0,
             "folder_count": 0,
+            "wash_hours": 0.0,
+            "sort_hours": 0.0,
+            "fold_hours": 0.0,
+            "pt_washer_hours": 0.0,
+            "pt_sorter_hours": 0.0,
+            "pt_folder_hours": 0.0,
         }
         for dow in range(7)
     }
     employee_days: dict[int, set[int]] = defaultdict(set)
+    included_entries: list[Mapping[str, Any]] = []
 
     for entry in entries or []:
         uid = int(entry.get("user_id") or 0)
         if uid in excluded:
             continue
+        included_entries.append(entry)
         dow = int(entry.get("day_of_week") or 0)
         hours = float(entry.get("hours") or _shift_hours_for_entry(entry))
         roles = parse_weekly_roles(entry.get("role"))
@@ -344,6 +490,12 @@ def compute_schedule_totals(
                 day["weigher_count"] = int(day["weigher_count"]) + 1
             elif role == "fold":
                 day["fold_count"] = int(day["fold_count"]) + 1
+            elif role == "pt_sorter":
+                day["pt_sorter_count"] = int(day["pt_sorter_count"]) + 1
+            elif role == "pt_washer":
+                day["pt_washer_count"] = int(day["pt_washer_count"]) + 1
+            elif role == "pt_folder":
+                day["pt_folder_count"] = int(day["pt_folder_count"]) + 1
             elif role == "hd_operator":
                 day["hd_operator_count"] = int(day["hd_operator_count"]) + 1
             elif role == "hd_folder":
@@ -356,6 +508,16 @@ def compute_schedule_totals(
                 day["operator_count"] = int(day["operator_count"]) + 1
             if role == "fold":
                 day["folder_count"] = int(day["folder_count"]) + 1
+
+    role_hours_by_day = allocate_role_hours_by_day(included_entries)
+    for dow, role_hours in enumerate(role_hours_by_day):
+        day = day_totals[dow]
+        day["wash_hours"] = float(role_hours.get("wash") or 0.0)
+        day["sort_hours"] = float(role_hours.get("sort") or 0.0)
+        day["fold_hours"] = float(role_hours.get("fold") or 0.0)
+        day["pt_washer_hours"] = float(role_hours.get("pt_washer") or 0.0)
+        day["pt_sorter_hours"] = float(role_hours.get("pt_sorter") or 0.0)
+        day["pt_folder_hours"] = float(role_hours.get("pt_folder") or 0.0)
 
     for uid, days in employee_days.items():
         if uid in employee_totals:
@@ -563,7 +725,10 @@ def _validate_entry_payload(
         roles_raw = data.get("roles") if "roles" in data else data.get("role")
         roles = parse_weekly_roles(roles_raw)
         if not roles:
-            return None, "role must be sort, wash, weigher, fold, hd_operator, hd_folder, non_rinse_folder, and/or attendant"
+            return None, (
+                "role must be sort, wash, weigher, fold, pt_sorter, pt_washer, pt_folder, "
+                "hd_operator, hd_folder, non_rinse_folder, and/or attendant"
+            )
         out["role"] = roles_to_storage(roles)
     if not partial or "start_time" in data:
         start = parse_time_value(data.get("start_time"))

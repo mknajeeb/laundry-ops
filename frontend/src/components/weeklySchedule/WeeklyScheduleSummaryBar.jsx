@@ -1,10 +1,14 @@
 import { Box, Typography } from "@mui/material";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+import { formatRoleHoursLabel } from "./weeklyScheduleRoles";
 
 const ROLE_ACCENT = {
   fold: VEEWASH_DASHBOARD.tealDark,
   sort: VEEWASH_DASHBOARD.primaryBlueDark,
   wash: VEEWASH_DASHBOARD.rushCopper,
+  pt_washer: "#c2410c",
+  pt_sorter: "#0369a1",
+  pt_folder: "#047857",
   weigher: "#6d28d9",
   hd_operator: "#be185d",
   hd_folder: "#0f766e",
@@ -20,6 +24,12 @@ function formatHours(value) {
 function formatCurrency(value) {
   const n = Number(value || 0);
   return n.toLocaleString(undefined, { style: "currency", currency: "USD" });
+}
+
+function roleMetricValue(count, hours, daysOnly) {
+  const c = Number(count || 0);
+  if (daysOnly || hours == null || Number(hours) <= 0) return String(c);
+  return `${c} · ${formatRoleHoursLabel(hours)}`;
 }
 
 function SummaryMetric({ label, value, accent, compact = false }) {
@@ -76,10 +86,37 @@ export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = 
 
   if (!hideRoleBreakdown) {
     metrics.push(
-      { label: "Wash", value: summary.washCount, accent: ROLE_ACCENT.wash },
-      { label: "Sort", value: summary.sortCount, accent: ROLE_ACCENT.sort },
+      {
+        label: "Wash",
+        value: roleMetricValue(summary.washCount, summary.washHours, daysOnly),
+        accent: ROLE_ACCENT.wash,
+      },
+      {
+        label: "Sort",
+        value: roleMetricValue(summary.sortCount, summary.sortHours, daysOnly),
+        accent: ROLE_ACCENT.sort,
+      },
       { label: "Weigher", value: summary.weigherCount, accent: ROLE_ACCENT.weigher },
-      { label: "Fold", value: summary.foldCount, accent: ROLE_ACCENT.fold },
+      {
+        label: "Fold",
+        value: roleMetricValue(summary.foldCount, summary.foldHours, daysOnly),
+        accent: ROLE_ACCENT.fold,
+      },
+      {
+        label: "PT Washer",
+        value: roleMetricValue(summary.ptWasherCount, summary.ptWasherHours, daysOnly),
+        accent: ROLE_ACCENT.pt_washer,
+      },
+      {
+        label: "PT Sorter",
+        value: roleMetricValue(summary.ptSorterCount, summary.ptSorterHours, daysOnly),
+        accent: ROLE_ACCENT.pt_sorter,
+      },
+      {
+        label: "PT Folder",
+        value: roleMetricValue(summary.ptFolderCount, summary.ptFolderHours, daysOnly),
+        accent: ROLE_ACCENT.pt_folder,
+      },
       { label: "HD Op", value: summary.hdOperatorCount, accent: ROLE_ACCENT.hd_operator },
       { label: "HD Fold", value: summary.hdFolderCount, accent: ROLE_ACCENT.hd_folder },
       { label: "NR Fold", value: summary.nonRinseFolderCount, accent: ROLE_ACCENT.non_rinse_folder },

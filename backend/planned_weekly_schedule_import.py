@@ -47,7 +47,7 @@ def parse_shift_label(label: str) -> tuple[int, str, str] | None:
 
 
 def sheet_role_to_planned_roles(sheet_role: str | None) -> list[str]:
-    """Map spreadsheet role labels to planned schedule roles (sort / wash / fold)."""
+    """Map spreadsheet role labels to planned schedule roles (sort / wash / fold / PT*)."""
     text = str(sheet_role or "").strip().lower()
     if not text:
         return ["fold"]
@@ -60,11 +60,27 @@ def sheet_role_to_planned_roles(sheet_role: str | None) -> list[str]:
         roles.append("hd_folder")
     if "attendant" in text:
         roles.append("attendant")
-    if "sort" in text:
+    # PT roles must stay distinct from sort/wash/fold.
+    has_pt_sorter = "pt sorter" in text or "pt_sorter" in text or "pt-sorter" in text or "pt sort" in text
+    has_pt_washer = "pt washer" in text or "pt_washer" in text or "pt-washer" in text or "pt wash" in text
+    has_pt_folder = "pt folder" in text or "pt_folder" in text or "pt-folder" in text or "pt fold" in text
+    if has_pt_sorter:
+        roles.append("pt_sorter")
+    elif "sort" in text:
         roles.append("sort")
-    if "wash" in text:
+    if has_pt_washer:
+        roles.append("pt_washer")
+    elif "wash" in text:
         roles.append("wash")
-    if "fold" in text and "hd folder" not in text and "hd_folder" not in text and "non-rinse" not in text and "non_rinse" not in text:
+    if has_pt_folder:
+        roles.append("pt_folder")
+    elif (
+        "fold" in text
+        and "hd folder" not in text
+        and "hd_folder" not in text
+        and "non-rinse" not in text
+        and "non_rinse" not in text
+    ):
         roles.append("fold")
     if roles:
         return roles

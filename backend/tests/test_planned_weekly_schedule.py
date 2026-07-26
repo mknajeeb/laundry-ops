@@ -6,6 +6,7 @@ from datetime import date, time
 from unittest.mock import MagicMock, patch
 
 from backend.planned_weekly_schedule import (
+    allocate_role_hours_by_day,
     build_week_payload,
     bulk_set_week_entry_employer_affiliation,
     carry_forward_week_schedule,
@@ -210,10 +211,198 @@ def test_normalize_weekly_role_legacy_and_new():
     assert normalize_weekly_role("attendant") == "attendant"
     assert normalize_weekly_role("non-rinse folder") == "non_rinse_folder"
     assert normalize_weekly_role("sort") == "sort"
+    assert normalize_weekly_role("pt_sorter") == "pt_sorter"
+    assert normalize_weekly_role("PT Washer") == "pt_washer"
+    assert normalize_weekly_role("pt fold") == "pt_folder"
     assert parse_weekly_roles("wash,fold") == ["wash", "fold"]
     assert parse_weekly_roles("wash,weigher") == ["wash", "weigher"]
     assert parse_weekly_roles("hd_operator,hd_folder") == ["hd_operator", "hd_folder"]
+    assert parse_weekly_roles("pt_washer,pt_sorter,pt_folder") == ["pt_sorter", "pt_washer", "pt_folder"]
     assert roles_to_storage(["fold", "sort", "wash", "weigher", "hd_operator"]) == "sort,wash,weigher,fold,hd_operator"
+    assert roles_to_storage(["pt_folder", "pt_washer"]) == "pt_washer,pt_folder"
+
+
+def test_allocate_role_hours_from_split_role_segments():
+    entries = [
+        serialize_entry(
+            {
+                "id": 1,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 10,
+                "day_of_week": 0,
+                "role": "wash",
+                "start_time": time(6, 45),
+                "end_time": time(7, 15),
+                "break_minutes": 0,
+            }
+        ),
+        serialize_entry(
+            {
+                "id": 2,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 10,
+                "day_of_week": 0,
+                "role": "fold",
+                "start_time": time(8, 0),
+                "end_time": time(15, 0),
+                "break_minutes": 0,
+            }
+        ),
+        serialize_entry(
+            {
+                "id": 3,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 10,
+                "day_of_week": 0,
+                "role": "sort",
+                "start_time": time(15, 0),
+                "end_time": time(17, 0),
+                "break_minutes": 0,
+            }
+        ),
+        serialize_entry(
+            {
+                "id": 4,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 10,
+                "day_of_week": 0,
+                "role": "sort",
+                "start_time": time(17, 0),
+                "end_time": time(18, 0),
+                "break_minutes": 0,
+            }
+        ),
+    ]
+    hours = allocate_role_hours_by_day(entries)
+    assert hours[0]["wash"] == 0.5
+    assert hours[0]["fold"] == 7.0
+    assert hours[0]["sort"] == 3.0
+
+
+def test_allocate_role_hours_keeps_pt_roles_separate_and_splits_multi_role():
+    entries = [
+        serialize_entry(
+            {
+                "id": 1,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 10,
+                "day_of_week": 0,
+                "role": "sort,wash",
+                "start_time": time(8, 0),
+                "end_time": time(12, 0),
+                "break_minutes": 0,
+            }
+        ),
+        serialize_entry(
+            {
+                "id": 2,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 11,
+                "day_of_week": 0,
+                "role": "pt_washer",
+                "start_time": time(8, 0),
+                "end_time": time(14, 0),
+                "break_minutes": 0,
+            }
+        ),
+    ]
+    hours = allocate_role_hours_by_day(entries)
+    assert hours[0]["sort"] == 2.0
+    assert hours[0]["wash"] == 2.0
+    assert hours[0]["pt_washer"] == 6.0
+    assert hours[0]["fold"] == 0.0
+
+
+def test_allocate_role_hours_overnight_and_overlap_no_double_count():
+    overnight = serialize_entry(
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": date(2026, 6, 14),
+            "user_id": 10,
+            "day_of_week": 0,
+            "role": "fold",
+            "start_time": time(22, 0),
+            "end_time": time(2, 0),
+            "break_minutes": 0,
+        }
+    )
+    assert overnight["hours"] == 4.0
+    assert allocate_role_hours_by_day([overnight])[0]["fold"] == 4.0
+
+    overlapping = [
+        serialize_entry(
+            {
+                "id": 2,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 10,
+                "day_of_week": 1,
+                "role": "wash",
+                "start_time": time(8, 0),
+                "end_time": time(12, 0),
+                "break_minutes": 0,
+            }
+        ),
+        serialize_entry(
+            {
+                "id": 3,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 10,
+                "day_of_week": 1,
+                "role": "wash",
+                "start_time": time(10, 0),
+                "end_time": time(14, 0),
+                "break_minutes": 0,
+            }
+        ),
+    ]
+    assert allocate_role_hours_by_day(overlapping)[1]["wash"] == 6.0
+
+
+def test_compute_schedule_totals_includes_pt_role_hours():
+    entries = [
+        serialize_entry(
+            {
+                "id": 1,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 10,
+                "day_of_week": 0,
+                "role": "pt_sorter",
+                "start_time": time(9, 0),
+                "end_time": time(13, 0),
+                "break_minutes": 0,
+            }
+        ),
+        serialize_entry(
+            {
+                "id": 2,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 10,
+                "day_of_week": 0,
+                "role": "wash",
+                "start_time": time(13, 0),
+                "end_time": time(15, 0),
+                "break_minutes": 0,
+            }
+        ),
+    ]
+    totals = compute_schedule_totals(entries, {10: {"default_hourly_rate": 20.0}})
+    sun = totals["day_totals"][0]
+    assert sun["pt_sorter_count"] == 1
+    assert sun["pt_sorter_hours"] == 4.0
+    assert sun["wash_count"] == 1
+    assert sun["wash_hours"] == 2.0
+    assert sun["sort_hours"] == 0.0
 
 
 def test_serialize_entry_days_only_has_zero_hours():
