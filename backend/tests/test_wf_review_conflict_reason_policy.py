@@ -532,6 +532,74 @@ def test_edit_bag_conflict_skips_day_snapshot_refresh():
     refresh_day.assert_not_called()
 
 
+
+def test_manager_edit_day_bag_patch_move_to_review_from_completed():
+    from backend.rinse_veewash_shift_day import apply_manager_edit_day_bag_patch
+
+    cursor = MagicMock()
+    day_row = {
+        "bag_id": BAG,
+        "effective_status": "completed",
+        "review_reason_codes": [],
+        "bag_snapshot": {"bag_id": BAG, "outcome": "completed"},
+        "canonical_completion_status": "completed",
+    }
+    day_rec = {
+        "headline": {
+            "segments": {
+                "all": {
+                    "completed": 1,
+                    "pending": 0,
+                    "exceptions": {"review_required": 0, "total": 0},
+                    "bag_ids": {
+                        "completed": [BAG],
+                        "pending": [],
+                        "review_required": [],
+                        "new_today": [BAG],
+                    },
+                },
+                "wf": {
+                    "completed": 1,
+                    "pending": 0,
+                    "exceptions": {"review_required": 0, "total": 0},
+                    "bag_ids": {
+                        "completed": [BAG],
+                        "pending": [],
+                        "review_required": [],
+                        "new_today": [BAG],
+                    },
+                },
+            },
+            "exceptions": {"review_required": 0},
+            "review_reasons_by_bag": {},
+            "review_by_reason": {},
+        },
+        "workload_meta": {"review_reasons_by_bag": {}},
+    }
+    with patch(
+        "backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables"
+    ), patch(
+        "backend.rinse_veewash_shift_day.load_day_bags_by_ids", return_value=[day_row]
+    ), patch(
+        "backend.rinse_veewash_shift_day.get_day_record", return_value=day_rec
+    ), patch(
+        "backend.rinse_step1_productivity_fast.project_productivity_fields_for_day_bag",
+        return_value={},
+    ):
+        out = apply_manager_edit_day_bag_patch(
+            cursor,
+            ORG,
+            DAY,
+            BAG,
+            previous_effective_status="completed",
+            previous_reason_codes=["MISSING_PRE_EVIDENCE"],
+            outcome_action="move_to_review",
+        )
+    assert out["ok"] is True
+    assert out["effective_status"] == "review_required"
+    assert out["review_reason_codes"] == ["MISSING_PRE_EVIDENCE"]
+
+
 def test_manager_edit_day_bag_patch_mark_completed_clears_review():
     from backend.rinse_veewash_shift_day import apply_manager_edit_day_bag_patch
 

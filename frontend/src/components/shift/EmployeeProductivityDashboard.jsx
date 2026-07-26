@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
+  Button,
   Chip,
   CircularProgress,
   Collapse,
@@ -21,13 +22,14 @@ import {
   useTheme,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import { getEmployeeProductivityDashboard } from "../../api";
+import { getBulkWorkitems, getEmployeeProductivityDashboard, getVeewashStep1BagDetail, postVeewashStep1Correction } from "../../api";
 import CopyableBagId from "../CopyableBagId";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import { yesterdayRange, todayRange } from "../../utils/foldingDateRange";
 import {
   PRODUCTIVITY_RANK_OPTIONS,
   PERFORMANCE_TIER_STYLES,
+  bagsWithMissingPre,
   buildExecutiveSummaryCards,
   employeeDisplayLbs,
   fmtProductivityRate,
@@ -39,6 +41,7 @@ import EmployeeProductivityDrilldown, {
   EmployeeProductivityDrilldownCollapse,
 } from "./EmployeeProductivityDrilldown";
 import EmployeeProductivityLaborSection from "./EmployeeProductivityLaborSection";
+import EditBagPanel from "./EditBagPanel";
 import RushFilterChips from "./RushFilterChips";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import MetricCardGrid from "./MetricCardGrid";
@@ -50,10 +53,40 @@ const DATE_PRESETS = [
   { id: "custom", label: "Custom ET Date" },
 ];
 
-function EmployeeSummaryPanel({ emp }) {
+function EmployeeSummaryPanel({ emp, onSendForReview, sendingReview = false, missingPreCount = 0 }) {
   const missingClockIn = isMissingClockIn(emp);
   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
   const displayLbs = employeeDisplayLbs(emp);
+  const reviewActions =
+    typeof onSendForReview === "function" ? (
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>
+        <Button
+          size="small"
+          variant="contained"
+          disabled={sendingReview || missingPreCount <= 0}
+          onClick={(e) => {
+            e.stopPropagation();
+            onSendForReview();
+          }}
+          data-testid="employee-send-for-review"
+        >
+          {sendingReview
+            ? "Sending…"
+            : missingPreCount > 0
+              ? `Send Missing PRE for Review (${missingPreCount})`
+              : "Send for Review"}
+        </Button>
+        {missingPreCount > 0 ? (
+          <Typography variant="caption" color="warning.main" fontWeight={700}>
+            {missingPreCount} bag{missingPreCount === 1 ? "" : "s"} missing PRE credit
+          </Typography>
+        ) : (
+          <Typography variant="caption" color="text.secondary">
+            No Missing PRE bags
+          </Typography>
+        )}
+      </Stack>
+    ) : null;
   const items = [
     { label: "Completed Bags", value: emp.completed_bags ?? 0 },
     { label: "Credited Lbs (PRE)", value: displayLbs },
@@ -87,6 +120,7 @@ function EmployeeSummaryPanel({ emp }) {
       <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>
         Employee Summary
       </Typography>
+      {reviewActions}
       <Box
         sx={{
           display: "grid",
@@ -109,7 +143,18 @@ function EmployeeSummaryPanel({ emp }) {
   );
 }
 
-function EmployeeMobileCard({ emp, open, onToggle, selectedDate, bagsLoading }) {
+function EmployeeMobileCard({
+  emp,
+  open,
+  onToggle,
+  selectedDate,
+  bagsLoading,
+  onSendForReview,
+  sendingReview,
+  missingPreCount,
+  onReviewBag,
+  onSendBagForReview,
+}) {
   const missingClockIn = isMissingClockIn(emp);
   const tier = PERFORMANCE_TIER_STYLES[emp.performance_tier] || PERFORMANCE_TIER_STYLES.middle;
   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
@@ -164,11 +209,19 @@ function EmployeeMobileCard({ emp, open, onToggle, selectedDate, bagsLoading }) 
       </Box>
       <EmployeeProductivityDrilldownCollapse open={open}>
         <Box sx={{ px: 1.25, pb: 1.25 }}>
-          <EmployeeSummaryPanel emp={emp} />
+          <EmployeeSummaryPanel
+            emp={emp}
+            onSendForReview={onSendForReview}
+            sendingReview={sendingReview}
+            missingPreCount={missingPreCount}
+          />
           <EmployeeProductivityDrilldown
             bags={emp.bags}
             referenceDateEt={selectedDate}
             bagsLoading={bagsLoading}
+            onReviewBag={onReviewBag}
+            onSendBagForReview={onSendBagForReview}
+            sendingReview={sendingReview}
           />
         </Box>
       </EmployeeProductivityDrilldownCollapse>
@@ -203,6 +256,11 @@ export default function EmployeeProductivityDashboard({
   const [scopeLabel, setScopeLabel] = useState(initialSection?.productivity_scope_label || "WF Only");
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState("");
+  const [sendingReview, setSendingReview] = useState(false);
+  const [reviewError, setReviewError] = useState("");
+  const [reviewBag, setReviewBag] = useState(null);
+  const [reviewCatalog, setReviewCatalog] = useState([]);
+  const [reviewLoadingBagId, setReviewLoadingBagId] = useState(null);
 
   useEffect(() => {
     setRushFilter(rushFilterProp || "all");
@@ -268,6 +326,104 @@ export default function EmployeeProductivityDashboard({
   const workload = banner.workload_completed_today ?? recon.workload_completed_today ?? 0;
   const selectedDate = section?.selected_date_et || activeDateEt;
   const productivityScopeLabel = section?.productivity_scope_label || scopeLabel || "WF Only";
+
+  const ensureReviewCatalog = useCallback(async () => {
+    if (reviewCatalog.length) return reviewCatalog;
+    try {
+      const res = await getBulkWorkitems({ active_only: true });
+      const rows = res?.data?.items || res?.data?.workitems || res?.data || [];
+      const list = (Array.isArray(rows) ? rows : []).filter((w) => w?.active !== false);
+      setReviewCatalog(list);
+      return list;
+    } catch (_) {
+      return [];
+    }
+  }, [reviewCatalog]);
+
+  const sendBagsForReview = useCallback(
+    async (bags, { reasonCode = "MISSING_PRE_EVIDENCE" } = {}) => {
+      const targets = (bags || []).filter((b) => b?.bag_id);
+      if (!targets.length || !selectedDate) return { ok: false, sent: 0 };
+      setSendingReview(true);
+      setReviewError("");
+      let sent = 0;
+      const errors = [];
+      try {
+        for (const bag of targets) {
+          try {
+            const res = await postVeewashStep1Correction({
+              action: "move_to_review",
+              bag_id: bag.bag_id,
+              selected_date_et: selectedDate,
+              reason_code: reasonCode,
+              reason:
+                reasonCode === "MISSING_PRE_EVIDENCE"
+                  ? "Missing PRE evidence — sent from employee productivity"
+                  : "Manager sent bag for review from employee productivity",
+            });
+            if (res?.data?.ok) sent += 1;
+            else errors.push(res?.data?.error || bag.bag_id);
+          } catch (e) {
+            errors.push(e?.response?.data?.error || e?.message || bag.bag_id);
+          }
+        }
+        if (sent > 0) {
+          await fetchSection(selectedDate, rushFilter);
+        }
+        if (errors.length) {
+          setReviewError(
+            friendlyApiError(errors[0], `Sent ${sent}; ${errors.length} failed.`),
+          );
+        }
+        return { ok: errors.length === 0, sent, errors };
+      } finally {
+        setSendingReview(false);
+      }
+    },
+    [fetchSection, rushFilter, selectedDate],
+  );
+
+  const openReviewBag = useCallback(
+    async (bag) => {
+      if (!bag?.bag_id || !selectedDate) return;
+      setReviewError("");
+      setReviewLoadingBagId(bag.bag_id);
+      try {
+        await ensureReviewCatalog();
+        const res = await getVeewashStep1BagDetail({
+          date: selectedDate,
+          metric: "completed",
+          queue: "completed",
+          bag_id: bag.bag_id,
+          include_details: true,
+        });
+        if (Array.isArray(res?.data?.active_bulk_workitems) && res.data.active_bulk_workitems.length) {
+          setReviewCatalog(res.data.active_bulk_workitems);
+        }
+        const detail =
+          (res?.data?.bags || []).find((b) => b.bag_id === bag.bag_id) || res?.data?.bags?.[0];
+        setReviewBag({
+          ...(detail || bag),
+          ...bag,
+          ...(detail || {}),
+          _detailsLoaded: true,
+          pre_weight_lbs:
+            detail?.pre_weight_lbs ?? bag.evidence_pre_weight_lbs ?? bag.pre_weight_lbs ?? null,
+          post_weight_lbs:
+            detail?.post_weight_lbs ?? bag.evidence_post_weight_lbs ?? bag.post_weight_lbs ?? null,
+          post_weight_value:
+            detail?.post_weight_value ?? detail?.post_weight_lbs ?? bag.post_weight_lbs ?? null,
+        });
+      } catch (e) {
+        setReviewError(
+          friendlyApiError(e?.response?.data?.error || e?.message, "Unable to open bag review."),
+        );
+      } finally {
+        setReviewLoadingBagId(null);
+      }
+    },
+    [ensureReviewCatalog, selectedDate],
+  );
 
   const rankedEmployees = useMemo(
     () => rankEmployees(employees, rankBy),
@@ -627,16 +783,30 @@ export default function EmployeeProductivityDashboard({
 
         {isMobile ? (
           <Stack spacing={1}>
-            {rankedEmployees.map((emp) => (
-              <EmployeeMobileCard
-                key={emp.employee}
-                emp={emp}
-                open={expandedEmployee === emp.employee}
-                onToggle={() => setExpandedEmployee((prev) => (prev === emp.employee ? null : emp.employee))}
-                selectedDate={selectedDate}
-                bagsLoading={loading && emp.bags == null}
-              />
-            ))}
+            {rankedEmployees.map((emp) => {
+              const missingPreBags = bagsWithMissingPre(emp.bags);
+              return (
+                <EmployeeMobileCard
+                  key={emp.employee}
+                  emp={emp}
+                  open={expandedEmployee === emp.employee}
+                  onToggle={() => setExpandedEmployee((prev) => (prev === emp.employee ? null : emp.employee))}
+                  selectedDate={selectedDate}
+                  bagsLoading={loading && emp.bags == null}
+                  missingPreCount={missingPreBags.length}
+                  sendingReview={sendingReview}
+                  onSendForReview={() => sendBagsForReview(missingPreBags)}
+                  onReviewBag={openReviewBag}
+                  onSendBagForReview={(bag) =>
+                    sendBagsForReview([bag], {
+                      reasonCode: bagsWithMissingPre([bag]).length
+                        ? "MISSING_PRE_EVIDENCE"
+                        : "MANAGER_SENT_FOR_REVIEW",
+                    })
+                  }
+                />
+              );
+            })}
           </Stack>
         ) : (
           <TableContainer sx={{ overflowX: "auto" }}>
@@ -701,11 +871,27 @@ export default function EmployeeProductivityDashboard({
                         <TableCell colSpan={colSpan} sx={{ py: 0, borderBottom: open ? undefined : "none" }}>
                           <EmployeeProductivityDrilldownCollapse open={open}>
                             <Box sx={{ py: 1.25, px: 0.5 }}>
-                              <EmployeeSummaryPanel emp={emp} />
+                              <EmployeeSummaryPanel
+                                emp={emp}
+                                missingPreCount={bagsWithMissingPre(emp.bags).length}
+                                sendingReview={sendingReview}
+                                onSendForReview={() =>
+                                  sendBagsForReview(bagsWithMissingPre(emp.bags))
+                                }
+                              />
                               <EmployeeProductivityDrilldown
                                 bags={emp.bags}
                                 referenceDateEt={selectedDate}
                                 bagsLoading={loading && emp.bags == null}
+                                onReviewBag={openReviewBag}
+                                onSendBagForReview={(bag) =>
+                                  sendBagsForReview([bag], {
+                                    reasonCode: bagsWithMissingPre([bag]).length
+                                      ? "MISSING_PRE_EVIDENCE"
+                                      : "MANAGER_SENT_FOR_REVIEW",
+                                  })
+                                }
+                                sendingReview={sendingReview || reviewLoadingBagId != null}
                               />
                             </Box>
                           </EmployeeProductivityDrilldownCollapse>
@@ -719,6 +905,39 @@ export default function EmployeeProductivityDashboard({
           </TableContainer>
         )}
       </Box>
+      {reviewError ? (
+        <Alert severity="error" sx={{ mt: 1.25 }} onClose={() => setReviewError("")}>
+          {reviewError}
+        </Alert>
+      ) : null}
+      {reviewBag ? (
+        <EditBagPanel
+          bag={reviewBag}
+          selectedDateEt={selectedDate}
+          catalog={reviewCatalog}
+          onCancel={() => setReviewBag(null)}
+          onError={(msg) => setReviewError(msg || "Review save failed")}
+          onReloadLatest={async (bagId) => {
+            const res = await getVeewashStep1BagDetail({
+              date: selectedDate,
+              metric: "completed",
+              queue: "completed",
+              bag_id: bagId,
+              include_details: true,
+            });
+            const detail =
+              (res?.data?.bags || []).find((b) => b.bag_id === bagId) || res?.data?.bags?.[0];
+            if (detail) {
+              setReviewBag((prev) => ({ ...(prev || {}), ...detail, _detailsLoaded: true }));
+            }
+            return detail;
+          }}
+          onSaved={async () => {
+            setReviewBag(null);
+            await fetchSection(selectedDate, rushFilter);
+          }}
+        />
+      ) : null}
     </Paper>
   );
 }

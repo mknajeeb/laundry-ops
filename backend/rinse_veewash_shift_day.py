@@ -851,6 +851,11 @@ def apply_manager_edit_day_bag_patch(
         new_status = "excluded"
         reasons = []
         disposition = DISPOSITION_EXCLUDE
+    elif outcome == "move_to_review":
+        new_status = OUTCOME_REVIEW_REQUIRED
+        if not reasons:
+            reasons = ["MANAGER_SENT_FOR_REVIEW"]
+        disposition = day_row.get("disposition")
     else:
         if reasons:
             new_status = OUTCOME_REVIEW_REQUIRED

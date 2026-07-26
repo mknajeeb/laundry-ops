@@ -41,6 +41,27 @@ describe("classifyEditSavePath", () => {
     expect(path.suggestedReasonCode).toBe("INCORRECT_CAPTURED_WEIGHT");
   });
 
+  it("treats PRE weight change as manager override", () => {
+    const path = classifyEditSavePath({
+      draft: { post_weight_lbs: "12", pre_weight_lbs: "18" },
+      baselineBag: { post_weight_lbs: 12, pre_weight_lbs: 10 },
+      outcome: null,
+    });
+    expect(path.isManagerOverride).toBe(true);
+    expect(path.reasonRequired).toBe(true);
+    expect(path.suggestedReasonCode).toBe("PRE_CORRECTION");
+  });
+
+  it("treats adding missing PRE as manager override", () => {
+    const path = classifyEditSavePath({
+      draft: { post_weight_lbs: "12", pre_weight_lbs: "17" },
+      baselineBag: { post_weight_lbs: 12, pre_weight_lbs: null },
+      outcome: null,
+    });
+    expect(path.isManagerOverride).toBe(true);
+    expect(path.suggestedReasonCode).toBe("MISSING_PRE_EVIDENCE");
+  });
+
   it("treats exclude outcome as manager override", () => {
     const path = classifyEditSavePath({
       draft: { post_weight_lbs: "12", pre_weight_lbs: "10" },

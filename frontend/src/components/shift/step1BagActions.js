@@ -13,7 +13,8 @@ export function actionsForBagStatus(status) {
     editBag: true,
     markCompleted: !isCompleted,
     returnPending: isReview || isCompleted,
-    moveToReview: isPending,
+    // Pending bags and completed bags (e.g. Missing PRE) can be sent to Review Required.
+    moveToReview: isPending || isCompleted,
     // Legacy separate correction flows replaced by Edit Bag.
     correctEntry: false,
     correctWeight: false,

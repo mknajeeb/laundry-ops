@@ -18,10 +18,11 @@ describe("actionsForBagStatus", () => {
     expect(acts.moveToReview).toBe(false);
   });
 
-  it("shows reopen actions for Completed", () => {
+  it("shows reopen and send-to-review actions for Completed", () => {
     const acts = actionsForBagStatus("completed");
     expect(acts.markCompleted).toBe(false);
     expect(acts.returnPending).toBe(true);
     expect(acts.editBag).toBe(true);
+    expect(acts.moveToReview).toBe(true);
   });
 });

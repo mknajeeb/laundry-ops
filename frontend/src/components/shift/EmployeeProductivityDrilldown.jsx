@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   Box,
+  Button,
   Chip,
   Collapse,
   Paper,
@@ -18,7 +19,7 @@ import {
 } from "@mui/material";
 import ShiftBagRecordRow from "./ShiftBagRecordRow";
 import CopyableBagId from "../CopyableBagId";
-import { resolveBagWeightLbs } from "../../utils/employeeProductivityHelpers";
+import { bagHasMissingPre, resolveBagWeightLbs } from "../../utils/employeeProductivityHelpers";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 
 function eventTs(bag) {
@@ -86,7 +87,54 @@ function normalizeProcessedBag(bag) {
   };
 }
 
-function BagMobileCard({ bag, expanded, onToggle, referenceDateEt, statusLabel }) {
+function BagActionBar({ bag, onReviewBag, onSendBagForReview, sendingReview }) {
+  if (!onReviewBag && !onSendBagForReview) return null;
+  const missingPre = bagHasMissingPre(bag);
+  return (
+    <Stack
+      direction="row"
+      spacing={0.75}
+      flexWrap="wrap"
+      useFlexGap
+      sx={{ mt: 1 }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {onReviewBag ? (
+        <Button
+          size="small"
+          variant="contained"
+          disabled={sendingReview}
+          onClick={() => onReviewBag(bag)}
+          data-testid="employee-bag-review"
+        >
+          Review
+        </Button>
+      ) : null}
+      {onSendBagForReview ? (
+        <Button
+          size="small"
+          variant="outlined"
+          disabled={sendingReview}
+          onClick={() => onSendBagForReview(bag)}
+          data-testid="employee-bag-send-for-review"
+        >
+          {missingPre ? "Send Missing PRE for Review" : "Send for Review"}
+        </Button>
+      ) : null}
+    </Stack>
+  );
+}
+
+function BagMobileCard({
+  bag,
+  expanded,
+  onToggle,
+  referenceDateEt,
+  statusLabel,
+  onReviewBag,
+  onSendBagForReview,
+  sendingReview,
+}) {
   const normalized = normalizeProcessedBag(bag);
   return (
     <Paper
@@ -104,6 +152,9 @@ function BagMobileCard({ bag, expanded, onToggle, referenceDateEt, statusLabel }
               />
               {statusLabel ? (
                 <Chip label={statusLabel} size="small" sx={{ fontWeight: 700, fontSize: "0.7rem" }} />
+              ) : null}
+              {bagHasMissingPre(bag) ? (
+                <Chip label="Missing PRE" size="small" color="warning" sx={{ fontWeight: 700, fontSize: "0.7rem" }} />
               ) : null}
             </Stack>
             <Typography variant="body2" color="text.secondary">
@@ -132,6 +183,12 @@ function BagMobileCard({ bag, expanded, onToggle, referenceDateEt, statusLabel }
           <Typography variant="caption" display="block" sx={{ mb: 0.5, whiteSpace: "pre-line" }}>
             {`Credited Weight (PRE): ${fmtLbs(bag.credited_weight_lbs ?? resolveBagWeightLbs(bag))}\nEvidence PRE: ${fmtLbs(bag.evidence_pre_weight_lbs ?? bag.pre_weight_lbs)}\nEvidence POST: ${fmtLbs(bag.evidence_post_weight_lbs)}\nRevenue Weight (POST): ${fmtLbs(bag.output_weight_lbs ?? bag.authoritative_post_weight_lbs ?? bag.post_weight_lbs)}`}
           </Typography>
+          <BagActionBar
+            bag={bag}
+            onReviewBag={onReviewBag}
+            onSendBagForReview={onSendBagForReview}
+            sendingReview={sendingReview}
+          />
           <ShiftBagRecordRow
             row={normalized}
             variant="at_vendor"
@@ -152,12 +209,16 @@ function BagTableSection({
   setExpandedBagId,
   referenceDateEt,
   statusForBag,
+  onReviewBag,
+  onSendBagForReview,
+  sendingReview,
 }) {
   const sortedBags = useMemo(
     () => [...(bags || [])].sort((a, b) => eventTs(a).localeCompare(eventTs(b))),
     [bags],
   );
   const expandedBag = sortedBags.find((b) => b.bag_id === expandedBagId);
+  const showActions = Boolean(onReviewBag || onSendBagForReview);
 
   if (!sortedBags.length) {
     return (
@@ -188,6 +249,7 @@ function BagTableSection({
               <TableCell sx={{ fontWeight: 700, py: 1.1 }} align="right">Credited Lbs (PRE)</TableCell>
               <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Signal</TableCell>
               <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Status</TableCell>
+              {showActions ? <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Actions</TableCell> : null}
             </TableRow>
           </TableHead>
           <TableBody>
@@ -215,6 +277,32 @@ function BagTableSection({
                   </TableCell>
                   <TableCell>{normalized.completion_signal || "—"}</TableCell>
                   <TableCell>{statusLabel || "—"}</TableCell>
+                  {showActions ? (
+                    <TableCell onClick={(e) => e.stopPropagation()} sx={{ whiteSpace: "nowrap" }}>
+                      <Stack direction="row" spacing={0.5}>
+                        {onReviewBag ? (
+                          <Button
+                            size="small"
+                            variant="contained"
+                            disabled={sendingReview}
+                            onClick={() => onReviewBag(bag)}
+                          >
+                            Review
+                          </Button>
+                        ) : null}
+                        {onSendBagForReview ? (
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            disabled={sendingReview}
+                            onClick={() => onSendBagForReview(bag)}
+                          >
+                            Send for Review
+                          </Button>
+                        ) : null}
+                      </Stack>
+                    </TableCell>
+                  ) : null}
                 </TableRow>
               );
             })}
@@ -226,6 +314,12 @@ function BagTableSection({
           <Typography variant="caption" display="block" sx={{ mb: 0.5, whiteSpace: "pre-line" }}>
             {`Credited Weight (PRE): ${fmtLbs(expandedBag.credited_weight_lbs ?? resolveBagWeightLbs(expandedBag))}\nEvidence PRE: ${fmtLbs(expandedBag.evidence_pre_weight_lbs ?? expandedBag.pre_weight_lbs)}\nEvidence POST: ${fmtLbs(expandedBag.evidence_post_weight_lbs)}\nRevenue Weight (POST): ${fmtLbs(expandedBag.output_weight_lbs ?? expandedBag.authoritative_post_weight_lbs ?? expandedBag.post_weight_lbs)}`}
           </Typography>
+          <BagActionBar
+            bag={expandedBag}
+            onReviewBag={onReviewBag}
+            onSendBagForReview={onSendBagForReview}
+            sendingReview={sendingReview}
+          />
           <ShiftBagRecordRow
             key={expandedBag.bag_id}
             row={normalizeProcessedBag(expandedBag)}
@@ -245,6 +339,9 @@ export default function EmployeeProductivityDrilldown({
   bags,
   referenceDateEt,
   bagsLoading = false,
+  onReviewBag,
+  onSendBagForReview,
+  sendingReview = false,
 }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
@@ -281,6 +378,9 @@ export default function EmployeeProductivityDrilldown({
               onToggle={() => setExpandedBagId((prev) => (prev === bag.bag_id ? null : bag.bag_id))}
               referenceDateEt={referenceDateEt}
               statusLabel="Completed"
+              onReviewBag={onReviewBag}
+              onSendBagForReview={onSendBagForReview}
+              sendingReview={sendingReview}
             />
           ))}
         </Stack>
@@ -297,6 +397,9 @@ export default function EmployeeProductivityDrilldown({
         setExpandedBagId={setExpandedBagId}
         referenceDateEt={referenceDateEt}
         statusForBag={() => "Completed"}
+        onReviewBag={onReviewBag}
+        onSendBagForReview={onSendBagForReview}
+        sendingReview={sendingReview}
       />
     </Box>
   );

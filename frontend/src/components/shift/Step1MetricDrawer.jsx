@@ -636,7 +636,7 @@ export default function Step1MetricDrawer({
                                   variant="outlined"
                                   onClick={() => startAction(bag, "move_to_review")}
                                 >
-                                  Move to Review Required
+                                  {acts.isCompleted ? "Send for Review" : "Move to Review Required"}
                                 </Button>
                               ) : null}
                               {acts.correctEntry ? (

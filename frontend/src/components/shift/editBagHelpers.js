@@ -29,9 +29,10 @@ export const REASON_CODES_POST_CORRECTION = [
 ];
 
 export const REASON_CODES_PRE_CORRECTION = [
+  { code: "PRE_CORRECTION", label: "PRE weight correction" },
+  { code: "MISSING_PRE_EVIDENCE", label: "Missing PRE evidence" },
   { code: "INCORRECT_CAPTURED_WEIGHT", label: "Incorrect captured weight" },
   { code: "SCALE_ISSUE", label: "Scale issue" },
-  { code: "MISSING_PRE_EVIDENCE", label: "Missing PRE evidence" },
   { code: "OTHER", label: "Other" },
 ];
 
@@ -152,7 +153,13 @@ export function classifyEditSavePath({ draft, baselineBag, outcome = null }) {
 
   const reasonRequired = triggers.length > 0;
   let suggestedReasonCode = null;
-  if (triggers.includes("post_weight_correction") || triggers.includes("pre_weight_correction")) {
+  if (triggers.includes("pre_weight_correction") && !triggers.includes("post_weight_correction")) {
+    const baselinePre = baselineBag?.pre_weight_lbs;
+    suggestedReasonCode =
+      baselinePre === null || baselinePre === undefined || baselinePre === ""
+        ? "MISSING_PRE_EVIDENCE"
+        : "PRE_CORRECTION";
+  } else if (triggers.includes("post_weight_correction") || triggers.includes("pre_weight_correction")) {
     suggestedReasonCode = "INCORRECT_CAPTURED_WEIGHT";
   } else if (outcome === "exclude" || triggers.includes("exclude")) {
     suggestedReasonCode = "NOT_VEEWASH_BAG";

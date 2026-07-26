@@ -922,7 +922,12 @@ def apply_step1_correction(
                 pass
         return out
 
-    if not reason and action not in ("undo_bag_edit", "edit_bag", "save_bulk_workitems"):
+    if not reason and action not in (
+        "undo_bag_edit",
+        "edit_bag",
+        "save_bulk_workitems",
+        "move_to_review",
+    ):
         return {"ok": False, "error": "reason_required"}
 
     from backend.rinse_veewash_shift_day import STATUS_CLOSED, get_day_record
@@ -964,8 +969,82 @@ def apply_step1_correction(
                 clear_step1_productivity_cache(organization_id, day)
             except Exception:
                 pass
+
             # Membership already patched inside apply_unified_bag_edit.
         return out
+
+    if action == "move_to_review":
+        from backend.rinse_veewash_shift_day import (
+            apply_manager_edit_day_bag_patch,
+            load_day_bags_by_ids,
+        )
+        from backend.rinse_veewash_workload import (
+            REASON_MANAGER_SENT_FOR_REVIEW,
+            REASON_MISSING_PRE_EVIDENCE,
+        )
+
+        reason_code = str(
+            body.get("reason_code") or REASON_MANAGER_SENT_FOR_REVIEW
+        ).strip().upper() or REASON_MANAGER_SENT_FOR_REVIEW
+        if reason_code not in (
+            REASON_MANAGER_SENT_FOR_REVIEW,
+            REASON_MISSING_PRE_EVIDENCE,
+            "SCAN_CHRONOLOGY_STALE",
+        ):
+            reason_code = REASON_MANAGER_SENT_FOR_REVIEW
+        reason_text = reason or (
+            "Missing PRE evidence — sent for review"
+            if reason_code == REASON_MISSING_PRE_EVIDENCE
+            else "Manager sent bag for review"
+        )
+        rows = load_day_bags_by_ids(cursor, organization_id, day, [bid])
+        day_row = rows[0] if rows else {}
+        prev_status = str(day_row.get("effective_status") or "").strip().lower() or None
+        prev_reasons = list(day_row.get("review_reason_codes") or [])
+        if reason_code not in prev_reasons:
+            prev_reasons = [*prev_reasons, reason_code]
+        patch = apply_manager_edit_day_bag_patch(
+            cursor,
+            organization_id,
+            day,
+            bid,
+            previous_effective_status=prev_status,
+            previous_reason_codes=prev_reasons,
+            outcome_action="move_to_review",
+        )
+        _record_correction(
+            cursor,
+            organization_id,
+            bag_id=bid,
+            action=action,
+            reason_text=reason_text,
+            reason_code=reason_code,
+            previous_values={
+                "effective_status": prev_status,
+                "review_reason_codes": day_row.get("review_reason_codes"),
+            },
+            new_values={
+                "status": "review_required",
+                "reason_code": reason_code,
+                "patch": patch,
+            },
+            actor_user_id=actor_user_id,
+            actor_display_name=actor_display_name,
+        )
+        try:
+            from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
+
+            clear_step1_productivity_cache(organization_id, day)
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "action": action,
+            "bag_id": bid,
+            "effective_status": "review_required",
+            "reason_code": reason_code,
+            "patch": patch,
+        }
 
     if action == "undo_bag_edit":
         from backend.rinse_step1_edit_bag import undo_bag_edit
@@ -1180,17 +1259,14 @@ def apply_step1_correction(
         )
         return {"ok": True, "action": action, "entry_at": ts.isoformat(), "service_type": svc}
 
-    if action in ("return_pending", "exclude", "move_to_review"):
+    if action in ("return_pending", "exclude"):
         _record_correction(
             cursor,
             organization_id,
             bag_id=bid,
             action=action,
             reason_text=reason,
-            reason_code=str(
-                body.get("reason_code")
-                or ("SCAN_CHRONOLOGY_STALE" if action == "move_to_review" else action.upper())
-            ),
+            reason_code=str(body.get("reason_code") or action.upper()),
             previous_values=prior,
             new_values={"status": action},
             actor_user_id=actor_user_id,

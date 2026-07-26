@@ -130,6 +130,10 @@ export default function EditBagPanel({
     () => bag?.updated_at || bag?.day_bag_updated_at || null
   );
   const [baselineBag, setBaselineBag] = useState(bag);
+  const [correctPre, setCorrectPre] = useState(() => {
+    const pre = bag?.pre_weight_lbs;
+    return pre === null || pre === undefined || pre === "";
+  });
   const [correctPost, setCorrectPost] = useState(false);
 
   useEffect(() => {
@@ -280,11 +284,10 @@ export default function EditBagPanel({
 
   const buildPayloadDraft = () => {
     const payload = buildEditBagPayloadDraft({ draft, lines, isHd });
-    // PRE is evidence-locked in the modal unless explicitly corrected later.
-    if (!correctPost) {
-      /* post may still equal baseline */
+    // PRE/POST stay evidence-locked unless the manager opts into correction.
+    if (!correctPre) {
+      payload.pre_weight_lbs = parseFloatOrNull(baselineBag?.pre_weight_lbs ?? bag?.pre_weight_lbs);
     }
-    payload.pre_weight_lbs = parseFloatOrNull(baselineBag?.pre_weight_lbs ?? bag?.pre_weight_lbs);
     if (!correctPost) {
       payload.post_weight_lbs = parseFloatOrNull(
         baselineBag?.post_weight_value ??
@@ -647,12 +650,15 @@ export default function EditBagPanel({
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
                 <Box sx={{ flex: 1, p: 1, bgcolor: "grey.50", borderRadius: 1 }}>
                   <Typography variant="caption" color="text.secondary">
-                    Evidence PRE (read-only)
+                    Evidence PRE
+                    {correctPre ? " (editing)" : ""}
                   </Typography>
                   <Typography fontWeight={700}>
-                    {draft.pre_weight_lbs !== "" && draft.pre_weight_lbs != null
-                      ? `${draft.pre_weight_lbs} lb`
-                      : "—"}
+                    {correctPre && draft.pre_weight_lbs !== ""
+                      ? `${draft.pre_weight_lbs} lb (corrected)`
+                      : draft.pre_weight_lbs !== "" && draft.pre_weight_lbs != null
+                        ? `${draft.pre_weight_lbs} lb`
+                        : "—"}
                   </Typography>
                   {(preProvenance.lines || []).map((line) => (
                     <Typography key={line} variant="caption" display="block" color="text.secondary">
@@ -701,6 +707,37 @@ export default function EditBagPanel({
                   </Typography>
                 </AccordionDetails>
               </Accordion>
+              <FormControlLabel
+                sx={{ mt: 0.5 }}
+                control={
+                  <Checkbox
+                    checked={correctPre}
+                    onChange={(e) => {
+                      setCorrectPre(e.target.checked);
+                      if (!e.target.checked) {
+                        setDraft((d) => ({
+                          ...d,
+                          pre_weight_lbs: weightFieldValue(baselineBag?.pre_weight_lbs),
+                        }));
+                      }
+                    }}
+                  />
+                }
+                label={preWeightMissing ? "Add PRE weight" : "Correct PRE weight"}
+              />
+              {correctPre ? (
+                <TextField
+                  size="small"
+                  type="number"
+                  label={preWeightMissing ? "PRE lbs" : "Corrected PRE lbs"}
+                  value={draft.pre_weight_lbs}
+                  onChange={(e) => setDraft((d) => ({ ...d, pre_weight_lbs: e.target.value }))}
+                  inputProps={{ step: 0.1, min: 0 }}
+                  fullWidth
+                  sx={{ mt: 0.5 }}
+                  helperText="Employee credit uses Evidence PRE."
+                />
+              ) : null}
               <FormControlLabel
                 sx={{ mt: 0.5 }}
                 control={

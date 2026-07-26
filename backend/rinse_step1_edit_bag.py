@@ -54,9 +54,10 @@ REASON_CODES_POST_CORRECTION = (
     {"code": "OTHER", "label": "Other"},
 )
 REASON_CODES_PRE_CORRECTION = (
+    {"code": "PRE_CORRECTION", "label": "PRE weight correction"},
+    {"code": "MISSING_PRE_EVIDENCE", "label": "Missing PRE evidence"},
     {"code": "INCORRECT_CAPTURED_WEIGHT", "label": "Incorrect captured weight"},
     {"code": "SCALE_ISSUE", "label": "Scale issue"},
-    {"code": "MISSING_PRE_EVIDENCE", "label": "Missing PRE evidence"},
     {"code": "OTHER", "label": "Other"},
 )
 REASON_CODES_RETURN_PENDING = (

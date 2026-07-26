@@ -181,6 +181,24 @@ export function resolveBagWeightLbs(bag) {
   return null;
 }
 
+/** True when employee credit shows Missing PRE in the productivity drilldown. */
+export function bagHasMissingPre(bag) {
+  if (!bag || typeof bag !== "object") return true;
+  if (bag.credited_weight_lbs != null && !Number.isNaN(Number(bag.credited_weight_lbs))) {
+    return false;
+  }
+  const evidence = bag.evidence_pre_weight_lbs ?? bag.pre_weight_lbs;
+  if (evidence != null && evidence !== "" && !Number.isNaN(Number(evidence))) {
+    return false;
+  }
+  const fallback = resolveBagWeightLbs(bag);
+  return fallback == null || Number.isNaN(fallback);
+}
+
+export function bagsWithMissingPre(bags) {
+  return (Array.isArray(bags) ? bags : []).filter(bagHasMissingPre);
+}
+
 /** Employee total lbs — prefer API total, else sum bag-level fallbacks. */
 export function employeeDisplayLbs(emp) {
   const apiTotal = emp?.total_completed_lbs;
