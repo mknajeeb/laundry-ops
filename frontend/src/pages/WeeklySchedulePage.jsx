@@ -56,6 +56,7 @@ import { entityLabel } from "../payroll/businessEntity";
 import {
   DAY_LABELS,
   formatWeekRange,
+  currentWeekStart,
   normalizeWeekStart,
   shiftWeek,
 } from "../components/weeklySchedule/weeklyScheduleDates";
@@ -250,7 +251,7 @@ export default function WeeklySchedulePage() {
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const isTablet = useMediaQuery(theme.breakpoints.between("md", "lg"));
 
-  const [weekStart, setWeekStart] = useState(() => normalizeWeekStart(new Date().toISOString().slice(0, 10)));
+  const [weekStart, setWeekStart] = useState(() => currentWeekStart());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
