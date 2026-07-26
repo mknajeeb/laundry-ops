@@ -208,6 +208,20 @@ class _FakeCursor:
                     self.rowcount = 1
                 self._result = []
                 return
+            if s.startswith("update") and "canonical_completion_employee = coalesce" in s:
+                emp, ts, prod_emp, org, day, bag = params
+                row = self.day_bags.get((int(org), day, bag))
+                if row is not None:
+                    if emp is not None:
+                        row["canonical_completion_employee"] = emp
+                    if ts is not None:
+                        row["canonical_completion_timestamp"] = ts
+                    if prod_emp is not None:
+                        row["productivity_employee_name"] = prod_emp
+                    self._bump_updated_at(row)
+                    self.rowcount = 1
+                self._result = []
+                return
             if s.startswith("update") and "set service_type" in s:
                 svc, rush, snap_json, org, day, bag = params
                 row = self.day_bags.get((int(org), day, bag))

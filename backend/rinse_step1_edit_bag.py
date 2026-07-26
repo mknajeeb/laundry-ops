@@ -844,9 +844,18 @@ def _apply_weight_update(
         """,
         (pre_weight_lbs, post_weight_lbs, new_weight, int(organization_id), shift_date_et, bag_id),
     )
-    # Also record on rinse_step1_corrections so existing weight-map loaders that
-    # read that table for reconciliation history stay in sync.
+    # Durable overrides for load_bag_weight_map / day rebuild. Bare pre/post fields
+    # alone are wiped when persist_day_snapshot reloads from scans.
     from backend.rinse_veewash_step1_api import _record_correction
+
+    new_values = {
+        "pre_weight_lbs": pre_weight_lbs,
+        "post_weight_lbs": post_weight_lbs,
+    }
+    if _weight_changed(before.get("pre_weight_lbs"), pre_weight_lbs):
+        new_values["corrected_pre_weight_lbs"] = pre_weight_lbs
+    if _weight_changed(before.get("post_weight_lbs"), post_weight_lbs):
+        new_values["corrected_post_weight_lbs"] = post_weight_lbs
 
     _record_correction(
         cursor,
@@ -859,10 +868,7 @@ def _apply_weight_update(
             "pre_weight_lbs": before.get("pre_weight_lbs"),
             "post_weight_lbs": before.get("post_weight_lbs"),
         },
-        new_values={
-            "pre_weight_lbs": pre_weight_lbs,
-            "post_weight_lbs": post_weight_lbs,
-        },
+        new_values=new_values,
         actor_user_id=actor_user_id,
         actor_display_name=actor_display_name,
     )
@@ -1116,6 +1122,71 @@ def apply_unified_bag_edit(
         )
     # OUTCOME_KEEP_REVIEW / None: no bucket change beyond draft field updates.
 
+    # Persist completion employee / timestamp even when outcome is null (Save Review).
+    # Without a durable correct_completion row, day rebuild reverts to clean-rack operator.
+    emp_changed = _completion_employee_changed(draft, before)
+    ts_changed = _completion_timestamp_changed(draft, before)
+    completion_override_emp = None
+    completion_override_at = None
+    if emp_changed or ts_changed:
+        completion_override_emp = (
+            str(
+                draft.get("completion_employee")
+                or draft.get("completed_by")
+                or draft.get("employee")
+                or before.get("completed_by")
+                or ""
+            ).strip()
+            or None
+        )
+        completion_override_at = _parse_dt(draft.get("completion_at")) or _parse_dt(
+            before.get("completion_at")
+        )
+        if completion_override_emp or completion_override_at:
+            from backend.rinse_veewash_step1_api import _record_correction
+
+            _record_correction(
+                cursor,
+                organization_id,
+                bag_id=bid,
+                action="correct_completion",
+                reason_text=reason_text,
+                reason_code=str(reason_code or "CORRECT_COMPLETION_DETAILS").strip().upper()
+                or "CORRECT_COMPLETION_DETAILS",
+                previous_values={
+                    "completed_by": before.get("completed_by"),
+                    "completion_at": before.get("completion_at"),
+                },
+                new_values={
+                    "completed_by": completion_override_emp,
+                    "completion_at": (
+                        completion_override_at.isoformat()
+                        if hasattr(completion_override_at, "isoformat")
+                        else completion_override_at
+                    ),
+                },
+                actor_user_id=actor_user_id,
+                actor_display_name=actor_display_name,
+            )
+            cursor.execute(
+                """
+                UPDATE rinse_shift_monitor_day_bags
+                SET canonical_completion_employee = COALESCE(%s, canonical_completion_employee),
+                    canonical_completion_timestamp = COALESCE(%s, canonical_completion_timestamp),
+                    productivity_employee_name = COALESCE(%s, productivity_employee_name),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+                """,
+                (
+                    completion_override_emp,
+                    completion_override_at,
+                    completion_override_emp,
+                    int(organization_id),
+                    selected_date_et,
+                    bid,
+                ),
+            )
+
     after = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
 
     # Fast membership sync (no full day rebuild — that hung the Save UI for 60s+).
@@ -1137,6 +1208,25 @@ def apply_unified_bag_edit(
             bulk_for_clear,
             list(after.get("bulk_items") or []),
         )
+        patch_completed_by = None
+        patch_completion_at = None
+        if outcome == OUTCOME_MARK_COMPLETED or emp_changed or ts_changed:
+            patch_completed_by = (
+                str(
+                    draft.get("completion_employee")
+                    or draft.get("completed_by")
+                    or draft.get("employee")
+                    or after.get("completed_by")
+                    or completion_override_emp
+                    or ""
+                ).strip()
+                or None
+            )
+            patch_completion_at = (
+                _parse_dt(draft.get("completion_at"))
+                or _parse_dt(after.get("completion_at"))
+                or completion_override_at
+            )
         apply_manager_edit_day_bag_patch(
             cursor,
             organization_id,
@@ -1147,24 +1237,8 @@ def apply_unified_bag_edit(
             previous_reason_codes=list(before_day.get("review_reason_codes") or []),
             outcome_action=outcome,
             bulk_cleared=bool(bulk_cleared),
-            completion_at=(
-                _parse_dt(draft.get("completion_at"))
-                or _parse_dt(after.get("completion_at"))
-            )
-            if outcome == OUTCOME_MARK_COMPLETED
-            else None,
-            completed_by=(
-                str(
-                    draft.get("completion_employee")
-                    or draft.get("completed_by")
-                    or draft.get("employee")
-                    or after.get("completed_by")
-                    or ""
-                ).strip()
-                or None
-            )
-            if outcome == OUTCOME_MARK_COMPLETED
-            else None,
+            completion_at=patch_completion_at,
+            completed_by=patch_completed_by,
             pre_weight_lbs=after.get("pre_weight_lbs"),
             post_weight_lbs=after.get("post_weight_lbs"),
         )

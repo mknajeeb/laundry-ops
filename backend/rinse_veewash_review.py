@@ -862,7 +862,7 @@ def load_bag_weight_map(
     Post = second weight-entry (value may be 0)
 
     No portal/registry/folding inference. Manager ``correct_weight`` may override
-    effective post without mutating source scans.
+    effective PRE and/or POST without mutating source scans.
     """
     from backend.ta_helpers import table_exists
 
@@ -944,26 +944,38 @@ def load_bag_weight_map(
                     raw = {}
             if not isinstance(raw, dict):
                 continue
-            post = _parse_weight(
-                raw.get(
-                    "corrected_post_weight_lbs",
-                    raw.get("post_weight_lbs", raw.get("weight_lbs")),
+            # Prefer explicit corrected_* locks. Legacy rows only locked POST via
+            # bare post_weight_lbs / weight_lbs (never bare pre_weight_lbs alone).
+            pre = _parse_weight(raw.get("corrected_pre_weight_lbs"))
+            post = _parse_weight(raw.get("corrected_post_weight_lbs"))
+            if post is None and raw.get("corrected_pre_weight_lbs") is None:
+                post = _parse_weight(
+                    raw.get("post_weight_lbs", raw.get("weight_lbs"))
                 )
-            )
-            if post is None:
+            if pre is None and post is None:
                 continue
             detected = out[bid]
-            out[bid] = {
+            merged = {
                 **detected,
-                "post_weight_lbs": post,
-                "post_weight_event_exists": True,
-                "post_weight_value": post,
-                "post_weight_valid_for_standard_weight_revenue": post > 0,
-                "weight_entry_count": max(int(detected.get("weight_entry_count") or 0), 2),
                 "detected_pre_weight_lbs": detected.get("pre_weight_lbs"),
                 "detected_post_weight_lbs": detected.get("post_weight_lbs"),
-                "corrected_post_weight_lbs": post,
             }
+            if pre is not None:
+                merged["pre_weight_lbs"] = pre
+                merged["corrected_pre_weight_lbs"] = pre
+                merged["weight_entry_count"] = max(
+                    int(detected.get("weight_entry_count") or 0), 1
+                )
+            if post is not None:
+                merged["post_weight_lbs"] = post
+                merged["post_weight_event_exists"] = True
+                merged["post_weight_value"] = post
+                merged["post_weight_valid_for_standard_weight_revenue"] = post > 0
+                merged["weight_entry_count"] = max(
+                    int(merged.get("weight_entry_count") or 0), 2
+                )
+                merged["corrected_post_weight_lbs"] = post
+            out[bid] = merged
     return out
 
 

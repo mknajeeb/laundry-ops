@@ -441,6 +441,60 @@ def load_canonical_completions_v2(
             "completion_kind": result.completion_kind,
             "via_clean_rack": bool(result.via_clean_rack),
         }
+
+    # Manager correct_completion overrides beat clean-rack operator on rebuild.
+    if out and table_exists(cursor, "rinse_step1_corrections"):
+        placeholders = ",".join(["%s"] * len(ids))
+        cursor.execute(
+            f"""
+            SELECT bag_id, new_values, created_at, id
+            FROM rinse_step1_corrections
+            WHERE organization_id = %s
+              AND bag_id IN ({placeholders})
+              AND action = 'correct_completion'
+            ORDER BY created_at ASC, id ASC
+            """,
+            (int(organization_id), *ids),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            bid = _norm_bag(row.get("bag_id"))
+            if bid not in out:
+                continue
+            raw = row.get("new_values")
+            if isinstance(raw, str):
+                try:
+                    import json
+
+                    raw = json.loads(raw)
+                except Exception:
+                    raw = {}
+            if not isinstance(raw, dict):
+                continue
+            emp = str(raw.get("completed_by") or raw.get("employee") or "").strip() or None
+            ts_raw = raw.get("completion_at")
+            ts = None
+            if ts_raw not in (None, ""):
+                if isinstance(ts_raw, datetime):
+                    ts = ts_raw
+                else:
+                    try:
+                        ts = datetime.fromisoformat(str(ts_raw).replace("Z", "").replace(" ", "T", 1))
+                    except ValueError:
+                        ts = None
+            if not emp and ts is None:
+                continue
+            merged = dict(out[bid])
+            if emp:
+                merged["completed_by"] = emp
+            if ts is not None:
+                merged["completion_at"] = ts
+                d2 = _scan_et_date(ts)
+                if d2 is not None:
+                    merged["completion_date"] = d2
+            merged["completion_source"] = "manager_correct_completion"
+            out[bid] = merged
     return out
 
 
