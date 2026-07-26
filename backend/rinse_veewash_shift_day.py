@@ -865,9 +865,20 @@ def apply_manager_edit_day_bag_patch(
 
     outcome = str(outcome_action or "").strip().lower() or None
     if outcome == "mark_completed":
-        new_status = OUTCOME_COMPLETED
-        reasons = []
-        disposition = DISPOSITION_COMPLETED
+        # Confirm Completed must not fake-clear bulk review — rebuild would put it
+        # back unless items/no-charge were saved (bulk_cleared).
+        pending_bulk = (
+            REASON_WF_BULK_WORKITEM_REVIEW in {str(r) for r in reasons}
+            and not bulk_cleared
+        )
+        if pending_bulk:
+            new_status = OUTCOME_REVIEW_REQUIRED
+            reasons = [REASON_WF_BULK_WORKITEM_REVIEW]
+            disposition = day_row.get("disposition") or DISPOSITION_COMPLETED
+        else:
+            new_status = OUTCOME_COMPLETED
+            reasons = []
+            disposition = DISPOSITION_COMPLETED
     elif outcome == "return_pending":
         new_status = OUTCOME_PENDING
         reasons = []

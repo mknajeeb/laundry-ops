@@ -470,8 +470,8 @@ export default function EditBagPanel({
           enterConflict(res.data);
           return;
         }
-        setLocalError(res?.data?.error || res?.data?.message || "Save failed");
-        onError?.(res?.data?.error || "Save failed");
+        setLocalError(res?.data?.message || res?.data?.error || "Save failed");
+        onError?.(res?.data?.message || res?.data?.error || "Save failed");
         return;
       }
       const editId = res.data.edit_id;
@@ -491,7 +491,7 @@ export default function EditBagPanel({
       if (status === 409 || data.error === "conflict") {
         enterConflict(data);
       } else {
-        const msg = data.error || e?.message || "Save failed";
+        const msg = data.message || data.error || e?.message || "Save failed";
         setLocalError(msg);
         onError?.(msg);
       }

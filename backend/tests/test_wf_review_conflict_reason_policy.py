@@ -600,6 +600,46 @@ def test_manager_edit_day_bag_patch_move_to_review_from_completed():
     assert out["review_reason_codes"] == ["MISSING_PRE_EVIDENCE"]
 
 
+def test_manager_edit_day_bag_patch_mark_completed_keeps_uncleared_bulk_review():
+    """Confirm Completed without bulk items/no-charge must stay in Review."""
+    from backend.rinse_veewash_shift_day import apply_manager_edit_day_bag_patch
+
+    cursor = MagicMock()
+    day_row = {
+        "bag_id": BAG,
+        "effective_status": "review_required",
+        "review_reason_codes": ["WF_BULK_WORKITEM_REVIEW"],
+        "bag_snapshot": {"bag_id": BAG, "outcome": "review_required"},
+        "canonical_completion_status": "completed",
+        "disposition": "COMPLETED",
+    }
+    with patch(
+        "backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables"
+    ), patch(
+        "backend.rinse_veewash_shift_day.load_day_bags_by_ids", return_value=[day_row]
+    ), patch(
+        "backend.rinse_veewash_shift_day.get_day_record", return_value=None
+    ), patch(
+        "backend.rinse_step1_productivity_fast.project_productivity_fields_for_day_bag",
+        return_value={},
+    ):
+        out = apply_manager_edit_day_bag_patch(
+            cursor,
+            ORG,
+            DAY,
+            BAG,
+            previous_effective_status="review_required",
+            previous_reason_codes=["WF_BULK_WORKITEM_REVIEW"],
+            outcome_action="mark_completed",
+            bulk_cleared=False,
+            completion_at="2026-07-26T14:36:00",
+            completed_by="Amna (Veewash)",
+        )
+    assert out["ok"] is True
+    assert out["effective_status"] == "review_required"
+    assert out["review_reason_codes"] == ["WF_BULK_WORKITEM_REVIEW"]
+
+
 def test_manager_edit_day_bag_patch_mark_completed_clears_review():
     from backend.rinse_veewash_shift_day import apply_manager_edit_day_bag_patch
 

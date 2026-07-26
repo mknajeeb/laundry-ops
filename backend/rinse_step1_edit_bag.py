@@ -1062,6 +1062,31 @@ def apply_unified_bag_edit(
     # e/f. completion + outcome ------------------------------------------------
     outcome_result: dict[str, Any] | None = None
     if outcome == OUTCOME_MARK_COMPLETED:
+        # Bulk create-workitem scan requires items or no-charge before leaving Review.
+        from backend.rinse_bulk_workitems import (
+            bag_bulk_review_cleared,
+            load_bag_bulk_lines,
+            load_bulk_resolutions,
+            load_bulk_workitem_scan_map,
+        )
+
+        bulk_scan = (load_bulk_workitem_scan_map(cursor, organization_id, [bid]) or {}).get(bid) or {}
+        if int(bulk_scan.get("count") or 0) > 0:
+            after_bulk_lines = (
+                load_bag_bulk_lines(cursor, organization_id, selected_date_et, [bid]) or {}
+            ).get(bid) or []
+            after_resolution = (
+                load_bulk_resolutions(cursor, organization_id, selected_date_et, [bid]) or {}
+            ).get(bid)
+            if not bag_bulk_review_cleared(after_resolution, list(after_bulk_lines)):
+                return {
+                    "ok": False,
+                    "error": "bulk_workitem_review_required",
+                    "message": (
+                        "This bag has a bulk workitem scan. Enter bath mat/comforter "
+                        "quantities or mark no-chargeable before Confirm Completed."
+                    ),
+                }
         skip_heavy_completion = False
         if confirm_completed:
             try:
