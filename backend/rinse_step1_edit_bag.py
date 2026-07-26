@@ -852,9 +852,14 @@ def _apply_weight_update(
         "pre_weight_lbs": pre_weight_lbs,
         "post_weight_lbs": post_weight_lbs,
     }
-    if _weight_changed(before.get("pre_weight_lbs"), pre_weight_lbs):
+    # Always lock the role being written. Rebuild loaders only honor corrected_*.
+    if pre_weight_lbs is not None:
         new_values["corrected_pre_weight_lbs"] = pre_weight_lbs
-    if _weight_changed(before.get("post_weight_lbs"), post_weight_lbs):
+    elif _weight_changed(before.get("pre_weight_lbs"), pre_weight_lbs):
+        new_values["corrected_pre_weight_lbs"] = pre_weight_lbs
+    if post_weight_lbs is not None:
+        new_values["corrected_post_weight_lbs"] = post_weight_lbs
+    elif _weight_changed(before.get("post_weight_lbs"), post_weight_lbs):
         new_values["corrected_post_weight_lbs"] = post_weight_lbs
 
     _record_correction(

@@ -153,3 +153,38 @@ def test_load_canonical_completions_prefers_manager_correct_completion():
     assert out["BAG1"]["completed_by"] == "Ms Chen"
     assert out["BAG1"]["completion_source"] == "manager_correct_completion"
     assert out["BAG1"]["completion_date"] == date(2026, 7, 26)
+
+
+def test_load_canonical_completions_applies_manager_override_without_scan_completion():
+    """Manager employee correction must stick even when scan completion is absent."""
+    cursor = MagicMock()
+
+    def execute(sql, params=None):
+        s = " ".join(str(sql).split()).lower()
+        if "from rinse_bag_scan_events" in s:
+            cursor._result = []
+        elif "from rinse_step1_corrections" in s:
+            cursor._result = [
+                {
+                    "bag_id": "BAG1",
+                    "new_values": json.dumps(
+                        {
+                            "completed_by": "Mrs Chen (VeeWash)",
+                            "completion_at": "2026-07-26T12:00:00",
+                        }
+                    ),
+                    "created_at": datetime(2026, 7, 26, 13, 0, 0),
+                    "id": 3,
+                }
+            ]
+        else:
+            cursor._result = []
+
+    cursor.execute.side_effect = execute
+    cursor.fetchall.side_effect = lambda: list(getattr(cursor, "_result", []) or [])
+
+    with patch("backend.rinse_veewash_workload.table_exists", return_value=True):
+        out = load_canonical_completions_v2(cursor, 3, ["BAG1"])
+
+    assert out["BAG1"]["completed_by"] == "Mrs Chen (VeeWash)"
+    assert out["BAG1"]["completion_source"] == "manager_correct_completion"

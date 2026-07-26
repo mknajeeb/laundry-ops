@@ -443,7 +443,8 @@ def load_canonical_completions_v2(
         }
 
     # Manager correct_completion overrides beat clean-rack operator on rebuild.
-    if out and table_exists(cursor, "rinse_step1_corrections"):
+    # Load even when scan completion is empty — otherwise Save→refresh reverts.
+    if ids and table_exists(cursor, "rinse_step1_corrections"):
         placeholders = ",".join(["%s"] * len(ids))
         cursor.execute(
             f"""
@@ -460,7 +461,7 @@ def load_canonical_completions_v2(
             if not isinstance(row, dict):
                 continue
             bid = _norm_bag(row.get("bag_id"))
-            if bid not in out:
+            if not bid or bid not in ids:
                 continue
             raw = row.get("new_values")
             if isinstance(raw, str):
@@ -485,7 +486,8 @@ def load_canonical_completions_v2(
                         ts = None
             if not emp and ts is None:
                 continue
-            merged = dict(out[bid])
+            # Apply even when scan-based completion is missing.
+            merged = dict(out.get(bid) or {})
             if emp:
                 merged["completed_by"] = emp
             if ts is not None:
@@ -1197,7 +1199,8 @@ def build_veewash_daily_workload_from_membership(
                 "membership_synthetic_entry": True,
             }
 
-    completion = load_canonical_completions_v2(cursor, organization_id, presence.keys())
+    completion_ids = sorted(member_set | set(presence.keys()))
+    completion = load_canonical_completions_v2(cursor, organization_id, completion_ids)
     candidate_absent = [
         bid
         for bid, p in presence.items()
