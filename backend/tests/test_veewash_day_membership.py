@@ -270,51 +270,135 @@ def test_pending_without_scans_is_stale_association_warning():
     assert "NOSCANBAG01" in (out.get("stale_scan_chronology_bag_ids") or [])
 
 
-def test_prior_day_portal_carryin_excluded_without_same_day_scan():
-    """Jul 24+ must not auto-admit Jul 23 membership bags with no Jul 24 scans."""
+def test_prior_day_portal_carryin_excluded_without_same_day_entry_scan():
+    """Jul 24+ must not auto-admit prior membership bags without Dirty/entry scan."""
     from backend.rinse_veewash_day_membership import exclude_prior_day_portal_carryins
 
     membership = {
         "OLD1": {"bag_id": "OLD1", "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE},
         "NEW1": {"bag_id": "NEW1", "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE},
         "REWORK1": {"bag_id": "REWORK1", "inclusion_source": INCLUSION_ADDED_LATER_IN_DAY},
-        "OLDSCAN": {
-            "bag_id": "OLDSCAN",
+        "OLDDIRTY": {
+            "bag_id": "OLDDIRTY",
             "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE,
         },
     }
-    cursor = MagicMock()
-
-    def execute(sql, params=None):
-        pass
-
-    # prior day bags via day_bags query, then same-day scans query
-    calls = {"n": 0}
-
-    def fetchall():
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return [{"bag_id": "OLD1"}, {"bag_id": "REWORK1"}, {"bag_id": "OLDSCAN"}]
-        return [{"bag_id": "REWORK1"}, {"bag_id": "OLDSCAN"}]
-
-    cursor.execute.side_effect = execute
-    cursor.fetchall.side_effect = fetchall
-
     with (
-        patch("backend.ta_helpers.table_exists", return_value=True),
+        patch(
+            "backend.rinse_veewash_day_membership._load_prior_day_membership_ids",
+            return_value={"OLD1", "REWORK1", "OLDDIRTY"},
+        ),
+        patch(
+            "backend.rinse_veewash_day_membership._bags_with_same_day_entry_evidence",
+            return_value={"REWORK1", "OLDDIRTY"},
+        ),
     ):
         kept, excluded = exclude_prior_day_portal_carryins(
-            cursor, 3, date(2026, 7, 24), membership
+            MagicMock(), 3, date(2026, 7, 24), membership
         )
     assert excluded == ["OLD1"]
     assert "OLD1" not in kept
     assert "NEW1" in kept
     assert "REWORK1" in kept
-    assert "OLDSCAN" in kept
+    assert "OLDDIRTY" in kept
     assert kept["NEW1"]["inclusion_source"] == INCLUSION_FIRST_SCRAPE_BASELINE
     assert kept["REWORK1"]["inclusion_source"] == INCLUSION_ADDED_LATER_IN_DAY
-    assert kept["OLDSCAN"]["inclusion_source"] == INCLUSION_ADDED_LATER_IN_DAY
-    assert kept["OLDSCAN"].get("requalified_from_prior_day") is True
+    assert kept["OLDDIRTY"]["inclusion_source"] == INCLUSION_ADDED_LATER_IN_DAY
+    assert kept["OLDDIRTY"].get("requalified_from_prior_day") is True
+    assert kept["OLDDIRTY"].get("membership_note") == (
+        "prior_day_requalified_by_same_day_entry_scan"
+    )
+
+
+def test_unfinished_prior_day_without_entry_scan_excluded():
+    from backend.rinse_veewash_day_membership import exclude_prior_day_portal_carryins
+
+    membership = {
+        "YDAY1": {"bag_id": "YDAY1", "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE},
+    }
+    with (
+        patch(
+            "backend.rinse_veewash_day_membership._load_prior_day_membership_ids",
+            return_value={"YDAY1"},
+        ),
+        patch(
+            "backend.rinse_veewash_day_membership._bags_with_same_day_entry_evidence",
+            return_value=set(),
+        ),
+    ):
+        kept, excluded = exclude_prior_day_portal_carryins(
+            MagicMock(), 3, date(2026, 7, 25), membership
+        )
+    assert excluded == ["YDAY1"]
+    assert kept == {}
+
+
+def test_prior_day_with_new_dirty_entry_is_requalified():
+    from backend.rinse_veewash_day_membership import exclude_prior_day_portal_carryins
+
+    membership = {
+        "YDAY1": {"bag_id": "YDAY1", "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE},
+    }
+    with (
+        patch(
+            "backend.rinse_veewash_day_membership._load_prior_day_membership_ids",
+            return_value={"YDAY1"},
+        ),
+        patch(
+            "backend.rinse_veewash_day_membership._bags_with_same_day_entry_evidence",
+            return_value={"YDAY1"},
+        ),
+    ):
+        kept, excluded = exclude_prior_day_portal_carryins(
+            MagicMock(), 3, date(2026, 7, 25), membership
+        )
+    assert excluded == []
+    assert kept["YDAY1"]["requalified_from_prior_day"] is True
+    assert kept["YDAY1"]["inclusion_source"] == INCLUSION_ADDED_LATER_IN_DAY
+
+
+def test_prior_bulk_or_review_resolution_does_not_admit():
+    """Non-Dirty same-day scans / prior bulk/review are not entry evidence."""
+    from backend.rinse_veewash_day_membership import _bags_with_same_day_entry_evidence
+
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []  # no Dirty rows returned
+    with (
+        patch("backend.ta_helpers.table_exists", return_value=True),
+        patch(
+            "backend.rinse_veewash_day_membership._facility_entry_rack_keys",
+            return_value=["veewash dirty"],
+        ),
+    ):
+        found = _bags_with_same_day_entry_evidence(
+            cursor, 3, date(2026, 7, 25), ["BULK1", "REV1"]
+        )
+    assert found == set()
+    sql = cursor.execute.call_args[0][0].lower()
+    assert "lower(trim(rack)) in" in sql
+    assert "create-workitem-bulk" not in sql
+
+
+def test_stale_prior_day_bags_union_live_membership():
+    """Stale CLOSED day_bags must not hide live prior-day portal members."""
+    from backend.rinse_veewash_day_membership import _load_prior_day_membership_ids
+
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [{"bag_id": "SNAP1"}]
+    with (
+        patch("backend.ta_helpers.table_exists", return_value=True),
+        patch(
+            "backend.rinse_veewash_day_membership.build_append_only_membership",
+            return_value={
+                "membership": {
+                    "SNAP1": {"bag_id": "SNAP1"},
+                    "LIVEONLY": {"bag_id": "LIVEONLY"},
+                }
+            },
+        ),
+    ):
+        prior = _load_prior_day_membership_ids(cursor, 3, date(2026, 7, 25))
+    assert prior == {"SNAP1", "LIVEONLY"}
 
 
 def test_cutover_day_does_not_filter_prior_portal_bags():
