@@ -462,7 +462,18 @@ def _operational_membership_ids(wl: Mapping[str, Any]) -> set[str]:
 def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -> list[dict[str, Any]]:
     review_ids = set(wl.get("review_required") or summary.get("segments", {}).get("all", {}).get("bag_ids", {}).get("review_required") or [])
     reasons = wl.get("review_reasons_by_bag") or summary.get("review_reasons_by_bag") or {}
-    member_ids = _operational_membership_ids(wl)
+    # Snapshot shells historically only populated review_required list keys. Treat every
+    # row on a from_snapshot shell as day membership so a re-persist cannot DELETE
+    # completed / pending bags and wipe Employee Productivity.
+    if wl.get("from_snapshot"):
+        member_ids = {
+            normalize_bag_id(r.get("bag_id"))
+            for r in (wl.get("rows") or [])
+            if r.get("bag_id")
+        }
+        member_ids.discard("")
+    else:
+        member_ids = _operational_membership_ids(wl)
     rows_out: list[dict[str, Any]] = []
     for row in wl.get("rows") or []:
         bid = normalize_bag_id(row.get("bag_id"))
@@ -479,7 +490,12 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
             entry_class = "new_today"
         eff = _effective_status_for_row(row, review_ids)
         # Only persist bags that are part of the day's operational set.
-        if entry_class not in ("new_today", "carryover") and bid not in review_ids:
+        # Snapshot rows are already the day membership — do not drop by entry_class.
+        if (
+            not wl.get("from_snapshot")
+            and entry_class not in ("new_today", "carryover")
+            and bid not in review_ids
+        ):
             # Still keep CWO / review bags that were force-included.
             if eff != OUTCOME_REVIEW_REQUIRED and row.get("final_bucket") != "review_required":
                 continue
@@ -1409,54 +1425,294 @@ def build_or_load_step1_for_date(
     return wl, summary, day or {"status": next_status, "shift_date_et": selected_date_et}
 
 
+CLOSE_NOT_READY_ERROR = "shift_not_ready_to_close"
+CLOSE_NOT_READY_MESSAGE = (
+    "Complete or review all admitted orders before closing the shift."
+)
+
+
+def _segment_count(seg: Mapping[str, Any] | None, key: str) -> int:
+    s = seg or {}
+    if key == "review_required":
+        return int((s.get("exceptions") or {}).get("review_required") or s.get("review_required") or 0)
+    return int(s.get(key) or 0)
+
+
+def _count_hd_partially_recorded(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    hd_bag_ids: set[str],
+) -> int:
+    """Count admitted HD bags with PARTIALLY_RECORDED production facts."""
+    if not cursor or not hd_bag_ids:
+        return 0
+    try:
+        from backend.daily_operations_hd import STATUS_PARTIALLY_RECORDED, ensure_hd_production_tables
+        from backend.ta_helpers import table_exists
+
+        ensure_hd_production_tables(cursor)
+        if not table_exists(cursor, "hd_day_bag_production"):
+            return 0
+        ids = sorted(hd_bag_ids)
+        placeholders = ",".join(["%s"] * len(ids))
+        cursor.execute(
+            f"""
+            SELECT bag_id
+            FROM hd_day_bag_production
+            WHERE organization_id = %s
+              AND operations_date_et = %s
+              AND status = %s
+              AND bag_id IN ({placeholders})
+            """,
+            (int(organization_id), shift_date_et, STATUS_PARTIALLY_RECORDED, *ids),
+        )
+        return len(
+            {
+                normalize_bag_id(r.get("bag_id"))
+                for r in (cursor.fetchall() or [])
+                if isinstance(r, dict) and normalize_bag_id(r.get("bag_id"))
+            }
+        )
+    except Exception:
+        return 0
+
+
+def compute_close_blocking_counts(
+    summary: Mapping[str, Any],
+    *,
+    cursor=None,
+    organization_id: int | None = None,
+    shift_date_et: date | None = None,
+    day_bags: list[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Authoritative close-gate counts.
+
+    Close is allowed only when every admitted order is COMPLETED or approved
+    EXCLUDED, and all pending / review / partial / unresolved counts are zero:
+
+      total_admitted_workload == completed + approved_excluded
+      pending = review_required = partially_recorded = unresolved_exceptions = 0
+    """
+    segs = summary.get("segments") or {}
+    all_seg = segs.get("all") or {}
+    wf = segs.get("wf") or {}
+    hd = segs.get("hd") or {}
+
+    completed = 0
+    approved_excluded = 0
+    wf_pending = 0
+    wf_review_required = 0
+    hd_review_required = 0
+    other_unresolved = 0
+    hd_member_ids: set[str] = set()
+
+    if day_bags is not None:
+        for bag in day_bags:
+            bid = normalize_bag_id(bag.get("bag_id"))
+            if not bid:
+                continue
+            svc = str(bag.get("service_type") or "").strip().upper()
+            eff = str(bag.get("effective_status") or "").strip().lower()
+            if svc == "HD":
+                hd_member_ids.add(bid)
+            if eff in ("excluded", "exclude"):
+                approved_excluded += 1
+                continue
+            if eff == OUTCOME_COMPLETED or eff.endswith("_completed"):
+                completed += 1
+                continue
+            if eff == OUTCOME_PENDING or "pending" in eff:
+                if svc == "WF":
+                    wf_pending += 1
+                elif svc == "HD":
+                    # HD pending is treated as unresolved review work.
+                    hd_review_required += 1
+                else:
+                    other_unresolved += 1
+                continue
+            if eff == OUTCOME_REVIEW_REQUIRED or eff == "review_required":
+                if svc == "WF":
+                    wf_review_required += 1
+                elif svc == "HD":
+                    hd_review_required += 1
+                else:
+                    other_unresolved += 1
+                continue
+            # Unknown / unresolved exception status on an admitted day bag.
+            other_unresolved += 1
+    else:
+        # Headline-only path (status bar). Prefer segment counts.
+        completed = _segment_count(all_seg, "completed") or int(summary.get("completed") or 0)
+        approved_excluded = int(
+            all_seg.get("excluded")
+            or len(((all_seg.get("bag_ids") or {}).get("excluded") or []))
+            or 0
+        )
+        wf_pending = _segment_count(wf, "pending")
+        wf_review_required = _segment_count(wf, "review_required")
+        hd_review_required = _segment_count(hd, "review_required") + _segment_count(hd, "pending")
+        # Bags listed under all.review but not attributed to WF/HD.
+        all_review = _segment_count(all_seg, "review_required") or int(
+            (summary.get("exceptions") or {}).get("review_required") or 0
+        )
+        attributed_review = wf_review_required + hd_review_required
+        if all_review > attributed_review:
+            other_unresolved += all_review - attributed_review
+        for bid in (hd.get("bag_ids") or {}).get("new_today") or []:
+            nb = normalize_bag_id(bid)
+            if nb:
+                hd_member_ids.add(nb)
+        for bid in (hd.get("bag_ids") or {}).get("review_required") or []:
+            nb = normalize_bag_id(bid)
+            if nb:
+                hd_member_ids.add(nb)
+        for bid in (hd.get("bag_ids") or {}).get("completed") or []:
+            nb = normalize_bag_id(bid)
+            if nb:
+                hd_member_ids.add(nb)
+
+    hd_partially_recorded = 0
+    if (
+        cursor is not None
+        and organization_id is not None
+        and isinstance(shift_date_et, date)
+    ):
+        hd_partially_recorded = _count_hd_partially_recorded(
+            cursor, int(organization_id), shift_date_et, hd_member_ids
+        )
+        # Partials are a subset of HD review; keep both visible, avoid double-block noise
+        # by subtracting partials from the non-partial HD review display count.
+        if hd_partially_recorded and hd_review_required >= hd_partially_recorded:
+            hd_review_required = hd_review_required - hd_partially_recorded
+
+    pending_total = wf_pending
+    review_total = wf_review_required + hd_review_required + hd_partially_recorded
+    accounted = (
+        completed
+        + approved_excluded
+        + pending_total
+        + review_total
+        + other_unresolved
+    )
+    headline_active = int(
+        all_seg.get("active_workload") or summary.get("active_workload") or 0
+    )
+    # When the headline active count exceeds accounted buckets, treat the gap as
+    # other unresolved (snapshot drift / unbucketed exceptions).
+    if day_bags is None and headline_active > accounted:
+        other_unresolved += headline_active - accounted
+        accounted = headline_active
+
+    blocking_counts = {
+        "wf_pending": int(wf_pending),
+        "wf_review_required": int(wf_review_required),
+        "hd_review_required": int(hd_review_required),
+        "hd_partially_recorded": int(hd_partially_recorded),
+        "other_unresolved": int(other_unresolved),
+    }
+    identity_ok = (
+        pending_total == 0
+        and review_total == 0
+        and other_unresolved == 0
+        and accounted == completed + approved_excluded
+    )
+    return {
+        "blocking_counts": blocking_counts,
+        "completed": int(completed),
+        "approved_excluded": int(approved_excluded),
+        "pending": int(pending_total),
+        "review_required": int(review_total),
+        "partially_recorded": int(hd_partially_recorded),
+        "unresolved_exceptions": int(other_unresolved),
+        "total_admitted_workload": int(accounted),
+        "identity_ok": bool(identity_ok),
+    }
+
+
 def validate_close(
     summary: Mapping[str, Any],
     *,
-    allow_unresolved_reviews: bool = False,
+    allow_unresolved_reviews: bool = False,  # deprecated — ignored; override close removed
+    cursor=None,
+    organization_id: int | None = None,
+    shift_date_et: date | None = None,
+    day_bags: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """Strict close gate. Override / unresolved-review bypass is not permitted."""
+    del allow_unresolved_reviews  # explicit: no override path
     segs = summary.get("segments") or {}
     all_seg = segs.get("all") or {}
-    review_n = int((all_seg.get("exceptions") or summary.get("exceptions") or {}).get("review_required") or 0)
-    completed = int(all_seg.get("completed") or summary.get("completed") or 0)
-    pending = int(all_seg.get("pending") or summary.get("pending") or 0)
-    active = int(all_seg.get("active_workload") or summary.get("active_workload") or 0)
-    arithmetic_ok = active == completed + pending + review_n
-
     wf = segs.get("wf") or {}
     hd = segs.get("hd") or {}
+
+    gate = compute_close_blocking_counts(
+        summary,
+        cursor=cursor,
+        organization_id=organization_id,
+        shift_date_et=shift_date_et,
+        day_bags=day_bags,
+    )
+    counts = gate["blocking_counts"]
+    review_n = int(gate["review_required"])
+    completed = int(gate["completed"])
+    pending = int(gate["pending"])
+    active = int(gate["total_admitted_workload"])
+    excluded = int(gate["approved_excluded"])
+    arithmetic_ok = bool(gate["identity_ok"])
+
     service_ok = (
         int(wf.get("new_today") or 0) + int(hd.get("new_today") or 0)
         == int(all_seg.get("new_today") or summary.get("new_today") or 0)
     )
-    checklist = {
-        "workload_reconciled": arithmetic_ok,
-        "completed_reviewed": True,
-        "pending_confirmed": True,
-        "review_required_cleared": review_n == 0,
-        "wf_zero_weight_resolved": True,
-        "completed_without_entry_resolved": True,
-        "disappeared_reviewed": True,
-        "bulk_workitems_reviewed": True,
-        "carryover_confirmed": True,
-        "service_totals_ok": service_ok,
-        "arithmetic_ok": arithmetic_ok,
-    }
-    # Explicit bulk unresolved count (also covered by review_required_cleared).
     review_by_reason = summary.get("review_by_reason") or {}
     bulk_ids = review_by_reason.get("WF_BULK_WORKITEM_REVIEW") or []
     bulk_n = len(bulk_ids)
-    checklist["bulk_workitems_reviewed"] = bulk_n == 0
-    blocking = []
-    if review_n > 0 and not allow_unresolved_reviews:
-        blocking.append("unresolved_review_required")
-    if bulk_n > 0 and not allow_unresolved_reviews:
-        blocking.append("unresolved_bulk_workitem_review")
+
+    checklist = {
+        "workload_reconciled": arithmetic_ok,
+        "completed_reviewed": counts["wf_pending"] == 0 and counts["wf_review_required"] == 0,
+        "pending_confirmed": counts["wf_pending"] == 0,
+        "review_required_cleared": review_n == 0,
+        "wf_zero_weight_resolved": counts["wf_review_required"] == 0,
+        "completed_without_entry_resolved": counts["wf_review_required"] == 0,
+        "disappeared_reviewed": counts["other_unresolved"] == 0 and counts["wf_review_required"] == 0,
+        "bulk_workitems_reviewed": bulk_n == 0,
+        "carryover_confirmed": True,
+        "service_totals_ok": service_ok,
+        "arithmetic_ok": arithmetic_ok,
+        "hd_review_cleared": counts["hd_review_required"] == 0,
+        "hd_partial_cleared": counts["hd_partially_recorded"] == 0,
+        "override_close_allowed": False,
+    }
+
+    blocking: list[str] = []
+    if counts["wf_pending"] > 0:
+        blocking.append("wf_pending")
+    if counts["wf_review_required"] > 0:
+        blocking.append("wf_review_required")
+    if counts["hd_review_required"] > 0:
+        blocking.append("hd_review_required")
+    if counts["hd_partially_recorded"] > 0:
+        blocking.append("hd_partially_recorded")
+    if counts["other_unresolved"] > 0:
+        blocking.append("other_unresolved")
+    if bulk_n > 0 and "wf_review_required" not in blocking:
+        # Bulk workitems are a WF review reason; ensure they block even if headline drifted.
+        blocking.append("wf_review_required")
+        counts["wf_review_required"] = max(counts["wf_review_required"], bulk_n)
         checklist["bulk_workitems_reviewed"] = False
-    if not arithmetic_ok:
+    if not arithmetic_ok and not blocking:
         blocking.append("headline_arithmetic_mismatch")
+        counts["other_unresolved"] = max(counts["other_unresolved"], 1)
+
+    ok = not blocking
     return {
-        "ok": not blocking,
+        "ok": ok,
         "blocking": blocking,
+        "blocking_counts": counts,
+        "error": None if ok else CLOSE_NOT_READY_ERROR,
+        "message": None if ok else CLOSE_NOT_READY_MESSAGE,
         "checklist": checklist,
         "review_required_count": review_n,
         "bulk_workitem_review_count": bulk_n,
@@ -1465,19 +1721,21 @@ def validate_close(
             "completed": completed,
             "pending": pending,
             "review_required": review_n,
+            "approved_excluded": excluded,
             "wf": {
                 "new_today": wf.get("new_today"),
                 "carryover": wf.get("carryover"),
                 "completed": wf.get("completed"),
-                "pending": wf.get("pending"),
-                "review_required": (wf.get("exceptions") or {}).get("review_required"),
+                "pending": counts["wf_pending"],
+                "review_required": counts["wf_review_required"],
             },
             "hd": {
                 "new_today": hd.get("new_today"),
                 "carryover": hd.get("carryover"),
                 "completed": hd.get("completed"),
-                "pending": hd.get("pending"),
-                "review_required": (hd.get("exceptions") or {}).get("review_required"),
+                "pending": 0,
+                "review_required": counts["hd_review_required"],
+                "partially_recorded": counts["hd_partially_recorded"],
             },
         },
     }
@@ -1527,21 +1785,32 @@ def close_shift_day(
     actor_user_id: int | None,
     actor_display_name: str | None,
     reason: str | None = None,
-    allow_unresolved_reviews: bool = False,
+    allow_unresolved_reviews: bool = False,  # deprecated — ignored
     checklist: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # Prefer already-persisted prior-day snapshot; do not live-rebuild on close.
-    wl, summary, day = build_or_load_step1_for_date(
-        cursor,
-        organization_id,
-        shift_date_et,
-        persist_live=(shift_date_et == today_et()),
-    )
-    if (day or {}).get("status") == STATUS_CLOSED:
+    """Close = finalize the existing persisted Step-1 snapshot (status only).
+
+    Must never live-rebuild, rewrite day bags, or change operational metrics.
+    Employee Productivity before/after close must be identical aside from status.
+
+    Strict gate: any pending / review / partial / unresolved admitted work rejects
+    close with ``shift_not_ready_to_close`` and performs no status/audit mutation.
+    Override close is not permitted.
+    """
+    del allow_unresolved_reviews  # override close removed
+    # Re-read authoritative persisted day state inside the caller's transaction.
+    existing = get_day_record(cursor, organization_id, shift_date_et)
+    if not existing:
+        return {"ok": False, "error": "day_not_found", "day": None}
+    day = existing
+    summary = summary_from_day_record(
+        day, cursor=cursor, organization_id=organization_id
+    ) or {}
+    if day.get("status") == STATUS_CLOSED:
         return {"ok": False, "error": "already_closed", "day": day}
-    if (day or {}).get("status") == STATUS_NOT_STARTED or derive_shift_day_status(
+    if day.get("status") == STATUS_NOT_STARTED or derive_shift_day_status(
         summary,
-        current_status=(day or {}).get("status"),
+        current_status=day.get("status"),
         membership=summary.get("membership") if isinstance(summary.get("membership"), dict) else None,
     ) == STATUS_NOT_STARTED:
         return {
@@ -1551,31 +1820,35 @@ def close_shift_day(
             "day": day,
         }
 
-    validation = validate_close(summary, allow_unresolved_reviews=allow_unresolved_reviews)
-    if not validation["ok"]:
-        return {"ok": False, "error": "validation_failed", "validation": validation}
-
-    if allow_unresolved_reviews and validation["review_required_count"] > 0 and not (reason or "").strip():
-        return {"ok": False, "error": "override_reason_required", "validation": validation}
-
-    # Final freeze persist
-    day = persist_day_snapshot(
-        cursor,
-        organization_id,
-        shift_date_et,
-        workload=wl,
-        summary=summary,
-        status=STATUS_CLOSED,
-        force=True,
+    day_bags = load_day_bags(cursor, organization_id, shift_date_et)
+    validation = validate_close(
+        summary,
+        cursor=cursor,
+        organization_id=organization_id,
+        shift_date_et=shift_date_et,
+        day_bags=day_bags,
     )
+    if not validation["ok"]:
+        # Rejected close must not mutate status, closed_*, audit, or snapshots.
+        return {
+            "ok": False,
+            "error": CLOSE_NOT_READY_ERROR,
+            "message": CLOSE_NOT_READY_MESSAGE,
+            "blocking_counts": validation.get("blocking_counts") or {},
+            "validation": validation,
+            "day": day,
+        }
+
+    # Freeze only: mark CLOSED. Do not call persist_day_snapshot / rewrite bags /
+    # rewrite headline_json — that previously deleted completed productivity rows.
     now = datetime.utcnow()
-    prev = (day or {}).get("status")
+    prev = day.get("status")
     cursor.execute(
         """
         UPDATE rinse_shift_monitor_days
         SET status=%s, closed_at=%s, closed_by_user_id=%s, closed_by_display_name=%s,
             close_reason=%s, close_override=%s, review_required_count=%s,
-            headline_json=%s, updated_at=CURRENT_TIMESTAMP
+            updated_at=CURRENT_TIMESTAMP
         WHERE organization_id=%s AND shift_date_et=%s
         """,
         (
@@ -1584,9 +1857,8 @@ def close_shift_day(
             actor_user_id,
             actor_display_name,
             reason,
-            1 if allow_unresolved_reviews and validation["review_required_count"] > 0 else 0,
-            validation["review_required_count"],
-            _json_dump(summary),
+            0,  # override close removed
+            0,
             int(organization_id),
             shift_date_et,
         ),
@@ -1595,7 +1867,7 @@ def close_shift_day(
         cursor,
         organization_id,
         shift_date_et,
-        action="CLOSE_OVERRIDE" if allow_unresolved_reviews and validation["review_required_count"] > 0 else "CLOSE",
+        action="CLOSE",
         actor_user_id=actor_user_id,
         actor_display_name=actor_display_name,
         reason=reason,
@@ -1604,6 +1876,12 @@ def close_shift_day(
         checklist=checklist or validation["checklist"],
         totals=validation["totals"],
     )
+    try:
+        from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
+
+        clear_step1_productivity_cache(organization_id, shift_date_et)
+    except Exception:
+        pass
 
     # Seed next-day carryover bag stubs from pending + explicit carry-forward dispositions.
     # Cutover 2026-07-23: next day starts from its own after-midnight scrape.

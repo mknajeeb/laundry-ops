@@ -1,6 +1,7 @@
 """Close Shift must accept list-shaped ``me.roles`` (portal users).
 
 Regression for TypeError: unhashable type: 'list' on Confirm Close.
+Also locks the strict close gate (no override).
 """
 
 from __future__ import annotations
@@ -77,60 +78,112 @@ def _summary(*, review=0, pending=0, completed=70, active=None, wf_review=None, 
     }
 
 
-def _close_ok(summary, *, allow_unresolved=False, reason=None):
+def _bid(prefix: str, i: int) -> str:
+    return f"{prefix}{i:06d}"[:10]
+
+
+def _bags_for(summary):
+    rows = []
+    for i in range(int(summary["completed"] or 0)):
+        rows.append(
+            {"bag_id": _bid("DONE", i), "service_type": "WF", "effective_status": "completed"}
+        )
+    for i in range(int(summary["pending"] or 0)):
+        rows.append(
+            {"bag_id": _bid("WPND", i), "service_type": "WF", "effective_status": "pending"}
+        )
+    wf_review = int((summary["segments"]["wf"].get("exceptions") or {}).get("review_required") or 0)
+    hd_review = int((summary["segments"]["hd"].get("exceptions") or {}).get("review_required") or 0)
+    for i in range(wf_review):
+        rows.append(
+            {
+                "bag_id": _bid("WREV", i),
+                "service_type": "WF",
+                "effective_status": "review_required",
+            }
+        )
+    for i in range(hd_review):
+        rows.append(
+            {
+                "bag_id": _bid("HREV", i),
+                "service_type": "HD",
+                "effective_status": "review_required",
+            }
+        )
+    return rows
+
+
+def _close(summary):
     cursor = MagicMock()
-    day = {"status": STATUS_READY_TO_CLOSE if summary["exceptions"]["review_required"] == 0 else STATUS_OPEN}
+    day = {
+        "status": STATUS_READY_TO_CLOSE
+        if summary["exceptions"]["review_required"] == 0 and summary["pending"] == 0
+        else STATUS_OPEN,
+        "headline": summary,
+    }
+    closed = {**day, "status": "CLOSED"}
+    bags = _bags_for(summary)
     with patch(
-        "backend.rinse_veewash_shift_day.build_or_load_step1_for_date",
-        return_value=({}, summary, day),
+        "backend.rinse_veewash_shift_day.get_day_record",
+        side_effect=[day, closed],
+    ), patch(
+        "backend.rinse_veewash_shift_day.summary_from_day_record",
+        return_value=summary,
+    ), patch(
+        "backend.rinse_veewash_shift_day.load_day_bags",
+        return_value=bags,
     ), patch(
         "backend.rinse_veewash_shift_day.persist_day_snapshot",
-        return_value={**day, "status": "CLOSED"},
-    ), patch(
+    ) as persist, patch(
         "backend.rinse_veewash_shift_day._write_audit"
     ), patch(
-        "backend.rinse_veewash_shift_day._commit"
+        "backend.rinse_employee_completed_bags.clear_step1_productivity_cache"
     ), patch(
-        "backend.rinse_veewash_shift_day.get_day_record",
-        return_value={"status": "CLOSED"},
+        "backend.rinse_veewash_shift_day._count_hd_partially_recorded",
+        return_value=0,
     ):
-        return close_shift_day(
+        out = close_shift_day(
             cursor,
             3,
             date(2026, 7, 25),
             actor_user_id=1,
             actor_display_name="Admin",
-            reason=reason,
-            allow_unresolved_reviews=allow_unresolved,
-            checklist={"workload_reconciled": True},
         )
+    if out.get("ok"):
+        persist.assert_not_called()
+    return out
 
 
 def test_close_no_reviews():
-    out = _close_ok(_summary(review=0, pending=0, completed=73))
+    out = _close(_summary(review=0, pending=0, completed=73))
     assert out["ok"] is True
 
 
-def test_close_wf_reviews_blocked_without_override():
+def test_close_wf_reviews_blocked():
     summary = _summary(review=2, pending=0, completed=70, wf_review=2, hd_review=0)
-    assert validate_close(summary)["ok"] is False
-    out = _close_ok(summary, allow_unresolved=False)
+    assert validate_close(summary, day_bags=_bags_for(summary))["ok"] is False
+    out = _close(summary)
     assert out["ok"] is False
-    assert out["error"] == "validation_failed"
+    assert out["error"] == "shift_not_ready_to_close"
+    assert out["blocking_counts"]["wf_review_required"] == 2
 
 
-def test_close_hd_reviews_with_override():
+def test_close_hd_reviews_blocked_no_override():
     summary = _summary(review=1, pending=0, completed=70, wf_review=0, hd_review=1)
-    out = _close_ok(summary, allow_unresolved=True, reason="HD review deferred")
-    assert out["ok"] is True
+    out = _close(summary)
+    assert out["ok"] is False
+    assert out["error"] == "shift_not_ready_to_close"
+    assert out["blocking_counts"]["hd_review_required"] == 1
 
 
-def test_close_mixed_wf_hd_reviews_with_override():
+def test_close_mixed_wf_hd_reviews_blocked():
     summary = _summary(review=3, pending=0, completed=70, wf_review=2, hd_review=1)
-    out = _close_ok(summary, allow_unresolved=True, reason="mixed reviews cleared offline")
-    assert out["ok"] is True
+    out = _close(summary)
+    assert out["ok"] is False
+    assert out["blocking_counts"]["wf_review_required"] == 2
+    assert out["blocking_counts"]["hd_review_required"] == 1
 
 
 def test_close_resolved_reviews():
-    out = _close_ok(_summary(review=0, pending=0, completed=70, wf_review=0, hd_review=0))
+    out = _close(_summary(review=0, pending=0, completed=70, wf_review=0, hd_review=0))
     assert out["ok"] is True

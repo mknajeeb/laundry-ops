@@ -55,25 +55,40 @@ def _summary(*, review=0, completed=72, pending=9, active=90):
 
 
 def test_validate_close_blocks_unresolved_reviews():
-    v = validate_close(_summary(review=9, active=90, completed=72, pending=9), allow_unresolved_reviews=False)
+    v = validate_close(_summary(review=9, active=90, completed=72, pending=9))
     assert v["ok"] is False
-    assert "unresolved_review_required" in v["blocking"]
+    assert v["error"] == "shift_not_ready_to_close"
+    assert v["blocking_counts"]["wf_pending"] >= 0
+    assert (
+        v["blocking_counts"]["wf_review_required"]
+        + v["blocking_counts"]["hd_review_required"]
+        + v["blocking_counts"]["wf_pending"]
+    ) > 0
 
 
-def test_validate_close_allows_override_flag():
-    v = validate_close(_summary(review=9, active=90, completed=72, pending=9), allow_unresolved_reviews=True)
-    assert v["ok"] is True
-    assert v["review_required_count"] == 9
+def test_validate_close_ignores_override_flag():
+    v = validate_close(
+        _summary(review=9, active=90, completed=72, pending=9),
+        allow_unresolved_reviews=True,
+    )
+    assert v["ok"] is False
+    assert v["checklist"]["override_close_allowed"] is False
+    assert v["review_required_count"] > 0
 
 
 def test_validate_close_arithmetic():
     v = validate_close(
         _summary(review=0, completed=72, pending=9, active=90),
-        allow_unresolved_reviews=False,
     )
-    # 72+9+0 != 90
+    # unresolved pending/review remains → not closable
     assert v["ok"] is False
-    assert "headline_arithmetic_mismatch" in v["blocking"]
+    bc = v["blocking_counts"]
+    assert (
+        bc["wf_pending"]
+        + bc["wf_review_required"]
+        + bc["hd_review_required"]
+        + bc["other_unresolved"]
+    ) > 0
 
 
 def test_summary_from_day_record_marks_closed_readonly():
@@ -136,13 +151,28 @@ def test_reopen_clears_closed_by_fields_and_does_not_autocommit():
     commit.assert_not_called()
 
 
-def test_close_requires_override_reason_when_reviews_remain():
+def test_close_rejects_unresolved_reviews_without_mutation():
     cursor = MagicMock()
     summary = _summary(review=2, completed=72, pending=9, active=83)
-    day = {"status": STATUS_OPEN}
+    day = {"status": STATUS_OPEN, "headline": summary}
+    bags = [
+        {"bag_id": "WPND000000", "service_type": "WF", "effective_status": "pending"},
+        {"bag_id": "WREV000000", "service_type": "WF", "effective_status": "review_required"},
+    ]
     with patch(
-        "backend.rinse_veewash_shift_day.build_or_load_step1_for_date",
-        return_value=({}, summary, day),
+        "backend.rinse_veewash_shift_day.get_day_record",
+        return_value=day,
+    ), patch(
+        "backend.rinse_veewash_shift_day.summary_from_day_record",
+        return_value=summary,
+    ), patch(
+        "backend.rinse_veewash_shift_day.load_day_bags",
+        return_value=bags,
+    ), patch(
+        "backend.rinse_veewash_shift_day._write_audit",
+    ) as audit, patch(
+        "backend.rinse_veewash_shift_day._count_hd_partially_recorded",
+        return_value=0,
     ):
         out = close_shift_day(
             cursor,
@@ -150,11 +180,13 @@ def test_close_requires_override_reason_when_reviews_remain():
             D1,
             actor_user_id=1,
             actor_display_name="Admin",
-            reason="",
+            reason="try override",
             allow_unresolved_reviews=True,
         )
     assert out["ok"] is False
-    assert out["error"] == "override_reason_required"
+    assert out["error"] == "shift_not_ready_to_close"
+    audit.assert_not_called()
+    cursor.execute.assert_not_called()
 
 
 def test_correction_api_exports_callable():

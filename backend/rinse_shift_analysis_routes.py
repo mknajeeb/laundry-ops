@@ -718,10 +718,19 @@ def register_rinse_shift_analysis_routes(
             )
 
             # Read-only status bar: never rebuild/persist the live day.
+            from backend.rinse_veewash_shift_day import load_day_bags
+
             _wl, summary, day_rec = build_or_load_step1_for_date(
                 cursor, org, day, persist_live=False, include_bag_rows=False
             )
-            validation = validate_close(summary or {}, allow_unresolved_reviews=False)
+            day_bags = load_day_bags(cursor, org, day)
+            validation = validate_close(
+                summary or {},
+                cursor=cursor,
+                organization_id=org,
+                shift_date_et=day,
+                day_bags=day_bags,
+            )
             return jsonify(
                 json_safe_rinse(
                     {
@@ -768,12 +777,12 @@ def register_rinse_shift_analysis_routes(
                     else None
                 ),
                 reason=body.get("reason"),
-                allow_unresolved_reviews=bool(body.get("allow_unresolved_reviews")),
                 checklist=body.get("checklist"),
             )
             if not out.get("ok"):
                 conn.rollback()
-                return jsonify(json_safe_rinse(out)), 400
+                status = 409 if out.get("error") == "shift_not_ready_to_close" else 400
+                return jsonify(json_safe_rinse(out)), status
             conn.commit()
             return jsonify(json_safe_rinse(out))
         except Exception as exc:

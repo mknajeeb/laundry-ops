@@ -175,10 +175,13 @@ def test_close_rejects_not_started_day():
 
     cursor = MagicMock()
     summary = _summary(opening=0, added=0, total=0, pending=0, review=0)
-    day = {"status": STATUS_NOT_STARTED}
+    day = {"status": STATUS_NOT_STARTED, "headline": summary}
     with patch(
-        "backend.rinse_veewash_shift_day.build_or_load_step1_for_date",
-        return_value=({}, summary, day),
+        "backend.rinse_veewash_shift_day.get_day_record",
+        return_value=day,
+    ), patch(
+        "backend.rinse_veewash_shift_day.summary_from_day_record",
+        return_value=summary,
     ):
         out = close_shift_day(
             cursor,

@@ -350,6 +350,13 @@ export default function VeeWashStep1Section({
         dataFreshness={dataFreshness}
         validation={{
           review_required_count: reviewCount,
+          blocking_counts: summary?.close_blocking_counts || dayMeta?.close_blocking_counts || {
+            wf_pending: wfSeg?.pending || 0,
+            wf_review_required: wfSeg?.exceptions?.review_required || 0,
+            hd_review_required: hdSeg?.exceptions?.review_required || 0,
+            hd_partially_recorded: hdSeg?.partially_recorded || 0,
+            other_unresolved: 0,
+          },
           totals: {
             active: totalSeg.active_workload,
             completed: totalSeg.completed,
@@ -366,12 +373,14 @@ export default function VeeWashStep1Section({
               completed: hdSeg?.completed,
               pending: hdSeg?.pending,
               review_required: hdSeg?.exceptions?.review_required,
+              partially_recorded: hdSeg?.partially_recorded,
             },
             membership: summary?.membership || dayMeta?.membership || null,
           },
         }}
         isToday={isToday}
         onChanged={onRefresh}
+        onOpenBlockingList={openMetric}
       />
       {summary?.step1_history_unavailable ? (
         <Alert severity="info" sx={{ mb: 1.5 }}>

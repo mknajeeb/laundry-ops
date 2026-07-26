@@ -2085,6 +2085,28 @@ _STEP1_PROD_CACHE: dict[tuple[int, str, str], tuple[float, dict[str, Any]]] = {}
 _STEP1_PROD_CACHE_TTL_SEC = 45.0
 
 
+def clear_step1_productivity_cache(
+    organization_id: int | None = None,
+    selected_date_et: date | str | None = None,
+) -> None:
+    """Drop cached Step-1 Employee Productivity payloads (all, or org/date scoped)."""
+    if organization_id is None and selected_date_et is None:
+        _STEP1_PROD_CACHE.clear()
+        return
+    org = int(organization_id) if organization_id is not None else None
+    day_key = (
+        selected_date_et.isoformat()
+        if isinstance(selected_date_et, date)
+        else (str(selected_date_et) if selected_date_et is not None else None)
+    )
+    for key in list(_STEP1_PROD_CACHE):
+        if org is not None and key[0] != org:
+            continue
+        if day_key is not None and key[1] != day_key:
+            continue
+        _STEP1_PROD_CACHE.pop(key, None)
+
+
 def _try_build_step1_employee_productivity_dashboard(
     cursor,
     organization_id: int,
