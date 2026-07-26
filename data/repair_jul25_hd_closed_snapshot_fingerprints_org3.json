@@ -1,0 +1,58 @@
+{
+  "organization_id": 3,
+  "operations_date_et": "2026-07-25",
+  "note": "Re-close blocked by strict gate (5 HD review_required). Fingerprints compare pre-repair CLOSED zero-HD vs post-rebuild REOPENED.",
+  "before_status": "CLOSED",
+  "final_status": "REOPENED",
+  "hd_before": {
+    "total_hd_orders": 0,
+    "review_required": 0,
+    "completed": 0,
+    "total_items": 0,
+    "total_revenue": 0.0,
+    "hd_revenue": 0.0,
+    "totals_source": "manager_completed_hd_reviews_only"
+  },
+  "hd_after_rebuild": {
+    "total_hd_orders": 5,
+    "review_required": 5,
+    "completed": 0,
+    "total_items": 0,
+    "total_revenue": 0.0,
+    "hd_revenue": 0.0,
+    "totals_source": "manager_completed_hd_reviews_only"
+  },
+  "hd_final": {
+    "total_hd_orders": 5,
+    "review_required": 5,
+    "completed": 0,
+    "total_items": 0,
+    "total_revenue": 0.0,
+    "hd_revenue": 0.0,
+    "totals_source": "manager_completed_hd_reviews_only"
+  },
+  "wf_ids_sha_before": "c0ff746bbe6c53fc",
+  "wf_ids_sha_final": "c0ff746bbe6c53fc",
+  "wf_unchanged": true,
+  "jul24_unchanged": true,
+  "close_result": {
+    "ok": false,
+    "skipped": true,
+    "error": "shift_not_ready_to_close",
+    "blocking_counts": {
+      "wf_pending": 0,
+      "wf_review_required": 0,
+      "hd_review_required": 5,
+      "hd_partially_recorded": 0,
+      "other_unresolved": 0
+    },
+    "note": "Strict close correctly blocked: HD reviews remain open. Day left REOPENED with restored HD membership."
+  },
+  "membership_ids_after": [
+    "30YT9G2QHR",
+    "389CSDTX3L",
+    "60UAYQX9JH",
+    "EFX3SHSDC1",
+    "EQM0CVJZY8"
+  ]
+}

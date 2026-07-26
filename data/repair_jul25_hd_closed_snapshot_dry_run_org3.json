@@ -1,0 +1,256 @@
+{
+  "organization_id": 3,
+  "operations_date_et": "2026-07-25",
+  "mode": "dry-run",
+  "current_closed_shift_status": "CLOSED",
+  "current_persisted_hd_headline": {
+    "new_today": 0,
+    "completed": 0,
+    "pending": 0,
+    "active_workload": 0,
+    "total_workload": 0,
+    "exceptions": {
+      "review_required": 0,
+      "disappeared_without_completion": 0,
+      "missing_workload_entry_scan": 0,
+      "completed_awaiting_workload_assignment": 0,
+      "total": 0
+    },
+    "bag_ids": {
+      "new_today": [],
+      "carryover": [],
+      "completed": [],
+      "pending": [],
+      "review_required": [],
+      "disappeared_without_completion": [],
+      "missing_workload_entry_scan": [],
+      "completed_awaiting_workload_assignment": []
+    }
+  },
+  "current_hd_dashboard_totals": {
+    "total_hd_orders": 0,
+    "review_required": 0,
+    "completed": 0,
+    "total_items": 0,
+    "total_revenue": 0.0,
+    "hd_revenue": 0.0,
+    "totals_source": "manager_completed_hd_reviews_only"
+  },
+  "current_hd_work_item_instances": [
+    {
+      "bag_id": "30YT9G2QHR",
+      "order_id": "30YT9G2QHR",
+      "customer_name": "Chris Maxwell",
+      "rush_flag": "RUSH",
+      "estimated_delivery_date": "2026-07-25",
+      "first_workitems_added_at": "2026-07-25T07:42:00",
+      "first_workitems_added_date_et": "2026-07-25",
+      "admitted_scan_id": 1560223,
+      "wia_status": "REVIEW_REQUIRED",
+      "production_status": null,
+      "expected_step1_status": "review_required",
+      "total_items": null,
+      "revenue": null
+    },
+    {
+      "bag_id": "389CSDTX3L",
+      "order_id": "389CSDTX3L",
+      "customer_name": "Katie Giovale",
+      "rush_flag": "NON-RUSH",
+      "estimated_delivery_date": "2026-07-27",
+      "first_workitems_added_at": "2026-07-25T17:29:00",
+      "first_workitems_added_date_et": "2026-07-25",
+      "admitted_scan_id": 1562359,
+      "wia_status": "REVIEW_REQUIRED",
+      "production_status": null,
+      "expected_step1_status": "review_required",
+      "total_items": null,
+      "revenue": null
+    },
+    {
+      "bag_id": "60UAYQX9JH",
+      "order_id": "60UAYQX9JH",
+      "customer_name": "Catherine Duncan",
+      "rush_flag": "RUSH",
+      "estimated_delivery_date": "2026-07-25",
+      "first_workitems_added_at": "2026-07-25T07:18:00",
+      "first_workitems_added_date_et": "2026-07-25",
+      "admitted_scan_id": 1560476,
+      "wia_status": "REVIEW_REQUIRED",
+      "production_status": null,
+      "expected_step1_status": "review_required",
+      "total_items": null,
+      "revenue": null
+    },
+    {
+      "bag_id": "EFX3SHSDC1",
+      "order_id": "EFX3SHSDC1",
+      "customer_name": "MarcAnthony Paz",
+      "rush_flag": "RUSH",
+      "estimated_delivery_date": "2026-07-25",
+      "first_workitems_added_at": "2026-07-25T07:56:00",
+      "first_workitems_added_date_et": "2026-07-25",
+      "admitted_scan_id": 1558697,
+      "wia_status": "REVIEW_REQUIRED",
+      "production_status": null,
+      "expected_step1_status": "review_required",
+      "total_items": null,
+      "revenue": null
+    },
+    {
+      "bag_id": "EQM0CVJZY8",
+      "order_id": "EQM0CVJZY8",
+      "customer_name": "Grace Hickey",
+      "rush_flag": "RUSH",
+      "estimated_delivery_date": "2026-07-25",
+      "first_workitems_added_at": "2026-07-25T07:36:00",
+      "first_workitems_added_date_et": "2026-07-25",
+      "admitted_scan_id": 1561305,
+      "wia_status": "REVIEW_REQUIRED",
+      "production_status": null,
+      "expected_step1_status": "review_required",
+      "total_items": null,
+      "revenue": null
+    }
+  ],
+  "current_hd_day_bag_production_facts": [],
+  "every_qualifying_jul25_hd_order": [
+    {
+      "bag_id": "30YT9G2QHR",
+      "order_id": "30YT9G2QHR",
+      "customer_name": "Chris Maxwell",
+      "rush_flag": "RUSH",
+      "estimated_delivery_date": "2026-07-25",
+      "first_workitems_added_at": "2026-07-25T07:42:00",
+      "first_workitems_added_date_et": "2026-07-25",
+      "admitted_scan_id": 1560223,
+      "wia_status": "REVIEW_REQUIRED",
+      "production_status": null,
+      "expected_step1_status": "review_required",
+      "total_items": null,
+      "revenue": null
+    },
+    {
+      "bag_id": "389CSDTX3L",
+      "order_id": "389CSDTX3L",
+      "customer_name": "Katie Giovale",
+      "rush_flag": "NON-RUSH",
+      "estimated_delivery_date": "2026-07-27",
+      "first_workitems_added_at": "2026-07-25T17:29:00",
+      "first_workitems_added_date_et": "2026-07-25",
+      "admitted_scan_id": 1562359,
+      "wia_status": "REVIEW_REQUIRED",
+      "production_status": null,
+      "expected_step1_status": "review_required",
+      "total_items": null,
+      "revenue": null
+    },
+    {
+      "bag_id": "60UAYQX9JH",
+      "order_id": "60UAYQX9JH",
+      "customer_name": "Catherine Duncan",
+      "rush_flag": "RUSH",
+      "estimated_delivery_date": "2026-07-25",
+      "first_workitems_added_at": "2026-07-25T07:18:00",
+      "first_workitems_added_date_et": "2026-07-25",
+      "admitted_scan_id": 1560476,
+      "wia_status": "REVIEW_REQUIRED",
+      "production_status": null,
+      "expected_step1_status": "review_required",
+      "total_items": null,
+      "revenue": null
+    },
+    {
+      "bag_id": "EFX3SHSDC1",
+      "order_id": "EFX3SHSDC1",
+      "customer_name": "MarcAnthony Paz",
+      "rush_flag": "RUSH",
+      "estimated_delivery_date": "2026-07-25",
+      "first_workitems_added_at": "2026-07-25T07:56:00",
+      "first_workitems_added_date_et": "2026-07-25",
+      "admitted_scan_id": 1558697,
+      "wia_status": "REVIEW_REQUIRED",
+      "production_status": null,
+      "expected_step1_status": "review_required",
+      "total_items": null,
+      "revenue": null
+    },
+    {
+      "bag_id": "EQM0CVJZY8",
+      "order_id": "EQM0CVJZY8",
+      "customer_name": "Grace Hickey",
+      "rush_flag": "RUSH",
+      "estimated_delivery_date": "2026-07-25",
+      "first_workitems_added_at": "2026-07-25T07:36:00",
+      "first_workitems_added_date_et": "2026-07-25",
+      "admitted_scan_id": 1561305,
+      "wia_status": "REVIEW_REQUIRED",
+      "production_status": null,
+      "expected_step1_status": "review_required",
+      "total_items": null,
+      "revenue": null
+    }
+  ],
+  "expected_hd_membership": [
+    "30YT9G2QHR",
+    "389CSDTX3L",
+    "60UAYQX9JH",
+    "EFX3SHSDC1",
+    "EQM0CVJZY8"
+  ],
+  "expected_review_required_count": 5,
+  "expected_completed_count": 0,
+  "expected_total_items": 0,
+  "expected_hd_revenue": 0.0,
+  "closed_snapshot_matches_facts": false,
+  "mismatch_reason": "Closed headline/day-bags show zero HD while WIA has five REVIEW_REQUIRED admits",
+  "conflicts": [],
+  "unrecoverable_rows": [],
+  "wf_fingerprint": {
+    "bag_count": 73,
+    "bag_ids_sha": "c0ff746bbe6c53fc",
+    "credit_eligible": 73,
+    "headline_wf": {
+      "new_today": 73,
+      "completed": 73,
+      "pending": 0,
+      "review_required": 0,
+      "completed_ids_sha": "c0ff746bbe6c53fc"
+    }
+  },
+  "jul24_fingerprint": {
+    "status": "CLOSED",
+    "bag_groups": [
+      {
+        "service_type": "HD",
+        "effective_status": "completed",
+        "c": 1
+      },
+      {
+        "service_type": "HD",
+        "effective_status": "pending",
+        "c": 6
+      },
+      {
+        "service_type": "HD",
+        "effective_status": "review_required",
+        "c": 21
+      },
+      {
+        "service_type": "WF",
+        "effective_status": "completed",
+        "c": 74
+      }
+    ],
+    "wf_completed": "74",
+    "hd_total_workload": "28",
+    "hd_dashboard_totals": null
+  },
+  "notes": [
+    "Membership authority: hd_work_item_instances.admitted_date_et == 2026-07-25",
+    "No EDD admission; Victoria Panettiere admitted 2026-07-23 (excluded by no-carryover)",
+    "Katie Giovale EDD 2026-07-27 but WIA admit 2026-07-25 (included)",
+    "No hd_day_bag_production COMPLETE rows for Jul 25 \u2192 items/revenue remain 0",
+    "Live EDD rebuild also yields 0 HD \u2014 not used for this repair"
+  ]
+}
