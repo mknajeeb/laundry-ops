@@ -106,20 +106,20 @@ def main() -> int:
     for bid, info in sorted(latest.items()):
         before = info["before"]
         after = info["after"]
-        day = day_by_bag.get(bid) or {}
+        day_row = day_by_bag.get(bid) or {}
         be = str(before.get("completed_by") or "").strip()
         ae = str(after.get("completed_by") or "").strip()
         de = str(
-            day.get("canonical_completion_employee")
-            or day.get("productivity_employee_name")
+            day_row.get("canonical_completion_employee")
+            or day_row.get("productivity_employee_name")
             or ""
         ).strip()
         bp = before.get("pre_weight_lbs")
         ap = after.get("pre_weight_lbs")
-        dp = day.get("pre_weight_lbs")
+        dp = day_row.get("pre_weight_lbs")
         bpost = before.get("post_weight_lbs")
         apost = after.get("post_weight_lbs")
-        dpost = day.get("post_weight_lbs")
+        dpost = day_row.get("post_weight_lbs")
         emp_needs_lock = bool(ae) and (ae.lower() != be.lower() or ae.lower() != de.lower())
         pre_needs_lock = ap is not None and (
             ap != bp or dp is None or float(dp) != float(ap)
