@@ -274,6 +274,13 @@ export default function EmployeeProductivityDashboard({
     [employees, rankBy],
   );
   const completedAttributionAudit = section?.completed_attribution_audit || section?.attribution_audit || [];
+  // Fast-path productivity omits the per-bag attribution audit list. Do not show "0 bags".
+  const attributionAuditUnavailableOnFastPath =
+    completedAttributionAudit.length === 0
+    && (
+      Number(creditedTotal) > 0
+      || employees.some((e) => Number(e?.completed_bags || 0) > 0 || e?.bags_stripped_for_summary)
+    );
 
   const kpiCards = useMemo(
     () => buildExecutiveSummaryCards(executiveSummary, productivityScopeLabel),
@@ -552,39 +559,50 @@ export default function EmployeeProductivityDashboard({
             Completed attribution debug
             {!auditOpen ? (
               <Typography component="span" variant="caption" color="inherit" sx={{ ml: 0.25 }}>
-                · {completedAttributionAudit.length} bags
+                {attributionAuditUnavailableOnFastPath
+                  ? "· Attribution audit unavailable on fast path"
+                  : `· ${completedAttributionAudit.length} bags`}
               </Typography>
             ) : null}
           </Typography>
           <Collapse in={auditOpen}>
-            <TableContainer sx={{ mt: 0.75, maxHeight: 320, overflow: "auto" }}>
-              <Table size="small" stickyHeader>
-                <TableHead>
-                  <TableRow>
-                    <TableCell sx={{ fontWeight: 700 }}>Bag</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>WF/HD</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Rush</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Employee</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Signal</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Excluded</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {completedAttributionAudit.map((row) => (
-                    <TableRow key={row.bag_id}>
-                      <TableCell>
-                        <CopyableBagId bagId={row.bag_id} />
-                      </TableCell>
-                      <TableCell>{row.workflow || row.service_type || "—"}</TableCell>
-                      <TableCell>{row.rush_label || row.rush_bucket || "—"}</TableCell>
-                      <TableCell>{row.credited_employee || "—"}</TableCell>
-                      <TableCell>{row.credit_signal || row.credit_event_type || "—"}</TableCell>
-                      <TableCell>{row.excluded_reason || (row.included_in_employee_productivity ? "—" : "Unassigned")}</TableCell>
+            {attributionAuditUnavailableOnFastPath ? (
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75, display: "block" }}>
+                Attribution audit unavailable on fast path.
+              </Typography>
+            ) : (
+              <TableContainer sx={{ mt: 0.75, maxHeight: 320, overflow: "auto" }}>
+                <Table size="small" stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell sx={{ fontWeight: 700 }}>Bag</TableCell>
+                      <TableCell sx={{ fontWeight: 700 }}>WF/HD</TableCell>
+                      <TableCell sx={{ fontWeight: 700 }}>Rush</TableCell>
+                      <TableCell sx={{ fontWeight: 700 }}>Employee</TableCell>
+                      <TableCell sx={{ fontWeight: 700 }}>Signal</TableCell>
+                      <TableCell sx={{ fontWeight: 700 }}>Excluded</TableCell>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
+                  </TableHead>
+                  <TableBody>
+                    {completedAttributionAudit.map((row) => (
+                      <TableRow key={row.bag_id}>
+                        <TableCell>
+                          <CopyableBagId bagId={row.bag_id} />
+                        </TableCell>
+                        <TableCell>{row.workflow || row.service_type || "—"}</TableCell>
+                        <TableCell>{row.rush_label || row.rush_bucket || "—"}</TableCell>
+                        <TableCell>{row.credited_employee || "—"}</TableCell>
+                        <TableCell>{row.credit_signal || row.credit_event_type || "—"}</TableCell>
+                        <TableCell>
+                          {row.excluded_reason
+                            || (row.included_in_employee_productivity ? "—" : "Unassigned")}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
           </Collapse>
         </Box>
 

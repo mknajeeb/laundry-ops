@@ -1,0 +1,241 @@
+{
+  "organization_id": 3,
+  "operations_date_et": "2026-07-24",
+  "current_status": "CLOSED",
+  "surviving_day_bags": 21,
+  "surviving_by_status": {
+    "review_required": 21
+  },
+  "rebuild_total_bags": 102,
+  "rebuild_by_status": {
+    "completed": 75,
+    "review_required": 21,
+    "pending": 6
+  },
+  "rebuild_by_service_status": {
+    "WF|completed": 74,
+    "HD|review_required": 21,
+    "HD|pending": 6,
+    "HD|completed": 1
+  },
+  "wf": {
+    "total": 74,
+    "completed": 74,
+    "pending": 0,
+    "review_required": 0,
+    "excluded": 0
+  },
+  "hd": {
+    "completed": 1,
+    "pending": 6,
+    "review_required": 21
+  },
+  "freeze_wf": {
+    "total": 74,
+    "completed": 74,
+    "pending": 0,
+    "review_required": 0
+  },
+  "wf_completed_vs_freeze": {
+    "equal": true,
+    "equal_headline": true,
+    "missing_from_rebuild": [],
+    "extra_in_rebuild": []
+  },
+  "rows_to_restore": [
+    "01ZKCLSFEB",
+    "07NFH9FHRC",
+    "0A05PN19TH",
+    "0F4NBDWW3V",
+    "0IEJEWIH7H",
+    "0VI2RQ9GAJ",
+    "10DXTFBXFC",
+    "11EIT9Z2RG",
+    "170NP3MD6K",
+    "1MVVB6SM92",
+    "265G183E57",
+    "2A00YUQT2V",
+    "2EPNBEE44B",
+    "2KX6Z4LCHS",
+    "37AJSL0NTE",
+    "389CSDTX3L",
+    "3GRG9CZTKP",
+    "3UJ28KRJDZ",
+    "412FHM5FUZ",
+    "431GVI3HWV",
+    "4BKS43BJVM",
+    "4BVHHY4WWE",
+    "4E90YEWJR6",
+    "4NV4O0MZSP",
+    "4RK9FMOG61",
+    "4SOBKDQR1Y",
+    "4WLKGYFR0H",
+    "4ZFXYYAIUZ",
+    "4ZIPMD4CZA",
+    "515H5IO4NR",
+    "5CKNT2113T",
+    "5CLPMADYBY",
+    "5E7R6DSI9T",
+    "5JD2VHHPIP",
+    "5KCD3H3MDB",
+    "5UOBNKL9IT",
+    "5YK03Z0MC0",
+    "6H36FEM4DI",
+    "6XKLFDGYW0",
+    "7FL27X7B27",
+    "7FL9CATKUV",
+    "7HYQ54AYMM",
+    "7JG5ORUX38",
+    "7K637V3OYS",
+    "7LCB3VFK1M",
+    "7M2DY73MFB",
+    "7U5BLWT0G8",
+    "7W3F187P8Y",
+    "80T3R98U86",
+    "89IDRJLGNC",
+    "8C6AGXMSQX",
+    "8LR7LSF4UA",
+    "8WL9N1BEN6",
+    "8WXN79QPW4",
+    "8ZJ5C0U250",
+    "90S8L62YVO",
+    "91NP1NWMMQ",
+    "984KKTR5J7",
+    "9B78SXWJPW",
+    "9NO4EDF25U",
+    "9URS870PMX",
+    "AB57EVF9NY",
+    "ADWJLTN27G",
+    "AGYQRCWFN4",
+    "AOCXEIAUMA",
+    "AS4SJJO7Z7",
+    "ASQXAVEBPR",
+    "B0IQEL9RON",
+    "B1535OQLPM",
+    "B16BVZRWNI",
+    "B9EDWBOHUP",
+    "BK0YJTIYYV",
+    "BVS0OLXYTJ",
+    "D22D118145",
+    "D5N31I22VX",
+    "D7G8ZZMCJD",
+    "E68KNV3VW5",
+    "EM2NN3SK8Z",
+    "EU13HA1Z1E",
+    "EWGVVJAIB5",
+    "T7QAMJZ4MF"
+  ],
+  "rows_to_restore_count": 81,
+  "surviving_kept": [
+    "0W1C5GUXUX",
+    "0YK5HT7ENQ",
+    "1J50JN3KRJ",
+    "1MLJL0H9SQ",
+    "1N1A6TRCK9",
+    "3DOZ9I3VLD",
+    "4EPXFQYPEN",
+    "51IU91LR1Q",
+    "5YO7DXYVZ4",
+    "6GF0EYKAHP",
+    "72K0PL82AP",
+    "7BZ4E32BE0",
+    "7D48GPU4P9",
+    "869LTLVOE6",
+    "8XRC1SNL7U",
+    "9N0QJXJZ4L",
+    "B45P19ZER8",
+    "BBDWX39XYC",
+    "C64JYA82DK",
+    "DJ5O4DJXSV",
+    "EN4M65Q4EQ"
+  ],
+  "surviving_would_drop": [],
+  "employee_attributed_completed_bags": 75,
+  "credited_pre_pounds": 1512.2,
+  "overall_post_pounds_completed_with_post": 1413.6,
+  "post_bags_with_value": 73,
+  "productivity_by_employee": [
+    {
+      "employee": "Amna (Veewash)",
+      "bags": 19,
+      "weight_lbs": 353.9
+    },
+    {
+      "employee": "Evelin (VeeWash)",
+      "bags": 18,
+      "weight_lbs": 316.3
+    },
+    {
+      "employee": "Yessenia (Veewash)",
+      "bags": 15,
+      "weight_lbs": 359.1
+    },
+    {
+      "employee": "Tarannum (Veewash)",
+      "bags": 14,
+      "weight_lbs": 300.7
+    },
+    {
+      "employee": "Angelica (Veewash)",
+      "bags": 5,
+      "weight_lbs": 133.9
+    },
+    {
+      "employee": "Francis (Veewash)",
+      "bags": 3,
+      "weight_lbs": 48.3
+    },
+    {
+      "employee": "Jordan Graham",
+      "bags": 1,
+      "weight_lbs": 0.0
+    }
+  ],
+  "freeze_productivity_bag_counts": {
+    "Amna (Veewash)": 19,
+    "Angelica (Veewash)": 5,
+    "Evelin (VeeWash)": 18,
+    "Francis (Veewash)": 3,
+    "Jordan Graham": 1,
+    "Tarannum (Veewash)": 14,
+    "Yessenia (Veewash)": 15
+  },
+  "employee_bag_count_conflicts": [],
+  "pre_weight_notes_vs_freeze": [
+    {
+      "employee": "Tarannum (Veewash)",
+      "freeze_pre": 297.6,
+      "rebuild_pre": 300.7,
+      "delta": 3.1,
+      "note": "bag_count_matches; PRE uses current authoritative resolver"
+    },
+    {
+      "employee": "Amna (Veewash)",
+      "freeze_pre": 352.2,
+      "rebuild_pre": 353.9,
+      "delta": 1.7,
+      "note": "bag_count_matches; PRE uses current authoritative resolver"
+    },
+    {
+      "employee": "Evelin (VeeWash)",
+      "freeze_pre": 309.4,
+      "rebuild_pre": 316.3,
+      "delta": 6.9,
+      "note": "bag_count_matches; PRE uses current authoritative resolver"
+    },
+    {
+      "employee": "Angelica (Veewash)",
+      "freeze_pre": 132.9,
+      "rebuild_pre": 133.9,
+      "delta": 1.0,
+      "note": "bag_count_matches; PRE uses current authoritative resolver"
+    }
+  ],
+  "unrecoverable_rows": [],
+  "headline_unchanged": true,
+  "reconcile_ok": true,
+  "apply_result": {
+    "upserted": 102,
+    "deleted_orphans": 0
+  }
+}
