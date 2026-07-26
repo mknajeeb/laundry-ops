@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from backend.rinse_veewash_shift_day import (
     STATUS_CLOSED,
     STATUS_OPEN,
+    STATUS_REOPENED,
     close_shift_day,
     reopen_shift_day,
     summary_from_day_record,
@@ -103,6 +104,36 @@ def test_reopen_requires_reason():
         )
     assert out["ok"] is False
     assert out["error"] == "reopen_reason_required"
+
+
+def test_reopen_clears_closed_by_fields_and_does_not_autocommit():
+    cursor = MagicMock()
+    with patch(
+        "backend.rinse_veewash_shift_day.get_day_record",
+        side_effect=[
+            {
+                "status": STATUS_CLOSED,
+                "closed_by_display_name": "debug",
+                "close_reason": "test",
+            },
+            {"status": STATUS_REOPENED, "closed_by_display_name": None},
+        ],
+    ), patch("backend.rinse_veewash_shift_day._write_audit"), patch(
+        "backend.rinse_veewash_shift_day._commit"
+    ) as commit:
+        out = reopen_shift_day(
+            cursor,
+            3,
+            D1,
+            actor_user_id=1,
+            actor_display_name="Admin",
+            reason="need to finish reviews",
+        )
+    assert out["ok"] is True
+    sql = cursor.execute.call_args[0][0]
+    assert "closed_at=NULL" in sql
+    assert "closed_by_display_name=NULL" in sql
+    commit.assert_not_called()
 
 
 def test_close_requires_override_reason_when_reviews_remain():

@@ -1610,7 +1610,9 @@ def close_shift_day(
     # Do not seed carryover rows into the following ET day.
     # _seed_next_day_carryover(cursor, organization_id, shift_date_et)
 
-    _commit(cursor)
+    # Caller owns the DB transaction (API route / job commits). Do not conn.commit()
+    # here — mid-function commits made diagnostics/tests impossible to roll back and
+    # can leave a day CLOSED while the outer request reports failure.
     return {
         "ok": True,
         "day": get_day_record(cursor, organization_id, shift_date_et),
@@ -1639,6 +1641,8 @@ def reopen_shift_day(
         """
         UPDATE rinse_shift_monitor_days
         SET status=%s, reopen_count=reopen_count+1, close_override=0,
+            closed_at=NULL, closed_by_user_id=NULL, closed_by_display_name=NULL,
+            close_reason=NULL,
             updated_at=CURRENT_TIMESTAMP
         WHERE organization_id=%s AND shift_date_et=%s
         """,
@@ -1655,7 +1659,7 @@ def reopen_shift_day(
         previous_status=prev,
         new_status=STATUS_REOPENED,
     )
-    _commit(cursor)
+    # Caller owns the DB transaction.
     return {"ok": True, "day": get_day_record(cursor, organization_id, shift_date_et)}
 
 
