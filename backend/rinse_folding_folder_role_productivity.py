@@ -280,11 +280,13 @@ def compute_folder_segment_dual_productivity(
         last_ts = _bag_completion_ts(eligible[-1]) if eligible else None
 
         if bag_count == 0 or last_ts is None:
-            active_hours = 0.0
+            # No qualifying bag: last-bag elapsed/idle/rates are null — do not
+            # classify the entire role segment as idle without separate approval.
+            active_hours = None
             active_bags_hr = None
             active_lbs_hr = None
             active_pct = None
-            idle_hours = role_hours
+            idle_hours = None
             active_completion_end = None
         else:
             active_sec = max(0.0, (last_ts - role_start).total_seconds())
@@ -326,7 +328,9 @@ def compute_folder_segment_dual_productivity(
         "credited_weight_basis": "EVIDENCE_PRE",
         "active_completion_end": active_completion_end.isoformat() if active_completion_end else None,
         "role_hours": role_hours,
-        "active_completion_hours": active_hours if not role_end_missing else 0.0,
+        "active_completion_hours": (
+            None if role_end_missing else active_hours
+        ),
         "idle_time_hours": idle_hours,
         "role_bags_per_hour": role_bags_hr,
         "role_lbs_per_hour": role_lbs_hr,
@@ -362,18 +366,18 @@ def aggregate_folder_dual_productivity(
         sum(float(s.get("role_hours") or 0) for s in authoritative if s.get("role_hours") is not None),
         4,
     )
-    total_active_hours = round(
-        sum(float(s.get("active_completion_hours") or 0) for s in authoritative),
-        4,
-    )
-    total_idle = round(
-        sum(
-            float(s.get("idle_time_hours") or 0)
-            for s in authoritative
-            if s.get("idle_time_hours") is not None
-        ),
-        4,
-    )
+    active_vals = [
+        float(s["active_completion_hours"])
+        for s in authoritative
+        if s.get("active_completion_hours") is not None
+    ]
+    total_active_hours = round(sum(active_vals), 4) if active_vals else 0.0
+    idle_vals = [
+        float(s["idle_time_hours"])
+        for s in authoritative
+        if s.get("idle_time_hours") is not None
+    ]
+    total_idle = round(sum(idle_vals), 4) if idle_vals else None
     total_bags = sum(int(s.get("completed_bags") or 0) for s in authoritative)
     total_lbs = round(sum(float(s.get("credited_lbs") or 0) for s in authoritative), 2)
 

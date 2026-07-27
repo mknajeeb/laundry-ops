@@ -464,16 +464,13 @@ def compute_session_idle(
 
     idle_minutes = None
     timing_conflict = False
-    if end is not None:
-        if last_bag_ts is not None:
-            # Visible idle stays clamped at zero; flag when completion is after end.
-            if last_bag_ts > end:
-                timing_conflict = True
-            idle_minutes = _minutes((end - last_bag_ts).total_seconds())
-        elif start is not None:
-            idle_minutes = _minutes((end - start).total_seconds())
-        else:
-            idle_minutes = 0.0
+    if end is not None and last_bag_ts is not None:
+        # Visible idle stays clamped at zero; flag when completion is after end.
+        if last_bag_ts > end:
+            timing_conflict = True
+        idle_minutes = _minutes((end - last_bag_ts).total_seconds())
+    # No qualifying bag in this session: idle/last-bag fields stay null (do not
+    # treat the entire session duration as idle without separate approval).
 
     sess["idle_minutes"] = idle_minutes
     sess["idle_label"] = _fmt_duration_minutes(idle_minutes)

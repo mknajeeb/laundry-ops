@@ -190,7 +190,7 @@ class TestNextSegmentStartEndsOpenRole:
 
 
 class TestNoCompletedBags:
-    def test_entire_segment_is_idle_and_active_rates_na(self):
+    def test_no_bag_idle_and_last_bag_fields_are_null(self):
         result = compute_folder_segment_dual_productivity(
             role_start=datetime(2026, 7, 10, 7, 0, 0),
             role_end=datetime(2026, 7, 10, 11, 0, 0),
@@ -199,12 +199,16 @@ class TestNoCompletedBags:
             folding_target_lbs_per_hour=TARGET,
         )
         assert result["completed_bags"] == 0
-        assert result["active_completion_hours"] == 0.0
+        assert result["active_completion_hours"] is None
         assert result["active_bags_per_hour"] is None
         assert result["active_lbs_per_hour"] is None
         assert result["active_productivity_pct"] is None
-        assert result["idle_time_hours"] == 4.0
+        assert result["idle_time_hours"] is None
+        assert result["last_completed"] is None
         assert result["role_hours"] == 4.0
+        # Full-role rates remain defined from role hours; last-bag rates stay N/A.
+        assert result["role_bags_per_hour"] == 0.0
+        assert result["role_lbs_per_hour"] == 0.0
 
 
 class TestPostCorrectionDoesNotChangePreRates:

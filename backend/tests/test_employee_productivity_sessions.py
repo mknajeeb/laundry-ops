@@ -171,6 +171,18 @@ def test_timing_conflict_false_when_bag_before_end():
     assert out["timing_conflict"] is False
 
 
+def test_no_qualifying_bag_idle_is_null():
+    sess = build_payroll_session(
+        _seg(ended_at=datetime(2026, 7, 24, 12, 0)),
+        selected_date_et=date(2026, 7, 24),
+    )
+    out = compute_session_idle(sess, [], selected_date_et=date(2026, 7, 24))
+    assert out["idle_minutes"] is None
+    assert out["last_bag_completion"] is None
+    assert out["idle_label"] is None
+    assert out["timing_conflict"] is False
+
+
 def test_bag_elapsed_first_uses_session_start():
     sess = build_payroll_session(
         _seg(),
