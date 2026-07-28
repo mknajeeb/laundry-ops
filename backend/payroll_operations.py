@@ -799,6 +799,13 @@ def update_time_record(
     return {"id": sid}
 
 
+def _payroll_hours_approve_sets(has_manual: bool) -> list[str]:
+    sets = ["payroll_hours_approved=1"]
+    if has_manual:
+        sets.append("manual_override=0")
+    return sets
+
+
 def approve_time_record(conn, organization_id: int, session_id: int) -> dict:
     if not _session_in_org(conn, organization_id, session_id):
         raise ValueError("Time record not found")
@@ -806,9 +813,7 @@ def approve_time_record(conn, organization_id: int, session_id: int) -> dict:
     ensure_payroll_hours_approved_column(chk)
     has_manual = table_has_column(chk, "shift_sessions", "manual_override")
     has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
-    sets = ["payroll_hours_approved=1"]
-    if has_manual:
-        sets.append("manual_override=0")
+    sets = _payroll_hours_approve_sets(has_manual)
     where = "id=%s"
     params: list[Any] = [int(session_id)]
     if has_ss_org:
@@ -819,11 +824,8 @@ def approve_time_record(conn, organization_id: int, session_id: int) -> dict:
     if c.rowcount < 1:
         raise ValueError("Time record not found")
     conn.commit()
-    items = list_time_records(conn, organization_id, limit=2000)
-    for rec in items:
-        if rec["id"] == session_id:
-            return rec
-    return {"id": session_id, "status": "approved"}
+    # UI reloads the list after approve; avoid re-running list_time_records (N rows × rate lookups).
+    return {"id": int(session_id), "status": "approved", "payroll_hours_approved": True}
 
 
 def bulk_approve_time_records(
@@ -853,15 +855,62 @@ def bulk_approve_time_records(
             for r in records
             if r.get("status") in ("pending_approval", "completed")
         ]
-    approved = 0
-    errors: list[dict] = []
+    # Preserve order while de-duplicating.
+    seen: set[int] = set()
+    unique_ids: list[int] = []
     for sid in ids:
-        try:
-            approve_time_record(conn, organization_id, sid)
-            approved += 1
-        except ValueError as exc:
-            errors.append({"id": sid, "error": str(exc)})
-    return {"approved": approved, "skipped": len(errors), "errors": errors}
+        if sid in seen:
+            continue
+        seen.add(sid)
+        unique_ids.append(sid)
+    ids = unique_ids
+    if not ids:
+        return {"approved": 0, "skipped": 0, "errors": []}
+
+    chk = conn.cursor()
+    ensure_payroll_hours_approved_column(chk)
+    has_manual = table_has_column(chk, "shift_sessions", "manual_override")
+    has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
+    ph = ",".join(["%s"] * len(ids))
+    find = conn.cursor(dictionary=True)
+    if has_ss_org:
+        find.execute(
+            f"SELECT id FROM shift_sessions WHERE id IN ({ph}) AND organization_id=%s",
+            tuple(ids) + (int(organization_id),),
+        )
+    else:
+        find.execute(
+            f"""
+            SELECT s.id FROM shift_sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.id IN ({ph}) AND u.organization_id=%s
+            """,
+            tuple(ids) + (int(organization_id),),
+        )
+    found = {int(r["id"]) for r in (find.fetchall() or [])}
+    errors = [
+        {"id": sid, "error": "Time record not found"}
+        for sid in ids
+        if sid not in found
+    ]
+    valid = [sid for sid in ids if sid in found]
+    if not valid:
+        return {"approved": 0, "skipped": len(errors), "errors": errors}
+
+    sets = _payroll_hours_approve_sets(has_manual)
+    ph_valid = ",".join(["%s"] * len(valid))
+    where = f"id IN ({ph_valid})"
+    params: list[Any] = list(valid)
+    if has_ss_org:
+        where += " AND organization_id=%s"
+        params.append(int(organization_id))
+    upd = conn.cursor()
+    upd.execute(
+        f"UPDATE shift_sessions SET {', '.join(sets)} WHERE {where}",
+        tuple(params),
+    )
+    conn.commit()
+    return {"approved": len(valid), "skipped": len(errors), "errors": errors}
 
 
 def delete_time_record(conn, organization_id: int, session_id: int) -> bool:

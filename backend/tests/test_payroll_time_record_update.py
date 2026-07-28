@@ -191,3 +191,43 @@ def test_update_tags_role_when_category_and_role_provided(conn):
     assert kwargs["user_id"] == 7
     assert kwargs["category_id"] == 1
     assert kwargs["role_id"] == 2
+    assert kwargs["ended_at"] == datetime(2026, 6, 18, 16, 0)
+
+
+def test_update_tags_role_on_open_shift_without_clock_out(conn):
+    """Open records (e.g. Evelin still clocked in) can still retag category/role."""
+    select_cur = MagicMock()
+    select_cur.fetchone.return_value = {
+        "user_id": 7,
+        "clock_in_at": datetime(2026, 7, 28, 8, 2),
+        "clock_out_at": None,
+    }
+    update_cur = MagicMock()
+    update_cur.rowcount = 1
+    conn.cursor.side_effect = [MagicMock(), select_cur, update_cur]
+
+    with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
+        "backend.payroll_operations.table_has_column", return_value=False
+    ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
+        "backend.payroll_operations._apply_time_record_role_tag"
+    ) as tag, patch(
+        "backend.payroll_operations.list_time_records",
+        return_value=[{"id": 9, "role_label": "Rinse HD — Operator", "status": "open"}],
+    ):
+        rec = update_time_record(
+            conn,
+            3,
+            9,
+            clock_in_at="2026-07-28 08:02:00",
+            clock_out_at="",
+            category_id=1,
+            role_id=3,
+        )
+
+    assert rec["id"] == 9
+    tag.assert_called_once()
+    kwargs = tag.call_args.kwargs
+    assert kwargs["category_id"] == 1
+    assert kwargs["role_id"] == 3
+    assert kwargs["ended_at"] is None
+    assert kwargs["started_at"] == datetime(2026, 7, 28, 8, 2)

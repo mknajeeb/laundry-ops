@@ -99,7 +99,7 @@ def job_tracking_feature_flag_put():
 
 @ta_bp.route("/job-tracking/selection-tree", methods=["GET"])
 @require_auth
-@require_any_perm("ta.clock", "ta.monitor", "ta.settings")
+@require_any_perm("ta.clock", "ta.monitor", "ta.settings", "ta.override", "users.edit")
 def job_tracking_selection_tree():
     conn = get_db()
     try:
