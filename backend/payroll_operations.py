@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -51,6 +51,24 @@ def worker_category_for_user(conn, user_id: int) -> str:
     except Exception:
         pass
     return "w2"
+
+
+def _date_start_dt(value: str) -> datetime:
+    """Inclusive lower bound for a YYYY-MM-DD (or datetime) filter."""
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("date required")
+    try:
+        d = datetime.fromisoformat(raw.replace("Z", "+00:00")[:10]).date()
+    except ValueError as exc:
+        raise ValueError("Invalid date") from exc
+    return datetime(d.year, d.month, d.day)
+
+
+def _date_end_exclusive_dt(value: str) -> datetime:
+    """Exclusive upper bound (start of day after YYYY-MM-DD)."""
+    start = _date_start_dt(value)
+    return start + timedelta(days=1)
 
 
 def _money(val: Any) -> Decimal:
@@ -255,12 +273,13 @@ def list_time_records(
         WHERE {org_clause}
     """
     params: list[Any] = [int(organization_id)]
+    # Prefer range predicates (sargable) over DATE(column) so clock_in indexes can be used.
     if from_date:
-        q += " AND DATE(s.clock_in_at) >= %s"
-        params.append(from_date)
+        q += " AND s.clock_in_at >= %s"
+        params.append(_date_start_dt(from_date))
     if to_date:
-        q += " AND DATE(s.clock_in_at) <= %s"
-        params.append(to_date)
+        q += " AND s.clock_in_at < %s"
+        params.append(_date_end_exclusive_dt(to_date))
     if user_id:
         q += " AND s.user_id = %s"
         params.append(int(user_id))
@@ -270,18 +289,18 @@ def list_time_records(
     rows = c.fetchall() or []
     rate_cache: dict[int, dict] = {}
     out = []
+    from backend.payroll_workflow import resolve_worker_hourly_rate
+
     for row in rows:
-        cat = worker_category_for_user(conn, int(row["user_id"]))
+        uid = int(row["user_id"])
+        if uid not in rate_cache:
+            rate_cache[uid] = resolve_worker_hourly_rate(conn, uid, int(organization_id))
+        rate_info = rate_cache[uid]
+        cat = rate_info.get("worker_category") or worker_category_for_user(conn, uid)
         if worker_category and worker_category != "all" and cat != worker_category:
             continue
         net = int(row.get("net_work_seconds") or 0)
         approved_sec = net
-        uid = int(row["user_id"])
-        if uid not in rate_cache:
-            from backend.payroll_workflow import resolve_worker_hourly_rate
-
-            rate_cache[uid] = resolve_worker_hourly_rate(conn, uid, int(organization_id))
-        rate_info = rate_cache[uid]
         rec = {
             "id": row["id"],
             "user_id": row["user_id"],
@@ -620,7 +639,23 @@ def create_manual_time_record(
     uid = int(user_id)
     oid = int(organization_id)
     if co is None and _user_has_active_shift(conn, uid):
-        raise ValueError("Worker already has an open shift. Clock them out first or edit the existing record.")
+        open_cur = conn.cursor(dictionary=True)
+        open_cur.execute(
+            """
+            SELECT id, clock_in_at FROM shift_sessions
+            WHERE user_id=%s AND status='active'
+            ORDER BY clock_in_at DESC LIMIT 1
+            """,
+            (uid,),
+        )
+        open_row = open_cur.fetchone() or {}
+        open_id = open_row.get("id")
+        open_ci = open_row.get("clock_in_at")
+        when = str(open_ci)[:16] if open_ci else "unknown date"
+        raise ValueError(
+            f"Worker already has an open shift (#{open_id} from {when}). "
+            "Clock them out first or edit the existing record — widen date filters if it is outside this period."
+        )
     pc_id = get_or_create_payroll_cycle_unified(conn, ci, oid)
     geofence_id = _geofence_for_user(conn, uid, oid)
     employment_category_id = _employment_category_for_user(conn, uid)
@@ -678,11 +713,15 @@ def create_manual_time_record(
             ended_at=co,
         )
     conn.commit()
-    items = list_time_records(conn, organization_id, limit=2000)
-    for rec in items:
-        if rec["id"] == sid:
-            return rec
-    return {"id": sid, "user_id": uid}
+    # UI reloads the filtered list after save — avoid list_time_records(limit=2000).
+    return {
+        "id": int(sid),
+        "user_id": uid,
+        "clock_in_at": ci,
+        "clock_out_at": co,
+        "status": "open" if co is None else "pending_approval",
+        "payroll_hours_approved": False,
+    }
 
 
 def update_time_record(
@@ -794,11 +833,15 @@ def update_time_record(
         )
     conn.commit()
 
-    items = list_time_records(conn, organization_id, limit=2000)
-    for rec in items:
-        if rec["id"] == sid:
-            return rec
-    return {"id": sid}
+    # UI reloads the filtered list after save — avoid list_time_records(limit=2000).
+    status = "open" if new_co is None else "pending_approval"
+    return {
+        "id": sid,
+        "user_id": int(cur["user_id"]),
+        "clock_in_at": new_ci,
+        "clock_out_at": new_co,
+        "status": status,
+    }
 
 
 def _payroll_hours_approve_sets(has_manual: bool) -> list[str]:

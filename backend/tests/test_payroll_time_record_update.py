@@ -35,9 +35,8 @@ def test_update_clock_in_only_keeps_active_session(conn):
     with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
         "backend.payroll_operations.table_has_column", return_value=False
     ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
-        "backend.payroll_operations.list_time_records",
-        return_value=[{"id": 9, "clock_in_at": datetime(2026, 6, 18, 10, 12)}],
-    ):
+        "backend.payroll_operations.list_time_records"
+    ) as list_fn:
         rec = update_time_record(
             connection,
             3,
@@ -46,6 +45,8 @@ def test_update_clock_in_only_keeps_active_session(conn):
             clock_out_at="",
         )
     assert rec["id"] == 9
+    assert rec["status"] == "open"
+    list_fn.assert_not_called()
     sql = update_cur.execute.call_args[0][0]
     assert "clock_out_at=NULL" in sql
     assert "status=%s" in sql or "status='active'" in sql.lower() or "active" in str(
@@ -65,10 +66,7 @@ def test_create_clock_in_only_starts_active_session(conn):
         "backend.payroll_operations._geofence_for_user", return_value=5
     ), patch("backend.payroll_operations._employment_category_for_user", return_value=2), patch(
         "backend.payroll_operations.table_has_column", return_value=False
-    ), patch(
-        "backend.payroll_operations.list_time_records",
-        return_value=[{"id": 42, "status": "open", "clock_out_at": None}],
-    ):
+    ), patch("backend.payroll_operations.list_time_records") as list_fn:
         rec = create_manual_time_record(
             connection,
             3,
@@ -77,6 +75,8 @@ def test_create_clock_in_only_starts_active_session(conn):
             clock_out_at="",
         )
     assert rec["id"] == 42
+    assert rec["status"] == "open"
+    list_fn.assert_not_called()
     sql, params = insert_cur.execute.call_args[0]
     assert "active" in params
     assert None in params
@@ -171,9 +171,8 @@ def test_update_tags_role_when_category_and_role_provided(conn):
     ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
         "backend.payroll_operations._apply_time_record_role_tag"
     ) as tag, patch(
-        "backend.payroll_operations.list_time_records",
-        return_value=[{"id": 9, "role_label": "Rinse WF — Operator"}],
-    ):
+        "backend.payroll_operations.list_time_records"
+    ) as list_fn:
         rec = update_time_record(
             conn,
             3,
@@ -185,6 +184,7 @@ def test_update_tags_role_when_category_and_role_provided(conn):
         )
 
     assert rec["id"] == 9
+    list_fn.assert_not_called()
     tag.assert_called_once()
     kwargs = tag.call_args.kwargs
     assert kwargs["session_id"] == 9
@@ -211,9 +211,8 @@ def test_update_tags_role_on_open_shift_without_clock_out(conn):
     ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
         "backend.payroll_operations._apply_time_record_role_tag"
     ) as tag, patch(
-        "backend.payroll_operations.list_time_records",
-        return_value=[{"id": 9, "role_label": "Rinse HD — Operator", "status": "open"}],
-    ):
+        "backend.payroll_operations.list_time_records"
+    ) as list_fn:
         rec = update_time_record(
             conn,
             3,
@@ -225,6 +224,7 @@ def test_update_tags_role_on_open_shift_without_clock_out(conn):
         )
 
     assert rec["id"] == 9
+    list_fn.assert_not_called()
     tag.assert_called_once()
     kwargs = tag.call_args.kwargs
     assert kwargs["category_id"] == 1
@@ -250,9 +250,8 @@ def test_update_role_only_when_session_row_unchanged(conn):
     ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
         "backend.payroll_operations._apply_time_record_role_tag"
     ) as tag, patch(
-        "backend.payroll_operations.list_time_records",
-        return_value=[{"id": 789, "role_label": "Rinse WF — Folder"}],
-    ):
+        "backend.payroll_operations.list_time_records"
+    ) as list_fn:
         rec = update_time_record(
             conn,
             3,
@@ -264,6 +263,7 @@ def test_update_role_only_when_session_row_unchanged(conn):
         )
 
     assert rec["id"] == 789
+    list_fn.assert_not_called()
     tag.assert_called_once()
     assert tag.call_args.kwargs["session_id"] == 789
     assert tag.call_args.kwargs["role_id"] == 2
