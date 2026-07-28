@@ -2,6 +2,10 @@
 
 Runs against a live DB when ``RUN_JUL27_COMPLETION_PARITY=1``.
 Otherwise validates the fixture contract shape so CI still guards the dataset.
+
+Parity scope is the frozen Step-1 membership ID set (94). Facility Workload may
+have a broader native membership universe; unrestricted Facility totals are not
+required to equal Step-1 membership.
 """
 
 from __future__ import annotations
@@ -27,6 +31,8 @@ def test_jul27_parity_fixture_contract():
     data = _load()
     assert data["organization_id"] == 3
     assert data["selected_date_et"] == "2026-07-27"
+    assert data.get("parity_scope") == "frozen_step1_membership_ids"
+    assert "broader native membership" in str(data.get("parity_note") or "").lower()
     assert data["totals"] == {"total": 94, "completed": 86, "pending": 8, "review": 0}
     assert len(data["completed_ids"]) == 86
     assert len(data["pending_ids"]) == 8

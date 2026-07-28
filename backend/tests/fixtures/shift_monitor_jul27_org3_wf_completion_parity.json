@@ -1,5 +1,7 @@
 {
   "description": "Permanent Release A regression lock: org3 2026-07-27 WF operational completion after cycle-boundary heal.",
+  "parity_scope": "frozen_step1_membership_ids",
+  "parity_note": "Facility Workload has a broader native membership universe than Step-1. Parity requires identical completed/pending statuses for this frozen Step-1 ID set across Step-1, At Vendor WF, SSP, and Facility Workload — not that Facility Workload unrestricted total equals 94.",
   "organization_id": 3,
   "selected_date_et": "2026-07-27",
   "release_a_deploy_sha": "e3efe0c0e47b9da87db9c9b2cfcb79e7f06330f1",
@@ -218,6 +220,7 @@
     "Membership size must remain 94",
     "Completed/pending must remain 86/8 under rinse_cycle_boundary",
     "The five resend IDs must stay completed",
-    "Rush flags must remain 79/15"
+    "Rush flags must remain 79/15",
+    "Parity is on this frozen Step-1 ID set — not Facility Workload unrestricted membership totals"
   ]
 }

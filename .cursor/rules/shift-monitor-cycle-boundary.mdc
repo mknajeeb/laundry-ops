@@ -1,6 +1,6 @@
 ---
 description: Shift Monitor current-cycle boundary invariant (non-negotiable)
-globs: backend/rinse_cycle_boundary.py,backend/rinse_veewash_workload.py,backend/rinse_veewash_shift_day.py,backend/rinse_bag_activity_rules.py,backend/rinse_at_vendor_module.py,backend/rinse_wf_weight_events.py,backend/tests/test_shift_monitor_cycle_boundary_invariant.py,backend/tests/test_cycle_anchored_completion.py,backend/tests/fixtures/shift_monitor_cycle_boundary_jul27_patterns.json
+globs: backend/rinse_cycle_boundary.py,backend/rinse_veewash_workload.py,backend/rinse_veewash_shift_day.py,backend/rinse_bag_activity_rules.py,backend/rinse_at_vendor_module.py,backend/rinse_simple_shift_performance.py,backend/rinse_facility_tracker.py,backend/rinse_wf_weight_events.py,backend/tests/test_shift_monitor_cycle_boundary_invariant.py,backend/tests/test_cycle_anchored_completion.py,backend/tests/test_jul27_wf_completion_parity_fixture.py,backend/tests/fixtures/shift_monitor_cycle_boundary_jul27_patterns.json,backend/tests/fixtures/shift_monitor_jul27_org3_wf_completion_parity.json
 alwaysApply: false
 ---
 
@@ -28,12 +28,42 @@ For every bag and selected ET day:
 - Old garments-reviewed / old completion timestamps
 - Ordinal weight-entry alone (2nd weight without post-review ordering)
 
+## Operational surfaces (Release A)
+
+The same completion decision must drive current-day WF status for:
+
+- Shift Monitor Step-1
+- At Vendor WF
+- Simple Shift Performance
+- Facility Workload **when evaluated against the locked Step-1 membership set**
+
+### Facility Workload membership distinction (explicit)
+
+Facility Workload has a **broader native membership universe** than Step-1 (entry-rack / facility tracker population).
+
+Parity guarantee:
+
+> For the same frozen Step-1 order-ID set, all four surfaces must return the same completed/pending statuses.
+
+Not a requirement:
+
+> Facility Workload’s unrestricted total membership = Step-1 membership
+
+Permanent lock: `backend/tests/fixtures/shift_monitor_jul27_org3_wf_completion_parity.json` (94 / 86 / 8).
+
+## Out of scope for this resolver
+
+- Prior-day incomplete **carryover** (Release B — separate workstream)
+- Employee Productivity attribution
+- HD completion
+- Registry / upload finalize / portal departure
+
 ## Deploy gate
 
-Do **not** deploy until:
+Do **not** change this resolver without:
 
-1. This invariant is covered by `backend/tests/test_shift_monitor_cycle_boundary_invariant.py`
-2. Controlled five-order validation against the Jul 27 pattern fixture passes
+1. `backend/tests/test_shift_monitor_cycle_boundary_invariant.py`
+2. Jul 27 pattern fixture + `shift_monitor_jul27_org3_wf_completion_parity.json` contract
 3. Manager-edited rows (`manager_edit_version` / correct_completion) remain protected
 
 Canonical implementation module: `backend/rinse_cycle_boundary.py`.
