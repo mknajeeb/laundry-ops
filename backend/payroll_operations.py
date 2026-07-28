@@ -776,7 +776,9 @@ def update_time_record(
 
     c2 = conn.cursor()
     c2.execute(f"UPDATE shift_sessions SET {', '.join(updates)} WHERE {where}", tuple(params))
-    if c2.rowcount < 1:
+    # MySQL reports 0 affected rows when SET values are unchanged (common when only
+    # retagging category/role). Session was already verified via _session_in_org + SELECT.
+    if c2.rowcount < 1 and not _session_in_org(conn, organization_id, sid):
         raise ValueError("Time record not found")
 
     if wants_role_tag and cat_id is not None and rol_id is not None:

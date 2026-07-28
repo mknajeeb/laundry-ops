@@ -231,3 +231,39 @@ def test_update_tags_role_on_open_shift_without_clock_out(conn):
     assert kwargs["role_id"] == 3
     assert kwargs["ended_at"] is None
     assert kwargs["started_at"] == datetime(2026, 7, 28, 8, 2)
+
+
+def test_update_role_only_when_session_row_unchanged(conn):
+    """MySQL rowcount=0 on no-op clock UPDATE must not block role retag."""
+    select_cur = MagicMock()
+    select_cur.fetchone.return_value = {
+        "user_id": 30,
+        "clock_in_at": datetime(2026, 7, 28, 8, 2),
+        "clock_out_at": None,
+    }
+    update_cur = MagicMock()
+    update_cur.rowcount = 0  # unchanged clock/status values
+    conn.cursor.side_effect = [MagicMock(), select_cur, update_cur]
+
+    with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
+        "backend.payroll_operations.table_has_column", return_value=False
+    ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
+        "backend.payroll_operations._apply_time_record_role_tag"
+    ) as tag, patch(
+        "backend.payroll_operations.list_time_records",
+        return_value=[{"id": 789, "role_label": "Rinse WF — Folder"}],
+    ):
+        rec = update_time_record(
+            conn,
+            3,
+            789,
+            clock_in_at="2026-07-28 08:02:00",
+            clock_out_at="",
+            category_id=1,
+            role_id=2,
+        )
+
+    assert rec["id"] == 789
+    tag.assert_called_once()
+    assert tag.call_args.kwargs["session_id"] == 789
+    assert tag.call_args.kwargs["role_id"] == 2
