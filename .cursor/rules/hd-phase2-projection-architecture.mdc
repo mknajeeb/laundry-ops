@@ -1,0 +1,35 @@
+---
+description: HD Phase 2 projection architecture — locked design rule (no implementation yet)
+globs: backend/hd_production*.py,backend/rinse_hd*.py,backend/**/daily_operations_hd.py
+alwaysApply: false
+---
+
+# HD Phase 2 — Projection Architecture (Locked Design Rule)
+
+Do **not** implement new projection infrastructure during production stabilization
+releases. This rule records the locked Phase 2 design only.
+
+## Sources of truth
+
+- **Lifecycle events** are immutable facts.
+- **Posting events** are immutable financial / productivity facts.
+- **Read models** are rebuildable projections.
+
+## Forbidden
+
+Frontend cards, Needs Attention, Shift Monitor summaries, Daily Operations totals,
+and Employee Productivity views must **never** become independent sources of truth.
+
+## Required shape (when Phase 2 builds projections)
+
+- Projection builders must derive from the appropriate lifecycle and posting events.
+- A projection may be rebuilt without creating lifecycle transitions, financial
+  postings, or productivity postings.
+
+## Freeze note
+
+Until Phase 2 is explicitly opened after a clean production observation period:
+
+- Keep `feature/hd-production-phase-1` frozen at the approved tip.
+- Keep `HD_PRODUCTION_MODULE_ENABLED = False`.
+- Do not rebase/merge/push/deploy/enable HD Phase 1 as part of unrelated work.
