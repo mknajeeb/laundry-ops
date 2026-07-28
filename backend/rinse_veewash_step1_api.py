@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime
 from typing import Any
 
@@ -22,6 +23,8 @@ from backend.rinse_veewash_workload import (
     today_et,
 )
 from backend.ta_helpers import table_exists
+
+logger = logging.getLogger(__name__)
 
 
 def _refresh_step1_day_snapshot_after_mutation(
@@ -880,32 +883,71 @@ def apply_step1_correction(
                 require_complete=(action == "mark_hd_completed"),
             )
         if out.get("ok"):
+            headline_patch_error = None
             try:
                 from backend.rinse_veewash_shift_day import apply_manager_edit_day_bag_patch
                 from backend.rinse_hd_step1_review import REASON_HD_COMPLETION_DETAILS_MISSING
 
                 completed = out.get("step1_outcome") == "completed"
-                apply_manager_edit_day_bag_patch(
+                # Capture prior day-bag status before patch (HD save may not bump it).
+                from backend.rinse_veewash_shift_day import load_day_bags_by_ids
+
+                prior_row = (
+                    load_day_bags_by_ids(cursor, organization_id, day, [bid]) or [{}]
+                )[0]
+                prior_status = str(prior_row.get("effective_status") or "").strip().lower() or None
+                patch_out = apply_manager_edit_day_bag_patch(
                     cursor,
                     organization_id,
                     day,
                     bid,
-                    previous_effective_status=None,
+                    previous_effective_status=(
+                        "review_required"
+                        if completed and prior_status != "completed"
+                        else prior_status
+                    ),
                     previous_reason_codes=(
                         [] if completed else [REASON_HD_COMPLETION_DETAILS_MISSING]
                     ),
                     outcome_action="mark_completed" if completed else None,
                 )
-            except Exception:
-                pass
-            try:
-                from backend.rinse_veewash_shift_day import build_or_load_step1_for_date
-
-                build_or_load_step1_for_date(
-                    cursor, organization_id, day, persist_live=True, include_bag_rows=False
+                if isinstance(patch_out, dict) and patch_out.get("headline_patch_error"):
+                    headline_patch_error = patch_out.get("headline_patch_error")
+                    logger.error(
+                        "hd_review headline patch error bag=%s error=%s detail=%s",
+                        bid,
+                        headline_patch_error,
+                        patch_out.get("detail"),
+                    )
+                if completed:
+                    # Protect manager completion from a later persist_live rebuild.
+                    cursor.execute(
+                        """
+                        UPDATE rinse_shift_monitor_day_bags
+                        SET manager_edit_version = manager_edit_version + 1,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+                        """,
+                        (int(organization_id), day, bid),
+                    )
+                # Do NOT call build_or_load_step1_for_date(persist_live=True) here —
+                # that overwrote the corrected headline with stale live classification.
+            except Exception as exc:
+                logger.exception(
+                    "hd_review headline patch raised bag=%s org=%s date=%s",
+                    bid,
+                    organization_id,
+                    day,
                 )
-            except Exception:
-                pass
+                headline_patch_error = "headline_patch_failed"
+                out = {
+                    **out,
+                    "headline_patch_error": headline_patch_error,
+                    "headline_patch_detail": str(exc),
+                }
+            else:
+                if headline_patch_error:
+                    out = {**out, "headline_patch_error": headline_patch_error}
         return out
 
     if action == "save_bulk_workitems":

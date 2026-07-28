@@ -14,6 +14,7 @@ partial audit trail.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime
 from typing import Any, Mapping
 
@@ -21,6 +22,8 @@ from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_veewash_workload import SERVICE_HD, SERVICE_WF
 from backend.rinse_wf_weight_events import normalize_scan_weight_lbs
 from backend.ta_helpers import table_exists
+
+logger = logging.getLogger(__name__)
 
 OUTCOME_MARK_COMPLETED = "mark_completed"
 OUTCOME_RETURN_PENDING = "return_pending"
@@ -1220,6 +1223,8 @@ def apply_unified_bag_edit(
     after = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
 
     # Fast membership sync (no full day rebuild — that hung the Save UI for 60s+).
+    headline_patch_error: str | None = None
+    headline_patch_detail: str | None = None
     try:
         from backend.rinse_bulk_workitems import bag_bulk_review_cleared
         from backend.rinse_veewash_shift_day import (
@@ -1257,7 +1262,7 @@ def apply_unified_bag_edit(
                 or _parse_dt(after.get("completion_at"))
                 or completion_override_at
             )
-        apply_manager_edit_day_bag_patch(
+        patch_out = apply_manager_edit_day_bag_patch(
             cursor,
             organization_id,
             selected_date_et,
@@ -1272,10 +1277,26 @@ def apply_unified_bag_edit(
             pre_weight_lbs=after.get("pre_weight_lbs"),
             post_weight_lbs=after.get("post_weight_lbs"),
         )
+        if isinstance(patch_out, dict) and patch_out.get("headline_patch_error"):
+            headline_patch_error = str(patch_out.get("headline_patch_error"))
+            headline_patch_detail = str(patch_out.get("detail") or "")
+            logger.error(
+                "step1_edit_bag headline patch error bag=%s error=%s detail=%s",
+                bid,
+                headline_patch_error,
+                headline_patch_detail,
+            )
         # Re-capture after membership patch so response/audit after reflects queue status.
         after = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.exception(
+            "step1_edit_bag headline patch raised bag=%s org=%s date=%s",
+            bid,
+            organization_id,
+            selected_date_et,
+        )
+        headline_patch_error = "headline_patch_failed"
+        headline_patch_detail = str(exc)
 
     deltas: list[dict[str, Any]] = []
     for field in _TRACKED_FIELDS:
@@ -1381,6 +1402,8 @@ def apply_unified_bag_edit(
         "bag": after,
         "deltas": deltas,
         "outcome_result": outcome_result,
+        "headline_patch_error": headline_patch_error,
+        "headline_patch_detail": headline_patch_detail,
     }
 
 

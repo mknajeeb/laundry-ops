@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime
 from typing import Any, Mapping
 
@@ -20,6 +21,8 @@ from backend.rinse_veewash_workload import (
     today_et,
 )
 from backend.ta_helpers import table_exists
+
+logger = logging.getLogger(__name__)
 
 STATUS_NOT_STARTED = "NOT_STARTED"
 STATUS_OPEN = "OPEN"
@@ -821,6 +824,96 @@ def _headline_bucket_for_status(status: str | None) -> str | None:
     return None
 
 
+_STATUS_BAG_ID_KEYS = (
+    "completed",
+    "pending",
+    "review_required",
+    "disappeared_without_completion",
+)
+
+_SEGMENT_FILTERS: dict[str, tuple[str | None, str | None]] = {
+    "all": (None, None),
+    "wf": ("WF", None),
+    "hd": ("HD", None),
+    "rush": (None, "RUSH"),
+    "non_rush": (None, "NON_RUSH"),
+    "wf_rush": ("WF", "RUSH"),
+    "wf_non_rush": ("WF", "NON_RUSH"),
+    "hd_rush": ("HD", "RUSH"),
+    "hd_non_rush": ("HD", "NON_RUSH"),
+}
+
+
+def _unique_bag_id_list(vals: Any) -> list[str]:
+    return sorted(
+        {
+            normalize_bag_id(x)
+            for x in list(vals or [])
+            if normalize_bag_id(x)
+        }
+    )
+
+
+def _rush_norm(rush: Any) -> str:
+    v = str(rush or "").strip().lower()
+    if not v:
+        return ""
+    if "non" in v:
+        return "NON_RUSH"
+    if "rush" in v or v in ("1", "true", "yes", "y"):
+        return "RUSH"
+    return "NON_RUSH"
+
+
+def _service_norm(service: Any) -> str:
+    return str(service or "").strip().upper()
+
+
+def _segment_filters(name: str) -> tuple[str | None, str | None]:
+    return _SEGMENT_FILTERS.get(str(name or "").strip().lower(), (None, None))
+
+
+def _matches_segment_filters(
+    meta: Mapping[str, Any],
+    *,
+    service: str | None,
+    rush: str | None,
+) -> bool:
+    if service:
+        svc = _service_norm(meta.get("service_type"))
+        # Missing service on a day-bag row must not drop the bag from WF/HD sync.
+        if svc and svc != service:
+            return False
+    if rush:
+        r = _rush_norm(meta.get("rush_status") or meta.get("rush_flag"))
+        if r and r != rush:
+            return False
+    return True
+
+
+def _recalc_status_counts_from_ids(seg: Mapping[str, Any]) -> dict[str, Any]:
+    """Set completed/pending/review counts from unique bag_ids lists. Preserve totals."""
+    out = dict(seg or {})
+    bag_ids = dict(out.get("bag_ids") or {})
+    completed = _unique_bag_id_list(bag_ids.get("completed"))
+    pending = _unique_bag_id_list(bag_ids.get("pending"))
+    review = _unique_bag_id_list(bag_ids.get("review_required"))
+    bag_ids["completed"] = completed
+    bag_ids["pending"] = pending
+    bag_ids["review_required"] = review
+    bag_ids["disappeared_without_completion"] = list(review)
+    out["bag_ids"] = bag_ids
+    out["completed"] = len(completed)
+    out["pending"] = len(pending)
+    out["exceptions"] = {
+        **dict(out.get("exceptions") or {}),
+        "review_required": len(review),
+        "disappeared_without_completion": len(review),
+        "total": len(review),
+    }
+    return out
+
+
 def _segment_lists_bag(seg: Mapping[str, Any], bid: str) -> bool:
     bags = (seg or {}).get("bag_ids") or {}
     for vals in bags.values():
@@ -837,44 +930,45 @@ def _move_bag_in_segment_bucket(
     old_bucket: str | None,
     new_bucket: str | None,
 ) -> dict[str, Any]:
-    """Move one bag between completed/pending/review_required lists inside a segment."""
+    """Move one bag between status lists. Does not require prior list membership."""
     out = dict(seg or {})
-    if not _segment_lists_bag(out, bid):
+    bid_n = normalize_bag_id(bid)
+    if not bid_n:
         return out
     bag_ids = dict(out.get("bag_ids") or {})
+
     if old_bucket and old_bucket != new_bucket:
-        old_list = [
-            x for x in list(bag_ids.get(old_bucket) or []) if normalize_bag_id(x) != bid
+        bag_ids[old_bucket] = [
+            x
+            for x in list(bag_ids.get(old_bucket) or [])
+            if normalize_bag_id(x) != bid_n
         ]
-        bag_ids[old_bucket] = old_list
-        out[old_bucket] = len(old_list)
         if old_bucket == "review_required":
-            out["exceptions"] = {
-                **dict(out.get("exceptions") or {}),
-                "review_required": len(old_list),
-                "disappeared_without_completion": len(old_list),
-                "total": len(old_list),
-            }
+            bag_ids["disappeared_without_completion"] = [
+                x
+                for x in list(bag_ids.get("disappeared_without_completion") or [])
+                if normalize_bag_id(x) != bid_n
+            ]
+
     if new_bucket and new_bucket != "excluded":
-        new_list = sorted(
-            {
-                normalize_bag_id(x)
-                for x in list(bag_ids.get(new_bucket) or [])
-                if normalize_bag_id(x)
-            }
-            | {bid}
+        for key in _STATUS_BAG_ID_KEYS:
+            if key == new_bucket:
+                continue
+            if key == "disappeared_without_completion" and new_bucket == "review_required":
+                continue
+            bag_ids[key] = [
+                x
+                for x in list(bag_ids.get(key) or [])
+                if normalize_bag_id(x) != bid_n
+            ]
+        bag_ids[new_bucket] = _unique_bag_id_list(
+            list(bag_ids.get(new_bucket) or []) + [bid_n]
         )
-        bag_ids[new_bucket] = new_list
-        out[new_bucket] = len(new_list)
         if new_bucket == "review_required":
-            out["exceptions"] = {
-                **dict(out.get("exceptions") or {}),
-                "review_required": len(new_list),
-                "disappeared_without_completion": len(new_list),
-                "total": len(new_list),
-            }
+            bag_ids["disappeared_without_completion"] = list(bag_ids[new_bucket])
+
     out["bag_ids"] = bag_ids
-    return out
+    return _recalc_status_counts_from_ids(out)
 
 
 def _strip_bag_from_review_segments(
@@ -883,18 +977,338 @@ def _strip_bag_from_review_segments(
     *,
     new_bucket: str | None,
 ) -> dict[str, Any]:
-    """Force-remove bag from every segment's review_required list, then place in new_bucket."""
+    """Remove bag from review_required and place in new_bucket (atomic per segment)."""
     out: dict[str, Any] = {}
     for name, seg in dict(segments or {}).items():
-        moved = _move_bag_in_segment_bucket(
-            seg, bid, old_bucket="review_required", new_bucket=None
-        )
         if new_bucket and new_bucket not in (None, "excluded", "review_required"):
-            moved = _move_bag_in_segment_bucket(
-                moved, bid, old_bucket=None, new_bucket=new_bucket
+            out[name] = _move_bag_in_segment_bucket(
+                seg, bid, old_bucket="review_required", new_bucket=new_bucket
             )
-        out[name] = moved
+        else:
+            out[name] = _move_bag_in_segment_bucket(
+                seg, bid, old_bucket="review_required", new_bucket=None
+            )
     return out
+
+
+def _load_day_bag_status_projection(
+    cursor, organization_id: int, shift_date_et: date
+) -> dict[str, dict[str, Any]]:
+    """bag_id → {effective_status, service_type, rush_status} for headline sync."""
+    ensure_shift_monitor_day_tables(cursor)
+    cursor.execute(
+        """
+        SELECT bag_id, effective_status, service_type, rush_status
+        FROM rinse_shift_monitor_day_bags
+        WHERE organization_id = %s AND shift_date_et = %s
+        """,
+        (int(organization_id), shift_date_et),
+    )
+    raw = cursor.fetchall()
+    if not isinstance(raw, (list, tuple)):
+        raw = []
+    out: dict[str, dict[str, Any]] = {}
+    for row in raw:
+        if not isinstance(row, Mapping):
+            continue
+        bid = normalize_bag_id(row.get("bag_id"))
+        if not bid:
+            continue
+        out[bid] = {
+            "effective_status": row.get("effective_status"),
+            "service_type": row.get("service_type"),
+            "rush_status": row.get("rush_status"),
+        }
+    return out
+
+
+def _apply_day_bag_statuses_to_headline(
+    headline: Mapping[str, Any],
+    status_by_bag: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Rebuild status bag_ids/counts from persisted day-bag effective_status.
+
+    Day-bag ``effective_status`` is authoritative. Headline JSON is only a
+    derived projection. Preserves new_today / carryover / total_workload
+    (membership unchanged during a status transition).
+    """
+    out = dict(headline or {})
+    segments = dict(out.get("segments") or {})
+    if not segments:
+        segments = {"all": {}, "wf": {}, "hd": {}}
+
+    for name, seg in list(segments.items()):
+        seg_out = dict(seg or {})
+        bag_ids = dict(seg_out.get("bag_ids") or {})
+        new_today = _unique_bag_id_list(bag_ids.get("new_today"))
+        carryover = _unique_bag_id_list(bag_ids.get("carryover"))
+        prev_total = seg_out.get("total_workload")
+        if prev_total is None:
+            prev_total = seg_out.get("active_workload")
+
+        svc_filter, rush_filter = _segment_filters(name)
+        prior_bucket: dict[str, str] = {}
+        for key in ("completed", "pending", "review_required"):
+            for bid in _unique_bag_id_list(bag_ids.get(key)):
+                prior_bucket[bid] = key
+
+        # Authoritative membership for status projection: new_today + carryover.
+        # Do not expand membership from stale status ID lists (that desyncs total).
+        if new_today or carryover:
+            members = set(new_today) | set(carryover)
+        else:
+            members = {
+                bid
+                for bid, meta in status_by_bag.items()
+                if _matches_segment_filters(
+                    meta, service=svc_filter, rush=rush_filter
+                )
+                and _headline_bucket_for_status(meta.get("effective_status"))
+                in ("completed", "pending", "review_required")
+            }
+        if (new_today or carryover) and (svc_filter or rush_filter):
+            filtered = set()
+            for bid in members:
+                meta = status_by_bag.get(bid)
+                if meta is None:
+                    filtered.add(bid)
+                    continue
+                if _matches_segment_filters(
+                    meta, service=svc_filter, rush=rush_filter
+                ):
+                    filtered.add(bid)
+            members = filtered
+
+        completed: list[str] = []
+        pending: list[str] = []
+        review: list[str] = []
+        for bid in sorted(members):
+            meta = status_by_bag.get(bid)
+            if meta:
+                bucket = _headline_bucket_for_status(meta.get("effective_status"))
+            else:
+                bucket = prior_bucket.get(bid)
+            if bucket == "completed":
+                completed.append(bid)
+            elif bucket == "pending":
+                pending.append(bid)
+            elif bucket == "review_required":
+                review.append(bid)
+
+        bag_ids["new_today"] = new_today
+        bag_ids["carryover"] = carryover
+        bag_ids["completed"] = completed
+        bag_ids["pending"] = pending
+        bag_ids["review_required"] = review
+        bag_ids["disappeared_without_completion"] = list(review)
+        seg_out["bag_ids"] = bag_ids
+        seg_out = _recalc_status_counts_from_ids(seg_out)
+        if new_today or carryover:
+            # Membership present: total_workload must not change on status transition.
+            if prev_total is not None:
+                try:
+                    total_i = int(prev_total)
+                except (TypeError, ValueError):
+                    total_i = len(new_today) + len(carryover)
+            else:
+                total_i = len(new_today) + len(carryover)
+            seg_out["total_workload"] = total_i
+            seg_out["active_workload"] = total_i
+            seg_out["total_operational_orders"] = total_i
+        else:
+            # No membership ID lists — derive total from the status partition.
+            total_i = (
+                int(seg_out.get("completed") or 0)
+                + int(seg_out.get("pending") or 0)
+                + int((seg_out.get("exceptions") or {}).get("review_required") or 0)
+            )
+            seg_out["total_workload"] = total_i
+            seg_out["active_workload"] = total_i
+            seg_out["total_operational_orders"] = total_i
+        segments[name] = seg_out
+
+    out["segments"] = segments
+    all_seg = dict(segments.get("all") or {})
+    out["completed"] = all_seg.get("completed", out.get("completed"))
+    out["pending"] = all_seg.get("pending", out.get("pending"))
+    out["exceptions"] = dict(
+        all_seg.get("exceptions") or out.get("exceptions") or {}
+    )
+    if all_seg.get("total_workload") is not None:
+        out["total_workload"] = all_seg.get("total_workload")
+        out["active_workload"] = all_seg.get(
+            "active_workload", all_seg.get("total_workload")
+        )
+    # Canonical day-level status counts (projection of day-bag effective_status).
+    out["completed_count"] = int(out.get("completed") or 0)
+    out["pending_count"] = int(out.get("pending") or 0)
+    out["review_required_count"] = int(
+        (out.get("exceptions") or {}).get("review_required") or 0
+    )
+    return out
+
+
+def count_day_bag_status_buckets(
+    status_by_bag: Mapping[str, Mapping[str, Any]],
+    *,
+    member_ids: set[str] | None = None,
+) -> dict[str, int]:
+    """Count authoritative day-bag statuses (optionally scoped to membership)."""
+    completed = pending = review = 0
+    for bid, meta in (status_by_bag or {}).items():
+        if member_ids is not None and bid not in member_ids:
+            continue
+        bucket = _headline_bucket_for_status((meta or {}).get("effective_status"))
+        if bucket == "completed":
+            completed += 1
+        elif bucket == "pending":
+            pending += 1
+        elif bucket == "review_required":
+            review += 1
+    return {
+        "completed_count": completed,
+        "pending_count": pending,
+        "review_required_count": review,
+        "status_total": completed + pending + review,
+    }
+
+
+def verify_headline_day_bag_status_invariant(
+    headline: Mapping[str, Any],
+    status_by_bag: Mapping[str, Mapping[str, Any]],
+    *,
+    context: str = "",
+) -> dict[str, Any]:
+    """Invariant: headline status counts == day-bag effective_status counts.
+
+    For a refreshed Shift Monitor day (all-segment / day membership):
+
+      review_required_count = COUNT(day_bags WHERE effective_status = review_required)
+      completed_count       = COUNT(day_bags WHERE effective_status = completed)
+      pending_count         = COUNT(day_bags WHERE effective_status = pending)
+      total_workload        = review_required + completed + pending
+
+    (Excluded bags are outside the operational status total.)
+
+    Mismatches are logged clearly and returned — never silently swallowed.
+    """
+    all_seg = ((headline or {}).get("segments") or {}).get("all") or {}
+    bags = all_seg.get("bag_ids") or {}
+    members = set(_unique_bag_id_list(bags.get("new_today"))) | set(
+        _unique_bag_id_list(bags.get("carryover"))
+    )
+    if not members:
+        # Fall back to union of status lists / full day-bag projection.
+        for key in ("completed", "pending", "review_required"):
+            members.update(_unique_bag_id_list(bags.get(key)))
+        if not members:
+            members = {
+                bid
+                for bid, meta in (status_by_bag or {}).items()
+                if _headline_bucket_for_status((meta or {}).get("effective_status"))
+                in ("completed", "pending", "review_required")
+            }
+
+    expected = count_day_bag_status_buckets(status_by_bag, member_ids=members)
+    # Membership bags missing from the projection still count via headline prior buckets.
+    for bid in members:
+        if bid in status_by_bag:
+            continue
+        if bid in _unique_bag_id_list(bags.get("completed")):
+            expected["completed_count"] += 1
+            expected["status_total"] += 1
+        elif bid in _unique_bag_id_list(bags.get("pending")):
+            expected["pending_count"] += 1
+            expected["status_total"] += 1
+        elif bid in _unique_bag_id_list(bags.get("review_required")):
+            expected["review_required_count"] += 1
+            expected["status_total"] += 1
+    got_completed = int(
+        headline.get("completed_count")
+        if headline.get("completed_count") is not None
+        else headline.get("completed")
+        if headline.get("completed") is not None
+        else all_seg.get("completed")
+        or 0
+    )
+    got_pending = int(
+        headline.get("pending_count")
+        if headline.get("pending_count") is not None
+        else headline.get("pending")
+        if headline.get("pending") is not None
+        else all_seg.get("pending")
+        or 0
+    )
+    got_review = int(
+        headline.get("review_required_count")
+        if headline.get("review_required_count") is not None
+        else (headline.get("exceptions") or {}).get("review_required")
+        if (headline.get("exceptions") or {}).get("review_required") is not None
+        else (all_seg.get("exceptions") or {}).get("review_required")
+        or 0
+    )
+    got_total = headline.get("total_workload")
+    if got_total is None:
+        got_total = all_seg.get("total_workload")
+    if got_total is None:
+        got_total = all_seg.get("active_workload")
+    try:
+        got_total_i = int(got_total) if got_total is not None else None
+    except (TypeError, ValueError):
+        got_total_i = None
+
+    # Unique-ID set lengths must match numeric counts.
+    id_completed = len(_unique_bag_id_list(bags.get("completed")))
+    id_pending = len(_unique_bag_id_list(bags.get("pending")))
+    id_review = len(_unique_bag_id_list(bags.get("review_required")))
+
+    mismatches: list[str] = []
+    if got_completed != expected["completed_count"]:
+        mismatches.append(
+            f"completed_count headline={got_completed} day_bags={expected['completed_count']}"
+        )
+    if got_pending != expected["pending_count"]:
+        mismatches.append(
+            f"pending_count headline={got_pending} day_bags={expected['pending_count']}"
+        )
+    if got_review != expected["review_required_count"]:
+        mismatches.append(
+            f"review_required_count headline={got_review} day_bags={expected['review_required_count']}"
+        )
+    if got_completed != id_completed or got_pending != id_pending or got_review != id_review:
+        mismatches.append(
+            "status_counts_ne_unique_id_lens "
+            f"counts=({got_completed},{got_pending},{got_review}) "
+            f"ids=({id_completed},{id_pending},{id_review})"
+        )
+    status_sum = got_completed + got_pending + got_review
+    if got_total_i is not None and got_total_i != status_sum:
+        mismatches.append(
+            f"total_workload={got_total_i} != completed+pending+review={status_sum}"
+        )
+
+    ok = not mismatches
+    result = {
+        "ok": ok,
+        "context": context or None,
+        "expected": expected,
+        "headline": {
+            "completed_count": got_completed,
+            "pending_count": got_pending,
+            "review_required_count": got_review,
+            "total_workload": got_total_i,
+        },
+        "mismatches": mismatches,
+    }
+    if not ok:
+        logger.error(
+            "headline_day_bag_status_invariant_mismatch context=%s mismatches=%s expected=%s headline=%s",
+            context,
+            mismatches,
+            expected,
+            result["headline"],
+        )
+    return result
 
 
 def apply_manager_edit_day_bag_patch(
@@ -1064,76 +1478,126 @@ def apply_manager_edit_day_bag_patch(
         ),
     )
 
-    # Patch headline counts / bag_id lists for the status transition.
-    # Must update WF/HD/rush segments too — drawers read those, not only "all".
+    # Patch headline counts from persisted day-bag effective_status (same source
+    # as drawer membership). Do not depend on prior bag_ids list membership.
     day = get_day_record(cursor, organization_id, shift_date_et)
     if day:
-        headline = dict(day.get("headline") or {})
-        segments = dict(headline.get("segments") or {})
-        old_bucket = _headline_bucket_for_status(prev_status)
-        new_bucket = _headline_bucket_for_status(new_status)
-        # Always strip from review_required when leaving review — day_bag may already
-        # say "completed" while WF/rush segments still list the bag (stale KPI).
-        if new_bucket != "review_required":
-            segments = _strip_bag_from_review_segments(
-                segments, bid, new_bucket=new_bucket
+        try:
+            headline = dict(day.get("headline") or {})
+            status_by_bag = _load_day_bag_status_projection(
+                cursor, organization_id, shift_date_et
             )
-        elif old_bucket and old_bucket != new_bucket:
-            for seg_name, seg in list(segments.items()):
-                segments[seg_name] = _move_bag_in_segment_bucket(
-                    seg,
-                    bid,
-                    old_bucket=old_bucket,
-                    new_bucket=new_bucket,
+            # Ensure the just-updated row is visible even if the SELECT is stale
+            # on unusual drivers (same cursor should see it).
+            status_by_bag[bid] = {
+                **dict(status_by_bag.get(bid) or {}),
+                "effective_status": new_status,
+                "service_type": (status_by_bag.get(bid) or {}).get("service_type")
+                or day_row.get("service_type"),
+                "rush_status": (status_by_bag.get(bid) or {}).get("rush_status")
+                or day_row.get("rush_status"),
+            }
+            old_bucket = _headline_bucket_for_status(prev_status)
+            new_bucket = _headline_bucket_for_status(new_status)
+            # Incremental move keeps ID lists correct even when status projection
+            # is empty (brand-new day); then full sync reconciles from day bags.
+            segments = dict(headline.get("segments") or {})
+            if new_bucket != "review_required":
+                segments = _strip_bag_from_review_segments(
+                    segments, bid, new_bucket=new_bucket
                 )
-        all_seg = dict(segments.get("all") or {})
-        headline["segments"] = segments
-        headline["completed"] = all_seg.get("completed", headline.get("completed"))
-        headline["pending"] = all_seg.get("pending", headline.get("pending"))
-        headline["exceptions"] = dict(all_seg.get("exceptions") or headline.get("exceptions") or {})
-        review_n = int((headline.get("exceptions") or {}).get("review_required") or 0)
-        # Prefer WF-accurate total from all segment after strip.
-        reasons_by_bag = dict(
-            (day.get("workload_meta") or {}).get("review_reasons_by_bag")
-            or headline.get("review_reasons_by_bag")
-            or {}
-        )
-        if reasons:
-            reasons_by_bag[bid] = list(reasons)
-        else:
-            reasons_by_bag.pop(bid, None)
-        headline["review_reasons_by_bag"] = reasons_by_bag
-        # Drop bag from review_by_reason indexes when leaving review.
-        review_by_reason = dict(headline.get("review_by_reason") or {})
-        if new_bucket != "review_required":
-            cleaned = {}
-            for code, ids in review_by_reason.items():
-                kept = [x for x in list(ids or []) if normalize_bag_id(x) != bid]
-                if kept:
-                    cleaned[code] = kept
-            review_by_reason = cleaned
-            headline["review_by_reason"] = review_by_reason
-        meta = dict(day.get("workload_meta") or {})
-        meta["review_reasons_by_bag"] = reasons_by_bag
-        if "review_by_reason" in headline:
-            meta["review_by_reason"] = review_by_reason
-        cursor.execute(
-            """
-            UPDATE rinse_shift_monitor_days
-            SET review_required_count = %s,
-                headline_json = %s,
-                workload_meta_json = %s,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE organization_id = %s AND shift_date_et = %s
-            """,
-            (
-                review_n,
-                _json_dump(headline),
-                _json_dump(meta),
-                int(organization_id),
+            elif old_bucket and old_bucket != new_bucket:
+                for seg_name, seg in list(segments.items()):
+                    segments[seg_name] = _move_bag_in_segment_bucket(
+                        seg,
+                        bid,
+                        old_bucket=old_bucket,
+                        new_bucket=new_bucket,
+                    )
+            headline["segments"] = segments
+            headline = _apply_day_bag_statuses_to_headline(headline, status_by_bag)
+            invariant = verify_headline_day_bag_status_invariant(
+                headline,
+                status_by_bag,
+                context=(
+                    f"org={organization_id} date={shift_date_et} bag={bid} "
+                    f"{prev_status}->{new_status}"
+                ),
+            )
+            if not invariant.get("ok"):
+                # Do not silently accept a broken projection.
+                raise RuntimeError(
+                    "headline_day_bag_status_invariant_mismatch: "
+                    + "; ".join(invariant.get("mismatches") or [])
+                )
+
+            reasons_by_bag = dict(
+                (day.get("workload_meta") or {}).get("review_reasons_by_bag")
+                or headline.get("review_reasons_by_bag")
+                or {}
+            )
+            if reasons:
+                reasons_by_bag[bid] = list(reasons)
+            else:
+                reasons_by_bag.pop(bid, None)
+            headline["review_reasons_by_bag"] = reasons_by_bag
+            review_by_reason = dict(headline.get("review_by_reason") or {})
+            if new_bucket != "review_required":
+                cleaned = {}
+                for code, ids in review_by_reason.items():
+                    kept = [
+                        x for x in list(ids or []) if normalize_bag_id(x) != bid
+                    ]
+                    if kept:
+                        cleaned[code] = kept
+                review_by_reason = cleaned
+                headline["review_by_reason"] = review_by_reason
+            meta = dict(day.get("workload_meta") or {})
+            meta["review_reasons_by_bag"] = reasons_by_bag
+            if "review_by_reason" in headline:
+                meta["review_by_reason"] = review_by_reason
+            meta["headline_status_synced_from_day_bags"] = True
+            review_n = int(
+                (headline.get("exceptions") or {}).get("review_required") or 0
+            )
+            cursor.execute(
+                """
+                UPDATE rinse_shift_monitor_days
+                SET review_required_count = %s,
+                    headline_json = %s,
+                    workload_meta_json = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE organization_id = %s AND shift_date_et = %s
+                """,
+                (
+                    review_n,
+                    _json_dump(headline),
+                    _json_dump(meta),
+                    int(organization_id),
+                    shift_date_et,
+                ),
+            )
+        except Exception as exc:
+            logger.exception(
+                "headline_patch_failed org=%s date=%s bag=%s prev=%s new=%s",
+                organization_id,
                 shift_date_et,
-            ),
-        )
+                bid,
+                prev_status,
+                new_status,
+            )
+            # Day-bag row already updated; preserve that write. Surface headline
+            # failure explicitly — do not swallow.
+            return {
+                "ok": True,
+                "bag_id": bid,
+                "previous_effective_status": prev_status,
+                "effective_status": new_status,
+                "review_reason_codes": reasons,
+                "headline_patched": False,
+                "headline_patch_error": "headline_patch_failed",
+                "detail": str(exc),
+            }
 
     try:
         from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
@@ -1148,6 +1612,7 @@ def apply_manager_edit_day_bag_patch(
         "previous_effective_status": prev_status,
         "effective_status": new_status,
         "review_reason_codes": reasons,
+        "headline_patched": bool(day),
     }
 
 
