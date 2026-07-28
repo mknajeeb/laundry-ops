@@ -524,6 +524,27 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
             # Still keep CWO / review bags that were force-included.
             if eff != OUTCOME_REVIEW_REQUIRED and row.get("final_bucket") != "review_required":
                 continue
+        snap = dict(row)
+        if eff == OUTCOME_COMPLETED:
+            snap["outcome"] = OUTCOME_COMPLETED
+            # Drop stale pre-cycle classify reasons once current-cycle completion wins.
+            if snap.get("reason") in (
+                "completed_before_selected_date",
+                "completes_after_selected_date_not_yet_entered",
+            ):
+                snap.pop("reason", None)
+            fb = str(snap.get("final_bucket") or "")
+            if (
+                not fb
+                or "pending" in fb
+                or fb == "not_in_workload"
+                or "completed_before" in fb
+            ):
+                snap["final_bucket"] = f"{entry_class}_{OUTCOME_COMPLETED}"
+            if row.get("completion_source"):
+                snap["completion_source"] = row.get("completion_source")
+            if row.get("cycle_anchor_at") is not None:
+                snap["cycle_anchor_at"] = row.get("cycle_anchor_at")
         rows_out.append(
             {
                 "bag_id": bid,
@@ -531,11 +552,15 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
                 "rush_status": row.get("rush_flag"),
                 "new_or_carryover": "workload" if entry_class else None,
                 "workload_entry_type": row.get("entry_source"),
-                "workload_entry_timestamp": row.get("first_entry_at") or row.get("original_entry_date"),
+                "workload_entry_timestamp": row.get("first_entry_at")
+                or row.get("entry_at")
+                or row.get("original_entry_date"),
                 "pre_weight_lbs": row.get("pre_weight_lbs"),
                 "post_weight_lbs": row.get("post_weight_lbs"),
                 "weight_lbs": row.get("weight_lbs"),
-                "canonical_completion_status": row.get("canonical_status") or row.get("outcome"),
+                "canonical_completion_status": row.get("canonical_status")
+                or snap.get("outcome")
+                or row.get("outcome"),
                 "canonical_completion_timestamp": row.get("completion_at"),
                 "canonical_completion_employee": row.get("completed_by"),
                 "effective_status": eff,
@@ -544,7 +569,7 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
                 "last_present_scrape": row.get("last_seen_date") or row.get("last_seen_at"),
                 "first_confirmed_absent_scrape": row.get("disappeared_date"),
                 "disposition": row.get("disposition"),
-                "bag_snapshot": dict(row),
+                "bag_snapshot": snap,
             }
         )
     return rows_out
@@ -658,21 +683,68 @@ def persist_day_snapshot(
               pre_weight_lbs=VALUES(pre_weight_lbs),
               post_weight_lbs=VALUES(post_weight_lbs),
               weight_lbs=VALUES(weight_lbs),
-              canonical_completion_status=VALUES(canonical_completion_status),
-              canonical_completion_timestamp=VALUES(canonical_completion_timestamp),
-              canonical_completion_employee=VALUES(canonical_completion_employee),
-              effective_status=VALUES(effective_status),
-              review_reason_codes_json=VALUES(review_reason_codes_json),
+              -- Manager-edited rows (manager_edit_version > 0): preserve status,
+              -- completion, review reasons, and snapshot. Scrape refresh must not
+              -- revert an explicit manager decision.
+              canonical_completion_status=IF(
+                manager_edit_version > 0,
+                canonical_completion_status,
+                VALUES(canonical_completion_status)
+              ),
+              canonical_completion_timestamp=IF(
+                manager_edit_version > 0,
+                canonical_completion_timestamp,
+                VALUES(canonical_completion_timestamp)
+              ),
+              canonical_completion_employee=IF(
+                manager_edit_version > 0,
+                canonical_completion_employee,
+                VALUES(canonical_completion_employee)
+              ),
+              effective_status=IF(
+                manager_edit_version > 0,
+                effective_status,
+                VALUES(effective_status)
+              ),
+              review_reason_codes_json=IF(
+                manager_edit_version > 0,
+                review_reason_codes_json,
+                VALUES(review_reason_codes_json)
+              ),
               portal_status_at_sync=VALUES(portal_status_at_sync),
               last_present_scrape=VALUES(last_present_scrape),
               first_confirmed_absent_scrape=VALUES(first_confirmed_absent_scrape),
               disposition=COALESCE(VALUES(disposition), disposition),
-              bag_snapshot_json=VALUES(bag_snapshot_json),
-              productivity_employee_name=VALUES(productivity_employee_name),
-              productivity_completed_at=VALUES(productivity_completed_at),
-              productivity_weight_lbs=VALUES(productivity_weight_lbs),
-              productivity_credit_eligible=VALUES(productivity_credit_eligible),
-              productivity_exclusion_reason=VALUES(productivity_exclusion_reason),
+              bag_snapshot_json=IF(
+                manager_edit_version > 0,
+                bag_snapshot_json,
+                VALUES(bag_snapshot_json)
+              ),
+              productivity_employee_name=IF(
+                manager_edit_version > 0,
+                productivity_employee_name,
+                VALUES(productivity_employee_name)
+              ),
+              productivity_completed_at=IF(
+                manager_edit_version > 0,
+                productivity_completed_at,
+                VALUES(productivity_completed_at)
+              ),
+              productivity_weight_lbs=IF(
+                manager_edit_version > 0,
+                productivity_weight_lbs,
+                VALUES(productivity_weight_lbs)
+              ),
+              productivity_credit_eligible=IF(
+                manager_edit_version > 0,
+                productivity_credit_eligible,
+                VALUES(productivity_credit_eligible)
+              ),
+              productivity_exclusion_reason=IF(
+                manager_edit_version > 0,
+                productivity_exclusion_reason,
+                VALUES(productivity_exclusion_reason)
+              ),
               -- Source/membership/productivity refresh must never bump the manager-edit
               -- optimistic-lock token (manager_edit_version or updated_at).
               updated_at=updated_at,

@@ -1,0 +1,1034 @@
+{
+  "invariant": "A scan from a previous sent-to-vendor cycle can never determine the current cycle's entry, completion, or status.",
+  "completion_rule": "cycle_anchor = latest valid purpose=sent-to-vendor on/before selected day cutoff; entry = first post-anchor move-bag to configured entry racks; completion = earliest valid weight-entry after garments-reviewed (both after anchor); Clean rack is not required.",
+  "configured_entry_racks_default": [
+    "VeeWash Dirty",
+    "Rinse Zipvan"
+  ],
+  "deploy_gate": "Do not deploy until this invariant is covered by tests and controlled five-order validation passes. Correction must be architectural, not an ID patch.",
+  "synthetic_cases": [
+    {
+      "fixture_bag_key": "synthetic_worked_example",
+      "source_note": "Confirmed design worked example",
+      "selected_date_et": "2026-07-27",
+      "service_type": "WF",
+      "configured_entry_racks": [
+        "VeeWash Dirty",
+        "Rinse Zipvan"
+      ],
+      "events": [
+        {
+          "purpose": "sent-to-vendor",
+          "rack": null,
+          "scanned_at": "2026-07-27 05:10:00",
+          "user_name": "Driver",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-27 06:16:00",
+          "user_name": "Ops",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 06:19:00",
+          "user_name": "Ops",
+          "weight_lbs": 10.0
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-27 14:31:00",
+          "user_name": "Reviewer",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 14:58:00",
+          "user_name": "Reviewer",
+          "weight_lbs": 9.5
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-07-27 14:58:00",
+          "user_name": "Reviewer",
+          "weight_lbs": null
+        }
+      ],
+      "expected": {
+        "cycle_anchor_at": "2026-07-27 05:10:00",
+        "entry_at": "2026-07-27 06:16:00",
+        "entry_rack": "VeeWash Dirty",
+        "garments_reviewed_at": "2026-07-27 14:31:00",
+        "completion_at": "2026-07-27 14:58:00",
+        "completed_by": "Reviewer",
+        "completion_source": "post_garments_reviewed_weight_entry",
+        "effective_status": "completed",
+        "via_clean_rack_required": false
+      }
+    },
+    {
+      "fixture_bag_key": "synthetic_old_cycle_ignored_after_resend",
+      "source_note": "Old clean-rack + weight must not complete new cycle",
+      "selected_date_et": "2026-07-27",
+      "service_type": "WF",
+      "configured_entry_racks": [
+        "VeeWash Dirty",
+        "Rinse Zipvan"
+      ],
+      "events": [
+        {
+          "purpose": "sent-to-vendor",
+          "rack": null,
+          "scanned_at": "2026-06-01 05:00:00",
+          "user_name": "Driver",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-06-01 06:00:00",
+          "user_name": "Ops",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-06-01 12:00:00",
+          "user_name": "Old",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-06-01 12:30:00",
+          "user_name": "Old",
+          "weight_lbs": 11.0
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-06-01 12:31:00",
+          "user_name": "Old",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "sent-to-vendor",
+          "rack": null,
+          "scanned_at": "2026-07-27 05:00:00",
+          "user_name": "Driver",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-27 06:00:00",
+          "user_name": "New",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-27 15:00:00",
+          "user_name": "New",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 15:20:00",
+          "user_name": "New",
+          "weight_lbs": 10.0
+        }
+      ],
+      "expected": {
+        "cycle_anchor_at": "2026-07-27 05:00:00",
+        "entry_at": "2026-07-27 06:00:00",
+        "entry_rack": "VeeWash Dirty",
+        "garments_reviewed_at": "2026-07-27 15:00:00",
+        "completion_at": "2026-07-27 15:20:00",
+        "completed_by": "New",
+        "completion_source": "post_garments_reviewed_weight_entry",
+        "effective_status": "completed",
+        "via_clean_rack_required": false
+      }
+    },
+    {
+      "fixture_bag_key": "synthetic_zipvan_entry",
+      "source_note": "Rinse Zipvan is a configured entry rack",
+      "selected_date_et": "2026-07-27",
+      "service_type": "WF",
+      "configured_entry_racks": [
+        "VeeWash Dirty",
+        "Rinse Zipvan"
+      ],
+      "events": [
+        {
+          "purpose": "sent-to-vendor",
+          "rack": null,
+          "scanned_at": "2026-07-27 05:00:00",
+          "user_name": "Driver",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "Rinse Zipvan",
+          "scanned_at": "2026-07-27 05:30:00",
+          "user_name": "Ops",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-27 10:00:00",
+          "user_name": "Rev",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 10:15:00",
+          "user_name": "Rev",
+          "weight_lbs": 8.0
+        }
+      ],
+      "expected": {
+        "cycle_anchor_at": "2026-07-27 05:00:00",
+        "entry_at": "2026-07-27 05:30:00",
+        "entry_rack": "Rinse Zipvan",
+        "garments_reviewed_at": "2026-07-27 10:00:00",
+        "completion_at": "2026-07-27 10:15:00",
+        "completed_by": "Rev",
+        "completion_source": "post_garments_reviewed_weight_entry",
+        "effective_status": "completed",
+        "via_clean_rack_required": false
+      }
+    },
+    {
+      "fixture_bag_key": "synthetic_duplicate_post_review_weights",
+      "source_note": "Duplicate post-review weights complete once on earliest",
+      "selected_date_et": "2026-07-27",
+      "service_type": "WF",
+      "configured_entry_racks": [
+        "VeeWash Dirty",
+        "Rinse Zipvan"
+      ],
+      "events": [
+        {
+          "purpose": "sent-to-vendor",
+          "rack": null,
+          "scanned_at": "2026-07-27 05:00:00",
+          "user_name": "Driver",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-27 06:00:00",
+          "user_name": "Ops",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-27 14:00:00",
+          "user_name": "Rev",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 14:10:00",
+          "user_name": "Rev",
+          "weight_lbs": 9.0
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 14:12:00",
+          "user_name": "Rev",
+          "weight_lbs": 9.1
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 14:15:00",
+          "user_name": "Rev",
+          "weight_lbs": 9.2
+        }
+      ],
+      "expected": {
+        "cycle_anchor_at": "2026-07-27 05:00:00",
+        "entry_at": "2026-07-27 06:00:00",
+        "entry_rack": "VeeWash Dirty",
+        "garments_reviewed_at": "2026-07-27 14:00:00",
+        "completion_at": "2026-07-27 14:10:00",
+        "completed_by": "Rev",
+        "completion_source": "post_garments_reviewed_weight_entry",
+        "effective_status": "completed",
+        "via_clean_rack_required": false
+      }
+    },
+    {
+      "fixture_bag_key": "synthetic_no_clean_still_completes",
+      "source_note": "No Clean rack still completes from post-review weight",
+      "selected_date_et": "2026-07-27",
+      "service_type": "WF",
+      "configured_entry_racks": [
+        "VeeWash Dirty",
+        "Rinse Zipvan"
+      ],
+      "events": [
+        {
+          "purpose": "sent-to-vendor",
+          "rack": null,
+          "scanned_at": "2026-07-27 05:00:00",
+          "user_name": "Driver",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-27 06:00:00",
+          "user_name": "Ops",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-27 14:00:00",
+          "user_name": "Rev",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 14:30:00",
+          "user_name": "Rev",
+          "weight_lbs": 7.5
+        }
+      ],
+      "expected": {
+        "cycle_anchor_at": "2026-07-27 05:00:00",
+        "entry_at": "2026-07-27 06:00:00",
+        "entry_rack": "VeeWash Dirty",
+        "garments_reviewed_at": "2026-07-27 14:00:00",
+        "completion_at": "2026-07-27 14:30:00",
+        "completed_by": "Rev",
+        "completion_source": "post_garments_reviewed_weight_entry",
+        "effective_status": "completed",
+        "via_clean_rack_required": false
+      }
+    }
+  ],
+  "jul27_pattern_cases": [
+    {
+      "fixture_bag_key": "jul27_cycle_case_01",
+      "source_note": "Anonymized timeline pattern derived from org3 2026-07-27 disputed pending bags. Order IDs must never be hard-coded into production resolvers.",
+      "selected_date_et": "2026-07-27",
+      "service_type": "WF",
+      "configured_entry_racks": [
+        "VeeWash Dirty",
+        "Rinse Zipvan"
+      ],
+      "events": [
+        {
+          "purpose": "move-bag",
+          "rack": "003-NY-WF",
+          "scanned_at": "2026-06-28 23:11:00",
+          "user_name": "Marguerite Smith",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "003-NY-WF",
+          "scanned_at": "2026-06-29 04:29:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-06-29 06:07:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-06-29 06:31:00",
+          "user_name": "Varun (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-06-29 16:43:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag Last Scan",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-06-29 16:45:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-06-29 16:45:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "015-NY-WF",
+          "scanned_at": "2026-07-10 05:15:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-10 06:02:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-10 06:08:00",
+          "user_name": "Francis (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-10 14:35:00",
+          "user_name": "Yessenia (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry Last Scan",
+          "rack": null,
+          "scanned_at": "2026-07-10 14:36:00",
+          "user_name": "Yessenia (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "001-NY-WF",
+          "scanned_at": "2026-07-27 05:10:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-27 06:16:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 06:19:00",
+          "user_name": "Varun (VeeWash)",
+          "weight_lbs": 25.2
+        },
+        {
+          "purpose": "garments-reviewed Last Scan",
+          "rack": null,
+          "scanned_at": "2026-07-27 14:31:00",
+          "user_name": "Yessenia (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-07-27 14:58:00",
+          "user_name": "Yessenia (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 14:58:00",
+          "user_name": "Yessenia (Veewash)",
+          "weight_lbs": 25.2
+        },
+        {
+          "purpose": "received-from-vendor Last Scan",
+          "rack": "Rinse Zipvan",
+          "scanned_at": "2026-07-27 15:27:00",
+          "user_name": "Shaquille Thompson",
+          "weight_lbs": null
+        }
+      ],
+      "expected": {
+        "cycle_anchor_at": "2026-07-27 05:10:00",
+        "entry_at": "2026-07-27 06:16:00",
+        "entry_rack": "VeeWash Dirty",
+        "garments_reviewed_at": "2026-07-27 14:31:00",
+        "completion_at": "2026-07-27 14:58:00",
+        "completed_by": "Yessenia (Veewash)",
+        "completion_source": "post_garments_reviewed_weight_entry",
+        "effective_status": "completed",
+        "via_clean_rack_required": false
+      }
+    },
+    {
+      "fixture_bag_key": "jul27_cycle_case_02",
+      "source_note": "Anonymized timeline pattern derived from org3 2026-07-27 disputed pending bags. Order IDs must never be hard-coded into production resolvers.",
+      "selected_date_et": "2026-07-27",
+      "service_type": "WF",
+      "configured_entry_racks": [
+        "VeeWash Dirty",
+        "Rinse Zipvan"
+      ],
+      "events": [
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "005-NY-WF",
+          "scanned_at": "2026-07-09 04:25:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-09 06:03:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-09 10:28:00",
+          "user_name": "Singh (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-09 13:57:00",
+          "user_name": "Jennifer (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag Last Scan",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-07-09 14:00:00",
+          "user_name": "Jennifer (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-09 14:00:00",
+          "user_name": "Jennifer (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "009-NY-WF",
+          "scanned_at": "2026-07-20 04:24:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-20 06:00:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-20 06:39:00",
+          "user_name": "Varun (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-20 12:50:00",
+          "user_name": "Jennifer (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-20 12:53:00",
+          "user_name": "Jennifer (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag Last Scan",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-07-20 12:54:00",
+          "user_name": "Jennifer (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "005-NY-WF",
+          "scanned_at": "2026-07-27 05:09:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-27 05:53:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 05:58:00",
+          "user_name": "Varun (VeeWash)",
+          "weight_lbs": 23.1
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-27 14:28:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag Last Scan",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-07-27 14:30:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 14:30:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": 23.1
+        }
+      ],
+      "expected": {
+        "cycle_anchor_at": "2026-07-27 05:09:00",
+        "entry_at": "2026-07-27 05:53:00",
+        "entry_rack": "VeeWash Dirty",
+        "garments_reviewed_at": "2026-07-27 14:28:00",
+        "completion_at": "2026-07-27 14:30:00",
+        "completed_by": "Tarannum (Veewash)",
+        "completion_source": "post_garments_reviewed_weight_entry",
+        "effective_status": "completed",
+        "via_clean_rack_required": false
+      }
+    },
+    {
+      "fixture_bag_key": "jul27_cycle_case_03",
+      "source_note": "Anonymized timeline pattern derived from org3 2026-07-27 disputed pending bags. Order IDs must never be hard-coded into production resolvers.",
+      "selected_date_et": "2026-07-27",
+      "service_type": "WF",
+      "configured_entry_racks": [
+        "VeeWash Dirty",
+        "Rinse Zipvan"
+      ],
+      "events": [
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "011-NY-WF",
+          "scanned_at": "2026-07-02 04:33:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-02 05:35:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-02 06:43:00",
+          "user_name": "Singh (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-02 11:12:00",
+          "user_name": "Jennifer (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-02 11:15:00",
+          "user_name": "Jennifer (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag Last Scan",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-07-02 11:17:00",
+          "user_name": "Jennifer (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "003-NY-WF",
+          "scanned_at": "2026-07-27 05:10:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-27 06:29:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 07:20:00",
+          "user_name": "Varun (VeeWash)",
+          "weight_lbs": 26.7
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-27 15:05:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-07-27 15:06:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 15:06:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": 26.7
+        },
+        {
+          "purpose": "received-from-vendor Last Scan",
+          "rack": "Rinse Zipvan",
+          "scanned_at": "2026-07-27 15:27:00",
+          "user_name": "Shaquille Thompson",
+          "weight_lbs": null
+        }
+      ],
+      "expected": {
+        "cycle_anchor_at": "2026-07-27 05:10:00",
+        "entry_at": "2026-07-27 06:29:00",
+        "entry_rack": "VeeWash Dirty",
+        "garments_reviewed_at": "2026-07-27 15:05:00",
+        "completion_at": "2026-07-27 15:06:00",
+        "completed_by": "Tarannum (Veewash)",
+        "completion_source": "post_garments_reviewed_weight_entry",
+        "effective_status": "completed",
+        "via_clean_rack_required": false
+      }
+    },
+    {
+      "fixture_bag_key": "jul27_cycle_case_04",
+      "source_note": "Anonymized timeline pattern derived from org3 2026-07-27 disputed pending bags. Order IDs must never be hard-coded into production resolvers.",
+      "selected_date_et": "2026-07-27",
+      "service_type": "WF",
+      "configured_entry_racks": [
+        "VeeWash Dirty",
+        "Rinse Zipvan"
+      ],
+      "events": [
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "005-NY-WF",
+          "scanned_at": "2026-07-02 04:31:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-02 05:47:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-02 06:55:00",
+          "user_name": "Singh (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-02 13:34:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-02 13:35:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag Last Scan",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-07-02 13:36:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "005-NY-WF",
+          "scanned_at": "2026-07-27 05:09:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "005-NY-WF",
+          "scanned_at": "2026-07-27 05:18:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-27 05:55:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 05:57:00",
+          "user_name": "Varun (VeeWash)",
+          "weight_lbs": 17.6
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-27 14:41:00",
+          "user_name": "Angelica (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-07-27 15:10:00",
+          "user_name": "Angelica (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 15:10:00",
+          "user_name": "Angelica (Veewash)",
+          "weight_lbs": 17.6
+        },
+        {
+          "purpose": "received-from-vendor Last Scan",
+          "rack": "Rinse Zipvan",
+          "scanned_at": "2026-07-27 15:26:00",
+          "user_name": "Shaquille Thompson",
+          "weight_lbs": null
+        }
+      ],
+      "expected": {
+        "cycle_anchor_at": "2026-07-27 05:18:00",
+        "entry_at": "2026-07-27 05:55:00",
+        "entry_rack": "VeeWash Dirty",
+        "garments_reviewed_at": "2026-07-27 14:41:00",
+        "completion_at": "2026-07-27 15:10:00",
+        "completed_by": "Angelica (Veewash)",
+        "completion_source": "post_garments_reviewed_weight_entry",
+        "effective_status": "completed",
+        "via_clean_rack_required": false
+      }
+    },
+    {
+      "fixture_bag_key": "jul27_cycle_case_05",
+      "source_note": "Anonymized timeline pattern derived from org3 2026-07-27 disputed pending bags. Order IDs must never be hard-coded into production resolvers.",
+      "selected_date_et": "2026-07-27",
+      "service_type": "WF",
+      "configured_entry_racks": [
+        "VeeWash Dirty",
+        "Rinse Zipvan"
+      ],
+      "events": [
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "007-NY-WF",
+          "scanned_at": "2026-06-22 04:33:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "007-NY-WF",
+          "scanned_at": "2026-06-22 04:34:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-06-22 05:50:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-06-22 07:53:00",
+          "user_name": "Jennifer (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "Folding-5-VW",
+          "scanned_at": "2026-06-22 10:04:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-06-22 10:40:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-06-22 10:42:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag Last Scan",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-06-22 10:43:00",
+          "user_name": "Tarannum (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "009-NY-WF",
+          "scanned_at": "2026-07-16 04:56:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-16 05:39:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-16 06:31:00",
+          "user_name": "Singh (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-16 10:18:00",
+          "user_name": "Jennifer (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag Last Scan",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-07-16 10:20:00",
+          "user_name": "Jennifer (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-16 10:20:00",
+          "user_name": "Jennifer (VeeWash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "023-NY-WF",
+          "scanned_at": "2026-07-27 04:50:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-27 06:27:00",
+          "user_name": "Melissa Branker",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 06:49:00",
+          "user_name": "Varun (VeeWash)",
+          "weight_lbs": 28.9
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-27 15:17:00",
+          "user_name": "Amna (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "move-bag Last Scan",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-07-27 16:07:00",
+          "user_name": "Amna (Veewash)",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-27 16:07:00",
+          "user_name": "Amna (Veewash)",
+          "weight_lbs": 28.9
+        }
+      ],
+      "expected": {
+        "cycle_anchor_at": "2026-07-27 04:50:00",
+        "entry_at": "2026-07-27 06:27:00",
+        "entry_rack": "VeeWash Dirty",
+        "garments_reviewed_at": "2026-07-27 15:17:00",
+        "completion_at": "2026-07-27 16:07:00",
+        "completed_by": "Amna (Veewash)",
+        "completion_source": "post_garments_reviewed_weight_entry",
+        "effective_status": "completed",
+        "via_clean_rack_required": false
+      }
+    }
+  ]
+}

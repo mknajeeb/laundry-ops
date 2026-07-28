@@ -14,7 +14,11 @@ Operating model:
   * workitems-added is NOT a WF workload entry event. Recognized entry:
       WF → first configured facility entry rack scan
       HD → first workitems-added scan (entry rack is not HD entry for CWO checks)
-  * Completion: evaluate_bag_completion_v2 (canonical production resolver).
+  * Completion: shared ``rinse_cycle_boundary.resolve_current_cycle`` for a
+    selected ET day (sent-to-vendor → configured entry move-bag →
+    garments-reviewed → earliest later weight-entry). Clean rack is not
+    required. Manager correct_completion overrides still win.
+    Lifetime first-clean must not determine current-cycle status.
   * Review Required (manager-facing, reason_codes, one count per bag) includes:
       DISAPPEARED_WITHOUT_COMPLETION
       COMPLETED_WITHOUT_RECOGNIZED_ENTRY (was hidden CWO — now in Active as Review)
@@ -380,13 +384,157 @@ def _has_recognized_entry_for_service(
     return dirty_entry is not None and dirty_entry.get("entry_date") is not None
 
 
+def _completion_employee_at(
+    timeline: list[dict[str, Any]], completion_at: datetime
+) -> str | None:
+    """Operator on the completion event (prefer the weight-entry row)."""
+    from backend.rinse_bag_activity_rules import _operator, event_ts
+    from backend.rinse_cycle_boundary import _norm_purpose
+
+    exact: list[Mapping[str, Any]] = []
+    for ev in timeline:
+        ts = event_ts(ev)
+        if ts is None or ts != completion_at:
+            continue
+        exact.append(ev)
+    if not exact:
+        return None
+    for ev in exact:
+        if _norm_purpose(ev.get("purpose")) == "weight-entry":
+            return _operator(ev)
+    return _operator(exact[-1])
+
+
+def _cycle_result_to_completion_dict(
+    result: Any,
+    *,
+    selected_date_et: date,
+    timeline: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Same-day current-cycle completion dict for Step-1 classify, or None."""
+    from backend.rinse_cycle_boundary import COMPLETION_SOURCE_POST_REVIEW_WEIGHT
+
+    if result is None or getattr(result, "effective_status", None) != "completed":
+        return None
+    comp_ts = getattr(result, "completion_at", None)
+    if comp_ts is None:
+        return None
+    d = _scan_et_date(comp_ts)
+    if d != selected_date_et:
+        return None
+    completed_by = getattr(result, "completed_by", None)
+    if not completed_by and timeline is not None:
+        completed_by = _completion_employee_at(timeline, comp_ts)
+    source = (
+        getattr(result, "completion_source", None) or COMPLETION_SOURCE_POST_REVIEW_WEIGHT
+    )
+    return {
+        "completion_at": comp_ts,
+        "completion_date": d,
+        "completed_by": completed_by,
+        "completion_source": source,
+        "completion_kind": source,
+        "via_clean_rack": False,
+        "cycle_anchor_at": getattr(result, "cycle_anchor_at", None),
+        "entry_at": getattr(result, "entry_at", None),
+        "entry_rack": getattr(result, "entry_rack", None),
+        "garments_reviewed_at": getattr(result, "garments_reviewed_at", None),
+    }
+
+
+def _cycle_anchored_completion_for_day(
+    timeline: list[dict[str, Any]],
+    *,
+    selected_date_et: date,
+    service_type: str = "WF",
+    entry_racks: Iterable[str] | None = None,
+) -> dict[str, Any] | None:
+    """Current-cycle same-day completion via shared ``rinse_cycle_boundary``.
+
+    HD keeps the At Vendor HD signal path (garments-reviewed / complete-cleaning /
+    assembly) so Hang Dry membership/completion rules are unchanged by this WF fix.
+    """
+    from backend.rinse_cycle_boundary import resolve_current_cycle
+    from backend.rinse_folding_et import naive_et_day_end_inclusive
+    from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
+
+    svc = str(service_type or "WF").strip().upper()
+    racks = list(entry_racks) if entry_racks is not None else list(DEFAULT_FACILITY_ENTRY_RACKS)
+
+    if svc == "HD":
+        from backend.rinse_at_vendor_module import AV_STATUS_COMPLETED, _evaluate_bag_as_of
+
+        day_end = naive_et_day_end_inclusive(selected_date_et)
+        status, signal, comp_ts, anchor_ts, _fields = _evaluate_bag_as_of(
+            timeline,
+            service_type="HD",
+            as_of_end=day_end,
+        )
+        if status != AV_STATUS_COMPLETED or comp_ts is None:
+            return None
+        d = _scan_et_date(comp_ts)
+        if d != selected_date_et:
+            return None
+        return {
+            "completion_at": comp_ts,
+            "completion_date": d,
+            "completed_by": _completion_employee_at(timeline, comp_ts),
+            "completion_source": f"cycle_anchored:{signal or 'hd_completed'}",
+            "completion_kind": signal or "hd_completed",
+            "via_clean_rack": False,
+            "cycle_anchor_at": anchor_ts,
+            "cycle_signal": signal,
+        }
+
+    result = resolve_current_cycle(
+        timeline,
+        selected_date_et=selected_date_et,
+        entry_racks=racks,
+    )
+    return _cycle_result_to_completion_dict(
+        result, selected_date_et=selected_date_et, timeline=timeline
+    )
+
+
 def load_canonical_completions_v2(
-    cursor, organization_id: int, bag_ids: Iterable[str]
+    cursor,
+    organization_id: int,
+    bag_ids: Iterable[str],
+    *,
+    selected_date_et: date | None = None,
+    service_type_by_bag: Mapping[str, str] | None = None,
+    entry_racks: Iterable[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Canonical completions via evaluate_bag_completion_v2 for the given bags."""
+    """Canonical completions for Step-1 / ledger-aligned day outcomes.
+
+    Precedence (highest wins):
+      1. Manager ``correct_completion`` override (rinse_step1_corrections)
+      2. When ``selected_date_et`` is set: shared ``rinse_cycle_boundary``
+         current-cycle completion (WF) / HD At Vendor signal (HD)
+      3. When no selected date: legacy ``evaluate_bag_completion_v2`` (report /
+         non-day callers only — not used for Shift Monitor day status)
+
+    When ``selected_date_et`` is set, lifetime first-clean is **never** emitted.
+    That prevents ``completed_before_selected_date`` + membership reinject-as-pending
+    for resend_today bags that completed again on D under the current cycle.
+    """
+    from backend.rinse_bag_activity_rules import evaluate_bag_completion_v2
+    from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
+
     ids = sorted({_norm_bag(b) for b in bag_ids if _norm_bag(b)})
     if not ids or not table_exists(cursor, "rinse_bag_scan_events"):
         return {}
+
+    racks = list(entry_racks) if entry_racks is not None else None
+    if racks is None and selected_date_et is not None:
+        try:
+            from backend.rinse_processing_settings import get_processing_settings
+
+            racks = get_processing_settings(cursor, organization_id).get(
+                "facility_entry_racks"
+            ) or list(DEFAULT_FACILITY_ENTRY_RACKS)
+        except Exception:
+            racks = list(DEFAULT_FACILITY_ENTRY_RACKS)
 
     # Bound IN lists — never full-table scan all org scan events.
     id_set = set(ids)
@@ -426,7 +574,24 @@ def load_canonical_completions_v2(
             )
 
     out: dict[str, dict[str, Any]] = {}
+    svc_map = {
+        _norm_bag(k): str(v or "").strip().upper()
+        for k, v in (service_type_by_bag or {}).items()
+        if _norm_bag(k)
+    }
     for bid, timeline in by_bag.items():
+        if selected_date_et is not None:
+            cycle = _cycle_anchored_completion_for_day(
+                timeline,
+                selected_date_et=selected_date_et,
+                service_type=svc_map.get(bid) or "WF",
+                entry_racks=racks,
+            )
+            if cycle is not None:
+                out[bid] = cycle
+            continue
+
+        # No selected date: legacy lifetime resolver for non-day callers only.
         result = evaluate_bag_completion_v2(timeline)
         if not result.completed or result.completion_at is None:
             continue
@@ -442,7 +607,7 @@ def load_canonical_completions_v2(
             "via_clean_rack": bool(result.via_clean_rack),
         }
 
-    # Manager correct_completion overrides beat clean-rack operator on rebuild.
+    # Manager correct_completion overrides beat scan/cycle operator on rebuild.
     # Load even when scan completion is empty — otherwise Save→refresh reverts.
     if ids and table_exists(cursor, "rinse_step1_corrections"):
         placeholders = ",".join(["%s"] * len(ids))
@@ -499,6 +664,48 @@ def load_canonical_completions_v2(
             out[bid] = merged
     return out
 
+
+def _apply_cycle_entry_overlay(
+    entry_by_bag: dict[str, dict[str, Any]],
+    completion_by_bag: Mapping[str, Mapping[str, Any]],
+    *,
+    selected_date_et: date,
+    member_ids: Iterable[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Prefer current-cycle configured-rack entry timestamps when present."""
+    member_set = (
+        {_norm_bag(b) for b in member_ids if _norm_bag(b)}
+        if member_ids is not None
+        else None
+    )
+    out = dict(entry_by_bag)
+    for bid, comp in completion_by_bag.items():
+        bid = _norm_bag(bid)
+        if not bid:
+            continue
+        if member_set is not None and bid not in member_set:
+            continue
+        entry_at = comp.get("entry_at")
+        if entry_at is None:
+            continue
+        ed = _scan_et_date(entry_at)
+        if ed != selected_date_et:
+            continue
+        prev = dict(out.get(bid) or {})
+        prev.update(
+            {
+                "entry_date": ed,
+                "entry_at": entry_at,
+                "entry_source": prev.get("entry_source") or ENTRY_SOURCE_DIRTY,
+                "entry_rack": comp.get("entry_rack") or prev.get("entry_rack"),
+                "cycle_anchored_entry": True,
+            }
+        )
+        out[bid] = prev
+    return out
+
+
+# NOTE: legacy helpers below retained for tests; day status uses load_canonical_completions_v2.
 
 def load_first_completion_scans(
     cursor, organization_id: int
@@ -644,7 +851,8 @@ def classify_veewash_workload(
     Classify the At-Vendor population for one ET day. Pure — no DB.
 
     Presence must already exclude RFV. Entry must already be service-specific.
-    Completion must already come from evaluate_bag_completion_v2 (or a test double).
+    Completion must already come from load_canonical_completions_v2 / cycle boundary
+    (or a test double).
     """
     D = selected_date_et
     prev_day = D - timedelta(days=1)
@@ -933,7 +1141,20 @@ def build_veewash_daily_workload(
         presence, dirty_by_bag=dirty, wia_by_bag=wia
     )
 
-    completion = load_canonical_completions_v2(cursor, organization_id, presence.keys())
+    completion = load_canonical_completions_v2(
+        cursor,
+        organization_id,
+        presence.keys(),
+        selected_date_et=selected_date_et,
+        service_type_by_bag={
+            _norm_bag(bid): str((pres or {}).get("service_type") or "WF")
+            for bid, pres in presence.items()
+        },
+        entry_racks=racks,
+    )
+    entry = _apply_cycle_entry_overlay(
+        entry, completion, selected_date_et=selected_date_et
+    )
 
     candidate_absent = [
         bid
@@ -1042,6 +1263,7 @@ def build_veewash_daily_workload_from_membership(
     *,
     selected_date_et: date,
     entry_racks: Iterable[str] | None = None,
+    frozen_member_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """
     Step-1 daily workload using append-only same-day scrape membership.
@@ -1049,6 +1271,11 @@ def build_veewash_daily_workload_from_membership(
     Membership (baseline + later additions) defines which bags are in the day.
     Classification / review still run on those bags; disappearing from later
     scrapes does not remove membership.
+
+    Completion / current-cycle entry come from shared ``rinse_cycle_boundary``.
+
+    ``frozen_member_ids``: optional pin to an existing day-bag ID set (e.g. controlled
+    validation / heal). Does not change fresh-start or carryover admission policy.
     """
     from backend.rinse_cleaner_ticket_presence import load_presence_run_snapshot_by_bag
     from backend.rinse_veewash_day_membership import (
@@ -1063,6 +1290,15 @@ def build_veewash_daily_workload_from_membership(
     # EDD gate intentionally bypassed — future-EDD HD that appears today stays.
     # Prior-completed HD exclusion runs in finalize_hd_step1_summary.
     member_ids = membership_bag_ids(membership)
+    if frozen_member_ids is not None:
+        freeze = sorted({_norm_bag(b) for b in frozen_member_ids if _norm_bag(b)})
+        member_ids = freeze
+        mem_rows = dict(membership.get("membership") or {})
+        membership = dict(membership)
+        membership["membership"] = {
+            bid: mem_rows.get(bid) or {"bag_id": bid} for bid in freeze
+        }
+        membership["frozen_member_ids"] = list(freeze)
     member_set = set(member_ids)
 
     racks = list(entry_racks) if entry_racks else None
@@ -1191,7 +1427,23 @@ def build_veewash_daily_workload_from_membership(
             }
 
     completion_ids = sorted(member_set | set(presence.keys()))
-    completion = load_canonical_completions_v2(cursor, organization_id, completion_ids)
+    completion = load_canonical_completions_v2(
+        cursor,
+        organization_id,
+        completion_ids,
+        selected_date_et=selected_date_et,
+        service_type_by_bag={
+            _norm_bag(bid): str((pres or {}).get("service_type") or "WF")
+            for bid, pres in presence.items()
+        },
+        entry_racks=racks,
+    )
+    entry = _apply_cycle_entry_overlay(
+        entry,
+        completion,
+        selected_date_et=selected_date_et,
+        member_ids=member_ids,
+    )
     candidate_absent = [
         bid
         for bid, p in presence.items()

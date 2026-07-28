@@ -185,6 +185,11 @@ def test_persist_day_snapshot_sql_preserves_manager_edit_version():
     compact = bag_sqls[0].replace(" ", "").replace("\n", "")
     assert "manager_edit_version=manager_edit_version" in compact
     assert "updated_at=updated_at" in compact
+    assert "IF(manager_edit_version>0,effective_status,VALUES(effective_status))" in compact
+    assert (
+        "IF(manager_edit_version>0,canonical_completion_timestamp,"
+        "VALUES(canonical_completion_timestamp))" in compact
+    )
 
 
 def test_legacy_updated_at_ignores_microseconds_and_offset():

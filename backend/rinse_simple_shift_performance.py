@@ -15,6 +15,7 @@ from backend.rinse_bag_activity_rules import (
     ROLE_WEIGHING,
     ROLE_WORKITEMS,
     BagActivityCredit,
+    BagCompletionResult,
     credit_in_et_period,
     evaluate_bag_completion_v2,
     evaluate_weight_difference,
@@ -141,6 +142,101 @@ def _qualifies_yet_to_fold(
     if has_start_cleaning and status not in LIFECYCLE_COMPLETED_STATUSES:
         return True
     return False
+
+
+def _wf_day_operational_completion(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    selected_date_et: date,
+    entry_racks: Sequence[str] | None = None,
+) -> BagCompletionResult:
+    """Current-day WF operational status via shared ``rinse_cycle_boundary``.
+
+    Used by Simple Shift Performance / Facility Workload completed·pending so
+    those surfaces reconcile with Step-1 / At Vendor WF. Requires completion on
+    the selected ET day (same filter as Step-1 ``_cycle_result_to_completion_dict``).
+
+    Does **not** replace ``extract_bag_activity_credits`` / folding attribution
+    (still legacy v2). HD callers must not use this helper. Manager overrides
+    are applied by callers that pass ``load_canonical_completions_v2`` results
+    through ``_bag_completion_result_from_canonical``.
+    """
+    from backend.rinse_cycle_boundary import resolve_current_cycle
+    from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
+    from backend.rinse_veewash_workload import _scan_et_date
+
+    cycle = resolve_current_cycle(
+        timeline,
+        selected_date_et=selected_date_et,
+        entry_racks=list(entry_racks) if entry_racks is not None else list(DEFAULT_FACILITY_ENTRY_RACKS),
+    )
+    completed = (
+        cycle.effective_status == "completed"
+        and cycle.completion_at is not None
+        and _scan_et_date(cycle.completion_at) == selected_date_et
+    )
+    return BagCompletionResult(
+        completed=completed,
+        via_clean_rack=False,
+        completion_at=cycle.completion_at if completed else None,
+        completion_user=cycle.completed_by if completed else None,
+        completion_kind=cycle.completion_source if completed else None,
+        exception_code=None,
+        needs_review=False,
+    )
+
+
+def _bag_completion_result_from_canonical(
+    canon: Mapping[str, Any] | None,
+) -> BagCompletionResult:
+    """Convert ``load_canonical_completions_v2`` day row → BagCompletionResult."""
+    if not canon or not canon.get("completion_at"):
+        return BagCompletionResult(
+            completed=False,
+            via_clean_rack=False,
+            completion_at=None,
+            completion_user=None,
+            completion_kind=None,
+            exception_code=None,
+            needs_review=False,
+        )
+    comp_at = canon.get("completion_at")
+    if isinstance(comp_at, str):
+        try:
+            comp_at = datetime.fromisoformat(comp_at.replace("Z", "+00:00").split("+")[0])
+        except ValueError:
+            comp_at = None
+    source = str(canon.get("completion_source") or canon.get("completion_kind") or "") or None
+    return BagCompletionResult(
+        completed=True,
+        via_clean_rack=bool(canon.get("via_clean_rack")),
+        completion_at=comp_at if isinstance(comp_at, datetime) else None,
+        completion_user=(str(canon.get("completed_by") or "").strip() or None),
+        completion_kind=source,
+        exception_code=None,
+        needs_review=False,
+    )
+
+
+def _operational_completion_for_bag(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    service_type: str | None,
+    selected_date_et: date,
+    entry_racks: Sequence[str] | None = None,
+    canonical: Mapping[str, Any] | None = None,
+) -> BagCompletionResult:
+    """Route current-day WF status through cycle/canonical; leave HD on legacy v2."""
+    svc = str(service_type or "").strip().upper()
+    if svc == "WF":
+        if canonical is not None:
+            return _bag_completion_result_from_canonical(canonical)
+        return _wf_day_operational_completion(
+            timeline,
+            selected_date_et=selected_date_et,
+            entry_racks=entry_racks,
+        )
+    return evaluate_bag_completion_v2(timeline)
 
 
 def _inc_split(counts: dict[str, int], bucket: str | None) -> None:
@@ -1255,6 +1351,9 @@ def _record_from_bag(
     customer = merged.get("name_clean") or merged.get("customer")
     bucket = _bucket_for_row(merged)
     completion = completion if completion is not None else evaluate_bag_completion_v2(events)
+    # Note: callers of the full SSP builder always pass a precomputed completion
+    # (WF via rinse_cycle_boundary). The v2 fallback above remains for HD and any
+    # direct _record_from_bag use without a day-scoped completion object.
     credits = extract_bag_activity_credits(
         bid, events, customer=customer, default_lbs=_safe_float(merged.get("weight_num"))
     )
@@ -3517,6 +3616,26 @@ def build_simple_shift_performance_payload(
     completed_excluded: list[str] = []
     sent_excluded: list[str] = []
 
+    # Batch current-day WF operational completions (cycle + manager) so SSP /
+    # Facility Workload completed·pending match Step-1. HD stays on legacy v2.
+    from backend.rinse_veewash_workload import load_canonical_completions_v2
+
+    wf_service_by_bag: dict[str, str] = {}
+    for bid in all_bag_ids:
+        meta0 = meta_by_bag.get(bid) or {"bag_id": bid}
+        pending0 = pending_by_bag.get(bid)
+        merged0 = {**meta0, **{k: v for k, v in (pending0 or {}).items() if v is not None}}
+        if (_normalized_service_type(merged0) or "") == "WF":
+            wf_service_by_bag[bid] = "WF"
+    canonical_wf = load_canonical_completions_v2(
+        cursor,
+        org,
+        list(wf_service_by_bag.keys()),
+        selected_date_et=target_date,
+        service_type_by_bag=wf_service_by_bag,
+        entry_racks=entry_racks,
+    ) if wf_service_by_bag else {}
+
     for bid in all_bag_ids:
         meta = meta_by_bag.get(bid) or {"bag_id": bid}
         pending_row = pending_by_bag.get(bid)
@@ -3529,7 +3648,14 @@ def build_simple_shift_performance_payload(
         in_incoming = bid in incoming_rows
         in_staging = bid in active_candidates
         in_facility_tracker = bid in facility_entry_ids
-        completion = evaluate_bag_completion_v2(completion_events)
+        svc_norm = _normalized_service_type(meta)
+        # Current-day WF operational status → canonical loader (cycle + manager +
+        # same-day). Matches Step-1. HD stays on evaluate_bag_completion_v2.
+        # Activity credits below still use extract_bag_activity_credits (legacy).
+        if svc_norm == "WF":
+            completion = _bag_completion_result_from_canonical(canonical_wf.get(bid))
+        else:
+            completion = evaluate_bag_completion_v2(completion_events)
         completions_by_bag[bid] = completion
         in_pipeline = bag_is_pipeline_eligible(pending_row, completion, meta, completion_events)
         if in_pipeline:

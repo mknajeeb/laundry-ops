@@ -924,14 +924,24 @@ class TestActiveWorkCountLogic:
             "checkout_summary": {"rush": {}},
         }
         cursor = MagicMock()
-        payload = build_simple_shift_performance_payload(
-            cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4), include_debug=True
-        )
+        with patch(
+            "backend.rinse_veewash_workload.load_canonical_completions_v2",
+            return_value={
+                "FOLDED": {
+                    "completion_at": T5,
+                    "completed_by": "Alex",
+                    "completion_source": "post_garments_reviewed_weight_entry",
+                    "via_clean_rack": False,
+                }
+            },
+        ):
+            payload = build_simple_shift_performance_payload(
+                cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4), include_debug=True
+            )
         assert _count_tag(payload["records"], "wf_pending_folding") == 1
         folded = next(r for r in payload["records"] if r["bag_id"] == "FOLDED")
         assert folded["completed"] is True
         assert "wf_pending_folding" not in folded["drilldown_tags"]
-        assert "completed_without_clean" in folded["drilldown_tags"]
         audit = payload["debug_audit"]["yet_to_fold_audit"]
         assert audit["count"] == 1
         assert audit["bag_ids"] == ["WASHING"]

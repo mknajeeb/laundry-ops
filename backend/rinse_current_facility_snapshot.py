@@ -682,6 +682,11 @@ def bag_is_operationally_complete(
         return True
     if wf_lifecycle_or_meta_indicates_complete(pending_row, meta, record=record):
         return True
+    # When a current-day operational completion object is present (SSP / Facility
+    # Workload now pass cycle-boundary results for WF), do not re-derive via
+    # lifetime Clean / strong-evidence — that disagrees with Step-1 for resends.
+    if completion is not None:
+        return False
     if wf_scan_events_indicate_complete(timeline):
         return True
     return False

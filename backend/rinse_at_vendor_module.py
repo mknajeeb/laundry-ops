@@ -2176,20 +2176,42 @@ def _wf_completion_signal(
     anchor_ts: datetime,
     as_of_end: datetime,
 ) -> tuple[str | None, datetime | None, dict[str, Any] | None]:
-    from backend.rinse_wf_weight_events import (
-        derive_wf_clean_weight_fields,
-        wf_post_processing_weight_completion,
-    )
+    """WF completion via shared ``rinse_cycle_boundary`` (not a separate rule).
 
+    Display weight fields still use derive_wf_clean_weight_fields for At Vendor
+    UI; the completion decision itself is garments-reviewed → earliest later
+    weight-entry after the current sent-to-vendor anchor.
+    """
+    from backend.rinse_cycle_boundary import (
+        COMPLETION_SOURCE_POST_REVIEW_WEIGHT,
+        resolve_current_cycle,
+    )
+    from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
+    from backend.rinse_wf_weight_events import derive_wf_clean_weight_fields
+
+    selected_date_et = as_of_end.date() if isinstance(as_of_end, datetime) else as_of_end
+    cycle = resolve_current_cycle(
+        timeline,
+        selected_date_et=selected_date_et,
+        entry_racks=list(DEFAULT_FACILITY_ENTRY_RACKS),
+        as_of_end=as_of_end,
+        cycle_anchor_override=anchor_ts,
+    )
+    anchor_for_fields = cycle.cycle_anchor_at or anchor_ts
     weight_fields = derive_wf_clean_weight_fields(
-        timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
+        timeline, anchor_ts=anchor_for_fields, as_of_end=as_of_end
     )
     display_fields = _wf_weight_fields_from_clean_weights(weight_fields)
-    weight_hit = wf_post_processing_weight_completion(
-        timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
-    )
-    if weight_hit is not None:
-        return weight_hit.signal, weight_hit.completion_ts, display_fields
+    if (
+        cycle.effective_status == "completed"
+        and cycle.completion_at is not None
+        and cycle.completion_at <= as_of_end
+    ):
+        return (
+            cycle.completion_source or COMPLETION_SOURCE_POST_REVIEW_WEIGHT,
+            cycle.completion_at,
+            display_fields,
+        )
     return None, None, display_fields
 
 
@@ -2325,6 +2347,50 @@ def _load_completed_before_day_start_still_present(
     return rows, ids
 
 
+def _evaluate_bag_as_of(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    service_type: str,
+    as_of_end: datetime,
+    anchor_ts_override: datetime | None = None,
+) -> tuple[str, str | None, datetime | None, datetime | None, dict[str, Any] | None]:
+    timeline = gaming_events_from_records(events)
+    selected_date_et = as_of_end.date() if isinstance(as_of_end, datetime) else as_of_end
+
+    anchor_ts = anchor_ts_override
+    if anchor_ts is None:
+        from backend.rinse_cycle_boundary import resolve_cycle_anchor
+
+        anchor_ts = resolve_cycle_anchor(timeline, selected_date_et=selected_date_et)
+    if anchor_ts is None:
+        for ev in timeline:
+            if is_sent_to_vendor_purpose(ev.get("purpose")):
+                ts = event_ts(ev)
+                if ts_valid(ts):
+                    anchor_ts = ts
+                    break
+    if anchor_ts is None or not ts_valid(anchor_ts):
+        return AV_STATUS_PENDING, None, None, None, None
+
+    svc = service_type if service_type in ("WF", "HD") else AV_UNKNOWN
+    wf_weight_fields: dict[str, Any] | None = None
+    if svc == "HD":
+        signal, comp_ts = _hd_completion_signal(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
+    else:
+        signal, comp_ts, wf_weight_fields = _wf_completion_signal(
+            timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
+        )
+        from backend.rinse_cycle_boundary import resolve_cycle_anchor
+
+        shared_anchor = resolve_cycle_anchor(timeline, selected_date_et=selected_date_et)
+        if shared_anchor is not None:
+            anchor_ts = shared_anchor
+
+    if comp_ts is not None:
+        return AV_STATUS_COMPLETED, signal, comp_ts, anchor_ts, wf_weight_fields
+    return AV_STATUS_PENDING, None, None, anchor_ts, wf_weight_fields
+
+
 def _hd_completion_signal(
     timeline: Sequence[Mapping[str, Any]],
     *,
@@ -2442,43 +2508,6 @@ def resolve_immutable_et_day_completion(
         if best is None or comp_ts > best[0]:
             best = (comp_ts, signal or WF_POST_PROCESSING_WEIGHT_SIGNAL, wf_weight_fields, anchor_ts)
     return best
-
-
-def _evaluate_bag_as_of(
-    events: Sequence[Mapping[str, Any]],
-    *,
-    service_type: str,
-    as_of_end: datetime,
-    anchor_ts_override: datetime | None = None,
-) -> tuple[str, str | None, datetime | None, datetime | None, dict[str, Any] | None]:
-    timeline = gaming_events_from_records(events)
-    anchor_ts = anchor_ts_override
-    anchor_ev = None
-    if anchor_ts is None:
-        anchor_ts, anchor_ev = lifecycle_anchor(timeline)
-    if anchor_ts is None:
-        for ev in timeline:
-            if is_sent_to_vendor_purpose(ev.get("purpose")):
-                ts = event_ts(ev)
-                if ts_valid(ts):
-                    anchor_ts = ts
-                    anchor_ev = ev
-                    break
-    if anchor_ts is None or not ts_valid(anchor_ts):
-        return AV_STATUS_PENDING, None, None, None, None
-
-    svc = service_type if service_type in ("WF", "HD") else AV_UNKNOWN
-    wf_weight_fields: dict[str, Any] | None = None
-    if svc == "HD":
-        signal, comp_ts = _hd_completion_signal(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
-    else:
-        signal, comp_ts, wf_weight_fields = _wf_completion_signal(
-            timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
-        )
-
-    if comp_ts is not None:
-        return AV_STATUS_COMPLETED, signal, comp_ts, anchor_ts, wf_weight_fields
-    return AV_STATUS_PENDING, None, None, anchor_ts, wf_weight_fields
 
 
 def _load_sent_to_vendor_bag_ids(cursor, organization_id: int, *, through_date: date) -> set[str]:
@@ -3636,6 +3665,65 @@ def build_at_vendor_module(
             and MOD_AT_VENDOR_CHANGED_RUSH not in row.get("module_tags", [])
         ):
             pending_for_prior_edd.append(bid)
+    # Align selected-day WF completed/pending with Step-1 canonical
+    # (cycle + manager + same-day). Do not change HD or attribution.
+    if hasattr(cursor, "execute") and rows:
+        try:
+            from backend.rinse_veewash_workload import load_canonical_completions_v2
+
+            wf_ids = sorted(
+                {
+                    str(r.get("bag_id") or "").strip().upper()
+                    for r in rows
+                    if str(r.get("service_type") or "").strip().upper() == "WF"
+                    and r.get("bag_id")
+                }
+            )
+            if wf_ids:
+                canonical_wf = load_canonical_completions_v2(
+                    cursor,
+                    org,
+                    wf_ids,
+                    selected_date_et=selected_date_et,
+                    service_type_by_bag={bid: "WF" for bid in wf_ids},
+                )
+                for row in rows:
+                    bid = str(row.get("bag_id") or "").strip().upper()
+                    if str(row.get("service_type") or "").strip().upper() != "WF":
+                        continue
+                    canon = canonical_wf.get(bid)
+                    if not canon or not canon.get("completion_at"):
+                        continue
+                    if row.get("at_vendor_status") == AV_STATUS_COMPLETED:
+                        continue
+                    comp_ts = canon.get("completion_at")
+                    row["at_vendor_status"] = AV_STATUS_COMPLETED
+                    row["completion_signal"] = str(
+                        canon.get("completion_source") or canon.get("completion_kind") or ""
+                    ) or row.get("completion_signal")
+                    row["completion_timestamp"] = (
+                        comp_ts.isoformat() if hasattr(comp_ts, "isoformat") else str(comp_ts)
+                    )
+                    row["completed_during_et_day"] = True
+                    row["daily_classification"] = DAILY_CLASS_COMPLETED_DURING_SELECTED_DAY
+                    tags = [
+                        t
+                        for t in (row.get("module_tags") or [])
+                        if t not in (MOD_AT_VENDOR_PENDING,)
+                    ]
+                    if MOD_AT_VENDOR_COMPLETED not in tags:
+                        tags.append(MOD_AT_VENDOR_COMPLETED)
+                    row["module_tags"] = tags
+                    row["drilldown_tags"] = list(tags)
+                pending_for_prior_edd = [
+                    str(r.get("bag_id") or "").strip().upper()
+                    for r in rows
+                    if r.get("at_vendor_status") == AV_STATUS_PENDING
+                    and MOD_AT_VENDOR_CHANGED_RUSH not in (r.get("module_tags") or [])
+                    and r.get("bag_id")
+                ]
+        except Exception:
+            pass
     step_ms["rows_ms"] = round((time.perf_counter() - t_rows) * 1000, 1)
 
     still_present_rows: list[dict[str, Any]] = []

@@ -129,31 +129,34 @@ class TestWFCompletion:
         assert signal is None
 
     def test_processing_then_final_weight_completes(self):
+        """Completion requires garments-reviewed then post-review weight (shared cycle rule)."""
         events = [
             _ev("sent-to-vendor", T0),
             _ev("weight-entry", T1),
             _ev("add-photos", T2),
+            _ev("garments-reviewed", T2),
             _ev("weight-entry", T3),
         ]
         status, signal, comp_ts, _, fields = _evaluate_bag_as_of(
             events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED)
         )
         assert status == AV_STATUS_COMPLETED
-        assert signal == "post_processing_weight"
+        assert signal == "post_garments_reviewed_weight_entry"
         assert comp_ts == T3
         assert fields.get("post_clean_weight_time") is not None
 
     def test_same_minute_final_weight_with_pre_clean_completes(self):
-        """Regression: BARS9TT3I6 — post-clean weigh tied to latest processing minute."""
+        """Post-review weight completes even when tied to other same-minute portal events."""
         selected = date(2026, 6, 18)
         tie = datetime(2026, 6, 18, 13, 59)
         pre = datetime(2026, 6, 18, 10, 51)
+        review = datetime(2026, 6, 18, 13, 45)
         anchor = datetime(2026, 6, 18, 4, 33)
         events = [
             _ev("sent-to-vendor", anchor),
             _ev("weight-entry", pre),
             _ev("add-photos", datetime(2026, 6, 18, 11, 23)),
-            _ev("complete-cleaning", datetime(2026, 6, 18, 13, 45)),
+            _ev("garments-reviewed", review),
             _ev("add-photos", tie),
             _ev("weight-entry", tie),
             _ev("processed-by-vendor", tie),
@@ -165,7 +168,7 @@ class TestWFCompletion:
             anchor_ts_override=anchor,
         )
         assert status == AV_STATUS_COMPLETED
-        assert signal == "post_processing_weight"
+        assert signal == "post_garments_reviewed_weight_entry"
         assert comp_ts == tie
         assert fields.get("post_clean_weight_time") is not None
 
@@ -319,14 +322,14 @@ class TestRepeatedEventCompletion:
         events = [
             _ev("sent-to-vendor", T0),
             _ev("weight-entry", T1),
-            _ev("add-photos", T2),
+            _ev("garments-reviewed", T2),
             _ev("weight-entry", T3),
         ]
         status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
             events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED)
         )
         assert status == AV_STATUS_COMPLETED
-        assert signal == "post_processing_weight"
+        assert signal == "post_garments_reviewed_weight_entry"
         assert comp_ts == T3
 
     def test_wf_pre_anchor_weight_plus_one_after_pending(self):
@@ -501,7 +504,7 @@ class TestChangedToRush:
         events = [
             _ev("sent-to-vendor", datetime(2026, 6, 11, 4, 0)),
             _ev("weight-entry", datetime(2026, 6, 11, 5, 0)),
-            _ev("add-photos", datetime(2026, 6, 11, 5, 30)),
+            _ev("garments-reviewed", datetime(2026, 6, 11, 5, 30)),
             _ev("weight-entry", datetime(2026, 6, 11, 6, 0)),
         ]
         row = _build_row(
@@ -628,6 +631,7 @@ class TestSelectedDayPopulation:
         events = [
             _ev("sent-to-vendor", datetime(2026, 6, 8, 4, 0)),
             _ev("weight-entry", datetime(2026, 6, 8, 5, 0)),
+            _ev("garments-reviewed", datetime(2026, 6, 8, 5, 30)),
             _ev("weight-entry", datetime(2026, 6, 8, 6, 0)),
         ]
         prior_end = naive_et_day_end_inclusive(date(2026, 6, 9))
@@ -1444,7 +1448,7 @@ class TestCrossDayCompletionAttribution:
         events = [
             _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
             _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
-            _ev("add-photos", datetime(2026, 6, 12, 20, 30)),
+            _ev("garments-reviewed", datetime(2026, 6, 12, 20, 30)),
             _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
         ]
         daily_class, signal, comp_ts, _ = _classify_baseline_seed_bag(
@@ -1453,7 +1457,7 @@ class TestCrossDayCompletionAttribution:
             selected_date_et=date(2026, 6, 13),
         )
         assert daily_class == DAILY_CLASS_COMPLETED_BEFORE_DAY_START
-        assert signal == "post_processing_weight"
+        assert signal == "post_garments_reviewed_weight_entry"
         assert comp_ts == datetime(2026, 6, 12, 21, 0)
 
     def test_baseline_seed_resend_today_opens_new_cycle(self):
@@ -1534,7 +1538,7 @@ class TestCrossDayCompletionAttribution:
         events = [
             _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
             _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
-            _ev("add-photos", datetime(2026, 6, 12, 20, 30)),
+            _ev("garments-reviewed", datetime(2026, 6, 12, 20, 30)),
             _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
         ]
         june12_row = _build_row(
@@ -1568,7 +1572,7 @@ class TestCrossDayCompletionAttribution:
         events = [
             _ev("sent-to-vendor", datetime(2026, 7, 5, 5, 0)),
             _ev("weight-entry", datetime(2026, 7, 5, 6, 0)),
-            _ev("add-photos", datetime(2026, 7, 5, 8, 0)),
+            _ev("garments-reviewed", datetime(2026, 7, 5, 8, 0)),
             _ev("weight-entry", datetime(2026, 7, 5, 9, 0), user_name="Jennifer"),
             _ev("received-from-vendor", datetime(2026, 7, 5, 11, 0)),
             _ev("sent-to-vendor", datetime(2026, 7, 5, 14, 0)),
@@ -1624,7 +1628,7 @@ class TestCrossDayCompletionAttribution:
         done_events = [
             _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
             _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
-            _ev("add-photos", datetime(2026, 6, 12, 20, 30)),
+            _ev("garments-reviewed", datetime(2026, 6, 12, 20, 30)),
             _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
         ]
         new_events = [_ev("sent-to-vendor", datetime(2026, 6, 13, 10, 0))]
@@ -1685,7 +1689,7 @@ class TestCrossDayCompletionAttribution:
             _ev("weight-entry", datetime(2026, 6, 19, 11, 0)),
             _ev("sent-to-vendor", datetime(2026, 6, 25, 5, 11)),
             _ev("weight-entry", datetime(2026, 6, 25, 7, 37)),
-            _ev("add-photos", datetime(2026, 6, 25, 15, 36)),
+            _ev("garments-reviewed", datetime(2026, 6, 25, 15, 36)),
             _ev("weight-entry", datetime(2026, 6, 25, 15, 37)),
         ]
         resend_ts = _latest_sent_to_vendor_ts(
@@ -2063,7 +2067,7 @@ class TestDaysLoadInvariant:
                 "SEEDDONE": [
                     _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
                     _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
-                    _ev("add-photos", datetime(2026, 6, 12, 20, 30)),
+                    _ev("garments-reviewed", datetime(2026, 6, 12, 20, 30)),
                     _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
                 ],
                 "NEW1": [_ev("sent-to-vendor", datetime(2026, 6, 13, 10, 0))],
@@ -2105,7 +2109,7 @@ class TestDaysLoadInvariant:
             _ev("weight-entry", datetime(2026, 6, 19, 11, 0)),
             _ev("sent-to-vendor", datetime(2026, 6, 25, 5, 11)),
             _ev("weight-entry", datetime(2026, 6, 25, 7, 37)),
-            _ev("add-photos", datetime(2026, 6, 25, 15, 36)),
+            _ev("garments-reviewed", datetime(2026, 6, 25, 15, 36)),
             _ev("weight-entry", datetime(2026, 6, 25, 15, 37)),
         ]
         row = _build_row(

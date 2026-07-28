@@ -1,0 +1,41 @@
+---
+description: Shift Monitor current-cycle boundary invariant (non-negotiable)
+globs: backend/rinse_cycle_boundary.py,backend/rinse_veewash_workload.py,backend/rinse_veewash_shift_day.py,backend/rinse_bag_activity_rules.py,backend/rinse_at_vendor_module.py,backend/rinse_wf_weight_events.py,backend/tests/test_shift_monitor_cycle_boundary_invariant.py,backend/tests/test_cycle_anchored_completion.py,backend/tests/fixtures/shift_monitor_cycle_boundary_jul27_patterns.json
+alwaysApply: false
+---
+
+# Shift Monitor current-cycle boundary (non-negotiable)
+
+## Invariant
+
+A scan from a previous `sent-to-vendor` cycle can **never** determine the current cycle’s entry, completion, or status.
+
+The correction must be **architectural**, not a five-order / ID-specific patch. Do not hard-code July 27 (or any) order IDs into production resolvers. Jul 27 patterns belong only in fixtures/tests.
+
+## Rules
+
+For every bag and selected ET day:
+
+1. `cycle_anchor` = latest valid `purpose='sent-to-vendor'` on or before the selected day cutoff.
+2. Ignore every Rinse scan **at or before** that anchor when resolving current-cycle entry and completion.
+3. **Entry** = first post-anchor `purpose='move-bag'` whose rack is in **configured** entry racks (default: `VeeWash Dirty`, `Rinse Zipvan`).
+4. **Completion** = earliest valid `purpose='weight-entry'` after post-anchor `garments-reviewed`. Clean rack is **not** required. Duplicate post-review weights stay in raw history; complete once on the earliest.
+
+## Do not use
+
+- Lifetime first clean-rack
+- Lifetime first weight-entry
+- Old garments-reviewed / old completion timestamps
+- Ordinal weight-entry alone (2nd weight without post-review ordering)
+
+## Deploy gate
+
+Do **not** deploy until:
+
+1. This invariant is covered by `backend/tests/test_shift_monitor_cycle_boundary_invariant.py`
+2. Controlled five-order validation against the Jul 27 pattern fixture passes
+3. Manager-edited rows (`manager_edit_version` / correct_completion) remain protected
+
+Canonical implementation module: `backend/rinse_cycle_boundary.py`.
+
+Raw Rinse events remain append-only.
