@@ -200,6 +200,7 @@ export default function PayrollTimeRecordsPanel({
   const [calendarSettings, setCalendarSettings] = useState(null);
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
+  const [editorError, setEditorError] = useState("");
   const [loading, setLoading] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorMode, setEditorMode] = useState("add");
@@ -302,6 +303,7 @@ export default function PayrollTimeRecordsPanel({
     setEditorMode("add");
     setEditingId(null);
     setInitialRoleKey("");
+    setEditorError("");
     setForm(emptyForm());
     setEditorOpen(true);
   };
@@ -309,6 +311,7 @@ export default function PayrollTimeRecordsPanel({
   const openEdit = (row) => {
     setEditorMode("edit");
     setEditingId(row.id);
+    setEditorError("");
     const segs = Array.isArray(row.role_segments) ? row.role_segments : [];
     const lastSeg = segs.length ? segs[segs.length - 1] : null;
     const categoryId = lastSeg?.category_id != null ? String(lastSeg.category_id) : "";
@@ -327,23 +330,30 @@ export default function PayrollTimeRecordsPanel({
 
   const saveEditor = async () => {
     if (!form.user_id || !form.clock_in_at) {
-      setError("Worker and clock in are required.");
+      setEditorError("Worker and clock in are required.");
       return;
     }
     const clockOutApi = form.clock_out_at ? toApiDateTime(form.clock_out_at) : "";
     if (clockOutApi && form.clock_in_at && clockOutApi <= toApiDateTime(form.clock_in_at)) {
-      setError("Clock out must be after clock in.");
+      setEditorError("Clock out must be after clock in.");
       return;
     }
     const hasCategory = form.category_id !== "" && form.category_id != null;
     const hasRole = form.role_id !== "" && form.role_id != null;
     if (hasCategory !== hasRole) {
-      setError("Select both category and role to tag a role, or leave both blank.");
+      setEditorError("Select both category and role to tag a role, or leave both blank.");
+      return;
+    }
+    if ((hasCategory || hasRole) && !selectionTree.length) {
+      setEditorError(
+        "Category/role list failed to load. Refresh the page, or check that your account can view job tracking.",
+      );
       return;
     }
     const roleKey = `${form.category_id || ""}:${form.role_id || ""}`;
     const roleChanged = editorMode === "add" || roleKey !== initialRoleKey;
     setSaving(true);
+    setEditorError("");
     setError("");
     try {
       const remarks = (form.notes || "").trim() || "Payroll time record update";
@@ -367,15 +377,12 @@ export default function PayrollTimeRecordsPanel({
       setEditorOpen(false);
       await load();
     } catch (e) {
-      if (e.response?.data?.error) {
-        setError(e.response.data.error);
-      } else if (e.code === "ERR_NETWORK") {
-        setError(
-          "Save blocked by browser (API CORS). Hard-refresh after deploy, or contact support if this persists.",
-        );
-      } else {
-        setError(e.message || "Save failed");
-      }
+      const msg = e.response?.data?.error
+        ? e.response.data.error
+        : e.code === "ERR_NETWORK"
+          ? "Save blocked by browser (API CORS). Hard-refresh after deploy, or contact support if this persists."
+          : e.message || "Save failed";
+      setEditorError(msg);
     } finally {
       setSaving(false);
     }
@@ -780,10 +787,15 @@ export default function PayrollTimeRecordsPanel({
       </TableContainer>
       </Paper>
 
-      <Dialog open={editorOpen} onClose={() => setEditorOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog open={editorOpen} onClose={() => !saving && setEditorOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>{editorMode === "add" ? "Add time record" : "Edit time record"}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
+            {editorError ? (
+              <Alert severity="error" onClose={() => setEditorError("")}>
+                {editorError}
+              </Alert>
+            ) : null}
             <FormControl fullWidth size="small" disabled={editorMode === "edit"}>
               <InputLabel>Worker</InputLabel>
               <Select
@@ -819,6 +831,12 @@ export default function PayrollTimeRecordsPanel({
                     {cat.name || cat.category_name}
                   </MenuItem>
                 ))}
+                {form.category_id &&
+                !selectionTree.some((c) => String(c.id) === String(form.category_id)) ? (
+                  <MenuItem value={String(form.category_id)}>
+                    Current category (id {form.category_id})
+                  </MenuItem>
+                ) : null}
               </Select>
             </FormControl>
             <FormControl fullWidth size="small" disabled={!form.category_id}>
@@ -841,11 +859,21 @@ export default function PayrollTimeRecordsPanel({
                     {displayRoleLabel(role)}
                   </MenuItem>
                 ))}
+                {form.role_id &&
+                !(
+                  selectionTree
+                    .find((c) => String(c.id) === String(form.category_id))
+                    ?.roles || []
+                ).some((role) => String(role.role_id ?? role.id) === String(form.role_id)) ? (
+                  <MenuItem value={String(form.role_id)}>
+                    Current role (id {form.role_id})
+                  </MenuItem>
+                ) : null}
               </Select>
             </FormControl>
             <Typography variant="caption" color="text.secondary">
               Tag the category and role for this shift. Leave blank if unknown — you can set it later
-              while editing.
+              while editing. Works for open (still clocked-in) records too.
             </Typography>
             <PayrollDateTimeField
               label="Clock in"
