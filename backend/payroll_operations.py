@@ -530,6 +530,51 @@ def _parse_optional_id(val: Any) -> Optional[int]:
         raise ValueError("category_id and role_id must be integers") from None
 
 
+def _resync_role_segments_to_session_clock(
+    conn,
+    organization_id: int,
+    *,
+    session_id: int,
+    user_id: int,
+    started_at: datetime,
+    ended_at: Optional[datetime] = None,
+) -> bool:
+    """Re-span existing role segments to match the session clock window.
+
+    Payroll clock edits previously updated shift_sessions only, leaving open
+    segments with stale started_at (e.g. Jul 8 → now) that blew up productivity.
+    Manager correction: keep the latest category/role, replace spans with one
+    window matching clock in/out.
+    """
+    c = conn.cursor(dictionary=True)
+    if not table_exists(c, "shift_job_segments"):
+        return False
+    c.execute(
+        """
+        SELECT category_id, role_id
+        FROM shift_job_segments
+        WHERE shift_session_id=%s
+        ORDER BY started_at DESC, id DESC
+        LIMIT 1
+        """,
+        (int(session_id),),
+    )
+    last = c.fetchone()
+    if not last or last.get("category_id") is None or last.get("role_id") is None:
+        return False
+    _apply_time_record_role_tag(
+        conn,
+        int(organization_id),
+        session_id=int(session_id),
+        user_id=int(user_id),
+        category_id=int(last["category_id"]),
+        role_id=int(last["role_id"]),
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+    return True
+
+
 def _apply_time_record_role_tag(
     conn,
     organization_id: int,
@@ -828,6 +873,16 @@ def update_time_record(
             user_id=int(cur["user_id"]),
             category_id=cat_id,
             role_id=rol_id,
+            started_at=new_ci,
+            ended_at=new_co,
+        )
+    else:
+        # Clock-only edits must still realign role segments (prevents multi-day open spans).
+        _resync_role_segments_to_session_clock(
+            conn,
+            int(organization_id),
+            session_id=sid,
+            user_id=int(cur["user_id"]),
             started_at=new_ci,
             ended_at=new_co,
         )

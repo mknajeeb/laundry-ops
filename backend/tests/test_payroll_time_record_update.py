@@ -36,7 +36,9 @@ def test_update_clock_in_only_keeps_active_session(conn):
         "backend.payroll_operations.table_has_column", return_value=False
     ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
         "backend.payroll_operations.list_time_records"
-    ) as list_fn:
+    ) as list_fn, patch(
+        "backend.payroll_operations._resync_role_segments_to_session_clock", return_value=False
+    ) as sync:
         rec = update_time_record(
             connection,
             3,
@@ -47,6 +49,9 @@ def test_update_clock_in_only_keeps_active_session(conn):
     assert rec["id"] == 9
     assert rec["status"] == "open"
     list_fn.assert_not_called()
+    sync.assert_called_once()
+    assert sync.call_args.kwargs["started_at"] == datetime(2026, 6, 18, 10, 12)
+    assert sync.call_args.kwargs["ended_at"] is None
     sql = update_cur.execute.call_args[0][0]
     assert "clock_out_at=NULL" in sql
     assert "status=%s" in sql or "status='active'" in sql.lower() or "active" in str(
@@ -267,3 +272,64 @@ def test_update_role_only_when_session_row_unchanged(conn):
     tag.assert_called_once()
     assert tag.call_args.kwargs["session_id"] == 789
     assert tag.call_args.kwargs["role_id"] == 2
+
+
+def test_resync_role_segments_retag_last_assignment(conn):
+    schema_cur = MagicMock()
+    schema_cur.fetchone.return_value = {"category_id": 1, "role_id": 2}
+    conn.cursor.side_effect = [schema_cur]
+
+    with patch("backend.payroll_operations.table_exists", return_value=True), patch(
+        "backend.payroll_operations._apply_time_record_role_tag"
+    ) as tag:
+        from backend.payroll_operations import _resync_role_segments_to_session_clock
+
+        ok = _resync_role_segments_to_session_clock(
+            conn,
+            3,
+            session_id=792,
+            user_id=19,
+            started_at=datetime(2026, 7, 28, 8, 0),
+            ended_at=None,
+        )
+
+    assert ok is True
+    tag.assert_called_once()
+    kwargs = tag.call_args.kwargs
+    assert kwargs["session_id"] == 792
+    assert kwargs["category_id"] == 1
+    assert kwargs["role_id"] == 2
+    assert kwargs["started_at"] == datetime(2026, 7, 28, 8, 0)
+    assert kwargs["ended_at"] is None
+
+
+def test_update_without_role_fields_still_resyncs_segments(conn):
+    select_cur = MagicMock()
+    select_cur.fetchone.return_value = {
+        "user_id": 19,
+        "clock_in_at": datetime(2026, 7, 8, 8, 0),
+        "clock_out_at": None,
+    }
+    update_cur = MagicMock()
+    update_cur.rowcount = 1
+    conn.cursor.side_effect = [MagicMock(), select_cur, update_cur]
+
+    with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
+        "backend.payroll_operations.table_has_column", return_value=False
+    ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
+        "backend.payroll_operations._resync_role_segments_to_session_clock", return_value=True
+    ) as sync, patch(
+        "backend.payroll_operations._apply_time_record_role_tag"
+    ) as tag:
+        update_time_record(
+            conn,
+            3,
+            792,
+            clock_in_at="2026-07-28 08:00:00",
+            clock_out_at="",
+        )
+
+    tag.assert_not_called()
+    sync.assert_called_once()
+    assert sync.call_args.kwargs["started_at"] == datetime(2026, 7, 28, 8, 0)
+    assert sync.call_args.kwargs["ended_at"] is None

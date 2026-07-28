@@ -190,7 +190,7 @@ class TestNextSegmentStartEndsOpenRole:
 
 
 class TestNoCompletedBags:
-    def test_no_bag_idle_and_last_bag_fields_are_null(self):
+    def test_entire_segment_is_idle_and_active_rates_na(self):
         result = compute_folder_segment_dual_productivity(
             role_start=datetime(2026, 7, 10, 7, 0, 0),
             role_end=datetime(2026, 7, 10, 11, 0, 0),
@@ -199,16 +199,12 @@ class TestNoCompletedBags:
             folding_target_lbs_per_hour=TARGET,
         )
         assert result["completed_bags"] == 0
-        assert result["active_completion_hours"] is None
+        assert result["active_completion_hours"] == 0.0
         assert result["active_bags_per_hour"] is None
         assert result["active_lbs_per_hour"] is None
         assert result["active_productivity_pct"] is None
-        assert result["idle_time_hours"] is None
-        assert result["last_completed"] is None
+        assert result["idle_time_hours"] == 4.0
         assert result["role_hours"] == 4.0
-        # Full-role rates remain defined from role hours; last-bag rates stay N/A.
-        assert result["role_bags_per_hour"] == 0.0
-        assert result["role_lbs_per_hour"] == 0.0
 
 
 class TestPostCorrectionDoesNotChangePreRates:
@@ -419,3 +415,36 @@ class TestHdAndNonWfExcluded:
             effective_end=datetime(2026, 7, 10, 11, 0, 0),
         )
         assert [b["bag_id"] for b in eligible] == ["WF1"]
+
+
+class TestStaleSegmentClampedToSessionClockIn:
+    def test_open_segment_started_days_ago_uses_session_clock_in(self):
+        """Payroll clock-in edit must not leave multi-day role hours in Shift Monitor."""
+        today = eastern_today()
+        now = datetime(today.year, today.month, today.day, 13, 0, 0)
+        stale_start = datetime(today.year, today.month, today.day, 8, 0, 0) - timedelta(days=20)
+        session_in = datetime(today.year, today.month, today.day, 8, 0, 0)
+        segs = [
+            {
+                "id": 99,
+                "shift_session_id": 792,
+                "category_name_snapshot": "Rinse WF",
+                "role_name_snapshot": "Folder",
+                "category_code": "RINSE_WF",
+                "role_code": "FOLDER",
+                "started_at": stale_start,
+                "ended_at": None,
+            }
+        ]
+        dual = compute_employee_folder_dual_productivity(
+            segments=segs,
+            bags=[],
+            selected_date_et=today,
+            folding_target_lbs_per_hour=TARGET,
+            now_et=now,
+            sessions_by_id={792: {"clock_in_at": session_in, "clock_out_at": None}},
+        )
+        assert dual is not None
+        # ~5h from 08:00–13:00, not ~485h from 20 days ago.
+        assert dual["role_hours"] is not None
+        assert 4.5 <= float(dual["role_hours"]) <= 5.5

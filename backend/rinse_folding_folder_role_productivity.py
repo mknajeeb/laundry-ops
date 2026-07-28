@@ -280,13 +280,11 @@ def compute_folder_segment_dual_productivity(
         last_ts = _bag_completion_ts(eligible[-1]) if eligible else None
 
         if bag_count == 0 or last_ts is None:
-            # No qualifying bag: last-bag elapsed/idle/rates are null — do not
-            # classify the entire role segment as idle without separate approval.
-            active_hours = None
+            active_hours = 0.0
             active_bags_hr = None
             active_lbs_hr = None
             active_pct = None
-            idle_hours = None
+            idle_hours = role_hours
             active_completion_end = None
         else:
             active_sec = max(0.0, (last_ts - role_start).total_seconds())
@@ -328,9 +326,7 @@ def compute_folder_segment_dual_productivity(
         "credited_weight_basis": "EVIDENCE_PRE",
         "active_completion_end": active_completion_end.isoformat() if active_completion_end else None,
         "role_hours": role_hours,
-        "active_completion_hours": (
-            None if role_end_missing else active_hours
-        ),
+        "active_completion_hours": active_hours if not role_end_missing else 0.0,
         "idle_time_hours": idle_hours,
         "role_bags_per_hour": role_bags_hr,
         "role_lbs_per_hour": role_lbs_hr,
@@ -366,18 +362,18 @@ def aggregate_folder_dual_productivity(
         sum(float(s.get("role_hours") or 0) for s in authoritative if s.get("role_hours") is not None),
         4,
     )
-    active_vals = [
-        float(s["active_completion_hours"])
-        for s in authoritative
-        if s.get("active_completion_hours") is not None
-    ]
-    total_active_hours = round(sum(active_vals), 4) if active_vals else 0.0
-    idle_vals = [
-        float(s["idle_time_hours"])
-        for s in authoritative
-        if s.get("idle_time_hours") is not None
-    ]
-    total_idle = round(sum(idle_vals), 4) if idle_vals else None
+    total_active_hours = round(
+        sum(float(s.get("active_completion_hours") or 0) for s in authoritative),
+        4,
+    )
+    total_idle = round(
+        sum(
+            float(s.get("idle_time_hours") or 0)
+            for s in authoritative
+            if s.get("idle_time_hours") is not None
+        ),
+        4,
+    )
     total_bags = sum(int(s.get("completed_bags") or 0) for s in authoritative)
     total_lbs = round(sum(float(s.get("credited_lbs") or 0) for s in authoritative), 2)
 
@@ -470,6 +466,36 @@ def _session_clock_out_for_segment(
     return _parse_dt(session.get("clock_out_at") or session.get("clock_out_time"))
 
 
+def _session_clock_in_for_segment(
+    seg: Mapping[str, Any],
+    sessions_by_id: Mapping[int, Mapping[str, Any]] | None,
+) -> datetime | None:
+    if not sessions_by_id:
+        return None
+    sid = seg.get("shift_session_id")
+    if sid is None:
+        return None
+    try:
+        session = sessions_by_id.get(int(sid))
+    except (TypeError, ValueError):
+        return None
+    if not session:
+        return None
+    return _parse_dt(session.get("clock_in_at") or session.get("clock_in_time"))
+
+
+def _clamp_role_start_to_session_clock(
+    role_start: datetime,
+    session_clock_in: datetime | None,
+) -> datetime:
+    """If payroll edited clock-in later than a stale segment start, prefer session clock-in."""
+    if session_clock_in is None:
+        return role_start
+    if session_clock_in > role_start:
+        return session_clock_in
+    return role_start
+
+
 def compute_employee_folder_dual_productivity(
     *,
     segments: Sequence[Mapping[str, Any]],
@@ -514,6 +540,8 @@ def compute_employee_folder_dual_productivity(
             continue
         end = _parse_dt(seg.get("ended_at") or seg.get("segment_end") or seg.get("end"))
         seg_id = seg.get("id") or seg.get("segment_id")
+        session_clock_in = _session_clock_in_for_segment(seg, sessions_by_id)
+        start = _clamp_role_start_to_session_clock(start, session_clock_in)
 
         next_start: datetime | None = None
         for other in timeline_sorted:
