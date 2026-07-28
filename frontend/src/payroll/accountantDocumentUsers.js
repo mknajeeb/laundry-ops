@@ -17,7 +17,7 @@ export const SYSTEM_USER_KNOWN_DISPLAY_NAMES = new Set([
 export const SYSTEM_USER_KNOWN_IDS = new Set([15]);
 
 const SYSTEM_ROLE_CODES = new Set(["ACCOUNTANT", "ADMIN", "PLATFORM_ADMIN", "SUPER_ADMIN"]);
-const PORTAL_SYSTEM_ONLY_ROLES = new Set(["RINSE"]);
+const PORTAL_SYSTEM_ONLY_ROLES = new Set(["RINSE", "SYSTEM"]);
 
 export function normalizeDocumentUserName(name) {
   return String(name || "")
@@ -57,10 +57,19 @@ export function isPortalSystemOnlyUser(user) {
   return roles.some((r) => PORTAL_SYSTEM_ONLY_ROLES.has(r));
 }
 
+function hasSystemEmploymentCategory(user) {
+  const assignments = user?.employment_assignments || [];
+  return assignments.some((a) => {
+    const code = String(a?.category_code || a?.code || "").toUpperCase().trim();
+    return code === "EC_SYSTEM";
+  });
+}
+
 /** Platform / accountant / partner portal login accounts — not W-2 payroll workers for document filing. */
 export function isAccountantSystemUser(user) {
   if (!user) return false;
   if (isPortalSystemOnlyUser(user)) return true;
+  if (hasSystemEmploymentCategory(user)) return true;
   if (matchesKnownSystemUser(user)) return true;
 
   const roles = userRoleCodes(user);

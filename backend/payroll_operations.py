@@ -21,12 +21,13 @@ from backend.payroll_identity import (
 from backend.ta_helpers import invalidate_schema_cache, json_safe, table_exists, table_has_column
 
 
-WORKER_CATEGORIES = ("w2", "contractor_1099", "temp")
+WORKER_CATEGORIES = ("w2", "contractor_1099", "temp", "system")
 
 CATEGORY_LABELS = {
     "w2": "W-2 Employee",
     "contractor_1099": "1099 Contractor",
     "temp": "Temp / One-Time",
+    "system": "System user (not on payroll)",
 }
 
 BATCH_STATUSES = (
@@ -41,6 +42,13 @@ BATCH_STATUSES = (
 
 
 def worker_category_for_user(conn, user_id: int) -> str:
+    try:
+        from backend.portal_system_users import is_portal_system_user
+
+        if is_portal_system_user(conn, int(user_id)):
+            return "system"
+    except Exception:
+        pass
     try:
         has_1099 = user_is_contractor(conn, user_id)
         has_temp = user_is_short_term_temp(conn, user_id)

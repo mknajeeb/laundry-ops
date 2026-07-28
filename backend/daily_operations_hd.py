@@ -247,7 +247,8 @@ def list_org_employee_options(cursor, organization_id: int) -> list[dict[str, An
         uid = int(row["id"])
         if is_portal_system_user is not None:
             try:
-                if is_portal_system_user(cursor, org, uid):
+                conn = getattr(cursor, "connection", None) or cursor
+                if is_portal_system_user(conn, uid):
                     continue
             except Exception:
                 pass

@@ -458,12 +458,20 @@ def list_schedule_workers_for_grid(conn, organization_id: int) -> list[dict[str,
         """,
         (oid,),
     )
+    from backend.portal_system_users import is_portal_system_user
+
     out: list[dict[str, Any]] = []
     for row in c.fetchall() or []:
         if not row or not int(row.get("user_id") or 0):
             continue
         if not int(row.get("active") or 0):
             continue
+        uid = int(row["user_id"])
+        try:
+            if is_portal_system_user(conn, uid):
+                continue
+        except Exception:
+            pass
         prof = dict(row)
         prof["worker_name"] = prof.get("display_name")
         out.append(json_safe(prof))
@@ -507,6 +515,10 @@ def ensure_worker_profile(
     c = _cursor(conn)
     oid = int(organization_id)
     uid = int(user_id)
+    from backend.portal_system_users import is_portal_system_user
+
+    if is_portal_system_user(conn, uid):
+        raise ValueError("System users (not on payroll) cannot be added to the schedule")
     c.execute(
         "SELECT * FROM payroll_worker_profiles WHERE organization_id=%s AND user_id=%s",
         (oid, uid),
@@ -575,9 +587,12 @@ def ensure_worker_profile(
     row["display_name"] = _worker_display_name(c, uid)
     row["worker_profile_id"] = row.get("id")
     row["worker_name"] = row["display_name"]
-    row["worker_category_label"] = {"w2": "W-2", "contractor_1099": "1099", "temp": "Temp"}.get(
-        str(row.get("worker_category")), str(row.get("worker_category"))
-    )
+    row["worker_category_label"] = {
+        "w2": "W-2",
+        "contractor_1099": "1099",
+        "temp": "Temp",
+        "system": "System",
+    }.get(str(row.get("worker_category")), str(row.get("worker_category")))
     return json_safe(row)
 
 
@@ -1168,9 +1183,12 @@ def _enrich_entry(conn, organization_id: int, row: dict) -> dict[str, Any]:
     prof = c.fetchone() or {}
     out["user_id"] = prof.get("user_id")
     out["worker_category"] = prof.get("worker_category")
-    out["worker_category_label"] = {"w2": "W-2", "contractor_1099": "1099", "temp": "Temp"}.get(
-        str(prof.get("worker_category")), str(prof.get("worker_category"))
-    )
+    out["worker_category_label"] = {
+        "w2": "W-2",
+        "contractor_1099": "1099",
+        "temp": "Temp",
+        "system": "System",
+    }.get(str(prof.get("worker_category")), str(prof.get("worker_category")))
     out["worker_name"] = _worker_display_name(c, int(prof.get("user_id") or 0))
     out["start_time"] = _time_to_str(_parse_time(out.get("start_time")))
     out["end_time"] = _time_to_str(_parse_time(out.get("end_time")))

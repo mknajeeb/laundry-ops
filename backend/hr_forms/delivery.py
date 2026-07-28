@@ -39,12 +39,16 @@ def infer_user_form_lanes(conn, user_id: int) -> list[str]:
         rows = []
     if not rows:
         return ["employee_w2"]
+    if any((r.get("code") or "").upper().strip() == "EC_SYSTEM" for r in rows):
+        return []
     has_1099 = False
     has_w2 = False
     has_temp = False
     for r in rows:
         code_u = (r.get("code") or "").upper().strip()
         name_blob = f"{(r.get('name') or '')} {code_u.lower()}".lower()
+        if code_u == "EC_SYSTEM":
+            return []
         if code_u == "EC_TEMP":
             has_temp = True
             continue

@@ -290,6 +290,7 @@ function PeoplePage({ user }) {
         if (filterSchedule === "w2" && cat !== "w2") return false;
         if (filterSchedule === "1099" && !cat.includes("1099") && cat !== "contractor_1099") return false;
         if (filterSchedule === "temp" && cat !== "temp") return false;
+        if (filterSchedule === "system" && cat !== "system") return false;
         if (filterSchedule === "rinse" && !sw.can_work_rinse) return false;
         if (filterSchedule === "dropoff" && !sw.can_work_drop_off) return false;
         if (filterSchedule === "folder" && !roleNames.some((n) => n.includes("folder"))) return false;
@@ -655,6 +656,7 @@ function PeoplePage({ user }) {
                 <MenuItem value="w2">W-2</MenuItem>
                 <MenuItem value="1099">1099</MenuItem>
                 <MenuItem value="temp">Temp</MenuItem>
+                <MenuItem value="system">System (not on payroll)</MenuItem>
                 <MenuItem value="rinse">Rinse-capable</MenuItem>
                 <MenuItem value="dropoff">Drop Off-capable</MenuItem>
                 <MenuItem value="folder">Folder skill</MenuItem>
