@@ -14,8 +14,14 @@ Architectural rules (not an ID-specific patch)
   current cycle's entry and completion.
 * Entry = first post-anchor ``purpose='move-bag'`` whose rack is in the
   configured entry racks (default: VeeWash Dirty, Rinse Zipvan).
-* Completion = earliest valid ``purpose='weight-entry'`` after a post-anchor
-  ``garments-reviewed``. Clean rack is **not** required.
+* Garments-reviewed counts only when it occurs **after** that entry.
+* Completion = earliest valid ``purpose='weight-entry'`` after that
+  post-entry garments-reviewed. Clean rack is **not** required.
+* Required ordering:
+  ``cycle_anchor < entry_at < garments_reviewed_at < completion_weight_at``
+* Garments-reviewed + weight **without** qualifying entry must not complete.
+  Result: ``effective_status=pending``, ``pending_reason=ENTRY_NOT_FOUND``,
+  ``completion_at=null``.
 * Raw scan history stays append-only; duplicate post-review weights complete
   the bag once (earliest qualifying weight).
 
@@ -34,6 +40,7 @@ from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
 from backend.rinse_scan_purpose import normalize_scan_purpose
 
 COMPLETION_SOURCE_POST_REVIEW_WEIGHT = "post_garments_reviewed_weight_entry"
+PENDING_REASON_ENTRY_NOT_FOUND = "ENTRY_NOT_FOUND"
 
 
 def _norm_purpose(raw: Any) -> str:
@@ -98,6 +105,7 @@ class CycleBoundaryResult:
     completion_event: Mapping[str, Any] | None
     completion_source: str | None
     effective_status: str  # pending | completed
+    pending_reason: str | None = None
     via_clean_rack_required: bool = False
 
     def as_dict(self) -> dict[str, Any]:
@@ -113,6 +121,7 @@ class CycleBoundaryResult:
             "completed_by": self.completed_by,
             "completion_source": self.completion_source,
             "effective_status": self.effective_status,
+            "pending_reason": self.pending_reason,
             "via_clean_rack_required": self.via_clean_rack_required,
         }
 
@@ -148,7 +157,9 @@ def resolve_current_cycle(
     Resolve current-cycle entry and completion for one bag on an ET day.
 
     Pre-anchor scans are ignored for entry and completion. Clean rack is never
-    required for completion.
+    required for completion. Completion requires the full chain:
+
+      sent-to-vendor → configured entry → garments-reviewed → weight-entry
 
     ``as_of_end`` (optional) limits which post-anchor events are visible — used
     by At Vendor live/as-of evaluation without changing the day-cutoff anchor.
@@ -172,6 +183,7 @@ def resolve_current_cycle(
         completion_event=None,
         completion_source=None,
         effective_status="pending",
+        pending_reason=None,
         via_clean_rack_required=False,
     )
     if anchor is None:
@@ -218,9 +230,49 @@ def resolve_current_cycle(
         entry_event = ev
         break
 
+    # Detect review+weight that would have completed without entry (CUR0 pattern).
+    orphan_review_at: datetime | None = None
+    orphan_weight_after_review = False
+    for ts, ev in post:
+        if _norm_purpose(ev.get("purpose")) != "garments-reviewed":
+            continue
+        orphan_review_at = ts
+        break
+    if orphan_review_at is not None:
+        for ts, ev in post:
+            if ts <= orphan_review_at:
+                continue
+            if _norm_purpose(ev.get("purpose")) == "weight-entry":
+                orphan_weight_after_review = True
+                break
+
+    if entry_at is None:
+        pending_reason = None
+        if orphan_review_at is not None and orphan_weight_after_review:
+            pending_reason = PENDING_REASON_ENTRY_NOT_FOUND
+        elif orphan_review_at is not None:
+            pending_reason = PENDING_REASON_ENTRY_NOT_FOUND
+        return CycleBoundaryResult(
+            cycle_anchor_at=anchor,
+            entry_at=None,
+            entry_rack=None,
+            entry_event=None,
+            garments_reviewed_at=None,
+            garments_reviewed_event=None,
+            completion_at=None,
+            completed_by=None,
+            completion_event=None,
+            completion_source=None,
+            effective_status="pending",
+            pending_reason=pending_reason,
+            via_clean_rack_required=False,
+        )
+
     review_at = None
     review_event = None
     for ts, ev in post:
+        if ts <= entry_at:
+            continue
         if _norm_purpose(ev.get("purpose")) != "garments-reviewed":
             continue
         review_at = ts
@@ -255,5 +307,6 @@ def resolve_current_cycle(
         completion_event=completion_event,
         completion_source=completion_source,
         effective_status="completed" if completion_at is not None else "pending",
+        pending_reason=None,
         via_clean_rack_required=False,
     )

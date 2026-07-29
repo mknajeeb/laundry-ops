@@ -2179,8 +2179,9 @@ def _wf_completion_signal(
     """WF completion via shared ``rinse_cycle_boundary`` (not a separate rule).
 
     Display weight fields still use derive_wf_clean_weight_fields for At Vendor
-    UI; the completion decision itself is garments-reviewed → earliest later
-    weight-entry after the current sent-to-vendor anchor.
+    UI; the completion decision itself requires the shared cycle chain:
+    sent-to-vendor → configured entry → garments-reviewed → earliest later
+    weight-entry.
     """
     from backend.rinse_cycle_boundary import (
         COMPLETION_SOURCE_POST_REVIEW_WEIGHT,

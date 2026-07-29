@@ -548,6 +548,9 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
                 snap["completion_source"] = row.get("completion_source")
             if row.get("cycle_anchor_at") is not None:
                 snap["cycle_anchor_at"] = row.get("cycle_anchor_at")
+        elif row.get("pending_reason"):
+            snap["pending_reason"] = row.get("pending_reason")
+            snap["reason"] = row.get("pending_reason")
         rows_out.append(
             {
                 "bag_id": bid,

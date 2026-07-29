@@ -57,10 +57,16 @@ def _ev(
 
 
 T0 = datetime(2026, 6, 10, 4, 0)
+T0_ENTRY = datetime(2026, 6, 10, 4, 30)
 T1 = datetime(2026, 6, 10, 5, 0)
 T2 = datetime(2026, 6, 10, 6, 0)
 T3 = datetime(2026, 6, 10, 7, 0)
 SELECTED = date(2026, 6, 10)
+
+
+def _dirty_entry(ts: datetime = T0_ENTRY) -> dict:
+    """Configured WF entry rack move after sent-to-vendor (required for completion)."""
+    return _ev("move-bag", ts, rack="VeeWash Dirty")
 
 
 class TestAtVendorRush:
@@ -129,9 +135,10 @@ class TestWFCompletion:
         assert signal is None
 
     def test_processing_then_final_weight_completes(self):
-        """Completion requires garments-reviewed then post-review weight (shared cycle rule)."""
+        """Completion requires entry then garments-reviewed then post-review weight."""
         events = [
             _ev("sent-to-vendor", T0),
+            _dirty_entry(),
             _ev("weight-entry", T1),
             _ev("add-photos", T2),
             _ev("garments-reviewed", T2),
@@ -154,6 +161,7 @@ class TestWFCompletion:
         anchor = datetime(2026, 6, 18, 4, 33)
         events = [
             _ev("sent-to-vendor", anchor),
+            _ev("move-bag", datetime(2026, 6, 18, 5, 0), rack="VeeWash Dirty"),
             _ev("weight-entry", pre),
             _ev("add-photos", datetime(2026, 6, 18, 11, 23)),
             _ev("garments-reviewed", review),
@@ -321,6 +329,7 @@ class TestRepeatedEventCompletion:
     def test_wf_processing_then_weight_completes(self):
         events = [
             _ev("sent-to-vendor", T0),
+            _dirty_entry(),
             _ev("weight-entry", T1),
             _ev("garments-reviewed", T2),
             _ev("weight-entry", T3),
@@ -503,6 +512,7 @@ class TestChangedToRush:
         meta = {"service_type": "WF", "date_clean": date(2026, 6, 11)}
         events = [
             _ev("sent-to-vendor", datetime(2026, 6, 11, 4, 0)),
+            _ev("move-bag", datetime(2026, 6, 11, 4, 30), rack="VeeWash Dirty"),
             _ev("weight-entry", datetime(2026, 6, 11, 5, 0)),
             _ev("garments-reviewed", datetime(2026, 6, 11, 5, 30)),
             _ev("weight-entry", datetime(2026, 6, 11, 6, 0)),
@@ -630,6 +640,7 @@ class TestSelectedDayPopulation:
     def test_completed_before_midnight_excluded_without_resend(self):
         events = [
             _ev("sent-to-vendor", datetime(2026, 6, 8, 4, 0)),
+            _ev("move-bag", datetime(2026, 6, 8, 4, 30), rack="VeeWash Dirty"),
             _ev("weight-entry", datetime(2026, 6, 8, 5, 0)),
             _ev("garments-reviewed", datetime(2026, 6, 8, 5, 30)),
             _ev("weight-entry", datetime(2026, 6, 8, 6, 0)),
@@ -1447,6 +1458,7 @@ class TestCrossDayCompletionAttribution:
 
         events = [
             _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
+            _ev("move-bag", datetime(2026, 6, 12, 18, 30), rack="VeeWash Dirty"),
             _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
             _ev("garments-reviewed", datetime(2026, 6, 12, 20, 30)),
             _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
@@ -1537,6 +1549,7 @@ class TestCrossDayCompletionAttribution:
 
         events = [
             _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
+            _ev("move-bag", datetime(2026, 6, 12, 18, 30), rack="VeeWash Dirty"),
             _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
             _ev("garments-reviewed", datetime(2026, 6, 12, 20, 30)),
             _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
@@ -1571,6 +1584,7 @@ class TestCrossDayCompletionAttribution:
 
         events = [
             _ev("sent-to-vendor", datetime(2026, 7, 5, 5, 0)),
+            _ev("move-bag", datetime(2026, 7, 5, 5, 30), rack="VeeWash Dirty"),
             _ev("weight-entry", datetime(2026, 7, 5, 6, 0)),
             _ev("garments-reviewed", datetime(2026, 7, 5, 8, 0)),
             _ev("weight-entry", datetime(2026, 7, 5, 9, 0), user_name="Jennifer"),
@@ -1627,6 +1641,7 @@ class TestCrossDayCompletionAttribution:
         open_events = [_ev("sent-to-vendor", datetime(2026, 6, 13, 1, 0))]
         done_events = [
             _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
+            _ev("move-bag", datetime(2026, 6, 12, 18, 30), rack="VeeWash Dirty"),
             _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
             _ev("garments-reviewed", datetime(2026, 6, 12, 20, 30)),
             _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
@@ -1688,6 +1703,7 @@ class TestCrossDayCompletionAttribution:
             _ev("weight-entry", datetime(2026, 6, 19, 10, 0)),
             _ev("weight-entry", datetime(2026, 6, 19, 11, 0)),
             _ev("sent-to-vendor", datetime(2026, 6, 25, 5, 11)),
+            _ev("move-bag", datetime(2026, 6, 25, 5, 40), rack="VeeWash Dirty"),
             _ev("weight-entry", datetime(2026, 6, 25, 7, 37)),
             _ev("garments-reviewed", datetime(2026, 6, 25, 15, 36)),
             _ev("weight-entry", datetime(2026, 6, 25, 15, 37)),
@@ -2066,6 +2082,7 @@ class TestDaysLoadInvariant:
                 "SEEDOPEN": [_ev("sent-to-vendor", datetime(2026, 6, 13, 1, 0))],
                 "SEEDDONE": [
                     _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
+                    _ev("move-bag", datetime(2026, 6, 12, 18, 30), rack="VeeWash Dirty"),
                     _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
                     _ev("garments-reviewed", datetime(2026, 6, 12, 20, 30)),
                     _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
@@ -2108,6 +2125,7 @@ class TestDaysLoadInvariant:
             _ev("weight-entry", datetime(2026, 6, 19, 10, 0)),
             _ev("weight-entry", datetime(2026, 6, 19, 11, 0)),
             _ev("sent-to-vendor", datetime(2026, 6, 25, 5, 11)),
+            _ev("move-bag", datetime(2026, 6, 25, 5, 40), rack="VeeWash Dirty"),
             _ev("weight-entry", datetime(2026, 6, 25, 7, 37)),
             _ev("garments-reviewed", datetime(2026, 6, 25, 15, 36)),
             _ev("weight-entry", datetime(2026, 6, 25, 15, 37)),

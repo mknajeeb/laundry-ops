@@ -1,6 +1,6 @@
 {
   "invariant": "A scan from a previous sent-to-vendor cycle can never determine the current cycle's entry, completion, or status.",
-  "completion_rule": "cycle_anchor = latest valid purpose=sent-to-vendor on/before selected day cutoff; entry = first post-anchor move-bag to configured entry racks; completion = earliest valid weight-entry after garments-reviewed (both after anchor); Clean rack is not required.",
+  "completion_rule": "cycle_anchor = latest valid purpose=sent-to-vendor on/before selected day cutoff; entry = first post-anchor move-bag to configured entry racks; garments-reviewed only after entry; completion = earliest valid weight-entry after that review. Required order: anchor < entry < review < weight. Clean rack is not required. Review+weight without entry => pending ENTRY_NOT_FOUND.",
   "configured_entry_racks_default": [
     "VeeWash Dirty",
     "Rinse Zipvan"
@@ -322,6 +322,58 @@
         "completed_by": "Rev",
         "completion_source": "post_garments_reviewed_weight_entry",
         "effective_status": "completed",
+        "via_clean_rack_required": false
+      }
+    },
+    {
+      "fixture_bag_key": "synthetic_cur0_no_entry_review_weight",
+      "source_note": "CUR0CB8E78 pattern: sent-to-vendor then garments-reviewed + post-review weight with no configured Dirty/Zipvan entry. Must stay pending ENTRY_NOT_FOUND. Production order ID must not appear in resolvers.",
+      "selected_date_et": "2026-07-28",
+      "service_type": "WF",
+      "configured_entry_racks": [
+        "VeeWash Dirty",
+        "Rinse Zipvan"
+      ],
+      "events": [
+        {
+          "purpose": "sent-to-vendor",
+          "rack": "VeeWash Dirty",
+          "scanned_at": "2026-07-27 11:20:00",
+          "user_name": "Driver",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "garments-reviewed",
+          "rack": null,
+          "scanned_at": "2026-07-28 12:19:00",
+          "user_name": "Jennifer",
+          "weight_lbs": null
+        },
+        {
+          "purpose": "weight-entry",
+          "rack": null,
+          "scanned_at": "2026-07-28 12:21:00",
+          "user_name": "Jennifer",
+          "weight_lbs": 20.9
+        },
+        {
+          "purpose": "move-bag",
+          "rack": "VeeWash Clean",
+          "scanned_at": "2026-07-28 12:21:00",
+          "user_name": "Jennifer",
+          "weight_lbs": null
+        }
+      ],
+      "expected": {
+        "cycle_anchor_at": "2026-07-27 11:20:00",
+        "entry_at": null,
+        "entry_rack": null,
+        "garments_reviewed_at": null,
+        "completion_at": null,
+        "completed_by": null,
+        "completion_source": null,
+        "effective_status": "pending",
+        "pending_reason": "ENTRY_NOT_FOUND",
         "via_clean_rack_required": false
       }
     }

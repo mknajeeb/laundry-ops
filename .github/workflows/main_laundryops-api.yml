@@ -80,7 +80,10 @@ jobs:
           assert "rinse_shift_monitor_day_bags.manager_edit_version > 0" in text
           assert "incoming.effective_status" in text
           assert "_sync_day_header_from_persisted_bags" in text
-          print("manager-lock UPSERT + headline sync present in artifact source")
+          boundary = Path("backend/rinse_cycle_boundary.py").read_text(encoding="utf-8")
+          assert "ENTRY_NOT_FOUND" in boundary
+          assert "entry_at < garments_reviewed_at" in boundary or "after entry" in boundary.lower()
+          print("manager-lock UPSERT + headline sync + entry-required cycle present")
           PY
 
       - name: Daily upload checkout regression (required)

@@ -56,7 +56,21 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     from backend.db import get_db
+    from backend.release_revision import load_release_revision_stamps
     from backend.rinse_scheduled_scrape import run_all_scheduled_scrapes
+
+    stamps = load_release_revision_stamps()
+    print(
+        json.dumps(
+            {
+                "scheduler_release_revision": stamps,
+                "manager_lock_upsert_module": "backend.rinse_veewash_shift_day",
+            },
+            indent=2,
+            default=str,
+        ),
+        flush=True,
+    )
 
     conn = get_db()
     try:
@@ -90,6 +104,9 @@ def main(argv: list[str] | None = None) -> int:
             "at_vendor_status": r.at_vendor_status,
             "log_path": str(r.paths.log_path) if r.paths else None,
             "detail": r.detail,
+            "scheduler_runtime_revision": stamps.get("runtime_revision"),
+            "scheduler_image_revision": stamps.get("image_revision"),
+            "scheduler_source_revision": stamps.get("source_revision"),
         }
         out.append(item)
         if r.status == "failed":
@@ -99,7 +116,16 @@ def main(argv: list[str] | None = None) -> int:
         elif r.status == "needs_attention" and exit_code == 0:
             exit_code = 3
 
-    print(json.dumps({"runs": out}, indent=2, default=str))
+    print(
+        json.dumps(
+            {
+                "runs": out,
+                "scheduler_release_revision": stamps,
+            },
+            indent=2,
+            default=str,
+        )
+    )
     return exit_code
 
 

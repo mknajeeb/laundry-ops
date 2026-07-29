@@ -135,25 +135,9 @@ start_daily_reset_scheduler(app)
 
 def _load_artifact_revision() -> str:
     """Revision baked into the deployed package (authoritative runtime stamp)."""
-    import os
-    from pathlib import Path
+    from backend.release_revision import load_release_revision_stamps
 
-    env_sha = (os.environ.get("ARTIFACT_SHA") or "").strip()
-    if env_sha:
-        return env_sha
-    for candidate in (
-        Path(__file__).resolve().parent / "release_revision.json",
-        Path(__file__).resolve().parent.parent / "release_revision.json",
-    ):
-        try:
-            if candidate.is_file():
-                data = json.loads(candidate.read_text(encoding="utf-8"))
-                sha = str((data or {}).get("sha") or "").strip()
-                if sha:
-                    return sha
-        except Exception:
-            continue
-    return ""
+    return str(load_release_revision_stamps().get("artifact_revision") or "").strip()
 
 
 @app.route("/health", methods=["GET"])
@@ -165,34 +149,17 @@ def health():
     When EXPECTED_RELEASE_SHA is set and does not match the artifact/runtime
     revision, status is ``unhealthy`` (HTTP 503).
     """
-    import os
+    from backend.release_revision import load_release_revision_stamps
 
-    source_revision = (
-        os.environ.get("SOURCE_RELEASE_SHA")
-        or os.environ.get("GITHUB_SHA")
-        or ""
-    ).strip()
-    build_revision = (
-        os.environ.get("BUILD_SHA") or os.environ.get("GITHUB_SHA") or ""
-    ).strip()
-    artifact_revision = _load_artifact_revision()
-    runtime_revision = (artifact_revision or build_revision or source_revision).strip()
-    expected_revision = (os.environ.get("EXPECTED_RELEASE_SHA") or "").strip()
-    build_time = (os.environ.get("BUILD_TIME") or "").strip()
-
-    revisions = {
-        "source_revision": source_revision or None,
-        "build_revision": build_revision or None,
-        "artifact_revision": artifact_revision or None,
-        "runtime_revision": runtime_revision or None,
-        "expected_revision": expected_revision or None,
-    }
-    stamped = [v for v in (source_revision, build_revision, artifact_revision, runtime_revision) if v]
-    stamp_agreement = len(set(stamped)) <= 1 if stamped else True
-    expected_ok = (not expected_revision) or (
-        expected_revision == runtime_revision
-        or expected_revision == artifact_revision
-    )
+    stamps = load_release_revision_stamps()
+    source_revision = str(stamps.get("source_revision") or "")
+    build_revision = str(stamps.get("build_revision") or "")
+    artifact_revision = str(stamps.get("artifact_revision") or "")
+    runtime_revision = str(stamps.get("runtime_revision") or "")
+    expected_revision = str(stamps.get("expected_revision") or "")
+    build_time = stamps.get("build_time")
+    stamp_agreement = bool(stamps.get("revision_stamp_agreement"))
+    expected_ok = bool(stamps.get("expected_revision_match"))
     healthy = bool(stamp_agreement and expected_ok)
 
     out = {
@@ -200,7 +167,11 @@ def health():
         "api_marker": "shift-monitor-v2",
         # Backward-compatible single field: prefer runtime/artifact over bare GITHUB_SHA.
         "git_sha": runtime_revision or source_revision or None,
-        **revisions,
+        "source_revision": source_revision or None,
+        "build_revision": build_revision or None,
+        "artifact_revision": artifact_revision or None,
+        "runtime_revision": runtime_revision or None,
+        "expected_revision": expected_revision or None,
         "revision_stamp_agreement": stamp_agreement,
         "expected_revision_match": expected_ok,
     }

@@ -305,11 +305,13 @@ def test_ssp_same_day_filter_ignores_next_day_cycle_completion():
 
     tl = [
         _ev(ts=datetime(2026, 7, 27, 15, 18, 0), purpose="sent-to-vendor"),
+        _ev(ts=datetime(2026, 7, 28, 6, 0, 0), purpose="move-bag", rack="VeeWash Dirty"),
         _ev(ts=datetime(2026, 7, 28, 10, 24, 0), purpose="garments-reviewed", user="Maria"),
         _ev(ts=datetime(2026, 7, 28, 10, 25, 0), purpose="weight-entry", user="Maria", weight=11.6),
     ]
     shared = resolve_current_cycle(tl, selected_date_et=DAY)
     assert shared.effective_status == "completed"
+    assert shared.entry_at == datetime(2026, 7, 28, 6, 0, 0)
     assert shared.completion_at == datetime(2026, 7, 28, 10, 25, 0)
     op = _wf_day_operational_completion(tl, selected_date_et=DAY)
     assert op.completed is False

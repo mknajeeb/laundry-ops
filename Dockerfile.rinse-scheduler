@@ -53,6 +53,20 @@ ENV PYTHONUNBUFFERED=1
 ENV PATH="/opt/laundry_venv/bin:${PATH}"
 ENV RINSE_SCRAPE_DATA_ROOT=/data/rinse-scrape
 
+# Bake revision stamps into the image so runtime logs prove manager-lock code.
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+ENV GIT_SHA=${GIT_SHA}
+ENV BUILD_SHA=${GIT_SHA}
+ENV SOURCE_RELEASE_SHA=${GIT_SHA}
+ENV ARTIFACT_SHA=${GIT_SHA}
+ENV EXPECTED_RELEASE_SHA=${GIT_SHA}
+ENV SCHEDULER_IMAGE_SHA=${GIT_SHA}
+ENV BUILD_TIME=${BUILD_TIME}
+RUN printf '%s\n' "{\"sha\":\"${GIT_SHA}\",\"built_at\":\"${BUILD_TIME}\",\"component\":\"rinse-scheduler\"}" \
+  > /app/backend/release_revision.json \
+  && cp /app/backend/release_revision.json /app/release_revision.json
+
 RUN mkdir -p /data/rinse-scrape
 
 CMD ["/opt/laundry_venv/bin/python", "-m", "backend.jobs.run_scheduled_rinse_scrape"]

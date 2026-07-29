@@ -17,6 +17,7 @@ import pytest
 
 from backend.rinse_cycle_boundary import (
     COMPLETION_SOURCE_POST_REVIEW_WEIGHT,
+    PENDING_REASON_ENTRY_NOT_FOUND,
     resolve_current_cycle,
     resolve_cycle_anchor,
 )
@@ -80,6 +81,8 @@ def _assert_matches_expected(result, expected: dict) -> None:
         "effective_status",
     ):
         assert got.get(key) == expected.get(key), (key, got.get(key), expected.get(key))
+    if "pending_reason" in expected:
+        assert got.get("pending_reason") == expected.get("pending_reason")
     assert got["via_clean_rack_required"] is False
     assert expected.get("via_clean_rack_required") is False
 
@@ -457,3 +460,162 @@ def test_do_not_use_ordinal_weight_or_lifetime_clean_as_completion():
     out = resolve_current_cycle(tl, selected_date_et=DAY, entry_racks=ENTRY_RACKS)
     assert out.completion_at is None
     assert out.effective_status == "pending"
+
+
+# --------------------------------------------------------------------------- #
+# Entry-required chain (stabilization)
+# --------------------------------------------------------------------------- #
+
+
+def test_no_entry_review_plus_weight_remains_pending_entry_not_found():
+    """CUR0 pattern: review+weight without configured entry must not complete."""
+    sent = datetime(2026, 7, 27, 11, 20, 0)
+    review = datetime(2026, 7, 28, 12, 19, 0)
+    weight = datetime(2026, 7, 28, 12, 21, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=review, purpose="garments-reviewed", user="Jennifer"),
+        _ev(ts=weight, purpose="weight-entry", user="Jennifer", weight=20.9),
+        _ev(ts=weight, purpose="move-bag", rack="VeeWash Clean", user="Jennifer"),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 28), entry_racks=ENTRY_RACKS
+    )
+    assert out.cycle_anchor_at == sent
+    assert out.entry_at is None
+    assert out.garments_reviewed_at is None
+    assert out.completion_at is None
+    assert out.effective_status == "pending"
+    assert out.pending_reason == PENDING_REASON_ENTRY_NOT_FOUND
+
+
+def test_entry_before_sent_to_vendor_ignored_for_completion_chain():
+    dirty_before = datetime(2026, 7, 28, 4, 0, 0)
+    sent = datetime(2026, 7, 28, 5, 0, 0)
+    review = datetime(2026, 7, 28, 14, 0, 0)
+    weight = datetime(2026, 7, 28, 14, 30, 0)
+    tl = [
+        _ev(ts=dirty_before, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", user="Ops", weight=8.0),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 28), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at is None
+    assert out.completion_at is None
+    assert out.effective_status == "pending"
+    assert out.pending_reason == PENDING_REASON_ENTRY_NOT_FOUND
+
+
+def test_review_before_entry_ignored():
+    sent = datetime(2026, 7, 28, 5, 0, 0)
+    review_before = datetime(2026, 7, 28, 5, 30, 0)
+    dirty = datetime(2026, 7, 28, 6, 0, 0)
+    review_after = datetime(2026, 7, 28, 14, 0, 0)
+    weight = datetime(2026, 7, 28, 14, 20, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=review_before, purpose="garments-reviewed", user="Early"),
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=review_after, purpose="garments-reviewed", user="Late"),
+        _ev(ts=weight, purpose="weight-entry", user="Late", weight=9.0),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 28), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == dirty
+    assert out.garments_reviewed_at == review_after
+    assert out.completion_at == weight
+    assert out.effective_status == "completed"
+
+
+def test_weight_after_review_but_entry_missing_remains_pending():
+    sent = datetime(2026, 7, 28, 5, 0, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=datetime(2026, 7, 28, 14, 0, 0), purpose="garments-reviewed"),
+        _ev(ts=datetime(2026, 7, 28, 14, 10, 0), purpose="weight-entry", weight=7.0),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 28), entry_racks=ENTRY_RACKS
+    )
+    assert out.effective_status == "pending"
+    assert out.pending_reason == PENDING_REASON_ENTRY_NOT_FOUND
+    assert out.completion_at is None
+
+
+def test_dirty_entry_completes_when_review_and_weight_follow():
+    sent = datetime(2026, 7, 28, 5, 0, 0)
+    dirty = datetime(2026, 7, 28, 6, 0, 0)
+    review = datetime(2026, 7, 28, 14, 0, 0)
+    weight = datetime(2026, 7, 28, 14, 30, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", user="Rev", weight=8.0),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 28), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_rack == "VeeWash Dirty"
+    assert out.effective_status == "completed"
+    assert out.completion_source == COMPLETION_SOURCE_POST_REVIEW_WEIGHT
+    assert out.pending_reason is None
+
+
+def test_zipvan_entry_completes_when_review_and_weight_follow():
+    sent = datetime(2026, 7, 28, 5, 0, 0)
+    zipvan = datetime(2026, 7, 28, 5, 30, 0)
+    review = datetime(2026, 7, 28, 14, 0, 0)
+    weight = datetime(2026, 7, 28, 14, 30, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=zipvan, purpose="move-bag", rack="Rinse Zipvan"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", user="Rev", weight=8.0),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 28), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_rack == "Rinse Zipvan"
+    assert out.effective_status == "completed"
+
+
+def test_duplicate_entries_select_earliest_valid_post_anchor_entry():
+    sent = datetime(2026, 7, 28, 5, 0, 0)
+    first = datetime(2026, 7, 28, 6, 0, 0)
+    second = datetime(2026, 7, 28, 7, 0, 0)
+    review = datetime(2026, 7, 28, 14, 0, 0)
+    weight = datetime(2026, 7, 28, 14, 30, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=first, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=second, purpose="move-bag", rack="Rinse Zipvan"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=8.0),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 28), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == first
+    assert out.entry_rack == "VeeWash Dirty"
+    assert out.effective_status == "completed"
+
+
+def test_cur0_fixture_pattern_pending_entry_not_found():
+    fix = _load_fixture()
+    case = next(
+        c
+        for c in fix["synthetic_cases"]
+        if c["fixture_bag_key"] == "synthetic_cur0_no_entry_review_weight"
+    )
+    out = resolve_current_cycle(
+        _events_from_fixture(case),
+        selected_date_et=date.fromisoformat(case["selected_date_et"]),
+        entry_racks=case.get("configured_entry_racks") or ENTRY_RACKS,
+    )
+    _assert_matches_expected(out, case["expected"])
+    assert out.pending_reason == PENDING_REASON_ENTRY_NOT_FOUND

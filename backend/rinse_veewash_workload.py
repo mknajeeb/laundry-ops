@@ -15,9 +15,11 @@ Operating model:
       WF → first configured facility entry rack scan
       HD → first workitems-added scan (entry rack is not HD entry for CWO checks)
   * Completion: shared ``rinse_cycle_boundary.resolve_current_cycle`` for a
-    selected ET day (sent-to-vendor → configured entry move-bag →
-    garments-reviewed → earliest later weight-entry). Clean rack is not
-    required. Manager correct_completion overrides still win.
+    selected ET day. Required order:
+    sent-to-vendor → configured entry move-bag → garments-reviewed →
+    earliest later weight-entry. Review+weight without entry stays pending
+    with ``ENTRY_NOT_FOUND``. Clean rack is not required. Manager
+    correct_completion overrides still win.
     Lifetime first-clean must not determine current-cycle status.
   * Review Required (manager-facing, reason_codes, one count per bag) includes:
       DISAPPEARED_WITHOUT_COMPLETION
@@ -84,6 +86,8 @@ REASON_COMPLETION_DETAILS_MISSING = "COMPLETION_DETAILS_MISSING"
 REASON_SCAN_CHRONOLOGY_STALE = "SCAN_CHRONOLOGY_STALE"
 REASON_MANAGER_SENT_FOR_REVIEW = "MANAGER_SENT_FOR_REVIEW"
 REASON_MISSING_PRE_EVIDENCE = "MISSING_PRE_EVIDENCE"
+# Pending-only cycle diagnostic (not a Review Required code).
+REASON_ENTRY_NOT_FOUND = "ENTRY_NOT_FOUND"
 
 REVIEW_REASON_CODES = (
     REASON_DISAPPEARED_WITHOUT_COMPLETION,
@@ -416,6 +420,8 @@ def _cycle_result_to_completion_dict(
 
     if result is None or getattr(result, "effective_status", None) != "completed":
         return None
+    if getattr(result, "pending_reason", None):
+        return None
     comp_ts = getattr(result, "completion_at", None)
     if comp_ts is None:
         return None
@@ -504,6 +510,7 @@ def load_canonical_completions_v2(
     selected_date_et: date | None = None,
     service_type_by_bag: Mapping[str, str] | None = None,
     entry_racks: Iterable[str] | None = None,
+    pending_reasons_out: dict[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Canonical completions for Step-1 / ledger-aligned day outcomes.
 
@@ -517,8 +524,16 @@ def load_canonical_completions_v2(
     When ``selected_date_et`` is set, lifetime first-clean is **never** emitted.
     That prevents ``completed_before_selected_date`` + membership reinject-as-pending
     for resend_today bags that completed again on D under the current cycle.
+
+    When ``pending_reasons_out`` is provided, WF bags that remain pending because
+    the current cycle lacks a configured entry (``ENTRY_NOT_FOUND``) are recorded
+    there without being treated as completed.
     """
     from backend.rinse_bag_activity_rules import evaluate_bag_completion_v2
+    from backend.rinse_cycle_boundary import (
+        PENDING_REASON_ENTRY_NOT_FOUND,
+        resolve_current_cycle,
+    )
     from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
 
     ids = sorted({_norm_bag(b) for b in bag_ids if _norm_bag(b)})
@@ -581,14 +596,33 @@ def load_canonical_completions_v2(
     }
     for bid, timeline in by_bag.items():
         if selected_date_et is not None:
-            cycle = _cycle_anchored_completion_for_day(
+            svc = svc_map.get(bid) or "WF"
+            if str(svc).strip().upper() == "HD":
+                cycle = _cycle_anchored_completion_for_day(
+                    timeline,
+                    selected_date_et=selected_date_et,
+                    service_type="HD",
+                    entry_racks=racks,
+                )
+                if cycle is not None:
+                    out[bid] = cycle
+                continue
+
+            boundary = resolve_current_cycle(
                 timeline,
                 selected_date_et=selected_date_et,
-                service_type=svc_map.get(bid) or "WF",
                 entry_racks=racks,
+            )
+            cycle = _cycle_result_to_completion_dict(
+                boundary, selected_date_et=selected_date_et, timeline=timeline
             )
             if cycle is not None:
                 out[bid] = cycle
+            elif (
+                pending_reasons_out is not None
+                and boundary.pending_reason == PENDING_REASON_ENTRY_NOT_FOUND
+            ):
+                pending_reasons_out[bid] = PENDING_REASON_ENTRY_NOT_FOUND
             continue
 
         # No selected date: legacy lifetime resolver for non-day callers only.
@@ -662,6 +696,46 @@ def load_canonical_completions_v2(
                     merged["completion_date"] = d2
             merged["completion_source"] = "manager_correct_completion"
             out[bid] = merged
+            if pending_reasons_out is not None:
+                pending_reasons_out.pop(bid, None)
+    return out
+
+
+def apply_cycle_pending_reasons(
+    result: dict[str, Any],
+    pending_reasons: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    """Attach ENTRY_NOT_FOUND (and similar) to pending rows without promoting Review."""
+    if not pending_reasons:
+        return result
+    out = dict(result)
+    rows = []
+    for row in result.get("rows") or []:
+        if not isinstance(row, Mapping):
+            rows.append(row)
+            continue
+        bid = _norm_bag(row.get("bag_id"))
+        reason = pending_reasons.get(bid) if bid else None
+        if not reason:
+            rows.append(dict(row))
+            continue
+        outcome = str(row.get("outcome") or row.get("final_bucket") or "").lower()
+        if "completed" in outcome or outcome == OUTCOME_REVIEW_REQUIRED:
+            rows.append(dict(row))
+            continue
+        updated = dict(row)
+        updated["pending_reason"] = reason
+        codes = [str(c) for c in (updated.get("reason_codes") or []) if str(c).strip()]
+        if reason not in codes:
+            codes.append(reason)
+        updated["reason_codes"] = codes
+        rows.append(updated)
+    out["rows"] = rows
+    out["cycle_pending_reasons_by_bag"] = {
+        _norm_bag(k): str(v)
+        for k, v in pending_reasons.items()
+        if _norm_bag(k) and str(v).strip()
+    }
     return out
 
 
@@ -1141,6 +1215,7 @@ def build_veewash_daily_workload(
         presence, dirty_by_bag=dirty, wia_by_bag=wia
     )
 
+    cycle_pending_reasons: dict[str, str] = {}
     completion = load_canonical_completions_v2(
         cursor,
         organization_id,
@@ -1151,6 +1226,7 @@ def build_veewash_daily_workload(
             for bid, pres in presence.items()
         },
         entry_racks=racks,
+        pending_reasons_out=cycle_pending_reasons,
     )
     entry = _apply_cycle_entry_overlay(
         entry, completion, selected_date_et=selected_date_et
@@ -1224,6 +1300,7 @@ def build_veewash_daily_workload(
         registry_service_by_bag=registry_services,
         last_scan_at_by_bag=last_scans,
     )
+    result = apply_cycle_pending_reasons(result, cycle_pending_reasons)
     result["data_freshness"] = freshness_from_day_and_presence(
         cursor,
         organization_id,
@@ -1427,6 +1504,7 @@ def build_veewash_daily_workload_from_membership(
             }
 
     completion_ids = sorted(member_set | set(presence.keys()))
+    cycle_pending_reasons: dict[str, str] = {}
     completion = load_canonical_completions_v2(
         cursor,
         organization_id,
@@ -1437,6 +1515,7 @@ def build_veewash_daily_workload_from_membership(
             for bid, pres in presence.items()
         },
         entry_racks=racks,
+        pending_reasons_out=cycle_pending_reasons,
     )
     entry = _apply_cycle_entry_overlay(
         entry,
@@ -1506,6 +1585,7 @@ def build_veewash_daily_workload_from_membership(
         registry_service_by_bag=registry_services,
         last_scan_at_by_bag=last_scans,
     )
+    result = apply_cycle_pending_reasons(result, cycle_pending_reasons)
 
     # Append-only model: no carryover; membership size is the authoritative total.
     total = len(member_ids)
