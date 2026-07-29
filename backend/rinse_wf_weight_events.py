@@ -271,25 +271,35 @@ def derive_wf_clean_weight_fields(
     *,
     anchor_ts: datetime,
     as_of_end: datetime,
+    observations: Sequence[Mapping[str, Any]] | None = None,
+    manual_pre_lbs: float | None = None,
+    manual_post_lbs: float | None = None,
 ) -> dict[str, Any]:
     """
     Pre/post clean weight display fields for WF At Vendor rows.
 
-    pre_clean_weight = first distinct weight-entry after anchor.
-    post_clean_weight = last distinct weight-entry after latest processing event.
+    Uses the shared current-cycle resolver (entry → garments-reviewed gated
+    PRE/POST events). Lifetime ordinal first/second weight-entry is not used.
     """
-    weights = distinct_wf_weight_events(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
-    pre = weights[0] if weights else None
+    from backend.rinse_current_cycle_weight import resolve_current_cycle_weights
+    from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
+
+    selected_date_et = as_of_end.date() if isinstance(as_of_end, datetime) else as_of_end
+    resolved = resolve_current_cycle_weights(
+        timeline,
+        selected_date_et=selected_date_et,
+        observations=observations,
+        entry_racks=list(DEFAULT_FACILITY_ENTRY_RACKS),
+        as_of_end=as_of_end,
+        manual_pre_lbs=manual_pre_lbs,
+        manual_post_lbs=manual_post_lbs,
+    )
+    # Keep processing metadata for UI diagnostics (non-authoritative for PRE/POST).
     latest_proc_ts, latest_proc_purpose = _latest_wf_processing_after_anchor(
         timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
     )
-    post: WfWeightEvent | None = None
-    if latest_proc_ts is not None:
-        post_weights = _post_processing_weight_events(weights, latest_proc_ts)
-        post = preferred_post_processing_weight_event(post_weights)
-
-    pre_lbs = pre.weight_lbs if pre else None
-    post_lbs = post.weight_lbs if post else None
+    pre_lbs = resolved.pre_weight_lbs
+    post_lbs = resolved.post_weight_lbs
     clean_delta = (
         round(abs(post_lbs - pre_lbs), 4)
         if pre_lbs is not None and post_lbs is not None
@@ -297,12 +307,19 @@ def derive_wf_clean_weight_fields(
     )
     return {
         "pre_clean_weight": pre_lbs,
-        "pre_clean_weight_time": pre.timestamp.isoformat() if pre else None,
+        "pre_clean_weight_time": resolved.pre_weight_event_at.isoformat()
+        if resolved.pre_weight_event_at
+        else None,
         "post_clean_weight": post_lbs,
-        "post_clean_weight_time": post.timestamp.isoformat() if post else None,
+        "post_clean_weight_time": resolved.post_weight_event_at.isoformat()
+        if resolved.post_weight_event_at
+        else None,
         "clean_weight_delta": clean_delta,
         "latest_processing_time": latest_proc_ts.isoformat() if latest_proc_ts else None,
         "latest_processing_purpose": latest_proc_purpose,
+        "pre_resolution_status": resolved.pre_resolution_status,
+        "post_resolution_status": resolved.post_resolution_status,
+        "resolution_reason": resolved.resolution_reason,
     }
 
 

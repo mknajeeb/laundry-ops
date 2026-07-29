@@ -684,23 +684,21 @@ def build_drilldown(
             item["bulk_workitems"] = lines
             edit_meta = last_edits.get(bid) or {}
             item.update(edit_meta)
-            # Overlay live scan provenance only. Manager correct_weight locks must
-            # win over raw scan Pre/Post lbs so reopen/refresh does not wipe saves.
-            from backend.rinse_scan_purpose import is_weight_entry_purpose
-            from backend.rinse_veewash_review import (
-                load_bag_weight_map,
-                resolve_weight_entry_pair,
-            )
+            # Overlay shared current-cycle PRE/POST (with portal observations).
+            # Manager correct_weight locks win over resolver lbs.
+            from backend.rinse_veewash_review import load_bag_weight_map
 
-            weight_events = [
-                s
-                for s in (item["scans"] or [])
-                if is_weight_entry_purpose(s.get("purpose") or s.get("raw_purpose"))
-            ]
-            live = resolve_weight_entry_pair(weight_events)
-            locked = (load_bag_weight_map(cursor, organization_id, [bid]) or {}).get(bid) or {}
-            has_pre_lock = locked.get("corrected_pre_weight_lbs") is not None
-            has_post_lock = locked.get("corrected_post_weight_lbs") is not None
+            resolved = (
+                load_bag_weight_map(
+                    cursor,
+                    organization_id,
+                    [bid],
+                    selected_date_et=selected_date_et,
+                )
+                or {}
+            ).get(bid) or {}
+            has_pre_lock = resolved.get("corrected_pre_weight_lbs") is not None
+            has_post_lock = resolved.get("corrected_post_weight_lbs") is not None
             for key in (
                 "pre_weight_source",
                 "pre_weight_observed_at",
@@ -714,34 +712,35 @@ def build_drilldown(
                 "post_weight_at",
                 "weight_entry_count",
                 "post_weight_event_exists",
+                "pre_resolution_status",
+                "post_resolution_status",
+                "resolution_reason",
+                "post_weight_value",
             ):
-                if live.get(key) is not None:
-                    item[key] = live.get(key)
-            if weight_events and not has_pre_lock and not has_post_lock:
-                item["pre_weight_lbs"] = live.get("pre_weight_lbs")
-                item["post_weight_lbs"] = live.get("post_weight_lbs")
-                item["post_weight_value"] = live.get("post_weight_value")
-                item["post_weight_event_exists"] = live.get("post_weight_event_exists")
-                item["weight_entry_count"] = live.get("weight_entry_count")
-            else:
-                if has_pre_lock or locked.get("pre_weight_lbs") is not None:
-                    item["pre_weight_lbs"] = locked.get("pre_weight_lbs")
-                elif weight_events and not has_pre_lock:
-                    item["pre_weight_lbs"] = live.get("pre_weight_lbs")
-                if has_post_lock or locked.get("post_weight_lbs") is not None:
-                    item["post_weight_lbs"] = locked.get("post_weight_lbs")
-                    item["post_weight_value"] = locked.get(
-                        "post_weight_value", locked.get("post_weight_lbs")
-                    )
-                    item["post_weight_event_exists"] = locked.get(
-                        "post_weight_event_exists", True
-                    )
-                elif weight_events and not has_post_lock:
-                    item["post_weight_lbs"] = live.get("post_weight_lbs")
-                    item["post_weight_value"] = live.get("post_weight_value")
-                    item["post_weight_event_exists"] = live.get("post_weight_event_exists")
-                if locked.get("weight_entry_count") is not None:
-                    item["weight_entry_count"] = locked.get("weight_entry_count")
+                if resolved.get(key) is not None:
+                    item[key] = resolved.get(key)
+            if has_pre_lock:
+                item["pre_weight_lbs"] = resolved.get("pre_weight_lbs")
+            elif resolved.get("pre_weight_lbs") is not None:
+                item["pre_weight_lbs"] = resolved.get("pre_weight_lbs")
+            if has_post_lock:
+                item["post_weight_lbs"] = resolved.get("post_weight_lbs")
+                item["post_weight_value"] = resolved.get(
+                    "post_weight_value", resolved.get("post_weight_lbs")
+                )
+                item["post_weight_event_exists"] = resolved.get(
+                    "post_weight_event_exists", True
+                )
+            elif resolved.get("post_weight_lbs") is not None or resolved.get(
+                "post_weight_event_exists"
+            ):
+                item["post_weight_lbs"] = resolved.get("post_weight_lbs")
+                item["post_weight_value"] = resolved.get(
+                    "post_weight_value", resolved.get("post_weight_lbs")
+                )
+                item["post_weight_event_exists"] = resolved.get("post_weight_event_exists")
+            if resolved.get("weight_entry_count") is not None:
+                item["weight_entry_count"] = resolved.get("weight_entry_count")
 
         else:
             item["scans"] = []

@@ -3666,6 +3666,50 @@ def build_at_vendor_module(
             and MOD_AT_VENDOR_CHANGED_RUSH not in row.get("module_tags", [])
         ):
             pending_for_prior_edd.append(bid)
+    # Align WF PRE/POST display lbs with shared current-cycle resolver
+    # (includes portal observations + audited manual corrections).
+    if hasattr(cursor, "execute") and rows:
+        try:
+            from backend.rinse_veewash_review import load_bag_weight_map
+
+            wf_weight_ids = sorted(
+                {
+                    str(r.get("bag_id") or "").strip().upper()
+                    for r in rows
+                    if str(r.get("service_type") or "").strip().upper() == "WF"
+                    and r.get("bag_id")
+                }
+            )
+            if wf_weight_ids:
+                weight_map = load_bag_weight_map(
+                    cursor, org, wf_weight_ids, selected_date_et=selected_date_et
+                )
+                for row in rows:
+                    bid = str(row.get("bag_id") or "").strip().upper()
+                    if str(row.get("service_type") or "").strip().upper() != "WF":
+                        continue
+                    info = weight_map.get(bid) or {}
+                    pre = info.get("pre_weight_lbs")
+                    post = info.get("post_weight_lbs")
+                    if pre is not None:
+                        row["pre_clean_weight"] = pre
+                    if post is not None or info.get("post_weight_event_exists"):
+                        row["post_clean_weight"] = post
+                    if info.get("pre_weight_at") is not None:
+                        ts = info.get("pre_weight_at")
+                        row["pre_clean_weight_time"] = ts.isoformat() if hasattr(ts, "isoformat") else ts
+                    if info.get("post_weight_at") is not None:
+                        ts = info.get("post_weight_at")
+                        row["post_clean_weight_time"] = ts.isoformat() if hasattr(ts, "isoformat") else ts
+                    if pre is not None and post is not None:
+                        row["clean_weight_delta"] = round(abs(float(post) - float(pre)), 4)
+                    if info.get("post_resolution_status") is not None:
+                        row["post_resolution_status"] = info.get("post_resolution_status")
+                    if info.get("pre_resolution_status") is not None:
+                        row["pre_resolution_status"] = info.get("pre_resolution_status")
+        except Exception:
+            pass
+
     # Align selected-day WF completed/pending with Step-1 canonical
     # (cycle + manager + same-day). Do not change HD or attribution.
     if hasattr(cursor, "execute") and rows:

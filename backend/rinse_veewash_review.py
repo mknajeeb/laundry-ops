@@ -861,16 +861,21 @@ def build_review_by_reason(result: Mapping[str, Any]) -> dict[str, list[str]]:
 
 
 def load_bag_weight_map(
-    cursor, organization_id: int, bag_ids: list[str]
+    cursor,
+    organization_id: int,
+    bag_ids: list[str],
+    *,
+    selected_date_et: date | None = None,
 ) -> dict[str, dict[str, Any]]:
     """
-    Pre/Post from chronological ``weight-entry`` scans only.
+    Pre/Post weight map for workload / Shift Monitor / review surfaces.
 
-    Pre  = first weight-entry
-    Post = second weight-entry (value may be 0)
+    When ``selected_date_et`` is provided, uses the shared current-cycle resolver
+    (cycle-anchor + garments-reviewed event selection + reconcilable portal
+    observations). Lifetime ordinal first/second weight-entry is not used.
 
-    No portal/registry/folding inference. Manager ``correct_weight`` may override
-    effective PRE and/or POST without mutating source scans.
+    Without ``selected_date_et``, falls back to the legacy ordinal pair for
+    callers that have not yet migrated (compat only).
     """
     from backend.ta_helpers import table_exists
 
@@ -878,6 +883,16 @@ def load_bag_weight_map(
     empty = {b: _empty_weight_info() for b in ids}
     if not ids:
         return empty
+
+    if selected_date_et is not None:
+        from backend.rinse_current_cycle_weight import load_current_cycle_weight_map
+
+        return load_current_cycle_weight_map(
+            cursor,
+            organization_id,
+            ids,
+            selected_date_et=selected_date_et,
+        )
 
     out = dict(empty)
     events_by: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}

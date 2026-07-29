@@ -36,6 +36,7 @@ WEIGHT_SOURCE_PRESENCE_RUN = "presence_run_weight_num"
 
 REASON_LATEST_ELIGIBLE = "latest_eligible_at_portal_observation"
 REASON_INTERVAL_ATTACH = "interval_eligible_presence_observation"
+REASON_POST_RECONCILE = "current_cycle_post_reconcile_correction"
 
 WEIGHT_ROLE_PRE = "PRE"
 WEIGHT_ROLE_POST = "POST"
@@ -460,38 +461,79 @@ def _apply_weight_to_scan_event(
     presence_run_id: Any = None,
     presence_run_row_id: Any = None,
     weight_role: str | None = None,
+    allow_overwrite: bool = False,
 ) -> bool:
     if scan_event_id is None or weight_lbs is None:
         return False
     ensure_scan_weight_enrichment_columns(cursor)
-    cursor.execute(
-        """
-        UPDATE rinse_bag_scan_events
-        SET weight_lbs = %s,
-            weight_observed_at = %s,
-            weight_source = %s,
-            weight_attach_batch_id = %s,
-            weight_attach_reason = %s,
-            weight_presence_run_id = %s,
-            weight_presence_run_row_id = %s,
-            weight_role = %s,
-            updated_at = NOW()
-        WHERE id = %s AND organization_id = %s AND bag_id = %s AND weight_lbs IS NULL
-        """,
-        (
-            weight_lbs,
-            observed_at,
-            weight_source,
-            int(upload_batch_id) if upload_batch_id is not None else None,
-            weight_attach_reason,
-            int(presence_run_id) if presence_run_id is not None else None,
-            int(presence_run_row_id) if presence_run_row_id is not None else None,
-            weight_role,
-            int(scan_event_id),
-            int(organization_id),
-            bag_id,
-        ),
-    )
+    if allow_overwrite:
+        cursor.execute(
+            """
+            UPDATE rinse_bag_scan_events
+            SET weight_lbs = %s,
+                weight_observed_at = %s,
+                weight_source = %s,
+                weight_attach_batch_id = %s,
+                weight_attach_reason = %s,
+                weight_presence_run_id = %s,
+                weight_presence_run_row_id = %s,
+                weight_role = %s,
+                updated_at = NOW()
+            WHERE id = %s AND organization_id = %s AND bag_id = %s
+              AND (
+                weight_lbs IS NULL
+                OR ABS(COALESCE(weight_lbs, 0) - %s) > 0.05
+              )
+              AND COALESCE(weight_source, '') NOT IN (
+                'manager_correction', 'correct_weight', 'step1_edit',
+                'rinse_step1_edit', 'operator_manual_correction',
+                'OPERATOR_MANUAL_CORRECTION'
+              )
+            """,
+            (
+                weight_lbs,
+                observed_at,
+                weight_source,
+                int(upload_batch_id) if upload_batch_id is not None else None,
+                weight_attach_reason,
+                int(presence_run_id) if presence_run_id is not None else None,
+                int(presence_run_row_id) if presence_run_row_id is not None else None,
+                weight_role,
+                int(scan_event_id),
+                int(organization_id),
+                bag_id,
+                float(weight_lbs),
+            ),
+        )
+    else:
+        cursor.execute(
+            """
+            UPDATE rinse_bag_scan_events
+            SET weight_lbs = %s,
+                weight_observed_at = %s,
+                weight_source = %s,
+                weight_attach_batch_id = %s,
+                weight_attach_reason = %s,
+                weight_presence_run_id = %s,
+                weight_presence_run_row_id = %s,
+                weight_role = %s,
+                updated_at = NOW()
+            WHERE id = %s AND organization_id = %s AND bag_id = %s AND weight_lbs IS NULL
+            """,
+            (
+                weight_lbs,
+                observed_at,
+                weight_source,
+                int(upload_batch_id) if upload_batch_id is not None else None,
+                weight_attach_reason,
+                int(presence_run_id) if presence_run_id is not None else None,
+                int(presence_run_row_id) if presence_run_row_id is not None else None,
+                weight_role,
+                int(scan_event_id),
+                int(organization_id),
+                bag_id,
+            ),
+        )
     return bool(getattr(cursor, "rowcount", 0))
 
 
@@ -578,29 +620,56 @@ def attach_observations_to_weight_events(
         filled[i] = existing
 
     default_source = weight_source or WEIGHT_SOURCE_PRESENCE_RUN
+    pre_lbs = filled.get(0)
+
+    def _can_reconcile_post(idx: int, role: str, current: float | None, new_lbs: float) -> bool:
+        """POST may correct when still provisional (equals PRE) and a later obs differs."""
+        if role != WEIGHT_ROLE_POST:
+            return False
+        if current is None:
+            return False
+        if abs(float(current) - float(new_lbs)) <= 0.05:
+            return False
+        # Provisional = still equal to PRE (or PRE unknown and we see a change from first fill).
+        if pre_lbs is not None and abs(float(current) - float(pre_lbs)) <= 0.05:
+            return True
+        return False
 
     for obs in numeric_obs:
         observed_at: datetime = obs["observed_at"]
         lbs: float = obs["weight_num"]
         candidates: list[dict[str, Any]] = []
+        reconcile_candidates: list[dict[str, Any]] = []
         for slot in intervals:
             idx = int(slot["index"])
             ev = slot["event"]
             ev_ts = slot["event_ts"]
+            role = slot["role"]
             if ev_ts is None or ev_ts > observed_at:
                 continue
             if not _observation_in_interval(
                 observed_at, slot["interval_start"], slot["interval_end"]
             ):
                 continue
-            if filled.get(idx) is not None:
+            if _event_is_manager_locked(ev, locked_roles) or role in locked_roles:
                 continue
-            if _event_is_manager_locked(ev, locked_roles) or slot["role"] in locked_roles:
-                # Manager-corrected role: never attach automatically.
-                continue
-            candidates.append(slot)
+            current = filled.get(idx)
+            if current is None:
+                candidates.append(slot)
+            elif _can_reconcile_post(idx, role, current, lbs):
+                reconcile_candidates.append(slot)
 
-        if not candidates:
+        target = None
+        allow_overwrite = False
+        attach_reason = REASON_INTERVAL_ATTACH
+        if candidates:
+            target = candidates[-1]
+        elif reconcile_candidates:
+            target = reconcile_candidates[-1]
+            allow_overwrite = True
+            attach_reason = REASON_POST_RECONCILE
+
+        if target is None:
             result["skipped_observations"].append(
                 {
                     "reason": "no_eligible_unfilled_event",
@@ -612,8 +681,7 @@ def attach_observations_to_weight_events(
             )
             continue
 
-        # Most recent eligible unfilled event at or before observation.
-        target = candidates[-1]
+        # Most recent eligible unfilled (or reconcilable POST) event.
         idx = int(target["index"])
         ev = target["event"]
         role = target["role"]
@@ -631,12 +699,13 @@ def attach_observations_to_weight_events(
             "weight_role": role,
             "weight_lbs": lbs,
             "weight_source": src,
-            "weight_attach_reason": REASON_INTERVAL_ATTACH,
+            "weight_attach_reason": attach_reason,
             "weight_observed_at": _iso(observed_at),
             "weight_presence_run_id": obs.get("presence_run_id"),
             "weight_presence_run_row_id": obs.get("presence_run_row_id"),
             "upload_batch_id": obs.get("upload_batch_id"),
             "updated": False,
+            "reconciled": allow_overwrite,
         }
         if not dry_run:
             ok = _apply_weight_to_scan_event(
@@ -646,18 +715,18 @@ def attach_observations_to_weight_events(
                 scan_id,
                 weight_lbs=lbs,
                 weight_source=src,
-                weight_attach_reason=REASON_INTERVAL_ATTACH,
+                weight_attach_reason=attach_reason,
                 observed_at=observed_at,
                 upload_batch_id=obs.get("upload_batch_id"),
                 presence_run_id=obs.get("presence_run_id"),
                 presence_run_row_id=obs.get("presence_run_row_id"),
                 weight_role=role,
+                allow_overwrite=allow_overwrite,
             )
             attached_row["updated"] = ok
             if ok:
                 result["updated_count"] += 1
                 filled[idx] = lbs
-                # Keep in-memory event in sync for subsequent eligibility.
                 ev["weight_lbs"] = lbs
                 ev["weight_role"] = role
                 ev["weight_source"] = src

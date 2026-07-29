@@ -90,10 +90,13 @@ class TestDistinctWfWeightEvents:
 
 class TestDeriveWfCleanWeightFields:
     def test_pre_clean_only_when_no_post_processing_weight(self):
+        # Current-cycle PRE requires entry + garments-reviewed gates.
         timeline = [
             _ev("sent-to-vendor", T0),
+            _ev("move-bag", T0.replace(hour=5), rack="VeeWash Dirty"),
             _ev("weight-entry", T1, weight_lbs=20.0),
-            _ev("add-photos", T2),
+            _ev("garments-reviewed", T2),
+            _ev("add-photos", T2.replace(minute=30)),
             _ev("complete-cleaning", T3),
         ]
         fields = derive_wf_clean_weight_fields(timeline, anchor_ts=T0, as_of_end=T3)
@@ -104,8 +107,10 @@ class TestDeriveWfCleanWeightFields:
     def test_pre_and_post_clean_weight(self):
         timeline = [
             _ev("sent-to-vendor", T0),
+            _ev("move-bag", T0.replace(hour=5), rack="VeeWash Dirty"),
             _ev("weight-entry", T1, weight_lbs=20.0),
-            _ev("add-photos", T2),
+            _ev("garments-reviewed", T2),
+            _ev("add-photos", T2.replace(minute=30)),
             _ev("weight-entry", T3, weight_lbs=12.0),
         ]
         fields = derive_wf_clean_weight_fields(timeline, anchor_ts=T0, as_of_end=T3)

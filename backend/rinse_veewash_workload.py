@@ -1265,7 +1265,9 @@ def build_veewash_daily_workload(
         | set(result.get("completed_without_recognized_entry") or [])
         | set(presence.keys())
     )
-    weights = load_bag_weight_map(cursor, organization_id, weight_ids)
+    weights = load_bag_weight_map(
+        cursor, organization_id, weight_ids, selected_date_et=selected_date_et
+    )
     registry_services = load_registry_service_map(cursor, organization_id, weight_ids)
 
     from backend.rinse_bulk_workitems import (
@@ -1550,7 +1552,9 @@ def build_veewash_daily_workload_from_membership(
     )
 
     weight_ids = sorted(member_set | set(presence.keys()))
-    weights = load_bag_weight_map(cursor, organization_id, weight_ids)
+    weights = load_bag_weight_map(
+        cursor, organization_id, weight_ids, selected_date_et=selected_date_et
+    )
     registry_services = load_registry_service_map(cursor, organization_id, weight_ids)
 
     from backend.rinse_bulk_workitems import (
