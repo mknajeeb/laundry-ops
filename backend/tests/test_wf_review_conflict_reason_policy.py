@@ -846,7 +846,7 @@ def test_persist_day_snapshot_never_bumps_day_bag_updated_at():
     ]
     assert bag_sqls
     compact = bag_sqls[0].replace(" ", "").replace("\n", "")
-    assert "updated_at=updated_at" in compact
+    assert "updated_at=rinse_shift_monitor_day_bags.updated_at" in compact
     assert "updated_at=CURRENT_TIMESTAMP" not in compact
     assert "updated_at=IF" not in compact
-    assert "manager_edit_version=manager_edit_version" in compact
+    assert "manager_edit_version=rinse_shift_monitor_day_bags.manager_edit_version" in compact

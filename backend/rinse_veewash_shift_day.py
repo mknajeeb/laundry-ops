@@ -578,6 +578,256 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
     return rows_out
 
 
+def _day_bag_manager_lock_upsert_sql() -> str:
+    """INSERT ... ON DUPLICATE KEY UPDATE for day bags with manager precedence.
+
+    When ``manager_edit_version > 0``, automatic refresh must not overwrite
+    manager-controlled decision fields. Observational scrape fields still update.
+    Uses INSERT alias ``incoming`` (MySQL 8.0.19+) so VALUES() is not required.
+    """
+    return """
+            INSERT INTO rinse_shift_monitor_day_bags (
+              organization_id, shift_date_et, bag_id, service_type, rush_status,
+              new_or_carryover, workload_entry_type, workload_entry_timestamp,
+              pre_weight_lbs, post_weight_lbs, weight_lbs,
+              canonical_completion_status, canonical_completion_timestamp,
+              canonical_completion_employee, effective_status,
+              review_reason_codes_json, portal_status_at_sync,
+              last_present_scrape, first_confirmed_absent_scrape, disposition,
+              bag_snapshot_json,
+              productivity_employee_name, productivity_completed_at,
+              productivity_weight_lbs, productivity_credit_eligible,
+              productivity_exclusion_reason,
+              manager_edit_version
+            ) VALUES (
+              %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+              %s,%s,%s,%s,%s,
+              0
+            ) AS incoming
+            ON DUPLICATE KEY UPDATE
+              service_type=incoming.service_type,
+              rush_status=incoming.rush_status,
+              new_or_carryover=incoming.new_or_carryover,
+              workload_entry_type=incoming.workload_entry_type,
+              workload_entry_timestamp=incoming.workload_entry_timestamp,
+              pre_weight_lbs=incoming.pre_weight_lbs,
+              post_weight_lbs=incoming.post_weight_lbs,
+              weight_lbs=incoming.weight_lbs,
+              -- Manager decision > automatic classifier > raw scrape.
+              -- manager_edit_version > 0: preserve decision fields; never keep
+              -- only the version token while replacing status/outcome.
+              canonical_completion_status=IF(
+                rinse_shift_monitor_day_bags.manager_edit_version > 0,
+                rinse_shift_monitor_day_bags.canonical_completion_status,
+                incoming.canonical_completion_status
+              ),
+              canonical_completion_timestamp=IF(
+                rinse_shift_monitor_day_bags.manager_edit_version > 0,
+                rinse_shift_monitor_day_bags.canonical_completion_timestamp,
+                incoming.canonical_completion_timestamp
+              ),
+              canonical_completion_employee=IF(
+                rinse_shift_monitor_day_bags.manager_edit_version > 0,
+                rinse_shift_monitor_day_bags.canonical_completion_employee,
+                incoming.canonical_completion_employee
+              ),
+              effective_status=IF(
+                rinse_shift_monitor_day_bags.manager_edit_version > 0,
+                rinse_shift_monitor_day_bags.effective_status,
+                incoming.effective_status
+              ),
+              review_reason_codes_json=IF(
+                rinse_shift_monitor_day_bags.manager_edit_version > 0,
+                rinse_shift_monitor_day_bags.review_reason_codes_json,
+                incoming.review_reason_codes_json
+              ),
+              portal_status_at_sync=incoming.portal_status_at_sync,
+              last_present_scrape=incoming.last_present_scrape,
+              first_confirmed_absent_scrape=incoming.first_confirmed_absent_scrape,
+              disposition=IF(
+                rinse_shift_monitor_day_bags.manager_edit_version > 0,
+                rinse_shift_monitor_day_bags.disposition,
+                COALESCE(incoming.disposition, rinse_shift_monitor_day_bags.disposition)
+              ),
+              bag_snapshot_json=IF(
+                rinse_shift_monitor_day_bags.manager_edit_version > 0,
+                rinse_shift_monitor_day_bags.bag_snapshot_json,
+                incoming.bag_snapshot_json
+              ),
+              productivity_employee_name=IF(
+                rinse_shift_monitor_day_bags.manager_edit_version > 0,
+                rinse_shift_monitor_day_bags.productivity_employee_name,
+                incoming.productivity_employee_name
+              ),
+              productivity_completed_at=IF(
+                rinse_shift_monitor_day_bags.manager_edit_version > 0,
+                rinse_shift_monitor_day_bags.productivity_completed_at,
+                incoming.productivity_completed_at
+              ),
+              productivity_weight_lbs=IF(
+                rinse_shift_monitor_day_bags.manager_edit_version > 0,
+                rinse_shift_monitor_day_bags.productivity_weight_lbs,
+                incoming.productivity_weight_lbs
+              ),
+              productivity_credit_eligible=IF(
+                rinse_shift_monitor_day_bags.manager_edit_version > 0,
+                rinse_shift_monitor_day_bags.productivity_credit_eligible,
+                incoming.productivity_credit_eligible
+              ),
+              productivity_exclusion_reason=IF(
+                rinse_shift_monitor_day_bags.manager_edit_version > 0,
+                rinse_shift_monitor_day_bags.productivity_exclusion_reason,
+                incoming.productivity_exclusion_reason
+              ),
+              -- Never bump the manager-edit optimistic-lock token on refresh.
+              updated_at=rinse_shift_monitor_day_bags.updated_at,
+              manager_edit_version=rinse_shift_monitor_day_bags.manager_edit_version
+            """
+
+
+def _load_persisted_review_reasons_by_bag(
+    cursor, organization_id: int, shift_date_et: date
+) -> dict[str, list[str]]:
+    """Authoritative review reasons from protected day-bag rows."""
+    ensure_shift_monitor_day_tables(cursor)
+    cursor.execute(
+        """
+        SELECT bag_id, review_reason_codes_json, effective_status
+        FROM rinse_shift_monitor_day_bags
+        WHERE organization_id = %s AND shift_date_et = %s
+        """,
+        (int(organization_id), shift_date_et),
+    )
+    raw = cursor.fetchall()
+    if not isinstance(raw, (list, tuple)):
+        raw = []
+    out: dict[str, list[str]] = {}
+    for row in raw:
+        if not isinstance(row, Mapping):
+            continue
+        bid = normalize_bag_id(row.get("bag_id"))
+        if not bid:
+            continue
+        if _headline_bucket_for_status(row.get("effective_status")) != "review_required":
+            continue
+        codes = _json_load(row.get("review_reason_codes_json")) or []
+        if isinstance(codes, list) and codes:
+            out[bid] = [str(c) for c in codes if str(c).strip()]
+    return out
+
+
+def _review_by_reason_from_map(
+    reasons_by_bag: Mapping[str, list[str]],
+) -> dict[str, list[str]]:
+    by_reason: dict[str, list[str]] = {}
+    for bid, codes in (reasons_by_bag or {}).items():
+        nb = normalize_bag_id(bid)
+        if not nb:
+            continue
+        for code in codes or []:
+            key = str(code or "").strip()
+            if not key:
+                continue
+            by_reason.setdefault(key, []).append(nb)
+    for key in list(by_reason):
+        by_reason[key] = sorted(set(by_reason[key]))
+    return by_reason
+
+
+def _sync_day_header_from_persisted_bags(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    *,
+    summary: Mapping[str, Any],
+    workload: Mapping[str, Any],
+    next_status: str,
+    opened_at: Any,
+    now: datetime,
+) -> dict[str, Any]:
+    """Persist headline_json from protected day-bag statuses (not live classifier).
+
+    Live classifier review reasons are retained under
+    ``workload_meta.auto_classifier_review_reasons_by_bag`` as diagnostics only.
+    """
+    status_by_bag = _load_day_bag_status_projection(
+        cursor, organization_id, shift_date_et
+    )
+    headline = _apply_day_bag_statuses_to_headline(dict(summary or {}), status_by_bag)
+    persisted_reasons = _load_persisted_review_reasons_by_bag(
+        cursor, organization_id, shift_date_et
+    )
+    headline["review_reasons_by_bag"] = persisted_reasons
+    headline["review_by_reason"] = _review_by_reason_from_map(persisted_reasons)
+
+    auto_reasons = (
+        (workload or {}).get("review_reasons_by_bag")
+        or (summary or {}).get("review_reasons_by_bag")
+        or {}
+    )
+    auto_norm = {
+        normalize_bag_id(k): [str(c) for c in (v or []) if str(c).strip()]
+        for k, v in dict(auto_reasons).items()
+        if normalize_bag_id(k)
+    }
+    buckets = count_day_bag_status_buckets(status_by_bag)
+    review_n = int(buckets.get("review_required_count") or 0)
+    meta = {
+        "selected_date_et": shift_date_et.isoformat(),
+        "counts": {
+            **dict((workload or {}).get("counts") or {}),
+            "completed": buckets.get("completed_count"),
+            "pending": buckets.get("pending_count"),
+            "review_required": review_n,
+            "total_workload": buckets.get("status_total"),
+        },
+        # UI / drawer authority: protected persisted day-bag reasons only.
+        "review_reasons_by_bag": persisted_reasons,
+        "review_by_reason": headline.get("review_by_reason"),
+        # Diagnostics only — must not drive effective_status or Review Required cards.
+        "auto_classifier_review_reasons_by_bag": auto_norm,
+        "headline_status_synced_from_day_bags": True,
+    }
+    headline["completed_count"] = int(buckets.get("completed_count") or 0)
+    headline["pending_count"] = int(buckets.get("pending_count") or 0)
+    headline["review_required_count"] = review_n
+
+    cursor.execute(
+        """
+        INSERT INTO rinse_shift_monitor_days (
+          organization_id, shift_date_et, status, opened_at, last_sync_at,
+          review_required_count, headline_json, workload_meta_json
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) AS incoming
+        ON DUPLICATE KEY UPDATE
+          status = incoming.status,
+          opened_at = COALESCE(
+            rinse_shift_monitor_days.opened_at, incoming.opened_at
+          ),
+          last_sync_at = incoming.last_sync_at,
+          review_required_count = incoming.review_required_count,
+          headline_json = incoming.headline_json,
+          workload_meta_json = incoming.workload_meta_json,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            int(organization_id),
+            shift_date_et,
+            next_status,
+            opened_at,
+            now,
+            review_n,
+            _json_dump(headline),
+            _json_dump(meta),
+        ),
+    )
+    return {
+        "headline": headline,
+        "workload_meta": meta,
+        "review_required_count": review_n,
+        "status_buckets": buckets,
+    }
+
+
 def persist_day_snapshot(
     cursor,
     organization_id: int,
@@ -588,13 +838,18 @@ def persist_day_snapshot(
     status: str | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
-    """Upsert day header + bag rows. No-op for CLOSED days unless force=True."""
+    """Upsert day header + bag rows. No-op for CLOSED days unless force=True.
+
+    Manager precedence: rows with ``manager_edit_version > 0`` keep their
+    decision fields across automatic scrape/Step-1 rebuilds. Headline counts
+    and Review ID sets are projected from the protected day-bag rows after
+    UPSERT — never from the live classifier summary alone.
+    """
     ensure_shift_monitor_day_tables(cursor)
     existing = get_day_record(cursor, organization_id, shift_date_et)
     if existing and existing.get("status") == STATUS_CLOSED and not force:
         return existing
 
-    review_n = int((summary.get("exceptions") or {}).get("review_required") or 0)
     now = datetime.utcnow()
     # When caller passes an explicit status (e.g. CLOSED), keep it. Otherwise derive
     # from admitted workload + pending/review — never READY_TO_CLOSE on empty days.
@@ -617,19 +872,20 @@ def persist_day_snapshot(
     else:
         opened_at = opened_at or now
 
+    # Ensure day header row exists before bag UPSERTs (shell only; headline
+    # rewritten from protected day bags after the bag loop).
     cursor.execute(
         """
         INSERT INTO rinse_shift_monitor_days (
           organization_id, shift_date_et, status, opened_at, last_sync_at,
           review_required_count, headline_json, workload_meta_json
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) AS incoming
         ON DUPLICATE KEY UPDATE
-          status = VALUES(status),
-          opened_at = COALESCE(rinse_shift_monitor_days.opened_at, VALUES(opened_at)),
-          last_sync_at = VALUES(last_sync_at),
-          review_required_count = VALUES(review_required_count),
-          headline_json = VALUES(headline_json),
-          workload_meta_json = VALUES(workload_meta_json),
+          status = incoming.status,
+          opened_at = COALESCE(
+            rinse_shift_monitor_days.opened_at, incoming.opened_at
+          ),
+          last_sync_at = incoming.last_sync_at,
           updated_at = CURRENT_TIMESTAMP
         """,
         (
@@ -638,121 +894,20 @@ def persist_day_snapshot(
             next_status,
             opened_at,
             now,
-            review_n,
-            _json_dump(summary),
-            _json_dump(
-                {
-                    "selected_date_et": shift_date_et.isoformat(),
-                    "counts": workload.get("counts"),
-                    "review_reasons_by_bag": workload.get("review_reasons_by_bag")
-                    or summary.get("review_reasons_by_bag"),
-                    "review_by_reason": summary.get("review_by_reason"),
-                }
-            ),
+            int((existing or {}).get("review_required_count") or 0),
+            _json_dump((existing or {}).get("headline") or summary),
+            _json_dump((existing or {}).get("workload_meta") or {}),
         ),
     )
 
     bags = _bag_rows_from_workload(workload, summary)
     from backend.rinse_step1_productivity_fast import project_productivity_fields_for_day_bag
 
+    upsert_sql = _day_bag_manager_lock_upsert_sql()
     for b in bags:
         proj = project_productivity_fields_for_day_bag(b)
         cursor.execute(
-            """
-            INSERT INTO rinse_shift_monitor_day_bags (
-              organization_id, shift_date_et, bag_id, service_type, rush_status,
-              new_or_carryover, workload_entry_type, workload_entry_timestamp,
-              pre_weight_lbs, post_weight_lbs, weight_lbs,
-              canonical_completion_status, canonical_completion_timestamp,
-              canonical_completion_employee, effective_status,
-              review_reason_codes_json, portal_status_at_sync,
-              last_present_scrape, first_confirmed_absent_scrape, disposition,
-              bag_snapshot_json,
-              productivity_employee_name, productivity_completed_at,
-              productivity_weight_lbs, productivity_credit_eligible,
-              productivity_exclusion_reason,
-              manager_edit_version
-            ) VALUES (
-              %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-              %s,%s,%s,%s,%s,
-              0
-            )
-            ON DUPLICATE KEY UPDATE
-              service_type=VALUES(service_type),
-              rush_status=VALUES(rush_status),
-              new_or_carryover=VALUES(new_or_carryover),
-              workload_entry_type=VALUES(workload_entry_type),
-              workload_entry_timestamp=VALUES(workload_entry_timestamp),
-              pre_weight_lbs=VALUES(pre_weight_lbs),
-              post_weight_lbs=VALUES(post_weight_lbs),
-              weight_lbs=VALUES(weight_lbs),
-              -- Manager-edited rows (manager_edit_version > 0): preserve status,
-              -- completion, review reasons, and snapshot. Scrape refresh must not
-              -- revert an explicit manager decision.
-              canonical_completion_status=IF(
-                manager_edit_version > 0,
-                canonical_completion_status,
-                VALUES(canonical_completion_status)
-              ),
-              canonical_completion_timestamp=IF(
-                manager_edit_version > 0,
-                canonical_completion_timestamp,
-                VALUES(canonical_completion_timestamp)
-              ),
-              canonical_completion_employee=IF(
-                manager_edit_version > 0,
-                canonical_completion_employee,
-                VALUES(canonical_completion_employee)
-              ),
-              effective_status=IF(
-                manager_edit_version > 0,
-                effective_status,
-                VALUES(effective_status)
-              ),
-              review_reason_codes_json=IF(
-                manager_edit_version > 0,
-                review_reason_codes_json,
-                VALUES(review_reason_codes_json)
-              ),
-              portal_status_at_sync=VALUES(portal_status_at_sync),
-              last_present_scrape=VALUES(last_present_scrape),
-              first_confirmed_absent_scrape=VALUES(first_confirmed_absent_scrape),
-              disposition=COALESCE(VALUES(disposition), disposition),
-              bag_snapshot_json=IF(
-                manager_edit_version > 0,
-                bag_snapshot_json,
-                VALUES(bag_snapshot_json)
-              ),
-              productivity_employee_name=IF(
-                manager_edit_version > 0,
-                productivity_employee_name,
-                VALUES(productivity_employee_name)
-              ),
-              productivity_completed_at=IF(
-                manager_edit_version > 0,
-                productivity_completed_at,
-                VALUES(productivity_completed_at)
-              ),
-              productivity_weight_lbs=IF(
-                manager_edit_version > 0,
-                productivity_weight_lbs,
-                VALUES(productivity_weight_lbs)
-              ),
-              productivity_credit_eligible=IF(
-                manager_edit_version > 0,
-                productivity_credit_eligible,
-                VALUES(productivity_credit_eligible)
-              ),
-              productivity_exclusion_reason=IF(
-                manager_edit_version > 0,
-                productivity_exclusion_reason,
-                VALUES(productivity_exclusion_reason)
-              ),
-              -- Source/membership/productivity refresh must never bump the manager-edit
-              -- optimistic-lock token (manager_edit_version or updated_at).
-              updated_at=updated_at,
-              manager_edit_version=manager_edit_version
-            """,
+            upsert_sql,
             (
                 int(organization_id),
                 shift_date_et,
@@ -783,6 +938,7 @@ def persist_day_snapshot(
             ),
         )
     # Drop presence-only / stale orphans left by older persist bugs.
+    # Never delete manager-locked rows even if a buggy rebuild omits them.
     keep_ids = sorted({normalize_bag_id(b.get("bag_id")) for b in bags if b.get("bag_id")})
     if keep_ids:
         placeholders = ",".join(["%s"] * len(keep_ids))
@@ -792,9 +948,22 @@ def persist_day_snapshot(
             WHERE organization_id = %s
               AND shift_date_et = %s
               AND bag_id NOT IN ({placeholders})
+              AND manager_edit_version = 0
             """,
             (int(organization_id), shift_date_et, *keep_ids),
         )
+
+    _sync_day_header_from_persisted_bags(
+        cursor,
+        organization_id,
+        shift_date_et,
+        summary=summary,
+        workload=workload,
+        next_status=next_status,
+        opened_at=opened_at,
+        now=now,
+    )
+
     try:
         from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
 

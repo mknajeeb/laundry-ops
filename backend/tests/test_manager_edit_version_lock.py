@@ -183,12 +183,26 @@ def test_persist_day_snapshot_sql_preserves_manager_edit_version():
     ]
     assert bag_sqls
     compact = bag_sqls[0].replace(" ", "").replace("\n", "")
-    assert "manager_edit_version=manager_edit_version" in compact
-    assert "updated_at=updated_at" in compact
-    assert "IF(manager_edit_version>0,effective_status,VALUES(effective_status))" in compact
+    assert "ASincoming" in compact
+    assert "manager_edit_version=rinse_shift_monitor_day_bags.manager_edit_version" in compact
+    assert "updated_at=rinse_shift_monitor_day_bags.updated_at" in compact
     assert (
-        "IF(manager_edit_version>0,canonical_completion_timestamp,"
-        "VALUES(canonical_completion_timestamp))" in compact
+        "IF(rinse_shift_monitor_day_bags.manager_edit_version>0,"
+        "rinse_shift_monitor_day_bags.effective_status,incoming.effective_status)"
+        in compact
+    )
+    assert (
+        "IF(rinse_shift_monitor_day_bags.manager_edit_version>0,"
+        "rinse_shift_monitor_day_bags.canonical_completion_timestamp,"
+        "incoming.canonical_completion_timestamp)"
+        in compact
+    )
+    # Must not use the unguarded overwrite form that caused Jul 28 prod regressions.
+    assert "effective_status=VALUES(effective_status)" not in bag_sqls[0]
+    assert "effective_status=incoming.effective_status," not in compact.replace(
+        "IF(rinse_shift_monitor_day_bags.manager_edit_version>0,"
+        "rinse_shift_monitor_day_bags.effective_status,incoming.effective_status)",
+        "",
     )
 
 

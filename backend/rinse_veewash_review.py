@@ -634,7 +634,15 @@ def expand_review_required(
             "reason_codes": list(reasons.get(bid) or []),
         }
 
-    # Ensure mismatched classification bags in review when flagged (completed only)
+    # Ensure mismatched classification bags in review when flagged (completed only).
+    #
+    # Precedence: manager decision > automatic classifier > raw scrape.
+    # This live classify may still flag SERVICE_CLASSIFICATION_MISMATCH for
+    # completed bags. persist_day_snapshot must NOT let that overwrite a row
+    # with manager_edit_version > 0. Automatic mismatch evidence is retained
+    # only as diagnostics in workload_meta.auto_classifier_review_reasons_by_bag
+    # after the protected day-bag UPSERT; it must not re-admit Review Required
+    # or replace manager completion fields for locked rows.
     for bid, codes in list(reasons.items()):
         if REASON_SERVICE_CLASSIFICATION_MISMATCH in codes and bid in (new_today | carryover):
             row = rows_by_id.get(bid) or {"bag_id": bid}

@@ -133,19 +133,80 @@ register_rinse_export_routes(app)
 start_daily_reset_scheduler(app)
 
 
+def _load_artifact_revision() -> str:
+    """Revision baked into the deployed package (authoritative runtime stamp)."""
+    import os
+    from pathlib import Path
+
+    env_sha = (os.environ.get("ARTIFACT_SHA") or "").strip()
+    if env_sha:
+        return env_sha
+    for candidate in (
+        Path(__file__).resolve().parent / "release_revision.json",
+        Path(__file__).resolve().parent.parent / "release_revision.json",
+    ):
+        try:
+            if candidate.is_file():
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+                sha = str((data or {}).get("sha") or "").strip()
+                if sha:
+                    return sha
+        except Exception:
+            continue
+    return ""
+
+
 @app.route("/health", methods=["GET"])
 def health():
-    """Liveness probe; does not touch the database."""
+    """Liveness probe; does not touch the database.
+
+    Exposes source / build / artifact / runtime revisions so deploy stamp skew
+    (e.g. GITHUB_SHA updated while SOURCE_RELEASE_SHA stays stale) is visible.
+    When EXPECTED_RELEASE_SHA is set and does not match the artifact/runtime
+    revision, status is ``unhealthy`` (HTTP 503).
+    """
     import os
 
-    out = {"status": "ok", "api_marker": "shift-monitor-v2"}
-    git_sha = (os.environ.get("GITHUB_SHA") or os.environ.get("BUILD_SHA") or "").strip()
+    source_revision = (
+        os.environ.get("SOURCE_RELEASE_SHA")
+        or os.environ.get("GITHUB_SHA")
+        or ""
+    ).strip()
+    build_revision = (
+        os.environ.get("BUILD_SHA") or os.environ.get("GITHUB_SHA") or ""
+    ).strip()
+    artifact_revision = _load_artifact_revision()
+    runtime_revision = (artifact_revision or build_revision or source_revision).strip()
+    expected_revision = (os.environ.get("EXPECTED_RELEASE_SHA") or "").strip()
     build_time = (os.environ.get("BUILD_TIME") or "").strip()
-    if git_sha:
-        out["git_sha"] = git_sha
+
+    revisions = {
+        "source_revision": source_revision or None,
+        "build_revision": build_revision or None,
+        "artifact_revision": artifact_revision or None,
+        "runtime_revision": runtime_revision or None,
+        "expected_revision": expected_revision or None,
+    }
+    stamped = [v for v in (source_revision, build_revision, artifact_revision, runtime_revision) if v]
+    stamp_agreement = len(set(stamped)) <= 1 if stamped else True
+    expected_ok = (not expected_revision) or (
+        expected_revision == runtime_revision
+        or expected_revision == artifact_revision
+    )
+    healthy = bool(stamp_agreement and expected_ok)
+
+    out = {
+        "status": "ok" if healthy else "unhealthy",
+        "api_marker": "shift-monitor-v2",
+        # Backward-compatible single field: prefer runtime/artifact over bare GITHUB_SHA.
+        "git_sha": runtime_revision or source_revision or None,
+        **revisions,
+        "revision_stamp_agreement": stamp_agreement,
+        "expected_revision_match": expected_ok,
+    }
     if build_time:
         out["build_time"] = build_time
-    return jsonify(out), 200
+    return jsonify(out), (200 if healthy else 503)
 
 
 def _trigger_daily_operational_reset_if_needed(conn, tenant_oid: int):

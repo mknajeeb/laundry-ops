@@ -50,6 +50,39 @@ jobs:
           test -f scripts/rinse-cleanertickets/package.json
           ls -la scripts/rinse-cleanertickets/
 
+      - name: Stamp release revision into artifact
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          sha = "${{ github.sha }}".strip()
+          assert len(sha) >= 7, sha
+          payload = {
+              "sha": sha,
+              "built_at": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "ref": "${{ github.ref }}",
+          }
+          Path("backend/release_revision.json").write_text(
+              json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+          )
+          Path("release_revision.json").write_text(
+              json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+          )
+          print(json.dumps(payload))
+          PY
+          test -f backend/release_revision.json
+          grep -q "${{ github.sha }}" backend/release_revision.json
+          # Fail the build if the manager-lock UPSERT is missing from the artifact source.
+          python - <<'PY'
+          from pathlib import Path
+          text = Path("backend/rinse_veewash_shift_day.py").read_text(encoding="utf-8")
+          assert "AS incoming" in text, "day-bag UPSERT must use INSERT alias incoming"
+          assert "rinse_shift_monitor_day_bags.manager_edit_version > 0" in text
+          assert "incoming.effective_status" in text
+          assert "_sync_day_header_from_persisted_bags" in text
+          print("manager-lock UPSERT + headline sync present in artifact source")
+          PY
+
       - name: Daily upload checkout regression (required)
         run: |
           source antenv/bin/activate
@@ -93,6 +126,10 @@ jobs:
           pwd
           test -f backend/app.py
           test -f scripts/rinse-cleanertickets/scrape.mjs
+          test -f backend/release_revision.json
+          grep -q "${{ github.sha }}" backend/release_revision.json
+          grep -q "AS incoming" backend/rinse_veewash_shift_day.py
+          grep -q "incoming.effective_status" backend/rinse_veewash_shift_day.py
           ls -la scripts/rinse-cleanertickets/
 
       - name: Login to Azure
@@ -119,6 +156,10 @@ jobs:
             --settings \
               SCM_DO_BUILD_DURING_DEPLOYMENT=false \
               GITHUB_SHA=${{ github.sha }} \
+              BUILD_SHA=${{ github.sha }} \
+              SOURCE_RELEASE_SHA=${{ github.sha }} \
+              EXPECTED_RELEASE_SHA=${{ github.sha }} \
+              ARTIFACT_SHA=${{ github.sha }} \
               BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
       - name: 'Deploy to Azure Web App'
@@ -133,29 +174,47 @@ jobs:
         shell: bash
         run: |
           API="https://laundryops-api-dscucxa8c6dbghd9.centralus-01.azurewebsites.net"
+          EXPECTED="${{ github.sha }}"
           for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
             BODY=$(curl -sS --max-time 20 "$API/health" || true)
             echo "health attempt $i: $BODY"
-            STATUS=$(HEALTH_BODY="$BODY" python - <<'PYHEALTH'
+            CHECK=$(HEALTH_BODY="$BODY" EXPECTED_SHA="$EXPECTED" python - <<'PYHEALTH'
           import json
           import os
+          import sys
 
           try:
-              print(json.loads(os.environ.get("HEALTH_BODY", "{}")).get("status", ""))
+              body = json.loads(os.environ.get("HEALTH_BODY", "{}"))
           except Exception:
-              print("")
+              print("parse_error")
+              sys.exit(0)
+          expected = (os.environ.get("EXPECTED_SHA") or "").strip()
+          status = str(body.get("status") or "")
+          runtime = str(
+              body.get("runtime_revision")
+              or body.get("artifact_revision")
+              or body.get("git_sha")
+              or ""
+          ).strip()
+          source = str(body.get("source_revision") or "").strip()
+          build = str(body.get("build_revision") or "").strip()
+          if status != "ok":
+              print("not_ok")
+          elif expected and expected not in (runtime, source, build, str(body.get("git_sha") or "")):
+              print("sha_mismatch")
+          elif body.get("revision_stamp_agreement") is False:
+              print("stamp_disagree")
+          else:
+              print("ok")
           PYHEALTH
           )
-            if [ "$STATUS" = "ok" ]; then
-              if [[ "$BODY" == *"${{ github.sha }}"* ]]; then
-                echo "Verified production /health reports commit ${{ github.sha }}"
-              else
-                echo "::warning::API /health is ok but did not report git_sha ${{ github.sha }} - check app setting update if build stamps are required"
-              fi
+            if [ "$CHECK" = "ok" ]; then
+              echo "Verified production /health reports agreed revision ${EXPECTED}"
               exit 0
             fi
+            echo "health check result=$CHECK"
             sleep 10
           done
-          echo "::error::API /health did not return status ok after deploy"
+          echo "::error::API /health did not return agreed revision ${EXPECTED} after deploy"
           curl -i --max-time 20 "$API/health" || true
           exit 1
