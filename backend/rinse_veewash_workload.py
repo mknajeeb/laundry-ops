@@ -107,6 +107,8 @@ OUTCOME_COMPLETED = "completed"
 OUTCOME_PENDING = "pending"
 OUTCOME_DISAPPEARED = "disappeared_exception"
 OUTCOME_REVIEW_REQUIRED = "review_required"
+# Release B close-archive: unresolved rows at day close (display: Unfinished at Close).
+OUTCOME_STALE = "stale"
 
 SERVICE_WF = "WF"
 SERVICE_HD = "HD"

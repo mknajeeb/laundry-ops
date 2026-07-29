@@ -715,14 +715,20 @@ def register_rinse_shift_analysis_routes(
                 list_close_audit,
                 validate_close,
                 build_or_load_step1_for_date,
+                load_day_bags,
+            )
+            from backend.rinse_shift_day_close_archive import (
+                build_close_confirmation_summary,
             )
 
-            # Read-only status bar: never rebuild/persist the live day.
-            from backend.rinse_veewash_shift_day import load_day_bags
-
+            # May archive yesterday on ET rollover (Release B); commit that freeze.
             _wl, summary, day_rec = build_or_load_step1_for_date(
                 cursor, org, day, persist_live=False, include_bag_rows=False
             )
+            try:
+                conn.commit()
+            except Exception:
+                pass
             day_bags = load_day_bags(cursor, org, day)
             validation = validate_close(
                 summary or {},
@@ -731,12 +737,26 @@ def register_rinse_shift_analysis_routes(
                 shift_date_et=day,
                 day_bags=day_bags,
             )
+            confirmation = build_close_confirmation_summary(day_bags)
+            # Release B close gate: archive close is always allowed when started.
+            archive_ok = True
+            day_status = str((day_rec or {}).get("status") or "").upper()
+            if day_status in ("", "NOT_STARTED"):
+                archive_ok = False
+            validation = dict(validation or {})
+            validation["close_archive"] = {
+                "ok": archive_ok,
+                "model": "fresh_day_close_archive",
+                "confirmation": confirmation,
+                "can_close": archive_ok and day_status != "CLOSED",
+            }
             return jsonify(
                 json_safe_rinse(
                     {
                         "day": day_rec or get_day_record(cursor, org, day),
                         "shift_day": (summary or {}).get("shift_day"),
                         "validation": validation,
+                        "close_confirmation": confirmation,
                         "audit": list_close_audit(cursor, org, day),
                     }
                 )
@@ -766,6 +786,21 @@ def register_rinse_shift_analysis_routes(
                 return jsonify({"error": "invalid_date"}), 400
             from backend.rinse_veewash_shift_day import close_shift_day
 
+            expected_completed = body.get("expected_completed")
+            expected_unfinished = body.get("expected_unfinished")
+            try:
+                expected_completed = (
+                    int(expected_completed) if expected_completed is not None else None
+                )
+            except (TypeError, ValueError):
+                expected_completed = None
+            try:
+                expected_unfinished = (
+                    int(expected_unfinished) if expected_unfinished is not None else None
+                )
+            except (TypeError, ValueError):
+                expected_unfinished = None
+
             out = close_shift_day(
                 cursor,
                 org,
@@ -778,10 +813,21 @@ def register_rinse_shift_analysis_routes(
                 ),
                 reason=body.get("reason"),
                 checklist=body.get("checklist"),
+                expected_completed=expected_completed,
+                expected_unfinished=expected_unfinished,
             )
             if not out.get("ok"):
                 conn.rollback()
-                status = 409 if out.get("error") == "shift_not_ready_to_close" else 400
+                err = out.get("error")
+                status = (
+                    409
+                    if err
+                    in (
+                        "shift_not_ready_to_close",
+                        "close_confirmation_stale",
+                    )
+                    else 400
+                )
                 return jsonify(json_safe_rinse(out)), status
             conn.commit()
             return jsonify(json_safe_rinse(out))

@@ -151,17 +151,19 @@ def test_reopen_clears_closed_by_fields_and_does_not_autocommit():
     commit.assert_not_called()
 
 
-def test_close_rejects_unresolved_reviews_without_mutation():
+def test_close_archives_unresolved_reviews():
+    """Release B: review/pending archive to stale instead of blocking close."""
     cursor = MagicMock()
     summary = _summary(review=2, completed=72, pending=9, active=83)
     day = {"status": STATUS_OPEN, "headline": summary}
+    closed = {**day, "status": STATUS_CLOSED}
     bags = [
         {"bag_id": "WPND000000", "service_type": "WF", "effective_status": "pending"},
         {"bag_id": "WREV000000", "service_type": "WF", "effective_status": "review_required"},
     ]
     with patch(
         "backend.rinse_veewash_shift_day.get_day_record",
-        return_value=day,
+        side_effect=[day, closed],
     ), patch(
         "backend.rinse_veewash_shift_day.summary_from_day_record",
         return_value=summary,
@@ -171,6 +173,8 @@ def test_close_rejects_unresolved_reviews_without_mutation():
     ), patch(
         "backend.rinse_veewash_shift_day._write_audit",
     ) as audit, patch(
+        "backend.rinse_employee_completed_bags.clear_step1_productivity_cache",
+    ), patch(
         "backend.rinse_veewash_shift_day._count_hd_partially_recorded",
         return_value=0,
     ):
@@ -180,13 +184,12 @@ def test_close_rejects_unresolved_reviews_without_mutation():
             D1,
             actor_user_id=1,
             actor_display_name="Admin",
-            reason="try override",
+            reason="archive",
             allow_unresolved_reviews=True,
         )
-    assert out["ok"] is False
-    assert out["error"] == "shift_not_ready_to_close"
-    audit.assert_not_called()
-    cursor.execute.assert_not_called()
+    assert out["ok"] is True
+    assert out["archive"]["unfinished"] == 2
+    audit.assert_called_once()
 
 
 def test_correction_api_exports_callable():
@@ -279,7 +282,8 @@ def test_prior_reopened_day_keeps_snapshot():
     assert meta["status"] == STATUS_REOPENED
 
 
-def test_carryover_seeds_pending_bags():
+def test_carryover_seed_is_disabled_no_op():
+    """Release B: prior-day seed must never write next-day rows."""
     from backend.rinse_veewash_shift_day import _seed_next_day_carryover
     from backend.rinse_veewash_workload import OUTCOME_PENDING
 
@@ -293,22 +297,13 @@ def test_carryover_seeds_pending_bags():
             "disposition": "CARRY_FORWARD",
             "bag_snapshot": {"bag_id": "REV1"},
         },
-        {
-            "bag_id": "REV2",
-            "effective_status": "review_required",
-            "disposition": "HISTORICAL_REVIEW_ONLY",
-            "bag_snapshot": {},
-        },
     ]
     with (
         patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=bags),
         patch("backend.rinse_veewash_shift_day.get_day_record", return_value={"status": STATUS_OPEN}),
     ):
         _seed_next_day_carryover(cursor, 3, D1)
-    # INSERT for each carry bag (pending + explicit carry-forward)
-    assert cursor.execute.call_count >= 2
-    sqls = " ".join(str(c.args[0]) for c in cursor.execute.call_args_list)
-    assert "rinse_shift_monitor_day_bags" in sqls
+    assert cursor.execute.call_count == 0
 
 
 def test_closed_snapshot_not_rewritten_without_force():

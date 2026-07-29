@@ -263,7 +263,8 @@ def test_h_batch_closure_allowed_when_no_hd_review_required():
     assert v["blocking_counts"].get("hd_pending_members") == 1
 
 
-def test_close_shift_day_rejects_with_hd_message():
+def test_close_shift_day_archives_hd_review_as_stale():
+    """Release B: HD review no longer blocks close — archived as unfinished."""
     cursor = MagicMock()
     day = {
         "status": "OPEN",
@@ -277,8 +278,10 @@ def test_close_shift_day_rejects_with_hd_message():
             }
         },
     }
+    closed = {**day, "status": "CLOSED"}
     with patch(
-        "backend.rinse_veewash_shift_day.get_day_record", return_value=day
+        "backend.rinse_veewash_shift_day.get_day_record",
+        side_effect=[day, closed],
     ), patch(
         "backend.rinse_veewash_shift_day.summary_from_day_record",
         return_value=day["headline"],
@@ -289,10 +292,15 @@ def test_close_shift_day_rejects_with_hd_message():
                 "bag_id": "HDWIA1",
                 "service_type": "HD",
                 "effective_status": "review_required",
+                "bag_snapshot": {},
             }
         ],
     ), patch(
         "backend.rinse_veewash_shift_day.derive_shift_day_status", return_value="OPEN"
+    ), patch(
+        "backend.rinse_veewash_shift_day._write_audit",
+    ), patch(
+        "backend.rinse_employee_completed_bags.clear_step1_productivity_cache",
     ):
         out = close_shift_day(
             cursor,
@@ -301,13 +309,8 @@ def test_close_shift_day_rejects_with_hd_message():
             actor_user_id=1,
             actor_display_name="Manager",
         )
-    assert out["ok"] is False
-    assert out["message"] == HD_CLOSE_REVIEW_REQUIRED_MESSAGE
-    # No status mutation on reject.
-    assert not any(
-        "UPDATE rinse_shift_monitor_days" in str(c).lower()
-        for c in cursor.execute.call_args_list
-    )
+    assert out["ok"] is True
+    assert out["archive"]["unfinished"] == 1
 
 
 def test_wf_untouched_by_hd_review_rewrite():

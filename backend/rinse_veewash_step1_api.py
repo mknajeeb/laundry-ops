@@ -183,6 +183,9 @@ def normalize_step1_queue_metric(raw: str | None) -> str:
         "production_missing": "pending",
         "review": "review_required",
         "review_required": "review_required",
+        "unfinished_at_close": "unfinished_at_close",
+        "unfinished": "unfinished_at_close",
+        "stale": "unfinished_at_close",
         "new_today": "new_today",
         "carryover": "carryover",
         "washed": "completed",
@@ -264,6 +267,7 @@ def _filter_bag_ids(
         "completed": "completed",
         "pending": "pending",
         "review_required": "review_required",
+        "unfinished_at_close": "unfinished_at_close",
         "active_workload": None,
     }.get(metric_norm, metric_norm)
 

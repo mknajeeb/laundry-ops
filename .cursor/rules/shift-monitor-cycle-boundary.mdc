@@ -53,10 +53,15 @@ Permanent lock: `backend/tests/fixtures/shift_monitor_jul27_org3_wf_completion_p
 
 ## Out of scope for this resolver
 
-- Prior-day incomplete **carryover** (Release B — separate workstream)
+- Prior-day incomplete **carryover** (explicitly rejected — Release B is fresh-day
+  close-and-archive, not carryover seeding)
 - Employee Productivity attribution
 - HD completion
 - Registry / upload finalize / portal departure
+
+Release B (separate module `rinse_shift_day_close_archive.py`) archives unresolved
+rows as ``stale`` / Unfinished at Close at ET rollover or manual close, and never
+seeds them into the next day. Do not reintroduce `_seed_next_day_carryover`.
 
 ## Deploy gate
 

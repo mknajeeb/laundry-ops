@@ -234,7 +234,7 @@ def test_all_completed_close_succeeds_and_freezes():
     assert out["ok"] is True
     persist.assert_not_called()
     audit.assert_called_once()
-    assert audit.call_args.kwargs.get("action") == "CLOSE"
+    assert audit.call_args.kwargs.get("action") == "CLOSE_ARCHIVE"
     sql = cursor.execute.call_args[0][0]
     assert "UPDATE rinse_shift_monitor_days" in sql
     assert "close_override=%s" in sql
@@ -242,17 +242,23 @@ def test_all_completed_close_succeeds_and_freezes():
     assert cursor.execute.call_args[0][1][5] == 0
 
 
-def test_failed_close_leaves_no_status_or_audit_mutation():
+def test_unresolved_close_archives_pending_as_stale():
+    """Release B: pending no longer blocks close — it becomes Unfinished at Close."""
     bags = _bags_from(wf_pending=1, completed=5)
     summary = _summary(wf_pending=1, completed=5)
     day = {"status": STATUS_OPEN, "headline": summary}
+    closed = {**day, "status": STATUS_CLOSED}
     cursor = MagicMock()
     with (
-        patch("backend.rinse_veewash_shift_day.get_day_record", return_value=day),
+        patch(
+            "backend.rinse_veewash_shift_day.get_day_record",
+            side_effect=[day, closed],
+        ),
         patch("backend.rinse_veewash_shift_day.summary_from_day_record", return_value=summary),
         patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=bags),
         patch("backend.rinse_veewash_shift_day._write_audit") as audit,
         patch("backend.rinse_veewash_shift_day.persist_day_snapshot") as persist,
+        patch("backend.rinse_employee_completed_bags.clear_step1_productivity_cache"),
         patch(
             "backend.rinse_veewash_shift_day._count_hd_partially_recorded",
             return_value=0,
@@ -265,14 +271,12 @@ def test_failed_close_leaves_no_status_or_audit_mutation():
             actor_user_id=1,
             actor_display_name="Admin",
             allow_unresolved_reviews=True,  # ignored
-            reason="please override",
+            reason="archive unfinished",
         )
-    assert out["ok"] is False
-    assert out["error"] == CLOSE_NOT_READY_ERROR
-    assert out["blocking_counts"]["wf_pending"] == 1
-    audit.assert_not_called()
+    assert out["ok"] is True
+    assert out["archive"]["unfinished"] >= 1
+    audit.assert_called_once()
     persist.assert_not_called()
-    cursor.execute.assert_not_called()
 
 
 def test_override_flag_ignored_when_reviews_remain():

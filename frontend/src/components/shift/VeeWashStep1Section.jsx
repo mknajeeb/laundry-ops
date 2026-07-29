@@ -130,9 +130,14 @@ function MetricRow({
   pendingTrusted = true,
   rowService = "all",
   hdDashboardTotals = null,
+  dayClosed = false,
 }) {
   if (!seg) return null;
   const review = seg.exceptions?.review_required ?? seg.exceptions?.total ?? 0;
+  const unfinished =
+    seg.unfinished_at_close
+    ?? seg.exceptions?.unfinished_at_close
+    ?? (dayClosed ? Number(seg.pending || 0) + Number(review || 0) : 0);
   const isHd = String(title || "").toUpperCase().startsWith("HD");
   const total =
     (isHd && hdDashboardTotals?.total_hd_orders != null
@@ -140,7 +145,9 @@ function MetricRow({
       : null) ??
     seg.total_workload ??
     seg.active_workload ??
-    Number(seg.completed || 0) + Number(seg.pending || 0) + Number(review || 0);
+    (dayClosed
+      ? Number(seg.completed || 0) + Number(unfinished || 0)
+      : Number(seg.completed || 0) + Number(seg.pending || 0) + Number(review || 0));
   const totalLabel = isHd ? "Total HD Orders" : "Total Workload";
   const doneLabel = isHd ? "Completed" : "Completed";
   const basePending = isHd ? "Review Required" : "Pending";
@@ -174,8 +181,8 @@ function MetricRow({
           display: "grid",
           gridTemplateColumns: {
             xs: "repeat(2, 1fr)",
-            sm: isHd ? "repeat(3, 1fr)" : "repeat(4, 1fr)",
-            md: isHd ? "repeat(5, 1fr)" : "repeat(4, 1fr)",
+            sm: dayClosed || isHd ? "repeat(3, 1fr)" : "repeat(4, 1fr)",
+            md: dayClosed ? "repeat(3, 1fr)" : isHd ? "repeat(5, 1fr)" : "repeat(4, 1fr)",
           },
           gap: 1,
         }}
@@ -185,9 +192,17 @@ function MetricRow({
           value={total}
           size="kpi"
           variant="wf"
-          onClick={click("active_workload", totalLabel)}
+          onClick={click(dayClosed ? "unfinished_at_close" : "active_workload", totalLabel)}
         />
-        {isHd ? (
+        {dayClosed ? (
+          <ShiftCountCard
+            label="Unfinished at Close"
+            value={unfinished}
+            size="kpi"
+            variant="pending"
+            onClick={click("unfinished_at_close", "Unfinished at Close")}
+          />
+        ) : isHd ? (
           <ShiftCountCard
             label="Review Required"
             value={pendingValue}
@@ -212,7 +227,7 @@ function MetricRow({
           size="kpi"
           onClick={click("completed", doneLabel)}
         />
-        {isHd ? (
+        {dayClosed ? null : isHd ? (
           <>
             <ShiftCountCard
               label="Total Items"
@@ -245,11 +260,13 @@ function MetricRow({
         )}
       </Box>
       <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
-        {isHd
+        {dayClosed
+          ? `Total ${total} = Completed ${completedValue} + Unfinished at Close ${unfinished}`
+          : isHd
           ? `Total ${total} = Completed ${completedValue} + Review Required ${pendingValue} · Items/HD Revenue from completed reviews only`
           : `Total ${total} = ${doneLabel} ${seg.completed} + ${basePending} ${seg.pending} + Review ${review}`}
         {membershipHelper ? ` · ${membershipHelper}` : ""}
-        {!pendingTrusted && !isHd ? " · Pending provisional" : ""}
+        {!pendingTrusted && !isHd && !dayClosed ? " · Pending provisional" : ""}
       </Typography>
     </Box>
   );
@@ -480,6 +497,7 @@ export default function VeeWashStep1Section({
               rowService="wf"
               onMetricClick={openMetric}
               pendingTrusted={pendingTrusted}
+              dayClosed={readOnly}
             />
           ) : null}
           {hdSeg ? (
@@ -489,6 +507,7 @@ export default function VeeWashStep1Section({
               rowService="hd"
               onMetricClick={openMetric}
               pendingTrusted={pendingTrusted}
+              dayClosed={readOnly}
               hdDashboardTotals={summary?.hd_dashboard_totals || null}
               membershipHelper={
                 summary?.hd_policy?.no_carryover
@@ -621,6 +640,7 @@ export default function VeeWashStep1Section({
               rowService={serviceFilter === "wf" || serviceFilter === "hd" ? serviceFilter : "all"}
               onMetricClick={openMetric}
               pendingTrusted={pendingTrusted}
+              dayClosed={readOnly}
               membershipHelper={
                 summary?.membership
                   ? `${

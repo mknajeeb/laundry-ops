@@ -989,6 +989,8 @@ def _headline_bucket_for_status(status: str | None) -> str | None:
         return "review_required"
     if s == OUTCOME_COMPLETED or s == "completed" or s.endswith("_completed"):
         return "completed"
+    if s in ("stale", "unfinished_at_close", "stale_for_day"):
+        return "unfinished_at_close"
     if s == OUTCOME_PENDING or s == "pending" or "pending" in s:
         return "pending"
     if s in ("excluded", "exclude"):
@@ -1000,6 +1002,7 @@ _STATUS_BAG_ID_KEYS = (
     "completed",
     "pending",
     "review_required",
+    "unfinished_at_close",
     "disappeared_without_completion",
 )
 
@@ -1326,7 +1329,7 @@ def count_day_bag_status_buckets(
     member_ids: set[str] | None = None,
 ) -> dict[str, int]:
     """Count authoritative day-bag statuses (optionally scoped to membership)."""
-    completed = pending = review = 0
+    completed = pending = review = unfinished = 0
     for bid, meta in (status_by_bag or {}).items():
         if member_ids is not None and bid not in member_ids:
             continue
@@ -1337,11 +1340,15 @@ def count_day_bag_status_buckets(
             pending += 1
         elif bucket == "review_required":
             review += 1
+        elif bucket == "unfinished_at_close":
+            unfinished += 1
     return {
         "completed_count": completed,
         "pending_count": pending,
         "review_required_count": review,
-        "status_total": completed + pending + review,
+        "unfinished_at_close_count": unfinished,
+        # Open days: completed+pending+review. Closed days: completed+unfinished.
+        "status_total": completed + pending + review + unfinished,
     }
 
 
@@ -2017,8 +2024,28 @@ def build_or_load_step1_for_date(
     ):
         return _unavailable_step1_payload(selected_date_et)
 
-    day = get_day_record(cursor, organization_id, selected_date_et)
     today = today_et()
+    # Release B: any access to "today" idempotently archives yesterday if still open.
+    # Manual close is not required for the new day to begin.
+    if selected_date_et == today:
+        try:
+            from backend.rinse_shift_day_close_archive import (
+                ensure_prior_et_day_archived_on_rollover,
+            )
+
+            rollover = ensure_prior_et_day_archived_on_rollover(
+                cursor, organization_id, today=today
+            )
+            if rollover and rollover.get("ok"):
+                _commit(cursor)
+        except Exception:
+            logger.exception(
+                "release_b_auto_rollover_archive_failed org=%s today=%s",
+                organization_id,
+                today,
+            )
+
+    day = get_day_record(cursor, organization_id, selected_date_et)
     status = (day or {}).get("status")
 
     def _summary_shell(day_rec: Mapping[str, Any], *, status_value: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -2182,6 +2209,10 @@ CLOSE_NOT_READY_MESSAGE = (
 HD_CLOSE_REVIEW_REQUIRED_MESSAGE = (
     "HD batch cannot be closed while orders require review."
 )
+
+# Release B: close archives unfinished work (pending/review → stale). The legacy
+# "shift_not_ready_to_close" gate remains available for diagnostics via
+# validate_close(), but close_shift_day no longer blocks on unresolved rows.
 
 
 def _segment_count(seg: Mapping[str, Any] | None, key: str) -> int:
@@ -2558,116 +2589,34 @@ def close_shift_day(
     reason: str | None = None,
     allow_unresolved_reviews: bool = False,  # deprecated — ignored
     checklist: Mapping[str, Any] | None = None,
+    expected_completed: int | None = None,
+    expected_unfinished: int | None = None,
 ) -> dict[str, Any]:
-    """Close = finalize the existing persisted Step-1 snapshot (status only).
+    """Close = archive-and-freeze the persisted Step-1 day (Release B).
 
-    Must never live-rebuild, rewrite day bags, or change operational metrics.
-    Employee Productivity before/after close must be identical aside from status.
+    Pending + Review Required become ``stale`` (Unfinished at Close).
+    Completed remains completed. Membership/status are frozen; next-day carryover
+    is never seeded. Manual close does not create tomorrow's membership.
 
-    Strict gate: any pending / review / partial / unresolved admitted work rejects
-    close with ``shift_not_ready_to_close`` and performs no status/audit mutation.
-    Override close is not permitted.
+    Idempotent for already-closed days (no bag/headline rewrite).
+    Optional ``expected_completed`` / ``expected_unfinished`` guard against a
+    stale close dialog; mismatch returns conflict without closing.
     """
     del allow_unresolved_reviews  # override close removed
-    # Re-read authoritative persisted day state inside the caller's transaction.
-    existing = get_day_record(cursor, organization_id, shift_date_et)
-    if not existing:
-        return {"ok": False, "error": "day_not_found", "day": None}
-    day = existing
-    summary = summary_from_day_record(
-        day, cursor=cursor, organization_id=organization_id
-    ) or {}
-    if day.get("status") == STATUS_CLOSED:
-        return {"ok": False, "error": "already_closed", "day": day}
-    if day.get("status") == STATUS_NOT_STARTED or derive_shift_day_status(
-        summary,
-        current_status=day.get("status"),
-        membership=summary.get("membership") if isinstance(summary.get("membership"), dict) else None,
-    ) == STATUS_NOT_STARTED:
-        return {
-            "ok": False,
-            "error": "shift_not_started",
-            "message": "Shift has not started — nothing to close.",
-            "day": day,
-        }
+    from backend.rinse_shift_day_close_archive import finalize_day_close_archive
 
-    day_bags = load_day_bags(cursor, organization_id, shift_date_et)
-    validation = validate_close(
-        summary,
-        cursor=cursor,
-        organization_id=organization_id,
-        shift_date_et=shift_date_et,
-        day_bags=day_bags,
-    )
-    if not validation["ok"]:
-        # Rejected close must not mutate status, closed_*, audit, or snapshots.
-        # Rechecked transactionally from persisted day bags (not stale UI counts).
-        return {
-            "ok": False,
-            "error": CLOSE_NOT_READY_ERROR,
-            "message": validation.get("message") or CLOSE_NOT_READY_MESSAGE,
-            "blocking_counts": validation.get("blocking_counts") or {},
-            "validation": validation,
-            "day": day,
-        }
-
-    # Freeze only: mark CLOSED. Do not call persist_day_snapshot / rewrite bags /
-    # rewrite headline_json — that previously deleted completed productivity rows.
-    now = datetime.utcnow()
-    prev = day.get("status")
-    cursor.execute(
-        """
-        UPDATE rinse_shift_monitor_days
-        SET status=%s, closed_at=%s, closed_by_user_id=%s, closed_by_display_name=%s,
-            close_reason=%s, close_override=%s, review_required_count=%s,
-            updated_at=CURRENT_TIMESTAMP
-        WHERE organization_id=%s AND shift_date_et=%s
-        """,
-        (
-            STATUS_CLOSED,
-            now,
-            actor_user_id,
-            actor_display_name,
-            reason,
-            0,  # override close removed
-            0,
-            int(organization_id),
-            shift_date_et,
-        ),
-    )
-    _write_audit(
+    return finalize_day_close_archive(
         cursor,
         organization_id,
         shift_date_et,
-        action="CLOSE",
         actor_user_id=actor_user_id,
         actor_display_name=actor_display_name,
         reason=reason,
-        previous_status=prev,
-        new_status=STATUS_CLOSED,
-        checklist=checklist or validation["checklist"],
-        totals=validation["totals"],
+        mode="manual",
+        checklist=checklist,
+        expected_completed=expected_completed,
+        expected_unfinished=expected_unfinished,
     )
-    try:
-        from backend.rinse_employee_completed_bags import clear_step1_productivity_cache
-
-        clear_step1_productivity_cache(organization_id, shift_date_et)
-    except Exception:
-        pass
-
-    # Seed next-day carryover bag stubs from pending + explicit carry-forward dispositions.
-    # Cutover 2026-07-23: next day starts from its own after-midnight scrape.
-    # Do not seed carryover rows into the following ET day.
-    # _seed_next_day_carryover(cursor, organization_id, shift_date_et)
-
-    # Caller owns the DB transaction (API route / job commits). Do not conn.commit()
-    # here — mid-function commits made diagnostics/tests impossible to roll back and
-    # can leave a day CLOSED while the outer request reports failure.
-    return {
-        "ok": True,
-        "day": get_day_record(cursor, organization_id, shift_date_et),
-        "validation": validation,
-    }
 
 
 def reopen_shift_day(
@@ -2687,6 +2636,41 @@ def reopen_shift_day(
     if day.get("status") != STATUS_CLOSED:
         return {"ok": False, "error": "not_closed", "day": day}
     prev = day.get("status")
+
+    # Restore pre-close statuses so managers can continue working after reopen.
+    bags = load_day_bags(cursor, organization_id, shift_date_et)
+    for bag in bags:
+        bid = normalize_bag_id(bag.get("bag_id"))
+        if not bid:
+            continue
+        snap = dict(bag.get("bag_snapshot") or {})
+        pre = str(snap.get("pre_close_status") or "").strip().lower()
+        eff = str(bag.get("effective_status") or "").strip().lower()
+        if eff not in ("stale", "unfinished_at_close", "stale_for_day"):
+            continue
+        restore = pre if pre in (OUTCOME_PENDING, OUTCOME_REVIEW_REQUIRED, "pending", "review_required") else OUTCOME_PENDING
+        reasons = snap.get("pre_close_review_reason_codes") or []
+        snap.pop("day_close_status", None)
+        snap.pop("day_close_label", None)
+        cursor.execute(
+            """
+            UPDATE rinse_shift_monitor_day_bags
+            SET effective_status=%s,
+                review_reason_codes_json=%s,
+                bag_snapshot_json=%s,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE organization_id=%s AND shift_date_et=%s AND bag_id=%s
+            """,
+            (
+                restore,
+                _json_dump(reasons if restore == OUTCOME_REVIEW_REQUIRED else []),
+                _json_dump(snap),
+                int(organization_id),
+                shift_date_et,
+                bid,
+            ),
+        )
+
     cursor.execute(
         """
         UPDATE rinse_shift_monitor_days
@@ -2716,80 +2700,13 @@ def reopen_shift_day(
 def _seed_next_day_carryover(
     cursor, organization_id: int, closed_date: date
 ) -> None:
-    from datetime import timedelta
+    """Disabled (Release B). Kept for reference only — do not call.
 
-    next_day = closed_date + timedelta(days=1)
-    bags = load_day_bags(cursor, organization_id, closed_date)
-    carry_ids = []
-    for b in bags:
-        disp = (b.get("disposition") or "").upper()
-        eff = b.get("effective_status")
-        if disp == DISPOSITION_CARRY_FORWARD:
-            carry_ids.append(b)
-            continue
-        if disp in (DISPOSITION_COMPLETED, DISPOSITION_EXCLUDE, DISPOSITION_HISTORICAL_REVIEW_ONLY):
-            continue
-        if eff == OUTCOME_PENDING:
-            carry_ids.append(b)
-
-    if not carry_ids:
-        return
-    # Ensure next day header exists as OPEN without wiping if already present.
-    existing = get_day_record(cursor, organization_id, next_day)
-    if not existing:
-        cursor.execute(
-            """
-            INSERT INTO rinse_shift_monitor_days (
-              organization_id, shift_date_et, status, opened_at, last_sync_at,
-              review_required_count
-            ) VALUES (%s,%s,%s,%s,%s,0)
-            """,
-            (int(organization_id), next_day, STATUS_OPEN, datetime.utcnow(), datetime.utcnow()),
-        )
-    for b in carry_ids:
-        snap = dict(b.get("bag_snapshot") or {})
-        snap["entry_class"] = "carryover"
-        snap["carried_from_date"] = closed_date.isoformat()
-        cursor.execute(
-            """
-            INSERT INTO rinse_shift_monitor_day_bags (
-              organization_id, shift_date_et, bag_id, service_type, rush_status,
-              new_or_carryover, workload_entry_type, workload_entry_timestamp,
-              pre_weight_lbs, post_weight_lbs, weight_lbs,
-              canonical_completion_status, canonical_completion_timestamp,
-              canonical_completion_employee, effective_status,
-              review_reason_codes_json, portal_status_at_sync,
-              last_present_scrape, first_confirmed_absent_scrape, disposition,
-              bag_snapshot_json
-            ) VALUES (
-              %s,%s,%s,%s,%s,'carryover',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s
-            )
-            ON DUPLICATE KEY UPDATE
-              new_or_carryover='carryover',
-              updated_at=CURRENT_TIMESTAMP
-            """,
-            (
-                int(organization_id),
-                next_day,
-                b["bag_id"],
-                b.get("service_type"),
-                b.get("rush_status"),
-                b.get("workload_entry_type"),
-                b.get("workload_entry_timestamp"),
-                b.get("pre_weight_lbs"),
-                b.get("post_weight_lbs"),
-                b.get("weight_lbs"),
-                b.get("canonical_completion_status"),
-                b.get("canonical_completion_timestamp"),
-                b.get("canonical_completion_employee"),
-                OUTCOME_PENDING,
-                _json_dump(b.get("review_reason_codes")),
-                b.get("portal_status_at_sync"),
-                b.get("last_present_scrape"),
-                b.get("first_confirmed_absent_scrape"),
-                _json_dump(snap),
-            ),
-        )
+    Fresh-day close-and-archive never seeds unresolved prior-day rows into the
+    next ET day. Next-day membership comes only from that day's Rinse scrapes.
+    """
+    del cursor, organization_id, closed_date
+    return
 
 
 def list_close_audit(

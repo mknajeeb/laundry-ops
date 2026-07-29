@@ -8,7 +8,6 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  Link,
   Stack,
   TextField,
   Typography,
@@ -21,49 +20,10 @@ import {
 } from "../../api";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
-const BLOCKING_ROWS = [
-  ["wf_pending", "WF Pending", { metric: "pending", title: "WF Pending", service: "wf" }],
-  [
-    "wf_review_required",
-    "WF Review Required",
-    { metric: "review_required", title: "WF Review Required", service: "wf" },
-  ],
-  [
-    "hd_review_required",
-    "HD Review Required",
-    { metric: "review_required", title: "HD Review Required", service: "hd" },
-  ],
-  [
-    "hd_partially_recorded",
-    "HD Partially Recorded",
-    {
-      metric: "review_required",
-      title: "HD Partially Recorded",
-      service: "hd",
-      queue: "partially_recorded",
-    },
-  ],
-  [
-    "other_unresolved",
-    "Other unresolved exceptions",
-    { metric: "review_required", title: "Other unresolved exceptions", service: "all" },
-  ],
-];
-
 function fmtTs(v) {
   if (!v) return "—";
   const s = String(v);
   return s.length > 19 ? s.slice(0, 19).replace("T", " ") : s.replace("T", " ");
-}
-
-function emptyBlockingCounts() {
-  return {
-    wf_pending: 0,
-    wf_review_required: 0,
-    hd_review_required: 0,
-    hd_partially_recorded: 0,
-    other_unresolved: 0,
-  };
 }
 
 export default function ShiftDayStatusBar({
@@ -87,6 +47,7 @@ export default function ShiftDayStatusBar({
   const [error, setError] = useState("");
   const [retryMsg, setRetryMsg] = useState("");
   const [gateValidation, setGateValidation] = useState(validation || null);
+  const [closeConfirmation, setCloseConfirmation] = useState(null);
 
   const refreshFailed =
     Boolean(day.step1_refresh_failed)
@@ -94,6 +55,7 @@ export default function ShiftDayStatusBar({
 
   useEffect(() => {
     setGateValidation(validation || null);
+    setCloseConfirmation(validation?.close_archive?.confirmation || null);
   }, [validation]);
 
   const statusColor = useMemo(() => {
@@ -110,21 +72,27 @@ export default function ShiftDayStatusBar({
       : status.replaceAll("_", " ");
 
   const totals = gateValidation?.totals || validation?.totals || {};
-  const blockingCounts = {
-    ...emptyBlockingCounts(),
-    ...(gateValidation?.blocking_counts || validation?.blocking_counts || {}),
-  };
-  const blockingTotal = BLOCKING_ROWS.reduce(
-    (sum, [key]) => sum + (Number(blockingCounts[key]) || 0),
-    0,
-  );
-  const canConfirmClose = blockingTotal === 0 && !notStarted;
+  const confirmation =
+    closeConfirmation
+    || gateValidation?.close_archive?.confirmation
+    || {
+      completed: totals.completed ?? 0,
+      unfinished:
+        (Number(totals.pending) || 0)
+        + (Number(totals.review_required) || 0),
+    };
+  const canConfirmClose = !notStarted && status !== "CLOSED";
 
   const refreshCloseGate = async () => {
     try {
       const res = await getVeewashStep1DayStatus({ date: selectedDateEt });
       if (res?.data?.validation) {
         setGateValidation(res.data.validation);
+      }
+      if (res?.data?.close_confirmation) {
+        setCloseConfirmation(res.data.close_confirmation);
+      } else if (res?.data?.validation?.close_archive?.confirmation) {
+        setCloseConfirmation(res.data.validation.close_archive.confirmation);
       }
     } catch {
       /* keep prior validation */
@@ -144,7 +112,7 @@ export default function ShiftDayStatusBar({
 
   const submitClose = async () => {
     if (!canConfirmClose) {
-      setError("Shift cannot be closed. Complete or review all admitted orders first.");
+      setError("Shift has not started — nothing to close.");
       return;
     }
     setBusy(true);
@@ -153,16 +121,21 @@ export default function ShiftDayStatusBar({
       const res = await closeVeewashStep1Day({
         date: selectedDateEt,
         reason: reason || undefined,
+        // Advisory dialog counts — backend recomputes and may 409 on mismatch.
+        expected_completed: confirmation.completed ?? undefined,
+        expected_unfinished: confirmation.unfinished ?? undefined,
       });
       if (!res?.data?.ok) {
         const data = res?.data || {};
-        if (data.blocking_counts) {
-          setGateValidation((v) => ({ ...(v || {}), ...data, blocking_counts: data.blocking_counts }));
+        if (data.error === "close_confirmation_stale" && data.confirmation) {
+          setCloseConfirmation(data.confirmation);
+          setError(
+            data.message
+              || "Counts changed since this dialog opened. Review the updated summary and confirm again.",
+          );
+          return;
         }
-        setError(
-          data.message
-            || "Shift cannot be closed. Complete or review all admitted orders first.",
-        );
+        setError(data.message || data.error || "Close and archive failed");
         return;
       }
       setCloseOpen(false);
@@ -170,15 +143,15 @@ export default function ShiftDayStatusBar({
       onChanged?.();
     } catch (e) {
       const data = e?.response?.data || {};
-      if (data.blocking_counts) {
-        setGateValidation((v) => ({ ...(v || {}), ...data, blocking_counts: data.blocking_counts }));
+      if (data.error === "close_confirmation_stale" && data.confirmation) {
+        setCloseConfirmation(data.confirmation);
+        setError(
+          data.message
+            || "Counts changed since this dialog opened. Review the updated summary and confirm again.",
+        );
+      } else {
+        setError(data.message || data.error || e?.message || "Close and archive failed");
       }
-      setError(
-        data.message
-          || data.error
-          || e?.message
-          || "Shift cannot be closed. Complete or review all admitted orders first.",
-      );
     } finally {
       setBusy(false);
     }
@@ -237,15 +210,6 @@ export default function ShiftDayStatusBar({
     } finally {
       setBusy(false);
     }
-  };
-
-  const openBlocking = (spec) => {
-    if (!onOpenBlockingList || !spec) return;
-    setCloseOpen(false);
-    onOpenBlockingList(spec.metric, spec.title, {
-      service: spec.service,
-      queue: spec.queue || spec.metric,
-    });
   };
 
   return (
@@ -364,96 +328,45 @@ export default function ShiftDayStatusBar({
               onClick={openCloseDialog}
               sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue }}
             >
-              Close Shift
+              Close Batch
             </Button>
           )}
         </Stack>
       </Stack>
 
       <Dialog open={closeOpen} onClose={() => !busy && setCloseOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Close Shift · {selectedDateEt}</DialogTitle>
+        <DialogTitle>Close and archive · {selectedDateEt}</DialogTitle>
         <DialogContent dividers>
           {error ? (
             <Alert severity="error" sx={{ mb: 1 }} onClose={() => setError("")}>
               {error}
             </Alert>
           ) : null}
-          {!canConfirmClose ? (
-            <Alert severity="warning" sx={{ mb: 1.25 }}>
-              Shift cannot be closed. Complete or review all admitted orders first.
-            </Alert>
-          ) : (
-            <Alert severity="success" sx={{ mb: 1.25 }}>
-              All admitted orders are completed or approved-excluded. Closing will freeze this
-              snapshot.
-            </Alert>
-          )}
-          <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.75 }}>
-            Blocking status
-          </Typography>
-          <Stack spacing={0.5} sx={{ mb: 1.5 }}>
-            {BLOCKING_ROWS.map(([key, label, spec]) => {
-              const n = Number(blockingCounts[key]) || 0;
-              const clickable = n > 0 && typeof onOpenBlockingList === "function";
-              return (
-                <Stack
-                  key={key}
-                  direction="row"
-                  justifyContent="space-between"
-                  alignItems="center"
-                  sx={{
-                    px: 1,
-                    py: 0.5,
-                    borderRadius: 1,
-                    bgcolor: n > 0 ? "#fff7ed" : "#f8fafc",
-                  }}
-                >
-                  {clickable ? (
-                    <Link
-                      component="button"
-                      type="button"
-                      underline="hover"
-                      onClick={() => openBlocking(spec)}
-                      sx={{ fontWeight: 700, textAlign: "left" }}
-                    >
-                      {label}
-                    </Link>
-                  ) : (
-                    <Typography variant="body2" fontWeight={n > 0 ? 700 : 500}>
-                      {label}
-                    </Typography>
-                  )}
-                  <Typography
-                    variant="body2"
-                    fontWeight={800}
-                    color={n > 0 ? "warning.dark" : "text.secondary"}
-                  >
-                    {n}
-                  </Typography>
-                </Stack>
-              );
-            })}
-          </Stack>
-          <Box sx={{ mt: 0.5, p: 1, bgcolor: "#f8fafc", borderRadius: 1 }}>
-            <Typography variant="caption" display="block" fontWeight={700}>
-              Final totals
+          <Alert severity="info" sx={{ mb: 1.25 }}>
+            Close and archive this day? Unfinished orders become Unfinished at Close.
+            The next day starts only from that day&apos;s Rinse scrapes — nothing is carried over.
+          </Alert>
+          <Box sx={{ mt: 0.5, p: 1.25, bgcolor: "#f8fafc", borderRadius: 1 }}>
+            <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
+              Confirmation summary
             </Typography>
-            <Typography variant="caption" display="block">
-              TOTAL Active {totals.active ?? "—"} · Completed {totals.completed ?? "—"} · Pending{" "}
-              {totals.pending ?? "—"} · Review {totals.review_required ?? reviewN}
-              {totals.approved_excluded != null
-                ? ` · Excluded ${totals.approved_excluded}`
-                : ""}
-            </Typography>
-            <Typography variant="caption" display="block">
-              WF Pending {totals.wf?.pending ?? blockingCounts.wf_pending} / Review{" "}
-              {totals.wf?.review_required ?? blockingCounts.wf_review_required} / Done{" "}
-              {totals.wf?.completed ?? "—"}
-            </Typography>
-            <Typography variant="caption" display="block">
-              HD Review {totals.hd?.review_required ?? blockingCounts.hd_review_required} / Partial{" "}
-              {totals.hd?.partially_recorded ?? blockingCounts.hd_partially_recorded} / Recorded{" "}
-              {totals.hd?.completed ?? "—"}
+            <Stack spacing={0.5}>
+              <Stack direction="row" justifyContent="space-between">
+                <Typography variant="body2">Completed</Typography>
+                <Typography variant="body2" fontWeight={800}>
+                  {confirmation.completed ?? 0}
+                </Typography>
+              </Stack>
+              <Stack direction="row" justifyContent="space-between">
+                <Typography variant="body2">Unfinished</Typography>
+                <Typography variant="body2" fontWeight={800}>
+                  {confirmation.unfinished ?? 0}
+                </Typography>
+              </Stack>
+            </Stack>
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
+              Pending and Review Required become Unfinished at Close. Completed stays Completed.
+              This day will be frozen; tomorrow is not seeded from these rows.
             </Typography>
           </Box>
           <TextField
@@ -476,7 +389,7 @@ export default function ShiftDayStatusBar({
             onClick={submitClose}
             disabled={busy || !canConfirmClose}
           >
-            {busy ? "Closing…" : "Confirm Close"}
+            {busy ? "Closing…" : "Close and archive this day"}
           </Button>
         </DialogActions>
       </Dialog>
