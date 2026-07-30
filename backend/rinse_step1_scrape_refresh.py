@@ -24,6 +24,7 @@ STATUS_RUNNING = "RUNNING"
 STATUS_SUCCESS = "SUCCESS"
 STATUS_FAILED = "FAILED"
 STATUS_SKIPPED = "SKIPPED"
+STATUS_DEFERRED = "DEFERRED"
 
 EVIDENCE_SUCCESS = "SUCCESS"
 EVIDENCE_FAILED = "FAILED"
@@ -280,10 +281,13 @@ def refresh_step1_after_scrape(
     operations_date_et: date | None = None,
     refresh_row_id: int | None = None,
     evidence_import_status: str = EVIDENCE_SUCCESS,
+    force_incomplete: bool = False,
+    import_incomplete: bool = False,
 ) -> dict[str, Any]:
     """Stage B: rebuild/persist current OPEN/REOPENED Step-1 day after evidence commit.
 
     Uses existing ``backfill_day_from_live`` only. Never rebuilds CLOSED days.
+    Never persists when scan chronology import is incomplete/stale.
     """
     from backend.rinse_veewash_shift_day import (
         STATUS_CLOSED,
@@ -373,8 +377,63 @@ def refresh_step1_after_scrape(
             _log(f"Step-1 day {day} CLOSED — skip post-scrape refresh\n")
             return out
 
+        # Gate: never persist provisional counts from incomplete/stale chronology.
+        from backend.rinse_scan_chronology_gate import evaluate_step1_rebuild_gate
+
         before_sync = (existing or {}).get("last_sync_at") if existing else None
-        backfill = backfill_day_from_live(cursor, org, day, force=True)
+        gate = evaluate_step1_rebuild_gate(
+            cursor,
+            org,
+            day,
+            day_meta=existing,
+            exclude_scrape_run_id=scrape_run_id,
+            force_incomplete=bool(force_incomplete or import_incomplete),
+        )
+        if gate.get("deferred") or not gate.get("allow_persist"):
+            finished = _utcnow()
+            reason = str(gate.get("reason") or "rebuild_deferred")
+            out = {
+                **base,
+                "ok": True,
+                "deferred": True,
+                "rebuild_deferred": True,
+                "reason": reason,
+                "step1_refresh_status": STATUS_DEFERRED,
+                "status": reason,
+                "finished_at": finished.isoformat(sep=" "),
+                "day_bags_rebuilt": 0,
+                "persisted": False,
+                "data_freshness": gate.get("data_freshness"),
+                "last_consistent_snapshot": gate.get("last_consistent_snapshot"),
+                "message": gate.get("message"),
+                "last_sync_at": before_sync,
+                "last_sync_at_before": before_sync,
+            }
+            _update_refresh_row(
+                cursor,
+                refresh_row_id,
+                status=STATUS_DEFERRED,
+                finished_at=finished,
+                error=reason,
+            )
+            try:
+                _persist_day_meta_diagnostics(cursor, org, day, out)
+                conn.commit()
+            except Exception:
+                pass
+            _log(
+                f"Step-1 refresh DEFERRED for {day}: {reason} "
+                f"(last consistent snapshot retained)\n"
+            )
+            return out
+
+        backfill = backfill_day_from_live(
+            cursor,
+            org,
+            day,
+            force=True,
+            chronology_complete=True,
+        )
         finished = _utcnow()
         ok = bool(backfill.get("ok"))
         day_after = backfill.get("day") or get_day_record(cursor, org, day) or {}
@@ -489,7 +548,7 @@ def list_retryable_step1_refreshes(
         FROM rinse_step1_scrape_refresh
         WHERE organization_id = %s
           AND evidence_import_status = %s
-          AND step1_refresh_status IN (%s, %s)
+          AND step1_refresh_status IN (%s, %s, %s)
           AND attempt_count < %s
         ORDER BY id ASC
         LIMIT %s
@@ -499,6 +558,7 @@ def list_retryable_step1_refreshes(
             EVIDENCE_SUCCESS,
             STATUS_PENDING,
             STATUS_FAILED,
+            STATUS_DEFERRED,
             max_attempts,
             int(limit),
         ),
@@ -556,13 +616,19 @@ def retry_failed_step1_refreshes(
 
 
 def step1_refresh_succeeded(detail: Mapping[str, Any] | None) -> bool:
-    """True when Stage B already succeeded or was intentionally skipped."""
+    """True when Stage B already succeeded, deferred safely, or was skipped.
+
+    DEFERRED means counts were intentionally not replaced — treat as a completed
+    Stage-B decision for the current scrape cycle (watchdog may retry later).
+    """
     refresh = (detail or {}).get("step1_day_refresh")
     if not isinstance(refresh, dict):
         return False
     if refresh.get("skipped"):
         return True
+    if refresh.get("deferred") or refresh.get("rebuild_deferred"):
+        return True
     status = str(refresh.get("step1_refresh_status") or refresh.get("status") or "").upper()
-    if status in (STATUS_SUCCESS, STATUS_SKIPPED, "OK"):
+    if status in (STATUS_SUCCESS, STATUS_SKIPPED, STATUS_DEFERRED, "OK"):
         return True
     return bool(refresh.get("ok"))

@@ -62,6 +62,43 @@ class TestShouldReplaceScanTimeline:
             is False
         )
 
+    def test_newer_but_thinner_export_does_not_replace(self):
+        """Jul 30 style: newer scrape timestamp must not wipe 2159→partial events."""
+        assert (
+            _should_replace_scan_timeline(
+                existing_max=T_EARLY,
+                existing_n=2159,
+                incoming_max=T_LATE,
+                incoming_n=800,
+            )
+            is False
+        )
+
+    def test_newer_complete_export_replaces_normally(self):
+        assert (
+            _should_replace_scan_timeline(
+                existing_max=T_EARLY,
+                existing_n=16,
+                incoming_max=T_LATE,
+                incoming_n=23,
+                existing_completion_events=2,
+                incoming_completion_events=3,
+            )
+            is True
+        )
+
+    def test_incomplete_import_marker_blocks_replace(self):
+        assert (
+            _should_replace_scan_timeline(
+                existing_max=T_EARLY,
+                existing_n=20,
+                incoming_max=T_LATE,
+                incoming_n=25,
+                import_complete=False,
+            )
+            is False
+        )
+
 
 class TestScanFreshness:
     def test_stale_when_portal_last_seen_hours_after_last_scan(self):

@@ -5,10 +5,13 @@ Persistent Rinse bag registry + scan history (survives daily operational reset).
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Any, Sequence
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 from backend.rinse_bag_completion import (
     COMPLETION_COMPLETED,
@@ -772,32 +775,90 @@ def _persistent_scan_bounds_for_bags(
     return out
 
 
+def _persistent_completion_stage_counts(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+) -> dict[str, int]:
+    """Count completion-stage purposes already persisted per bag."""
+    out: dict[str, int] = {
+        normalize_bag_id(b): 0 for b in bag_ids if normalize_bag_id(b)
+    }
+    ids = sorted(out.keys())
+    if not ids:
+        return out
+    chunk = 200
+    for i in range(0, len(ids), chunk):
+        part = ids[i : i + chunk]
+        ph = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT bag_id, purpose
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s AND bag_id IN ({ph})
+            """,
+            (int(organization_id), *part),
+        )
+        by_bag: dict[str, list[Any]] = {b: [] for b in part}
+        for row in cursor.fetchall() or []:
+            if isinstance(row, dict):
+                bid = normalize_bag_id(row.get("bag_id"))
+                if bid:
+                    by_bag.setdefault(bid, []).append(row.get("purpose"))
+            else:
+                bid = normalize_bag_id(row[0])
+                if bid:
+                    by_bag.setdefault(bid, []).append(row[1])
+        for bid, purposes in by_bag.items():
+            out[bid] = _count_completion_stage_events(purposes)
+    return out
+
+
 def _should_replace_scan_timeline(
     *,
     existing_max: datetime | None,
     existing_n: int,
     incoming_max: datetime | None,
     incoming_n: int,
+    existing_completion_events: int = 0,
+    incoming_completion_events: int = 0,
+    event_id_overlap: int | None = None,
+    import_complete: bool = True,
 ) -> bool:
     """
-    Replace only when the incoming export is at least as fresh and not thinner.
+    Replace only when the incoming export is complete and not materially thinner.
 
-    Truncated scrapes (older max timestamp, or fewer rows without a newer max)
-    must not delete later persisted scans.
+    A newer max timestamp alone must never delete a richer persisted timeline.
+    Truncated / partial scrapes preserve existing events (additive upsert still runs).
     """
-    if existing_n <= 0:
-        return True
-    if incoming_n <= 0:
-        return False
-    if existing_max is not None and incoming_max is not None and existing_max > incoming_max:
-        return False
-    if incoming_n < existing_n and (
-        incoming_max is None
-        or existing_max is None
-        or incoming_max <= existing_max
-    ):
-        return False
-    return True
+    from backend.rinse_scan_chronology_gate import evaluate_timeline_replace_decision
+
+    decision = evaluate_timeline_replace_decision(
+        existing_max=existing_max,
+        existing_n=existing_n,
+        incoming_max=incoming_max,
+        incoming_n=incoming_n,
+        existing_completion_events=existing_completion_events,
+        incoming_completion_events=incoming_completion_events,
+        event_id_overlap=event_id_overlap,
+        import_complete=import_complete,
+    )
+    return bool(decision.get("replace"))
+
+
+def _count_completion_stage_events(purposes: Sequence[Any] | None) -> int:
+    """Count garments-reviewed / complete-cleaning style lifecycle events."""
+    n = 0
+    for raw in purposes or []:
+        p = str(raw or "").strip().lower().replace("_", "-")
+        if p in (
+            "garments-reviewed",
+            "complete-cleaning",
+            "assembly-printed-ct",
+            "ready-for-delivery",
+        ):
+            n += 1
+    return n
 
 
 def merge_scan_events_from_upload(
@@ -848,24 +909,60 @@ def merge_scan_events_from_upload(
     events_deleted = 0
     bags_replace: list[str] = []
     bags_preserve_existing: list[str] = []
+    bags_preserve_reasons: dict[str, list[str]] = {}
     preserved_weight_enrichment: dict[tuple[str, str], dict[str, Any]] = {}
+    import_incomplete = False
     if replace_existing and bag_ids:
         # Never wipe a richer persisted timeline with a truncated scrape export.
         # Additive upsert still runs for preserved bags so new rows can land.
+        from backend.rinse_scan_chronology_gate import evaluate_timeline_replace_decision
+
         existing_bounds = _persistent_scan_bounds_for_bags(cursor, org, bag_ids)
+        existing_completion = _persistent_completion_stage_counts(cursor, org, bag_ids)
         for bag_id in bag_ids:
             bag_rows = df.loc[df["Bag ID"] == bag_id]
             incoming_max, incoming_n = _incoming_scan_bounds_from_rows(bag_rows)
             existing_max, existing_n = existing_bounds.get(bag_id, (None, 0))
-            if _should_replace_scan_timeline(
+            incoming_purposes = [
+                row.get("Purpose") for _, row in bag_rows.iterrows()
+            ] if not bag_rows.empty else []
+            decision = evaluate_timeline_replace_decision(
                 existing_max=existing_max,
                 existing_n=existing_n,
                 incoming_max=incoming_max,
                 incoming_n=incoming_n,
-            ):
+                existing_completion_events=int(existing_completion.get(bag_id) or 0),
+                incoming_completion_events=_count_completion_stage_events(incoming_purposes),
+                import_complete=True,
+            )
+            if decision.get("replace"):
                 bags_replace.append(bag_id)
             else:
                 bags_preserve_existing.append(bag_id)
+                reasons = list(decision.get("reasons") or [])
+                bags_preserve_reasons[bag_id] = reasons
+                if decision.get("incomplete"):
+                    import_incomplete = True
+                logger.warning(
+                    "scan timeline preserve org=%s bag=%s reasons=%s "
+                    "existing_n=%s incoming_n=%s existing_max=%s incoming_max=%s "
+                    "(partial export will not delete richer timeline)",
+                    org,
+                    bag_id,
+                    reasons,
+                    existing_n,
+                    incoming_n,
+                    existing_max,
+                    incoming_max,
+                )
+        if bags_preserve_existing:
+            logger.warning(
+                "scan chronology import incomplete org=%s preserved_bags=%s "
+                "replaced_bags=%s — Stage B must not persist provisional Step-1 counts",
+                org,
+                len(bags_preserve_existing),
+                len(bags_replace),
+            )
         if bags_replace:
             # Events CSV never carries Weight — a full timeline replace deletes
             # the rows that previously had portal weight_num attached. Snapshot
@@ -988,6 +1085,9 @@ def merge_scan_events_from_upload(
         "replace_existing": replace_existing,
         "bags_replaced": bags_replace if replace_existing else list(bag_ids),
         "bags_preserve_existing_timeline": bags_preserve_existing,
+        "bags_preserve_reasons": bags_preserve_reasons,
+        "import_incomplete": bool(import_incomplete),
+        "timeline_replacement_deferred": bool(import_incomplete),
         "bag_ids": bag_ids,
         "weight_enrichment_preserved": len(preserved_weight_enrichment),
         "weight_enrichment_restored": weight_enrichment_restored,

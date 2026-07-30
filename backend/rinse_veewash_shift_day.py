@@ -840,6 +840,7 @@ def persist_day_snapshot(
     summary: Mapping[str, Any],
     status: str | None = None,
     force: bool = False,
+    chronology_complete: bool = True,
 ) -> dict[str, Any]:
     """Upsert day header + bag rows. No-op for CLOSED days unless force=True.
 
@@ -847,6 +848,9 @@ def persist_day_snapshot(
     decision fields across automatic scrape/Step-1 rebuilds. Headline counts
     and Review ID sets are projected from the protected day-bag rows after
     UPSERT — never from the live classifier summary alone.
+
+    When ``chronology_complete`` is False, previously persisted Completed bags
+    are not downgraded to Pending/Review by temporary missing scan evidence.
     """
     ensure_shift_monitor_day_tables(cursor)
     existing = get_day_record(cursor, organization_id, shift_date_et)
@@ -905,9 +909,44 @@ def persist_day_snapshot(
 
     bags = _bag_rows_from_workload(workload, summary)
     from backend.rinse_step1_productivity_fast import project_productivity_fields_for_day_bag
+    from backend.rinse_scan_chronology_gate import should_preserve_persisted_completion
+
+    # Prior statuses for incomplete-chronology completion protection.
+    prior_by_id: dict[str, dict[str, Any]] = {}
+    if not chronology_complete:
+        try:
+            for row in load_day_bags(cursor, organization_id, shift_date_et) or []:
+                bid = normalize_bag_id(row.get("bag_id"))
+                if bid:
+                    prior_by_id[bid] = dict(row)
+        except Exception:
+            prior_by_id = {}
 
     upsert_sql = _day_bag_manager_lock_upsert_sql()
     for b in bags:
+        bid = normalize_bag_id(b.get("bag_id"))
+        prior = prior_by_id.get(bid) if bid else None
+        if prior and should_preserve_persisted_completion(
+            previous_status=prior.get("effective_status"),
+            incoming_status=b.get("effective_status"),
+            chronology_complete=chronology_complete,
+            manager_edit_version=int(prior.get("manager_edit_version") or 0),
+        ):
+            # Keep prior confirmed completion while chronology is incomplete.
+            b = dict(b)
+            b["effective_status"] = prior.get("effective_status") or "completed"
+            b["canonical_completion_status"] = (
+                prior.get("canonical_completion_status") or b.get("canonical_completion_status")
+            )
+            b["canonical_completion_timestamp"] = (
+                prior.get("canonical_completion_timestamp")
+                or b.get("canonical_completion_timestamp")
+            )
+            b["canonical_completion_employee"] = (
+                prior.get("canonical_completion_employee")
+                or b.get("canonical_completion_employee")
+            )
+            b["review_reason_codes"] = prior.get("review_reason_codes") or []
         proj = project_productivity_fields_for_day_bag(b)
         cursor.execute(
             upsert_sql,
@@ -1908,6 +1947,12 @@ def summary_from_day_record(
             step1_refresh.get("step1_refresh_status")
             or step1_refresh.get("status")
         )
+        refresh_status_u = str(refresh_status or "").upper()
+        rebuild_deferred = bool(
+            step1_refresh.get("rebuild_deferred")
+            or step1_refresh.get("deferred")
+            or refresh_status_u == "DEFERRED"
+        )
         out["shift_day"] = {
             "status": day.get("status"),
             "opened_at": day.get("opened_at"),
@@ -1915,14 +1960,21 @@ def summary_from_day_record(
             "step1_refreshed_at": step1_refreshed_at,
             "step1_refresh_status": refresh_status,
             "step1_refresh_error": step1_refresh.get("error")
-            or step1_refresh.get("step1_refresh_error"),
+            or step1_refresh.get("step1_refresh_error")
+            or (step1_refresh.get("reason") if rebuild_deferred else None),
             "step1_refresh_scrape_batch_id": step1_refresh.get("scrape_batch_id")
             or step1_refresh.get("import_batch_id"),
             "step1_refresh_day_bags_rebuilt": step1_refresh.get("day_bags_rebuilt"),
             "step1_refresh_failed": (
-                str(refresh_status or "").upper() in ("FAILED", "FAIL", "ERROR")
-                or step1_refresh.get("ok") is False
+                refresh_status_u in ("FAILED", "FAIL", "ERROR")
+                or (
+                    step1_refresh.get("ok") is False
+                    and not rebuild_deferred
+                )
             ),
+            "rebuild_deferred": rebuild_deferred,
+            "last_consistent_snapshot": step1_refresh.get("last_consistent_snapshot"),
+            "step1_refresh_message": step1_refresh.get("message"),
             "closed_at": day.get("closed_at"),
             "closed_by_display_name": day.get("closed_by_display_name"),
             "close_reason": day.get("close_reason"),
@@ -2732,7 +2784,12 @@ def list_close_audit(
 
 
 def backfill_day_from_live(
-    cursor, organization_id: int, shift_date_et: date, *, force: bool = False
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    *,
+    force: bool = False,
+    chronology_complete: bool = True,
 ) -> dict[str, Any]:
     """Rebuild and persist a day from source (activation / cutover onward)."""
     activation = get_step1_activation_date(cursor, organization_id)
@@ -2803,6 +2860,7 @@ def backfill_day_from_live(
             membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
         ),
         force=True,
+        chronology_complete=bool(chronology_complete),
     )
     _commit(cursor)
     return {
@@ -2817,4 +2875,5 @@ def backfill_day_from_live(
         },
         "membership": wl.get("membership"),
         "bag_count": len(load_day_bags(cursor, organization_id, shift_date_et)),
+        "chronology_complete": bool(chronology_complete),
     }
