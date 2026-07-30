@@ -1082,6 +1082,84 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/process-flow-calculator", methods=["GET", "POST"])
+    def rinse_shift_analysis_process_flow_calculator():
+        """
+        Read-only Process Flow stage-availability calculator.
+
+        Composes shared Sort/Wash/Dry current-cycle selectors. Does not mutate scans.
+        """
+        from backend.rinse_process_flow_chronology import (
+            ProcessFlowValidationError,
+            build_process_flow_calculator_payload,
+        )
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+
+            body = request.get_json(silent=True) if request.method == "POST" else None
+            body = body if isinstance(body, dict) else {}
+
+            raw_date = str(
+                (body.get("date_et") if body else None)
+                or request.args.get("date_et")
+                or request.args.get("date_start")
+                or ""
+            ).strip()
+            if not raw_date:
+                from backend.rinse_scheduled_scrape import _today_et
+
+                selected = _today_et()
+            else:
+                selected = parse_date_value(raw_date)
+            if not isinstance(selected, date):
+                return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+
+            def _opt_int(key_body, *arg_keys):
+                if key_body in body and body.get(key_body) is not None and str(body.get(key_body)).strip() != "":
+                    return body.get(key_body)
+                for k in arg_keys:
+                    raw = (request.args.get(k) or "").strip()
+                    if raw:
+                        return raw
+                return None
+
+            checkpoints = body.get("checkpoints") if body else None
+            if checkpoints is None:
+                raw_checkpoints = (
+                    request.args.get("checkpoints") or request.args.get("checkpoint_times") or ""
+                ).strip()
+                checkpoints = [p.strip() for p in raw_checkpoints.split(",") if p.strip()]
+            if not isinstance(checkpoints, list):
+                return jsonify({"error": "checkpoints must be a list of times"}), 400
+
+            payload = build_process_flow_calculator_payload(
+                cursor,
+                tenant_oid,
+                selected_date_et=selected,
+                checkpoints=checkpoints,
+                sort_assumption_minutes=_opt_int("sort_assumption_minutes", "sort_minutes"),
+                wash_assumption_minutes=_opt_int("wash_assumption_minutes", "wash_minutes"),
+                dry_assumption_minutes=_opt_int(
+                    "dry_assumption_minutes", "dry_minutes", "drying_duration_minutes"
+                ),
+            )
+            return jsonify(json_safe_rinse(payload))
+        except ProcessFlowValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/shift-analysis/sorting-chronology", methods=["GET"])
     def rinse_shift_analysis_sorting_chronology():
         """Legacy sorting chronology endpoint — delegates to scan-chronology stage=sorting."""

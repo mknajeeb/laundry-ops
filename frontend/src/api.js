@@ -886,6 +886,13 @@ export const getScanChronology = (params = {}, config = {}) =>
     ...config,
   });
 
+/** Read-only Process Flow stage-availability calculator. */
+export const calculateProcessFlowIntervals = (body = {}, config = {}) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/process-flow-calculator`, body, {
+    timeout: 60000,
+    ...config,
+  });
+
 export const getOperationsTimeline = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/operations-timeline`, { params, timeout: 60000 });
 

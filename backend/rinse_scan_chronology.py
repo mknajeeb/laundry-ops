@@ -12,6 +12,7 @@ from backend.rinse_drying_chronology import (
     build_drying_chronology_payload,
 )
 from backend.rinse_ready_to_fold_chronology import build_ready_to_fold_chronology_payload
+from backend.rinse_process_flow_chronology import build_process_flow_chronology_payload
 from backend.rinse_sorting_chronology import build_sorting_chronology_payload
 from backend.rinse_washing_chronology import (
     build_washer_utilization_payload,
@@ -33,6 +34,7 @@ VALID_STAGES = frozenset(
         "coverage_audit",
         "user_activity",
         "ready_to_fold",
+        "process_flow",
     }
 )
 
@@ -454,6 +456,22 @@ def build_scan_chronology_payload(
             view_mode=view_mode,
             employee_filter=employee_filter,
             confidence_filter=confidence_filter,
+        )
+
+    if stage_key == "process_flow":
+        return build_process_flow_chronology_payload(
+            cursor,
+            organization_id,
+            selected_date_et=selected_date_et,
+            bag_id_filter=bag_id_filter,
+            confidence_filter=confidence_filter,
+            drying_duration_minutes=drying_duration_minutes,
+            employee_filter=employee_filter,
+            machine_filter=machine_filter,
+            activity_type_filter=activity_type_filter,
+            order_type_filter=order_type_filter,
+            status_filter=status_filter,
+            view_mode=view_mode,
         )
 
     if stage_key == "coverage_audit":

@@ -31,6 +31,8 @@ import CloseIcon from "@mui/icons-material/Close";
 import { getRinseBagScanEvents, getScanChronology } from "../api";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import ReadyToFoldChronologyPanel from "../components/ReadyToFoldChronologyPanel";
+import ProcessFlowChronologyPanel from "../components/ProcessFlowChronologyPanel";
+import ProcessFlowAvailabilityCalculator from "../components/ProcessFlowAvailabilityCalculator";
 import { todayRange, yesterdayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
 import { parseRinseBagScanEventsResponse } from "../utils/rinseTimeFormat";
@@ -53,6 +55,7 @@ const STAGE_TABS = [
   { id: "washing", label: "Washing" },
   { id: "drying", label: "Drying" },
   { id: "ready_to_fold", label: "Ready to Fold" },
+  { id: "process_flow", label: "Process Flow" },
   { id: "washer_utilization", label: "Washer Utilization" },
   { id: "dryer_utilization", label: "Dryer Utilization" },
   { id: "coverage_audit", label: "Coverage Audit" },
@@ -320,6 +323,7 @@ export default function ScanChronologyPage() {
   const isUserActivity = activeStage === "user_activity";
   const isCoverageAudit = activeStage === "coverage_audit";
   const isReadyToFold = activeStage === "ready_to_fold";
+  const isProcessFlow = activeStage === "process_flow";
   const isDurationStage = DURATION_STAGES.has(activeStage);
   const isEventStage = EVENT_STAGES.has(activeStage);
   const isUtilStage = UTIL_STAGES.has(activeStage);
@@ -338,6 +342,12 @@ export default function ScanChronologyPage() {
   const [orderTypeFilter, setOrderTypeFilter] = useState("");
   const [machineFilter, setMachineFilter] = useState("");
   const [readyViewMode, setReadyViewMode] = useState("both");
+  const [pfCurrentStageFilter, setPfCurrentStageFilter] = useState("");
+  const [pfSequenceStatusFilter, setPfSequenceStatusFilter] = useState("");
+  const [pfSortEmployeeFilter, setPfSortEmployeeFilter] = useState("");
+  const [pfWashEmployeeFilter, setPfWashEmployeeFilter] = useState("");
+  const [pfDryEmployeeFilter, setPfDryEmployeeFilter] = useState("");
+  const [pfCardFilter, setPfCardFilter] = useState(null);
   const [drawerSession, setDrawerSession] = useState(null);
   const [drawerScans, setDrawerScans] = useState([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
@@ -394,9 +404,12 @@ export default function ScanChronologyPage() {
 
   const currentFilters = useMemo(
     () => ({
-      employee: isReadyToFold ? "" : employeeFilter,
+      employee: isReadyToFold || isProcessFlow ? "" : employeeFilter,
       bag_id: bagFilter,
-      confidence: isUserActivity || isCoverageAudit || isReadyToFold ? "" : confidenceFilter,
+      confidence:
+        isUserActivity || isCoverageAudit || isReadyToFold || isProcessFlow
+          ? ""
+          : confidenceFilter,
       activity_type: isUserActivity ? activityTypeFilter : undefined,
       drying_duration_minutes: isReadyToFold ? dryingDurationMinutes : undefined,
       order_type: isReadyToFold ? orderTypeFilter : undefined,
@@ -415,6 +428,7 @@ export default function ScanChronologyPage() {
       isUserActivity,
       isCoverageAudit,
       isReadyToFold,
+      isProcessFlow,
     ],
   );
 
@@ -475,7 +489,7 @@ export default function ScanChronologyPage() {
     exportScanChronologyCsv({
       stage: activeStage,
       dateEt: activeDateEt,
-      sessions: data.sessions || [],
+      sessions: isProcessFlow ? processFlowSessions : data.sessions || [],
       coverageRows: data.rows || data.sessions || [],
       employeeGroups: data.employee_groups || [],
       intervals: data.intervals || [],
@@ -484,6 +498,12 @@ export default function ScanChronologyPage() {
 
   const handleStageChange = (_, value) => {
     if (!value || value === activeStage) return;
+    setPfCardFilter(null);
+    setPfCurrentStageFilter("");
+    setPfSequenceStatusFilter("");
+    setPfSortEmployeeFilter("");
+    setPfWashEmployeeFilter("");
+    setPfDryEmployeeFilter("");
     const next = new URLSearchParams(searchParams);
     next.set("stage", value);
     setSearchParams(next, { replace: true });
@@ -524,6 +544,52 @@ export default function ScanChronologyPage() {
 
   const summary = data?.summary || {};
   const sessions = data?.sessions || [];
+  const processFlowSessions = useMemo(() => {
+    if (!isProcessFlow) return [];
+    let rows = sessions;
+    if (bagFilter.trim()) {
+      const needle = bagFilter.trim().toUpperCase();
+      rows = rows.filter((r) => String(r.bag_id || "").toUpperCase() === needle);
+    }
+    if (pfCurrentStageFilter) {
+      rows = rows.filter((r) => r.current_stage === pfCurrentStageFilter);
+    }
+    if (pfSequenceStatusFilter) {
+      const ss = pfSequenceStatusFilter.toLowerCase();
+      rows = rows.filter(
+        (r) =>
+          String(r.sequence_status || "")
+            .toLowerCase()
+            .includes(ss) ||
+          (r.sequence_codes || []).some((c) => String(c).toLowerCase() === ss),
+      );
+    }
+    if (pfSortEmployeeFilter) {
+      rows = rows.filter((r) => r.sort_employee === pfSortEmployeeFilter);
+    }
+    if (pfWashEmployeeFilter) {
+      rows = rows.filter((r) => r.wash_employee === pfWashEmployeeFilter);
+    }
+    if (pfDryEmployeeFilter) {
+      rows = rows.filter((r) => r.dry_employee === pfDryEmployeeFilter);
+    }
+    if (confidenceFilter) {
+      rows = rows.filter(
+        (r) => String(r.confidence || "").toLowerCase() === confidenceFilter.toLowerCase(),
+      );
+    }
+    return rows;
+  }, [
+    isProcessFlow,
+    sessions,
+    bagFilter,
+    pfCurrentStageFilter,
+    pfSequenceStatusFilter,
+    pfSortEmployeeFilter,
+    pfWashEmployeeFilter,
+    pfDryEmployeeFilter,
+    confidenceFilter,
+  ]);
   const coverageRows = data?.rows || sessions;
   const employeeGroups = data?.employee_groups || [];
   const readyIntervals = data?.intervals || [];
@@ -1058,9 +1124,109 @@ export default function ScanChronologyPage() {
         ) : null}
       </Paper>
 
+      {isProcessFlow && data ? (
+        <ProcessFlowChronologyPanel
+          sessions={[]}
+          summary={data.summary || {}}
+          cardFilter={pfCardFilter}
+          onCardFilterChange={setPfCardFilter}
+          cardsOnly
+        />
+      ) : null}
+
       <Paper elevation={0} sx={{ p: 1.5, mb: 2, borderRadius: 2, border: "1px solid", borderColor: "divider" }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} flexWrap="wrap" useFlexGap>
-          {isReadyToFold ? (
+          {isProcessFlow ? (
+            <>
+              <FormControl size="small" sx={{ minWidth: 180 }}>
+                <InputLabel>Current Stage</InputLabel>
+                <Select
+                  label="Current Stage"
+                  value={pfCurrentStageFilter}
+                  onChange={(e) => setPfCurrentStageFilter(e.target.value)}
+                >
+                  <MenuItem value="">All</MenuItem>
+                  {(data?.current_stage_options || []).map((opt) => (
+                    <MenuItem key={opt} value={opt}>
+                      {opt}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl size="small" sx={{ minWidth: 180 }}>
+                <InputLabel>Sequence Status</InputLabel>
+                <Select
+                  label="Sequence Status"
+                  value={pfSequenceStatusFilter}
+                  onChange={(e) => setPfSequenceStatusFilter(e.target.value)}
+                >
+                  <MenuItem value="">All</MenuItem>
+                  {(data?.sequence_status_options || []).map((opt) => (
+                    <MenuItem key={opt} value={opt}>
+                      {opt}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl size="small" sx={{ minWidth: 160 }}>
+                <InputLabel>Sort Employee</InputLabel>
+                <Select
+                  label="Sort Employee"
+                  value={pfSortEmployeeFilter}
+                  onChange={(e) => setPfSortEmployeeFilter(e.target.value)}
+                >
+                  <MenuItem value="">All</MenuItem>
+                  {(data?.employees || []).map((name) => (
+                    <MenuItem key={`sort-${name}`} value={name}>
+                      {name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl size="small" sx={{ minWidth: 160 }}>
+                <InputLabel>Wash Employee</InputLabel>
+                <Select
+                  label="Wash Employee"
+                  value={pfWashEmployeeFilter}
+                  onChange={(e) => setPfWashEmployeeFilter(e.target.value)}
+                >
+                  <MenuItem value="">All</MenuItem>
+                  {(data?.employees || []).map((name) => (
+                    <MenuItem key={`wash-${name}`} value={name}>
+                      {name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl size="small" sx={{ minWidth: 160 }}>
+                <InputLabel>Dry Employee</InputLabel>
+                <Select
+                  label="Dry Employee"
+                  value={pfDryEmployeeFilter}
+                  onChange={(e) => setPfDryEmployeeFilter(e.target.value)}
+                >
+                  <MenuItem value="">All</MenuItem>
+                  {(data?.employees || []).map((name) => (
+                    <MenuItem key={`dry-${name}`} value={name}>
+                      {name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl size="small" sx={{ minWidth: 130 }}>
+                <InputLabel>Confidence</InputLabel>
+                <Select
+                  label="Confidence"
+                  value={confidenceFilter}
+                  onChange={(e) => setConfidenceFilter(e.target.value)}
+                >
+                  <MenuItem value="">All</MenuItem>
+                  <MenuItem value="exact">Exact</MenuItem>
+                  <MenuItem value="inferred">Inferred</MenuItem>
+                </Select>
+              </FormControl>
+            </>
+          ) : isReadyToFold ? (
             <>
               <TextField
                 size="small"
@@ -1149,7 +1315,7 @@ export default function ScanChronologyPage() {
                 ))}
               </Select>
             </FormControl>
-          ) : !isCoverageAudit && !isReadyToFold ? (
+          ) : !isCoverageAudit && !isReadyToFold && !isProcessFlow ? (
             <FormControl size="small" sx={{ minWidth: 130 }}>
               <InputLabel>Confidence</InputLabel>
               <Select
@@ -1205,7 +1371,18 @@ export default function ScanChronologyPage() {
 
       {data ? (
         <>
-          {isReadyToFold ? (
+          {isProcessFlow ? (
+            <>
+              <ProcessFlowAvailabilityCalculator dateEt={activeDateEt} disabled={loading} />
+              <ProcessFlowChronologyPanel
+                sessions={processFlowSessions}
+                summary={data.summary || {}}
+                cardFilter={pfCardFilter}
+                onCardFilterChange={setPfCardFilter}
+                tableOnly
+              />
+            </>
+          ) : isReadyToFold ? (
             <>
               <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
                 {renderSummaryCards()}

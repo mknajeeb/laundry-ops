@@ -187,6 +187,42 @@ function buildReadyToFoldBagRows(sessions) {
   return { headers, rows };
 }
 
+function buildProcessFlowRows(sessions) {
+  const headers = [
+    "Bag ID",
+    "Sort Employee",
+    "Sort Scan Time ET",
+    "Sort Machine/Rack",
+    "Wash Employee",
+    "Wash Scan Time ET",
+    "Washer",
+    "Dry Employee",
+    "Dry Scan Time ET",
+    "Dryer",
+    "Ready-to-Fold Time ET",
+    "Current Stage",
+    "Sequence Status",
+    "Confidence",
+  ];
+  const rows = sessions.map((row) => [
+    row.bag_id ?? "",
+    row.sort_employee ?? "",
+    formatExportDateTime(row.sort_scan_et),
+    row.sort_machine_rack ?? "",
+    row.wash_employee ?? "",
+    formatExportDateTime(row.wash_scan_et),
+    row.washer ?? "",
+    row.dry_employee ?? "",
+    formatExportDateTime(row.dry_scan_et),
+    row.dryer ?? "",
+    formatExportDateTime(row.ready_to_fold_et),
+    row.current_stage ?? "",
+    row.sequence_status ?? "",
+    row.confidence ?? "",
+  ]);
+  return { headers, rows };
+}
+
 /**
  * Export the active Scan Chronology tab as CSV.
  * @returns {boolean} true if a file was downloaded
@@ -206,6 +242,8 @@ export function exportScanChronologyCsv({
     payload = buildUserActivityRows(employeeGroups);
   } else if (stageId === "coverage_audit") {
     payload = buildCoverageRows(coverageRows);
+  } else if (stageId === "process_flow") {
+    payload = buildProcessFlowRows(sessions);
   } else if (stageId === "ready_to_fold") {
     // Prefer bag-level detail when available; otherwise interval summary.
     payload = sessions.length
