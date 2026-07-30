@@ -14,7 +14,7 @@ from backend.rinse_bag_folding import rack_contains_folding
 from backend.rinse_bag_stage_bounds import (
     event_ts,
     gaming_events_from_records,
-    sort_key_ev,
+    lifecycle_anchor_as_of,
     ts_valid,
 )
 from backend.rinse_drying_chronology import extract_drying_rows_from_events
@@ -81,25 +81,6 @@ def _normalize_service_type(raw: Any) -> str | None:
     if val in ("HD", "HANG DRY", "HANG_DRY", "HANGDRY"):
         return "HD"
     return val
-
-
-def lifecycle_anchor_as_of(
-    timeline: Sequence[Mapping[str, Any]],
-    *,
-    as_of_end: datetime,
-) -> tuple[datetime | None, Mapping[str, Any] | None]:
-    """Latest sent-to-vendor at or before as_of_end — current lifecycle for that day."""
-    candidates: list[Mapping[str, Any]] = []
-    for ev in timeline:
-        if not is_sent_to_vendor_purpose(ev.get("purpose")):
-            continue
-        ts = event_ts(ev)
-        if ts_valid(ts) and ts <= as_of_end:
-            candidates.append(ev)
-    if not candidates:
-        return None, None
-    ev = max(candidates, key=sort_key_ev)
-    return event_ts(ev), ev
 
 
 def find_folding_start_after(

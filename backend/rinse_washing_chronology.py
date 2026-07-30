@@ -14,7 +14,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
-from backend.rinse_bag_stage_bounds import event_ts, ts_valid
+from backend.rinse_bag_stage_bounds import event_ts, gaming_events_from_records, lifecycle_anchor_as_of, ts_valid
 from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_start
 from backend.rinse_machine_rack import (
     cap_machine_load_rows_per_bag,
@@ -25,6 +25,7 @@ from backend.rinse_machine_rack import (
     normalize_rack_code,
 )
 from backend.rinse_scan_purpose import (
+    is_sent_to_vendor_purpose,
     is_start_cleaning_purpose,
     is_washer_settings_purpose,
     normalize_scan_purpose,
@@ -190,6 +191,111 @@ def extract_washing_rows_from_events(
     for idx, row in enumerate(rows):
         row["index"] = idx + 1
     return rows
+
+
+def _bag_key(bag_id: Any) -> str:
+    return str(bag_id or "").strip().upper()
+
+
+def _washing_row_sort_key(row: Mapping[str, Any]) -> tuple:
+    return (
+        row.get("timestamp_et") or datetime.min,
+        int(row.get("scan_event_id") or 0),
+        str(row.get("bag_id") or ""),
+    )
+
+
+def select_current_lifecycle_washing_row(
+    washing_rows: Sequence[Mapping[str, Any]],
+    bag_events: Sequence[Mapping[str, Any]],
+    *,
+    as_of_end: datetime,
+) -> dict[str, Any] | None:
+    """
+    Pick the current-lifecycle washing (start-cleaning) row for one bag.
+
+    Rules (aligned with select_current_lifecycle_drying_row):
+    - Discard rows after as_of_end
+    - Prefer rows on/after the latest sent-to-vendor at or before as_of_end
+    - Among eligible, take the most recent by (timestamp_et, scan_event_id)
+    - If an STV anchor exists at/before as_of_end but every wash predates it → None
+    - If no STV anchor as-of cutoff, fall back to latest wash <= as_of_end
+
+    Does not redefine extract_washing_rows_from_events or remove the chronology
+    max-two-row-per-bag behavior for existing screens.
+    """
+    eligible = [
+        dict(row)
+        for row in washing_rows
+        if ts_valid(row.get("timestamp_et")) and row["timestamp_et"] <= as_of_end
+    ]
+    if not eligible:
+        return None
+
+    timeline = gaming_events_from_records(bag_events)
+    anchor_ts, _ = lifecycle_anchor_as_of(timeline, as_of_end=as_of_end)
+    if anchor_ts is not None:
+        anchored = [row for row in eligible if row["timestamp_et"] >= anchor_ts]
+        if anchored:
+            eligible = anchored
+        elif any(
+            is_sent_to_vendor_purpose(ev.get("purpose"))
+            and ts_valid(event_ts(ev))
+            and event_ts(ev) <= as_of_end
+            for ev in timeline
+        ):
+            return None
+
+    chosen = max(eligible, key=_washing_row_sort_key)
+    chosen["bag_id"] = _bag_key(chosen.get("bag_id"))
+    return chosen
+
+
+def select_current_cycle_washing_rows(
+    washing_rows: Sequence[Mapping[str, Any]],
+    events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    *,
+    as_of_end: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """
+    One washing row per bag for the current lifecycle.
+
+    When events_by_bag/as_of_end are provided, respects sent-to-vendor lifecycle
+    anchors. Otherwise falls back to latest washing row.
+    Existing chronology should continue using extract_washing_rows_from_events
+    (multi-row, cap 2) without this selector.
+    """
+    by_bag: dict[str, list[dict[str, Any]]] = {}
+    for row in washing_rows:
+        bid = _bag_key(row.get("bag_id"))
+        if not bid or not ts_valid(row.get("timestamp_et")):
+            continue
+        by_bag.setdefault(bid, []).append(dict(row))
+
+    selected: list[dict[str, Any]] = []
+    for bid, rows in by_bag.items():
+        if events_by_bag is not None and as_of_end is not None:
+            chosen = select_current_lifecycle_washing_row(
+                rows,
+                events_by_bag.get(bid) or [],
+                as_of_end=as_of_end,
+            )
+            if chosen:
+                selected.append(chosen)
+            continue
+
+        chosen = max(rows, key=_washing_row_sort_key)
+        chosen["bag_id"] = bid
+        selected.append(chosen)
+
+    return sorted(
+        selected,
+        key=lambda r: (
+            r.get("timestamp_et") is None,
+            r.get("timestamp_et") or datetime.min,
+            str(r.get("bag_id") or ""),
+        ),
+    )
 
 
 def build_washing_chronology_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:

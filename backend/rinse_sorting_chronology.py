@@ -25,6 +25,7 @@ from backend.rinse_bag_stage_bounds import (
     events_on_or_after,
     gaming_events_from_records,
     lifecycle_anchor,
+    lifecycle_anchor_as_of,
     ts_valid,
 )
 from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_start, rinse_wall_calendar_date
@@ -32,6 +33,7 @@ from backend.rinse_scan_purpose import (
     is_add_photos_purpose,
     is_ghost_cleaning_purpose,
     is_lifecycle_sorting_progress_marker_purpose,
+    is_sent_to_vendor_purpose,
     is_weight_entry_purpose,
     normalize_scan_purpose,
 )
@@ -332,6 +334,103 @@ def extract_sorting_sessions_for_bag(
                         }
                     )
     return _dedupe_sessions_by_window(sessions)
+
+
+def _bag_key(bag_id: Any) -> str:
+    return str(bag_id or "").strip().upper()
+
+
+def _session_sort_key(session: Mapping[str, Any]) -> tuple:
+    return (
+        session.get("sort_start_et") or datetime.min,
+        session.get("sort_end_et") or datetime.min,
+        str(session.get("bag_id") or ""),
+        str(session.get("employee") or ""),
+    )
+
+
+def select_current_lifecycle_sorting_session(
+    sessions: Sequence[Mapping[str, Any]],
+    bag_events: Sequence[Mapping[str, Any]],
+    *,
+    as_of_end: datetime,
+) -> dict[str, Any] | None:
+    """
+    Pick the current-lifecycle sorting session for one bag.
+
+    Rules (aligned with select_current_lifecycle_drying_row):
+    - Discard sessions beginning after as_of_end
+    - Prefer sessions on/after the latest sent-to-vendor at or before as_of_end
+    - Among eligible, take the most recent by sort_start_et
+    - If an STV anchor exists at/before as_of_end but every session predates it → None
+    - If no STV anchor as-of cutoff, fall back to latest session <= as_of_end
+
+    Does not redefine how sessions are built — only selects among extract_sorting_sessions_for_bag output.
+    """
+    eligible = [
+        dict(sess)
+        for sess in sessions
+        if ts_valid(sess.get("sort_start_et")) and sess["sort_start_et"] <= as_of_end
+    ]
+    if not eligible:
+        return None
+
+    timeline = gaming_events_from_records(bag_events)
+    anchor_ts, _ = lifecycle_anchor_as_of(timeline, as_of_end=as_of_end)
+    if anchor_ts is not None:
+        anchored = [sess for sess in eligible if sess["sort_start_et"] >= anchor_ts]
+        if anchored:
+            eligible = anchored
+        elif any(
+            is_sent_to_vendor_purpose(ev.get("purpose"))
+            and ts_valid(event_ts(ev))
+            and event_ts(ev) <= as_of_end
+            for ev in timeline
+        ):
+            return None
+
+    chosen = max(eligible, key=_session_sort_key)
+    chosen["bag_id"] = _bag_key(chosen.get("bag_id"))
+    return chosen
+
+
+def select_current_cycle_sorting_sessions(
+    sessions: Sequence[Mapping[str, Any]],
+    events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    *,
+    as_of_end: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """
+    One sorting session per bag for the current lifecycle.
+
+    When events_by_bag/as_of_end are provided, respects sent-to-vendor lifecycle
+    anchors. Otherwise falls back to latest session by sort_start_et.
+    Existing chronology screens should continue using the full session list.
+    """
+    by_bag: dict[str, list[dict[str, Any]]] = {}
+    for sess in sessions:
+        bid = _bag_key(sess.get("bag_id"))
+        if not bid or not ts_valid(sess.get("sort_start_et")):
+            continue
+        by_bag.setdefault(bid, []).append(dict(sess))
+
+    selected: list[dict[str, Any]] = []
+    for bid, rows in by_bag.items():
+        if events_by_bag is not None and as_of_end is not None:
+            chosen = select_current_lifecycle_sorting_session(
+                rows,
+                events_by_bag.get(bid) or [],
+                as_of_end=as_of_end,
+            )
+            if chosen:
+                selected.append(chosen)
+            continue
+
+        chosen = max(rows, key=_session_sort_key)
+        chosen["bag_id"] = bid
+        selected.append(chosen)
+
+    return sorted(selected, key=_session_sort_key)
 
 
 def chronology_rows_with_gaps(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:

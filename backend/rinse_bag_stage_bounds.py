@@ -85,6 +85,30 @@ def lifecycle_anchor(
     return event_ts(ev), ev
 
 
+def lifecycle_anchor_as_of(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    as_of_end: datetime,
+) -> tuple[datetime | None, Mapping[str, Any] | None]:
+    """
+    Latest sent-to-vendor at or before as_of_end — current lifecycle for that cutoff.
+
+    Shared by Sorting / Washing / Drying / Ready-to-Fold current-cycle selectors.
+    Events after as_of_end must not affect the selected-day result.
+    """
+    candidates: list[Mapping[str, Any]] = []
+    for ev in timeline:
+        if not is_sent_to_vendor_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if ts_valid(ts) and ts <= as_of_end:
+            candidates.append(ev)
+    if not candidates:
+        return None, None
+    ev = max(candidates, key=sort_key_ev)
+    return event_ts(ev), ev
+
+
 def events_on_or_after(
     timeline: Sequence[Mapping[str, Any]], anchor_ts: datetime | None
 ) -> list[dict[str, Any]]:
