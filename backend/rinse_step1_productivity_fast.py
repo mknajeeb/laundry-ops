@@ -47,11 +47,18 @@ def _weight_lbs(row: Mapping[str, Any]) -> float | None:
     """
     Credited pounds for Employee Performance.
 
-    WF: immutable Evidence PRE only (never POST / canonical / manager correction).
+    WF: immutable Evidence PRE only (never POST / canonical / manager correction),
+    except settled bulk-only orders which must not receive standard WF-lb credit.
     HD and other services: preserve prior snapshot chain.
     """
+    from backend.rinse_settled_bulk_only_weight import (
+        row_is_settled_bulk_only_for_productivity,
+    )
+
     svc = str(row.get("service_type") or row.get("service_bucket") or "").upper()
     if svc == "WF":
+        if row_is_settled_bulk_only_for_productivity(row):
+            return 0.0
         return _parse_weight(row.get("pre_weight_lbs"))
     for key in ("productivity_weight_lbs", "weight_lbs", "post_weight_lbs", "pre_weight_lbs"):
         lbs = _parse_weight(row.get(key))
@@ -62,6 +69,21 @@ def _weight_lbs(row: Mapping[str, Any]) -> float | None:
 
 def _wf_credited_weight_fields(row: Mapping[str, Any]) -> dict[str, Any]:
     """Bag-level Evidence PRE credit fields for WF Employee Performance."""
+    from backend.rinse_settled_bulk_only_weight import (
+        PROD_EXCLUSION_SETTLED_BULK_ONLY,
+        row_is_settled_bulk_only_for_productivity,
+    )
+
+    if row_is_settled_bulk_only_for_productivity(row):
+        return {
+            "credited_weight_lbs": 0.0,
+            "credited_weight_source": PROD_EXCLUSION_SETTLED_BULK_ONLY,
+            "missing_production_credit_weight": False,
+            "pre_weight_lbs": _parse_weight(row.get("pre_weight_lbs")),
+            "pre_weight_at": row.get("pre_weight_at") or row.get("productivity_pre_weight_at"),
+            "pre_weight_source": row.get("pre_weight_source"),
+            "settled_bulk_only": True,
+        }
     pre = _parse_weight(row.get("pre_weight_lbs"))
     # If projection already stored PRE into productivity_weight_lbs, prefer that
     # only when pre_weight_lbs is also present / equal — never invent from POST.
@@ -601,9 +623,15 @@ def build_employee_productivity_bags_page(
 def project_productivity_fields_for_day_bag(row: Mapping[str, Any]) -> dict[str, Any]:
     """Compute productivity projection columns for snapshot upsert.
 
-    WF credited pounds = immutable Evidence PRE only.
+    WF credited pounds = immutable Evidence PRE only, except settled bulk-only
+    (productivity WF pounds forced to 0; PRE must not become credit later).
     HD / other services keep prior weight_lbs → post → pre chain.
     """
+    from backend.rinse_settled_bulk_only_weight import (
+        project_productivity_override_for_settled_bulk_only,
+        row_is_settled_bulk_only_for_productivity,
+    )
+
     eff = str(row.get("effective_status") or "").lower()
     eligible = eff == "completed"
     emp = row.get("canonical_completion_employee") or row.get("completed_by")
@@ -617,7 +645,7 @@ def project_productivity_fields_for_day_bag(row: Mapping[str, Any]) -> dict[str,
             lbs = _parse_weight(row.get("post_weight_lbs"))
         if lbs is None:
             lbs = _parse_weight(row.get("pre_weight_lbs"))
-    return {
+    out = {
         "productivity_employee_name": (str(emp).strip() if emp else None) or None,
         "productivity_completed_at": ts,
         "productivity_weight_lbs": lbs,
@@ -626,3 +654,6 @@ def project_productivity_fields_for_day_bag(row: Mapping[str, Any]) -> dict[str,
         if eligible
         else (f"effective_status={eff}" if eff else "not_completed"),
     }
+    if svc == "WF" and row_is_settled_bulk_only_for_productivity(row):
+        return project_productivity_override_for_settled_bulk_only(out)
+    return out

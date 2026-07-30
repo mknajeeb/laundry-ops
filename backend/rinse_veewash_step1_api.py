@@ -716,6 +716,11 @@ def build_drilldown(
                 "post_resolution_status",
                 "resolution_reason",
                 "post_weight_value",
+                "settled_bulk_only",
+                "authoritative_post_weight_lbs",
+                "post_weight_valid_for_standard_weight_revenue",
+                "raw_post_weight_lbs",
+                "detected_post_weight_lbs",
             ):
                 if resolved.get(key) is not None:
                     item[key] = resolved.get(key)

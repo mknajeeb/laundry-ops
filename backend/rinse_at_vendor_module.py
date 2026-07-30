@@ -3707,6 +3707,16 @@ def build_at_vendor_module(
                         row["post_resolution_status"] = info.get("post_resolution_status")
                     if info.get("pre_resolution_status") is not None:
                         row["pre_resolution_status"] = info.get("pre_resolution_status")
+                    if info.get("settled_bulk_only") is not None:
+                        row["settled_bulk_only"] = bool(info.get("settled_bulk_only"))
+                    if info.get("authoritative_post_weight_lbs") is not None:
+                        row["authoritative_post_weight_lbs"] = info.get(
+                            "authoritative_post_weight_lbs"
+                        )
+                    if info.get("post_weight_valid_for_standard_weight_revenue") is not None:
+                        row["post_weight_valid_for_standard_weight_revenue"] = bool(
+                            info.get("post_weight_valid_for_standard_weight_revenue")
+                        )
         except Exception:
             pass
 

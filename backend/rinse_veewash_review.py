@@ -596,6 +596,11 @@ def expand_review_required(
             rows_by_id[bid]["post_weight_valid_for_standard_weight_revenue"] = bool(
                 info.get("post_weight_valid_for_standard_weight_revenue")
             )
+            rows_by_id[bid]["settled_bulk_only"] = bool(info.get("settled_bulk_only"))
+            if info.get("authoritative_post_weight_lbs") is not None:
+                rows_by_id[bid]["authoritative_post_weight_lbs"] = info.get(
+                    "authoritative_post_weight_lbs"
+                )
             rows_by_id[bid]["weight_lbs"] = (
                 post_value if post_value is not None else (post_w if post_w is not None else pre_w)
             )
@@ -886,11 +891,23 @@ def load_bag_weight_map(
 
     if selected_date_et is not None:
         from backend.rinse_current_cycle_weight import load_current_cycle_weight_map
+        from backend.rinse_settled_bulk_only_weight import (
+            apply_settled_bulk_only_to_weight_map,
+        )
 
-        return load_current_cycle_weight_map(
+        # Shared current-cycle PRE/POST first (unchanged). Then a narrow
+        # settled-bulk-only POST overlay: keep PRE, set POST = final portal WF.
+        weight_map = load_current_cycle_weight_map(
             cursor,
             organization_id,
             ids,
+            selected_date_et=selected_date_et,
+        )
+        return apply_settled_bulk_only_to_weight_map(
+            cursor,
+            organization_id,
+            ids,
+            weight_map,
             selected_date_et=selected_date_et,
         )
 
