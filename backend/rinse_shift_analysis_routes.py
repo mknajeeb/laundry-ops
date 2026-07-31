@@ -1095,8 +1095,8 @@ def register_rinse_shift_analysis_routes(
         """
         Read-only Process Flow inter-stage queue calculator.
 
-        Washing / Drying / Folding queues from actual canonical times.
-        Does not mutate scans. No Sort/Wash duration assumptions.
+        Durations apply to Sort/Wash/Dry START scans for next-stage availability.
+        Queue departures use actual Wash START / Dry START / folding completion.
         """
         from backend.rinse_process_flow_chronology import (
             ProcessFlowValidationError,
@@ -1162,8 +1162,17 @@ def register_rinse_shift_analysis_routes(
                 selected_date_et=selected,
                 checkpoints=checkpoints,
                 start_time=start_time,
-                dry_assumption_minutes=_opt_int(
-                    "dry_assumption_minutes", "dry_minutes", "drying_duration_minutes"
+                sort_duration_minutes=_opt_int(
+                    "sort_duration_minutes", "sort_minutes", "sort_assumption_minutes"
+                ),
+                wash_duration_minutes=_opt_int(
+                    "wash_duration_minutes", "wash_minutes", "wash_assumption_minutes"
+                ),
+                dry_duration_minutes=_opt_int(
+                    "dry_duration_minutes",
+                    "dry_minutes",
+                    "dry_assumption_minutes",
+                    "drying_duration_minutes",
                 ),
             )
             return jsonify(json_safe_rinse(payload))

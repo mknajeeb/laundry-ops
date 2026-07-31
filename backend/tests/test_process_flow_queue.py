@@ -11,6 +11,7 @@ from backend.rinse_process_flow_chronology import (
     clamp_dry_assumption_minutes,
 )
 from backend.rinse_process_flow_queue import (
+    DEFAULT_SORT_DURATION_MINUTES,
     FOLDING_COMPLETION_RESOLVER,
     FOLDING_COMPLETION_SOURCE,
     build_queue_slot,
@@ -23,9 +24,15 @@ from backend.rinse_process_flow_queue import (
     processed_in_interval,
     reconcile_waiting_end,
     replay_peak_and_starved,
+    resolve_dry_duration_minutes,
+    resolve_sort_duration_minutes,
+    resolve_wash_duration_minutes,
     waiting_at_checkpoint,
 )
-from backend.rinse_processing_settings import DEFAULT_DRYING_MINUTES as SETTINGS_DRYING_MINUTES
+from backend.rinse_processing_settings import (
+    DEFAULT_DRYING_MINUTES as SETTINGS_DRYING_MINUTES,
+    DEFAULT_WASHING_MINUTES,
+)
 
 SELECTED = date(2026, 7, 30)
 
@@ -72,8 +79,27 @@ class TestDefaultsAndFoldingResolver:
         )
 
 
+class TestProcessDurations:
+    def test_sort_default_temporary_10(self):
+        assert DEFAULT_SORT_DURATION_MINUTES == 10
+        assert resolve_sort_duration_minutes(None) == 10
+        assert resolve_sort_duration_minutes("") == 10
+        assert resolve_sort_duration_minutes(15) == 15
+
+    def test_wash_defaults_from_org_washing_minutes(self):
+        assert DEFAULT_WASHING_MINUTES == 30
+        assert resolve_wash_duration_minutes(None, org_washing_minutes=30) == 30
+        assert resolve_wash_duration_minutes(None, org_washing_minutes=25) == 25
+        assert resolve_wash_duration_minutes(40, org_washing_minutes=30) == 40
+
+    def test_dry_remains_40_not_settings_45(self):
+        assert resolve_dry_duration_minutes(None) == 40
+        assert SETTINGS_DRYING_MINUTES == 45
+        assert resolve_dry_duration_minutes(None) != SETTINGS_DRYING_MINUTES
+
+
 class TestReadyTimesAreActual:
-    def test_washing_arrival_is_sort_time(self):
+    def test_washing_arrival_is_sort_start_plus_duration(self):
         rows = [
             {
                 "bag_id": "A",
@@ -89,14 +115,17 @@ class TestReadyTimesAreActual:
         ]
         bags = compose_queue_bags_from_process_flow_rows(
             rows,
+            sort_minutes=10,
+            wash_minutes=30,
             dry_minutes=40,
             fold_completions={},
             pre_pounds={},
         )
-        assert bags[0]["wash_arrival"] == datetime(2026, 7, 30, 8, 0)
+        assert bags[0]["ready_for_washing_at"] == datetime(2026, 7, 30, 8, 10)
+        assert bags[0]["wash_arrival"] == datetime(2026, 7, 30, 8, 10)
         assert bags[0]["wash_departure"] == datetime(2026, 7, 30, 9, 0)
 
-    def test_drying_arrival_is_wash_time(self):
+    def test_drying_arrival_is_wash_start_plus_duration(self):
         rows = [
             {
                 "bag_id": "A",
@@ -108,12 +137,18 @@ class TestReadyTimesAreActual:
             }
         ]
         bags = compose_queue_bags_from_process_flow_rows(
-            rows, dry_minutes=40, fold_completions={}, pre_pounds={}
+            rows,
+            sort_minutes=10,
+            wash_minutes=30,
+            dry_minutes=40,
+            fold_completions={},
+            pre_pounds={},
         )
-        assert bags[0]["dry_arrival"] == datetime(2026, 7, 30, 9, 0)
+        assert bags[0]["ready_for_drying_at"] == datetime(2026, 7, 30, 9, 30)
+        assert bags[0]["dry_arrival"] == datetime(2026, 7, 30, 9, 30)
         assert bags[0]["dry_departure"] == datetime(2026, 7, 30, 10, 0)
 
-    def test_folding_arrival_is_dry_plus_40(self):
+    def test_folding_arrival_is_dry_start_plus_40(self):
         rows = [
             {
                 "bag_id": "A",
@@ -125,9 +160,15 @@ class TestReadyTimesAreActual:
             }
         ]
         bags = compose_queue_bags_from_process_flow_rows(
-            rows, dry_minutes=40, fold_completions={}, pre_pounds={}
+            rows,
+            sort_minutes=10,
+            wash_minutes=30,
+            dry_minutes=40,
+            fold_completions={},
+            pre_pounds={},
         )
         assert bags[0]["fold_arrival"] == datetime(2026, 7, 30, 10, 40)
+        assert bags[0]["ready_for_folding_at"] == datetime(2026, 7, 30, 10, 40)
 
     def test_folded_uses_folding_end_at(self):
         rows = [
@@ -142,13 +183,15 @@ class TestReadyTimesAreActual:
         ]
         bags = compose_queue_bags_from_process_flow_rows(
             rows,
+            sort_minutes=10,
+            wash_minutes=30,
             dry_minutes=40,
             fold_completions={"A": datetime(2026, 7, 30, 11, 30)},
             pre_pounds={},
         )
         assert bags[0]["fold_departure"] == datetime(2026, 7, 30, 11, 30)
 
-    def test_no_sort_wash_duration_assumptions_in_compose(self):
+    def test_waiting_for_wash_uses_ready_not_raw_sort(self):
         rows = [
             {
                 "bag_id": "A",
@@ -160,11 +203,29 @@ class TestReadyTimesAreActual:
             }
         ]
         bags = compose_queue_bags_from_process_flow_rows(
-            rows, dry_minutes=40, fold_completions={}, pre_pounds={}
+            rows,
+            sort_minutes=10,
+            wash_minutes=30,
+            dry_minutes=40,
+            fold_completions={},
+            pre_pounds={},
         )
-        # Wash arrival is raw sort time — not sort+assumption
-        assert bags[0]["wash_arrival"] == datetime(2026, 7, 30, 8, 0)
-        assert bags[0]["fold_arrival"] is None
+        # At 8:05: sorted but not yet ready for wash (ready at 8:10)
+        waiting_early = waiting_at_checkpoint(
+            bags,
+            datetime(2026, 7, 30, 8, 5),
+            arrival_key="wash_arrival",
+            departure_key="wash_departure",
+        )
+        assert waiting_early == []
+        waiting_ready = waiting_at_checkpoint(
+            bags,
+            datetime(2026, 7, 30, 8, 15),
+            arrival_key="wash_arrival",
+            departure_key="wash_departure",
+        )
+        assert [b["bag_id"] for b in waiting_ready] == ["A"]
+
 
 
 class TestPointInTimeWaiting:
@@ -388,6 +449,10 @@ class TestDetailReconcileAndStatus:
         )
         assert c["status"] == "capacity_available"
         assert "Folder capacity" in c["label"]
+        d2 = classify_excess_deficit(
+            stage_id="folding_queue", waiting_at_end=14, work_starved_minutes=0
+        )
+        assert "Folder deficit — 14" in d2["label"]
         b = classify_excess_deficit(
             stage_id="drying_queue", waiting_at_end=0, work_starved_minutes=0
         )

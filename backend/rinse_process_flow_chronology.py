@@ -1010,6 +1010,9 @@ def build_process_flow_calculator_payload(
     selected_date_et: date,
     checkpoints: Sequence[Any],
     start_time: Any = None,
+    sort_duration_minutes: int | None = None,
+    wash_duration_minutes: int | None = None,
+    dry_duration_minutes: int | None = None,
     sort_assumption_minutes: int | None = None,
     wash_assumption_minutes: int | None = None,
     dry_assumption_minutes: int | None = None,
@@ -1018,10 +1021,9 @@ def build_process_flow_calculator_payload(
     """
     Read-only Process Flow queue calculator (Washing / Drying / Folding queues).
 
-    Sort/Wash duration assumptions are not used. Optional sort/wash kwargs are
-    ignored for compatibility with older clients.
+    Durations apply to stage START scans. Alias kwargs (*_assumption_*) accepted
+    for older clients.
     """
-    del sort_assumption_minutes, wash_assumption_minutes  # removed from calculator
     from backend.rinse_process_flow_queue import build_process_flow_queue_calculator_payload
 
     return build_process_flow_queue_calculator_payload(
@@ -1030,6 +1032,20 @@ def build_process_flow_calculator_payload(
         selected_date_et=selected_date_et,
         checkpoints=checkpoints,
         start_time=start_time,
-        dry_assumption_minutes=dry_assumption_minutes,
+        sort_duration_minutes=(
+            sort_duration_minutes
+            if sort_duration_minutes is not None
+            else sort_assumption_minutes
+        ),
+        wash_duration_minutes=(
+            wash_duration_minutes
+            if wash_duration_minutes is not None
+            else wash_assumption_minutes
+        ),
+        dry_duration_minutes=(
+            dry_duration_minutes
+            if dry_duration_minutes is not None
+            else dry_assumption_minutes
+        ),
         now_et=now_et,
     )

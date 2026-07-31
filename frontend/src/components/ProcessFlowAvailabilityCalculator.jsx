@@ -21,10 +21,12 @@ import {
   Typography,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
-import { calculateProcessFlowIntervals } from "../api";
+import { calculateProcessFlowIntervals, getProcessingSettings } from "../api";
 import { formatDateTime } from "../utils/foldingFormat";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 
+const DEFAULT_SORT = 10; // temporary Process Flow operational default
+const DEFAULT_WASH_FALLBACK = 30; // matches org washing_minutes default
 const DEFAULT_DRY = 40;
 const MAX_SLOTS = 48;
 
@@ -141,7 +143,7 @@ function DetailDialog({ open, onClose, title, columns, bags }) {
 
 const AVAILABLE_COLS = [
   { key: "bag_id", label: "Bag ID" },
-  { key: "arrival_time_et", label: "Arrival Time ET", format: formatDateTime },
+  { key: "arrival_time_et", label: "Available At ET", format: formatDateTime },
   { key: "arrival_employee", label: "Employee" },
   { key: "arrival_machine", label: "Machine/Rack" },
   { key: "departure_time_et", label: "Downstream Time ET", format: formatDateTime },
@@ -150,7 +152,7 @@ const AVAILABLE_COLS = [
 
 const PROCESSED_COLS = [
   { key: "bag_id", label: "Bag ID" },
-  { key: "arrival_time_et", label: "Arrival Time ET", format: formatDateTime },
+  { key: "arrival_time_et", label: "Available At ET", format: formatDateTime },
   { key: "processing_time_et", label: "Processing Time ET", format: formatDateTime },
   { key: "processing_employee", label: "Employee" },
   { key: "processing_machine", label: "Machine" },
@@ -170,6 +172,9 @@ const WAITING_COLS = [
 
 export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = false }) {
   const [slotCount, setSlotCount] = useState(3);
+  const [sortMins, setSortMins] = useState(String(DEFAULT_SORT));
+  const [washMins, setWashMins] = useState(String(DEFAULT_WASH_FALLBACK));
+  const [washDefault, setWashDefault] = useState(DEFAULT_WASH_FALLBACK);
   const [dryMins, setDryMins] = useState(String(DEFAULT_DRY));
   const [slotTimes, setSlotTimes] = useState(() => Array(3).fill(""));
   const [spaceStart, setSpaceStart] = useState("");
@@ -178,6 +183,25 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
   const [error, setError] = useState("");
   const [results, setResults] = useState(null);
   const [viewDetail, setViewDetail] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getProcessingSettings();
+        const orgWash = Number(res?.data?.washing_minutes);
+        if (!cancelled && Number.isFinite(orgWash) && orgWash >= 0) {
+          setWashDefault(orgWash);
+          setWashMins(String(orgWash));
+        }
+      } catch {
+        // Keep fallback 30 — calculator backend also defaults from washing_minutes.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setResults(null);
@@ -199,6 +223,8 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
   };
 
   const handleReset = () => {
+    setSortMins(String(DEFAULT_SORT));
+    setWashMins(String(washDefault));
     setDryMins(String(DEFAULT_DRY));
     setSlotTimes(Array(slotCount).fill(""));
     setSpaceStart("");
@@ -221,9 +247,11 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
 
   const handleCalculate = async () => {
     setError("");
-    const dry = requireIntegerString(dryMins, { min: 1, max: 1440, field: "Drying Time (Minutes)" });
-    if (!dry.ok) {
-      setError(dry.error);
+    const sort = requireIntegerString(sortMins, { min: 0, max: 1440, field: "Sort Duration (Minutes)" });
+    const wash = requireIntegerString(washMins, { min: 0, max: 1440, field: "Wash Duration (Minutes)" });
+    const dry = requireIntegerString(dryMins, { min: 1, max: 1440, field: "Dry Duration (Minutes)" });
+    if (!sort.ok || !wash.ok || !dry.ok) {
+      setError(sort.error || wash.error || dry.error);
       return;
     }
     if (!String(spaceStart || "").trim()) {
@@ -259,7 +287,9 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
         date_et: dateEt,
         start_time: startTime,
         checkpoints,
-        dry_assumption_minutes: dry.value,
+        sort_duration_minutes: sort.value,
+        wash_duration_minutes: wash.value,
+        dry_duration_minutes: dry.value,
       });
       setResults(res?.data || null);
     } catch (err) {
@@ -288,10 +318,10 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
         Inter-Stage Queue Calculator
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Uses actual Sort → Wash → Dry → Fold evidence. No Sort/Wash duration assumptions.
-        Ready-to-Fold arrival = Dry time + Drying Time (default 40), not the organization
-        processing setting (45). Work-Starved Minutes measure queue availability only — not
-        employee idle time.
+        Durations are applied to actual stage start scans to calculate when bags become available for
+        the next stage. Queue departures use actual Wash START, Dry START, and Folding Completion.
+        Dry Duration default 40 is not the organization Dryer Time (45). Work-Starved Minutes measure
+        queue availability only — not employee idle time.
       </Typography>
 
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
@@ -307,13 +337,37 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
         />
         <TextField
           size="small"
-          label="Drying Time (Minutes)"
+          label="Sort Duration (Minutes)"
+          value={sortMins}
+          onChange={(e) => {
+            setSortMins(e.target.value);
+            setResults(null);
+          }}
+          helperText="Default operational assumption (10)"
+          disabled={disabled || loading}
+          sx={{ minWidth: 200 }}
+        />
+        <TextField
+          size="small"
+          label="Wash Duration (Minutes)"
+          value={washMins}
+          onChange={(e) => {
+            setWashMins(e.target.value);
+            setResults(null);
+          }}
+          helperText={`From org Wash Time (prefill ${washDefault})`}
+          disabled={disabled || loading}
+          sx={{ minWidth: 200 }}
+        />
+        <TextField
+          size="small"
+          label="Dry Duration (Minutes)"
           value={dryMins}
           onChange={(e) => {
             setDryMins(e.target.value);
             setResults(null);
           }}
-          helperText="Ready-to-Fold = Dry + minutes (default 40)"
+          helperText="Ready-to-Fold = Dry START + minutes (default 40)"
           disabled={disabled || loading}
           sx={{ minWidth: 220 }}
         />
@@ -451,7 +505,6 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
                       </TableCell>
                       <TableCell align="right">{slot.newly_available_count ?? 0}</TableCell>
                       <TableCell align="right">{slot.processed_count ?? 0}</TableCell>
-                      <TableCell align="right">{slot.waiting_at_start ?? 0}</TableCell>
                       <TableCell align="right" sx={{ fontWeight: 700 }}>
                         {slot.waiting_at_end ?? 0}
                       </TableCell>

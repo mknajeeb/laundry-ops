@@ -1,11 +1,22 @@
 """
 Read-only Process Flow inter-stage queue calculator.
 
-Uses actual canonical Sort / Wash / Dry times and folding completion
-(folding_end_at from evaluate_folding_performance_for_bag via rinse_folding_performance).
+Canonical Process Flow timestamps are process START events:
+- sort_scan_et = sorting start
+- wash_scan_et = washing start (start-cleaning)
+- dry_scan_et = drying start
 
-Does not introduce Sort/Wash duration assumptions.
-Ready-to-Fold arrival = dry + drying_minutes (default 40; not org settings 45).
+Availability for the next stage:
+  ready_for_washing_at = sort_start + sort_duration_minutes
+  ready_for_drying_at  = wash_start + wash_duration_minutes
+  ready_for_folding_at = dry_start  + dry_duration_minutes
+
+Queue departures remain actual downstream events (Wash START / Dry START /
+folding_end_at from evaluate_folding_performance_for_bag).
+
+Dry duration default 40 (not org drying_minutes=45).
+Wash duration defaults from org washing_minutes (default 30).
+Sort duration temporary Process Flow default = 10 (not labor estimate settings).
 """
 
 from __future__ import annotations
@@ -26,12 +37,21 @@ from backend.rinse_process_flow_chronology import (
     parse_checkpoint_datetime,
     validate_checkpoint_times,
 )
+from backend.rinse_processing_settings import (
+    DEFAULT_WASHING_MINUTES,
+    get_processing_settings,
+)
 from backend.ta_helpers import table_exists, table_has_column
 
 # Folding completion = persisted output of evaluate_folding_performance_for_bag
 # (FOLDING rack → CLEAN rack → folding_end_at). Do not invent a competing resolver.
 FOLDING_COMPLETION_SOURCE = "rinse_folding_performance.folding_end_at"
 FOLDING_COMPLETION_RESOLVER = "evaluate_folding_performance_for_bag"
+
+# Temporary Process Flow–only Sort Duration default (not an org setting).
+DEFAULT_SORT_DURATION_MINUTES = 10
+DEFAULT_DRY_DURATION_MINUTES = DEFAULT_DRY_ASSUMPTION_MINUTES  # 40
+SORT_DURATION_DEFAULT_LABEL = "Default operational assumption"
 
 SEQ_FOLDED_BEFORE_READY = "Folded Before Ready to Fold"
 
@@ -60,6 +80,71 @@ def parse_interval_start(value: Any, *, selected_date_et: date) -> datetime:
             "Start Time is required. Slot 1 interval starts at the calculator Start Time."
         )
     return parse_checkpoint_datetime(value, selected_date_et=selected_date_et)
+
+
+def _require_duration_int(value: Any, *, field: str) -> int:
+    if isinstance(value, bool):
+        raise ProcessFlowValidationError(f"{field} must be an integer.")
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ProcessFlowValidationError(f"{field} must be an integer.")
+        return int(value)
+    if isinstance(value, int):
+        return value
+    raw = str(value or "").strip()
+    if not raw:
+        raise ProcessFlowValidationError(f"{field} is required.")
+    if "." in raw or "e" in raw.lower():
+        raise ProcessFlowValidationError(f"{field} must be an integer.")
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ProcessFlowValidationError(f"{field} must be an integer.") from exc
+
+
+def resolve_sort_duration_minutes(value: Any) -> int:
+    """Temporary Process Flow default = 10 when blank. Not an org setting."""
+    if value is None or (isinstance(value, str) and not str(value).strip()):
+        return DEFAULT_SORT_DURATION_MINUTES
+    minutes = _require_duration_int(value, field="Sort Duration (Minutes)")
+    if minutes < 0 or minutes > 1440:
+        raise ProcessFlowValidationError(
+            "Sort Duration (Minutes) must be between 0 and 1440."
+        )
+    return minutes
+
+
+def resolve_wash_duration_minutes(
+    value: Any, *, org_washing_minutes: int | None = None
+) -> int:
+    """Prefill/default from org washing_minutes (default 30). Editable override."""
+    fallback = (
+        int(org_washing_minutes)
+        if org_washing_minutes is not None
+        else int(DEFAULT_WASHING_MINUTES)
+    )
+    if value is None or (isinstance(value, str) and not str(value).strip()):
+        return max(0, min(1440, fallback))
+    minutes = _require_duration_int(value, field="Wash Duration (Minutes)")
+    if minutes < 0 or minutes > 1440:
+        raise ProcessFlowValidationError(
+            "Wash Duration (Minutes) must be between 0 and 1440."
+        )
+    return minutes
+
+
+def resolve_dry_duration_minutes(value: Any) -> int:
+    """Scan Chronology Ready-to-Fold default 40 — not org drying_minutes (45)."""
+    return clamp_dry_assumption_minutes(value)
+
+
+def org_washing_minutes_default(cursor, organization_id: int) -> int:
+    settings = get_processing_settings(cursor, organization_id)
+    raw = settings.get("washing_minutes")
+    try:
+        return max(0, min(1440, int(raw)))
+    except (TypeError, ValueError):
+        return int(DEFAULT_WASHING_MINUTES)
 
 
 def effective_departure(
@@ -279,7 +364,7 @@ def classify_excess_deficit(
             "capacity": "Drying capacity available",
         },
         "folding_queue": {
-            "deficit": lambda x: f"Folding deficit — {x} bags waiting",
+            "deficit": lambda x: f"Folder deficit — {x} bags waiting",
             "capacity": "Folder capacity available",
         },
     }
@@ -634,11 +719,17 @@ def load_bag_pre_pounds(
 def compose_queue_bags_from_process_flow_rows(
     rows: Sequence[Mapping[str, Any]],
     *,
+    sort_minutes: int,
+    wash_minutes: int,
     dry_minutes: int,
     fold_completions: Mapping[str, datetime],
     pre_pounds: Mapping[str, float],
 ) -> list[dict[str, Any]]:
-    """Map Process Flow chronology rows into queue bag records (actual evidence)."""
+    """
+    Map Process Flow chronology rows into queue bag records.
+
+    Arrivals = stage START + duration. Departures = actual downstream START/completion.
+    """
     bags: list[dict[str, Any]] = []
     for row in rows:
         bid = _bag_key(row.get("bag_id"))
@@ -647,13 +738,19 @@ def compose_queue_bags_from_process_flow_rows(
         sort_ts = _as_naive(row.get("sort_scan_et"))
         wash_ts = _as_naive(row.get("wash_scan_et"))
         dry_ts = _as_naive(row.get("dry_scan_et"))
-        ready_ts = None
-        if dry_ts is not None:
-            ready_ts = dry_ts + timedelta(minutes=int(dry_minutes))
+        ready_for_washing = (
+            sort_ts + timedelta(minutes=int(sort_minutes)) if sort_ts is not None else None
+        )
+        ready_for_drying = (
+            wash_ts + timedelta(minutes=int(wash_minutes)) if wash_ts is not None else None
+        )
+        ready_for_folding = (
+            dry_ts + timedelta(minutes=int(dry_minutes)) if dry_ts is not None else None
+        )
         fold_ts = _as_naive(fold_completions.get(bid))
         codes = list(row.get("sequence_codes") or [])
         # Folded before ready exception
-        if fold_ts is not None and ready_ts is not None and fold_ts < ready_ts:
+        if fold_ts is not None and ready_for_folding is not None and fold_ts < ready_for_folding:
             if SEQ_FOLDED_BEFORE_READY not in codes:
                 codes = codes + [SEQ_FOLDED_BEFORE_READY]
         seq_status = "; ".join(codes) if codes else (row.get("sequence_status") or "Valid")
@@ -663,27 +760,30 @@ def compose_queue_bags_from_process_flow_rows(
                 "sort_ts": sort_ts,
                 "wash_ts": wash_ts,
                 "dry_ts": dry_ts,
-                "ready_to_fold_ts": ready_ts,
+                "ready_for_washing_at": ready_for_washing,
+                "ready_for_drying_at": ready_for_drying,
+                "ready_for_folding_at": ready_for_folding,
+                "ready_to_fold_ts": ready_for_folding,
                 "fold_completion_ts": fold_ts,
                 "sequence_status": seq_status,
                 "sequence_codes": codes,
                 "pre_weight_lbs": pre_pounds.get(bid),
-                # Washing queue fields
-                "wash_arrival": sort_ts,
+                # Washing queue: arrival = ready_for_washing; departure = Wash START
+                "wash_arrival": ready_for_washing,
                 "wash_departure": wash_ts,
                 "wash_arrival_employee": row.get("sort_employee"),
                 "wash_arrival_machine": row.get("sort_machine_rack"),
                 "wash_departure_employee": row.get("wash_employee"),
                 "wash_departure_machine": row.get("washer"),
-                # Drying queue
-                "dry_arrival": wash_ts,
+                # Drying queue: arrival = ready_for_drying; departure = Dry START
+                "dry_arrival": ready_for_drying,
                 "dry_departure": dry_ts,
                 "dry_arrival_employee": row.get("wash_employee"),
                 "dry_arrival_machine": row.get("washer"),
                 "dry_departure_employee": row.get("dry_employee"),
                 "dry_departure_machine": row.get("dryer"),
-                # Folding queue
-                "fold_arrival": ready_ts,
+                # Folding queue: arrival = ready_for_folding; departure = folding_end_at
+                "fold_arrival": ready_for_folding,
                 "fold_departure": fold_ts,
                 "fold_arrival_employee": row.get("dry_employee"),
                 "fold_arrival_machine": row.get("dryer"),
@@ -722,17 +822,32 @@ def build_process_flow_queue_calculator_payload(
     selected_date_et: date,
     checkpoints: Sequence[Any],
     start_time: Any,
+    sort_duration_minutes: int | None = None,
+    wash_duration_minutes: int | None = None,
+    dry_duration_minutes: int | None = None,
     dry_assumption_minutes: int | None = None,
     now_et: datetime | None = None,
 ) -> dict[str, Any]:
     """
     Read-only three-queue calculator: Washing / Drying / Folding.
 
-    No Sort/Wash duration assumptions. Dry minutes only for Ready-to-Fold = dry + N.
+    Durations apply to stage START scans to compute next-stage availability.
+    Departures use actual Wash START / Dry START / folding completion.
     """
     from backend.rinse_process_flow_chronology import build_process_flow_chronology_payload
 
-    dry_mins = clamp_dry_assumption_minutes(dry_assumption_minutes)
+    org_wash = org_washing_minutes_default(cursor, organization_id)
+    sort_mins = resolve_sort_duration_minutes(sort_duration_minutes)
+    wash_mins = resolve_wash_duration_minutes(
+        wash_duration_minutes, org_washing_minutes=org_wash
+    )
+    dry_raw = (
+        dry_duration_minutes
+        if dry_duration_minutes is not None
+        else dry_assumption_minutes
+    )
+    dry_mins = resolve_dry_duration_minutes(dry_raw)
+
     parsed_cps = validate_checkpoint_times(checkpoints, selected_date_et=selected_date_et)
     interval_start_0 = parse_interval_start(start_time, selected_date_et=selected_date_et)
     if interval_start_0 >= parsed_cps[0]:
@@ -746,6 +861,7 @@ def build_process_flow_queue_calculator_payload(
     day_end = naive_et_day_end_inclusive(selected_date_et)
     analysis_cap = min(now, day_end) if is_today else day_end
 
+    # Bag table chronology still uses dry duration for ready_to_fold display only.
     base = build_process_flow_chronology_payload(
         cursor,
         organization_id,
@@ -758,6 +874,8 @@ def build_process_flow_queue_calculator_payload(
     pre_pounds = load_bag_pre_pounds(cursor, organization_id, selected_date_et, bag_ids)
     queue_bags = compose_queue_bags_from_process_flow_rows(
         sessions,
+        sort_minutes=sort_mins,
+        wash_minutes=wash_mins,
         dry_minutes=dry_mins,
         fold_completions=fold_completions,
         pre_pounds=pre_pounds,
@@ -770,39 +888,39 @@ def build_process_flow_queue_calculator_payload(
         {
             "id": "washing_queue",
             "label": "Washing Queue",
-            "subtitle": "Sorted → Washed",
+            "subtitle": "Ready for Wash → Actually Washed",
             "arrival_key": "wash_arrival",
             "departure_key": "wash_departure",
             "stage": "washing",
             "labels": {
-                "newly_available": "Newly Sorted",
-                "processed": "Washed",
+                "newly_available": "Newly Ready for Wash",
+                "processed": "Actually Washed",
                 "waiting": "Waiting for Wash",
             },
         },
         {
             "id": "drying_queue",
             "label": "Drying Queue",
-            "subtitle": "Washed → Dried",
+            "subtitle": "Ready for Dry → Actually Dried",
             "arrival_key": "dry_arrival",
             "departure_key": "dry_departure",
             "stage": "drying",
             "labels": {
-                "newly_available": "Newly Washed",
-                "processed": "Dried",
+                "newly_available": "Newly Ready for Dry",
+                "processed": "Actually Dried",
                 "waiting": "Waiting for Dry",
             },
         },
         {
             "id": "folding_queue",
             "label": "Folding Queue",
-            "subtitle": "Ready to Fold → Folded",
+            "subtitle": "Ready for Fold → Actually Folded",
             "arrival_key": "fold_arrival",
             "departure_key": "fold_departure",
             "stage": "folding",
             "labels": {
-                "newly_available": "Newly Ready to Fold",
-                "processed": "Folded",
+                "newly_available": "Newly Ready for Fold",
+                "processed": "Actually Folded",
                 "waiting": "Waiting for Fold",
                 "capacity": "Additional Folder Capacity",
             },
@@ -905,13 +1023,24 @@ def build_process_flow_queue_calculator_payload(
         "stage": "process_flow_queue_calculator",
         "read_only": True,
         "mutates_scan_records": False,
-        "dry_assumption_minutes": dry_mins,
-        "dry_assumption_label": (
-            "Scan Chronology Ready-to-Fold assumption (default 40; "
+        "sort_duration_minutes": sort_mins,
+        "wash_duration_minutes": wash_mins,
+        "dry_duration_minutes": dry_mins,
+        "sort_duration_default": DEFAULT_SORT_DURATION_MINUTES,
+        "sort_duration_default_label": SORT_DURATION_DEFAULT_LABEL,
+        "wash_duration_default": org_wash,
+        "wash_duration_default_source": "washing_minutes",
+        "dry_duration_default": DEFAULT_DRY_DURATION_MINUTES,
+        "dry_duration_label": (
+            "Applied to Dry START scan (default 40; "
             "not rinse_processing_settings.drying_minutes=45)"
         ),
-        "sort_assumption_minutes": None,
-        "wash_assumption_minutes": None,
+        "duration_helper": (
+            "Durations are applied to actual stage start scans to calculate "
+            "when bags become available for the next stage."
+        ),
+        # Backward-compatible aliases
+        "dry_assumption_minutes": dry_mins,
         "start_time_et": interval_start_0,
         "checkpoints_et": parsed_cps,
         "is_today": is_today,
