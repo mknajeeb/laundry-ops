@@ -2790,6 +2790,9 @@ def backfill_day_from_live(
     *,
     force: bool = False,
     chronology_complete: bool = True,
+    import_batch_id: int | None = None,
+    scrape_run_id: int | None = None,
+    bypass_evidence_gate: bool = False,
 ) -> dict[str, Any]:
     """Rebuild and persist a day from source (activation / cutover onward)."""
     activation = get_step1_activation_date(cursor, organization_id)
@@ -2814,6 +2817,48 @@ def backfill_day_from_live(
     day = get_day_record(cursor, organization_id, shift_date_et)
     if day and day.get("status") == STATUS_CLOSED and not force:
         return {"ok": False, "error": "day_closed", "day": day}
+
+    # Durable incomplete-batch gate: refuse day-bag / headline writes while the
+    # evidence batch Stage B would use is marked incomplete.
+    if chronology_complete and not bypass_evidence_gate:
+        from backend.rinse_step1_evidence_gate import evaluate_durable_evidence_gate
+        from backend.rinse_scan_chronology_gate import last_consistent_snapshot_counts
+
+        durable = evaluate_durable_evidence_gate(
+            cursor,
+            int(organization_id),
+            import_batch_id=import_batch_id,
+            scrape_run_id=scrape_run_id,
+        )
+        if durable.get("blocking"):
+            reason = str(durable.get("gate_reason") or "import_incomplete")
+            return {
+                "ok": True,
+                "deferred": True,
+                "rebuild_deferred": True,
+                "persisted": False,
+                "reason": reason,
+                "gate_decision": "defer",
+                "gate_reason": reason,
+                "gate_status": durable.get("gate_status"),
+                "import_batch_id": durable.get("import_batch_id"),
+                "scrape_run_id": durable.get("scrape_run_id"),
+                "portal_presence_run_id": durable.get("portal_presence_run_id"),
+                "evidence_generation_id": durable.get("evidence_generation_id"),
+                "last_consistent_snapshot": last_consistent_snapshot_counts(
+                    day,
+                    cursor=cursor,
+                    organization_id=int(organization_id),
+                    shift_date_et=shift_date_et,
+                ),
+                "day": day,
+                "durable_evidence_gate": durable,
+                "message": (
+                    "Scan chronology updating — counts have not been replaced. "
+                    "Last consistent snapshot retained."
+                ),
+            }
+
     if day and day.get("status") == STATUS_CLOSED and force:
         reopen_shift_day(
             cursor,

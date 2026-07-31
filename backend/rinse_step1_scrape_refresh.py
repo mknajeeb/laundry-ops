@@ -378,9 +378,21 @@ def refresh_step1_after_scrape(
             return out
 
         # Gate: never persist provisional counts from incomplete/stale chronology.
+        # Durable batch-backed incomplete state blocks even when force_incomplete
+        # was not passed (watchdog / retry / manual / null scrape_run_id).
         from backend.rinse_scan_chronology_gate import evaluate_step1_rebuild_gate
+        from backend.rinse_step1_evidence_gate import resolve_batch_id_for_stage_b
 
         before_sync = (existing or {}).get("last_sync_at") if existing else None
+        resolved_batch = resolve_batch_id_for_stage_b(
+            cursor,
+            org,
+            import_batch_id=import_batch_id,
+            scrape_run_id=scrape_run_id,
+        )
+        if resolved_batch is not None:
+            base["import_batch_id"] = resolved_batch
+            base["scrape_batch_id"] = resolved_batch
         gate = evaluate_step1_rebuild_gate(
             cursor,
             org,
@@ -388,6 +400,8 @@ def refresh_step1_after_scrape(
             day_meta=existing,
             exclude_scrape_run_id=scrape_run_id,
             force_incomplete=bool(force_incomplete or import_incomplete),
+            import_batch_id=resolved_batch,
+            scrape_run_id=scrape_run_id,
         )
         if gate.get("deferred") or not gate.get("allow_persist"):
             finished = _utcnow()
@@ -408,6 +422,13 @@ def refresh_step1_after_scrape(
                 "message": gate.get("message"),
                 "last_sync_at": before_sync,
                 "last_sync_at_before": before_sync,
+                "portal_presence_run_id": gate.get("portal_presence_run_id"),
+                "scan_import_batch_id": gate.get("import_batch_id") or resolved_batch,
+                "evidence_generation_id": gate.get("evidence_generation_id"),
+                "gate_decision": gate.get("gate_decision") or "defer",
+                "gate_reason": gate.get("gate_reason") or reason,
+                "gate_status": gate.get("gate_status"),
+                "durable_evidence_gate": gate.get("durable_evidence_gate"),
             }
             _update_refresh_row(
                 cursor,
@@ -433,6 +454,9 @@ def refresh_step1_after_scrape(
             day,
             force=True,
             chronology_complete=True,
+            import_batch_id=resolved_batch,
+            scrape_run_id=scrape_run_id,
+            bypass_evidence_gate=True,  # Stage B already applied durable gate above
         )
         finished = _utcnow()
         ok = bool(backfill.get("ok"))
@@ -475,6 +499,14 @@ def refresh_step1_after_scrape(
             "summary_totals": backfill.get("summary_totals"),
             "freshness": freshness,
             "error": err,
+            "persisted": ok,
+            "portal_presence_run_id": gate.get("portal_presence_run_id"),
+            "scan_import_batch_id": gate.get("import_batch_id") or resolved_batch,
+            "evidence_generation_id": gate.get("evidence_generation_id"),
+            "gate_decision": gate.get("gate_decision") or "allow",
+            "gate_reason": gate.get("gate_reason"),
+            "gate_status": gate.get("gate_status") or "ok",
+            "durable_evidence_gate": gate.get("durable_evidence_gate"),
         }
         _update_refresh_row(
             cursor,

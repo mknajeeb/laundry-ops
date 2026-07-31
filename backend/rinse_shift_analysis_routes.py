@@ -894,7 +894,15 @@ def register_rinse_shift_analysis_routes(
                 return jsonify({"error": "invalid_date"}), 400
             from backend.rinse_veewash_shift_day import backfill_day_from_live
 
-            out = backfill_day_from_live(cursor, org, day)
+            out = backfill_day_from_live(
+                cursor,
+                org,
+                day,
+                import_batch_id=body.get("import_batch_id") or body.get("batch_id"),
+                scrape_run_id=body.get("scrape_run_id"),
+            )
+            if out.get("deferred") or out.get("rebuild_deferred"):
+                return jsonify(json_safe_rinse({"ok": True, **out})), 200
             if not out.get("ok"):
                 conn.rollback()
                 return jsonify(json_safe_rinse(out)), 400
