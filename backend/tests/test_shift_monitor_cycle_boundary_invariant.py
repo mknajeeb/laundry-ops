@@ -17,7 +17,9 @@ import pytest
 
 from backend.rinse_cycle_boundary import (
     COMPLETION_SOURCE_POST_REVIEW_WEIGHT,
+    COMPLETION_SOURCE_SAME_MINUTE_POST_AFTER_REVIEW,
     PENDING_REASON_ENTRY_NOT_FOUND,
+    PRE_STV_ENTRY_MAX_MINUTES,
     resolve_current_cycle,
     resolve_cycle_anchor,
 )
@@ -43,14 +45,21 @@ def _ev(
     rack: str | None = None,
     user: str | None = None,
     weight: float | None = None,
+    scan_index: int | None = None,
+    ev_id: int | None = None,
 ) -> dict:
-    return {
+    row = {
         "scanned_at_parsed": ts,
         "purpose": purpose,
         "rack": rack,
         "user_name": user,
         "weight_lbs": weight,
     }
+    if scan_index is not None:
+        row["scan_index"] = scan_index
+    if ev_id is not None:
+        row["id"] = ev_id
+    return row
 
 
 def _events_from_fixture(case: dict) -> list[dict]:
@@ -619,3 +628,216 @@ def test_cur0_fixture_pattern_pending_entry_not_found():
     )
     _assert_matches_expected(out, case["expected"])
     assert out.pending_reason == PENDING_REASON_ENTRY_NOT_FOUND
+
+
+# --------------------------------------------------------------------------- #
+# Same-minute POST + pre-STV entry edge cases
+# --------------------------------------------------------------------------- #
+
+
+def test_same_minute_review_then_post_by_scan_index_completes():
+    """Portal reverse-index: lower scan_index = later; weight after review."""
+    sent = datetime(2026, 7, 30, 4, 19, 0)
+    dirty = datetime(2026, 7, 30, 5, 12, 0)
+    tie = datetime(2026, 7, 30, 8, 49, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        # Weight id earlier than review (import order) but scan_index later.
+        _ev(
+            ts=tie,
+            purpose="weight-entry",
+            user="Singh",
+            weight=12.9,
+            scan_index=2,
+            ev_id=100,
+        ),
+        _ev(
+            ts=tie,
+            purpose="garments-reviewed",
+            user="Singh",
+            scan_index=7,
+            ev_id=105,
+        ),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.effective_status == "completed"
+    assert out.completion_at == tie
+    assert out.garments_reviewed_at == tie
+    assert out.completion_source == COMPLETION_SOURCE_SAME_MINUTE_POST_AFTER_REVIEW
+    assert out.pending_reason is None
+
+
+def test_same_minute_post_before_review_by_scan_index_not_completed():
+    """Same minute but scan_index proves weight-entry preceded review."""
+    sent = datetime(2026, 7, 30, 4, 19, 0)
+    dirty = datetime(2026, 7, 30, 5, 12, 0)
+    tie = datetime(2026, 7, 30, 8, 49, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(
+            ts=tie,
+            purpose="weight-entry",
+            user="Early",
+            weight=12.9,
+            scan_index=8,
+            ev_id=200,
+        ),
+        _ev(
+            ts=tie,
+            purpose="garments-reviewed",
+            user="Later",
+            scan_index=2,
+            ev_id=201,
+        ),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.effective_status == "pending"
+    assert out.completion_at is None
+    assert out.garments_reviewed_at == tie
+    assert out.completion_source is None
+
+
+def test_same_minute_without_sequence_evidence_not_completed():
+    """Equal timestamps with no scan_index/id evidence must not complete."""
+    sent = datetime(2026, 7, 30, 4, 0, 0)
+    dirty = datetime(2026, 7, 30, 5, 0, 0)
+    tie = datetime(2026, 7, 30, 8, 49, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=tie, purpose="garments-reviewed"),
+        _ev(ts=tie, purpose="weight-entry", weight=10.0),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.effective_status == "pending"
+    assert out.completion_at is None
+
+
+def test_dirty_just_before_stv_with_same_cycle_evidence_accepted():
+    """Configured Dirty minutes before STV + review/POST → completed."""
+    assert PRE_STV_ENTRY_MAX_MINUTES == 15
+    dirty = datetime(2026, 7, 30, 7, 16, 0)
+    sent = datetime(2026, 7, 30, 7, 23, 0)
+    review = datetime(2026, 7, 30, 10, 5, 0)
+    weight = datetime(2026, 7, 30, 10, 36, 0)
+    tl = [
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty", user="Ops"),
+        _ev(ts=sent, purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=review, purpose="garments-reviewed", user="Folder"),
+        _ev(ts=weight, purpose="weight-entry", user="Folder", weight=33.1),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.cycle_anchor_at == sent
+    assert out.entry_at == dirty
+    assert out.entry_rack == "VeeWash Dirty"
+    assert out.garments_reviewed_at == review
+    assert out.completion_at == weight
+    assert out.effective_status == "completed"
+    assert out.completion_source == COMPLETION_SOURCE_POST_REVIEW_WEIGHT
+    assert out.pending_reason is None
+
+
+def test_old_dirty_before_stv_from_prior_cycle_rejected():
+    """Historical Dirty outside tolerance / prior cycle must not unlock entry."""
+    old_dirty = datetime(2026, 7, 29, 6, 0, 0)
+    prior_review = datetime(2026, 7, 29, 14, 0, 0)
+    prior_weight = datetime(2026, 7, 29, 14, 30, 0)
+    sent = datetime(2026, 7, 30, 7, 23, 0)
+    review = datetime(2026, 7, 30, 10, 5, 0)
+    weight = datetime(2026, 7, 30, 10, 36, 0)
+    tl = [
+        _ev(ts=old_dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=prior_review, purpose="garments-reviewed"),
+        _ev(ts=prior_weight, purpose="weight-entry", weight=20.0),
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=33.1),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at is None
+    assert out.completion_at is None
+    assert out.effective_status == "pending"
+    assert out.pending_reason == PENDING_REASON_ENTRY_NOT_FOUND
+
+
+def test_pre_stv_dirty_without_post_evidence_not_used_as_entry():
+    """Pre-STV Dirty alone (no review+POST) must not become current entry."""
+    dirty = datetime(2026, 7, 30, 7, 16, 0)
+    sent = datetime(2026, 7, 30, 7, 23, 0)
+    tl = [
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=sent, purpose="sent-to-vendor"),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at is None
+    assert out.effective_status == "pending"
+
+
+def test_no_entry_evidence_remains_entry_not_found():
+    """Review+weight with no configured entry (pre or post) stays ENTRY_NOT_FOUND."""
+    sent = datetime(2026, 7, 30, 7, 23, 0)
+    review = datetime(2026, 7, 30, 10, 5, 0)
+    weight = datetime(2026, 7, 30, 10, 36, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=33.1),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at is None
+    assert out.completion_at is None
+    assert out.effective_status == "pending"
+    assert out.pending_reason == PENDING_REASON_ENTRY_NOT_FOUND
+
+
+def test_disappearance_not_applicable_when_resolver_completes():
+    """Disappeared-without-completion only applies when resolver finds no completion."""
+    from backend.rinse_veewash_workload import _cycle_result_to_completion_dict
+
+    sent = datetime(2026, 7, 30, 4, 19, 0)
+    dirty = datetime(2026, 7, 30, 5, 12, 0)
+    tie = datetime(2026, 7, 30, 8, 49, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(
+            ts=tie,
+            purpose="weight-entry",
+            user="Singh",
+            weight=12.9,
+            scan_index=2,
+            ev_id=100,
+        ),
+        _ev(
+            ts=tie,
+            purpose="garments-reviewed",
+            user="Singh",
+            scan_index=7,
+            ev_id=105,
+        ),
+    ]
+    day = date(2026, 7, 30)
+    out = resolve_current_cycle(tl, selected_date_et=day, entry_racks=ENTRY_RACKS)
+    assert out.effective_status == "completed"
+    comp = _cycle_result_to_completion_dict(out, selected_date_et=day, timeline=tl)
+    assert comp is not None
+    assert comp["completion_source"] == COMPLETION_SOURCE_SAME_MINUTE_POST_AFTER_REVIEW
+    # Workload only routes to disappeared_without_completion when completion
+    # dict is absent; a completed resolver result must not enter that bucket.
+    assert comp["completion_at"] == tie
