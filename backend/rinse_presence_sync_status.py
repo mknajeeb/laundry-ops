@@ -479,31 +479,6 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
     if not latest or not isinstance(latest, dict):
         return build_sync_status_from_run(None, sync_name="At Vendor Sync", enabled=True)
 
-    batch_row = _fetch_upload_batch_row(cursor, org, latest.get("imported_batch_id")) if latest.get("imported_batch_id") else None
-    detail = build_scrape_run_batch_detail(latest, batch_row) or {}
-    finished_raw = latest.get("finished_at")
-    started_raw = latest.get("started_at")
-    last_fmt = detail.get("data_last_updated_at") or detail.get("scrape_finished_at")
-    last_et = _short_time_et(finished_raw if isinstance(finished_raw, datetime) else None)
-    now = naive_system_utc(evaluation_time) or datetime.now(timezone.utc).replace(tzinfo=None)
-    age_min = None
-    stale = False
-    ref_dt = naive_system_utc(finished_raw if isinstance(finished_raw, datetime) else None)
-    if ref_dt is not None:
-        age_min = max(0, int((now - ref_dt).total_seconds()) // 60)
-        stale = age_min > RINSE_SYNC_STALE_MINUTES
-    run_status = str(latest.get("status") or "unknown")
-    failed = run_status == "failed"
-    in_progress = run_status == "running"
-    if in_progress and isinstance(started_raw, datetime):
-        s = naive_system_utc(started_raw)
-        if s is not None:
-            running_min = max(0, int((now - s).total_seconds()) // 60)
-            if running_min > RINSE_SYNC_STALE_MINUTES:
-                in_progress = False
-                failed = True
-                run_status = "failed"
-                stale = True
     cursor.execute(
         """
         SELECT id, status, started_at, finished_at, duration_seconds,
@@ -517,6 +492,42 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         (org,),
     )
     last_success = cursor.fetchone()
+
+    tip_status = str(latest.get("status") or "unknown")
+    # Primary panel must not blank when the tip cron is ALREADY_RUNNING skip.
+    display_row = latest
+    if tip_status == "skipped" and last_success and isinstance(last_success, dict):
+        display_row = last_success
+
+    batch_row = (
+        _fetch_upload_batch_row(cursor, org, display_row.get("imported_batch_id"))
+        if display_row.get("imported_batch_id")
+        else None
+    )
+    detail = build_scrape_run_batch_detail(display_row, batch_row) or {}
+    finished_raw = display_row.get("finished_at")
+    started_raw = display_row.get("started_at")
+    last_fmt = detail.get("data_last_updated_at") or detail.get("scrape_finished_at")
+    last_et = _short_time_et(finished_raw if isinstance(finished_raw, datetime) else None)
+    now = naive_system_utc(evaluation_time) or datetime.now(timezone.utc).replace(tzinfo=None)
+    age_min = None
+    stale = False
+    ref_dt = naive_system_utc(finished_raw if isinstance(finished_raw, datetime) else None)
+    if ref_dt is not None:
+        age_min = max(0, int((now - ref_dt).total_seconds()) // 60)
+        stale = age_min > RINSE_SYNC_STALE_MINUTES
+    run_status = str(display_row.get("status") or "unknown")
+    failed = run_status == "failed"
+    in_progress = run_status == "running"
+    if in_progress and isinstance(started_raw, datetime):
+        s = naive_system_utc(started_raw)
+        if s is not None:
+            running_min = max(0, int((now - s).total_seconds()) // 60)
+            if running_min > RINSE_SYNC_STALE_MINUTES:
+                in_progress = False
+                failed = True
+                run_status = "failed"
+                stale = True
     success_batch = (
         _fetch_upload_batch_row(cursor, org, last_success.get("imported_batch_id"))
         if last_success and isinstance(last_success, dict) and last_success.get("imported_batch_id")
@@ -527,14 +538,16 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         if last_success and isinstance(last_success, dict)
         else None
     )
-    latest_attempt_at = detail.get("scrape_finished_at") or _fmt_system(
-        finished_raw if isinstance(finished_raw, datetime) else None
+    latest_attempt_at = _fmt_system(
+        latest.get("finished_at") if isinstance(latest.get("finished_at"), datetime) else None
+    ) or _fmt_system(
+        latest.get("started_at") if isinstance(latest.get("started_at"), datetime) else None
     )
     last_success_at = (
         (success_detail or {}).get("scrape_finished_at")
         or (success_detail or {}).get("data_last_updated_at")
     )
-    portal_pulled_raw = _portal_pulled_at_from_batch(cursor, org, latest.get("imported_batch_id"))
+    portal_pulled_raw = _portal_pulled_at_from_batch(cursor, org, display_row.get("imported_batch_id"))
     if not portal_pulled_raw:
         presence_run = _latest_success_presence_run(cursor, org, PORTAL_STATUS_AT_VENDOR)
         if presence_run:
@@ -571,21 +584,24 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         or _short_time_et(started_raw if isinstance(started_raw, datetime) else None),
         data_updated_at_et=last_et,
         scan_events_count=detail.get("scan_events_count"),
-        imported_batch_id=latest.get("imported_batch_id"),
+        imported_batch_id=display_row.get("imported_batch_id"),
     )
     if not portal_pulled_fmt:
         freshness["portal_pull_unavailable"] = True
         freshness["portal_pull_note"] = "Portal pull time unavailable"
+    message = (
+        f"At Vendor Sync: in progress ({last_et or 'started'})"
+        if in_progress
+        else f"At Vendor Sync: {last_et or last_fmt or '—'}"
+    )
+    if tip_status == "skipped" and display_row is not latest and last_et:
+        message = f"At Vendor Sync: {last_et}"
     return {
         "enabled": True,
         "status": run_status,
         "failed": failed,
         "in_progress": in_progress,
-        "message": (
-            f"At Vendor Sync: in progress ({last_et or 'started'})"
-            if in_progress
-            else f"At Vendor Sync: {last_et or last_fmt or '—'}"
-        ),
+        "message": message,
         "stale": stale or failed,
         "stale_reason": (
             "At Vendor Sync failed"
@@ -595,6 +611,7 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         "last_refreshed_at": last_fmt,
         "last_refreshed_at_et": last_et,
         "latest_attempt_at": latest_attempt_at,
+        "latest_attempt": _build_latest_attempt_payload(latest),
         "last_success_at": last_success_at,
         "last_started_at": detail.get("scrape_started_at"),
         "last_finished_at": detail.get("scrape_finished_at"),
@@ -603,7 +620,7 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         "rows_found": detail.get("portal_rows_count"),
         "rows_imported": detail.get("rows_imported"),
         "scan_events_count": detail.get("scan_events_count"),
-        "imported_batch_id": latest.get("imported_batch_id"),
+        "imported_batch_id": display_row.get("imported_batch_id"),
         "pages_visited": detail.get("pages_visited"),
         "sync_time_unavailable": not last_fmt,
         "age_minutes": age_min,
@@ -612,9 +629,10 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         "latest_run": detail,
         "last_success": success_detail,
         "freshness": freshness,
-        "error_message": latest.get("error_message"),
+        "error_message": display_row.get("error_message"),
         "started_at_raw": started_raw,
         "finished_at_raw": finished_raw,
+        "tip_status": tip_status,
     }
 
 
@@ -648,8 +666,129 @@ def evaluate_at_vendor_presence_freshness(
     return True, None, run
 
 
+def _parse_scrape_result_json(raw: Any) -> dict[str, Any]:
+    detail = raw
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except json.JSONDecodeError:
+            detail = {}
+    return detail if isinstance(detail, dict) else {}
+
+
+def _is_meaningful_completed_scrape(row: Mapping[str, Any] | None) -> bool:
+    """True for a non-skipped cycle that carried portal/import work."""
+    if not row or not isinstance(row, Mapping):
+        return False
+    status = str(row.get("status") or "").strip().lower()
+    if status in ("skipped", "running", "in_progress", "started"):
+        return False
+    if status in ("success", "needs_attention", "partial_success", "inspect_only"):
+        return True
+    if status == "failed" and row.get("imported_batch_id") is not None:
+        return True
+    detail = _parse_scrape_result_json(row.get("result_json"))
+    sync_cycle = detail.get("sync_cycle") if isinstance(detail.get("sync_cycle"), dict) else {}
+    return bool(sync_cycle.get("sync_cycle_id") or row.get("imported_batch_id"))
+
+
+def _build_latest_attempt_payload(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not row or not isinstance(row, Mapping):
+        return None
+    status = str(row.get("status") or "unknown")
+    skip_reason = None
+    if status == "skipped":
+        skip_reason = str(row.get("error_message") or "skipped")
+    return {
+        "run_id": row.get("id"),
+        "started_at": _fmt_system(row.get("started_at") if isinstance(row.get("started_at"), datetime) else None),
+        "started_at_et": _short_time_et(row.get("started_at") if isinstance(row.get("started_at"), datetime) else None),
+        "finished_at": _fmt_system(row.get("finished_at") if isinstance(row.get("finished_at"), datetime) else None),
+        "status": status,
+        "skip_reason": skip_reason,
+        "error_message": row.get("error_message"),
+    }
+
+
+def _build_completed_cycle_summary(
+    row: Mapping[str, Any],
+    detail: Mapping[str, Any],
+) -> dict[str, Any]:
+    sync_cycle = detail.get("sync_cycle") if isinstance(detail.get("sync_cycle"), dict) else {}
+    targeted = detail.get("targeted_pending_scan_refresh") or detail.get("off_portal_scan_refresh") or {}
+    step1 = detail.get("step1_day_refresh") if isinstance(detail.get("step1_day_refresh"), dict) else {}
+    av_presence = (
+        detail.get("at_vendor_presence_sync")
+        if isinstance(detail.get("at_vendor_presence_sync"), dict)
+        else {}
+    )
+    targeted_status = None
+    if isinstance(targeted, dict) and targeted:
+        if targeted.get("skipped_reason"):
+            targeted_status = f"skipped:{targeted.get('skipped_reason')}"
+        elif targeted.get("targeted_refresh_ran"):
+            targeted_status = "ran"
+        elif targeted.get("error"):
+            targeted_status = "failed"
+        else:
+            targeted_status = "present"
+    step1_status = (
+        step1.get("step1_refresh_status")
+        or step1.get("status")
+        or None
+    )
+    return {
+        "run_id": row.get("id") or sync_cycle.get("sync_cycle_id"),
+        "started_at": _fmt_system(row.get("started_at") if isinstance(row.get("started_at"), datetime) else None)
+        or sync_cycle.get("cycle_started_at")
+        or sync_cycle.get("at_vendor_started_at"),
+        "finished_at": _fmt_system(row.get("finished_at") if isinstance(row.get("finished_at"), datetime) else None)
+        or sync_cycle.get("at_vendor_completed_at"),
+        "status": sync_cycle.get("cycle_status") or row.get("status"),
+        "portal_presence_run_id": sync_cycle.get("at_vendor_run_id")
+        or av_presence.get("run_id")
+        or step1.get("portal_presence_run_id"),
+        "scan_import_batch_id": row.get("imported_batch_id")
+        or step1.get("scan_import_batch_id")
+        or step1.get("import_batch_id"),
+        "targeted_refresh": {
+            "status": targeted_status,
+            **(
+                {
+                    k: targeted.get(k)
+                    for k in (
+                        "targeted_refresh_ran",
+                        "targeted_bags_considered",
+                        "targeted_bags_refreshed",
+                        "missing_scans_imported",
+                        "bags_completed_after_refresh",
+                        "lookup_failures",
+                        "skipped_reason",
+                    )
+                    if isinstance(targeted, dict) and k in targeted
+                }
+            ),
+        }
+        if targeted
+        else {"status": None},
+        "step1": {
+            "status": step1_status,
+            "reason": step1.get("reason") or step1.get("gate_reason"),
+            "deferred": bool(step1.get("deferred") or step1.get("rebuild_deferred")),
+            "persisted": step1.get("persisted"),
+            "gate_decision": step1.get("gate_decision"),
+        },
+    }
+
+
 def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any]:
-    """Combined RFV → At Vendor sync cycle from latest scrape run metadata."""
+    """Combined RFV → At Vendor sync cycle from latest *completed* scrape metadata.
+
+    Always returns both ``latest_attempt`` (tip cron row, including ALREADY_RUNNING
+    skips) and ``latest_completed_cycle`` (last meaningful non-skipped cycle).
+    Primary panel fields are populated from the completed cycle so a lock-skip
+    tip never blanks portal crawl / At Vendor status.
+    """
     org = int(organization_id)
     cycle: dict[str, Any] = {
         "label": "Last Rinse Sync Cycle",
@@ -671,32 +810,46 @@ def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any
         "rfv_status": None,
         "at_vendor_status": None,
         "failure_message": None,
+        "latest_attempt": None,
+        "latest_completed_cycle": None,
     }
     if not table_exists(cursor, "rinse_scrape_runs"):
         return cycle
+
     cursor.execute(
         """
-        SELECT status, started_at, finished_at, result_json
+        SELECT id, status, started_at, finished_at, error_message,
+               imported_batch_id, portal_rows_count, scan_events_count, result_json
         FROM rinse_scrape_runs
         WHERE organization_id = %s
         ORDER BY started_at DESC
-        LIMIT 1
+        LIMIT 25
         """,
         (org,),
     )
-    row = cursor.fetchone()
-    if not row or not isinstance(row, dict):
+    rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    if not rows:
         return cycle
-    detail = row.get("result_json")
-    if isinstance(detail, str):
-        try:
-            detail = json.loads(detail)
-        except json.JSONDecodeError:
-            detail = {}
-    if not isinstance(detail, dict):
-        detail = {}
+
+    latest_row = rows[0]
+    cycle["latest_attempt"] = _build_latest_attempt_payload(latest_row)
+
+    completed_row = next((r for r in rows if _is_meaningful_completed_scrape(r)), None)
+    if completed_row is None:
+        # Tip may be a skip with no prior completed cycle — keep attempt info only.
+        attempt = cycle["latest_attempt"] or {}
+        if attempt.get("status") == "skipped":
+            cycle["cycle_status"] = None
+            cycle["failure_message"] = attempt.get("skip_reason")
+            cycle["at_vendor_skipped_reason"] = attempt.get("skip_reason")
+        return cycle
+
+    detail = _parse_scrape_result_json(completed_row.get("result_json"))
     sync_cycle = detail.get("sync_cycle") if isinstance(detail.get("sync_cycle"), dict) else {}
     rfv_sync = detail.get("ready_for_vendor_sync") if isinstance(detail.get("ready_for_vendor_sync"), dict) else {}
+    completed_summary = _build_completed_cycle_summary(completed_row, detail)
+    cycle["latest_completed_cycle"] = completed_summary
+
     for key in (
         "sync_cycle_id",
         "cycle_started_at",
@@ -716,18 +869,23 @@ def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any
     ):
         if sync_cycle.get(key) is not None:
             cycle[key] = sync_cycle.get(key)
-    cycle["cycle_status"] = sync_cycle.get("cycle_status") or row.get("status")
+    cycle["sync_cycle_id"] = sync_cycle.get("sync_cycle_id") or completed_row.get("id")
+    cycle["cycle_status"] = sync_cycle.get("cycle_status") or completed_row.get("status")
     cycle["rfv_status"] = sync_cycle.get("rfv_status") or rfv_sync.get("status")
-    cycle["at_vendor_status"] = sync_cycle.get("at_vendor_status") or row.get("status")
+    cycle["at_vendor_status"] = sync_cycle.get("at_vendor_status") or completed_row.get("status")
     cycle["rfv_completed_at"] = sync_cycle.get("rfv_completed_at") or rfv_sync.get("finished_at")
     if cycle.get("at_vendor_started_at") is None:
-        cycle["at_vendor_started_at"] = sync_cycle.get("at_vendor_started_at") or _fmt_system(row.get("started_at"))
+        cycle["at_vendor_started_at"] = sync_cycle.get("at_vendor_started_at") or _fmt_system(
+            completed_row.get("started_at") if isinstance(completed_row.get("started_at"), datetime) else None
+        )
     if cycle.get("at_vendor_completed_at") is None:
-        cycle["at_vendor_completed_at"] = sync_cycle.get("at_vendor_completed_at") or _fmt_system(row.get("finished_at"))
-    if isinstance(row.get("started_at"), datetime):
-        cycle["at_vendor_started_at_et"] = _short_time_et(row.get("started_at"))
-    if isinstance(row.get("finished_at"), datetime):
-        cycle["at_vendor_completed_at_et"] = _short_time_et(row.get("finished_at"))
+        cycle["at_vendor_completed_at"] = sync_cycle.get("at_vendor_completed_at") or _fmt_system(
+            completed_row.get("finished_at") if isinstance(completed_row.get("finished_at"), datetime) else None
+        )
+    if isinstance(completed_row.get("started_at"), datetime):
+        cycle["at_vendor_started_at_et"] = _short_time_et(completed_row.get("started_at"))
+    if isinstance(completed_row.get("finished_at"), datetime):
+        cycle["at_vendor_completed_at_et"] = _short_time_et(completed_row.get("finished_at"))
     if cycle.get("rfv_completed_at"):
         try:
             from datetime import datetime as _dt
@@ -752,6 +910,7 @@ def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any
     if av_presence_run:
         av_item = build_presence_run_list_item(av_presence_run)
         cycle["at_vendor_presence_freshness"] = av_item.get("freshness")
+    # Prefer completed-cycle scrape freshness so a skipped tip cannot blank the panel.
     av_scrape = build_at_vendor_sync_status(cursor, org)
     if av_scrape.get("freshness"):
         cycle["at_vendor_scrape_freshness"] = av_scrape.get("freshness")
@@ -769,12 +928,27 @@ def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any
         ):
             if key in targeted:
                 cycle[key] = targeted[key]
-        if isinstance(row.get("finished_at"), datetime):
-            cycle["targeted_refresh_completed_at_et"] = _short_time_et(row.get("finished_at"))
+        if isinstance(completed_row.get("finished_at"), datetime):
+            cycle["targeted_refresh_completed_at_et"] = _short_time_et(completed_row.get("finished_at"))
+    if isinstance(detail.get("step1_day_refresh"), dict):
+        cycle["step1_day_refresh"] = detail.get("step1_day_refresh")
     sync_warning = detail.get("sync_warning")
     if sync_warning:
         cycle["sync_warning"] = sync_warning
     portal_gate = detail.get("portal_confirm_gate")
     if isinstance(portal_gate, dict):
         cycle["portal_confirm_gate"] = portal_gate
+
+    # Informational only: tip skip while a completed cycle exists.
+    attempt = cycle.get("latest_attempt") or {}
+    if (
+        attempt.get("status") == "skipped"
+        and str(attempt.get("skip_reason") or "").upper() == "ALREADY_RUNNING"
+        and cycle.get("latest_completed_cycle")
+    ):
+        cycle["latest_attempt_informational"] = True
+        cycle["latest_attempt_message"] = (
+            f"{attempt.get('started_at_et') or 'Latest'} run skipped because "
+            "the previous sync was still running."
+        )
     return cycle

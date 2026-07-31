@@ -78,32 +78,33 @@ export default function SyncStatusSection({
     && (rfvSync?.failed || rfvSync?.latest_failed || (rfvSync?.stale && !rfv?.zero_rows_success))
     && !rfv?.zero_rows_success;
   const cycle = syncCycle || {};
-  const targeted = cycle.targeted_pending_scan_refresh || {};
-  const misleadingCronSkip =
-    cycle.sync_cycle_id == null &&
-    (cycle.cycle_status === "skipped" ||
-      cycle.at_vendor_skipped_reason === "ALREADY_RUNNING" ||
-      cycle.failure_message === "ALREADY_RUNNING");
-  let cycleStatusMain = cycle.cycle_status || "—";
+  const completed = cycle.latest_completed_cycle || null;
+  const attempt = cycle.latest_attempt || avSync?.latest_attempt || null;
+  const targeted =
+    cycle.targeted_pending_scan_refresh
+    || completed?.targeted_refresh
+    || {};
+  const hasCompletedCycle = Boolean(
+    completed?.run_id
+    || cycle.sync_cycle_id
+    || cycle.at_vendor_completed_at
+    || cycle.at_vendor_completed_at_et
+  );
+  const tipSkippedAlreadyRunning =
+    attempt?.status === "skipped"
+    && String(attempt?.skip_reason || "").toUpperCase() === "ALREADY_RUNNING";
+
+  let cycleStatusMain = cycle.cycle_status || (hasCompletedCycle ? "success" : "—");
   let cycleStatusSuffix = cycle.at_vendor_ran === false ? " · At Vendor did not run" : "";
-  if (misleadingCronSkip) {
-    const rfvEt = rfvActive
-      ? (rfvSync?.last_success_at_et || rfvSync?.last_refreshed_at_et)
-      : null;
-    const avEt = avSync?.last_refreshed_at_et || cycle.at_vendor_completed_at_et;
-    if (rfvEt || avEt) {
-      cycleStatusMain = "—";
-      cycleStatusSuffix = rfvActive
-        ? ` · latest completed RFV ${rfvEt || "—"} · portal crawl ${avEt || "—"}`
-        : ` · portal crawl ${avEt || "—"}`;
-    } else {
-      cycleStatusMain = "—";
-      cycleStatusSuffix = " · no completed cycle on latest cron tick";
-    }
+  if (!hasCompletedCycle) {
+    cycleStatusMain = "—";
+    cycleStatusSuffix = tipSkippedAlreadyRunning
+      ? " · no completed cycle yet"
+      : "";
   }
   const cycleWarn =
-    !misleadingCronSkip &&
-    (cycle.cycle_status === "failed" || cycle.cycle_status === "partial_success");
+    hasCompletedCycle
+    && (cycle.cycle_status === "failed" || cycle.cycle_status === "partial_success");
   const inspectOnlyWarn =
     cycle.cycle_status === "inspect_only" || Boolean(cycle.sync_warning || cycle.failure_message?.includes("no credible supply"));
   const gateWarning =
@@ -111,12 +112,20 @@ export default function SyncStatusSection({
     || (inspectOnlyWarn ? cycle.failure_message : null);
   const avScanRows = avSync?.scan_events_count ?? avSync?.freshness?.scan_events_count;
   const avPortalRows = avSync?.rows_found ?? avSync?.freshness?.rows_found;
-  const avBatchId = avSync?.imported_batch_id ?? avSync?.freshness?.imported_batch_id;
+  const avBatchId =
+    avSync?.imported_batch_id
+    ?? avSync?.freshness?.imported_batch_id
+    ?? completed?.scan_import_batch_id;
   const portalCrawlEt =
     avSync?.freshness?.portal_pulled_at_et
     || cycle.at_vendor_completed_at_et
     || avSync?.last_refreshed_at_et
-    || "—";
+    || (hasCompletedCycle ? (completed?.finished_at || "—") : "—");
+  const skipInfoMessage =
+    cycle.latest_attempt_message
+    || (tipSkippedAlreadyRunning && hasCompletedCycle
+      ? `${attempt?.started_at_et || "Latest"} run skipped because the previous sync was still running.`
+      : null);
 
   return (
     <Box sx={{ mb: 2 }}>
@@ -170,6 +179,11 @@ export default function SyncStatusSection({
           <Alert severity="warning" sx={{ mb: 1, py: 0.5 }}>
             Cycle status: {cycle.cycle_status || "unknown"}
             {cycle.at_vendor_skipped_reason ? ` · At Vendor skipped: ${cycle.at_vendor_skipped_reason}` : ""}
+          </Alert>
+        ) : null}
+        {skipInfoMessage ? (
+          <Alert severity="info" sx={{ mb: 1, py: 0.5 }}>
+            {skipInfoMessage}
           </Alert>
         ) : null}
         <Box
@@ -230,6 +244,11 @@ export default function SyncStatusSection({
         <Typography variant="caption" color="text.secondary" sx={{ wordBreak: "break-word" }}>
           Status: {cycleStatusMain}
           {cycleStatusSuffix}
+          {completed?.step1?.status
+            ? ` · Step-1 ${completed.step1.status}`
+            : (cycle.step1_day_refresh?.step1_refresh_status
+              ? ` · Step-1 ${cycle.step1_day_refresh.step1_refresh_status}`
+              : "")}
         </Typography>
       </Collapse>
     </Box>

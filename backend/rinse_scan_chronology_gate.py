@@ -128,14 +128,20 @@ def evaluate_step1_rebuild_gate(
     require_freshness_ok: bool = True,
     exclude_scrape_run_id: int | None = None,
     force_incomplete: bool = False,
+    import_batch_id: int | None = None,
+    scrape_run_id: int | None = None,
 ) -> dict[str, Any]:
     """
     Decide whether Stage B may persist a new Step-1 snapshot.
 
     Blocks persist when portal/scan pipeline is incomplete or stale so we never
     commit provisional Completed→Pending downgrades.
+
+    Durable batch-backed incomplete gates always win over a missing
+    ``force_incomplete`` flag (watchdog / retry / manual Stage B).
     """
     from backend.rinse_scan_freshness import freshness_from_day_and_presence
+    from backend.rinse_step1_evidence_gate import evaluate_durable_evidence_gate
 
     org = int(organization_id)
     day = operations_date_et
@@ -171,10 +177,26 @@ def evaluate_step1_rebuild_gate(
     portal_ahead = int(freshness.get("portal_ahead_bag_count") or 0)
     status = str(freshness.get("status") or STATUS_OK).strip().lower()
 
+    durable = evaluate_durable_evidence_gate(
+        cursor,
+        org,
+        import_batch_id=import_batch_id,
+        scrape_run_id=scrape_run_id if scrape_run_id is not None else exclude_scrape_run_id,
+    )
+
     defer_reason: str | None = None
     defer_status = STATUS_REBUILD_DEFERRED
-    if force_incomplete:
-        defer_reason = STATUS_IMPORT_INCOMPLETE
+    if durable.get("blocking"):
+        from backend.rinse_step1_evidence_gate import REASON_IMPORT_BATCH_INCOMPLETE
+
+        defer_reason = str(
+            durable.get("gate_reason") or REASON_IMPORT_BATCH_INCOMPLETE
+        )
+        defer_status = STATUS_IMPORT_INCOMPLETE
+    elif force_incomplete:
+        from backend.rinse_step1_evidence_gate import REASON_IMPORT_BATCH_INCOMPLETE
+
+        defer_reason = REASON_IMPORT_BATCH_INCOMPLETE
         defer_status = STATUS_IMPORT_INCOMPLETE
     elif import_running:
         defer_reason = STATUS_SCAN_IMPORT_IN_PROGRESS
@@ -206,6 +228,14 @@ def evaluate_step1_rebuild_gate(
         "scan_import_in_progress": import_running,
         "portal_ahead_bag_count": portal_ahead,
         "last_consistent_snapshot": snapshot,
+        "import_batch_id": durable.get("import_batch_id"),
+        "scrape_run_id": durable.get("scrape_run_id"),
+        "portal_presence_run_id": durable.get("portal_presence_run_id"),
+        "evidence_generation_id": durable.get("evidence_generation_id"),
+        "gate_status": durable.get("gate_status") if not allow else (durable.get("gate_status") or "ok"),
+        "gate_reason": defer_reason,
+        "gate_decision": "allow" if allow else "defer",
+        "durable_evidence_gate": durable,
         "message": (
             None
             if allow

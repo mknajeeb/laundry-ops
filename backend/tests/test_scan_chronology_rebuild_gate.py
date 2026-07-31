@@ -305,7 +305,14 @@ def test_retry_after_import_completes_rebuilds():
     assert out.get("deferred") is not True
     assert out["step1_refresh_status"] == STATUS_SUCCESS
     backfill.assert_called_once_with(
-        cursor, 3, DAY, force=True, chronology_complete=True
+        cursor,
+        3,
+        DAY,
+        force=True,
+        chronology_complete=True,
+        import_batch_id=None,
+        scrape_run_id=999,
+        bypass_evidence_gate=True,
     )
 
 
@@ -351,6 +358,7 @@ def test_jul30_incomplete_then_complete_reproduction():
 
     assert incomplete["rebuild_deferred"] is True
     assert incomplete["status"] in (
+        "import_batch_incomplete",
         "import_coverage_incomplete",
         STATUS_SCAN_CHRONOLOGY_STALE,
         STATUS_REBUILD_DEFERRED,

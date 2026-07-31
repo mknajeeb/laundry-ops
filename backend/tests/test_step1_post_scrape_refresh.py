@@ -102,7 +102,14 @@ def test_post_scrape_refreshes_open_step1_day_exactly_once():
     assert out["started_at"]
     assert out["finished_at"]
     backfill.assert_called_once_with(
-        cursor, 3, day, force=True, chronology_complete=True
+        cursor,
+        3,
+        day,
+        force=True,
+        chronology_complete=True,
+        import_batch_id=2941,
+        scrape_run_id=3017,
+        bypass_evidence_gate=True,
     )
     stamp.assert_called_once()
     conn.commit.assert_called()
@@ -440,9 +447,9 @@ def test_repeated_refresh_is_idempotent_calls_same_backfill():
         )
     assert a["ok"] and b["ok"]
     assert backfill.call_count == 2
-    assert backfill.call_args_list[0] == call(
-        cursor, 3, day, force=True, chronology_complete=True
-    )
+    assert backfill.call_args_list[0].kwargs.get("bypass_evidence_gate") is True
+    assert backfill.call_args_list[0].kwargs.get("chronology_complete") is True
+    assert backfill.call_args_list[0].args[:3] == (cursor, 3, day)
 
 
 def test_watchdog_retries_failed_stage_b_without_rescrape():

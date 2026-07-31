@@ -842,9 +842,15 @@ def _attach_step1_lightweight_sync_statuses(
     active_work: dict[str, Any],
     evaluation_time: datetime | None = None,
 ) -> dict[str, Any]:
-    """One-query At Vendor freshness for Step-1 summary (skips RFV/cycle scrape walks)."""
-    from backend.rinse_scan_time import naive_system_utc
-    from backend.ta_helpers import table_exists
+    """At Vendor + sync-cycle status for Step-1 summary.
+
+    Uses the dual latest_attempt / latest_completed_cycle builder so a skipped
+    tip cron cannot blank portal crawl or At Vendor status.
+    """
+    from backend.rinse_presence_sync_status import (
+        build_at_vendor_sync_status,
+        build_rinse_sync_cycle_status,
+    )
 
     org = int(organization_id)
     rfv_sync = {
@@ -855,56 +861,19 @@ def _attach_step1_lightweight_sync_statuses(
         "message": "Ready for Vendor Sync: disabled",
         "sync_time_unavailable": True,
     }
-    av_sync: dict[str, Any] = {
-        "enabled": True,
-        "status": "unknown",
-        "message": "At Vendor Sync",
-        "stale": False,
-        "last_refreshed_at": None,
-    }
-    if table_exists(cursor, "rinse_scrape_runs"):
-        cursor.execute(
-            """
-            SELECT status, finished_at, started_at, error_message
-            FROM rinse_scrape_runs
-            WHERE organization_id = %s
-            ORDER BY started_at DESC
-            LIMIT 1
-            """,
-            (org,),
-        )
-        latest = cursor.fetchone() or {}
-        finished = latest.get("finished_at") if isinstance(latest, dict) else None
-        status = str((latest or {}).get("status") or "unknown")
-        av_sync["status"] = status
-        if finished is not None:
-            finished_naive = naive_system_utc(finished if isinstance(finished, datetime) else None)
-            av_sync["last_refreshed_at"] = (
-                finished_naive.isoformat(sep=" ") if finished_naive is not None else str(finished)
-            )
-            now = naive_system_utc(evaluation_time) or datetime.utcnow()
-            if finished_naive is not None:
-                age_min = max(0, int((now - finished_naive).total_seconds()) // 60)
-                av_sync["age_minutes"] = age_min
-                av_sync["stale"] = age_min > 90
-        if status == "failed":
-            av_sync["message"] = str((latest or {}).get("error_message") or "At Vendor Sync failed")
-        elif status == "success":
-            av_sync["message"] = "At Vendor Sync: up to date"
-        else:
-            av_sync["message"] = f"At Vendor Sync: {status}"
+    av_sync = build_at_vendor_sync_status(
+        cursor, org, evaluation_time=evaluation_time
+    )
+    sync_cycle = build_rinse_sync_cycle_status(cursor, org)
     active_work["last_refreshed_at"] = av_sync.get("last_refreshed_at")
     active_work["sync_status"] = av_sync
     return {
         "at_vendor": av_sync,
         "ready_for_vendor": rfv_sync,
         "ready_for_vendor_enabled": False,
-        "sync_cycle": {
-            "label": "Last Rinse Sync Cycle",
-            "cycle_status": av_sync.get("status"),
-            "at_vendor_status": av_sync.get("status"),
-            "at_vendor_completed_at": av_sync.get("last_refreshed_at"),
-        },
+        "sync_cycle": sync_cycle,
+        "latest_attempt": sync_cycle.get("latest_attempt"),
+        "latest_completed_cycle": sync_cycle.get("latest_completed_cycle"),
     }
 
 

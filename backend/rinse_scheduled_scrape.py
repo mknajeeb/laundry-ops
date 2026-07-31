@@ -230,15 +230,60 @@ def _refresh_open_step1_day_after_scrape(
     scrape_run_id: int | None = None,
     import_incomplete: bool = False,
     detail: Mapping[str, Any] | None = None,
+    portal_presence_run_id: int | None = None,
 ) -> dict[str, Any]:
     """Compat wrapper — canonical owner is ``refresh_step1_after_scrape``.
 
     Atomic order: Stage B runs only after portal scrape + scan import commit.
     Incomplete/thinner merges force rebuild deferral (no provisional counts).
+    Incomplete state is also persisted against the scan-import batch so later
+    Stage-B paths (watchdog/retry/manual) cannot bypass the gate.
     """
+    from backend.rinse_step1_evidence_gate import record_evidence_gate_from_merge
     from backend.rinse_step1_scrape_refresh import refresh_step1_after_scrape
 
     incomplete = bool(import_incomplete) or _merge_import_incomplete(detail)
+    merge_payload: Mapping[str, Any] | None = None
+    if isinstance(detail, Mapping):
+        merge_payload = detail.get("persistent_merge")  # type: ignore[assignment]
+        if not isinstance(merge_payload, Mapping):
+            confirm = detail.get("confirm") if isinstance(detail.get("confirm"), Mapping) else {}
+            finalize = (
+                confirm.get("rinse_finalize") if isinstance(confirm, Mapping) else None
+            )
+            if isinstance(finalize, Mapping):
+                merge_payload = finalize.get("persistent_merge") or finalize.get(
+                    "persistent_scan_merge"
+                )
+    if scrape_batch_id is not None:
+        try:
+            recorded = record_evidence_gate_from_merge(
+                cursor,
+                organization_id=org_id,
+                import_batch_id=scrape_batch_id,
+                scrape_run_id=scrape_run_id,
+                portal_presence_run_id=portal_presence_run_id,
+                merge=merge_payload
+                if isinstance(merge_payload, Mapping)
+                else {
+                    "import_incomplete": incomplete,
+                    "timeline_replacement_deferred": incomplete,
+                },
+                detail=detail if isinstance(detail, Mapping) else None,
+            )
+            if recorded and log is not None and hasattr(log, "write"):
+                log.write(
+                    f"Step-1 evidence gate recorded batch={scrape_batch_id} "
+                    f"status={recorded.get('gate_status')} "
+                    f"allow_persist={recorded.get('allow_persist')}\n"
+                )
+            try:
+                conn.commit()
+            except Exception:
+                pass
+        except Exception as exc:
+            if log is not None and hasattr(log, "write"):
+                log.write(f"WARNING: evidence gate record failed: {exc}\n")
     if incomplete and log is not None and hasattr(log, "write"):
         log.write(
             "Step-1 Stage B deferred: scan chronology import incomplete / "
@@ -937,6 +982,9 @@ def run_rinse_combined_sync_for_org(
         ):
             # Order: portal scrape → scan import commit → validate → Stage B.
             result.detail["persistent_merge"] = merge_payload
+            presence_run_id = None
+            if isinstance(av_presence_detail, Mapping):
+                presence_run_id = av_presence_detail.get("run_id")
             result.detail["step1_day_refresh"] = _refresh_open_step1_day_after_scrape(
                 conn,
                 cursor,
@@ -944,6 +992,7 @@ def run_rinse_combined_sync_for_org(
                 log=log,
                 scrape_batch_id=result.batch_id,
                 scrape_run_id=result.run_id or run_id,
+                portal_presence_run_id=int(presence_run_id) if presence_run_id else None,
                 detail={
                     **(result.detail or {}),
                     "persistent_merge": merge_payload,
