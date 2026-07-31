@@ -505,6 +505,7 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
                       </TableCell>
                       <TableCell align="right">{slot.newly_available_count ?? 0}</TableCell>
                       <TableCell align="right">{slot.processed_count ?? 0}</TableCell>
+                      <TableCell align="right">{slot.waiting_at_start ?? 0}</TableCell>
                       <TableCell align="right" sx={{ fontWeight: 700 }}>
                         {slot.waiting_at_end ?? 0}
                       </TableCell>
