@@ -1,19 +1,15 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
   Button,
+  Chip,
   CircularProgress,
-  Collapse,
   Dialog,
   DialogContent,
   DialogTitle,
-  FormControl,
   IconButton,
-  InputLabel,
-  MenuItem,
   Paper,
-  Select,
   Stack,
   Table,
   TableBody,
@@ -30,8 +26,6 @@ import { formatDateTime } from "../utils/foldingFormat";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 
 const DEFAULT_DRY = 40;
-const DEFAULT_SORT = 0;
-const DEFAULT_WASH = 0;
 const MAX_SLOTS = 48;
 
 function pad2(n) {
@@ -71,7 +65,7 @@ function evenlySpaceTimes(startHhmm, endHhmm, slotCount) {
   if (!startParts || !endParts) return null;
   const startMin = Number(startParts[1]) * 60 + Number(startParts[2]);
   const endMin = Number(endParts[1]) * 60 + Number(endParts[2]);
-  if (endMin <= startMin) return null; // no silent overnight wrap
+  if (endMin <= startMin) return null;
   if (n === 1) return [`${pad2(Math.floor(startMin / 60))}:${pad2(startMin % 60)}`];
   const step = (endMin - startMin) / (n - 1);
   const out = [];
@@ -95,6 +89,13 @@ function validateSlotOrder(slotTimes) {
   return "";
 }
 
+function statusChipColor(status) {
+  if (status === "deficit") return "warning";
+  if (status === "capacity_available") return "info";
+  if (status === "balanced") return "success";
+  return "default";
+}
+
 function DetailDialog({ open, onClose, title, columns, bags }) {
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
@@ -107,7 +108,7 @@ function DetailDialog({ open, onClose, title, columns, bags }) {
       <DialogContent dividers>
         {!bags?.length ? (
           <Typography variant="body2" color="text.secondary">
-            No bags in this interval.
+            No bags in this selection.
           </Typography>
         ) : (
           <Table size="small">
@@ -125,7 +126,7 @@ function DetailDialog({ open, onClose, title, columns, bags }) {
                 <TableRow key={`${bag.bag_id}-${idx}`} hover>
                   {columns.map((c) => (
                     <TableCell key={c.key}>
-                      {c.format ? c.format(bag[c.key], bag) : bag[c.key] || "—"}
+                      {c.format ? c.format(bag[c.key], bag) : bag[c.key] ?? "—"}
                     </TableCell>
                   ))}
                 </TableRow>
@@ -138,10 +139,37 @@ function DetailDialog({ open, onClose, title, columns, bags }) {
   );
 }
 
+const AVAILABLE_COLS = [
+  { key: "bag_id", label: "Bag ID" },
+  { key: "arrival_time_et", label: "Arrival Time ET", format: formatDateTime },
+  { key: "arrival_employee", label: "Employee" },
+  { key: "arrival_machine", label: "Machine/Rack" },
+  { key: "departure_time_et", label: "Downstream Time ET", format: formatDateTime },
+  { key: "sequence_status", label: "Sequence Status" },
+];
+
+const PROCESSED_COLS = [
+  { key: "bag_id", label: "Bag ID" },
+  { key: "arrival_time_et", label: "Arrival Time ET", format: formatDateTime },
+  { key: "processing_time_et", label: "Processing Time ET", format: formatDateTime },
+  { key: "processing_employee", label: "Employee" },
+  { key: "processing_machine", label: "Machine" },
+  { key: "queue_wait_minutes", label: "Queue Wait (min)" },
+  { key: "sequence_status", label: "Sequence Status" },
+];
+
+const WAITING_COLS = [
+  { key: "bag_id", label: "Bag ID" },
+  { key: "available_since_et", label: "Available Since ET", format: formatDateTime },
+  { key: "minutes_waiting", label: "Minutes Waiting" },
+  { key: "upstream_employee", label: "Upstream Employee" },
+  { key: "upstream_machine", label: "Upstream Machine/Rack" },
+  { key: "later_processing_time_et", label: "Later Processing Time ET", format: formatDateTime },
+  { key: "sequence_status", label: "Sequence Status" },
+];
+
 export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = false }) {
   const [slotCount, setSlotCount] = useState(3);
-  const [sortMins, setSortMins] = useState(String(DEFAULT_SORT));
-  const [washMins, setWashMins] = useState(String(DEFAULT_WASH));
   const [dryMins, setDryMins] = useState(String(DEFAULT_DRY));
   const [slotTimes, setSlotTimes] = useState(() => Array(3).fill(""));
   const [spaceStart, setSpaceStart] = useState("");
@@ -171,8 +199,6 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
   };
 
   const handleReset = () => {
-    setSortMins(String(DEFAULT_SORT));
-    setWashMins(String(DEFAULT_WASH));
     setDryMins(String(DEFAULT_DRY));
     setSlotTimes(Array(slotCount).fill(""));
     setSpaceStart("");
@@ -195,11 +221,13 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
 
   const handleCalculate = async () => {
     setError("");
-    const sort = requireIntegerString(sortMins, { min: 0, max: 1440, field: "Sort Assumption (Minutes)" });
-    const wash = requireIntegerString(washMins, { min: 0, max: 1440, field: "Wash Assumption (Minutes)" });
-    const dry = requireIntegerString(dryMins, { min: 1, max: 1440, field: "Dry Assumption (Minutes)" });
-    if (!sort.ok || !wash.ok || !dry.ok) {
-      setError(sort.error || wash.error || dry.error);
+    const dry = requireIntegerString(dryMins, { min: 1, max: 1440, field: "Drying Time (Minutes)" });
+    if (!dry.ok) {
+      setError(dry.error);
+      return;
+    }
+    if (!String(spaceStart || "").trim()) {
+      setError("Enter Start Time. Slot 1 interval starts at Start Time (not midnight).");
       return;
     }
     if (slotTimes.some((t) => !String(t || "").trim())) {
@@ -215,18 +243,22 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
       setError("Select an ET operations date first.");
       return;
     }
+    if (slotTimes[0] && spaceStart >= slotTimes[0]) {
+      setError("Start Time must be earlier than Slot 1 checkpoint.");
+      return;
+    }
+    const startTime = parseTimeOnDate(dateEt, spaceStart);
     const checkpoints = slotTimes.map((t) => parseTimeOnDate(dateEt, t));
-    if (checkpoints.some((c) => !c)) {
-      setError("Each checkpoint must be a valid time (HH:MM).");
+    if (!startTime || checkpoints.some((c) => !c)) {
+      setError("Start Time and each checkpoint must be valid times (HH:MM).");
       return;
     }
     setLoading(true);
     try {
       const res = await calculateProcessFlowIntervals({
         date_et: dateEt,
+        start_time: startTime,
         checkpoints,
-        sort_assumption_minutes: sort.value,
-        wash_assumption_minutes: wash.value,
         dry_assumption_minutes: dry.value,
       });
       setResults(res?.data || null);
@@ -239,32 +271,6 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
   };
 
   const sections = results?.sections || [];
-  const detailColumnsBySection = {
-    ready_for_washing: [
-      { key: "bag_id", label: "Bag ID" },
-      { key: "sort_employee", label: "Sort Employee" },
-      { key: "sort_scan_et", label: "Sort Scan Time ET", format: formatDateTime },
-      { key: "sort_machine_rack", label: "Sort Machine/Rack" },
-      { key: "ready_for_washing_et", label: "Ready-for-Washing Time ET", format: formatDateTime },
-      { key: "confidence", label: "Confidence" },
-    ],
-    ready_for_drying: [
-      { key: "bag_id", label: "Bag ID" },
-      { key: "wash_employee", label: "Wash Employee" },
-      { key: "wash_scan_et", label: "Wash Scan Time ET", format: formatDateTime },
-      { key: "washer", label: "Washer" },
-      { key: "ready_for_drying_et", label: "Ready-for-Drying Time ET", format: formatDateTime },
-      { key: "confidence", label: "Confidence" },
-    ],
-    ready_for_folding: [
-      { key: "bag_id", label: "Bag ID" },
-      { key: "dry_employee", label: "Dry Employee" },
-      { key: "dry_scan_et", label: "Dry Scan Time ET", format: formatDateTime },
-      { key: "dryer", label: "Dryer" },
-      { key: "ready_for_folding_et", label: "Ready-for-Folding Time ET", format: formatDateTime },
-      { key: "confidence", label: "Confidence" },
-    ],
-  };
 
   return (
     <Paper
@@ -279,12 +285,13 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
       }}
     >
       <Typography variant="subtitle1" fontWeight={800} color={VEEWASH_DASHBOARD.primaryBlue} sx={{ mb: 0.5 }}>
-        Stage Availability Calculator
+        Inter-Stage Queue Calculator
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Sort and Wash minutes are planning assumptions (no configured operational duration — default 0).
-        Dry minutes use the Scan Chronology Ready-to-Fold assumption (default 40), not the organization
-        processing setting (45).
+        Uses actual Sort → Wash → Dry → Fold evidence. No Sort/Wash duration assumptions.
+        Ready-to-Fold arrival = Dry time + Drying Time (default 40), not the organization
+        processing setting (45). Work-Starved Minutes measure queue availability only — not
+        employee idle time.
       </Typography>
 
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
@@ -300,72 +307,40 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
         />
         <TextField
           size="small"
-          label="Sort Assumption (Minutes)"
-          value={sortMins}
-          onChange={(e) => {
-            setSortMins(e.target.value);
-            setResults(null);
-          }}
-          helperText="No configured assumption — 0 minutes"
-          disabled={disabled || loading}
-          sx={{ minWidth: 200 }}
-        />
-        <TextField
-          size="small"
-          label="Wash Assumption (Minutes)"
-          value={washMins}
-          onChange={(e) => {
-            setWashMins(e.target.value);
-            setResults(null);
-          }}
-          helperText="No configured assumption — 0 minutes"
-          disabled={disabled || loading}
-          sx={{ minWidth: 200 }}
-        />
-        <TextField
-          size="small"
-          label="Dry Assumption (Minutes)"
+          label="Drying Time (Minutes)"
           value={dryMins}
           onChange={(e) => {
             setDryMins(e.target.value);
             setResults(null);
           }}
-          helperText="Ready-to-Fold assumption (default 40)"
+          helperText="Ready-to-Fold = Dry + minutes (default 40)"
           disabled={disabled || loading}
-          sx={{ minWidth: 200 }}
+          sx={{ minWidth: 220 }}
         />
-        <Button
-          size="small"
-          variant="contained"
-          onClick={handleCalculate}
-          disabled={disabled || loading}
-          sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue }}
-        >
-          {loading ? <CircularProgress size={16} color="inherit" /> : "Calculate"}
-        </Button>
-        <Button size="small" variant="outlined" onClick={handleReset} disabled={loading}>
-          Reset
-        </Button>
       </Stack>
 
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1 }} alignItems={{ sm: "center" }}>
-        <Typography variant="body2" fontWeight={600}>
-          Evenly Space Times
-        </Typography>
+      <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>
+        Interval Start &amp; Checkpoints (ET)
+      </Typography>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
         <TextField
           size="small"
           type="time"
           label="Start Time"
           value={spaceStart}
-          onChange={(e) => setSpaceStart(e.target.value)}
+          onChange={(e) => {
+            setSpaceStart(e.target.value);
+            setResults(null);
+          }}
           InputLabelProps={{ shrink: true }}
           inputProps={{ step: 60 }}
+          helperText="Slot 1 starts here"
           disabled={disabled || loading}
         />
         <TextField
           size="small"
           type="time"
-          label="End Time"
+          label="End (evenly space)"
           value={spaceEnd}
           onChange={(e) => setSpaceEnd(e.target.value)}
           InputLabelProps={{ shrink: true }}
@@ -373,116 +348,213 @@ export default function ProcessFlowAvailabilityCalculator({ dateEt, disabled = f
           disabled={disabled || loading}
         />
         <Button size="small" variant="outlined" onClick={handleEvenlySpace} disabled={disabled || loading}>
-          Apply spacing
+          Evenly space checkpoints
         </Button>
       </Stack>
 
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
         {slotTimes.map((value, idx) => (
           <TextField
-            key={`pf-slot-${idx}`}
+            key={`slot-${idx}`}
             size="small"
             type="time"
-            label={`Slot ${idx + 1}`}
+            label={`Slot ${idx + 1} Checkpoint`}
             value={value}
             onChange={(e) => {
-              setSlotTimes((prev) => {
-                const next = [...prev];
-                next[idx] = e.target.value;
-                return next;
-              });
+              const next = [...slotTimes];
+              next[idx] = e.target.value;
+              setSlotTimes(next);
               setResults(null);
             }}
             InputLabelProps={{ shrink: true }}
             inputProps={{ step: 60 }}
-            disabled={disabled || loading}
             error={Boolean(orderError) && idx > 0 && value && slotTimes[idx - 1] && value <= slotTimes[idx - 1]}
+            disabled={disabled || loading}
           />
         ))}
       </Stack>
 
-      {orderError ? (
-        <Alert severity="warning" sx={{ mb: 1 }}>
-          {orderError}
-        </Alert>
-      ) : null}
-      {error ? (
-        <Alert severity="error" sx={{ mb: 1 }} onClose={() => setError("")}>
-          {error}
-        </Alert>
-      ) : null}
+      <Stack direction="row" spacing={1} sx={{ mb: 1.5 }}>
+        <Button
+          variant="contained"
+          onClick={handleCalculate}
+          disabled={disabled || loading}
+          startIcon={loading ? <CircularProgress size={16} color="inherit" /> : null}
+        >
+          Calculate Queues
+        </Button>
+        <Button variant="text" onClick={handleReset} disabled={loading}>
+          Reset
+        </Button>
+      </Stack>
 
-      {sections.map((section) => (
-        <Box key={section.id} sx={{ mt: 2 }}>
-          <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>
-            {section.label}
-          </Typography>
-          <Collapse in={Boolean(section.slots?.length)}>
-            <TableContainer>
+      {(error || orderError) && (
+        <Alert severity="warning" sx={{ mb: 1.5 }}>
+          {error || orderError}
+        </Alert>
+      )}
+
+      {results?.work_starved_definition && (
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+          {results.work_starved_definition}
+          {results.is_today ? " Today intervals truncate at current ET." : ""}
+        </Typography>
+      )}
+
+      {sections.map((section) => {
+        const labels = section.labels || {};
+        return (
+          <Box key={section.id} sx={{ mb: 2.5 }}>
+            <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.25 }}>
+              {section.label}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              {section.subtitle}
+            </Typography>
+            <TableContainer component={Paper} elevation={0} sx={{ border: "1px solid", borderColor: "divider" }}>
               <Table size="small">
                 <TableHead>
                   <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue }}>
-                    {["Slot", "Checkpoint Time", "Interval", "New Bags Ready", "Cumulative Bags Ready", "View Bags"].map(
-                      (h) => (
-                        <TableCell key={h} sx={{ color: "#fff", fontWeight: 700 }} align={h.includes("Bags Ready") ? "right" : "left"}>
-                          {h}
-                        </TableCell>
-                      ),
-                    )}
+                    {[
+                      "Slot",
+                      "Checkpoint",
+                      "Interval",
+                      labels.newly_available || "Newly Available",
+                      labels.processed || "Processed",
+                      "Waiting at Start",
+                      "Waiting at End",
+                      "Peak Waiting",
+                      "Excess / Deficit",
+                      "Work-Starved Minutes",
+                      "Excluded",
+                      "View Available",
+                      "View Processed",
+                      "View Waiting",
+                      ...(section.id === "folding_queue" ? [labels.capacity || "Folder Capacity"] : []),
+                    ].map((h) => (
+                      <TableCell key={h} sx={{ color: "#fff", fontWeight: 700, whiteSpace: "nowrap" }}>
+                        {h}
+                      </TableCell>
+                    ))}
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {(section.slots || []).map((slot) => (
-                    <Fragment key={`${section.id}-${slot.slot}`}>
-                      <TableRow hover>
-                        <TableCell>{slot.slot}</TableCell>
-                        <TableCell>{slot.checkpoint_label}</TableCell>
-                        <TableCell>{slot.interval_label}</TableCell>
-                        <TableCell align="right" sx={{ fontWeight: 700 }}>
-                          {slot.newly_ready_count ?? 0}
-                        </TableCell>
-                        <TableCell align="right">{slot.cumulative_ready_count ?? 0}</TableCell>
+                    <TableRow key={`${section.id}-${slot.slot_index}`} hover>
+                      <TableCell>{slot.slot_index}</TableCell>
+                      <TableCell>{formatDateTime(slot.checkpoint_et)}</TableCell>
+                      <TableCell>
+                        {slot.interval_label}
+                        {slot.incomplete_interval || slot.future_interval ? (
+                          <Chip size="small" label="Incomplete" sx={{ ml: 0.5 }} />
+                        ) : null}
+                      </TableCell>
+                      <TableCell align="right">{slot.newly_available_count ?? 0}</TableCell>
+                      <TableCell align="right">{slot.processed_count ?? 0}</TableCell>
+                      <TableCell align="right">{slot.waiting_at_start ?? 0}</TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 700 }}>
+                        {slot.waiting_at_end ?? 0}
+                      </TableCell>
+                      <TableCell align="right">{slot.peak_waiting ?? 0}</TableCell>
+                      <TableCell>
+                        {slot.excess_deficit_label ? (
+                          <Chip
+                            size="small"
+                            color={statusChipColor(slot.excess_deficit_status)}
+                            label={slot.excess_deficit_label}
+                          />
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
+                      <TableCell align="right">{slot.work_starved_minutes ?? 0}</TableCell>
+                      <TableCell align="right">{slot.excluded_sequence_count ?? 0}</TableCell>
+                      <TableCell>
+                        <Button
+                          size="small"
+                          disabled={!slot.newly_available_count}
+                          onClick={() =>
+                            setViewDetail({
+                              title: `${section.label} — ${labels.newly_available} (Slot ${slot.slot_index})`,
+                              columns: AVAILABLE_COLS,
+                              bags: slot.bags_available || [],
+                            })
+                          }
+                        >
+                          View {slot.newly_available_count ?? 0}
+                        </Button>
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          size="small"
+                          disabled={!slot.processed_count}
+                          onClick={() =>
+                            setViewDetail({
+                              title: `${section.label} — ${labels.processed} (Slot ${slot.slot_index})`,
+                              columns: PROCESSED_COLS,
+                              bags: slot.bags_processed || [],
+                            })
+                          }
+                        >
+                          View {slot.processed_count ?? 0}
+                        </Button>
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          size="small"
+                          disabled={!slot.waiting_at_end}
+                          onClick={() =>
+                            setViewDetail({
+                              title: `${section.label} — ${labels.waiting} (Slot ${slot.slot_index})`,
+                              columns: WAITING_COLS,
+                              bags: slot.bags_waiting || [],
+                            })
+                          }
+                        >
+                          View {slot.waiting_at_end ?? 0}
+                        </Button>
+                      </TableCell>
+                      {section.id === "folding_queue" ? (
                         <TableCell>
-                          <Box
-                            component="button"
-                            type="button"
-                            disabled={!slot.newly_ready_count}
-                            onClick={() =>
-                              setViewDetail({
-                                sectionId: section.id,
-                                title: `${section.label} — Slot ${slot.slot}`,
-                                bags: slot.bags || [],
-                              })
-                            }
-                            sx={{
-                              border: 0,
-                              background: "none",
-                              p: 0,
-                              color: VEEWASH_DASHBOARD.primaryBlue,
-                              fontWeight: 700,
-                              cursor: slot.newly_ready_count ? "pointer" : "default",
-                              opacity: slot.newly_ready_count ? 1 : 0.45,
-                              fontSize: "0.875rem",
-                            }}
-                          >
-                            View {slot.newly_ready_count ?? 0} Bag{(slot.newly_ready_count ?? 0) === 1 ? "" : "s"}
-                          </Box>
+                          {slot.folder_capacity ? (
+                            <Box>
+                              <Typography variant="body2" fontWeight={700}>
+                                {slot.folder_capacity.recommendation}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary" display="block">
+                                Bags: {slot.folder_capacity.available_bags}
+                                {slot.folder_capacity.available_pounds != null
+                                  ? ` · Lbs: ${slot.folder_capacity.available_pounds}`
+                                  : ""}
+                                {slot.folder_capacity.capacity_ratio != null
+                                  ? ` · Ratio: ${slot.folder_capacity.capacity_ratio}`
+                                  : ""}
+                              </Typography>
+                              {slot.folder_capacity.note ? (
+                                <Typography variant="caption" color="warning.main" display="block">
+                                  {slot.folder_capacity.note}
+                                </Typography>
+                              ) : null}
+                            </Box>
+                          ) : (
+                            "—"
+                          )}
                         </TableCell>
-                      </TableRow>
-                    </Fragment>
+                      ) : null}
+                    </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </TableContainer>
-          </Collapse>
-        </Box>
-      ))}
+          </Box>
+        );
+      })}
 
       <DetailDialog
         open={Boolean(viewDetail)}
         onClose={() => setViewDetail(null)}
         title={viewDetail?.title || ""}
-        columns={detailColumnsBySection[viewDetail?.sectionId] || []}
+        columns={viewDetail?.columns || []}
         bags={viewDetail?.bags || []}
       />
     </Paper>

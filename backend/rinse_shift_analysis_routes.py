@@ -1093,9 +1093,10 @@ def register_rinse_shift_analysis_routes(
     @app.route("/rinse/shift-analysis/process-flow-calculator", methods=["GET", "POST"])
     def rinse_shift_analysis_process_flow_calculator():
         """
-        Read-only Process Flow stage-availability calculator.
+        Read-only Process Flow inter-stage queue calculator.
 
-        Composes shared Sort/Wash/Dry current-cycle selectors. Does not mutate scans.
+        Washing / Drying / Folding queues from actual canonical times.
+        Does not mutate scans. No Sort/Wash duration assumptions.
         """
         from backend.rinse_process_flow_chronology import (
             ProcessFlowValidationError,
@@ -1146,13 +1147,21 @@ def register_rinse_shift_analysis_routes(
             if not isinstance(checkpoints, list):
                 return jsonify({"error": "checkpoints must be a list of times"}), 400
 
+            start_time = (
+                body.get("start_time")
+                or body.get("interval_start")
+                or body.get("start_time_et")
+                or request.args.get("start_time")
+                or request.args.get("interval_start")
+                or request.args.get("start_time_et")
+            )
+
             payload = build_process_flow_calculator_payload(
                 cursor,
                 tenant_oid,
                 selected_date_et=selected,
                 checkpoints=checkpoints,
-                sort_assumption_minutes=_opt_int("sort_assumption_minutes", "sort_minutes"),
-                wash_assumption_minutes=_opt_int("wash_assumption_minutes", "wash_minutes"),
+                start_time=start_time,
                 dry_assumption_minutes=_opt_int(
                     "dry_assumption_minutes", "dry_minutes", "drying_duration_minutes"
                 ),

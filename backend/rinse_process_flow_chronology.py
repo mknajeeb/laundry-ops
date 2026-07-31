@@ -4,11 +4,12 @@ Read-only Process Flow chronology for Scan Chronology.
 Composes existing Sorting / Washing / Drying current-cycle selectors into one
 row per bag. Does not redefine canonical scan selection.
 
-Duration assumptions (Process Flow calculator only):
-- Sort: default 0 — labeled "No configured assumption"
-- Wash: default 0 — labeled "No configured assumption"
-- Dry: default 40 — Scan Chronology Ready-to-Fold assumption
-  (NOT rinse_processing_settings.drying_minutes=45)
+Process Flow bag table: Ready-to-Fold time is calculated as dry + assumption
+(default 40; NOT rinse_processing_settings.drying_minutes=45).
+
+Process Flow queue calculator (see rinse_process_flow_queue):
+- No Sort/Wash duration assumptions — uses actual canonical times
+- Folding completion from evaluate_folding_performance_for_bag → folding_end_at
 """
 
 from __future__ import annotations
@@ -1008,136 +1009,27 @@ def build_process_flow_calculator_payload(
     *,
     selected_date_et: date,
     checkpoints: Sequence[Any],
+    start_time: Any = None,
     sort_assumption_minutes: int | None = None,
     wash_assumption_minutes: int | None = None,
     dry_assumption_minutes: int | None = None,
+    now_et: datetime | None = None,
 ) -> dict[str, Any]:
-    """Read-only three-milestone checkpoint calculator for Process Flow."""
-    sort_mins = clamp_sort_assumption_minutes(sort_assumption_minutes)
-    wash_mins = clamp_wash_assumption_minutes(wash_assumption_minutes)
-    dry_mins = clamp_dry_assumption_minutes(dry_assumption_minutes)
-    parsed = validate_checkpoint_times(checkpoints, selected_date_et=selected_date_et)
+    """
+    Read-only Process Flow queue calculator (Washing / Drying / Folding queues).
 
-    base = build_process_flow_chronology_payload(
+    Sort/Wash duration assumptions are not used. Optional sort/wash kwargs are
+    ignored for compatibility with older clients.
+    """
+    del sort_assumption_minutes, wash_assumption_minutes  # removed from calculator
+    from backend.rinse_process_flow_queue import build_process_flow_queue_calculator_payload
+
+    return build_process_flow_queue_calculator_payload(
         cursor,
         organization_id,
         selected_date_et=selected_date_et,
-        dry_assumption_minutes=dry_mins,
+        checkpoints=checkpoints,
+        start_time=start_time,
+        dry_assumption_minutes=dry_assumption_minutes,
+        now_et=now_et,
     )
-    # Rebuild ready milestones from canonical times using calculator assumptions.
-    bags = []
-    for row in base.get("sessions") or []:
-        bid = _bag_key(row.get("bag_id"))
-        sort_ts = row.get("sort_scan_et")
-        wash_ts = row.get("wash_scan_et")
-        dry_ts = row.get("dry_scan_et")
-        item = {
-            "bag_id": bid,
-            "sort_employee": row.get("sort_employee"),
-            "sort_scan_et": sort_ts,
-            "sort_machine_rack": row.get("sort_machine_rack"),
-            "sort_confidence": row.get("confidence"),
-            "wash_employee": row.get("wash_employee"),
-            "wash_scan_et": wash_ts,
-            "washer": row.get("washer"),
-            "wash_confidence": row.get("confidence"),
-            "dry_employee": row.get("dry_employee"),
-            "dry_scan_et": dry_ts,
-            "dryer": row.get("dryer"),
-            "dry_confidence": row.get("confidence"),
-            "confidence": row.get("confidence"),
-            "ready_for_washing_at": (
-                sort_ts + timedelta(minutes=sort_mins) if ts_valid(sort_ts) else None
-            ),
-            "ready_for_drying_at": (
-                wash_ts + timedelta(minutes=wash_mins) if ts_valid(wash_ts) else None
-            ),
-            "ready_for_folding_at": (
-                dry_ts + timedelta(minutes=dry_mins) if ts_valid(dry_ts) else None
-            ),
-        }
-        bags.append(item)
-
-    def _detail_washing(b: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            "bag_id": b.get("bag_id"),
-            "sort_employee": b.get("sort_employee"),
-            "sort_scan_et": b.get("sort_scan_et"),
-            "sort_machine_rack": b.get("sort_machine_rack"),
-            "ready_for_washing_et": b.get("ready_for_washing_at"),
-            "confidence": b.get("confidence"),
-        }
-
-    def _detail_drying(b: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            "bag_id": b.get("bag_id"),
-            "wash_employee": b.get("wash_employee"),
-            "wash_scan_et": b.get("wash_scan_et"),
-            "washer": b.get("washer"),
-            "ready_for_drying_et": b.get("ready_for_drying_at"),
-            "confidence": b.get("confidence"),
-        }
-
-    def _detail_folding(b: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            "bag_id": b.get("bag_id"),
-            "dry_employee": b.get("dry_employee"),
-            "dry_scan_et": b.get("dry_scan_et"),
-            "dryer": b.get("dryer"),
-            "ready_for_folding_et": b.get("ready_for_folding_at"),
-            "confidence": b.get("confidence"),
-        }
-
-    wash_slots = assign_ready_times_to_slots(
-        bags, parsed, ready_key="ready_for_washing_at"
-    )
-    dry_slots = assign_ready_times_to_slots(
-        bags, parsed, ready_key="ready_for_drying_at"
-    )
-    fold_slots = assign_ready_times_to_slots(
-        bags, parsed, ready_key="ready_for_folding_at"
-    )
-
-    def _map_slots(slots, detail_fn):
-        out = []
-        for s in slots:
-            out.append(
-                {
-                    **{k: s[k] for k in s if k != "bags"},
-                    "bags": [detail_fn(b) for b in s["bags"]],
-                }
-            )
-        return out
-
-    return {
-        "date_et": selected_date_et.isoformat(),
-        "stage": "process_flow_calculator",
-        "read_only": True,
-        "mutates_scan_records": False,
-        "sort_assumption_minutes": sort_mins,
-        "wash_assumption_minutes": wash_mins,
-        "dry_assumption_minutes": dry_mins,
-        "sort_assumption_label": "No configured assumption — 0 minutes",
-        "wash_assumption_label": "No configured assumption — 0 minutes",
-        "dry_assumption_label": (
-            "Scan Chronology Ready-to-Fold assumption (default 40; "
-            "not rinse_processing_settings.drying_minutes=45)"
-        ),
-        "sections": [
-            {
-                "id": "ready_for_washing",
-                "label": "Ready for Washing",
-                "slots": _map_slots(wash_slots, _detail_washing),
-            },
-            {
-                "id": "ready_for_drying",
-                "label": "Ready for Drying",
-                "slots": _map_slots(dry_slots, _detail_drying),
-            },
-            {
-                "id": "ready_for_folding",
-                "label": "Ready for Folding",
-                "slots": _map_slots(fold_slots, _detail_folding),
-            },
-        ],
-    }
