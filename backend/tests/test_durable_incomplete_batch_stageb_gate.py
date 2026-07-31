@@ -239,7 +239,13 @@ def test_incomplete_batch_initial_stage_b_defers_no_persist():
     assert out["deferred"] is True
     assert out["persisted"] is False
     assert out["step1_refresh_status"] == STATUS_DEFERRED
-    assert out["reason"] == STATUS_IMPORT_INCOMPLETE or "incomplete" in str(out["reason"])
+    assert out["reason"] in (
+        STATUS_IMPORT_INCOMPLETE,
+        "import_batch_incomplete",
+    ) or "incomplete" in str(out["reason"])
+    assert out.get("gate_reason") == "import_batch_incomplete" or "incomplete" in str(
+        out.get("gate_reason") or out["reason"]
+    )
     snap = out["last_consistent_snapshot"]
     assert (snap["completed"], snap["pending"], snap["review_required"]) == (89, 3, 1)
     backfill.assert_not_called()
@@ -439,7 +445,7 @@ def test_baseline_counts_hold_across_incomplete_and_repeat():
         return_value={
             "blocking": True,
             "allow_persist": False,
-            "gate_reason": "import_incomplete",
+            "gate_reason": "import_batch_incomplete",
             "gate_status": GATE_INCOMPLETE,
             "import_batch_id": 3173,
             "durable_gate_checked": True,
@@ -449,6 +455,7 @@ def test_baseline_counts_hold_across_incomplete_and_repeat():
             cursor, 3, DAY, day_meta=day_meta, import_batch_id=3173
         )
     assert gate["allow_persist"] is False
+    assert gate["gate_reason"] == "import_batch_incomplete"
     assert gate["last_consistent_snapshot"]["completed"] == 89
     assert gate["last_consistent_snapshot"]["pending"] == 3
     assert gate["last_consistent_snapshot"]["review_required"] == 1

@@ -2831,7 +2831,7 @@ def backfill_day_from_live(
             scrape_run_id=scrape_run_id,
         )
         if durable.get("blocking"):
-            reason = str(durable.get("gate_reason") or "import_incomplete")
+            reason = str(durable.get("gate_reason") or "import_batch_incomplete")
             return {
                 "ok": True,
                 "deferred": True,

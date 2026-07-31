@@ -24,6 +24,9 @@ GATE_IMPORT_RUNNING = "import_running"
 GATE_COVERAGE_INCOMPLETE = "coverage_incomplete"
 GATE_INVALID = "invalid_for_step1_rebuild"
 
+# Canonical Stage-B defer reason when a scan-import batch is incomplete.
+REASON_IMPORT_BATCH_INCOMPLETE = "import_batch_incomplete"
+
 BLOCKING_STATUSES = frozenset(
     {
         GATE_INCOMPLETE,
@@ -31,6 +34,7 @@ BLOCKING_STATUSES = frozenset(
         GATE_COVERAGE_INCOMPLETE,
         GATE_INVALID,
         "import_incomplete",
+        REASON_IMPORT_BATCH_INCOMPLETE,
         "timeline_replacement_deferred",
         "coverage_incomplete",
         "import_running",
@@ -130,11 +134,7 @@ def record_evidence_gate_for_batch(
         reason = "coverage_incomplete"
     elif import_incomplete or timeline_replacement_deferred:
         status = GATE_INCOMPLETE
-        reason = (
-            "import_incomplete"
-            if import_incomplete
-            else "timeline_replacement_deferred"
-        )
+        reason = REASON_IMPORT_BATCH_INCOMPLETE
     else:
         status = GATE_COMPLETE
         reason = None
@@ -422,5 +422,5 @@ def evaluate_durable_evidence_gate(
     if blocking:
         out["allow_persist"] = False
         out["blocking"] = True
-        out["gate_reason"] = out["gate_reason"] or "import_incomplete"
+        out["gate_reason"] = out["gate_reason"] or REASON_IMPORT_BATCH_INCOMPLETE
     return out

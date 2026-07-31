@@ -358,6 +358,7 @@ def test_jul30_incomplete_then_complete_reproduction():
 
     assert incomplete["rebuild_deferred"] is True
     assert incomplete["status"] in (
+        "import_batch_incomplete",
         "import_coverage_incomplete",
         STATUS_SCAN_CHRONOLOGY_STALE,
         STATUS_REBUILD_DEFERRED,

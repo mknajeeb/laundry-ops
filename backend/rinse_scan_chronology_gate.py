@@ -186,10 +186,17 @@ def evaluate_step1_rebuild_gate(
 
     defer_reason: str | None = None
     defer_status = STATUS_REBUILD_DEFERRED
-    if force_incomplete or durable.get("blocking"):
+    if durable.get("blocking"):
+        from backend.rinse_step1_evidence_gate import REASON_IMPORT_BATCH_INCOMPLETE
+
         defer_reason = str(
-            durable.get("gate_reason") or STATUS_IMPORT_INCOMPLETE
+            durable.get("gate_reason") or REASON_IMPORT_BATCH_INCOMPLETE
         )
+        defer_status = STATUS_IMPORT_INCOMPLETE
+    elif force_incomplete:
+        from backend.rinse_step1_evidence_gate import REASON_IMPORT_BATCH_INCOMPLETE
+
+        defer_reason = REASON_IMPORT_BATCH_INCOMPLETE
         defer_status = STATUS_IMPORT_INCOMPLETE
     elif import_running:
         defer_reason = STATUS_SCAN_IMPORT_IN_PROGRESS
