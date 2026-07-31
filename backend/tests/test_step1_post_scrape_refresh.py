@@ -51,6 +51,24 @@ def _patch_refresh_deps(*, day, day_record, backfill_return=None, backfill_side_
             "backend.rinse_step1_scrape_refresh.verify_step1_snapshot_freshness",
             return_value={"fresh": True, "reason": "ok"},
         ),
+        patch(
+            "backend.rinse_scan_chronology_gate.evaluate_step1_rebuild_gate",
+            return_value={
+                "allow_persist": True,
+                "ok": True,
+                "deferred": False,
+                "rebuild_deferred": False,
+                "reason": None,
+                "status": "ok",
+                "data_freshness": {"status": "ok"},
+                "last_consistent_snapshot": {
+                    "completed": 70,
+                    "pending": 3,
+                    "review_required": 0,
+                    "total": 73,
+                },
+            },
+        ),
     )
 
 
@@ -65,7 +83,7 @@ def test_post_scrape_refreshes_open_step1_day_exactly_once():
     )
     with patches[0], patches[1], patches[2], patches[3] as backfill, patches[4], patches[
         5
-    ], patches[6], patches[7] as stamp, patches[8]:
+    ], patches[6], patches[7] as stamp, patches[8], patches[9]:
         out = _refresh_open_step1_day_after_scrape(
             conn,
             cursor,
@@ -83,7 +101,9 @@ def test_post_scrape_refreshes_open_step1_day_exactly_once():
     assert out["day_bags_rebuilt"] == 78
     assert out["started_at"]
     assert out["finished_at"]
-    backfill.assert_called_once_with(cursor, 3, day, force=True)
+    backfill.assert_called_once_with(
+        cursor, 3, day, force=True, chronology_complete=True
+    )
     stamp.assert_called_once()
     conn.commit.assert_called()
     assert "ERROR" not in "".join(str(c) for c in log.write.call_args_list)
@@ -100,7 +120,7 @@ def test_post_scrape_skips_closed_step1_day():
     )
     with patches[0], patches[1], patches[2], patches[3] as backfill, patches[4], patches[
         5
-    ], patches[6], patches[7], patches[8]:
+    ], patches[6], patches[7], patches[8], patches[9]:
         out = _refresh_open_step1_day_after_scrape(
             conn, cursor, org_id=3, log=log, scrape_batch_id=1
         )
@@ -166,6 +186,18 @@ def test_refresh_failure_does_not_require_evidence_rollback():
     ), patch(
         "backend.rinse_step1_scrape_refresh.verify_step1_snapshot_freshness",
         return_value={"fresh": True, "reason": "ok"},
+    ), patch(
+        "backend.rinse_scan_chronology_gate.evaluate_step1_rebuild_gate",
+        return_value={
+            "allow_persist": True,
+            "ok": True,
+            "deferred": False,
+            "rebuild_deferred": False,
+            "reason": None,
+            "status": "ok",
+            "data_freshness": {"status": "ok"},
+            "last_consistent_snapshot": {},
+        },
     ):
         out = refresh_step1_after_scrape(
             conn,
@@ -399,7 +431,7 @@ def test_repeated_refresh_is_idempotent_calls_same_backfill():
     )
     with patches[0], patches[1], patches[2], patches[3] as backfill, patches[4], patches[
         5
-    ], patches[6], patches[7], patches[8]:
+    ], patches[6], patches[7], patches[8], patches[9]:
         a = _refresh_open_step1_day_after_scrape(
             conn, cursor, org_id=3, log=log, scrape_batch_id=1
         )
@@ -408,7 +440,9 @@ def test_repeated_refresh_is_idempotent_calls_same_backfill():
         )
     assert a["ok"] and b["ok"]
     assert backfill.call_count == 2
-    assert backfill.call_args_list[0] == call(cursor, 3, day, force=True)
+    assert backfill.call_args_list[0] == call(
+        cursor, 3, day, force=True, chronology_complete=True
+    )
 
 
 def test_watchdog_retries_failed_stage_b_without_rescrape():

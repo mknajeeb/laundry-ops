@@ -182,6 +182,44 @@ def _mark_step1_refresh_failed_on_result(
         result.status = "needs_attention"
 
 
+def _merge_import_incomplete(detail: Mapping[str, Any] | None) -> bool:
+    """True when persistent scan merge marked the import incomplete/thinner."""
+    if not isinstance(detail, Mapping):
+        return False
+    for key in (
+        "persistent_merge",
+        "persistent_scan_merge",
+        "scan_events_only_import",
+    ):
+        payload = detail.get(key)
+        if isinstance(payload, Mapping) and (
+            payload.get("import_incomplete")
+            or payload.get("timeline_replacement_deferred")
+        ):
+            return True
+    finalize = detail.get("rinse_finalize")
+    if isinstance(finalize, Mapping):
+        merge = finalize.get("persistent_merge") or finalize.get("persistent_scan_merge")
+        if isinstance(merge, Mapping) and (
+            merge.get("import_incomplete")
+            or merge.get("timeline_replacement_deferred")
+        ):
+            return True
+    confirm = detail.get("confirm")
+    if isinstance(confirm, Mapping):
+        finalize = confirm.get("rinse_finalize") or {}
+        if isinstance(finalize, Mapping):
+            merge = finalize.get("persistent_merge") or finalize.get(
+                "persistent_scan_merge"
+            )
+            if isinstance(merge, Mapping) and (
+                merge.get("import_incomplete")
+                or merge.get("timeline_replacement_deferred")
+            ):
+                return True
+    return False
+
+
 def _refresh_open_step1_day_after_scrape(
     conn,
     cursor,
@@ -190,10 +228,22 @@ def _refresh_open_step1_day_after_scrape(
     log: "_TeeLog",
     scrape_batch_id: int | None = None,
     scrape_run_id: int | None = None,
+    import_incomplete: bool = False,
+    detail: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compat wrapper — canonical owner is ``refresh_step1_after_scrape``."""
+    """Compat wrapper — canonical owner is ``refresh_step1_after_scrape``.
+
+    Atomic order: Stage B runs only after portal scrape + scan import commit.
+    Incomplete/thinner merges force rebuild deferral (no provisional counts).
+    """
     from backend.rinse_step1_scrape_refresh import refresh_step1_after_scrape
 
+    incomplete = bool(import_incomplete) or _merge_import_incomplete(detail)
+    if incomplete and log is not None and hasattr(log, "write"):
+        log.write(
+            "Step-1 Stage B deferred: scan chronology import incomplete / "
+            "timeline replacement deferred — retaining last consistent snapshot\n"
+        )
     return refresh_step1_after_scrape(
         conn,
         cursor,
@@ -202,6 +252,8 @@ def _refresh_open_step1_day_after_scrape(
         scrape_run_id=scrape_run_id,
         import_batch_id=scrape_batch_id,
         operations_date_et=_today_et(),
+        force_incomplete=incomplete,
+        import_incomplete=incomplete,
     )
 
 
@@ -883,6 +935,8 @@ def run_rinse_combined_sync_for_org(
         if _combined_cycle_needs_step1_refresh(
             dry_run=dry_run, status=result.status, detail=result.detail
         ):
+            # Order: portal scrape → scan import commit → validate → Stage B.
+            result.detail["persistent_merge"] = merge_payload
             result.detail["step1_day_refresh"] = _refresh_open_step1_day_after_scrape(
                 conn,
                 cursor,
@@ -890,6 +944,10 @@ def run_rinse_combined_sync_for_org(
                 log=log,
                 scrape_batch_id=result.batch_id,
                 scrape_run_id=result.run_id or run_id,
+                detail={
+                    **(result.detail or {}),
+                    "persistent_merge": merge_payload,
+                },
             )
             result.detail["step1_day_refresh_via"] = "combined_cycle_guarantee"
         if not dry_run and str(result.status or "") in ("success", "needs_attention"):
@@ -1338,6 +1396,7 @@ def run_scheduled_scrape_for_org(
                         log=log,
                         scrape_batch_id=result.batch_id,
                         scrape_run_id=run_id,
+                        detail=result.detail,
                     )
                     _mark_step1_refresh_failed_on_result(
                         result, result.detail.get("step1_day_refresh")
@@ -1446,6 +1505,7 @@ def run_scheduled_scrape_for_org(
                 )
                 # After scans land (confirm + optional targeted refresh), rebuild
                 # today's Step-1 snapshot so Completed/Pending queues catch up.
+                # Never run Stage B against an import still marked incomplete.
                 step1_refresh_detail = _refresh_open_step1_day_after_scrape(
                     conn,
                     cursor,
@@ -1453,6 +1513,10 @@ def run_scheduled_scrape_for_org(
                     log=log,
                     scrape_batch_id=int(batch_id) if batch_id else None,
                     scrape_run_id=run_id,
+                    detail={
+                        "confirm": confirm_payload,
+                        "draft": draft_payload,
+                    },
                 )
 
             result.status = final_status

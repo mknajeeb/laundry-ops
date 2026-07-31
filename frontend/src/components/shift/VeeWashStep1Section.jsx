@@ -155,7 +155,7 @@ function MetricRow({
     ? "Review Required"
     : pendingTrusted
       ? basePending
-      : "Pending — provisional";
+      : "Pending — unavailable";
   const pendingValue = isHd ? review : seg.pending;
   const completedValue = isHd
     ? hdDashboardTotals?.completed ?? seg.completed
@@ -213,8 +213,12 @@ function MetricRow({
         ) : (
           <ShiftCountCard
             label={pendingLabel}
-            value={pendingTrusted ? seg.pending : seg.pending}
-            sub={pendingTrusted ? undefined : "Pending count may be incomplete"}
+            value={seg.pending}
+            sub={
+              pendingTrusted
+                ? undefined
+                : "Last consistent Pending — refresh pending"
+            }
             size="kpi"
             variant="pending"
             warn={!pendingTrusted}
@@ -266,7 +270,9 @@ function MetricRow({
           ? `Total ${total} = Completed ${completedValue} + Review Required ${pendingValue} · Items/HD Revenue from completed reviews only`
           : `Total ${total} = ${doneLabel} ${seg.completed} + ${basePending} ${seg.pending} + Review ${review}`}
         {membershipHelper ? ` · ${membershipHelper}` : ""}
-        {!pendingTrusted && !isHd && !dayClosed ? " · Pending provisional" : ""}
+        {!pendingTrusted && !isHd && !dayClosed
+          ? " · Pending unavailable until scan chronology is ok"
+          : ""}
       </Typography>
     </Box>
   );
@@ -350,12 +356,20 @@ export default function VeeWashStep1Section({
 
   const dayLabel = isToday ? "Today's Workload" : `Workload · ${selectedDateEt || summary.selected_date_et || ""}`;
   const dataFreshness = summary?.data_freshness || dayMeta?.data_freshness || null;
-  const pendingTrusted = !(
+  const freshnessNotOk = Boolean(
     dataFreshness
-    && (
-      dataFreshness.trust_pending_from_missing_completion === false
-      || dataFreshness.pending_trust === "provisional"
-      || (dataFreshness.status && dataFreshness.status !== "ok")
+    && dataFreshness.status
+    && String(dataFreshness.status).toLowerCase() !== "ok",
+  );
+  const pendingTrusted = !(
+    freshnessNotOk
+    || Boolean(dayMeta?.rebuild_deferred)
+    || (
+      dataFreshness
+      && (
+        dataFreshness.trust_pending_from_missing_completion === false
+        || dataFreshness.pending_trust === "provisional"
+      )
     )
   );
 

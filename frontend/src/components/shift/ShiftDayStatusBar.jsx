@@ -52,6 +52,16 @@ export default function ShiftDayStatusBar({
   const refreshFailed =
     Boolean(day.step1_refresh_failed)
     || String(day.step1_refresh_status || "").toUpperCase() === "FAILED";
+  const rebuildDeferred =
+    Boolean(day.rebuild_deferred)
+    || String(day.step1_refresh_status || "").toUpperCase() === "DEFERRED";
+  const lastConsistent = day.last_consistent_snapshot || null;
+  const freshnessNotOk = Boolean(
+    dataFreshness
+    && dataFreshness.status
+    && String(dataFreshness.status).toLowerCase() !== "ok",
+  );
+  const showLastConsistentBanner = rebuildDeferred || freshnessNotOk;
 
   useEffect(() => {
     setGateValidation(validation || null);
@@ -199,7 +209,14 @@ export default function ShiftDayStatusBar({
         );
         return;
       }
-      setRetryMsg("Shift Monitor refresh succeeded.");
+      if (res?.data?.deferred || res?.data?.rebuild_deferred) {
+        setRetryMsg(
+          res?.data?.message
+            || "Scan chronology updating — counts have not been replaced. Retry again after import completes.",
+        );
+      } else {
+        setRetryMsg("Shift Monitor refresh succeeded.");
+      }
       onChanged?.();
     } catch (e) {
       setError(
@@ -281,27 +298,39 @@ export default function ShiftDayStatusBar({
               {retryMsg}
             </Alert>
           ) : null}
-          {dataFreshness && dataFreshness.status && dataFreshness.status !== "ok" ? (
-            <Box sx={{ mt: 0.35 }}>
-              <Typography variant="caption" color="warning.main" display="block" fontWeight={700}>
-                Scan data freshness: {String(dataFreshness.status).replaceAll("_", " ")}
+          {showLastConsistentBanner ? (
+            <Alert severity="warning" sx={{ mt: 0.75, py: 0.5 }}>
+              <Typography variant="caption" display="block" fontWeight={700}>
+                Refresh state: Scan chronology updating — counts have not been replaced.
               </Typography>
-              <Typography variant="caption" color="warning.main" display="block">
-                Last scan refresh: {fmtTs(dataFreshness.last_scan_refresh_at || dataFreshness.most_recent_persisted_scan_at)}
-                {" · "}
-                Last portal scrape: {fmtTs(dataFreshness.last_portal_scrape_at || dataFreshness.portal_last_seen_at)}
-              </Typography>
-              <Typography variant="caption" color="warning.main" display="block">
-                Portal ahead by:{" "}
-                {dataFreshness.portal_ahead_bag_count ?? dataFreshness.stale_chronology_bag_count ?? 0}{" "}
-                bag(s)
-                {" · "}
-                Pending count may be incomplete
-              </Typography>
-              <Typography variant="caption" color="text.secondary" display="block">
-                Retry / Refresh Portal Sync to update status. Pending is provisional until freshness is ok.
-              </Typography>
-            </Box>
+              {lastConsistent ? (
+                <Typography variant="caption" display="block" sx={{ mt: 0.35 }}>
+                  Last consistent snapshot: Completed {lastConsistent.completed ?? "—"}
+                  {" · "}Pending {lastConsistent.pending ?? "—"}
+                  {" · "}Review {lastConsistent.review_required ?? "—"}
+                </Typography>
+              ) : (
+                <Typography variant="caption" display="block" sx={{ mt: 0.35 }}>
+                  Showing last consistent cards until a complete scan import is available.
+                </Typography>
+              )}
+              {dataFreshness?.status ? (
+                <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.25 }}>
+                  Freshness: {String(dataFreshness.status).replaceAll("_", " ")}
+                  {" · "}Portal ahead by{" "}
+                  {dataFreshness.portal_ahead_bag_count
+                    ?? dataFreshness.stale_chronology_bag_count
+                    ?? 0}{" "}
+                  bag(s)
+                  {" · "}Pending unavailable until freshness is ok
+                </Typography>
+              ) : null}
+              {day.step1_refresh_message || day.step1_refresh_error ? (
+                <Typography variant="caption" display="block" color="text.secondary">
+                  {String(day.step1_refresh_message || day.step1_refresh_error).slice(0, 160)}
+                </Typography>
+              ) : null}
+            </Alert>
           ) : null}
         </Stack>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
