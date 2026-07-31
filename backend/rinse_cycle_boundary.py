@@ -35,14 +35,22 @@ Edge-case exceptions (narrow)
    later within a scrape); event id when scan_index is unavailable; never
    purpose alone. Source: ``same_minute_post_after_review_sequence``.
 
-2. Pre-STV entry fallback: when no post-anchor configured entry exists, accept
-   the latest configured Dirty/Zipvan move-bag at most
-   ``PRE_STV_ENTRY_MAX_MINUTES`` before the anchor, only when:
+2. Pre-STV entry fallback: accept the latest configured Dirty/Zipvan move-bag
+   at most ``PRE_STV_ENTRY_MAX_MINUTES`` before the anchor, only when:
    * no intervening sent-to-vendor / return / prior-cycle completion sits
      between that move and the anchor, and
-   * post-anchor garments-reviewed + post-review weight evidence supports the
-     same operational cycle.
+   * garments-reviewed after that entry + post-review weight evidence forms a
+     valid complete chain for the same operational cycle.
    Do not treat arbitrary historical Dirty scans as current-cycle entry.
+
+3. Entry-candidate selection (no later-Dirty shadowing): build all valid
+   configured-entry candidates for the selected cycle (normal post-STV moves
+   plus the narrowly permitted pre-STV fallback). Evaluate each candidate
+   independently against garments-reviewed after that candidate and qualifying
+   POST weight after garments-reviewed. Prefer a normal post-STV candidate that
+   forms a valid complete chain; use the pre-STV fallback only when no normal
+   candidate does. A later post-STV Dirty must not suppress a valid pre-STV
+   fallback when that later candidate does not form a valid downstream chain.
 
 Do not use lifetime first clean-rack, lifetime first weight-entry, old
 garments-reviewed, old completion timestamps, or ordinal weight-entry alone.
@@ -222,44 +230,97 @@ def _has_intervening_prior_cycle_boundary(
     return False
 
 
-def _post_anchor_has_review_and_post_weight(
+@dataclass(frozen=True)
+class _EntryCandidate:
+    kind: str  # "post_stv" | "pre_stv"
+    entry_at: datetime
+    entry_rack: str
+    entry_event: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class _ChainFromEntry:
+    review_at: datetime
+    review_event: Mapping[str, Any]
+    completion_at: datetime
+    completion_event: Mapping[str, Any]
+    completed_by: str | None
+    completion_source: str
+
+
+def _chain_from_entry(
     post: Sequence[tuple[datetime, Mapping[str, Any]]],
-) -> bool:
+    *,
+    entry_at: datetime,
+) -> _ChainFromEntry | None:
+    """Garments-reviewed after entry + qualifying POST weight after review."""
     review_at: datetime | None = None
-    review_ev: Mapping[str, Any] | None = None
+    review_event: Mapping[str, Any] | None = None
     for ts, ev in post:
+        if ts <= entry_at:
+            continue
         if _norm_purpose(ev.get("purpose")) != "garments-reviewed":
             continue
         review_at = ts
-        review_ev = ev
+        review_event = ev
         break
-    if review_at is None or review_ev is None:
-        return False
+    if review_at is None or review_event is None:
+        return None
     for ts, ev in post:
         if _norm_purpose(ev.get("purpose")) != "weight-entry":
             continue
-        follows, _src = _weight_follows_review(ev, ts, review_ev, review_at)
-        if follows:
-            return True
-    return False
+        follows, src_override = _weight_follows_review(
+            ev, ts, review_event, review_at
+        )
+        if not follows:
+            continue
+        return _ChainFromEntry(
+            review_at=review_at,
+            review_event=review_event,
+            completion_at=ts,
+            completion_event=ev,
+            completed_by=_operator(ev),
+            completion_source=src_override or COMPLETION_SOURCE_POST_REVIEW_WEIGHT,
+        )
+    return None
 
 
-def _resolve_pre_stv_entry_fallback(
+def _collect_post_stv_entry_candidates(
+    post: Sequence[tuple[datetime, Mapping[str, Any]]],
+    *,
+    rack_keys: set[str],
+) -> list[_EntryCandidate]:
+    out: list[_EntryCandidate] = []
+    for ts, ev in post:
+        if _norm_purpose(ev.get("purpose")) != "move-bag":
+            continue
+        rack = str(ev.get("rack") or "").strip()
+        if rack.lower() not in rack_keys:
+            continue
+        out.append(
+            _EntryCandidate(
+                kind="post_stv",
+                entry_at=ts,
+                entry_rack=rack,
+                entry_event=ev,
+            )
+        )
+    return out
+
+
+def _collect_pre_stv_entry_candidate(
     timeline: Sequence[Mapping[str, Any]],
     *,
     anchor: datetime,
     rack_keys: set[str],
-    post: Sequence[tuple[datetime, Mapping[str, Any]]],
-) -> tuple[datetime | None, str | None, Mapping[str, Any] | None]:
+) -> _EntryCandidate | None:
     """
-    Narrow pre-anchor configured-entry fallback.
+    Narrow pre-anchor configured-entry candidate (latest within tolerance).
 
-    Requires same-cycle post-anchor review + POST evidence and forbids
-    intervening prior-cycle boundaries. Max lookback: PRE_STV_ENTRY_MAX_MINUTES.
+    Forbids intervening prior-cycle boundaries. Downstream review+POST is
+    evaluated later per-candidate so a later invalid post-STV Dirty cannot
+    suppress a valid pre-STV fallback.
     """
-    if not _post_anchor_has_review_and_post_weight(post):
-        return None, None, None
-
     earliest = anchor - PRE_STV_ENTRY_MAX_TOLERANCE
     best_ts: datetime | None = None
     best_rack: str | None = None
@@ -282,7 +343,38 @@ def _resolve_pre_stv_entry_fallback(
             best_ts = ts
             best_rack = rack
             best_ev = ev
-    return best_ts, best_rack, best_ev
+    if best_ts is None or best_rack is None or best_ev is None:
+        return None
+    return _EntryCandidate(
+        kind="pre_stv",
+        entry_at=best_ts,
+        entry_rack=best_rack,
+        entry_event=best_ev,
+    )
+
+
+def _select_entry_candidate(
+    post_stv: Sequence[_EntryCandidate],
+    pre_stv: _EntryCandidate | None,
+    post: Sequence[tuple[datetime, Mapping[str, Any]]],
+) -> tuple[_EntryCandidate | None, _ChainFromEntry | None]:
+    """
+    Prefer a post-STV candidate that forms a valid complete chain; otherwise
+    use a pre-STV fallback that forms a valid chain. If nothing completes,
+    keep the earliest post-STV entry for pending display (never a bare
+    pre-STV without downstream evidence).
+    """
+    for cand in post_stv:
+        chain = _chain_from_entry(post, entry_at=cand.entry_at)
+        if chain is not None:
+            return cand, chain
+    if pre_stv is not None:
+        chain = _chain_from_entry(post, entry_at=pre_stv.entry_at)
+        if chain is not None:
+            return pre_stv, chain
+    if post_stv:
+        return post_stv[0], None
+    return None, None
 
 
 @dataclass(frozen=True)
@@ -415,28 +507,13 @@ def resolve_current_cycle(
         )
     )
 
-    entry_at = None
-    entry_rack = None
-    entry_event = None
-    for ts, ev in post:
-        if _norm_purpose(ev.get("purpose")) != "move-bag":
-            continue
-        rack = str(ev.get("rack") or "").strip()
-        if rack.lower() not in rack_keys:
-            continue
-        entry_at = ts
-        entry_rack = rack
-        entry_event = ev
-        break
-
-    if entry_at is None:
-        fb_ts, fb_rack, fb_ev = _resolve_pre_stv_entry_fallback(
-            timeline, anchor=anchor, rack_keys=rack_keys, post=post
-        )
-        if fb_ts is not None:
-            entry_at = fb_ts
-            entry_rack = fb_rack
-            entry_event = fb_ev
+    entry_candidates = _collect_post_stv_entry_candidates(post, rack_keys=rack_keys)
+    pre_stv_candidate = _collect_pre_stv_entry_candidate(
+        timeline, anchor=anchor, rack_keys=rack_keys
+    )
+    selected, chain = _select_entry_candidate(
+        entry_candidates, pre_stv_candidate, post
+    )
 
     # Detect review+weight that would have completed without entry (CUR0 pattern).
     orphan_review_at: datetime | None = None
@@ -459,7 +536,7 @@ def resolve_current_cycle(
                 orphan_weight_after_review = True
                 break
 
-    if entry_at is None:
+    if selected is None:
         pending_reason = None
         if orphan_review_at is not None and orphan_weight_after_review:
             pending_reason = PENDING_REASON_ENTRY_NOT_FOUND
@@ -481,10 +558,28 @@ def resolve_current_cycle(
             via_clean_rack_required=False,
         )
 
+    if chain is not None:
+        return CycleBoundaryResult(
+            cycle_anchor_at=anchor,
+            entry_at=selected.entry_at,
+            entry_rack=selected.entry_rack,
+            entry_event=selected.entry_event,
+            garments_reviewed_at=chain.review_at,
+            garments_reviewed_event=chain.review_event,
+            completion_at=chain.completion_at,
+            completed_by=chain.completed_by,
+            completion_event=chain.completion_event,
+            completion_source=chain.completion_source,
+            effective_status="completed",
+            pending_reason=None,
+            via_clean_rack_required=False,
+        )
+
+    # Entry present but no complete downstream chain yet.
     review_at = None
     review_event = None
     for ts, ev in post:
-        if ts <= entry_at:
+        if ts <= selected.entry_at:
             continue
         if _norm_purpose(ev.get("purpose")) != "garments-reviewed":
             continue
@@ -492,37 +587,18 @@ def resolve_current_cycle(
         review_event = ev
         break
 
-    completion_at = None
-    completion_event = None
-    completed_by = None
-    completion_source = None
-    if review_at is not None and review_event is not None:
-        for ts, ev in post:
-            if _norm_purpose(ev.get("purpose")) != "weight-entry":
-                continue
-            follows, src_override = _weight_follows_review(
-                ev, ts, review_event, review_at
-            )
-            if not follows:
-                continue
-            completion_at = ts
-            completion_event = ev
-            completed_by = _operator(ev)
-            completion_source = src_override or COMPLETION_SOURCE_POST_REVIEW_WEIGHT
-            break
-
     return CycleBoundaryResult(
         cycle_anchor_at=anchor,
-        entry_at=entry_at,
-        entry_rack=entry_rack,
-        entry_event=entry_event,
+        entry_at=selected.entry_at,
+        entry_rack=selected.entry_rack,
+        entry_event=selected.entry_event,
         garments_reviewed_at=review_at,
         garments_reviewed_event=review_event,
-        completion_at=completion_at,
-        completed_by=completed_by,
-        completion_event=completion_event,
-        completion_source=completion_source,
-        effective_status="completed" if completion_at is not None else "pending",
+        completion_at=None,
+        completed_by=None,
+        completion_event=None,
+        completion_source=None,
+        effective_status="pending",
         pending_reason=None,
         via_clean_rack_required=False,
     )
