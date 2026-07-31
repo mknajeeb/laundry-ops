@@ -841,3 +841,251 @@ def test_disappearance_not_applicable_when_resolver_completes():
     # Workload only routes to disappeared_without_completion when completion
     # dict is absent; a completed resolver result must not enter that bucket.
     assert comp["completion_at"] == tie
+
+
+# --------------------------------------------------------------------------- #
+# Entry-candidate selection (no later-Dirty shadowing)
+# --------------------------------------------------------------------------- #
+
+
+def test_valid_post_stv_entry_chain_selects_normal_entry():
+    sent = datetime(2026, 7, 30, 7, 0, 0)
+    dirty = datetime(2026, 7, 30, 7, 30, 0)
+    review = datetime(2026, 7, 30, 10, 0, 0)
+    weight = datetime(2026, 7, 30, 10, 20, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", user="Folder", weight=20.0),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == dirty
+    assert out.effective_status == "completed"
+    assert out.completion_at == weight
+
+
+def test_invalid_post_stv_plus_valid_pre_stv_fallback_selects_fallback():
+    """Later post-STV Dirty after review must not shadow valid ≤15-min pre-STV."""
+    pre_dirty = datetime(2026, 7, 30, 7, 16, 0)
+    sent = datetime(2026, 7, 30, 7, 23, 0)
+    review = datetime(2026, 7, 30, 10, 5, 0)
+    weight = datetime(2026, 7, 30, 10, 36, 0)
+    late_dirty = datetime(2026, 7, 30, 12, 0, 0)
+    tl = [
+        _ev(ts=pre_dirty, purpose="move-bag", rack="VeeWash Dirty", user="Ops"),
+        _ev(ts=sent, purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=review, purpose="garments-reviewed", user="Folder"),
+        _ev(ts=weight, purpose="weight-entry", user="Folder", weight=33.1),
+        _ev(ts=late_dirty, purpose="move-bag", rack="VeeWash Dirty", user="Admin"),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == pre_dirty
+    assert out.garments_reviewed_at == review
+    assert out.completion_at == weight
+    assert out.effective_status == "completed"
+    assert out.entry_at != late_dirty
+
+
+def test_both_valid_prefers_post_stv_entry():
+    pre_dirty = datetime(2026, 7, 30, 7, 16, 0)
+    sent = datetime(2026, 7, 30, 7, 23, 0)
+    post_dirty = datetime(2026, 7, 30, 8, 0, 0)
+    review = datetime(2026, 7, 30, 10, 5, 0)
+    weight = datetime(2026, 7, 30, 10, 36, 0)
+    tl = [
+        _ev(ts=pre_dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=post_dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=33.1),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == post_dirty
+    assert out.effective_status == "completed"
+
+
+def test_old_pre_stv_dirty_outside_tolerance_rejected():
+    old_dirty = datetime(2026, 7, 30, 6, 0, 0)  # 83 min before STV
+    sent = datetime(2026, 7, 30, 7, 23, 0)
+    late_dirty = datetime(2026, 7, 30, 12, 0, 0)
+    review = datetime(2026, 7, 30, 10, 5, 0)
+    weight = datetime(2026, 7, 30, 10, 36, 0)
+    tl = [
+        _ev(ts=old_dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=33.1),
+        _ev(ts=late_dirty, purpose="move-bag", rack="VeeWash Dirty"),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    # Late Dirty after review cannot complete; old Dirty outside tolerance.
+    assert out.entry_at == late_dirty
+    assert out.completion_at is None
+    assert out.effective_status == "pending"
+
+
+def test_pre_stv_fallback_without_downstream_review_post_rejected():
+    dirty = datetime(2026, 7, 30, 7, 16, 0)
+    sent = datetime(2026, 7, 30, 7, 23, 0)
+    late_dirty = datetime(2026, 7, 30, 12, 0, 0)
+    tl = [
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=late_dirty, purpose="move-bag", rack="VeeWash Dirty"),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    # No complete chain → keep earliest post-STV for pending display; not pre-STV.
+    assert out.entry_at == late_dirty
+    assert out.effective_status == "pending"
+    assert out.completion_at is None
+
+
+def test_multiple_post_stv_dirty_invalid_does_not_shadow_valid():
+    """Later invalid post-STV Dirty does not suppress an earlier valid chain."""
+    sent = datetime(2026, 7, 30, 7, 0, 0)
+    valid_dirty = datetime(2026, 7, 30, 8, 0, 0)
+    review = datetime(2026, 7, 30, 10, 0, 0)
+    weight = datetime(2026, 7, 30, 10, 20, 0)
+    invalid_late = datetime(2026, 7, 30, 12, 0, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=valid_dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=12.0),
+        _ev(ts=invalid_late, purpose="move-bag", rack="Rinse Zipvan"),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == valid_dirty
+    assert out.effective_status == "completed"
+    assert out.completion_at == weight
+
+
+def test_3gvvidbqh3_fixture_completed_in_pure_resolver():
+    """Production residual pattern: admin Dirty at 12:00 after review/POST."""
+    pre_dirty = datetime(2026, 7, 30, 7, 16, 0)
+    sent = datetime(2026, 7, 30, 7, 23, 0)
+    review = datetime(2026, 7, 30, 10, 5, 0)
+    weight = datetime(2026, 7, 30, 10, 35, 0)
+    weight2 = datetime(2026, 7, 30, 10, 36, 0)
+    late_dirty = datetime(2026, 7, 30, 12, 0, 0)
+    tl = [
+        _ev(ts=pre_dirty, purpose="move-bag", rack="VeeWash Dirty", user="Melissa"),
+        _ev(ts=datetime(2026, 7, 30, 7, 23, 0), purpose="weight-entry", weight=34.7),
+        _ev(ts=sent, purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=review, purpose="garments-reviewed", user="Amna"),
+        _ev(ts=weight, purpose="weight-entry", user="Amna", weight=33.1),
+        _ev(ts=weight2, purpose="weight-entry", user="Amna", weight=33.1),
+        _ev(ts=late_dirty, purpose="move-bag", rack="VeeWash Dirty", user="Admin"),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.cycle_anchor_at == sent
+    assert out.entry_at == pre_dirty
+    assert out.garments_reviewed_at == review
+    assert out.completion_at == weight
+    assert out.effective_status == "completed"
+    assert out.completed_by == "Amna"
+
+
+def test_persisted_day_bag_and_pure_resolver_agree_on_3gv_pattern():
+    """Persisted Completed + pure resolver Completed for the residual pattern."""
+    persisted_status = "completed"
+    persisted_completion = datetime(2026, 7, 30, 10, 35, 0)
+    pre_dirty = datetime(2026, 7, 30, 7, 16, 0)
+    sent = datetime(2026, 7, 30, 7, 23, 0)
+    review = datetime(2026, 7, 30, 10, 5, 0)
+    weight = datetime(2026, 7, 30, 10, 35, 0)
+    late_dirty = datetime(2026, 7, 30, 12, 0, 0)
+    tl = [
+        _ev(ts=pre_dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", user="Amna", weight=33.1),
+        _ev(ts=late_dirty, purpose="move-bag", rack="VeeWash Dirty"),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.effective_status == persisted_status
+    assert out.completion_at == persisted_completion
+
+
+def test_2c686tfbzp_same_minute_regression_remains_completed():
+    """Same-minute POST bag with later admin Dirty still completes on post-STV entry."""
+    sent = datetime(2026, 7, 30, 4, 19, 0)
+    dirty = datetime(2026, 7, 30, 5, 12, 0)
+    tie = datetime(2026, 7, 30, 8, 49, 0)
+    late_dirty = datetime(2026, 7, 30, 12, 0, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(
+            ts=tie,
+            purpose="weight-entry",
+            user="Singh",
+            weight=12.9,
+            scan_index=2,
+            ev_id=100,
+        ),
+        _ev(
+            ts=tie,
+            purpose="garments-reviewed",
+            user="Singh",
+            scan_index=7,
+            ev_id=105,
+        ),
+        _ev(ts=late_dirty, purpose="move-bag", rack="VeeWash Dirty", user="Admin"),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == dirty
+    assert out.effective_status == "completed"
+    assert out.completion_source == COMPLETION_SOURCE_SAME_MINUTE_POST_AFTER_REVIEW
+
+
+def test_2giwg0utr3_zipvan_regression_remains_completed():
+    sent = datetime(2026, 7, 28, 6, 25, 0)
+    zipvan = datetime(2026, 7, 28, 7, 33, 0)
+    mid_dirty = datetime(2026, 7, 28, 12, 0, 0)
+    review = datetime(2026, 7, 28, 15, 0, 0)
+    weight = datetime(2026, 7, 28, 15, 0, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=zipvan, purpose="move-bag", rack="Rinse Zipvan"),
+        _ev(ts=mid_dirty, purpose="move-bag", rack="VeeWash Dirty", user="Admin"),
+        _ev(
+            ts=weight,
+            purpose="weight-entry",
+            user="Tarannum",
+            weight=15.4,
+            scan_index=4,
+            ev_id=200,
+        ),
+        _ev(
+            ts=review,
+            purpose="garments-reviewed",
+            user="Tarannum",
+            scan_index=8,
+            ev_id=205,
+        ),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 28), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == zipvan
+    assert out.effective_status == "completed"
