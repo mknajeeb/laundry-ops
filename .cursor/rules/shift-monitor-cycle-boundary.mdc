@@ -16,10 +16,13 @@ The correction must be **architectural**, not a five-order / ID-specific patch. 
 
 For every bag and selected ET day:
 
-1. `cycle_anchor` = latest valid `purpose='sent-to-vendor'` on or before the selected day cutoff.
-2. Ignore every Rinse scan **at or before** that anchor when resolving current-cycle entry and completion.
-3. **Entry** = first post-anchor `purpose='move-bag'` whose rack is in **configured** entry racks (default: `VeeWash Dirty`, `Rinse Zipvan`).
-4. **Completion** = earliest valid `purpose='weight-entry'` after post-anchor `garments-reviewed`. Clean rack is **not** required. Duplicate post-review weights stay in raw history; complete once on the earliest.
+1. `current_cycle_anchor` = latest valid `purpose='sent-to-vendor'` on or before the selected day cutoff (existing cycle boundary).
+2. `first_cycle_weight_entry` = earliest `weight-entry` **strictly after** that anchor. Never use a prior-cycle or lifetime first weight as the cutoff.
+3. **Entry candidates** = current-cycle scans with purpose `sent-to-vendor` **or** `move-bag`, rack in **configured** entry racks (default: `VeeWash Dirty`, `Rinse Zipvan`), occurring **before** `first_cycle_weight_entry` (equal purposes — not a fallback hierarchy).
+4. **selected_entry** = latest qualifying candidate before that cutoff. If no current-cycle weight exists yet, select the latest qualifying configured entry in the open cycle (bag stays pending until review + POST).
+5. Configured-rack STV/move-bag scans **after** `first_cycle_weight_entry` are ignored for entry (outbound Zipvan, late Dirty, etc.). The first weight may be PRE and is only an entry cutoff — it does not prove completion.
+6. **Completion** = earliest valid `purpose='weight-entry'` after post-entry `garments-reviewed`. Clean rack is **not** required. Duplicate post-review weights stay in raw history; complete once on the earliest.
+7. Do **not** require move-bag after sent-to-vendor, or a separate move-bag when STV already lands on a configured entry rack before first weight.
 
 ## Do not use
 
@@ -27,6 +30,7 @@ For every bag and selected ET day:
 - Lifetime first weight-entry
 - Old garments-reviewed / old completion timestamps
 - Ordinal weight-entry alone (2nd weight without post-review ordering)
+- Pre-STV ≤15-minute fallback framing, or “entry candidate shadowing” hierarchies that demote STV-on-configured-rack
 
 ## Operational surfaces (Release A)
 

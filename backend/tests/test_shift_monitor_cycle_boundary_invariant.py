@@ -19,7 +19,6 @@ from backend.rinse_cycle_boundary import (
     COMPLETION_SOURCE_POST_REVIEW_WEIGHT,
     COMPLETION_SOURCE_SAME_MINUTE_POST_AFTER_REVIEW,
     PENDING_REASON_ENTRY_NOT_FOUND,
-    PRE_STV_ENTRY_MAX_MINUTES,
     resolve_current_cycle,
     resolve_cycle_anchor,
 )
@@ -179,7 +178,7 @@ def test_new_entry_rinse_zipvan_after_anchor():
     assert out.entry_rack == "Rinse Zipvan"
 
 
-def test_move_bag_before_sent_to_vendor_ignored():
+def test_move_bag_before_sent_to_vendor_is_valid_entry_when_before_first_weight():
     dirty_before = datetime(2026, 7, 27, 4, 0, 0)
     sent = datetime(2026, 7, 27, 5, 0, 0)
     tl = [
@@ -188,7 +187,8 @@ def test_move_bag_before_sent_to_vendor_ignored():
     ]
     out = resolve_current_cycle(tl, selected_date_et=DAY, entry_racks=ENTRY_RACKS)
     assert out.cycle_anchor_at == sent
-    assert out.entry_at is None
+    assert out.entry_at == dirty_before
+    assert out.effective_status == "pending"
 
 
 def test_move_bag_to_nonconfigured_rack_ignored():
@@ -202,7 +202,7 @@ def test_move_bag_to_nonconfigured_rack_ignored():
     assert out.entry_at is None
 
 
-def test_multiple_configured_moves_use_first_only():
+def test_multiple_configured_moves_select_latest_before_first_weight():
     sent = datetime(2026, 7, 27, 5, 0, 0)
     first = datetime(2026, 7, 27, 6, 0, 0)
     second = datetime(2026, 7, 27, 7, 0, 0)
@@ -212,8 +212,8 @@ def test_multiple_configured_moves_use_first_only():
         _ev(ts=second, purpose="move-bag", rack="Rinse Zipvan"),
     ]
     out = resolve_current_cycle(tl, selected_date_et=DAY, entry_racks=ENTRY_RACKS)
-    assert out.entry_at == first
-    assert out.entry_rack == "VeeWash Dirty"
+    assert out.entry_at == second
+    assert out.entry_rack == "Rinse Zipvan"
 
 
 def test_new_completion_only_after_new_garments_reviewed():
@@ -482,7 +482,7 @@ def test_no_entry_review_plus_weight_remains_pending_entry_not_found():
     review = datetime(2026, 7, 28, 12, 19, 0)
     weight = datetime(2026, 7, 28, 12, 21, 0)
     tl = [
-        _ev(ts=sent, purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=sent, purpose="sent-to-vendor", rack="Truck"),
         _ev(ts=review, purpose="garments-reviewed", user="Jennifer"),
         _ev(ts=weight, purpose="weight-entry", user="Jennifer", weight=20.9),
         _ev(ts=weight, purpose="move-bag", rack="VeeWash Clean", user="Jennifer"),
@@ -498,7 +498,7 @@ def test_no_entry_review_plus_weight_remains_pending_entry_not_found():
     assert out.pending_reason == PENDING_REASON_ENTRY_NOT_FOUND
 
 
-def test_entry_before_sent_to_vendor_ignored_for_completion_chain():
+def test_dirty_move_before_sent_to_vendor_completes_when_before_first_weight():
     dirty_before = datetime(2026, 7, 28, 4, 0, 0)
     sent = datetime(2026, 7, 28, 5, 0, 0)
     review = datetime(2026, 7, 28, 14, 0, 0)
@@ -512,10 +512,9 @@ def test_entry_before_sent_to_vendor_ignored_for_completion_chain():
     out = resolve_current_cycle(
         tl, selected_date_et=date(2026, 7, 28), entry_racks=ENTRY_RACKS
     )
-    assert out.entry_at is None
-    assert out.completion_at is None
-    assert out.effective_status == "pending"
-    assert out.pending_reason == PENDING_REASON_ENTRY_NOT_FOUND
+    assert out.entry_at == dirty_before
+    assert out.completion_at == weight
+    assert out.effective_status == "completed"
 
 
 def test_review_before_entry_ignored():
@@ -593,7 +592,7 @@ def test_zipvan_entry_completes_when_review_and_weight_follow():
     assert out.effective_status == "completed"
 
 
-def test_duplicate_entries_select_earliest_valid_post_anchor_entry():
+def test_duplicate_entries_select_latest_qualifying_before_first_weight():
     sent = datetime(2026, 7, 28, 5, 0, 0)
     first = datetime(2026, 7, 28, 6, 0, 0)
     second = datetime(2026, 7, 28, 7, 0, 0)
@@ -609,17 +608,36 @@ def test_duplicate_entries_select_earliest_valid_post_anchor_entry():
     out = resolve_current_cycle(
         tl, selected_date_et=date(2026, 7, 28), entry_racks=ENTRY_RACKS
     )
-    assert out.entry_at == first
-    assert out.entry_rack == "VeeWash Dirty"
+    assert out.entry_at == second
+    assert out.entry_rack == "Rinse Zipvan"
     assert out.effective_status == "completed"
 
 
-def test_cur0_fixture_pattern_pending_entry_not_found():
+def test_cur0_fixture_actual_stv_on_dirty_completes():
+    """CUR0 production-shaped STV-on-Dirty before first current-cycle weight."""
     fix = _load_fixture()
     case = next(
         c
         for c in fix["synthetic_cases"]
-        if c["fixture_bag_key"] == "synthetic_cur0_no_entry_review_weight"
+        if c["fixture_bag_key"] == "synthetic_cur0_stv_on_dirty_completes"
+    )
+    out = resolve_current_cycle(
+        _events_from_fixture(case),
+        selected_date_et=date.fromisoformat(case["selected_date_et"]),
+        entry_racks=case.get("configured_entry_racks") or ENTRY_RACKS,
+    )
+    _assert_matches_expected(out, case["expected"])
+    assert out.entry_rack == "VeeWash Dirty"
+    assert out.effective_status == "completed"
+    assert out.pending_reason is None
+
+
+def test_no_configured_entry_fixture_remains_entry_not_found():
+    fix = _load_fixture()
+    case = next(
+        c
+        for c in fix["synthetic_cases"]
+        if c["fixture_bag_key"] == "synthetic_no_configured_entry_before_first_weight"
     )
     out = resolve_current_cycle(
         _events_from_fixture(case),
@@ -722,8 +740,7 @@ def test_same_minute_without_sequence_evidence_not_completed():
 
 
 def test_dirty_just_before_stv_with_same_cycle_evidence_accepted():
-    """Configured Dirty minutes before STV + review/POST → completed."""
-    assert PRE_STV_ENTRY_MAX_MINUTES == 15
+    """Configured Dirty before STV + review/POST → completed (latest before weight)."""
     dirty = datetime(2026, 7, 30, 7, 16, 0)
     sent = datetime(2026, 7, 30, 7, 23, 0)
     review = datetime(2026, 7, 30, 10, 5, 0)
@@ -738,7 +755,8 @@ def test_dirty_just_before_stv_with_same_cycle_evidence_accepted():
         tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
     )
     assert out.cycle_anchor_at == sent
-    assert out.entry_at == dirty
+    # STV-on-Dirty is later than the pre-STV Dirty move → selected as entry.
+    assert out.entry_at == sent
     assert out.entry_rack == "VeeWash Dirty"
     assert out.garments_reviewed_at == review
     assert out.completion_at == weight
@@ -748,7 +766,7 @@ def test_dirty_just_before_stv_with_same_cycle_evidence_accepted():
 
 
 def test_old_dirty_before_stv_from_prior_cycle_rejected():
-    """Historical Dirty outside tolerance / prior cycle must not unlock entry."""
+    """Historical Dirty cut off by a prior completed cycle must not unlock entry."""
     old_dirty = datetime(2026, 7, 29, 6, 0, 0)
     prior_review = datetime(2026, 7, 29, 14, 0, 0)
     prior_weight = datetime(2026, 7, 29, 14, 30, 0)
@@ -772,8 +790,8 @@ def test_old_dirty_before_stv_from_prior_cycle_rejected():
     assert out.pending_reason == PENDING_REASON_ENTRY_NOT_FOUND
 
 
-def test_pre_stv_dirty_without_post_evidence_not_used_as_entry():
-    """Pre-STV Dirty alone (no review+POST) must not become current entry."""
+def test_entry_without_review_or_post_remains_pending():
+    """Configured entry before first weight may exist; missing review/POST stays pending."""
     dirty = datetime(2026, 7, 30, 7, 16, 0)
     sent = datetime(2026, 7, 30, 7, 23, 0)
     tl = [
@@ -783,12 +801,13 @@ def test_pre_stv_dirty_without_post_evidence_not_used_as_entry():
     out = resolve_current_cycle(
         tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
     )
-    assert out.entry_at is None
+    assert out.entry_at == dirty
     assert out.effective_status == "pending"
+    assert out.completion_at is None
 
 
 def test_no_entry_evidence_remains_entry_not_found():
-    """Review+weight with no configured entry (pre or post) stays ENTRY_NOT_FOUND."""
+    """Review+weight with no configured STV/move before first weight stays ENTRY_NOT_FOUND."""
     sent = datetime(2026, 7, 30, 7, 23, 0)
     review = datetime(2026, 7, 30, 10, 5, 0)
     weight = datetime(2026, 7, 30, 10, 36, 0)
@@ -844,8 +863,225 @@ def test_disappearance_not_applicable_when_resolver_completes():
 
 
 # --------------------------------------------------------------------------- #
-# Entry-candidate selection (no later-Dirty shadowing)
+# Entry before first weight (STV and move-bag equal)
 # --------------------------------------------------------------------------- #
+
+
+def test_prior_cycle_weight_ignored_as_cutoff_stv_on_dirty_selected():
+    """Prior-cycle weight must not become first_cycle_weight_entry cutoff."""
+    prior_sent = datetime(2026, 7, 30, 5, 0, 0)
+    prior_dirty = datetime(2026, 7, 30, 6, 0, 0)
+    prior_review = datetime(2026, 7, 30, 14, 0, 0)
+    prior_weight = datetime(2026, 7, 30, 14, 30, 0)
+    sent = datetime(2026, 7, 31, 5, 10, 0)
+    pre = datetime(2026, 7, 31, 6, 0, 0)
+    review = datetime(2026, 7, 31, 14, 0, 0)
+    post = datetime(2026, 7, 31, 14, 20, 0)
+    tl = [
+        _ev(ts=prior_sent, purpose="sent-to-vendor", rack="Truck"),
+        _ev(ts=prior_dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=prior_review, purpose="garments-reviewed"),
+        _ev(ts=prior_weight, purpose="weight-entry", weight=11.0),
+        _ev(ts=sent, purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=pre, purpose="weight-entry", weight=18.0),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=post, purpose="weight-entry", user="Folder", weight=17.5),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 31), entry_racks=ENTRY_RACKS
+    )
+    assert out.cycle_anchor_at == sent
+    assert out.entry_at == sent
+    assert out.entry_rack == "VeeWash Dirty"
+    assert out.completion_at == post
+    assert out.effective_status == "completed"
+    assert out.completion_at != prior_weight
+
+
+def test_stv_on_veewash_dirty_before_first_weight_is_valid_entry():
+    sent = datetime(2026, 7, 31, 6, 0, 0)
+    review = datetime(2026, 7, 31, 10, 0, 0)
+    weight = datetime(2026, 7, 31, 10, 20, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=18.0),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 31), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == sent
+    assert out.entry_rack == "VeeWash Dirty"
+    assert out.effective_status == "completed"
+    assert out.completion_at == weight
+
+
+def test_move_bag_to_veewash_dirty_before_first_weight_is_valid_entry():
+    sent = datetime(2026, 7, 31, 5, 0, 0)
+    dirty = datetime(2026, 7, 31, 6, 0, 0)
+    review = datetime(2026, 7, 31, 10, 0, 0)
+    weight = datetime(2026, 7, 31, 10, 20, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor", rack="Truck"),
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=18.0),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 31), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == dirty
+    assert out.entry_rack == "VeeWash Dirty"
+    assert out.effective_status == "completed"
+
+
+def test_stv_on_rinse_zipvan_before_first_weight_is_valid_entry():
+    sent = datetime(2026, 7, 31, 6, 0, 0)
+    review = datetime(2026, 7, 31, 10, 0, 0)
+    weight = datetime(2026, 7, 31, 10, 20, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor", rack="Rinse Zipvan"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=18.0),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 31), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == sent
+    assert out.entry_rack == "Rinse Zipvan"
+    assert out.effective_status == "completed"
+
+
+def test_move_bag_to_rinse_zipvan_before_first_weight_is_valid_entry():
+    sent = datetime(2026, 7, 31, 5, 0, 0)
+    zipvan = datetime(2026, 7, 31, 6, 30, 0)
+    review = datetime(2026, 7, 31, 10, 0, 0)
+    weight = datetime(2026, 7, 31, 10, 20, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor", rack="Truck"),
+        _ev(ts=zipvan, purpose="move-bag", rack="Rinse Zipvan"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=18.0),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 31), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == zipvan
+    assert out.entry_rack == "Rinse Zipvan"
+    assert out.effective_status == "completed"
+
+
+def test_both_stv_and_move_bag_before_first_weight_selects_latest():
+    dirty = datetime(2026, 7, 31, 5, 30, 0)
+    sent = datetime(2026, 7, 31, 6, 0, 0)
+    review = datetime(2026, 7, 31, 10, 0, 0)
+    weight = datetime(2026, 7, 31, 10, 20, 0)
+    tl = [
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=sent, purpose="sent-to-vendor", rack="Rinse Zipvan"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=18.0),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 31), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == sent
+    assert out.entry_rack == "Rinse Zipvan"
+    assert out.effective_status == "completed"
+
+
+def test_configured_rack_move_after_first_weight_ignored():
+    sent = datetime(2026, 7, 31, 5, 0, 0)
+    pre = datetime(2026, 7, 31, 6, 0, 0)
+    review = datetime(2026, 7, 31, 10, 0, 0)
+    post = datetime(2026, 7, 31, 10, 20, 0)
+    late_dirty = datetime(2026, 7, 31, 12, 0, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor", rack="Truck"),
+        _ev(ts=pre, purpose="weight-entry", weight=30.0),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=post, purpose="weight-entry", weight=28.0),
+        _ev(ts=late_dirty, purpose="move-bag", rack="VeeWash Dirty"),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 31), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at is None
+    assert out.effective_status == "pending"
+    assert out.pending_reason == PENDING_REASON_ENTRY_NOT_FOUND
+
+
+def test_afternoon_outbound_zipvan_after_first_weight_ignored():
+    sent = datetime(2026, 7, 31, 5, 0, 0)
+    dirty = datetime(2026, 7, 31, 6, 0, 0)
+    pre = datetime(2026, 7, 31, 7, 0, 0)
+    review = datetime(2026, 7, 31, 10, 0, 0)
+    post = datetime(2026, 7, 31, 10, 20, 0)
+    outbound = datetime(2026, 7, 31, 16, 0, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor", rack="Truck"),
+        _ev(ts=dirty, purpose="move-bag", rack="VeeWash Dirty"),
+        _ev(ts=pre, purpose="weight-entry", weight=30.0),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=post, purpose="weight-entry", weight=28.0),
+        _ev(ts=outbound, purpose="move-bag", rack="Rinse Zipvan"),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 31), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at == dirty
+    assert out.entry_at != outbound
+    assert out.effective_status == "completed"
+    assert out.completion_at == post
+
+
+def test_no_configured_rack_stv_or_move_before_first_weight_entry_not_found():
+    sent = datetime(2026, 7, 31, 5, 0, 0)
+    review = datetime(2026, 7, 31, 10, 0, 0)
+    weight = datetime(2026, 7, 31, 10, 20, 0)
+    outbound = datetime(2026, 7, 31, 16, 0, 0)
+    tl = [
+        _ev(ts=sent, purpose="sent-to-vendor", rack="Truck"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=18.0),
+        _ev(ts=outbound, purpose="move-bag", rack="Rinse Zipvan"),
+    ]
+    out = resolve_current_cycle(
+        tl, selected_date_et=date(2026, 7, 31), entry_racks=ENTRY_RACKS
+    )
+    assert out.entry_at is None
+    assert out.pending_reason == PENDING_REASON_ENTRY_NOT_FOUND
+    assert out.effective_status == "pending"
+
+
+def test_jul31_stv_on_dirty_or_zipvan_pattern_resolves():
+    """Jul 31 STV-on-Dirty/Zipvan pattern: STV itself is first-class entry."""
+    sent_dirty = datetime(2026, 7, 31, 7, 10, 0)
+    review = datetime(2026, 7, 31, 11, 0, 0)
+    weight = datetime(2026, 7, 31, 11, 15, 0)
+    tl_dirty = [
+        _ev(ts=sent_dirty, purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=22.0),
+    ]
+    out_dirty = resolve_current_cycle(
+        tl_dirty, selected_date_et=date(2026, 7, 31), entry_racks=ENTRY_RACKS
+    )
+    assert out_dirty.entry_at == sent_dirty
+    assert out_dirty.effective_status == "completed"
+
+    sent_zip = datetime(2026, 7, 31, 8, 0, 0)
+    tl_zip = [
+        _ev(ts=sent_zip, purpose="sent-to-vendor", rack="Rinse Zipvan"),
+        _ev(ts=review, purpose="garments-reviewed"),
+        _ev(ts=weight, purpose="weight-entry", weight=22.0),
+    ]
+    out_zip = resolve_current_cycle(
+        tl_zip, selected_date_et=date(2026, 7, 31), entry_racks=ENTRY_RACKS
+    )
+    assert out_zip.entry_at == sent_zip
+    assert out_zip.entry_rack == "Rinse Zipvan"
+    assert out_zip.effective_status == "completed"
 
 
 def test_valid_post_stv_entry_chain_selects_normal_entry():
@@ -867,8 +1103,8 @@ def test_valid_post_stv_entry_chain_selects_normal_entry():
     assert out.completion_at == weight
 
 
-def test_invalid_post_stv_plus_valid_pre_stv_fallback_selects_fallback():
-    """Later post-STV Dirty after review must not shadow valid ≤15-min pre-STV."""
+def test_configured_move_after_first_weight_does_not_replace_earlier_entry():
+    """Later Dirty after first weight must not replace a valid earlier entry."""
     pre_dirty = datetime(2026, 7, 30, 7, 16, 0)
     sent = datetime(2026, 7, 30, 7, 23, 0)
     review = datetime(2026, 7, 30, 10, 5, 0)
@@ -876,7 +1112,7 @@ def test_invalid_post_stv_plus_valid_pre_stv_fallback_selects_fallback():
     late_dirty = datetime(2026, 7, 30, 12, 0, 0)
     tl = [
         _ev(ts=pre_dirty, purpose="move-bag", rack="VeeWash Dirty", user="Ops"),
-        _ev(ts=sent, purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=sent, purpose="sent-to-vendor", rack="Truck"),
         _ev(ts=review, purpose="garments-reviewed", user="Folder"),
         _ev(ts=weight, purpose="weight-entry", user="Folder", weight=33.1),
         _ev(ts=late_dirty, purpose="move-bag", rack="VeeWash Dirty", user="Admin"),
@@ -891,7 +1127,7 @@ def test_invalid_post_stv_plus_valid_pre_stv_fallback_selects_fallback():
     assert out.entry_at != late_dirty
 
 
-def test_both_valid_prefers_post_stv_entry():
+def test_both_valid_selects_latest_before_first_weight():
     pre_dirty = datetime(2026, 7, 30, 7, 16, 0)
     sent = datetime(2026, 7, 30, 7, 23, 0)
     post_dirty = datetime(2026, 7, 30, 8, 0, 0)
@@ -911,7 +1147,8 @@ def test_both_valid_prefers_post_stv_entry():
     assert out.effective_status == "completed"
 
 
-def test_old_pre_stv_dirty_outside_tolerance_rejected():
+def test_pre_anchor_dirty_before_first_weight_still_valid_without_time_cap():
+    """No ≤15-min fallback: Dirty before first weight remains a first-class entry."""
     old_dirty = datetime(2026, 7, 30, 6, 0, 0)  # 83 min before STV
     sent = datetime(2026, 7, 30, 7, 23, 0)
     late_dirty = datetime(2026, 7, 30, 12, 0, 0)
@@ -919,7 +1156,7 @@ def test_old_pre_stv_dirty_outside_tolerance_rejected():
     weight = datetime(2026, 7, 30, 10, 36, 0)
     tl = [
         _ev(ts=old_dirty, purpose="move-bag", rack="VeeWash Dirty"),
-        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=sent, purpose="sent-to-vendor", rack="Truck"),
         _ev(ts=review, purpose="garments-reviewed"),
         _ev(ts=weight, purpose="weight-entry", weight=33.1),
         _ev(ts=late_dirty, purpose="move-bag", rack="VeeWash Dirty"),
@@ -927,13 +1164,12 @@ def test_old_pre_stv_dirty_outside_tolerance_rejected():
     out = resolve_current_cycle(
         tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
     )
-    # Late Dirty after review cannot complete; old Dirty outside tolerance.
-    assert out.entry_at == late_dirty
-    assert out.completion_at is None
-    assert out.effective_status == "pending"
+    assert out.entry_at == old_dirty
+    assert out.completion_at == weight
+    assert out.effective_status == "completed"
 
 
-def test_pre_stv_fallback_without_downstream_review_post_rejected():
+def test_latest_before_first_weight_without_downstream_stays_pending():
     dirty = datetime(2026, 7, 30, 7, 16, 0)
     sent = datetime(2026, 7, 30, 7, 23, 0)
     late_dirty = datetime(2026, 7, 30, 12, 0, 0)
@@ -945,14 +1181,14 @@ def test_pre_stv_fallback_without_downstream_review_post_rejected():
     out = resolve_current_cycle(
         tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
     )
-    # No complete chain → keep earliest post-STV for pending display; not pre-STV.
+    # No weight cutoff yet → latest configured scan is the pending entry.
     assert out.entry_at == late_dirty
     assert out.effective_status == "pending"
     assert out.completion_at is None
 
 
-def test_multiple_post_stv_dirty_invalid_does_not_shadow_valid():
-    """Later invalid post-STV Dirty does not suppress an earlier valid chain."""
+def test_move_after_first_weight_does_not_suppress_earlier_valid_entry():
+    """Later configured move after first weight is ignored; earlier entry wins."""
     sent = datetime(2026, 7, 30, 7, 0, 0)
     valid_dirty = datetime(2026, 7, 30, 8, 0, 0)
     review = datetime(2026, 7, 30, 10, 0, 0)
@@ -974,7 +1210,7 @@ def test_multiple_post_stv_dirty_invalid_does_not_shadow_valid():
 
 
 def test_3gvvidbqh3_fixture_completed_in_pure_resolver():
-    """Production residual pattern: admin Dirty at 12:00 after review/POST."""
+    """Jul 30 truck-STV + Dirty move: same-ts weight at STV is not post-anchor cutoff."""
     pre_dirty = datetime(2026, 7, 30, 7, 16, 0)
     sent = datetime(2026, 7, 30, 7, 23, 0)
     review = datetime(2026, 7, 30, 10, 5, 0)
@@ -983,8 +1219,9 @@ def test_3gvvidbqh3_fixture_completed_in_pure_resolver():
     late_dirty = datetime(2026, 7, 30, 12, 0, 0)
     tl = [
         _ev(ts=pre_dirty, purpose="move-bag", rack="VeeWash Dirty", user="Melissa"),
+        # Same timestamp as STV — not strictly after anchor, so not the cutoff.
         _ev(ts=datetime(2026, 7, 30, 7, 23, 0), purpose="weight-entry", weight=34.7),
-        _ev(ts=sent, purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=sent, purpose="sent-to-vendor", rack="Truck"),
         _ev(ts=review, purpose="garments-reviewed", user="Amna"),
         _ev(ts=weight, purpose="weight-entry", user="Amna", weight=33.1),
         _ev(ts=weight2, purpose="weight-entry", user="Amna", weight=33.1),
@@ -994,6 +1231,7 @@ def test_3gvvidbqh3_fixture_completed_in_pure_resolver():
         tl, selected_date_et=date(2026, 7, 30), entry_racks=ENTRY_RACKS
     )
     assert out.cycle_anchor_at == sent
+    # First current-cycle weight is POST@10:35; latest before it is Dirty@7:16.
     assert out.entry_at == pre_dirty
     assert out.garments_reviewed_at == review
     assert out.completion_at == weight
@@ -1012,7 +1250,7 @@ def test_persisted_day_bag_and_pure_resolver_agree_on_3gv_pattern():
     late_dirty = datetime(2026, 7, 30, 12, 0, 0)
     tl = [
         _ev(ts=pre_dirty, purpose="move-bag", rack="VeeWash Dirty"),
-        _ev(ts=sent, purpose="sent-to-vendor"),
+        _ev(ts=sent, purpose="sent-to-vendor", rack="Truck"),
         _ev(ts=review, purpose="garments-reviewed"),
         _ev(ts=weight, purpose="weight-entry", user="Amna", weight=33.1),
         _ev(ts=late_dirty, purpose="move-bag", rack="VeeWash Dirty"),
@@ -1022,10 +1260,11 @@ def test_persisted_day_bag_and_pure_resolver_agree_on_3gv_pattern():
     )
     assert out.effective_status == persisted_status
     assert out.completion_at == persisted_completion
+    assert out.entry_at == pre_dirty
 
 
 def test_2c686tfbzp_same_minute_regression_remains_completed():
-    """Same-minute POST bag with later admin Dirty still completes on post-STV entry."""
+    """Same-minute POST bag with later admin Dirty still completes on pre-weight entry."""
     sent = datetime(2026, 7, 30, 4, 19, 0)
     dirty = datetime(2026, 7, 30, 5, 12, 0)
     tie = datetime(2026, 7, 30, 8, 49, 0)
@@ -1061,12 +1300,14 @@ def test_2c686tfbzp_same_minute_regression_remains_completed():
 def test_2giwg0utr3_zipvan_regression_remains_completed():
     sent = datetime(2026, 7, 28, 6, 25, 0)
     zipvan = datetime(2026, 7, 28, 7, 33, 0)
+    pre = datetime(2026, 7, 28, 8, 0, 0)
     mid_dirty = datetime(2026, 7, 28, 12, 0, 0)
     review = datetime(2026, 7, 28, 15, 0, 0)
     weight = datetime(2026, 7, 28, 15, 0, 0)
     tl = [
         _ev(ts=sent, purpose="sent-to-vendor"),
         _ev(ts=zipvan, purpose="move-bag", rack="Rinse Zipvan"),
+        _ev(ts=pre, purpose="weight-entry", weight=16.0),
         _ev(ts=mid_dirty, purpose="move-bag", rack="VeeWash Dirty", user="Admin"),
         _ev(
             ts=weight,
@@ -1087,5 +1328,6 @@ def test_2giwg0utr3_zipvan_regression_remains_completed():
     out = resolve_current_cycle(
         tl, selected_date_et=date(2026, 7, 28), entry_racks=ENTRY_RACKS
     )
+    # PRE is the entry cutoff; afternoon Dirty after PRE is ignored.
     assert out.entry_at == zipvan
     assert out.effective_status == "completed"
