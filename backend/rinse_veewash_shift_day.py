@@ -54,6 +54,12 @@ def _step1_cutover_date(organization_id: int, activation: date | None) -> date |
     return activation
 
 
+_SNAPSHOT_MISSING_MSG = (
+    "Shift Monitor snapshot is not available yet. "
+    "Counts will appear after a successful scan refresh."
+)
+
+
 def _unavailable_step1_payload(
     selected_date_et: date,
     *,
@@ -100,6 +106,85 @@ def _unavailable_step1_payload(
         "shift_date_et": selected_date_et,
         "step1_history_unavailable": True,
         "message": message,
+    }
+    return wl, summary, day_meta
+
+
+def _snapshot_missing_step1_payload(
+    selected_date_et: date,
+    *,
+    message: str = _SNAPSHOT_MISSING_MSG,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Fast interactive-read payload when no persisted Step-1 day snapshot exists.
+
+    Counts are intentionally null (not zero) so the UI shows Unavailable instead of
+    fabricated live values. Callers with persist_live=True must not use this path.
+    """
+    empty_seg = {
+        "active_workload": None,
+        "total_workload": None,
+        "completed": None,
+        "pending": None,
+        "new_today": None,
+        "carryover": None,
+        "exceptions": {"review_required": None, "total": None},
+        "bag_ids": {
+            "active_workload": [],
+            "completed": [],
+            "pending": [],
+            "review_required": [],
+            "new_today": [],
+            "carryover": [],
+        },
+    }
+    flags = {
+        "snapshot_available": False,
+        "snapshot_status": "missing",
+        "data_unavailable": True,
+        "unavailable_reason": "step1_snapshot_missing",
+        "snapshot_missing": True,
+        "message": message,
+    }
+    wl = {
+        "selected_date_et": selected_date_et.isoformat(),
+        "rows": [],
+        "new_today": [],
+        "carryover": [],
+        "completed_on_date": [],
+        "pending_end_of_date": [],
+        "review_required": [],
+        "review_reasons_by_bag": {},
+        "total_workload": None,
+        "from_snapshot": False,
+        **flags,
+    }
+    summary = {
+        "selected_date_et": selected_date_et.isoformat(),
+        "active_workload": None,
+        "total_workload": None,
+        "completed": None,
+        "pending": None,
+        "new_today": None,
+        "carryover": None,
+        "exceptions": {"review_required": None, "total": None},
+        "segments": {
+            "all": dict(empty_seg),
+            "wf": dict(empty_seg),
+            "hd": dict(empty_seg),
+        },
+        "shift_day": {
+            "status": None,
+            "read_only": True,
+            "review_required_count": None,
+            **flags,
+        },
+        "shift_day_status": None,
+        **flags,
+    }
+    day_meta = {
+        "status": None,
+        "shift_date_et": selected_date_et,
+        **flags,
     }
     return wl, summary, day_meta
 
@@ -2059,8 +2144,12 @@ def build_or_load_step1_for_date(
 
     CLOSED days always load frozen headline.
     Prior OPEN/READY_TO_CLOSE days load the persisted snapshot (never live portal rebuild).
-    Today and REOPENED days rebuild live and persist.
-    Missing prior-day snapshot: one-time reconstruct from source + persist.
+    Today / REOPENED / missing-day rebuild + persist only when ``persist_live=True``
+    (scrape / backfill / explicit Stage-B refresh).
+
+    Interactive reads (``persist_live=False``) never run a full live Step-1 rebuild:
+    when no valid persisted snapshot exists they return a fast snapshot-unavailable
+    payload instead.
 
     When ``include_bag_rows`` is False (dashboard cards), return headline/summary only and
     skip loading every day-bag snapshot into memory.
@@ -2181,6 +2270,11 @@ def build_or_load_step1_for_date(
                     cursor, organization_id, selected_date_et, summary
                 )
                 return wl, summary, day_out
+
+    # Interactive / read-only path: never rebuild when the persisted day is missing.
+    # Stage-B scrape / backfill / explicit refresh call with persist_live=True.
+    if not persist_live:
+        return _snapshot_missing_step1_payload(selected_date_et)
 
     # Live / reconstruct path (today, or missing prior-day snapshot).
     # On/after VeeWash Jul 23 cutover: append-only membership rebuild (not live presence rewrite).

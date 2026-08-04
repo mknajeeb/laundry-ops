@@ -131,8 +131,49 @@ function MetricRow({
   rowService = "all",
   hdDashboardTotals = null,
   dayClosed = false,
+  snapshotUnavailable = false,
 }) {
   if (!seg) return null;
+  if (snapshotUnavailable) {
+    return (
+      <Box sx={{ mb: emphasize ? 0 : 1.5 }}>
+        <Typography
+          variant="subtitle2"
+          fontWeight={800}
+          sx={{
+            mb: 0.75,
+            letterSpacing: 0.4,
+            color: emphasize ? VEEWASH_DASHBOARD.primaryBlueDark : "text.primary",
+          }}
+        >
+          {title}
+        </Typography>
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: {
+              xs: "repeat(2, 1fr)",
+              sm: "repeat(4, 1fr)",
+              md: "repeat(4, 1fr)",
+            },
+            gap: 1,
+          }}
+        >
+          {["Total Workload", "Completed", "Pending", "Review Required"].map((label) => (
+            <ShiftCountCard
+              key={label}
+              label={label}
+              value="Unavailable"
+              size="kpi"
+            />
+          ))}
+        </Box>
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
+          Snapshot not available yet — counts appear after a successful scan refresh.
+        </Typography>
+      </Box>
+    );
+  }
   const review = seg.exceptions?.review_required ?? seg.exceptions?.total ?? 0;
   const unfinished =
     seg.unfinished_at_close
@@ -300,6 +341,19 @@ export default function VeeWashStep1Section({
   const segments = summary?.segments || {};
   const dayMeta = shiftDay || summary?.shift_day || {};
   const readOnly = Boolean(dayMeta.read_only || String(dayMeta.status || "").toUpperCase() === "CLOSED");
+  const snapshotUnavailable = Boolean(
+    summary?.data_unavailable
+    || summary?.snapshot_available === false
+    || summary?.snapshot_missing
+    || summary?.unavailable_reason === "step1_snapshot_missing"
+    || dayMeta?.data_unavailable
+    || dayMeta?.snapshot_available === false
+    || dayMeta?.snapshot_missing
+  );
+  const snapshotUnavailableMessage =
+    summary?.message
+    || dayMeta?.message
+    || "Shift Monitor snapshot is not available yet. Counts will appear after a successful scan refresh.";
 
   const keys = useMemo(
     () => resolveStep1SegmentKeys(serviceFilter, rushFilter),
@@ -313,10 +367,13 @@ export default function VeeWashStep1Section({
   const reviewIds = totalSeg.bag_ids?.review_required
     || totalSeg.bag_ids?.disappeared_without_completion
     || [];
-  const reviewCount = totalSeg.exceptions?.review_required ?? reviewIds.length ?? 0;
+  const reviewCount = snapshotUnavailable
+    ? null
+    : (totalSeg.exceptions?.review_required ?? reviewIds.length ?? 0);
   const reviewByReason = summary?.review_by_reason || {};
 
   const openMetric = (metric, title, opts = null) => {
+    if (snapshotUnavailable) return;
     const options = typeof opts === "string" || opts == null ? { reasonCode: opts } : opts;
     const svc = String(options?.service || "all").toLowerCase();
     setDrawer({
@@ -375,6 +432,7 @@ export default function VeeWashStep1Section({
 
   return (
     <Box sx={{ mb: 2.5 }}>
+      {snapshotUnavailable ? null : (
       <ShiftDayStatusBar
         selectedDateEt={selectedDateEt || summary.selected_date_et}
         shiftDay={dayMeta}
@@ -413,10 +471,16 @@ export default function VeeWashStep1Section({
         onChanged={onRefresh}
         onOpenBlockingList={openMetric}
       />
+      )}
       {summary?.step1_history_unavailable ? (
         <Alert severity="info" sx={{ mb: 1.5 }}>
           {summary.message ||
             "Step-1 daily workload tracking started July 23, 2026. Earlier operational snapshots were retired."}
+        </Alert>
+      ) : null}
+      {snapshotUnavailable && !summary?.step1_history_unavailable ? (
+        <Alert severity="warning" sx={{ mb: 1.5 }}>
+          {snapshotUnavailableMessage}
         </Alert>
       ) : null}
       <Paper
@@ -512,6 +576,7 @@ export default function VeeWashStep1Section({
               onMetricClick={openMetric}
               pendingTrusted={pendingTrusted}
               dayClosed={readOnly}
+              snapshotUnavailable={snapshotUnavailable}
             />
           ) : null}
           {hdSeg ? (
@@ -522,6 +587,7 @@ export default function VeeWashStep1Section({
               onMetricClick={openMetric}
               pendingTrusted={pendingTrusted}
               dayClosed={readOnly}
+              snapshotUnavailable={snapshotUnavailable}
               hdDashboardTotals={summary?.hd_dashboard_totals || null}
               membershipHelper={
                 summary?.hd_policy?.no_carryover
@@ -532,6 +598,7 @@ export default function VeeWashStep1Section({
           ) : null}
 
           {(() => {
+            if (snapshotUnavailable) return null;
             const svcKey = serviceFilter === "wf" || serviceFilter === "hd" ? serviceFilter : "all";
             const specialty =
               summary?.specialty_metrics?.[svcKey] || summary?.specialty_metrics?.all || null;
@@ -655,8 +722,11 @@ export default function VeeWashStep1Section({
               onMetricClick={openMetric}
               pendingTrusted={pendingTrusted}
               dayClosed={readOnly}
+              snapshotUnavailable={snapshotUnavailable}
               membershipHelper={
-                summary?.membership
+                snapshotUnavailable
+                  ? null
+                  : summary?.membership
                   ? `${
                       summary.membership.fresh_start_no_prior_day_carryover
                         ? "Fresh start — no prior-day carryover · "
@@ -673,6 +743,7 @@ export default function VeeWashStep1Section({
         </Box>
       </Paper>
 
+      {snapshotUnavailable ? null : (
       <Paper
         elevation={0}
         sx={{
@@ -752,6 +823,7 @@ export default function VeeWashStep1Section({
           ) : null}
         </Accordion>
       </Paper>
+      )}
 
       <Step1MetricDrawer
         open={drawer.open}

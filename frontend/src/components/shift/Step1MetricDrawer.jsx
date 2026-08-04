@@ -122,6 +122,8 @@ export default function Step1MetricDrawer({
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
+  const [snapshotUnavailable, setSnapshotUnavailable] = useState(false);
+  const [snapshotMessage, setSnapshotMessage] = useState("");
   const [expanded, setExpanded] = useState(null);
   const [detailLoading, setDetailLoading] = useState({});
   const [actionBag, setActionBag] = useState(null);
@@ -144,6 +146,8 @@ export default function Step1MetricDrawer({
       const skipCacheMerge = Boolean(opts.skipCacheMerge) || Boolean(openEditId);
       setLoading(true);
       setError("");
+      setSnapshotUnavailable(false);
+      setSnapshotMessage("");
       if (!preserveExpanded) {
         setExpanded(null);
         setEditingBag(null);
@@ -165,6 +169,23 @@ export default function Step1MetricDrawer({
         });
         if (signal?.aborted) return;
         const data = res?.data || {};
+        if (
+          data.snapshot_missing
+          || data.data_unavailable
+          || data.snapshot_available === false
+          || data.unavailable_reason === "step1_snapshot_missing"
+        ) {
+          setSnapshotUnavailable(true);
+          setSnapshotMessage(
+            data.message
+              || "Shift Monitor snapshot is not available yet. Counts will appear after a successful scan refresh."
+          );
+          setBags([]);
+          setTotal(0);
+          setHasMore(false);
+          setPage(1);
+          return;
+        }
         setBags((prev) => {
           const prevById = Object.fromEntries((prev || []).map((b) => [b.bag_id, b]));
           return (data.bags || []).map((b) =>
@@ -438,6 +459,11 @@ export default function Step1MetricDrawer({
         <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
           <CircularProgress size={28} />
         </Box>
+      ) : snapshotUnavailable ? (
+        <Alert severity="warning" sx={{ py: 1.5 }}>
+          {snapshotMessage
+            || "Shift Monitor snapshot is not available yet. Counts will appear after a successful scan refresh."}
+        </Alert>
       ) : (
         <Stack spacing={1}>
           <Stack direction="row" justifyContent="space-between" alignItems="center">

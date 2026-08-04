@@ -3067,52 +3067,65 @@ def _try_build_step1_lightweight_summary(
     t_s1 = time.perf_counter()
     # Dashboard cards must stay snapshot-first. Live rebuild happens on scrape /
     # backfill / correction — not on every Shift Monitor page open.
+    # Checkpoint 1B: never escalate to persist_live=True from this interactive path.
     s1, summary, day_meta = build_or_load_step1_for_date(
         cursor, org, period_end, persist_live=False, include_bag_rows=False
     )
-    if not summary or not (summary.get("segments") or summary.get("active_workload") is not None):
-        s1, summary, day_meta = build_or_load_step1_for_date(
-            cursor, org, period_end, persist_live=True, include_bag_rows=False
-        )
-    s1["today_validation"] = build_today_validation(s1, selected_date_et=period_end)
+    snapshot_unavailable = bool(
+        (summary or {}).get("data_unavailable")
+        or (summary or {}).get("snapshot_available") is False
+        or (s1 or {}).get("data_unavailable")
+        or (day_meta or {}).get("data_unavailable")
+    )
+    if isinstance(s1, dict):
+        s1 = dict(s1)
+    else:
+        s1 = {}
+    if not snapshot_unavailable:
+        s1["today_validation"] = build_today_validation(s1, selected_date_et=period_end)
     s1["activation_date_et"] = activation.isoformat()
     # Recompute data freshness on read so scrape-touch last_seen false positives
-    # clear without rewriting immutable day membership.
-    try:
-        from backend.rinse_scan_freshness import freshness_from_day_and_presence
+    # clear without rewriting immutable day membership. Skip when snapshot is
+    # missing — freshness presence scans are N+1 and have nothing to attach to.
+    if not snapshot_unavailable:
+        try:
+            from backend.rinse_scan_freshness import freshness_from_day_and_presence
 
-        pending_ids = list(
-            ((summary or {}).get("segments") or {}).get("all", {}).get("bag_ids", {}).get("pending")
-            or []
-        )
-        sample_ids = list(
-            dict.fromkeys(
-                list(((summary or {}).get("segments") or {}).get("all", {}).get("bag_ids", {}).get("new_today") or [])
-                + list(((summary or {}).get("segments") or {}).get("all", {}).get("bag_ids", {}).get("carryover") or [])
+            pending_ids = list(
+                ((summary or {}).get("segments") or {}).get("all", {}).get("bag_ids", {}).get("pending")
+                or []
             )
-        )
-        live_freshness = freshness_from_day_and_presence(
-            cursor,
-            org,
-            period_end,
-            day_meta=day_meta,
-            sample_bag_ids=sample_ids,
-            pending_bag_ids=pending_ids,
-        )
-        if isinstance(summary, dict):
-            summary = dict(summary)
-            summary["data_freshness"] = live_freshness
-        if isinstance(s1, dict):
-            s1 = dict(s1)
+            sample_ids = list(
+                dict.fromkeys(
+                    list(((summary or {}).get("segments") or {}).get("all", {}).get("bag_ids", {}).get("new_today") or [])
+                    + list(((summary or {}).get("segments") or {}).get("all", {}).get("bag_ids", {}).get("carryover") or [])
+                )
+            )
+            live_freshness = freshness_from_day_and_presence(
+                cursor,
+                org,
+                period_end,
+                day_meta=day_meta,
+                sample_bag_ids=sample_ids,
+                pending_bag_ids=pending_ids,
+            )
+            if isinstance(summary, dict):
+                summary = dict(summary)
+                summary["data_freshness"] = live_freshness
             s1["data_freshness"] = live_freshness
-    except Exception:
-        pass
+        except Exception:
+            pass
     s1_ms = (time.perf_counter() - t_s1) * 1000
 
     # Settings-only baseline banner (no scrape hunting on every page open).
     t_baseline = time.perf_counter()
     baseline_settings = get_shift_monitor_baseline(cursor, org)
     baseline_ms = (time.perf_counter() - t_baseline) * 1000
+    unavailable_message = (
+        (summary or {}).get("message")
+        or (day_meta or {}).get("message")
+        or "Shift Monitor snapshot is not available yet. Counts will appear after a successful scan refresh."
+    )
     baseline_payload = {
         "active": True,
         "shift_monitor_baseline_start_at_et": baseline_settings.get(
@@ -3121,7 +3134,11 @@ def _try_build_step1_lightweight_summary(
         "baseline_source": baseline_settings.get("baseline_source"),
         "baseline_time_et": baseline_settings.get("baseline_time_et"),
         "banner_title": format_baseline_banner_et(baseline_settings),
-        "banner_subtitle": "Using persisted Step-1 day snapshot + latest At Vendor scrape",
+        "banner_subtitle": (
+            unavailable_message
+            if snapshot_unavailable
+            else "Using persisted Step-1 day snapshot + latest At Vendor scrape"
+        ),
         "at_vendor_scrape_ready": True,
     }
 
@@ -3131,7 +3148,7 @@ def _try_build_step1_lightweight_summary(
     at_vendor_module: dict[str, Any] = {
         "scope": "veewash_step1_lightweight",
         "selected_date_et": period_end.isoformat(),
-        "daily_metrics_reliable": True,
+        "daily_metrics_reliable": not snapshot_unavailable,
         "veewash_step1_active": True,
         "veewash_step1_summary": summary,
         "veewash_step1_day": (summary or {}).get("shift_day")
@@ -3146,15 +3163,52 @@ def _try_build_step1_lightweight_summary(
         "uses_clean_veewash_baseline": str(baseline_settings.get("baseline_source") or "")
         == "latest_clean_veewash_scrape",
     }
+    if snapshot_unavailable:
+        at_vendor_module["daily_metrics_ui_warning"] = unavailable_message
+        at_vendor_module["snapshot_available"] = False
+        at_vendor_module["snapshot_status"] = "missing"
+        at_vendor_module["data_unavailable"] = True
+        at_vendor_module["unavailable_reason"] = "step1_snapshot_missing"
+        at_vendor_module["snapshot_missing"] = True
+        # Prefer explicit unavailable day metadata over fabricating OPEN.
+        at_vendor_module["veewash_step1_day"] = (summary or {}).get("shift_day") or {
+            "status": None,
+            "read_only": True,
+            "snapshot_available": False,
+            "snapshot_status": "missing",
+            "data_unavailable": True,
+            "unavailable_reason": "step1_snapshot_missing",
+            "message": unavailable_message,
+        }
 
     t_sync = time.perf_counter()
     active_work_stub: dict[str, Any] = {"live": True}
-    rinse_sync = _attach_step1_lightweight_sync_statuses(
-        cursor,
-        org,
-        active_work=active_work_stub,
-        evaluation_time=eval_at,
-    )
+    if snapshot_unavailable:
+        # Keep the missing-snapshot interactive path free of sync-status SQL.
+        rinse_sync = {
+            "at_vendor": {
+                "enabled": True,
+                "status": "snapshot_unavailable",
+                "message": unavailable_message,
+            },
+            "ready_for_vendor": {
+                "enabled": False,
+                "status": "disabled",
+                "skipped_reason": "RFV_SCRAPE_ENABLED=false",
+                "message": "Ready for Vendor Sync: disabled",
+            },
+            "ready_for_vendor_enabled": False,
+            "sync_cycle": {},
+            "latest_attempt": None,
+            "latest_completed_cycle": None,
+        }
+    else:
+        rinse_sync = _attach_step1_lightweight_sync_statuses(
+            cursor,
+            org,
+            active_work=active_work_stub,
+            evaluation_time=eval_at,
+        )
     sync_ms = (time.perf_counter() - t_sync) * 1000
 
     payload: dict[str, Any] = {
@@ -3193,6 +3247,13 @@ def _try_build_step1_lightweight_summary(
         "current_active_work": active_work_stub,
         "current_active_work_now": active_work_stub,
     }
+    if snapshot_unavailable:
+        payload["snapshot_available"] = False
+        payload["snapshot_status"] = "missing"
+        payload["data_unavailable"] = True
+        payload["unavailable_reason"] = "step1_snapshot_missing"
+        payload["snapshot_missing"] = True
+        payload["message"] = unavailable_message
     total_ms = (time.perf_counter() - t0) * 1000
     payload["performance_meta"] = _build_performance_meta(
         total_build_ms=total_ms,
@@ -3206,6 +3267,8 @@ def _try_build_step1_lightweight_summary(
     )
     payload["performance_meta"]["step1_lightweight"] = True
     payload["performance_meta"]["step1_sync_lightweight"] = True
+    if snapshot_unavailable:
+        payload["performance_meta"]["step1_snapshot_missing"] = True
     return payload
 
 

@@ -79,7 +79,7 @@ export default function AtVendorFlowSection({
 
   return (
     <Box sx={{ mb: 2.5 }}>
-      {!dailyReliable && av.daily_metrics_ui_warning ? (
+      {!dailyReliable && av.daily_metrics_ui_warning && !step1Active ? (
         <Alert severity="warning" sx={{ mb: 1.5, py: 0.5 }}>
           {av.daily_metrics_ui_warning}
         </Alert>

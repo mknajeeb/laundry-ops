@@ -393,7 +393,7 @@ def build_drilldown(
     snap_ms = (time.perf_counter() - t_snap) * 1000.0
 
     # Read path only: never call build_step1_payload(persist_live=True). Opening a
-    # drawer/modal must not rebuild the live day. Missing snapshot → empty queue.
+    # drawer/modal must not rebuild the live day. Missing snapshot → explicit unavailable.
     if not (day_rec and summary):
         return {
             "selected_date_et": selected_date_et.isoformat(),
@@ -409,6 +409,14 @@ def build_drilldown(
                 "has_more": False,
             },
             "snapshot_missing": True,
+            "snapshot_available": False,
+            "snapshot_status": "missing",
+            "data_unavailable": True,
+            "unavailable_reason": "step1_snapshot_missing",
+            "message": (
+                "Shift Monitor snapshot is not available yet. "
+                "Counts will appear after a successful scan refresh."
+            ),
             "timing_ms": {
                 "total": round((time.perf_counter() - t0) * 1000.0, 1),
                 "snapshot": round(snap_ms, 1),
