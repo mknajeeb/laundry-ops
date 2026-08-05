@@ -319,13 +319,16 @@ def evaluate_timeline_replace_decision(
             "incomplete": True,
         }
     # Never wipe a richer timeline with a thinner export — even if newer.
+    # Preserve only: additive upsert still lands new rows. Do NOT mark the
+    # import incomplete for Stage-B — portal exports are routinely thinner than
+    # lifetime persistent history accumulated across prior cycles/days.
     if incoming_n < existing_n:
         reasons.append("incoming_materially_thinner")
         return {
             "replace": False,
             "preserve": True,
             "reasons": reasons,
-            "incomplete": True,
+            "incomplete": False,
             "existing_n": existing_n,
             "incoming_n": incoming_n,
         }

@@ -200,6 +200,8 @@ def test_newer_thinner_timeline_does_not_replace():
     assert decision["replace"] is False
     assert decision["preserve"] is True
     assert "incoming_materially_thinner" in decision["reasons"]
+    # Preserve richer lifetime timelines must not mark Stage-B import incomplete.
+    assert decision.get("incomplete") is not True
 
 
 def test_newer_complete_timeline_replaces():
@@ -447,4 +449,7 @@ def test_partial_import_cannot_delete_existing_events_via_replace_guard():
         incoming_n=400,
     )
     assert decision["replace"] is False
-    assert decision.get("incomplete") is True
+    assert decision["preserve"] is True
+    assert "incoming_materially_thinner" in decision["reasons"]
+    # Timeline preserve remains; Stage-B incompleteness is a separate signal.
+    assert decision.get("incomplete") is not True

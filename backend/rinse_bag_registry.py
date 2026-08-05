@@ -941,11 +941,15 @@ def merge_scan_events_from_upload(
                 bags_preserve_existing.append(bag_id)
                 reasons = list(decision.get("reasons") or [])
                 bags_preserve_reasons[bag_id] = reasons
+                # Only true incompleteness blocks Stage-B. Intentional preserve
+                # for richer lifetime timelines (incoming_materially_thinner)
+                # sets incomplete=False in evaluate_timeline_replace_decision.
                 if decision.get("incomplete"):
                     import_incomplete = True
                 logger.warning(
                     "scan timeline preserve org=%s bag=%s reasons=%s "
                     "existing_n=%s incoming_n=%s existing_max=%s incoming_max=%s "
+                    "stage_b_incomplete=%s "
                     "(partial export will not delete richer timeline)",
                     org,
                     bag_id,
@@ -954,11 +958,20 @@ def merge_scan_events_from_upload(
                     incoming_n,
                     existing_max,
                     incoming_max,
+                    bool(decision.get("incomplete")),
                 )
-        if bags_preserve_existing:
+        if bags_preserve_existing and import_incomplete:
             logger.warning(
                 "scan chronology import incomplete org=%s preserved_bags=%s "
                 "replaced_bags=%s — Stage B must not persist provisional Step-1 counts",
+                org,
+                len(bags_preserve_existing),
+                len(bags_replace),
+            )
+        elif bags_preserve_existing:
+            logger.info(
+                "scan chronology preserved richer timelines org=%s preserved_bags=%s "
+                "replaced_bags=%s — Stage B may proceed (additive upsert retained new rows)",
                 org,
                 len(bags_preserve_existing),
                 len(bags_replace),
