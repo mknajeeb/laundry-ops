@@ -5,8 +5,10 @@ Stages (resume-safe via evidence_processing_stage):
 
   board_applied → membership_applied → weights_attached → projections_refreshed
 
-Rejected / anomalous runs are no-ops. Failures set evidence_failed_stage + error
-without mutating immutable Presence Run Row evidence.
+``projections_refreshed`` reprojects completion onto existing day-bag membership
+(``reproject_day_bag_completions_from_chronology``). It does not admit/remove
+bags. Rejected / anomalous runs are no-ops. Failures set evidence_failed_stage
++ error without mutating immutable Presence Run Row evidence.
 """
 
 from __future__ import annotations
@@ -124,7 +126,7 @@ def continue_presence_run_downstream(
     - Rejected / anomalous: no-op
     - Membership: rebuild append-only for the selected ET day
     - Weights: interval-attach Presence Run Row observations per bag in the run
-    - Projections: stage marker only (PRE/POST projection is read-time)
+    - Projections: reproject day-bag completion onto frozen persisted membership
 
     Idempotent from ``evidence_processing_stage``. On failure, sets
     ``evidence_failed_stage`` + error and leaves immutable evidence intact.
@@ -260,19 +262,59 @@ def continue_presence_run_downstream(
             stats["error"] = str(exc)
             return stats
 
-    # --- projections_refreshed (read-time PRE/POST; stage marker only) ---
-    if rank < _STAGE_ORDER.index(EVIDENCE_STAGE_PROJECTIONS_REFRESHED):
+    # --- projections_refreshed ---
+    # Persist day-bag completion from scan chronology onto the *existing*
+    # membership set. Always refresh when weights are attached (including
+    # resumes that previously recorded the old read_time_noop marker).
+    if rank >= _STAGE_ORDER.index(EVIDENCE_STAGE_WEIGHTS_ATTACHED):
         try:
-            set_presence_run_processing_stage(
-                cursor,
-                org,
-                rid,
-                stage=EVIDENCE_STAGE_PROJECTIONS_REFRESHED,
-                failed_stage=None,
-                error=None,
-                extra={"projections": "read_time_noop"},
+            from backend.rinse_veewash_shift_day import (
+                reproject_day_bag_completions_from_chronology,
             )
-            stats["stages_completed"].append(EVIDENCE_STAGE_PROJECTIONS_REFRESHED)
+
+            projection = reproject_day_bag_completions_from_chronology(
+                cursor, org, day
+            )
+            stats["projections"] = {
+                "mode": "day_bag_completion_reproject",
+                "ok": bool(projection.get("ok")),
+                "persisted": bool(projection.get("persisted")),
+                "skipped": bool(projection.get("skipped")),
+                "reason": projection.get("reason") or projection.get("error"),
+                "membership_count": projection.get("membership_count"),
+                "completed_count": projection.get("completed_count"),
+                "summary_totals": projection.get("summary_totals"),
+            }
+            if projection.get("ok") is False:
+                raise RuntimeError(
+                    projection.get("error")
+                    or projection.get("reason")
+                    or "day_bag_completion_reproject_failed"
+                )
+            if rank < _STAGE_ORDER.index(EVIDENCE_STAGE_PROJECTIONS_REFRESHED):
+                set_presence_run_processing_stage(
+                    cursor,
+                    org,
+                    rid,
+                    stage=EVIDENCE_STAGE_PROJECTIONS_REFRESHED,
+                    failed_stage=None,
+                    error=None,
+                    extra={"projections": stats["projections"]},
+                )
+                stats["stages_completed"].append(EVIDENCE_STAGE_PROJECTIONS_REFRESHED)
+            else:
+                # Already marked projections_refreshed — still refresh day bags
+                # and record the latest projection stats on the run.
+                set_presence_run_processing_stage(
+                    cursor,
+                    org,
+                    rid,
+                    stage=EVIDENCE_STAGE_PROJECTIONS_REFRESHED,
+                    failed_stage=None,
+                    error=None,
+                    extra={"projections": stats["projections"]},
+                )
+                stats["stages_completed"].append("day_bag_completion_reproject")
             stage = EVIDENCE_STAGE_PROJECTIONS_REFRESHED
         except Exception as exc:
             set_presence_run_processing_stage(
