@@ -1,11 +1,12 @@
 """HD-only Step-1 day presentation — isolated from WF / Employee Productivity.
 
-Post-cutover HD rules:
-- No prior-day HD carryover (unresolved yesterday does not seed today).
-- Same-day HD admits are allowed any time during the ET day (opening scrape,
-  later portal scrape, same-day HD workload entry, or other qualifying evidence).
+Post-cutover HD rules (CP2B):
+- Opening Carryover applies to HD the same as WF (prior-day active, not
+  completed before opening). Same-day Dirty/Zipvan is not required.
+- Opening New and Added During Day follow the shared membership policy.
 - Prior completed HD order instances stay excluded on later days.
 - Does not mutate WF / wf_rush / wf_non_rush segments or productivity fields.
+- Does not change HD completion or review logic.
 """
 
 from __future__ import annotations
@@ -15,7 +16,11 @@ from datetime import date
 from typing import Any, Mapping
 
 from backend.rinse_bag_completion import normalize_bag_id
-from backend.rinse_veewash_day_membership import INCLUSION_BASELINE
+from backend.rinse_veewash_day_membership import (
+    INCLUSION_BASELINE,
+    INCLUSION_OPENING_CARRYOVER,
+    INCLUSION_OPENING_NEW,
+)
 from backend.rinse_veewash_workload import STEP1_AUTHORITATIVE_START_ET
 
 _HD_SEGMENT_KEYS = ("hd", "hd_rush", "hd_non_rush")
@@ -82,26 +87,34 @@ def _hd_carryover_ids(segments: Mapping[str, Any]) -> set[str]:
     return ids
 
 
-def strip_hd_carryover_from_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
-    """Remove HD carryover bags from HD (+ combined) segments; leave WF untouched."""
+def strip_hd_carryover_from_summary(
+    summary: Mapping[str, Any],
+    membership: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Preserve HD Opening Carryover; strip only non-membership legacy carryover ids.
+
+    CP2B: Opening Carryover is admitted by shared membership for WF and HD.
+    Bags listed in membership ``opening_carryover_bag_ids`` stay in HD segments.
+    """
     out = deepcopy(dict(summary or {}))
     segments = dict(out.get("segments") or {})
-    remove = _hd_carryover_ids(segments)
+    mem = membership if isinstance(membership, dict) else out.get("membership")
+    mem = mem if isinstance(mem, dict) else {}
+    keep = _as_bag_set(mem.get("opening_carryover_bag_ids"))
+    if not keep and isinstance(mem.get("membership"), dict):
+        for bid, row in (mem.get("membership") or {}).items():
+            if str((row or {}).get("inclusion_source") or "") == INCLUSION_OPENING_CARRYOVER:
+                nb = normalize_bag_id(bid) or normalize_bag_id((row or {}).get("bag_id"))
+                if nb:
+                    keep.add(nb)
+
+    remove = _hd_carryover_ids(segments) - keep
     if not remove:
-        # Still force HD carryover counters/lists to empty for terminology cleanup.
-        for key in _HD_SEGMENT_KEYS:
-            if key not in segments:
-                continue
-            seg = dict(segments[key] or {})
-            bags = dict(seg.get("bag_ids") or {})
-            bags["carryover"] = []
-            seg["bag_ids"] = bags
-            seg["carryover"] = 0
-            segments[key] = _recount_seg(seg)
         out["segments"] = segments
         out["hd_policy"] = {
             **dict(out.get("hd_policy") or {}),
-            "no_carryover": True,
+            "no_carryover": False,
+            "opening_carryover_enabled": True,
             "carryover_removed_count": 0,
         }
         return out
@@ -109,27 +122,23 @@ def strip_hd_carryover_from_summary(summary: Mapping[str, Any]) -> dict[str, Any
     for key in _HD_SEGMENT_KEYS:
         if key in segments:
             segments[key] = _strip_ids_from_seg(segments[key], remove)
-            bags = dict((segments[key].get("bag_ids") or {}))
-            bags["carryover"] = []
-            segments[key]["bag_ids"] = bags
-            segments[key]["carryover"] = 0
             segments[key] = _recount_seg(segments[key])
 
     for key in _COMBINED_SEGMENT_KEYS:
         if key not in segments:
             continue
-        # Only strip the HD carryover ids — never rewrite WF membership lists.
+        # Only strip non-kept HD carryover ids — never rewrite WF membership lists.
         segments[key] = _strip_ids_from_seg(segments[key], remove)
 
     out["segments"] = segments
-    # Top-level carryover is the combined segment's remaining carryover (WF-only after strip).
     all_seg = segments.get("all") or {}
     out["carryover"] = int(all_seg.get("carryover") or 0)
     out["active_workload"] = int(all_seg.get("active_workload") or out.get("active_workload") or 0)
     out["total_workload"] = int(all_seg.get("total_workload") or out.get("total_workload") or 0)
     out["hd_policy"] = {
         **dict(out.get("hd_policy") or {}),
-        "no_carryover": True,
+        "no_carryover": False,
+        "opening_carryover_enabled": True,
         "carryover_removed_count": len(remove),
         "carryover_removed_bag_ids": sorted(remove),
     }
@@ -137,9 +146,13 @@ def strip_hd_carryover_from_summary(summary: Mapping[str, Any]) -> dict[str, Any
 
 
 def _opening_scrape_bag_ids(membership: Mapping[str, Any] | None) -> set[str] | None:
-    """Bag ids admitted by the day's first valid portal scrape."""
+    """Bag ids admitted by the day's first valid portal scrape (carryover ∪ new)."""
     if not isinstance(membership, dict):
         return None
+    carry = membership.get("opening_carryover_bag_ids")
+    opening_new = membership.get("opening_new_bag_ids")
+    if isinstance(carry, (list, tuple, set)) or isinstance(opening_new, (list, tuple, set)):
+        return _as_bag_set(carry) | _as_bag_set(opening_new)
     baseline = membership.get("baseline_bag_ids")
     if isinstance(baseline, (list, tuple, set)):
         return _as_bag_set(baseline)
@@ -150,7 +163,13 @@ def _opening_scrape_bag_ids(membership: Mapping[str, Any] | None) -> set[str] | 
     for bid, row in raw.items():
         if not isinstance(row, dict):
             continue
-        if str(row.get("inclusion_source") or "") != INCLUSION_BASELINE:
+        src = str(row.get("inclusion_source") or "")
+        if src not in (
+            INCLUSION_BASELINE,
+            INCLUSION_OPENING_NEW,
+            INCLUSION_OPENING_CARRYOVER,
+            "FIRST_SCRAPE_BASELINE",
+        ):
             continue
         nb = normalize_bag_id(bid) or normalize_bag_id(row.get("bag_id"))
         if nb:
@@ -163,39 +182,26 @@ def apply_hd_same_day_membership_policy(
     membership: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """
-    Keep all remaining HD bags after prior-day carryover strip.
+    Keep HD Opening Carryover, Opening New, and Added During Day.
 
-    Fresh start means no yesterday carryover — not midnight-only membership.
-    Opening-scrape AND later same-day HD admits (ADDED_LATER / workload entry /
-    later portal appearance) stay in HD segments. WF unchanged.
+    WF unchanged. HD completion/review logic unchanged.
     """
     opening = _opening_scrape_bag_ids(membership)
     out = deepcopy(dict(summary or {}))
     segments = dict(out.get("segments") or {})
 
-    # Belt-and-suspenders: carryover lists must stay empty for HD segments.
-    for key in _HD_SEGMENT_KEYS:
-        if key not in segments:
-            continue
-        seg = dict(segments[key] or {})
-        bags = dict(seg.get("bag_ids") or {})
-        bags["carryover"] = []
-        # Fold any residual carryover ids that still appear under new_today into
-        # new_today only when already present there; strip pure carryover leftovers
-        # was already handled by strip_hd_carryover_from_summary.
-        seg["bag_ids"] = bags
-        seg["carryover"] = 0
-        segments[key] = _recount_seg(seg)
-
     hd_seg = segments.get("hd") or {}
     hd_bags = dict(hd_seg.get("bag_ids") or {})
     current_hd: set[str] = set()
-    for key in ("new_today", "completed", "pending", "review_required"):
+    for key in ("new_today", "carryover", "completed", "pending", "review_required"):
         current_hd |= _as_bag_set(hd_bags.get(key))
 
     opening_ids = opening if opening is not None else set()
     opening_admitted = current_hd & opening_ids
     same_day_later = current_hd - opening_ids if opening is not None else set(current_hd)
+    opening_carry = current_hd & _as_bag_set(
+        (membership or {}).get("opening_carryover_bag_ids") if isinstance(membership, dict) else []
+    )
 
     out["segments"] = segments
     all_seg = segments.get("all") or {}
@@ -204,18 +210,20 @@ def apply_hd_same_day_membership_policy(
     out["total_workload"] = int(all_seg.get("total_workload") or 0)
     out["hd_policy"] = {
         **dict(out.get("hd_policy") or {}),
-        "no_carryover": True,
+        "no_carryover": False,
+        "opening_carryover_enabled": True,
         "opening_scrape_restricted": False,
         "same_day_adds_allowed": True,
         "opening_scrape_admit_count": len(opening_admitted),
+        "opening_carryover_count": len(opening_carry),
         "same_day_later_admit_count": len(same_day_later),
         "removed_non_opening_hd_count": 0,
-        "membership_source": "same_day_qualifying_evidence",
+        "membership_source": "opening_carryover_v1",
         "same_day_later_bag_ids": sorted(same_day_later),
     }
     if opening is None:
         out["hd_policy"]["reason"] = "membership_unavailable"
-    out["hd_carryover_enabled"] = False
+    out["hd_carryover_enabled"] = True
     return out
 
 
@@ -236,13 +244,13 @@ def finalize_hd_step1_summary(
     cursor=None,
     organization_id: int | None = None,
 ) -> dict[str, Any]:
-    """Apply HD date-scoped / no-carryover / review / prior-complete presentation."""
+    """Apply HD date-scoped / opening-carryover / review / prior-complete presentation."""
     if apply is False:
         return dict(summary or {})
     if selected_date_et < STEP1_AUTHORITATIVE_START_ET:
         return dict(summary or {})
     mem = membership if membership is not None else (summary or {}).get("membership")
-    out = strip_hd_carryover_from_summary(summary)
+    out = strip_hd_carryover_from_summary(summary, mem if isinstance(mem, dict) else None)
     out = apply_hd_same_day_membership_policy(out, mem if isinstance(mem, dict) else None)
 
     if cursor is not None and organization_id is not None:
@@ -284,6 +292,9 @@ def finalize_hd_step1_summary(
 
             remaining = set(
                 ((out.get("segments") or {}).get("hd") or {}).get("bag_ids", {}).get("new_today")
+                or []
+            ) | set(
+                ((out.get("segments") or {}).get("hd") or {}).get("bag_ids", {}).get("carryover")
                 or []
             ) | set(
                 ((out.get("segments") or {}).get("hd") or {}).get("bag_ids", {}).get(

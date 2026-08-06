@@ -203,11 +203,16 @@ def count_admitted_operational_workload(
     mem = membership if isinstance(membership, dict) else summary.get("membership")
     mem = mem if isinstance(mem, dict) else {}
 
-    opening = int(
-        mem.get("opening_scrape_admit_count")
-        if mem.get("opening_scrape_admit_count") is not None
-        else (mem.get("baseline_count") or 0)
-    )
+    opening_carry = int(mem.get("opening_carryover_count") or 0)
+    opening_new = int(mem.get("opening_new_count") or 0)
+    if opening_carry or opening_new:
+        opening = opening_carry + opening_new
+    else:
+        opening = int(
+            mem.get("opening_scrape_admit_count")
+            if mem.get("opening_scrape_admit_count") is not None
+            else (mem.get("baseline_count") or 0)
+        )
     added = int(
         mem.get("added_during_day_count")
         if mem.get("added_during_day_count") is not None
@@ -238,11 +243,20 @@ def count_admitted_operational_workload(
         else (summary.get("completed") or 0)
     )
 
-    # Distinct bags admitted today — do not count carryover-only membership.
+    # Distinct bags admitted today (Opening Carryover ∪ Opening New ∪ Added).
     admitted_ids: set[str] = set()
     for svc in ("all", "wf", "hd"):
         bags = ((segs.get(svc) or {}).get("bag_ids") or {})
-        for key in ("new_today", "completed", "pending", "review_required"):
+        for key in (
+            "new_today",
+            "carryover",
+            "opening_carryover",
+            "opening_new",
+            "added_during_day",
+            "completed",
+            "pending",
+            "review_required",
+        ):
             for raw in bags.get(key) or []:
                 bid = normalize_bag_id(raw)
                 if bid:
@@ -587,11 +601,15 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
         if member_ids and bid not in member_ids:
             continue
         entry_class = row.get("entry_class") or row.get("inclusion_source") or "new_today"
-        if entry_class in ("carryover", "FIRST_SCRAPE_BASELINE", "ADDED_LATER_IN_DAY"):
-            # Persist operational membership without carryover classification.
-            entry_class = "new_today" if entry_class != "carryover" else "new_today"
-        if entry_class == "carryover":
-            entry_class = "new_today"
+        # Normalize inclusion_source constants onto stable entry_class labels.
+        if entry_class in ("OPENING_CARRYOVER", "opening_carryover", "carryover"):
+            entry_class = "opening_carryover"
+        elif entry_class in ("OPENING_NEW", "opening_new", "FIRST_SCRAPE_BASELINE"):
+            entry_class = "opening_new"
+        elif entry_class in ("ADDED_LATER_IN_DAY", "added_during_day", "ADDED_LATER"):
+            entry_class = "added_during_day"
+        elif entry_class == "new_today":
+            entry_class = "opening_new"
         eff = _effective_status_for_row(row, review_ids)
         if bid in hd_completed:
             eff = OUTCOME_COMPLETED
@@ -604,9 +622,16 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
             eff = OUTCOME_PENDING
         # Only persist bags that are part of the day's operational set.
         # Snapshot rows are already the day membership — do not drop by entry_class.
+        _persistable_entry = (
+            "new_today",
+            "carryover",
+            "opening_carryover",
+            "opening_new",
+            "added_during_day",
+        )
         if (
             not wl.get("from_snapshot")
-            and entry_class not in ("new_today", "carryover")
+            and entry_class not in _persistable_entry
             and bid not in review_ids
         ):
             # Still keep CWO / review bags that were force-included.
@@ -636,12 +661,18 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
         elif row.get("pending_reason"):
             snap["pending_reason"] = row.get("pending_reason")
             snap["reason"] = row.get("pending_reason")
+        if entry_class == "opening_carryover":
+            new_or_carry = "carryover"
+        elif entry_class == "added_during_day":
+            new_or_carry = "added_during_day"
+        else:
+            new_or_carry = "opening_new"
         rows_out.append(
             {
                 "bag_id": bid,
                 "service_type": row.get("service_type"),
                 "rush_status": row.get("rush_flag"),
-                "new_or_carryover": "workload" if entry_class else None,
+                "new_or_carryover": new_or_carry,
                 "workload_entry_type": row.get("entry_source"),
                 "workload_entry_timestamp": row.get("first_entry_at")
                 or row.get("entry_at")

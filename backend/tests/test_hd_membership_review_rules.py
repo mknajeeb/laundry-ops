@@ -182,6 +182,7 @@ def test_d_later_same_day_admission():
 
 
 def test_e_prior_day_carryover_excluded():
+    """Legacy HD carryover without membership Opening Carryover evidence is stripped."""
     summary = {
         "segments": {
             "wf": _seg(["WF01"], []),
@@ -195,10 +196,31 @@ def test_e_prior_day_carryover_excluded():
             "wf_non_rush": _seg(["WF01"], []),
         }
     }
-    out = strip_hd_carryover_from_summary(summary)
+    out = strip_hd_carryover_from_summary(summary, membership={"opening_carryover_bag_ids": []})
     assert out["segments"]["hd"]["bag_ids"]["carryover"] == []
     assert out["segments"]["hd"]["bag_ids"]["new_today"] == []
     assert out["hd_policy"]["carryover_removed_count"] == 1
+
+
+def test_e2_opening_carryover_hd_preserved():
+    summary = {
+        "segments": {
+            "wf": _seg(["WF01"], []),
+            "hd": _seg([], ["HDCARRY1"], review=["HDCARRY1"]),
+            "hd_rush": _seg([], []),
+            "hd_non_rush": _seg([], ["HDCARRY1"], review=["HDCARRY1"]),
+            "all": _seg(["WF01"], ["HDCARRY1"], review=["HDCARRY1"]),
+            "rush": _seg([], []),
+            "non_rush": _seg(["WF01"], ["HDCARRY1"], review=["HDCARRY1"]),
+            "wf_rush": _seg([], []),
+            "wf_non_rush": _seg(["WF01"], []),
+        }
+    }
+    out = strip_hd_carryover_from_summary(
+        summary, membership={"opening_carryover_bag_ids": ["HDCARRY1"]}
+    )
+    assert "HDCARRY1" in out["segments"]["hd"]["bag_ids"]["carryover"]
+    assert out["hd_policy"]["carryover_removed_count"] == 0
 
 
 def test_f_prior_user_completed_excluded():

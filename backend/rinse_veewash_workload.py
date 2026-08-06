@@ -1593,11 +1593,65 @@ def build_veewash_daily_workload_from_membership(
     )
     result = apply_cycle_pending_reasons(result, cycle_pending_reasons)
 
-    # Append-only model: no carryover; membership size is the authoritative total.
+    # CP2B membership buckets: Opening Carryover / Opening New / Added During Day.
+    from backend.rinse_veewash_day_membership import (
+        INCLUSION_ADDED_LATER,
+        INCLUSION_OPENING_CARRYOVER,
+        INCLUSION_OPENING_NEW,
+    )
+
+    mem_by_bag = membership.get("membership") or {}
+    opening_carryover = [
+        _norm_bag(b)
+        for b in (membership.get("opening_carryover_bag_ids") or [])
+        if _norm_bag(b) in member_set
+    ]
+    if not opening_carryover and isinstance(mem_by_bag, dict):
+        opening_carryover = sorted(
+            bid
+            for bid, row in mem_by_bag.items()
+            if _norm_bag(bid) in member_set
+            and str((row or {}).get("inclusion_source") or "") == INCLUSION_OPENING_CARRYOVER
+        )
+    opening_new = [
+        _norm_bag(b)
+        for b in (membership.get("opening_new_bag_ids") or [])
+        if _norm_bag(b) in member_set
+    ]
+    if not opening_new and isinstance(mem_by_bag, dict):
+        opening_new = sorted(
+            bid
+            for bid, row in mem_by_bag.items()
+            if _norm_bag(bid) in member_set
+            and str((row or {}).get("inclusion_source") or "")
+            in (INCLUSION_OPENING_NEW, "FIRST_SCRAPE_BASELINE")
+        )
+    added_during = [
+        _norm_bag(b)
+        for b in (membership.get("added_later_bag_ids") or [])
+        if _norm_bag(b) in member_set
+    ]
+    if not added_during and isinstance(mem_by_bag, dict):
+        added_during = sorted(
+            bid
+            for bid, row in mem_by_bag.items()
+            if _norm_bag(bid) in member_set
+            and str((row or {}).get("inclusion_source") or "") == INCLUSION_ADDED_LATER
+        )
+
+    # Segment compat: carryover = Opening Carryover; new_today = Opening New ∪ Added.
+    carry_set = {_norm_bag(b) for b in opening_carryover}
+    new_set = ({_norm_bag(b) for b in opening_new} | {_norm_bag(b) for b in added_during}) - carry_set
+    # Any frozen/orphan member not classified still counts in new_today.
+    unclassified = member_set - carry_set - new_set
+    new_set |= unclassified
+
     total = len(member_ids)
-    prior_carry = list(result.get("carryover") or [])
-    result["carryover"] = []
-    result["new_today"] = sorted(set(member_ids))
+    result["carryover"] = sorted(carry_set)
+    result["new_today"] = sorted(new_set)
+    result["opening_carryover"] = sorted(carry_set)
+    result["opening_new"] = sorted({_norm_bag(b) for b in opening_new} & member_set)
+    result["added_during_day"] = sorted({_norm_bag(b) for b in added_during} & member_set)
 
     # Membership bags must never remain "not_in_workload" — they are in today's set.
     not_in = set(result.get("not_in_workload") or [])
@@ -1612,31 +1666,50 @@ def build_veewash_daily_workload_from_membership(
         pending.add(bid)
     result["pending_end_of_date"] = sorted(pending)
 
+    def _entry_class_for(bid: str, incl_src: str | None) -> str:
+        src = str(incl_src or "")
+        if src == INCLUSION_OPENING_CARRYOVER or bid in carry_set:
+            return "opening_carryover"
+        if src == INCLUSION_ADDED_LATER or bid in set(result["added_during_day"]):
+            return "added_during_day"
+        if src in (INCLUSION_OPENING_NEW, "FIRST_SCRAPE_BASELINE") or bid in set(
+            result["opening_new"]
+        ):
+            return "opening_new"
+        return "opening_new" if bid in new_set else "opening_carryover"
+
     for row in result.get("rows") or []:
         bid = row.get("bag_id")
         if bid not in member_set:
             continue
-        row["entry_class"] = "new_today"
-        incl = (membership.get("membership") or {}).get(bid) or {}
+        incl = mem_by_bag.get(bid) or {}
+        entry_class = _entry_class_for(bid, incl.get("inclusion_source"))
+        row["entry_class"] = entry_class
         row["inclusion_source"] = incl.get("inclusion_source")
+        # Never label Opening Carryover as New Today.
+        if entry_class == "opening_carryover":
+            row["new_or_carryover"] = "carryover"
+        elif entry_class == "added_during_day":
+            row["new_or_carryover"] = "added_during_day"
+        else:
+            row["new_or_carryover"] = "opening_new"
         if row.get("outcome") == "not_in_workload" or row.get("final_bucket") == "not_in_workload":
             if bid in completed:
                 row["outcome"] = "completed"
-                row["final_bucket"] = "new_today_completed"
+                row["final_bucket"] = f"{entry_class}_completed"
             elif bid in review:
                 row["outcome"] = "review_required"
                 row["final_bucket"] = "review_required"
             else:
                 row["outcome"] = "pending"
-                row["final_bucket"] = "new_today_pending"
-        if "carryover" in str(row.get("final_bucket") or ""):
-            row["final_bucket"] = str(row["final_bucket"]).replace("carryover", "new_today")
-
-    _ = prior_carry
+                row["final_bucket"] = f"{entry_class}_pending"
 
     counts = dict(result.get("counts") or {})
-    counts["carryover"] = 0
+    counts["carryover"] = len(result.get("carryover") or [])
     counts["new_today"] = len(result.get("new_today") or [])
+    counts["opening_carryover"] = len(result.get("opening_carryover") or [])
+    counts["opening_new"] = len(result.get("opening_new") or [])
+    counts["added_during_day"] = len(result.get("added_during_day") or [])
     counts["not_in_workload"] = len(result.get("not_in_workload") or [])
     counts["pending"] = len(result.get("pending_end_of_date") or [])
     counts["total_workload"] = total

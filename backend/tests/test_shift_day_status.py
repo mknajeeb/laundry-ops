@@ -152,20 +152,49 @@ def test_reopened_cleared_becomes_ready_to_close():
     assert derive_shift_day_status(s, current_status=STATUS_REOPENED) == STATUS_READY_TO_CLOSE
 
 
-def test_prior_day_carryins_do_not_count_as_admitted():
+def test_excluded_completed_before_opening_do_not_count_as_admitted():
+    """Excluded-before-opening counts alone must not open the day."""
     s = _summary(
         opening=0,
         added=0,
-        excluded_carryin=12,
+        excluded_carryin=0,
         total=0,
         active=0,
         new_today=0,
         bag_ids={"new_today": [], "completed": [], "pending": [], "review_required": [], "carryover": []},
     )
-    # Even if someone stuffed carryover bag ids, admitted-today helper ignores carryover bucket.
-    s["segments"]["all"]["bag_ids"]["carryover"] = [f"OLD{i}" for i in range(12)]
+    s["membership"]["excluded_completed_before_opening_count"] = 9
+    s["membership"]["opening_carryover_count"] = 0
+    s["membership"]["opening_new_count"] = 0
     assert count_admitted_operational_workload(s) == 0
     assert derive_shift_day_status(s) == STATUS_NOT_STARTED
+
+
+def test_opening_carryover_counts_as_admitted():
+    """CP2B: Opening Carryover is part of today's admitted workload."""
+    carry_ids = [f"OLD{i}" for i in range(12)]
+    s = _summary(
+        opening=0,
+        added=0,
+        total=12,
+        active=12,
+        new_today=0,
+        pending=12,
+        review=0,
+        bag_ids={
+            "new_today": [],
+            "completed": [],
+            "pending": carry_ids,
+            "review_required": [],
+            "carryover": carry_ids,
+        },
+    )
+    s["membership"]["opening_carryover_count"] = 12
+    s["membership"]["opening_new_count"] = 0
+    s["membership"]["opening_scrape_admit_count"] = 12
+    s["segments"]["all"]["bag_ids"]["carryover"] = carry_ids
+    assert count_admitted_operational_workload(s) == 12
+    assert derive_shift_day_status(s) == STATUS_OPEN
 
 
 def test_close_rejects_not_started_day():

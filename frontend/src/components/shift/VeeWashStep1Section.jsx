@@ -522,22 +522,28 @@ export default function VeeWashStep1Section({
           <Typography variant="caption" sx={{ mt: 0.35, opacity: 0.9, display: "block", maxWidth: 640 }}>
             WF/HD append-only daily membership · Completion canonical · Review Required is for genuine exceptions only.
           </Typography>
-          {summary?.membership?.fresh_start_no_prior_day_carryover ||
-          summary?.membership?.excluded_prior_day_carryin_count > 0 ||
-          summary?.membership?.prior_day_carryover_count === 0 ? (
-            <Typography variant="caption" fontWeight={700} sx={{ display: "block", mt: 0.5, color: "#bbf7d0" }}>
-              Fresh start — no prior-day carryover
-            </Typography>
-          ) : null}
+          <Typography variant="caption" fontWeight={700} sx={{ display: "block", mt: 0.5, color: "#bbf7d0" }}>
+            {summary?.membership?.membership_copy ||
+              "Today's active workload includes opening carryover and bags added during the day."}
+          </Typography>
           {summary?.membership ? (
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-              Opening scrape admits:{" "}
-              {summary.membership.opening_scrape_admit_count ?? summary.membership.baseline_count ?? "—"}
-              {summary.membership.baseline_delayed ? " (delayed)" : ""} · Added during day:{" "}
-              {summary.membership.added_during_day_count ?? summary.membership.added_later_count ?? "—"} · Total:{" "}
-              {summary.membership.total_count ?? "—"}
-              {summary.membership.excluded_prior_day_carryin_count
-                ? ` · Excluded prior-day portal carry-in ${summary.membership.excluded_prior_day_carryin_count}`
+              Opening Carryover:{" "}
+              {summary.membership.opening_carryover_count ??
+                summary.membership.prior_day_carryover_count ??
+                "—"}
+              {summary.membership.opening_carryover_rush_count != null ||
+              summary.membership.opening_carryover_non_rush_count != null
+                ? ` (Rush ${summary.membership.opening_carryover_rush_count ?? 0} · Non-Rush ${
+                    summary.membership.opening_carryover_non_rush_count ?? 0
+                  })`
+                : ""}
+              {" · "}Opening New: {summary.membership.opening_new_count ?? "—"}
+              {" · "}Added During Day:{" "}
+              {summary.membership.added_during_day_count ?? summary.membership.added_later_count ?? "—"}
+              {" · "}Total Workload: {summary.membership.total_count ?? "—"}
+              {summary.membership.excluded_completed_before_opening_count
+                ? ` · Excluded completed before opening ${summary.membership.excluded_completed_before_opening_count}`
                 : ""}
               {summary.membership.baseline_presence_run_id
                 ? ` · scrape #${summary.membership.baseline_presence_run_id}`
@@ -590,7 +596,10 @@ export default function VeeWashStep1Section({
               snapshotUnavailable={snapshotUnavailable}
               hdDashboardTotals={summary?.hd_dashboard_totals || null}
               membershipHelper={
-                summary?.hd_policy?.no_carryover
+                summary?.hd_policy?.opening_carryover_enabled ||
+                summary?.membership?.includes_opening_carryover
+                  ? "Date-scoped · includes Opening Carryover when eligible"
+                  : summary?.hd_policy?.no_carryover
                   ? "Date-scoped · estimated delivery date · no HD carryover"
                   : null
               }
@@ -727,15 +736,17 @@ export default function VeeWashStep1Section({
                 snapshotUnavailable
                   ? null
                   : summary?.membership
-                  ? `${
-                      summary.membership.fresh_start_no_prior_day_carryover
-                        ? "Fresh start — no prior-day carryover · "
-                        : ""
-                    }Opening scrape admits: ${
-                      summary.membership.opening_scrape_admit_count ?? summary.membership.baseline_count ?? "—"
-                    } · Added during day: ${
-                      summary.membership.added_during_day_count ?? summary.membership.added_later_count ?? "—"
-                    } · Total: ${summary.membership.total_count ?? totalSeg.active_workload ?? "—"}`
+                  ? `Opening Carryover: ${
+                      summary.membership.opening_carryover_count ??
+                      summary.membership.prior_day_carryover_count ??
+                      "—"
+                    } · Opening New: ${summary.membership.opening_new_count ?? "—"} · Added During Day: ${
+                      summary.membership.added_during_day_count ??
+                      summary.membership.added_later_count ??
+                      "—"
+                    } · Total Workload: ${
+                      summary.membership.total_count ?? totalSeg.active_workload ?? "—"
+                    }`
                   : null
               }
             />

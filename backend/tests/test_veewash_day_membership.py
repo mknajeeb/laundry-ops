@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 from backend.rinse_veewash_day_membership import (
     INCLUSION_ADDED_LATER_IN_DAY,
     INCLUSION_FIRST_SCRAPE_BASELINE,
+    INCLUSION_OPENING_CARRYOVER,
+    INCLUSION_OPENING_NEW,
     STEP1_AUTHORITATIVE_START_ET,
     build_append_only_membership,
     list_valid_same_day_scrapes,
@@ -171,13 +173,14 @@ def test_later_bag_appended_disappearing_stays_idempotent_no_carryover():
     assert m1["total_count"] == 4
 
     by_id = m1["membership"]
-    assert by_id["BAGA"]["inclusion_source"] == INCLUSION_FIRST_SCRAPE_BASELINE
-    assert by_id["BAGB"]["inclusion_source"] == INCLUSION_FIRST_SCRAPE_BASELINE
-    assert by_id["BAGC"]["inclusion_source"] == INCLUSION_FIRST_SCRAPE_BASELINE
+    assert by_id["BAGA"]["inclusion_source"] == INCLUSION_OPENING_NEW
+    assert by_id["BAGB"]["inclusion_source"] == INCLUSION_OPENING_NEW
+    assert by_id["BAGC"]["inclusion_source"] == INCLUSION_OPENING_NEW
     assert by_id["BAGD"]["inclusion_source"] == INCLUSION_ADDED_LATER_IN_DAY
     assert "BAGB" in by_id and "BAGC" in by_id
     assert m1["selected_date_et"] == D.isoformat()
-    assert "carryover" not in m1
+    assert m1["opening_new_count"] == 3
+    assert m1["added_later_count"] == 1
     assert m1["total_count"] == m2["total_count"]
     assert set(m1["membership"]) == set(m2["membership"])
 
@@ -270,17 +273,17 @@ def test_pending_without_scans_is_stale_association_warning():
     assert "NOSCANBAG01" in (out.get("stale_scan_chronology_bag_ids") or [])
 
 
-def test_prior_day_portal_carryin_excluded_without_same_day_entry_scan():
-    """Jul 24+ must not auto-admit prior membership bags without Dirty/entry scan."""
+def test_prior_day_portal_carryin_becomes_opening_carryover_without_dirty():
+    """CP2B: prior membership on opening scrape → Opening Carryover (no Dirty required)."""
     from backend.rinse_veewash_day_membership import exclude_prior_day_portal_carryins
 
     membership = {
-        "OLD1": {"bag_id": "OLD1", "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE},
-        "NEW1": {"bag_id": "NEW1", "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE},
+        "OLD1": {"bag_id": "OLD1", "inclusion_source": INCLUSION_OPENING_NEW},
+        "NEW1": {"bag_id": "NEW1", "inclusion_source": INCLUSION_OPENING_NEW},
         "REWORK1": {"bag_id": "REWORK1", "inclusion_source": INCLUSION_ADDED_LATER_IN_DAY},
         "OLDDIRTY": {
             "bag_id": "OLDDIRTY",
-            "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE,
+            "inclusion_source": INCLUSION_OPENING_NEW,
         },
     }
     with (
@@ -289,32 +292,25 @@ def test_prior_day_portal_carryin_excluded_without_same_day_entry_scan():
             return_value={"OLD1", "REWORK1", "OLDDIRTY"},
         ),
         patch(
-            "backend.rinse_veewash_day_membership._bags_with_same_day_entry_evidence",
-            return_value={"REWORK1", "OLDDIRTY"},
+            "backend.rinse_veewash_day_membership._bags_canonically_completed_before_opening",
+            return_value=set(),
         ),
     ):
         kept, excluded = exclude_prior_day_portal_carryins(
             MagicMock(), 3, date(2026, 7, 24), membership
         )
-    assert excluded == ["OLD1"]
-    assert "OLD1" not in kept
-    assert "NEW1" in kept
-    assert "REWORK1" in kept
-    assert "OLDDIRTY" in kept
-    assert kept["NEW1"]["inclusion_source"] == INCLUSION_FIRST_SCRAPE_BASELINE
+    assert excluded == []
+    assert kept["OLD1"]["inclusion_source"] == INCLUSION_OPENING_CARRYOVER
+    assert kept["NEW1"]["inclusion_source"] == INCLUSION_OPENING_NEW
     assert kept["REWORK1"]["inclusion_source"] == INCLUSION_ADDED_LATER_IN_DAY
-    assert kept["OLDDIRTY"]["inclusion_source"] == INCLUSION_ADDED_LATER_IN_DAY
-    assert kept["OLDDIRTY"].get("requalified_from_prior_day") is True
-    assert kept["OLDDIRTY"].get("membership_note") == (
-        "prior_day_requalified_by_same_day_entry_scan"
-    )
+    assert kept["OLDDIRTY"]["inclusion_source"] == INCLUSION_OPENING_CARRYOVER
 
 
-def test_unfinished_prior_day_without_entry_scan_excluded():
+def test_unfinished_prior_day_without_completion_is_opening_carryover():
     from backend.rinse_veewash_day_membership import exclude_prior_day_portal_carryins
 
     membership = {
-        "YDAY1": {"bag_id": "YDAY1", "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE},
+        "YDAY1": {"bag_id": "YDAY1", "inclusion_source": INCLUSION_OPENING_NEW},
     }
     with (
         patch(
@@ -322,8 +318,31 @@ def test_unfinished_prior_day_without_entry_scan_excluded():
             return_value={"YDAY1"},
         ),
         patch(
-            "backend.rinse_veewash_day_membership._bags_with_same_day_entry_evidence",
+            "backend.rinse_veewash_day_membership._bags_canonically_completed_before_opening",
             return_value=set(),
+        ),
+    ):
+        kept, excluded = exclude_prior_day_portal_carryins(
+            MagicMock(), 3, date(2026, 7, 25), membership
+        )
+    assert excluded == []
+    assert kept["YDAY1"]["inclusion_source"] == INCLUSION_OPENING_CARRYOVER
+
+
+def test_prior_day_completed_before_opening_is_excluded():
+    from backend.rinse_veewash_day_membership import exclude_prior_day_portal_carryins
+
+    membership = {
+        "YDAY1": {"bag_id": "YDAY1", "inclusion_source": INCLUSION_OPENING_NEW},
+    }
+    with (
+        patch(
+            "backend.rinse_veewash_day_membership._load_prior_day_membership_ids",
+            return_value={"YDAY1"},
+        ),
+        patch(
+            "backend.rinse_veewash_day_membership._bags_canonically_completed_before_opening",
+            return_value={"YDAY1"},
         ),
     ):
         kept, excluded = exclude_prior_day_portal_carryins(
@@ -331,30 +350,6 @@ def test_unfinished_prior_day_without_entry_scan_excluded():
         )
     assert excluded == ["YDAY1"]
     assert kept == {}
-
-
-def test_prior_day_with_new_dirty_entry_is_requalified():
-    from backend.rinse_veewash_day_membership import exclude_prior_day_portal_carryins
-
-    membership = {
-        "YDAY1": {"bag_id": "YDAY1", "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE},
-    }
-    with (
-        patch(
-            "backend.rinse_veewash_day_membership._load_prior_day_membership_ids",
-            return_value={"YDAY1"},
-        ),
-        patch(
-            "backend.rinse_veewash_day_membership._bags_with_same_day_entry_evidence",
-            return_value={"YDAY1"},
-        ),
-    ):
-        kept, excluded = exclude_prior_day_portal_carryins(
-            MagicMock(), 3, date(2026, 7, 25), membership
-        )
-    assert excluded == []
-    assert kept["YDAY1"]["requalified_from_prior_day"] is True
-    assert kept["YDAY1"]["inclusion_source"] == INCLUSION_ADDED_LATER_IN_DAY
 
 
 def test_prior_bulk_or_review_resolution_does_not_admit():
@@ -401,15 +396,25 @@ def test_stale_prior_day_bags_union_live_membership():
     assert prior == {"SNAP1", "LIVEONLY"}
 
 
-def test_cutover_day_does_not_filter_prior_portal_bags():
+def test_cutover_day_prior_empty_keeps_opening_new():
     from backend.rinse_veewash_day_membership import exclude_prior_day_portal_carryins
 
-    membership = {"OLD1": {"bag_id": "OLD1", "inclusion_source": INCLUSION_FIRST_SCRAPE_BASELINE}}
-    kept, excluded = exclude_prior_day_portal_carryins(
-        MagicMock(), 3, date(2026, 7, 23), membership
-    )
+    membership = {"OLD1": {"bag_id": "OLD1", "inclusion_source": INCLUSION_OPENING_NEW}}
+    with (
+        patch(
+            "backend.rinse_veewash_day_membership._load_prior_day_membership_ids",
+            return_value=set(),
+        ),
+        patch(
+            "backend.rinse_veewash_day_membership._bags_canonically_completed_before_opening",
+            return_value=set(),
+        ),
+    ):
+        kept, excluded = exclude_prior_day_portal_carryins(
+            MagicMock(), 3, date(2026, 7, 23), membership
+        )
     assert excluded == []
-    assert kept == membership
+    assert kept["OLD1"]["inclusion_source"] == INCLUSION_OPENING_NEW
 
     from backend.rinse_veewash_shift_day import build_or_load_step1_for_date
 
