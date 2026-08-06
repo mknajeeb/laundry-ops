@@ -2877,6 +2877,152 @@ def list_close_audit(
     return out
 
 
+def reproject_day_bag_completions_from_chronology(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    *,
+    chronology_complete: bool = True,
+) -> dict[str, Any]:
+    """Re-project completion onto an existing day-bag membership set.
+
+    Checkpoint 2A: scan chronology may gain review/POST evidence after the last
+    Stage-B ``backfill_day_from_live``. Presence downstream previously marked
+    ``projections_refreshed`` as a read-time no-op, so day_bags stayed Pending
+    even when ``resolve_current_cycle`` already returned completed.
+
+    This path:
+      - freezes membership to already-persisted day-bag IDs (no admit/remove)
+      - rebuilds workload outcomes from scan chronology
+      - persists via ``persist_day_snapshot`` (same projection function as Stage-B)
+
+    Does not change carryover / opening-scrape / evidence-gate policy.
+    """
+    org = int(organization_id)
+    day = get_day_record(cursor, org, shift_date_et)
+    if not day:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "day_missing",
+            "persisted": False,
+            "membership_count": 0,
+            "completed_count": 0,
+        }
+    if str(day.get("status") or "") == STATUS_CLOSED:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "day_closed",
+            "persisted": False,
+            "membership_count": 0,
+            "completed_count": 0,
+        }
+
+    existing_bags = load_day_bags(cursor, org, shift_date_et)
+    frozen = sorted(
+        {
+            normalize_bag_id(b.get("bag_id"))
+            for b in existing_bags
+            if normalize_bag_id(b.get("bag_id"))
+        }
+    )
+    if not frozen:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "no_day_bags",
+            "persisted": False,
+            "membership_count": 0,
+            "completed_count": 0,
+        }
+
+    activation = get_step1_activation_date(cursor, org)
+    wl = build_veewash_daily_workload_from_membership(
+        cursor,
+        org,
+        selected_date_et=shift_date_et,
+        frozen_member_ids=frozen,
+    )
+    member_ids = sorted(
+        {
+            normalize_bag_id(b)
+            for b in (wl.get("new_today") or [])
+            if normalize_bag_id(b)
+        }
+    )
+    if member_ids != frozen:
+        return {
+            "ok": False,
+            "error": "frozen_membership_diverged",
+            "persisted": False,
+            "membership_count": len(frozen),
+            "rebuild_membership_count": len(member_ids),
+            "only_in_rebuild": sorted(set(member_ids) - set(frozen))[:20],
+            "missing_from_rebuild": sorted(set(frozen) - set(member_ids))[:20],
+        }
+
+    summary = build_step1_headline_summary(
+        wl,
+        selected_date_et=shift_date_et,
+        activation_date=activation or shift_date_et,
+    )
+    if isinstance(wl.get("membership"), dict) and "membership" not in (summary or {}):
+        summary = dict(summary)
+        summary["membership"] = wl.get("membership")
+
+    from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
+    from backend.rinse_hd_day_presentation import finalize_hd_step1_summary
+
+    summary = finalize_hd_step1_summary(
+        summary,
+        selected_date_et=shift_date_et,
+        membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
+        cursor=cursor,
+        organization_id=org,
+    )
+    summary = attach_specialty_metrics_to_summary(
+        cursor, org, shift_date_et, summary
+    )
+
+    day = persist_day_snapshot(
+        cursor,
+        org,
+        shift_date_et,
+        workload=wl,
+        summary=summary,
+        status=derive_shift_day_status(
+            summary,
+            current_status=(day or {}).get("status"),
+            membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
+        ),
+        force=True,
+        chronology_complete=bool(chronology_complete),
+    )
+    _commit(cursor)
+    bags_after = load_day_bags(cursor, org, shift_date_et)
+    completed_n = sum(
+        1
+        for b in bags_after
+        if str(b.get("effective_status") or "").lower() == OUTCOME_COMPLETED
+    )
+    return {
+        "ok": True,
+        "persisted": True,
+        "skipped": False,
+        "membership_count": len(frozen),
+        "completed_count": completed_n,
+        "summary_totals": {
+            "active": summary.get("active_workload"),
+            "total_workload": summary.get("total_workload"),
+            "completed": summary.get("completed"),
+            "pending": summary.get("pending"),
+            "review_required": (summary.get("exceptions") or {}).get("review_required"),
+        },
+        "day": day,
+    }
+
+
 def backfill_day_from_live(
     cursor,
     organization_id: int,
