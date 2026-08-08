@@ -19,11 +19,11 @@ import {
   retryVeewashStep1Refresh,
 } from "../../api";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 
+/** Operator-facing timestamps: America/New_York only (never raw UTC truncate). */
 function fmtTs(v) {
-  if (!v) return "—";
-  const s = String(v);
-  return s.length > 19 ? s.slice(0, 19).replace("T", " ") : s.replace("T", " ");
+  return formatFriendlyEtWall(v);
 }
 
 export default function ShiftDayStatusBar({

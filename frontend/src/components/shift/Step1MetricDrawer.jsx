@@ -40,6 +40,7 @@ import HdReviewPanel from "./HdReviewPanel";
 import { formatWeightObservedEt, mergeBagListRow } from "./editBagHelpers";
 import { actionsForBagStatus } from "./step1BagActions";
 import { friendlyApiError } from "../../utils/shiftMonitorHelpers";
+import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 
 /** Session-scoped maintenance catalog (fetched once per browser session). */
 let cachedBulkCatalog = null;
@@ -96,10 +97,9 @@ function detailCacheKey(dateEt, bagId) {
   return `${dateEt || ""}::${String(bagId || "").toUpperCase()}`;
 }
 
+/** Operator-facing timestamps: America/New_York only (never raw UTC truncate). */
 function fmtTs(v) {
-  if (!v) return "—";
-  const s = String(v);
-  return s.length > 19 ? s.slice(0, 19).replace("T", " ") : s.replace("T", " ");
+  return formatFriendlyEtWall(v);
 }
 
 export default function Step1MetricDrawer({

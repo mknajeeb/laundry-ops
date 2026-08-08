@@ -293,6 +293,13 @@ def freshness_from_day_and_presence(
             most_recent_scan = row.get("mx") if isinstance(row, dict) else (row[0] if row else None)
         same_day_portal = None
         if table_exists(cursor, "rinse_cleaner_ticket_presence_runs"):
+            # finished_at is system UTC — bound the ET calendar day in UTC.
+            # Never compare UTC stamps to bare ET dates (11:45 PM ET → next UTC day).
+            from backend.rinse_upload_batch_retention import et_date_range_to_utc_bounds
+
+            start_utc, end_utc_inclusive = et_date_range_to_utc_bounds(
+                selected_date_et, selected_date_et
+            )
             cursor.execute(
                 """
                 SELECT finished_at
@@ -302,11 +309,11 @@ def freshness_from_day_and_presence(
                   AND status = 'success'
                   AND finished_at IS NOT NULL
                   AND finished_at >= %s
-                  AND finished_at < DATE_ADD(%s, INTERVAL 1 DAY)
+                  AND finished_at <= %s
                 ORDER BY finished_at DESC
                 LIMIT 1
                 """,
-                (org, selected_date_et, selected_date_et),
+                (org, start_utc, end_utc_inclusive),
             )
             row = cursor.fetchone() or {}
             same_day_portal = row.get("finished_at") if isinstance(row, dict) else (row[0] if row else None)

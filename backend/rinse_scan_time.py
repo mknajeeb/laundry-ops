@@ -215,6 +215,9 @@ _SYSTEM_UTC_DATETIME_KEYS = frozenset(
         "last_sync_at",
         "scraped_at",
         "portal_observed_at",
+        "opened_at",
+        "closed_at",
+        "step1_refreshed_at",
     }
 )
 

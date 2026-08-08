@@ -1,0 +1,61 @@
+---
+description: Business Time Contract — America/New_York only for business logic and UI
+alwaysApply: true
+---
+
+# Business Time Contract (non-negotiable)
+
+## Contract
+
+| Layer | Timezone |
+|-------|----------|
+| Storage | UTC |
+| Infrastructure | UTC |
+| Scheduler | UTC |
+| Business logic | **America/New_York ONLY** |
+| UI | **America/New_York ONLY** |
+| Reports / STOP / validation | **America/New_York ONLY** |
+| Logs | ET first; UTC optional in parentheses |
+
+There must never be ambiguity later of "is this UTC or ET?" for business decisions.
+
+## Must execute in America/New_York
+
+membership · carryover · completed · productivity · review · supply · replay ·
+historical repair · Stage-B · snapshots · reports · UI · selected day · opening/closing ·
+rush · current cycle · completion canonical · evidence/chronology/refresh windows
+
+## Hard comparison rule
+
+Business decisions may **NEVER** compare:
+
+- UTC datetime vs ET date
+- UTC datetime vs naive datetime of unknown zone
+
+Everything must first become an **America/New_York timezone-aware** datetime
+(or a documented naive **ET wall** value for Rinse scan fields), then compare.
+
+## Allowed UTC (infrastructure only)
+
+- scrape `started_at` / `finished_at`
+- scheduler / ACA job stamps
+- DB / lock timestamps
+- Stage-B refresh row clocks
+
+Never make a business decision directly from those. Convert with
+`system_datetime_to_et` / `business_today` / `naive_et_day_*` first.
+
+## Canonical helpers
+
+- `backend/business_time.py` — `business_today`, `business_now`
+- `backend/rinse_scan_time.py` — scan = ET wall; system DB = UTC → serialize via helpers
+- `backend/rinse_folding_et.py` — `ET`, `naive_et_day_start` / `end_*`
+- Frontend: `formatFriendlyEtWall` / `formatBusinessDateTime` / `formatEasternDateTime` — never raw string truncate of UTC
+
+## Reports
+
+Always show ET primary:
+
+`2026-08-08 12:42:30 ET` `(16:42:30 UTC)`
+
+Never UTC-first for operator or STOP reports.

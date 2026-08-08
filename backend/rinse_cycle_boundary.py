@@ -98,13 +98,38 @@ def _norm_purpose(raw: Any) -> str:
 
 
 def _event_ts(ev: Mapping[str, Any]) -> datetime | None:
+    """Return naive America/New_York wall time for cycle comparisons.
+
+    Rinse scan fields are stored as naive ET wall. Aware / ``Z`` / offset ISO
+    values are converted to ET first — never strip the zone and treat UTC digits
+    as Eastern wall (that silently shifts bags across the day boundary).
+    """
+    from datetime import timezone as _tz
+
+    from backend.rinse_folding_et import ET
+    from backend.rinse_scan_time import _has_numeric_offset, system_datetime_to_et
+
     for key in ("scanned_at_parsed", "scanned_at", "timestamp"):
         raw = ev.get(key)
         if isinstance(raw, datetime):
+            if raw.tzinfo is not None:
+                et = system_datetime_to_et(raw) or raw.astimezone(ET)
+                return et.replace(tzinfo=None)
             return raw
         if isinstance(raw, str) and raw.strip():
+            s = raw.strip()
             try:
-                return datetime.fromisoformat(raw.replace("Z", "+00:00").split("+")[0])
+                # Aware ISO (Z or numeric offset) → ET wall naive.
+                if s.endswith(("Z", "z")) or _has_numeric_offset(s):
+                    aware = datetime.fromisoformat(
+                        s.replace("Z", "+00:00").replace("z", "+00:00")
+                    )
+                    if aware.tzinfo is None:
+                        aware = aware.replace(tzinfo=_tz.utc)
+                    et = system_datetime_to_et(aware) or aware.astimezone(ET)
+                    return et.replace(tzinfo=None)
+                # Naive ISO / space datetime → already ET wall.
+                return datetime.fromisoformat(s.replace(" ", "T", 1).split(".", 1)[0])
             except ValueError:
                 continue
     return None
