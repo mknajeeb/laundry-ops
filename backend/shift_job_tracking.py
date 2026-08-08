@@ -759,17 +759,86 @@ def list_category_roles(
 
 
 def list_active_selection_tree(cursor, organization_id: int) -> list[dict]:
-    """Employee-facing tree: active categories with their active assigned roles."""
-    cats = list_categories(cursor, organization_id, include_inactive=False)
-    out = []
-    for cat in cats:
-        roles = list_category_roles(
-            cursor, organization_id, int(cat["id"]), include_inactive=False
-        )
-        if not roles:
-            continue
-        out.append({**cat, "roles": roles})
-    return out
+    """
+    Employee-facing tree: active categories with their active assigned roles.
+
+    Read-only hot path for Role open — one JOIN query, no seed, no DDL.
+    """
+    oid = int(organization_id)
+    if not table_exists(cursor, "ta_task_categories") or not table_exists(
+        cursor, "ta_task_category_roles"
+    ):
+        return []
+    if not table_exists(cursor, "ta_task_roles"):
+        return []
+    cursor.execute(
+        """
+        SELECT
+          c.id AS category_id,
+          c.organization_id,
+          c.code AS category_code,
+          c.name AS category_name,
+          c.sort_order AS category_sort_order,
+          c.active AS category_active,
+          c.created_at AS category_created_at,
+          c.updated_at AS category_updated_at,
+          cr.id AS assignment_id,
+          cr.role_id,
+          cr.sort_order AS role_sort_order,
+          cr.active AS assignment_active,
+          r.code AS role_code,
+          r.name AS role_name,
+          r.active AS role_active
+        FROM ta_task_categories c
+        INNER JOIN ta_task_category_roles cr
+          ON cr.category_id = c.id
+         AND cr.organization_id = c.organization_id
+         AND cr.active = 1
+        INNER JOIN ta_task_roles r
+          ON r.id = cr.role_id
+         AND r.organization_id = c.organization_id
+         AND r.active = 1
+        WHERE c.organization_id = %s
+          AND c.active = 1
+        ORDER BY c.sort_order ASC, c.name ASC, cr.sort_order ASC, r.name ASC
+        """,
+        (oid,),
+    )
+    by_cat: dict[int, dict] = {}
+    order: list[int] = []
+    for row in cursor.fetchall() or []:
+        r = json_safe(row)
+        cat_id = int(r["category_id"])
+        if cat_id not in by_cat:
+            by_cat[cat_id] = {
+                "id": cat_id,
+                "organization_id": r.get("organization_id"),
+                "code": r.get("category_code"),
+                "name": r.get("category_name"),
+                "sort_order": r.get("category_sort_order"),
+                "active": r.get("category_active"),
+                "created_at": r.get("category_created_at"),
+                "updated_at": r.get("category_updated_at"),
+                "roles": [],
+            }
+            order.append(cat_id)
+        role = {
+            "id": r.get("assignment_id"),
+            "organization_id": r.get("organization_id"),
+            "category_id": cat_id,
+            "role_id": r.get("role_id"),
+            "sort_order": r.get("role_sort_order"),
+            "active": r.get("assignment_active"),
+            "category_code": r.get("category_code"),
+            "category_name": r.get("category_name"),
+            "category_active": r.get("category_active"),
+            "role_code": r.get("role_code"),
+            "role_name": r.get("role_name"),
+            "role_active": r.get("role_active"),
+            "display_label": f"{r.get('category_name')} — {r.get('role_name')}",
+        }
+        by_cat[cat_id]["roles"].append(role)
+    return [by_cat[cid] for cid in order]
 
 
 def get_assignment(cursor, organization_id: int, assignment_id: int) -> Optional[dict]:

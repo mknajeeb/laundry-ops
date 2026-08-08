@@ -113,11 +113,9 @@ def test_pin_role_switch_opens_selection_tree():
             "started_at": datetime(2026, 7, 22, 10, 0),
         },
     ), patch(
-        "backend.attendance_pin_role_switch.seed_default_categories_and_roles"
-    ), patch(
         "backend.attendance_pin_role_switch.list_active_selection_tree",
         return_value=tree,
-    ), patch(
+    ) as tree_fn, patch(
         "backend.attendance_pin_role_switch.record_pin_attempt"
     ), patch(
         "backend.employee_mobile_pin_access.assert_employee_allows_module",
@@ -131,6 +129,7 @@ def test_pin_role_switch_opens_selection_tree():
     assert body["selection_tree"] == tree
     assert body["current_display_label"] == "DHS — Operator"
     assert body["employee_first_name"] == "Vee"
+    tree_fn.assert_called_once()
 
 
 def test_pin_role_switch_performs_switch():
@@ -233,3 +232,55 @@ def test_pin_role_switch_conflict_returns_409():
         )
     assert status == 409
     assert body["code"] == "idempotency_conflict"
+
+
+def test_pin_role_switch_hub_token_skips_pin_resolve():
+    conn = MagicMock()
+    matched = {"id": 23, "first_name": "Vee"}
+    tree = [{"id": 1, "name": "DHS", "roles": [{"role_id": 2, "role_name": "Operator"}]}]
+    with patch(
+        "backend.attendance_pin_role_switch.payroll_profiles_active", return_value=True
+    ), patch(
+        "backend.attendance_pin_role_switch.fetch_organization_by_slug",
+        return_value={"id": 3, "slug": "veewash"},
+    ), patch(
+        "backend.attendance_pin_role_switch.shared_device_attendance_enabled",
+        return_value=True,
+    ), patch(
+        "backend.attendance_pin_role_switch.is_rate_limited", return_value=False
+    ), patch(
+        "backend.attendance_pin_role_switch._resolve_user_by_hub_token",
+        return_value=matched,
+    ) as hub_resolve, patch(
+        "backend.attendance_pin_role_switch.resolve_user_by_attendance_pin",
+    ) as pin_resolve, patch(
+        "backend.attendance_pin_role_switch._active_shift",
+        return_value={"id": 99},
+    ), patch(
+        "backend.attendance_pin_role_switch.is_category_role_tracking_enabled",
+        return_value=True,
+    ), patch(
+        "backend.attendance_pin_role_switch.get_open_job_segment",
+        return_value={},
+    ), patch(
+        "backend.attendance_pin_role_switch.list_active_selection_tree",
+        return_value=tree,
+    ), patch(
+        "backend.attendance_pin_role_switch.record_pin_attempt"
+    ), patch(
+        "backend.employee_mobile_pin_access.assert_employee_allows_module",
+    ) as assert_mod:
+        body, status = perform_pin_role_switch(
+            conn,
+            "veewash",
+            "",
+            _mock_roles,
+            "127.0.0.1",
+            hub_token="hub-token-abc",
+        )
+    assert status == 200
+    assert body["needs_selection"] is True
+    hub_resolve.assert_called_once()
+    pin_resolve.assert_not_called()
+    assert_mod.assert_called_once()
+    assert assert_mod.call_args.args[3] == "switch_role"

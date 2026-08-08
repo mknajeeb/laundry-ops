@@ -17,6 +17,7 @@ export function createSwitchRoleController({
   currentCategoryId = null,
   currentRoleId = null,
   pin,
+  hubToken = "",
   slug,
   switchRoleApi,
   createIdempotencyKey,
@@ -77,6 +78,7 @@ export function createSwitchRoleController({
         category_id: cid,
         role_id: rid,
         idempotency_key: idempotencyKey,
+        ...(hubToken ? { hubToken } : {}),
       });
       const status = res?.status ?? 0;
       const body = res?.data && typeof res.data === "object" ? res.data : {};

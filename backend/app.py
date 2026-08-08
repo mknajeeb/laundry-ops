@@ -61,6 +61,7 @@ from backend.rinse_processing_routes import register_rinse_processing_routes
 from backend.rinse_shift_analysis_routes import register_rinse_shift_analysis_routes
 from backend.supply_usage_routes import register_supply_usage_routes
 from backend.daily_revenue_cost_routes import register_daily_revenue_cost_routes
+from backend.drc_mobile_entry_routes import register_drc_mobile_entry_routes
 from backend.daily_operations_routes import register_daily_operations_routes
 from backend.inventory_routes import register_inventory_routes
 from backend.maintenance_task_list_routes import register_maintenance_task_list_routes
@@ -5148,12 +5149,14 @@ def public_attendance_pin_switch_role():
     """
     Mobile PIN role switch (no clock in/out, no Bearer token).
     Employee must already be clocked in. Feature flag must be enabled.
+    Accepts hub_token from PIN Hub to skip a second bcrypt PIN scan.
     """
     from backend.attendance_pin_role_switch import perform_pin_role_switch
 
     data = request.json or {}
     org_slug = (data.get("organization_slug") or data.get("organization") or "").strip().lower()
     pin = data.get("pin")
+    hub_token = str(data.get("hub_token") or "").strip() or None
     idempotency_key = (
         (data.get("idempotency_key") or "").strip()
         or (request.headers.get("Idempotency-Key") or "").strip()
@@ -5166,6 +5169,7 @@ def public_attendance_pin_switch_role():
             pin,
             fetch_user_roles,
             get_request_ip(),
+            hub_token=hub_token,
             category_id=data.get("category_id"),
             role_id=data.get("role_id"),
             idempotency_key=idempotency_key or None,
@@ -10753,6 +10757,15 @@ register_daily_revenue_cost_routes(
     require_admin=require_admin,
     user_org_id=user_org_id,
     parse_date_value=parse_date_value,
+)
+register_drc_mobile_entry_routes(
+    app,
+    require_user=require_user,
+    require_admin=require_admin,
+    require_admin_or_ops=require_admin_or_ops,
+    user_org_id=user_org_id,
+    parse_date_value=parse_date_value,
+    effective_washpro_permission_keys=effective_washpro_permission_keys,
 )
 register_daily_operations_routes(
     app,

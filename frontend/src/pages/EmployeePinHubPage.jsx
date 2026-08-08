@@ -421,7 +421,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         markPinHubAppSession(slug);
         setAuthSession(payload);
         onLoggedIn?.(payload.user);
-        navigate("/finance/daily-revenue-cost", { replace: true });
+        navigate("/revenue-cost/floor", { replace: true });
         return;
       }
     } catch (e) {

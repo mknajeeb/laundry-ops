@@ -74,6 +74,7 @@ import PermissionsPage from "./pages/PermissionsPage";
 import NotificationsPage from "./pages/NotificationsPage";
 import OrganizationSettingsPage from "./pages/OrganizationSettingsPage";
 import DailyRevenueCostPage from "./pages/DailyRevenueCostPage";
+import RevenueCostFloorPage from "./pages/RevenueCostFloorPage";
 import DailyOperationsPage from "./pages/DailyOperationsPage";
 import OrganizationsPlatformPage from "./pages/OrganizationsPlatformPage";
 import PlatformAdminPage from "./pages/PlatformAdminPage";
@@ -194,9 +195,14 @@ function isInventoryRoute(path) {
   return p === "/inventory" || p.startsWith("/inventory/");
 }
 
-function isPinHubFinanceRoute(path) {
+function isRevenueCostFloorRoute(path) {
   const p = normalizePathname(path);
-  return p === "/finance/daily-revenue-cost" || p.startsWith("/finance/daily-revenue-cost/");
+  return p === "/revenue-cost/floor" || p.startsWith("/revenue-cost/");
+}
+
+/** @deprecated pin hub employees use /revenue-cost/floor — kept for any stale app sessions */
+function isPinHubFinanceRoute(path) {
+  return isRevenueCostFloorRoute(path);
 }
 
 /** Kiosk clock in/out only: /attendance or /attendance/:orgSlug (no app session). */
@@ -608,13 +614,13 @@ function AppShell() {
   }
 
   /**
-   * Phone PIN menu → Inventory / Revenue & Cost: fullscreen feature
+   * Phone PIN menu → Inventory / Revenue & Cost floor: fullscreen feature
    * (no sidebar / idle kiosk lock / ADMIN gate). Mobile PIN Access is the
-   * employee permission source; manager ADMIN routes stay separate.
+   * employee permission source; manager Daily Revenue & Cost stays separate.
    */
   if (
     isPinHubAppSessionActive() &&
-    (isInventoryRoute(pathname) || isPinHubFinanceRoute(pathname))
+    (isInventoryRoute(pathname) || isRevenueCostFloorRoute(pathname))
   ) {
     if (authLoading) {
       return (
@@ -653,9 +659,9 @@ function AppShell() {
             }
           />
           <Route
-            path="/finance/daily-revenue-cost"
+            path="/revenue-cost/floor"
             element={
-              <DailyRevenueCostPage
+              <RevenueCostFloorPage
                 user={user}
                 onPinHubDone={() => {
                   washproSessionSyncedRef.current = false;

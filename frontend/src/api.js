@@ -237,11 +237,14 @@ export const attendancePinSwitchRole = (organization_slug, pin, options = {}) =>
     (options.category_id != null && options.role_id != null
       ? createTaskTrackingSwitchIdempotencyKey()
       : undefined);
+  const hubToken = options.hubToken ? String(options.hubToken) : "";
   return axios.post(
     `${API_BASE}/api/public/attendance/pin-switch-role`,
     {
       organization_slug: String(organization_slug || "").trim().toLowerCase(),
-      pin: String(pin || "").trim(),
+      ...(hubToken
+        ? { hub_token: hubToken }
+        : { pin: String(pin || "").trim() }),
       ...(options.category_id != null ? { category_id: options.category_id } : {}),
       ...(options.role_id != null ? { role_id: options.role_id } : {}),
       // Body only — do not send Idempotency-Key header (CORS preflight blocks it on older API).
@@ -2213,6 +2216,45 @@ export const getDrcDashboard = (params) =>
 
 export const postDrcEntryWorkflow = (entryDate, body) =>
   axios.post(`${API_BASE}/finance/daily-revenue-cost/entries/${entryDate}/workflow`, body);
+
+/** Employee PIN Revenue & Cost floor (Phase 5E) — not the manager Daily Entry APIs. */
+export const getDrcMobileToday = (params = {}) =>
+  axios.get(`${API_BASE}/finance/daily-revenue-cost/mobile/today`, { params });
+
+export const putDrcMobileSectionDraft = (sectionKey, payload) =>
+  axios.put(
+    `${API_BASE}/finance/daily-revenue-cost/mobile/sections/${encodeURIComponent(sectionKey)}/draft`,
+    payload,
+  );
+
+export const submitDrcMobileSection = (sectionKey, payload = {}) =>
+  axios.post(
+    `${API_BASE}/finance/daily-revenue-cost/mobile/sections/${encodeURIComponent(sectionKey)}/submit`,
+    payload,
+  );
+
+export const submitDrcMobileAll = (payload = {}) =>
+  axios.post(`${API_BASE}/finance/daily-revenue-cost/mobile/submit`, payload);
+
+export const getDrcMobileWeekdayAssignments = () =>
+  axios.get(`${API_BASE}/finance/daily-revenue-cost/mobile/weekday-assignments`);
+
+export const putDrcMobileWeekdayAssignments = (assignments) =>
+  axios.put(`${API_BASE}/finance/daily-revenue-cost/mobile/weekday-assignments`, {
+    assignments,
+  });
+
+export const getDrcMobileSubmissions = (params = {}) =>
+  axios.get(`${API_BASE}/finance/daily-revenue-cost/mobile/submissions`, { params });
+
+export const getDrcMobileSubmission = (submissionId) =>
+  axios.get(`${API_BASE}/finance/daily-revenue-cost/mobile/submissions/${submissionId}`);
+
+export const reviewDrcMobileSubmission = (submissionId, body) =>
+  axios.post(
+    `${API_BASE}/finance/daily-revenue-cost/mobile/submissions/${submissionId}/review`,
+    body,
+  );
 
 export const getDailyOperationsMeta = () =>
   axios.get(`${API_BASE}/api/daily-operations/meta`);

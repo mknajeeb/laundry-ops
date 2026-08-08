@@ -10,6 +10,7 @@ import logging
 from typing import Any, Optional
 
 from backend.attendance_pin_punch import (
+    ADMIN_ROLE_CODES,
     INVALID_PIN_MESSAGE,
     KIOSK_DISABLED_MESSAGE,
     PIN_LEN_KIOSK,
@@ -26,7 +27,6 @@ from backend.shift_job_tracking import (
     IdempotencyConflictError,
     get_open_job_segment,
     list_active_selection_tree,
-    seed_default_categories_and_roles,
     start_category_role_segment,
 )
 
@@ -64,6 +64,55 @@ def _current_assignment_payload(conn, session_id: int) -> dict:
     }
 
 
+def _resolve_user_by_hub_token(
+    conn, organization_id: int, org_slug: str, hub_token: str, fetch_roles_fn
+) -> Optional[dict]:
+    """Resolve employee from a verified PIN Hub session token (no bcrypt)."""
+    from backend.employee_pin_hub import verify_hub_session_token
+
+    try:
+        claims = verify_hub_session_token(hub_token)
+    except ValueError:
+        return None
+    emp_id = int(claims["employee_id"])
+    claim_org = int(claims["organization_id"])
+    if claim_org != int(organization_id):
+        return None
+    c = conn.cursor(dictionary=True)
+    try:
+        c.execute(
+            """
+            SELECT u.id, u.username, u.display_name, u.active, u.organization_id,
+                   pp.first_name, pp.last_name, pp.termination_date
+            FROM users u
+            LEFT JOIN payroll_profiles pp ON pp.user_id = u.id
+            INNER JOIN organizations o ON o.id = u.organization_id AND o.active = 1
+            WHERE u.id = %s
+              AND u.organization_id = %s
+              AND u.active = 1
+              AND LOWER(o.slug) = %s
+            LIMIT 1
+            """,
+            (emp_id, int(organization_id), org_slug),
+        )
+        row = c.fetchone()
+        if not row:
+            return None
+        if row.get("termination_date"):
+            return None
+        roles = fetch_roles_fn(c, row["id"])
+        rs = {str(r).upper() for r in roles}
+        if rs & ADMIN_ROLE_CODES:
+            return None
+        row["_roles"] = roles
+        return row
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
 def perform_pin_role_switch(
     conn,
     organization_slug: str,
@@ -71,22 +120,29 @@ def perform_pin_role_switch(
     fetch_roles_fn,
     ip_address: str,
     *,
+    hub_token: Optional[str] = None,
     category_id: Optional[Any] = None,
     role_id: Optional[Any] = None,
     idempotency_key: Optional[str] = None,
 ) -> tuple[dict, int]:
     """
-    PIN → role switch for an already-clocked-in employee.
+    PIN / hub_token → role switch for an already-clocked-in employee.
 
-    Without category/role: validate PIN + active shift + feature flag, return selection tree.
+    Without category/role: validate identity + active shift + feature flag, return selection tree.
     With category/role + idempotency_key: perform the switch.
+
+    When ``hub_token`` is present (PIN Hub already authenticated), skip bcrypt PIN scan.
+    Mobile PIN Access ``switch_role`` is still re-checked on open and before mutate.
     """
     org_slug = (organization_slug or "").strip().lower()
     pin_clean = str(pin or "").strip()
+    hub_clean = str(hub_token or "").strip()
 
-    if not org_slug or not pin_clean:
+    if not org_slug:
         return {"ok": False, "error": INVALID_PIN_MESSAGE}, 400
-    if not pin_clean.isdigit() or len(pin_clean) != PIN_LEN_KIOSK:
+    if not hub_clean and not pin_clean:
+        return {"ok": False, "error": INVALID_PIN_MESSAGE}, 400
+    if pin_clean and (not pin_clean.isdigit() or len(pin_clean) != PIN_LEN_KIOSK):
         return {"ok": False, "error": INVALID_PIN_MESSAGE}, 400
 
     if not payroll_profiles_active(conn):
@@ -104,11 +160,25 @@ def perform_pin_role_switch(
     if is_rate_limited(conn, org_id, ip_address):
         return {"ok": False, "error": INVALID_PIN_MESSAGE}, 429
 
-    matched = resolve_user_by_attendance_pin(conn, org_id, pin_clean, fetch_roles_fn)
-    if not matched:
-        record_pin_attempt(conn, org_id, ip_address, success=False, action="pin_role_switch_fail")
-        conn.commit()
-        return {"ok": False, "error": INVALID_PIN_MESSAGE}, 401
+    matched = None
+    if hub_clean:
+        matched = _resolve_user_by_hub_token(
+            conn, org_id, org_slug, hub_clean, fetch_roles_fn
+        )
+        if not matched:
+            record_pin_attempt(
+                conn, org_id, ip_address, success=False, action="pin_role_switch_hub_fail"
+            )
+            conn.commit()
+            return {"ok": False, "error": INVALID_PIN_MESSAGE}, 401
+    else:
+        matched = resolve_user_by_attendance_pin(conn, org_id, pin_clean, fetch_roles_fn)
+        if not matched:
+            record_pin_attempt(
+                conn, org_id, ip_address, success=False, action="pin_role_switch_fail"
+            )
+            conn.commit()
+            return {"ok": False, "error": INVALID_PIN_MESSAGE}, 401
 
     user_id = int(matched["id"])
     active = _active_shift(conn, user_id)
@@ -168,8 +238,13 @@ def perform_pin_role_switch(
     )
     if not has_assignment:
         c = conn.cursor(dictionary=True)
-        seed_default_categories_and_roles(c, org_id)
-        tree = list_active_selection_tree(c, org_id)
+        try:
+            tree = list_active_selection_tree(c, org_id)
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
         record_pin_attempt(
             conn, org_id, ip_address, success=True, user_id=user_id, action="pin_role_switch_open"
         )

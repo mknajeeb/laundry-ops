@@ -469,7 +469,12 @@ def _row_to_access(row: Optional[dict]) -> Optional[dict[str, bool]]:
 
 
 def get_access_row(cursor, organization_id: int, user_id: int) -> Optional[dict]:
-    ensure_employee_mobile_pin_access_tables(cursor)
+    """
+    Hot-path read. Caller must ensure schema via ``ensure_org_mobile_pin_access_backfill``
+    (skips CREATE TABLE IF NOT EXISTS when tables already exist).
+    """
+    if not table_exists(cursor, ACCESS_TABLE):
+        return None
     cursor.execute(
         f"""
         SELECT organization_id, user_id,

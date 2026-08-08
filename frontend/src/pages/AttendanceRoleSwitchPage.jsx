@@ -240,24 +240,27 @@ export default function AttendanceRoleSwitchPage() {
   }, []);
 
   const openPickerFromPin = useCallback(
-    async (digits) => {
+    async (digits, opts = {}) => {
       if (!slug || punchInFlightRef.current) return;
       const clean = String(digits || "").replace(/\D/g, "");
-      if (clean.length !== PIN_LEN) return;
+      const hubToken = opts.hubToken ? String(opts.hubToken) : "";
+      if (!hubToken && clean.length !== PIN_LEN) return;
       punchInFlightRef.current = true;
       setLoading(true);
       setError("");
       try {
-        const res = await attendancePinSwitchRole(slug, clean);
+        const res = await attendancePinSwitchRole(slug, clean, {
+          ...(hubToken ? { hubToken } : {}),
+        });
         const status = res?.status ?? 0;
         const body = res?.data && typeof res.data === "object" ? res.data : {};
         if (status >= 200 && status < 300 && body.ok && body.needs_selection) {
-          applySelectionBody(body, clean);
+          applySelectionBody(body, clean || "hub");
           return;
         }
         setUnavailableMessage(openRoleFlowEmployeeError(body, status));
         setPhase("unavailable");
-        setPendingPin(clean);
+        setPendingPin(clean || "hub");
         setFirstName(body.employee_first_name || loadPinHubSession()?.employee_first_name || "");
         setPin("");
         prevPinLenRef.current = 0;
@@ -292,21 +295,22 @@ export default function AttendanceRoleSwitchPage() {
     }
   }, [slug, pinDigits, openPickerFromPin, phase, loading]);
 
-  /** From /pin hub: reuse PIN already entered (no second keypad). */
+  /** From /pin hub: reuse hub_token (no second bcrypt); PIN kept only as local session glue. */
   useEffect(() => {
     if (!fromHub || !slug || hubPinUsedRef.current) return;
     if (phase !== "opening" && phase !== "pin") return;
+    const hub = loadPinHubSession();
     const hubPin = takePinHubPinForSlug(slug);
-    if (!hubPin || hubPin.length !== PIN_LEN) {
-      // Stale hub navigation without PIN — show unavailable rather than blank dialog.
+    const hubToken = hub?.token && hub?.organization_slug === slug ? String(hub.token) : "";
+    if (!hubToken && (!hubPin || hubPin.length !== PIN_LEN)) {
+      // Stale hub navigation without session — show unavailable rather than blank dialog.
       hubPinUsedRef.current = true;
       setPhase("unavailable");
       return;
     }
     hubPinUsedRef.current = true;
-    const hub = loadPinHubSession();
     if (hub?.employee_first_name) setFirstName(hub.employee_first_name);
-    void openPickerFromPin(hubPin);
+    void openPickerFromPin(hubPin || "", { hubToken });
   }, [fromHub, slug, phase, openPickerFromPin]);
 
   // Bind controller whenever selection context is ready.
@@ -315,11 +319,16 @@ export default function AttendanceRoleSwitchPage() {
       controllerRef.current = null;
       return undefined;
     }
+    const hubToken =
+      fromHub && loadPinHubSession()?.organization_slug === slug
+        ? String(loadPinHubSession()?.token || "")
+        : "";
     const controller = createSwitchRoleController({
       selectionTree,
       currentCategoryId,
       currentRoleId,
-      pin: pendingPin,
+      pin: pendingPin === "hub" ? "" : pendingPin,
+      hubToken,
       slug,
       switchRoleApi: attendancePinSwitchRole,
       createIdempotencyKey: createTaskTrackingSwitchIdempotencyKey,

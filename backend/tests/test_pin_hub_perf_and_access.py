@@ -23,6 +23,21 @@ def test_ensure_org_skips_create_when_tables_exist():
         ensure.assert_not_called()
 
 
+def test_get_access_row_does_not_create_tables():
+    from backend.employee_mobile_pin_access import get_access_row
+
+    cursor = MagicMock()
+    cursor.fetchone.return_value = None
+    with patch(
+        "backend.employee_mobile_pin_access.table_exists", return_value=True
+    ), patch(
+        "backend.employee_mobile_pin_access.ensure_employee_mobile_pin_access_tables"
+    ) as ensure:
+        get_access_row(cursor, 3, 23)
+        ensure.assert_not_called()
+        cursor.execute.assert_called_once()
+
+
 def test_ensure_org_creates_when_missing():
     cursor = MagicMock()
     with patch(
