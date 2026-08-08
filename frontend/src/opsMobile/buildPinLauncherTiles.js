@@ -22,13 +22,21 @@ export const PIN_LAUNCHER_META = {
     iconKey: "tasks",
   },
   inventory: {
-    label: "Stock",
+    label: "Inventory",
     color: "#0e7490",
     iconKey: "stock",
+  },
+  revenue_cost: {
+    label: "Revenue & Cost",
+    color: "#b45309",
+    iconKey: "revenue",
   },
 };
 
 export const CLOCK_DISABLED_HELPER = "Use the shared attendance tablet.";
+
+export const ROLE_CLOCK_IN_FIRST_MESSAGE =
+  "Clock in first using the shared attendance tablet, then return here to change your role.";
 
 /** Clock label from reliable attendance state only. */
 export function clockTileLabel(attendance) {
@@ -49,7 +57,7 @@ export function isClockAllowedFromHub(attendance) {
 
 /**
  * @param {object} opts
- * @param {Record<string, { allowed?: boolean, label?: string }>|null} opts.features
+ * @param {Record<string, { allowed?: boolean, label?: string, requires_clock_in?: boolean }>|null} opts.features
  * @param {string[]|null} opts.featureOrder
  * @param {{
  *   shared_device_enabled?: boolean,
@@ -64,7 +72,8 @@ export function isClockAllowedFromHub(attendance) {
  *   iconKey: string,
  *   href?: string,
  *   disabled?: boolean,
- *   disabledHelper?: string
+ *   disabledHelper?: string,
+ *   requiresClockIn?: boolean
  * }>}
  */
 export function buildPinLauncherTiles({ features = {}, featureOrder = null, attendance = null } = {}) {
@@ -88,17 +97,12 @@ export function buildPinLauncherTiles({ features = {}, featureOrder = null, atte
   const order =
     Array.isArray(featureOrder) && featureOrder.length
       ? featureOrder
-      : ["switch_role", "checklist", "inventory"];
+      : ["switch_role", "checklist", "inventory", "revenue_cost"];
 
   for (const id of order) {
     if (id === "clock" || id === "break") continue;
     const feat = feats[id];
     if (!feat?.allowed) continue;
-
-    // Role only when confirmed clocked in (API rejects otherwise).
-    if (id === "switch_role" && att.clocked_in !== true) {
-      continue;
-    }
 
     const meta = PIN_LAUNCHER_META[id] || {
       label: feat.label || id,
@@ -111,6 +115,9 @@ export function buildPinLauncherTiles({ features = {}, featureOrder = null, atte
       color: meta.color,
       iconKey: meta.iconKey,
     };
+    if (id === "switch_role" && (feat.requires_clock_in || att.clocked_in !== true)) {
+      tile.requiresClockIn = true;
+    }
     if (feat.disabled) {
       tile.disabled = true;
       tile.disabledHelper = feat.disabled_helper || feat.disabledHelper || "";

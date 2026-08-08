@@ -22,6 +22,7 @@ import {
   Inventory2,
   Login,
   Logout,
+  RequestQuote,
   SwapHoriz,
 } from "@mui/icons-material";
 import {
@@ -39,6 +40,7 @@ import {
   OpsMobileShell,
   OpsTopBar,
   OPS_MOBILE,
+  ROLE_CLOCK_IN_FIRST_MESSAGE,
   buildPinLauncherTiles,
 } from "../opsMobile";
 import { VEEWASH_LOGO_URL } from "../theme/veewashBrand";
@@ -72,6 +74,7 @@ const TILE_ICONS = {
   role: SwapHoriz,
   tasks: AssignmentTurnedIn,
   stock: Inventory2,
+  revenue: RequestQuote,
 };
 
 function sanitizeSlug(raw) {
@@ -358,6 +361,10 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         return;
       }
       if (featureId === "switch_role") {
+        if (tile?.requiresClockIn || hub?.attendance?.clocked_in !== true) {
+          setError(ROLE_CLOCK_IN_FIRST_MESSAGE);
+          return;
+        }
         // Full-screen shared flow on /attendance/role (not an in-hub dialog).
         navigate(`/attendance/role/${encodeURIComponent(slug)}?from=hub`);
         return;
@@ -380,6 +387,9 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         return;
       }
       if (featureId === "inventory") {
+        if (tile?.disabled || hub?.features?.inventory?.disabled) {
+          return;
+        }
         const res = await authAttendancePinUnlock(slug, hub.pin);
         const payload = res?.data || {};
         if (!payload?.token || !payload?.user) {
@@ -389,6 +399,21 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         setAuthSession(payload);
         onLoggedIn?.(payload.user);
         navigate("/inventory", { replace: true });
+        return;
+      }
+      if (featureId === "revenue_cost") {
+        if (tile?.disabled || hub?.features?.revenue_cost?.disabled) {
+          return;
+        }
+        const res = await authAttendancePinUnlock(slug, hub.pin);
+        const payload = res?.data || {};
+        if (!payload?.token || !payload?.user) {
+          throw new Error(payload?.error || "Could not unlock Revenue & Cost");
+        }
+        markPinHubAppSession(slug);
+        setAuthSession(payload);
+        onLoggedIn?.(payload.user);
+        navigate("/finance/daily-revenue-cost", { replace: true });
         return;
       }
     } catch (e) {
@@ -478,9 +503,27 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
           )}
 
           {error ? (
-            <Alert severity="error" sx={{ width: "100%" }} onClose={() => setError("")}>
+            <Alert
+              severity={error === ROLE_CLOCK_IN_FIRST_MESSAGE ? "info" : "error"}
+              sx={{ width: "100%" }}
+              onClose={() => setError("")}
+            >
               {error}
             </Alert>
+          ) : null}
+
+          {phase === "menu" ? (
+            <Box sx={{ width: "100%", textAlign: "center", px: 0.5 }}>
+              <Typography sx={{ fontWeight: 800, fontSize: "1rem", color: VW.navy }}>
+                Current Role:{" "}
+                {(hub?.attendance?.clocked_in && hub?.attendance?.current_display_label) || "—"}
+              </Typography>
+              {!hub?.attendance?.clocked_in ? (
+                <Typography sx={{ mt: 0.25, fontWeight: 600, fontSize: "0.9rem", color: alpha(VW.navy, 0.72) }}>
+                  Not clocked in
+                </Typography>
+              ) : null}
+            </Box>
           ) : null}
 
           {phase === "pin" && (

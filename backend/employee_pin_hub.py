@@ -65,6 +65,11 @@ PIN_HUB_FEATURE_DEFS: tuple[dict[str, Any], ...] = (
         "label": "Inventory",
         "path": "/inventory",
     },
+    {
+        "id": "revenue_cost",
+        "label": "Revenue & Cost",
+        "path": "/finance/daily-revenue-cost",
+    },
 )
 
 
@@ -188,16 +193,27 @@ def attendance_snapshot_for_hub(
     employee_allow_clock = bool(emp_access.get("clock")) if isinstance(emp_access, dict) else True
     active = _active_shift(conn, int(user_id))
     on_break = False
+    current_display_label = None
     if active:
         from backend.ta_routes import get_open_break
+        from backend.shift_job_tracking import get_open_job_segment
 
         on_break = bool(get_open_break(conn, active["id"]))
+        open_seg = get_open_job_segment(conn, int(active["id"])) or {}
+        cat = (open_seg.get("category_name_snapshot") or "").strip()
+        role = (open_seg.get("role_name_snapshot") or "").strip()
+        if cat and role:
+            current_display_label = f"{cat} · {role}"
+        else:
+            label = (open_seg.get("display_label") or "").strip()
+            current_display_label = label or None
     return {
         "shared_device_enabled": shared,
         "allow_clock_from_hub": allow_clock,
         "employee_allow_clock": employee_allow_clock,
         "clocked_in": bool(active),
         "on_break": on_break,
+        "current_display_label": current_display_label,
     }
 
 
@@ -205,14 +221,14 @@ def apply_attendance_gates_to_features(
     features: dict[str, Any], attendance: dict[str, Any]
 ) -> dict[str, Any]:
     """
-    Hide Switch Role when not clocked in (API already rejects that case).
-    Returns a shallow-copied features map.
+    Keep Role allowed when clocked out so the tile stays visible; mark requires_clock_in
+    for the client to show the shared-tablet clock-in message on tap.
     """
     out = {k: dict(v) if isinstance(v, dict) else v for k, v in (features or {}).items()}
     role = out.get("switch_role")
     if isinstance(role, dict) and role.get("allowed") and not attendance.get("clocked_in"):
         role = dict(role)
-        role["allowed"] = False
+        role["requires_clock_in"] = True
         role["blocked_reason"] = "not_clocked_in"
         out["switch_role"] = role
     return out
@@ -258,8 +274,10 @@ def _user_may_use_feature(
 ) -> bool:
     """
     Extra gates beyond org pin_menu assignment.
-    Checklist/inventory: any employee with a valid attendance PIN (org toggle is the assigner).
+    Checklist: any employee with a valid attendance PIN (weekday assigner still applies).
     Switch role: still requires category/role tracking.
+    Inventory: inventory tenant module.
+    Revenue & Cost: finance tenant module.
     """
     if feature_id == "switch_role":
         return bool(is_category_role_tracking_enabled(conn, org_id))
@@ -269,6 +287,9 @@ def _user_may_use_feature(
 
     if feature_id == "inventory":
         return bool(_tenant_module_enabled(conn, org_id, "inventory"))
+
+    if feature_id == "revenue_cost":
+        return bool(_tenant_module_enabled(conn, org_id, "finance"))
 
     return False
 
@@ -283,8 +304,7 @@ def resolve_hub_features(
 ) -> dict[str, Any]:
     """
     Return feature tiles for the mobile PIN menu.
-    Org pin_menu always applies. Stage A employee Mobile PIN Access AND-gates
-    switch_role and checklist only; other modules remain org-gated.
+    Org pin_menu ∧ employee Mobile PIN Access (ENFORCED modules) ∧ feature gates.
     """
     from backend.employee_mobile_pin_access import (
         ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES,

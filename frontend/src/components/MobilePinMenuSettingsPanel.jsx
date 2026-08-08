@@ -18,6 +18,7 @@ export const DEFAULT_PIN_MENU = {
     switch_role: true,
     checklist: true,
     inventory: true,
+    revenue_cost: true,
   },
 };
 
@@ -37,6 +38,11 @@ export const PIN_MENU_FEATURE_OPTIONS = [
     id: "inventory",
     label: "Inventory",
     help: "Open inventory after PIN unlock (inventory module must be on).",
+  },
+  {
+    id: "revenue_cost",
+    label: "Revenue & Cost",
+    help: "Open Revenue & Cost after PIN unlock (finance module must be on).",
   },
 ];
 

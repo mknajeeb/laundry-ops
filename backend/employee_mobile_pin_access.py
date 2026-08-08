@@ -34,11 +34,10 @@ MODULE_KEYS = (
     "revenue_cost",
 )
 
-# Stage A rollout: only switch role and the End-of-Day Checklist are
-# AND-gated by employee access in hub resolution / PIN enforcement.
-# Clock, Inventory, and Revenue & Cost flags are stored and editable but
-# are not activated here.
-ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES = frozenset({"switch_role", "checklist"})
+# Hub / PIN enforcement AND-gates. Clock remains stored but not activated.
+ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES = frozenset(
+    {"switch_role", "checklist", "inventory", "revenue_cost"}
+)
 
 # DB column ↔ API/feature key
 COLUMN_BY_KEY = {

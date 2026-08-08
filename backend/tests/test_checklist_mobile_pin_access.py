@@ -471,7 +471,7 @@ def test_hub_employee_denied_hides_checklist_and_no_maintenance_token():
     issue_mtl.assert_not_called()
 
 
-def test_checklist_permission_does_not_activate_inventory_enforcement():
+def test_checklist_permission_is_independent_of_inventory_grant():
     from backend.employee_mobile_pin_access import (
         MobilePinAccessDeniedError,
         assert_employee_allows_module,
@@ -479,10 +479,11 @@ def test_checklist_permission_does_not_activate_inventory_enforcement():
     )
 
     assert employee_module_enforced("checklist")
-    assert not employee_module_enforced("inventory")
+    assert employee_module_enforced("inventory")
     cur = FakeCursor()
     cur.backfill_orgs[3] = 1
     cur.access[(3, 10)] = _access_row(checklist=True)
     cur.access[(3, 10)]["inventory"] = False
     assert_employee_allows_module(cur, 3, 10, "checklist")
-    assert_employee_allows_module(cur, 3, 10, "inventory")
+    with pytest.raises(MobilePinAccessDeniedError):
+        assert_employee_allows_module(cur, 3, 10, "inventory")

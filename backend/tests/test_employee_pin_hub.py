@@ -40,7 +40,13 @@ def test_resolve_hub_features_org_assign_shows_checklist_without_floor_role():
             conn,
             org_id=3,
             matched=matched,
-            employee_module_access={"clock": True, "switch_role": True, "checklist": True},
+            employee_module_access={
+                "clock": True,
+                "switch_role": True,
+                "checklist": True,
+                "inventory": True,
+                "revenue_cost": True,
+            },
         )
     assert features["checklist"]["allowed"] is True
     assert features["inventory"]["allowed"] is True
@@ -101,7 +107,7 @@ def test_resolve_hub_features_inventory_module_off():
     assert features["switch_role"]["allowed"] is True
 
 
-def test_apply_attendance_gates_hides_switch_role_when_clocked_out():
+def test_apply_attendance_gates_keeps_role_visible_when_clocked_out():
     features = {
         "switch_role": {"id": "switch_role", "allowed": True, "label": "Switch Role"},
         "checklist": {"id": "checklist", "allowed": True},
@@ -109,17 +115,19 @@ def test_apply_attendance_gates_hides_switch_role_when_clocked_out():
     gated = apply_attendance_gates_to_features(
         features, {"clocked_in": False, "shared_device_enabled": True}
     )
-    assert gated["switch_role"]["allowed"] is False
+    assert gated["switch_role"]["allowed"] is True
+    assert gated["switch_role"]["requires_clock_in"] is True
     assert gated["switch_role"]["blocked_reason"] == "not_clocked_in"
     assert gated["checklist"]["allowed"] is True
     # Original map not mutated
-    assert features["switch_role"]["allowed"] is True
+    assert features["switch_role"].get("requires_clock_in") is None
 
 
 def test_apply_attendance_gates_keeps_switch_role_when_clocked_in():
     features = {"switch_role": {"id": "switch_role", "allowed": True}}
     gated = apply_attendance_gates_to_features(features, {"clocked_in": True})
     assert gated["switch_role"]["allowed"] is True
+    assert gated["switch_role"].get("requires_clock_in") is None
 
 
 def test_perform_pin_hub_open_success_returns_menu():
@@ -188,7 +196,12 @@ def test_perform_pin_hub_open_success_returns_menu():
     assert body["ok"] is True
     assert body["token"] == "hub-token"
     assert body["maintenance_token"] == "mtl-token"
-    assert body["feature_order"] == ["switch_role", "checklist", "inventory"]
+    assert body["feature_order"] == [
+        "switch_role",
+        "checklist",
+        "inventory",
+        "revenue_cost",
+    ]
     assert body["features"]["switch_role"]["allowed"] is True
     assert body["features"]["checklist"].get("disabled") is not True
     assert body["attendance"]["clocked_in"] is True

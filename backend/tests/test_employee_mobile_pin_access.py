@@ -446,7 +446,7 @@ def test_assert_denies_module():
     )
 
     assert ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES == frozenset(
-        {"switch_role", "checklist"}
+        {"switch_role", "checklist", "inventory", "revenue_cost"}
     )
     cur = FakeCursor()
     cur.backfill_orgs[3] = 0
@@ -461,19 +461,23 @@ def test_assert_denies_module():
         assert_employee_allows_module(cur, 3, 10, "switch_role")
     with pytest.raises(MobilePinAccessDeniedError):
         assert_employee_allows_module(cur, 3, 10, "checklist")
-    # Stage A: clock, inventory, and revenue cost are not yet enforced.
+    with pytest.raises(MobilePinAccessDeniedError):
+        assert_employee_allows_module(cur, 3, 10, "inventory")
+    with pytest.raises(MobilePinAccessDeniedError):
+        assert_employee_allows_module(cur, 3, 10, "revenue_cost")
+    # Clock remains stored but not enforced.
     assert_employee_allows_module(cur, 3, 10, "clock")
-    assert_employee_allows_module(cur, 3, 10, "inventory")
-    assert_employee_allows_module(cur, 3, 10, "revenue_cost")
-    # Optional unlock helper: omitted and unactivated modules are no-ops.
+    # Optional unlock helper: omitted module is a no-op; enforced modules deny.
     assert_optional_pin_hub_module(cur, 3, 10, None)
     assert_optional_pin_hub_module(cur, 3, 10, "")
-    assert_optional_pin_hub_module(cur, 3, 10, "inventory")
-    assert_optional_pin_hub_module(cur, 3, 10, "revenue_cost")
+    with pytest.raises(MobilePinAccessDeniedError):
+        assert_optional_pin_hub_module(cur, 3, 10, "inventory")
+    with pytest.raises(MobilePinAccessDeniedError):
+        assert_optional_pin_hub_module(cur, 3, 10, "revenue_cost")
 
 
-def test_resolve_hub_features_stage_a_enforces_switch_role_and_checklist_only():
-    """Stage A AND-gates switch_role and checklist, not inventory or revenue cost."""
+def test_resolve_hub_features_enforces_role_checklist_inventory_and_revenue_cost():
+    """Employee OFF hides Role, Checklist, Inventory, and Revenue & Cost."""
     from backend.employee_pin_hub import resolve_hub_features
 
     matched = {"id": 10, "_roles": []}
@@ -513,8 +517,10 @@ def test_resolve_hub_features_stage_a_enforces_switch_role_and_checklist_only():
     assert feats["switch_role"]["employee_allowed"] is False
     assert feats["checklist"]["allowed"] is False
     assert feats["checklist"]["employee_allowed"] is False
-    assert feats["inventory"]["allowed"] is True
-    assert feats["inventory"]["employee_allowed"] is True
+    assert feats["inventory"]["allowed"] is False
+    assert feats["inventory"]["employee_allowed"] is False
+    assert feats["revenue_cost"]["allowed"] is False
+    assert feats["revenue_cost"]["employee_allowed"] is False
 
 
 def test_resolve_hub_features_role_allowed_when_employee_grants():
@@ -555,11 +561,11 @@ def test_resolve_hub_features_role_allowed_when_employee_grants():
         )
     assert feats["switch_role"]["allowed"] is True
     assert feats["switch_role"]["employee_allowed"] is True
-    assert feats["inventory"]["allowed"] is True
-    assert feats["inventory"]["employee_allowed"] is True
+    assert feats["inventory"]["allowed"] is False
+    assert feats["inventory"]["employee_allowed"] is False
 
 
-def test_resolve_hub_features_inventory_ignores_unactivated_employee_grant():
+def test_resolve_hub_features_inventory_off_hides_tile():
     from backend.employee_pin_hub import resolve_hub_features
 
     matched = {"id": 10, "_roles": []}
@@ -595,10 +601,9 @@ def test_resolve_hub_features_inventory_ignores_unactivated_employee_grant():
             matched=matched,
             employee_module_access=emp,
         )
-    assert feats["inventory"]["allowed"] is True
-    assert feats["inventory"]["employee_allowed"] is True
+    assert feats["inventory"]["allowed"] is False
+    assert feats["inventory"]["employee_allowed"] is False
     assert feats["inventory"]["org_enabled"] is True
-    # Does not grant Shift Role.
     assert feats["switch_role"]["allowed"] is False
 
 

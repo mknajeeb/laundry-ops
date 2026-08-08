@@ -15,6 +15,7 @@ export {
   buildPinLauncherTiles,
   clockTileLabel,
   CLOCK_DISABLED_HELPER,
+  ROLE_CLOCK_IN_FIRST_MESSAGE,
   isClockAllowedFromHub,
   PIN_LAUNCHER_META,
 } from "./buildPinLauncherTiles";
