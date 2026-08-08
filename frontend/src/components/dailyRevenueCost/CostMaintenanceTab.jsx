@@ -13,6 +13,7 @@ import {
 import SaveIcon from "@mui/icons-material/Save";
 import { getDrcCostSettings, updateDrcCostSettings } from "../../api";
 import { CurrencyField, NumberField, SectionCard } from "./DrcShared";
+import DrcMobileWeekdayAssignmentsPanel from "./DrcMobileWeekdayAssignmentsPanel";
 
 const COST_FIELDS = [
   { key: "electricity_daily", label: "Electricity (daily)" },
@@ -129,6 +130,8 @@ export default function CostMaintenanceTab() {
       <Button variant="contained" size="large" startIcon={<SaveIcon />} onClick={handleSave} disabled={saving} fullWidth>
         {saving ? "Saving…" : "Save Cost Settings"}
       </Button>
+
+      <DrcMobileWeekdayAssignmentsPanel canEdit />
     </Box>
   );
 }
