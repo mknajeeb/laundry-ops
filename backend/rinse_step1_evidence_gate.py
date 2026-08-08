@@ -8,12 +8,19 @@ transient ``force_incomplete`` argument.
 
 Only a later *complete* batch may clear the org tip. Batch N incomplete stays
 blocking for any Stage B that targets batch N.
+
+``GATE_IMPORT_RUNNING`` is the mid-cycle phase stamp for active scan-events
+DB write / timeline merge. It must be committed before mutation starts and
+replaced with a terminal complete/incomplete state when the import function
+exits (success or failure). Overall ``rinse_scrape_runs.status='running'``
+is not a Stage-B blocker by itself.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import os
+from datetime import datetime, timedelta
 from typing import Any, Mapping
 
 from backend.ta_helpers import table_exists
@@ -26,6 +33,21 @@ GATE_INVALID = "invalid_for_step1_rebuild"
 
 # Canonical Stage-B defer reason when a scan-import batch is incomplete.
 REASON_IMPORT_BATCH_INCOMPLETE = "import_batch_incomplete"
+REASON_IMPORT_RUNNING = "import_running"
+
+# Stuck import_running rows older than this are treated as failed imports so
+# Retry cannot remain blocked after a killed scheduler process.
+def _import_running_stale_minutes() -> int:
+    try:
+        raw = os.getenv("RINSE_IMPORT_RUNNING_STALE_MINUTES")
+        if raw is not None and str(raw).strip():
+            return max(5, min(240, int(raw)))
+    except (TypeError, ValueError):
+        pass
+    try:
+        return max(5, min(240, int(os.getenv("RINSE_SCRAPE_STALE_MINUTES", "120"))))
+    except (TypeError, ValueError):
+        return 120
 
 BLOCKING_STATUSES = frozenset(
     {
@@ -246,6 +268,129 @@ def record_evidence_gate_from_merge(
             },
         },
     )
+
+
+def record_scan_import_running(
+    cursor,
+    *,
+    organization_id: int,
+    import_batch_id: int,
+    scrape_run_id: int | None = None,
+    portal_presence_run_id: int | None = None,
+    detail: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Mark scan chronology mutation in progress (must be committed before mutate)."""
+    payload = {
+        "phase": GATE_IMPORT_RUNNING,
+        "started_at": _utcnow().isoformat(sep=" "),
+        **(dict(detail) if isinstance(detail, Mapping) else {}),
+    }
+    return record_evidence_gate_for_batch(
+        cursor,
+        organization_id=organization_id,
+        import_batch_id=int(import_batch_id),
+        scrape_run_id=scrape_run_id,
+        portal_presence_run_id=portal_presence_run_id,
+        import_running=True,
+        detail=payload,
+    )
+
+
+def record_scan_import_terminal_failure(
+    cursor,
+    *,
+    organization_id: int,
+    import_batch_id: int,
+    scrape_run_id: int | None = None,
+    error: str | None = None,
+    detail: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Clear import_running after a failed mutation; leave a blocking incomplete tip."""
+    payload = {
+        "phase": "scan_import_failed",
+        "finished_at": _utcnow().isoformat(sep=" "),
+        "error": (error or "")[:2000] or None,
+        **(dict(detail) if isinstance(detail, Mapping) else {}),
+    }
+    return record_evidence_gate_for_batch(
+        cursor,
+        organization_id=organization_id,
+        import_batch_id=int(import_batch_id),
+        scrape_run_id=scrape_run_id,
+        import_incomplete=True,
+        detail=payload,
+    )
+
+
+def reconcile_stale_import_running_gates(cursor, organization_id: int) -> int:
+    """Convert abandoned import_running rows to incomplete so Retry cannot stick."""
+    if not table_exists(cursor, "rinse_step1_evidence_gate"):
+        return 0
+    cutoff = _utcnow() - timedelta(minutes=_import_running_stale_minutes())
+    cursor.execute(
+        """
+        SELECT import_batch_id, scrape_run_id
+        FROM rinse_step1_evidence_gate
+        WHERE organization_id = %s
+          AND gate_status = %s
+          AND updated_at < %s
+        """,
+        (int(organization_id), GATE_IMPORT_RUNNING, cutoff),
+    )
+    rows = [r for r in (cursor.fetchall() or []) if isinstance(r, Mapping)]
+    cleared = 0
+    for row in rows:
+        bid = row.get("import_batch_id")
+        if bid is None:
+            continue
+        record_scan_import_terminal_failure(
+            cursor,
+            organization_id=organization_id,
+            import_batch_id=int(bid),
+            scrape_run_id=(
+                int(row["scrape_run_id"]) if row.get("scrape_run_id") is not None else None
+            ),
+            error=(
+                f"import_running gate stale after {_import_running_stale_minutes()} minutes"
+            ),
+            detail={"stale_reconciled": True},
+        )
+        cleared += 1
+    return cleared
+
+
+def active_scan_import_running(
+    cursor,
+    organization_id: int,
+    *,
+    exclude_scrape_run_id: int | None = None,
+) -> bool:
+    """True when a non-stale import_running evidence gate exists for the org."""
+    if not table_exists(cursor, "rinse_step1_evidence_gate"):
+        return False
+    reconcile_stale_import_running_gates(cursor, organization_id)
+    cutoff = _utcnow() - timedelta(minutes=_import_running_stale_minutes())
+    cursor.execute(
+        """
+        SELECT import_batch_id, scrape_run_id, gate_status, updated_at
+        FROM rinse_step1_evidence_gate
+        WHERE organization_id = %s
+          AND gate_status = %s
+          AND updated_at >= %s
+        ORDER BY updated_at DESC, import_batch_id DESC
+        LIMIT 4
+        """,
+        (int(organization_id), GATE_IMPORT_RUNNING, cutoff),
+    )
+    exclude = int(exclude_scrape_run_id) if exclude_scrape_run_id is not None else None
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, Mapping):
+            continue
+        sid = row.get("scrape_run_id")
+        if exclude is not None and sid is not None and int(sid) == exclude:
+            continue
+        return True
+    return False
 
 
 def fetch_evidence_gate(

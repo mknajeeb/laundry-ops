@@ -649,6 +649,8 @@ def commit_scheduled_scan_events_only(
     batch_date: date,
     events_filename: str,
     events_df: pd.DataFrame,
+    *,
+    scrape_run_id: int | None = None,
 ) -> dict[str, Any]:
     """
     Persist scheduled scan-events export when portal ACA gate blocks portal upload.
@@ -658,6 +660,11 @@ def commit_scheduled_scan_events_only(
     """
     from backend.rinse_bag_registry import merge_scan_events_from_upload, recompute_completion_for_bags
     from backend.rinse_scan_events_upload import commit_scan_events_for_batch
+    from backend.rinse_step1_evidence_gate import (
+        record_evidence_gate_from_merge,
+        record_scan_import_running,
+        record_scan_import_terminal_failure,
+    )
 
     schema = get_upload_batch_schema(cursor)
     shell_name = f"scheduled-scan-events-only + {events_filename}"
@@ -665,44 +672,83 @@ def commit_scheduled_scan_events_only(
         cursor, tenant_oid, batch_date, shell_name, schema
     )
 
-    batch_events_payload = commit_scan_events_for_batch(
+    # Authoritative mid-cycle stamp before scan chronology mutation (committed).
+    record_scan_import_running(
         cursor,
-        tenant_oid,
-        upload_batch_id,
-        events_df,
-        events_filename,
-        replace_existing=True,
+        organization_id=tenant_oid,
+        import_batch_id=int(upload_batch_id),
+        scrape_run_id=scrape_run_id,
+        detail={"source": "scheduled_scan_events_only"},
     )
+    conn.commit()
 
+    batch_events_payload: dict[str, Any] = {}
     persistent_merge_payload: dict[str, Any] = {}
-    if not events_df.empty:
-        persistent_merge_payload = merge_scan_events_from_upload(
+    try:
+        batch_events_payload = commit_scan_events_for_batch(
             cursor,
             tenant_oid,
             upload_batch_id,
             events_df,
             events_filename,
             replace_existing=True,
-            credential_sourced=True,
-        )
-        bag_ids = list(persistent_merge_payload.get("bag_ids") or [])
-        if bag_ids:
-            recompute_completion_for_bags(cursor, tenant_oid, bag_ids)
-
-    if schema.has_state:
-        set_parts = ["state = 'CONFIRMED'", "confirmed_at = NOW()", "orders_loaded = 0"]
-        if schema.has_rows_inserted:
-            set_parts.append("rows_inserted = 0")
-        cursor.execute(
-            f"""
-            UPDATE upload_batches
-            SET {", ".join(set_parts)}
-            WHERE batch_id = %s
-            """,
-            (int(upload_batch_id),),
         )
 
-    conn.commit()
+        if not events_df.empty:
+            persistent_merge_payload = merge_scan_events_from_upload(
+                cursor,
+                tenant_oid,
+                upload_batch_id,
+                events_df,
+                events_filename,
+                replace_existing=True,
+                credential_sourced=True,
+            )
+            bag_ids = list(persistent_merge_payload.get("bag_ids") or [])
+            if bag_ids:
+                recompute_completion_for_bags(cursor, tenant_oid, bag_ids)
+
+        if schema.has_state:
+            set_parts = ["state = 'CONFIRMED'", "confirmed_at = NOW()", "orders_loaded = 0"]
+            if schema.has_rows_inserted:
+                set_parts.append("rows_inserted = 0")
+            cursor.execute(
+                f"""
+                UPDATE upload_batches
+                SET {", ".join(set_parts)}
+                WHERE batch_id = %s
+                """,
+                (int(upload_batch_id),),
+            )
+
+        record_evidence_gate_from_merge(
+            cursor,
+            organization_id=tenant_oid,
+            import_batch_id=int(upload_batch_id),
+            scrape_run_id=scrape_run_id,
+            merge=persistent_merge_payload,
+            detail={"source": "scheduled_scan_events_only"},
+        )
+        conn.commit()
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        try:
+            record_scan_import_terminal_failure(
+                cursor,
+                organization_id=tenant_oid,
+                import_batch_id=int(upload_batch_id),
+                scrape_run_id=scrape_run_id,
+                error=str(exc),
+                detail={"source": "scheduled_scan_events_only"},
+            )
+            conn.commit()
+        except Exception:
+            pass
+        raise
+
     return {
         "status": "scan_events_only",
         "source": "scheduled_scan_events_only",
@@ -723,14 +769,25 @@ def commit_rinse_combined_upload(
     events_df: pd.DataFrame,
     *,
     portal_scrape_meta: dict | None = None,
-    portal_scrape_meta_path: str | Path | None = None,
+    portal_scrape_meta_path: str | None = None,
+    scrape_run_id: int | None = None,
 ) -> dict:
     """
     Dual CSV: scan-events merged and completion recomputed before portal row classification.
-    Single transaction; caller must not commit on failure (rollback in route).
+
+    Pre-mutation portal draft work is committed with an ``import_running`` evidence
+    gate so concurrent Stage-B/Retry can see the unsafe window. Scan-events write +
+    timeline merge then run; the gate is always transitioned to a terminal
+    complete/incomplete state before return (success or exception).
     """
     from backend.app import summarize_batch_rows
     from backend.rinse_scan_events_upload import commit_scan_events_for_batch
+    from backend.rinse_step1_evidence_gate import (
+        record_evidence_gate_for_batch,
+        record_evidence_gate_from_merge,
+        record_scan_import_running,
+        record_scan_import_terminal_failure,
+    )
     from backend.upload_batch_requirements import batch_upload_files_status
 
     schema = get_upload_batch_schema(cursor)
@@ -777,40 +834,91 @@ def commit_rinse_combined_upload(
         pending_events_df=events_df,
     )
 
-    batch_events_payload = commit_scan_events_for_batch(
+    # Stamp + commit before scan chronology mutation so API Retry can observe it.
+    record_scan_import_running(
         cursor,
-        tenant_oid,
-        upload_batch_id,
-        events_df,
-        events_filename,
-        replace_existing=True,
+        organization_id=tenant_oid,
+        import_batch_id=int(upload_batch_id),
+        scrape_run_id=scrape_run_id,
+        detail={"source": "upload_rinse_dual_csv"},
     )
+    conn.commit()
 
+    batch_events_payload: dict[str, Any] = {}
     persistent_merge_payload: dict[str, Any] = {}
-    if is_auto_scrape and not events_df.empty:
-        from backend.rinse_bag_registry import merge_scan_events_from_upload
-
-        persistent_merge_payload = merge_scan_events_from_upload(
+    try:
+        batch_events_payload = commit_scan_events_for_batch(
             cursor,
             tenant_oid,
             upload_batch_id,
             events_df,
             events_filename,
             replace_existing=True,
-            credential_sourced=True,
         )
-        # Best-effort: attach portal Weight_Num onto the latest eligible
-        # weight-entry immediately after the draft merge, so enrichment isn't
-        # only available once the batch is confirmed. Never raises — the
-        # confirm-time apply_registry_from_accepted_portal_rows path is the
-        # authoritative attach and must work even if this is skipped.
-        _attach_portal_weights_after_draft_merge(cursor, tenant_oid, upload_batch_id, orders_df)
 
-    finalize_upload_batch_row_counts(
-        cursor, tenant_oid, upload_batch_id, counts["rows_inserted"], schema
-    )
+        if is_auto_scrape and not events_df.empty:
+            from backend.rinse_bag_registry import merge_scan_events_from_upload
 
-    conn.commit()
+            persistent_merge_payload = merge_scan_events_from_upload(
+                cursor,
+                tenant_oid,
+                upload_batch_id,
+                events_df,
+                events_filename,
+                replace_existing=True,
+                credential_sourced=True,
+            )
+            # Best-effort: attach portal Weight_Num onto the latest eligible
+            # weight-entry immediately after the draft merge, so enrichment isn't
+            # only available once the batch is confirmed. Never raises — the
+            # confirm-time apply_registry_from_accepted_portal_rows path is the
+            # authoritative attach and must work even if this is skipped.
+            _attach_portal_weights_after_draft_merge(
+                cursor, tenant_oid, upload_batch_id, orders_df
+            )
+
+        finalize_upload_batch_row_counts(
+            cursor, tenant_oid, upload_batch_id, counts["rows_inserted"], schema
+        )
+
+        if persistent_merge_payload:
+            record_evidence_gate_from_merge(
+                cursor,
+                organization_id=tenant_oid,
+                import_batch_id=int(upload_batch_id),
+                scrape_run_id=scrape_run_id,
+                merge=persistent_merge_payload,
+                detail={"source": "upload_rinse_dual_csv"},
+            )
+        else:
+            # Scan batch written (possibly empty merge) — clear import_running.
+            record_evidence_gate_for_batch(
+                cursor,
+                organization_id=tenant_oid,
+                import_batch_id=int(upload_batch_id),
+                scrape_run_id=scrape_run_id,
+                detail={"source": "upload_rinse_dual_csv", "merge": "skipped_or_empty"},
+            )
+        conn.commit()
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        try:
+            record_scan_import_terminal_failure(
+                cursor,
+                organization_id=tenant_oid,
+                import_batch_id=int(upload_batch_id),
+                scrape_run_id=scrape_run_id,
+                error=str(exc),
+                detail={"source": "upload_rinse_dual_csv"},
+            )
+            conn.commit()
+        except Exception:
+            pass
+        raise
+
     summary = summarize_batch_rows(cursor, upload_batch_id, schema.row_pk)
     upload_files = batch_upload_files_status(cursor, upload_batch_id, tenant_oid)
 

@@ -1195,6 +1195,7 @@ def _import_scan_events_when_portal_gate_blocked(
     env: dict[str, str],
     log,
     batch_date: date,
+    scrape_run_id: int | None = None,
 ) -> dict[str, Any] | None:
     """Run scan-events scrape and merge into persistent storage despite ACA gate block."""
     if _run_bash_script(scan_script, env, log) != 0:
@@ -1227,6 +1228,7 @@ def _import_scan_events_when_portal_gate_blocked(
         batch_date,
         events_name,
         events_df,
+        scrape_run_id=scrape_run_id,
     )
     log.write(
         "Scan-events-only import during inspect_only: "
@@ -1395,6 +1397,7 @@ def run_scheduled_scrape_for_org(
                         env=env,
                         log=log,
                         batch_date=batch_date,
+                        scrape_run_id=run_id,
                     )
                     if scan_events_only_detail:
                         result.scan_events_count = int(
@@ -1489,6 +1492,7 @@ def run_scheduled_scrape_for_org(
                 events_name,
                 events_df,
                 portal_scrape_meta_path=str(portal_meta_path),
+                scrape_run_id=run_id,
             )
             if not draft_payload.get("portal_absence_allowed"):
                 log.write(

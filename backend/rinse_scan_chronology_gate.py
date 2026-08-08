@@ -31,31 +31,19 @@ def scrape_import_in_progress(
     *,
     exclude_scrape_run_id: int | None = None,
 ) -> bool:
-    """True when an org scrape run (other than exclude) is still running."""
-    if not table_exists(cursor, "rinse_scrape_runs"):
-        return False
-    org = int(organization_id)
-    cursor.execute(
-        """
-        SELECT id, status
-        FROM rinse_scrape_runs
-        WHERE organization_id = %s
-        ORDER BY id DESC
-        LIMIT 6
-        """,
-        (org,),
+    """True only while scan chronology is actively being mutated.
+
+    Checkpoint B: overall ``rinse_scrape_runs.status='running'`` (presence /
+    CSV download / post-merge Stage-B) must NOT block Retry. The authoritative
+    mid-cycle signal is ``rinse_step1_evidence_gate.gate_status='import_running'``.
+    """
+    from backend.rinse_step1_evidence_gate import active_scan_import_running
+
+    return active_scan_import_running(
+        cursor,
+        int(organization_id),
+        exclude_scrape_run_id=exclude_scrape_run_id,
     )
-    exclude = int(exclude_scrape_run_id) if exclude_scrape_run_id is not None else None
-    for row in cursor.fetchall() or []:
-        if not isinstance(row, Mapping):
-            continue
-        rid = row.get("id")
-        if exclude is not None and rid is not None and int(rid) == exclude:
-            continue
-        st = _norm_status(row.get("status"))
-        if st in ("running", "in_progress", "started", "importing"):
-            return True
-    return False
 
 
 def last_consistent_snapshot_counts(
@@ -187,12 +175,26 @@ def evaluate_step1_rebuild_gate(
     defer_reason: str | None = None
     defer_status = STATUS_REBUILD_DEFERRED
     if durable.get("blocking"):
-        from backend.rinse_step1_evidence_gate import REASON_IMPORT_BATCH_INCOMPLETE
-
-        defer_reason = str(
-            durable.get("gate_reason") or REASON_IMPORT_BATCH_INCOMPLETE
+        from backend.rinse_step1_evidence_gate import (
+            GATE_IMPORT_RUNNING,
+            REASON_IMPORT_BATCH_INCOMPLETE,
+            REASON_IMPORT_RUNNING,
         )
-        defer_status = STATUS_IMPORT_INCOMPLETE
+
+        durable_status = str(durable.get("gate_status") or "").strip().lower()
+        durable_reason = str(durable.get("gate_reason") or "").strip().lower()
+        if durable_status == GATE_IMPORT_RUNNING or durable_reason in (
+            REASON_IMPORT_RUNNING,
+            STATUS_SCAN_IMPORT_IN_PROGRESS,
+        ):
+            # Mid-cycle mutation stamp — not a terminal incomplete batch.
+            defer_reason = STATUS_SCAN_IMPORT_IN_PROGRESS
+            defer_status = STATUS_SCAN_IMPORT_IN_PROGRESS
+        else:
+            defer_reason = str(
+                durable.get("gate_reason") or REASON_IMPORT_BATCH_INCOMPLETE
+            )
+            defer_status = STATUS_IMPORT_INCOMPLETE
     elif force_incomplete:
         from backend.rinse_step1_evidence_gate import REASON_IMPORT_BATCH_INCOMPLETE
 
