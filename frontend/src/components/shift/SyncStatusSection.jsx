@@ -65,7 +65,7 @@ export default function SyncStatusSection({
   onRefresh,
   readyForVendorEnabled = false,
 }) {
-  const [open, setOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const rfvActive = Boolean(readyForVendorEnabled && rfvSync?.enabled !== false);
   const rfvSyncSub = syncStatusSubtext(
     { sync_status: rfvSync, last_refreshed_at: rfv?.last_refreshed_at },
@@ -136,16 +136,16 @@ export default function SyncStatusSection({
           alignItems: "center",
           flexWrap: "wrap",
           gap: 1,
-          mb: 0.75,
+          mb: 0.5,
         }}
       >
         <Typography
-          variant="subtitle1"
-          fontWeight={800}
-          onClick={() => setOpen((v) => !v)}
-          sx={{ cursor: "pointer", userSelect: "none" }}
+          variant="caption"
+          color="text.secondary"
+          onClick={() => setDiagnosticsOpen((v) => !v)}
+          sx={{ cursor: "pointer", userSelect: "none", fontWeight: 700 }}
         >
-          {cycle.label || "Last Rinse Sync Cycle"} {open ? "▾" : "▸"}
+          Admin / Diagnostics {diagnosticsOpen ? "▾" : "▸"}
         </Typography>
         <Box
           component="button"
@@ -169,7 +169,10 @@ export default function SyncStatusSection({
             : (rfvActive ? "Refresh Both Syncs" : "Refresh Portal Sync")}
         </Box>
       </Box>
-      <Collapse in={open}>
+      <Collapse in={diagnosticsOpen}>
+        <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
+          {cycle.label || "Last Rinse Sync Cycle"}
+        </Typography>
         {gateWarning ? (
           <Alert severity="warning" sx={{ mb: 1, py: 0.5 }}>
             {gateWarning}

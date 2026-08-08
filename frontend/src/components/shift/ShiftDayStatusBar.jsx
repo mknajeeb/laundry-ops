@@ -10,6 +10,7 @@ import {
   DialogTitle,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import {
@@ -20,6 +21,7 @@ import {
 } from "../../api";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
+import { sourceFreshnessCaption } from "../../utils/shiftMonitorSourceFreshness";
 
 /** Operator-facing timestamps: America/New_York only (never raw UTC truncate). */
 function fmtTs(v) {
@@ -39,7 +41,14 @@ export default function ShiftDayStatusBar({
   const status = String(day.status || "NOT_STARTED").toUpperCase();
   const readOnly = Boolean(day.read_only || status === "CLOSED");
   const notStarted = status === "NOT_STARTED";
-  const reviewN = day.review_required_count ?? validation?.review_required_count ?? 0;
+  const freshnessCaption = useMemo(
+    () => sourceFreshnessCaption(dataFreshness, shiftDay || {}),
+    [
+      dataFreshness,
+      shiftDay?.step1_refreshed_at,
+      shiftDay?.last_sync_at,
+    ],
+  );
   const [closeOpen, setCloseOpen] = useState(false);
   const [reopenOpen, setReopenOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -265,16 +274,40 @@ export default function ShiftDayStatusBar({
             {isToday ? <Chip size="small" variant="outlined" label="Live" /> : null}
             {readOnly ? <Chip size="small" variant="outlined" label="Read-only" /> : null}
           </Stack>
-          <Typography variant="caption" color="text.secondary">
-            {notStarted
-              ? "Shift has not started."
-              : `Opened ${fmtTs(day.opened_at)} · Step-1 refreshed ${fmtTs(
-                  day.step1_refreshed_at || day.last_sync_at
-                )} · Review Required ${reviewN}`}
-            {!notStarted && day.closed_by_display_name
-              ? ` · Closed by ${day.closed_by_display_name} @ ${fmtTs(day.closed_at)}`
-              : ""}
-          </Typography>
+          {notStarted ? (
+            <Typography variant="caption" color="text.secondary">
+              Shift has not started.
+            </Typography>
+          ) : (
+            <Stack spacing={0.15}>
+              {freshnessCaption.tooltip ? (
+                <Tooltip
+                  title={
+                    <Box sx={{ whiteSpace: "pre-line" }}>{freshnessCaption.tooltip}</Box>
+                  }
+                  arrow
+                  placement="bottom-start"
+                >
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ cursor: "help", display: "inline-block", width: "fit-content" }}
+                  >
+                    {freshnessCaption.label}
+                  </Typography>
+                </Tooltip>
+              ) : (
+                <Typography variant="caption" color="text.secondary">
+                  {freshnessCaption.label}
+                </Typography>
+              )}
+              {day.closed_by_display_name ? (
+                <Typography variant="caption" color="text.secondary">
+                  Closed by {day.closed_by_display_name} @ {fmtTs(day.closed_at)}
+                </Typography>
+              ) : null}
+            </Stack>
+          )}
           {refreshFailed ? (
             <Alert
               severity="warning"

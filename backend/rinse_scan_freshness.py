@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
+
+from backend.rinse_scan_time import (
+    serialize_rinse_scan_datetime_for_api,
+    serialize_system_datetime_for_api,
+    system_datetime_to_et,
+)
 
 # Presence.last_seen_at is scrape observation wall-clock, not facility scan time.
 # Comparing it to MAX(scanned_at_parsed) falsely flags idle-but-present bags once
@@ -12,6 +19,70 @@ from typing import Any, Mapping, Sequence
 DEFAULT_STALE_GAP = timedelta(hours=4)
 # Pipeline lag: portal presence finished successfully but scan-event import is behind.
 DEFAULT_IMPORT_LAG = timedelta(minutes=45)
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _scan_wall_to_et_aware(dt: datetime | None) -> datetime | None:
+    """``scanned_at_parsed`` / most_recent_persisted_scan_at = ET wall (naive or aware)."""
+    if dt is None or not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=_ET)
+    return dt.astimezone(_ET)
+
+
+def build_operator_source_freshness_watermarks(
+    *,
+    most_recent_persisted_scan_at: datetime | None,
+    last_portal_scrape_at: datetime | None,
+    shift_last_sync_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Operator source-data freshness (not Stage-B recalculation time).
+
+    ``operator_data_current_through_et`` = MIN(portal_through_et, scan_through_et).
+    Missing either source watermark → unavailable (do not invent a time).
+    Manual recalculation must not move this watermark.
+    """
+    portal_et = system_datetime_to_et(
+        last_portal_scrape_at if isinstance(last_portal_scrape_at, datetime) else None
+    )
+    scan_et = _scan_wall_to_et_aware(
+        most_recent_persisted_scan_at
+        if isinstance(most_recent_persisted_scan_at, datetime)
+        else None
+    )
+    calculated_iso = (
+        serialize_system_datetime_for_api(shift_last_sync_at)
+        if isinstance(shift_last_sync_at, datetime)
+        else None
+    )
+    portal_iso = (
+        serialize_system_datetime_for_api(last_portal_scrape_at)
+        if isinstance(last_portal_scrape_at, datetime)
+        else None
+    )
+    scan_iso = (
+        serialize_rinse_scan_datetime_for_api(most_recent_persisted_scan_at)
+        if isinstance(most_recent_persisted_scan_at, datetime)
+        else None
+    )
+    if portal_et is None or scan_et is None:
+        return {
+            "portal_data_through_et": portal_iso,
+            "scan_data_through_et": scan_iso,
+            "operator_data_current_through_et": None,
+            "calculated_at_et": calculated_iso,
+            "source_freshness_available": False,
+        }
+    current_et = min(portal_et, scan_et)
+    return {
+        "portal_data_through_et": portal_iso,
+        "scan_data_through_et": scan_iso,
+        "operator_data_current_through_et": current_et.isoformat(timespec="seconds"),
+        "calculated_at_et": calculated_iso,
+        "source_freshness_available": True,
+    }
 
 
 def build_scan_data_freshness(
@@ -54,6 +125,12 @@ def build_scan_data_freshness(
     elif stale_bags:
         status = "scan_chronology_stale"
 
+    watermarks = build_operator_source_freshness_watermarks(
+        most_recent_persisted_scan_at=most_recent_persisted_scan_at,
+        last_portal_scrape_at=last_portal_scrape_at,
+        shift_last_sync_at=shift_last_sync_at,
+    )
+
     return {
         "status": status,
         "selected_date_et": selected_date_et.isoformat(),
@@ -71,6 +148,7 @@ def build_scan_data_freshness(
         "reasons": reasons,
         "trust_pending_from_missing_completion": status == "ok",
         "pending_trust": "trusted" if status == "ok" else "provisional",
+        **watermarks,
     }
 
 

@@ -218,6 +218,14 @@ _SYSTEM_UTC_DATETIME_KEYS = frozenset(
         "opened_at",
         "closed_at",
         "step1_refreshed_at",
+        "last_portal_scrape_at",
+        "last_scan_refresh_at",
+        "shift_last_sync_at",
+        "step1_refresh_started_at",
+        "step1_refresh_finished_at",
+        "evidence_import_finished_at",
+        "step1_day_last_sync_at",
+        "calculated_at_et",
     }
 )
 
@@ -227,6 +235,9 @@ def json_safe_rinse(obj: Any, *, _key: str | None = None) -> Any:
 
     Naive datetimes default to America/New_York portal wall time, except known
     system/UTC observation keys (weight_observed_at, scrape finished_at, …).
+
+    Naive *string* values under system/UTC keys are also parsed as UTC and
+    converted to America/New_York — Stage-B meta often stores finished_at as text.
     """
     if obj is None:
         return None
@@ -236,6 +247,9 @@ def json_safe_rinse(obj: Any, *, _key: str | None = None) -> Any:
         if _key in _SYSTEM_UTC_DATETIME_KEYS:
             return serialize_system_datetime_for_api(obj)
         return serialize_rinse_scan_datetime_for_api(obj)
+    if isinstance(obj, str) and _key in _SYSTEM_UTC_DATETIME_KEYS:
+        # UTC-naive Stage-B / scrape stamps persisted as JSON strings.
+        return serialize_weight_observation_for_api(obj)
     if isinstance(obj, date):
         return obj.isoformat()
     if isinstance(obj, dict):
