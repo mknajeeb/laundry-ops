@@ -154,6 +154,22 @@ describe("createSwitchRoleController", () => {
     vi.useRealTimers();
   });
 
+  it("always opens on role list even when a current role exists", () => {
+    const controller = createSwitchRoleController({
+      selectionTree: multiCatTree,
+      currentCategoryId: 10,
+      currentRoleId: 1,
+      pin: "1234",
+      slug: "veewash",
+      switchRoleApi: vi.fn(),
+      createIdempotencyKey: () => "key-1",
+      onSuccess: vi.fn(),
+    });
+    expect(controller.getState().step).toBe("role");
+    expect(controller.getState().roleId).toBe(null);
+    expect(controller.isCurrentRole({ role_id: 1, role_name: "Operator" })).toBe(true);
+  });
+
   it("does not call API when confirming the current category+role", async () => {
     const switchRoleApi = vi.fn();
     const controller = createSwitchRoleController({
@@ -166,6 +182,8 @@ describe("createSwitchRoleController", () => {
       createIdempotencyKey: () => "key-1",
       onSuccess: vi.fn(),
     });
+    expect(controller.getState().step).toBe("role");
+    controller.setRole({ role_id: 1, role_name: "Operator" });
     expect(controller.getState().step).toBe("category");
     const result = await controller.selectCategory({ id: 10, name: "Floor" });
     expect(result.called).toBe(false);

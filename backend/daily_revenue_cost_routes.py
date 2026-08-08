@@ -25,6 +25,30 @@ from backend.daily_revenue_cost import (
 from backend.rinse_scan_time import json_safe_rinse
 
 
+def _drc_access_error(cursor, me, user_org_id):
+    """
+    Manager/admin path unchanged (ADMIN+).
+    Employee PIN path: Mobile PIN Access revenue_cost is sufficient — no second
+    Washpro ADMIN/role grant required for the same PIN module.
+    """
+    rs = {str(r).upper() for r in (me.get("roles") or [])}
+    if rs & {"ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"}:
+        return None, None
+    from backend.employee_mobile_pin_access import (
+        DENIED_MODULE_MESSAGE,
+        MobilePinAccessDeniedError,
+        assert_employee_allows_module,
+    )
+
+    try:
+        assert_employee_allows_module(
+            cursor, int(user_org_id(me)), int(me["user_id"]), "revenue_cost"
+        )
+        return None, None
+    except MobilePinAccessDeniedError:
+        return jsonify({"error": DENIED_MODULE_MESSAGE}), 403
+
+
 def register_daily_revenue_cost_routes(
     app,
     *,
@@ -33,22 +57,31 @@ def register_daily_revenue_cost_routes(
     user_org_id,
     parse_date_value,
 ) -> None:
+    # require_admin kept for register() signature compatibility; access via _require_drc.
+    _ = require_admin
+
     def _parse_entry_date(raw: str | None) -> date:
         if not raw:
             return business_today()
         return parse_date_value(raw.strip())
+
+    def _require_drc(cursor):
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return None, err_resp, err_code
+        err_body, err_code2 = _drc_access_error(cursor, me, user_org_id)
+        if err_body is not None:
+            return None, err_body, err_code2
+        return me, None, None
 
     @app.route("/finance/daily-revenue-cost/cost-settings", methods=["GET", "PUT"])
     def finance_drc_cost_settings():
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err_resp, err_code = require_user(cursor)
+            me, err_resp, err_code = _require_drc(cursor)
             if err_resp:
                 return err_resp, err_code
-            _, err_admin, code_admin = require_admin(cursor)
-            if err_admin:
-                return err_admin, code_admin
             tenant_oid = user_org_id(me)
             user_id = int(me["user_id"]) if me.get("user_id") else None
             if request.method == "GET":
@@ -69,12 +102,9 @@ def register_daily_revenue_cost_routes(
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err_resp, err_code = require_user(cursor)
+            me, err_resp, err_code = _require_drc(cursor)
             if err_resp:
                 return err_resp, err_code
-            _, err_admin, code_admin = require_admin(cursor)
-            if err_admin:
-                return err_admin, code_admin
             tenant_oid = user_org_id(me)
             user_id = int(me["user_id"]) if me.get("user_id") else None
             if request.method == "GET":
@@ -101,12 +131,9 @@ def register_daily_revenue_cost_routes(
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err_resp, err_code = require_user(cursor)
+            me, err_resp, err_code = _require_drc(cursor)
             if err_resp:
                 return err_resp, err_code
-            _, err_admin, code_admin = require_admin(cursor)
-            if err_admin:
-                return err_admin, code_admin
             tenant_oid = user_org_id(me)
             user_id = int(me["user_id"]) if me.get("user_id") else None
             data = request.get_json(silent=True) or {}
@@ -131,12 +158,9 @@ def register_daily_revenue_cost_routes(
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err_resp, err_code = require_user(cursor)
+            me, err_resp, err_code = _require_drc(cursor)
             if err_resp:
                 return err_resp, err_code
-            _, err_admin, code_admin = require_admin(cursor)
-            if err_admin:
-                return err_admin, code_admin
             tenant_oid = user_org_id(me)
             user_id = int(me["user_id"]) if me.get("user_id") else None
             if request.method == "GET":
@@ -163,12 +187,9 @@ def register_daily_revenue_cost_routes(
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err_resp, err_code = require_user(cursor)
+            me, err_resp, err_code = _require_drc(cursor)
             if err_resp:
                 return err_resp, err_code
-            _, err_admin, code_admin = require_admin(cursor)
-            if err_admin:
-                return err_admin, code_admin
             tenant_oid = user_org_id(me)
             user_id = int(me["user_id"]) if me.get("user_id") else None
             try:
@@ -200,12 +221,9 @@ def register_daily_revenue_cost_routes(
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err_resp, err_code = require_user(cursor)
+            me, err_resp, err_code = _require_drc(cursor)
             if err_resp:
                 return err_resp, err_code
-            _, err_admin, code_admin = require_admin(cursor)
-            if err_admin:
-                return err_admin, code_admin
             tenant_oid = user_org_id(me)
             try:
                 target_date = _parse_entry_date(entry_date)
@@ -232,12 +250,9 @@ def register_daily_revenue_cost_routes(
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err_resp, err_code = require_user(cursor)
+            me, err_resp, err_code = _require_drc(cursor)
             if err_resp:
                 return err_resp, err_code
-            _, err_admin, code_admin = require_admin(cursor)
-            if err_admin:
-                return err_admin, code_admin
             tenant_oid = user_org_id(me)
             user_id = int(me["user_id"]) if me.get("user_id") else None
             try:
@@ -270,12 +285,9 @@ def register_daily_revenue_cost_routes(
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err_resp, err_code = require_user(cursor)
+            me, err_resp, err_code = _require_drc(cursor)
             if err_resp:
                 return err_resp, err_code
-            _, err_admin, code_admin = require_admin(cursor)
-            if err_admin:
-                return err_admin, code_admin
             tenant_oid = user_org_id(me)
             period = (request.args.get("period") or "daily").strip().lower()
             ref_raw = (request.args.get("date") or "").strip()

@@ -339,7 +339,7 @@ export default function AttendanceRoleSwitchPage() {
       setSuccessLabel(snap.successLabel);
       if (snap.phase === "success") setPhase("success");
     });
-    // Sync initial controller snapshot (may start on category when role is known).
+    // Sync initial controller snapshot (always role-first).
     const snap0 = controller.getState();
     setFlowStep(snap0.step);
     setRoleId(snap0.roleId);

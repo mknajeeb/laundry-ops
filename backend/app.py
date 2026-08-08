@@ -4934,15 +4934,23 @@ def get_geofence_config():
 
 @app.route("/auth/attendance-pin-unlock", methods=["POST"])
 def attendance_pin_unlock():
-    """Shared-tablet lock screen: unlock with org slug + employee payroll PIN (non-admin users only)."""
+    """
+    Unlock a short Washpro session with org slug + employee payroll PIN
+    (non-admin users only), or reuse a verified PIN Hub hub_token to skip a
+    second bcrypt scan when opening Inventory / Revenue & Cost from the hub.
+    """
     data = request.json or {}
     org_slug = (data.get("organization_slug") or data.get("organization") or "").strip().lower()
     pin_raw = data.get("pin")
     pin = str(pin_raw).strip() if pin_raw is not None else ""
+    hub_token = str(data.get("hub_token") or "").strip()
+    pin_hub_module = str(data.get("pin_hub_module") or "").strip()
 
-    if not org_slug or not pin:
+    if not org_slug:
         return jsonify({"error": "organization_slug and pin are required"}), 400
-    if not pin.isdigit() or len(pin) < 4 or len(pin) > 10:
+    if not hub_token and not pin:
+        return jsonify({"error": "organization_slug and pin are required"}), 400
+    if pin and (not pin.isdigit() or len(pin) < 4 or len(pin) > 10):
         return jsonify({"error": "Invalid PIN"}), 400
 
     conn = None
@@ -4959,39 +4967,96 @@ def attendance_pin_unlock():
 
         has_u_org = table_has_column(cursor, "users", "organization_id")
         logo_sql = _org_logo_select_sql(cursor)
-        cursor.execute(
-            f"""
-            SELECT u.id, u.username, u.display_name, u.active, u.organization_id,
-                   o.slug AS organization_slug, o.display_name AS organization_name,
-                   {logo_sql},
-                   pp.attendance_pin_hash
-            FROM payroll_profiles pp
-            INNER JOIN users u ON u.id = pp.user_id
-            INNER JOIN organizations o ON o.id = u.organization_id AND o.active = 1
-            WHERE LOWER(o.slug) = %s
-              AND u.active = 1
-              AND pp.attendance_pin_hash IS NOT NULL
-            """,
-            (org_slug,),
-        )
-        rows = cursor.fetchall() or []
-
         matched = None
         matched_roles = None
-        for row in rows:
-            h = row.get("attendance_pin_hash")
-            if not h or not verify_password(str(h), pin):
-                continue
-            roles = fetch_user_roles(cursor, row["id"])
-            rs = {str(r).upper() for r in roles}
-            if rs & {"ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"}:
-                continue
-            matched = row
-            matched_roles = roles
-            break
 
-        if not matched:
-            return jsonify({"error": "Invalid PIN"}), 401
+        if hub_token:
+            from backend.employee_pin_hub import verify_hub_session_token
+            from backend.employee_mobile_pin_access import (
+                DENIED_MODULE_MESSAGE,
+                MobilePinAccessDeniedError,
+                assert_optional_pin_hub_module,
+            )
+
+            try:
+                claims = verify_hub_session_token(hub_token)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 401
+            emp_id = int(claims["employee_id"])
+            org_id = int(claims["organization_id"])
+            cursor.execute(
+                f"""
+                SELECT u.id, u.username, u.display_name, u.active, u.organization_id,
+                       o.slug AS organization_slug, o.display_name AS organization_name,
+                       {logo_sql}
+                FROM users u
+                INNER JOIN organizations o ON o.id = u.organization_id AND o.active = 1
+                WHERE u.id = %s AND u.organization_id = %s AND u.active = 1
+                  AND LOWER(o.slug) = %s
+                LIMIT 1
+                """,
+                (emp_id, org_id, org_slug),
+            )
+            matched = cursor.fetchone()
+            if not matched:
+                return jsonify({"error": "Invalid PIN"}), 401
+            try:
+                assert_optional_pin_hub_module(cursor, org_id, emp_id, pin_hub_module)
+            except MobilePinAccessDeniedError:
+                return jsonify({"error": DENIED_MODULE_MESSAGE}), 403
+            matched_roles = fetch_user_roles(cursor, matched["id"])
+            rs = {str(r).upper() for r in matched_roles}
+            if rs & {"ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"}:
+                return jsonify({"error": "Invalid PIN"}), 401
+        else:
+            cursor.execute(
+                f"""
+                SELECT u.id, u.username, u.display_name, u.active, u.organization_id,
+                       o.slug AS organization_slug, o.display_name AS organization_name,
+                       {logo_sql},
+                       pp.attendance_pin_hash
+                FROM payroll_profiles pp
+                INNER JOIN users u ON u.id = pp.user_id
+                INNER JOIN organizations o ON o.id = u.organization_id AND o.active = 1
+                WHERE LOWER(o.slug) = %s
+                  AND u.active = 1
+                  AND pp.attendance_pin_hash IS NOT NULL
+                """,
+                (org_slug,),
+            )
+            rows = cursor.fetchall() or []
+
+            for row in rows:
+                h = row.get("attendance_pin_hash")
+                if not h or not verify_password(str(h), pin):
+                    continue
+                roles = fetch_user_roles(cursor, row["id"])
+                rs = {str(r).upper() for r in roles}
+                if rs & {"ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"}:
+                    continue
+                matched = row
+                matched_roles = roles
+                break
+
+            if not matched:
+                return jsonify({"error": "Invalid PIN"}), 401
+
+            if pin_hub_module:
+                from backend.employee_mobile_pin_access import (
+                    DENIED_MODULE_MESSAGE,
+                    MobilePinAccessDeniedError,
+                    assert_optional_pin_hub_module,
+                )
+
+                try:
+                    assert_optional_pin_hub_module(
+                        cursor,
+                        int(matched["organization_id"]),
+                        int(matched["id"]),
+                        pin_hub_module,
+                    )
+                except MobilePinAccessDeniedError:
+                    return jsonify({"error": DENIED_MODULE_MESSAGE}), 403
 
         if matched.get("organization_logo_url"):
             matched["organization_logo_url"] = rewrite_org_logo_url_for_client(

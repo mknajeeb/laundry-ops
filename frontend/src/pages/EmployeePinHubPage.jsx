@@ -392,7 +392,10 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         if (tile?.disabled || hub?.features?.inventory?.disabled) {
           return;
         }
-        const res = await authAttendancePinUnlock(slug, hub.pin);
+        const res = await authAttendancePinUnlock(slug, hub.pin, {
+          hubToken: hub.token,
+          pinHubModule: "inventory",
+        });
         const payload = res?.data || {};
         if (!payload?.token || !payload?.user) {
           throw new Error(payload?.error || "Could not unlock inventory");
@@ -407,7 +410,10 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         if (tile?.disabled || hub?.features?.revenue_cost?.disabled) {
           return;
         }
-        const res = await authAttendancePinUnlock(slug, hub.pin);
+        const res = await authAttendancePinUnlock(slug, hub.pin, {
+          hubToken: hub.token,
+          pinHubModule: "revenue_cost",
+        });
         const payload = res?.data || {};
         if (!payload?.token || !payload?.user) {
           throw new Error(payload?.error || "Could not unlock Revenue & Cost");

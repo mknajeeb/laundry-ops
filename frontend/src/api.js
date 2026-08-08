@@ -116,13 +116,15 @@ export const authLogin = (username, password, organization_slug) =>
     { timeout: AUTH_LOGIN_TIMEOUT_MS },
   );
 
-/** Shared tablet lock screen: unlock session with tenant slug + payroll attendance PIN. */
-export const authAttendancePinUnlock = (organization_slug, pin) =>
+/** Shared tablet / PIN Hub unlock: slug + PIN, or hub_token to skip a second PIN scan. */
+export const authAttendancePinUnlock = (organization_slug, pin, opts = {}) =>
   axios.post(
     `${API_BASE}/auth/attendance-pin-unlock`,
     {
       organization_slug: String(organization_slug || "").trim().toLowerCase(),
       pin: String(pin || "").trim(),
+      hub_token: opts.hubToken ? String(opts.hubToken) : undefined,
+      pin_hub_module: opts.pinHubModule ? String(opts.pinHubModule) : undefined,
     },
     { timeout: AUTH_LOGIN_TIMEOUT_MS },
   );

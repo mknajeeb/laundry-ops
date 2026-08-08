@@ -4,7 +4,6 @@
  */
 import {
   categoriesForRole,
-  initialRoleId,
   isCurrentRoleAssignment,
   resolveCategoryId,
   resolveRoleId,
@@ -24,10 +23,11 @@ export function createSwitchRoleController({
   onSuccess,
   successDelayMs = 900,
 }) {
-  let roleId = initialRoleId(selectionTree, currentRoleId);
+  // Always open on Operator / Folder (role list). Never skip to categories just because
+  // a current role exists — that felt like an intermediate screen from the PIN Hub.
+  let roleId = null;
   let categoryId = null;
-  // Role first; if a role is preselected (current / single), go straight to category step.
-  let step = roleId != null ? "category" : "role";
+  let step = "role";
   let pending = false;
   let pendingCategoryId = null;
   let error = "";

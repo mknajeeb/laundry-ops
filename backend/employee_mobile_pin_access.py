@@ -161,9 +161,15 @@ def ensure_org_mobile_pin_access_backfill(cursor, organization_id: int) -> None:
     Does not grant employees or write markers. Legacy grants require
     ``run_org_mobile_pin_access_legacy_backfill``; new orgs use
     ``initialize_new_org_mobile_pin_access_marker``.
+
+    Hot path: skip CREATE TABLE IF NOT EXISTS when both tables already exist
+    (table_exists is process-cached). CREATE IF NOT EXISTS is ~300ms on Azure MySQL
+    even when the table is present.
     """
-    ensure_employee_mobile_pin_access_tables(cursor)
     _ = int(organization_id)
+    if table_exists(cursor, ACCESS_TABLE) and table_exists(cursor, BACKFILL_MARKER_TABLE):
+        return
+    ensure_employee_mobile_pin_access_tables(cursor)
 
 
 def initialize_new_org_mobile_pin_access_marker(cursor, organization_id: int) -> bool:

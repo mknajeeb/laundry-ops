@@ -194,6 +194,11 @@ function isInventoryRoute(path) {
   return p === "/inventory" || p.startsWith("/inventory/");
 }
 
+function isPinHubFinanceRoute(path) {
+  const p = normalizePathname(path);
+  return p === "/finance/daily-revenue-cost" || p.startsWith("/finance/daily-revenue-cost/");
+}
+
 /** Kiosk clock in/out only: /attendance or /attendance/:orgSlug (no app session). */
 function isAttendanceRoute(path) {
   const p = normalizePathname(path);
@@ -373,7 +378,11 @@ function AppShell() {
         setAuthLoading(false);
         return;
       }
-      if (isPinHubAppSessionActive() && isInventoryRoute(pathname) && user) {
+      if (
+        isPinHubAppSessionActive() &&
+        (isInventoryRoute(pathname) || isPinHubFinanceRoute(pathname)) &&
+        user
+      ) {
         setAuthLoading(false);
         washproSessionSyncedRef.current = true;
         return;
@@ -550,7 +559,16 @@ function AppShell() {
     []
   );
 
-  if (authLoading && !isLoginRoute(pathname) && !isPublicPinSurface(pathname) && !isPartnerRosterRoute(pathname) && !(isPinHubAppSessionActive() && isInventoryRoute(pathname))) {
+  if (
+    authLoading &&
+    !isLoginRoute(pathname) &&
+    !isPublicPinSurface(pathname) &&
+    !isPartnerRosterRoute(pathname) &&
+    !(
+      isPinHubAppSessionActive() &&
+      (isInventoryRoute(pathname) || isPinHubFinanceRoute(pathname))
+    )
+  ) {
     return (
       <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "grid", placeItems: "center" }}>
         <Typography>Loading...</Typography>
@@ -590,10 +608,14 @@ function AppShell() {
   }
 
   /**
-   * Phone PIN menu → Inventory: fullscreen feature (no sidebar / idle kiosk lock).
-   * Shared-tablet /kiosk idle lock must never claim this session.
+   * Phone PIN menu → Inventory / Revenue & Cost: fullscreen feature
+   * (no sidebar / idle kiosk lock / ADMIN gate). Mobile PIN Access is the
+   * employee permission source; manager ADMIN routes stay separate.
    */
-  if (isPinHubAppSessionActive() && isInventoryRoute(pathname)) {
+  if (
+    isPinHubAppSessionActive() &&
+    (isInventoryRoute(pathname) || isPinHubFinanceRoute(pathname))
+  ) {
     if (authLoading) {
       return (
         <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "grid", placeItems: "center" }}>
@@ -622,6 +644,18 @@ function AppShell() {
             path="/inventory"
             element={
               <InventoryPage
+                user={user}
+                onPinHubDone={() => {
+                  washproSessionSyncedRef.current = false;
+                  setUser(null);
+                }}
+              />
+            }
+          />
+          <Route
+            path="/finance/daily-revenue-cost"
+            element={
+              <DailyRevenueCostPage
                 user={user}
                 onPinHubDone={() => {
                   washproSessionSyncedRef.current = false;

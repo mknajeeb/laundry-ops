@@ -48,8 +48,7 @@ CHECKLIST_PERM_KEYS = (
     "maintenance.tasks.manage",
 )
 
-# Extensible registry — add entries here for new mobile PIN buttons.
-PIN_HUB_FEATURE_DEFS: tuple[dict[str, Any], ...] = (
+PIN_HUB_FEATURE_DEFS = (
     {
         "id": "switch_role",
         "label": "Switch Role",
@@ -91,8 +90,6 @@ def issue_hub_session_token(*, organization_id: int, employee_id: int) -> str:
 
 
 def verify_hub_session_token(token: str) -> dict:
-    if not token:
-        raise ValueError("Missing session")
     try:
         data = _serializer().loads(token, max_age=HUB_SESSION_MAX_AGE_SECONDS)
     except SignatureExpired as exc:
@@ -122,32 +119,46 @@ def _role_set(matched: dict) -> set[str]:
     return {str(r).upper() for r in roles}
 
 
-def _tenant_module_enabled(conn, org_id: int, module_key: str) -> bool:
+def _tenant_modules_enabled(conn, org_id: int, module_keys: tuple[str, ...]) -> dict[str, bool]:
+    """Resolve several tenant entitlements in one short path (cached schema checks)."""
     from backend.ta_helpers import table_exists
 
+    out = {str(k): True for k in module_keys}
     c = conn.cursor(dictionary=True)
     try:
         if not table_exists(c, "tenant_entitlements"):
-            return True
+            return out
         c.execute(
             "SELECT 1 FROM tenant_entitlements WHERE organization_id = %s LIMIT 1",
             (int(org_id),),
         )
         if c.fetchone() is None:
-            return True
+            return out
+        placeholders = ", ".join(["%s"] * len(module_keys))
         c.execute(
-            "SELECT enabled FROM tenant_entitlements WHERE organization_id = %s AND module_key = %s LIMIT 1",
-            (int(org_id), str(module_key)),
+            f"""
+            SELECT module_key, enabled
+            FROM tenant_entitlements
+            WHERE organization_id = %s AND module_key IN ({placeholders})
+            """,
+            (int(org_id), *[str(k) for k in module_keys]),
         )
-        row = c.fetchone()
-        if row is None:
-            return True
-        return bool(row.get("enabled"))
+        for row in c.fetchall() or []:
+            key = str(row.get("module_key") or "")
+            if key in out:
+                out[key] = bool(row.get("enabled"))
+        return out
     finally:
         c.close()
 
 
+def _tenant_module_enabled(conn, org_id: int, module_key: str) -> bool:
+    return bool(_tenant_modules_enabled(conn, org_id, (str(module_key),)).get(str(module_key), True))
+
+
 def _permission_keys(conn, user_id: int, effective_keys_fn: Optional[Callable]) -> set[str]:
+    # Kept for tests/callers; PIN Hub feature tiles no longer depend on Washpro
+    # role permission keys (Mobile PIN Access is the employee source).
     if effective_keys_fn is None:
         return set()
     try:
@@ -170,14 +181,18 @@ def attendance_snapshot_for_hub(
     user_id: int,
     *,
     employee_module_access: Optional[dict] = None,
+    pin_menu: Optional[dict] = None,
 ) -> dict[str, Any]:
     """
     Read-only punch state for PIN Menu tile labels/visibility.
     Does not change clock/break rules — presentation metadata only.
     """
-    shared = bool(shared_device_attendance_enabled(conn, int(org_id)))
-    pin_menu = load_pin_menu_settings(conn, int(org_id))
-    allow_clock = bool(pin_menu.get("allow_clock_from_hub", True))
+    pm = pin_menu if isinstance(pin_menu, dict) else load_pin_menu_settings(conn, int(org_id))
+    if "shared_device_attendance" in pm:
+        shared = bool(pm.get("shared_device_attendance"))
+    else:
+        shared = bool(shared_device_attendance_enabled(conn, int(org_id)))
+    allow_clock = bool(pm.get("allow_clock_from_hub", True))
     emp_access = employee_module_access
     if emp_access is None:
         from backend.employee_mobile_pin_access import resolve_employee_mobile_pin_access
@@ -237,13 +252,21 @@ def apply_attendance_gates_to_features(
 
 
 def load_pin_menu_settings(conn, org_id: int) -> dict:
+    from backend.ta_helpers import as_bool
     from backend.ta_routes import load_clock_payroll_ui
 
     ui = load_clock_payroll_ui(conn, int(org_id))
     pm = ui.get("pin_menu") if isinstance(ui, dict) else None
+    clock = ui.get("clock") if isinstance(ui, dict) else None
+    shared = as_bool((clock or {}).get("shared_device_attendance"), False)
     base_feats = {d["id"]: True for d in PIN_HUB_FEATURE_DEFS}
     if not isinstance(pm, dict):
-        return {"enabled": True, "allow_clock_from_hub": True, "features": base_feats}
+        return {
+            "enabled": True,
+            "allow_clock_from_hub": True,
+            "features": base_feats,
+            "shared_device_attendance": shared,
+        }
     feats = dict(base_feats)
     raw_feats = pm.get("features") if isinstance(pm.get("features"), dict) else {}
     for k, v in raw_feats.items():
@@ -252,6 +275,7 @@ def load_pin_menu_settings(conn, org_id: int) -> dict:
         "enabled": bool(pm.get("enabled", True)),
         "allow_clock_from_hub": bool(pm.get("allow_clock_from_hub", True)),
         "features": feats,
+        "shared_device_attendance": shared,
     }
 
 
@@ -273,24 +297,31 @@ def _user_may_use_feature(
     feature_id: str,
     keys: set[str],
     roles: set[str],
+    tenant_modules: Optional[dict[str, bool]] = None,
 ) -> bool:
     """
-    Extra gates beyond org pin_menu assignment.
-    Checklist: any employee with a valid attendance PIN (weekday assigner still applies).
-    Switch role: still requires category/role tracking.
-    Inventory: inventory tenant module.
-    Revenue & Cost: finance tenant module.
+    Org/module gates beyond pin_menu + employee Mobile PIN Access.
+
+    Employee-facing Washpro role permission keys are intentionally NOT required
+    here — Mobile PIN Access is the employee permission source for PIN modules.
+    Manager/admin app permissions remain separate on manager routes.
     """
+    del keys, roles, matched  # reserved for future non-employee gates
     if feature_id == "switch_role":
         return bool(is_category_role_tracking_enabled(conn, org_id))
 
     if feature_id == "checklist":
         return True
 
+    mods = tenant_modules if isinstance(tenant_modules, dict) else None
     if feature_id == "inventory":
+        if mods is not None:
+            return bool(mods.get("inventory", True))
         return bool(_tenant_module_enabled(conn, org_id, "inventory"))
 
     if feature_id == "revenue_cost":
+        if mods is not None:
+            return bool(mods.get("finance", True))
         return bool(_tenant_module_enabled(conn, org_id, "finance"))
 
     return False
@@ -303,6 +334,7 @@ def resolve_hub_features(
     matched: dict,
     effective_keys_fn: Optional[Callable] = None,
     employee_module_access: Optional[dict] = None,
+    pin_menu: Optional[dict] = None,
 ) -> dict[str, Any]:
     """
     Return feature tiles for the mobile PIN menu.
@@ -313,9 +345,10 @@ def resolve_hub_features(
         resolve_employee_mobile_pin_access,
     )
 
+    del effective_keys_fn  # unused: do not load Washpro role perms on hub open
     roles = _role_set(matched)
-    keys = _permission_keys(conn, int(matched["id"]), effective_keys_fn)
-    pin_menu = load_pin_menu_settings(conn, org_id)
+    keys: set[str] = set()
+    pin_menu_settings = pin_menu if isinstance(pin_menu, dict) else load_pin_menu_settings(conn, org_id)
     emp_access = employee_module_access if isinstance(employee_module_access, dict) else None
     needs_emp = any(d["id"] in ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES for d in PIN_HUB_FEATURE_DEFS)
     if emp_access is None and needs_emp:
@@ -330,10 +363,12 @@ def resolve_hub_features(
             except Exception:
                 pass
 
+    tenant_modules = _tenant_modules_enabled(conn, org_id, ("inventory", "finance"))
+
     out: dict[str, Any] = {}
     for defn in PIN_HUB_FEATURE_DEFS:
         fid = defn["id"]
-        org_on = _org_feature_enabled(pin_menu, fid)
+        org_on = _org_feature_enabled(pin_menu_settings, fid)
         emp_on = (
             bool(emp_access.get(fid))
             if fid in ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES and emp_access is not None
@@ -347,6 +382,7 @@ def resolve_hub_features(
                 feature_id=fid,
                 keys=keys,
                 roles=roles,
+                tenant_modules=tenant_modules,
             )
             if org_on and emp_on
             else False
@@ -375,6 +411,7 @@ def perform_pin_hub_open(
     Validate org slug + attendance PIN and return hub session + allowed features.
     Does not create a full Washpro auth_sessions row (inventory mints that on demand).
     """
+    del effective_keys_fn  # hub tiles use Mobile PIN Access, not Washpro role keys
     org_slug = (organization_slug or "").strip().lower()
     pin_clean = str(pin or "").strip()
 
@@ -420,11 +457,15 @@ def perform_pin_hub_open(
         conn,
         org_id=org_id,
         matched=matched,
-        effective_keys_fn=effective_keys_fn,
         employee_module_access=emp_access,
+        pin_menu=pin_menu,
     )
     attendance = attendance_snapshot_for_hub(
-        conn, org_id, employee_id, employee_module_access=emp_access
+        conn,
+        org_id,
+        employee_id,
+        employee_module_access=emp_access,
+        pin_menu=pin_menu,
     )
     features = apply_attendance_gates_to_features(features, attendance)
 
