@@ -5,7 +5,7 @@
 -- Rollout (Phase 5B.2):
 --   employee_mobile_pin_access_backfill marks each organization explicitly.
 --   init_mode = legacy_grant  → controlled operator backfill (all-true for eligible PIN staff)
---   init_mode = new_org       → org-create hook (zero grants; new employees get all-false)
+--   init_mode = new_org       → org-create hook (zero grants, new employees get all-false)
 --   Request paths never auto-backfill. Unmarked orgs keep missing-row → allow-all
 --   until an operator migrates them or a new-org marker is written.
 
