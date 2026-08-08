@@ -6,11 +6,13 @@ export const DRC_MOBILE_CONFLICT_MESSAGE =
 export function formatBusinessDateLong(isoDate) {
   if (!isoDate) return "";
   try {
+    // Noon local avoids timezone day-shift; date string itself comes from API business_date.
     const d = new Date(`${String(isoDate).slice(0, 10)}T12:00:00`);
     return d.toLocaleDateString("en-US", {
       weekday: "long",
       month: "long",
       day: "numeric",
+      year: "numeric",
     });
   } catch {
     return String(isoDate);

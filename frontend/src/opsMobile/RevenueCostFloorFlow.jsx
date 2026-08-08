@@ -16,6 +16,7 @@ import {
 import OpsMobileShell from "./OpsMobileShell";
 import OpsStickyActionBar from "./OpsStickyActionBar";
 import OpsTopBar from "./OpsTopBar";
+import { OPS_MOBILE } from "./tokens";
 import { createStockSubmitController } from "./createStockDraftAutosave";
 import { createFloorRevisionedAutosave } from "./createFloorRevisionedAutosave";
 import {
@@ -31,6 +32,27 @@ import {
   sectionIsReturned,
   valuesStateFromPayload,
 } from "../utils/drcMobileEntryHelpers";
+
+/** Prominent business date from mobile API payload — not browser "today". */
+function BusinessDateHeading({ businessDate }) {
+  const label = formatBusinessDateLong(businessDate);
+  if (!label) return null;
+  return (
+    <Typography
+      component="h2"
+      sx={{
+        fontWeight: 800,
+        fontSize: "1.15rem",
+        lineHeight: 1.3,
+        color: OPS_MOBILE.navy,
+        mt: 0.5,
+        mb: 0.25,
+      }}
+    >
+      {label}
+    </Typography>
+  );
+}
 
 /**
  * Phase 5E dedicated mobile Revenue & Cost — never loads manager Finance dashboard.
@@ -315,15 +337,13 @@ export default function RevenueCostFloorFlow({ onBack, onDone, onLock }) {
     return (
       <OpsMobileShell>
         <OpsTopBar title="Revenue & Cost" onBack={onBack} onLock={onLock} />
+        <BusinessDateHeading businessDate={payload?.business_date} />
         <Stack spacing={1.5} sx={{ py: 4, px: 1, textAlign: "center" }}>
           <Typography fontWeight={800} sx={{ fontSize: "1.15rem" }}>
             Revenue & Cost Submitted
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.85rem" }}>
             Pending manager review
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {formatBusinessDateLong(payload?.business_date)}
           </Typography>
           <Typography variant="body2" color="text.secondary">
             {formatSubmittedTime(first?.submitted_at)}
@@ -347,6 +367,7 @@ export default function RevenueCostFloorFlow({ onBack, onDone, onLock }) {
     return (
       <OpsMobileShell>
         <OpsTopBar title="Revenue & Cost" onBack={onBack} onLock={onLock} />
+        <BusinessDateHeading businessDate={payload?.business_date} />
         <Alert severity="info" sx={{ mt: 2 }}>
           {loadError || "No Revenue & Cost entry assigned today."}
         </Alert>
@@ -357,11 +378,15 @@ export default function RevenueCostFloorFlow({ onBack, onDone, onLock }) {
   return (
     <OpsMobileShell>
       <OpsTopBar title="Revenue & Cost" onBack={onBack} onLock={onLock} />
+      <BusinessDateHeading businessDate={payload?.business_date} />
       <Stack spacing={1} sx={{ pb: 10 }}>
-        <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.8rem" }}>
-          {formatBusinessDateLong(payload?.business_date)}
-          {progress.total ? ` · ${progress.done}/${progress.total} sections` : ""}
-          {saveLabel ? ` · ${saveLabel}` : ""}
+        <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.85rem" }}>
+          {[
+            progress.total ? `${progress.done}/${progress.total} sections` : "",
+            saveLabel || "",
+          ]
+            .filter(Boolean)
+            .join(" · ")}
         </Typography>
 
         {error ? (

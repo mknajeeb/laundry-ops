@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   allSectionsSubmitted,
   compactProgress,
+  formatBusinessDateLong,
   formatMoneyInput,
   managerStatusLabel,
   parseMoneyInput,
@@ -12,6 +13,11 @@ import {
 } from "./drcMobileEntryHelpers";
 
 describe("drcMobileEntryHelpers", () => {
+  it("formats API business_date with weekday and year", () => {
+    expect(formatBusinessDateLong("2026-08-08")).toBe("Saturday, August 8, 2026");
+    expect(formatBusinessDateLong("")).toBe("");
+  });
+
   it("formats currency en-US", () => {
     expect(formatMoneyInput(12.5)).toBe("$12.50");
     expect(formatMoneyInput(0)).toBe("$0.00");
