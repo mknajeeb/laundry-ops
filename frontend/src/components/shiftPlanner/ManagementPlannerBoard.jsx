@@ -441,18 +441,21 @@ function BlockRoleRow({
       <Stack direction="row" alignItems="center" spacing={0.25} sx={{ flexShrink: 0 }}>
         <IconButton
           size="small"
-          aria-label={`Decrease ${role.label}`}
+          aria-label={`Decrease ${role.label} staff`}
           onClick={() => onBaseChange(Math.max(0, base - 1))}
           sx={{ p: 0.35 }}
         >
           <RemoveIcon sx={{ fontSize: 16 }} />
         </IconButton>
-        <Typography sx={{ width: 18, textAlign: "center", fontWeight: 800, fontSize: "0.95rem" }}>
+        <Typography
+          sx={{ width: 18, textAlign: "center", fontWeight: 800, fontSize: "0.95rem" }}
+          aria-label={`${role.label} staff ${base}`}
+        >
           {base}
         </Typography>
         <IconButton
           size="small"
-          aria-label={`Increase ${role.label}`}
+          aria-label={`Increase ${role.label} staff`}
           onClick={() => onBaseChange(base + 1)}
           sx={{ p: 0.35 }}
         >
@@ -694,7 +697,7 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
         <Box
           sx={{
             display: "grid",
-            gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", md: "1.1fr 1.2fr 1.2fr 1fr 0.9fr 0.9fr" },
+            gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(2, 1fr)", md: "1fr 1.2fr 1.2fr 1fr" },
             gap: 1,
           }}
         >
@@ -728,11 +731,33 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
               ))}
             </Select>
           </FormControl>
+        </Box>
+      </Box>
+
+      {/* MACHINES — hardware capacity only; not wash/dry staffing */}
+      <Box sx={stripSx}>
+        <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>
+          <Typography sx={{ fontWeight: 800, fontSize: "0.8rem", letterSpacing: 0.4, color: "text.secondary" }}>
+            MACHINES
+          </Typography>
+          <Typography sx={{ fontSize: "0.72rem", color: "text.disabled" }}>
+            Hardware only — wash/dry still need staff in STAFFING below
+          </Typography>
+        </Stack>
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: { xs: "1fr 1fr", md: "1fr 1fr" },
+            gap: 1,
+            maxWidth: { md: 420 },
+          }}
+        >
           <CompactNum
             label="Washers"
             value={inputs.washer_count}
             onChange={(v) => onChange("washer_count", v)}
             min={1}
+            suffix="machines"
             width="100%"
           />
           <CompactNum
@@ -740,6 +765,7 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
             value={inputs.dryer_count}
             onChange={(v) => onChange("dryer_count", v)}
             min={1}
+            suffix="machines"
             width="100%"
           />
         </Box>
@@ -765,9 +791,6 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
           <CompactNum label="Dry cycle" value={inputs.dry_cycle_min} onChange={(v) => onChange("dry_cycle_min", v)} min={1} suffix="m" width={92} />
           <CompactNum label="Fold" value={inputs.fold_min_per_bag} onChange={(v) => onChange("fold_min_per_bag", v)} min={0} step={0.5} suffix="m" width={84} />
         </Stack>
-        <Typography sx={{ mt: 0.75, fontSize: "0.78rem", color: "text.secondary" }}>
-          Machines · Washers {inputs.washer_count} · Dryers {inputs.dryer_count}
-        </Typography>
       </Box>
 
       <CompactSummary
