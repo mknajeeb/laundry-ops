@@ -30,8 +30,8 @@ export const PIN_MENU_FEATURE_OPTIONS = [
   },
   {
     id: "checklist",
-    label: "End-of-day checklist",
-    help: "Maintenance task list for anyone with an attendance PIN.",
+    label: "End-of-Day Checklist",
+    help: "End-of-Day Checklist for assigned employees with an attendance PIN.",
   },
   {
     id: "inventory",

@@ -239,7 +239,7 @@ export default function MaintenanceTaskSettingsPage() {
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           One employee per day. Empty days have no floor checklist. Assignments are always
-          authoritative on the PIN Tasks tile.
+          authoritative on the PIN End-of-Day Checklist tile.
         </Typography>
         {unassignedDays.length ? (
           <Alert severity="warning" sx={{ mb: 1.5 }}>

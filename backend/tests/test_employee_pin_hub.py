@@ -36,7 +36,12 @@ def test_resolve_hub_features_org_assign_shows_checklist_without_floor_role():
     ), patch(
         "backend.employee_pin_hub._permission_keys", return_value=set()
     ):
-        features = resolve_hub_features(conn, org_id=3, matched=matched)
+        features = resolve_hub_features(
+            conn,
+            org_id=3,
+            matched=matched,
+            employee_module_access={"clock": True, "switch_role": True, "checklist": True},
+        )
     assert features["checklist"]["allowed"] is True
     assert features["inventory"]["allowed"] is True
     assert features["switch_role"]["allowed"] is True
@@ -58,7 +63,12 @@ def test_resolve_hub_features_respects_org_pin_menu_off():
     ), patch(
         "backend.employee_pin_hub._permission_keys", return_value=set()
     ):
-        features = resolve_hub_features(conn, org_id=3, matched=matched)
+        features = resolve_hub_features(
+            conn,
+            org_id=3,
+            matched=matched,
+            employee_module_access={"clock": True, "switch_role": True, "checklist": True},
+        )
     assert features["switch_role"]["allowed"] is False
     assert features["switch_role"]["org_enabled"] is False
     assert features["checklist"]["allowed"] is True
@@ -81,7 +91,12 @@ def test_resolve_hub_features_inventory_module_off():
     ), patch(
         "backend.employee_pin_hub._permission_keys", return_value=set()
     ):
-        features = resolve_hub_features(conn, org_id=3, matched=matched)
+        features = resolve_hub_features(
+            conn,
+            org_id=3,
+            matched=matched,
+            employee_module_access={"clock": True, "switch_role": True, "checklist": True},
+        )
     assert features["inventory"]["allowed"] is False
     assert features["switch_role"]["allowed"] is True
 

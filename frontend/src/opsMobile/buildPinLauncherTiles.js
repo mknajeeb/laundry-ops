@@ -17,7 +17,7 @@ export const PIN_LAUNCHER_META = {
     iconKey: "role",
   },
   checklist: {
-    label: "Tasks",
+    label: "End-of-Day Checklist",
     color: "#0f766e",
     iconKey: "tasks",
   },

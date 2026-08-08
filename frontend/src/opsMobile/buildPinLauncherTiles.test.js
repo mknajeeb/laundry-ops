@@ -40,7 +40,7 @@ describe("buildPinLauncherTiles", () => {
     expect(enabled[0].label).toBe("Clock In");
     expect(enabled[0].disabled).toBe(false);
     expect(enabled.find((t) => t.id === "inventory")?.label).toBe("Stock");
-    expect(enabled.find((t) => t.id === "checklist")?.label).toBe("Tasks");
+    expect(enabled.find((t) => t.id === "checklist")?.label).toBe("End-of-Day Checklist");
 
     const disabled = buildPinLauncherTiles({
       features: { inventory: { allowed: true } },

@@ -2,7 +2,8 @@
 Employee phone PIN hub: one PIN → assignable feature menu buttons.
 
 Org assigns which buttons exist (pin_menu in clock_payroll_ui_json).
-Permissions still gate who can open checklist / inventory.
+Stage A AND-gates Switch Role and End-of-Day Checklist with employee Mobile
+PIN Access. Permissions still gate who can open checklist / inventory.
 Add new features to PIN_HUB_FEATURE_DEFS later.
 """
 
@@ -56,7 +57,7 @@ PIN_HUB_FEATURE_DEFS: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "checklist",
-        "label": "End-of-day checklist",
+        "label": "End-of-Day Checklist",
         "path": "/attendance/maintenance",
     },
     {
@@ -158,7 +159,13 @@ def _has_prefix(keys: set[str], prefix: str) -> bool:
     return any(str(k).startswith(prefix) for k in keys)
 
 
-def attendance_snapshot_for_hub(conn, org_id: int, user_id: int) -> dict[str, Any]:
+def attendance_snapshot_for_hub(
+    conn,
+    org_id: int,
+    user_id: int,
+    *,
+    employee_module_access: Optional[dict] = None,
+) -> dict[str, Any]:
     """
     Read-only punch state for PIN Menu tile labels/visibility.
     Does not change clock/break rules — presentation metadata only.
@@ -166,6 +173,19 @@ def attendance_snapshot_for_hub(conn, org_id: int, user_id: int) -> dict[str, An
     shared = bool(shared_device_attendance_enabled(conn, int(org_id)))
     pin_menu = load_pin_menu_settings(conn, int(org_id))
     allow_clock = bool(pin_menu.get("allow_clock_from_hub", True))
+    emp_access = employee_module_access
+    if emp_access is None:
+        from backend.employee_mobile_pin_access import resolve_employee_mobile_pin_access
+
+        cursor = conn.cursor(dictionary=True)
+        try:
+            emp_access = resolve_employee_mobile_pin_access(cursor, int(org_id), int(user_id))
+        finally:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+    employee_allow_clock = bool(emp_access.get("clock")) if isinstance(emp_access, dict) else True
     active = _active_shift(conn, int(user_id))
     on_break = False
     if active:
@@ -175,6 +195,7 @@ def attendance_snapshot_for_hub(conn, org_id: int, user_id: int) -> dict[str, An
     return {
         "shared_device_enabled": shared,
         "allow_clock_from_hub": allow_clock,
+        "employee_allow_clock": employee_allow_clock,
         "clocked_in": bool(active),
         "on_break": on_break,
     }
@@ -258,19 +279,44 @@ def resolve_hub_features(
     org_id: int,
     matched: dict,
     effective_keys_fn: Optional[Callable] = None,
+    employee_module_access: Optional[dict] = None,
 ) -> dict[str, Any]:
     """
     Return feature tiles for the mobile PIN menu.
-    Org pin_menu assigns which buttons exist; feature defs add small extra gates.
+    Org pin_menu always applies. Stage A employee Mobile PIN Access AND-gates
+    switch_role and checklist only; other modules remain org-gated.
     """
+    from backend.employee_mobile_pin_access import (
+        ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES,
+        resolve_employee_mobile_pin_access,
+    )
+
     roles = _role_set(matched)
     keys = _permission_keys(conn, int(matched["id"]), effective_keys_fn)
     pin_menu = load_pin_menu_settings(conn, org_id)
+    emp_access = employee_module_access if isinstance(employee_module_access, dict) else None
+    needs_emp = any(d["id"] in ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES for d in PIN_HUB_FEATURE_DEFS)
+    if emp_access is None and needs_emp:
+        cursor = conn.cursor(dictionary=True)
+        try:
+            emp_access = resolve_employee_mobile_pin_access(
+                cursor, int(org_id), int(matched["id"])
+            )
+        finally:
+            try:
+                cursor.close()
+            except Exception:
+                pass
 
     out: dict[str, Any] = {}
     for defn in PIN_HUB_FEATURE_DEFS:
         fid = defn["id"]
         org_on = _org_feature_enabled(pin_menu, fid)
+        emp_on = (
+            bool(emp_access.get(fid))
+            if fid in ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES and emp_access is not None
+            else True
+        )
         user_ok = (
             _user_may_use_feature(
                 conn,
@@ -280,7 +326,7 @@ def resolve_hub_features(
                 keys=keys,
                 roles=roles,
             )
-            if org_on
+            if org_on and emp_on
             else False
         )
         out[fid] = {
@@ -288,7 +334,8 @@ def resolve_hub_features(
             "label": defn["label"],
             "path": defn["path"],
             "org_enabled": org_on,
-            "allowed": bool(org_on and user_ok),
+            "employee_allowed": emp_on,
+            "allowed": bool(org_on and emp_on and user_ok),
         }
     return out
 
@@ -335,14 +382,28 @@ def perform_pin_hub_open(
         record_pin_attempt(conn, org_id, ip_address, False)
         return {"ok": False, "error": INVALID_PIN_MESSAGE}, 401
 
+    employee_id = int(matched["id"])
+    from backend.employee_mobile_pin_access import resolve_employee_mobile_pin_access
+
+    access_cursor = conn.cursor(dictionary=True)
+    try:
+        emp_access = resolve_employee_mobile_pin_access(access_cursor, org_id, employee_id)
+    finally:
+        try:
+            access_cursor.close()
+        except Exception:
+            pass
+
     features = resolve_hub_features(
         conn,
         org_id=org_id,
         matched=matched,
         effective_keys_fn=effective_keys_fn,
+        employee_module_access=emp_access,
     )
-    employee_id = int(matched["id"])
-    attendance = attendance_snapshot_for_hub(conn, org_id, employee_id)
+    attendance = attendance_snapshot_for_hub(
+        conn, org_id, employee_id, employee_module_access=emp_access
+    )
     features = apply_attendance_gates_to_features(features, attendance)
 
     # Weekday checklist assignment: tile stays visible when org-enabled; disable if not assigned.

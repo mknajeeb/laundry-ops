@@ -108,6 +108,39 @@ def perform_pin_maintenance_open(
         return {"ok": False, "error": INVALID_PIN_MESSAGE}, 401
 
     employee_id = int(matched["id"])
+
+    # Stage A: check current Mobile PIN Access before issuing a checklist token.
+    # Keep this outside assignment handling so an access denial is never swallowed.
+    from backend.employee_mobile_pin_access import (
+        DENIED_MODULE_MESSAGE,
+        MobilePinAccessDeniedError,
+        assert_employee_allows_module,
+    )
+
+    access_c = conn.cursor(dictionary=True)
+    try:
+        try:
+            assert_employee_allows_module(access_c, org_id, employee_id, "checklist")
+        except MobilePinAccessDeniedError:
+            record_pin_attempt(
+                conn,
+                org_id,
+                ip_address,
+                success=False,
+                user_id=employee_id,
+                action="pin_maintenance_module_denied",
+            )
+            try:
+                conn.commit()
+            except Exception:
+                pass
+            return {"ok": False, "error": DENIED_MODULE_MESSAGE}, 403
+    finally:
+        try:
+            access_c.close()
+        except Exception:
+            pass
+
     try:
         from backend.maintenance_task_list_module import (
             employee_assigned_for_date,

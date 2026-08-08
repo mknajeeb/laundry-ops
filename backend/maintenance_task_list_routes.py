@@ -25,6 +25,10 @@ from backend.maintenance_task_list_module import (
     submit_task_list,
 )
 from backend.maintenance_task_list_constants import SUGGESTED_CATEGORIES, WEEKDAY_ROWS
+from backend.employee_mobile_pin_access import (
+    DENIED_MODULE_MESSAGE,
+    MobilePinAccessDeniedError,
+)
 from backend.maintenance_task_list_pin import (
     perform_pin_maintenance_open,
     verify_pin_session_token,
@@ -91,7 +95,10 @@ def register_maintenance_task_list_routes(
         me, err_resp, err_code = require_user(cursor)
         return me, err_resp, err_code, user_org_id(me) if me else None
 
-    def _pin_session_from_request() -> dict:
+    def _pin_session_from_request(cursor=None) -> dict:
+        """Resolve a PIN session and re-check current checklist access."""
+        from backend.employee_mobile_pin_access import assert_employee_allows_module
+
         auth = (request.headers.get("Authorization") or "").strip()
         token = ""
         if auth.lower().startswith("bearer "):
@@ -100,13 +107,32 @@ def register_maintenance_task_list_routes(
             token = (request.headers.get("X-Maintenance-Session") or "").strip()
         if not token and request.json:
             token = str((request.json or {}).get("session_token") or "").strip()
-        return verify_pin_session_token(token)
+        session = verify_pin_session_token(token)
+        org_id = int(session["organization_id"])
+        employee_id = int(session["employee_id"])
+        if cursor is None:
+            raise ValueError("Invalid session. Enter your PIN again.")
+        cursor.execute(
+            """
+            SELECT id FROM users
+            WHERE id = %s AND organization_id = %s AND active = 1
+            LIMIT 1
+            """,
+            (employee_id, org_id),
+        )
+        if not cursor.fetchone():
+            raise ValueError("Invalid session. Enter your PIN again.")
+        assert_employee_allows_module(cursor, org_id, employee_id, "checklist")
+        return {"organization_id": org_id, "employee_id": employee_id}
 
     def _safe(payload):
         try:
             return json_safe_rinse(payload)
         except Exception:
             return json_safe(payload)
+
+    def _pin_denied_response():
+        return jsonify({"ok": False, "error": DENIED_MODULE_MESSAGE}), 403
 
     # ----- Public PIN employee APIs -----
 
@@ -149,7 +175,7 @@ def register_maintenance_task_list_routes(
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            session = _pin_session_from_request()
+            session = _pin_session_from_request(cursor)
             ensure_maintenance_task_list_tables(cursor)
             task_date = None
             if request.method == "POST":
@@ -177,6 +203,8 @@ def register_maintenance_task_list_routes(
                     }
                 )
             )
+        except MobilePinAccessDeniedError:
+            return _pin_denied_response()
         except ValueError as e:
             return jsonify({"ok": False, "error": str(e)}), 401
         except MaintenanceTaskListError as e:
@@ -196,7 +224,7 @@ def register_maintenance_task_list_routes(
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            session = _pin_session_from_request()
+            session = _pin_session_from_request(cursor)
             data = request.json or {}
             existing = get_task_list(cursor, session["organization_id"], list_id)
             if int(existing["employee_id"]) != int(session["employee_id"]):
@@ -212,6 +240,8 @@ def register_maintenance_task_list_routes(
             )
             conn.commit()
             return jsonify(_safe({"ok": True, "list": payload}))
+        except MobilePinAccessDeniedError:
+            return _pin_denied_response()
         except ValueError as e:
             return jsonify({"ok": False, "error": str(e)}), 401
         except MaintenanceTaskListError as e:
@@ -231,7 +261,7 @@ def register_maintenance_task_list_routes(
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            session = _pin_session_from_request()
+            session = _pin_session_from_request(cursor)
             existing = get_task_list(cursor, session["organization_id"], list_id)
             if int(existing["employee_id"]) != int(session["employee_id"]):
                 return jsonify({"ok": False, "error": "Forbidden"}), 403
@@ -244,6 +274,8 @@ def register_maintenance_task_list_routes(
             )
             conn.commit()
             return jsonify(_safe({"ok": True, "list": payload}))
+        except MobilePinAccessDeniedError:
+            return _pin_denied_response()
         except ValueError as e:
             return jsonify({"ok": False, "error": str(e)}), 401
         except MaintenanceTaskListError as e:
@@ -263,7 +295,7 @@ def register_maintenance_task_list_routes(
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            session = _pin_session_from_request()
+            session = _pin_session_from_request(cursor)
             existing = get_task_list(cursor, session["organization_id"], list_id)
             if int(existing["employee_id"]) != int(session["employee_id"]):
                 return jsonify({"ok": False, "error": "Forbidden"}), 403
@@ -285,6 +317,8 @@ def register_maintenance_task_list_routes(
                     }
                 )
             )
+        except MobilePinAccessDeniedError:
+            return _pin_denied_response()
         except ValueError as e:
             return jsonify({"ok": False, "error": str(e)}), 401
         except MaintenanceTaskListError as e:

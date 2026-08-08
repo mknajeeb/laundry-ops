@@ -99,7 +99,7 @@ function digitKeySx() {
 }
 
 /**
- * PIN employee Tasks checklist — mobile-first completion flow.
+ * PIN employee End-of-Day Checklist — mobile-first completion flow.
  * Routes: /attendance/maintenance, /attendance/maintenance/:orgSlug
  */
 export default function MaintenanceTaskListPinPage() {
@@ -126,7 +126,7 @@ export default function MaintenanceTaskListPinPage() {
   const [branding, setBranding] = useState(null);
   const [pendingTick, setPendingTick] = useState(0);
   const [unavailableMessage, setUnavailableMessage] = useState(
-    "Tasks aren’t available right now.",
+    "End-of-Day Checklist isn’t available right now.",
   );
 
   const punchInFlightRef = useRef(false);
@@ -162,7 +162,7 @@ export default function MaintenanceTaskListPinPage() {
   );
 
   const onBack = useCallback(() => {
-    // Preserve hub unlock; checklist MTL session stays so Tasks can reopen.
+    // Preserve hub unlock; checklist MTL session stays so Checklist can reopen.
     navigate(pinHubMenuPath(slug), { replace: true });
   }, [navigate, slug]);
 
@@ -248,7 +248,7 @@ export default function MaintenanceTaskListPinPage() {
     if (res.status === 401) {
       clearMtlPinSession();
       setSession(null);
-      setUnavailableMessage("Tasks aren’t available right now.");
+      setUnavailableMessage("End-of-Day Checklist isn’t available right now.");
       setPhase("unavailable");
       return null;
     }
@@ -290,7 +290,7 @@ export default function MaintenanceTaskListPinPage() {
     const existing = loadMtlPinSession();
     if (!existing || !slug) {
       if (fromHub && slug && !existing) {
-        setUnavailableMessage("Tasks aren’t available right now.");
+        setUnavailableMessage("End-of-Day Checklist isn’t available right now.");
         setPhase("unavailable");
       }
       return;
@@ -306,7 +306,7 @@ export default function MaintenanceTaskListPinPage() {
         if (!cancelled) {
           clearMtlPinSession();
           setSession(null);
-          setUnavailableMessage("Tasks aren’t available right now.");
+          setUnavailableMessage("End-of-Day Checklist isn’t available right now.");
           setPhase("unavailable");
         }
       } finally {
@@ -356,7 +356,7 @@ export default function MaintenanceTaskListPinPage() {
         prevPinLenRef.current = 0;
         await loadTodayList(sess);
       } catch (e) {
-        setUnavailableMessage("Tasks aren’t available right now.");
+        setUnavailableMessage("End-of-Day Checklist isn’t available right now.");
         setPhase("unavailable");
         setPin("");
         prevPinLenRef.current = 0;
@@ -410,7 +410,7 @@ export default function MaintenanceTaskListPinPage() {
             gap: 1.5,
           }}
         >
-          <OpsTopBar title="Tasks" onBack={onBack} backLabel="PIN" onLock={onLock} sticky />
+          <OpsTopBar title="End-of-Day Checklist" onBack={onBack} backLabel="PIN" onLock={onLock} sticky />
           <Stack spacing={0.5} alignItems="center" sx={{ py: 1.5, textAlign: "center" }}>
             <Typography sx={{ fontWeight: 900, fontSize: "1.15rem", color: OPS_MOBILE.navy }}>
               Maintenance Checklist Submitted
@@ -478,7 +478,7 @@ export default function MaintenanceTaskListPinPage() {
           }}
         >
           <OpsTopBar
-            title="Tasks"
+            title="End-of-Day Checklist"
             onBack={onBack}
             backLabel="PIN"
             onLock={onLock}
@@ -642,7 +642,7 @@ export default function MaintenanceTaskListPinPage() {
             <TenantLogo size={40} />
           )}
           <Typography sx={{ fontWeight: 900, fontSize: "1.35rem", color: OPS_MOBILE.navy }}>
-            Tasks
+            End-of-Day Checklist
           </Typography>
 
           {!routeSlug ? (

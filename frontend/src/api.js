@@ -1852,6 +1852,12 @@ export const computeContractorPayment = (body) =>
 
 export const getTaUser = (id) => axios.get(`${API_BASE}/api/ta/users/${id}`);
 
+export const getTaUserMobilePinAccess = (id) =>
+  axios.get(`${API_BASE}/api/ta/users/${id}/mobile-pin-access`);
+
+export const putTaUserMobilePinAccess = (id, body) =>
+  axios.put(`${API_BASE}/api/ta/users/${id}/mobile-pin-access`, body);
+
 export const createTaUser = (body) =>
   axios.post(`${API_BASE}/api/ta/users`, body);
 

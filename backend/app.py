@@ -1450,6 +1450,20 @@ def bootstrap_organization_supporting_rows(cursor, conn, org_id: int, slug: str)
             (int(org_id), prefix[:16]),
         )
         conn.commit()
+    # Stage A: new organizations get an explicit zero-grant marker so missing
+    # employee rows are deny-by-default without invoking legacy backfill.
+    try:
+        from backend.employee_mobile_pin_access import (
+            initialize_new_org_mobile_pin_access_marker,
+        )
+
+        initialize_new_org_mobile_pin_access_marker(cursor, int(org_id))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 def _default_tenant_modules():

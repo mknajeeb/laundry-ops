@@ -24,6 +24,7 @@ import {
   Typography,
 } from "@mui/material";
 import { ArrowBack, Add, DeleteOutline, ExpandMore } from "@mui/icons-material";
+import MobilePinAccessPanel from "../components/MobilePinAccessPanel";
 import {
   createTaUser,
   deleteTaUser,
@@ -1798,6 +1799,13 @@ export default function UserProfilePage({ user: sessionUser }) {
             </Accordion>
           ) : null}
         </Paper>
+        ) : null}
+
+        {!platformMode && uid && Number(uid) > 0 ? (
+          <MobilePinAccessPanel
+            userId={Number(uid)}
+            canEdit={!!canEditPayrollRecords || !!canTaAdd}
+          />
         ) : null}
 
         {platformMode ? (

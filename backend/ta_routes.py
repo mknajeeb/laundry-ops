@@ -2591,6 +2591,23 @@ def users_create():
                     (wid, int(data["role_id"])),
                 )
             write_audit(conn, g.ta_user["id"], "user", wid, "create", new={"email": data["email"]})
+            try:
+                from backend.employee_mobile_pin_access import (
+                    ensure_new_employee_mobile_pin_access,
+                )
+
+                c_access = conn.cursor(dictionary=True)
+                try:
+                    ensure_new_employee_mobile_pin_access(
+                        c_access,
+                        int(uw.get("organization_id") or _tenant_id()),
+                        wid,
+                        actor_user_id=int(g.ta_user["id"]),
+                    )
+                finally:
+                    c_access.close()
+            except Exception:
+                pass
             conn.commit()
             return jsonify({"id": wid}), 201
 
@@ -2789,6 +2806,25 @@ def users_update(user_id):
                     if has_pin_last4:
                         fields.append("attendance_pin_last4=%s")
                         vals.append(pin_last4)
+                    # New / first PIN after cutover: explicit all-false Mobile
+                    # PIN Access row, without overwriting existing grants.
+                    try:
+                        from backend.employee_mobile_pin_access import (
+                            ensure_new_employee_mobile_pin_access,
+                        )
+
+                        c_access = conn.cursor(dictionary=True)
+                        try:
+                            ensure_new_employee_mobile_pin_access(
+                                c_access,
+                                _tenant_id(),
+                                int(user_id),
+                                actor_user_id=int(g.ta_user["id"]),
+                            )
+                        finally:
+                            c_access.close()
+                    except Exception:
+                        pass
 
             if fields:
                 vals.append(user_id)

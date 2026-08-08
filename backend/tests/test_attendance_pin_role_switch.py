@@ -37,6 +37,8 @@ def test_pin_role_switch_requires_clocked_in():
         "backend.attendance_pin_role_switch._active_shift", return_value=None
     ), patch(
         "backend.attendance_pin_role_switch.record_pin_attempt"
+    ), patch(
+        "backend.employee_mobile_pin_access.assert_employee_allows_module",
     ):
         body, status = perform_pin_role_switch(
             conn, "veewash", "1234", _mock_roles, "127.0.0.1"
@@ -117,6 +119,8 @@ def test_pin_role_switch_opens_selection_tree():
         return_value=tree,
     ), patch(
         "backend.attendance_pin_role_switch.record_pin_attempt"
+    ), patch(
+        "backend.employee_mobile_pin_access.assert_employee_allows_module",
     ):
         body, status = perform_pin_role_switch(
             conn, "veewash", "1234", _mock_roles, "127.0.0.1"
@@ -166,6 +170,8 @@ def test_pin_role_switch_performs_switch():
         return_value=seg,
     ) as start, patch(
         "backend.attendance_pin_role_switch.record_pin_attempt"
+    ), patch(
+        "backend.employee_mobile_pin_access.assert_employee_allows_module",
     ):
         body, status = perform_pin_role_switch(
             conn,
@@ -212,6 +218,8 @@ def test_pin_role_switch_conflict_returns_409():
     ), patch(
         "backend.attendance_pin_role_switch.start_category_role_segment",
         side_effect=IdempotencyConflictError("already used"),
+    ), patch(
+        "backend.employee_mobile_pin_access.assert_employee_allows_module",
     ):
         body, status = perform_pin_role_switch(
             conn,

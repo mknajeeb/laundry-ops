@@ -131,6 +131,34 @@ def perform_pin_role_switch(
         conn.commit()
         return {"ok": False, "error": FEATURE_DISABLED_MESSAGE}, 403
 
+    # Stage A: check current employee access before showing selections.
+    from backend.employee_mobile_pin_access import (
+        DENIED_MODULE_MESSAGE,
+        MobilePinAccessDeniedError,
+        assert_employee_allows_module,
+    )
+
+    access_c = conn.cursor(dictionary=True)
+    try:
+        try:
+            assert_employee_allows_module(access_c, org_id, user_id, "switch_role")
+        except MobilePinAccessDeniedError:
+            record_pin_attempt(
+                conn,
+                org_id,
+                ip_address,
+                success=False,
+                user_id=user_id,
+                action="pin_role_switch_module_denied",
+            )
+            conn.commit()
+            return {"ok": False, "error": DENIED_MODULE_MESSAGE}, 403
+    finally:
+        try:
+            access_c.close()
+        except Exception:
+            pass
+
     session_id = int(active["id"])
     first_name = _employee_first_name(matched)
     current = _current_assignment_payload(conn, session_id)
@@ -160,6 +188,28 @@ def perform_pin_role_switch(
         return {"ok": False, "error": MISSING_IDEMPOTENCY_MESSAGE}, 400
     if len(key) > 64:
         return {"ok": False, "error": "idempotency_key must be at most 64 characters"}, 400
+
+    # Re-check immediately before mutation so a mid-session revoke blocks it.
+    access_c2 = conn.cursor(dictionary=True)
+    try:
+        try:
+            assert_employee_allows_module(access_c2, org_id, user_id, "switch_role")
+        except MobilePinAccessDeniedError:
+            record_pin_attempt(
+                conn,
+                org_id,
+                ip_address,
+                success=False,
+                user_id=user_id,
+                action="pin_role_switch_module_denied_mutate",
+            )
+            conn.commit()
+            return {"ok": False, "error": DENIED_MODULE_MESSAGE}, 403
+    finally:
+        try:
+            access_c2.close()
+        except Exception:
+            pass
 
     try:
         open_before = get_open_job_segment(conn, session_id)

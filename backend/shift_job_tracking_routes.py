@@ -694,3 +694,92 @@ def job_tracking_list_names_legacy():
         return jsonify(list_job_names(c, _tenant_id()))
     finally:
         conn.close()
+
+
+# --- Employee Mobile PIN Access (Stage A) ---
+
+
+@ta_bp.route("/users/<int:user_id>/mobile-pin-access", methods=["GET"])
+@require_auth
+@require_any_perm("users.view", "users.edit", "ta.settings")
+def employee_mobile_pin_access_get(user_id: int):
+    from backend.employee_mobile_pin_access import manager_mobile_pin_access_payload
+
+    conn = get_db()
+    try:
+        oid = _tenant_id()
+        c = conn.cursor(dictionary=True)
+        payload = manager_mobile_pin_access_payload(c, oid, int(user_id))
+        conn.commit()
+        return jsonify(payload)
+    except LookupError as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/users/<int:user_id>/mobile-pin-access", methods=["PUT"])
+@require_auth
+@require_any_perm("users.edit", "ta.settings")
+def employee_mobile_pin_access_put(user_id: int):
+    from backend.employee_mobile_pin_access import (
+        MODULE_KEYS,
+        manager_mobile_pin_access_payload,
+        save_employee_mobile_pin_access,
+    )
+
+    data = request.json or {}
+    conn = get_db()
+    try:
+        oid = _tenant_id()
+        actor = int(g.ta_user["id"])
+
+        def _audit(actor_id, entity_type, entity_id, action, old=None, new=None, organization_id=None):
+            write_audit(
+                conn,
+                actor_id,
+                entity_type,
+                entity_id,
+                action,
+                old=old,
+                new=new,
+                organization_id=organization_id if organization_id is not None else oid,
+            )
+
+        grants = {k: data.get(k) for k in MODULE_KEYS}
+        c = conn.cursor(dictionary=True)
+        save_employee_mobile_pin_access(
+            c,
+            oid,
+            int(user_id),
+            grants=grants,
+            actor_user_id=actor,
+            write_audit_fn=_audit,
+        )
+        payload = manager_mobile_pin_access_payload(c, oid, int(user_id))
+        conn.commit()
+        return jsonify(payload)
+    except LookupError as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 404
+    except ValueError as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
