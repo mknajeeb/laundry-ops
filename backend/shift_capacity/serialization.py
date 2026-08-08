@@ -6,7 +6,12 @@ from typing import Any
 
 from backend.shift_capacity.models import Bag, SimulationState
 from backend.shift_capacity.block_positions import build_block_positions
-from backend.shift_capacity.staffing_plan import AuthoredInterval, CanonicalSegment, block_staffing_view
+from backend.shift_capacity.staffing_plan import (
+    HYBRID_SPECS,
+    AuthoredInterval,
+    CanonicalSegment,
+    block_staffing_view,
+)
 from backend.shift_capacity.summaries import compute_kpis, ready_by_batch, staffing_summary, time_summary
 from backend.shift_capacity.timebase import sec_to_min_int
 from backend.shift_capacity.validation import label_minutes
@@ -377,16 +382,25 @@ def _block_positions_with_staffing(state: SimulationState) -> list[dict[str, Any
     if not state.inputs.management_mode or not plan:
         return rows
 
-    authored = [
-        AuthoredInterval(
-            role=str(a["role"]),
-            people=int(a["people"]),
-            start_sec=int(a["start_sec"]),
-            end_sec=int(a["end_sec"]),
-            mode=str(a.get("mode") or "base"),
+    authored = []
+    for a in plan.get("authored_intervals") or []:
+        hybrid_type = a.get("hybrid") or a.get("hybrid_type")
+        hybrid_type = str(hybrid_type).strip().lower() if hybrid_type else None
+        role_raw = a.get("role")
+        if hybrid_type:
+            role = HYBRID_SPECS.get(hybrid_type, ("weigher",))[0]
+        else:
+            role = str(role_raw or "")
+        authored.append(
+            AuthoredInterval(
+                role=role,
+                people=int(a["people"]),
+                start_sec=int(a["start_sec"]),
+                end_sec=int(a["end_sec"]),
+                mode=str(a.get("mode") or "base"),
+                hybrid_type=hybrid_type,
+            )
         )
-        for a in plan.get("authored_intervals") or []
-    ]
     normalized = [
         CanonicalSegment(
             role=str(s["role"]),

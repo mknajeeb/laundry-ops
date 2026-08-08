@@ -10,10 +10,13 @@ import {
   formatManagementOutcome,
   getAdditionalForBlock,
   getBasePeopleForBlock,
+  getHybridPeopleForBlock,
+  indexBlockPositionsByEnd,
   intervalsOverlap,
   parseClockToSec,
   pickPersistedPlannerParams,
   setBasePeopleForBlock,
+  setHybridPeopleForBlock,
   stageRemaining,
   validateManagementPlanInputs,
   validatePersistedPlannerParams,
@@ -232,6 +235,83 @@ describe("managementHelpers", () => {
     const edited = setBasePeopleForBlock(next, "weigher", "10:00 AM", "11:00 AM", 4);
     expect(getBasePeopleForBlock(edited, "weigher", "9:00 AM")).toBe(0);
     expect(getBasePeopleForBlock(edited, "weigher", "10:00 AM")).toBe(4);
+  });
+
+  it("getBasePeopleForBlock reveals mid-block BASE that does not cover block start", () => {
+    const intervals = [
+      {
+        id: "mid",
+        role: "sorter",
+        people: 1,
+        start: "5:30 AM",
+        end: "6:00 AM",
+        mode: "base",
+      },
+      {
+        id: "temp",
+        role: "sorter",
+        people: 2,
+        start: "5:30 AM",
+        end: "6:00 AM",
+        mode: "additional",
+      },
+    ];
+    // Old bug: only checked coverage at 5:00 → showed 0 while DES had 3 sorter slots.
+    expect(getBasePeopleForBlock(intervals, "sorter", "5:00 AM")).toBe(0);
+    expect(getBasePeopleForBlock(intervals, "sorter", "5:00 AM", "6:00 AM")).toBe(1);
+    expect(getAdditionalForBlock(intervals, "sorter", "5:00 AM", "6:00 AM")).toHaveLength(1);
+  });
+
+  it("hybrid block helpers author weigh_wash without dedicated role inflation", () => {
+    let hybrids = setHybridPeopleForBlock([], "weigh_wash", "9:00 AM", "10:00 AM", 1);
+    expect(getHybridPeopleForBlock(hybrids, "weigh_wash", "9:00 AM", "10:00 AM")).toBe(1);
+    expect(getHybridPeopleForBlock(hybrids, "wash_dry", "9:00 AM", "10:00 AM")).toBe(0);
+
+    const body = buildManagementPayload({
+      ...DEFAULT_MANAGEMENT_INPUTS,
+      staffing_intervals: [
+        {
+          id: "s1",
+          role: "sorter",
+          people: 1,
+          start: "9:00 AM",
+          end: "10:00 AM",
+          mode: "base",
+        },
+      ],
+      hybrid_intervals: hybrids,
+    });
+    const kinds = body.staffing_plan.intervals.map((row) => row.hybrid || row.role);
+    expect(kinds).toContain("sorter");
+    expect(kinds).toContain("weigh_wash");
+    expect(body.staffing_plan.intervals.filter((r) => r.hybrid === "weigh_wash")).toHaveLength(1);
+    expect(body.staffing_plan.intervals.every((r) => r.role !== "weigher" || r.hybrid)).toBe(true);
+
+    hybrids = setHybridPeopleForBlock(hybrids, "weigh_wash", "9:00 AM", "10:00 AM", 0);
+    expect(getHybridPeopleForBlock(hybrids, "weigh_wash", "9:00 AM", "10:00 AM")).toBe(0);
+  });
+
+  it("indexBlockPositionsByEnd never lets next block_start overwrite prior block_end", () => {
+    const rows = [
+      {
+        block_start: "5:00 AM",
+        block_end: "6:00 AM",
+        sorted_this_block: 12,
+        washed_this_block: 0,
+      },
+      {
+        block_start: "6:00 AM",
+        block_end: "7:00 AM",
+        sorted_this_block: 0,
+        washed_this_block: 8,
+      },
+    ];
+    const map = indexBlockPositionsByEnd(rows);
+    expect(map["6:00 AM"].sorted_this_block).toBe(12);
+    expect(map["6:00 AM"].washed_this_block).toBe(0);
+    expect(map["7:00 AM"].washed_this_block).toBe(8);
+    // Collision bug previously set map['6:00 AM'] from the second row's block_start.
+    expect(map["6:00 AM"].block_end).toBe("6:00 AM");
   });
 
   it("stage remaining is target minus stage done and never negative", () => {

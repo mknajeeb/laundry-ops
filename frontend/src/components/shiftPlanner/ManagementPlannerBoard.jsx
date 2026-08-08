@@ -33,6 +33,7 @@ import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import {
   BLOCK_SIZE_OPTIONS,
   DEFAULT_MANAGEMENT_INPUTS,
+  MANAGEMENT_HYBRIDS,
   MANAGEMENT_ROLES,
   newStaffingInterval,
 } from "../../shiftPlanner/managementConstants";
@@ -47,10 +48,13 @@ import {
   fillRestBasePeopleForRole,
   getAdditionalForBlock,
   getBasePeopleForBlock,
+  getHybridPeopleForBlock,
   hmToClock,
+  indexBlockPositionsByEnd,
   pickEditablePlannerParamSnapshot,
   pickPersistedPlannerParams,
   setBasePeopleForBlock,
+  setHybridPeopleForBlock,
   validateManagementPlanInputs,
   validatePersistedPlannerParams,
   validateStaffingIntervals,
@@ -437,7 +441,7 @@ function BlockRoleRow({
   showFillRest = false,
   onFillRest = null,
 }) {
-  const base = getBasePeopleForBlock(intervals, role.id, blockStart);
+  const base = getBasePeopleForBlock(intervals, role.id, blockStart, blockEnd);
   const extras = getAdditionalForBlock(intervals, role.id, blockStart, blockEnd);
 
   return (
@@ -555,11 +559,72 @@ function BlockRoleRow({
   );
 }
 
-function compactStaffingSummary(intervals, blockStart) {
-  return MANAGEMENT_ROLES.map((role) => {
-    const n = getBasePeopleForBlock(intervals, role.id, blockStart);
+function compactStaffingSummary(intervals, hybridIntervals, blockStart, blockEnd) {
+  const dedicated = MANAGEMENT_ROLES.map((role) => {
+    const n = getBasePeopleForBlock(intervals, role.id, blockStart, blockEnd);
     return `${role.short} ${n}`;
   }).join(" · ");
+  const hybrids = MANAGEMENT_HYBRIDS.map((h) => {
+    const n = getHybridPeopleForBlock(hybridIntervals, h.id, blockStart, blockEnd);
+    return n > 0 ? `${h.label} ${n}` : null;
+  }).filter(Boolean);
+  return hybrids.length ? `${dedicated} · ${hybrids.join(" · ")}` : dedicated;
+}
+
+function HybridRoleRow({ hybrid, blockStart, blockEnd, intervals, onChange }) {
+  const count = getHybridPeopleForBlock(intervals, hybrid.id, blockStart, blockEnd);
+  return (
+    <Stack
+      direction="row"
+      alignItems="center"
+      spacing={1}
+      sx={{
+        py: 0.35,
+        borderBottom: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
+        "&:last-child": { borderBottom: 0 },
+        minHeight: 32,
+      }}
+    >
+      <Typography
+        sx={{
+          width: 140,
+          flexShrink: 0,
+          fontWeight: 700,
+          fontSize: "0.72rem",
+          color: "text.secondary",
+        }}
+      >
+        {hybrid.label}
+      </Typography>
+      <Stack direction="row" alignItems="center" spacing={0.25} sx={{ flexShrink: 0 }}>
+        <IconButton
+          size="small"
+          aria-label={`Decrease ${hybrid.label} hybrid staff`}
+          onClick={() => onChange(Math.max(0, count - 1))}
+          sx={{ p: 0.35 }}
+        >
+          <RemoveIcon sx={{ fontSize: 16 }} />
+        </IconButton>
+        <Typography
+          sx={{ width: 18, textAlign: "center", fontWeight: 800, fontSize: "0.95rem" }}
+          aria-label={`${hybrid.label} hybrid staff ${count}`}
+        >
+          {count}
+        </Typography>
+        <IconButton
+          size="small"
+          aria-label={`Increase ${hybrid.label} hybrid staff`}
+          onClick={() => onChange(count + 1)}
+          sx={{ p: 0.35 }}
+        >
+          <AddIcon sx={{ fontSize: 16 }} />
+        </IconButton>
+      </Stack>
+      <Typography sx={{ fontSize: "0.72rem", color: "text.disabled" }}>
+        {count > 0 ? "shared calendar" : "—"}
+      </Typography>
+    </Stack>
+  );
 }
 
 function SectionLabel({
@@ -724,14 +789,10 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
     [inputs.start_time, inputs.target_time, inputs.planning_block_size_min],
   );
 
-  const positionByEnd = useMemo(() => {
-    const map = {};
-    (result?.block_positions || []).forEach((b) => {
-      map[b.block_end] = b;
-      map[b.block_start] = b;
-    });
-    return map;
-  }, [result]);
+  const positionByEnd = useMemo(
+    () => indexBlockPositionsByEnd(result?.block_positions),
+    [result],
+  );
 
   const runSim = useCallback(async (nextInputs) => {
     const payloadInputs = nextInputs || inputs;
@@ -804,7 +865,10 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
     };
   }, [inputs, settingsReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const hasStaffing = (inputs.staffing_intervals || []).length > 0;
+  const hasStaffing = (
+    (inputs.staffing_intervals || []).length > 0
+    || (inputs.hybrid_intervals || []).length > 0
+  );
   const outcome = useMemo(
     () => (result && hasStaffing ? formatManagementOutcome({ ...result, inputs }) : null),
     [result, inputs, hasStaffing],
@@ -860,6 +924,19 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
       staffing_intervals: setBasePeopleForBlock(
         prev.staffing_intervals,
         roleId,
+        blockStart,
+        blockEnd,
+        people,
+      ),
+    }));
+  };
+
+  const changeHybrid = (hybridId, blockStart, blockEnd, people) => {
+    setInputs((prev) => ({
+      ...prev,
+      hybrid_intervals: setHybridPeopleForBlock(
+        prev.hybrid_intervals,
+        hybridId,
         blockStart,
         blockEnd,
         people,
@@ -1132,25 +1209,54 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                       [pb.block_start]: !staffOpen,
                     }))
                   }
-                  collapsedSummary={compactStaffingSummary(inputs.staffing_intervals, pb.block_start)}
+                  collapsedSummary={compactStaffingSummary(
+                    inputs.staffing_intervals,
+                    inputs.hybrid_intervals,
+                    pb.block_start,
+                    pb.block_end,
+                  )}
                 />
-                {staffOpen
-                  ? MANAGEMENT_ROLES.map((role) => (
-                    <BlockRoleRow
-                      key={role.id}
-                      role={role}
-                      blockStart={pb.block_start}
-                      blockEnd={pb.block_end}
-                      intervals={inputs.staffing_intervals}
-                      onBaseChange={(n) => changeBase(role.id, pb.block_start, pb.block_end, n)}
-                      onAddTemporary={(roleId) => openTemporary(roleId, pb.block_start, pb.block_end)}
-                      onEdit={openEdit}
-                      onRemove={removeInterval}
-                      showFillRest={isFirstStaffingBlock && planBlocks.length > 1}
-                      onFillRest={(people) => fillRest(role.id, people)}
-                    />
-                  ))
-                  : null}
+                {staffOpen ? (
+                  <>
+                    {MANAGEMENT_ROLES.map((role) => (
+                      <BlockRoleRow
+                        key={role.id}
+                        role={role}
+                        blockStart={pb.block_start}
+                        blockEnd={pb.block_end}
+                        intervals={inputs.staffing_intervals}
+                        onBaseChange={(n) => changeBase(role.id, pb.block_start, pb.block_end, n)}
+                        onAddTemporary={(roleId) => openTemporary(roleId, pb.block_start, pb.block_end)}
+                        onEdit={openEdit}
+                        onRemove={removeInterval}
+                        showFillRest={isFirstStaffingBlock && planBlocks.length > 1}
+                        onFillRest={(people) => fillRest(role.id, people)}
+                      />
+                    ))}
+                    <Typography
+                      sx={{
+                        mt: 1,
+                        mb: 0.35,
+                        fontWeight: 800,
+                        fontSize: "0.68rem",
+                        letterSpacing: 0.5,
+                        color: "text.secondary",
+                      }}
+                    >
+                      HYBRID
+                    </Typography>
+                    {MANAGEMENT_HYBRIDS.map((hybrid) => (
+                      <HybridRoleRow
+                        key={hybrid.id}
+                        hybrid={hybrid}
+                        blockStart={pb.block_start}
+                        blockEnd={pb.block_end}
+                        intervals={inputs.hybrid_intervals}
+                        onChange={(n) => changeHybrid(hybrid.id, pb.block_start, pb.block_end, n)}
+                      />
+                    ))}
+                  </>
+                ) : null}
               </Box>
 
               <Box sx={{ textAlign: "center", py: 0.35, color: "text.disabled", fontSize: "0.85rem" }}>

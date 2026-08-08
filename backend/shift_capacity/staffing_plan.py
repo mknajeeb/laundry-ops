@@ -26,6 +26,20 @@ ROLE_PREFIX = {
     "folder": "MGMT_FOLD",
 }
 
+# One human resource may qualify for these roles on a single shared calendar.
+# Key is the authored hybrid type; values are ordered qualified roles
+# (first becomes primary_role for stable IDs / tie-breaks).
+HYBRID_SPECS: dict[str, tuple[str, ...]] = {
+    "weigh_wash": ("weigher", "washer"),
+    "wash_dry": ("washer", "dryer"),
+    "weigh_wash_dry": ("weigher", "washer", "dryer"),
+}
+HYBRID_ID_PREFIX = {
+    "weigh_wash": "MGMT_HYBRID_WEIGH_WASH",
+    "wash_dry": "MGMT_HYBRID_WASH_DRY",
+    "weigh_wash_dry": "MGMT_HYBRID_WEIGH_WASH_DRY",
+}
+
 
 @dataclass
 class AuthoredInterval:
@@ -34,6 +48,7 @@ class AuthoredInterval:
     start_sec: int
     end_sec: int
     mode: str = "base"  # base | additional (authoring metadata only)
+    hybrid_type: str | None = None  # when set, role is unused for compilation
 
 
 @dataclass
@@ -69,7 +84,8 @@ class StaffingPlanResult:
         return {
             "authored_intervals": [
                 {
-                    "role": a.role,
+                    "role": a.role if a.hybrid_type is None else None,
+                    "hybrid": a.hybrid_type,
                     "people": a.people,
                     "start": label_seconds(a.start_sec),
                     "end": label_seconds(a.end_sec),
@@ -84,6 +100,15 @@ class StaffingPlanResult:
                 {
                     "id": e.employee_id,
                     "role": e.primary_role,
+                    "qualified_roles": list(e.qualified_roles),
+                    "hybrid_type": next(
+                        (
+                            ht
+                            for ht, prefix in HYBRID_ID_PREFIX.items()
+                            if e.employee_id.startswith(prefix)
+                        ),
+                        None,
+                    ),
                     "windows": [
                         {
                             "start": label_seconds(w.start_min),
@@ -140,16 +165,31 @@ def parse_and_compile_staffing_plan(
                 )
             )
             continue
-        role = _normalize_role(str(row.get("role") or ""))
-        if role not in MANAGEMENT_ROLES:
-            result.errors.append(
-                ValidationError(
-                    "STAFFING_ROLE_INVALID",
-                    f"Unknown role {row.get('role')!r}",
-                    {"index": idx, "role": row.get("role")},
+
+        hybrid_raw = row.get("hybrid") or row.get("hybrid_type")
+        hybrid_type = str(hybrid_raw).strip().lower() if hybrid_raw else None
+        if hybrid_type:
+            if hybrid_type not in HYBRID_SPECS:
+                result.errors.append(
+                    ValidationError(
+                        "STAFFING_HYBRID_INVALID",
+                        f"Unknown hybrid type {hybrid_raw!r}",
+                        {"index": idx, "hybrid": hybrid_raw},
+                    )
                 )
-            )
-            continue
+                continue
+            role = HYBRID_SPECS[hybrid_type][0]
+        else:
+            role = _normalize_role(str(row.get("role") or ""))
+            if role not in MANAGEMENT_ROLES:
+                result.errors.append(
+                    ValidationError(
+                        "STAFFING_ROLE_INVALID",
+                        f"Unknown role {row.get('role')!r}",
+                        {"index": idx, "role": row.get("role")},
+                    )
+                )
+                continue
 
         raw_people = row.get("people")
         if isinstance(raw_people, float) and not float(raw_people).is_integer():
@@ -236,15 +276,20 @@ def parse_and_compile_staffing_plan(
                 start_sec=start_sec,
                 end_sec=end_sec,
                 mode=mode,
+                hybrid_type=hybrid_type,
             )
         )
 
     if result.errors:
         return result
 
-    # Reject overlapping BASE intervals for the same role (half-open).
+    # Reject overlapping BASE intervals for the same dedicated role (half-open).
     for role in MANAGEMENT_ROLES:
-        bases = [a for a in authored if a.role == role and a.mode == "base"]
+        bases = [
+            a
+            for a in authored
+            if a.hybrid_type is None and a.role == role and a.mode == "base"
+        ]
         for i in range(len(bases)):
             for j in range(i + 1, len(bases)):
                 a, b = bases[i], bases[j]
@@ -266,19 +311,56 @@ def parse_and_compile_staffing_plan(
                             },
                         )
                     )
+    # Reject overlapping BASE for the same hybrid type.
+    for hybrid_type in HYBRID_SPECS:
+        bases = [
+            a
+            for a in authored
+            if a.hybrid_type == hybrid_type and a.mode == "base"
+        ]
+        for i in range(len(bases)):
+            for j in range(i + 1, len(bases)):
+                a, b = bases[i], bases[j]
+                if a.start_sec < b.end_sec and b.start_sec < a.end_sec:
+                    result.errors.append(
+                        ValidationError(
+                            "STAFFING_HYBRID_BASE_OVERLAP",
+                            f"Overlapping BASE intervals for hybrid {hybrid_type}",
+                            {
+                                "hybrid": hybrid_type,
+                                "a": {
+                                    "start": label_seconds(a.start_sec),
+                                    "end": label_seconds(a.end_sec),
+                                },
+                                "b": {
+                                    "start": label_seconds(b.start_sec),
+                                    "end": label_seconds(b.end_sec),
+                                },
+                            },
+                        )
+                    )
     if result.errors:
         return result
 
     result.authored = authored
-    result.normalized_intervals = normalize_headcount(authored)
+    dedicated = [a for a in authored if a.hybrid_type is None]
+    hybrids = [a for a in authored if a.hybrid_type is not None]
+    result.normalized_intervals = normalize_headcount(dedicated)
     result.employees = compile_employees(result.normalized_intervals)
+    result.employees.extend(compile_hybrid_employees(hybrids))
     return result
 
 
 def normalize_headcount(authored: list[AuthoredInterval]) -> list[CanonicalSegment]:
-    """Sum overlapping authored intervals into canonical [start, end) segments."""
+    """Sum overlapping authored intervals into canonical [start, end) segments.
+
+    Hybrid authored rows are excluded — they compile to multi-role employees
+    separately and must not inflate dedicated role headcount.
+    """
     by_role: dict[str, list[AuthoredInterval]] = {r: [] for r in MANAGEMENT_ROLES}
     for item in authored:
+        if item.hybrid_type is not None:
+            continue
         by_role[item.role].append(item)
 
     segments: list[CanonicalSegment] = []
@@ -342,6 +424,63 @@ def compile_employees(segments: list[CanonicalSegment]) -> list[Employee]:
     return employees
 
 
+def compile_hybrid_employees(authored_hybrids: list[AuthoredInterval]) -> list[Employee]:
+    """Compile hybrid headcount into one shared multi-role calendar per slot.
+
+    Scheduling reuse (documented): pick_employee selects the eligible employee
+    who can start soonest; ties break by employee_id ascending. Hybrids share
+    that rule with dedicated MGMT_* slots — no separate optimizer.
+    """
+    employees: list[Employee] = []
+    for hybrid_type, roles in HYBRID_SPECS.items():
+        items = [a for a in authored_hybrids if a.hybrid_type == hybrid_type]
+        if not items:
+            continue
+        # Normalize hybrid headcount the same way as a single pseudo-role.
+        bounds = sorted({t for it in items for t in (it.start_sec, it.end_sec)})
+        segments: list[tuple[int, int, int]] = []
+        for i in range(len(bounds) - 1):
+            a, b = bounds[i], bounds[i + 1]
+            if a >= b:
+                continue
+            people = sum(it.people for it in items if it.start_sec <= a < it.end_sec)
+            if people > 0:
+                segments.append((a, b, people))
+        if not segments:
+            continue
+        max_people = max(p for _, _, p in segments)
+        slot_ranges: list[list[tuple[int, int]]] = [[] for _ in range(max_people)]
+        for start, end, people in sorted(segments, key=lambda s: s[0]):
+            for slot in range(people):
+                slot_ranges[slot].append((start, end))
+        primary = roles[0]
+        qualified = list(roles[1:])
+        prefix = HYBRID_ID_PREFIX[hybrid_type]
+        for slot_idx, ranges in enumerate(slot_ranges):
+            if not ranges:
+                continue
+            merged = _merge_ranges(ranges)
+            emp_id = f"{prefix}_{slot_idx + 1:03d}"
+            employees.append(
+                Employee(
+                    employee_id=emp_id,
+                    display_name=emp_id,
+                    primary_role=primary,
+                    qualified_roles=qualified,
+                    active=True,
+                    schedule_windows=[
+                        EmployeeScheduleWindow(
+                            start_min=start,
+                            end_min=end,
+                            exit_policy="stop_and_reassign",
+                        )
+                        for start, end in merged
+                    ],
+                )
+            )
+    return employees
+
+
 def block_staffing_view(
     authored: list[AuthoredInterval],
     normalized: list[CanonicalSegment],
@@ -352,16 +491,22 @@ def block_staffing_view(
     """Authoring-friendly staffing summary for a planning block [start, end)."""
     roles: dict[str, Any] = {}
     for role in MANAGEMENT_ROLES:
-        # Base = authored base intervals overlapping the block
+        # Dedicated only — hybrids use primary_role for compile IDs but are not
+        # dedicated weigh/wash/dry headcount.
         base_items = [
             a
             for a in authored
-            if a.role == role and a.mode == "base" and a.start_sec < block_end_sec and a.end_sec > block_start_sec
+            if a.hybrid_type is None
+            and a.role == role
+            and a.mode == "base"
+            and a.start_sec < block_end_sec
+            and a.end_sec > block_start_sec
         ]
         additional_items = [
             a
             for a in authored
-            if a.role == role
+            if a.hybrid_type is None
+            and a.role == role
             and a.mode == "additional"
             and a.start_sec < block_end_sec
             and a.end_sec > block_start_sec
@@ -401,12 +546,43 @@ def block_staffing_view(
             ],
             "effective_segments": effective,
         }
+    hybrids: dict[str, Any] = {}
+    for hybrid_type in HYBRID_SPECS:
+        items = [
+            a
+            for a in authored
+            if a.hybrid_type == hybrid_type
+            and a.start_sec < block_end_sec
+            and a.end_sec > block_start_sec
+        ]
+        at_start = 0
+        peak = 0
+        for a in items:
+            if a.mode == "base" and a.start_sec <= block_start_sec < a.end_sec:
+                at_start = max(at_start, a.people)
+            if a.start_sec < block_end_sec and a.end_sec > block_start_sec:
+                peak = max(peak, a.people)
+        hybrids[hybrid_type] = {
+            "people_at_block_start": at_start,
+            "peak_people": peak,
+            "qualified_roles": list(HYBRID_SPECS[hybrid_type]),
+            "base": [
+                {
+                    "people": a.people,
+                    "start": label_seconds(a.start_sec),
+                    "end": label_seconds(a.end_sec),
+                }
+                for a in items
+                if a.mode == "base"
+            ],
+        }
     return {
         "block_start": label_seconds(block_start_sec),
         "block_end": label_seconds(block_end_sec),
         "block_start_sec": block_start_sec,
         "block_end_sec": block_end_sec,
         "roles": roles,
+        "hybrids": hybrids,
     }
 
 
@@ -448,14 +624,25 @@ _BLOCKED_STATE_ROLE = {
 
 
 def _role_has_capacity_after(employees: list[Employee], role: str, after_sec: int) -> bool:
-    """True if any explicit employee window for role remains after after_sec."""
+    """True if any explicit employee window for role remains after after_sec.
+
+    Includes hybrid MGMT resources whose qualified_roles cover ``role``
+    (shared calendar; not a second independent headcount).
+    """
+    from backend.shift_capacity.resources import role_active_at
+
     for emp in employees:
-        if emp.primary_role != role:
-            continue
         for win in emp.schedule_windows:
-            # Half-open: capacity exists if window still open after after_sec
-            # or starts later.
-            if win.end_min > after_sec and win.start_min < win.end_min:
+            if win.end_min <= after_sec or win.start_min >= win.end_min:
+                continue
+            # Probe at the later of after_sec and window start (half-open).
+            probe = max(after_sec, win.start_min)
+            if probe >= win.end_min:
+                continue
+            if role_active_at(emp, role, probe):
+                return True
+            # Window starts later than after_sec — still future capacity.
+            if win.start_min > after_sec and role_active_at(emp, role, win.start_min):
                 return True
     return False
 

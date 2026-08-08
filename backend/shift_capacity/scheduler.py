@@ -433,6 +433,7 @@ def _process_batch(
     wash_groups = split_bags_by_weight(members, 2) if split_wash else [members]
 
     washer_ids_used: list[str] = []
+    wash_failed = False
     for group in wash_groups:
         ok = _schedule_wash_group(
             group,
@@ -448,7 +449,10 @@ def _process_batch(
         )
         if not ok:
             if inp.management_mode:
-                return  # bags remain waiting_to_wash — no synthetic washer
+                # Partial wash (e.g. 2-washer split group2 failed): still attempt
+                # dry for bags that already finished wash. No synthetic washer.
+                wash_failed = True
+                break
             raise OverlapError(
                 ValidationError(
                     "RESOURCE_OVERLAP",
@@ -457,21 +461,49 @@ def _process_batch(
                 )
             )
 
-    batch.washer_id = "+".join(washer_ids_used)
-    batch.washer_load_start = min(b.washer_load_start for b in members)  # type: ignore[type-var]
-    batch.washer_load_end = max(b.washer_load_end for b in members)  # type: ignore[type-var]
-    batch.wash_start = min(b.wash_start for b in members)  # type: ignore[type-var]
-    batch.wash_end = max(b.wash_end for b in members)  # type: ignore[type-var]
-    batch.transfer_start = min(b.transfer_start for b in members)  # type: ignore[type-var]
-    batch.transfer_end = max(b.transfer_end for b in members)  # type: ignore[type-var]
+    washed_members = [b for b in members if b.wash_end is not None]
+    if not washed_members:
+        return  # all still waiting_to_wash
 
-    dryer_ready = batch.transfer_end or event_start
-    split_dry = any(b.requires_two_dryers for b in members) and len(members) >= 2 and len(dryers) >= 2
-    dry_groups = split_bags_by_weight(members, 2) if split_dry else [members]
+    batch.washer_id = "+".join(washer_ids_used)
+    batch.washer_load_start = min(b.washer_load_start for b in washed_members)  # type: ignore[type-var]
+    batch.washer_load_end = max(b.washer_load_end for b in washed_members)  # type: ignore[type-var]
+    batch.wash_start = min(b.wash_start for b in washed_members)  # type: ignore[type-var]
+    batch.wash_end = max(b.wash_end for b in washed_members)  # type: ignore[type-var]
+    batch.transfer_start = min(b.transfer_start for b in washed_members)  # type: ignore[type-var]
+    batch.transfer_end = max(b.transfer_end for b in washed_members)  # type: ignore[type-var]
+
+    # Dry cohorts by wash/transfer readiness. Never hold early wash-split
+    # finishers until a later sibling's wash_end (default 80% 2-washer split
+    # previously set dryer_ready=max(batch) past the dry staff window).
+    cohorts: dict[int, list] = {}
+    for bag in washed_members:
+        ready_key = int(
+            (bag.transfer_end if bag.transfer_end is not None else bag.wash_end) or event_start
+        )
+        cohorts.setdefault(ready_key, []).append(bag)
+
+    dry_groups: list[list] = []
+    for ready_key in sorted(cohorts):
+        cohort = cohorts[ready_key]
+        split_dry = (
+            any(b.requires_two_dryers for b in cohort)
+            and len(cohort) >= 2
+            and len(dryers) >= 2
+        )
+        if split_dry:
+            dry_groups.extend(split_bags_by_weight(cohort, 2))
+        else:
+            dry_groups.append(cohort)
+
     dryer_ids_used: list[str] = []
     ready_times: list[int] = []
 
     for group in dry_groups:
+        group_ready = max(
+            (b.transfer_end if b.transfer_end is not None else b.wash_end) or event_start
+            for b in group
+        )
         ready = _schedule_dry_group(
             group,
             batch=batch,
@@ -479,14 +511,15 @@ def _process_batch(
             emp_cal=emp_cal,
             machine_cal=machine_cal,
             dryers=dryers,
-            dryer_ready=dryer_ready,
+            dryer_ready=int(group_ready),
             override=override,
             hard=hard,
             dryer_ids_used=dryer_ids_used,
         )
         if ready is None:
             if inp.management_mode:
-                return  # washed but waiting_to_dry / cannot dry
+                # Remaining washed bags stay waiting_to_dry; no synthetic dry labor.
+                break
             raise OverlapError(
                 ValidationError(
                     "RESOURCE_OVERLAP",
@@ -496,14 +529,18 @@ def _process_batch(
             )
         ready_times.append(ready)
 
-    batch.dryer_id = "+".join(dryer_ids_used)
-    batch.dryer_load_start = min(b.dryer_load_start for b in members)  # type: ignore[type-var]
-    batch.dryer_load_end = max(b.dryer_load_end for b in members)  # type: ignore[type-var]
-    batch.dry_start = min(b.dry_start for b in members)  # type: ignore[type-var]
-    batch.dry_end = max(b.dry_end for b in members)  # type: ignore[type-var]
-    batch.ready_to_fold = max(ready_times) if ready_times else dryer_ready
+    dried_members = [b for b in washed_members if b.dryer_load_start is not None]
+    if dried_members:
+        batch.dryer_id = "+".join(dryer_ids_used)
+        batch.dryer_load_start = min(b.dryer_load_start for b in dried_members)  # type: ignore[type-var]
+        batch.dryer_load_end = max(b.dryer_load_end for b in dried_members)  # type: ignore[type-var]
+        batch.dry_start = min(b.dry_start for b in dried_members)  # type: ignore[type-var]
+        batch.dry_end = max(b.dry_end for b in dried_members)  # type: ignore[type-var]
+        batch.ready_to_fold = max(ready_times) if ready_times else batch.transfer_end
     if batch.provenance != "manual_override":
         batch.provenance = "recalculated"
+    if wash_failed and inp.management_mode:
+        return
 
 
 def _schedule_wash_group(
@@ -771,37 +808,24 @@ def _schedule_wash_group(
         raise
 
 
-def _schedule_dry_group(
+def _plan_dry_group_on_dryer(
     group: list[Bag],
     *,
     batch: Batch,
     inp: SimulationInputs,
     emp_cal: ResourceCalendar,
     machine_cal: ResourceCalendar,
-    dryers: list[str],
+    dryer_id: str,
     dryer_ready: int,
     override,
     hard: bool,
-    dryer_ids_used: list[str],
-) -> int | None:
-    cycle = _dur(inp.processing_times.dry_cycle_min)
-    unload = _dur(inp.processing_times.unload_dryer_min)
-    load_dur_default_sec = _dur(inp.processing_times.load_dryer_min)
-    dry_role = _dry_labor_role(inp)
-    if not dryers:
-        return None
-
-    if override and override.dryer_id:
-        dryer_id = override.dryer_id
-    else:
-        dryer_id = min(
-            dryers,
-            key=lambda d: machine_cal.next_free(d, resource_type="dryer_machine", not_before=dryer_ready),
-        )
-
+    cycle: int,
+    unload: int,
+    load_dur_default_sec: int,
+    dry_role: str,
+) -> tuple[list[tuple[Bag, Any, int, int, int]], int, int, int, int] | None:
+    """Return (planned, load_start, load_end, dry_end, ready) or None if unschedulable."""
     probe = dryer_ready
-    planned: list[tuple[Bag, Any, int, int, int]] | None = None
-    load_start = load_end = dry_end = ready = 0
     for _attempt in range(2048):
         machine_free = machine_cal.next_free(dryer_id, resource_type="dryer_machine", not_before=probe)
         cursor = machine_free
@@ -827,8 +851,7 @@ def _schedule_dry_group(
                     )
                 )
             if emp is None and inp.management_mode:
-                trial = []
-                break
+                return None
             dur_sec = _dur(_emp_rate_min(emp, "load_dryer", inp)) if emp else load_dur_default_sec
             if hard and forced and emp is not None:
                 start = cursor
@@ -863,18 +886,14 @@ def _schedule_dry_group(
             cursor = end
 
         if not trial:
-            if inp.management_mode:
-                return None
-            probe = machine_free + 1
-            continue
+            return None
         load_start = trial[0][2]
         load_end = trial[-1][3]
         dry_end = load_end + cycle
         ready = dry_end + unload
         machine_end = ready if unload else dry_end
         if machine_cal.is_free(dryer_id, load_start, machine_end, resource_type="dryer_machine"):
-            planned = trial
-            break
+            return trial, load_start, load_end, dry_end, ready
         if hard:
             raise OverlapError(
                 ValidationError(
@@ -889,17 +908,73 @@ def _schedule_dry_group(
                 )
             )
         probe = machine_cal.next_free(dryer_id, resource_type="dryer_machine", not_before=load_start + 1)
+    return None
 
-    if planned is None:
+
+def _schedule_dry_group(
+    group: list[Bag],
+    *,
+    batch: Batch,
+    inp: SimulationInputs,
+    emp_cal: ResourceCalendar,
+    machine_cal: ResourceCalendar,
+    dryers: list[str],
+    dryer_ready: int,
+    override,
+    hard: bool,
+    dryer_ids_used: list[str],
+) -> int | None:
+    cycle = _dur(inp.processing_times.dry_cycle_min)
+    unload = _dur(inp.processing_times.unload_dryer_min)
+    load_dur_default_sec = _dur(inp.processing_times.load_dryer_min)
+    dry_role = _dry_labor_role(inp)
+    if not dryers:
+        return None
+
+    # Evaluate every dryer and take the earliest feasible load (then dryer_id).
+    # Selecting only by next_free(dryer_ready) stuck all work on D1 when a labor-
+    # delayed booking left a phantom gap before the first reservation.
+    if override and override.dryer_id:
+        candidate_dryers = [override.dryer_id]
+    else:
+        candidate_dryers = sorted(dryers)
+
+    best: tuple[int, str, list[tuple[Bag, Any, int, int, int]], int, int, int] | None = None
+    for dryer_id in candidate_dryers:
+        planned = _plan_dry_group_on_dryer(
+            group,
+            batch=batch,
+            inp=inp,
+            emp_cal=emp_cal,
+            machine_cal=machine_cal,
+            dryer_id=dryer_id,
+            dryer_ready=dryer_ready,
+            override=override,
+            hard=hard,
+            cycle=cycle,
+            unload=unload,
+            load_dur_default_sec=load_dur_default_sec,
+            dry_role=dry_role,
+        )
+        if planned is None:
+            continue
+        trial, load_start, load_end, dry_end, ready = planned
+        key = (load_start, dryer_id)
+        if best is None or key < (best[0], best[1]):
+            best = (load_start, dryer_id, trial, load_end, dry_end, ready)
+
+    if best is None:
         if inp.management_mode:
             return None
         raise OverlapError(
             ValidationError(
                 code="RESOURCE_OVERLAP",
-                message=f"Could not place dry group on {dryer_id}",
-                details={"resource_type": "dryer_machine", "resource_id": dryer_id},
+                message="Could not place dry group on any dryer",
+                details={"resource_type": "dryer_machine", "dryer_ids": list(dryers)},
             )
         )
+
+    load_start, dryer_id, planned, load_end, dry_end, ready = best
 
     emp_snap = emp_cal.checkpoint()
     mach_snap = machine_cal.checkpoint()

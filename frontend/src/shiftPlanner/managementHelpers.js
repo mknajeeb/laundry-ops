@@ -5,11 +5,14 @@
  */
 
 import {
+  MANAGEMENT_HYBRIDS,
   MANAGEMENT_ROLES,
   PERSISTED_PLANNER_PARAM_KEYS,
   ROLE_LABEL,
   SESSION_PLANNER_PARAM_KEYS,
 } from "./managementConstants";
+
+const HYBRID_IDS = new Set(MANAGEMENT_HYBRIDS.map((h) => h.id));
 
 const ROLE_ALIAS = {
   weigh: "weigher",
@@ -109,19 +112,41 @@ export function buildPlanningBlocks(startTime, targetTime, blockSizeMin) {
   return blocks;
 }
 
-/** Base people covering the start of a block for a role. */
-export function getBasePeopleForBlock(intervals, roleId, blockStart) {
+/**
+ * Base people for a planning block / role.
+ * Prefer headcount covering block start (what +/- edits).
+ * If none, fall back to max BASE headcount overlapping the block so mid-block
+ * base intervals are not invisible capacity.
+ */
+export function getBasePeopleForBlock(intervals, roleId, blockStart, blockEnd = null) {
   const bs = parseClockToSec(blockStart);
   if (bs == null) return 0;
+  let atStart = 0;
+  let maxOverlap = 0;
+  const be = blockEnd != null ? parseClockToSec(blockEnd) : null;
   for (const row of intervals || []) {
     if (normalizeRole(row.role) !== roleId) continue;
     if (String(row.mode || "base").toLowerCase() === "additional") continue;
     const s = parseClockToSec(row.start);
     const e = parseClockToSec(row.end);
     if (s == null || e == null) continue;
-    if (s <= bs && bs < e) return Number(row.people) || 0;
+    const people = Number(row.people) || 0;
+    if (s <= bs && bs < e) atStart = Math.max(atStart, people);
+    if (be != null && intervalsOverlap(s, e, bs, be)) {
+      maxOverlap = Math.max(maxOverlap, people);
+    }
   }
-  return 0;
+  if (atStart > 0) return atStart;
+  return be != null ? maxOverlap : 0;
+}
+
+/** Index block_positions by block_end only (never by block_start — keys collide). */
+export function indexBlockPositionsByEnd(blockPositions) {
+  const map = {};
+  (blockPositions || []).forEach((b) => {
+    if (b && b.block_end != null) map[b.block_end] = b;
+  });
+  return map;
 }
 
 /** Additional intervals that overlap a block. */
@@ -137,6 +162,73 @@ export function getAdditionalForBlock(intervals, roleId, blockStart, blockEnd) {
     if (s == null || e == null) return false;
     return intervalsOverlap(s, e, bs, be);
   });
+}
+
+/** Hybrid headcount for a planning block (base coverage at start, else max overlap). */
+export function getHybridPeopleForBlock(intervals, hybridId, blockStart, blockEnd = null) {
+  const bs = parseClockToSec(blockStart);
+  if (bs == null || !HYBRID_IDS.has(hybridId)) return 0;
+  let atStart = 0;
+  let maxOverlap = 0;
+  const be = blockEnd != null ? parseClockToSec(blockEnd) : null;
+  for (const row of intervals || []) {
+    if (String(row.hybrid || row.hybrid_type || "") !== hybridId) continue;
+    if (String(row.mode || "base").toLowerCase() === "additional") continue;
+    const s = parseClockToSec(row.start);
+    const e = parseClockToSec(row.end);
+    if (s == null || e == null) continue;
+    const people = Number(row.people) || 0;
+    if (s <= bs && bs < e) atStart = Math.max(atStart, people);
+    if (be != null && intervalsOverlap(s, e, bs, be)) {
+      maxOverlap = Math.max(maxOverlap, people);
+    }
+  }
+  if (atStart > 0) return atStart;
+  return be != null ? maxOverlap : 0;
+}
+
+/** Set hybrid base headcount for one planning block. */
+export function setHybridPeopleForBlock(intervals, hybridId, blockStart, blockEnd, people) {
+  const bs = parseClockToSec(blockStart);
+  const be = parseClockToSec(blockEnd);
+  const peopleN = Math.max(0, Math.floor(Number(people) || 0));
+  if (bs == null || be == null || be <= bs || !HYBRID_IDS.has(hybridId)) {
+    return intervals || [];
+  }
+  const next = [];
+  for (const row of intervals || []) {
+    if (String(row.hybrid || row.hybrid_type || "") !== hybridId) {
+      next.push(row);
+      continue;
+    }
+    if (String(row.mode || "base").toLowerCase() === "additional") {
+      next.push(row);
+      continue;
+    }
+    const s = parseClockToSec(row.start);
+    const e = parseClockToSec(row.end);
+    if (s == null || e == null || !intervalsOverlap(s, e, bs, be)) {
+      next.push(row);
+      continue;
+    }
+    if (s < bs) {
+      next.push({ ...row, id: `${row.id}-L-${bs}`, end: formatClockFromSec(bs) });
+    }
+    if (be < e) {
+      next.push({ ...row, id: `${row.id}-R-${be}`, start: formatClockFromSec(be) });
+    }
+  }
+  if (peopleN >= 1) {
+    next.push({
+      id: `hy-${hybridId}-${blockStart}-${blockEnd}-${peopleN}`.replace(/\s+/g, ""),
+      hybrid: hybridId,
+      people: peopleN,
+      start: blockStart,
+      end: blockEnd,
+      mode: "base",
+    });
+  }
+  return next;
 }
 
 /**
@@ -276,13 +368,23 @@ export function validateStaffingIntervals(intervals, { startTime, endTime } = {}
 }
 
 export function buildManagementPayload(inputs) {
-  const intervals = (inputs.staffing_intervals || []).map((row) => ({
+  const dedicated = (inputs.staffing_intervals || []).map((row) => ({
     role: normalizeRole(row.role) || row.role,
     people: Number(row.people),
     start: row.start,
     end: row.end,
     mode: String(row.mode || "base").toLowerCase() === "additional" ? "additional" : "base",
   }));
+  const hybrids = (inputs.hybrid_intervals || [])
+    .filter((row) => HYBRID_IDS.has(String(row.hybrid || row.hybrid_type || "")))
+    .map((row) => ({
+      hybrid: String(row.hybrid || row.hybrid_type),
+      people: Number(row.people),
+      start: row.start,
+      end: row.end,
+      mode: String(row.mode || "base").toLowerCase() === "additional" ? "additional" : "base",
+    }));
+  const intervals = [...dedicated, ...hybrids];
 
   // Horizon = start → target finish. Backend still accepts end_time; map it internally.
   const target = inputs.target_time;

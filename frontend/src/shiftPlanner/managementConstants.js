@@ -10,6 +10,13 @@ export const MANAGEMENT_ROLES = [
 
 export const ROLE_LABEL = Object.fromEntries(MANAGEMENT_ROLES.map((r) => [r.id, r.label]));
 
+/** Block-level hybrid staffing: one person, multiple qualified roles, one calendar. */
+export const MANAGEMENT_HYBRIDS = [
+  { id: "weigh_wash", label: "Weigh / Wash", roles: ["weigher", "washer"] },
+  { id: "wash_dry", label: "Wash / Dry", roles: ["washer", "dryer"] },
+  { id: "weigh_wash_dry", label: "Weigh / Wash / Dry", roles: ["weigher", "washer", "dryer"] },
+];
+
 export const BLOCK_SIZE_OPTIONS = [
   { value: 30, label: "30 min" },
   { value: 45, label: "45 min" },
@@ -66,6 +73,8 @@ export const DEFAULT_MANAGEMENT_INPUTS = {
   ...DEFAULT_PROCESS_PARAMS,
   // Authored intervals only — empty by default (no auto staff).
   staffing_intervals: [],
+  // Hybrid block staffing: { id, hybrid, people, start, end, mode: "base" }
+  hybrid_intervals: [],
 };
 
 export function newStaffingInterval(role = "sorter", overrides = {}) {
