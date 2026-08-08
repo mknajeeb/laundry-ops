@@ -494,6 +494,43 @@ def resolve_cycle_anchor(
     return best
 
 
+def current_cycle_event_window(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    selected_date_et: date,
+    as_of_end: datetime | None = None,
+) -> tuple[datetime | None, datetime | None]:
+    """Inclusive start / exclusive end for scans in the current resolved cycle.
+
+    Start is ``resolve_current_cycle(...).cycle_anchor_at``. End is the next
+    ``sent-to-vendor`` after that anchor (exclusive), matching the resolver's
+    internal ``next_send`` bound. Open cycles have ``end=None``.
+
+    Callers must not substitute selected-calendar-day bounds for this window —
+    cycles may cross ET midnight.
+    """
+    cycle = resolve_current_cycle(
+        timeline,
+        selected_date_et=selected_date_et,
+        as_of_end=as_of_end,
+    )
+    start = cycle.cycle_anchor_at
+    if start is None:
+        return None, None
+    next_send: datetime | None = None
+    for ev in timeline:
+        if _norm_purpose(ev.get("purpose")) != "sent-to-vendor":
+            continue
+        ts = _event_ts(ev)
+        if ts is None:
+            continue
+        if as_of_end is not None and ts > as_of_end:
+            continue
+        if ts > start and (next_send is None or ts < next_send):
+            next_send = ts
+    return start, next_send
+
+
 def resolve_current_cycle(
     timeline: Sequence[Mapping[str, Any]],
     *,

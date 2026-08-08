@@ -376,26 +376,54 @@ def purpose_is_bulk_workitem(purpose: Any) -> bool:
     return any(m in p for m in BULK_PURPOSE_MARKERS)
 
 
+def _bulk_event_in_cycle_window(
+    ts: datetime | None,
+    *,
+    cycle_start: datetime | None,
+    cycle_end_exclusive: datetime | None,
+) -> bool:
+    """True when ``cycle_start <= ts < cycle_end`` (open end when end is None)."""
+    if ts is None or cycle_start is None:
+        return False
+    if ts < cycle_start:
+        return False
+    if cycle_end_exclusive is not None and ts >= cycle_end_exclusive:
+        return False
+    return True
+
+
 def load_bulk_workitem_scan_map(
     cursor,
     organization_id: int,
     bag_ids: Iterable[str],
+    *,
+    selected_date_et: date,
 ) -> dict[str, dict[str, Any]]:
     """
-    Return bag_id → {count, first_at, last_at, employee} for create-workitem-bulk scans.
-    Multiple scans still count as one review flag later.
+    Return bag_id → {count, first_at, last_at, employee} for create-workitem-bulk
+    scans in the **current resolved workload cycle** for ``selected_date_et``.
+
+    Prior-cycle / lifetime bulk scans are ignored for WF review. Historical rows
+    remain in ``rinse_bag_scan_events`` for chronology/audit.
+
+    Cycle window = ``current_cycle_event_window`` from ``resolve_current_cycle``
+    (anchor inclusive → next sent-to-vendor exclusive). Not calendar-day bounds.
     """
+    from backend.rinse_cycle_boundary import current_cycle_event_window
+
     ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
     out: dict[str, dict[str, Any]] = {}
     if not ids or not table_exists(cursor, "rinse_bag_scan_events"):
         return out
+
+    raw_by_bag: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
     chunk = 400
     for i in range(0, len(ids), chunk):
         part = ids[i : i + chunk]
         placeholders = ",".join(["%s"] * len(part))
         cursor.execute(
             f"""
-            SELECT bag_id, purpose, scanned_at_parsed, user_name
+            SELECT id, bag_id, purpose, scanned_at_parsed, user_name
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND bag_id IN ({placeholders})
@@ -410,7 +438,52 @@ def load_bulk_workitem_scan_map(
         )
         for row in cursor.fetchall() or []:
             bid = normalize_bag_id(row.get("bag_id"))
-            if not bid or not purpose_is_bulk_workitem(row.get("purpose")):
+            if not bid or bid not in raw_by_bag:
+                continue
+            if not purpose_is_bulk_workitem(row.get("purpose")):
+                continue
+            raw_by_bag[bid].append(dict(row))
+
+    bags_with_bulk = sorted(b for b, rows in raw_by_bag.items() if rows)
+    if not bags_with_bulk:
+        return out
+
+    # Full timelines only for bags that have any bulk history — cycle window
+    # needs STV anchors from resolve_current_cycle (may cross ET midnight).
+    timelines: dict[str, list[dict[str, Any]]] = {b: [] for b in bags_with_bulk}
+    for i in range(0, len(bags_with_bulk), chunk):
+        part = bags_with_bulk[i : i + chunk]
+        placeholders = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT id, bag_id, purpose, rack, user_name, scanned_at_parsed
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND bag_id IN ({placeholders})
+              AND scanned_at_parsed IS NOT NULL
+            ORDER BY scanned_at_parsed ASC, id ASC
+            """,
+            (int(organization_id), *part),
+        )
+        for row in cursor.fetchall() or []:
+            bid = normalize_bag_id(row.get("bag_id"))
+            if bid in timelines:
+                timelines[bid].append(dict(row))
+
+    for bid in bags_with_bulk:
+        cycle_start, cycle_end = current_cycle_event_window(
+            timelines.get(bid) or [],
+            selected_date_et=selected_date_et,
+        )
+        for row in raw_by_bag.get(bid) or []:
+            ts = row.get("scanned_at_parsed")
+            if isinstance(ts, datetime) and ts.tzinfo is not None:
+                ts = ts.replace(tzinfo=None)
+            if not _bulk_event_in_cycle_window(
+                ts if isinstance(ts, datetime) else None,
+                cycle_start=cycle_start,
+                cycle_end_exclusive=cycle_end,
+            ):
                 continue
             info = out.setdefault(
                 bid,
@@ -420,10 +493,11 @@ def load_bulk_workitem_scan_map(
                     "last_at": None,
                     "employee": None,
                     "events": [],
+                    "cycle_anchor_at": cycle_start,
+                    "next_cycle_anchor_at": cycle_end,
                 },
             )
             info["count"] += 1
-            ts = row.get("scanned_at_parsed")
             if info["first_at"] is None:
                 info["first_at"] = ts
                 info["employee"] = row.get("user_name")
@@ -432,6 +506,7 @@ def load_bulk_workitem_scan_map(
                 info["employee"] = row.get("user_name")
             info["events"].append(
                 {
+                    "id": row.get("id"),
                     "scanned_at_parsed": ts,
                     "purpose": row.get("purpose"),
                     "user_name": row.get("user_name"),
@@ -623,7 +698,9 @@ def save_bag_bulk_workitems(
     except Exception:
         portal_svc = None
     reg_svc = (load_registry_service_map(cursor, organization_id, [bid]).get(bid) or "").upper()
-    bulk_map = load_bulk_workitem_scan_map(cursor, organization_id, [bid])
+    bulk_map = load_bulk_workitem_scan_map(
+        cursor, organization_id, [bid], selected_date_et=shift_date_et
+    )
     has_bulk = bool(bulk_map.get(bid) and int((bulk_map.get(bid) or {}).get("count") or 0) > 0)
     if has_bulk or reg_svc == SERVICE_WF:
         effective = SERVICE_WF

@@ -236,10 +236,21 @@ def allocate_estimated_bag_weight_revenues(
     return allocated
 
 
-def _workitem_activity_detected(cursor, organization_id: int, bag_id: str) -> dict[str, Any]:
+def _workitem_activity_detected(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    selected_date_et: date,
+) -> dict[str, Any]:
     from backend.rinse_bulk_workitems import load_bulk_workitem_scan_map
 
-    m = load_bulk_workitem_scan_map(cursor, organization_id, [bag_id]).get(_norm_bag(bag_id)) or {}
+    m = load_bulk_workitem_scan_map(
+        cursor,
+        organization_id,
+        [bag_id],
+        selected_date_et=selected_date_et,
+    ).get(_norm_bag(bag_id)) or {}
     return {
         "detected": bool(int(m.get("count") or 0) > 0),
         "count": int(m.get("count") or 0),
@@ -267,7 +278,9 @@ def _bulk_review_unresolved(
     blob = review_reason_codes_json
     if not isinstance(blob, str):
         blob = json.dumps(blob or [])
-    activity = _workitem_activity_detected(cursor, organization_id, bag_id)
+    activity = _workitem_activity_detected(
+        cursor, organization_id, bag_id, selected_date_et=operations_date_et
+    )
     if REASON_WF_BULK_WORKITEM_REVIEW not in blob and not activity["detected"]:
         # Still check unresolved resolution rows / lines for bags already in review.
         pass
@@ -292,7 +305,9 @@ def _queue_flags_for_bag(
 ) -> dict[str, Any]:
     bid = _norm_bag(bag_row.get("bag_id"))
     missing_post = bool(post.get("missing") or post.get("weight_lbs") is None)
-    activity = _workitem_activity_detected(cursor, organization_id, bid)
+    activity = _workitem_activity_detected(
+        cursor, organization_id, bid, selected_date_et=operations_date_et
+    )
     unresolved_wi = _bulk_review_unresolved(
         cursor,
         organization_id,
@@ -470,7 +485,9 @@ def get_wf_review_detail(
     lines = load_bag_bulk_lines(cursor, org, operations_date_et, [bid]).get(bid) or []
     resolution = load_bulk_resolutions(cursor, org, operations_date_et, [bid]).get(bid)
     audits = load_bag_bulk_audits(cursor, org, operations_date_et, [bid]).get(bid) or []
-    scan = load_bulk_workitem_scan_map(cursor, org, [bid]).get(bid) or {}
+    scan = load_bulk_workitem_scan_map(
+        cursor, org, [bid], selected_date_et=operations_date_et
+    ).get(bid) or {}
     catalog = list_workitems(cursor, org, active_only=True)
     flags = _queue_flags_for_bag(cursor, org, operations_date_et, row, post, fact)
 

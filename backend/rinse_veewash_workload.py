@@ -1278,7 +1278,9 @@ def build_veewash_daily_workload(
         load_bulk_workitem_scan_map,
     )
 
-    bulk_scans = load_bulk_workitem_scan_map(cursor, organization_id, weight_ids)
+    bulk_scans = load_bulk_workitem_scan_map(
+        cursor, organization_id, weight_ids, selected_date_et=selected_date_et
+    )
     bulk_resolutions = load_bulk_resolutions(
         cursor, organization_id, selected_date_et, weight_ids
     )
@@ -1565,7 +1567,9 @@ def build_veewash_daily_workload_from_membership(
         load_bulk_workitem_scan_map,
     )
 
-    bulk_scans = load_bulk_workitem_scan_map(cursor, organization_id, weight_ids)
+    bulk_scans = load_bulk_workitem_scan_map(
+        cursor, organization_id, weight_ids, selected_date_et=selected_date_et
+    )
     bulk_resolutions = load_bulk_resolutions(
         cursor, organization_id, selected_date_et, weight_ids
     )

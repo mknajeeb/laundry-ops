@@ -1073,7 +1073,12 @@ def apply_unified_bag_edit(
             load_bulk_workitem_scan_map,
         )
 
-        bulk_scan = (load_bulk_workitem_scan_map(cursor, organization_id, [bid]) or {}).get(bid) or {}
+        bulk_scan = (
+            load_bulk_workitem_scan_map(
+                cursor, organization_id, [bid], selected_date_et=selected_date_et
+            )
+            or {}
+        ).get(bid) or {}
         if int(bulk_scan.get("count") or 0) > 0:
             after_bulk_lines = (
                 load_bag_bulk_lines(cursor, organization_id, selected_date_et, [bid]) or {}

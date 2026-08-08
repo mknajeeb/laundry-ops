@@ -523,7 +523,9 @@ def build_drilldown(
     bulk_resolutions: dict = {}
     active_catalog: list = []
     if page_ids and need_bulk_lines:
-        bulk_scans = load_bulk_workitem_scan_map(cursor, organization_id, page_ids)
+        bulk_scans = load_bulk_workitem_scan_map(
+            cursor, organization_id, page_ids, selected_date_et=selected_date_et
+        )
         bulk_lines = load_bag_bulk_lines(
             cursor, organization_id, selected_date_et, page_ids
         )
