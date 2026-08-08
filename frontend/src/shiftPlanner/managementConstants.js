@@ -27,6 +27,30 @@ export const DEFAULT_PROCESS_PARAMS = {
   fold_min_per_bag: 6,
 };
 
+/** Org-persisted Plan / Machines / Process fields (not staffing or sim output). */
+export const PERSISTED_PLANNER_PARAM_KEYS = [
+  "bag_count",
+  "start_time",
+  "target_time",
+  "planning_block_size_min",
+  "washer_count",
+  "dryer_count",
+  "weigh_sec_per_bag",
+  "sort_min_per_bag",
+  "load_washer_min",
+  "wash_cycle_min",
+  "load_dryer_min",
+  "dry_cycle_min",
+  "fold_min_per_bag",
+];
+
+/** Extra strip fields locked with Edit Parameters but not persisted. */
+export const SESSION_PLANNER_PARAM_KEYS = [
+  "avg_lbs_per_bag",
+  "two_washer_split_pct",
+  "two_dryer_split_pct",
+];
+
 export const DEFAULT_MANAGEMENT_INPUTS = {
   bag_count: 50,
   start_time: "9:00 AM",
@@ -36,6 +60,9 @@ export const DEFAULT_MANAGEMENT_INPUTS = {
   dryer_count: 4,
   batch_size: 8,
   avg_lbs_per_bag: 20,
+  // Validated planner default: 80% of bags use 2 machine positions.
+  two_washer_split_pct: 80,
+  two_dryer_split_pct: 80,
   ...DEFAULT_PROCESS_PARAMS,
   // Authored intervals only — empty by default (no auto staff).
   staffing_intervals: [],

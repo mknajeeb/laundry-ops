@@ -32,6 +32,8 @@ def _mgmt(**overrides):
         "planning_block_size_min": 60,
         "bag_count": 4,
         "avg_lbs_per_bag": 20,
+        "two_washer_split_pct": 0,
+        "two_dryer_split_pct": 0,
         "batch_size": 2,
         "washer_count": 2,
         "dryer_count": 2,

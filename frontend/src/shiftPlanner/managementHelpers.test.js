@@ -1,19 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyPersistedPlannerParams,
   buildManagementPayload,
   buildPlanningBlocks,
   buildPositionFlowDisplay,
   buildStagePositionDisplay,
+  fillRestBasePeopleForRole,
   formatBlockStaffingLine,
   formatManagementOutcome,
+  getAdditionalForBlock,
   getBasePeopleForBlock,
   intervalsOverlap,
   parseClockToSec,
+  pickPersistedPlannerParams,
   setBasePeopleForBlock,
   stageRemaining,
+  validateManagementPlanInputs,
+  validatePersistedPlannerParams,
   validateStaffingIntervals,
 } from "./managementHelpers";
-import { DEFAULT_MANAGEMENT_INPUTS } from "./managementConstants";
+import { DEFAULT_MANAGEMENT_INPUTS, PERSISTED_PLANNER_PARAM_KEYS } from "./managementConstants";
 
 describe("managementHelpers", () => {
   it("builds payload with management_mode, process params, and end_time=target", () => {
@@ -26,6 +32,16 @@ describe("managementHelpers", () => {
     expect(body.weigh_sec_per_bag).toBe(45);
     expect(body.sort_min_per_bag).toBe(5);
     expect(body.fold_rate_mode).toBe("minutes_per_bag");
+    expect(body.avg_lbs_per_bag).toBe(20);
+    expect(body.two_washer_split_pct).toBe(80);
+    expect(body.two_dryer_split_pct).toBe(80);
+  });
+
+  it("validates avg weight and split percentage bounds", () => {
+    expect(validateManagementPlanInputs(DEFAULT_MANAGEMENT_INPUTS).ok).toBe(true);
+    expect(validateManagementPlanInputs({ ...DEFAULT_MANAGEMENT_INPUTS, avg_lbs_per_bag: 0 }).ok).toBe(false);
+    expect(validateManagementPlanInputs({ ...DEFAULT_MANAGEMENT_INPUTS, two_washer_split_pct: 101 }).ok).toBe(false);
+    expect(validateManagementPlanInputs({ ...DEFAULT_MANAGEMENT_INPUTS, two_dryer_split_pct: -1 }).ok).toBe(false);
   });
 
   it("preserves exact staffing times in payload", () => {
@@ -159,6 +175,65 @@ describe("managementHelpers", () => {
     expect(getBasePeopleForBlock(next, "sorter", "11:00 AM")).toBe(1);
   });
 
+  it("Fill rest copies only the selected role into later blocks", () => {
+    const blocks = buildPlanningBlocks("9:00 AM", "12:00 PM", 60);
+    let intervals = [];
+    intervals = setBasePeopleForBlock(intervals, "folder", "9:00 AM", "10:00 AM", 6);
+    intervals = setBasePeopleForBlock(intervals, "weigher", "9:00 AM", "10:00 AM", 1);
+    intervals = setBasePeopleForBlock(intervals, "sorter", "9:00 AM", "10:00 AM", 1);
+    intervals = setBasePeopleForBlock(intervals, "washer", "9:00 AM", "10:00 AM", 1);
+    intervals = setBasePeopleForBlock(intervals, "dryer", "9:00 AM", "10:00 AM", 1);
+    // Later blocks start empty / different.
+    intervals = setBasePeopleForBlock(intervals, "folder", "10:00 AM", "11:00 AM", 2);
+    intervals = setBasePeopleForBlock(intervals, "sorter", "10:00 AM", "11:00 AM", 3);
+
+    const afterFold = fillRestBasePeopleForRole(intervals, "folder", blocks, 6);
+    expect(getBasePeopleForBlock(afterFold, "folder", "9:00 AM")).toBe(6);
+    expect(getBasePeopleForBlock(afterFold, "folder", "10:00 AM")).toBe(6);
+    expect(getBasePeopleForBlock(afterFold, "folder", "11:00 AM")).toBe(6);
+    // Other roles unchanged.
+    expect(getBasePeopleForBlock(afterFold, "weigher", "9:00 AM")).toBe(1);
+    expect(getBasePeopleForBlock(afterFold, "weigher", "10:00 AM")).toBe(0);
+    expect(getBasePeopleForBlock(afterFold, "sorter", "10:00 AM")).toBe(3);
+    expect(getBasePeopleForBlock(afterFold, "washer", "9:00 AM")).toBe(1);
+    expect(getBasePeopleForBlock(afterFold, "dryer", "9:00 AM")).toBe(1);
+
+    const afterWeigh = fillRestBasePeopleForRole(afterFold, "weigher", blocks, 1);
+    expect(getBasePeopleForBlock(afterWeigh, "weigher", "9:00 AM")).toBe(1);
+    expect(getBasePeopleForBlock(afterWeigh, "weigher", "10:00 AM")).toBe(1);
+    expect(getBasePeopleForBlock(afterWeigh, "weigher", "11:00 AM")).toBe(1);
+    expect(getBasePeopleForBlock(afterWeigh, "folder", "10:00 AM")).toBe(6);
+    expect(getBasePeopleForBlock(afterWeigh, "sorter", "10:00 AM")).toBe(3);
+  });
+
+  it("Fill rest propagates zero and leaves temps / first block alone", () => {
+    const blocks = buildPlanningBlocks("9:00 AM", "11:00 AM", 60);
+    let intervals = [
+      {
+        id: "temp-sort",
+        role: "sorter",
+        people: 1,
+        start: "9:15 AM",
+        end: "9:45 AM",
+        mode: "additional",
+      },
+    ];
+    intervals = setBasePeopleForBlock(intervals, "weigher", "9:00 AM", "10:00 AM", 0);
+    intervals = setBasePeopleForBlock(intervals, "weigher", "10:00 AM", "11:00 AM", 2);
+    intervals = setBasePeopleForBlock(intervals, "sorter", "9:00 AM", "10:00 AM", 1);
+
+    const next = fillRestBasePeopleForRole(intervals, "weigher", blocks, 0);
+    expect(getBasePeopleForBlock(next, "weigher", "9:00 AM")).toBe(0);
+    expect(getBasePeopleForBlock(next, "weigher", "10:00 AM")).toBe(0);
+    expect(getBasePeopleForBlock(next, "sorter", "9:00 AM")).toBe(1);
+    expect(getAdditionalForBlock(next, "sorter", "9:00 AM", "10:00 AM")).toHaveLength(1);
+
+    // Later block remains independently editable after fill.
+    const edited = setBasePeopleForBlock(next, "weigher", "10:00 AM", "11:00 AM", 4);
+    expect(getBasePeopleForBlock(edited, "weigher", "9:00 AM")).toBe(0);
+    expect(getBasePeopleForBlock(edited, "weigher", "10:00 AM")).toBe(4);
+  });
+
   it("stage remaining is target minus stage done and never negative", () => {
     expect(stageRemaining(50, 32)).toBe(18);
     expect(stageRemaining(50, 50)).toBe(0);
@@ -221,11 +296,80 @@ describe("managementHelpers", () => {
       thisBlock: 10,
       doneLabel: "COMPLETE",
     });
+    // Waiting ≠ remaining
     expect(flow.waiting.to_wash).toBe(11);
     expect(flow.stages.sort.remaining).toBe(19);
     expect(flow.waiting.to_wash).not.toBe(flow.stages.sort.remaining);
+    // Target reconciliation for every stage
     for (const stage of Object.values(flow.stages)) {
       expect(stage.done + stage.remaining).toBe(50);
     }
+  });
+
+  it("pickPersistedPlannerParams excludes staffing and session-only fields", () => {
+    const picked = pickPersistedPlannerParams({
+      ...DEFAULT_MANAGEMENT_INPUTS,
+      bag_count: 77,
+      staffing_intervals: [{ id: "x" }],
+      avg_lbs_per_bag: 25,
+      two_washer_split_pct: 50,
+    });
+    expect(picked.bag_count).toBe(77);
+    expect(picked.staffing_intervals).toBeUndefined();
+    expect(picked.avg_lbs_per_bag).toBeUndefined();
+    expect(Object.keys(picked).sort()).toEqual([...PERSISTED_PLANNER_PARAM_KEYS].sort());
+  });
+
+  it("applyPersistedPlannerParams restores saved values without touching staffing", () => {
+    const staffing = [{ id: "keep", role: "sorter", people: 2, start: "9:00 AM", end: "10:00 AM", mode: "base" }];
+    const next = applyPersistedPlannerParams(
+      { ...DEFAULT_MANAGEMENT_INPUTS, bag_count: 10, staffing_intervals: staffing },
+      { bag_count: 90, wash_cycle_min: 35 },
+    );
+    expect(next.bag_count).toBe(90);
+    expect(next.wash_cycle_min).toBe(35);
+    expect(next.staffing_intervals).toEqual(staffing);
+  });
+
+  it("validatePersistedPlannerParams rejects invalid values and accepts defaults", () => {
+    expect(validatePersistedPlannerParams(DEFAULT_MANAGEMENT_INPUTS).ok).toBe(true);
+    expect(validatePersistedPlannerParams({ ...DEFAULT_MANAGEMENT_INPUTS, bag_count: -1 }).ok).toBe(false);
+    expect(validatePersistedPlannerParams({
+      ...DEFAULT_MANAGEMENT_INPUTS,
+      start_time: "3:00 PM",
+      target_time: "9:00 AM",
+    }).ok).toBe(false);
+    expect(validatePersistedPlannerParams({
+      ...DEFAULT_MANAGEMENT_INPUTS,
+      planning_block_size_min: 15,
+    }).ok).toBe(false);
+    expect(validatePersistedPlannerParams({
+      ...DEFAULT_MANAGEMENT_INPUTS,
+      washer_count: 0,
+    }).ok).toBe(false);
+    expect(validatePersistedPlannerParams({
+      ...DEFAULT_MANAGEMENT_INPUTS,
+      weigh_sec_per_bag: 0,
+    }).ok).toBe(false);
+  });
+
+  it("Fill rest does not mutate plan/machine/process fields when applied via payload inputs", () => {
+    const blocks = buildPlanningBlocks("9:00 AM", "11:00 AM", 60);
+    const inputs = {
+      ...DEFAULT_MANAGEMENT_INPUTS,
+      bag_count: 50,
+      washer_count: 4,
+      dryer_count: 4,
+      weigh_sec_per_bag: 45,
+      staffing_intervals: setBasePeopleForBlock([], "folder", "9:00 AM", "10:00 AM", 6),
+    };
+    const nextIntervals = fillRestBasePeopleForRole(inputs.staffing_intervals, "folder", blocks, 6);
+    const body = buildManagementPayload({ ...inputs, staffing_intervals: nextIntervals });
+    expect(body.bag_count).toBe(50);
+    expect(body.washer_count).toBe(4);
+    expect(body.dryer_count).toBe(4);
+    expect(body.weigh_sec_per_bag).toBe(45);
+    expect(body.start_time).toBe("9:00 AM");
+    expect(body.target_time).toBe("3:00 PM");
   });
 });

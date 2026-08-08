@@ -20,9 +20,15 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import RemoveIcon from "@mui/icons-material/Remove";
 import PlanningTimePicker from "../datetime/PlanningTimePicker";
-import { simulateShiftCapacity } from "../../api";
+import {
+  getShiftCapacityPlannerSettings,
+  saveShiftCapacityPlannerSettings,
+  simulateShiftCapacity,
+} from "../../api";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import {
   BLOCK_SIZE_OPTIONS,
@@ -31,16 +37,22 @@ import {
   newStaffingInterval,
 } from "../../shiftPlanner/managementConstants";
 import {
+  applyPersistedPlannerParams,
   buildManagementPayload,
   buildPlanningBlocks,
   buildPositionFlowDisplay,
   clockToHm,
   earlyMinutesBeforeTarget,
   formatManagementOutcome,
+  fillRestBasePeopleForRole,
   getAdditionalForBlock,
   getBasePeopleForBlock,
   hmToClock,
+  pickEditablePlannerParamSnapshot,
+  pickPersistedPlannerParams,
   setBasePeopleForBlock,
+  validateManagementPlanInputs,
+  validatePersistedPlannerParams,
   validateStaffingIntervals,
 } from "../../shiftPlanner/managementHelpers";
 
@@ -58,7 +70,17 @@ const stripSx = {
   boxShadow: VEEWASH_DASHBOARD.cardShadow,
 };
 
-function CompactNum({ label, value, onChange, min = 0, step = 1, suffix = "", width = 72 }) {
+function CompactNum({
+  label,
+  value,
+  onChange,
+  min = 0,
+  max,
+  step = 1,
+  suffix = "",
+  width = 72,
+  disabled = false,
+}) {
   const full = width === "100%";
   return (
     <TextField
@@ -68,17 +90,19 @@ function CompactNum({ label, value, onChange, min = 0, step = 1, suffix = "", wi
       fullWidth={full}
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      inputProps={{ min, step }}
+      disabled={disabled}
+      inputProps={{ min, max, step, readOnly: disabled }}
       sx={{
         ...fieldSx,
         width: full ? undefined : width,
         "& .MuiInputBase-input": { py: 0.6, fontSize: "0.85rem" },
+        ...(disabled ? { "& .MuiOutlinedInput-root": { bgcolor: "#f8fafc" } } : null),
       }}
     />
   );
 }
 
-function ClockField({ label, value, onChange }) {
+function ClockField({ label, value, onChange, disabled = false }) {
   return (
     <PlanningTimePicker
       label={label}
@@ -86,6 +110,7 @@ function ClockField({ label, value, onChange }) {
       onChange={(hm) => onChange(hmToClock(hm))}
       exactMinutes
       size="small"
+      disabled={disabled}
     />
   );
 }
@@ -409,6 +434,8 @@ function BlockRoleRow({
   onAddTemporary,
   onEdit,
   onRemove,
+  showFillRest = false,
+  onFillRest = null,
 }) {
   const base = getBasePeopleForBlock(intervals, role.id, blockStart);
   const extras = getAdditionalForBlock(intervals, role.id, blockStart, blockEnd);
@@ -467,6 +494,27 @@ function BlockRoleRow({
         {base > 0 ? `${blockStart}–${blockEnd}` : "—"}
       </Typography>
 
+      {showFillRest ? (
+        <Button
+          size="small"
+          onClick={() => onFillRest?.(base)}
+          aria-label={`Fill rest ${role.label}`}
+          sx={{
+            textTransform: "none",
+            fontWeight: 600,
+            fontSize: "0.75rem",
+            color: "text.secondary",
+            minWidth: 0,
+            px: 0.5,
+            py: 0.25,
+            flexShrink: 0,
+            "&:hover": { bgcolor: "transparent", color: VEEWASH_DASHBOARD.primaryBlue, textDecoration: "underline" },
+          }}
+        >
+          Fill rest
+        </Button>
+      ) : null}
+
       <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ flex: 1, minWidth: 0 }}>
         {extras.map((row) => (
           <Box
@@ -507,9 +555,30 @@ function BlockRoleRow({
   );
 }
 
-function SectionLabel({ time, kind }) {
+function compactStaffingSummary(intervals, blockStart) {
+  return MANAGEMENT_ROLES.map((role) => {
+    const n = getBasePeopleForBlock(intervals, role.id, blockStart);
+    return `${role.short} ${n}`;
+  }).join(" · ");
+}
+
+function SectionLabel({
+  time,
+  kind,
+  collapsible = false,
+  expanded = true,
+  onToggle = null,
+  collapsedSummary = "",
+}) {
   return (
-    <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 0.75 }}>
+    <Stack
+      direction="row"
+      alignItems="center"
+      spacing={1}
+      sx={{ mb: expanded || kind !== "staffing" ? 0.75 : 0 }}
+      flexWrap="wrap"
+      useFlexGap
+    >
       <Typography sx={{ fontWeight: 800, fontSize: "0.95rem" }}>
         {time}
       </Typography>
@@ -523,27 +592,132 @@ function SectionLabel({ time, kind }) {
       >
         — {kind === "staffing" ? "STAFFING" : "POSITION"}
       </Typography>
+      {collapsible ? (
+        <Button
+          size="small"
+          onClick={onToggle}
+          endIcon={expanded ? <ExpandLessIcon sx={{ fontSize: 16 }} /> : <ExpandMoreIcon sx={{ fontSize: 16 }} />}
+          aria-expanded={expanded}
+          aria-label={expanded ? "Collapse staffing" : "Expand staffing"}
+          sx={{
+            textTransform: "none",
+            fontWeight: 700,
+            fontSize: "0.72rem",
+            minWidth: 0,
+            px: 0.75,
+            py: 0.15,
+            ml: "auto",
+          }}
+        >
+          {expanded ? "Collapse" : "Expand"}
+        </Button>
+      ) : null}
+      {collapsible && !expanded && collapsedSummary ? (
+        <Typography sx={{ width: "100%", fontSize: "0.78rem", color: "text.secondary", fontWeight: 600 }}>
+          {collapsedSummary}
+        </Typography>
+      ) : null}
     </Stack>
   );
 }
 
-export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
+export default function ManagementPlannerBoard({ initialInputs = null, skipSettingsLoad = false } = {}) {
   const [inputs, setInputs] = useState(() => ({
     ...DEFAULT_MANAGEMENT_INPUTS,
     ...(initialInputs || {}),
   }));
+  const [savedParams, setSavedParams] = useState(() =>
+    pickPersistedPlannerParams({ ...DEFAULT_MANAGEMENT_INPUTS, ...(initialInputs || {}) }),
+  );
+  const [settingsReady, setSettingsReady] = useState(Boolean(skipSettingsLoad || initialInputs));
+  const [paramsEditing, setParamsEditing] = useState(false);
+  const [editSnapshot, setEditSnapshot] = useState(null);
+  const [savingParams, setSavingParams] = useState(false);
+  const [paramError, setParamError] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [draft, setDraft] = useState(null);
   const [modeLocked, setModeLocked] = useState(true);
+  /** Per-block staffing strip open state; default expanded. */
+  const [staffingExpanded, setStaffingExpanded] = useState({});
   const debounceRef = useRef(null);
   const seqRef = useRef(0);
+  const paramsLocked = !paramsEditing;
+
+  useEffect(() => {
+    if (skipSettingsLoad || initialInputs) {
+      setSettingsReady(true);
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getShiftCapacityPlannerSettings();
+        if (cancelled) return;
+        const saved = pickPersistedPlannerParams(res.data || {});
+        setSavedParams(saved);
+        setInputs((prev) => applyPersistedPlannerParams(prev, saved));
+      } catch {
+        if (cancelled) return;
+        setSavedParams(pickPersistedPlannerParams(DEFAULT_MANAGEMENT_INPUTS));
+      } finally {
+        if (!cancelled) setSettingsReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [skipSettingsLoad, initialInputs]);
 
   const onChange = useCallback((key, value) => {
     setInputs((prev) => ({ ...prev, [key]: value }));
   }, []);
+
+  const beginEditParams = () => {
+    setEditSnapshot(pickEditablePlannerParamSnapshot(inputs));
+    setParamError("");
+    setParamsEditing(true);
+  };
+
+  const cancelEditParams = () => {
+    if (editSnapshot) {
+      setInputs((prev) => ({ ...prev, ...editSnapshot }));
+    } else {
+      setInputs((prev) => applyPersistedPlannerParams(prev, savedParams));
+    }
+    setParamError("");
+    setParamsEditing(false);
+    setEditSnapshot(null);
+  };
+
+  const saveParams = async () => {
+    const persistedCheck = validatePersistedPlannerParams(inputs);
+    if (!persistedCheck.ok) {
+      setParamError(persistedCheck.errors[0]?.message || "Fix parameters before saving");
+      return;
+    }
+    const planCheck = validateManagementPlanInputs(inputs);
+    if (!planCheck.ok) {
+      setParamError(planCheck.errors[0]?.message || "Fix parameters before saving");
+      return;
+    }
+    setSavingParams(true);
+    setParamError("");
+    try {
+      const res = await saveShiftCapacityPlannerSettings(persistedCheck.normalized);
+      const saved = pickPersistedPlannerParams(res.data || persistedCheck.normalized);
+      setSavedParams(saved);
+      setInputs((prev) => applyPersistedPlannerParams(prev, saved));
+      setParamsEditing(false);
+      setEditSnapshot(null);
+    } catch (err) {
+      setParamError(err.response?.data?.error || err.message || "Failed to save parameters");
+    } finally {
+      setSavingParams(false);
+    }
+  };
 
   const planBlocks = useMemo(
     () => buildPlanningBlocks(inputs.start_time, inputs.target_time, inputs.planning_block_size_min),
@@ -562,6 +736,11 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
   const runSim = useCallback(async (nextInputs) => {
     const payloadInputs = nextInputs || inputs;
     const horizonEnd = payloadInputs.target_time;
+    const planCheck = validateManagementPlanInputs(payloadInputs);
+    if (!planCheck.ok) {
+      setError(planCheck.errors[0]?.message || "Fix plan parameters");
+      return null;
+    }
     const client = validateStaffingIntervals(payloadInputs.staffing_intervals, {
       startTime: payloadInputs.start_time,
       endTime: horizonEnd,
@@ -615,6 +794,7 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
   }, [inputs]);
 
   useEffect(() => {
+    if (!settingsReady) return undefined;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       runSim(inputs);
@@ -622,7 +802,7 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [inputs]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [inputs, settingsReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const hasStaffing = (inputs.staffing_intervals || []).length > 0;
   const outcome = useMemo(
@@ -687,17 +867,83 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
     }));
   };
 
+  const fillRest = (roleId, people) => {
+    setInputs((prev) => ({
+      ...prev,
+      staffing_intervals: fillRestBasePeopleForRole(
+        prev.staffing_intervals,
+        roleId,
+        planBlocks,
+        people,
+      ),
+    }));
+  };
+
+  if (!settingsReady) {
+    return (
+      <Box sx={{ ...stripSx, py: 2, display: "flex", alignItems: "center", gap: 1 }}>
+        <CircularProgress size={16} sx={{ color: VEEWASH_DASHBOARD.primaryBlue }} />
+        <Typography sx={{ fontSize: "0.9rem", color: "text.secondary" }}>
+          Loading saved parameters…
+        </Typography>
+      </Box>
+    );
+  }
+
+  const headerBtnSx = {
+    textTransform: "none",
+    fontWeight: 700,
+    fontSize: "0.8rem",
+    minWidth: 0,
+    px: 1,
+    py: 0.35,
+  };
+
   return (
     <Stack spacing={1.5}>
       {/* PLAN */}
       <Box sx={stripSx}>
-        <Typography sx={{ fontWeight: 800, fontSize: "0.8rem", letterSpacing: 0.4, color: "text.secondary", mb: 1 }}>
-          PLAN
-        </Typography>
+        <Stack
+          direction="row"
+          alignItems="center"
+          justifyContent="space-between"
+          spacing={1}
+          sx={{ mb: 1 }}
+        >
+          <Typography sx={{ fontWeight: 800, fontSize: "0.8rem", letterSpacing: 0.4, color: "text.secondary" }}>
+            PLAN
+          </Typography>
+          {!paramsEditing ? (
+            <Button size="small" onClick={beginEditParams} sx={headerBtnSx}>
+              Edit Parameters
+            </Button>
+          ) : (
+            <Stack direction="row" spacing={0.75} alignItems="center">
+              <Button
+                size="small"
+                variant="contained"
+                onClick={saveParams}
+                disabled={savingParams}
+                sx={headerBtnSx}
+              >
+                {savingParams ? "Saving…" : "Save Parameters"}
+              </Button>
+              <Button
+                size="small"
+                onClick={cancelEditParams}
+                disabled={savingParams}
+                sx={headerBtnSx}
+              >
+                Cancel
+              </Button>
+            </Stack>
+          )}
+        </Stack>
+        {paramError ? <Alert severity="warning" sx={{ py: 0.25, mb: 1 }}>{paramError}</Alert> : null}
         <Box
           sx={{
             display: "grid",
-            gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(2, 1fr)", md: "1fr 1.2fr 1.2fr 1fr" },
+            gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", md: "1fr 1fr 1.2fr 1.2fr 1fr" },
             gap: 1,
           }}
         >
@@ -707,24 +953,37 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
             onChange={(v) => onChange("bag_count", v)}
             min={1}
             width="100%"
+            disabled={paramsLocked}
+          />
+          <CompactNum
+            label="Avg Bag Weight"
+            value={inputs.avg_lbs_per_bag}
+            onChange={(v) => onChange("avg_lbs_per_bag", v)}
+            min={0.1}
+            step={0.1}
+            suffix="lb"
+            width="100%"
+            disabled={paramsLocked}
           />
           <ClockField
             label="Start time"
             value={inputs.start_time}
             onChange={(v) => onChange("start_time", v)}
+            disabled={paramsLocked}
           />
           <ClockField
             label="Target finish"
             value={inputs.target_time}
             onChange={(v) => onChange("target_time", v)}
+            disabled={paramsLocked}
           />
-          <FormControl size="small" fullWidth>
+          <FormControl size="small" fullWidth disabled={paramsLocked}>
             <InputLabel>Block size</InputLabel>
             <Select
               label="Block size"
               value={inputs.planning_block_size_min}
               onChange={(e) => onChange("planning_block_size_min", Number(e.target.value))}
-              sx={{ bgcolor: "#fff" }}
+              sx={{ bgcolor: paramsLocked ? "#f8fafc" : "#fff" }}
             >
               {BLOCK_SIZE_OPTIONS.map((o) => (
                 <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>
@@ -747,9 +1006,8 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
         <Box
           sx={{
             display: "grid",
-            gridTemplateColumns: { xs: "1fr 1fr", md: "1fr 1fr" },
+            gridTemplateColumns: { xs: "1fr 1fr", md: "repeat(4, 1fr)" },
             gap: 1,
-            maxWidth: { md: 420 },
           }}
         >
           <CompactNum
@@ -759,6 +1017,18 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
             min={1}
             suffix="machines"
             width="100%"
+            disabled={paramsLocked}
+          />
+          <CompactNum
+            label="2-Washer Split"
+            value={inputs.two_washer_split_pct}
+            onChange={(v) => onChange("two_washer_split_pct", v)}
+            min={0}
+            max={100}
+            step={0.1}
+            suffix="%"
+            width="100%"
+            disabled={paramsLocked}
           />
           <CompactNum
             label="Dryers"
@@ -767,6 +1037,18 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
             min={1}
             suffix="machines"
             width="100%"
+            disabled={paramsLocked}
+          />
+          <CompactNum
+            label="2-Dryer Split"
+            value={inputs.two_dryer_split_pct}
+            onChange={(v) => onChange("two_dryer_split_pct", v)}
+            min={0}
+            max={100}
+            step={0.1}
+            suffix="%"
+            width="100%"
+            disabled={paramsLocked}
           />
         </Box>
       </Box>
@@ -783,13 +1065,13 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
           spacing={0.75}
           alignItems="flex-start"
         >
-          <CompactNum label="Weigh" value={inputs.weigh_sec_per_bag} onChange={(v) => onChange("weigh_sec_per_bag", v)} min={1} suffix="s" width={84} />
-          <CompactNum label="Sort" value={inputs.sort_min_per_bag} onChange={(v) => onChange("sort_min_per_bag", v)} min={0} step={0.5} suffix="m" width={84} />
-          <CompactNum label="Wash labor" value={inputs.load_washer_min} onChange={(v) => onChange("load_washer_min", v)} min={0} step={0.5} suffix="m" width={96} />
-          <CompactNum label="Wash cycle" value={inputs.wash_cycle_min} onChange={(v) => onChange("wash_cycle_min", v)} min={1} suffix="m" width={96} />
-          <CompactNum label="Dry labor" value={inputs.load_dryer_min} onChange={(v) => onChange("load_dryer_min", v)} min={0} step={0.5} suffix="m" width={92} />
-          <CompactNum label="Dry cycle" value={inputs.dry_cycle_min} onChange={(v) => onChange("dry_cycle_min", v)} min={1} suffix="m" width={92} />
-          <CompactNum label="Fold" value={inputs.fold_min_per_bag} onChange={(v) => onChange("fold_min_per_bag", v)} min={0} step={0.5} suffix="m" width={84} />
+          <CompactNum label="Weigh" value={inputs.weigh_sec_per_bag} onChange={(v) => onChange("weigh_sec_per_bag", v)} min={1} suffix="s" width={84} disabled={paramsLocked} />
+          <CompactNum label="Sort" value={inputs.sort_min_per_bag} onChange={(v) => onChange("sort_min_per_bag", v)} min={0} step={0.5} suffix="m" width={84} disabled={paramsLocked} />
+          <CompactNum label="Wash labor" value={inputs.load_washer_min} onChange={(v) => onChange("load_washer_min", v)} min={0} step={0.5} suffix="m" width={96} disabled={paramsLocked} />
+          <CompactNum label="Wash cycle" value={inputs.wash_cycle_min} onChange={(v) => onChange("wash_cycle_min", v)} min={1} suffix="m" width={96} disabled={paramsLocked} />
+          <CompactNum label="Dry labor" value={inputs.load_dryer_min} onChange={(v) => onChange("load_dryer_min", v)} min={0} step={0.5} suffix="m" width={92} disabled={paramsLocked} />
+          <CompactNum label="Dry cycle" value={inputs.dry_cycle_min} onChange={(v) => onChange("dry_cycle_min", v)} min={1} suffix="m" width={92} disabled={paramsLocked} />
+          <CompactNum label="Fold" value={inputs.fold_min_per_bag} onChange={(v) => onChange("fold_min_per_bag", v)} min={0} step={0.5} suffix="m" width={84} disabled={paramsLocked} />
         </Stack>
       </Box>
 
@@ -802,28 +1084,73 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
 
       {error ? <Alert severity="error" sx={{ py: 0.5 }}>{error}</Alert> : null}
 
+      {planBlocks.length > 1 ? (
+        <Stack direction="row" spacing={1} justifyContent="flex-end">
+          <Button
+            size="small"
+            onClick={() => {
+              const next = {};
+              planBlocks.forEach((pb) => { next[pb.block_start] = false; });
+              setStaffingExpanded(next);
+            }}
+            sx={{ textTransform: "none", fontWeight: 700, fontSize: "0.75rem" }}
+          >
+            Collapse all staffing
+          </Button>
+          <Button
+            size="small"
+            onClick={() => {
+              const next = {};
+              planBlocks.forEach((pb) => { next[pb.block_start] = true; });
+              setStaffingExpanded(next);
+            }}
+            sx={{ textTransform: "none", fontWeight: 700, fontSize: "0.75rem" }}
+          >
+            Expand all staffing
+          </Button>
+        </Stack>
+      ) : null}
+
       {/* Block sequence: STAFFING → POSITION */}
       <Stack spacing={1.25}>
-        {planBlocks.map((pb) => {
+        {planBlocks.map((pb, blockIndex) => {
           const pos = positionByEnd[pb.block_end] || null;
           const blockStall = hasStaffing && stallRole ? stallRole : null;
+          const isFirstStaffingBlock = blockIndex === 0;
+          const staffOpen = staffingExpanded[pb.block_start] !== false;
           return (
             <Box key={`${pb.block_start}-${pb.block_end}`}>
               <Box sx={{ ...stripSx, py: 1 }}>
-                <SectionLabel time={pb.block_start} kind="staffing" />
-                {MANAGEMENT_ROLES.map((role) => (
-                  <BlockRoleRow
-                    key={role.id}
-                    role={role}
-                    blockStart={pb.block_start}
-                    blockEnd={pb.block_end}
-                    intervals={inputs.staffing_intervals}
-                    onBaseChange={(n) => changeBase(role.id, pb.block_start, pb.block_end, n)}
-                    onAddTemporary={(roleId) => openTemporary(roleId, pb.block_start, pb.block_end)}
-                    onEdit={openEdit}
-                    onRemove={removeInterval}
-                  />
-                ))}
+                <SectionLabel
+                  time={pb.block_start}
+                  kind="staffing"
+                  collapsible
+                  expanded={staffOpen}
+                  onToggle={() =>
+                    setStaffingExpanded((prev) => ({
+                      ...prev,
+                      [pb.block_start]: !staffOpen,
+                    }))
+                  }
+                  collapsedSummary={compactStaffingSummary(inputs.staffing_intervals, pb.block_start)}
+                />
+                {staffOpen
+                  ? MANAGEMENT_ROLES.map((role) => (
+                    <BlockRoleRow
+                      key={role.id}
+                      role={role}
+                      blockStart={pb.block_start}
+                      blockEnd={pb.block_end}
+                      intervals={inputs.staffing_intervals}
+                      onBaseChange={(n) => changeBase(role.id, pb.block_start, pb.block_end, n)}
+                      onAddTemporary={(roleId) => openTemporary(roleId, pb.block_start, pb.block_end)}
+                      onEdit={openEdit}
+                      onRemove={removeInterval}
+                      showFillRest={isFirstStaffingBlock && planBlocks.length > 1}
+                      onFillRest={(people) => fillRest(role.id, people)}
+                    />
+                  ))
+                  : null}
               </Box>
 
               <Box sx={{ textAlign: "center", py: 0.35, color: "text.disabled", fontSize: "0.85rem" }}>

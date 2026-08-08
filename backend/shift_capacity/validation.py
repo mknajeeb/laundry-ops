@@ -119,7 +119,15 @@ def parse_inputs(data: dict[str, Any] | None) -> SimulationInputs:
         planning_block = summary_interval if summary_interval in (30, 45, 60) else 60
 
     bag_count = max(1, int(raw.get("bag_count") or nested_shift.get("bag_count") or 1))
-    avg_lbs = float(raw.get("avg_lbs_per_bag") or nested_shift.get("avg_lbs_per_bag") or 20)
+    avg_raw = raw.get("avg_lbs_per_bag")
+    if avg_raw is None or avg_raw == "":
+        avg_raw = nested_shift.get("avg_lbs_per_bag")
+    if avg_raw is None or avg_raw == "":
+        avg_lbs = 20.0
+    else:
+        avg_lbs = float(avg_raw)
+        if avg_lbs <= 0:
+            raise ValueError("avg_lbs_per_bag must be > 0")
     bag_weights = [float(x) for x in (raw.get("bag_weights") or []) if x is not None]
 
     shift = ShiftConfig(
@@ -261,8 +269,41 @@ def parse_inputs(data: dict[str, Any] | None) -> SimulationInputs:
         ]
 
     orders = _parse_orders(raw.get("orders") or [])
+    split_meta: dict[str, Any] = {
+        "bags_using_2_washers": 0,
+        "bags_using_2_dryers": 0,
+        "two_washer_split_pct": None,
+        "two_dryer_split_pct": None,
+    }
     if not orders:
-        orders = _synthetic_orders(bag_count, bag_weights, avg_lbs, shift.batch_size)
+        wash_split_n = 0
+        dry_split_n = 0
+        if management_mode:
+            from backend.shift_capacity.split_loads import resolve_management_split_counts
+
+            wash_split_n, dry_split_n = resolve_management_split_counts(raw, bag_count)
+            split_meta = {
+                "bags_using_2_washers": wash_split_n,
+                "bags_using_2_dryers": dry_split_n,
+                "two_washer_split_pct": (
+                    raw.get("two_washer_split_pct")
+                    if raw.get("two_washer_split_pct") is not None
+                    else raw.get("orders_using_2_washers_pct")
+                ),
+                "two_dryer_split_pct": (
+                    raw.get("two_dryer_split_pct")
+                    if raw.get("two_dryer_split_pct") is not None
+                    else raw.get("orders_using_2_dryers_pct")
+                ),
+            }
+        orders = _synthetic_orders(
+            bag_count,
+            bag_weights,
+            avg_lbs,
+            shift.batch_size,
+            two_washer_count=wash_split_n,
+            two_dryer_count=dry_split_n,
+        )
 
     overrides = _parse_overrides(raw.get("batch_overrides") or [])
     if management_mode:
@@ -311,7 +352,7 @@ def parse_inputs(data: dict[str, Any] | None) -> SimulationInputs:
         finish_in_progress_at_exit=finish,
         management_mode=management_mode,
         staffing_plan_data=staffing_plan_data,
-        raw=raw,
+        raw={**raw, "_management_split": split_meta},
     )
     if staffing_errors:
         # Stash for validate_inputs / early rejection in scheduler
@@ -328,6 +369,8 @@ def parse_inputs(data: dict[str, Any] | None) -> SimulationInputs:
 
 def validate_inputs(inp: SimulationInputs) -> ValidationResult:
     errors: list[ValidationError] = []
+    if inp.shift.avg_lbs_per_bag <= 0:
+        errors.append(ValidationError("AVG_LBS_INVALID", "avg_lbs_per_bag must be > 0"))
     if inp.shift.washer_capacity_lb <= 0 or inp.shift.dryer_capacity_lb <= 0:
         errors.append(ValidationError("CAPACITY_INVALID", "Machine capacities must be positive"))
     if inp.shift.batch_size < 1:
@@ -613,6 +656,12 @@ def _parse_orders(rows: list[Any]) -> list[Order]:
         for bag_row in row.get("bags") or []:
             if not isinstance(bag_row, dict):
                 continue
+            bag_two_wash = bag_row.get("two_washer")
+            if bag_two_wash is None:
+                bag_two_wash = bag_row.get("requires_two_washers")
+            bag_two_dry = bag_row.get("two_dryer")
+            if bag_two_dry is None:
+                bag_two_dry = bag_row.get("requires_two_dryers")
             bag_rows.append(
                 OrderBagInput(
                     bag_id=str(bag_row["bag_id"]) if bag_row.get("bag_id") else None,
@@ -620,6 +669,8 @@ def _parse_orders(rows: list[Any]) -> list[Order]:
                     priority=int(bag_row.get("priority") or row.get("priority") or 100),
                     rush=bool(bag_row.get("rush", row.get("rush"))),
                     manual_batch_lock=_maybe_int(bag_row.get("manual_batch_lock")),
+                    requires_two_washers=None if bag_two_wash is None else bool(bag_two_wash),
+                    requires_two_dryers=None if bag_two_dry is None else bool(bag_two_dry),
                 )
             )
         orders.append(
@@ -644,11 +695,23 @@ def _parse_orders(rows: list[Any]) -> list[Order]:
     return orders
 
 
-def _synthetic_orders(bag_count: int, bag_weights: list[float], avg_lbs: float, batch_size: int) -> list[Order]:
+def _synthetic_orders(
+    bag_count: int,
+    bag_weights: list[float],
+    avg_lbs: float,
+    batch_size: int,
+    *,
+    two_washer_count: int = 0,
+    two_dryer_count: int = 0,
+) -> list[Order]:
+    from backend.shift_capacity.split_loads import deterministic_two_machine_flags
+
     weights = list(bag_weights)
     while len(weights) < bag_count:
         weights.append(avg_lbs)
     weights = weights[:bag_count]
+    wash_flags = deterministic_two_machine_flags(bag_count, two_washer_count)
+    dry_flags = deterministic_two_machine_flags(bag_count, two_dryer_count)
     orders: list[Order] = []
     remaining = bag_count
     cursor = 0
@@ -656,11 +719,21 @@ def _synthetic_orders(bag_count: int, bag_weights: list[float], avg_lbs: float, 
     while remaining > 0:
         n = min(batch_size, remaining)
         chunk = weights[cursor : cursor + n]
+        bag_specs = [
+            OrderBagInput(
+                bag_id=f"ORD-{order_idx}-{i + 1}",
+                weight_lb=float(chunk[i]),
+                requires_two_washers=wash_flags[cursor + i],
+                requires_two_dryers=dry_flags[cursor + i],
+            )
+            for i in range(n)
+        ]
         orders.append(
             Order(
                 order_id=f"ORD-{order_idx}",
                 bag_count=n,
                 bag_weights=chunk,
+                bags=bag_specs,
                 total_weight_lb=sum(chunk),
             )
         )

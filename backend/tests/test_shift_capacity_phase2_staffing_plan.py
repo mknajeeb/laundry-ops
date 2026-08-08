@@ -18,6 +18,8 @@ def _plan(intervals, **overrides):
         "target_time": "12:00 PM",
         "planning_block_size_min": 60,
         "bag_count": 4,
+        "two_washer_split_pct": 0,
+        "two_dryer_split_pct": 0,
         "batch_size": 2,
         "washer_count": 2,
         "dryer_count": 2,
@@ -538,3 +540,109 @@ def test_staffing_not_extrapolated_after_authored_end():
             assert parse_clock_seconds(win["end"]) <= parse_clock_seconds("10:00 AM")
     if result["management_outcome"]["completion_status"] == "stalled":
         assert result["summary"]["final_completion_time"] is None
+
+
+def test_machines_without_wash_staff_yield_zero_wash_starts():
+    """4 washers + WASH staff 0 => washed_total 0; waiting_to_wash builds."""
+    intervals = [
+        {"role": "weigher", "people": 1, "start": "9:00 AM", "end": "12:00 PM"},
+        {"role": "sorter", "people": 1, "start": "9:00 AM", "end": "12:00 PM"},
+        {"role": "dryer", "people": 1, "start": "9:00 AM", "end": "12:00 PM"},
+        {"role": "folder", "people": 1, "start": "9:00 AM", "end": "12:00 PM"},
+    ]
+    result = run_shift_capacity(
+        _plan(intervals, bag_count=4, batch_size=2, washer_count=4, dryer_count=4)
+    )
+    last = result["block_positions"][-1]
+    assert last["washed_total"] == 0
+    assert last["waiting_to_wash"] == 4
+    assert all(row["wash_start"] is None for row in result["bag_rows"])
+
+
+def test_wash_staff_added_later_allows_wash_only_after_window():
+    intervals = [
+        {"role": "weigher", "people": 1, "start": "9:00 AM", "end": "12:00 PM"},
+        {"role": "sorter", "people": 1, "start": "9:00 AM", "end": "12:00 PM"},
+        {"role": "washer", "people": 1, "start": "10:00 AM", "end": "12:00 PM"},
+        {"role": "dryer", "people": 1, "start": "9:00 AM", "end": "12:00 PM"},
+        {"role": "folder", "people": 1, "start": "9:00 AM", "end": "12:00 PM"},
+    ]
+    result = run_shift_capacity(
+        _plan(intervals, bag_count=2, batch_size=2, washer_count=4, dryer_count=4)
+    )
+    wash_starts = [
+        parse_clock_seconds(row["wash_start"])
+        for row in result["bag_rows"]
+        if row.get("wash_start")
+    ]
+    assert wash_starts
+    assert all(t >= parse_clock_seconds("10:00 AM") for t in wash_starts)
+    # First block end (10:00): wash may still be zero or just starting; later blocks advance.
+    by_end = {b["block_end"]: b for b in result["block_positions"]}
+    assert by_end["12:00 PM"]["washed_total"] >= 1
+
+
+def test_dry_advances_then_fold_after_fold_staff_added():
+    """Dry DONE advances with Fold=0; waiting_to_fold builds; later Fold staff completes bags."""
+    target = 4
+    # Phase 1: no Fold staff
+    no_fold = [
+        {"role": "weigher", "people": 2, "start": "9:00 AM", "end": "3:00 PM"},
+        {"role": "sorter", "people": 2, "start": "9:00 AM", "end": "3:00 PM"},
+        {"role": "washer", "people": 2, "start": "9:00 AM", "end": "3:00 PM"},
+        {"role": "dryer", "people": 2, "start": "9:00 AM", "end": "3:00 PM"},
+    ]
+    stalled = run_shift_capacity(
+        _plan(
+            no_fold,
+            bag_count=target,
+            batch_size=2,
+            start_time="9:00 AM",
+            target_time="3:00 PM",
+            end_time="3:00 PM",
+            washer_count=4,
+            dryer_count=4,
+            wash_cycle_min=20,
+            dry_cycle_min=20,
+            sort_min_per_bag=2,
+            fold_min_per_bag=4,
+        )
+    )
+    last = stalled["block_positions"][-1]
+    assert last["washed_total"] >= 1
+    assert last["dried_total"] >= 1
+    assert last["waiting_to_fold"] >= 1
+    assert (last.get("folded_total") or last.get("completed_total") or 0) == 0
+    assert stalled["management_outcome"]["completion_status"] == "stalled"
+    assert stalled["summary"]["final_completion_time"] is None
+
+    # Phase 2: Fold staff from 11:00 onward
+    with_fold = no_fold + [
+        {"role": "folder", "people": 2, "start": "11:00 AM", "end": "3:00 PM"},
+    ]
+    finished = run_shift_capacity(
+        _plan(
+            with_fold,
+            bag_count=target,
+            batch_size=2,
+            start_time="9:00 AM",
+            target_time="3:00 PM",
+            end_time="3:00 PM",
+            washer_count=4,
+            dryer_count=4,
+            wash_cycle_min=20,
+            dry_cycle_min=20,
+            sort_min_per_bag=2,
+            fold_min_per_bag=4,
+        )
+    )
+    last2 = finished["block_positions"][-1]
+    folded = last2.get("folded_total") or last2.get("completed_total") or 0
+    assert last2["dried_total"] >= folded
+    assert folded >= 1
+    # Target reconciliation for display: remaining = target - folded
+    assert target - folded >= 0
+    # Fold cannot start before authored fold window.
+    for row in finished["bag_rows"]:
+        if row.get("fold_start"):
+            assert parse_clock_seconds(row["fold_start"]) >= parse_clock_seconds("11:00 AM")

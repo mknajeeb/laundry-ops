@@ -4,7 +4,12 @@
  * Does not recreate staffing normalization or DES logic.
  */
 
-import { MANAGEMENT_ROLES, ROLE_LABEL } from "./managementConstants";
+import {
+  MANAGEMENT_ROLES,
+  PERSISTED_PLANNER_PARAM_KEYS,
+  ROLE_LABEL,
+  SESSION_PLANNER_PARAM_KEYS,
+} from "./managementConstants";
 
 const ROLE_ALIAS = {
   weigh: "weigher",
@@ -188,6 +193,22 @@ export function setBasePeopleForBlock(intervals, roleId, blockStart, blockEnd, p
 }
 
 /**
+ * Copy one role's base people count from the first planning block into every later block.
+ * Does not touch other roles, additional/temp intervals, or the first block itself.
+ */
+export function fillRestBasePeopleForRole(intervals, roleId, planBlocks, people) {
+  const blocks = Array.isArray(planBlocks) ? planBlocks : [];
+  if (blocks.length < 2) return intervals || [];
+  const peopleN = Math.max(0, Math.floor(Number(people) || 0));
+  let next = intervals || [];
+  for (let i = 1; i < blocks.length; i += 1) {
+    const block = blocks[i];
+    next = setBasePeopleForBlock(next, roleId, block.block_start, block.block_end, peopleN);
+  }
+  return next;
+}
+
+/**
  * Client-side validation of authored intervals.
  * Horizon = start → target finish (mapped as endTime).
  */
@@ -266,6 +287,10 @@ export function buildManagementPayload(inputs) {
   // Horizon = start → target finish. Backend still accepts end_time; map it internally.
   const target = inputs.target_time;
 
+  const avgLbs = Number(inputs.avg_lbs_per_bag);
+  const washSplit = Number(inputs.two_washer_split_pct);
+  const drySplit = Number(inputs.two_dryer_split_pct);
+
   return {
     engine: "bag_des_v2",
     management_mode: true,
@@ -275,7 +300,9 @@ export function buildManagementPayload(inputs) {
     planning_block_size_min: Number(inputs.planning_block_size_min) || 60,
     summary_interval_min: Number(inputs.planning_block_size_min) || 60,
     bag_count: Number(inputs.bag_count) || 1,
-    avg_lbs_per_bag: Number(inputs.avg_lbs_per_bag) || 20,
+    avg_lbs_per_bag: Number.isFinite(avgLbs) && avgLbs > 0 ? avgLbs : 20,
+    two_washer_split_pct: Number.isFinite(washSplit) ? washSplit : 80,
+    two_dryer_split_pct: Number.isFinite(drySplit) ? drySplit : 80,
     washer_count: Number(inputs.washer_count) || 4,
     dryer_count: Number(inputs.dryer_count) || 4,
     batch_size: Number(inputs.batch_size) || 8,
@@ -290,6 +317,126 @@ export function buildManagementPayload(inputs) {
     staffing_plan: { intervals },
     _skip_recommendations: true,
   };
+}
+
+/** Pick org-persisted planner parameter keys from an inputs object. */
+export function pickPersistedPlannerParams(inputs = {}) {
+  const out = {};
+  for (const key of PERSISTED_PLANNER_PARAM_KEYS) {
+    if (inputs[key] !== undefined && inputs[key] !== null) out[key] = inputs[key];
+  }
+  return out;
+}
+
+/** Snapshot of locked strip fields (persisted + session-only). */
+export function pickEditablePlannerParamSnapshot(inputs = {}) {
+  const out = pickPersistedPlannerParams(inputs);
+  for (const key of SESSION_PLANNER_PARAM_KEYS) {
+    if (inputs[key] !== undefined && inputs[key] !== null) out[key] = inputs[key];
+  }
+  return out;
+}
+
+/** Merge saved persisted params into full inputs (staffing untouched). */
+export function applyPersistedPlannerParams(inputs, saved) {
+  return {
+    ...inputs,
+    ...pickPersistedPlannerParams(saved || {}),
+  };
+}
+
+/**
+ * Validate org-persisted planner params before Save.
+ * Does not mutate saved state; returns { ok, errors, normalized? }.
+ */
+export function validatePersistedPlannerParams(inputs) {
+  const errors = [];
+  const bag = Number(inputs.bag_count);
+  if (!Number.isFinite(bag) || bag < 1 || !Number.isInteger(bag)) {
+    errors.push({ message: "Target bags must be a whole number >= 1." });
+  }
+  const startSec = parseClockToSec(inputs.start_time);
+  const targetSec = parseClockToSec(inputs.target_time);
+  if (startSec == null) errors.push({ message: "Start time is invalid." });
+  if (targetSec == null) errors.push({ message: "Target finish is invalid." });
+  if (startSec != null && targetSec != null && targetSec <= startSec) {
+    errors.push({ message: "Target finish must be after start time." });
+  }
+  const block = Number(inputs.planning_block_size_min);
+  if (![30, 45, 60].includes(block)) {
+    errors.push({ message: "Block size must be 30, 45, or 60 minutes." });
+  }
+  for (const [key, label] of [
+    ["washer_count", "Washers"],
+    ["dryer_count", "Dryers"],
+  ]) {
+    const n = Number(inputs[key]);
+    if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
+      errors.push({ message: `${label} must be a whole number >= 1.` });
+    }
+  }
+  const weigh = Number(inputs.weigh_sec_per_bag);
+  if (!Number.isFinite(weigh) || weigh <= 0) {
+    errors.push({ message: "Weigh seconds must be greater than 0." });
+  }
+  for (const [key, label, minExclusive] of [
+    ["sort_min_per_bag", "Sort minutes", false],
+    ["load_washer_min", "Wash labor minutes", false],
+    ["wash_cycle_min", "Wash cycle minutes", true],
+    ["load_dryer_min", "Dry labor minutes", false],
+    ["dry_cycle_min", "Dry cycle minutes", true],
+    ["fold_min_per_bag", "Fold minutes", false],
+  ]) {
+    const n = Number(inputs[key]);
+    if (!Number.isFinite(n) || n < 0 || (minExclusive && n <= 0)) {
+      errors.push({
+        message: minExclusive
+          ? `${label} must be greater than 0.`
+          : `${label} must be >= 0.`,
+      });
+    }
+  }
+  if (errors.length) return { ok: false, errors };
+  return {
+    ok: true,
+    errors: [],
+    normalized: {
+      bag_count: bag,
+      start_time: String(inputs.start_time).trim(),
+      target_time: String(inputs.target_time).trim(),
+      planning_block_size_min: block,
+      washer_count: Number(inputs.washer_count),
+      dryer_count: Number(inputs.dryer_count),
+      weigh_sec_per_bag: weigh,
+      sort_min_per_bag: Number(inputs.sort_min_per_bag),
+      load_washer_min: Number(inputs.load_washer_min),
+      wash_cycle_min: Number(inputs.wash_cycle_min),
+      load_dryer_min: Number(inputs.load_dryer_min),
+      dry_cycle_min: Number(inputs.dry_cycle_min),
+      fold_min_per_bag: Number(inputs.fold_min_per_bag),
+    },
+  };
+}
+
+/** Client-side checks for Plan/Machine parameters (backend remains authoritative). */
+export function validateManagementPlanInputs(inputs) {
+  const errors = [];
+  const persisted = validatePersistedPlannerParams(inputs);
+  if (!persisted.ok) errors.push(...persisted.errors);
+  const avg = Number(inputs.avg_lbs_per_bag);
+  if (!Number.isFinite(avg) || avg <= 0) {
+    errors.push({ message: "Avg bag weight must be greater than 0." });
+  }
+  for (const [key, label] of [
+    ["two_washer_split_pct", "2-Washer Split"],
+    ["two_dryer_split_pct", "2-Dryer Split"],
+  ]) {
+    const pct = Number(inputs[key]);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      errors.push({ message: `${label} must be between 0 and 100.` });
+    }
+  }
+  return { ok: errors.length === 0, errors };
 }
 
 export function formatPeople(n) {

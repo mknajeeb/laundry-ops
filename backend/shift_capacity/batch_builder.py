@@ -45,6 +45,13 @@ def expand_bags(inp: SimulationInputs) -> list[Bag]:
         for i in range(n):
             spec = order.bags[i] if order.bags and i < len(order.bags) else None
             bag_id = (spec.bag_id if spec and spec.bag_id else None) or f"{order.order_id}-{i + 1}"
+            two_wash = order.requires_two_washers
+            two_dry = order.requires_two_dryers
+            if spec is not None:
+                if spec.requires_two_washers is not None:
+                    two_wash = bool(spec.requires_two_washers)
+                if spec.requires_two_dryers is not None:
+                    two_dry = bool(spec.requires_two_dryers)
             bags.append(
                 Bag(
                     bag_id=bag_id,
@@ -54,8 +61,8 @@ def expand_bags(inp: SimulationInputs) -> list[Bag]:
                     weight_source=sources[i],  # type: ignore[arg-type]
                     priority=spec.priority if spec else order.priority,
                     rush=bool(spec.rush if spec else order.rush),
-                    requires_two_washers=order.requires_two_washers,
-                    requires_two_dryers=order.requires_two_dryers,
+                    requires_two_washers=two_wash,
+                    requires_two_dryers=two_dry,
                     required_by=order.required_by_min,
                     manual_batch_lock=spec.manual_batch_lock if spec else None,
                 )

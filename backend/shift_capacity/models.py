@@ -99,6 +99,8 @@ class OrderBagInput:
     priority: int = 100
     rush: bool = False
     manual_batch_lock: int | None = None
+    requires_two_washers: bool | None = None
+    requires_two_dryers: bool | None = None
 
 
 @dataclass

@@ -36,6 +36,8 @@ def serialize_bag(bag: Bag, emp_names: dict[str, str]) -> dict[str, Any]:
         "sort_start": label_minutes(bag.sort_start),
         "sort_end": label_minutes(bag.sort_end),
         "available_to_wash": label_minutes(bag.available_to_wash or bag.sort_end),
+        "requires_two_washers": bool(bag.requires_two_washers),
+        "requires_two_dryers": bool(bag.requires_two_dryers),
         "washer": bag.washer_id,
         "washer_id": bag.washer_id,
         "washer_load_start": label_minutes(bag.washer_load_start),
@@ -307,6 +309,14 @@ def serialize_state(
             "target_time": label_minutes(state.inputs.shift.target_min),
             "bag_count": len(state.bags),
             "avg_lbs_per_bag": state.inputs.shift.avg_lbs_per_bag,
+            "bags_using_2_washers": sum(1 for b in state.bags if b.requires_two_washers),
+            "bags_using_2_dryers": sum(1 for b in state.bags if b.requires_two_dryers),
+            "two_washer_split_pct": (state.inputs.raw or {}).get("_management_split", {}).get(
+                "two_washer_split_pct"
+            ),
+            "two_dryer_split_pct": (state.inputs.raw or {}).get("_management_split", {}).get(
+                "two_dryer_split_pct"
+            ),
             "washer_count": state.inputs.shift.washer_count,
             "dryer_count": state.inputs.shift.dryer_count,
             "washer_capacity_lb": state.inputs.shift.washer_capacity_lb,

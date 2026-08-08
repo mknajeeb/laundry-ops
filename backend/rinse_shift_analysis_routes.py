@@ -2274,6 +2274,59 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/shift-capacity-planner/settings", methods=["GET"])
+    def rinse_shift_capacity_planner_settings_get():
+        from backend.shift_capacity_planner_settings import get_shift_capacity_planner_settings
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            return jsonify(
+                json_safe_rinse(get_shift_capacity_planner_settings(cursor, tenant_oid))
+            )
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/shift-capacity-planner/settings", methods=["PUT"])
+    def rinse_shift_capacity_planner_settings_put():
+        from backend.shift_capacity_planner_settings import save_shift_capacity_planner_settings
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            saved = save_shift_capacity_planner_settings(cursor, tenant_oid, body)
+            conn.commit()
+            return jsonify(json_safe_rinse(saved))
+        except ValueError as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/shift-analysis/shift-capacity-planner/simulate", methods=["GET", "POST"])
     def rinse_shift_capacity_planner_simulate():
         conn = get_db()
