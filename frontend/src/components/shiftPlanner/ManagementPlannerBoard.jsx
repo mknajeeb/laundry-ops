@@ -33,6 +33,7 @@ import {
 import {
   buildManagementPayload,
   buildPlanningBlocks,
+  buildPositionFlowDisplay,
   clockToHm,
   earlyMinutesBeforeTarget,
   formatManagementOutcome,
@@ -274,7 +275,7 @@ function CompactSummary({ inputs, outcome, loading, hasStaffing }) {
   );
 }
 
-function QueueBridge({ count, label }) {
+function QueueBridge({ count, stageLabel }) {
   const n = Number(count) || 0;
   return (
     <Box
@@ -289,27 +290,24 @@ function QueueBridge({ count, label }) {
         color: n > 0 ? VEEWASH_DASHBOARD.pendingDark : "text.disabled",
       }}
     >
-      <Typography sx={{ fontSize: "0.7rem", fontWeight: 700, lineHeight: 1.2, textAlign: "center" }}>
-        → {n} waiting →
+      <Typography sx={{ fontSize: "0.68rem", fontWeight: 800, lineHeight: 1.2, textAlign: "center", letterSpacing: 0.2 }}>
+        → {n} WAITING
       </Typography>
-      {label ? (
-        <Typography sx={{ fontSize: "0.65rem", color: "text.disabled", display: { xs: "none", lg: "block" } }}>
-          {label}
-        </Typography>
-      ) : null}
+      <Typography sx={{ fontSize: "0.65rem", fontWeight: 700, lineHeight: 1.15, textAlign: "center" }}>
+        TO {stageLabel} →
+      </Typography>
     </Box>
   );
 }
 
-function StageCell({ title, thisBlock, total, foldTarget = null, highlight = false }) {
-  const tb = Number(thisBlock) || 0;
-  const tot = Number(total) || 0;
+function StageCell({ display, highlight = false }) {
+  if (!display) return null;
   return (
     <Box
       sx={{
-        minWidth: { xs: "100%", md: 88 },
+        minWidth: { xs: "100%", md: 96 },
         flex: { md: "1 1 0" },
-        px: 0.75,
+        px: 0.5,
         py: 0.5,
         borderRadius: 1,
         bgcolor: highlight ? "#fff7ed" : "transparent",
@@ -322,34 +320,61 @@ function StageCell({ title, thisBlock, total, foldTarget = null, highlight = fal
           fontSize: "0.68rem",
           letterSpacing: 0.5,
           color: "text.secondary",
-          mb: 0.15,
+          mb: 0.35,
         }}
       >
-        {title}
+        {display.title}
       </Typography>
-      <Typography sx={{ fontWeight: 800, fontSize: "1.05rem", lineHeight: 1.15 }}>
-        {tb}
-      </Typography>
-      <Typography sx={{ fontSize: "0.68rem", color: "text.secondary", lineHeight: 1.2 }}>
-        this block
-      </Typography>
-      <Typography sx={{ fontWeight: 700, fontSize: "0.82rem", mt: 0.2, lineHeight: 1.2 }}>
-        {foldTarget != null ? `${tot} / ${foldTarget} complete` : `${tot} total`}
+      <Stack direction="row" justifyContent="center" spacing={1.25} sx={{ mb: 0.2 }}>
+        <Box sx={{ minWidth: 36 }}>
+          <Typography sx={{ fontWeight: 800, fontSize: "1.15rem", lineHeight: 1.05 }}>
+            {display.done}
+          </Typography>
+          <Typography
+            sx={{
+              fontWeight: 800,
+              fontSize: "0.58rem",
+              letterSpacing: 0.4,
+              color: "text.secondary",
+              lineHeight: 1.1,
+            }}
+          >
+            {display.doneLabel}
+          </Typography>
+        </Box>
+        <Box sx={{ minWidth: 36 }}>
+          <Typography sx={{ fontWeight: 800, fontSize: "1.15rem", lineHeight: 1.05 }}>
+            {display.remaining}
+          </Typography>
+          <Typography
+            sx={{
+              fontWeight: 800,
+              fontSize: "0.58rem",
+              letterSpacing: 0.4,
+              color: "text.secondary",
+              lineHeight: 1.1,
+            }}
+          >
+            {display.remainingLabel}
+          </Typography>
+        </Box>
+      </Stack>
+      <Typography sx={{ fontSize: "0.68rem", color: "text.disabled", lineHeight: 1.2, fontWeight: 600 }}>
+        {display.thisBlockLabel}
       </Typography>
     </Box>
   );
 }
 
 function PositionFlow({ block, targetBags, stallRole }) {
-  if (!block) {
+  const flow = buildPositionFlowDisplay(block, targetBags);
+  if (!flow) {
     return (
       <Typography sx={{ fontSize: "0.85rem", color: "text.disabled", py: 0.5 }}>
         No flow yet for this block.
       </Typography>
     );
   }
-  const foldTotal = Number(block.folded_total ?? block.completed_total) || 0;
-  const foldBlock = Number(block.folded_this_block ?? block.completed_this_block) || 0;
   const washStall = stallRole === "washer";
 
   return (
@@ -362,25 +387,15 @@ function PositionFlow({ block, targetBags, stallRole }) {
         overflow: "hidden",
       }}
     >
-      <StageCell title="WEIGH" thisBlock={block.weighed_this_block} total={block.weighed_total} />
-      <QueueBridge count={block.waiting_to_sort} label="to sort" />
-      <StageCell title="SORT" thisBlock={block.sorted_this_block} total={block.sorted_total} />
-      <QueueBridge count={block.waiting_to_wash} label="to wash" />
-      <StageCell
-        title="WASH"
-        thisBlock={block.washed_this_block}
-        total={block.washed_total}
-        highlight={washStall}
-      />
-      <QueueBridge count={block.waiting_to_dry} label="to dry" />
-      <StageCell title="DRY" thisBlock={block.dried_this_block} total={block.dried_total} />
-      <QueueBridge count={block.waiting_to_fold} label="to fold" />
-      <StageCell
-        title="FOLD"
-        thisBlock={foldBlock}
-        total={foldTotal}
-        foldTarget={targetBags}
-      />
+      <StageCell display={flow.stages.weigh} />
+      <QueueBridge count={flow.waiting.to_sort} stageLabel="SORT" />
+      <StageCell display={flow.stages.sort} />
+      <QueueBridge count={flow.waiting.to_wash} stageLabel="WASH" />
+      <StageCell display={flow.stages.wash} highlight={washStall} />
+      <QueueBridge count={flow.waiting.to_dry} stageLabel="DRY" />
+      <StageCell display={flow.stages.dry} />
+      <QueueBridge count={flow.waiting.to_fold} stageLabel="FOLD" />
+      <StageCell display={flow.stages.fold} />
     </Box>
   );
 }

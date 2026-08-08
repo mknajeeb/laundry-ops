@@ -331,6 +331,94 @@ export function formatStageProgress(label, total, thisBlock) {
   return `${label} ${t}`;
 }
 
+/**
+ * End-of-slot remaining for a stage: bags not yet DONE with that stage.
+ * Display-only; not the same as between-stage WAITING queues.
+ */
+export function stageRemaining(targetBags, stageTotal) {
+  const target = Math.max(0, Number(targetBags) || 0);
+  const done = Math.max(0, Number(stageTotal) || 0);
+  return Math.max(0, target - done);
+}
+
+/**
+ * Compact end-of-block stage position for management POSITION nodes.
+ * Done uses backend completed-stage totals; remaining = target - done.
+ */
+export function buildStagePositionDisplay({
+  title,
+  thisBlock,
+  stageTotal,
+  targetBags,
+  completeLabel = false,
+} = {}) {
+  const done = Math.max(0, Number(stageTotal) || 0);
+  const remaining = stageRemaining(targetBags, done);
+  const block = Math.max(0, Number(thisBlock) || 0);
+  const target = Math.max(0, Number(targetBags) || 0);
+  return {
+    title: title || "",
+    thisBlock: block,
+    done,
+    remaining,
+    target,
+    doneLabel: completeLabel ? "COMPLETE" : "DONE",
+    remainingLabel: "REMAINING",
+    thisBlockLabel: block > 0 ? `+${block} this block` : "0 this block",
+  };
+}
+
+/**
+ * Map a block_positions row to stage display models.
+ * Waiting queues are returned separately and must not be conflated with remaining.
+ */
+export function buildPositionFlowDisplay(block, targetBags) {
+  if (!block) return null;
+  const foldTotal = Number(block.folded_total ?? block.completed_total) || 0;
+  const foldBlock = Number(block.folded_this_block ?? block.completed_this_block) || 0;
+  return {
+    stages: {
+      weigh: buildStagePositionDisplay({
+        title: "WEIGH",
+        thisBlock: block.weighed_this_block,
+        stageTotal: block.weighed_total,
+        targetBags,
+      }),
+      sort: buildStagePositionDisplay({
+        title: "SORT",
+        thisBlock: block.sorted_this_block,
+        stageTotal: block.sorted_total,
+        targetBags,
+      }),
+      wash: buildStagePositionDisplay({
+        title: "WASH",
+        thisBlock: block.washed_this_block,
+        stageTotal: block.washed_total,
+        targetBags,
+      }),
+      dry: buildStagePositionDisplay({
+        title: "DRY",
+        thisBlock: block.dried_this_block,
+        stageTotal: block.dried_total,
+        targetBags,
+      }),
+      fold: buildStagePositionDisplay({
+        title: "FOLD",
+        thisBlock: foldBlock,
+        stageTotal: foldTotal,
+        targetBags,
+        completeLabel: true,
+      }),
+    },
+    waiting: {
+      to_sort: Math.max(0, Number(block.waiting_to_sort) || 0),
+      to_wash: Math.max(0, Number(block.waiting_to_wash) || 0),
+      to_dry: Math.max(0, Number(block.waiting_to_dry) || 0),
+      to_fold: Math.max(0, Number(block.waiting_to_fold) || 0),
+    },
+  };
+}
+
 export function roleDisplayName(role) {
   const id = normalizeRole(role) || role;
   return ROLE_LABEL[id] || String(role || "").replace(/^\w/, (c) => c.toUpperCase());

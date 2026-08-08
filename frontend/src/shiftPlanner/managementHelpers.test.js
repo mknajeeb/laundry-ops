@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   buildManagementPayload,
   buildPlanningBlocks,
+  buildPositionFlowDisplay,
+  buildStagePositionDisplay,
   formatBlockStaffingLine,
   formatManagementOutcome,
   getBasePeopleForBlock,
   intervalsOverlap,
   parseClockToSec,
   setBasePeopleForBlock,
+  stageRemaining,
   validateStaffingIntervals,
 } from "./managementHelpers";
 import { DEFAULT_MANAGEMENT_INPUTS } from "./managementConstants";
@@ -154,5 +157,75 @@ describe("managementHelpers", () => {
     expect(getBasePeopleForBlock(next, "sorter", "9:00 AM")).toBe(1);
     expect(getBasePeopleForBlock(next, "sorter", "10:00 AM")).toBe(2);
     expect(getBasePeopleForBlock(next, "sorter", "11:00 AM")).toBe(1);
+  });
+
+  it("stage remaining is target minus stage done and never negative", () => {
+    expect(stageRemaining(50, 32)).toBe(18);
+    expect(stageRemaining(50, 50)).toBe(0);
+    expect(stageRemaining(50, 60)).toBe(0);
+    expect(stageRemaining(50, null)).toBe(50);
+  });
+
+  it("buildStagePositionDisplay prioritizes done/remaining and Fold COMPLETE label", () => {
+    const sort = buildStagePositionDisplay({
+      title: "SORT",
+      thisBlock: 12,
+      stageTotal: 32,
+      targetBags: 50,
+    });
+    expect(sort.done).toBe(32);
+    expect(sort.remaining).toBe(18);
+    expect(sort.done + sort.remaining).toBe(50);
+    expect(sort.doneLabel).toBe("DONE");
+    expect(sort.thisBlockLabel).toBe("+12 this block");
+
+    const fold = buildStagePositionDisplay({
+      title: "FOLD",
+      thisBlock: 10,
+      stageTotal: 16,
+      targetBags: 50,
+      completeLabel: true,
+    });
+    expect(fold.done).toBe(16);
+    expect(fold.remaining).toBe(34);
+    expect(fold.doneLabel).toBe("COMPLETE");
+  });
+
+  it("buildPositionFlowDisplay keeps waiting separate from remaining and uses wash/dry totals", () => {
+    const flow = buildPositionFlowDisplay(
+      {
+        weighed_this_block: 18,
+        weighed_total: 34,
+        sorted_this_block: 15,
+        sorted_total: 31,
+        washed_this_block: 14,
+        washed_total: 20,
+        dried_this_block: 12,
+        dried_total: 17,
+        folded_this_block: 10,
+        folded_total: 16,
+        waiting_to_sort: 3,
+        waiting_to_wash: 11,
+        waiting_to_dry: 4,
+        waiting_to_fold: 7,
+      },
+      50,
+    );
+    expect(flow.stages.weigh).toMatchObject({ done: 34, remaining: 16, thisBlock: 18 });
+    expect(flow.stages.sort).toMatchObject({ done: 31, remaining: 19, thisBlock: 15 });
+    expect(flow.stages.wash).toMatchObject({ done: 20, remaining: 30, thisBlock: 14, doneLabel: "DONE" });
+    expect(flow.stages.dry).toMatchObject({ done: 17, remaining: 33, thisBlock: 12, doneLabel: "DONE" });
+    expect(flow.stages.fold).toMatchObject({
+      done: 16,
+      remaining: 34,
+      thisBlock: 10,
+      doneLabel: "COMPLETE",
+    });
+    expect(flow.waiting.to_wash).toBe(11);
+    expect(flow.stages.sort.remaining).toBe(19);
+    expect(flow.waiting.to_wash).not.toBe(flow.stages.sort.remaining);
+    for (const stage of Object.values(flow.stages)) {
+      expect(stage.done + stage.remaining).toBe(50);
+    }
   });
 });
