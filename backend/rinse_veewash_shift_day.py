@@ -2925,6 +2925,9 @@ def reproject_day_bag_completions_from_chronology(
     This path:
       - freezes membership to already-persisted day-bag IDs (no admit/remove)
       - rebuilds workload outcomes from scan chronology
+      - compares frozen IDs to full rebuilt membership (``new_today`` ∪
+        ``carryover`` / ``opening_carryover``) so CP2B Opening Carryover is not
+        a false divergence
       - persists via ``persist_day_snapshot`` (same projection function as Stage-B)
 
     Does not change carryover / opening-scrape / evidence-gate policy.
@@ -2975,10 +2978,16 @@ def reproject_day_bag_completions_from_chronology(
         selected_date_et=shift_date_et,
         frozen_member_ids=frozen,
     )
+    # Full rebuilt membership = new_today ∪ carryover (CP2B Opening Carryover
+    # lives outside new_today). Dedupe by bag ID before comparing to frozen.
     member_ids = sorted(
         {
             normalize_bag_id(b)
-            for b in (wl.get("new_today") or [])
+            for b in (
+                list(wl.get("new_today") or [])
+                + list(wl.get("carryover") or [])
+                + list(wl.get("opening_carryover") or [])
+            )
             if normalize_bag_id(b)
         }
     )
