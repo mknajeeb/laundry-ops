@@ -618,3 +618,105 @@ def test_attach_reconcile_allows_provisional_but_not_confirmed_or_manual():
         dry_run=True,
     )
     assert result2["updated_count"] == 0
+
+
+def test_pre_fallback_without_configured_rack_entry_single_weight():
+    """Anchor exists, ENTRY_NOT_FOUND — still project factual PRE for display."""
+    day = date(2026, 8, 8)
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 8, 14, 22), eid=1, rack=None),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 8, 15, 7),
+            eid=2,
+            lbs=22.8,
+            user="Sarah Kamran",
+            weight_role="PRE",
+        ),
+    ]
+    selected = select_current_cycle_weight_events(events, selected_date_et=day)
+    assert selected["entry_at"] is None
+    assert selected["cycle"].entry_at is None
+    assert selected["pre_event"]["id"] == 2
+    assert selected["post_event"] is None
+
+    resolved = resolve_current_cycle_weights(events, selected_date_et=day)
+    assert resolved.entry_at is None
+    assert resolved.pre_weight_lbs == 22.8
+    assert resolved.pre_weight_event_id == 2
+    assert resolved.pre_weight_event_at == datetime(2026, 8, 8, 15, 7)
+    assert resolved.post_weight_lbs is None
+    assert resolved.post_weight_event_id is None
+    assert resolved.weight_entry_count == 1
+
+
+def test_pre_fallback_prefers_weight_role_pre_not_later_same_lbs():
+    """4QKX443PML shape: PRE role at 3:07; later same-lbs weight is not PRE."""
+    day = date(2026, 8, 8)
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 8, 14, 22), eid=1943716, rack=None),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 8, 15, 7),
+            eid=1943714,
+            lbs=22.8,
+            user="Sarah Kamran",
+            weight_role="PRE",
+        ),
+        _ev("garments-reviewed", datetime(2026, 8, 8, 16, 36), eid=1944079),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 8, 16, 38),
+            eid=1944075,
+            lbs=22.8,
+            user="Maria (Veewash)",
+        ),
+    ]
+    selected = select_current_cycle_weight_events(events, selected_date_et=day)
+    assert selected["entry_at"] is None
+    assert selected["cycle"].entry_at is None
+    # Live bag reports ENTRY_NOT_FOUND; keep entry unresolved either way.
+    assert selected["cycle"].pending_reason in (None, "ENTRY_NOT_FOUND")
+    assert selected["pre_event"]["id"] == 1943714
+    # Fallback must not invent POST / completion evidence.
+    assert selected["post_event"] is None
+    assert selected["garments_reviewed_at"] is None
+
+    resolved = resolve_current_cycle_weights(events, selected_date_et=day)
+    assert resolved.entry_at is None
+    assert resolved.pre_weight_lbs == 22.8
+    assert resolved.pre_weight_event_id == 1943714
+    assert resolved.pre_weight_event_at == datetime(2026, 8, 8, 15, 7)
+    assert resolved.post_weight_event_id is None
+    assert resolved.post_weight_lbs is None
+
+
+def test_pre_fallback_ignores_lifetime_weights_before_anchor():
+    day = date(2026, 8, 8)
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 7, 1, 8, 0), eid=1, rack="VeeWash Dirty"),
+        _ev("weight-entry", datetime(2026, 7, 1, 9, 0), eid=2, lbs=99.0, weight_role="PRE"),
+        _ev("sent-to-vendor", datetime(2026, 8, 8, 14, 22), eid=3, rack=None),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 8, 15, 7),
+            eid=4,
+            lbs=22.8,
+            weight_role="PRE",
+        ),
+    ]
+    selected = select_current_cycle_weight_events(events, selected_date_et=day)
+    assert selected["entry_at"] is None
+    assert selected["pre_event"]["id"] == 4
+    resolved = resolve_current_cycle_weights(events, selected_date_et=day)
+    assert resolved.pre_weight_lbs == 22.8
+    assert resolved.pre_weight_lbs != 99.0
+
+
+def test_pre_fallback_does_not_override_when_entry_exists():
+    """Configured-rack entry path unchanged — latest pre-review still wins."""
+    events = _cycle_base(old_weights=False)
+    selected = select_current_cycle_weight_events(events, selected_date_et=DAY)
+    assert selected["entry_at"] is not None
+    assert selected["pre_event"]["id"] == 12
+    assert selected["post_event"]["id"] == 14

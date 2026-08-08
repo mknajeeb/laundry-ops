@@ -14,6 +14,15 @@ garments_reviewed_at= first garments-reviewed after entry_at
 PRE event  = latest weight-entry with entry_at <= ts < garments_reviewed_at
 POST event = earliest weight-entry with ts > garments_reviewed_at
 
+When ``entry_at`` is missing but ``cycle_anchor`` exists, a narrow **display**
+fallback may still select factual PRE evidence from:
+
+  cycle_anchor_at <= weight_event < cycle_end
+
+This does not synthesize entry, clear ENTRY_NOT_FOUND, select POST, or change
+completion / review / garments-reviewed logic. Prefer ``weight_role=PRE``;
+otherwise the earliest in-window weight-entry.
+
 Role comes from event ordering relative to review.
 Numeric pounds come from portal / presence observations (or audited manual
 correction). POST may start provisional and later correct when a later eligible
@@ -312,6 +321,35 @@ def select_current_cycle_weight_events(
                     pre_cands.append(ev)
             if pre_cands:
                 pre_event = pre_cands[-1]
+        elif entry_at is None and anchor is not None:
+            # Factual PRE display fallback only. Entry stays unresolved;
+            # POST is never selected on this path.
+            pre_cands: list[Mapping[str, Any]] = []
+            for ev in timeline:
+                if not _is_weight_entry(ev):
+                    continue
+                ts = _event_ts(ev)
+                if ts is None:
+                    continue
+                if as_of_end is not None and ts > as_of_end:
+                    continue
+                # Approved window: cycle_anchor_at <= ts < cycle_end
+                if ts < anchor:
+                    continue
+                if next_send is not None and ts >= next_send:
+                    continue
+                pre_cands.append(ev)
+            pre_cands.sort(
+                key=lambda e: (_event_ts(e) or datetime.min, e.get("id") or 0)
+            )
+            if pre_cands:
+                role_pre = [
+                    ev
+                    for ev in pre_cands
+                    if str(ev.get("weight_role") or "").strip().upper() == "PRE"
+                ]
+                pre_event = role_pre[-1] if role_pre else pre_cands[0]
+            # Explicit: do not assign post_event without entry_at.
 
     return {
         "cycle": cycle,
