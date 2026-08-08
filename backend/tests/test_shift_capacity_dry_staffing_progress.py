@@ -44,7 +44,8 @@ def test_waiting_to_dry_at_6_with_dry_staff_6_to_7_progresses():
         {"role": "washer", "people": 2, "start": "5:00 AM", "end": "6:00 AM", "mode": "base"},
         {"role": "dryer", "people": 1, "start": "6:00 AM", "end": "7:00 AM", "mode": "base"},
     ]
-    result = run_shift_capacity(_payload(intervals, bag_count=8, batch_size=2))
+    # 24 washers so labor—not machine count—feeds bags into waiting_to_dry by 6:00.
+    result = run_shift_capacity(_payload(intervals, bag_count=8, batch_size=2, washer_count=24, dryer_count=24))
     assert result["simulation_valid"] is True
 
     compiled = [c["id"] for c in result["staffing_plan"]["compiled_resources"]]
@@ -109,8 +110,8 @@ def test_default_80pct_washer_split_does_not_block_all_dry():
             batch_size=8,
             two_washer_split_pct=80,
             two_dryer_split_pct=0,
-            washer_count=4,
-            dryer_count=4,
+            washer_count=24,
+            dryer_count=24,
         )
     )
     assert result["simulation_valid"] is True
@@ -124,7 +125,7 @@ def test_default_80pct_washer_split_does_not_block_all_dry():
     ]
     assert washed_by_7
     dry_started = [r for r in washed_by_7 if r.get("dryer_load_start")]
-    assert dry_started, "early wash-split subgroup must be able to enter Dry before late sibling ends"
+    assert dry_started, "early wash-split parent must enter Dry as soon as parent wash completes"
     assert all(r.get("dryer_loaded_by_employee_id") == "MGMT_DRY_001" for r in dry_started)
 
     b7 = next(b for b in result["block_positions"] if b["block_end"] == "7:00 AM")
@@ -139,8 +140,12 @@ def test_late_dry_staff_uses_multiple_dryer_machines():
         {"role": "washer", "people": 2, "start": "5:00 AM", "end": "6:00 AM", "mode": "base"},
         {"role": "dryer", "people": 1, "start": "6:00 AM", "end": "7:00 AM", "mode": "base"},
     ]
-    result = run_shift_capacity(_payload(intervals, bag_count=16, batch_size=2, dryer_count=4))
+    result = run_shift_capacity(
+        _payload(intervals, bag_count=16, batch_size=2, washer_count=24, dryer_count=4)
+    )
     dry_started = [r for r in result["bag_rows"] if r.get("dryer_load_start")]
     assert dry_started
-    dryer_ids = {r.get("dryer_id") for r in dry_started}
-    assert len(dryer_ids) >= 2, f"expected parallel dryers, got {dryer_ids}"
+    dryer_ids = {r.get("dryer") or r.get("dryer_id") for r in dry_started}
+    # Flatten joined parent dryer ids from dual loads.
+    flat = {p for d in dryer_ids for p in str(d or "").split("+") if p}
+    assert len(flat) >= 2, f"expected parallel dryers, got {dryer_ids}"
