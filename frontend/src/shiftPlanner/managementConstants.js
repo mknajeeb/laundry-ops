@@ -16,16 +16,27 @@ export const BLOCK_SIZE_OPTIONS = [
   { value: 60, label: "60 min" },
 ];
 
+/** Engine management defaults — exposed as Process Parameters in the UI. */
+export const DEFAULT_PROCESS_PARAMS = {
+  weigh_sec_per_bag: 45,
+  sort_min_per_bag: 5,
+  load_washer_min: 3,
+  wash_cycle_min: 30,
+  load_dryer_min: 3,
+  dry_cycle_min: 45,
+  fold_min_per_bag: 6,
+};
+
 export const DEFAULT_MANAGEMENT_INPUTS = {
   bag_count: 50,
   start_time: "9:00 AM",
   target_time: "3:00 PM",
-  end_time: "5:00 PM",
   planning_block_size_min: 60,
   washer_count: 4,
   dryer_count: 4,
   batch_size: 8,
   avg_lbs_per_bag: 20,
+  ...DEFAULT_PROCESS_PARAMS,
   // Authored intervals only — empty by default (no auto staff).
   staffing_intervals: [],
 };
@@ -64,7 +75,6 @@ export const MANAGEMENT_REVIEW_SCENARIOS = {
     ...DEFAULT_MANAGEMENT_INPUTS,
     bag_count: 20,
     target_time: "3:00 PM",
-    end_time: "5:00 PM",
     staffing_intervals: [
       si("weigher", 1, "9:00 AM", "3:00 PM"),
       si("sorter", 2, "9:00 AM", "3:00 PM"),
@@ -77,7 +87,6 @@ export const MANAGEMENT_REVIEW_SCENARIOS = {
     ...DEFAULT_MANAGEMENT_INPUTS,
     bag_count: 20,
     target_time: "12:00 PM",
-    end_time: "3:00 PM",
     planning_block_size_min: 60,
     staffing_intervals: [
       si("weigher", 1, "9:00 AM", "12:00 PM"),
@@ -92,7 +101,6 @@ export const MANAGEMENT_REVIEW_SCENARIOS = {
     ...DEFAULT_MANAGEMENT_INPUTS,
     bag_count: 20,
     target_time: "12:00 PM",
-    end_time: "3:00 PM",
     staffing_intervals: [
       si("weigher", 1, "9:00 AM", "12:00 PM"),
       si("sorter", 1, "9:00 AM", "12:00 PM"),
@@ -105,7 +113,6 @@ export const MANAGEMENT_REVIEW_SCENARIOS = {
     bag_count: 24,
     start_time: "9:00 AM",
     target_time: "10:00 AM",
-    end_time: "5:00 PM",
     staffing_intervals: [
       si("weigher", 1, "9:00 AM", "3:00 PM"),
       si("sorter", 1, "9:00 AM", "3:00 PM"),

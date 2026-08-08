@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link as RouterLink } from "react-router-dom";
+import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -40,10 +40,15 @@ import {
   upsertBatchOverride,
 } from "../shiftPlanner/plannerHelpers";
 
+/**
+ * Production senior-management planner = Management experience only.
+ * Advanced DES planner remains available via ?advanced=1 (no UI toggle).
+ */
 export default function ShiftCapacityPlannerPage() {
   const { t } = useI18n();
-  // Management is the default view; Advanced keeps the existing DES planner unchanged.
-  const [plannerView, setPlannerView] = useState("management");
+  const [searchParams] = useSearchParams();
+  const showAdvanced = searchParams.get("advanced") === "1";
+
   const [inputs, setInputs] = useState(DEFAULT_INPUTS);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -85,9 +90,9 @@ export default function ShiftCapacityPlannerPage() {
   }, [inputs]);
 
   useEffect(() => {
-    if (plannerView !== "advanced") return;
+    if (!showAdvanced) return;
     runSim();
-  }, [plannerView]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [showAdvanced]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const applyInputsAndRerun = async (nextInputs) => {
     setUndoStack((stack) => [
@@ -180,43 +185,27 @@ export default function ShiftCapacityPlannerPage() {
           <Box>
             <Typography variant="h6" fontWeight={800}>{t("nav.shiftCapacityPlanner")}</Typography>
             <Typography variant="caption" sx={{ opacity: 0.9 }}>
-              {plannerView === "management"
-                ? "If I staff the shift like this, what happens?"
-                : "Advanced — bag-level DES, batch overrides, named employees"}
+              {showAdvanced
+                ? "Advanced DES planner (internal)"
+                : "Staff the shift and see what happens"}
             </Typography>
           </Box>
         </Stack>
       </Box>
 
-      <Box sx={{ px: { xs: 1.5, md: 2.5 }, pt: 1.5, maxWidth: plannerView === "management" ? 1100 : 1600, mx: "auto" }}>
+      <Box sx={{ px: { xs: 1.5, md: 2.5 }, pt: 1.5, maxWidth: showAdvanced ? 1600 : 1100, mx: "auto" }}>
         <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5, flexWrap: "wrap" }}>
           <Button size="small" component={RouterLink} to="/performance" sx={{ textTransform: "none", fontWeight: 600 }}>
             ← {t("nav.shiftAnalysis")}
           </Button>
-          <Button
-            size="small"
-            variant={plannerView === "management" ? "contained" : "outlined"}
-            onClick={() => setPlannerView("management")}
-            sx={{ textTransform: "none", fontWeight: 700 }}
-          >
-            Management
-          </Button>
-          <Button
-            size="small"
-            variant={plannerView === "advanced" ? "contained" : "outlined"}
-            onClick={() => setPlannerView("advanced")}
-            sx={{ textTransform: "none", fontWeight: 700 }}
-          >
-            Advanced
-          </Button>
-          {plannerView === "advanced" && undoStack.length ? (
+          {showAdvanced && undoStack.length ? (
             <Button size="small" variant="outlined" onClick={onUndo} sx={{ textTransform: "none", fontWeight: 700 }}>
               Undo last change
             </Button>
           ) : null}
         </Stack>
 
-        {plannerView === "management" ? (
+        {!showAdvanced ? (
           <ManagementPlannerBoard />
         ) : (
           <>

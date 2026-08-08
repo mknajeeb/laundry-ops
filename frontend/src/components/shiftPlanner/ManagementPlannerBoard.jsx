@@ -20,6 +20,8 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import RemoveIcon from "@mui/icons-material/Remove";
+import PlanningTimePicker from "../datetime/PlanningTimePicker";
 import { simulateShiftCapacity } from "../../api";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import {
@@ -30,80 +32,73 @@ import {
 } from "../../shiftPlanner/managementConstants";
 import {
   buildManagementPayload,
-  formatBlockStaffingLine,
-  formatDeficitLines,
-  formatIntervalLine,
+  buildPlanningBlocks,
+  clockToHm,
+  earlyMinutesBeforeTarget,
   formatManagementOutcome,
-  formatStageProgress,
-  intervalsForRole,
+  getAdditionalForBlock,
+  getBasePeopleForBlock,
+  hmToClock,
+  setBasePeopleForBlock,
   validateStaffingIntervals,
 } from "../../shiftPlanner/managementHelpers";
 
 const fieldSx = {
   "& .MuiOutlinedInput-root": { bgcolor: "#fff" },
-  "& .MuiInputBase-input": { py: 1 },
+  "& .MuiInputBase-input": { py: 0.75 },
 };
 
-function OutcomeBanner({ outcome }) {
-  if (!outcome) return null;
-  const colors = {
-    success: { bg: VEEWASH_DASHBOARD.tealLight, border: VEEWASH_DASHBOARD.tealBorder, fg: VEEWASH_DASHBOARD.tealDark },
-    warning: { bg: VEEWASH_DASHBOARD.pendingLight, border: VEEWASH_DASHBOARD.pendingBorder, fg: VEEWASH_DASHBOARD.pendingDark },
-    neutral: { bg: "#fff7ed", border: "rgba(180, 83, 9, 0.35)", fg: "#9a3412" },
-  };
-  const c = colors[outcome.tone] || colors.neutral;
+const stripSx = {
+  bgcolor: "#fff",
+  border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
+  borderRadius: 1.25,
+  px: 1.5,
+  py: 1.25,
+  boxShadow: VEEWASH_DASHBOARD.cardShadow,
+};
+
+function CompactNum({ label, value, onChange, min = 0, step = 1, suffix = "", width = 72 }) {
+  const full = width === "100%";
   return (
-    <Box
+    <TextField
+      label={suffix ? `${label} (${suffix})` : label}
+      type="number"
+      size="small"
+      fullWidth={full}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      inputProps={{ min, step }}
       sx={{
-        bgcolor: c.bg,
-        border: `1px solid ${c.border}`,
-        borderRadius: 1.5,
-        px: 2.5,
-        py: 2,
+        ...fieldSx,
+        width: full ? undefined : width,
+        "& .MuiInputBase-input": { py: 0.6, fontSize: "0.85rem" },
       }}
-    >
-      <Typography sx={{ fontWeight: 800, fontSize: "1.35rem", color: c.fg, lineHeight: 1.25 }}>
-        {outcome.title}
-      </Typography>
-      {outcome.detail ? (
-        <Typography sx={{ mt: 0.75, color: "text.secondary", fontWeight: 500 }}>{outcome.detail}</Typography>
-      ) : null}
-    </Box>
+    />
   );
 }
 
-function WaitingChip({ label, count }) {
-  const n = Number(count) || 0;
-  if (n <= 0) {
-    return (
-      <Typography component="span" sx={{ color: "text.disabled", fontSize: "0.85rem", mr: 1.5 }}>
-        {label} 0
-      </Typography>
-    );
-  }
+function ClockField({ label, value, onChange }) {
   return (
-    <Box
-      component="span"
-      sx={{
-        display: "inline-block",
-        bgcolor: VEEWASH_DASHBOARD.pendingLight,
-        border: `1px solid ${VEEWASH_DASHBOARD.pendingBorder}`,
-        color: VEEWASH_DASHBOARD.pendingDark,
-        fontWeight: 700,
-        fontSize: "0.85rem",
-        px: 1,
-        py: 0.25,
-        borderRadius: 1,
-        mr: 1,
-        mb: 0.5,
-      }}
-    >
-      {label} {n}
-    </Box>
+    <PlanningTimePicker
+      label={label}
+      value={clockToHm(value)}
+      onChange={(hm) => onChange(hmToClock(hm))}
+      exactMinutes
+      size="small"
+    />
   );
 }
 
-function StaffingIntervalDialog({ open, draft, onClose, onSave, shiftStart, shiftEnd, existing }) {
+function StaffingIntervalDialog({
+  open,
+  draft,
+  onClose,
+  onSave,
+  planStart,
+  planEnd,
+  existing,
+  modeLocked = false,
+}) {
   const [local, setLocal] = useState(draft);
   const [error, setError] = useState("");
 
@@ -115,24 +110,26 @@ function StaffingIntervalDialog({ open, draft, onClose, onSave, shiftStart, shif
   const save = () => {
     const nextList = existing.map((row) => (row.id === local.id ? local : row));
     if (!existing.some((row) => row.id === local.id)) nextList.push(local);
-    const v = validateStaffingIntervals(nextList, { startTime: shiftStart, endTime: shiftEnd });
+    const v = validateStaffingIntervals(nextList, { startTime: planStart, endTime: planEnd });
     if (!v.ok) {
       const hit = v.errors.find((e) => e.intervalId === local.id) || v.errors[0];
-      setError(hit?.message || "Invalid staffing interval");
+      setError(hit?.message || "Invalid staffing");
       return;
     }
     onSave(local);
   };
 
   if (!local) return null;
+  const isAdditional = String(local.mode).toLowerCase() === "additional";
+  const title = existing.some((r) => r.id === local.id)
+    ? (isAdditional ? "Edit temporary staff" : "Edit base staffing")
+    : (isAdditional ? "Add temporary staff" : "Set base staffing");
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
-      <DialogTitle sx={{ fontWeight: 800 }}>
-        {existing.some((r) => r.id === local.id) ? "Edit staffing" : "Add staffing"}
-      </DialogTitle>
+      <DialogTitle sx={{ fontWeight: 800, py: 1.5 }}>{title}</DialogTitle>
       <DialogContent>
-        <Stack spacing={1.5} sx={{ pt: 1 }}>
+        <Stack spacing={1.25} sx={{ pt: 0.5 }}>
           {error ? <Alert severity="warning">{error}</Alert> : null}
           <FormControl fullWidth size="small">
             <InputLabel>Role</InputLabel>
@@ -157,36 +154,45 @@ function StaffingIntervalDialog({ open, draft, onClose, onSave, shiftStart, shif
             sx={fieldSx}
           />
           <Stack direction="row" spacing={1}>
-            <TextField
-              label="Start"
-              size="small"
-              fullWidth
-              value={local.start}
-              onChange={(e) => setLocal((p) => ({ ...p, start: e.target.value }))}
-              placeholder="9:15 AM"
-              sx={fieldSx}
-            />
-            <TextField
-              label="End"
-              size="small"
-              fullWidth
-              value={local.end}
-              onChange={(e) => setLocal((p) => ({ ...p, end: e.target.value }))}
-              placeholder="10:00 AM"
-              sx={fieldSx}
-            />
+            <Box sx={{ flex: 1 }}>
+              <ClockField
+                label="Start"
+                value={local.start}
+                onChange={(v) => setLocal((p) => ({ ...p, start: v }))}
+              />
+            </Box>
+            <Box sx={{ flex: 1 }}>
+              <ClockField
+                label="End"
+                value={local.end}
+                onChange={(v) => setLocal((p) => ({ ...p, end: v }))}
+              />
+            </Box>
           </Stack>
-          <FormControl fullWidth size="small">
-            <InputLabel>Type</InputLabel>
-            <Select
-              label="Type"
-              value={local.mode}
-              onChange={(e) => setLocal((p) => ({ ...p, mode: e.target.value }))}
-            >
-              <MenuItem value="base">Base</MenuItem>
-              <MenuItem value="additional">Additional</MenuItem>
-            </Select>
-          </FormControl>
+          {!modeLocked ? (
+            <Stack direction="row" spacing={1}>
+              <Button
+                size="small"
+                variant={!isAdditional ? "contained" : "outlined"}
+                onClick={() => setLocal((p) => ({ ...p, mode: "base" }))}
+                sx={{ textTransform: "none", fontWeight: 700, flex: 1 }}
+              >
+                Base staffing
+              </Button>
+              <Button
+                size="small"
+                variant={isAdditional ? "contained" : "outlined"}
+                onClick={() => setLocal((p) => ({ ...p, mode: "additional" }))}
+                sx={{ textTransform: "none", fontWeight: 700, flex: 1 }}
+              >
+                Temporary
+              </Button>
+            </Stack>
+          ) : (
+            <Typography sx={{ fontSize: "0.8rem", color: "text.secondary" }}>
+              {isAdditional ? "Temporary staffing for this block" : "Base staffing for this block"}
+            </Typography>
+          )}
         </Stack>
       </DialogContent>
       <DialogActions>
@@ -199,132 +205,321 @@ function StaffingIntervalDialog({ open, draft, onClose, onSave, shiftStart, shif
   );
 }
 
-function RoleStaffingSection({ role, intervals, onAdd, onEdit, onRemove }) {
-  const rows = intervalsForRole(intervals, role.id);
-  const bases = rows.filter((r) => String(r.mode).toLowerCase() !== "additional");
-  const extras = rows.filter((r) => String(r.mode).toLowerCase() === "additional");
+function CompactSummary({ inputs, outcome, loading, hasStaffing }) {
+  if (!hasStaffing) {
+    return (
+      <Box sx={{ ...stripSx, py: 1.5 }}>
+        <Stack direction="row" alignItems="center" spacing={1}>
+          <Typography sx={{ fontWeight: 700, color: "text.secondary", fontSize: "0.95rem" }}>
+            Add staffing to build the plan.
+          </Typography>
+          {loading ? <CircularProgress size={14} sx={{ color: VEEWASH_DASHBOARD.primaryBlue }} /> : null}
+        </Stack>
+      </Box>
+    );
+  }
+  if (!outcome) {
+    return (
+      <Box sx={{ ...stripSx, py: 1.5 }}>
+        <Stack direction="row" alignItems="center" spacing={1}>
+          <Typography sx={{ color: "text.secondary" }}>Running…</Typography>
+          {loading ? <CircularProgress size={14} /> : null}
+        </Stack>
+      </Box>
+    );
+  }
+
+  const target = Number(outcome.targetBags ?? inputs.bag_count) || 0;
+  const projected = Number(outcome.completedByTarget) || 0;
+  const finish = outcome.projected || "—";
+  const early = earlyMinutesBeforeTarget(inputs.target_time, outcome.projected);
+  let statusText = outcome.statusLabel || "";
+  if (outcome.status === "completed" && early != null) {
+    statusText = `${early} min early`;
+  }
+
+  const toneColor = {
+    success: VEEWASH_DASHBOARD.tealDark,
+    warning: VEEWASH_DASHBOARD.pendingDark,
+    neutral: "#9a3412",
+  }[outcome.tone] || "text.primary";
 
   return (
-    <Box
-      sx={{
-        borderBottom: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
-        py: 1.25,
-        "&:last-child": { borderBottom: 0 },
-      }}
-    >
-      <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={1}>
-        <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography sx={{ fontWeight: 800, letterSpacing: 0.4, fontSize: "0.8rem", color: "text.secondary" }}>
-            {role.label.toUpperCase()}
-          </Typography>
-          {!rows.length ? (
-            <Typography sx={{ color: "text.disabled", fontSize: "0.9rem", mt: 0.25 }}>No staffing</Typography>
-          ) : (
-            <Stack spacing={0.35} sx={{ mt: 0.35 }}>
-              {[...bases, ...extras].map((row) => (
-                <Stack key={row.id} direction="row" alignItems="center" spacing={0.5}>
-                  <Typography sx={{ fontSize: "0.95rem", fontWeight: 600, flex: 1 }}>
-                    {formatIntervalLine(row)}
-                  </Typography>
-                  <IconButton size="small" aria-label="Edit staffing" onClick={() => onEdit(row)}>
-                    <EditOutlinedIcon fontSize="small" />
-                  </IconButton>
-                  <IconButton size="small" aria-label="Remove staffing" onClick={() => onRemove(row.id)}>
-                    <DeleteOutlineIcon fontSize="small" />
-                  </IconButton>
-                </Stack>
-              ))}
-            </Stack>
-          )}
-        </Box>
-        <Button
-          size="small"
-          startIcon={<AddIcon />}
-          onClick={() => onAdd(role.id)}
-          sx={{ textTransform: "none", fontWeight: 700, flexShrink: 0 }}
-        >
-          Add
-        </Button>
+    <Box sx={stripSx}>
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        spacing={{ xs: 0.75, sm: 2 }}
+        alignItems={{ xs: "flex-start", sm: "center" }}
+        flexWrap="wrap"
+        useFlexGap
+      >
+        <Typography sx={{ fontWeight: 800, fontSize: "0.8rem", color: "text.secondary", letterSpacing: 0.4 }}>
+          SUMMARY
+        </Typography>
+        <Typography sx={{ fontWeight: 700, fontSize: "0.95rem" }}>
+          {target} bags
+        </Typography>
+        <Typography sx={{ fontWeight: 700, fontSize: "0.95rem" }}>
+          Projected {projected} / {target}
+        </Typography>
+        <Typography sx={{ fontWeight: 700, fontSize: "0.95rem" }}>
+          Finish {finish}
+        </Typography>
+        <Typography sx={{ fontWeight: 800, fontSize: "0.95rem", color: toneColor }}>
+          {statusText}
+        </Typography>
+        {loading ? <CircularProgress size={14} sx={{ color: VEEWASH_DASHBOARD.primaryBlue }} /> : null}
       </Stack>
     </Box>
   );
 }
 
-function BlockCard({ block }) {
-  const notYet = Number(block.not_yet_weighed) || 0;
-  const waiting = [
-    ["Not yet weighed", notYet],
-    ["Waiting to Sort", block.waiting_to_sort],
-    ["Waiting to Wash", block.waiting_to_wash],
-    ["Waiting to Dry", block.waiting_to_dry],
-    ["Waiting to Fold", block.waiting_to_fold],
-  ];
-  const hasQueue = waiting.some(([, n]) => (Number(n) || 0) > 0);
-
+function QueueBridge({ count, label }) {
+  const n = Number(count) || 0;
   return (
     <Box
       sx={{
-        bgcolor: "#fff",
-        border: `1px solid ${hasQueue ? VEEWASH_DASHBOARD.pendingBorder : VEEWASH_DASHBOARD.snapshotBorder}`,
-        borderRadius: 1.5,
-        px: 2,
-        py: 1.5,
-        boxShadow: VEEWASH_DASHBOARD.cardShadow,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        px: { xs: 0.5, md: 0.75 },
+        py: 0.25,
+        minWidth: { xs: "100%", md: 72 },
+        color: n > 0 ? VEEWASH_DASHBOARD.pendingDark : "text.disabled",
       }}
     >
-      <Typography sx={{ fontWeight: 800, mb: 0.5 }}>
-        {block.block_start} – {block.block_end}
+      <Typography sx={{ fontSize: "0.7rem", fontWeight: 700, lineHeight: 1.2, textAlign: "center" }}>
+        → {n} waiting →
       </Typography>
-      <Typography sx={{ fontSize: "0.88rem", color: "text.secondary", mb: 1.25 }}>
-        {formatBlockStaffingLine(block.staffing)}
-      </Typography>
-
-      <Stack spacing={0.35} sx={{ mb: 1.25 }}>
-        <Typography sx={{ fontSize: "0.92rem" }}>
-          {formatStageProgress("Weighed", block.weighed_total, block.weighed_this_block)}
-        </Typography>
-        <Typography sx={{ fontSize: "0.92rem" }}>
-          {formatStageProgress("Sorted", block.sorted_total, block.sorted_this_block)}
-        </Typography>
-        <Typography sx={{ fontSize: "0.92rem" }}>
-          {formatStageProgress("Washed", block.washed_total, block.washed_this_block)}
-        </Typography>
-        <Typography sx={{ fontSize: "0.92rem" }}>
-          {formatStageProgress("Dried", block.dried_total, block.dried_this_block)}
-        </Typography>
-        <Typography sx={{ fontSize: "0.92rem" }}>
-          {formatStageProgress("Folded", block.folded_total ?? block.completed_total, block.folded_this_block ?? block.completed_this_block)}
-        </Typography>
-      </Stack>
-
-      <Box sx={{ mb: 0.75 }}>
-        {waiting.map(([label, n]) => (
-          <WaitingChip key={label} label={label} count={n} />
-        ))}
-      </Box>
-
-      {((Number(block.in_wash_cycle) || 0) > 0 || (Number(block.in_dry_cycle) || 0) > 0) ? (
-        <Typography sx={{ fontSize: "0.85rem", color: "text.secondary" }}>
-          {[
-            (Number(block.in_wash_cycle) || 0) > 0 ? `In Wash Cycle ${block.in_wash_cycle}` : null,
-            (Number(block.in_dry_cycle) || 0) > 0 ? `In Dry Cycle ${block.in_dry_cycle}` : null,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
+      {label ? (
+        <Typography sx={{ fontSize: "0.65rem", color: "text.disabled", display: { xs: "none", lg: "block" } }}>
+          {label}
         </Typography>
       ) : null}
     </Box>
   );
 }
 
+function StageCell({ title, thisBlock, total, foldTarget = null, highlight = false }) {
+  const tb = Number(thisBlock) || 0;
+  const tot = Number(total) || 0;
+  return (
+    <Box
+      sx={{
+        minWidth: { xs: "100%", md: 88 },
+        flex: { md: "1 1 0" },
+        px: 0.75,
+        py: 0.5,
+        borderRadius: 1,
+        bgcolor: highlight ? "#fff7ed" : "transparent",
+        textAlign: "center",
+      }}
+    >
+      <Typography
+        sx={{
+          fontWeight: 800,
+          fontSize: "0.68rem",
+          letterSpacing: 0.5,
+          color: "text.secondary",
+          mb: 0.15,
+        }}
+      >
+        {title}
+      </Typography>
+      <Typography sx={{ fontWeight: 800, fontSize: "1.05rem", lineHeight: 1.15 }}>
+        {tb}
+      </Typography>
+      <Typography sx={{ fontSize: "0.68rem", color: "text.secondary", lineHeight: 1.2 }}>
+        this block
+      </Typography>
+      <Typography sx={{ fontWeight: 700, fontSize: "0.82rem", mt: 0.2, lineHeight: 1.2 }}>
+        {foldTarget != null ? `${tot} / ${foldTarget} complete` : `${tot} total`}
+      </Typography>
+    </Box>
+  );
+}
+
+function PositionFlow({ block, targetBags, stallRole }) {
+  if (!block) {
+    return (
+      <Typography sx={{ fontSize: "0.85rem", color: "text.disabled", py: 0.5 }}>
+        No flow yet for this block.
+      </Typography>
+    );
+  }
+  const foldTotal = Number(block.folded_total ?? block.completed_total) || 0;
+  const foldBlock = Number(block.folded_this_block ?? block.completed_this_block) || 0;
+  const washStall = stallRole === "washer";
+
+  return (
+    <Box
+      sx={{
+        display: "flex",
+        flexDirection: { xs: "column", md: "row" },
+        alignItems: { xs: "stretch", md: "center" },
+        gap: { xs: 0.25, md: 0 },
+        overflow: "hidden",
+      }}
+    >
+      <StageCell title="WEIGH" thisBlock={block.weighed_this_block} total={block.weighed_total} />
+      <QueueBridge count={block.waiting_to_sort} label="to sort" />
+      <StageCell title="SORT" thisBlock={block.sorted_this_block} total={block.sorted_total} />
+      <QueueBridge count={block.waiting_to_wash} label="to wash" />
+      <StageCell
+        title="WASH"
+        thisBlock={block.washed_this_block}
+        total={block.washed_total}
+        highlight={washStall}
+      />
+      <QueueBridge count={block.waiting_to_dry} label="to dry" />
+      <StageCell title="DRY" thisBlock={block.dried_this_block} total={block.dried_total} />
+      <QueueBridge count={block.waiting_to_fold} label="to fold" />
+      <StageCell
+        title="FOLD"
+        thisBlock={foldBlock}
+        total={foldTotal}
+        foldTarget={targetBags}
+      />
+    </Box>
+  );
+}
+
+function BlockRoleRow({
+  role,
+  blockStart,
+  blockEnd,
+  intervals,
+  onBaseChange,
+  onAddTemporary,
+  onEdit,
+  onRemove,
+}) {
+  const base = getBasePeopleForBlock(intervals, role.id, blockStart);
+  const extras = getAdditionalForBlock(intervals, role.id, blockStart, blockEnd);
+
+  return (
+    <Stack
+      direction="row"
+      alignItems="center"
+      spacing={1}
+      sx={{
+        py: 0.45,
+        borderBottom: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
+        "&:last-child": { borderBottom: 0 },
+        minHeight: 36,
+      }}
+    >
+      <Typography
+        sx={{
+          width: 52,
+          flexShrink: 0,
+          fontWeight: 800,
+          fontSize: "0.72rem",
+          letterSpacing: 0.4,
+          color: "text.secondary",
+        }}
+      >
+        {role.short.toUpperCase()}
+      </Typography>
+
+      <Stack direction="row" alignItems="center" spacing={0.25} sx={{ flexShrink: 0 }}>
+        <IconButton
+          size="small"
+          aria-label={`Decrease ${role.label}`}
+          onClick={() => onBaseChange(Math.max(0, base - 1))}
+          sx={{ p: 0.35 }}
+        >
+          <RemoveIcon sx={{ fontSize: 16 }} />
+        </IconButton>
+        <Typography sx={{ width: 18, textAlign: "center", fontWeight: 800, fontSize: "0.95rem" }}>
+          {base}
+        </Typography>
+        <IconButton
+          size="small"
+          aria-label={`Increase ${role.label}`}
+          onClick={() => onBaseChange(base + 1)}
+          sx={{ p: 0.35 }}
+        >
+          <AddIcon sx={{ fontSize: 16 }} />
+        </IconButton>
+      </Stack>
+
+      <Typography sx={{ fontSize: "0.78rem", color: "text.secondary", flexShrink: 0 }}>
+        {base > 0 ? `${blockStart}–${blockEnd}` : "—"}
+      </Typography>
+
+      <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ flex: 1, minWidth: 0 }}>
+        {extras.map((row) => (
+          <Box
+            key={row.id}
+            sx={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 0.25,
+              bgcolor: VEEWASH_DASHBOARD.tealLight,
+              border: `1px solid ${VEEWASH_DASHBOARD.tealBorder}`,
+              borderRadius: 1,
+              px: 0.6,
+              py: 0.1,
+            }}
+          >
+            <Typography sx={{ fontSize: "0.75rem", fontWeight: 700 }}>
+              +{row.people} {row.start}–{row.end}
+            </Typography>
+            <IconButton size="small" onClick={() => onEdit(row)} sx={{ p: 0.15 }}>
+              <EditOutlinedIcon sx={{ fontSize: 14 }} />
+            </IconButton>
+            <IconButton size="small" onClick={() => onRemove(row.id)} sx={{ p: 0.15 }}>
+              <DeleteOutlineIcon sx={{ fontSize: 14 }} />
+            </IconButton>
+          </Box>
+        ))}
+      </Stack>
+
+      <Button
+        size="small"
+        startIcon={<AddIcon sx={{ fontSize: 14 }} />}
+        onClick={() => onAddTemporary(role.id)}
+        sx={{ textTransform: "none", fontWeight: 700, fontSize: "0.75rem", flexShrink: 0, minWidth: 0, px: 0.75 }}
+      >
+        Temp
+      </Button>
+    </Stack>
+  );
+}
+
+function SectionLabel({ time, kind }) {
+  return (
+    <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mb: 0.75 }}>
+      <Typography sx={{ fontWeight: 800, fontSize: "0.95rem" }}>
+        {time}
+      </Typography>
+      <Typography
+        sx={{
+          fontWeight: 800,
+          fontSize: "0.72rem",
+          letterSpacing: 0.6,
+          color: kind === "staffing" ? VEEWASH_DASHBOARD.primaryBlue : "text.secondary",
+        }}
+      >
+        — {kind === "staffing" ? "STAFFING" : "POSITION"}
+      </Typography>
+    </Stack>
+  );
+}
+
 export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
-  const [inputs, setInputs] = useState(() => initialInputs || DEFAULT_MANAGEMENT_INPUTS);
+  const [inputs, setInputs] = useState(() => ({
+    ...DEFAULT_MANAGEMENT_INPUTS,
+    ...(initialInputs || {}),
+  }));
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [clientErrors, setClientErrors] = useState([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [draft, setDraft] = useState(null);
+  const [modeLocked, setModeLocked] = useState(true);
   const debounceRef = useRef(null);
   const seqRef = useRef(0);
 
@@ -332,15 +527,27 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
     setInputs((prev) => ({ ...prev, [key]: value }));
   }, []);
 
+  const planBlocks = useMemo(
+    () => buildPlanningBlocks(inputs.start_time, inputs.target_time, inputs.planning_block_size_min),
+    [inputs.start_time, inputs.target_time, inputs.planning_block_size_min],
+  );
+
+  const positionByEnd = useMemo(() => {
+    const map = {};
+    (result?.block_positions || []).forEach((b) => {
+      map[b.block_end] = b;
+      map[b.block_start] = b;
+    });
+    return map;
+  }, [result]);
+
   const runSim = useCallback(async (nextInputs) => {
     const payloadInputs = nextInputs || inputs;
+    const horizonEnd = payloadInputs.target_time;
     const client = validateStaffingIntervals(payloadInputs.staffing_intervals, {
       startTime: payloadInputs.start_time,
-      endTime: payloadInputs.end_time,
+      endTime: horizonEnd,
     });
-    setClientErrors(client.errors.map((e) => e.message));
-    // Still call backend when client validation fails only if intervals empty of hard errors?
-    // Prefer: block network when client invalid to avoid noise; empty plan is valid.
     if (!client.ok) {
       setError(client.errors[0]?.message || "Fix staffing before running");
       return null;
@@ -352,7 +559,6 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
     try {
       const res = await simulateShiftCapacity(buildManagementPayload(payloadInputs));
       if (seq !== seqRef.current) return null;
-      // API wraps DES under des.*; prefer promoted top-level management fields.
       const raw = res.data || {};
       const des = raw.des && typeof raw.des === "object" ? raw.des : {};
       const merged = {
@@ -373,7 +579,11 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
       };
       setResult(merged);
       if (res.data?.simulation_valid === false && (res.data?.validation_errors || []).length) {
-        setError((res.data.validation_errors || []).map((e) => (typeof e === "string" ? e : e.message || e.code)).join(" · "));
+        setError(
+          (res.data.validation_errors || [])
+            .map((e) => (typeof e === "string" ? e : e.message || e.code))
+            .join(" · "),
+        );
       }
       return res.data;
     } catch (err) {
@@ -386,7 +596,6 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
     }
   }, [inputs]);
 
-  // Debounced auto-run on input changes
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
@@ -397,28 +606,29 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
     };
   }, [inputs]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const hasStaffing = (inputs.staffing_intervals || []).length > 0;
   const outcome = useMemo(
-    () => (result ? formatManagementOutcome({ ...result, inputs }) : null),
-    [result, inputs],
+    () => (result && hasStaffing ? formatManagementOutcome({ ...result, inputs }) : null),
+    [result, inputs, hasStaffing],
   );
-  const deficitLines = useMemo(
-    () => formatDeficitLines(result?.staffing_deficits || []),
-    [result],
-  );
-  const blocks = result?.block_positions || [];
+  const targetBags = Number(inputs.bag_count) || 0;
+  const stallRole = outcome?.firstBlockingRole || null;
 
-  const openAdd = (roleId) => {
+  const openTemporary = (roleId, blockStart, blockEnd) => {
+    setModeLocked(true);
     setDraft(
       newStaffingInterval(roleId, {
-        start: inputs.start_time,
-        end: inputs.target_time,
-        mode: "base",
+        start: blockStart,
+        end: blockEnd,
+        mode: "additional",
+        people: 1,
       }),
     );
     setDialogOpen(true);
   };
 
   const openEdit = (row) => {
+    setModeLocked(true);
     setDraft({ ...row });
     setDialogOpen(true);
   };
@@ -446,58 +656,49 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
     }));
   };
 
+  const changeBase = (roleId, blockStart, blockEnd, people) => {
+    setInputs((prev) => ({
+      ...prev,
+      staffing_intervals: setBasePeopleForBlock(
+        prev.staffing_intervals,
+        roleId,
+        blockStart,
+        blockEnd,
+        people,
+      ),
+    }));
+  };
+
   return (
-    <Stack spacing={2}>
-      {/* Plan */}
-      <Box
-        sx={{
-          bgcolor: "#fff",
-          border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
-          borderRadius: 1.5,
-          px: 2,
-          py: 1.75,
-          boxShadow: VEEWASH_DASHBOARD.cardShadow,
-        }}
-      >
-        <Typography sx={{ fontWeight: 800, mb: 1.25 }}>Plan</Typography>
+    <Stack spacing={1.5}>
+      {/* PLAN */}
+      <Box sx={stripSx}>
+        <Typography sx={{ fontWeight: 800, fontSize: "0.8rem", letterSpacing: 0.4, color: "text.secondary", mb: 1 }}>
+          PLAN
+        </Typography>
         <Box
           sx={{
             display: "grid",
-            gridTemplateColumns: { xs: "1fr 1fr", md: "repeat(5, 1fr)" },
-            gap: 1.25,
+            gridTemplateColumns: { xs: "1fr 1fr", sm: "repeat(3, 1fr)", md: "1.1fr 1.2fr 1.2fr 1fr 0.9fr 0.9fr" },
+            gap: 1,
           }}
         >
-          <TextField
+          <CompactNum
             label="Target bags"
-            type="number"
-            size="small"
             value={inputs.bag_count}
-            onChange={(e) => onChange("bag_count", e.target.value)}
-            inputProps={{ min: 1 }}
-            sx={fieldSx}
+            onChange={(v) => onChange("bag_count", v)}
+            min={1}
+            width="100%"
           />
-          <TextField
-            label="Shift start"
-            size="small"
+          <ClockField
+            label="Start time"
             value={inputs.start_time}
-            onChange={(e) => onChange("start_time", e.target.value)}
-            sx={fieldSx}
+            onChange={(v) => onChange("start_time", v)}
           />
-          <TextField
-            label="Target time"
-            size="small"
+          <ClockField
+            label="Target finish"
             value={inputs.target_time}
-            onChange={(e) => onChange("target_time", e.target.value)}
-            sx={fieldSx}
-          />
-          <TextField
-            label="Shift end"
-            size="small"
-            value={inputs.end_time}
-            onChange={(e) => onChange("end_time", e.target.value)}
-            helperText="Staffing cannot extend past this"
-            FormHelperTextProps={{ sx: { mx: 0 } }}
-            sx={fieldSx}
+            onChange={(v) => onChange("target_time", v)}
           />
           <FormControl size="small" fullWidth>
             <InputLabel>Block size</InputLabel>
@@ -512,83 +713,110 @@ export default function ManagementPlannerBoard({ initialInputs = null } = {}) {
               ))}
             </Select>
           </FormControl>
+          <CompactNum
+            label="Washers"
+            value={inputs.washer_count}
+            onChange={(v) => onChange("washer_count", v)}
+            min={1}
+            width="100%"
+          />
+          <CompactNum
+            label="Dryers"
+            value={inputs.dryer_count}
+            onChange={(v) => onChange("dryer_count", v)}
+            min={1}
+            width="100%"
+          />
         </Box>
       </Box>
 
-      {/* Staffing */}
-      <Box
-        sx={{
-          bgcolor: "#fff",
-          border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
-          borderRadius: 1.5,
-          px: 2,
-          py: 1.5,
-          boxShadow: VEEWASH_DASHBOARD.cardShadow,
-        }}
-      >
-        <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ mb: 0.5 }}>
-          <Typography sx={{ fontWeight: 800 }}>Staffing</Typography>
-          <Typography sx={{ fontSize: "0.8rem", color: "text.secondary" }}>
-            Exact times · Base + Additional · no named employees
-          </Typography>
+      {/* PROCESS */}
+      <Box sx={stripSx}>
+        <Typography sx={{ fontWeight: 800, fontSize: "0.8rem", letterSpacing: 0.4, color: "text.secondary", mb: 1 }}>
+          PROCESS
+        </Typography>
+        <Stack
+          direction="row"
+          flexWrap="wrap"
+          useFlexGap
+          spacing={0.75}
+          alignItems="flex-start"
+        >
+          <CompactNum label="Weigh" value={inputs.weigh_sec_per_bag} onChange={(v) => onChange("weigh_sec_per_bag", v)} min={1} suffix="s" width={84} />
+          <CompactNum label="Sort" value={inputs.sort_min_per_bag} onChange={(v) => onChange("sort_min_per_bag", v)} min={0} step={0.5} suffix="m" width={84} />
+          <CompactNum label="Wash labor" value={inputs.load_washer_min} onChange={(v) => onChange("load_washer_min", v)} min={0} step={0.5} suffix="m" width={96} />
+          <CompactNum label="Wash cycle" value={inputs.wash_cycle_min} onChange={(v) => onChange("wash_cycle_min", v)} min={1} suffix="m" width={96} />
+          <CompactNum label="Dry labor" value={inputs.load_dryer_min} onChange={(v) => onChange("load_dryer_min", v)} min={0} step={0.5} suffix="m" width={92} />
+          <CompactNum label="Dry cycle" value={inputs.dry_cycle_min} onChange={(v) => onChange("dry_cycle_min", v)} min={1} suffix="m" width={92} />
+          <CompactNum label="Fold" value={inputs.fold_min_per_bag} onChange={(v) => onChange("fold_min_per_bag", v)} min={0} step={0.5} suffix="m" width={84} />
         </Stack>
-        {MANAGEMENT_ROLES.map((role) => (
-          <RoleStaffingSection
-            key={role.id}
-            role={role}
-            intervals={inputs.staffing_intervals}
-            onAdd={openAdd}
-            onEdit={openEdit}
-            onRemove={removeInterval}
-          />
-        ))}
+        <Typography sx={{ mt: 0.75, fontSize: "0.78rem", color: "text.secondary" }}>
+          Machines · Washers {inputs.washer_count} · Dryers {inputs.dryer_count}
+        </Typography>
       </Box>
 
-      {error ? <Alert severity="error">{error}</Alert> : null}
-      {clientErrors.length > 1 ? (
-        <Alert severity="warning">{clientErrors.slice(0, 3).join(" · ")}</Alert>
-      ) : null}
+      <CompactSummary
+        inputs={inputs}
+        outcome={outcome}
+        loading={loading}
+        hasStaffing={hasStaffing}
+      />
 
-      {/* Outcome */}
-      <Box>
-        <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-          <Typography sx={{ fontWeight: 800 }}>Outcome</Typography>
-          {loading ? <CircularProgress size={16} sx={{ color: VEEWASH_DASHBOARD.primaryBlue }} /> : null}
-        </Stack>
-        {outcome ? <OutcomeBanner outcome={outcome} /> : (
-          <Typography color="text.secondary">Run a plan to see results.</Typography>
-        )}
-        {deficitLines.length ? (
-          <Stack spacing={0.5} sx={{ mt: 1.25 }}>
-            {deficitLines.map((line) => (
-              <Typography key={line} sx={{ fontSize: "0.9rem", color: "text.secondary" }}>
-                {line}
-              </Typography>
-            ))}
-          </Stack>
+      {error ? <Alert severity="error" sx={{ py: 0.5 }}>{error}</Alert> : null}
+
+      {/* Block sequence: STAFFING → POSITION */}
+      <Stack spacing={1.25}>
+        {planBlocks.map((pb) => {
+          const pos = positionByEnd[pb.block_end] || null;
+          const blockStall = hasStaffing && stallRole ? stallRole : null;
+          return (
+            <Box key={`${pb.block_start}-${pb.block_end}`}>
+              <Box sx={{ ...stripSx, py: 1 }}>
+                <SectionLabel time={pb.block_start} kind="staffing" />
+                {MANAGEMENT_ROLES.map((role) => (
+                  <BlockRoleRow
+                    key={role.id}
+                    role={role}
+                    blockStart={pb.block_start}
+                    blockEnd={pb.block_end}
+                    intervals={inputs.staffing_intervals}
+                    onBaseChange={(n) => changeBase(role.id, pb.block_start, pb.block_end, n)}
+                    onAddTemporary={(roleId) => openTemporary(roleId, pb.block_start, pb.block_end)}
+                    onEdit={openEdit}
+                    onRemove={removeInterval}
+                  />
+                ))}
+              </Box>
+
+              <Box sx={{ textAlign: "center", py: 0.35, color: "text.disabled", fontSize: "0.85rem" }}>
+                ↓
+              </Box>
+
+              <Box sx={stripSx}>
+                <SectionLabel time={pb.block_end} kind="position" />
+                {hasStaffing ? (
+                  <PositionFlow block={pos} targetBags={targetBags} stallRole={blockStall} />
+                ) : (
+                  <Typography sx={{ fontSize: "0.85rem", color: "text.disabled" }}>
+                    Position appears after staffing is set.
+                  </Typography>
+                )}
+              </Box>
+            </Box>
+          );
+        })}
+        {!planBlocks.length ? (
+          <Typography color="text.secondary">Set start and target finish to build blocks.</Typography>
         ) : null}
-      </Box>
-
-      {/* Timeline */}
-      <Box>
-        <Typography sx={{ fontWeight: 800, mb: 1 }}>Timeline</Typography>
-        {!blocks.length && !loading ? (
-          <Typography color="text.secondary">No block positions yet.</Typography>
-        ) : (
-          <Stack spacing={1.25}>
-            {blocks.map((block) => (
-              <BlockCard key={`${block.block_start}-${block.block_end}`} block={block} />
-            ))}
-          </Stack>
-        )}
-      </Box>
+      </Stack>
 
       <StaffingIntervalDialog
         open={dialogOpen}
         draft={draft}
         existing={inputs.staffing_intervals}
-        shiftStart={inputs.start_time}
-        shiftEnd={inputs.end_time}
+        planStart={inputs.start_time}
+        planEnd={inputs.target_time}
+        modeLocked={modeLocked}
         onClose={() => setDialogOpen(false)}
         onSave={saveInterval}
       />
