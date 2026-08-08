@@ -147,7 +147,6 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
 
   const punchInFlightRef = useRef(false);
   const prevPinLenRef = useRef(0);
-  const sessionRefreshRef = useRef(false);
 
   const pinClean = useMemo(() => String(pin || "").replace(/\D/g, "").slice(0, PIN_LEN), [pin]);
   const logoSrc = attendanceLogoSrc(slug, branding?.logo_url);
@@ -287,25 +286,29 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
     [slug, t, applyHubBody],
   );
 
+  // Restore hub session and always refresh so Current Role updates after role switch.
   useEffect(() => {
-    if (!slug) return;
+    if (!slug) return undefined;
     const existing = loadPinHubSession();
-    if (!existing || existing.organization_slug !== slug) return;
+    if (!existing || existing.organization_slug !== slug) return undefined;
     setHub(existing);
     setPhase("menu");
-    if (sessionRefreshRef.current || !existing.pin) return;
-    sessionRefreshRef.current = true;
+    if (!existing.pin) return undefined;
+    let cancelled = false;
     (async () => {
       try {
         const res = await attendancePinHub(slug, existing.pin);
         const body = res?.data && typeof res.data === "object" ? res.data : {};
-        if (res?.status >= 200 && res?.status < 300 && body.ok) {
+        if (!cancelled && res?.status >= 200 && res?.status < 300 && body.ok) {
           applyHubBody(body, existing.pin);
         }
       } catch {
         /* keep cached session */
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [slug, applyHubBody]);
 
   useEffect(() => {
@@ -344,7 +347,6 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
     setPin("");
     setError("");
     prevPinLenRef.current = 0;
-    sessionRefreshRef.current = false;
   };
 
   const openFeature = async (tile) => {

@@ -28,10 +28,7 @@ import {
   OPS_MOBILE,
 } from "../opsMobile";
 import { createSwitchRoleController } from "../opsMobile/createSwitchRoleController";
-import {
-  initialRoleId,
-  openRoleFlowEmployeeError,
-} from "../opsMobile/switchRoleFlowHelpers";
+import { openRoleFlowEmployeeError } from "../opsMobile/switchRoleFlowHelpers";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import {
@@ -103,7 +100,8 @@ export default function AttendanceRoleSwitchPage() {
 
   const [pin, setPin] = useState("");
   const [pendingPin, setPendingPin] = useState("");
-  const [phase, setPhase] = useState("pin"); // pin | select | success | unavailable
+  // from=hub: skip PIN keypad flash — show opening until select/unavailable.
+  const [phase, setPhase] = useState(fromHub ? "opening" : "pin"); // opening | pin | select | success | unavailable
   const [selectionTree, setSelectionTree] = useState([]);
   const [flowStep, setFlowStep] = useState("role"); // role | category
   const [roleId, setRoleId] = useState(null);
@@ -227,10 +225,11 @@ export default function AttendanceRoleSwitchPage() {
       body.current_category_id != null ? Number(body.current_category_id) : null,
     );
     setCurrentRoleId(body.current_role_id != null ? Number(body.current_role_id) : null);
-    const rid = initialRoleId(tree, body.current_role_id);
-    setRoleId(rid);
+    // Always open on the role list (Operator / Folder, …). Do not skip to category
+    // just because a current role already exists — that felt like an intermediate screen.
+    setRoleId(null);
     setCategoryId(null);
-    setFlowStep(rid != null ? "category" : "role");
+    setFlowStep("role");
     setFlowError("");
     setPending(false);
     setPendingCategoryId(null);
@@ -295,14 +294,13 @@ export default function AttendanceRoleSwitchPage() {
 
   /** From /pin hub: reuse PIN already entered (no second keypad). */
   useEffect(() => {
-    if (!fromHub || !slug || phase !== "pin" || hubPinUsedRef.current) return;
+    if (!fromHub || !slug || hubPinUsedRef.current) return;
+    if (phase !== "opening" && phase !== "pin") return;
     const hubPin = takePinHubPinForSlug(slug);
     if (!hubPin || hubPin.length !== PIN_LEN) {
       // Stale hub navigation without PIN — show unavailable rather than blank dialog.
-      if (fromHub) {
-        hubPinUsedRef.current = true;
-        setPhase("unavailable");
-      }
+      hubPinUsedRef.current = true;
+      setPhase("unavailable");
       return;
     }
     hubPinUsedRef.current = true;
@@ -376,6 +374,17 @@ export default function AttendanceRoleSwitchPage() {
     setPin("");
     prevPinLenRef.current = 0;
   };
+
+  if (phase === "opening") {
+    return (
+      <OpsMobileShell>
+        <Stack spacing={2} alignItems="center" sx={{ py: 6 }}>
+          <CircularProgress size={36} />
+          <Typography sx={{ fontWeight: 700, color: OPS_MOBILE.muted }}>Opening role…</Typography>
+        </Stack>
+      </OpsMobileShell>
+    );
+  }
 
   if (phase === "select" || phase === "success" || phase === "unavailable") {
     return (

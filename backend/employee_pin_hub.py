@@ -202,8 +202,10 @@ def attendance_snapshot_for_hub(
         open_seg = get_open_job_segment(conn, int(active["id"])) or {}
         cat = (open_seg.get("category_name_snapshot") or "").strip()
         role = (open_seg.get("role_name_snapshot") or "").strip()
-        if cat and role:
-            current_display_label = f"{cat} · {role}"
+        if role and cat:
+            current_display_label = f"{role} · {cat}"
+        elif role:
+            current_display_label = role
         else:
             label = (open_seg.get("display_label") or "").strip()
             current_display_label = label or None

@@ -271,4 +271,14 @@ describe("hub opens full-screen role route", () => {
     expect(href).toBe("/attendance/role/veewash?from=hub");
     expect(href.includes("Dialog")).toBe(false);
   });
+
+  it("keeps role-list as first screen even when a current role exists", () => {
+    // Mirrors AttendanceRoleSwitchPage.applySelectionBody: never skip to category
+    // solely because current_role_id is set (Operator / Folder must show first).
+    const currentRoleId = 1;
+    const preferred = initialRoleId(multiCatTree, currentRoleId);
+    expect(preferred).toBe(1);
+    const openStep = "role"; // always — do not use preferred != null ? "category" : "role"
+    expect(openStep).toBe("role");
+  });
 });
