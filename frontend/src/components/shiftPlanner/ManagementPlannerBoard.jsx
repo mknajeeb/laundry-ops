@@ -46,6 +46,7 @@ import {
   earlyMinutesBeforeTarget,
   formatManagementOutcome,
   fillRestBasePeopleForRole,
+  formatCollapsedSlotStaffLine,
   getAdditionalForBlock,
   getBasePeopleForBlock,
   getHybridPeopleForBlock,
@@ -220,7 +221,7 @@ function StaffingIntervalDialog({
             </Stack>
           ) : (
             <Typography sx={{ fontSize: "0.8rem", color: "text.secondary" }}>
-              {isAdditional ? "Temporary staffing for this block" : "Base staffing for this block"}
+              {isAdditional ? "Temporary staffing for this slot" : "Base staffing for this slot"}
             </Typography>
           )}
         </Stack>
@@ -318,6 +319,7 @@ function QueueBridge({ count, stageLabel }) {
         minWidth: { xs: "100%", md: 72 },
         color: n > 0 ? VEEWASH_DASHBOARD.pendingDark : "text.disabled",
       }}
+      data-testid={`queue-to-${String(stageLabel || "").toLowerCase()}`}
     >
       <Typography sx={{ fontSize: "0.68rem", fontWeight: 800, lineHeight: 1.2, textAlign: "center", letterSpacing: 0.2 }}>
         → {n} WAITING
@@ -342,6 +344,7 @@ function StageCell({ display, highlight = false }) {
         bgcolor: highlight ? "#fff7ed" : "transparent",
         textAlign: "center",
       }}
+      data-testid={`stage-${String(display.title || "").toLowerCase()}`}
     >
       <Typography
         sx={{
@@ -354,7 +357,30 @@ function StageCell({ display, highlight = false }) {
       >
         {display.title}
       </Typography>
-      <Stack direction="row" justifyContent="center" spacing={1.25} sx={{ mb: 0.2 }}>
+      <Typography
+        sx={{
+          fontSize: "0.72rem",
+          fontWeight: 800,
+          lineHeight: 1.15,
+          color: display.thisBlock > 0 ? "text.primary" : "text.disabled",
+          mb: 0.15,
+        }}
+      >
+        {display.thisBlock > 0 ? `+${display.thisBlock}` : "0"}
+      </Typography>
+      <Typography
+        sx={{
+          fontWeight: 800,
+          fontSize: "0.55rem",
+          letterSpacing: 0.35,
+          color: "text.disabled",
+          mb: 0.35,
+          lineHeight: 1.1,
+        }}
+      >
+        THIS SLOT
+      </Typography>
+      <Stack direction="row" justifyContent="center" spacing={1.25} sx={{ mb: 0.15 }}>
         <Box sx={{ minWidth: 36 }}>
           <Typography sx={{ fontWeight: 800, fontSize: "1.15rem", lineHeight: 1.05 }}>
             {display.done}
@@ -388,9 +414,21 @@ function StageCell({ display, highlight = false }) {
           </Typography>
         </Box>
       </Stack>
-      <Typography sx={{ fontSize: "0.68rem", color: "text.disabled", lineHeight: 1.2, fontWeight: 600 }}>
-        {display.thisBlockLabel}
-      </Typography>
+      {display.inCycleLabel ? (
+        <Typography
+          sx={{
+            mt: 0.25,
+            fontSize: "0.62rem",
+            fontWeight: 700,
+            letterSpacing: 0.3,
+            color: "text.disabled",
+            lineHeight: 1.15,
+          }}
+          data-testid={`in-cycle-${String(display.title || "").toLowerCase()}`}
+        >
+          {display.inCycleLabel}
+        </Typography>
+      ) : null}
     </Box>
   );
 }
@@ -400,7 +438,7 @@ function PositionFlow({ block, targetBags, stallRole }) {
   if (!flow) {
     return (
       <Typography sx={{ fontSize: "0.85rem", color: "text.disabled", py: 0.5 }}>
-        No flow yet for this block.
+        No flow yet for this slot.
       </Typography>
     );
   }
@@ -559,18 +597,6 @@ function BlockRoleRow({
   );
 }
 
-function compactStaffingSummary(intervals, hybridIntervals, blockStart, blockEnd) {
-  const dedicated = MANAGEMENT_ROLES.map((role) => {
-    const n = getBasePeopleForBlock(intervals, role.id, blockStart, blockEnd);
-    return `${role.short} ${n}`;
-  }).join(" · ");
-  const hybrids = MANAGEMENT_HYBRIDS.map((h) => {
-    const n = getHybridPeopleForBlock(hybridIntervals, h.id, blockStart, blockEnd);
-    return n > 0 ? `${h.label} ${n}` : null;
-  }).filter(Boolean);
-  return hybrids.length ? `${dedicated} · ${hybrids.join(" · ")}` : dedicated;
-}
-
 function HybridRoleRow({ hybrid, blockStart, blockEnd, intervals, onChange }) {
   const count = getHybridPeopleForBlock(intervals, hybrid.id, blockStart, blockEnd);
   return (
@@ -627,61 +653,33 @@ function HybridRoleRow({ hybrid, blockStart, blockEnd, intervals, onChange }) {
   );
 }
 
-function SectionLabel({
-  time,
-  kind,
-  collapsible = false,
-  expanded = true,
-  onToggle = null,
-  collapsedSummary = "",
-}) {
+function SlotCardHeader({ slotLabel, staffOpen, onToggle }) {
   return (
-    <Stack
-      direction="row"
-      alignItems="center"
-      spacing={1}
-      sx={{ mb: expanded || kind !== "staffing" ? 0.75 : 0 }}
-      flexWrap="wrap"
-      useFlexGap
-    >
-      <Typography sx={{ fontWeight: 800, fontSize: "0.95rem" }}>
-        {time}
-      </Typography>
+    <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 0.75 }} flexWrap="wrap" useFlexGap>
       <Typography
+        sx={{ fontWeight: 800, fontSize: "0.95rem" }}
+        data-testid="slot-range"
+      >
+        {slotLabel}
+      </Typography>
+      <Button
+        size="small"
+        onClick={onToggle}
+        endIcon={staffOpen ? <ExpandLessIcon sx={{ fontSize: 16 }} /> : <ExpandMoreIcon sx={{ fontSize: 16 }} />}
+        aria-expanded={staffOpen}
+        aria-label={staffOpen ? "Collapse staffing" : "Expand staffing"}
         sx={{
-          fontWeight: 800,
+          textTransform: "none",
+          fontWeight: 700,
           fontSize: "0.72rem",
-          letterSpacing: 0.6,
-          color: kind === "staffing" ? VEEWASH_DASHBOARD.primaryBlue : "text.secondary",
+          minWidth: 0,
+          px: 0.75,
+          py: 0.15,
+          ml: "auto",
         }}
       >
-        — {kind === "staffing" ? "STAFFING" : "POSITION"}
-      </Typography>
-      {collapsible ? (
-        <Button
-          size="small"
-          onClick={onToggle}
-          endIcon={expanded ? <ExpandLessIcon sx={{ fontSize: 16 }} /> : <ExpandMoreIcon sx={{ fontSize: 16 }} />}
-          aria-expanded={expanded}
-          aria-label={expanded ? "Collapse staffing" : "Expand staffing"}
-          sx={{
-            textTransform: "none",
-            fontWeight: 700,
-            fontSize: "0.72rem",
-            minWidth: 0,
-            px: 0.75,
-            py: 0.15,
-            ml: "auto",
-          }}
-        >
-          {expanded ? "Collapse" : "Expand"}
-        </Button>
-      ) : null}
-      {collapsible && !expanded && collapsedSummary ? (
-        <Typography sx={{ width: "100%", fontSize: "0.78rem", color: "text.secondary", fontWeight: 600 }}>
-          {collapsedSummary}
-        </Typography>
-      ) : null}
+        {staffOpen ? "Collapse staffing" : "Expand staffing"}
+      </Button>
     </Stack>
   );
 }
@@ -1188,91 +1186,132 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
         </Stack>
       ) : null}
 
-      {/* Block sequence: STAFFING → POSITION */}
+      {/* One card = one time slot: start staffing + end POSITION */}
       <Stack spacing={1.25}>
         {planBlocks.map((pb, blockIndex) => {
           const pos = positionByEnd[pb.block_end] || null;
           const blockStall = hasStaffing && stallRole ? stallRole : null;
           const isFirstStaffingBlock = blockIndex === 0;
           const staffOpen = staffingExpanded[pb.block_start] !== false;
+          const staffLine = formatCollapsedSlotStaffLine(
+            inputs.staffing_intervals,
+            inputs.hybrid_intervals,
+            pb.block_start,
+            pb.block_end,
+          );
+          const slotLabel = `${pb.block_start} → ${pb.block_end}`;
           return (
-            <Box key={`${pb.block_start}-${pb.block_end}`}>
-              <Box sx={{ ...stripSx, py: 1 }}>
-                <SectionLabel
-                  time={pb.block_start}
-                  kind="staffing"
-                  collapsible
-                  expanded={staffOpen}
-                  onToggle={() =>
-                    setStaffingExpanded((prev) => ({
-                      ...prev,
-                      [pb.block_start]: !staffOpen,
-                    }))
-                  }
-                  collapsedSummary={compactStaffingSummary(
-                    inputs.staffing_intervals,
-                    inputs.hybrid_intervals,
-                    pb.block_start,
-                    pb.block_end,
-                  )}
-                />
-                {staffOpen ? (
-                  <>
-                    {MANAGEMENT_ROLES.map((role) => (
-                      <BlockRoleRow
-                        key={role.id}
-                        role={role}
-                        blockStart={pb.block_start}
-                        blockEnd={pb.block_end}
-                        intervals={inputs.staffing_intervals}
-                        onBaseChange={(n) => changeBase(role.id, pb.block_start, pb.block_end, n)}
-                        onAddTemporary={(roleId) => openTemporary(roleId, pb.block_start, pb.block_end)}
-                        onEdit={openEdit}
-                        onRemove={removeInterval}
-                        showFillRest={isFirstStaffingBlock && planBlocks.length > 1}
-                        onFillRest={(people) => fillRest(role.id, people)}
-                      />
-                    ))}
-                    <Typography
-                      sx={{
-                        mt: 1,
-                        mb: 0.35,
-                        fontWeight: 800,
-                        fontSize: "0.68rem",
-                        letterSpacing: 0.5,
-                        color: "text.secondary",
-                      }}
-                    >
-                      HYBRID
-                    </Typography>
-                    {MANAGEMENT_HYBRIDS.map((hybrid) => (
-                      <HybridRoleRow
-                        key={hybrid.id}
-                        hybrid={hybrid}
-                        blockStart={pb.block_start}
-                        blockEnd={pb.block_end}
-                        intervals={inputs.hybrid_intervals}
-                        onChange={(n) => changeHybrid(hybrid.id, pb.block_start, pb.block_end, n)}
-                      />
-                    ))}
-                  </>
-                ) : null}
-              </Box>
+            <Box
+              key={`${pb.block_start}-${pb.block_end}`}
+              sx={{ ...stripSx, py: 1 }}
+              data-testid="planning-slot-card"
+              data-slot-start={pb.block_start}
+              data-slot-end={pb.block_end}
+            >
+              <SlotCardHeader
+                slotLabel={slotLabel}
+                staffOpen={staffOpen}
+                onToggle={() =>
+                  setStaffingExpanded((prev) => ({
+                    ...prev,
+                    [pb.block_start]: !staffOpen,
+                  }))
+                }
+              />
 
-              <Box sx={{ textAlign: "center", py: 0.35, color: "text.disabled", fontSize: "0.85rem" }}>
+              <Typography
+                sx={{
+                  fontWeight: 800,
+                  fontSize: "0.68rem",
+                  letterSpacing: 0.5,
+                  color: VEEWASH_DASHBOARD.primaryBlue,
+                  mb: 0.35,
+                }}
+              >
+                STAFFING
+              </Typography>
+              {!staffOpen ? (
+                <Typography
+                  sx={{ fontSize: "0.8rem", color: "text.secondary", fontWeight: 600, mb: 0.75 }}
+                  data-testid="collapsed-staff-line"
+                >
+                  STAFF: {staffLine}
+                </Typography>
+              ) : (
+                <Box sx={{ mb: 0.75 }} data-testid="expanded-staffing">
+                  {MANAGEMENT_ROLES.map((role) => (
+                    <BlockRoleRow
+                      key={role.id}
+                      role={role}
+                      blockStart={pb.block_start}
+                      blockEnd={pb.block_end}
+                      intervals={inputs.staffing_intervals}
+                      onBaseChange={(n) => changeBase(role.id, pb.block_start, pb.block_end, n)}
+                      onAddTemporary={(roleId) => openTemporary(roleId, pb.block_start, pb.block_end)}
+                      onEdit={openEdit}
+                      onRemove={removeInterval}
+                      showFillRest={isFirstStaffingBlock && planBlocks.length > 1}
+                      onFillRest={(people) => fillRest(role.id, people)}
+                    />
+                  ))}
+                  <Typography
+                    sx={{
+                      mt: 0.85,
+                      mb: 0.25,
+                      fontWeight: 700,
+                      fontSize: "0.65rem",
+                      letterSpacing: 0.4,
+                      color: "text.disabled",
+                    }}
+                  >
+                    Hybrid
+                  </Typography>
+                  {MANAGEMENT_HYBRIDS.map((hybrid) => (
+                    <HybridRoleRow
+                      key={hybrid.id}
+                      hybrid={hybrid}
+                      blockStart={pb.block_start}
+                      blockEnd={pb.block_end}
+                      intervals={inputs.hybrid_intervals}
+                      onChange={(n) => changeHybrid(hybrid.id, pb.block_start, pb.block_end, n)}
+                    />
+                  ))}
+                </Box>
+              )}
+
+              <Box
+                sx={{
+                  textAlign: "center",
+                  py: 0.35,
+                  color: "text.disabled",
+                  fontSize: "0.85rem",
+                  borderTop: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
+                  mt: 0.25,
+                }}
+              >
                 ↓
               </Box>
 
-              <Box sx={stripSx}>
-                <SectionLabel time={pb.block_end} kind="position" />
-                {hasStaffing ? (
-                  <PositionFlow block={pos} targetBags={targetBags} stallRole={blockStall} />
-                ) : (
-                  <Typography sx={{ fontSize: "0.85rem", color: "text.disabled" }}>
-                    Position appears after staffing is set.
-                  </Typography>
-                )}
-              </Box>
+              <Typography
+                sx={{
+                  fontWeight: 800,
+                  fontSize: "0.72rem",
+                  letterSpacing: 0.5,
+                  color: "text.secondary",
+                  mt: 0.5,
+                  mb: 0.5,
+                }}
+                data-testid="slot-position-label"
+              >
+                {pb.block_end} POSITION
+              </Typography>
+              {hasStaffing ? (
+                <PositionFlow block={pos} targetBags={targetBags} stallRole={blockStall} />
+              ) : (
+                <Typography sx={{ fontSize: "0.85rem", color: "text.disabled" }}>
+                  Position appears after staffing is set.
+                </Typography>
+              )}
             </Box>
           );
         })}

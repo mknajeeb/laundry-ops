@@ -3,10 +3,13 @@ import {
   applyPersistedPlannerParams,
   buildManagementPayload,
   buildPlanningBlocks,
+  buildPlanningSlotViewModel,
   buildPositionFlowDisplay,
   buildStagePositionDisplay,
   fillRestBasePeopleForRole,
   formatBlockStaffingLine,
+  formatCollapsedSlotStaffLine,
+  formatHybridStaffChips,
   formatManagementOutcome,
   getAdditionalForBlock,
   getBasePeopleForBlock,
@@ -332,7 +335,7 @@ describe("managementHelpers", () => {
     expect(sort.remaining).toBe(18);
     expect(sort.done + sort.remaining).toBe(50);
     expect(sort.doneLabel).toBe("DONE");
-    expect(sort.thisBlockLabel).toBe("+12 this block");
+    expect(sort.thisBlockLabel).toBe("+12 this slot");
 
     const fold = buildStagePositionDisplay({
       title: "FOLD",
@@ -363,13 +366,29 @@ describe("managementHelpers", () => {
         waiting_to_wash: 11,
         waiting_to_dry: 4,
         waiting_to_fold: 7,
+        in_wash_cycle: 2,
+        in_dry_cycle: 2,
       },
       50,
     );
     expect(flow.stages.weigh).toMatchObject({ done: 34, remaining: 16, thisBlock: 18 });
     expect(flow.stages.sort).toMatchObject({ done: 31, remaining: 19, thisBlock: 15 });
-    expect(flow.stages.wash).toMatchObject({ done: 20, remaining: 30, thisBlock: 14, doneLabel: "DONE" });
-    expect(flow.stages.dry).toMatchObject({ done: 17, remaining: 33, thisBlock: 12, doneLabel: "DONE" });
+    expect(flow.stages.wash).toMatchObject({
+      done: 20,
+      remaining: 30,
+      thisBlock: 14,
+      doneLabel: "DONE",
+      inCycle: 2,
+      inCycleLabel: "2 IN CYCLE",
+    });
+    expect(flow.stages.dry).toMatchObject({
+      done: 17,
+      remaining: 33,
+      thisBlock: 12,
+      doneLabel: "DONE",
+      inCycle: 2,
+      inCycleLabel: "2 IN CYCLE",
+    });
     expect(flow.stages.fold).toMatchObject({
       done: 16,
       remaining: 34,
@@ -384,6 +403,149 @@ describe("managementHelpers", () => {
     for (const stage of Object.values(flow.stages)) {
       expect(stage.done + stage.remaining).toBe(50);
     }
+  });
+
+  it("one planning slot view model combines staffing start and end POSITION", () => {
+    const slots = [
+      { block_start: "5:00 AM", block_end: "6:00 AM" },
+      { block_start: "6:00 AM", block_end: "7:00 AM" },
+    ].map((pb) =>
+      buildPlanningSlotViewModel({
+        blockStart: pb.block_start,
+        blockEnd: pb.block_end,
+        staffingIntervals: [
+          {
+            id: "w",
+            role: "weigher",
+            people: 1,
+            start: "5:00 AM",
+            end: "7:00 AM",
+            mode: "base",
+          },
+          {
+            id: "s",
+            role: "sorter",
+            people: 1,
+            start: "5:00 AM",
+            end: "6:00 AM",
+            mode: "base",
+          },
+        ],
+        hybridIntervals: [
+          {
+            id: "h",
+            hybrid: "weigh_wash",
+            people: 1,
+            start: "6:00 AM",
+            end: "7:00 AM",
+            mode: "base",
+          },
+        ],
+        positionBlock: {
+          washed_this_block: 2,
+          washed_total: 18,
+          dried_this_block: 0,
+          dried_total: 0,
+          folded_this_block: 0,
+          folded_total: 0,
+          weighed_this_block: 0,
+          weighed_total: 80,
+          sorted_this_block: 0,
+          sorted_total: 22,
+          waiting_to_sort: 0,
+          waiting_to_wash: 0,
+          waiting_to_dry: 0,
+          waiting_to_fold: 0,
+          in_wash_cycle: 2,
+          in_dry_cycle: 2,
+        },
+        targetBags: 100,
+        staffingExpanded: false,
+      }),
+    );
+
+    // 1. One slot → one combined view model (not separate staff/position cards)
+    expect(slots).toHaveLength(2);
+    expect(slots[0].slotLabel).toBe("5:00 AM → 6:00 AM");
+    expect(slots[1].slotLabel).toBe("6:00 AM → 7:00 AM");
+
+    // 2. Start staffing + end position in same model
+    expect(slots[0].blockStart).toBe("5:00 AM");
+    expect(slots[0].positionLabel).toBe("6:00 AM POSITION");
+    expect(slots[0].flow).toBeTruthy();
+
+    // 3–4. Collapsed staff line includes dedicated + compact hybrid chip
+    expect(formatCollapsedSlotStaffLine(
+      [
+        { role: "weigher", people: 0, start: "6:00 AM", end: "7:00 AM", mode: "base" },
+        { role: "sorter", people: 1, start: "6:00 AM", end: "7:00 AM", mode: "base" },
+        { role: "dryer", people: 1, start: "6:00 AM", end: "7:00 AM", mode: "base" },
+        { role: "folder", people: 2, start: "6:00 AM", end: "7:00 AM", mode: "base" },
+      ],
+      [{ hybrid: "weigh_wash", people: 1, start: "6:00 AM", end: "7:00 AM", mode: "base" }],
+      "6:00 AM",
+      "7:00 AM",
+    )).toBe("Weigh 0 · Sort 1 · Wash 0 · Dry 1 · Fold 2 · Hybrid W/W 1");
+    expect(formatHybridStaffChips(
+      [{ hybrid: "weigh_wash", people: 1, start: "6:00 AM", end: "7:00 AM", mode: "base" }],
+      "6:00 AM",
+      "7:00 AM",
+    )).toEqual(["Hybrid W/W 1"]);
+
+    // 6–10. Position concepts + in-cycle; Dry DONE may be 0 with IN CYCLE > 0
+    const seven = slots[1].flow;
+    expect(seven.stages.wash.thisBlockLabel).toContain("this slot");
+    expect(seven.stages.wash).toMatchObject({
+      thisBlock: 2,
+      done: 18,
+      remaining: 82,
+      inCycleLabel: "2 IN CYCLE",
+    });
+    expect(seven.stages.dry).toMatchObject({
+      thisBlock: 0,
+      done: 0,
+      remaining: 100,
+      inCycle: 2,
+      inCycleLabel: "2 IN CYCLE",
+    });
+    expect(seven.stages.fold.doneLabel).toBe("COMPLETE");
+
+    // 7. Waiting queues between stages stay distinct keys
+    expect(seven.waiting).toEqual({
+      to_sort: 0,
+      to_wash: 0,
+      to_dry: 0,
+      to_fold: 0,
+    });
+
+    // 12. Multiple slots stay compact (one model each)
+    expect(slots.every((s) => s.slotKey && s.staffLine && s.positionLabel)).toBe(true);
+  });
+
+  it("reads in_wash_cycle / in_dry_cycle from detail when flat keys absent", () => {
+    const flow = buildPositionFlowDisplay(
+      {
+        washed_this_block: 2,
+        washed_total: 18,
+        dried_this_block: 0,
+        dried_total: 0,
+        weighed_this_block: 0,
+        weighed_total: 80,
+        sorted_this_block: 0,
+        sorted_total: 22,
+        folded_this_block: 0,
+        folded_total: 0,
+        waiting_to_sort: 0,
+        waiting_to_wash: 0,
+        waiting_to_dry: 0,
+        waiting_to_fold: 0,
+        detail: { in_wash_cycle: 2, in_dry_cycle: 2 },
+      },
+      100,
+    );
+    expect(flow.stages.wash.inCycle).toBe(2);
+    expect(flow.stages.dry.inCycle).toBe(2);
+    expect(flow.stages.dry.done).toBe(0);
   });
 
   it("pickPersistedPlannerParams excludes staffing and session-only fields", () => {

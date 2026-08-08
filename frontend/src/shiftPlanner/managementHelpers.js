@@ -576,8 +576,64 @@ export function formatBlockStaffingLine(staffing) {
 export function formatStageProgress(label, total, thisBlock) {
   const t = Number(total) || 0;
   const d = Number(thisBlock) || 0;
-  if (d > 0) return `${label} ${t} (+${d} this block)`;
+  if (d > 0) return `${label} ${t} (+${d} this slot)`;
   return `${label} ${t}`;
+}
+
+/** Compact hybrid chips for collapsed slot summary (short labels). */
+export function formatHybridStaffChips(hybridIntervals, blockStart, blockEnd) {
+  const short = {
+    weigh_wash: "Hybrid W/W",
+    wash_dry: "Hybrid W/D",
+    weigh_wash_dry: "Hybrid W/W/D",
+  };
+  return MANAGEMENT_HYBRIDS.map((h) => {
+    const n = getHybridPeopleForBlock(hybridIntervals, h.id, blockStart, blockEnd);
+    if (n <= 0) return null;
+    return `${short[h.id] || h.label} ${n}`;
+  }).filter(Boolean);
+}
+
+/** Collapsed STAFF line for one planning slot (dedicated + hybrid chips). */
+export function formatCollapsedSlotStaffLine(intervals, hybridIntervals, blockStart, blockEnd) {
+  const dedicated = MANAGEMENT_ROLES.map((role) => {
+    const n = getBasePeopleForBlock(intervals, role.id, blockStart, blockEnd);
+    return `${role.short} ${n}`;
+  }).join(" · ");
+  const hybrids = formatHybridStaffChips(hybridIntervals, blockStart, blockEnd);
+  return hybrids.length ? `${dedicated} · ${hybrids.join(" · ")}` : dedicated;
+}
+
+/**
+ * View model for one planning slot card (staffing start + end POSITION).
+ * Presentation-only — all counts come from authored intervals / block_positions.
+ */
+export function buildPlanningSlotViewModel({
+  blockStart,
+  blockEnd,
+  staffingIntervals,
+  hybridIntervals,
+  positionBlock,
+  targetBags,
+  staffingExpanded = false,
+} = {}) {
+  const staffLine = formatCollapsedSlotStaffLine(
+    staffingIntervals,
+    hybridIntervals,
+    blockStart,
+    blockEnd,
+  );
+  return {
+    slotKey: `${blockStart}->${blockEnd}`,
+    slotLabel: `${blockStart} → ${blockEnd}`,
+    blockStart,
+    blockEnd,
+    staffingExpanded: Boolean(staffingExpanded),
+    staffLine,
+    hybridChips: formatHybridStaffChips(hybridIntervals, blockStart, blockEnd),
+    positionLabel: `${blockEnd} POSITION`,
+    flow: buildPositionFlowDisplay(positionBlock, targetBags),
+  };
 }
 
 /**
@@ -591,8 +647,9 @@ export function stageRemaining(targetBags, stageTotal) {
 }
 
 /**
- * Compact end-of-block stage position for management POSITION nodes.
+ * Compact end-of-slot stage position for management POSITION nodes.
  * Done uses backend completed-stage totals; remaining = target - done.
+ * inCycle is API-provided (wash/dry machine cycle) — never computed here.
  */
 export function buildStagePositionDisplay({
   title,
@@ -600,11 +657,13 @@ export function buildStagePositionDisplay({
   stageTotal,
   targetBags,
   completeLabel = false,
+  inCycle = null,
 } = {}) {
   const done = Math.max(0, Number(stageTotal) || 0);
   const remaining = stageRemaining(targetBags, done);
   const block = Math.max(0, Number(thisBlock) || 0);
   const target = Math.max(0, Number(targetBags) || 0);
+  const cycleN = inCycle == null ? null : Math.max(0, Number(inCycle) || 0);
   return {
     title: title || "",
     thisBlock: block,
@@ -613,8 +672,20 @@ export function buildStagePositionDisplay({
     target,
     doneLabel: completeLabel ? "COMPLETE" : "DONE",
     remainingLabel: "REMAINING",
-    thisBlockLabel: block > 0 ? `+${block} this block` : "0 this block",
+    thisBlockLabel: block > 0 ? `+${block} this slot` : "0 this slot",
+    inCycle: cycleN,
+    inCycleLabel:
+      cycleN != null && cycleN > 0
+        ? `${cycleN} IN CYCLE`
+        : null,
   };
+}
+
+function _blockInCycle(block, key) {
+  if (!block) return 0;
+  const detail = block.detail || {};
+  const raw = block[key] ?? detail[key];
+  return Math.max(0, Number(raw) || 0);
 }
 
 /**
@@ -644,12 +715,14 @@ export function buildPositionFlowDisplay(block, targetBags) {
         thisBlock: block.washed_this_block,
         stageTotal: block.washed_total,
         targetBags,
+        inCycle: _blockInCycle(block, "in_wash_cycle"),
       }),
       dry: buildStagePositionDisplay({
         title: "DRY",
         thisBlock: block.dried_this_block,
         stageTotal: block.dried_total,
         targetBags,
+        inCycle: _blockInCycle(block, "in_dry_cycle"),
       }),
       fold: buildStagePositionDisplay({
         title: "FOLD",
