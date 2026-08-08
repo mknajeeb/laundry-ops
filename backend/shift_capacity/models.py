@@ -178,19 +178,20 @@ class Bag:
     stage_provenance: dict[str, Provenance] = field(default_factory=dict)
 
     def recompute_waits(self) -> None:
-        def gap(a: int | None, b: int | None) -> int | None:
+        def gap_min(a: int | None, b: int | None) -> int | None:
+            """Gap in whole minutes (floor) for API compat; times are seconds."""
             if a is None or b is None:
                 return None
-            return max(0, b - a)
+            return max(0, (b - a) // 60)
 
-        self.wait_for_weigh_minutes = gap(self.entry_time, self.weigh_start)
-        self.wait_for_sort_minutes = gap(self.weigh_end, self.sort_start)
-        self.wait_for_batch_minutes = gap(self.sort_end, self.available_to_wash)
-        self.wait_for_washer_minutes = gap(self.available_to_wash or self.sort_end, self.washer_load_start)
-        self.wait_for_transfer_minutes = gap(self.wash_end, self.transfer_start)
-        self.wait_for_dryer_minutes = gap(self.transfer_end, self.dryer_load_start)
-        self.wait_for_folder_minutes = gap(self.ready_to_fold, self.fold_start)
-        self.total_elapsed_minutes = gap(self.entry_time, self.completed_at)
+        self.wait_for_weigh_minutes = gap_min(self.entry_time, self.weigh_start)
+        self.wait_for_sort_minutes = gap_min(self.weigh_end, self.sort_start)
+        self.wait_for_batch_minutes = gap_min(self.sort_end, self.available_to_wash)
+        self.wait_for_washer_minutes = gap_min(self.available_to_wash or self.sort_end, self.washer_load_start)
+        self.wait_for_transfer_minutes = gap_min(self.wash_end, self.transfer_start)
+        self.wait_for_dryer_minutes = gap_min(self.transfer_end or self.wash_end, self.dryer_load_start)
+        self.wait_for_folder_minutes = gap_min(self.ready_to_fold, self.fold_start)
+        self.total_elapsed_minutes = gap_min(self.entry_time, self.completed_at)
 
 
 @dataclass
@@ -278,7 +279,9 @@ class Reservation:
 
 @dataclass
 class ProcessingTimes:
+    # Minute-valued fields remain the API/compat inputs. Scheduler converts to seconds.
     weigh_min_per_bag: float = 1.0
+    weigh_sec_per_bag: float = 60.0
     sort_min_per_bag: float = 5.0
     load_washer_min: float = 3.0
     wash_cycle_min: float = 30.0
@@ -293,10 +296,12 @@ class ProcessingTimes:
 
 @dataclass
 class ShiftConfig:
+    # NOTE: start_min/target_min/end_min store *seconds from midnight* internally.
     start_min: int
     target_min: int
     end_min: int | None = None
     summary_interval_min: int = 30
+    planning_block_size_min: int = 60
     washer_count: int = 1
     dryer_count: int = 1
     washer_capacity_lb: float = 80.0
@@ -314,8 +319,8 @@ class SimulationInputs:
     mode: SimMode = "full_run"
     scenario_id: str | None = None
     parent_scenario_id: str | None = None
-    continue_from_min: int | None = None
-    shift: ShiftConfig = field(default_factory=lambda: ShiftConfig(7 * 60, 12 * 60))
+    continue_from_min: int | None = None  # seconds from midnight internally
+    shift: ShiftConfig = field(default_factory=lambda: ShiftConfig(7 * 3600, 12 * 3600))
     processing_times: ProcessingTimes = field(default_factory=ProcessingTimes)
     employees: list[Employee] = field(default_factory=list)
     machines: list[Machine] = field(default_factory=list)
@@ -332,6 +337,10 @@ class SimulationInputs:
     sorter_washer_same: bool = False
     washer_folder_same: bool = False
     finish_in_progress_at_exit: bool = True
+    # Management planning mode: explicit staffing, Dry role, no transfer double-count
+    management_mode: bool = False
+    # Compiled management staffing plan metadata (for response echo / debugging)
+    staffing_plan_data: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
 
 

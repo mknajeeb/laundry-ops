@@ -26,9 +26,9 @@ from backend.shift_capacity.resources import (
     OverlapError,
     ResourceCalendar,
     pick_employee,
-    role_active_at,
     task_from_reservation,
 )
+from backend.shift_capacity.timebase import duration_sec, duration_sec_from_min
 from backend.shift_capacity.validation import label_minutes, validate_inputs
 
 
@@ -44,11 +44,21 @@ STAGE_FIELDS = (
 )
 
 
-def _dur(value: float) -> int:
-    return max(1, int(round(float(value))))
+def _dur(value_min: float) -> int:
+    """Convert minute-based duration to seconds. Minimum 1s when value > 0."""
+    sec = duration_sec_from_min(value_min)
+    if float(value_min) > 0 and sec == 0:
+        return 1
+    return sec
 
 
-def _emp_rate(emp: Any, kind: str, inp: SimulationInputs) -> float:
+def _weigh_duration_sec(emp: Any | None, inp: SimulationInputs) -> int:
+    if emp is not None and emp.default_rates.weigh_min_per_bag is not None:
+        return max(1, _dur(emp.default_rates.weigh_min_per_bag))
+    return max(1, duration_sec(inp.processing_times.weigh_sec_per_bag))
+
+
+def _emp_rate_min(emp: Any, kind: str, inp: SimulationInputs) -> float:
     rates = emp.default_rates
     defaults = inp.processing_times
     mapping = {
@@ -62,7 +72,7 @@ def _emp_rate(emp: Any, kind: str, inp: SimulationInputs) -> float:
     return float(override if override is not None else default)
 
 
-def _fold_duration(emp: Any, bag: Bag, inp: SimulationInputs) -> float:
+def _fold_duration_min(emp: Any, bag: Bag, inp: SimulationInputs) -> float:
     rates = emp.default_rates
     if inp.processing_times.fold_rate_mode == "minutes_per_bag":
         return float(rates.fold_min_per_bag if rates.fold_min_per_bag is not None else inp.processing_times.fold_min_per_bag)
@@ -72,11 +82,15 @@ def _fold_duration(emp: Any, bag: Bag, inp: SimulationInputs) -> float:
     return max(0.1, (bag.weight_lb / max(1.0, lbs_per_hour)) * 60.0)
 
 
+def _dry_labor_role(inp: SimulationInputs) -> str:
+    return "dryer" if inp.management_mode else "washer"
+
+
 def _book_employee(
     calendar: ResourceCalendar,
     emp: Any,
     earliest: int,
-    duration: float,
+    duration_sec_val: int,
     *,
     task_type: str,
     bag_ids: list[str],
@@ -85,9 +99,10 @@ def _book_employee(
     hard_start: int | None = None,
     provenance: Provenance = "recalculated",
 ) -> tuple[int, int, str]:
+    dur = max(0, int(duration_sec_val))
     if hard_start is not None:
         start = int(hard_start)
-        end = start + _dur(duration)
+        end = start + dur
         result = calendar.reserve_exact(
             emp.employee_id,
             start,
@@ -103,7 +118,7 @@ def _book_employee(
         result = calendar.reserve_at_earliest_available(
             emp.employee_id,
             earliest,
-            _dur(duration),
+            dur,
             resource_type="employee",
             task_type=task_type,
             bag_ids=bag_ids,
@@ -118,21 +133,29 @@ def _book_synthetic_employee(
     calendar: ResourceCalendar,
     resource_id: str,
     earliest: int,
-    duration: float,
+    duration_sec_val: int | float,
     *,
     task_type: str,
     bag_ids: list[str],
     hard: bool = False,
+    management_mode: bool = False,
 ) -> tuple[int, int]:
+    """Compat-only synthetic labor. Forbidden when management_mode is true."""
+    if management_mode:
+        raise RuntimeError(
+            "synthetic labor is forbidden when management_mode=true "
+            f"(attempted {resource_id!r} task={task_type!r})"
+        )
+    dur = max(0, int(round(float(duration_sec_val))))
     if hard:
         start = int(earliest)
-        end = start + _dur(duration)
+        end = start + dur
         result = calendar.reserve_exact(
             resource_id, start, end, resource_type="employee", task_type=task_type, bag_ids=bag_ids
         )
     else:
         result = calendar.reserve_at_earliest_available(
-            resource_id, earliest, _dur(duration), resource_type="employee", task_type=task_type, bag_ids=bag_ids
+            resource_id, earliest, dur, resource_type="employee", task_type=task_type, bag_ids=bag_ids
         )
     return result.start, result.end
 
@@ -267,6 +290,17 @@ def run_scheduler(
             errors=[ValidationError("OVERLAP", f"Overlap on {rid}", {"resource_id": rid}) for rid in overlaps],
         )
 
+    if inp.management_mode:
+        forbidden = [
+            rid
+            for rid in emp_cal.calendars
+            if rid.startswith("__") or rid == "Unassigned"
+        ]
+        if forbidden:
+            raise RuntimeError(
+                "management_mode synthetic labor calendar leak: " + ", ".join(sorted(forbidden))
+            )
+
     state.bags = bags
     state.batches = batches
     state.tasks = tasks
@@ -277,66 +311,95 @@ def run_scheduler(
 
 
 def _schedule_weigh(bag: Bag, inp: SimulationInputs, emp_cal: ResourceCalendar, *, not_before: int) -> None:
-    dur = inp.processing_times.weigh_min_per_bag
+    dur_sec = _weigh_duration_sec(None, inp)
     emp, t0 = pick_employee(
-        inp.employees, "weigher", emp_cal, not_before, dur, finish_current_exit=inp.finish_in_progress_at_exit
+        inp.employees, "weigher", emp_cal, not_before, dur_sec, finish_current_exit=inp.finish_in_progress_at_exit
     )
     if emp is None:
+        if inp.management_mode:
+            return  # no synthetic labor — bag remains not_yet_weighed / waiting
         start, end = _book_synthetic_employee(
-            emp_cal, "__weigh__", not_before, dur, task_type="weigh", bag_ids=[bag.bag_id]
+            emp_cal,
+            "__weigh__",
+            not_before,
+            dur_sec,
+            task_type="weigh",
+            bag_ids=[bag.bag_id],
+            management_mode=inp.management_mode,
         )
         bag.weigh_start, bag.weigh_end = start, end
         bag.weighed_by_employee_id = "Unassigned"
         return
-    dur = _emp_rate(emp, "weigher", inp)
+    dur_sec = _weigh_duration_sec(emp, inp)
     start, end, _ = _book_employee(
-        emp_cal, emp, t0, dur, task_type="weigh", bag_ids=[bag.bag_id], required_role="weigher"
+        emp_cal, emp, t0, dur_sec, task_type="weigh", bag_ids=[bag.bag_id], required_role="weigher"
     )
     bag.weigh_start, bag.weigh_end = start, end
     bag.weighed_by_employee_id = emp.employee_id
 
 
 def _schedule_sort(bag: Bag, inp: SimulationInputs, emp_cal: ResourceCalendar, *, not_before: int) -> None:
-    dur = inp.processing_times.sort_min_per_bag
+    if bag.weigh_end is None:
+        return
+    dur_sec = _dur(inp.processing_times.sort_min_per_bag)
     emp, t0 = pick_employee(
-        inp.employees, "sorter", emp_cal, not_before, dur, finish_current_exit=inp.finish_in_progress_at_exit
+        inp.employees, "sorter", emp_cal, not_before, dur_sec, finish_current_exit=inp.finish_in_progress_at_exit
     )
     if emp is None:
+        if inp.management_mode:
+            return
         start, end = _book_synthetic_employee(
-            emp_cal, "__sort__", not_before, dur, task_type="sort", bag_ids=[bag.bag_id]
+            emp_cal,
+            "__sort__",
+            not_before,
+            dur_sec,
+            task_type="sort",
+            bag_ids=[bag.bag_id],
+            management_mode=inp.management_mode,
         )
         bag.sort_start, bag.sort_end = start, end
         bag.sorted_by_employee_id = "Unassigned"
         return
-    dur = _emp_rate(emp, "sorter", inp)
+    dur_sec = _dur(_emp_rate_min(emp, "sorter", inp))
     start, end, _ = _book_employee(
-        emp_cal, emp, t0, dur, task_type="sort", bag_ids=[bag.bag_id], required_role="sorter"
+        emp_cal, emp, t0, dur_sec, task_type="sort", bag_ids=[bag.bag_id], required_role="sorter"
     )
     bag.sort_start, bag.sort_end = start, end
     bag.sorted_by_employee_id = emp.employee_id
 
 
 def _schedule_fold(bag: Bag, inp: SimulationInputs, emp_cal: ResourceCalendar, *, not_before: int) -> None:
-    probe = (
+    if bag.ready_to_fold is None:
+        return
+    probe_min = (
         inp.processing_times.fold_min_per_bag
         if inp.processing_times.fold_rate_mode == "minutes_per_bag"
         else max(0.1, (bag.weight_lb / max(1.0, inp.processing_times.fold_lbs_per_hour)) * 60.0)
     )
+    probe_sec = _dur(probe_min)
     emp, t0 = pick_employee(
-        inp.employees, "folder", emp_cal, not_before, probe, finish_current_exit=inp.finish_in_progress_at_exit
+        inp.employees, "folder", emp_cal, not_before, probe_sec, finish_current_exit=inp.finish_in_progress_at_exit
     )
     if emp is None:
+        if inp.management_mode:
+            return
         start, end = _book_synthetic_employee(
-            emp_cal, "__fold__", not_before, probe, task_type="fold", bag_ids=[bag.bag_id]
+            emp_cal,
+            "__fold__",
+            not_before,
+            probe_sec,
+            task_type="fold",
+            bag_ids=[bag.bag_id],
+            management_mode=inp.management_mode,
         )
         bag.fold_start, bag.fold_end = start, end
         bag.folder_employee_id = "Unassigned"
         bag.folded_by_employee_id = "Unassigned"
         bag.completed_at = end
         return
-    dur = _fold_duration(emp, bag, inp)
+    dur_sec = _dur(_fold_duration_min(emp, bag, inp))
     start, end, _ = _book_employee(
-        emp_cal, emp, t0, dur, task_type="fold", bag_ids=[bag.bag_id], required_role="folder"
+        emp_cal, emp, t0, dur_sec, task_type="fold", bag_ids=[bag.bag_id], required_role="folder"
     )
     bag.fold_start, bag.fold_end = start, end
     bag.folder_employee_id = emp.employee_id
@@ -358,6 +421,8 @@ def _process_batch(
     """Schedule wash/dry for a batch with atomic machine occupancy and rollback."""
     override = effective_override(inp.batch_overrides, batch.sequence)
     members = [bags_by_id[bid] for bid in batch.bag_ids]
+    if any(b.sort_end is None for b in members):
+        return
     ready_sort = max(b.sort_end or event_start for b in members)
     if override and override.earliest_start_min is not None:
         ready_sort = max(ready_sort, override.earliest_start_min)
@@ -369,7 +434,7 @@ def _process_batch(
 
     washer_ids_used: list[str] = []
     for group in wash_groups:
-        _schedule_wash_group(
+        ok = _schedule_wash_group(
             group,
             batch=batch,
             inp=inp,
@@ -381,6 +446,16 @@ def _process_batch(
             hard=hard,
             washer_ids_used=washer_ids_used,
         )
+        if not ok:
+            if inp.management_mode:
+                return  # bags remain waiting_to_wash — no synthetic washer
+            raise OverlapError(
+                ValidationError(
+                    "RESOURCE_OVERLAP",
+                    f"Could not place wash group for batch {batch.sequence}",
+                    {"batch_number": batch.sequence},
+                )
+            )
 
     batch.washer_id = "+".join(washer_ids_used)
     batch.washer_load_start = min(b.washer_load_start for b in members)  # type: ignore[type-var]
@@ -409,6 +484,16 @@ def _process_batch(
             hard=hard,
             dryer_ids_used=dryer_ids_used,
         )
+        if ready is None:
+            if inp.management_mode:
+                return  # washed but waiting_to_dry / cannot dry
+            raise OverlapError(
+                ValidationError(
+                    "RESOURCE_OVERLAP",
+                    f"Could not place dry group for batch {batch.sequence}",
+                    {"batch_number": batch.sequence},
+                )
+            )
         ready_times.append(ready)
 
     batch.dryer_id = "+".join(dryer_ids_used)
@@ -433,9 +518,11 @@ def _schedule_wash_group(
     override,
     hard: bool,
     washer_ids_used: list[str],
-) -> None:
+) -> bool:
     cycle = _dur(inp.processing_times.wash_cycle_min)
-    load_dur_default = inp.processing_times.load_washer_min
+    load_dur_default_sec = _dur(inp.processing_times.load_washer_min)
+    if not washers:
+        return False
 
     if override and override.washer_id:
         washer_id = override.washer_id
@@ -450,9 +537,9 @@ def _schedule_wash_group(
     if hard and override and override.earliest_start_min is not None:
         probe = override.earliest_start_min
 
-    planned: list[tuple[Bag, Any, int, int, float]] | None = None
+    planned: list[tuple[Bag, Any, int, int, int]] | None = None
     load_start = load_end = wash_end = 0
-    for _attempt in range(64):
+    for _attempt in range(2048):
         machine_free = machine_cal.next_free(washer_id, resource_type="washer_machine", not_before=probe)
         if hard and override and override.earliest_start_min is not None:
             if machine_free > override.earliest_start_min:
@@ -472,7 +559,7 @@ def _schedule_wash_group(
             machine_free = override.earliest_start_min
 
         cursor = machine_free
-        trial: list[tuple[Bag, Any, int, int, float]] = []
+        trial: list[tuple[Bag, Any, int, int, int]] = []
         pending_emp: dict[str, list[tuple[int, int]]] = {}
         for bag in group:
             forced = override.washer_person_id if override else None
@@ -481,7 +568,7 @@ def _schedule_wash_group(
                 "washer",
                 emp_cal,
                 cursor,
-                load_dur_default,
+                load_dur_default_sec,
                 forced_id=forced,
                 finish_current_exit=inp.finish_in_progress_at_exit,
             )
@@ -493,11 +580,14 @@ def _schedule_wash_group(
                         {"employee_id": forced, "batch_number": batch.sequence},
                     )
                 )
-            dur = _emp_rate(emp, "load_washer", inp) if emp else load_dur_default
+            if emp is None and inp.management_mode:
+                trial = []
+                break
+            dur_sec = _dur(_emp_rate_min(emp, "load_washer", inp)) if emp else load_dur_default_sec
             if hard and forced and emp is not None:
                 # Hard employee assignment cannot silently wait past requested cursor.
                 start = cursor
-                end = start + _dur(dur)
+                end = start + dur_sec
                 if not emp_cal.is_free(emp.employee_id, start, end, resource_type="employee"):
                     raise OverlapError(
                         ValidationError(
@@ -516,18 +606,23 @@ def _schedule_wash_group(
                 start, end = emp_cal.find_earliest_available(
                     emp.employee_id,
                     max(cursor, t0, machine_free),
-                    _dur(dur),
+                    dur_sec,
                     resource_type="employee",
                     pending=pending_emp.get(emp.employee_id),
                 )
             else:
                 start = max(cursor, machine_free)
-                end = start + _dur(dur)
+                end = start + dur_sec
             if emp is not None:
                 pending_emp.setdefault(emp.employee_id, []).append((start, end))
-            trial.append((bag, emp, start, end, dur))
+            trial.append((bag, emp, start, end, dur_sec))
             cursor = end
 
+        if not trial:
+            if inp.management_mode:
+                return False
+            probe = machine_free + 1
+            continue
         load_start = trial[0][2]
         load_end = trial[-1][3]
         wash_end = load_end + cycle
@@ -551,6 +646,8 @@ def _schedule_wash_group(
         probe = machine_cal.next_free(washer_id, resource_type="washer_machine", not_before=load_start + 1)
 
     if planned is None:
+        if inp.management_mode:
+            return False
         raise OverlapError(
             ValidationError(
                 code="RESOURCE_OVERLAP",
@@ -572,10 +669,21 @@ def _schedule_wash_group(
             bag_ids=[b.bag_id for b in group],
             batch_id=batch.batch_id,
         )
-        for bag, emp, start, end, dur in planned:
+        for bag, emp, start, end, dur_sec in planned:
             if emp is None:
+                if inp.management_mode:
+                    emp_cal.restore(emp_snap)
+                    machine_cal.restore(mach_snap)
+                    return False
                 _book_synthetic_employee(
-                    emp_cal, "__wash_load__", start, dur, task_type="washer_load", bag_ids=[bag.bag_id], hard=True
+                    emp_cal,
+                    "__wash_load__",
+                    start,
+                    dur_sec,
+                    task_type="washer_load",
+                    bag_ids=[bag.bag_id],
+                    hard=True,
+                    management_mode=inp.management_mode,
                 )
                 bag.washer_loaded_by_employee_id = "Unassigned"
             else:
@@ -583,7 +691,7 @@ def _schedule_wash_group(
                     emp_cal,
                     emp,
                     start,
-                    dur,
+                    dur_sec,
                     task_type="washer_load",
                     bag_ids=[bag.bag_id],
                     batch_id=batch.batch_id,
@@ -597,16 +705,24 @@ def _schedule_wash_group(
             bag.wash_start = load_end
             bag.wash_end = wash_end
 
-        # Transfers after wash (employee only; machine already free after wash_end)
+        # Transfers after wash (compat path only). Management mode has transfer_min=0
+        # so dryer handling lives entirely in dry labor time.
+        skip_transfer = inp.management_mode or float(inp.processing_times.transfer_min or 0) <= 0
         xfer_cursor = wash_end
         for bag in group:
+            if skip_transfer:
+                bag.transfer_start = wash_end
+                bag.transfer_end = wash_end
+                bag.transferred_by_employee_id = None
+                continue
             forced = override.transfer_person_id if override else None
+            xfer_dur_sec = _dur(inp.processing_times.transfer_min)
             emp, t0 = pick_employee(
                 inp.employees,
                 "washer",
                 emp_cal,
                 xfer_cursor,
-                inp.processing_times.transfer_min,
+                xfer_dur_sec,
                 forced_id=forced,
                 finish_current_exit=inp.finish_in_progress_at_exit,
             )
@@ -624,19 +740,20 @@ def _schedule_wash_group(
                     emp_cal,
                     "__xfer__",
                     xfer_cursor,
-                    inp.processing_times.transfer_min,
+                    xfer_dur_sec,
                     task_type="transfer",
                     bag_ids=[bag.bag_id],
+                    management_mode=inp.management_mode,
                 )
                 bag.transfer_start, bag.transfer_end = start, end
                 bag.transferred_by_employee_id = "Unassigned"
             else:
-                dur = _emp_rate(emp, "transfer", inp)
+                dur_sec = _dur(_emp_rate_min(emp, "transfer", inp))
                 start, end, _ = _book_employee(
                     emp_cal,
                     emp,
                     t0 if not (hard and forced) else xfer_cursor,
-                    dur,
+                    dur_sec,
                     task_type="transfer",
                     bag_ids=[bag.bag_id],
                     batch_id=batch.batch_id,
@@ -647,6 +764,7 @@ def _schedule_wash_group(
                 bag.transferred_by_employee_id = emp.employee_id
             xfer_cursor = bag.transfer_end  # type: ignore[assignment]
         washer_ids_used.append(washer_id)
+        return True
     except Exception:
         emp_cal.restore(emp_snap)
         machine_cal.restore(mach_snap)
@@ -665,10 +783,13 @@ def _schedule_dry_group(
     override,
     hard: bool,
     dryer_ids_used: list[str],
-) -> int:
+) -> int | None:
     cycle = _dur(inp.processing_times.dry_cycle_min)
-    unload = max(0, int(round(inp.processing_times.unload_dryer_min)))
-    load_dur_default = inp.processing_times.load_dryer_min
+    unload = _dur(inp.processing_times.unload_dryer_min)
+    load_dur_default_sec = _dur(inp.processing_times.load_dryer_min)
+    dry_role = _dry_labor_role(inp)
+    if not dryers:
+        return None
 
     if override and override.dryer_id:
         dryer_id = override.dryer_id
@@ -679,21 +800,21 @@ def _schedule_dry_group(
         )
 
     probe = dryer_ready
-    planned: list[tuple[Bag, Any, int, int, float]] | None = None
+    planned: list[tuple[Bag, Any, int, int, int]] | None = None
     load_start = load_end = dry_end = ready = 0
-    for _attempt in range(64):
+    for _attempt in range(2048):
         machine_free = machine_cal.next_free(dryer_id, resource_type="dryer_machine", not_before=probe)
         cursor = machine_free
-        trial: list[tuple[Bag, Any, int, int, float]] = []
+        trial: list[tuple[Bag, Any, int, int, int]] = []
         pending_emp: dict[str, list[tuple[int, int]]] = {}
         for bag in group:
             forced = override.dryer_load_person_id if override else None
             emp, t0 = pick_employee(
                 inp.employees,
-                "washer",
+                dry_role,
                 emp_cal,
                 cursor,
-                load_dur_default,
+                load_dur_default_sec,
                 forced_id=forced,
                 finish_current_exit=inp.finish_in_progress_at_exit,
             )
@@ -705,10 +826,13 @@ def _schedule_dry_group(
                         {"employee_id": forced, "batch_number": batch.sequence},
                     )
                 )
-            dur = _emp_rate(emp, "load_dryer", inp) if emp else load_dur_default
+            if emp is None and inp.management_mode:
+                trial = []
+                break
+            dur_sec = _dur(_emp_rate_min(emp, "load_dryer", inp)) if emp else load_dur_default_sec
             if hard and forced and emp is not None:
                 start = cursor
-                end = start + _dur(dur)
+                end = start + dur_sec
                 if not emp_cal.is_free(emp.employee_id, start, end, resource_type="employee"):
                     raise OverlapError(
                         ValidationError(
@@ -726,18 +850,23 @@ def _schedule_dry_group(
                 start, end = emp_cal.find_earliest_available(
                     emp.employee_id,
                     max(cursor, t0, machine_free),
-                    _dur(dur),
+                    dur_sec,
                     resource_type="employee",
                     pending=pending_emp.get(emp.employee_id),
                 )
             else:
                 start = max(cursor, machine_free)
-                end = start + _dur(dur)
+                end = start + dur_sec
             if emp is not None:
                 pending_emp.setdefault(emp.employee_id, []).append((start, end))
-            trial.append((bag, emp, start, end, dur))
+            trial.append((bag, emp, start, end, dur_sec))
             cursor = end
 
+        if not trial:
+            if inp.management_mode:
+                return None
+            probe = machine_free + 1
+            continue
         load_start = trial[0][2]
         load_end = trial[-1][3]
         dry_end = load_end + cycle
@@ -762,6 +891,8 @@ def _schedule_dry_group(
         probe = machine_cal.next_free(dryer_id, resource_type="dryer_machine", not_before=load_start + 1)
 
     if planned is None:
+        if inp.management_mode:
+            return None
         raise OverlapError(
             ValidationError(
                 code="RESOURCE_OVERLAP",
@@ -783,10 +914,21 @@ def _schedule_dry_group(
             bag_ids=[b.bag_id for b in group],
             batch_id=batch.batch_id,
         )
-        for bag, emp, start, end, dur in planned:
+        for bag, emp, start, end, dur_sec in planned:
             if emp is None:
+                if inp.management_mode:
+                    emp_cal.restore(emp_snap)
+                    machine_cal.restore(mach_snap)
+                    return None
                 _book_synthetic_employee(
-                    emp_cal, "__dry_load__", start, dur, task_type="dryer_load", bag_ids=[bag.bag_id], hard=True
+                    emp_cal,
+                    "__dry_load__",
+                    start,
+                    dur_sec,
+                    task_type="dryer_load",
+                    bag_ids=[bag.bag_id],
+                    hard=True,
+                    management_mode=inp.management_mode,
                 )
                 bag.dryer_loaded_by_employee_id = "Unassigned"
             else:
@@ -794,11 +936,11 @@ def _schedule_dry_group(
                     emp_cal,
                     emp,
                     start,
-                    dur,
+                    dur_sec,
                     task_type="dryer_load",
                     bag_ids=[bag.bag_id],
                     batch_id=batch.batch_id,
-                    required_role="washer",
+                    required_role=dry_role,
                     hard_start=start,
                 )
                 bag.dryer_loaded_by_employee_id = emp.employee_id

@@ -147,5 +147,5 @@ def test_weight_based_folding_duration_is_correct():
         )
     )
     row = result["bag_rows"][0]
-    fold_min = parse_clock_minutes(row["fold_end"]) - parse_clock_minutes(row["fold_start"])
-    assert fold_min == 60  # 40 lb / 40 lb/hr * 60
+    fold_sec = parse_clock_minutes(row["fold_end"]) - parse_clock_minutes(row["fold_start"])
+    assert fold_sec == 3600  # 40 lb / 40 lb/hr = 60 min = 3600 sec (seconds timebase)

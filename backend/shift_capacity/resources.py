@@ -137,7 +137,8 @@ class ResourceCalendar:
             )
         busy.sort(key=lambda r: r.start)
 
-        for _ in range(256):
+        # Seconds timebase can require many jumps across short reservations.
+        for _ in range(10_000):
             start = t
             for res in busy:
                 if res.end <= start:
@@ -408,6 +409,21 @@ class ResourceCalendar:
                 )
 
 
+def _norm_role(role: str) -> str:
+    role = (role or "").strip().lower()
+    if role in ("dry", "dryer_person", "dryer-person"):
+        return "dryer"
+    if role in ("weigh",):
+        return "weigher"
+    if role in ("sort",):
+        return "sorter"
+    if role in ("wash", "washer_person"):
+        return "washer"
+    if role in ("fold",):
+        return "folder"
+    return role
+
+
 def role_active_at(emp: Employee, role: str, t: int) -> bool:
     if not emp.active:
         return False
@@ -420,14 +436,14 @@ def role_active_at(emp: Employee, role: str, t: int) -> bool:
     if not on_shift:
         return False
 
-    role = role.lower()
+    role = _norm_role(role)
     if emp.role_windows:
         for rw in emp.role_windows:
-            if rw.role == role and rw.start_min <= t < rw.end_min:
+            if _norm_role(rw.role) == role and rw.start_min <= t < rw.end_min:
                 return True
         return False
 
-    qualified = {emp.primary_role.lower(), *[r.lower() for r in emp.qualified_roles]}
+    qualified = {_norm_role(emp.primary_role), *[_norm_role(r) for r in emp.qualified_roles]}
     return role in qualified
 
 
@@ -459,7 +475,7 @@ def pick_employee(
         entry = earliest_entry(emp)
         probe = max(int(earliest), entry)
         attempts = 0
-        while attempts < 48:
+        while attempts < 512:
             if role_active_at(emp, role, probe):
                 end_limit = emp.end_min()
                 if end_limit is not None and probe >= end_limit:
@@ -497,17 +513,20 @@ def pick_employee(
 
 
 def _next_role_start(emp: Employee, role: str, after: int) -> int | None:
-    role = role.lower()
+    role = _norm_role(role)
     if emp.role_windows:
-        starts = [rw.start_min for rw in emp.role_windows if rw.role == role and rw.end_min > after]
+        starts = [rw.start_min for rw in emp.role_windows if _norm_role(rw.role) == role and rw.end_min > after]
         future = [s for s in starts if s >= after]
         return min(future) if future else None
+    # Jump to the next schedule window start after `after` (supports gapped slots).
+    next_windows = sorted(
+        w.start_min for w in emp.schedule_windows if w.start_min > after
+    )
+    if next_windows:
+        return next_windows[0]
     if after < earliest_entry(emp):
         return earliest_entry(emp)
-    end = emp.end_min()
-    if end is not None and after >= end:
-        return None
-    return after
+    return None
 
 
 def task_from_reservation(res: Reservation, resource_id: str | None = None) -> Task:

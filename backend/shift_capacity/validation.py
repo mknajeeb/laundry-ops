@@ -19,39 +19,24 @@ from backend.shift_capacity.models import (
     ValidationError,
     ValidationResult,
 )
+from backend.shift_capacity.timebase import (
+    api_minutes_to_seconds,
+    label_seconds,
+    parse_clock_seconds,
+)
 
 
 def parse_clock_minutes(raw: Any, *, default: str = "7:00 AM") -> int:
-    text = str(raw if raw is not None else default).strip().upper().replace(".", "")
-    if not text:
-        text = default.upper()
-    am_pm = "AM" if "AM" in text else "PM" if "PM" in text else ""
-    core = text.replace("AM", "").replace("PM", "").strip()
-    if ":" in core:
-        hh_s, mm_s = core.split(":", 1)
-    else:
-        hh_s, mm_s = core, "0"
-    try:
-        hh = int(hh_s)
-        mm = int(mm_s)
-    except ValueError:
-        return parse_clock_minutes(default)
-    if am_pm == "PM" and hh != 12:
-        hh += 12
-    if am_pm == "AM" and hh == 12:
-        hh = 0
-    return hh * 60 + mm
+    """Parse a clock label to *seconds* from midnight.
+
+    Name retained for call-site compatibility inside bag_des_v2. Returns seconds.
+    """
+    return parse_clock_seconds(raw, default=default)
 
 
-def label_minutes(minutes: int | None) -> str | None:
-    if minutes is None:
-        return None
-    m = int(minutes) % (24 * 60)
-    hh = m // 60
-    mm = m % 60
-    am_pm = "AM" if hh < 12 else "PM"
-    h12 = hh % 12 or 12
-    return f"{h12}:{mm:02d} {am_pm}"
+def label_minutes(seconds: int | None) -> str | None:
+    """Format seconds-from-midnight as a clock label (shows :SS when needed)."""
+    return label_seconds(seconds)
 
 
 def _maybe_float(raw: Any) -> float | None:
@@ -99,21 +84,39 @@ def parse_inputs(data: dict[str, Any] | None) -> SimulationInputs:
     nested_shift = raw.get("shift") if isinstance(raw.get("shift"), dict) else {}
     nested_times = raw.get("processing_times") if isinstance(raw.get("processing_times"), dict) else {}
     nested_strategy = raw.get("strategy") if isinstance(raw.get("strategy"), dict) else {}
+    management_mode = _flag(raw, "management_mode") or _flag(nested_strategy, "management_mode")
 
-    start_min = parse_clock_minutes(
+    start_min = parse_clock_seconds(
         nested_shift.get("start_time") or raw.get("start_time"), default="7:00 AM"
     )
-    target_min = parse_clock_minutes(
+    target_min = parse_clock_seconds(
         nested_shift.get("target_time") or raw.get("target_time"), default="12:00 PM"
     )
     if target_min <= start_min:
-        target_min = start_min + 5 * 60
+        target_min = start_min + 5 * 3600
     end_raw = nested_shift.get("end_time") or raw.get("end_time")
-    end_min = parse_clock_minutes(end_raw, default=label_minutes(start_min + 8 * 60) or "3:00 PM") if end_raw else start_min + 8 * 60
+    end_min = (
+        parse_clock_seconds(end_raw, default=label_seconds(start_min + 8 * 3600) or "3:00 PM")
+        if end_raw
+        else start_min + 8 * 3600
+    )
 
-    summary_interval = int(nested_shift.get("summary_interval_min") or raw.get("summary_interval_min") or 30)
-    if summary_interval not in (30, 60):
-        summary_interval = 30
+    summary_interval = int(
+        nested_shift.get("summary_interval_min")
+        or raw.get("summary_interval_min")
+        or nested_shift.get("planning_block_size_min")
+        or raw.get("planning_block_size_min")
+        or (60 if management_mode else 30)
+    )
+    if summary_interval not in (30, 45, 60):
+        summary_interval = 60 if management_mode else 30
+    planning_block = int(
+        nested_shift.get("planning_block_size_min")
+        or raw.get("planning_block_size_min")
+        or summary_interval
+    )
+    if planning_block not in (30, 45, 60):
+        planning_block = summary_interval if summary_interval in (30, 45, 60) else 60
 
     bag_count = max(1, int(raw.get("bag_count") or nested_shift.get("bag_count") or 1))
     avg_lbs = float(raw.get("avg_lbs_per_bag") or nested_shift.get("avg_lbs_per_bag") or 20)
@@ -124,6 +127,7 @@ def parse_inputs(data: dict[str, Any] | None) -> SimulationInputs:
         target_min=target_min,
         end_min=end_min,
         summary_interval_min=summary_interval,
+        planning_block_size_min=planning_block,
         washer_count=max(1, int(nested_shift.get("washer_count") or raw.get("washer_count") or 1)),
         dryer_count=max(1, int(nested_shift.get("dryer_count") or raw.get("dryer_count") or 1)),
         washer_capacity_lb=float(nested_shift.get("washer_capacity_lb") or raw.get("washer_capacity_lb") or 80),
@@ -149,36 +153,92 @@ def parse_inputs(data: dict[str, Any] | None) -> SimulationInputs:
         order_preserving=bool(nested_strategy.get("order_preserving", True)),
     )
 
-    times = ProcessingTimes(
-        weigh_min_per_bag=float(nested_times.get("weigh_min_per_bag") or raw.get("weigh_min_per_bag") or 1),
-        sort_min_per_bag=float(nested_times.get("sort_min_per_bag") or raw.get("sort_min_per_bag") or 5),
-        load_washer_min=float(nested_times.get("load_washer_min") or raw.get("load_washer_min") or 3),
-        wash_cycle_min=float(nested_times.get("wash_cycle_min") or raw.get("wash_cycle_min") or 30),
-        transfer_min=float(
+    weigh_sec_raw = nested_times.get("weigh_sec_per_bag", raw.get("weigh_sec_per_bag"))
+    weigh_min_raw = nested_times.get("weigh_min_per_bag", raw.get("weigh_min_per_bag"))
+    if weigh_sec_raw is not None and weigh_sec_raw != "":
+        weigh_sec = float(weigh_sec_raw)
+        weigh_min = weigh_sec / 60.0
+    elif weigh_min_raw is not None and weigh_min_raw != "":
+        weigh_min = float(weigh_min_raw)
+        weigh_sec = weigh_min * 60.0
+    elif management_mode:
+        weigh_sec = 45.0
+        weigh_min = 45.0 / 60.0
+    else:
+        weigh_sec = 60.0
+        weigh_min = 1.0
+
+    transfer_present = any(
+        k in nested_times or k in raw
+        for k in ("transfer_min", "unload_transfer_min")
+    )
+    if management_mode and not transfer_present:
+        transfer_min = 0.0
+    else:
+        transfer_min = float(
             nested_times.get("transfer_min")
             or nested_times.get("unload_transfer_min")
             or raw.get("unload_transfer_min")
             or raw.get("transfer_min")
-            or 5
-        ),
+            or (0 if management_mode else 5)
+        )
+        if management_mode:
+            # Management workflow folds dryer handling into dry labor — never add a
+            # standalone transfer assumption even if a legacy field is present.
+            transfer_min = 0.0
+
+    fold_mode_raw = nested_times.get("fold_rate_mode") or raw.get("fold_rate_mode")
+    if fold_mode_raw is None:
+        fold_mode = "minutes_per_bag" if management_mode else "lbs_per_hour"
+    else:
+        fold_mode = str(fold_mode_raw).strip().lower()
+        if fold_mode not in ("minutes_per_bag", "lbs_per_hour"):
+            fold_mode = "minutes_per_bag" if management_mode else "lbs_per_hour"
+
+    times = ProcessingTimes(
+        weigh_min_per_bag=weigh_min,
+        weigh_sec_per_bag=weigh_sec,
+        sort_min_per_bag=float(nested_times.get("sort_min_per_bag") or raw.get("sort_min_per_bag") or 5),
+        load_washer_min=float(nested_times.get("load_washer_min") or raw.get("load_washer_min") or 3),
+        wash_cycle_min=float(nested_times.get("wash_cycle_min") or raw.get("wash_cycle_min") or 30),
+        transfer_min=transfer_min,
         load_dryer_min=float(nested_times.get("load_dryer_min") or raw.get("load_dryer_min") or 3),
         dry_cycle_min=float(nested_times.get("dry_cycle_min") or raw.get("dry_cycle_min") or 45),
         unload_dryer_min=float(nested_times.get("unload_dryer_min") or raw.get("unload_dryer_min") or 0),
-        fold_rate_mode=str(  # type: ignore[arg-type]
-            nested_times.get("fold_rate_mode") or raw.get("fold_rate_mode") or "lbs_per_hour"
-        ).strip().lower()
-        if str(nested_times.get("fold_rate_mode") or raw.get("fold_rate_mode") or "lbs_per_hour").strip().lower()
-        in ("minutes_per_bag", "lbs_per_hour")
-        else "lbs_per_hour",
+        fold_rate_mode=fold_mode,  # type: ignore[arg-type]
         fold_min_per_bag=float(nested_times.get("fold_min_per_bag") or raw.get("fold_min_per_bag") or 6),
         fold_lbs_per_hour=float(nested_times.get("fold_lbs_per_hour") or raw.get("fold_lbs_per_hour") or 35),
     )
 
-    employees = _parse_employees(raw.get("employees") or [], start_min=start_min, end_min=end_min)
-    employees = _apply_shared_role_flags(employees, raw)
+    staffing_plan_data: dict[str, Any] = {}
+    staffing_errors: list[ValidationError] = []
+    if management_mode:
+        from backend.shift_capacity.staffing_plan import parse_and_compile_staffing_plan
 
-    if not employees:
-        employees = _default_employees(start_min, end_min, times.fold_lbs_per_hour)
+        # Management mode: staffing_plan is the sole labor source of truth.
+        # Ignore legacy employees / defaults / same-person / secondary roles.
+        plan_raw = raw.get("staffing_plan")
+        if plan_raw is None and isinstance(raw.get("staffing"), dict):
+            plan_raw = raw.get("staffing")
+        compiled = parse_and_compile_staffing_plan(
+            plan_raw if plan_raw is not None else {"intervals": []},
+            plan_start_sec=start_min,
+            plan_target_sec=target_min,
+            plan_end_sec=end_min,
+        )
+        if not compiled.accepted:
+            staffing_errors = list(compiled.errors)
+            employees = []
+        else:
+            employees = list(compiled.employees)
+            staffing_plan_data = compiled.as_dict()
+    else:
+        employees = _parse_employees(raw.get("employees") or [], start_min=start_min, end_min=end_min)
+        employees = _apply_shared_role_flags(employees, raw)
+        if not employees:
+            employees = _default_employees(
+                start_min, end_min, times.fold_lbs_per_hour, management_mode=False
+            )
 
     machines: list[Machine] = []
     for row in raw.get("machines") or []:
@@ -205,22 +265,30 @@ def parse_inputs(data: dict[str, Any] | None) -> SimulationInputs:
         orders = _synthetic_orders(bag_count, bag_weights, avg_lbs, shift.batch_size)
 
     overrides = _parse_overrides(raw.get("batch_overrides") or [])
+    if management_mode:
+        overrides = _neutralize_helper_overrides(overrides)
 
     mode = _normalize_mode(raw.get("mode") or raw.get("sim_mode") or "full_run")
     continue_from = None
-    if raw.get("continue_from_time") is not None or raw.get("continue_from_min") is not None:
-        continue_from = (
-            int(raw["continue_from_min"])
-            if raw.get("continue_from_min") is not None
-            else parse_clock_minutes(raw.get("continue_from_time"))
-        )
+    if (
+        raw.get("continue_from_time") is not None
+        or raw.get("continue_from_min") is not None
+        or raw.get("continue_from_sec") is not None
+    ):
+        if raw.get("continue_from_sec") is not None:
+            continue_from = int(raw["continue_from_sec"])
+        elif raw.get("continue_from_time") is not None:
+            continue_from = parse_clock_seconds(raw.get("continue_from_time"))
+        else:
+            continue_from = api_minutes_to_seconds(raw["continue_from_min"])
         if mode == "full_run":
             mode = "continue_from_time"
 
     exit_policy = _exit_policy(raw.get("exit_policy"))
-    finish = exit_policy == "finish_current_task"
+    # Management mode: never allow a task to start that extends past the slot end.
+    finish = False if management_mode else (exit_policy == "finish_current_task")
 
-    return SimulationInputs(
+    inp = SimulationInputs(
         mode=mode,  # type: ignore[arg-type]
         scenario_id=raw.get("scenario_id"),
         parent_scenario_id=raw.get("parent_scenario_id"),
@@ -236,13 +304,26 @@ def parse_inputs(data: dict[str, Any] | None) -> SimulationInputs:
         recommendation_action=raw.get("recommendation_action") if isinstance(raw.get("recommendation_action"), dict) else None,
         change_type=raw.get("change_type"),  # type: ignore[arg-type]
         change_payload=raw.get("change_payload") if isinstance(raw.get("change_payload"), dict) else None,
-        weigher_washer_same=_flag(raw, "weigher_washer_same"),
-        weigher_sorter_same=_flag(raw, "weigher_sorter_same"),
-        sorter_washer_same=_flag(raw, "sorter_washer_same"),
-        washer_folder_same=_flag(raw, "washer_folder_same"),
+        weigher_washer_same=False if management_mode else _flag(raw, "weigher_washer_same"),
+        weigher_sorter_same=False if management_mode else _flag(raw, "weigher_sorter_same"),
+        sorter_washer_same=False if management_mode else _flag(raw, "sorter_washer_same"),
+        washer_folder_same=False if management_mode else _flag(raw, "washer_folder_same"),
         finish_in_progress_at_exit=finish,
+        management_mode=management_mode,
+        staffing_plan_data=staffing_plan_data,
         raw=raw,
     )
+    if staffing_errors:
+        # Stash for validate_inputs / early rejection in scheduler
+        inp.staffing_plan_data = {
+            "errors": [e.as_dict() for e in staffing_errors],
+            "normalized_intervals": [],
+            "authored_intervals": [],
+            "compiled_resources": [],
+        }
+        # Raise so API returns structured validation (also checked in validate_inputs)
+        raise ValueError("; ".join(e.message for e in staffing_errors))
+    return inp
 
 
 def validate_inputs(inp: SimulationInputs) -> ValidationResult:
@@ -364,13 +445,13 @@ def _parse_employees(rows: list[Any], *, start_min: int, end_min: int) -> list[E
         if not isinstance(row, dict) or row.get("active") is False:
             continue
         emp_id = str(row.get("employee_id") or row.get("id") or f"E{idx + 1}")
-        role = str(row.get("primary_role") or "helper").strip().lower()
+        role = _normalize_role(str(row.get("primary_role") or "helper").strip().lower())
         name = str(row.get("display_name") or row.get("name") or f"{role.title()} {idx + 1}")
-        start = parse_clock_minutes(row.get("start_time"), default=label_minutes(start_min) or "7:00 AM")
+        start = parse_clock_seconds(row.get("start_time"), default=label_seconds(start_min) or "7:00 AM")
         end_raw = row.get("end_time")
-        end = parse_clock_minutes(end_raw, default=label_minutes(end_min) or "3:00 PM") if end_raw else end_min
+        end = parse_clock_seconds(end_raw, default=label_seconds(end_min) or "3:00 PM") if end_raw else end_min
         secondary = [
-            str(r).strip().lower()
+            _normalize_role(str(r).strip().lower())
             for r in (row.get("qualified_roles") or row.get("secondary_roles") or row.get("allowed_secondary_roles") or [])
             if str(r).strip()
         ]
@@ -380,14 +461,14 @@ def _parse_employees(rows: list[Any], *, start_min: int, end_min: int) -> list[E
                 continue
             role_windows.append(
                 EmployeeRoleWindow(
-                    role=str(window["role"]).strip().lower(),
-                    start_min=parse_clock_minutes(
+                    role=_normalize_role(str(window["role"]).strip().lower()),
+                    start_min=parse_clock_seconds(
                         window.get("start_time") or window.get("from"),
-                        default=label_minutes(start) or "7:00 AM",
+                        default=label_seconds(start) or "7:00 AM",
                     ),
-                    end_min=parse_clock_minutes(
+                    end_min=parse_clock_seconds(
                         window.get("end_time") or window.get("to"),
-                        default=label_minutes(end) or "3:00 PM",
+                        default=label_seconds(end) or "3:00 PM",
                     ),
                 )
             )
@@ -453,7 +534,46 @@ def _apply_shared_role_flags(employees: list[Employee], raw: dict[str, Any]) -> 
     return employees
 
 
-def _default_employees(start_min: int, end_min: int, fold_lbs: float) -> list[Employee]:
+def _normalize_role(role: str) -> str:
+    role = (role or "").strip().lower()
+    if role in ("dry", "dryer_person", "dryer-person"):
+        return "dryer"
+    if role in ("weigh", "weigher"):
+        return "weigher"
+    if role in ("sort", "sorter"):
+        return "sorter"
+    if role in ("wash", "washer", "washer_person"):
+        return "washer"
+    if role in ("fold", "folder"):
+        return "folder"
+    return role
+
+
+def _apply_management_staffing_rules(employees: list[Employee]) -> list[Employee]:
+    """Explicit staffing only: no secondary-role freelancing; keep role_windows."""
+    for emp in employees:
+        emp.qualified_roles = []
+        emp.primary_role = _normalize_role(emp.primary_role)
+        for rw in emp.role_windows:
+            rw.role = _normalize_role(rw.role)
+    return employees
+
+
+def _neutralize_helper_overrides(overrides: list[BatchOverride]) -> list[BatchOverride]:
+    for ov in overrides:
+        ov.helper_employee_id = None
+        ov.sorter_helps_washer = None
+        ov.folder_helps_washer = None
+    return overrides
+
+
+def _default_employees(
+    start_min: int,
+    end_min: int,
+    fold_lbs: float,
+    *,
+    management_mode: bool = False,
+) -> list[Employee]:
     def emp(eid: str, name: str, role: str, start: int, **rates: Any) -> Employee:
         return Employee(
             employee_id=eid,
@@ -463,13 +583,22 @@ def _default_employees(start_min: int, end_min: int, fold_lbs: float) -> list[Em
             default_rates=EmployeeRates(**rates),
         )
 
+    if management_mode:
+        return [
+            emp("E-WEIGH-1", "Weigher 1", "weigher", start_min),
+            emp("E-SORT-1", "Sorter 1", "sorter", start_min),
+            emp("E-WASH-1", "Washer 1", "washer", start_min),
+            emp("E-DRY-1", "Dryer 1", "dryer", start_min),
+            emp("E-FOLD-1", "Folder 1", "folder", start_min, fold_min_per_bag=6.0),
+        ]
+
     return [
         emp("E-WEIGH-1", "Weigher 1", "weigher", start_min),
         emp("E-SORT-1", "Sorter 1", "sorter", start_min),
         emp("E-WASH-1", "Washer 1", "washer", start_min),
         emp("E-FOLD-1", "Folder 1", "folder", start_min, fold_lbs_per_hour=fold_lbs),
-        emp("E-FOLD-2", "Folder 2", "folder", start_min + 60, fold_lbs_per_hour=max(fold_lbs, 40)),
-        emp("E-FOLD-3", "Folder 3", "folder", start_min + 150, fold_lbs_per_hour=fold_lbs),
+        emp("E-FOLD-2", "Folder 2", "folder", start_min + 3600, fold_lbs_per_hour=max(fold_lbs, 40)),
+        emp("E-FOLD-3", "Folder 3", "folder", start_min + 9000, fold_lbs_per_hour=fold_lbs),
     ]
 
 
@@ -556,11 +685,12 @@ def _parse_overrides(rows: list[Any]) -> list[BatchOverride]:
             raise ValueError("batch_overrides.apply_scope must be this_batch_only, from_this_batch, or all_future_unlocked")
         earliest = None
         if row.get("earliest_start") or row.get("planned_start_time") or row.get("planned_start_min") is not None:
-            earliest = (
-                int(row["planned_start_min"])
-                if row.get("planned_start_min") is not None
-                else parse_clock_minutes(row.get("earliest_start") or row.get("planned_start_time"))
-            )
+            if row.get("planned_start_sec") is not None:
+                earliest = int(row["planned_start_sec"])
+            elif row.get("planned_start_min") is not None:
+                earliest = api_minutes_to_seconds(row["planned_start_min"])
+            else:
+                earliest = parse_clock_seconds(row.get("earliest_start") or row.get("planned_start_time"))
         overrides.append(
             BatchOverride(
                 batch_number=number,

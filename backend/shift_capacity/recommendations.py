@@ -25,7 +25,7 @@ def build_recommendations(
     # Candidate: add washer person mid-shift if washer wait is high
     avg_wash_wait = float(kpis.get("average_bag_wait_for_washer") or 0)
     if avg_wash_wait >= 5:
-        inject_at = state.inputs.shift.start_min + 90
+        inject_at = state.inputs.shift.start_min + 90 * 60
         rec = _try_staff_injection(
             raw_inputs,
             run_fn,
@@ -41,7 +41,7 @@ def build_recommendations(
 
     avg_folder_wait = float(kpis.get("average_bag_wait_for_folder") or 0)
     if avg_folder_wait >= 8 or int(kpis.get("maximum_fold_backlog") or 0) >= 4:
-        inject_at = state.inputs.shift.start_min + 120
+        inject_at = state.inputs.shift.start_min + 120 * 60
         rec = _try_staff_injection(
             raw_inputs,
             run_fn,
@@ -57,7 +57,7 @@ def build_recommendations(
 
     sorter_util = float(kpis.get("sorter_utilization_pct") or 0)
     if sorter_util >= 85:
-        inject_at = state.inputs.shift.start_min + 60
+        inject_at = state.inputs.shift.start_min + 60 * 60
         rec = _try_staff_injection(
             raw_inputs,
             run_fn,

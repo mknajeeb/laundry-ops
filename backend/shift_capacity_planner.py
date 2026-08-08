@@ -4253,6 +4253,7 @@ def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
         from backend.shift_capacity.service import run_shift_capacity
 
         des = run_shift_capacity(dict(data or {}))
+        summary = des.get("summary") or des.get("kpis") or {}
         return {
             "engine": "bag_des_v2",
             "scenario_id": des.get("scenario_id"),
@@ -4261,7 +4262,7 @@ def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
             "validation": des.get("validation") or {},
             "continuation": des.get("continuation") or {},
             "inputs": des.get("inputs") or {},
-            "summary": des.get("summary") or des.get("kpis") or {},
+            "summary": summary,
             "kpis": des.get("kpis") or des.get("summary") or {},
             "ready_to_fold_by_batch": des.get("ready_to_fold_by_batch") or [],
             "availability_30min": des.get("availability_30min") or des.get("time_summary") or [],
@@ -4279,6 +4280,14 @@ def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
             "recommendations": des.get("recommendations") or [],
             "simulation_valid": des.get("simulation_valid", True),
             "overlap_errors": des.get("overlap_errors") or [],
+            # Management planner surface (also available under des.*)
+            "block_positions": des.get("block_positions") or [],
+            "staffing_plan": des.get("staffing_plan") or {},
+            "management_outcome": des.get("management_outcome")
+            or summary.get("management_outcome"),
+            "staffing_deficits": des.get("staffing_deficits")
+            or summary.get("staffing_deficits")
+            or [],
             "des": des,
             "validation_errors": des.get("validation_errors") or [],
             "bags_moved": des.get("bags_moved") or [],
@@ -4289,7 +4298,7 @@ def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
             "recommendation": {},
             "operational": {
                 "command_board": {
-                    "summary": des.get("summary") or des.get("kpis") or {},
+                    "summary": summary,
                     "batch_timeline": des.get("ready_to_fold_by_batch") or [],
                     "resource_timeline": des.get("staffing_chart") or [],
                     "next_batch": (des.get("ready_to_fold_by_batch") or [None])[0],

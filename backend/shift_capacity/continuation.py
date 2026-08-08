@@ -7,7 +7,8 @@ from typing import Any
 
 from backend.shift_capacity.models import SimulationInputs, SimulationState, new_id
 from backend.shift_capacity.scheduler import run_scheduler
-from backend.shift_capacity.validation import label_minutes, parse_clock_minutes
+from backend.shift_capacity.timebase import label_seconds, parse_clock_seconds, sec_to_min_int
+from backend.shift_capacity.validation import label_minutes
 
 
 def build_freeze_snapshot(baseline: SimulationState) -> SimulationState:
@@ -20,25 +21,30 @@ def employees_present_before(inp: SimulationInputs, t: int) -> list:
 
 
 def prepare_continuation_inputs(data: dict[str, Any], t: int) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Split payload into baseline (staff before T) and continued (all staff)."""
+    """Split payload into baseline (staff before T) and continued (all staff).
+
+    `t` is seconds from midnight.
+    """
     baseline = dict(data or {})
     continued = dict(data or {})
     employees = list(baseline.get("employees") or [])
     start_label = baseline.get("start_time") or (baseline.get("shift") or {}).get("start_time") or "7:00 AM"
 
     def start_of(emp: dict[str, Any]) -> int:
-        return parse_clock_minutes(emp.get("start_time"), default=str(start_label))
+        return parse_clock_seconds(emp.get("start_time"), default=str(start_label))
 
     baseline["employees"] = [dict(e) for e in employees if isinstance(e, dict) and start_of(e) < t]
     baseline["mode"] = "full_run"
     baseline["sim_mode"] = "full_run"
     baseline.pop("continue_from_time", None)
     baseline.pop("continue_from_min", None)
+    baseline.pop("continue_from_sec", None)
 
     continued["mode"] = "continue_from_time"
     continued["sim_mode"] = "continue_from_time"
-    continued["continue_from_min"] = t
-    continued["continue_from_time"] = label_minutes(t)
+    continued["continue_from_sec"] = t
+    continued["continue_from_min"] = sec_to_min_int(t)
+    continued["continue_from_time"] = label_minutes(t) or label_seconds(t)
     return baseline, continued
 
 

@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from backend.shift_capacity.models import Bag, SimulationState
+from backend.shift_capacity.block_positions import build_block_positions
+from backend.shift_capacity.staffing_plan import AuthoredInterval, CanonicalSegment, block_staffing_view
 from backend.shift_capacity.summaries import compute_kpis, ready_by_batch, staffing_summary, time_summary
+from backend.shift_capacity.timebase import sec_to_min_int
 from backend.shift_capacity.validation import label_minutes
 
 
@@ -111,8 +114,10 @@ def serialize_state(
                     {
                         "start": label_minutes(r.start),
                         "end": label_minutes(r.end),
-                        "start_min": r.start,
-                        "end_min": r.end,
+                        "start_sec": r.start,
+                        "end_sec": r.end,
+                        "start_min": sec_to_min_int(r.start),
+                        "end_min": sec_to_min_int(r.end),
                         "task": r.task_type,
                         "task_id": r.task_id,
                         "bag_ids": list(r.bag_ids),
@@ -134,8 +139,10 @@ def serialize_state(
                     {
                         "start": label_minutes(r.start),
                         "end": label_minutes(r.end),
-                        "start_min": r.start,
-                        "end_min": r.end,
+                        "start_sec": r.start,
+                        "end_sec": r.end,
+                        "start_min": sec_to_min_int(r.start),
+                        "end_min": sec_to_min_int(r.end),
                         "task": r.task_type,
                         "task_id": r.task_id,
                         "bag_ids": list(r.bag_ids),
@@ -200,6 +207,10 @@ def serialize_state(
         "ready_to_fold_by_batch": batches,
         "time_summary": time_rows,
         "availability_30min": time_rows if interval == 30 else time_summary(state, 30),
+        "block_positions": _block_positions_with_staffing(state),
+        "staffing_plan": _staffing_plan_payload(state),
+        "management_outcome": kpis.get("management_outcome"),
+        "staffing_deficits": kpis.get("staffing_deficits") or [],
         "staffing_summary": staff_rows,
         "staffing_chart": staff_rows,
         "employee_timeline": employee_timeline,
@@ -303,10 +314,15 @@ def serialize_state(
             "batch_size": state.inputs.shift.batch_size,
             "batch_limit_mode": state.inputs.shift.batch_limit_mode,
             "summary_interval_min": state.inputs.shift.summary_interval_min,
+            "planning_block_size_min": state.inputs.shift.planning_block_size_min,
+            "management_mode": state.inputs.management_mode,
+            "weigh_sec_per_bag": state.inputs.processing_times.weigh_sec_per_bag,
+            "weigh_min_per_bag": state.inputs.processing_times.weigh_min_per_bag,
             "wash_cycle_min": state.inputs.processing_times.wash_cycle_min,
             "dry_cycle_min": state.inputs.processing_times.dry_cycle_min,
             "load_washer_min": state.inputs.processing_times.load_washer_min,
             "unload_transfer_min": state.inputs.processing_times.transfer_min,
+            "transfer_min": state.inputs.processing_times.transfer_min,
             "load_dryer_min": state.inputs.processing_times.load_dryer_min,
             "unload_dryer_min": state.inputs.processing_times.unload_dryer_min,
             "fold_rate_mode": state.inputs.processing_times.fold_rate_mode,
@@ -335,6 +351,49 @@ def serialize_state(
             "dryers": [m.machine_id for m in state.inputs.machines if m.kind == "dryer"],
         },
     }
+
+
+def _staffing_plan_payload(state: SimulationState) -> dict[str, Any]:
+    data = dict(state.inputs.staffing_plan_data or {})
+    if not state.inputs.management_mode and not data:
+        return {"management_mode": False}
+    data["management_mode"] = state.inputs.management_mode
+    return data
+
+
+def _block_positions_with_staffing(state: SimulationState) -> list[dict[str, Any]]:
+    rows = build_block_positions(state)
+    plan = state.inputs.staffing_plan_data or {}
+    if not state.inputs.management_mode or not plan:
+        return rows
+
+    authored = [
+        AuthoredInterval(
+            role=str(a["role"]),
+            people=int(a["people"]),
+            start_sec=int(a["start_sec"]),
+            end_sec=int(a["end_sec"]),
+            mode=str(a.get("mode") or "base"),
+        )
+        for a in plan.get("authored_intervals") or []
+    ]
+    normalized = [
+        CanonicalSegment(
+            role=str(s["role"]),
+            start_sec=int(s["start_sec"]),
+            end_sec=int(s["end_sec"]),
+            people=int(s["people"]),
+        )
+        for s in plan.get("normalized_intervals") or []
+    ]
+    for row in rows:
+        row["staffing"] = block_staffing_view(
+            authored,
+            normalized,
+            block_start_sec=int(row["block_start_sec"]),
+            block_end_sec=int(row["block_end_sec"]),
+        )
+    return rows
 
 
 def _util(rows, start: int, end: int) -> float:

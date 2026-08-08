@@ -2279,13 +2279,25 @@ def register_rinse_shift_analysis_routes(
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err_resp, err_code = require_user(cursor)
-            if err_resp:
-                return err_resp, err_code
             if request.method == "POST":
                 body = request.get_json(silent=True) or {}
             else:
                 body = {k: request.args.get(k) for k in request.args if request.args.get(k) is not None}
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                # Opt-in local preview only (never on by default in production).
+                import os
+
+                remote = (request.remote_addr or "").strip()
+                allow_local_preview = os.getenv(
+                    "LOCAL_MANAGEMENT_PLANNER_PREVIEW", ""
+                ).strip().lower() in ("1", "true", "yes")
+                if not (
+                    allow_local_preview
+                    and remote in ("127.0.0.1", "::1")
+                    and bool(body.get("management_mode"))
+                ):
+                    return err_resp, err_code
             payload = simulate_shift_capacity(body)
             return jsonify(json_safe_rinse(payload))
         except ValueError as exc:

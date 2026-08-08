@@ -53,6 +53,39 @@ def compute_kpis(state: SimulationState) -> dict[str, Any]:
     primary = candidates[0][1] if candidates and candidates[0][0] > 0 else "none"
     secondary = candidates[1][1] if len(candidates) > 1 else "none"
 
+    target_bags = state.inputs.shift.bag_count or len(bags)
+    all_complete = len(folded) >= target_bags and target_bags > 0 and all(
+        b.completed_at is not None for b in bags
+    )
+    deficits: list[dict[str, Any]] = []
+    if state.inputs.management_mode:
+        from backend.shift_capacity.staffing_plan import (
+            compute_staffing_deficits,
+            first_blocking_role,
+        )
+
+        deficits = compute_staffing_deficits(state)
+        blocking = first_blocking_role(deficits)
+    else:
+        blocking = None
+
+    outcome = _management_outcome(
+        bags=bags,
+        target_sec=target,
+        target_bags=target_bags,
+        final_complete=final_complete,
+        bags_folded_by_target=bags_folded,
+        all_complete=all_complete,
+        first_blocking_role=blocking,
+        management_mode=state.inputs.management_mode,
+    )
+
+    # Management mode: never present a projected finish unless the plan can complete.
+    if state.inputs.management_mode and not all_complete:
+        final_completion_label = None
+    else:
+        final_completion_label = label_minutes(final_complete)
+
     return {
         "bags_ready_by_target": bags_ready,
         "pounds_ready_by_target": lbs_ready,
@@ -62,7 +95,7 @@ def compute_kpis(state: SimulationState) -> dict[str, Any]:
         "first_batch_ready_time": label_minutes(batches[0].ready_to_fold) if batches else None,
         "last_batch_ready_time": label_minutes(batches[-1].ready_to_fold) if batches else None,
         "last_bag_ready_time": label_minutes(last_ready),
-        "final_completion_time": label_minutes(final_complete),
+        "final_completion_time": final_completion_label,
         "maximum_fold_backlog": max_backlog,
         "time_of_maximum_backlog": label_minutes(max_backlog_time),
         "average_bag_wait_for_washer": avg([b.wait_for_washer_minutes for b in bags]),
@@ -80,6 +113,52 @@ def compute_kpis(state: SimulationState) -> dict[str, Any]:
         "primary_bottleneck": primary,
         "secondary_bottleneck": secondary,
         "avg_ready_wait_min": avg([b.wait_for_folder_minutes for b in bags]),
+        "management_outcome": outcome,
+        "staffing_deficits": deficits,
+    }
+
+
+def _management_outcome(
+    *,
+    bags: list[Bag],
+    target_sec: int,
+    target_bags: int,
+    final_complete: int | None,
+    bags_folded_by_target: int,
+    all_complete: bool,
+    first_blocking_role: str | None = None,
+    management_mode: bool = False,
+) -> dict[str, Any]:
+    """Explicit management planner outcome (incomplete plans are valid)."""
+    completed_count = len([b for b in bags if b.completed_at is not None])
+    if all_complete:
+        if final_complete is not None and final_complete <= target_sec:
+            status = "completed"
+        else:
+            status = "incomplete_by_target"  # finished after target under explicit staff
+        return {
+            "completion_status": status,
+            "can_complete_under_plan": True,
+            "projected_finish": label_minutes(final_complete),
+            "bags_completed": completed_count,
+            "completed_by_target": bags_folded_by_target,
+            "bags_completed_by_target": bags_folded_by_target,
+            "target_bags": target_bags,
+            "first_blocking_role": None,
+            "stalled_reason": None,
+        }
+
+    # Not all bags completed under the explicit staffing plan.
+    return {
+        "completion_status": "stalled",
+        "can_complete_under_plan": False,
+        "projected_finish": None,
+        "bags_completed": completed_count,
+        "completed_by_target": bags_folded_by_target,
+        "bags_completed_by_target": bags_folded_by_target,
+        "target_bags": target_bags,
+        "first_blocking_role": first_blocking_role if management_mode else None,
+        "stalled_reason": "required_labor_unavailable_under_staffing_plan",
     }
 
 
@@ -114,7 +193,8 @@ def ready_by_batch(state: SimulationState) -> list[dict[str, Any]]:
 
 
 def time_summary(state: SimulationState, interval_min: int | None = None) -> list[dict[str, Any]]:
-    interval = interval_min or state.inputs.shift.summary_interval_min or 30
+    interval_min = interval_min or state.inputs.shift.summary_interval_min or 30
+    interval = max(1, int(interval_min)) * 60  # seconds
     bags = state.bags
     start = state.inputs.shift.start_min
     end = max(
@@ -151,18 +231,23 @@ def staffing_summary(state: SimulationState) -> list[dict[str, Any]]:
                     switches.append(f"{emp.display_name} → {rw.role}")
                 if rw.end_min == t:
                     switches.append(f"{emp.display_name} leaves {rw.role}")
+        from backend.shift_capacity.timebase import sec_to_min_int
+
         rows.append(
             {
                 "time": label_minutes(t),
-                "time_min": t,
+                "time_sec": t,
+                "time_min": sec_to_min_int(t),
                 "active_weighers": sum(1 for e in employees if role_active_at(e, "weigher", t)),
                 "active_sorters": sum(1 for e in employees if role_active_at(e, "sorter", t)),
                 "active_washer_persons": sum(1 for e in employees if role_active_at(e, "washer", t)),
+                "active_dryers": sum(1 for e in employees if role_active_at(e, "dryer", t)),
                 "active_folders": sum(1 for e in employees if role_active_at(e, "folder", t)),
                 # Compat keys
                 "weighers": sum(1 for e in employees if role_active_at(e, "weigher", t)),
                 "sorters": sum(1 for e in employees if role_active_at(e, "sorter", t)),
                 "washer_persons": sum(1 for e in employees if role_active_at(e, "washer", t)),
+                "dryers": sum(1 for e in employees if role_active_at(e, "dryer", t)),
                 "folders": sum(1 for e in employees if role_active_at(e, "folder", t)),
                 "role_switches": switches,
             }
@@ -179,17 +264,44 @@ def _interval_row(bags: list[Bag], employees: list[Employee], t: int) -> dict[st
     ready_lbs = round(sum(b.weight_lb for b in bags if b.ready_to_fold is not None and b.ready_to_fold <= t), 2)
     folded_lbs = round(sum(b.weight_lb for b in bags if b.completed_at is not None and b.completed_at <= t), 2)
 
+    from backend.shift_capacity.timebase import sec_to_min_int
+
+    waiting_to_sort = count(
+        lambda b: b.weigh_end is not None
+        and b.weigh_end <= t
+        and (b.sort_start is None or b.sort_start > t)
+    )
+    waiting_to_wash = count(
+        lambda b: b.sort_end is not None
+        and b.sort_end <= t
+        and (b.washer_load_start is None or b.washer_load_start > t)
+    )
+    waiting_to_dry = count(
+        lambda b: b.wash_end is not None
+        and b.wash_end <= t
+        and (b.dryer_load_start is None or b.dryer_load_start > t)
+        and not (
+            b.transfer_start is not None
+            and b.transfer_end is not None
+            and b.transfer_start < b.transfer_end
+            and b.transfer_start <= t < b.transfer_end
+        )
+    )
+    fold_backlog = count(
+        lambda b: b.ready_to_fold is not None
+        and b.ready_to_fold <= t
+        and (b.fold_start is None or b.fold_start > t)
+    )
+
     return {
         "time": label_minutes(t),
-        "time_min": t,
+        "time_sec": t,
+        "time_min": sec_to_min_int(t),
         "entered": count(lambda b: b.entry_time is not None and b.entry_time <= t),
         "weighed": count(lambda b: b.weigh_end is not None and b.weigh_end <= t),
         "sorted": count(lambda b: b.sort_end is not None and b.sort_end <= t),
-        "waiting_to_wash": count(
-            lambda b: b.sort_end is not None
-            and b.sort_end <= t
-            and (b.washer_load_start is None or b.washer_load_start > t)
-        ),
+        "waiting_to_sort": waiting_to_sort,
+        "waiting_to_wash": waiting_to_wash,
         "washer_loading": count(
             lambda b: b.washer_load_start is not None
             and b.washer_load_end is not None
@@ -198,11 +310,8 @@ def _interval_row(bags: list[Bag], employees: list[Employee], t: int) -> dict[st
         "in_wash": count(
             lambda b: b.wash_start is not None and b.wash_end is not None and b.wash_start <= t < b.wash_end
         ),
-        "waiting_for_dryer": count(
-            lambda b: b.wash_end is not None
-            and b.wash_end <= t
-            and (b.dryer_load_start is None or b.dryer_load_start > t)
-        ),
+        "waiting_to_dry": waiting_to_dry,
+        "waiting_for_dryer": waiting_to_dry,
         "dryer_loading": count(
             lambda b: b.dryer_load_start is not None
             and b.dryer_load_end is not None
@@ -216,11 +325,8 @@ def _interval_row(bags: list[Bag], employees: list[Employee], t: int) -> dict[st
             lambda b: b.fold_start is not None and b.fold_end is not None and b.fold_start <= t < b.fold_end
         ),
         "folded": folded_n,
-        "fold_backlog": count(
-            lambda b: b.ready_to_fold is not None
-            and b.ready_to_fold <= t
-            and (b.fold_start is None or b.fold_start > t)
-        ),
+        "fold_backlog": fold_backlog,
+        "waiting_to_fold": fold_backlog,
         "cumulative_bags_ready": ready_n,
         "cumulative_pounds_ready": ready_lbs,
         "cumulative_bags_folded": folded_n,
@@ -233,6 +339,7 @@ def _interval_row(bags: list[Bag], employees: list[Employee], t: int) -> dict[st
         "active_weighers": sum(1 for e in employees if role_active_at(e, "weigher", t)),
         "active_sorters": sum(1 for e in employees if role_active_at(e, "sorter", t)),
         "active_washer_persons": sum(1 for e in employees if role_active_at(e, "washer", t)),
+        "active_dryers": sum(1 for e in employees if role_active_at(e, "dryer", t)),
         "active_folders": sum(1 for e in employees if role_active_at(e, "folder", t)),
     }
 

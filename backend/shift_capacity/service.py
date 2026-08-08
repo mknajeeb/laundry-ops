@@ -14,7 +14,8 @@ from backend.shift_capacity.models import SimulationState, ValidationError, Vali
 from backend.shift_capacity.recommendations import build_recommendations
 from backend.shift_capacity.scheduler import run_scheduler
 from backend.shift_capacity.serialization import serialize_state
-from backend.shift_capacity.validation import parse_clock_minutes, parse_inputs
+from backend.shift_capacity.timebase import api_minutes_to_seconds, parse_clock_seconds
+from backend.shift_capacity.validation import parse_inputs
 
 # In-memory scenario store for undo / parent lookup within process lifetime.
 _SCENARIOS: dict[str, dict[str, Any]] = {}
@@ -125,11 +126,14 @@ def _run_continue(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_continue_state(raw: dict[str, Any]) -> SimulationState:
-    t = (
-        int(raw["continue_from_min"])
-        if raw.get("continue_from_min") is not None
-        else parse_clock_minutes(raw.get("continue_from_time"))
-    )
+    if raw.get("continue_from_sec") is not None:
+        t = int(raw["continue_from_sec"])
+    elif raw.get("continue_from_time") is not None:
+        t = parse_clock_seconds(raw.get("continue_from_time"))
+    elif raw.get("continue_from_min") is not None:
+        t = api_minutes_to_seconds(raw["continue_from_min"])
+    else:
+        t = parse_clock_seconds("7:00 AM")
     parent_id = raw.get("parent_scenario_id")
     freeze: SimulationState | None = None
     if parent_id and parent_id in _SCENARIOS:
