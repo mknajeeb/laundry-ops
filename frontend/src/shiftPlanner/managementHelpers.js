@@ -604,6 +604,53 @@ export function formatCollapsedSlotStaffLine(intervals, hybridIntervals, blockSt
   return hybrids.length ? `${dedicated} · ${hybrids.join(" · ")}` : dedicated;
 }
 
+/** Effective dedicated headcount in a slot (BASE at/overlapping start + ADDITIONAL overlap). */
+export function dedicatedPeopleInSlot(intervals, roleId, blockStart, blockEnd) {
+  const base = getBasePeopleForBlock(intervals, roleId, blockStart, blockEnd);
+  const additional = getAdditionalForBlock(intervals, roleId, blockStart, blockEnd).reduce(
+    (sum, row) => sum + (Number(row.people) || 0),
+    0,
+  );
+  return base + additional;
+}
+
+/**
+ * Compact flow notes for a slot's staffing mix.
+ * DES already enforces chronology (Dry cannot load before Wash ends).
+ * These warn only when the authored mix cannot feed a later role in-slot.
+ */
+export function buildSlotStaffingNotes(staffingIntervals, hybridIntervals, blockStart, blockEnd) {
+  const washer = dedicatedPeopleInSlot(staffingIntervals, "washer", blockStart, blockEnd);
+  const dryer = dedicatedPeopleInSlot(staffingIntervals, "dryer", blockStart, blockEnd);
+  const folder = dedicatedPeopleInSlot(staffingIntervals, "folder", blockStart, blockEnd);
+  const ww = getHybridPeopleForBlock(hybridIntervals, "weigh_wash", blockStart, blockEnd);
+  const wd = getHybridPeopleForBlock(hybridIntervals, "wash_dry", blockStart, blockEnd);
+  const wwd = getHybridPeopleForBlock(hybridIntervals, "weigh_wash_dry", blockStart, blockEnd);
+  const washCap = washer + ww + wd + wwd;
+  const dryCap = dryer + wd + wwd;
+  const hybridCap = ww + wd + wwd;
+  const notes = [];
+  if (dryCap > 0 && washCap === 0) {
+    notes.push({
+      tone: "warning",
+      text: "Dry waits for Wash — no Wash labor in this slot (dedicated or hybrid).",
+    });
+  }
+  if (folder > 0 && dryCap === 0) {
+    notes.push({
+      tone: "warning",
+      text: "Fold waits for Dry — no Dry labor in this slot (dedicated or hybrid).",
+    });
+  }
+  if (hybridCap > 0) {
+    notes.push({
+      tone: "info",
+      text: "Hybrid is one person on one calendar — cannot work two roles at the same instant.",
+    });
+  }
+  return notes;
+}
+
 /**
  * View model for one planning slot card (staffing start + end POSITION).
  * Presentation-only — all counts come from authored intervals / block_positions.
@@ -623,6 +670,12 @@ export function buildPlanningSlotViewModel({
     blockStart,
     blockEnd,
   );
+  const staffingNotes = buildSlotStaffingNotes(
+    staffingIntervals,
+    hybridIntervals,
+    blockStart,
+    blockEnd,
+  );
   return {
     slotKey: `${blockStart}->${blockEnd}`,
     slotLabel: `${blockStart} → ${blockEnd}`,
@@ -630,6 +683,7 @@ export function buildPlanningSlotViewModel({
     blockEnd,
     staffingExpanded: Boolean(staffingExpanded),
     staffLine,
+    staffingNotes,
     hybridChips: formatHybridStaffChips(hybridIntervals, blockStart, blockEnd),
     positionLabel: `${blockEnd} POSITION`,
     flow: buildPositionFlowDisplay(positionBlock, targetBags),
@@ -692,51 +746,80 @@ function _blockInCycle(block, key) {
  * Map a block_positions row to stage display models.
  * Waiting queues are returned separately and must not be conflated with remaining.
  */
+/**
+ * Concise hover copy for WAITING TO SORT (queued ≠ stage remaining).
+ * Uses authored DONE totals; does not recompute waiting from the engine.
+ */
+export function formatWaitingToSortHint(weighedDone, sortedDone, waitingToSort) {
+  const w = Math.max(0, Number(weighedDone) || 0);
+  const s = Math.max(0, Number(sortedDone) || 0);
+  const q = Math.max(0, Number(waitingToSort) || 0);
+  if (q <= 0) return "No bags waiting between Weigh and Sort.";
+  return (
+    `${w} bags have completed Weigh and ${s} have completed Sort, `
+    + `leaving ${q} currently waiting for Sort.`
+  );
+}
+
 export function buildPositionFlowDisplay(block, targetBags) {
   if (!block) return null;
   const foldTotal = Number(block.folded_total ?? block.completed_total) || 0;
   const foldBlock = Number(block.folded_this_block ?? block.completed_this_block) || 0;
+  const stages = {
+    weigh: buildStagePositionDisplay({
+      title: "WEIGH",
+      thisBlock: block.weighed_this_block,
+      stageTotal: block.weighed_total,
+      targetBags,
+    }),
+    sort: buildStagePositionDisplay({
+      title: "SORT",
+      thisBlock: block.sorted_this_block,
+      stageTotal: block.sorted_total,
+      targetBags,
+    }),
+    wash: buildStagePositionDisplay({
+      title: "WASH",
+      thisBlock: block.washed_this_block,
+      stageTotal: block.washed_total,
+      targetBags,
+      inCycle: _blockInCycle(block, "in_wash_cycle"),
+    }),
+    dry: buildStagePositionDisplay({
+      title: "DRY",
+      thisBlock: block.dried_this_block,
+      stageTotal: block.dried_total,
+      targetBags,
+      inCycle: _blockInCycle(block, "in_dry_cycle"),
+    }),
+    fold: buildStagePositionDisplay({
+      title: "FOLD",
+      thisBlock: foldBlock,
+      stageTotal: foldTotal,
+      targetBags,
+      completeLabel: true,
+    }),
+  };
+  const waiting = {
+    to_sort: Math.max(0, Number(block.waiting_to_sort) || 0),
+    to_wash: Math.max(0, Number(block.waiting_to_wash) || 0),
+    to_dry: Math.max(0, Number(block.waiting_to_dry) || 0),
+    to_fold: Math.max(0, Number(block.waiting_to_fold) || 0),
+  };
   return {
-    stages: {
-      weigh: buildStagePositionDisplay({
-        title: "WEIGH",
-        thisBlock: block.weighed_this_block,
-        stageTotal: block.weighed_total,
-        targetBags,
-      }),
-      sort: buildStagePositionDisplay({
-        title: "SORT",
-        thisBlock: block.sorted_this_block,
-        stageTotal: block.sorted_total,
-        targetBags,
-      }),
-      wash: buildStagePositionDisplay({
-        title: "WASH",
-        thisBlock: block.washed_this_block,
-        stageTotal: block.washed_total,
-        targetBags,
-        inCycle: _blockInCycle(block, "in_wash_cycle"),
-      }),
-      dry: buildStagePositionDisplay({
-        title: "DRY",
-        thisBlock: block.dried_this_block,
-        stageTotal: block.dried_total,
-        targetBags,
-        inCycle: _blockInCycle(block, "in_dry_cycle"),
-      }),
-      fold: buildStagePositionDisplay({
-        title: "FOLD",
-        thisBlock: foldBlock,
-        stageTotal: foldTotal,
-        targetBags,
-        completeLabel: true,
-      }),
-    },
-    waiting: {
-      to_sort: Math.max(0, Number(block.waiting_to_sort) || 0),
-      to_wash: Math.max(0, Number(block.waiting_to_wash) || 0),
-      to_dry: Math.max(0, Number(block.waiting_to_dry) || 0),
-      to_fold: Math.max(0, Number(block.waiting_to_fold) || 0),
+    stages,
+    waiting,
+    hints: {
+      to_sort: formatWaitingToSortHint(stages.weigh.done, stages.sort.done, waiting.to_sort),
+      to_wash: waiting.to_wash > 0
+        ? "Finished Sort, not yet in wash labor/cycle."
+        : "No bags waiting between Sort and Wash.",
+      to_dry: waiting.to_dry > 0
+        ? "Wash cycle finished, not yet loaded into a dryer."
+        : "No bags waiting between Wash and Dry.",
+      to_fold: waiting.to_fold > 0
+        ? "Dry cycle finished, not yet folding."
+        : "No bags waiting between Dry and Fold.",
     },
   };
 }

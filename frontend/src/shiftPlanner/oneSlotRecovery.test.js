@@ -23,6 +23,7 @@ describe("one-slot recovery board structure", () => {
 
   it("keeps expanded staffing controls and compact Hybrid subsection", () => {
     expect(boardSrc).toContain("data-testid=\"expanded-staffing\"");
+    expect(boardSrc).toContain("data-testid=\"collapsed-staff-line\"");
     expect(boardSrc).toContain("Fill rest");
     expect(boardSrc).toContain("Temp");
     expect(boardSrc).toContain("Collapse all staffing");
@@ -31,9 +32,52 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("Avg Bag Weight");
     expect(boardSrc).toContain("2-Washer Split");
     expect(boardSrc).toContain("2-Dryer Split");
-    expect(boardSrc).toMatch(/Hybrid\s*\n/);
+    expect(boardSrc).toContain("Washers");
+    expect(boardSrc).toContain("Dryers");
+    expect(boardSrc).toContain("Target bags");
+    expect(boardSrc).toContain("Start time");
+    expect(boardSrc).toContain("Target finish");
+    expect(boardSrc).toContain("Block size");
+    expect(boardSrc).toContain("PlanningTimePicker");
+    expect(boardSrc).toMatch(/>\s*Hybrid\s*</);
     expect(boardSrc).toContain("MANAGEMENT_HYBRIDS.map");
     expect(boardSrc).toContain("THIS SLOT");
     expect(boardSrc).toContain("inCycleLabel");
+    expect(boardSrc).toContain("display.doneLabel");
+    expect(boardSrc).toContain("display.remainingLabel");
+  });
+
+  it("keeps sticky Recalculate and auto-recalc debounce", () => {
+    expect(boardSrc).toContain('data-testid="recalculate-plan"');
+    expect(boardSrc).toContain("summaryStickySx");
+    expect(boardSrc).toContain('position: "sticky"');
+    expect(boardSrc).toContain("Recalculate");
+    expect(boardSrc).toContain("recalculateNow");
+    expect(boardSrc).toContain("Auto-updates as you edit");
+    // Auto-recalc on input changes remains
+    expect(boardSrc).toContain("setTimeout(() => {\n      runSim(inputs);\n    }, 350)");
+    expect(boardSrc).toContain("}, [inputs, settingsReady]");
+  });
+
+  it("keeps waiting queues between stages with hover hints", () => {
+    expect(boardSrc).toContain('stageLabel="SORT"');
+    expect(boardSrc).toContain('stageLabel="WASH"');
+    expect(boardSrc).toContain('stageLabel="DRY"');
+    expect(boardSrc).toContain('stageLabel="FOLD"');
+    expect(boardSrc).toContain("hint={flow.hints.to_sort}");
+    expect(boardSrc).toContain("Tooltip");
+    expect(boardSrc).toContain("QueueBridge");
+  });
+
+  it("uses this slot labels and does not surface this block in UI copy", () => {
+    expect(boardSrc).toContain("this slot");
+    expect(boardSrc).not.toMatch(/this block/i);
+    expect(boardSrc).not.toContain("THIS BLOCK");
+  });
+
+  it("keeps color segregation bands for staffing vs position", () => {
+    expect(boardSrc).toContain("staffingBandSx");
+    expect(boardSrc).toContain("positionBandSx");
+    expect(boardSrc).toContain("slotCardSx");
   });
 });

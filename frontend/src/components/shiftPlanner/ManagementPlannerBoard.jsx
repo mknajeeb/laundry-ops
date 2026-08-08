@@ -15,6 +15,7 @@ import {
   Select,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
@@ -22,6 +23,7 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import RefreshIcon from "@mui/icons-material/Refresh";
 import RemoveIcon from "@mui/icons-material/Remove";
 import PlanningTimePicker from "../datetime/PlanningTimePicker";
 import {
@@ -45,6 +47,7 @@ import {
   clockToHm,
   earlyMinutesBeforeTarget,
   formatManagementOutcome,
+  buildSlotStaffingNotes,
   fillRestBasePeopleForRole,
   formatCollapsedSlotStaffLine,
   getAdditionalForBlock,
@@ -73,6 +76,41 @@ const stripSx = {
   px: 1.5,
   py: 1.25,
   boxShadow: VEEWASH_DASHBOARD.cardShadow,
+};
+
+/** Slot shell: left accent marks the hour; staffing vs position bands differ. */
+const slotCardSx = {
+  ...stripSx,
+  py: 1,
+  borderLeft: `4px solid ${VEEWASH_DASHBOARD.primaryBlue}`,
+  bgcolor: "#fafbfc",
+};
+
+const staffingBandSx = {
+  bgcolor: VEEWASH_DASHBOARD.primaryBlueLight,
+  border: `1px solid ${VEEWASH_DASHBOARD.primaryBlueBorder}`,
+  borderRadius: 1,
+  px: 1.25,
+  py: 0.85,
+  mb: 0.5,
+};
+
+const positionBandSx = {
+  bgcolor: "#fff",
+  border: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
+  borderRadius: 1,
+  px: 1.25,
+  py: 0.85,
+  mt: 0.25,
+};
+
+/** Keep SUMMARY + Recalculate at eye level while scrolling slots. */
+const summaryStickySx = {
+  ...stripSx,
+  position: "sticky",
+  top: 0,
+  zIndex: 4,
+  bgcolor: "#fff",
 };
 
 function CompactNum({
@@ -236,25 +274,66 @@ function StaffingIntervalDialog({
   );
 }
 
-function CompactSummary({ inputs, outcome, loading, hasStaffing }) {
+function RecalculateButton({ onClick, loading, disabled }) {
+  return (
+    <Button
+      size="small"
+      variant="contained"
+      onClick={onClick}
+      disabled={disabled || loading}
+      startIcon={
+        loading
+          ? <CircularProgress size={14} color="inherit" />
+          : <RefreshIcon sx={{ fontSize: 18 }} />
+      }
+      data-testid="recalculate-plan"
+      aria-label="Recalculate plan"
+      sx={{
+        textTransform: "none",
+        fontWeight: 800,
+        px: 1.5,
+        py: 0.55,
+        minWidth: 132,
+        ml: { sm: "auto" },
+        bgcolor: VEEWASH_DASHBOARD.primaryBlue,
+        "&:hover": { bgcolor: VEEWASH_DASHBOARD.primaryBlueDark },
+        boxShadow: "none",
+      }}
+    >
+      {loading ? "Updating…" : "Recalculate"}
+    </Button>
+  );
+}
+
+function CompactSummary({ inputs, outcome, loading, hasStaffing, onRecalculate }) {
   if (!hasStaffing) {
     return (
-      <Box sx={{ ...stripSx, py: 1.5 }}>
-        <Stack direction="row" alignItems="center" spacing={1}>
-          <Typography sx={{ fontWeight: 700, color: "text.secondary", fontSize: "0.95rem" }}>
+      <Box sx={{ ...summaryStickySx, py: 1.5 }}>
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          alignItems={{ xs: "stretch", sm: "center" }}
+          spacing={1}
+        >
+          <Typography sx={{ fontWeight: 700, color: "text.secondary", fontSize: "0.95rem", flex: 1 }}>
             Add staffing to build the plan.
           </Typography>
-          {loading ? <CircularProgress size={14} sx={{ color: VEEWASH_DASHBOARD.primaryBlue }} /> : null}
+          <RecalculateButton onClick={onRecalculate} loading={loading} disabled />
         </Stack>
       </Box>
     );
   }
   if (!outcome) {
     return (
-      <Box sx={{ ...stripSx, py: 1.5 }}>
-        <Stack direction="row" alignItems="center" spacing={1}>
-          <Typography sx={{ color: "text.secondary" }}>Running…</Typography>
-          {loading ? <CircularProgress size={14} /> : null}
+      <Box sx={{ ...summaryStickySx, py: 1.5 }}>
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          alignItems={{ xs: "stretch", sm: "center" }}
+          spacing={1}
+        >
+          <Typography sx={{ color: "text.secondary", flex: 1 }}>
+            {loading ? "Updating plan…" : "Plan not ready — recalculate."}
+          </Typography>
+          <RecalculateButton onClick={onRecalculate} loading={loading} />
         </Stack>
       </Box>
     );
@@ -276,11 +355,11 @@ function CompactSummary({ inputs, outcome, loading, hasStaffing }) {
   }[outcome.tone] || "text.primary";
 
   return (
-    <Box sx={stripSx}>
+    <Box sx={summaryStickySx} data-testid="planner-summary-bar">
       <Stack
         direction={{ xs: "column", sm: "row" }}
-        spacing={{ xs: 0.75, sm: 2 }}
-        alignItems={{ xs: "flex-start", sm: "center" }}
+        spacing={{ xs: 0.75, sm: 1.5 }}
+        alignItems={{ xs: "stretch", sm: "center" }}
         flexWrap="wrap"
         useFlexGap
       >
@@ -299,15 +378,18 @@ function CompactSummary({ inputs, outcome, loading, hasStaffing }) {
         <Typography sx={{ fontWeight: 800, fontSize: "0.95rem", color: toneColor }}>
           {statusText}
         </Typography>
-        {loading ? <CircularProgress size={14} sx={{ color: VEEWASH_DASHBOARD.primaryBlue }} /> : null}
+        <RecalculateButton onClick={onRecalculate} loading={loading} />
       </Stack>
+      <Typography sx={{ mt: 0.45, fontSize: "0.68rem", color: "text.disabled", fontWeight: 600 }}>
+        Auto-updates as you edit · use Recalculate anytime
+      </Typography>
     </Box>
   );
 }
 
-function QueueBridge({ count, stageLabel }) {
+function QueueBridge({ count, stageLabel, hint }) {
   const n = Number(count) || 0;
-  return (
+  const body = (
     <Box
       sx={{
         display: "flex",
@@ -318,6 +400,7 @@ function QueueBridge({ count, stageLabel }) {
         py: 0.25,
         minWidth: { xs: "100%", md: 72 },
         color: n > 0 ? VEEWASH_DASHBOARD.pendingDark : "text.disabled",
+        cursor: hint ? "help" : "default",
       }}
       data-testid={`queue-to-${String(stageLabel || "").toLowerCase()}`}
     >
@@ -328,6 +411,12 @@ function QueueBridge({ count, stageLabel }) {
         TO {stageLabel} →
       </Typography>
     </Box>
+  );
+  if (!hint) return body;
+  return (
+    <Tooltip title={hint} arrow enterDelay={250}>
+      {body}
+    </Tooltip>
   );
 }
 
@@ -455,13 +544,13 @@ function PositionFlow({ block, targetBags, stallRole }) {
       }}
     >
       <StageCell display={flow.stages.weigh} />
-      <QueueBridge count={flow.waiting.to_sort} stageLabel="SORT" />
+      <QueueBridge count={flow.waiting.to_sort} stageLabel="SORT" hint={flow.hints.to_sort} />
       <StageCell display={flow.stages.sort} />
-      <QueueBridge count={flow.waiting.to_wash} stageLabel="WASH" />
+      <QueueBridge count={flow.waiting.to_wash} stageLabel="WASH" hint={flow.hints.to_wash} />
       <StageCell display={flow.stages.wash} highlight={washStall} />
-      <QueueBridge count={flow.waiting.to_dry} stageLabel="DRY" />
+      <QueueBridge count={flow.waiting.to_dry} stageLabel="DRY" hint={flow.hints.to_dry} />
       <StageCell display={flow.stages.dry} />
-      <QueueBridge count={flow.waiting.to_fold} stageLabel="FOLD" />
+      <QueueBridge count={flow.waiting.to_fold} stageLabel="FOLD" hint={flow.hints.to_fold} />
       <StageCell display={flow.stages.fold} />
     </Box>
   );
@@ -657,7 +746,7 @@ function SlotCardHeader({ slotLabel, staffOpen, onToggle }) {
   return (
     <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 0.75 }} flexWrap="wrap" useFlexGap>
       <Typography
-        sx={{ fontWeight: 800, fontSize: "0.95rem" }}
+        sx={{ fontWeight: 800, fontSize: "0.95rem", color: VEEWASH_DASHBOARD.primaryBlueDark }}
         data-testid="slot-range"
       >
         {slotLabel}
@@ -680,6 +769,34 @@ function SlotCardHeader({ slotLabel, staffOpen, onToggle }) {
       >
         {staffOpen ? "Collapse staffing" : "Expand staffing"}
       </Button>
+    </Stack>
+  );
+}
+
+function SlotStaffingNotes({ notes }) {
+  if (!notes?.length) return null;
+  return (
+    <Stack spacing={0.4} sx={{ mt: 0.65 }} data-testid="slot-staffing-notes">
+      {notes.map((note) => (
+        <Typography
+          key={`${note.tone}-${note.text}`}
+          sx={{
+            fontSize: "0.72rem",
+            fontWeight: 650,
+            lineHeight: 1.35,
+            color: note.tone === "warning" ? VEEWASH_DASHBOARD.pendingDark : "text.secondary",
+            bgcolor: note.tone === "warning" ? "#fff7ed" : "rgba(255,255,255,0.65)",
+            border: `1px solid ${
+              note.tone === "warning" ? "rgba(146, 64, 14, 0.25)" : VEEWASH_DASHBOARD.primaryBlueBorder
+            }`,
+            borderRadius: 0.75,
+            px: 0.85,
+            py: 0.45,
+          }}
+        >
+          {note.text}
+        </Typography>
+      ))}
     </Stack>
   );
 }
@@ -862,6 +979,11 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [inputs, settingsReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const recalculateNow = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    runSim(inputs);
+  }, [inputs, runSim]);
 
   const hasStaffing = (
     (inputs.staffing_intervals || []).length > 0
@@ -1155,6 +1277,7 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
         outcome={outcome}
         loading={loading}
         hasStaffing={hasStaffing}
+        onRecalculate={recalculateNow}
       />
 
       {error ? <Alert severity="error" sx={{ py: 0.5 }}>{error}</Alert> : null}
@@ -1199,11 +1322,17 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
             pb.block_start,
             pb.block_end,
           );
+          const staffingNotes = buildSlotStaffingNotes(
+            inputs.staffing_intervals,
+            inputs.hybrid_intervals,
+            pb.block_start,
+            pb.block_end,
+          );
           const slotLabel = `${pb.block_start} → ${pb.block_end}`;
           return (
             <Box
               key={`${pb.block_start}-${pb.block_end}`}
-              sx={{ ...stripSx, py: 1 }}
+              sx={slotCardSx}
               data-testid="planning-slot-card"
               data-slot-start={pb.block_start}
               data-slot-end={pb.block_end}
@@ -1219,65 +1348,68 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                 }
               />
 
-              <Typography
-                sx={{
-                  fontWeight: 800,
-                  fontSize: "0.68rem",
-                  letterSpacing: 0.5,
-                  color: VEEWASH_DASHBOARD.primaryBlue,
-                  mb: 0.35,
-                }}
-              >
-                STAFFING
-              </Typography>
-              {!staffOpen ? (
+              <Box sx={staffingBandSx}>
                 <Typography
-                  sx={{ fontSize: "0.8rem", color: "text.secondary", fontWeight: 600, mb: 0.75 }}
-                  data-testid="collapsed-staff-line"
+                  sx={{
+                    fontWeight: 800,
+                    fontSize: "0.68rem",
+                    letterSpacing: 0.5,
+                    color: VEEWASH_DASHBOARD.primaryBlueDark,
+                    mb: 0.35,
+                  }}
                 >
-                  STAFF: {staffLine}
+                  STAFFING
                 </Typography>
-              ) : (
-                <Box sx={{ mb: 0.75 }} data-testid="expanded-staffing">
-                  {MANAGEMENT_ROLES.map((role) => (
-                    <BlockRoleRow
-                      key={role.id}
-                      role={role}
-                      blockStart={pb.block_start}
-                      blockEnd={pb.block_end}
-                      intervals={inputs.staffing_intervals}
-                      onBaseChange={(n) => changeBase(role.id, pb.block_start, pb.block_end, n)}
-                      onAddTemporary={(roleId) => openTemporary(roleId, pb.block_start, pb.block_end)}
-                      onEdit={openEdit}
-                      onRemove={removeInterval}
-                      showFillRest={isFirstStaffingBlock && planBlocks.length > 1}
-                      onFillRest={(people) => fillRest(role.id, people)}
-                    />
-                  ))}
+                {!staffOpen ? (
                   <Typography
-                    sx={{
-                      mt: 0.85,
-                      mb: 0.25,
-                      fontWeight: 700,
-                      fontSize: "0.65rem",
-                      letterSpacing: 0.4,
-                      color: "text.disabled",
-                    }}
+                    sx={{ fontSize: "0.8rem", color: "text.secondary", fontWeight: 600 }}
+                    data-testid="collapsed-staff-line"
                   >
-                    Hybrid
+                    STAFF: {staffLine}
                   </Typography>
-                  {MANAGEMENT_HYBRIDS.map((hybrid) => (
-                    <HybridRoleRow
-                      key={hybrid.id}
-                      hybrid={hybrid}
-                      blockStart={pb.block_start}
-                      blockEnd={pb.block_end}
-                      intervals={inputs.hybrid_intervals}
-                      onChange={(n) => changeHybrid(hybrid.id, pb.block_start, pb.block_end, n)}
-                    />
-                  ))}
-                </Box>
-              )}
+                ) : (
+                  <Box data-testid="expanded-staffing">
+                    {MANAGEMENT_ROLES.map((role) => (
+                      <BlockRoleRow
+                        key={role.id}
+                        role={role}
+                        blockStart={pb.block_start}
+                        blockEnd={pb.block_end}
+                        intervals={inputs.staffing_intervals}
+                        onBaseChange={(n) => changeBase(role.id, pb.block_start, pb.block_end, n)}
+                        onAddTemporary={(roleId) => openTemporary(roleId, pb.block_start, pb.block_end)}
+                        onEdit={openEdit}
+                        onRemove={removeInterval}
+                        showFillRest={isFirstStaffingBlock && planBlocks.length > 1}
+                        onFillRest={(people) => fillRest(role.id, people)}
+                      />
+                    ))}
+                    <Typography
+                      sx={{
+                        mt: 0.85,
+                        mb: 0.25,
+                        fontWeight: 700,
+                        fontSize: "0.65rem",
+                        letterSpacing: 0.4,
+                        color: "text.disabled",
+                      }}
+                    >
+                      Hybrid
+                    </Typography>
+                    {MANAGEMENT_HYBRIDS.map((hybrid) => (
+                      <HybridRoleRow
+                        key={hybrid.id}
+                        hybrid={hybrid}
+                        blockStart={pb.block_start}
+                        blockEnd={pb.block_end}
+                        intervals={inputs.hybrid_intervals}
+                        onChange={(n) => changeHybrid(hybrid.id, pb.block_start, pb.block_end, n)}
+                      />
+                    ))}
+                  </Box>
+                )}
+                <SlotStaffingNotes notes={staffingNotes} />
+              </Box>
 
               <Box
                 sx={{
@@ -1285,33 +1417,32 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                   py: 0.35,
                   color: "text.disabled",
                   fontSize: "0.85rem",
-                  borderTop: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
-                  mt: 0.25,
                 }}
               >
                 ↓
               </Box>
 
-              <Typography
-                sx={{
-                  fontWeight: 800,
-                  fontSize: "0.72rem",
-                  letterSpacing: 0.5,
-                  color: "text.secondary",
-                  mt: 0.5,
-                  mb: 0.5,
-                }}
-                data-testid="slot-position-label"
-              >
-                {pb.block_end} POSITION
-              </Typography>
-              {hasStaffing ? (
-                <PositionFlow block={pos} targetBags={targetBags} stallRole={blockStall} />
-              ) : (
-                <Typography sx={{ fontSize: "0.85rem", color: "text.disabled" }}>
-                  Position appears after staffing is set.
+              <Box sx={positionBandSx}>
+                <Typography
+                  sx={{
+                    fontWeight: 800,
+                    fontSize: "0.72rem",
+                    letterSpacing: 0.5,
+                    color: "text.secondary",
+                    mb: 0.5,
+                  }}
+                  data-testid="slot-position-label"
+                >
+                  {pb.block_end} POSITION
                 </Typography>
-              )}
+                {hasStaffing ? (
+                  <PositionFlow block={pos} targetBags={targetBags} stallRole={blockStall} />
+                ) : (
+                  <Typography sx={{ fontSize: "0.85rem", color: "text.disabled" }}>
+                    Position appears after staffing is set.
+                  </Typography>
+                )}
+              </Box>
             </Box>
           );
         })}

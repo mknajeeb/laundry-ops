@@ -6,11 +6,14 @@ import {
   buildPlanningSlotViewModel,
   buildPositionFlowDisplay,
   buildStagePositionDisplay,
+  buildSlotStaffingNotes,
+  dedicatedPeopleInSlot,
   fillRestBasePeopleForRole,
   formatBlockStaffingLine,
   formatCollapsedSlotStaffLine,
   formatHybridStaffChips,
   formatManagementOutcome,
+  formatWaitingToSortHint,
   getAdditionalForBlock,
   getBasePeopleForBlock,
   getHybridPeopleForBlock,
@@ -613,5 +616,104 @@ describe("managementHelpers", () => {
     expect(body.weigh_sec_per_bag).toBe(45);
     expect(body.start_time).toBe("9:00 AM");
     expect(body.target_time).toBe("3:00 PM");
+  });
+
+  it("dedicatedPeopleInSlot includes temp/additional dryers", () => {
+    const intervals = [
+      { role: "dryer", people: 0, start: "6:00 AM", end: "7:00 AM", mode: "base" },
+      { role: "dryer", people: 1, start: "6:00 AM", end: "7:00 AM", mode: "additional" },
+    ];
+    expect(dedicatedPeopleInSlot(intervals, "dryer", "6:00 AM", "7:00 AM")).toBe(1);
+  });
+
+  it("buildSlotStaffingNotes warns Dry with no Wash capacity; info for hybrid", () => {
+    const dryOnly = buildSlotStaffingNotes(
+      [
+        { role: "dryer", people: 1, start: "6:00 AM", end: "7:00 AM", mode: "additional" },
+      ],
+      [],
+      "6:00 AM",
+      "7:00 AM",
+    );
+    expect(dryOnly.some((n) => n.tone === "warning" && /no Wash labor/i.test(n.text))).toBe(true);
+
+    const hybridWwPlusDry = buildSlotStaffingNotes(
+      [{ role: "dryer", people: 1, start: "6:00 AM", end: "7:00 AM", mode: "additional" }],
+      [{ hybrid: "weigh_wash", people: 1, start: "6:00 AM", end: "7:00 AM", mode: "base" }],
+      "6:00 AM",
+      "7:00 AM",
+    );
+    expect(hybridWwPlusDry.some((n) => /no Wash labor/i.test(n.text))).toBe(false);
+    expect(hybridWwPlusDry.some((n) => n.tone === "info" && /one calendar/i.test(n.text))).toBe(true);
+
+    const foldNoDry = buildSlotStaffingNotes(
+      [{ role: "folder", people: 2, start: "6:00 AM", end: "7:00 AM", mode: "base" }],
+      [],
+      "6:00 AM",
+      "7:00 AM",
+    );
+    expect(foldNoDry.some((n) => n.tone === "warning" && /no Dry labor/i.test(n.text))).toBe(true);
+  });
+
+  it("waiting != remaining and waiting-to-sort tooltip stays concise", () => {
+    const flow = buildPositionFlowDisplay(
+      {
+        weighed_this_block: 80,
+        weighed_total: 80,
+        sorted_this_block: 11,
+        sorted_total: 11,
+        washed_this_block: 0,
+        washed_total: 0,
+        dried_this_block: 0,
+        dried_total: 0,
+        folded_this_block: 0,
+        folded_total: 0,
+        waiting_to_sort: 69,
+        waiting_to_wash: 11,
+        waiting_to_dry: 0,
+        waiting_to_fold: 0,
+      },
+      100,
+    );
+    expect(flow.stages.weigh).toMatchObject({ done: 80, remaining: 20 });
+    expect(flow.stages.sort).toMatchObject({ done: 11, remaining: 89 });
+    expect(flow.waiting.to_sort).toBe(69);
+    expect(flow.waiting.to_sort).not.toBe(flow.stages.sort.remaining);
+    expect(flow.hints.to_sort).toBe(
+      "80 bags have completed Weigh and 11 have completed Sort, leaving 69 currently waiting for Sort.",
+    );
+    expect(formatWaitingToSortHint(80, 11, 69)).toBe(flow.hints.to_sort);
+  });
+
+  it("DRY DONE 0 with IN CYCLE > 0 uses API in_dry_cycle only", () => {
+    const flow = buildPositionFlowDisplay(
+      {
+        weighed_total: 100,
+        sorted_total: 100,
+        washed_total: 4,
+        dried_total: 0,
+        folded_total: 0,
+        weighed_this_block: 0,
+        sorted_this_block: 0,
+        washed_this_block: 2,
+        dried_this_block: 0,
+        folded_this_block: 0,
+        waiting_to_sort: 0,
+        waiting_to_wash: 0,
+        waiting_to_dry: 2,
+        waiting_to_fold: 0,
+        detail: { in_wash_cycle: 2, in_dry_cycle: 2 },
+      },
+      100,
+    );
+    expect(flow.stages.dry).toMatchObject({
+      thisBlock: 0,
+      done: 0,
+      remaining: 100,
+      inCycle: 2,
+      inCycleLabel: "2 IN CYCLE",
+      thisBlockLabel: "0 this slot",
+    });
+    expect(flow.stages.wash.inCycleLabel).toBe("2 IN CYCLE");
   });
 });
