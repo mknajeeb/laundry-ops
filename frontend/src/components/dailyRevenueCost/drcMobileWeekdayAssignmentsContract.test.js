@@ -16,7 +16,8 @@ describe("R&C manager weekday assignment UI contracts", () => {
     expect(panel).toContain("getDrcMobileWeekdayAssignments");
     expect(panel).toContain("putDrcMobileWeekdayAssignments");
     expect(panel).toContain("Saturday");
-    expect(panel).toContain("Self Service");
+    expect(panel).toContain("section_label");
+    expect(panel).toContain("DAY_ORDER");
   });
 
   it("employee floor still uses API business_date, not browser today", () => {
