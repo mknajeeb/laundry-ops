@@ -398,17 +398,17 @@ function QueueBridge({ count, stageLabel, hint }) {
         justifyContent: "center",
         px: { xs: 0.5, md: 0.75 },
         py: 0.25,
-        minWidth: { xs: "100%", md: 72 },
+        minWidth: { xs: "100%", md: 88 },
         color: n > 0 ? VEEWASH_DASHBOARD.pendingDark : "text.disabled",
         cursor: hint ? "help" : "default",
       }}
       data-testid={`queue-to-${String(stageLabel || "").toLowerCase()}`}
     >
-      <Typography sx={{ fontSize: "0.68rem", fontWeight: 800, lineHeight: 1.2, textAlign: "center", letterSpacing: 0.2 }}>
-        → {n} WAITING
+      <Typography sx={{ fontSize: "0.65rem", fontWeight: 800, lineHeight: 1.2, textAlign: "center", letterSpacing: 0.2 }}>
+        → {n} WAITING TO ENTER
       </Typography>
       <Typography sx={{ fontSize: "0.65rem", fontWeight: 700, lineHeight: 1.15, textAlign: "center" }}>
-        TO {stageLabel} →
+        {stageLabel} →
       </Typography>
     </Box>
   );
@@ -422,10 +422,11 @@ function QueueBridge({ count, stageLabel, hint }) {
 
 function StageCell({ display, highlight = false }) {
   if (!display) return null;
+  const machine = Boolean(display.showMachineDetail);
   return (
     <Box
       sx={{
-        minWidth: { xs: "100%", md: 96 },
+        minWidth: { xs: "100%", md: machine ? 110 : 96 },
         flex: { md: "1 1 0" },
         px: 0.5,
         py: 0.5,
@@ -510,7 +511,7 @@ function StageCell({ display, highlight = false }) {
             fontSize: "0.62rem",
             fontWeight: 700,
             letterSpacing: 0.3,
-            color: "text.disabled",
+            color: (display.inCycle || 0) > 0 ? VEEWASH_DASHBOARD.primaryBlueDark : "text.disabled",
             lineHeight: 1.15,
           }}
           data-testid={`in-cycle-${String(display.title || "").toLowerCase()}`}
@@ -518,7 +519,40 @@ function StageCell({ display, highlight = false }) {
           {display.inCycleLabel}
         </Typography>
       ) : null}
+      {machine ? (
+        <Typography
+          sx={{
+            mt: 0.15,
+            fontSize: "0.58rem",
+            fontWeight: 700,
+            letterSpacing: 0.25,
+            color: (display.waitingToEnter || 0) > 0 ? VEEWASH_DASHBOARD.pendingDark : "text.disabled",
+            lineHeight: 1.15,
+          }}
+          data-testid={`waiting-enter-${String(display.title || "").toLowerCase()}`}
+        >
+          {display.waitingToEnterLabel || "0 WAITING TO ENTER"}
+        </Typography>
+      ) : null}
     </Box>
+  );
+}
+
+function ReconcileLine({ reconcile, testId }) {
+  if (!reconcile?.text) return null;
+  return (
+    <Typography
+      data-testid={testId}
+      sx={{
+        mt: 0.55,
+        fontSize: "0.68rem",
+        fontWeight: 650,
+        lineHeight: 1.35,
+        color: reconcile.matches ? "text.secondary" : VEEWASH_DASHBOARD.pendingDark,
+      }}
+    >
+      {reconcile.text}
+    </Typography>
   );
 }
 
@@ -534,24 +568,28 @@ function PositionFlow({ block, targetBags, stallRole }) {
   const washStall = stallRole === "washer";
 
   return (
-    <Box
-      sx={{
-        display: "flex",
-        flexDirection: { xs: "column", md: "row" },
-        alignItems: { xs: "stretch", md: "center" },
-        gap: { xs: 0.25, md: 0 },
-        overflow: "hidden",
-      }}
-    >
-      <StageCell display={flow.stages.weigh} />
-      <QueueBridge count={flow.waiting.to_sort} stageLabel="SORT" hint={flow.hints.to_sort} />
-      <StageCell display={flow.stages.sort} />
-      <QueueBridge count={flow.waiting.to_wash} stageLabel="WASH" hint={flow.hints.to_wash} />
-      <StageCell display={flow.stages.wash} highlight={washStall} />
-      <QueueBridge count={flow.waiting.to_dry} stageLabel="DRY" hint={flow.hints.to_dry} />
-      <StageCell display={flow.stages.dry} />
-      <QueueBridge count={flow.waiting.to_fold} stageLabel="FOLD" hint={flow.hints.to_fold} />
-      <StageCell display={flow.stages.fold} />
+    <Box>
+      <Box
+        sx={{
+          display: "flex",
+          flexDirection: { xs: "column", md: "row" },
+          alignItems: { xs: "stretch", md: "center" },
+          gap: { xs: 0.25, md: 0 },
+          overflow: "hidden",
+        }}
+      >
+        <StageCell display={flow.stages.weigh} />
+        <QueueBridge count={flow.waiting.to_sort} stageLabel="SORT" hint={flow.hints.to_sort} />
+        <StageCell display={flow.stages.sort} />
+        <QueueBridge count={flow.waiting.to_wash} stageLabel="WASH" hint={flow.hints.to_wash} />
+        <StageCell display={flow.stages.wash} highlight={washStall} />
+        <QueueBridge count={flow.waiting.to_dry} stageLabel="DRY" hint={flow.hints.to_dry} />
+        <StageCell display={flow.stages.dry} />
+        <QueueBridge count={flow.waiting.to_fold} stageLabel="FOLD" hint={flow.hints.to_fold} />
+        <StageCell display={flow.stages.fold} />
+      </Box>
+      <ReconcileLine reconcile={flow.reconcile?.sortToWash} testId="reconcile-sort-to-wash" />
+      <ReconcileLine reconcile={flow.reconcile?.washToDry} testId="reconcile-wash-to-dry" />
     </Box>
   );
 }

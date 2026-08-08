@@ -59,14 +59,18 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("}, [inputs, settingsReady]");
   });
 
-  it("keeps waiting queues between stages with hover hints", () => {
+  it("keeps waiting-to-enter queues between stages with hover hints", () => {
     expect(boardSrc).toContain('stageLabel="SORT"');
     expect(boardSrc).toContain('stageLabel="WASH"');
     expect(boardSrc).toContain('stageLabel="DRY"');
     expect(boardSrc).toContain('stageLabel="FOLD"');
+    expect(boardSrc).toContain("WAITING TO ENTER");
     expect(boardSrc).toContain("hint={flow.hints.to_sort}");
     expect(boardSrc).toContain("Tooltip");
     expect(boardSrc).toContain("QueueBridge");
+    expect(boardSrc).toContain("reconcile-sort-to-wash");
+    expect(boardSrc).toContain("reconcile-wash-to-dry");
+    expect(boardSrc).toContain("waiting-enter-");
   });
 
   it("uses this slot labels and does not surface this block in UI copy", () => {

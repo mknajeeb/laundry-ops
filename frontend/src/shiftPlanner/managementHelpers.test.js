@@ -13,6 +13,8 @@ import {
   formatCollapsedSlotStaffLine,
   formatHybridStaffChips,
   formatManagementOutcome,
+  formatStageReconcile,
+  formatTempStaffChips,
   formatWaitingToSortHint,
   getAdditionalForBlock,
   getBasePeopleForBlock,
@@ -495,6 +497,37 @@ describe("managementHelpers", () => {
       "7:00 AM",
     )).toEqual(["Hybrid W/W 1"]);
 
+    // Collapsed TEMP staffing remains visible
+    expect(formatCollapsedSlotStaffLine(
+      [
+        { role: "weigher", people: 1, start: "5:00 AM", end: "6:00 AM", mode: "base" },
+        { role: "sorter", people: 0, start: "5:00 AM", end: "6:00 AM", mode: "base" },
+        {
+          id: "temp-sort",
+          role: "sorter",
+          people: 2,
+          start: "5:30 AM",
+          end: "6:00 AM",
+          mode: "additional",
+        },
+      ],
+      [],
+      "5:00 AM",
+      "6:00 AM",
+    )).toContain("Sort 0 (+2 5:30 AM–6:00 AM)");
+    expect(formatTempStaffChips(
+      [{
+        id: "temp-sort",
+        role: "sorter",
+        people: 2,
+        start: "5:30 AM",
+        end: "6:00 AM",
+        mode: "additional",
+      }],
+      "5:00 AM",
+      "6:00 AM",
+    )).toEqual(["Sort +2 5:30 AM–6:00 AM"]);
+
     // 6–10. Position concepts + in-cycle; Dry DONE may be 0 with IN CYCLE > 0
     const seven = slots[1].flow;
     expect(seven.stages.wash.thisBlockLabel).toContain("this slot");
@@ -655,7 +688,7 @@ describe("managementHelpers", () => {
     expect(foldNoDry.some((n) => n.tone === "warning" && /no Dry labor/i.test(n.text))).toBe(true);
   });
 
-  it("waiting != remaining and waiting-to-sort tooltip stays concise", () => {
+  it("waiting != remaining and waiting-to-enter tooltip stays concise", () => {
     const flow = buildPositionFlowDisplay(
       {
         weighed_this_block: 80,
@@ -680,9 +713,90 @@ describe("managementHelpers", () => {
     expect(flow.waiting.to_sort).toBe(69);
     expect(flow.waiting.to_sort).not.toBe(flow.stages.sort.remaining);
     expect(flow.hints.to_sort).toBe(
-      "80 bags have completed Weigh and 11 have completed Sort, leaving 69 currently waiting for Sort.",
+      "80 bags have completed Weigh and 11 have completed Sort, leaving 69 currently waiting to enter Sort.",
     );
     expect(formatWaitingToSortHint(80, 11, 69)).toBe(flow.hints.to_sort);
+    expect(flow.stages.wash.waitingToEnterLabel).toBe("11 WAITING TO ENTER");
+    expect(flow.hints.to_wash).toMatch(/entered Wash/i);
+    expect(buildPositionFlowDisplay({
+      weighed_total: 12,
+      sorted_total: 12,
+      washed_total: 7,
+      dried_total: 0,
+      folded_total: 0,
+      waiting_to_sort: 0,
+      waiting_to_wash: 0,
+      waiting_to_dry: 0,
+      waiting_to_fold: 0,
+      detail: { in_wash_cycle: 5 },
+    }, 100).hints.to_wash).toMatch(/0 waiting to enter Wash/i);
+  });
+
+  it("WASH/DRY reconcile upstream DONE using backend counts only", () => {
+    const flow = buildPositionFlowDisplay(
+      {
+        weighed_total: 100,
+        sorted_total: 12,
+        washed_total: 7,
+        dried_total: 0,
+        folded_total: 0,
+        weighed_this_block: 0,
+        sorted_this_block: 1,
+        washed_this_block: 7,
+        dried_this_block: 0,
+        folded_this_block: 0,
+        waiting_to_sort: 0,
+        waiting_to_wash: 0,
+        waiting_to_dry: 2,
+        waiting_to_fold: 0,
+        detail: { in_wash_cycle: 5, in_dry_cycle: 5, in_wash_labor: 0, in_dry_labor: 0 },
+      },
+      100,
+    );
+    expect(flow.stages.wash).toMatchObject({
+      done: 7,
+      inCycle: 5,
+      inCycleLabel: "5 IN CYCLE",
+      waitingToEnter: 0,
+      waitingToEnterLabel: "0 WAITING TO ENTER",
+    });
+    expect(flow.stages.dry).toMatchObject({
+      done: 0,
+      inCycle: 5,
+      waitingToEnter: 2,
+      waitingToEnterLabel: "2 WAITING TO ENTER",
+    });
+    expect(flow.reconcile.sortToWash).toMatchObject({
+      upstreamDone: 12,
+      waitingToEnter: 0,
+      inCycle: 5,
+      stageDone: 7,
+      accounted: 12,
+      matches: true,
+    });
+    expect(flow.reconcile.sortToWash.text).toBe(
+      "12 Sort DONE = 0 waiting to enter + 5 in cycle + 7 Wash DONE",
+    );
+    expect(flow.reconcile.washToDry).toMatchObject({
+      upstreamDone: 7,
+      waitingToEnter: 2,
+      inCycle: 5,
+      stageDone: 0,
+      accounted: 7,
+      matches: true,
+    });
+    expect(flow.reconcile.washToDry.text).toBe(
+      "7 Wash DONE = 2 waiting to enter + 5 in cycle + 0 Dry DONE",
+    );
+    // Formatter is presentation-only over provided backend numbers.
+    expect(formatStageReconcile({
+      upstreamDone: 12,
+      waitingToEnter: 0,
+      inCycle: 5,
+      stageDone: 7,
+      upstreamLabel: "Sort",
+      stageLabel: "Wash",
+    }).matches).toBe(true);
   });
 
   it("DRY DONE 0 with IN CYCLE > 0 uses API in_dry_cycle only", () => {
