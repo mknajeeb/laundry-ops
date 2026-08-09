@@ -49,7 +49,10 @@ import {
   formatManagementOutcome,
   buildSlotStaffingNotes,
   fillRestBasePeopleForRole,
+  findWorkCoverageForHybrid,
+  findWorkCoverageForRole,
   formatCollapsedSlotStaffLine,
+  formatWorkCoverageLine,
   getAdditionalForBlock,
   getBasePeopleForBlock,
   getHybridPeopleForBlock,
@@ -590,7 +593,32 @@ function PositionFlow({ block, targetBags, stallRole }) {
       </Box>
       <ReconcileLine reconcile={flow.reconcile?.sortToWash} testId="reconcile-sort-to-wash" />
       <ReconcileLine reconcile={flow.reconcile?.washToDry} testId="reconcile-wash-to-dry" />
+      <ReconcileLine reconcile={flow.reconcile?.dryToFold} testId="reconcile-dry-to-fold" />
     </Box>
+  );
+}
+
+function WorkCoverageHint({ rows, testId }) {
+  if (!rows?.length) return null;
+  return (
+    <Stack spacing={0.15} sx={{ pl: 6.5, pb: 0.35 }} data-testid={testId || "work-coverage-hint"}>
+      {rows.map((row) => (
+        <Typography
+          key={`${row.role || row.hybrid}-${row.mode}-${row.start}-${row.end}-${row.index}`}
+          sx={{
+            fontSize: "0.68rem",
+            fontWeight: 600,
+            color: row.status === "fully_utilized"
+              ? VEEWASH_DASHBOARD.primaryBlueDark
+              : "text.secondary",
+            lineHeight: 1.25,
+          }}
+        >
+          {String(row.mode).toLowerCase() === "additional" ? "TEMP · " : ""}
+          {formatWorkCoverageLine(row)}
+        </Typography>
+      ))}
+    </Stack>
   );
 }
 
@@ -605,19 +633,30 @@ function BlockRoleRow({
   onRemove,
   showFillRest = false,
   onFillRest = null,
+  coverageRows = [],
 }) {
   const base = getBasePeopleForBlock(intervals, role.id, blockStart, blockEnd);
   const extras = getAdditionalForBlock(intervals, role.id, blockStart, blockEnd);
+  const baseCoverage = base > 0
+    ? findWorkCoverageForRole(coverageRows, role.id, blockStart, blockEnd, { mode: "base" })
+    : [];
+  const tempCoverage = extras.length
+    ? findWorkCoverageForRole(coverageRows, role.id, blockStart, blockEnd, { mode: "additional" })
+    : [];
 
   return (
+    <Box
+      sx={{
+        borderBottom: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
+        "&:last-child": { borderBottom: 0 },
+      }}
+    >
     <Stack
       direction="row"
       alignItems="center"
       spacing={1}
       sx={{
         py: 0.45,
-        borderBottom: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
-        "&:last-child": { borderBottom: 0 },
         minHeight: 36,
       }}
     >
@@ -721,20 +760,30 @@ function BlockRoleRow({
         Temp
       </Button>
     </Stack>
+    <WorkCoverageHint rows={baseCoverage} testId={`work-coverage-${role.id}-base`} />
+    <WorkCoverageHint rows={tempCoverage} testId={`work-coverage-${role.id}-temp`} />
+    </Box>
   );
 }
 
-function HybridRoleRow({ hybrid, blockStart, blockEnd, intervals, onChange }) {
+function HybridRoleRow({ hybrid, blockStart, blockEnd, intervals, onChange, coverageRows = [] }) {
   const count = getHybridPeopleForBlock(intervals, hybrid.id, blockStart, blockEnd);
+  const hybridCoverage = count > 0
+    ? findWorkCoverageForHybrid(coverageRows, hybrid.id, blockStart, blockEnd)
+    : [];
   return (
+    <Box
+      sx={{
+        borderBottom: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
+        "&:last-child": { borderBottom: 0 },
+      }}
+    >
     <Stack
       direction="row"
       alignItems="center"
       spacing={1}
       sx={{
         py: 0.35,
-        borderBottom: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
-        "&:last-child": { borderBottom: 0 },
         minHeight: 32,
       }}
     >
@@ -777,6 +826,8 @@ function HybridRoleRow({ hybrid, blockStart, blockEnd, intervals, onChange }) {
         {count > 0 ? "shared calendar" : "—"}
       </Typography>
     </Stack>
+    <WorkCoverageHint rows={hybridCoverage} testId={`work-coverage-hybrid-${hybrid.id}`} />
+    </Box>
   );
 }
 
@@ -986,6 +1037,7 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
           || des.staffing_deficits
           || raw.summary?.staffing_deficits
           || [],
+        work_coverage: raw.work_coverage || des.work_coverage || [],
         summary: raw.summary || des.summary || {},
       };
       setResult(merged);
@@ -1414,6 +1466,11 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                         blockStart={pb.block_start}
                         blockEnd={pb.block_end}
                         intervals={inputs.staffing_intervals}
+                        coverageRows={
+                          (pos?.staffing?.work_coverage)
+                          || result?.work_coverage
+                          || []
+                        }
                         onBaseChange={(n) => changeBase(role.id, pb.block_start, pb.block_end, n)}
                         onAddTemporary={(roleId) => openTemporary(roleId, pb.block_start, pb.block_end)}
                         onEdit={openEdit}
@@ -1441,6 +1498,11 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                         blockStart={pb.block_start}
                         blockEnd={pb.block_end}
                         intervals={inputs.hybrid_intervals}
+                        coverageRows={
+                          (pos?.staffing?.work_coverage)
+                          || result?.work_coverage
+                          || []
+                        }
                         onChange={(n) => changeHybrid(hybrid.id, pb.block_start, pb.block_end, n)}
                       />
                     ))}

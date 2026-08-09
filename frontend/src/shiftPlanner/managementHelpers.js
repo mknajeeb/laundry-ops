@@ -573,6 +573,81 @@ export function formatBlockStaffingLine(staffing) {
   return parts.join(" · ");
 }
 
+/**
+ * Match DES work_coverage rows for a role (or hybrid) overlapping a planning block.
+ * Presentation only — all metrics come from the API (no frontend capacity math).
+ */
+export function findWorkCoverageForRole(coverageRows, roleId, blockStart, blockEnd, { mode } = {}) {
+  const bs = parseClockToSec(blockStart);
+  const be = parseClockToSec(blockEnd);
+  if (bs == null || be == null) return [];
+  const rows = Array.isArray(coverageRows) ? coverageRows : [];
+  return rows.filter((row) => {
+    if (mode != null && String(row.mode || "base").toLowerCase() !== String(mode).toLowerCase()) {
+      return false;
+    }
+    if (row.hybrid) return false;
+    if (normalizeRole(row.role) !== roleId) return false;
+    const s = Number(row.start_sec);
+    const e = Number(row.end_sec);
+    if (!Number.isFinite(s) || !Number.isFinite(e)) return false;
+    return s < be && e > bs;
+  });
+}
+
+export function findWorkCoverageForHybrid(coverageRows, hybridId, blockStart, blockEnd) {
+  const bs = parseClockToSec(blockStart);
+  const be = parseClockToSec(blockEnd);
+  if (bs == null || be == null) return [];
+  const rows = Array.isArray(coverageRows) ? coverageRows : [];
+  return rows.filter((row) => {
+    if (row.hybrid !== hybridId) return false;
+    const s = Number(row.start_sec);
+    const e = Number(row.end_sec);
+    if (!Number.isFinite(s) || !Number.isFinite(e)) return false;
+    return s < be && e > bs;
+  });
+}
+
+/** Compact one-line Upstream Work Coverage from a DES work_coverage row. */
+export function formatWorkCoverageLine(row, { compact = true } = {}) {
+  if (!row) return "";
+  const bags = Number(row.eligible_bags) || 0;
+  const avail = _fmtCoverageMin(row.available_work_min);
+  const staff = _fmtCoverageMin(row.staff_min);
+  const used = _fmtCoverageMin(row.used_min);
+  const idle = _fmtCoverageMin(row.idle_min);
+  const status = row.status === "fully_utilized"
+    ? "FULL"
+    : (row.status_label || `${idle} min idle`);
+
+  if (row.role_allocation_min && typeof row.role_allocation_min === "object") {
+    const alloc = row.role_allocation_min;
+    const bits = [`${staff} staff min`];
+    const labels = { weigher: "Weigh", washer: "Wash", dryer: "Dry", sorter: "Sort", folder: "Fold" };
+    Object.keys(labels).forEach((k) => {
+      const v = Number(alloc[k]);
+      if (v > 0) bits.push(`${labels[k]} ${_fmtCoverageMin(v)}m`);
+    });
+    bits.push(`Idle ${_fmtCoverageMin(alloc.idle ?? idle)}m`);
+    return bits.join(" · ");
+  }
+
+  if (compact) {
+    return `${bags} bags · ${avail} work min · ${staff} staff · ${used} used · ${idle} idle · ${status}`;
+  }
+  return (
+    `${avail} min available · ${used} min used · ${idle} idle · ${status}`
+  );
+}
+
+function _fmtCoverageMin(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "0";
+  if (Math.abs(n - Math.round(n)) < 0.05) return String(Math.round(n));
+  return n.toFixed(1);
+}
+
 export function formatStageProgress(label, total, thisBlock) {
   const t = Number(total) || 0;
   const d = Number(thisBlock) || 0;
@@ -828,6 +903,7 @@ export function buildPositionFlowDisplay(block, targetBags) {
   };
   const inWashLabor = _blockInCycle(block, "in_wash_labor");
   const inDryLabor = _blockInCycle(block, "in_dry_labor");
+  const inFoldLabor = _blockInCycle(block, "in_fold_labor");
   const washInCycle = _blockInCycle(block, "in_wash_cycle");
   const dryInCycle = _blockInCycle(block, "in_dry_cycle");
   const stages = {
@@ -899,6 +975,15 @@ export function buildPositionFlowDisplay(block, targetBags) {
         stageDone: stages.dry.done,
         upstreamLabel: "Wash",
         stageLabel: "Dry",
+      }),
+      dryToFold: formatStageReconcile({
+        upstreamDone: stages.dry.done,
+        waitingToEnter: waiting.to_fold,
+        inCycle: 0,
+        inLabor: inFoldLabor,
+        stageDone: stages.fold.done,
+        upstreamLabel: "Dry",
+        stageLabel: "Fold",
       }),
     },
     hints: {

@@ -15,6 +15,10 @@ from backend.shift_capacity.staffing_plan import (
 from backend.shift_capacity.summaries import compute_kpis, ready_by_batch, staffing_summary, time_summary
 from backend.shift_capacity.timebase import sec_to_min_int
 from backend.shift_capacity.validation import label_minutes
+from backend.shift_capacity.work_coverage import (
+    attach_work_coverage_to_blocks,
+    build_work_coverage,
+)
 
 
 def serialize_bag(bag: Bag, emp_names: dict[str, str]) -> dict[str, Any]:
@@ -172,6 +176,11 @@ def serialize_state(
 
     validation_errors = [e.message for e in state.validation.errors]
 
+    work_coverage = build_work_coverage(state) if state.inputs.management_mode else []
+    block_positions = _block_positions_with_staffing(state)
+    if work_coverage:
+        attach_work_coverage_to_blocks(block_positions, work_coverage)
+
     return {
         "engine": "bag_des_v2",
         "scenario_id": state.scenario_id,
@@ -184,6 +193,7 @@ def serialize_state(
         "summary": kpis,
         "bags": bags,
         "bag_rows": bags,
+        "work_coverage": work_coverage,
         "batches": [
             {
                 "batch_number": b.sequence,
@@ -214,7 +224,7 @@ def serialize_state(
         "ready_to_fold_by_batch": batches,
         "time_summary": time_rows,
         "availability_30min": time_rows if interval == 30 else time_summary(state, 30),
-        "block_positions": _block_positions_with_staffing(state),
+        "block_positions": block_positions,
         "staffing_plan": _staffing_plan_payload(state),
         "management_outcome": kpis.get("management_outcome"),
         "staffing_deficits": kpis.get("staffing_deficits") or [],

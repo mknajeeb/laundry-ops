@@ -4283,6 +4283,7 @@ def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
             # Management planner surface (also available under des.*)
             "block_positions": des.get("block_positions") or [],
             "staffing_plan": des.get("staffing_plan") or {},
+            "work_coverage": des.get("work_coverage") or [],
             "management_outcome": des.get("management_outcome")
             or summary.get("management_outcome"),
             "staffing_deficits": des.get("staffing_deficits")

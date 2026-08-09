@@ -10,12 +10,15 @@ import {
   dedicatedPeopleInSlot,
   fillRestBasePeopleForRole,
   formatBlockStaffingLine,
+  findWorkCoverageForHybrid,
+  findWorkCoverageForRole,
   formatCollapsedSlotStaffLine,
   formatHybridStaffChips,
   formatManagementOutcome,
   formatStageReconcile,
   formatTempStaffChips,
   formatWaitingToSortHint,
+  formatWorkCoverageLine,
   getAdditionalForBlock,
   getBasePeopleForBlock,
   getHybridPeopleForBlock,
@@ -829,5 +832,74 @@ describe("managementHelpers", () => {
       thisBlockLabel: "0 this slot",
     });
     expect(flow.stages.wash.inCycleLabel).toBe("2 IN CYCLE");
+  });
+
+  it("formats work coverage lines from API rows only", () => {
+    const full = formatWorkCoverageLine({
+      eligible_bags: 6,
+      available_work_min: 24,
+      staff_min: 15,
+      used_min: 15,
+      idle_min: 0,
+      status: "fully_utilized",
+      status_label: "FULLY UTILIZED",
+    });
+    expect(full).toContain("6 bags");
+    expect(full).toContain("24 work min");
+    expect(full).toContain("15 staff");
+    expect(full).toContain("FULL");
+
+    const idle = formatWorkCoverageLine({
+      eligible_bags: 2,
+      available_work_min: 6,
+      staff_min: 15,
+      used_min: 6,
+      idle_min: 9,
+      status: "idle_waiting_for_work",
+      status_label: "9 min likely idle",
+    });
+    expect(idle).toContain("9 idle");
+    expect(idle).toContain("9 min likely idle");
+  });
+
+  it("matches work_coverage rows to role/TEMP within a slot", () => {
+    const rows = [
+      {
+        role: "dryer",
+        hybrid: null,
+        mode: "additional",
+        start: "6:45 AM",
+        end: "7:00 AM",
+        start_sec: parseClockToSec("6:45 AM"),
+        end_sec: parseClockToSec("7:00 AM"),
+        eligible_bags: 14,
+        available_work_min: 42,
+        staff_min: 15,
+        used_min: 15,
+        idle_min: 0,
+        status: "fully_utilized",
+      },
+      {
+        role: "washer",
+        hybrid: null,
+        mode: "base",
+        start: "6:00 AM",
+        end: "7:00 AM",
+        start_sec: parseClockToSec("6:00 AM"),
+        end_sec: parseClockToSec("7:00 AM"),
+        eligible_bags: 20,
+        available_work_min: 90,
+        staff_min: 60,
+        used_min: 60,
+        idle_min: 0,
+        status: "fully_utilized",
+      },
+    ];
+    const dryTemp = findWorkCoverageForRole(rows, "dryer", "6:00 AM", "7:00 AM", { mode: "additional" });
+    expect(dryTemp).toHaveLength(1);
+    expect(dryTemp[0].used_min).toBe(15);
+    const washBase = findWorkCoverageForRole(rows, "washer", "6:00 AM", "7:00 AM", { mode: "base" });
+    expect(washBase).toHaveLength(1);
+    expect(findWorkCoverageForHybrid(rows, "wash_dry", "6:00 AM", "7:00 AM")).toHaveLength(0);
   });
 });

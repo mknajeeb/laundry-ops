@@ -11,6 +11,32 @@ from backend.shift_capacity.models import Bag, SimulationState
 from backend.shift_capacity.timebase import label_seconds, planning_block_boundaries, sec_to_min_int
 
 
+def _machine_parts(machine_id: str | None) -> int:
+    if not machine_id:
+        return 0
+    return len([p for p in str(machine_id).split("+") if p])
+
+
+def parent_wash_complete(bag: Bag, t: int) -> bool:
+    """True when the parent has fully finished all required washer child loads by t."""
+    if bag.wash_end is None or bag.wash_end > t:
+        return False
+    need = 2 if bag.requires_two_washers else 1
+    return _machine_parts(bag.washer_id) >= need
+
+
+def parent_dry_complete(bag: Bag, t: int) -> bool:
+    """True when the parent has fully finished all required dryer child loads by t.
+
+    DRY DONE ≡ ready_to_fold and every required child load is present. A single
+    child finishing must never count as parent Dry DONE / fold-eligible.
+    """
+    if bag.ready_to_fold is None or bag.ready_to_fold > t:
+        return False
+    need = 2 if bag.requires_two_dryers else 1
+    return _machine_parts(bag.dryer_id) >= need
+
+
 def bag_state_at(bag: Bag, t: int) -> str:
     """Return the mutually exclusive workflow state of a bag at exact time t."""
     # Labor / cycle intervals are half-open [start, end).
@@ -20,17 +46,26 @@ def bag_state_at(bag: Bag, t: int) -> str:
     if bag.fold_start is not None and bag.fold_end is not None and bag.fold_start <= t < bag.fold_end:
         return "in_fold_labor"
 
-    ready = bag.ready_to_fold
-    if ready is not None and ready <= t and (bag.fold_start is None or bag.fold_start > t):
+    # Fold queue only for parents that are fully Dry DONE.
+    if parent_dry_complete(bag, t) and (bag.fold_start is None or bag.fold_start > t):
         return "waiting_to_fold"
 
-    # Dry cycle (+ optional unload) occupies until ready_to_fold.
+    ready = bag.ready_to_fold
+    # Dry cycle (+ optional unload) occupies until parent dry completion.
     if bag.dryer_load_start is not None and bag.dryer_load_end is not None and bag.dryer_load_start <= t < bag.dryer_load_end:
         return "in_dry_labor"
     if bag.dry_start is not None and ready is not None and bag.dry_start <= t < ready:
         return "in_dry_cycle"
     if bag.dry_start is not None and bag.dry_end is not None and ready is None and bag.dry_start <= t < bag.dry_end:
         return "in_dry_cycle"
+    # Incomplete split: child cycle(s) finished but parent still needs another load.
+    if (
+        bag.dryer_load_start is not None
+        and bag.dryer_load_start <= t
+        and not parent_dry_complete(bag, t)
+        and (bag.requires_two_dryers and _machine_parts(bag.dryer_id) < 2)
+    ):
+        return "waiting_to_dry"
 
     # Compat transfer labor (zero-length in management mode).
     if (
@@ -41,7 +76,7 @@ def bag_state_at(bag: Bag, t: int) -> str:
     ):
         return "in_transfer_labor"
 
-    wash_done = bag.wash_end is not None and bag.wash_end <= t
+    wash_done = parent_wash_complete(bag, t)
     dry_not_started = bag.dryer_load_start is None or bag.dryer_load_start > t
     if wash_done and dry_not_started:
         return "waiting_to_dry"
@@ -50,6 +85,15 @@ def bag_state_at(bag: Bag, t: int) -> str:
         return "in_wash_labor"
     if bag.wash_start is not None and bag.wash_end is not None and bag.wash_start <= t < bag.wash_end:
         return "in_wash_cycle"
+    # Incomplete wash split after child cycle(s): still needs remaining wash labor.
+    if (
+        bag.washer_load_start is not None
+        and bag.washer_load_start <= t
+        and bag.requires_two_washers
+        and _machine_parts(bag.washer_id) < 2
+        and not parent_wash_complete(bag, t)
+    ):
+        return "waiting_to_wash"
 
     if bag.sort_end is not None and bag.sort_end <= t and (bag.washer_load_start is None or bag.washer_load_start > t):
         return "waiting_to_wash"
@@ -79,23 +123,43 @@ def _count_completed_by(bags: list[Bag], attr: str, t: int) -> int:
     return sum(1 for bag in bags if (getattr(bag, attr) is not None and getattr(bag, attr) <= t))
 
 
+def _count_parent_wash_between(bags: list[Bag], start_exclusive: int, end_inclusive: int) -> int:
+    n = 0
+    for bag in bags:
+        if bag.wash_end is None:
+            continue
+        if start_exclusive < bag.wash_end <= end_inclusive and parent_wash_complete(bag, end_inclusive):
+            n += 1
+    return n
+
+
+def _count_parent_dry_between(bags: list[Bag], start_exclusive: int, end_inclusive: int) -> int:
+    n = 0
+    for bag in bags:
+        if bag.ready_to_fold is None:
+            continue
+        if start_exclusive < bag.ready_to_fold <= end_inclusive and parent_dry_complete(bag, end_inclusive):
+            n += 1
+    return n
+
+
 def position_at(bags: list[Bag], t: int, *, prev_t: int | None = None, target_bags: int | None = None) -> dict[str, Any]:
     prev = prev_t if prev_t is not None else t
     target = target_bags if target_bags is not None else len(bags)
 
-    # WASHED = wash cycle completed; DRIED = ready for folding (dry cycle complete).
+    # WASHED / DRIED are parent-complete only (all required child loads finished).
     this_block = {
         "weighed_this_block": _count_completed_between(bags, "weigh_end", prev, t),
         "sorted_this_block": _count_completed_between(bags, "sort_end", prev, t),
-        "washed_this_block": _count_completed_between(bags, "wash_end", prev, t),
-        "dried_this_block": _count_completed_between(bags, "ready_to_fold", prev, t),
+        "washed_this_block": _count_parent_wash_between(bags, prev, t),
+        "dried_this_block": _count_parent_dry_between(bags, prev, t),
         "folded_this_block": _count_completed_between(bags, "completed_at", prev, t),
     }
     totals = {
         "weighed_total": _count_completed_by(bags, "weigh_end", t),
         "sorted_total": _count_completed_by(bags, "sort_end", t),
-        "washed_total": _count_completed_by(bags, "wash_end", t),
-        "dried_total": _count_completed_by(bags, "ready_to_fold", t),
+        "washed_total": sum(1 for b in bags if parent_wash_complete(b, t)),
+        "dried_total": sum(1 for b in bags if parent_dry_complete(b, t)),
         "folded_total": _count_completed_by(bags, "completed_at", t),
     }
 

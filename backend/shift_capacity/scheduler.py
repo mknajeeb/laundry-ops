@@ -44,6 +44,39 @@ STAGE_FIELDS = (
 )
 
 
+_WASH_SNAP_FIELDS = (
+    "washer_id",
+    "washer_load_start",
+    "washer_load_end",
+    "wash_start",
+    "wash_end",
+    "transfer_start",
+    "transfer_end",
+    "washer_loaded_by_employee_id",
+    "transferred_by_employee_id",
+)
+_DRY_SNAP_FIELDS = (
+    "dryer_id",
+    "dryer_load_start",
+    "dryer_load_end",
+    "dry_start",
+    "dry_end",
+    "ready_to_fold",
+    "dryer_unload_start",
+    "dryer_unload_end",
+    "dryer_loaded_by_employee_id",
+)
+
+
+def _snap_bag_fields(bag: Bag, fields: tuple[str, ...]) -> dict[str, Any]:
+    return {f: getattr(bag, f) for f in fields}
+
+
+def _restore_bag_fields(bag: Bag, snap: dict[str, Any]) -> None:
+    for f, v in snap.items():
+        setattr(bag, f, v)
+
+
 def _dur(value_min: float) -> int:
     """Convert minute-based duration to seconds. Minimum 1s when value > 0."""
     sec = duration_sec_from_min(value_min)
@@ -435,6 +468,7 @@ def _process_batch(
     if inp.management_mode:
         # Parent-level physical loads: each bag is eligible at its own sort_end.
         # Split parents get two 3-min loads on two washers; cycles overlap labor.
+        # All-or-nothing: never leave wash_end set after only one of two loads.
         for bag in sorted(members, key=lambda b: (b.sort_end is None, b.sort_end or 0, b.bag_id)):
             if bag.sort_end is None:
                 continue
@@ -442,6 +476,10 @@ def _process_batch(
             bag_ready = int(bag.sort_end)
             if override and override.earliest_start_min is not None:
                 bag_ready = max(bag_ready, int(override.earliest_start_min))
+            emp_snap = emp_cal.checkpoint()
+            mach_snap = machine_cal.checkpoint()
+            washers_snap = list(washer_ids_used)
+            bag_snap = _snap_bag_fields(bag, _WASH_SNAP_FIELDS)
             placed = 0
             for load_i in range(n_loads):
                 ok = _schedule_wash_group(
@@ -458,11 +496,14 @@ def _process_batch(
                     merge_parent=(load_i > 0),
                 )
                 if not ok:
-                    wash_failed = True
+                    emp_cal.restore(emp_snap)
+                    machine_cal.restore(mach_snap)
+                    washer_ids_used[:] = washers_snap
+                    _restore_bag_fields(bag, bag_snap)
+                    if load_i == 0:
+                        wash_failed = True
                     break
                 placed += 1
-            if wash_failed and placed == 0:
-                break
             if wash_failed:
                 break
     else:
@@ -510,6 +551,7 @@ def _process_batch(
 
     if inp.management_mode:
         # Parent-level dry loads: each washed bag is dry-eligible at its wash_end.
+        # All-or-nothing: never set ready_to_fold after only one of two dryer loads.
         for bag in sorted(
             washed_members,
             key=lambda b: (
@@ -521,6 +563,11 @@ def _process_batch(
             bag_ready = int(
                 (bag.transfer_end if bag.transfer_end is not None else bag.wash_end) or event_start
             )
+            emp_snap = emp_cal.checkpoint()
+            mach_snap = machine_cal.checkpoint()
+            dryers_snap = list(dryer_ids_used)
+            bag_snap = _snap_bag_fields(bag, _DRY_SNAP_FIELDS)
+            bag_ready_times: list[int] = []
             for load_i in range(n_loads):
                 ready = _schedule_dry_group(
                     [bag],
@@ -536,8 +583,14 @@ def _process_batch(
                     merge_parent=(load_i > 0),
                 )
                 if ready is None:
+                    emp_cal.restore(emp_snap)
+                    machine_cal.restore(mach_snap)
+                    dryer_ids_used[:] = dryers_snap
+                    _restore_bag_fields(bag, bag_snap)
+                    bag_ready_times = []
                     break
-                ready_times.append(ready)
+                bag_ready_times.append(ready)
+            ready_times.extend(bag_ready_times)
     else:
         cohorts: dict[int, list] = {}
         for bag in washed_members:

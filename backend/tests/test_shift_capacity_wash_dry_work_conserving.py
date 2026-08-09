@@ -228,10 +228,14 @@ def test_owner_5_to_6_scenario_labor_not_machines_limits_and_no_avoidable_idle()
     assert len(wash_starts) >= 9  # ~11 theoretical; allow sort feed lag
     assert b6["washed_total"] == len(wash_done)
     assert b6.get("in_wash_cycle", 0) >= 1
-    # Dry begins at first wash completion; with 80% dual dry loads ≈4 parents/24min.
-    assert len(dry_starts) >= 4
+    # Dry begins at first wash completion; dual parents are all-or-nothing (2×3 min).
+    assert len(dry_starts) >= 3
     assert b6["dried_total"] == len(dry_done) == 0  # 40-min cycle
     assert b6.get("in_dry_cycle", 0) >= 3
+    # Parent Dry DONE never exceeds fold pipeline with zero fold staff.
+    assert b6["dried_total"] == (
+        b6["waiting_to_fold"] + b6.get("in_fold_labor", 0) + b6["folded_total"]
+    )
 
     wash_labor = _labor_windows(result, "MGMT_WASH", "washer_load", t5, t6)
     dry_labor = _labor_windows(result, "MGMT_DRY", "dryer_load", t5, t6)
@@ -246,10 +250,11 @@ def test_owner_5_to_6_scenario_labor_not_machines_limits_and_no_avoidable_idle()
     # Sort feeds ~11 bags/hr; wash should stay busy after first sorted bag arrives.
     # Allow only the unavoidable pre-first-sort idle (~weigh+first sort).
     assert wash_idle <= 12 * 60
-    # Dry waits only until first parent wash completes (~first load + 25m cycle + dual loads).
-    assert dry_idle <= 40 * 60
-    # After first dry load starts, dry labor is continuous to hour end.
-    assert dry_labor[-1][1] >= t6 - 3 * 60
+    # Dry waits until first parent wash completes (~load + wash cycle), then dual-packs.
+    # Trailing <6 min cannot start another dual parent (all-or-nothing).
+    assert dry_idle <= 45 * 60
+    # After first dry load starts, dual packing continues while full parents fit.
+    assert dry_labor[-1][1] >= t6 - 6 * 60
 
     # Machine count is not the limiter: many distinct washers/dryers used.
     wash_machines = {r.get("washer") for r in wash_starts if r.get("washer")}
