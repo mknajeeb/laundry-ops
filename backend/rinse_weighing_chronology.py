@@ -218,8 +218,14 @@ def _try_append_weighing_session(
     weight_ev: Mapping[str, Any],
     weight_ts: datetime,
     selected_date_et: date,
+    not_before_ts: datetime | None = None,
 ) -> None:
-    session = compute_weighing_session(timeline, weight_ev=weight_ev, weight_ts=weight_ts)
+    session = compute_weighing_session(
+        timeline,
+        weight_ev=weight_ev,
+        weight_ts=weight_ts,
+        not_before_ts=not_before_ts,
+    )
     if _is_post_sort_weigh_end(
         anchored,
         weigh_start_et=session.weigh_start_et,
@@ -264,6 +270,7 @@ def extract_weighing_sessions_for_bag(
                 weight_ev=weight_ev,
                 weight_ts=weight_ts,
                 selected_date_et=selected_date_et,
+                not_before_ts=anchor_ts,
             )
         prev_bound = add_ts
 
@@ -280,6 +287,7 @@ def extract_weighing_sessions_for_bag(
                 weight_ev=weight_ev,
                 weight_ts=weight_ts,
                 selected_date_et=selected_date_et,
+                not_before_ts=anchor_ts,
             )
 
     sessions = _dedupe_sessions_by_window(sessions)
@@ -458,9 +466,10 @@ def build_weighing_chronology_payload(
         ),
         "grouping_rules": (
             "One row per bag for the first post-sent-to-vendor weight-entry only; "
-            "bounds from rinse_weighing_session (same-employee cleaning/start-cleaning before "
-            "first weight-entry; weight-entry is weigh end; post-processing completion "
-            "weights and later weigh cycles are excluded); "
+            "bounds from rinse_weighing_session (same-employee cleaning/start-cleaning in the "
+            "current sent-to-vendor cycle before first weight-entry; missing current-cycle start "
+            "falls back to weight-entry — never a prior-cycle cleaning; weight-entry is weigh end; "
+            "post-processing completion weights and later weigh cycles are excluded); "
             "global chronological order; gap_until_next = next session weigh_start minus current weigh_end."
         ),
     }

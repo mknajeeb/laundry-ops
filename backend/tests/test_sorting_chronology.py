@@ -733,3 +733,28 @@ class TestRepeatTripSortingCycleBoundaries:
         )
         anchor_ts, _ = lifecycle_anchor(tl)
         assert anchor_ts == at(2026, 6, 25, 5, 9)
+
+    def test_same_employee_prior_cycle_cleaning_cannot_start_current_sort(self):
+        """Shared chronology helper: prior-cycle cleaning must not stretch Aug 8 sort."""
+        at = datetime
+        events = [
+            _ev("sent-to-vendor", at(2026, 7, 11, 1, 0), ev_id=1),
+            _ev("cleaning", at(2026, 7, 11, 9, 17), ev_id=2, scan_index=2, user="Francis"),
+            _ev("weight-entry", at(2026, 7, 11, 9, 20), ev_id=3, scan_index=3, user="Francis"),
+            _ev("add-photos", at(2026, 7, 11, 9, 40), ev_id=4, scan_index=4, user="Francis"),
+            _ev("sent-to-vendor", at(2026, 8, 8, 7, 2), ev_id=10, scan_index=10),
+            # Current cycle: weight + add-photos, no current-cycle cleaning before add-photos.
+            _ev("weight-entry", at(2026, 8, 8, 10, 6), ev_id=11, scan_index=11, user="Francis"),
+            _ev("add-photos", at(2026, 8, 8, 11, 12), ev_id=12, scan_index=12, user="Francis"),
+        ]
+        sessions = extract_sorting_sessions_for_bag(
+            "8IUJWGF04Q",
+            events,
+            selected_date_et=date(2026, 8, 8),
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["sort_start_et"] == at(2026, 8, 8, 10, 6)
+        assert sessions[0]["sort_end_et"] == at(2026, 8, 8, 11, 12)
+        assert sessions[0]["duration_seconds"] == 66 * 60
+        assert sessions[0]["sort_start_et"] != at(2026, 7, 11, 9, 17)
+        assert sessions[0]["duration_seconds"] < 24 * 3600

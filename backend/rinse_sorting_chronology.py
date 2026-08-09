@@ -275,6 +275,7 @@ def extract_sorting_sessions_for_bag(
             weight_ev=weight_ev,
             weight_ts=weight_ts,
             add_photos_ev=add_ev_iter,
+            not_before_ts=anchor_ts,
         )
         if session is None:
             continue

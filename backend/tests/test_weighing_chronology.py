@@ -252,3 +252,127 @@ class TestWeighingChronologySessions:
                 selected_date_et=SELECTED,
             )
             assert all(int(s.get("duration_seconds") or 0) < 30 * 60 for s in sessions), bag_id
+
+
+class TestWeighingPriorCycleStartContamination:
+    """Aug 8 / Today must never pair a current-cycle weight with a prior-cycle start."""
+
+    def test_prior_cycle_same_employee_cleaning_cannot_become_aug8_start(self):
+        """Screenshot pattern: Francis June cleaning must not start Aug 8 weight."""
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 20, 4, 18), ev_id=1, user="Driver"),
+            _ev("cleaning", datetime(2026, 6, 20, 14, 0), ev_id=2, scan_index=2, user="Francis"),
+            _ev("weight-entry", datetime(2026, 6, 20, 14, 4), ev_id=3, scan_index=3, user="Francis"),
+            _ev("add-photos", datetime(2026, 6, 20, 14, 10), ev_id=4, scan_index=4, user="Francis"),
+            _ev("sent-to-vendor", datetime(2026, 8, 8, 7, 2), ev_id=10, scan_index=10, user="Driver"),
+            _ev("weight-entry", datetime(2026, 8, 8, 8, 11), ev_id=11, scan_index=11, user="Francis"),
+            _ev("add-photos", datetime(2026, 8, 8, 8, 48), ev_id=12, scan_index=12, user="Francis"),
+        ]
+        sessions = extract_weighing_sessions_for_bag(
+            "A71OSKDE0V",
+            events,
+            selected_date_et=date(2026, 8, 8),
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["weigh_start_et"] == datetime(2026, 8, 8, 8, 11)
+        assert sessions[0]["weigh_end_et"] == datetime(2026, 8, 8, 8, 11)
+        assert sessions[0]["duration_seconds"] == 0
+        assert sessions[0]["confidence"] == "inferred"
+        assert sessions[0]["weigh_start_et"].month == 8
+        assert sessions[0]["duration_seconds"] < 24 * 3600
+
+    def test_current_cycle_cleaning_before_weight_gives_realistic_duration(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 20, 4, 18), ev_id=1),
+            _ev("cleaning", datetime(2026, 6, 20, 14, 0), ev_id=2, scan_index=2, user="Francis"),
+            _ev("weight-entry", datetime(2026, 6, 20, 14, 4), ev_id=3, scan_index=3, user="Francis"),
+            _ev("add-photos", datetime(2026, 6, 20, 14, 10), ev_id=4, scan_index=4, user="Francis"),
+            _ev("sent-to-vendor", datetime(2026, 8, 8, 7, 2), ev_id=10, scan_index=10),
+            _ev("cleaning", datetime(2026, 8, 8, 8, 5), ev_id=11, scan_index=11, user="Francis"),
+            _ev("weight-entry", datetime(2026, 8, 8, 8, 11), ev_id=12, scan_index=12, user="Francis"),
+            _ev("add-photos", datetime(2026, 8, 8, 8, 48), ev_id=13, scan_index=13, user="Francis"),
+        ]
+        sessions = extract_weighing_sessions_for_bag(
+            "BAG-CUR",
+            events,
+            selected_date_et=date(2026, 8, 8),
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["weigh_start_et"] == datetime(2026, 8, 8, 8, 5)
+        assert sessions[0]["weigh_end_et"] == datetime(2026, 8, 8, 8, 11)
+        assert sessions[0]["duration_seconds"] == 6 * 60
+        assert sessions[0]["confidence"] == "exact"
+        assert sessions[0]["source"] == "cleaning → weight-entry"
+
+    def test_missing_current_cycle_start_does_not_fall_back_to_lifetime(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 8, 5, 0), ev_id=1),
+            _ev("cleaning", datetime(2026, 7, 8, 11, 26), ev_id=2, scan_index=2, user="Varun"),
+            _ev("weight-entry", datetime(2026, 7, 8, 11, 30), ev_id=3, scan_index=3, user="Varun"),
+            _ev("add-photos", datetime(2026, 7, 8, 11, 40), ev_id=4, scan_index=4, user="Varun"),
+            _ev("sent-to-vendor", datetime(2026, 8, 8, 5, 20), ev_id=10, scan_index=10),
+            # Concurrent ghost cleaning at weight time is not a valid pre-weight start.
+            _ev("cleaning", datetime(2026, 8, 8, 5, 25), ev_id=11, scan_index=11, user="Varun"),
+            _ev("weight-entry", datetime(2026, 8, 8, 5, 25), ev_id=12, scan_index=12, user="Varun"),
+            _ev("add-photos", datetime(2026, 8, 8, 6, 36), ev_id=13, scan_index=13, user="Maria"),
+        ]
+        sessions = extract_weighing_sessions_for_bag(
+            "7GCK0G5820",
+            events,
+            selected_date_et=date(2026, 8, 8),
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["weigh_start_et"] == datetime(2026, 8, 8, 5, 25)
+        assert sessions[0]["weigh_end_et"] == datetime(2026, 8, 8, 5, 25)
+        assert sessions[0]["duration_seconds"] == 0
+        assert sessions[0]["confidence"] == "inferred"
+        assert sessions[0]["weigh_start_et"] != datetime(2026, 7, 8, 11, 26)
+
+    def test_selected_date_boundaries_are_et_safe(self):
+        """Session on Aug 8 ET must not be attributed to Aug 7 or pull July start."""
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 15, 4, 0), ev_id=1),
+            _ev("cleaning", datetime(2026, 7, 15, 12, 32), ev_id=2, scan_index=2, user="Varun"),
+            _ev("weight-entry", datetime(2026, 7, 15, 12, 40), ev_id=3, scan_index=3, user="Varun"),
+            _ev("add-photos", datetime(2026, 7, 15, 12, 50), ev_id=4, scan_index=4, user="Varun"),
+            _ev("sent-to-vendor", datetime(2026, 8, 8, 0, 5), ev_id=10, scan_index=10),
+            _ev("cleaning", datetime(2026, 8, 8, 0, 10), ev_id=11, scan_index=11, user="Varun"),
+            _ev("weight-entry", datetime(2026, 8, 8, 0, 15), ev_id=12, scan_index=12, user="Varun"),
+            _ev("add-photos", datetime(2026, 8, 8, 0, 20), ev_id=13, scan_index=13, user="Varun"),
+        ]
+        aug8 = extract_weighing_sessions_for_bag(
+            "ET-BOUND",
+            events,
+            selected_date_et=date(2026, 8, 8),
+        )
+        aug7 = extract_weighing_sessions_for_bag(
+            "ET-BOUND",
+            events,
+            selected_date_et=date(2026, 8, 7),
+        )
+        assert len(aug8) == 1
+        assert aug8[0]["weigh_start_et"] == datetime(2026, 8, 8, 0, 10)
+        assert aug8[0]["weigh_end_et"] == datetime(2026, 8, 8, 0, 15)
+        assert aug8[0]["duration_seconds"] == 5 * 60
+        assert aug7 == []
+
+    def test_summary_rejects_month_spanning_first_weigh_start(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 20, 4, 18), ev_id=1),
+            _ev("cleaning", datetime(2026, 6, 20, 14, 0), ev_id=2, scan_index=2, user="Francis"),
+            _ev("weight-entry", datetime(2026, 6, 20, 14, 4), ev_id=3, scan_index=3, user="Francis"),
+            _ev("add-photos", datetime(2026, 6, 20, 14, 10), ev_id=4, scan_index=4, user="Francis"),
+            _ev("sent-to-vendor", datetime(2026, 8, 8, 7, 2), ev_id=10, scan_index=10),
+            _ev("weight-entry", datetime(2026, 8, 8, 8, 11), ev_id=11, scan_index=11, user="Francis"),
+            _ev("add-photos", datetime(2026, 8, 8, 8, 48), ev_id=12, scan_index=12, user="Francis"),
+        ]
+        sessions = extract_weighing_sessions_for_bag(
+            "A71OSKDE0V",
+            events,
+            selected_date_et=date(2026, 8, 8),
+        )
+        rows = chronology_rows_with_gaps(sessions)
+        summary = build_weighing_chronology_summary(rows)
+        assert summary["first_weigh_start_et"] == datetime(2026, 8, 8, 8, 11)
+        assert summary["total_weighing_seconds"] == 0
+        assert summary["average_weigh_duration_seconds"] == 0

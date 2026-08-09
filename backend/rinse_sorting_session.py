@@ -146,20 +146,36 @@ def has_post_sort_downstream_between(
     return False
 
 
+def _cleaning_in_cycle_window(
+    ev: Mapping[str, Any],
+    *,
+    before_ts: datetime,
+    not_before_ts: datetime | None,
+) -> bool:
+    """True when cleaning is before the session end and inside the current vendor cycle."""
+    if not is_cleaning_purpose_for_activity_start(ev.get("purpose")):
+        return False
+    ts = event_ts(ev)
+    if not ts_valid(ts) or ts >= before_ts:
+        return False
+    if not_before_ts is not None and ts_valid(not_before_ts) and ts <= not_before_ts:
+        return False
+    return True
+
+
 def _last_cleaning_before_ts_by_employee(
     timeline: Sequence[Mapping[str, Any]],
     *,
     before_ts: datetime,
     employee: str | None,
+    not_before_ts: datetime | None = None,
 ) -> Mapping[str, Any] | None:
     if not employee:
         return None
     candidates = [
         ev
         for ev in timeline
-        if is_cleaning_purpose_for_activity_start(ev.get("purpose"))
-        and ts_valid(event_ts(ev))
-        and event_ts(ev) < before_ts
+        if _cleaning_in_cycle_window(ev, before_ts=before_ts, not_before_ts=not_before_ts)
         and _operators_match(_operator(ev), employee)
     ]
     return max(candidates, key=sort_key_ev) if candidates else None
@@ -188,13 +204,12 @@ def _last_cleaning_before_ts(
     timeline: Sequence[Mapping[str, Any]],
     *,
     before_ts: datetime,
+    not_before_ts: datetime | None = None,
 ) -> Mapping[str, Any] | None:
     candidates = [
         ev
         for ev in timeline
-        if is_cleaning_purpose_for_activity_start(ev.get("purpose"))
-        and ts_valid(event_ts(ev))
-        and event_ts(ev) < before_ts
+        if _cleaning_in_cycle_window(ev, before_ts=before_ts, not_before_ts=not_before_ts)
     ]
     return max(candidates, key=sort_key_ev) if candidates else None
 
@@ -226,15 +241,20 @@ def _sorting_start_ev(
     *,
     add_photos_ev: Mapping[str, Any],
     add_ts: datetime,
+    not_before_ts: datetime | None = None,
 ) -> Mapping[str, Any]:
     """
-    Sort start: latest same-employee cleaning before add-photos, else same-employee
-    weight-entry, else add-photos (zero-duration fallback).
+    Sort start: latest same-employee cleaning before add-photos in the current
+    vendor cycle, else same-employee weight-entry, else add-photos (zero-duration
+    fallback). Prior-cycle cleanings must never become the start.
     """
     sort_employee = _operator(add_photos_ev)
     if sort_employee:
         cleaning = _last_cleaning_before_ts_by_employee(
-            timeline, before_ts=add_ts, employee=sort_employee
+            timeline,
+            before_ts=add_ts,
+            employee=sort_employee,
+            not_before_ts=not_before_ts,
         )
         if cleaning is not None:
             return cleaning
@@ -245,7 +265,9 @@ def _sorting_start_ev(
             return weight
         return add_photos_ev
 
-    cleaning = _last_cleaning_before_ts(timeline, before_ts=add_ts)
+    cleaning = _last_cleaning_before_ts(
+        timeline, before_ts=add_ts, not_before_ts=not_before_ts
+    )
     if cleaning is not None:
         return cleaning
     return add_photos_ev
@@ -468,11 +490,14 @@ def compute_sorting_session(
     weight_ev: Mapping[str, Any],
     weight_ts: datetime,
     add_photos_ev: Mapping[str, Any] | None = None,
+    not_before_ts: datetime | None = None,
 ) -> SortingSessionResult | None:
     """
     Standardized sort session for one weight cycle.
 
     Returns None when no canonical add-photos exists after *weight_ts*.
+    When *not_before_ts* is set (lifecycle sent-to-vendor), sort start cleaning
+    must be strictly after that floor.
     """
     add_ev = add_photos_ev or canonical_add_photos_for_weight(anchored, weight_ts)
     if add_ev is not None:
@@ -491,7 +516,11 @@ def compute_sorting_session(
 
     cycle_employee = _operator(add_ev)
     sort_start_ev = _sorting_start_ev(
-        anchored, timeline, add_photos_ev=add_ev, add_ts=add_ts
+        anchored,
+        timeline,
+        add_photos_ev=add_ev,
+        add_ts=add_ts,
+        not_before_ts=not_before_ts,
     )
     sort_end_ev = _sorting_end_ev(
         anchored,
