@@ -5,6 +5,7 @@
  */
 
 import {
+  DEFAULT_PROCESS_PARAMS,
   MANAGEMENT_HYBRIDS,
   MANAGEMENT_ROLES,
   PERSISTED_PLANNER_PARAM_KEYS,
@@ -609,12 +610,31 @@ export function findWorkCoverageForHybrid(coverageRows, hybridId, blockStart, bl
   });
 }
 
+const COVERAGE_ROLE_TITLE = {
+  weigher: "WEIGH",
+  sorter: "SORT",
+  washer: "WASH",
+  dryer: "DRY",
+  folder: "FOLD",
+  weigh_wash: "WEIGH/WASH",
+  wash_dry: "WASH/DRY",
+  weigh_wash_dry: "WEIGH/WASH/DRY",
+};
+
+const COVERAGE_ROLE_SHORT = {
+  weigher: "Weigh",
+  sorter: "Sort",
+  washer: "Wash",
+  dryer: "Dry",
+  folder: "Fold",
+};
+
 /**
  * Manager-facing utilization from a DES work_coverage row.
  * Answers: was this person actually utilized during this staffing interval?
  * Does not recompute capacity — only formats API fields.
  */
-export function describeWorkCoverage(row) {
+export function describeWorkCoverage(row, options = {}) {
   if (!row) {
     return {
       level: "none",
@@ -629,6 +649,7 @@ export function describeWorkCoverage(row) {
       detail: "",
     };
   }
+  const params = { ...DEFAULT_PROCESS_PARAMS, ...(options.processParams || {}) };
   const staffMin = Number(row.staff_min) || 0;
   const usedMin = Number(row.used_min) || 0;
   const idleMin = Number(row.idle_min) || 0;
@@ -650,83 +671,79 @@ export function describeWorkCoverage(row) {
   }
 
   let reasonCode = "FULLY_UTILIZED";
-  let reasonLabel = "";
   if (level !== "fully_utilized") {
-    if (idleNo > 0 && unusedFit <= 0.05) {
+    if (idleNo > 0.05 && unusedFit <= 0.05) {
       reasonCode = "NO_WORK_AVAILABLE";
-      reasonLabel = level === "underutilized"
-        ? "Not enough upstream work"
-        : "insufficient upstream work";
-    } else if (unusedFit > 0 && idleNo <= 0.05) {
+    } else if (unusedFit > 0.05 && idleNo <= 0.05) {
       reasonCode = "WORK_DID_NOT_FIT";
-      reasonLabel = level === "mostly_utilized"
-        ? "next eligible work was not available in time"
-        : "WORK DID NOT FIT IN REMAINING TIME";
-    } else if (idleNo > 0 && unusedFit > 0) {
+    } else if (idleNo > 0.05 && unusedFit > 0.05) {
       reasonCode = "WORK_ARRIVED_TOO_LATE";
-      reasonLabel = "WORK ARRIVED TOO LATE / DID NOT FIT";
     } else if (String(row.status || "").includes("machine")) {
       reasonCode = "MACHINE_CAPACITY_LIMITED";
-      reasonLabel = "MACHINE CAPACITY LIMITED";
     } else {
       reasonCode = "WORK_DID_NOT_FIT";
-      reasonLabel = "next eligible work was not available in time";
     }
   }
+
+  const reasonLabel = _coverageUnusedReason({
+    role: row.role,
+    idleNo,
+    unusedFit,
+    params,
+  });
 
   const isTemp = String(row.mode || "").toLowerCase() === "additional";
-  const head = isTemp
-    ? `TEMP +${Number(row.people) || 1} ${row.start}–${row.end}`
-    : null;
+  const roleKey = normalizeRole(row.role) || row.role;
+  const roleTitle = COVERAGE_ROLE_TITLE[roleKey]
+    || COVERAGE_ROLE_TITLE[row.hybrid]
+    || String(ROLE_LABEL[roleKey] || roleKey || "STAFF").toUpperCase();
+  const roleShort = COVERAGE_ROLE_SHORT[roleKey] || ROLE_LABEL[roleKey] || roleTitle;
 
-  const lines = [];
-  if (head) lines.push(head);
-
-  if (level === "fully_utilized") {
-    if (isTemp) {
-      lines.push(`${usedS} of ${staffS} min productive · FULLY UTILIZED`);
-    } else {
-      lines.push(levelLabel);
-      lines.push(`${usedS} of ${staffS} min productive`);
-    }
-  } else if (isTemp && level === "underutilized") {
-    lines.push(`${usedS} of ${staffS} min productive · ${idleS} min idle`);
-    if (reasonLabel) lines.push(reasonLabel);
-  } else {
-    lines.push(levelLabel);
-    lines.push(`${usedS} of ${staffS} min productive · ${idleS} min idle`);
-    if (reasonLabel) lines.push(`Reason: ${reasonLabel}`);
-  }
+  const productiveLine = idleMin < 0.05
+    ? `${usedS} of ${staffS} min productive`
+    : `${usedS} of ${staffS} min productive · ${idleS} min unused`;
 
   const alloc = row.role_allocation_min;
-  if (alloc && typeof alloc === "object") {
+  if (alloc && typeof alloc === "object" && !isTemp) {
     const labels = { weigher: "Weigh", washer: "Wash", dryer: "Dry", sorter: "Sort", folder: "Fold" };
     const parts = [];
     Object.keys(labels).forEach((k) => {
       const v = Number(alloc[k]);
       if (v > 0) parts.push(`${labels[k]} ${_fmtCoverageMin(v)}m`);
     });
-    if (parts.length) {
-      // Prefer productive summary first for hybrids.
-      const hybridLines = [
-        `${usedS} of ${staffS} min productive`,
-        parts.join(" · "),
-        levelLabel,
-      ];
-      return {
-        level,
-        levelLabel,
-        reasonCode,
-        reasonLabel,
-        usedMin,
-        staffMin,
-        idleMin,
-        headline: hybridLines[0],
-        lines: hybridLines,
-        detail: formatWorkCoverageDetail(row),
-      };
+    const idleAlloc = Number(alloc.idle);
+    const idlePart = Number.isFinite(idleAlloc) ? idleAlloc : idleMin;
+    parts.push(`Idle ${_fmtCoverageMin(idlePart)}`);
+    const hybridLines = [
+      `${usedS} of ${staffS} min productive`,
+      parts.join(" · "),
+    ];
+    if (level !== "fully_utilized") {
+      hybridLines.push(`Status: ${levelLabel}`);
     }
+    return {
+      level,
+      levelLabel,
+      reasonCode,
+      reasonLabel,
+      usedMin,
+      staffMin,
+      idleMin,
+      headline: hybridLines[0],
+      lines: hybridLines,
+      detail: formatWorkCoverageDetail(row),
+    };
   }
+
+  const lines = [];
+  if (isTemp) {
+    lines.push(`TEMP ${roleShort} ${row.start}–${row.end}`);
+    lines.push(productiveLine);
+  } else {
+    lines.push(`${roleTitle} — ${productiveLine}`);
+  }
+  if (reasonLabel) lines.push(reasonLabel);
+  lines.push(`Status: ${levelLabel}`);
 
   return {
     level,
@@ -742,9 +759,41 @@ export function describeWorkCoverage(row) {
   };
 }
 
+function _coverageUnusedReason({ role, idleNo, unusedFit, params }) {
+  const parts = [];
+  if (idleNo > 0.05) {
+    parts.push(`${_fmtCoverageMin(idleNo)} min waiting for first bag`);
+  }
+  if (unusedFit > 0.05) {
+    parts.push(_coverageUnusedFitPhrase(role, unusedFit, params));
+  }
+  return parts.join(" · ");
+}
+
+function _coverageUnusedFitPhrase(role, unusedFit, params) {
+  const unusedS = _fmtCoverageMin(unusedFit);
+  const roleId = normalizeRole(role) || role;
+  if (roleId === "washer" || roleId === "dryer") {
+    return `${unusedS} min remaining was too short to start another required split load`;
+  }
+  if (roleId === "sorter") {
+    const unit = Number(params.sort_min_per_bag) || 5;
+    return `${unusedS} min too short for another ${_fmtCoverageMin(unit)}-min sort`;
+  }
+  if (roleId === "folder") {
+    const unit = Number(params.fold_min_per_bag) || 6;
+    return `${unusedS} min too short for another ${_fmtCoverageMin(unit)}-min fold`;
+  }
+  if (roleId === "weigher") {
+    const sec = Number(params.weigh_sec_per_bag) || 45;
+    return `${unusedS} min too short for another ${sec}-sec weigh`;
+  }
+  return `${unusedS} min remaining was too short to start the next unit of work`;
+}
+
 /** Manager-facing primary lines (joined). */
-export function formatWorkCoverageLine(row) {
-  const d = describeWorkCoverage(row);
+export function formatWorkCoverageLine(row, options = {}) {
+  const d = describeWorkCoverage(row, options);
   return d.lines.filter(Boolean).join("\n");
 }
 
@@ -752,24 +801,25 @@ export function formatWorkCoverageLine(row) {
 export function formatWorkCoverageDetail(row) {
   if (!row) return "";
   const bags = Number(row.eligible_bags) || 0;
-  const atStart = Number(row.eligible_bags_at_start) || 0;
-  const became = Number(row.eligible_bags_became) || 0;
+  const demand = _fmtCoverageMin(row.available_work_min);
   const loads = Number(row.physical_loads_available) || 0;
   return [
-    `${bags} bags available (${atStart} at start · ${became} became ready)`,
-    `${_fmtCoverageMin(row.available_work_min)} work min · ${_fmtCoverageMin(row.staff_min)} staff`,
-    `${_fmtCoverageMin(row.used_min)} used · ${_fmtCoverageMin(row.idle_min)} idle`,
-    `idle_no_work ${_fmtCoverageMin(row.idle_no_eligible_work_min)} · unused_fit ${_fmtCoverageMin(row.unused_fit_min)}`,
+    `${bags} eligible bags · ${demand} min total eligible work demand generated during interval`,
+    `${_fmtCoverageMin(row.staff_min)} staff min · ${_fmtCoverageMin(row.used_min)} productive · ${_fmtCoverageMin(row.idle_min)} unused`,
+    `${_fmtCoverageMin(row.idle_no_eligible_work_min)} min waiting for first bag · ${_fmtCoverageMin(row.unused_fit_min)} min unused fit`,
     loads ? `${loads} physical loads` : null,
-    row.status ? `status ${row.status}` : null,
+    row.status ? `engine status ${row.status}` : null,
   ].filter(Boolean).join(" · ");
 }
 
 function _fmtCoverageMin(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "0";
-  if (Math.abs(n - Math.round(n)) < 0.05) return String(Math.round(n));
-  return n.toFixed(1);
+  const rounded = Math.round(n * 100) / 100;
+  if (Math.abs(rounded - Math.round(rounded)) < 0.001) return String(Math.round(rounded));
+  const tenths = Math.round(rounded * 10) / 10;
+  if (Math.abs(rounded - tenths) < 0.001) return tenths.toFixed(1);
+  return rounded.toFixed(2);
 }
 
 export function formatStageProgress(label, total, thisBlock) {

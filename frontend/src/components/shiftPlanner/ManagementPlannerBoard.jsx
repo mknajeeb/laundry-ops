@@ -547,39 +547,42 @@ function PositionFlow({ block, targetBags }) {
   );
 }
 
-function WorkCoverageHint({ rows, testId }) {
+function WorkCoverageHint({ rows, testId, processParams }) {
   if (!rows?.length) return null;
   return (
     <Stack spacing={0.35} sx={{ pl: 6.5, pb: 0.4 }} data-testid={testId || "work-coverage-hint"}>
       {rows.map((row) => {
-        const d = describeWorkCoverage(row);
+        const d = describeWorkCoverage(row, { processParams });
         const color = d.level === "fully_utilized"
           ? VEEWASH_DASHBOARD.primaryBlueDark
           : d.level === "mostly_utilized"
             ? "text.secondary"
             : VEEWASH_DASHBOARD.pendingDark;
         return (
-          <Box
-            key={`${row.role || row.hybrid}-${row.mode}-${row.start}-${row.end}-${row.index}`}
-            title={d.detail || undefined}
-            data-coverage-level={d.level}
-            data-coverage-reason={d.reasonCode}
-          >
-            {d.lines.map((line, i) => (
-              <Typography
-                key={`${line}-${i}`}
-                sx={{
-                  fontSize: i === 0 ? "0.7rem" : "0.66rem",
-                  fontWeight: i === 0 || line === d.levelLabel ? 700 : 600,
-                  color,
-                  lineHeight: 1.25,
-                  whiteSpace: "pre-line",
-                }}
-              >
-                {line}
-              </Typography>
-            ))}
-          </Box>
+          <Tooltip key={`${row.role || row.hybrid}-${row.mode}-${row.start}-${row.end}-${row.index}`} title={d.detail || ""} arrow enterDelay={350}>
+            <Box
+              data-coverage-level={d.level}
+              data-coverage-reason={d.reasonCode}
+            >
+              {d.lines.map((line, i) => {
+                const isStatus = String(line).startsWith("Status:");
+                return (
+                  <Typography
+                    key={`${line}-${i}`}
+                    sx={{
+                      fontSize: i === 0 || isStatus ? "0.7rem" : "0.66rem",
+                      fontWeight: i === 0 || isStatus ? 700 : 600,
+                      color,
+                      lineHeight: 1.25,
+                      whiteSpace: "pre-line",
+                    }}
+                  >
+                    {line}
+                  </Typography>
+                );
+              })}
+            </Box>
+          </Tooltip>
         );
       })}
     </Stack>
@@ -598,6 +601,7 @@ function BlockRoleRow({
   showFillRest = false,
   onFillRest = null,
   coverageRows = [],
+  processParams = null,
 }) {
   const base = getBasePeopleForBlock(intervals, role.id, blockStart, blockEnd);
   const extras = getAdditionalForBlock(intervals, role.id, blockStart, blockEnd);
@@ -724,13 +728,29 @@ function BlockRoleRow({
         Temp
       </Button>
     </Stack>
-    <WorkCoverageHint rows={baseCoverage} testId={`work-coverage-${role.id}-base`} />
-    <WorkCoverageHint rows={tempCoverage} testId={`work-coverage-${role.id}-temp`} />
+    <WorkCoverageHint
+      rows={baseCoverage}
+      testId={`work-coverage-${role.id}-base`}
+      processParams={processParams}
+    />
+    <WorkCoverageHint
+      rows={tempCoverage}
+      testId={`work-coverage-${role.id}-temp`}
+      processParams={processParams}
+    />
     </Box>
   );
 }
 
-function HybridRoleRow({ hybrid, blockStart, blockEnd, intervals, onChange, coverageRows = [] }) {
+function HybridRoleRow({
+  hybrid,
+  blockStart,
+  blockEnd,
+  intervals,
+  onChange,
+  coverageRows = [],
+  processParams = null,
+}) {
   const count = getHybridPeopleForBlock(intervals, hybrid.id, blockStart, blockEnd);
   const hybridCoverage = count > 0
     ? findWorkCoverageForHybrid(coverageRows, hybrid.id, blockStart, blockEnd)
@@ -790,7 +810,11 @@ function HybridRoleRow({ hybrid, blockStart, blockEnd, intervals, onChange, cove
         {count > 0 ? "shared calendar" : "—"}
       </Typography>
     </Stack>
-    <WorkCoverageHint rows={hybridCoverage} testId={`work-coverage-hybrid-${hybrid.id}`} />
+    <WorkCoverageHint
+      rows={hybridCoverage}
+      testId={`work-coverage-hybrid-${hybrid.id}`}
+      processParams={processParams}
+    />
     </Box>
   );
 }
@@ -1433,6 +1457,7 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                           || result?.work_coverage
                           || []
                         }
+                        processParams={inputs}
                         onBaseChange={(n) => changeBase(role.id, pb.block_start, pb.block_end, n)}
                         onAddTemporary={(roleId) => openTemporary(roleId, pb.block_start, pb.block_end)}
                         onEdit={openEdit}
@@ -1465,6 +1490,7 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                           || result?.work_coverage
                           || []
                         }
+                        processParams={inputs}
                         onChange={(n) => changeHybrid(hybrid.id, pb.block_start, pb.block_end, n)}
                       />
                     ))}
