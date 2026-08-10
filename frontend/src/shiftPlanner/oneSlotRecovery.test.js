@@ -41,10 +41,9 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("PlanningTimePicker");
     expect(boardSrc).toMatch(/>\s*Hybrid\s*</);
     expect(boardSrc).toContain("MANAGEMENT_HYBRIDS.map");
-    expect(boardSrc).toContain("THIS SLOT");
-    expect(boardSrc).toContain("inCycleLabel");
-    expect(boardSrc).toContain("display.doneLabel");
-    expect(boardSrc).toContain("display.remainingLabel");
+    expect(boardSrc).toContain("this slot");
+    expect(boardSrc).toContain("progress-");
+    expect(boardSrc).toContain("inventory-");
   });
 
   it("keeps sticky Recalculate and auto-recalc debounce", () => {
@@ -59,24 +58,28 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("}, [inputs, settingsReady]");
   });
 
-  it("keeps waiting-to-enter queues between stages with hover hints", () => {
-    expect(boardSrc).toContain('stageLabel="SORT"');
-    expect(boardSrc).toContain('stageLabel="WASH"');
-    expect(boardSrc).toContain('stageLabel="DRY"');
-    expect(boardSrc).toContain('stageLabel="FOLD"');
-    expect(boardSrc).toContain("WAITING TO ENTER");
-    expect(boardSrc).toContain("hint={flow.hints.to_sort}");
-    expect(boardSrc).toContain("Tooltip");
-    expect(boardSrc).toContain("QueueBridge");
-    expect(boardSrc).toContain("reconcile-sort-to-wash");
-    expect(boardSrc).toContain("reconcile-wash-to-dry");
-    expect(boardSrc).toContain("waiting-enter-");
+  it("uses two-row POSITION: progress stages + exclusive inventory", () => {
+    expect(boardSrc).toContain("buildPositionInventoryDisplay");
+    expect(boardSrc).toContain("position-two-row");
+    expect(boardSrc).toContain("position-progress-row");
+    expect(boardSrc).toContain("position-inventory-row");
+    expect(boardSrc).toContain("position-reconciled");
+    expect(boardSrc).toContain("PROGRESS — STAGE COMPLETED");
+    expect(boardSrc).toContain("CURRENT POSITION — WHERE BAGS ARE NOW");
+    expect(boardSrc).not.toContain("QueueBridge");
+    expect(boardSrc).not.toContain("WAITING TO ENTER");
+    expect(boardSrc).not.toContain("reconcile-sort-to-wash");
   });
 
   it("uses this slot labels and does not surface this block in UI copy", () => {
     expect(boardSrc).toContain("this slot");
     expect(boardSrc).not.toMatch(/this block/i);
     expect(boardSrc).not.toContain("THIS BLOCK");
+  });
+
+  it("keeps Upstream Work Coverage under staffing, separate from POSITION", () => {
+    expect(boardSrc).toContain("WorkCoverageHint");
+    expect(boardSrc).toContain("describeWorkCoverage");
   });
 
   it("keeps color segregation bands for staffing vs position", () => {

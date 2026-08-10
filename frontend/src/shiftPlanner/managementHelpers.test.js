@@ -5,11 +5,13 @@ import {
   buildPlanningBlocks,
   buildPlanningSlotViewModel,
   buildPositionFlowDisplay,
+  buildPositionInventoryDisplay,
   buildStagePositionDisplay,
   buildSlotStaffingNotes,
   dedicatedPeopleInSlot,
   fillRestBasePeopleForRole,
   formatBlockStaffingLine,
+  describeWorkCoverage,
   findWorkCoverageForHybrid,
   findWorkCoverageForRole,
   formatCollapsedSlotStaffLine,
@@ -18,6 +20,7 @@ import {
   formatStageReconcile,
   formatTempStaffChips,
   formatWaitingToSortHint,
+  formatWorkCoverageDetail,
   formatWorkCoverageLine,
   getAdditionalForBlock,
   getBasePeopleForBlock,
@@ -357,6 +360,101 @@ describe("managementHelpers", () => {
     expect(fold.doneLabel).toBe("COMPLETE");
   });
 
+  it("buildPositionInventoryDisplay separates progress DONE from exclusive current position", () => {
+    // Screenshot-style 6:00 slot: 80 weigh done / 22 sort done; missing 1s are in labor.
+    const view = buildPositionInventoryDisplay(
+      {
+        target_bags: 100,
+        weighed_this_block: 80,
+        weighed_total: 80,
+        sorted_this_block: 22,
+        sorted_total: 22,
+        washed_this_block: 0,
+        washed_total: 0,
+        dried_this_block: 0,
+        dried_total: 0,
+        folded_this_block: 0,
+        folded_total: 0,
+        completed: 0,
+        not_yet_weighed: 20,
+        in_weigh_labor: 0,
+        waiting_to_sort: 57,
+        in_sort_labor: 1,
+        waiting_to_wash: 21,
+        in_wash_labor: 1,
+        in_wash_cycle: 0,
+        waiting_to_dry: 0,
+        in_transfer_labor: 0,
+        in_dry_labor: 0,
+        in_dry_cycle: 0,
+        waiting_to_fold: 0,
+        in_fold_labor: 0,
+      },
+      100,
+    );
+    expect(view.progress.map((p) => [p.title, p.done, p.thisSlot])).toEqual([
+      ["WEIGH", 80, 80],
+      ["SORT", 22, 22],
+      ["WASH", 0, 0],
+      ["DRY", 0, 0],
+      ["FOLD", 0, 0],
+    ]);
+    const byId = Object.fromEntries(view.inventory.map((r) => [r.id, r.count]));
+    expect(byId).toMatchObject({
+      not_yet_weighed: 20,
+      waiting_to_sort: 57,
+      sorting_now: 1,
+      waiting_to_wash: 21,
+      washing_now: 1,
+      waiting_to_dry: 0,
+      drying_now: 0,
+      waiting_to_fold: 0,
+      folding_now: 0,
+      complete: 0,
+    });
+    expect(view.inventorySum).toBe(100);
+    expect(view.reconciled).toBe(true);
+    expect(view.reconcileLabel).toBe("Position reconciled: 100 / 100");
+    // Pipeline identities (progress ≠ waiting subtraction)
+    expect(view.details.weighPipeline.matches).toBe(true);
+    expect(view.details.sortPipeline.matches).toBe(true);
+    expect(80).toBe(57 + 1 + 22);
+    expect(22).toBe(21 + 1 + 0 + 0);
+  });
+
+  it("buildPositionInventoryDisplay combines wash/dry labor+cycle with hover detail", () => {
+    const view = buildPositionInventoryDisplay(
+      {
+        washed_total: 10,
+        waiting_to_dry: 3,
+        in_transfer_labor: 1,
+        in_dry_labor: 1,
+        in_dry_cycle: 3,
+        dried_total: 2,
+        in_wash_labor: 1,
+        in_wash_cycle: 5,
+        waiting_to_wash: 0,
+        sorted_total: 8,
+        not_yet_weighed: 0,
+        waiting_to_sort: 0,
+        in_sort_labor: 0,
+        waiting_to_fold: 0,
+        in_fold_labor: 0,
+        folded_total: 0,
+        completed: 0,
+        weighed_total: 8,
+      },
+      12,
+    );
+    const wash = view.inventory.find((r) => r.id === "washing_now");
+    const dry = view.inventory.find((r) => r.id === "drying_now");
+    const waitDry = view.inventory.find((r) => r.id === "waiting_to_dry");
+    expect(wash).toMatchObject({ count: 6, detail: "1 loading · 5 in machine" });
+    expect(dry).toMatchObject({ count: 4, detail: "1 loading · 3 in machine" });
+    expect(waitDry.count).toBe(4); // 3 waiting + 1 transfer
+    expect(view.details.washPipeline.matches).toBe(true);
+  });
+
   it("buildPositionFlowDisplay keeps waiting separate from remaining and uses wash/dry totals", () => {
     const flow = buildPositionFlowDisplay(
       {
@@ -411,6 +509,8 @@ describe("managementHelpers", () => {
     for (const stage of Object.values(flow.stages)) {
       expect(stage.done + stage.remaining).toBe(50);
     }
+    expect(flow.inventory.progress).toHaveLength(5);
+    expect(flow.inventory.reconcileLabel).toMatch(/^Position reconciled: \d+ \/ 50$/);
   });
 
   it("one planning slot view model combines staffing start and end POSITION", () => {
@@ -834,32 +934,93 @@ describe("managementHelpers", () => {
     expect(flow.stages.wash.inCycleLabel).toBe("2 IN CYCLE");
   });
 
-  it("formats work coverage lines from API rows only", () => {
-    const full = formatWorkCoverageLine({
+  it("formats manager-facing utilization from API work_coverage only", () => {
+    const full = describeWorkCoverage({
+      mode: "base",
       eligible_bags: 6,
       available_work_min: 24,
+      staff_min: 60,
+      used_min: 60,
+      idle_min: 0,
+      idle_no_eligible_work_min: 0,
+      unused_fit_min: 0,
+      status: "fully_utilized",
+    });
+    expect(full.levelLabel).toBe("FULLY UTILIZED");
+    expect(full.lines.join(" ")).toContain("60 of 60 min productive");
+    expect(full.lines.join(" ")).not.toContain("bags");
+
+    const mostly = describeWorkCoverage({
+      mode: "base",
+      staff_min: 60,
+      used_min: 55,
+      idle_min: 5,
+      idle_no_eligible_work_min: 0,
+      unused_fit_min: 5,
+      available_work_min: 395,
+      eligible_bags: 79,
+      status: "work_not_fit",
+    });
+    expect(mostly.levelLabel).toBe("MOSTLY UTILIZED");
+    expect(mostly.reasonCode).toBe("WORK_DID_NOT_FIT");
+    expect(mostly.lines.join("\n")).toContain("55 of 60 min productive · 5 min idle");
+    expect(mostly.lines.join("\n")).toContain("next eligible work was not available in time");
+
+    const starved = describeWorkCoverage({
+      mode: "additional",
+      people: 1,
+      start: "6:45 AM",
+      end: "7:00 AM",
+      staff_min: 15,
+      used_min: 6,
+      idle_min: 9,
+      idle_no_eligible_work_min: 9,
+      unused_fit_min: 0,
+      available_work_min: 6,
+      status: "idle_waiting_for_work",
+    });
+    expect(starved.lines[0]).toContain("TEMP +1 6:45 AM–7:00 AM");
+    expect(starved.lines.join("\n")).toContain("6 of 15 min productive · 9 min idle");
+    expect(starved.lines.join("\n")).toContain("Not enough upstream work");
+
+    const hybrid = describeWorkCoverage({
+      hybrid: "weigh_wash_dry",
+      mode: "base",
+      staff_min: 60,
+      used_min: 60,
+      idle_min: 0,
+      status: "fully_utilized",
+      role_allocation_min: { weigher: 18, washer: 27, dryer: 15, idle: 0 },
+    });
+    expect(hybrid.lines.join("\n")).toContain("60 of 60 min productive");
+    expect(hybrid.lines.join("\n")).toContain("Weigh 18m · Wash 27m · Dry 15m");
+    expect(hybrid.lines.join("\n")).toContain("FULLY UTILIZED");
+
+    const detail = formatWorkCoverageDetail({
+      eligible_bags: 79,
+      eligible_bags_at_start: 0,
+      eligible_bags_became: 79,
+      available_work_min: 395,
+      staff_min: 60,
+      used_min: 55,
+      idle_min: 5,
+      idle_no_eligible_work_min: 0,
+      unused_fit_min: 5,
+      physical_loads_available: 79,
+      status: "work_not_fit",
+    });
+    expect(detail).toContain("79 bags");
+    expect(detail).toContain("395 work min");
+    expect(formatWorkCoverageLine({
+      mode: "additional",
+      people: 1,
+      start: "6:45 AM",
+      end: "7:00 AM",
       staff_min: 15,
       used_min: 15,
       idle_min: 0,
       status: "fully_utilized",
-      status_label: "FULLY UTILIZED",
-    });
-    expect(full).toContain("6 bags");
-    expect(full).toContain("24 work min");
-    expect(full).toContain("15 staff");
-    expect(full).toContain("FULL");
-
-    const idle = formatWorkCoverageLine({
-      eligible_bags: 2,
-      available_work_min: 6,
-      staff_min: 15,
-      used_min: 6,
-      idle_min: 9,
-      status: "idle_waiting_for_work",
-      status_label: "9 min likely idle",
-    });
-    expect(idle).toContain("9 idle");
-    expect(idle).toContain("9 min likely idle");
+    })).toContain("FULLY UTILIZED");
   });
 
   it("matches work_coverage rows to role/TEMP within a slot", () => {

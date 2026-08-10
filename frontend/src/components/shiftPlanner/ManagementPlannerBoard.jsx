@@ -43,16 +43,16 @@ import {
   applyPersistedPlannerParams,
   buildManagementPayload,
   buildPlanningBlocks,
-  buildPositionFlowDisplay,
+  buildPositionInventoryDisplay,
   clockToHm,
   earlyMinutesBeforeTarget,
   formatManagementOutcome,
   buildSlotStaffingNotes,
   fillRestBasePeopleForRole,
+  describeWorkCoverage,
   findWorkCoverageForHybrid,
   findWorkCoverageForRole,
   formatCollapsedSlotStaffLine,
-  formatWorkCoverageLine,
   getAdditionalForBlock,
   getBasePeopleForBlock,
   getHybridPeopleForBlock,
@@ -390,234 +390,198 @@ function CompactSummary({ inputs, outcome, loading, hasStaffing, onRecalculate }
   );
 }
 
-function QueueBridge({ count, stageLabel, hint }) {
-  const n = Number(count) || 0;
-  const body = (
-    <Box
-      sx={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        px: { xs: 0.5, md: 0.75 },
-        py: 0.25,
-        minWidth: { xs: "100%", md: 88 },
-        color: n > 0 ? VEEWASH_DASHBOARD.pendingDark : "text.disabled",
-        cursor: hint ? "help" : "default",
-      }}
-      data-testid={`queue-to-${String(stageLabel || "").toLowerCase()}`}
-    >
-      <Typography sx={{ fontSize: "0.65rem", fontWeight: 800, lineHeight: 1.2, textAlign: "center", letterSpacing: 0.2 }}>
-        → {n} WAITING TO ENTER
-      </Typography>
-      <Typography sx={{ fontSize: "0.65rem", fontWeight: 700, lineHeight: 1.15, textAlign: "center" }}>
-        {stageLabel} →
-      </Typography>
-    </Box>
-  );
-  if (!hint) return body;
-  return (
-    <Tooltip title={hint} arrow enterDelay={250}>
-      {body}
-    </Tooltip>
-  );
-}
-
-function StageCell({ display, highlight = false }) {
-  if (!display) return null;
-  const machine = Boolean(display.showMachineDetail);
-  return (
-    <Box
-      sx={{
-        minWidth: { xs: "100%", md: machine ? 110 : 96 },
-        flex: { md: "1 1 0" },
-        px: 0.5,
-        py: 0.5,
-        borderRadius: 1,
-        bgcolor: highlight ? "#fff7ed" : "transparent",
-        textAlign: "center",
-      }}
-      data-testid={`stage-${String(display.title || "").toLowerCase()}`}
-    >
-      <Typography
-        sx={{
-          fontWeight: 800,
-          fontSize: "0.68rem",
-          letterSpacing: 0.5,
-          color: "text.secondary",
-          mb: 0.35,
-        }}
-      >
-        {display.title}
-      </Typography>
-      <Typography
-        sx={{
-          fontSize: "0.72rem",
-          fontWeight: 800,
-          lineHeight: 1.15,
-          color: display.thisBlock > 0 ? "text.primary" : "text.disabled",
-          mb: 0.15,
-        }}
-      >
-        {display.thisBlock > 0 ? `+${display.thisBlock}` : "0"}
-      </Typography>
-      <Typography
-        sx={{
-          fontWeight: 800,
-          fontSize: "0.55rem",
-          letterSpacing: 0.35,
-          color: "text.disabled",
-          mb: 0.35,
-          lineHeight: 1.1,
-        }}
-      >
-        THIS SLOT
-      </Typography>
-      <Stack direction="row" justifyContent="center" spacing={1.25} sx={{ mb: 0.15 }}>
-        <Box sx={{ minWidth: 36 }}>
-          <Typography sx={{ fontWeight: 800, fontSize: "1.15rem", lineHeight: 1.05 }}>
-            {display.done}
-          </Typography>
-          <Typography
-            sx={{
-              fontWeight: 800,
-              fontSize: "0.58rem",
-              letterSpacing: 0.4,
-              color: "text.secondary",
-              lineHeight: 1.1,
-            }}
-          >
-            {display.doneLabel}
-          </Typography>
-        </Box>
-        <Box sx={{ minWidth: 36 }}>
-          <Typography sx={{ fontWeight: 800, fontSize: "1.15rem", lineHeight: 1.05 }}>
-            {display.remaining}
-          </Typography>
-          <Typography
-            sx={{
-              fontWeight: 800,
-              fontSize: "0.58rem",
-              letterSpacing: 0.4,
-              color: "text.secondary",
-              lineHeight: 1.1,
-            }}
-          >
-            {display.remainingLabel}
-          </Typography>
-        </Box>
-      </Stack>
-      {display.inCycleLabel ? (
-        <Typography
-          sx={{
-            mt: 0.25,
-            fontSize: "0.62rem",
-            fontWeight: 700,
-            letterSpacing: 0.3,
-            color: (display.inCycle || 0) > 0 ? VEEWASH_DASHBOARD.primaryBlueDark : "text.disabled",
-            lineHeight: 1.15,
-          }}
-          data-testid={`in-cycle-${String(display.title || "").toLowerCase()}`}
-        >
-          {display.inCycleLabel}
-        </Typography>
-      ) : null}
-      {machine ? (
-        <Typography
-          sx={{
-            mt: 0.15,
-            fontSize: "0.58rem",
-            fontWeight: 700,
-            letterSpacing: 0.25,
-            color: (display.waitingToEnter || 0) > 0 ? VEEWASH_DASHBOARD.pendingDark : "text.disabled",
-            lineHeight: 1.15,
-          }}
-          data-testid={`waiting-enter-${String(display.title || "").toLowerCase()}`}
-        >
-          {display.waitingToEnterLabel || "0 WAITING TO ENTER"}
-        </Typography>
-      ) : null}
-    </Box>
-  );
-}
-
-function ReconcileLine({ reconcile, testId }) {
-  if (!reconcile?.text) return null;
-  return (
-    <Typography
-      data-testid={testId}
-      sx={{
-        mt: 0.55,
-        fontSize: "0.68rem",
-        fontWeight: 650,
-        lineHeight: 1.35,
-        color: reconcile.matches ? "text.secondary" : VEEWASH_DASHBOARD.pendingDark,
-      }}
-    >
-      {reconcile.text}
-    </Typography>
-  );
-}
-
-function PositionFlow({ block, targetBags, stallRole }) {
-  const flow = buildPositionFlowDisplay(block, targetBags);
-  if (!flow) {
+function PositionFlow({ block, targetBags }) {
+  const view = buildPositionInventoryDisplay(block, targetBags);
+  if (!view) {
     return (
       <Typography sx={{ fontSize: "0.85rem", color: "text.disabled", py: 0.5 }}>
-        No flow yet for this slot.
+        No position yet for this slot.
       </Typography>
     );
   }
-  const washStall = stallRole === "washer";
 
   return (
-    <Box>
-      <Box
-        sx={{
-          display: "flex",
-          flexDirection: { xs: "column", md: "row" },
-          alignItems: { xs: "stretch", md: "center" },
-          gap: { xs: 0.25, md: 0 },
-          overflow: "hidden",
-        }}
-      >
-        <StageCell display={flow.stages.weigh} />
-        <QueueBridge count={flow.waiting.to_sort} stageLabel="SORT" hint={flow.hints.to_sort} />
-        <StageCell display={flow.stages.sort} />
-        <QueueBridge count={flow.waiting.to_wash} stageLabel="WASH" hint={flow.hints.to_wash} />
-        <StageCell display={flow.stages.wash} highlight={washStall} />
-        <QueueBridge count={flow.waiting.to_dry} stageLabel="DRY" hint={flow.hints.to_dry} />
-        <StageCell display={flow.stages.dry} />
-        <QueueBridge count={flow.waiting.to_fold} stageLabel="FOLD" hint={flow.hints.to_fold} />
-        <StageCell display={flow.stages.fold} />
+    <Stack spacing={1.1} data-testid="position-two-row">
+      <Box data-testid="position-progress-row">
+        <Typography
+          sx={{
+            fontWeight: 800,
+            fontSize: "0.65rem",
+            letterSpacing: 0.45,
+            color: "text.disabled",
+            mb: 0.45,
+          }}
+        >
+          PROGRESS — STAGE COMPLETED
+        </Typography>
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: {
+              xs: "repeat(2, minmax(0, 1fr))",
+              sm: "repeat(3, minmax(0, 1fr))",
+              md: "repeat(5, minmax(0, 1fr))",
+            },
+            gap: 0.75,
+          }}
+        >
+          {view.progress.map((stage) => (
+            <Box
+              key={stage.id}
+              data-testid={`progress-${stage.id}`}
+              sx={{
+                textAlign: "center",
+                px: 0.5,
+                py: 0.55,
+                borderRadius: 1,
+                bgcolor: "rgba(255,255,255,0.55)",
+                border: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
+              }}
+            >
+              <Typography sx={{ fontWeight: 800, fontSize: "0.68rem", letterSpacing: 0.4, color: "text.secondary" }}>
+                {stage.title}
+              </Typography>
+              <Typography sx={{ fontWeight: 800, fontSize: "1.2rem", lineHeight: 1.1, mt: 0.15 }}>
+                {stage.done}
+              </Typography>
+              <Typography sx={{ fontWeight: 700, fontSize: "0.58rem", letterSpacing: 0.35, color: "text.secondary" }}>
+                {stage.doneLabel}
+              </Typography>
+              <Typography
+                sx={{
+                  mt: 0.25,
+                  fontSize: "0.66rem",
+                  fontWeight: 700,
+                  color: stage.thisSlot > 0 ? "text.primary" : "text.disabled",
+                }}
+              >
+                {stage.thisSlot > 0 ? `+${stage.thisSlot} this slot` : "+0 this slot"}
+              </Typography>
+            </Box>
+          ))}
+        </Box>
       </Box>
-      <ReconcileLine reconcile={flow.reconcile?.sortToWash} testId="reconcile-sort-to-wash" />
-      <ReconcileLine reconcile={flow.reconcile?.washToDry} testId="reconcile-wash-to-dry" />
-      <ReconcileLine reconcile={flow.reconcile?.dryToFold} testId="reconcile-dry-to-fold" />
-    </Box>
+
+      <Box data-testid="position-inventory-row">
+        <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ mb: 0.45 }} flexWrap="wrap" useFlexGap>
+          <Typography
+            sx={{
+              fontWeight: 800,
+              fontSize: "0.65rem",
+              letterSpacing: 0.45,
+              color: "text.disabled",
+            }}
+          >
+            CURRENT POSITION — WHERE BAGS ARE NOW
+          </Typography>
+          <Typography
+            data-testid="position-reconciled"
+            sx={{
+              fontWeight: 700,
+              fontSize: "0.68rem",
+              color: view.reconciled ? VEEWASH_DASHBOARD.primaryBlueDark : VEEWASH_DASHBOARD.pendingDark,
+            }}
+          >
+            {view.reconcileLabel}
+          </Typography>
+        </Stack>
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: {
+              xs: "repeat(2, minmax(0, 1fr))",
+              sm: "repeat(3, minmax(0, 1fr))",
+              md: "repeat(4, minmax(0, 1fr))",
+              lg: "repeat(6, minmax(0, 1fr))",
+            },
+            gap: 0.55,
+          }}
+        >
+          {view.inventory.map((item) => {
+            const cell = (
+              <Box
+                data-testid={`inventory-${item.id}`}
+                sx={{
+                  px: 0.6,
+                  py: 0.5,
+                  borderRadius: 1,
+                  border: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
+                  bgcolor: item.count > 0 ? "rgba(255,255,255,0.7)" : "transparent",
+                  minHeight: 52,
+                }}
+              >
+                <Typography
+                  sx={{
+                    fontWeight: 800,
+                    fontSize: "1.05rem",
+                    lineHeight: 1.1,
+                    color: item.count > 0 ? "text.primary" : "text.disabled",
+                  }}
+                >
+                  {item.count}
+                </Typography>
+                <Typography
+                  sx={{
+                    fontWeight: 700,
+                    fontSize: "0.62rem",
+                    lineHeight: 1.2,
+                    color: item.count > 0 ? "text.secondary" : "text.disabled",
+                  }}
+                >
+                  {item.label}
+                </Typography>
+              </Box>
+            );
+            if (!item.detail) {
+              return <Box key={item.id}>{cell}</Box>;
+            }
+            return (
+              <Tooltip key={item.id} title={item.detail} arrow enterDelay={200}>
+                {cell}
+              </Tooltip>
+            );
+          })}
+        </Box>
+      </Box>
+    </Stack>
   );
 }
 
 function WorkCoverageHint({ rows, testId }) {
   if (!rows?.length) return null;
   return (
-    <Stack spacing={0.15} sx={{ pl: 6.5, pb: 0.35 }} data-testid={testId || "work-coverage-hint"}>
-      {rows.map((row) => (
-        <Typography
-          key={`${row.role || row.hybrid}-${row.mode}-${row.start}-${row.end}-${row.index}`}
-          sx={{
-            fontSize: "0.68rem",
-            fontWeight: 600,
-            color: row.status === "fully_utilized"
-              ? VEEWASH_DASHBOARD.primaryBlueDark
-              : "text.secondary",
-            lineHeight: 1.25,
-          }}
-        >
-          {String(row.mode).toLowerCase() === "additional" ? "TEMP · " : ""}
-          {formatWorkCoverageLine(row)}
-        </Typography>
-      ))}
+    <Stack spacing={0.35} sx={{ pl: 6.5, pb: 0.4 }} data-testid={testId || "work-coverage-hint"}>
+      {rows.map((row) => {
+        const d = describeWorkCoverage(row);
+        const color = d.level === "fully_utilized"
+          ? VEEWASH_DASHBOARD.primaryBlueDark
+          : d.level === "mostly_utilized"
+            ? "text.secondary"
+            : VEEWASH_DASHBOARD.pendingDark;
+        return (
+          <Box
+            key={`${row.role || row.hybrid}-${row.mode}-${row.start}-${row.end}-${row.index}`}
+            title={d.detail || undefined}
+            data-coverage-level={d.level}
+            data-coverage-reason={d.reasonCode}
+          >
+            {d.lines.map((line, i) => (
+              <Typography
+                key={`${line}-${i}`}
+                sx={{
+                  fontSize: i === 0 ? "0.7rem" : "0.66rem",
+                  fontWeight: i === 0 || line === d.levelLabel ? 700 : 600,
+                  color,
+                  lineHeight: 1.25,
+                  whiteSpace: "pre-line",
+                }}
+              >
+                {line}
+              </Typography>
+            ))}
+          </Box>
+        );
+      })}
     </Stack>
   );
 }
@@ -1084,7 +1048,6 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
     [result, inputs, hasStaffing],
   );
   const targetBags = Number(inputs.bag_count) || 0;
-  const stallRole = outcome?.firstBlockingRole || null;
 
   const openTemporary = (roleId, blockStart, blockEnd) => {
     setModeLocked(true);
@@ -1403,7 +1366,6 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
       <Stack spacing={1.25}>
         {planBlocks.map((pb, blockIndex) => {
           const pos = positionByEnd[pb.block_end] || null;
-          const blockStall = hasStaffing && stallRole ? stallRole : null;
           const isFirstStaffingBlock = blockIndex === 0;
           const staffOpen = staffingExpanded[pb.block_start] !== false;
           const staffLine = formatCollapsedSlotStaffLine(
@@ -1536,7 +1498,7 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                   {pb.block_end} POSITION
                 </Typography>
                 {hasStaffing ? (
-                  <PositionFlow block={pos} targetBags={targetBags} stallRole={blockStall} />
+                  <PositionFlow block={pos} targetBags={targetBags} />
                 ) : (
                   <Typography sx={{ fontSize: "0.85rem", color: "text.disabled" }}>
                     Position appears after staffing is set.

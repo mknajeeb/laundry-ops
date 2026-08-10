@@ -609,36 +609,160 @@ export function findWorkCoverageForHybrid(coverageRows, hybridId, blockStart, bl
   });
 }
 
-/** Compact one-line Upstream Work Coverage from a DES work_coverage row. */
-export function formatWorkCoverageLine(row, { compact = true } = {}) {
-  if (!row) return "";
-  const bags = Number(row.eligible_bags) || 0;
-  const avail = _fmtCoverageMin(row.available_work_min);
-  const staff = _fmtCoverageMin(row.staff_min);
-  const used = _fmtCoverageMin(row.used_min);
-  const idle = _fmtCoverageMin(row.idle_min);
-  const status = row.status === "fully_utilized"
-    ? "FULL"
-    : (row.status_label || `${idle} min idle`);
+/**
+ * Manager-facing utilization from a DES work_coverage row.
+ * Answers: was this person actually utilized during this staffing interval?
+ * Does not recompute capacity — only formats API fields.
+ */
+export function describeWorkCoverage(row) {
+  if (!row) {
+    return {
+      level: "none",
+      levelLabel: "",
+      reasonCode: "",
+      reasonLabel: "",
+      usedMin: 0,
+      staffMin: 0,
+      idleMin: 0,
+      headline: "",
+      lines: [],
+      detail: "",
+    };
+  }
+  const staffMin = Number(row.staff_min) || 0;
+  const usedMin = Number(row.used_min) || 0;
+  const idleMin = Number(row.idle_min) || 0;
+  const idleNo = Number(row.idle_no_eligible_work_min) || 0;
+  const unusedFit = Number(row.unused_fit_min) || 0;
+  const usedS = _fmtCoverageMin(usedMin);
+  const staffS = _fmtCoverageMin(staffMin);
+  const idleS = _fmtCoverageMin(idleMin);
+  const ratio = staffMin > 0 ? usedMin / staffMin : 0;
 
-  if (row.role_allocation_min && typeof row.role_allocation_min === "object") {
-    const alloc = row.role_allocation_min;
-    const bits = [`${staff} staff min`];
+  let level = "underutilized";
+  let levelLabel = "UNDERUTILIZED";
+  if (row.status === "fully_utilized" || idleMin < 0.5) {
+    level = "fully_utilized";
+    levelLabel = "FULLY UTILIZED";
+  } else if (ratio >= 0.75 || idleMin <= Math.max(5, staffMin * 0.15)) {
+    level = "mostly_utilized";
+    levelLabel = "MOSTLY UTILIZED";
+  }
+
+  let reasonCode = "FULLY_UTILIZED";
+  let reasonLabel = "";
+  if (level !== "fully_utilized") {
+    if (idleNo > 0 && unusedFit <= 0.05) {
+      reasonCode = "NO_WORK_AVAILABLE";
+      reasonLabel = level === "underutilized"
+        ? "Not enough upstream work"
+        : "insufficient upstream work";
+    } else if (unusedFit > 0 && idleNo <= 0.05) {
+      reasonCode = "WORK_DID_NOT_FIT";
+      reasonLabel = level === "mostly_utilized"
+        ? "next eligible work was not available in time"
+        : "WORK DID NOT FIT IN REMAINING TIME";
+    } else if (idleNo > 0 && unusedFit > 0) {
+      reasonCode = "WORK_ARRIVED_TOO_LATE";
+      reasonLabel = "WORK ARRIVED TOO LATE / DID NOT FIT";
+    } else if (String(row.status || "").includes("machine")) {
+      reasonCode = "MACHINE_CAPACITY_LIMITED";
+      reasonLabel = "MACHINE CAPACITY LIMITED";
+    } else {
+      reasonCode = "WORK_DID_NOT_FIT";
+      reasonLabel = "next eligible work was not available in time";
+    }
+  }
+
+  const isTemp = String(row.mode || "").toLowerCase() === "additional";
+  const head = isTemp
+    ? `TEMP +${Number(row.people) || 1} ${row.start}–${row.end}`
+    : null;
+
+  const lines = [];
+  if (head) lines.push(head);
+
+  if (level === "fully_utilized") {
+    if (isTemp) {
+      lines.push(`${usedS} of ${staffS} min productive · FULLY UTILIZED`);
+    } else {
+      lines.push(levelLabel);
+      lines.push(`${usedS} of ${staffS} min productive`);
+    }
+  } else if (isTemp && level === "underutilized") {
+    lines.push(`${usedS} of ${staffS} min productive · ${idleS} min idle`);
+    if (reasonLabel) lines.push(reasonLabel);
+  } else {
+    lines.push(levelLabel);
+    lines.push(`${usedS} of ${staffS} min productive · ${idleS} min idle`);
+    if (reasonLabel) lines.push(`Reason: ${reasonLabel}`);
+  }
+
+  const alloc = row.role_allocation_min;
+  if (alloc && typeof alloc === "object") {
     const labels = { weigher: "Weigh", washer: "Wash", dryer: "Dry", sorter: "Sort", folder: "Fold" };
+    const parts = [];
     Object.keys(labels).forEach((k) => {
       const v = Number(alloc[k]);
-      if (v > 0) bits.push(`${labels[k]} ${_fmtCoverageMin(v)}m`);
+      if (v > 0) parts.push(`${labels[k]} ${_fmtCoverageMin(v)}m`);
     });
-    bits.push(`Idle ${_fmtCoverageMin(alloc.idle ?? idle)}m`);
-    return bits.join(" · ");
+    if (parts.length) {
+      // Prefer productive summary first for hybrids.
+      const hybridLines = [
+        `${usedS} of ${staffS} min productive`,
+        parts.join(" · "),
+        levelLabel,
+      ];
+      return {
+        level,
+        levelLabel,
+        reasonCode,
+        reasonLabel,
+        usedMin,
+        staffMin,
+        idleMin,
+        headline: hybridLines[0],
+        lines: hybridLines,
+        detail: formatWorkCoverageDetail(row),
+      };
+    }
   }
 
-  if (compact) {
-    return `${bags} bags · ${avail} work min · ${staff} staff · ${used} used · ${idle} idle · ${status}`;
-  }
-  return (
-    `${avail} min available · ${used} min used · ${idle} idle · ${status}`
-  );
+  return {
+    level,
+    levelLabel,
+    reasonCode,
+    reasonLabel,
+    usedMin,
+    staffMin,
+    idleMin,
+    headline: lines[0] || levelLabel,
+    lines,
+    detail: formatWorkCoverageDetail(row),
+  };
+}
+
+/** Manager-facing primary lines (joined). */
+export function formatWorkCoverageLine(row) {
+  const d = describeWorkCoverage(row);
+  return d.lines.filter(Boolean).join("\n");
+}
+
+/** Diagnostic detail for hover / expand — keeps API diagnostics available. */
+export function formatWorkCoverageDetail(row) {
+  if (!row) return "";
+  const bags = Number(row.eligible_bags) || 0;
+  const atStart = Number(row.eligible_bags_at_start) || 0;
+  const became = Number(row.eligible_bags_became) || 0;
+  const loads = Number(row.physical_loads_available) || 0;
+  return [
+    `${bags} bags available (${atStart} at start · ${became} became ready)`,
+    `${_fmtCoverageMin(row.available_work_min)} work min · ${_fmtCoverageMin(row.staff_min)} staff`,
+    `${_fmtCoverageMin(row.used_min)} used · ${_fmtCoverageMin(row.idle_min)} idle`,
+    `idle_no_work ${_fmtCoverageMin(row.idle_no_eligible_work_min)} · unused_fit ${_fmtCoverageMin(row.unused_fit_min)}`,
+    loads ? `${loads} physical loads` : null,
+    row.status ? `status ${row.status}` : null,
+  ].filter(Boolean).join(" · ");
 }
 
 function _fmtCoverageMin(v) {
@@ -891,6 +1015,158 @@ export function formatStageReconcile({
   };
 }
 
+/**
+ * Two-row management POSITION view.
+ * Row 1 PROGRESS = cumulative stage DONE (not current location).
+ * Row 2 CURRENT = mutually exclusive parent states (where every bag sits now).
+ * All counts come from block_positions / detail — no frontend DES math.
+ */
+export function buildPositionInventoryDisplay(block, targetBags) {
+  if (!block) return null;
+  const target = Math.max(0, Number(targetBags ?? block.target_bags) || 0);
+  const detail = block.detail || {};
+  const states = (block.reconciliation && block.reconciliation.states) || {};
+  const n = (key) => Math.max(
+    0,
+    Number(block[key] ?? detail[key] ?? states[key]) || 0,
+  );
+
+  const inWeighLabor = n("in_weigh_labor");
+  const inSortLabor = n("in_sort_labor");
+  const inWashLabor = n("in_wash_labor");
+  const inWashCycle = n("in_wash_cycle");
+  const inTransfer = n("in_transfer_labor");
+  const inDryLabor = n("in_dry_labor");
+  const inDryCycle = n("in_dry_cycle");
+  const inFoldLabor = n("in_fold_labor");
+
+  const washingNow = inWashLabor + inWashCycle;
+  const dryingNow = inDryLabor + inDryCycle;
+  // Transfer is between wash and dry; fold into waiting-to-dry for management row.
+  const waitingToDry = n("waiting_to_dry") + inTransfer;
+
+  const inventory = [
+    { id: "not_yet_weighed", label: "Not Yet Weighed", count: n("not_yet_weighed") },
+    { id: "weighing_now", label: "Weighing Now", count: inWeighLabor },
+    { id: "waiting_to_sort", label: "Waiting to Sort", count: n("waiting_to_sort") },
+    { id: "sorting_now", label: "Sorting Now", count: inSortLabor },
+    { id: "waiting_to_wash", label: "Waiting to Wash", count: n("waiting_to_wash") },
+    {
+      id: "washing_now",
+      label: "Washing Now",
+      count: washingNow,
+      detail: washingNow > 0
+        ? `${inWashLabor} loading · ${inWashCycle} in machine`
+        : null,
+    },
+    { id: "waiting_to_dry", label: "Waiting to Dry", count: waitingToDry },
+    {
+      id: "drying_now",
+      label: "Drying Now",
+      count: dryingNow,
+      detail: dryingNow > 0
+        ? `${inDryLabor} loading · ${inDryCycle} in machine`
+        : null,
+    },
+    { id: "waiting_to_fold", label: "Waiting to Fold", count: n("waiting_to_fold") },
+    { id: "folding_now", label: "Folding Now", count: inFoldLabor },
+    { id: "complete", label: "Complete", count: n("completed") || n("folded_total") },
+  ];
+
+  const inventorySum = inventory.reduce((sum, row) => sum + row.count, 0);
+  const progress = [
+    {
+      id: "weigh",
+      title: "WEIGH",
+      done: n("weighed_total"),
+      doneLabel: "DONE",
+      thisSlot: n("weighed_this_block"),
+    },
+    {
+      id: "sort",
+      title: "SORT",
+      done: n("sorted_total"),
+      doneLabel: "DONE",
+      thisSlot: n("sorted_this_block"),
+    },
+    {
+      id: "wash",
+      title: "WASH",
+      done: n("washed_total"),
+      doneLabel: "DONE",
+      thisSlot: n("washed_this_block"),
+    },
+    {
+      id: "dry",
+      title: "DRY",
+      done: n("dried_total"),
+      doneLabel: "DONE",
+      thisSlot: n("dried_this_block"),
+    },
+    {
+      id: "fold",
+      title: "FOLD",
+      done: n("folded_total") || n("completed"),
+      doneLabel: "COMPLETE",
+      thisSlot: n("folded_this_block") || n("completed_this_block"),
+    },
+  ];
+
+  // Pipeline checks (debug / details only).
+  const weighDone = n("weighed_total");
+  const sortDone = n("sorted_total");
+  const washDone = n("washed_total");
+  const dryDone = n("dried_total");
+  const details = {
+    weighPipeline: {
+      left: weighDone,
+      right: n("waiting_to_sort") + inSortLabor + sortDone,
+      matches: weighDone === n("waiting_to_sort") + inSortLabor + sortDone,
+      text:
+        `${weighDone} Weigh DONE = ${n("waiting_to_sort")} waiting to sort`
+        + ` + ${inSortLabor} sorting now + ${sortDone} Sort DONE`,
+    },
+    sortPipeline: {
+      left: sortDone,
+      right: n("waiting_to_wash") + inWashLabor + inWashCycle + washDone,
+      matches: sortDone === n("waiting_to_wash") + inWashLabor + inWashCycle + washDone,
+      text:
+        `${sortDone} Sort DONE = ${n("waiting_to_wash")} waiting to wash`
+        + ` + ${inWashLabor} wash labor + ${inWashCycle} wash cycle + ${washDone} Wash DONE`,
+    },
+    washPipeline: {
+      left: washDone,
+      right: n("waiting_to_dry") + inTransfer + inDryLabor + inDryCycle + dryDone,
+      matches:
+        washDone === n("waiting_to_dry") + inTransfer + inDryLabor + inDryCycle + dryDone,
+      text:
+        `${washDone} Wash DONE = ${n("waiting_to_dry")} waiting to dry`
+        + ` + ${inTransfer} transfer + ${inDryLabor} dry labor`
+        + ` + ${inDryCycle} dry cycle + ${dryDone} Dry DONE`,
+    },
+    dryPipeline: {
+      left: dryDone,
+      right: n("waiting_to_fold") + inFoldLabor + (n("folded_total") || n("completed")),
+      matches:
+        dryDone === n("waiting_to_fold") + inFoldLabor + (n("folded_total") || n("completed")),
+      text:
+        `${dryDone} Dry DONE = ${n("waiting_to_fold")} waiting to fold`
+        + ` + ${inFoldLabor} folding now + ${n("folded_total") || n("completed")} Fold COMPLETE`,
+    },
+  };
+
+  return {
+    progress,
+    inventory,
+    inventorySum,
+    target,
+    reconciled: inventorySum === target,
+    reconcileLabel: `Position reconciled: ${inventorySum} / ${target}`,
+    details,
+  };
+}
+
+/** Legacy flow helper kept for tests / debug details. Prefer buildPositionInventoryDisplay. */
 export function buildPositionFlowDisplay(block, targetBags) {
   if (!block) return null;
   const foldTotal = Number(block.folded_total ?? block.completed_total) || 0;
@@ -927,7 +1203,6 @@ export function buildPositionFlowDisplay(block, targetBags) {
         targetBags,
         inCycle: washInCycle,
       }),
-      // Always surface for machine stages (including zero).
       inCycleLabel: `${washInCycle} IN CYCLE`,
       waitingToEnter: waiting.to_wash,
       waitingToEnterLabel: `${waiting.to_wash} WAITING TO ENTER`,
@@ -954,9 +1229,11 @@ export function buildPositionFlowDisplay(block, targetBags) {
       completeLabel: true,
     }),
   };
+  const inventory = buildPositionInventoryDisplay(block, targetBags);
   return {
     stages,
     waiting,
+    inventory,
     reconcile: {
       sortToWash: formatStageReconcile({
         upstreamDone: stages.sort.done,
