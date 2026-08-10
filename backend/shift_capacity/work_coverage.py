@@ -249,16 +249,214 @@ def _eligible_demand(
     return available, len(bag_ids), loads, at_start, became
 
 
+def _busy_intervals_for_worker(
+    calendars: dict[str, list[Any]],
+    employee_id: str,
+    w0: int,
+    w1: int,
+    *,
+    tasks: set[str] | None,
+) -> list[tuple[int, int]]:
+    """Return merged busy [lo, hi) segments for one worker inside [w0, w1)."""
+    segs: list[tuple[int, int]] = []
+    for r in calendars.get(employee_id) or []:
+        task = getattr(r, "task_type", None) or getattr(r, "task", None)
+        if tasks is not None and task not in tasks:
+            continue
+        lo = max(int(r.start), w0)
+        hi = min(int(r.end), w1)
+        if hi > lo:
+            segs.append((lo, hi))
+    if not segs:
+        return []
+    segs.sort()
+    merged: list[tuple[int, int]] = [segs[0]]
+    for lo, hi in segs[1:]:
+        prev_lo, prev_hi = merged[-1]
+        if lo <= prev_hi:
+            merged[-1] = (prev_lo, max(prev_hi, hi))
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
+def _idle_gaps(busy: list[tuple[int, int]], w0: int, w1: int) -> list[tuple[int, int]]:
+    gaps: list[tuple[int, int]] = []
+    cursor = w0
+    for lo, hi in busy:
+        if lo > cursor:
+            gaps.append((cursor, lo))
+        cursor = max(cursor, hi)
+    if cursor < w1:
+        gaps.append((cursor, w1))
+    return gaps
+
+
+def _bag_eligible_for_role_at(
+    bag: Any,
+    role: str,
+    t: int,
+    calendars: dict[str, list[Any]],
+) -> bool:
+    """True if bag has unfinished, unassigned labor for role ready at instant t."""
+    ready = _ready_sec_for_role(bag, role)
+    if ready is None or ready > t:
+        return False
+    task = ROLE_LABOR_TASK[role]
+    if role in ("washer", "dryer"):
+        n = _n_loads(bag, role)
+        done = _loads_completed_before(bag.bag_id, task, t, calendars)
+        if done >= n:
+            return False
+        # In-progress or already-booked future load on any calendar → claimed.
+        for rows in calendars.values():
+            for r in rows or []:
+                if (getattr(r, "task_type", None) or getattr(r, "task", None)) != task:
+                    continue
+                if bag.bag_id not in (getattr(r, "bag_ids", None) or []):
+                    continue
+                if int(r.end) <= t:
+                    continue
+                # Reservation still open at or after t (in progress or future).
+                if int(r.start) >= t or int(r.start) <= t < int(r.end):
+                    return False
+        return True
+
+    # Single-shot stages: only unassigned ready bags count as eligible demand.
+    start_attr = {
+        "weigher": "weigh_start",
+        "sorter": "sort_start",
+        "folder": "fold_start",
+    }[role]
+    end_attr = {
+        "weigher": "weigh_end",
+        "sorter": "sort_end",
+        "folder": "fold_end",
+    }[role]
+    if getattr(bag, end_attr, None) is not None and int(getattr(bag, end_attr)) <= t:
+        return False
+    if getattr(bag, start_attr, None) is not None:
+        return False
+    return True
+
+
+def _has_eligible_work_at(
+    bags: list[Any],
+    roles: list[str],
+    t: int,
+    calendars: dict[str, list[Any]],
+) -> bool:
+    for bag in bags:
+        for role in roles:
+            if _bag_eligible_for_role_at(bag, role, t, calendars):
+                return True
+    return False
+
+
+def _ready_event_times(
+    bags: list[Any],
+    roles: list[str],
+    gap_lo: int,
+    gap_hi: int,
+) -> list[int]:
+    times: set[int] = set()
+    for bag in bags:
+        for role in roles:
+            ready = _ready_sec_for_role(bag, role)
+            if ready is not None and gap_lo < int(ready) < gap_hi:
+                times.add(int(ready))
+    return sorted(times)
+
+
+def _classify_idle_gap(
+    gap_lo: int,
+    gap_hi: int,
+    *,
+    bags: list[Any],
+    roles: list[str],
+    calendars: dict[str, list[Any]],
+) -> tuple[int, int]:
+    """Split one idle gap into (idle_no_eligible_sec, unused_fit_sec) via DES readiness."""
+    if gap_hi <= gap_lo:
+        return 0, 0
+    boundaries = [gap_lo, gap_hi] + _ready_event_times(bags, roles, gap_lo, gap_hi)
+    boundaries = sorted(set(boundaries))
+    idle_no = 0
+    unused_fit = 0
+    for i in range(len(boundaries) - 1):
+        t0 = boundaries[i]
+        t1 = boundaries[i + 1]
+        if t1 <= t0:
+            continue
+        if _has_eligible_work_at(bags, roles, t0, calendars):
+            unused_fit += t1 - t0
+        else:
+            idle_no += t1 - t0
+    return idle_no, unused_fit
+
+
+def _classify_idle_from_calendars(
+    employee_ids: list[str],
+    *,
+    calendars: dict[str, list[Any]],
+    bags: list[Any],
+    w0: int,
+    w1: int,
+    roles: list[str],
+    tasks: set[str],
+    staff_sec: int,
+    used_sec: int,
+) -> tuple[int, int, int]:
+    """Per-worker idle classification, then sum.
+
+    idle_no_eligible_work: worker free and no eligible upstream work.
+    unused_fit: worker free while eligible work existed (typically end-fragment
+    under finish_in_progress_at_exit=False).
+
+    Does NOT use aggregated staff vs cumulative available_work_min.
+    """
+    idle_no_total = 0
+    unused_fit_total = 0
+    for eid in employee_ids:
+        busy = _busy_intervals_for_worker(calendars, eid, w0, w1, tasks=tasks)
+        for gap_lo, gap_hi in _idle_gaps(busy, w0, w1):
+            no_sec, fit_sec = _classify_idle_gap(
+                gap_lo, gap_hi, bags=bags, roles=roles, calendars=calendars
+            )
+            idle_no_total += no_sec
+            unused_fit_total += fit_sec
+
+    idle_sec = max(0, staff_sec - used_sec)
+    classified = idle_no_total + unused_fit_total
+    # Guard: classified idle should match calendar spare within the window.
+    # If calendars are empty but staff exists, treat all spare as no-eligible.
+    if classified == 0 and idle_sec > 0:
+        return idle_sec, idle_sec, 0
+    if classified != idle_sec and classified > 0:
+        # Prefer calendar classification; scale only if tiny float/clip drift.
+        drift = idle_sec - classified
+        if abs(drift) <= 1:
+            if drift > 0:
+                unused_fit_total += drift
+            elif unused_fit_total >= -drift:
+                unused_fit_total += drift
+            else:
+                idle_no_total += drift
+        else:
+            # Trust calendars: recompute idle from classification.
+            idle_sec = classified
+    return idle_sec, idle_no_total, unused_fit_total
+
+
 def _idle_breakdown(
     *,
     staff_sec: int,
     used_sec: int,
     available_sec: int,
 ) -> tuple[int, int, int]:
+    """Legacy aggregate fallback — prefer _classify_idle_from_calendars."""
     idle = max(0, staff_sec - used_sec)
-    # Minutes with no upstream work to consume capacity.
     idle_no_work = max(0, min(idle, staff_sec - available_sec))
-    # Remaining idle while demand existed (fit / machine / sequencing).
     unused_fit = max(0, idle - idle_no_work)
     return idle, idle_no_work, unused_fit
 
@@ -271,11 +469,18 @@ def _status(staff_sec: int, used_sec: int, idle_no_work: int, unused_fit: int) -
         return "fully_utilized"
     if idle_no_work > 0 and unused_fit == 0:
         return "idle_waiting_for_work"
-    if idle_no_work > 0:
+    if idle_no_work > 0 and unused_fit > 0:
         return "partial_upstream_short"
     if unused_fit > 0:
         return "work_not_fit"
+    if idle_no_work > 0:
+        return "idle_waiting_for_work"
     return "partial"
+
+
+def _min2(sec: int | float) -> float:
+    """Minutes with 2-decimal precision (preserve 2.25 / 7.75)."""
+    return round(float(sec) / 60.0, 2)
 
 
 def _coverage_for_interval(
@@ -300,9 +505,6 @@ def _coverage_for_interval(
         roles = list(HYBRID_SPECS[interval.hybrid_type])
         tasks = {ROLE_LABOR_TASK[r] for r in roles}
         used_sec, by_task = _used_labor(employee_ids, calendars, w0, w1, tasks=tasks)
-        # Eligible demand = sum across qualified roles (work any of them can take).
-        # Avoid double-counting bags: count each bag once under the earliest
-        # unfinished qualified role it is ready for in-window.
         available_sec, eligible_bags, physical_loads, at_start, became = _hybrid_eligible_demand(
             bags,
             roles=roles,
@@ -311,19 +513,29 @@ def _coverage_for_interval(
             load_sec=load_sec,
             calendars=calendars,
         )
-        role_alloc = {
-            r: round(by_task.get(ROLE_LABOR_TASK[r], 0) / 60.0, 1) for r in roles
-        }
-        idle_sec, idle_no_work, unused_fit = _idle_breakdown(
-            staff_sec=staff_sec, used_sec=used_sec, available_sec=available_sec
+        idle_sec, idle_no_work, unused_fit = _classify_idle_from_calendars(
+            employee_ids,
+            calendars=calendars,
+            bags=bags,
+            w0=w0,
+            w1=w1,
+            roles=roles,
+            tasks=tasks,
+            staff_sec=staff_sec,
+            used_sec=used_sec,
         )
-        role_alloc["idle"] = round(idle_sec / 60.0, 1)
+        role_alloc = {
+            r: round(by_task.get(ROLE_LABOR_TASK[r], 0) / 60.0, 2) for r in roles
+        }
+        role_alloc["idle"] = _min2(idle_sec)
         primary_role = None
         label_role = interval.hybrid_type
     else:
         role = interval.role
+        roles = [role]
         task = ROLE_LABOR_TASK[role]
-        used_sec, _ = _used_labor(employee_ids, calendars, w0, w1, tasks={task})
+        tasks = {task}
+        used_sec, _ = _used_labor(employee_ids, calendars, w0, w1, tasks=tasks)
         available_sec, eligible_bags, physical_loads, at_start, became = _eligible_demand(
             bags,
             role=role,
@@ -332,18 +544,28 @@ def _coverage_for_interval(
             load_sec=load_sec[role],
             calendars=calendars,
         )
-        idle_sec, idle_no_work, unused_fit = _idle_breakdown(
-            staff_sec=staff_sec, used_sec=used_sec, available_sec=available_sec
+        idle_sec, idle_no_work, unused_fit = _classify_idle_from_calendars(
+            employee_ids,
+            calendars=calendars,
+            bags=bags,
+            w0=w0,
+            w1=w1,
+            roles=roles,
+            tasks=tasks,
+            staff_sec=staff_sec,
+            used_sec=used_sec,
         )
         role_alloc = None
         primary_role = role
         label_role = role
 
     status = _status(staff_sec, used_sec, idle_no_work, unused_fit)
-    staff_min = round(staff_sec / 60.0, 1)
-    available_min = round(available_sec / 60.0, 1)
-    used_min = round(used_sec / 60.0, 1)
-    idle_min = round(idle_sec / 60.0, 1)
+    staff_min = _min2(staff_sec)
+    available_min = _min2(available_sec)
+    used_min = _min2(used_sec)
+    idle_min = _min2(idle_sec)
+    idle_no_min = _min2(idle_no_work)
+    unused_fit_min = _min2(unused_fit)
 
     return {
         "index": index,
@@ -360,8 +582,8 @@ def _coverage_for_interval(
         "available_work_min": available_min,
         "used_min": used_min,
         "idle_min": idle_min,
-        "idle_no_eligible_work_min": round(idle_no_work / 60.0, 1),
-        "unused_fit_min": round(unused_fit / 60.0, 1),
+        "idle_no_eligible_work_min": idle_no_min,
+        "unused_fit_min": unused_fit_min,
         "eligible_bags": eligible_bags,
         "eligible_bags_at_start": at_start,
         "eligible_bags_became": became,
@@ -380,6 +602,8 @@ def _coverage_for_interval(
             available_min=available_min,
             used_min=used_min,
             idle_min=idle_min,
+            idle_no_min=idle_no_min,
+            unused_fit_min=unused_fit_min,
             eligible_bags=eligible_bags,
             status=status,
             role_alloc=role_alloc,
@@ -456,6 +680,8 @@ def _summary_line(
     available_min: float,
     used_min: float,
     idle_min: float,
+    idle_no_min: float,
+    unused_fit_min: float,
     eligible_bags: int,
     status: str,
     role_alloc: dict[str, float] | None,
@@ -470,13 +696,11 @@ def _summary_line(
         "wash_dry": "WASH/DRY",
         "weigh_wash_dry": "WEIGH/WASH/DRY",
     }.get(role_key, str(role_key).upper())
-    prefix = "TEMP" if mode == "additional" else role_disp
     if mode == "additional":
         head = f"TEMP +{people} {start}–{end}"
     else:
         head = f"{role_disp} {people} · {start}–{end}"
 
-    avail_i = _fmt_min(available_min)
     used_i = _fmt_min(used_min)
     staff_i = _fmt_min(staff_min)
     idle_i = _fmt_min(idle_min)
@@ -498,17 +722,27 @@ def _summary_line(
         parts.append(f"Idle {_fmt_min(role_alloc.get('idle', idle_min))}m")
         return f"{head} · " + " · ".join(parts)
 
-    status_bit = "FULL" if status == "fully_utilized" else _status_label(status, idle_min)
+    util = int(round((used_min / staff_min) * 100)) if staff_min > 0 else 0
+    reason_bits = []
+    if idle_no_min > 0.005:
+        reason_bits.append(f"{_fmt_min(idle_no_min)} waiting")
+    if unused_fit_min > 0.005:
+        reason_bits.append(f"{_fmt_min(unused_fit_min)} unused_fit")
+    reason = (" · " + " · ".join(reason_bits)) if reason_bits else ""
     return (
-        f"{head} · {eligible_bags} bags available · {avail_i} work min · "
-        f"{staff_i} staff min · {used_i} used · {idle_i} idle · {status_bit}"
+        f"{head} · {used_i} of {staff_i} productive · {util}% · "
+        f"{idle_i} unused{reason} · {_status_label(status, idle_min)}"
     )
 
 
 def _fmt_min(v: float) -> str:
-    if abs(v - round(v)) < 0.05:
+    if abs(v - round(v)) < 0.005:
         return str(int(round(v)))
-    return f"{v:.1f}"
+    # Keep two decimals when needed (2.25), else one (4.5).
+    rounded2 = round(v, 2)
+    if abs(rounded2 * 10 - round(rounded2 * 10)) < 0.001:
+        return f"{rounded2:.1f}"
+    return f"{rounded2:.2f}"
 
 
 def attach_work_coverage_to_blocks(

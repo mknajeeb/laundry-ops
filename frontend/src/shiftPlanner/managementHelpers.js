@@ -632,7 +632,7 @@ const COVERAGE_ROLE_SHORT = {
 /**
  * Manager-facing utilization from a DES work_coverage row.
  * Answers: was this person actually utilized during this staffing interval?
- * Does not recompute capacity — only formats API fields.
+ * Does not recompute capacity — only formats API idle classification fields.
  */
 export function describeWorkCoverage(row, options = {}) {
   if (!row) {
@@ -659,6 +659,7 @@ export function describeWorkCoverage(row, options = {}) {
   const staffS = _fmtCoverageMin(staffMin);
   const idleS = _fmtCoverageMin(idleMin);
   const ratio = staffMin > 0 ? usedMin / staffMin : 0;
+  const utilPct = staffMin > 0 ? Math.round((usedMin / staffMin) * 100) : 0;
 
   let level = "underutilized";
   let levelLabel = "UNDERUTILIZED";
@@ -685,13 +686,6 @@ export function describeWorkCoverage(row, options = {}) {
     }
   }
 
-  const reasonLabel = _coverageUnusedReason({
-    role: row.role,
-    idleNo,
-    unusedFit,
-    params,
-  });
-
   const isTemp = String(row.mode || "").toLowerCase() === "additional";
   const roleKey = normalizeRole(row.role) || row.role;
   const roleTitle = COVERAGE_ROLE_TITLE[roleKey]
@@ -699,9 +693,13 @@ export function describeWorkCoverage(row, options = {}) {
     || String(ROLE_LABEL[roleKey] || roleKey || "STAFF").toUpperCase();
   const roleShort = COVERAGE_ROLE_SHORT[roleKey] || ROLE_LABEL[roleKey] || roleTitle;
 
-  const productiveLine = idleMin < 0.05
-    ? `${usedS} of ${staffS} min productive`
-    : `${usedS} of ${staffS} min productive · ${idleS} min unused`;
+  const reasonLabel = _coverageUnusedExplanation({
+    role: row.role,
+    idleNo,
+    unusedFit,
+    idleMin,
+    params,
+  });
 
   const alloc = row.role_allocation_min;
   if (alloc && typeof alloc === "object" && !isTemp) {
@@ -715,12 +713,10 @@ export function describeWorkCoverage(row, options = {}) {
     const idlePart = Number.isFinite(idleAlloc) ? idleAlloc : idleMin;
     parts.push(`Idle ${_fmtCoverageMin(idlePart)}`);
     const hybridLines = [
-      `${usedS} of ${staffS} min productive`,
+      `${usedS} of ${staffS} min productive · ${utilPct}% utilized`,
       parts.join(" · "),
     ];
-    if (level !== "fully_utilized") {
-      hybridLines.push(`Status: ${levelLabel}`);
-    }
+    if (reasonLabel) hybridLines.push(reasonLabel);
     return {
       level,
       levelLabel,
@@ -735,15 +731,12 @@ export function describeWorkCoverage(row, options = {}) {
     };
   }
 
-  const lines = [];
-  if (isTemp) {
-    lines.push(`TEMP ${roleShort} ${row.start}–${row.end}`);
-    lines.push(productiveLine);
-  } else {
-    lines.push(`${roleTitle} — ${productiveLine}`);
-  }
+  const head = isTemp
+    ? `${roleShort.toUpperCase()} TEMP ${row.start}–${row.end} — ${usedS} of ${staffS} min productive · ${utilPct}% utilized`
+    : `${roleTitle} — ${usedS} of ${staffS} min productive · ${utilPct}% utilized`;
+
+  const lines = [head];
   if (reasonLabel) lines.push(reasonLabel);
-  lines.push(`Status: ${levelLabel}`);
 
   return {
     level,
@@ -753,42 +746,70 @@ export function describeWorkCoverage(row, options = {}) {
     usedMin,
     staffMin,
     idleMin,
-    headline: lines[0] || levelLabel,
+    headline: head,
     lines,
     detail: formatWorkCoverageDetail(row),
   };
 }
 
-function _coverageUnusedReason({ role, idleNo, unusedFit, params }) {
+function _coverageUnusedExplanation({ role, idleNo, unusedFit, idleMin, params }) {
+  if (idleMin < 0.05) return "";
+  const roleId = normalizeRole(role) || role;
+  if (partsWouldBeIdleOnly(idleNo, unusedFit)) {
+    return `${_fmtCoverageMin(idleMin)} min unused: ${_waitingPhrase(roleId)}`;
+  }
+  if (partsWouldBeFitOnly(idleNo, unusedFit)) {
+    return `${_fmtCoverageMin(idleMin)} min unused: ${_insufficientFitPhrase(roleId, params, false)}`;
+  }
   const parts = [];
   if (idleNo > 0.05) {
-    parts.push(`${_fmtCoverageMin(idleNo)} min waiting for first bag`);
+    parts.push(`${_fmtCoverageMin(idleNo)} min ${_waitingPhrase(roleId)}`);
   }
   if (unusedFit > 0.05) {
-    parts.push(_coverageUnusedFitPhrase(role, unusedFit, params));
+    parts.push(`${_fmtCoverageMin(unusedFit)} min ${_insufficientFitPhrase(roleId, params, true)}`);
   }
-  return parts.join(" · ");
+  if (!parts.length) return "";
+  return `${_fmtCoverageMin(idleMin)} min unused: ${parts.join(" · ")}`;
 }
 
-function _coverageUnusedFitPhrase(role, unusedFit, params) {
-  const unusedS = _fmtCoverageMin(unusedFit);
-  const roleId = normalizeRole(role) || role;
+function partsWouldBeIdleOnly(idleNo, unusedFit) {
+  return idleNo > 0.05 && unusedFit <= 0.05;
+}
+
+function partsWouldBeFitOnly(idleNo, unusedFit) {
+  return unusedFit > 0.05 && idleNo <= 0.05;
+}
+
+function _waitingPhrase(roleId) {
+  if (roleId === "sorter") return "waiting for bags";
+  if (roleId === "washer") return "waiting for sorted bags";
+  if (roleId === "dryer") return "waiting for washed bags";
+  if (roleId === "folder") return "waiting for dried bags";
+  if (roleId === "weigher") return "waiting for bags";
+  return "waiting for bags";
+}
+
+function _insufficientFitPhrase(roleId, params, shortForm) {
   if (roleId === "washer" || roleId === "dryer") {
-    return `${unusedS} min remaining was too short to start another required split load`;
+    return "insufficient time for next required load";
   }
   if (roleId === "sorter") {
     const unit = Number(params.sort_min_per_bag) || 5;
-    return `${unusedS} min too short for another ${_fmtCoverageMin(unit)}-min sort`;
+    return shortForm
+      ? "too short to start another sort"
+      : `insufficient time for another ${_fmtCoverageMin(unit)}-min sort`;
   }
   if (roleId === "folder") {
     const unit = Number(params.fold_min_per_bag) || 6;
-    return `${unusedS} min too short for another ${_fmtCoverageMin(unit)}-min fold`;
+    return shortForm
+      ? "too short to start another fold"
+      : `insufficient time for another ${_fmtCoverageMin(unit)}-min fold`;
   }
   if (roleId === "weigher") {
     const sec = Number(params.weigh_sec_per_bag) || 45;
-    return `${unusedS} min too short for another ${sec}-sec weigh`;
+    return `insufficient time for another ${sec}-sec weigh`;
   }
-  return `${unusedS} min remaining was too short to start the next unit of work`;
+  return "insufficient time for next required work";
 }
 
 /** Manager-facing primary lines (joined). */
@@ -806,7 +827,7 @@ export function formatWorkCoverageDetail(row) {
   return [
     `${bags} eligible bags · ${demand} min total eligible work demand generated during interval`,
     `${_fmtCoverageMin(row.staff_min)} staff min · ${_fmtCoverageMin(row.used_min)} productive · ${_fmtCoverageMin(row.idle_min)} unused`,
-    `${_fmtCoverageMin(row.idle_no_eligible_work_min)} min waiting for first bag · ${_fmtCoverageMin(row.unused_fit_min)} min unused fit`,
+    `${_fmtCoverageMin(row.idle_no_eligible_work_min)} min waiting (no eligible work) · ${_fmtCoverageMin(row.unused_fit_min)} min unused fit`,
     loads ? `${loads} physical loads` : null,
     row.status ? `engine status ${row.status}` : null,
   ].filter(Boolean).join(" · ");

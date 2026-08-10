@@ -936,7 +936,7 @@ describe("managementHelpers", () => {
 
   it("formats manager-facing utilization from API work_coverage only", () => {
     const full = describeWorkCoverage({
-      role: "sorter",
+      role: "washer",
       mode: "base",
       eligible_bags: 6,
       available_work_min: 24,
@@ -947,32 +947,42 @@ describe("managementHelpers", () => {
       unused_fit_min: 0,
       status: "fully_utilized",
     });
-    expect(full.levelLabel).toBe("FULLY UTILIZED");
-    expect(full.lines.join("\n")).toContain("SORT — 60 of 60 min productive");
-    expect(full.lines.join("\n")).toContain("Status: FULLY UTILIZED");
+    expect(full.lines.join("\n")).toBe("WASH — 60 of 60 min productive · 100% utilized");
     expect(full.lines.join("\n")).not.toContain("bags");
     expect(full.lines.join("\n")).not.toContain("395");
 
     const mostly = describeWorkCoverage({
       role: "sorter",
       mode: "base",
+      staff_min: 120,
+      used_min: 110,
+      idle_min: 10,
+      idle_no_eligible_work_min: 2.25,
+      unused_fit_min: 7.75,
+      available_work_min: 395,
+      eligible_bags: 79,
+      status: "partial_upstream_short",
+    });
+    expect(mostly.lines.join("\n")).toBe([
+      "SORT — 110 of 120 min productive · 92% utilized",
+      "10 min unused: 2.25 min waiting for bags · 7.75 min too short to start another sort",
+    ].join("\n"));
+    expect(mostly.lines.join("\n")).not.toContain("395");
+
+    const endOnly = describeWorkCoverage({
+      role: "sorter",
+      mode: "base",
       staff_min: 60,
       used_min: 55,
       idle_min: 5,
-      idle_no_eligible_work_min: 0.75,
-      unused_fit_min: 4.25,
-      available_work_min: 395,
-      eligible_bags: 79,
+      idle_no_eligible_work_min: 0,
+      unused_fit_min: 5,
       status: "work_not_fit",
     });
-    expect(mostly.levelLabel).toBe("MOSTLY UTILIZED");
-    expect(mostly.reasonCode).toBe("WORK_ARRIVED_TOO_LATE");
-    expect(mostly.lines.join("\n")).toBe([
-      "SORT — 55 of 60 min productive · 5 min unused",
-      "0.75 min waiting for first bag · 4.25 min too short for another 5-min sort",
-      "Status: MOSTLY UTILIZED",
+    expect(endOnly.lines.join("\n")).toBe([
+      "SORT — 55 of 60 min productive · 92% utilized",
+      "5 min unused: insufficient time for another 5-min sort",
     ].join("\n"));
-    expect(mostly.lines.join("\n")).not.toContain("395");
 
     const tempDry = describeWorkCoverage({
       role: "dryer",
@@ -989,30 +999,25 @@ describe("managementHelpers", () => {
       status: "work_not_fit",
     });
     expect(tempDry.lines.join("\n")).toBe([
-      "TEMP Dry 6:45 AM–7:00 AM",
-      "12 of 15 min productive · 3 min unused",
-      "3 min remaining was too short to start another required split load",
-      "Status: MOSTLY UTILIZED",
+      "DRY TEMP 6:45 AM–7:00 AM — 12 of 15 min productive · 80% utilized",
+      "3 min unused: insufficient time for next required load",
     ].join("\n"));
 
     const starved = describeWorkCoverage({
       role: "dryer",
-      mode: "additional",
-      people: 1,
-      start: "6:45 AM",
-      end: "7:00 AM",
-      staff_min: 15,
-      used_min: 6,
-      idle_min: 9,
-      idle_no_eligible_work_min: 9,
+      mode: "base",
+      staff_min: 60,
+      used_min: 18,
+      idle_min: 42,
+      idle_no_eligible_work_min: 42,
       unused_fit_min: 0,
       available_work_min: 6,
       status: "idle_waiting_for_work",
     });
-    expect(starved.lines[0]).toBe("TEMP Dry 6:45 AM–7:00 AM");
-    expect(starved.lines.join("\n")).toContain("6 of 15 min productive · 9 min unused");
-    expect(starved.lines.join("\n")).toContain("9 min waiting for first bag");
-    expect(starved.lines.join("\n")).toContain("Status: UNDERUTILIZED");
+    expect(starved.lines.join("\n")).toBe([
+      "DRY — 18 of 60 min productive · 30% utilized",
+      "42 min unused: waiting for washed bags",
+    ].join("\n"));
 
     const hybrid = describeWorkCoverage({
       hybrid: "wash_dry",
@@ -1024,7 +1029,7 @@ describe("managementHelpers", () => {
       role_allocation_min: { washer: 36, dryer: 24, idle: 0 },
     });
     expect(hybrid.lines.join("\n")).toBe([
-      "60 of 60 min productive",
+      "60 of 60 min productive · 100% utilized",
       "Wash 36m · Dry 24m · Idle 0",
     ].join("\n"));
 
@@ -1033,27 +1038,16 @@ describe("managementHelpers", () => {
       eligible_bags_at_start: 0,
       eligible_bags_became: 79,
       available_work_min: 395,
-      staff_min: 60,
-      used_min: 55,
-      idle_min: 5,
-      idle_no_eligible_work_min: 0.75,
-      unused_fit_min: 4.25,
+      staff_min: 120,
+      used_min: 110,
+      idle_min: 10,
+      idle_no_eligible_work_min: 2.25,
+      unused_fit_min: 7.75,
       physical_loads_available: 79,
-      status: "work_not_fit",
+      status: "partial_upstream_short",
     });
     expect(detail).toContain("79 eligible bags · 395 min total eligible work demand generated during interval");
-    expect(detail).not.toMatch(/\b395 work min\b/);
-    expect(formatWorkCoverageLine({
-      role: "dryer",
-      mode: "additional",
-      people: 1,
-      start: "6:45 AM",
-      end: "7:00 AM",
-      staff_min: 15,
-      used_min: 15,
-      idle_min: 0,
-      status: "fully_utilized",
-    })).toContain("Status: FULLY UTILIZED");
+    expect(detail).toContain("2.25 min waiting (no eligible work) · 7.75 min unused fit");
   });
 
   it("matches work_coverage rows to role/TEMP within a slot", () => {

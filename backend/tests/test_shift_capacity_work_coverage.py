@@ -237,6 +237,41 @@ def test_machine_constrained_still_reports_available_vs_used():
     assert "used_min" in dry and "idle_min" in dry
 
 
+def test_two_sorter_idle_classified_from_per_worker_calendars():
+    """Verified fixture: 2 Sort × 60 min → 110 used, 2.25 starve + 7.75 end-fragment.
+
+    Idle reasons must come from each MGMT_SORT_* calendar, not staff vs cumulative
+    available_work_min (which previously marked all 10 as unused_fit).
+    """
+    intervals = [
+        {"role": "weigher", "people": 1, "start": "5:00 AM", "end": "6:00 AM", "mode": "base"},
+        {"role": "sorter", "people": 2, "start": "5:00 AM", "end": "6:00 AM", "mode": "base"},
+    ]
+    result = run_shift_capacity(
+        _base_payload(
+            intervals,
+            target_time="6:00 AM",
+            end_time="6:00 AM",
+        )
+    )
+    row = _coverage(result, role="sorter", mode="base", start="5:00 AM", end="6:00 AM")[0]
+    assert row["staff_min"] == 120
+    assert row["used_min"] == 110
+    assert row["idle_min"] == 10
+    assert row["idle_no_eligible_work_min"] == 2.25
+    assert row["unused_fit_min"] == 7.75
+    assert abs(
+        row["used_min"]
+        + row["idle_no_eligible_work_min"]
+        + row["unused_fit_min"]
+        - row["staff_min"]
+    ) < 0.02
+    # Cumulative demand stays for diagnostics but must not drive the split.
+    assert row["available_work_min"] == 395
+    assert row["resource_ids"] == ["MGMT_SORT_001", "MGMT_SORT_002"]
+    assert row["status"] == "partial_upstream_short"
+
+
 def test_screenshot_dry_temp_trace_invariants():
     """Production-like Dry TEMP: only fully dual parents start (all-or-nothing)."""
     result = run_shift_capacity(_base_payload(_screenshot_intervals()))
