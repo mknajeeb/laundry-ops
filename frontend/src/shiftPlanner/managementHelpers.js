@@ -1087,10 +1087,9 @@ export function formatStageReconcile({
 }
 
 /**
- * Two-row management POSITION view.
- * Row 1 PROGRESS = cumulative stage DONE (not current location).
- * Row 2 CURRENT = mutually exclusive parent states (where every bag sits now).
- * All counts come from block_positions / detail — no frontend DES math.
+ * Five-column management POSITION: PROGRESS + AVAILABLE TO START.
+ * Counts from block_positions only — no frontend DES math / interpolation.
+ * Full exclusive inventory kept under details for debug.
  */
 export function buildPositionInventoryDisplay(block, targetBags) {
   if (!block) return null;
@@ -1111,12 +1110,7 @@ export function buildPositionInventoryDisplay(block, targetBags) {
   const inDryCycle = n("in_dry_cycle");
   const inFoldLabor = n("in_fold_labor");
 
-  const washingNow = inWashLabor + inWashCycle;
-  const dryingNow = inDryLabor + inDryCycle;
-  // Transfer is between wash and dry; fold into waiting-to-dry for management row.
-  const waitingToDry = n("waiting_to_dry") + inTransfer;
-
-  const inventory = [
+  const exclusiveInventory = [
     { id: "not_yet_weighed", label: "Not Yet Weighed", count: n("not_yet_weighed") },
     { id: "weighing_now", label: "Weighing Now", count: inWeighLabor },
     { id: "waiting_to_sort", label: "Waiting to Sort", count: n("waiting_to_sort") },
@@ -1125,17 +1119,17 @@ export function buildPositionInventoryDisplay(block, targetBags) {
     {
       id: "washing_now",
       label: "Washing Now",
-      count: washingNow,
-      detail: washingNow > 0
+      count: inWashLabor + inWashCycle,
+      detail: (inWashLabor + inWashCycle) > 0
         ? `${inWashLabor} loading · ${inWashCycle} in machine`
         : null,
     },
-    { id: "waiting_to_dry", label: "Waiting to Dry", count: waitingToDry },
+    { id: "waiting_to_dry", label: "Waiting to Dry", count: n("waiting_to_dry") + inTransfer },
     {
       id: "drying_now",
       label: "Drying Now",
-      count: dryingNow,
-      detail: dryingNow > 0
+      count: inDryLabor + inDryCycle,
+      detail: (inDryLabor + inDryCycle) > 0
         ? `${inDryLabor} loading · ${inDryCycle} in machine`
         : null,
     },
@@ -1143,15 +1137,24 @@ export function buildPositionInventoryDisplay(block, targetBags) {
     { id: "folding_now", label: "Folding Now", count: inFoldLabor },
     { id: "complete", label: "Complete", count: n("completed") || n("folded_total") },
   ];
+  const inventorySum = exclusiveInventory.reduce((sum, row) => sum + row.count, 0);
+  const reconOk = block.reconciliation?.ok;
+  const exclusiveSum = Number(block.reconciliation?.exclusive_state_sum);
+  const reconciled = reconOk != null
+    ? Boolean(reconOk)
+    : (Number.isFinite(exclusiveSum) ? exclusiveSum === target : inventorySum === target);
+  const reconN = Number.isFinite(exclusiveSum) ? exclusiveSum : inventorySum;
 
-  const inventorySum = inventory.reduce((sum, row) => sum + row.count, 0);
-  const progress = [
+  const columns = [
     {
       id: "weigh",
       title: "WEIGH",
       done: n("weighed_total"),
       doneLabel: "DONE",
       thisSlot: n("weighed_this_block"),
+      available: n("not_yet_weighed"),
+      availableLabel: "NOT YET WEIGHED",
+      secondary: null,
     },
     {
       id: "sort",
@@ -1159,6 +1162,9 @@ export function buildPositionInventoryDisplay(block, targetBags) {
       done: n("sorted_total"),
       doneLabel: "DONE",
       thisSlot: n("sorted_this_block"),
+      available: n("waiting_to_sort"),
+      availableLabel: "AVAILABLE TO START SORT",
+      secondary: null,
     },
     {
       id: "wash",
@@ -1166,6 +1172,11 @@ export function buildPositionInventoryDisplay(block, targetBags) {
       done: n("washed_total"),
       doneLabel: "DONE",
       thisSlot: n("washed_this_block"),
+      available: n("waiting_to_wash"),
+      availableLabel: "AVAILABLE TO START WASH",
+      secondary: (inWashLabor + inWashCycle) > 0
+        ? `${inWashLabor} loading · ${inWashCycle} in cycle`
+        : null,
     },
     {
       id: "dry",
@@ -1173,6 +1184,11 @@ export function buildPositionInventoryDisplay(block, targetBags) {
       done: n("dried_total"),
       doneLabel: "DONE",
       thisSlot: n("dried_this_block"),
+      available: n("waiting_to_dry") + inTransfer,
+      availableLabel: "AVAILABLE TO START DRY",
+      secondary: (inDryLabor + inDryCycle) > 0
+        ? `${inDryLabor} loading · ${inDryCycle} in cycle`
+        : null,
     },
     {
       id: "fold",
@@ -1180,60 +1196,43 @@ export function buildPositionInventoryDisplay(block, targetBags) {
       done: n("folded_total") || n("completed"),
       doneLabel: "COMPLETE",
       thisSlot: n("folded_this_block") || n("completed_this_block"),
+      available: n("waiting_to_fold"),
+      availableLabel: "AVAILABLE TO START FOLD",
+      secondary: null,
     },
   ];
 
-  // Pipeline checks (debug / details only).
-  const weighDone = n("weighed_total");
-  const sortDone = n("sorted_total");
-  const washDone = n("washed_total");
-  const dryDone = n("dried_total");
-  const details = {
-    weighPipeline: {
-      left: weighDone,
-      right: n("waiting_to_sort") + inSortLabor + sortDone,
-      matches: weighDone === n("waiting_to_sort") + inSortLabor + sortDone,
-      text:
-        `${weighDone} Weigh DONE = ${n("waiting_to_sort")} waiting to sort`
-        + ` + ${inSortLabor} sorting now + ${sortDone} Sort DONE`,
-    },
-    sortPipeline: {
-      left: sortDone,
-      right: n("waiting_to_wash") + inWashLabor + inWashCycle + washDone,
-      matches: sortDone === n("waiting_to_wash") + inWashLabor + inWashCycle + washDone,
-      text:
-        `${sortDone} Sort DONE = ${n("waiting_to_wash")} waiting to wash`
-        + ` + ${inWashLabor} wash labor + ${inWashCycle} wash cycle + ${washDone} Wash DONE`,
-    },
-    washPipeline: {
-      left: washDone,
-      right: n("waiting_to_dry") + inTransfer + inDryLabor + inDryCycle + dryDone,
-      matches:
-        washDone === n("waiting_to_dry") + inTransfer + inDryLabor + inDryCycle + dryDone,
-      text:
-        `${washDone} Wash DONE = ${n("waiting_to_dry")} waiting to dry`
-        + ` + ${inTransfer} transfer + ${inDryLabor} dry labor`
-        + ` + ${inDryCycle} dry cycle + ${dryDone} Dry DONE`,
-    },
-    dryPipeline: {
-      left: dryDone,
-      right: n("waiting_to_fold") + inFoldLabor + (n("folded_total") || n("completed")),
-      matches:
-        dryDone === n("waiting_to_fold") + inFoldLabor + (n("folded_total") || n("completed")),
-      text:
-        `${dryDone} Dry DONE = ${n("waiting_to_fold")} waiting to fold`
-        + ` + ${inFoldLabor} folding now + ${n("folded_total") || n("completed")} Fold COMPLETE`,
-    },
-  };
+  const progress = columns.map((c) => ({
+    id: c.id,
+    title: c.title,
+    done: c.done,
+    doneLabel: c.doneLabel,
+    thisSlot: c.thisSlot,
+  }));
+
+  const checkpoints = Array.isArray(block.availability_checkpoints)
+    ? block.availability_checkpoints
+    : [];
 
   return {
+    columns,
     progress,
-    inventory,
+    inventory: exclusiveInventory,
     inventorySum,
+    checkpoints,
     target,
-    reconciled: inventorySum === target,
-    reconcileLabel: `Position reconciled: ${inventorySum} / ${target}`,
-    details,
+    reconciled,
+    reconcileLabel: `Position reconciled: ${reconN} / ${target}`,
+    details: {
+      exclusiveInventory,
+      inLabor: {
+        weigh: inWeighLabor,
+        sort: inSortLabor,
+        wash: inWashLabor,
+        dry: inDryLabor,
+        fold: inFoldLabor,
+      },
+    },
   };
 }
 

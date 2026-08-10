@@ -143,6 +143,79 @@ def _count_parent_dry_between(bags: list[Bag], start_exclusive: int, end_inclusi
     return n
 
 
+def _checkpoint_times(block_start: int, block_end: int) -> list[int]:
+    """15-minute marks after start through end (always includes block_end)."""
+    step = 15 * 60
+    times: list[int] = []
+    t = block_start + step
+    while t < block_end:
+        times.append(t)
+        t += step
+    times.append(block_end)
+    return times
+
+
+def _state_counts_at(bags: list[Bag], t: int) -> dict[str, int]:
+    counts: dict[str, int] = {
+        "not_yet_weighed": 0,
+        "in_weigh_labor": 0,
+        "waiting_to_sort": 0,
+        "in_sort_labor": 0,
+        "waiting_to_wash": 0,
+        "in_wash_labor": 0,
+        "in_wash_cycle": 0,
+        "in_transfer_labor": 0,
+        "waiting_to_dry": 0,
+        "in_dry_labor": 0,
+        "in_dry_cycle": 0,
+        "waiting_to_fold": 0,
+        "in_fold_labor": 0,
+        "completed": 0,
+    }
+    for bag in bags:
+        counts[bag_state_at(bag, t)] += 1
+    return counts
+
+
+def build_availability_checkpoints(
+    bags: list[Bag],
+    *,
+    block_start: int,
+    block_end: int,
+) -> list[dict[str, Any]]:
+    """Point-in-time AVAILABLE TO START + newly-available from DES timestamps.
+
+    available_to_* = waiting_to_* at checkpoint (not in labor/cycle).
+    newly_available_* = upstream completion events in (prev, t] — not Δ available.
+    """
+    times = _checkpoint_times(block_start, block_end)
+    rows: list[dict[str, Any]] = []
+    prev = block_start
+    for t in times:
+        counts = _state_counts_at(bags, t)
+        rows.append(
+            {
+                "time": label_seconds(t),
+                "time_sec": t,
+                "not_yet_weighed": counts["not_yet_weighed"],
+                "available_to_sort": counts["waiting_to_sort"],
+                "newly_available_to_sort": _count_completed_between(bags, "weigh_end", prev, t),
+                "available_to_wash": counts["waiting_to_wash"],
+                "newly_available_to_wash": _count_completed_between(bags, "sort_end", prev, t),
+                "available_to_dry": counts["waiting_to_dry"],
+                "newly_available_to_dry": _count_parent_wash_between(bags, prev, t),
+                "available_to_fold": counts["waiting_to_fold"],
+                "newly_available_to_fold": _count_parent_dry_between(bags, prev, t),
+                "in_wash_labor": counts["in_wash_labor"],
+                "in_wash_cycle": counts["in_wash_cycle"],
+                "in_dry_labor": counts["in_dry_labor"],
+                "in_dry_cycle": counts["in_dry_cycle"],
+            }
+        )
+        prev = t
+    return rows
+
+
 def position_at(bags: list[Bag], t: int, *, prev_t: int | None = None, target_bags: int | None = None) -> dict[str, Any]:
     prev = prev_t if prev_t is not None else t
     target = target_bags if target_bags is not None else len(bags)
@@ -163,24 +236,7 @@ def position_at(bags: list[Bag], t: int, *, prev_t: int | None = None, target_ba
         "folded_total": _count_completed_by(bags, "completed_at", t),
     }
 
-    state_counts: dict[str, int] = {
-        "not_yet_weighed": 0,
-        "in_weigh_labor": 0,
-        "waiting_to_sort": 0,
-        "in_sort_labor": 0,
-        "waiting_to_wash": 0,
-        "in_wash_labor": 0,
-        "in_wash_cycle": 0,
-        "in_transfer_labor": 0,
-        "waiting_to_dry": 0,
-        "in_dry_labor": 0,
-        "in_dry_cycle": 0,
-        "waiting_to_fold": 0,
-        "in_fold_labor": 0,
-        "completed": 0,
-    }
-    for bag in bags:
-        state_counts[bag_state_at(bag, t)] += 1
+    state_counts = _state_counts_at(bags, t)
 
     waiting = {
         "waiting_to_sort": state_counts["waiting_to_sort"],
@@ -246,5 +302,8 @@ def build_block_positions(state: SimulationState) -> list[dict[str, Any]]:
         row["block_end_sec"] = block_end
         row["block_duration_min"] = round((block_end - block_start) / 60.0, 4)
         row["is_short_final_block"] = (block_end - block_start) < (block_min * 60) and block_end == target
+        row["availability_checkpoints"] = build_availability_checkpoints(
+            bags, block_start=block_start, block_end=block_end
+        )
         rows.append(row)
     return rows

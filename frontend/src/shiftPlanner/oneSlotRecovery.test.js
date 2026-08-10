@@ -43,7 +43,7 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("MANAGEMENT_HYBRIDS.map");
     expect(boardSrc).toContain("this slot");
     expect(boardSrc).toContain("progress-");
-    expect(boardSrc).toContain("inventory-");
+    expect(boardSrc).toContain("available-");
   });
 
   it("keeps sticky Recalculate and auto-recalc debounce", () => {
@@ -58,17 +58,24 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("}, [inputs, settingsReady]");
   });
 
-  it("uses two-row POSITION: progress stages + exclusive inventory", () => {
+  it("uses five-column POSITION: PROGRESS + AVAILABLE TO START + 15-min detail", () => {
     expect(boardSrc).toContain("buildPositionInventoryDisplay");
     expect(boardSrc).toContain("position-two-row");
-    expect(boardSrc).toContain("position-progress-row");
-    expect(boardSrc).toContain("position-inventory-row");
+    expect(boardSrc).toContain("position-stage-columns");
+    expect(boardSrc).toContain("AVAILABLE TO START");
     expect(boardSrc).toContain("position-reconciled");
-    expect(boardSrc).toContain("PROGRESS — STAGE COMPLETED");
-    expect(boardSrc).toContain("CURRENT POSITION — WHERE BAGS ARE NOW");
+    expect(boardSrc).toContain("availability-15min");
+    expect(boardSrc).toContain("15-min availability");
+    expect(boardSrc).toContain("useState(false)");
     expect(boardSrc).not.toContain("QueueBridge");
     expect(boardSrc).not.toContain("WAITING TO ENTER");
     expect(boardSrc).not.toContain("reconcile-sort-to-wash");
+    // Default UI must not render ...Now primary inventory cells
+    expect(boardSrc).not.toContain("Weighing Now");
+    expect(boardSrc).not.toContain("Sorting Now");
+    expect(boardSrc).not.toContain("Washing Now");
+    expect(boardSrc).not.toContain("Drying Now");
+    expect(boardSrc).not.toContain("Folding Now");
   });
 
   it("uses this slot labels and does not surface this block in UI copy", () => {
@@ -86,5 +93,7 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("staffingBandSx");
     expect(boardSrc).toContain("positionBandSx");
     expect(boardSrc).toContain("slotCardSx");
+    expect(boardSrc).toContain("POSITION_TEAL");
+    expect(boardSrc).toContain("POSITION_AMBER");
   });
 });

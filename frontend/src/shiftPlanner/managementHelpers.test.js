@@ -360,7 +360,7 @@ describe("managementHelpers", () => {
     expect(fold.doneLabel).toBe("COMPLETE");
   });
 
-  it("buildPositionInventoryDisplay separates progress DONE from exclusive current position", () => {
+  it("buildPositionInventoryDisplay uses five columns: progress + available to start", () => {
     // Screenshot-style 6:00 slot: 80 weigh done / 22 sort done; missing 1s are in labor.
     const view = buildPositionInventoryDisplay(
       {
@@ -389,40 +389,43 @@ describe("managementHelpers", () => {
         in_dry_cycle: 0,
         waiting_to_fold: 0,
         in_fold_labor: 0,
+        reconciliation: { exclusive_state_sum: 100, ok: true },
+        availability_checkpoints: [
+          {
+            time: "5:15 AM",
+            time_sec: 1,
+            available_to_sort: 14,
+            newly_available_to_sort: 20,
+            available_to_wash: 2,
+            newly_available_to_wash: 4,
+            available_to_dry: 0,
+            newly_available_to_dry: 0,
+            available_to_fold: 0,
+            newly_available_to_fold: 0,
+          },
+        ],
       },
       100,
     );
-    expect(view.progress.map((p) => [p.title, p.done, p.thisSlot])).toEqual([
-      ["WEIGH", 80, 80],
-      ["SORT", 22, 22],
-      ["WASH", 0, 0],
-      ["DRY", 0, 0],
-      ["FOLD", 0, 0],
+    expect(view.columns.map((c) => c.id)).toEqual(["weigh", "sort", "wash", "dry", "fold"]);
+    expect(view.columns.map((c) => [c.title, c.done, c.thisSlot, c.available])).toEqual([
+      ["WEIGH", 80, 80, 20],
+      ["SORT", 22, 22, 57],
+      ["WASH", 0, 0, 21],
+      ["DRY", 0, 0, 0],
+      ["FOLD", 0, 0, 0],
     ]);
-    const byId = Object.fromEntries(view.inventory.map((r) => [r.id, r.count]));
-    expect(byId).toMatchObject({
-      not_yet_weighed: 20,
-      waiting_to_sort: 57,
-      sorting_now: 1,
-      waiting_to_wash: 21,
-      washing_now: 1,
-      waiting_to_dry: 0,
-      drying_now: 0,
-      waiting_to_fold: 0,
-      folding_now: 0,
-      complete: 0,
-    });
-    expect(view.inventorySum).toBe(100);
-    expect(view.reconciled).toBe(true);
+    expect(view.columns.find((c) => c.id === "wash").secondary).toBe("1 loading · 0 in cycle");
+    expect(view.columns.find((c) => c.id === "sort").availableLabel).toBe("AVAILABLE TO START SORT");
+    expect(view.columns.find((c) => c.id === "weigh").availableLabel).toBe("NOT YET WEIGHED");
     expect(view.reconcileLabel).toBe("Position reconciled: 100 / 100");
-    // Pipeline identities (progress ≠ waiting subtraction)
-    expect(view.details.weighPipeline.matches).toBe(true);
-    expect(view.details.sortPipeline.matches).toBe(true);
-    expect(80).toBe(57 + 1 + 22);
-    expect(22).toBe(21 + 1 + 0 + 0);
+    expect(view.checkpoints).toHaveLength(1);
+    // Details still keep exclusive "...Now" inventory; not primary columns.
+    expect(view.inventory.find((r) => r.id === "sorting_now").count).toBe(1);
+    expect(view.columns.every((c) => !String(c.availableLabel).includes("Now"))).toBe(true);
   });
 
-  it("buildPositionInventoryDisplay combines wash/dry labor+cycle with hover detail", () => {
+  it("buildPositionInventoryDisplay wash/dry secondary in-cycle from labor+cycle", () => {
     const view = buildPositionInventoryDisplay(
       {
         washed_total: 10,
@@ -446,13 +449,12 @@ describe("managementHelpers", () => {
       },
       12,
     );
-    const wash = view.inventory.find((r) => r.id === "washing_now");
-    const dry = view.inventory.find((r) => r.id === "drying_now");
-    const waitDry = view.inventory.find((r) => r.id === "waiting_to_dry");
-    expect(wash).toMatchObject({ count: 6, detail: "1 loading · 5 in machine" });
-    expect(dry).toMatchObject({ count: 4, detail: "1 loading · 3 in machine" });
-    expect(waitDry.count).toBe(4); // 3 waiting + 1 transfer
-    expect(view.details.washPipeline.matches).toBe(true);
+    expect(view.columns.find((c) => c.id === "wash").secondary).toBe("1 loading · 5 in cycle");
+    expect(view.columns.find((c) => c.id === "dry")).toMatchObject({
+      available: 4,
+      secondary: "1 loading · 3 in cycle",
+    });
+    expect(view.inventory.find((r) => r.id === "washing_now").detail).toBe("1 loading · 5 in machine");
   });
 
   it("buildPositionFlowDisplay keeps waiting separate from remaining and uses wash/dry totals", () => {
