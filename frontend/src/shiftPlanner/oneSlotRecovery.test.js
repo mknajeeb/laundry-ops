@@ -8,6 +8,7 @@ const boardSrc = readFileSync(
   join(root, "../components/shiftPlanner/ManagementPlannerBoard.jsx"),
   "utf8",
 );
+const helpersSrc = readFileSync(join(root, "managementHelpers.js"), "utf8");
 
 describe("one-slot recovery board structure", () => {
   it("renders one planning-slot-card per time slot (not separate STAFFING/POSITION cards)", () => {
@@ -42,8 +43,8 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toMatch(/>\s*Hybrid\s*</);
     expect(boardSrc).toContain("MANAGEMENT_HYBRIDS.map");
     expect(boardSrc).toContain("this slot");
-    expect(boardSrc).toContain("progress-");
-    expect(boardSrc).toContain("available-");
+    expect(boardSrc).toContain("completed-");
+    expect(boardSrc).toContain("waiting-");
   });
 
   it("keeps sticky Recalculate and auto-recalc debounce", () => {
@@ -58,15 +59,25 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("}, [inputs, settingsReady]");
   });
 
-  it("uses five-column POSITION: PROGRESS + AVAILABLE TO START + 15-min detail", () => {
+  it("uses five-column POSITION: COMPLETED + WAITING + next-slot 15-min detail", () => {
     expect(boardSrc).toContain("buildPositionInventoryDisplay");
     expect(boardSrc).toContain("position-two-row");
     expect(boardSrc).toContain("position-stage-columns");
-    expect(boardSrc).toContain("AVAILABLE TO START");
+    expect(boardSrc).toContain("COMPLETED");
+    expect(boardSrc).toContain("WAITING");
+    expect(boardSrc).toContain("nextBlock");
     expect(boardSrc).toContain("position-reconciled");
     expect(boardSrc).toContain("availability-15min");
     expect(boardSrc).toContain("15-min availability");
+    expect(boardSrc).toContain("checkpoint-header");
     expect(boardSrc).toContain("useState(false)");
+    expect(helpersSrc).toContain("WAITING TO WEIGH");
+    expect(helpersSrc).toContain("WAITING TO SORT");
+    expect(helpersSrc).toContain("WAITING TO WASH");
+    expect(helpersSrc).toContain("WAITING TO DRY");
+    expect(helpersSrc).toContain("WAITING TO FOLD");
+    expect(helpersSrc).toContain("NEXT slot only");
+    expect(boardSrc).not.toContain("AVAILABLE TO START");
     expect(boardSrc).not.toContain("QueueBridge");
     expect(boardSrc).not.toContain("WAITING TO ENTER");
     expect(boardSrc).not.toContain("reconcile-sort-to-wash");

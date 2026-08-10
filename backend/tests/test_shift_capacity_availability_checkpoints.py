@@ -71,6 +71,13 @@ def test_60min_slot_exposes_four_checkpoints_on_block_positions():
         assert "available_to_sort" in c
         assert "newly_available_to_sort" in c
         assert "in_wash_cycle" in c
+        assert "weighed_total" in c
+        assert "sorted_total" in c
+        assert "washed_total" in c
+        assert "dried_total" in c
+        assert "folded_total" in c
+        assert c["waiting_to_weigh"] == c["not_yet_weighed"]
+        assert c["waiting_to_sort"] == c["available_to_sort"]
 
 
 def test_30_and_45_min_checkpoint_counts():

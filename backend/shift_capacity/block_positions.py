@@ -183,9 +183,10 @@ def build_availability_checkpoints(
     block_start: int,
     block_end: int,
 ) -> list[dict[str, Any]]:
-    """Point-in-time AVAILABLE TO START + newly-available from DES timestamps.
+    """Point-in-time WAITING + COMPLETED + newly-available from DES timestamps.
 
-    available_to_* = waiting_to_* at checkpoint (not in labor/cycle).
+    available_to_* / not_yet_weighed = waiting queues at checkpoint (not in labor/cycle).
+    *_total = parent bags that fully completed that stage by checkpoint.
     newly_available_* = upstream completion events in (prev, t] — not Δ available.
     """
     times = _checkpoint_times(block_start, block_end)
@@ -197,14 +198,24 @@ def build_availability_checkpoints(
             {
                 "time": label_seconds(t),
                 "time_sec": t,
+                "weighed_total": _count_completed_by(bags, "weigh_end", t),
+                "sorted_total": _count_completed_by(bags, "sort_end", t),
+                "washed_total": sum(1 for b in bags if parent_wash_complete(b, t)),
+                "dried_total": sum(1 for b in bags if parent_dry_complete(b, t)),
+                "folded_total": _count_completed_by(bags, "completed_at", t),
                 "not_yet_weighed": counts["not_yet_weighed"],
+                "waiting_to_weigh": counts["not_yet_weighed"],
                 "available_to_sort": counts["waiting_to_sort"],
+                "waiting_to_sort": counts["waiting_to_sort"],
                 "newly_available_to_sort": _count_completed_between(bags, "weigh_end", prev, t),
                 "available_to_wash": counts["waiting_to_wash"],
+                "waiting_to_wash": counts["waiting_to_wash"],
                 "newly_available_to_wash": _count_completed_between(bags, "sort_end", prev, t),
                 "available_to_dry": counts["waiting_to_dry"],
+                "waiting_to_dry": counts["waiting_to_dry"],
                 "newly_available_to_dry": _count_parent_wash_between(bags, prev, t),
                 "available_to_fold": counts["waiting_to_fold"],
+                "waiting_to_fold": counts["waiting_to_fold"],
                 "newly_available_to_fold": _count_parent_dry_between(bags, prev, t),
                 "in_wash_labor": counts["in_wash_labor"],
                 "in_wash_cycle": counts["in_wash_cycle"],

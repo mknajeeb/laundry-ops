@@ -1087,11 +1087,12 @@ export function formatStageReconcile({
 }
 
 /**
- * Five-column management POSITION: PROGRESS + AVAILABLE TO START.
+ * Five-column management POSITION: COMPLETED + WAITING.
  * Counts from block_positions only — no frontend DES math / interpolation.
+ * 15-min detail uses the NEXT slot's checkpoints (not the ended slot).
  * Full exclusive inventory kept under details for debug.
  */
-export function buildPositionInventoryDisplay(block, targetBags) {
+export function buildPositionInventoryDisplay(block, targetBags, options = {}) {
   if (!block) return null;
   const target = Math.max(0, Number(targetBags ?? block.target_bags) || 0);
   const detail = block.detail || {};
@@ -1149,31 +1150,53 @@ export function buildPositionInventoryDisplay(block, targetBags) {
     {
       id: "weigh",
       title: "WEIGH",
-      done: n("weighed_total"),
-      doneLabel: "DONE",
+      completed: n("weighed_total"),
+      completedLabel: "COMPLETED",
       thisSlot: n("weighed_this_block"),
+      waiting: n("not_yet_weighed"),
+      waitingLabel: "WAITING TO WEIGH",
+      waitingHint: "Not yet weighed",
+      loading: null,
+      inCycle: null,
+      // Back-compat aliases for older tests / callers
+      done: n("weighed_total"),
+      doneLabel: "COMPLETED",
       available: n("not_yet_weighed"),
-      availableLabel: "NOT YET WEIGHED",
+      availableLabel: "WAITING TO WEIGH",
       secondary: null,
     },
     {
       id: "sort",
       title: "SORT",
-      done: n("sorted_total"),
-      doneLabel: "DONE",
+      completed: n("sorted_total"),
+      completedLabel: "COMPLETED",
       thisSlot: n("sorted_this_block"),
+      waiting: n("waiting_to_sort"),
+      waitingLabel: "WAITING TO SORT",
+      waitingHint: null,
+      loading: null,
+      inCycle: null,
+      done: n("sorted_total"),
+      doneLabel: "COMPLETED",
       available: n("waiting_to_sort"),
-      availableLabel: "AVAILABLE TO START SORT",
+      availableLabel: "WAITING TO SORT",
       secondary: null,
     },
     {
       id: "wash",
       title: "WASH",
-      done: n("washed_total"),
-      doneLabel: "DONE",
+      completed: n("washed_total"),
+      completedLabel: "COMPLETED",
       thisSlot: n("washed_this_block"),
+      waiting: n("waiting_to_wash"),
+      waitingLabel: "WAITING TO WASH",
+      waitingHint: null,
+      loading: inWashLabor > 0 ? inWashLabor : null,
+      inCycle: inWashCycle > 0 ? inWashCycle : null,
+      done: n("washed_total"),
+      doneLabel: "COMPLETED",
       available: n("waiting_to_wash"),
-      availableLabel: "AVAILABLE TO START WASH",
+      availableLabel: "WAITING TO WASH",
       secondary: (inWashLabor + inWashCycle) > 0
         ? `${inWashLabor} loading · ${inWashCycle} in cycle`
         : null,
@@ -1181,11 +1204,18 @@ export function buildPositionInventoryDisplay(block, targetBags) {
     {
       id: "dry",
       title: "DRY",
-      done: n("dried_total"),
-      doneLabel: "DONE",
+      completed: n("dried_total"),
+      completedLabel: "COMPLETED",
       thisSlot: n("dried_this_block"),
-      available: n("waiting_to_dry") + inTransfer,
-      availableLabel: "AVAILABLE TO START DRY",
+      waiting: n("waiting_to_dry"),
+      waitingLabel: "WAITING TO DRY",
+      waitingHint: null,
+      loading: inDryLabor > 0 ? inDryLabor : null,
+      inCycle: inDryCycle > 0 ? inDryCycle : null,
+      done: n("dried_total"),
+      doneLabel: "COMPLETED",
+      available: n("waiting_to_dry"),
+      availableLabel: "WAITING TO DRY",
       secondary: (inDryLabor + inDryCycle) > 0
         ? `${inDryLabor} loading · ${inDryCycle} in cycle`
         : null,
@@ -1193,11 +1223,18 @@ export function buildPositionInventoryDisplay(block, targetBags) {
     {
       id: "fold",
       title: "FOLD",
-      done: n("folded_total") || n("completed"),
-      doneLabel: "COMPLETE",
+      completed: n("folded_total") || n("completed"),
+      completedLabel: "COMPLETED",
       thisSlot: n("folded_this_block") || n("completed_this_block"),
+      waiting: n("waiting_to_fold"),
+      waitingLabel: "WAITING TO FOLD",
+      waitingHint: null,
+      loading: null,
+      inCycle: null,
+      done: n("folded_total") || n("completed"),
+      doneLabel: "COMPLETED",
       available: n("waiting_to_fold"),
-      availableLabel: "AVAILABLE TO START FOLD",
+      availableLabel: "WAITING TO FOLD",
       secondary: null,
     },
   ];
@@ -1205,14 +1242,43 @@ export function buildPositionInventoryDisplay(block, targetBags) {
   const progress = columns.map((c) => ({
     id: c.id,
     title: c.title,
-    done: c.done,
-    doneLabel: c.doneLabel,
+    done: c.completed,
+    doneLabel: c.completedLabel,
     thisSlot: c.thisSlot,
   }));
 
-  const checkpoints = Array.isArray(block.availability_checkpoints)
-    ? block.availability_checkpoints
-    : [];
+  // NEXT slot only — never the slot that already ended at this POSITION.
+  const nextBlock = options.nextBlock || null;
+  const rawCheckpoints = Array.isArray(options.checkpoints)
+    ? options.checkpoints
+    : (Array.isArray(nextBlock?.availability_checkpoints)
+      ? nextBlock.availability_checkpoints
+      : []);
+
+  const checkpoints = rawCheckpoints.map((cp) => {
+    const completedWeigh = Number(cp.weighed_total) || 0;
+    const completedSort = Number(cp.sorted_total) || 0;
+    const completedWash = Number(cp.washed_total) || 0;
+    const completedDry = Number(cp.dried_total) || 0;
+    const completedFold = Number(cp.folded_total) || 0;
+    const waitingWeigh = Number(cp.waiting_to_weigh ?? cp.not_yet_weighed) || 0;
+    const waitingSort = Number(cp.waiting_to_sort ?? cp.available_to_sort) || 0;
+    const waitingWash = Number(cp.waiting_to_wash ?? cp.available_to_wash) || 0;
+    const waitingDry = Number(cp.waiting_to_dry ?? cp.available_to_dry) || 0;
+    const waitingFold = Number(cp.waiting_to_fold ?? cp.available_to_fold) || 0;
+    return {
+      ...cp,
+      time: cp.time,
+      time_sec: cp.time_sec,
+      stages: [
+        { id: "weigh", title: "WEIGH", completed: completedWeigh, waiting: waitingWeigh },
+        { id: "sort", title: "SORT", completed: completedSort, waiting: waitingSort },
+        { id: "wash", title: "WASH", completed: completedWash, waiting: waitingWash },
+        { id: "dry", title: "DRY", completed: completedDry, waiting: waitingDry },
+        { id: "fold", title: "FOLD", completed: completedFold, waiting: waitingFold },
+      ],
+    };
+  });
 
   return {
     columns,
