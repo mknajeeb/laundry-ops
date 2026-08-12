@@ -278,6 +278,189 @@ def test_manager_correct_completion_beats_cycle_resolver():
     assert out["BAG1"]["completion_at"] == datetime(2026, 7, 27, 18, 0, 0)
 
 
+def _timeline_rows(bag_id: str, events: list[dict]) -> list[dict]:
+    return [
+        {
+            "bag_id": bag_id,
+            "rack": e.get("rack"),
+            "purpose": e.get("purpose"),
+            "scanned_at_parsed": e["scanned_at_parsed"],
+            "user_name": e.get("user_name"),
+            "weight_lbs": e.get("weight_lbs"),
+            "source_filename": None,
+            "raw_json": None,
+        }
+        for e in events
+    ]
+
+
+def test_prior_cycle_manager_correction_does_not_override_new_cycle_completion():
+    """Jul-30 manager correction must not replace Aug-12 current-cycle completion."""
+    day = date(2026, 8, 12)
+    tl = [
+        # Prior cycle (Jul 30) — completed + manager-corrected
+        _ev(ts=datetime(2026, 7, 30, 6, 0, 0), purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=datetime(2026, 7, 30, 12, 42, 0), purpose="garments-reviewed", user="Ops"),
+        _ev(ts=datetime(2026, 7, 30, 12, 43, 0), purpose="weight-entry", user="Ops", weight=22.1),
+        # Current cycle (Aug 12)
+        _ev(ts=datetime(2026, 8, 12, 5, 2, 0), purpose="sent-to-vendor", rack="Rinse Zipvan"),
+        _ev(ts=datetime(2026, 8, 12, 6, 19, 0), purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=datetime(2026, 8, 12, 6, 46, 0), purpose="weight-entry", user="Early", weight=17.2),
+        _ev(ts=datetime(2026, 8, 12, 10, 28, 0), purpose="garments-reviewed", user="Evelin"),
+        _ev(ts=datetime(2026, 8, 12, 10, 29, 0), purpose="weight-entry", user="Evelin", weight=16.4),
+    ]
+    cursor = MagicMock()
+    cursor.fetchall.side_effect = [
+        _timeline_rows("6G3ZUEM06I", tl),
+        [
+            {
+                "bag_id": "6G3ZUEM06I",
+                "new_values": {
+                    "completed_by": "Mrs Chen (VeeWash)",
+                    "completion_at": "2026-07-30T12:43:00",
+                },
+                "created_at": datetime(2026, 7, 30, 20, 37, 33),
+                "id": 106,
+            }
+        ],
+    ]
+    with patch("backend.rinse_veewash_workload.table_exists", return_value=True):
+        out = load_canonical_completions_v2(
+            cursor,
+            3,
+            ["6G3ZUEM06I"],
+            selected_date_et=day,
+            service_type_by_bag={"6G3ZUEM06I": "WF"},
+            entry_racks=["VeeWash Dirty", "Rinse Zipvan"],
+        )
+    assert out["6G3ZUEM06I"]["completion_at"] == datetime(2026, 8, 12, 10, 29, 0)
+    assert out["6G3ZUEM06I"]["completion_source"] == COMPLETION_SOURCE_POST_REVIEW_WEIGHT
+    assert out["6G3ZUEM06I"]["completed_by"] == "Evelin"
+    assert out["6G3ZUEM06I"]["completion_date"] == day
+
+
+def test_current_cycle_manager_correction_still_wins():
+    """Same-cycle manager correction must still override scan completion."""
+    day = date(2026, 8, 12)
+    tl = [
+        _ev(ts=datetime(2026, 8, 12, 6, 19, 0), purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=datetime(2026, 8, 12, 10, 28, 0), purpose="garments-reviewed", user="Evelin"),
+        _ev(ts=datetime(2026, 8, 12, 10, 29, 0), purpose="weight-entry", user="Evelin", weight=16.4),
+    ]
+    cursor = MagicMock()
+    cursor.fetchall.side_effect = [
+        _timeline_rows("BAG1", tl),
+        [
+            {
+                "bag_id": "BAG1",
+                "new_values": {
+                    "completed_by": "Manager Override",
+                    "completion_at": "2026-08-12T10:35:00",
+                },
+                "created_at": datetime(2026, 8, 12, 15, 0, 0),
+                "id": 200,
+            }
+        ],
+    ]
+    with patch("backend.rinse_veewash_workload.table_exists", return_value=True):
+        out = load_canonical_completions_v2(
+            cursor,
+            3,
+            ["BAG1"],
+            selected_date_et=day,
+            service_type_by_bag={"BAG1": "WF"},
+            entry_racks=["VeeWash Dirty", "Rinse Zipvan"],
+        )
+    assert out["BAG1"]["completion_source"] == "manager_correct_completion"
+    assert out["BAG1"]["completed_by"] == "Manager Override"
+    assert out["BAG1"]["completion_at"] == datetime(2026, 8, 12, 10, 35, 0)
+
+
+def test_repeated_bag_id_across_cycles_manager_scoped_per_selected_day():
+    """Same bag ID: Jul 30 view keeps Jul correction; Aug 12 view keeps Aug scan."""
+    tl = [
+        _ev(ts=datetime(2026, 7, 30, 6, 0, 0), purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=datetime(2026, 7, 30, 12, 42, 0), purpose="garments-reviewed", user="Ops"),
+        _ev(ts=datetime(2026, 7, 30, 12, 43, 0), purpose="weight-entry", user="Ops", weight=22.1),
+        _ev(ts=datetime(2026, 8, 12, 6, 19, 0), purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=datetime(2026, 8, 12, 10, 28, 0), purpose="garments-reviewed", user="Evelin"),
+        _ev(ts=datetime(2026, 8, 12, 10, 29, 0), purpose="weight-entry", user="Evelin", weight=16.4),
+    ]
+    corr = [
+        {
+            "bag_id": "BAGX",
+            "new_values": {
+                "completed_by": "Mrs Chen",
+                "completion_at": "2026-07-30T12:43:00",
+            },
+            "created_at": datetime(2026, 7, 30, 20, 0, 0),
+            "id": 1,
+        }
+    ]
+    with patch("backend.rinse_veewash_workload.table_exists", return_value=True):
+        cur_jul = MagicMock()
+        cur_jul.fetchall.side_effect = [_timeline_rows("BAGX", tl), list(corr)]
+        jul = load_canonical_completions_v2(
+            cur_jul,
+            3,
+            ["BAGX"],
+            selected_date_et=date(2026, 7, 30),
+            service_type_by_bag={"BAGX": "WF"},
+            entry_racks=["VeeWash Dirty", "Rinse Zipvan"],
+        )
+        cur_aug = MagicMock()
+        cur_aug.fetchall.side_effect = [_timeline_rows("BAGX", tl), list(corr)]
+        aug = load_canonical_completions_v2(
+            cur_aug,
+            3,
+            ["BAGX"],
+            selected_date_et=date(2026, 8, 12),
+            service_type_by_bag={"BAGX": "WF"},
+            entry_racks=["VeeWash Dirty", "Rinse Zipvan"],
+        )
+    assert jul["BAGX"]["completion_source"] == "manager_correct_completion"
+    assert jul["BAGX"]["completion_at"] == datetime(2026, 7, 30, 12, 43, 0)
+    assert aug["BAGX"]["completion_source"] == COMPLETION_SOURCE_POST_REVIEW_WEIGHT
+    assert aug["BAGX"]["completion_at"] == datetime(2026, 8, 12, 10, 29, 0)
+
+
+def test_midnight_crossing_cycle_manager_correction_still_applies():
+    """Correction after midnight still belongs to cycle anchored previous evening."""
+    day = date(2026, 8, 12)
+    tl = [
+        _ev(ts=datetime(2026, 8, 11, 23, 30, 0), purpose="sent-to-vendor", rack="VeeWash Dirty"),
+        _ev(ts=datetime(2026, 8, 12, 10, 0, 0), purpose="garments-reviewed", user="Ops"),
+        _ev(ts=datetime(2026, 8, 12, 10, 5, 0), purpose="weight-entry", user="Ops", weight=11.0),
+    ]
+    cursor = MagicMock()
+    cursor.fetchall.side_effect = [
+        _timeline_rows("BAG1", tl),
+        [
+            {
+                "bag_id": "BAG1",
+                "new_values": {
+                    "completed_by": "Manager",
+                    "completion_at": "2026-08-12T10:10:00",
+                },
+                "created_at": datetime(2026, 8, 12, 11, 0, 0),
+                "id": 9,
+            }
+        ],
+    ]
+    with patch("backend.rinse_veewash_workload.table_exists", return_value=True):
+        out = load_canonical_completions_v2(
+            cursor,
+            3,
+            ["BAG1"],
+            selected_date_et=day,
+            service_type_by_bag={"BAG1": "WF"},
+            entry_racks=["VeeWash Dirty", "Rinse Zipvan"],
+        )
+    assert out["BAG1"]["completion_source"] == "manager_correct_completion"
+    assert out["BAG1"]["completion_at"] == datetime(2026, 8, 12, 10, 10, 0)
+    assert out["BAG1"]["cycle_anchor_at"] == datetime(2026, 8, 11, 23, 30, 0)
+
+
 def test_repeated_cycle_resolve_idempotent():
     tl = _resend_post_review_timeline()
     a = resolve_current_cycle(tl, selected_date_et=DAY).as_dict()

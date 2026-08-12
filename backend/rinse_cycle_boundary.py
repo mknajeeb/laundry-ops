@@ -499,6 +499,7 @@ def current_cycle_event_window(
     *,
     selected_date_et: date,
     as_of_end: datetime | None = None,
+    entry_racks: Iterable[str] | None = None,
 ) -> tuple[datetime | None, datetime | None]:
     """Inclusive start / exclusive end for scans in the current resolved cycle.
 
@@ -513,6 +514,7 @@ def current_cycle_event_window(
         timeline,
         selected_date_et=selected_date_et,
         as_of_end=as_of_end,
+        entry_racks=entry_racks,
     )
     start = cycle.cycle_anchor_at
     if start is None:

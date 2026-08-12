@@ -19,7 +19,8 @@ Operating model:
     sent-to-vendor → configured entry move-bag → garments-reviewed →
     earliest later weight-entry. Review+weight without entry stays pending
     with ``ENTRY_NOT_FOUND``. Clean rack is not required. Manager
-    correct_completion overrides still win.
+    correct_completion overrides still win **within the current cycle only**
+    (prior-cycle corrections must not replace a later cycle's completion).
     Lifetime first-clean must not determine current-cycle status.
   * Review Required (manager-facing, reason_codes, one count per bag) includes:
       DISAPPEARED_WITHOUT_COMPLETION
@@ -518,6 +519,7 @@ def load_canonical_completions_v2(
 
     Precedence (highest wins):
       1. Manager ``correct_completion`` override (rinse_step1_corrections)
+         **scoped to the current cycle** when ``selected_date_et`` is set
       2. When ``selected_date_et`` is set: shared ``rinse_cycle_boundary``
          current-cycle completion (WF) / HD At Vendor signal (HD)
       3. When no selected date: legacy ``evaluate_bag_completion_v2`` (report /
@@ -527,6 +529,17 @@ def load_canonical_completions_v2(
     That prevents ``completed_before_selected_date`` + membership reinject-as-pending
     for resend_today bags that completed again on D under the current cycle.
 
+    Manager-cycle scoping (selected day only)
+    ----------------------------------------
+    Corrections have no dedicated cycle-id column. The durable association is
+    ``new_values.completion_at``: a correction overrides only when that
+    timestamp falls in the current cycle window
+    ``[cycle_anchor_at, next_sent_to_vendor)`` from
+    ``current_cycle_event_window`` (open cycles have no end). Prior-cycle
+    corrections must not replace a later/current cycle's completion.
+    Calendar-day equality alone is insufficient — cycles cross ET midnight.
+    When ``selected_date_et`` is omitted, legacy callers keep unscoped apply.
+
     When ``pending_reasons_out`` is provided, WF bags that remain pending because
     the current cycle lacks a configured entry (``ENTRY_NOT_FOUND``) are recorded
     there without being treated as completed.
@@ -534,6 +547,7 @@ def load_canonical_completions_v2(
     from backend.rinse_bag_activity_rules import evaluate_bag_completion_v2
     from backend.rinse_cycle_boundary import (
         PENDING_REASON_ENTRY_NOT_FOUND,
+        current_cycle_event_window,
         resolve_current_cycle,
     )
     from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
@@ -645,6 +659,8 @@ def load_canonical_completions_v2(
 
     # Manager correct_completion overrides beat scan/cycle operator on rebuild.
     # Load even when scan completion is empty — otherwise Save→refresh reverts.
+    # When selected_date_et is set, only apply corrections whose completion_at
+    # belongs to the current cycle window (never a prior cycle's override).
     if ids and table_exists(cursor, "rinse_step1_corrections"):
         placeholders = ",".join(["%s"] * len(ids))
         cursor.execute(
@@ -658,6 +674,7 @@ def load_canonical_completions_v2(
             """,
             (int(organization_id), *ids),
         )
+        cycle_windows: dict[str, tuple[datetime | None, datetime | None]] = {}
         for row in cursor.fetchall() or []:
             if not isinstance(row, dict):
                 continue
@@ -687,7 +704,33 @@ def load_canonical_completions_v2(
                         ts = None
             if not emp and ts is None:
                 continue
-            # Apply even when scan-based completion is missing.
+
+            if selected_date_et is not None:
+                if bid not in cycle_windows:
+                    cycle_windows[bid] = current_cycle_event_window(
+                        by_bag.get(bid) or [],
+                        selected_date_et=selected_date_et,
+                        entry_racks=racks,
+                    )
+                cycle_start, cycle_end = cycle_windows[bid]
+                if ts is not None:
+                    if not _manager_completion_belongs_to_cycle(
+                        ts, cycle_start=cycle_start, cycle_end=cycle_end
+                    ):
+                        continue
+                else:
+                    # Employee-only correction without completion_at: overlay
+                    # only onto an existing current-cycle completion.
+                    existing_at = (out.get(bid) or {}).get("completion_at")
+                    if not isinstance(existing_at, datetime):
+                        continue
+                    if not _manager_completion_belongs_to_cycle(
+                        existing_at, cycle_start=cycle_start, cycle_end=cycle_end
+                    ):
+                        continue
+
+            # Apply even when scan-based completion is missing (same-cycle only
+            # when selected_date_et is set).
             merged = dict(out.get(bid) or {})
             if emp:
                 merged["completed_by"] = emp
@@ -701,6 +744,27 @@ def load_canonical_completions_v2(
             if pending_reasons_out is not None:
                 pending_reasons_out.pop(bid, None)
     return out
+
+
+def _manager_completion_belongs_to_cycle(
+    correction_at: datetime,
+    *,
+    cycle_start: datetime | None,
+    cycle_end: datetime | None,
+) -> bool:
+    """True when a manager correction's completion_at is in [anchor, next_stv).
+
+    ``cycle_end`` is exclusive (next sent-to-vendor). Open cycles pass
+    ``cycle_end=None``. Without a cycle anchor the correction cannot be
+    associated with the selected day's current cycle.
+    """
+    if cycle_start is None:
+        return False
+    if correction_at < cycle_start:
+        return False
+    if cycle_end is not None and correction_at >= cycle_end:
+        return False
+    return True
 
 
 def apply_cycle_pending_reasons(
