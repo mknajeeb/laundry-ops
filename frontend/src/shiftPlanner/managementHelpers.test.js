@@ -136,7 +136,7 @@ describe("managementHelpers", () => {
       ],
       summary: {},
     });
-    expect(stalled.statusLabel).toMatch(/Stalled at Wash/i);
+    expect(stalled.statusLabel).toMatch(/Cannot finish — needs Wash/i);
 
     const late = formatManagementOutcome({
       inputs: { target_time: "12:00 PM" },
@@ -360,95 +360,73 @@ describe("managementHelpers", () => {
     expect(fold.doneLabel).toBe("COMPLETE");
   });
 
-  it("buildPositionInventoryDisplay uses five columns: completed + waiting", () => {
-    // Screenshot-style 6:00 slot: 80 weigh done / 22 sort done; missing 1s are in labor.
+  it("buildPositionInventoryDisplay uses checkpoint snapshot with four concepts", () => {
     const view = buildPositionInventoryDisplay(
       {
         target_bags: 100,
-        weighed_this_block: 80,
         weighed_total: 80,
-        sorted_this_block: 22,
         sorted_total: 22,
-        washed_this_block: 0,
-        washed_total: 0,
-        dried_this_block: 0,
+        washed_total: 4,
         dried_total: 0,
-        folded_this_block: 0,
         folded_total: 0,
-        completed: 0,
-        not_yet_weighed: 20,
-        in_weigh_labor: 0,
-        waiting_to_sort: 57,
-        in_sort_labor: 1,
-        waiting_to_wash: 21,
-        in_wash_labor: 1,
-        in_wash_cycle: 0,
-        waiting_to_dry: 0,
-        in_transfer_labor: 0,
-        in_dry_labor: 0,
-        in_dry_cycle: 0,
-        waiting_to_fold: 0,
-        in_fold_labor: 0,
+        reconciliation: { exclusive_state_sum: 100, ok: true },
+        availability_checkpoints: [
+          {
+            time: "5:15 AM",
+            time_sec: 100,
+            stages: {
+              weigh: { id: "weigh", title: "WEIGH", this_15_min: 20, total_done: 20, waiting_next: 14, waiting_next_label: "Sort", in_process: 1, is_terminal: false },
+              sort: { id: "sort", title: "SORT", this_15_min: 4, total_done: 4, waiting_next: 2, waiting_next_label: "Wash", in_process: 1, is_terminal: false },
+              wash: { id: "wash", title: "WASH", this_15_min: 0, total_done: 0, waiting_next: 0, waiting_next_label: "Dry", in_process: 2, in_labor: 1, in_cycle: 1, is_terminal: false },
+              dry: { id: "dry", title: "DRY", this_15_min: 0, total_done: 0, waiting_next: 0, waiting_next_label: "Fold", in_process: 0, is_terminal: false },
+              fold: { id: "fold", title: "FOLD", this_15_min: 0, total_done: 0, waiting_next: 0, waiting_next_label: null, in_process: 0, is_terminal: true },
+            },
+                        reconciliation: { exclusive_state_sum: 100, ok: true },
+          },
+          {
+            time: "6:00 AM",
+            time_sec: 200,
+            stages: {
+              weigh: { id: "weigh", title: "WEIGH", this_15_min: 20, total_done: 80, waiting_next: 58, waiting_next_label: "Sort", in_process: 0, is_terminal: false },
+              sort: { id: "sort", title: "SORT", this_15_min: 6, total_done: 22, waiting_next: 13, waiting_next_label: "Wash", in_process: 1, is_terminal: false },
+              wash: { id: "wash", title: "WASH", this_15_min: 4, total_done: 4, waiting_next: 1, waiting_next_label: "Dry", in_process: 5, in_labor: 0, in_cycle: 5, is_terminal: false },
+              dry: { id: "dry", title: "DRY", this_15_min: 0, total_done: 0, waiting_next: 0, waiting_next_label: "Fold", in_process: 3, in_labor: 0, in_cycle: 3, is_terminal: false },
+              fold: { id: "fold", title: "FOLD", this_15_min: 0, total_done: 0, waiting_next: 0, waiting_next_label: null, in_process: 0, is_terminal: true, terminal_completed: 0 },
+            },
+            reconciliation: { exclusive_state_sum: 100, ok: true },
+          },
+        ],
+      },
+      100,
+    );
+    // Defaults to last checkpoint.
+    expect(view.selectedTime).toBe("6:00 AM");
+    expect(view.columns.map((c) => [c.id, c.totalDone, c.this15, c.waitingNext, c.inProcess])).toEqual([
+      ["weigh", 80, 20, 58, 0],
+      ["sort", 22, 6, 13, 1],
+      ["wash", 4, 4, 1, 5],
+      ["dry", 0, 0, 0, 3],
+      ["fold", 0, 0, 0, 0],
+    ]);
+    expect(view.columns.find((c) => c.id === "wash").waitingNextText).toBe("1 → Dry");
+    expect(view.columns.find((c) => c.id === "fold").isTerminal).toBe(true);
+    expect(view.checkpoints).toHaveLength(2);
+
+    const at515 = buildPositionInventoryDisplay(
+      {
+        target_bags: 100,
+        availability_checkpoints: view.checkpoints.map((c) => c.raw),
         reconciliation: { exclusive_state_sum: 100, ok: true },
       },
       100,
-      {
-        nextBlock: {
-          availability_checkpoints: [
-            {
-              time: "6:15 AM",
-              time_sec: 1,
-              weighed_total: 90,
-              sorted_total: 30,
-              washed_total: 2,
-              dried_total: 0,
-              folded_total: 0,
-              not_yet_weighed: 10,
-              available_to_sort: 58,
-              available_to_wash: 24,
-              available_to_dry: 1,
-              available_to_fold: 0,
-            },
-          ],
-        },
-      },
+      { selectedTimeSec: 100 },
     );
-    expect(view.columns.map((c) => c.id)).toEqual(["weigh", "sort", "wash", "dry", "fold"]);
-    expect(view.columns.map((c) => [c.title, c.completed, c.thisSlot, c.waiting])).toEqual([
-      ["WEIGH", 80, 80, 20],
-      ["SORT", 22, 22, 57],
-      ["WASH", 0, 0, 21],
-      ["DRY", 0, 0, 0],
-      ["FOLD", 0, 0, 0],
-    ]);
-    expect(view.columns.find((c) => c.id === "wash")).toMatchObject({
-      loading: 1,
-      inCycle: null,
-      waitingLabel: "WAITING TO WASH",
-      completedLabel: "COMPLETED",
-    });
-    expect(view.columns.find((c) => c.id === "sort").waitingLabel).toBe("WAITING TO SORT");
-    expect(view.columns.find((c) => c.id === "weigh")).toMatchObject({
-      waitingLabel: "WAITING TO WEIGH",
-      waitingHint: "Not yet weighed",
-    });
-    expect(view.reconcileLabel).toBe("Position reconciled: 100 / 100");
-    // Next-slot checkpoints only (not the ended slot).
-    expect(view.checkpoints).toHaveLength(1);
-    expect(view.checkpoints[0].time).toBe("6:15 AM");
-    expect(view.checkpoints[0].stages.map((s) => [s.id, s.completed, s.waiting])).toEqual([
-      ["weigh", 90, 10],
-      ["sort", 30, 58],
-      ["wash", 2, 24],
-      ["dry", 0, 1],
-      ["fold", 0, 0],
-    ]);
-    // Details still keep exclusive "...Now" inventory; not primary columns.
-    expect(view.inventory.find((r) => r.id === "sorting_now").count).toBe(1);
-    expect(view.columns.every((c) => !String(c.waitingLabel).includes("Now"))).toBe(true);
+    expect(at515.selectedTime).toBe("5:15 AM");
+    expect(at515.columns.find((c) => c.id === "weigh").totalDone).toBe(20);
+    expect(at515.columns.find((c) => c.id === "wash").inProcess).toBe(2);
   });
 
-  it("buildPositionInventoryDisplay wash/dry secondary in-cycle from labor+cycle", () => {
+  it("buildPositionInventoryDisplay wash/dry in-process includes cycle", () => {
     const view = buildPositionInventoryDisplay(
       {
         washed_total: 10,
@@ -472,37 +450,9 @@ describe("managementHelpers", () => {
       },
       12,
     );
-    expect(view.columns.find((c) => c.id === "wash")).toMatchObject({
-      loading: 1,
-      inCycle: 5,
-    });
-    expect(view.columns.find((c) => c.id === "dry")).toMatchObject({
-      waiting: 3,
-      loading: 1,
-      inCycle: 3,
-    });
+    expect(view.columns.find((c) => c.id === "wash").inProcess).toBe(6);
+    expect(view.columns.find((c) => c.id === "dry").inProcess).toBe(4);
     expect(view.inventory.find((r) => r.id === "washing_now").detail).toBe("1 loading · 5 in machine");
-  });
-
-  it("buildPositionInventoryDisplay omits 15-min when there is no next slot", () => {
-    const view = buildPositionInventoryDisplay(
-      {
-        weighed_total: 10,
-        sorted_total: 5,
-        washed_total: 0,
-        dried_total: 0,
-        folded_total: 0,
-        not_yet_weighed: 0,
-        waiting_to_sort: 5,
-        waiting_to_wash: 0,
-        waiting_to_dry: 0,
-        waiting_to_fold: 0,
-        availability_checkpoints: [{ time: "ended", weighed_total: 1 }],
-      },
-      10,
-      { nextBlock: null },
-    );
-    expect(view.checkpoints).toEqual([]);
   });
 
   it("buildPositionFlowDisplay keeps waiting separate from remaining and uses wash/dry totals", () => {
@@ -984,7 +934,7 @@ describe("managementHelpers", () => {
     expect(flow.stages.wash.inCycleLabel).toBe("2 IN CYCLE");
   });
 
-  it("formats manager-facing utilization from API work_coverage only", () => {
+  it("formats manager-facing labor-use from API work_coverage only", () => {
     const full = describeWorkCoverage({
       role: "washer",
       mode: "base",
@@ -997,9 +947,10 @@ describe("managementHelpers", () => {
       unused_fit_min: 0,
       status: "fully_utilized",
     });
-    expect(full.lines.join("\n")).toBe("WASH — 60 of 60 min productive · 100% utilized");
+    expect(full.lines.join("\n")).toBe("WASH — Labor used: 60 / 60 min");
     expect(full.lines.join("\n")).not.toContain("bags");
     expect(full.lines.join("\n")).not.toContain("395");
+    expect(full.lines.join("\n")).not.toMatch(/utilized/i);
 
     const mostly = describeWorkCoverage({
       role: "sorter",
@@ -1014,8 +965,9 @@ describe("managementHelpers", () => {
       status: "partial_upstream_short",
     });
     expect(mostly.lines.join("\n")).toBe([
-      "SORT — 110 of 120 min productive · 92% utilized",
-      "10 min unused: 2.25 min waiting for bags · 7.75 min too short to start another sort",
+      "SORT — Labor used: 110 / 120 min",
+      "2.25 min waiting for bags",
+      "7.75 min remaining — too short to start another sort",
     ].join("\n"));
     expect(mostly.lines.join("\n")).not.toContain("395");
 
@@ -1030,8 +982,8 @@ describe("managementHelpers", () => {
       status: "work_not_fit",
     });
     expect(endOnly.lines.join("\n")).toBe([
-      "SORT — 55 of 60 min productive · 92% utilized",
-      "5 min unused: insufficient time for another 5-min sort",
+      "SORT — Labor used: 55 / 60 min",
+      "5 min remaining — too short to start another sort",
     ].join("\n"));
 
     const tempDry = describeWorkCoverage({
@@ -1049,8 +1001,8 @@ describe("managementHelpers", () => {
       status: "work_not_fit",
     });
     expect(tempDry.lines.join("\n")).toBe([
-      "DRY TEMP 6:45 AM–7:00 AM — 12 of 15 min productive · 80% utilized",
-      "3 min unused: insufficient time for next required load",
+      "DRY TEMP 6:45 AM–7:00 AM — Labor used: 12 / 15 min",
+      "3 min remaining — insufficient time for next required load",
     ].join("\n"));
 
     const starved = describeWorkCoverage({
@@ -1065,8 +1017,8 @@ describe("managementHelpers", () => {
       status: "idle_waiting_for_work",
     });
     expect(starved.lines.join("\n")).toBe([
-      "DRY — 18 of 60 min productive · 30% utilized",
-      "42 min unused: waiting for washed bags",
+      "DRY — Labor used: 18 / 60 min",
+      "42 min waiting for washed bags",
     ].join("\n"));
 
     const hybrid = describeWorkCoverage({
@@ -1078,10 +1030,9 @@ describe("managementHelpers", () => {
       status: "fully_utilized",
       role_allocation_min: { washer: 36, dryer: 24, idle: 0 },
     });
-    expect(hybrid.lines.join("\n")).toBe([
-      "60 of 60 min productive · 100% utilized",
-      "Wash 36m · Dry 24m · Idle 0",
-    ].join("\n"));
+    expect(hybrid.lines[0]).toBe("Labor used: 60 / 60 min");
+    expect(hybrid.lines.join("\n")).toContain("Wash 36m");
+    expect(hybrid.lines.join("\n")).toContain("Dry 24m");
 
     const detail = formatWorkCoverageDetail({
       eligible_bags: 79,
@@ -1093,11 +1044,14 @@ describe("managementHelpers", () => {
       idle_min: 10,
       idle_no_eligible_work_min: 2.25,
       unused_fit_min: 7.75,
+      machine_blocked_min: 0,
       physical_loads_available: 79,
       status: "partial_upstream_short",
     });
-    expect(detail).toContain("79 eligible bags · 395 min total eligible work demand generated during interval");
-    expect(detail).toContain("2.25 min waiting (no eligible work) · 7.75 min unused fit");
+    expect(detail).toContain("worked");
+    expect(detail).toContain("waiting");
+    expect(detail).toContain("remaining too short");
+    expect(detail).not.toContain("productive");
   });
 
   it("matches work_coverage rows to role/TEMP within a slot", () => {

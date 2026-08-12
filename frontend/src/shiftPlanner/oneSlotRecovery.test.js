@@ -42,9 +42,9 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("PlanningTimePicker");
     expect(boardSrc).toMatch(/>\s*Hybrid\s*</);
     expect(boardSrc).toContain("MANAGEMENT_HYBRIDS.map");
-    expect(boardSrc).toContain("this slot");
-    expect(boardSrc).toContain("completed-");
-    expect(boardSrc).toContain("waiting-");
+    expect(boardSrc).toContain("this 15 min");
+    expect(boardSrc).toContain("total-done-");
+    expect(boardSrc).toContain("this-15-");
   });
 
   it("keeps sticky Recalculate and auto-recalc debounce", () => {
@@ -59,29 +59,24 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("}, [inputs, settingsReady]");
   });
 
-  it("uses five-column POSITION: COMPLETED + WAITING + next-slot 15-min detail", () => {
+  it("uses five-column POSITION checkpoint snapshot + 15-min timeline", () => {
     expect(boardSrc).toContain("buildPositionInventoryDisplay");
     expect(boardSrc).toContain("position-two-row");
     expect(boardSrc).toContain("position-stage-columns");
-    expect(boardSrc).toContain("COMPLETED");
-    expect(boardSrc).toContain("WAITING");
-    expect(boardSrc).toContain("nextBlock");
+    expect(boardSrc).toContain("POSITION ·");
+    expect(boardSrc).toContain("total done");
+    expect(boardSrc).toContain("this 15 min");
+    expect(boardSrc).toContain("15-MIN CHECKPOINTS");
+    expect(boardSrc).toContain("setSelectedTimeSec");
     expect(boardSrc).toContain("position-reconciled");
     expect(boardSrc).toContain("availability-15min");
-    expect(boardSrc).toContain("15-min availability");
-    expect(boardSrc).toContain("checkpoint-header");
-    expect(boardSrc).toContain("useState(false)");
-    expect(helpersSrc).toContain("WAITING TO WEIGH");
-    expect(helpersSrc).toContain("WAITING TO SORT");
-    expect(helpersSrc).toContain("WAITING TO WASH");
-    expect(helpersSrc).toContain("WAITING TO DRY");
-    expect(helpersSrc).toContain("WAITING TO FOLD");
-    expect(helpersSrc).toContain("NEXT slot only");
+    expect(helpersSrc).toContain("columnsFromCheckpoint");
+    expect(helpersSrc).toContain("waiting_next");
+    expect(helpersSrc).toContain("this_15_min");
     expect(boardSrc).not.toContain("AVAILABLE TO START");
+    expect(boardSrc).toContain("checkpoint-header");
     expect(boardSrc).not.toContain("QueueBridge");
     expect(boardSrc).not.toContain("WAITING TO ENTER");
-    expect(boardSrc).not.toContain("reconcile-sort-to-wash");
-    // Default UI must not render ...Now primary inventory cells
     expect(boardSrc).not.toContain("Weighing Now");
     expect(boardSrc).not.toContain("Sorting Now");
     expect(boardSrc).not.toContain("Washing Now");
@@ -89,8 +84,8 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).not.toContain("Folding Now");
   });
 
-  it("uses this slot labels and does not surface this block in UI copy", () => {
-    expect(boardSrc).toContain("this slot");
+  it("uses this 15 min labels and does not surface this block in UI copy", () => {
+    expect(boardSrc).toContain("this 15 min");
     expect(boardSrc).not.toMatch(/this block/i);
     expect(boardSrc).not.toContain("THIS BLOCK");
   });

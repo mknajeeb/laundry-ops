@@ -177,32 +177,161 @@ def _state_counts_at(bags: list[Bag], t: int) -> dict[str, int]:
     return counts
 
 
+def _wash_started(bag: Bag, t: int) -> bool:
+    return bag.washer_load_start is not None and bag.washer_load_start <= t
+
+
+def _dry_started(bag: Bag, t: int) -> bool:
+    return bag.dryer_load_start is not None and bag.dryer_load_start <= t
+
+
+def _stage_metrics_at(bags: list[Bag], t: int, prev: int) -> dict[str, dict[str, Any]]:
+    """Canonical per-stage snapshot at checkpoint t (prev → t interval).
+
+    this_15_min: completed S in (prev, t]
+    total_done: completed S by t
+    waiting_next: completed S, next stage not started
+    in_process: started S, not completed S
+    """
+    counts = _state_counts_at(bags, t)
+
+    weigh_done = _count_completed_by(bags, "weigh_end", t)
+    sort_done = _count_completed_by(bags, "sort_end", t)
+    wash_done = sum(1 for b in bags if parent_wash_complete(b, t))
+    dry_done = sum(1 for b in bags if parent_dry_complete(b, t))
+    fold_done = _count_completed_by(bags, "completed_at", t)
+
+    # Waiting→next: completed this stage, next not started (never upstream bags).
+    weigh_waiting_next = sum(
+        1
+        for b in bags
+        if b.weigh_end is not None
+        and b.weigh_end <= t
+        and (b.sort_start is None or b.sort_start > t)
+    )
+    sort_waiting_next = sum(
+        1
+        for b in bags
+        if b.sort_end is not None
+        and b.sort_end <= t
+        and (b.washer_load_start is None or b.washer_load_start > t)
+    )
+    wash_waiting_next = sum(
+        1
+        for b in bags
+        if parent_wash_complete(b, t) and not _dry_started(b, t)
+    )
+    dry_waiting_next = sum(
+        1
+        for b in bags
+        if parent_dry_complete(b, t) and (b.fold_start is None or b.fold_start > t)
+    )
+
+    wash_in_process = sum(
+        1
+        for b in bags
+        if _wash_started(b, t) and not parent_wash_complete(b, t)
+    )
+    dry_in_process = sum(
+        1
+        for b in bags
+        if _dry_started(b, t) and not parent_dry_complete(b, t)
+    )
+
+    return {
+        "weigh": {
+            "id": "weigh",
+            "title": "WEIGH",
+            "this_15_min": _count_completed_between(bags, "weigh_end", prev, t),
+            "total_done": weigh_done,
+            "waiting_next": weigh_waiting_next,
+            "waiting_next_label": "Sort",
+            "in_process": counts["in_weigh_labor"],
+            "is_terminal": False,
+        },
+        "sort": {
+            "id": "sort",
+            "title": "SORT",
+            "this_15_min": _count_completed_between(bags, "sort_end", prev, t),
+            "total_done": sort_done,
+            "waiting_next": sort_waiting_next,
+            "waiting_next_label": "Wash",
+            "in_process": counts["in_sort_labor"],
+            "is_terminal": False,
+        },
+        "wash": {
+            "id": "wash",
+            "title": "WASH",
+            "this_15_min": _count_parent_wash_between(bags, prev, t),
+            "total_done": wash_done,
+            "waiting_next": wash_waiting_next,
+            "waiting_next_label": "Dry",
+            "in_process": wash_in_process,
+            "in_labor": counts["in_wash_labor"],
+            "in_cycle": counts["in_wash_cycle"],
+            "is_terminal": False,
+        },
+        "dry": {
+            "id": "dry",
+            "title": "DRY",
+            "this_15_min": _count_parent_dry_between(bags, prev, t),
+            "total_done": dry_done,
+            "waiting_next": dry_waiting_next,
+            "waiting_next_label": "Fold",
+            "in_process": dry_in_process,
+            "in_labor": counts["in_dry_labor"],
+            "in_cycle": counts["in_dry_cycle"],
+            "is_terminal": False,
+        },
+        "fold": {
+            "id": "fold",
+            "title": "FOLD",
+            "this_15_min": _count_completed_between(bags, "completed_at", prev, t),
+            "total_done": fold_done,
+            "waiting_next": 0,
+            "waiting_next_label": None,
+            "in_process": counts["in_fold_labor"],
+            "is_terminal": True,
+            "terminal_completed": fold_done,
+        },
+    }
+
+
 def build_availability_checkpoints(
     bags: list[Bag],
     *,
     block_start: int,
     block_end: int,
+    target_bags: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Point-in-time WAITING + COMPLETED + newly-available from DES timestamps.
+    """15-min operational checkpoints with per-stage this/total/waiting/in-process.
 
-    available_to_* / not_yet_weighed = waiting queues at checkpoint (not in labor/cycle).
-    *_total = parent bags that fully completed that stage by checkpoint.
-    newly_available_* = upstream completion events in (prev, t] — not Δ available.
+    Also keeps legacy waiting/total keys for older consumers.
     """
     times = _checkpoint_times(block_start, block_end)
+    target = target_bags if target_bags is not None else len(bags)
     rows: list[dict[str, Any]] = []
     prev = block_start
     for t in times:
         counts = _state_counts_at(bags, t)
+        stages = _stage_metrics_at(bags, t, prev)
+        exclusive_sum = sum(counts.values())
         rows.append(
             {
                 "time": label_seconds(t),
                 "time_sec": t,
-                "weighed_total": _count_completed_by(bags, "weigh_end", t),
-                "sorted_total": _count_completed_by(bags, "sort_end", t),
-                "washed_total": sum(1 for b in bags if parent_wash_complete(b, t)),
-                "dried_total": sum(1 for b in bags if parent_dry_complete(b, t)),
-                "folded_total": _count_completed_by(bags, "completed_at", t),
+                "stages": stages,
+                "stage_list": [stages[k] for k in ("weigh", "sort", "wash", "dry", "fold")],
+                "weighed_total": stages["weigh"]["total_done"],
+                "sorted_total": stages["sort"]["total_done"],
+                "washed_total": stages["wash"]["total_done"],
+                "dried_total": stages["dry"]["total_done"],
+                "folded_total": stages["fold"]["total_done"],
+                "weighed_this_15": stages["weigh"]["this_15_min"],
+                "sorted_this_15": stages["sort"]["this_15_min"],
+                "washed_this_15": stages["wash"]["this_15_min"],
+                "dried_this_15": stages["dry"]["this_15_min"],
+                "folded_this_15": stages["fold"]["this_15_min"],
                 "not_yet_weighed": counts["not_yet_weighed"],
                 "waiting_to_weigh": counts["not_yet_weighed"],
                 "available_to_sort": counts["waiting_to_sort"],
@@ -217,10 +346,19 @@ def build_availability_checkpoints(
                 "available_to_fold": counts["waiting_to_fold"],
                 "waiting_to_fold": counts["waiting_to_fold"],
                 "newly_available_to_fold": _count_parent_dry_between(bags, prev, t),
+                "in_weigh_labor": counts["in_weigh_labor"],
+                "in_sort_labor": counts["in_sort_labor"],
                 "in_wash_labor": counts["in_wash_labor"],
                 "in_wash_cycle": counts["in_wash_cycle"],
                 "in_dry_labor": counts["in_dry_labor"],
                 "in_dry_cycle": counts["in_dry_cycle"],
+                "in_fold_labor": counts["in_fold_labor"],
+                "reconciliation": {
+                    "exclusive_state_sum": exclusive_sum,
+                    "target_bags": target,
+                    "ok": exclusive_sum == target,
+                    "states": counts,
+                },
             }
         )
         prev = t
@@ -314,7 +452,7 @@ def build_block_positions(state: SimulationState) -> list[dict[str, Any]]:
         row["block_duration_min"] = round((block_end - block_start) / 60.0, 4)
         row["is_short_final_block"] = (block_end - block_start) < (block_min * 60) and block_end == target
         row["availability_checkpoints"] = build_availability_checkpoints(
-            bags, block_start=block_start, block_end=block_end
+            bags, block_start=block_start, block_end=block_end, target_bags=target_bags
         )
         rows.append(row)
     return rows

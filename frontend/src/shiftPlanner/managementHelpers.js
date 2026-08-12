@@ -630,8 +630,8 @@ const COVERAGE_ROLE_SHORT = {
 };
 
 /**
- * Manager-facing utilization from a DES work_coverage row.
- * Answers: was this person actually utilized during this staffing interval?
+ * Manager-facing labor-use from a DES work_coverage row.
+ * Answers: what happened to staffed time? Not "was this staffing required."
  * Does not recompute capacity — only formats API idle classification fields.
  */
 export function describeWorkCoverage(row, options = {}) {
@@ -655,29 +655,30 @@ export function describeWorkCoverage(row, options = {}) {
   const idleMin = Number(row.idle_min) || 0;
   const idleNo = Number(row.idle_no_eligible_work_min) || 0;
   const unusedFit = Number(row.unused_fit_min) || 0;
+  const machineBlocked = Number(row.machine_blocked_min) || 0;
   const usedS = _fmtCoverageMin(usedMin);
   const staffS = _fmtCoverageMin(staffMin);
-  const idleS = _fmtCoverageMin(idleMin);
   const ratio = staffMin > 0 ? usedMin / staffMin : 0;
-  const utilPct = staffMin > 0 ? Math.round((usedMin / staffMin) * 100) : 0;
 
   let level = "underutilized";
   let levelLabel = "UNDERUTILIZED";
   if (row.status === "fully_utilized" || idleMin < 0.5) {
     level = "fully_utilized";
-    levelLabel = "FULLY UTILIZED";
+    levelLabel = "FULLY USED";
   } else if (ratio >= 0.75 || idleMin <= Math.max(5, staffMin * 0.15)) {
     level = "mostly_utilized";
-    levelLabel = "MOSTLY UTILIZED";
+    levelLabel = "MOSTLY USED";
   }
 
   let reasonCode = "FULLY_UTILIZED";
   if (level !== "fully_utilized") {
-    if (idleNo > 0.05 && unusedFit <= 0.05) {
+    if (machineBlocked > 0.05 && idleNo <= 0.05 && unusedFit <= 0.05) {
+      reasonCode = "MACHINE_CAPACITY_LIMITED";
+    } else if (idleNo > 0.05 && unusedFit <= 0.05 && machineBlocked <= 0.05) {
       reasonCode = "NO_WORK_AVAILABLE";
-    } else if (unusedFit > 0.05 && idleNo <= 0.05) {
+    } else if (unusedFit > 0.05 && idleNo <= 0.05 && machineBlocked <= 0.05) {
       reasonCode = "WORK_DID_NOT_FIT";
-    } else if (idleNo > 0.05 && unusedFit > 0.05) {
+    } else if (idleNo > 0.05 || unusedFit > 0.05 || machineBlocked > 0.05) {
       reasonCode = "WORK_ARRIVED_TOO_LATE";
     } else if (String(row.status || "").includes("machine")) {
       reasonCode = "MACHINE_CAPACITY_LIMITED";
@@ -693,11 +694,11 @@ export function describeWorkCoverage(row, options = {}) {
     || String(ROLE_LABEL[roleKey] || roleKey || "STAFF").toUpperCase();
   const roleShort = COVERAGE_ROLE_SHORT[roleKey] || ROLE_LABEL[roleKey] || roleTitle;
 
-  const reasonLabel = _coverageUnusedExplanation({
+  const reasonLines = _coverageReasonLines({
     role: row.role,
     idleNo,
     unusedFit,
-    idleMin,
+    machineBlocked,
     params,
   });
 
@@ -711,17 +712,17 @@ export function describeWorkCoverage(row, options = {}) {
     });
     const idleAlloc = Number(alloc.idle);
     const idlePart = Number.isFinite(idleAlloc) ? idleAlloc : idleMin;
-    parts.push(`Idle ${_fmtCoverageMin(idlePart)}`);
+    parts.push(`Spare ${_fmtCoverageMin(idlePart)}`);
     const hybridLines = [
-      `${usedS} of ${staffS} min productive · ${utilPct}% utilized`,
+      `Labor used: ${usedS} / ${staffS} min`,
       parts.join(" · "),
+      ...reasonLines,
     ];
-    if (reasonLabel) hybridLines.push(reasonLabel);
     return {
       level,
       levelLabel,
       reasonCode,
-      reasonLabel,
+      reasonLabel: reasonLines.join(" · "),
       usedMin,
       staffMin,
       idleMin,
@@ -732,17 +733,16 @@ export function describeWorkCoverage(row, options = {}) {
   }
 
   const head = isTemp
-    ? `${roleShort.toUpperCase()} TEMP ${row.start}–${row.end} — ${usedS} of ${staffS} min productive · ${utilPct}% utilized`
-    : `${roleTitle} — ${usedS} of ${staffS} min productive · ${utilPct}% utilized`;
+    ? `${roleShort.toUpperCase()} TEMP ${row.start}–${row.end} — Labor used: ${usedS} / ${staffS} min`
+    : `${roleTitle} — Labor used: ${usedS} / ${staffS} min`;
 
-  const lines = [head];
-  if (reasonLabel) lines.push(reasonLabel);
+  const lines = [head, ...reasonLines];
 
   return {
     level,
     levelLabel,
     reasonCode,
-    reasonLabel,
+    reasonLabel: reasonLines.join(" · "),
     usedMin,
     staffMin,
     idleMin,
@@ -752,24 +752,25 @@ export function describeWorkCoverage(row, options = {}) {
   };
 }
 
-function _coverageUnusedExplanation({ role, idleNo, unusedFit, idleMin, params }) {
-  if (idleMin < 0.05) return "";
+function _coverageReasonLines({ role, idleNo, unusedFit, machineBlocked, params }) {
   const roleId = normalizeRole(role) || role;
-  if (partsWouldBeIdleOnly(idleNo, unusedFit)) {
-    return `${_fmtCoverageMin(idleMin)} min unused: ${_waitingPhrase(roleId)}`;
-  }
-  if (partsWouldBeFitOnly(idleNo, unusedFit)) {
-    return `${_fmtCoverageMin(idleMin)} min unused: ${_insufficientFitPhrase(roleId, params, false)}`;
-  }
-  const parts = [];
+  const lines = [];
   if (idleNo > 0.05) {
-    parts.push(`${_fmtCoverageMin(idleNo)} min ${_waitingPhrase(roleId)}`);
+    lines.push(`${_fmtCoverageMin(idleNo)} min ${_waitingPhrase(roleId)}`);
+  }
+  if (machineBlocked > 0.05) {
+    lines.push(`${_fmtCoverageMin(machineBlocked)} min machine unavailable / blocked`);
   }
   if (unusedFit > 0.05) {
-    parts.push(`${_fmtCoverageMin(unusedFit)} min ${_insufficientFitPhrase(roleId, params, true)}`);
+    lines.push(`${_fmtCoverageMin(unusedFit)} min remaining — ${_insufficientFitPhrase(roleId, params, true)}`);
   }
-  if (!parts.length) return "";
-  return `${_fmtCoverageMin(idleMin)} min unused: ${parts.join(" · ")}`;
+  return lines;
+}
+
+function _coverageUnusedExplanation({ role, idleNo, unusedFit, idleMin, params, machineBlocked = 0 }) {
+  // Compat wrapper for older tests.
+  const lines = _coverageReasonLines({ role, idleNo, unusedFit, machineBlocked, params });
+  return lines.join(" · ");
 }
 
 function partsWouldBeIdleOnly(idleNo, unusedFit) {
@@ -826,8 +827,8 @@ export function formatWorkCoverageDetail(row) {
   const loads = Number(row.physical_loads_available) || 0;
   return [
     `${bags} eligible bags · ${demand} min total eligible work demand generated during interval`,
-    `${_fmtCoverageMin(row.staff_min)} staff min · ${_fmtCoverageMin(row.used_min)} productive · ${_fmtCoverageMin(row.idle_min)} unused`,
-    `${_fmtCoverageMin(row.idle_no_eligible_work_min)} min waiting (no eligible work) · ${_fmtCoverageMin(row.unused_fit_min)} min unused fit`,
+    `${_fmtCoverageMin(row.staff_min)} staff min · ${_fmtCoverageMin(row.used_min)} worked · ${_fmtCoverageMin(row.idle_min)} spare`,
+    `${_fmtCoverageMin(row.idle_no_eligible_work_min)} waiting · ${_fmtCoverageMin(row.unused_fit_min)} remaining too short · ${_fmtCoverageMin(row.machine_blocked_min)} machine blocked`,
     loads ? `${loads} physical loads` : null,
     row.status ? `engine status ${row.status}` : null,
   ].filter(Boolean).join(" · ");
@@ -1087,10 +1088,54 @@ export function formatStageReconcile({
 }
 
 /**
- * Five-column management POSITION: COMPLETED + WAITING.
- * Counts from block_positions only — no frontend DES math / interpolation.
- * 15-min detail uses the NEXT slot's checkpoints (not the ended slot).
- * Full exclusive inventory kept under details for debug.
+ * Map one DES availability_checkpoint into five stage columns.
+ * Prefer canonical `stages` / `stage_list` from the API.
+ */
+export function columnsFromCheckpoint(checkpoint) {
+  if (!checkpoint) return [];
+  const stageList = Array.isArray(checkpoint.stage_list) && checkpoint.stage_list.length
+    ? checkpoint.stage_list
+    : ["weigh", "sort", "wash", "dry", "fold"].map((id) => {
+      const s = (checkpoint.stages && checkpoint.stages[id]) || {};
+      return { id, ...s };
+    });
+  return stageList.map((s) => {
+    const id = s.id;
+    const title = s.title || String(id || "").toUpperCase();
+    const this15 = Math.max(0, Number(s.this_15_min) || 0);
+    const totalDone = Math.max(0, Number(s.total_done) || 0);
+    const waitingNext = Math.max(0, Number(s.waiting_next) || 0);
+    const inProcess = Math.max(0, Number(s.in_process) || 0);
+    const nextLabel = s.waiting_next_label || null;
+    const isTerminal = Boolean(s.is_terminal);
+    return {
+      id,
+      title,
+      this15,
+      totalDone,
+      waitingNext,
+      waitingNextLabel: nextLabel,
+      waitingNextText: isTerminal
+        ? null
+        : (nextLabel ? `${waitingNext} → ${nextLabel}` : null),
+      inProcess,
+      inProcessText: inProcess > 0 ? `${inProcess} in process` : null,
+      isTerminal,
+      terminalText: isTerminal ? `${totalDone} complete` : null,
+      inLabor: s.in_labor != null ? Number(s.in_labor) || 0 : null,
+      inCycle: s.in_cycle != null ? Number(s.in_cycle) || 0 : null,
+      completed: totalDone,
+      done: totalDone,
+      thisSlot: this15,
+      waiting: waitingNext,
+      available: waitingNext,
+    };
+  });
+}
+
+/**
+ * Five-column management POSITION at a selected 15-min checkpoint.
+ * Counts come from block_positions.availability_checkpoints only.
  */
 export function buildPositionInventoryDisplay(block, targetBags, options = {}) {
   if (!block) return null;
@@ -1139,153 +1184,101 @@ export function buildPositionInventoryDisplay(block, targetBags, options = {}) {
     { id: "complete", label: "Complete", count: n("completed") || n("folded_total") },
   ];
   const inventorySum = exclusiveInventory.reduce((sum, row) => sum + row.count, 0);
-  const reconOk = block.reconciliation?.ok;
-  const exclusiveSum = Number(block.reconciliation?.exclusive_state_sum);
+
+  const checkpoints = Array.isArray(block.availability_checkpoints)
+    ? block.availability_checkpoints
+    : [];
+  const selectedTimeSec = options.selectedTimeSec;
+  let selected = checkpoints.length ? checkpoints[checkpoints.length - 1] : null;
+  if (selectedTimeSec != null && checkpoints.length) {
+    selected = checkpoints.find((c) => Number(c.time_sec) === Number(selectedTimeSec)) || selected;
+  }
+
+  let columns;
+  if (selected) {
+    columns = columnsFromCheckpoint(selected);
+  } else {
+    columns = [
+      {
+        id: "weigh", title: "WEIGH", this15: n("weighed_this_block"), totalDone: n("weighed_total"),
+        waitingNext: n("waiting_to_sort"), waitingNextLabel: "Sort",
+        waitingNextText: `${n("waiting_to_sort")} → Sort`,
+        inProcess: inWeighLabor, inProcessText: inWeighLabor > 0 ? `${inWeighLabor} in process` : null,
+        isTerminal: false, completed: n("weighed_total"), done: n("weighed_total"),
+        thisSlot: n("weighed_this_block"), waiting: n("waiting_to_sort"), available: n("waiting_to_sort"),
+      },
+      {
+        id: "sort", title: "SORT", this15: n("sorted_this_block"), totalDone: n("sorted_total"),
+        waitingNext: n("waiting_to_wash"), waitingNextLabel: "Wash",
+        waitingNextText: `${n("waiting_to_wash")} → Wash`,
+        inProcess: inSortLabor, inProcessText: inSortLabor > 0 ? `${inSortLabor} in process` : null,
+        isTerminal: false, completed: n("sorted_total"), done: n("sorted_total"),
+        thisSlot: n("sorted_this_block"), waiting: n("waiting_to_wash"), available: n("waiting_to_wash"),
+      },
+      {
+        id: "wash", title: "WASH", this15: n("washed_this_block"), totalDone: n("washed_total"),
+        waitingNext: n("waiting_to_dry"), waitingNextLabel: "Dry",
+        waitingNextText: `${n("waiting_to_dry")} → Dry`,
+        inProcess: inWashLabor + inWashCycle,
+        inProcessText: (inWashLabor + inWashCycle) > 0 ? `${inWashLabor + inWashCycle} in process` : null,
+        inLabor: inWashLabor, inCycle: inWashCycle,
+        isTerminal: false, completed: n("washed_total"), done: n("washed_total"),
+        thisSlot: n("washed_this_block"), waiting: n("waiting_to_dry"), available: n("waiting_to_dry"),
+      },
+      {
+        id: "dry", title: "DRY", this15: n("dried_this_block"), totalDone: n("dried_total"),
+        waitingNext: n("waiting_to_fold"), waitingNextLabel: "Fold",
+        waitingNextText: `${n("waiting_to_fold")} → Fold`,
+        inProcess: inDryLabor + inDryCycle,
+        inProcessText: (inDryLabor + inDryCycle) > 0 ? `${inDryLabor + inDryCycle} in process` : null,
+        inLabor: inDryLabor, inCycle: inDryCycle,
+        isTerminal: false, completed: n("dried_total"), done: n("dried_total"),
+        thisSlot: n("dried_this_block"), waiting: n("waiting_to_fold"), available: n("waiting_to_fold"),
+      },
+      {
+        id: "fold", title: "FOLD", this15: n("folded_this_block"), totalDone: n("folded_total") || n("completed"),
+        waitingNext: 0, waitingNextLabel: null, waitingNextText: null,
+        inProcess: inFoldLabor, inProcessText: inFoldLabor > 0 ? `${inFoldLabor} in process` : null,
+        isTerminal: true, terminalText: `${n("folded_total") || n("completed")} complete`,
+        completed: n("folded_total") || n("completed"), done: n("folded_total") || n("completed"),
+        thisSlot: n("folded_this_block"), waiting: 0, available: 0,
+      },
+    ];
+  }
+
+  const recon = (selected && selected.reconciliation) || block.reconciliation || {};
+  const reconOk = recon.ok;
+  const exclusiveSum = Number(recon.exclusive_state_sum);
   const reconciled = reconOk != null
     ? Boolean(reconOk)
     : (Number.isFinite(exclusiveSum) ? exclusiveSum === target : inventorySum === target);
   const reconN = Number.isFinite(exclusiveSum) ? exclusiveSum : inventorySum;
 
-  const columns = [
-    {
-      id: "weigh",
-      title: "WEIGH",
-      completed: n("weighed_total"),
-      completedLabel: "COMPLETED",
-      thisSlot: n("weighed_this_block"),
-      waiting: n("not_yet_weighed"),
-      waitingLabel: "WAITING TO WEIGH",
-      waitingHint: "Not yet weighed",
-      loading: null,
-      inCycle: null,
-      // Back-compat aliases for older tests / callers
-      done: n("weighed_total"),
-      doneLabel: "COMPLETED",
-      available: n("not_yet_weighed"),
-      availableLabel: "WAITING TO WEIGH",
-      secondary: null,
-    },
-    {
-      id: "sort",
-      title: "SORT",
-      completed: n("sorted_total"),
-      completedLabel: "COMPLETED",
-      thisSlot: n("sorted_this_block"),
-      waiting: n("waiting_to_sort"),
-      waitingLabel: "WAITING TO SORT",
-      waitingHint: null,
-      loading: null,
-      inCycle: null,
-      done: n("sorted_total"),
-      doneLabel: "COMPLETED",
-      available: n("waiting_to_sort"),
-      availableLabel: "WAITING TO SORT",
-      secondary: null,
-    },
-    {
-      id: "wash",
-      title: "WASH",
-      completed: n("washed_total"),
-      completedLabel: "COMPLETED",
-      thisSlot: n("washed_this_block"),
-      waiting: n("waiting_to_wash"),
-      waitingLabel: "WAITING TO WASH",
-      waitingHint: null,
-      loading: inWashLabor > 0 ? inWashLabor : null,
-      inCycle: inWashCycle > 0 ? inWashCycle : null,
-      done: n("washed_total"),
-      doneLabel: "COMPLETED",
-      available: n("waiting_to_wash"),
-      availableLabel: "WAITING TO WASH",
-      secondary: (inWashLabor + inWashCycle) > 0
-        ? `${inWashLabor} loading · ${inWashCycle} in cycle`
-        : null,
-    },
-    {
-      id: "dry",
-      title: "DRY",
-      completed: n("dried_total"),
-      completedLabel: "COMPLETED",
-      thisSlot: n("dried_this_block"),
-      waiting: n("waiting_to_dry"),
-      waitingLabel: "WAITING TO DRY",
-      waitingHint: null,
-      loading: inDryLabor > 0 ? inDryLabor : null,
-      inCycle: inDryCycle > 0 ? inDryCycle : null,
-      done: n("dried_total"),
-      doneLabel: "COMPLETED",
-      available: n("waiting_to_dry"),
-      availableLabel: "WAITING TO DRY",
-      secondary: (inDryLabor + inDryCycle) > 0
-        ? `${inDryLabor} loading · ${inDryCycle} in cycle`
-        : null,
-    },
-    {
-      id: "fold",
-      title: "FOLD",
-      completed: n("folded_total") || n("completed"),
-      completedLabel: "COMPLETED",
-      thisSlot: n("folded_this_block") || n("completed_this_block"),
-      waiting: n("waiting_to_fold"),
-      waitingLabel: "WAITING TO FOLD",
-      waitingHint: null,
-      loading: null,
-      inCycle: null,
-      done: n("folded_total") || n("completed"),
-      doneLabel: "COMPLETED",
-      available: n("waiting_to_fold"),
-      availableLabel: "WAITING TO FOLD",
-      secondary: null,
-    },
-  ];
-
   const progress = columns.map((c) => ({
     id: c.id,
     title: c.title,
-    done: c.completed,
-    doneLabel: c.completedLabel,
-    thisSlot: c.thisSlot,
+    done: c.totalDone,
+    doneLabel: "TOTAL DONE",
+    thisSlot: c.this15,
   }));
 
-  // NEXT slot only — never the slot that already ended at this POSITION.
-  const nextBlock = options.nextBlock || null;
-  const rawCheckpoints = Array.isArray(options.checkpoints)
-    ? options.checkpoints
-    : (Array.isArray(nextBlock?.availability_checkpoints)
-      ? nextBlock.availability_checkpoints
-      : []);
-
-  const checkpoints = rawCheckpoints.map((cp) => {
-    const completedWeigh = Number(cp.weighed_total) || 0;
-    const completedSort = Number(cp.sorted_total) || 0;
-    const completedWash = Number(cp.washed_total) || 0;
-    const completedDry = Number(cp.dried_total) || 0;
-    const completedFold = Number(cp.folded_total) || 0;
-    const waitingWeigh = Number(cp.waiting_to_weigh ?? cp.not_yet_weighed) || 0;
-    const waitingSort = Number(cp.waiting_to_sort ?? cp.available_to_sort) || 0;
-    const waitingWash = Number(cp.waiting_to_wash ?? cp.available_to_wash) || 0;
-    const waitingDry = Number(cp.waiting_to_dry ?? cp.available_to_dry) || 0;
-    const waitingFold = Number(cp.waiting_to_fold ?? cp.available_to_fold) || 0;
-    return {
-      ...cp,
-      time: cp.time,
-      time_sec: cp.time_sec,
-      stages: [
-        { id: "weigh", title: "WEIGH", completed: completedWeigh, waiting: waitingWeigh },
-        { id: "sort", title: "SORT", completed: completedSort, waiting: waitingSort },
-        { id: "wash", title: "WASH", completed: completedWash, waiting: waitingWash },
-        { id: "dry", title: "DRY", completed: completedDry, waiting: waitingDry },
-        { id: "fold", title: "FOLD", completed: completedFold, waiting: waitingFold },
-      ],
-    };
-  });
+  const checkpointRows = checkpoints.map((cp) => ({
+    time: cp.time,
+    time_sec: cp.time_sec,
+    stages: columnsFromCheckpoint(cp),
+    reconciled: cp.reconciliation ? cp.reconciliation.ok : undefined,
+    raw: cp,
+  }));
 
   return {
     columns,
     progress,
     inventory: exclusiveInventory,
     inventorySum,
-    checkpoints,
+    checkpoints: checkpointRows,
+    selectedCheckpoint: selected,
+    selectedTime: (selected && selected.time) || block.block_end || block.time,
+    selectedTimeSec: selected ? selected.time_sec : null,
     target,
     reconciled,
     reconcileLabel: `Position reconciled: ${reconN} / ${target}`,
@@ -1460,8 +1453,8 @@ export function formatManagementOutcome(result) {
   }
 
   const roleLabel = blocking ? roleDisplayName(blocking) : null;
-  let statusLabel = "Stalled";
-  if (roleLabel) statusLabel = `Stalled at ${roleLabel}`;
+  let statusLabel = "Cannot finish under plan";
+  if (roleLabel) statusLabel = `Cannot finish — needs ${roleLabel}`;
 
   return {
     status: "stalled",

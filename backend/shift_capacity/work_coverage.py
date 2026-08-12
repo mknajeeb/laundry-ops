@@ -47,6 +47,16 @@ def build_work_coverage(state: Any) -> list[dict[str, Any]]:
     bags = list(state.bags or [])
     pt = state.inputs.processing_times
     load_sec = _load_sec_by_role(pt)
+    machine_calendars = state.machine_calendars or {}
+    machines = list(getattr(state.inputs, "machines", None) or [])
+    washer_ids = [str(m.machine_id) for m in machines if getattr(m, "kind", None) == "washer" or str(getattr(m, "machine_id", "")).startswith("W")]
+    dryer_ids = [str(m.machine_id) for m in machines if getattr(m, "kind", None) == "dryer" or str(getattr(m, "machine_id", "")).startswith("D")]
+    if not washer_ids:
+        n = int(getattr(state.inputs.shift, "washer_count", 0) or 0)
+        washer_ids = [f"W{i}" for i in range(1, n + 1)]
+    if not dryer_ids:
+        n = int(getattr(state.inputs.shift, "dryer_count", 0) or 0)
+        dryer_ids = [f"D{i}" for i in range(1, n + 1)]
 
     rows: list[dict[str, Any]] = []
     for idx, interval in enumerate(authored):
@@ -59,6 +69,9 @@ def build_work_coverage(state: Any) -> list[dict[str, Any]]:
                 calendars=calendars,
                 bags=bags,
                 load_sec=load_sec,
+                machine_calendars=machine_calendars,
+                washer_ids=washer_ids,
+                dryer_ids=dryer_ids,
             )
         )
     return rows
@@ -368,6 +381,31 @@ def _ready_event_times(
     return sorted(times)
 
 
+def _machine_busy_at(machine_calendars: dict[str, list[Any]], machine_id: str, t: int) -> bool:
+    for r in machine_calendars.get(machine_id) or []:
+        if int(r.start) <= t < int(r.end):
+            return True
+    return False
+
+
+def _any_machine_free_at(
+    machine_calendars: dict[str, list[Any]],
+    machine_ids: list[str],
+    t: int,
+) -> bool:
+    if not machine_ids:
+        return True
+    return any(not _machine_busy_at(machine_calendars, mid, t) for mid in machine_ids)
+
+
+def _roles_need_machine(roles: list[str]) -> str | None:
+    if "washer" in roles:
+        return "washer"
+    if "dryer" in roles:
+        return "dryer"
+    return None
+
+
 def _classify_idle_gap(
     gap_lo: int,
     gap_hi: int,
@@ -375,24 +413,43 @@ def _classify_idle_gap(
     bags: list[Any],
     roles: list[str],
     calendars: dict[str, list[Any]],
-) -> tuple[int, int]:
-    """Split one idle gap into (idle_no_eligible_sec, unused_fit_sec) via DES readiness."""
+    machine_calendars: dict[str, list[Any]] | None = None,
+    washer_ids: list[str] | None = None,
+    dryer_ids: list[str] | None = None,
+) -> tuple[int, int, int]:
+    """Split idle gap into (idle_no_eligible, unused_fit, machine_blocked) seconds."""
     if gap_hi <= gap_lo:
-        return 0, 0
+        return 0, 0, 0
     boundaries = [gap_lo, gap_hi] + _ready_event_times(bags, roles, gap_lo, gap_hi)
     boundaries = sorted(set(boundaries))
     idle_no = 0
     unused_fit = 0
+    machine_blocked = 0
+    machine_role = _roles_need_machine(roles)
+    machine_ids = []
+    if machine_role == "washer":
+        machine_ids = list(washer_ids or [])
+    elif machine_role == "dryer":
+        machine_ids = list(dryer_ids or [])
     for i in range(len(boundaries) - 1):
         t0 = boundaries[i]
         t1 = boundaries[i + 1]
         if t1 <= t0:
             continue
-        if _has_eligible_work_at(bags, roles, t0, calendars):
-            unused_fit += t1 - t0
+        dur = t1 - t0
+        if not _has_eligible_work_at(bags, roles, t0, calendars):
+            idle_no += dur
+            continue
+        if (
+            machine_role
+            and machine_calendars is not None
+            and machine_ids
+            and not _any_machine_free_at(machine_calendars, machine_ids, t0)
+        ):
+            machine_blocked += dur
         else:
-            idle_no += t1 - t0
-    return idle_no, unused_fit
+            unused_fit += dur
+    return idle_no, unused_fit, machine_blocked
 
 
 def _classify_idle_from_calendars(
@@ -406,46 +463,52 @@ def _classify_idle_from_calendars(
     tasks: set[str],
     staff_sec: int,
     used_sec: int,
-) -> tuple[int, int, int]:
+    machine_calendars: dict[str, list[Any]] | None = None,
+    washer_ids: list[str] | None = None,
+    dryer_ids: list[str] | None = None,
+) -> tuple[int, int, int, int]:
     """Per-worker idle classification, then sum.
 
-    idle_no_eligible_work: worker free and no eligible upstream work.
-    unused_fit: worker free while eligible work existed (typically end-fragment
-    under finish_in_progress_at_exit=False).
-
-    Does NOT use aggregated staff vs cumulative available_work_min.
+    Returns (idle_sec, idle_no_eligible, unused_fit, machine_blocked).
     """
     idle_no_total = 0
     unused_fit_total = 0
+    machine_blocked_total = 0
     for eid in employee_ids:
         busy = _busy_intervals_for_worker(calendars, eid, w0, w1, tasks=tasks)
         for gap_lo, gap_hi in _idle_gaps(busy, w0, w1):
-            no_sec, fit_sec = _classify_idle_gap(
-                gap_lo, gap_hi, bags=bags, roles=roles, calendars=calendars
+            no_sec, fit_sec, blocked_sec = _classify_idle_gap(
+                gap_lo,
+                gap_hi,
+                bags=bags,
+                roles=roles,
+                calendars=calendars,
+                machine_calendars=machine_calendars,
+                washer_ids=washer_ids,
+                dryer_ids=dryer_ids,
             )
             idle_no_total += no_sec
             unused_fit_total += fit_sec
+            machine_blocked_total += blocked_sec
 
     idle_sec = max(0, staff_sec - used_sec)
-    classified = idle_no_total + unused_fit_total
-    # Guard: classified idle should match calendar spare within the window.
-    # If calendars are empty but staff exists, treat all spare as no-eligible.
+    classified = idle_no_total + unused_fit_total + machine_blocked_total
     if classified == 0 and idle_sec > 0:
-        return idle_sec, idle_sec, 0
+        return idle_sec, idle_sec, 0, 0
     if classified != idle_sec and classified > 0:
-        # Prefer calendar classification; scale only if tiny float/clip drift.
         drift = idle_sec - classified
         if abs(drift) <= 1:
             if drift > 0:
                 unused_fit_total += drift
             elif unused_fit_total >= -drift:
                 unused_fit_total += drift
+            elif machine_blocked_total >= -drift:
+                machine_blocked_total += drift
             else:
                 idle_no_total += drift
         else:
-            # Trust calendars: recompute idle from classification.
             idle_sec = classified
-    return idle_sec, idle_no_total, unused_fit_total
+    return idle_sec, idle_no_total, unused_fit_total, machine_blocked_total
 
 
 def _idle_breakdown(
@@ -461,18 +524,28 @@ def _idle_breakdown(
     return idle, idle_no_work, unused_fit
 
 
-def _status(staff_sec: int, used_sec: int, idle_no_work: int, unused_fit: int) -> str:
+def _status(
+    staff_sec: int,
+    used_sec: int,
+    idle_no_work: int,
+    unused_fit: int,
+    machine_blocked: int = 0,
+) -> str:
     if staff_sec <= 0:
         return "no_staff"
     # Fully utilized when DES used the whole staff window.
     if used_sec >= staff_sec - 1:
         return "fully_utilized"
-    if idle_no_work > 0 and unused_fit == 0:
+    if idle_no_work > 0 and unused_fit == 0 and machine_blocked == 0:
         return "idle_waiting_for_work"
-    if idle_no_work > 0 and unused_fit > 0:
+    if machine_blocked > 0 and idle_no_work == 0 and unused_fit == 0:
+        return "machine_blocked"
+    if idle_no_work > 0 and (unused_fit > 0 or machine_blocked > 0):
         return "partial_upstream_short"
-    if unused_fit > 0:
+    if unused_fit > 0 and machine_blocked == 0:
         return "work_not_fit"
+    if machine_blocked > 0:
+        return "machine_blocked"
     if idle_no_work > 0:
         return "idle_waiting_for_work"
     return "partial"
@@ -492,6 +565,9 @@ def _coverage_for_interval(
     calendars: dict[str, list[Any]],
     bags: list[Any],
     load_sec: dict[str, int],
+    machine_calendars: dict[str, list[Any]] | None = None,
+    washer_ids: list[str] | None = None,
+    dryer_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     w0, w1 = interval.start_sec, interval.end_sec
     employee_ids = _employee_ids_for_interval(
@@ -513,7 +589,7 @@ def _coverage_for_interval(
             load_sec=load_sec,
             calendars=calendars,
         )
-        idle_sec, idle_no_work, unused_fit = _classify_idle_from_calendars(
+        idle_sec, idle_no_work, unused_fit, machine_blocked = _classify_idle_from_calendars(
             employee_ids,
             calendars=calendars,
             bags=bags,
@@ -523,6 +599,9 @@ def _coverage_for_interval(
             tasks=tasks,
             staff_sec=staff_sec,
             used_sec=used_sec,
+            machine_calendars=machine_calendars,
+            washer_ids=washer_ids,
+            dryer_ids=dryer_ids,
         )
         role_alloc = {
             r: round(by_task.get(ROLE_LABOR_TASK[r], 0) / 60.0, 2) for r in roles
@@ -544,7 +623,7 @@ def _coverage_for_interval(
             load_sec=load_sec[role],
             calendars=calendars,
         )
-        idle_sec, idle_no_work, unused_fit = _classify_idle_from_calendars(
+        idle_sec, idle_no_work, unused_fit, machine_blocked = _classify_idle_from_calendars(
             employee_ids,
             calendars=calendars,
             bags=bags,
@@ -554,18 +633,22 @@ def _coverage_for_interval(
             tasks=tasks,
             staff_sec=staff_sec,
             used_sec=used_sec,
+            machine_calendars=machine_calendars,
+            washer_ids=washer_ids,
+            dryer_ids=dryer_ids,
         )
         role_alloc = None
         primary_role = role
         label_role = role
 
-    status = _status(staff_sec, used_sec, idle_no_work, unused_fit)
+    status = _status(staff_sec, used_sec, idle_no_work, unused_fit, machine_blocked)
     staff_min = _min2(staff_sec)
     available_min = _min2(available_sec)
     used_min = _min2(used_sec)
     idle_min = _min2(idle_sec)
     idle_no_min = _min2(idle_no_work)
     unused_fit_min = _min2(unused_fit)
+    machine_blocked_min = _min2(machine_blocked)
 
     return {
         "index": index,
@@ -584,6 +667,7 @@ def _coverage_for_interval(
         "idle_min": idle_min,
         "idle_no_eligible_work_min": idle_no_min,
         "unused_fit_min": unused_fit_min,
+        "machine_blocked_min": machine_blocked_min,
         "eligible_bags": eligible_bags,
         "eligible_bags_at_start": at_start,
         "eligible_bags_became": became,
@@ -607,6 +691,7 @@ def _coverage_for_interval(
             eligible_bags=eligible_bags,
             status=status,
             role_alloc=role_alloc,
+            machine_blocked_min=machine_blocked_min,
         ),
     }
 
@@ -685,6 +770,7 @@ def _summary_line(
     eligible_bags: int,
     status: str,
     role_alloc: dict[str, float] | None,
+    machine_blocked_min: float = 0,
 ) -> str:
     role_disp = {
         "weigher": "WEIGH",
@@ -725,13 +811,15 @@ def _summary_line(
     util = int(round((used_min / staff_min) * 100)) if staff_min > 0 else 0
     reason_bits = []
     if idle_no_min > 0.005:
-        reason_bits.append(f"{_fmt_min(idle_no_min)} waiting")
+        reason_bits.append(f"{_fmt_min(idle_no_min)} waiting for work")
+    if machine_blocked_min > 0.005:
+        reason_bits.append(f"{_fmt_min(machine_blocked_min)} machine blocked")
     if unused_fit_min > 0.005:
-        reason_bits.append(f"{_fmt_min(unused_fit_min)} unused_fit")
+        reason_bits.append(f"{_fmt_min(unused_fit_min)} remaining too short")
     reason = (" · " + " · ".join(reason_bits)) if reason_bits else ""
     return (
-        f"{head} · {used_i} of {staff_i} productive · {util}% · "
-        f"{idle_i} unused{reason} · {_status_label(status, idle_min)}"
+        f"{head} · Labor used {used_i}/{staff_i} min · "
+        f"{idle_i} spare{reason}"
     )
 
 
