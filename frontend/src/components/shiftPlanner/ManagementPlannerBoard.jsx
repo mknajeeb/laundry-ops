@@ -52,6 +52,7 @@ import {
   formatManagementOutcome,
   buildSlotStaffingNotes,
   fillRestBasePeopleForRole,
+  fillRestHybridPeople,
   describeWorkCoverage,
   findWorkCoverageForHybrid,
   findWorkCoverageForRole,
@@ -61,6 +62,8 @@ import {
   getBasePeopleForBlock,
   hmToClock,
   indexBlockPositionsByEnd,
+  isHybridFillRestComplete,
+  isRoleFillRestComplete,
   listHybridsForBlock,
   pickEditablePlannerParamSnapshot,
   pickPersistedPlannerParams,
@@ -683,6 +686,8 @@ function BlockRoleRow({
   onEdit,
   onRemove,
   showFillRest = false,
+  fillRestFilled = false,
+  fillRestDisabled = false,
   onFillRest = null,
   coverageRows = [],
   processParams = null,
@@ -695,6 +700,7 @@ function BlockRoleRow({
   const tempCoverage = extras.length
     ? findWorkCoverageForRole(coverageRows, role.id, blockStart, blockEnd, { mode: "additional" })
     : [];
+  const fillDisabled = fillRestDisabled || fillRestFilled || base < 1;
 
   return (
     <Box
@@ -757,21 +763,25 @@ function BlockRoleRow({
       {showFillRest ? (
         <Button
           size="small"
+          disabled={fillDisabled}
           onClick={() => onFillRest?.(base)}
-          aria-label={`Fill rest ${role.label}`}
+          aria-label={fillRestFilled ? `${role.label} filled` : `Fill rest ${role.label}`}
           sx={{
             textTransform: "none",
             fontWeight: 600,
             fontSize: "0.75rem",
-            color: "text.secondary",
+            color: fillRestFilled ? "text.disabled" : "text.secondary",
             minWidth: 0,
             px: 0.5,
             py: 0.25,
             flexShrink: 0,
-            "&:hover": { bgcolor: "transparent", color: VEEWASH_DASHBOARD.primaryBlue, textDecoration: "underline" },
+            "&.Mui-disabled": { color: "text.disabled" },
+            "&:hover": fillDisabled
+              ? undefined
+              : { bgcolor: "transparent", color: VEEWASH_DASHBOARD.primaryBlue, textDecoration: "underline" },
           }}
         >
-          Fill rest
+          {fillRestFilled ? "Filled" : "Fill rest"}
         </Button>
       ) : null}
 
@@ -945,6 +955,9 @@ function HybridAssignmentRow({
   processParams = null,
   onEdit,
   onDelete,
+  showFillRest = false,
+  fillRestFilled = false,
+  onFillRest = null,
 }) {
   const label = assignment.label || formatHybridRolesLabel(assignment.roles);
   const peopleLabel = `${assignment.people} ${assignment.people === 1 ? "person" : "people"}`;
@@ -954,6 +967,7 @@ function HybridAssignmentRow({
     assignment.start,
     assignment.end,
   );
+  const fillDisabled = fillRestFilled || !(assignment.people >= 1);
   return (
     <Box
       sx={{
@@ -973,6 +987,25 @@ function HybridAssignmentRow({
         <Typography sx={{ fontWeight: 700, fontSize: "0.75rem", color: "text.primary" }}>
           {label} · {peopleLabel} · {assignment.start}–{assignment.end}
         </Typography>
+        {showFillRest ? (
+          <Button
+            size="small"
+            disabled={fillDisabled}
+            onClick={() => onFillRest?.(assignment)}
+            aria-label={fillRestFilled ? `Hybrid ${label} filled` : `Fill rest hybrid ${label}`}
+            sx={{
+              textTransform: "none",
+              fontWeight: 600,
+              fontSize: "0.68rem",
+              color: fillRestFilled ? "text.disabled" : "text.secondary",
+              minWidth: 0,
+              px: 0.5,
+              "&.Mui-disabled": { color: "text.disabled" },
+            }}
+          >
+            {fillRestFilled ? "Filled" : "Fill rest"}
+          </Button>
+        ) : null}
         <Button
           size="small"
           onClick={() => onEdit(assignment)}
@@ -1351,7 +1384,7 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
     }));
   };
 
-  const fillRest = (roleId, people) => {
+  const fillRest = (roleId, people, fromBlockStart) => {
     setInputs((prev) => ({
       ...prev,
       staffing_intervals: fillRestBasePeopleForRole(
@@ -1359,6 +1392,20 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
         roleId,
         planBlocks,
         people,
+        fromBlockStart,
+      ),
+    }));
+  };
+
+  const fillRestHybrid = (assignment) => {
+    setInputs((prev) => ({
+      ...prev,
+      hybrid_intervals: fillRestHybridPeople(
+        prev.hybrid_intervals,
+        assignment.roles,
+        planBlocks,
+        assignment.people,
+        assignment.start,
       ),
     }));
   };
@@ -1598,9 +1645,8 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
 
       {/* One card = one time slot: start staffing + end POSITION */}
       <Stack spacing={1.25}>
-        {planBlocks.map((pb, blockIndex) => {
+        {planBlocks.map((pb) => {
           const pos = positionByEnd[pb.block_end] || null;
-          const isFirstStaffingBlock = blockIndex === 0;
           const staffOpen = staffingExpanded[pb.block_start] !== false;
           const staffLine = formatCollapsedSlotStaffLine(
             inputs.staffing_intervals,
@@ -1615,6 +1661,7 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
             pb.block_end,
           );
           const slotLabel = `${pb.block_start} → ${pb.block_end}`;
+          const showSlotFillRest = planBlocks.length >= 1;
           return (
             <Box
               key={`${pb.block_start}-${pb.block_end}`}
@@ -1655,7 +1702,14 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                   </Typography>
                 ) : (
                   <Box data-testid="expanded-staffing">
-                    {MANAGEMENT_ROLES.map((role) => (
+                    {MANAGEMENT_ROLES.map((role) => {
+                      const filled = isRoleFillRestComplete(
+                        inputs.staffing_intervals,
+                        role.id,
+                        pb.block_start,
+                        planBlocks,
+                      );
+                      return (
                       <BlockRoleRow
                         key={role.id}
                         role={role}
@@ -1672,10 +1726,12 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                         onAddTemporary={(roleId) => openTemporary(roleId, pb.block_start, pb.block_end)}
                         onEdit={openEdit}
                         onRemove={removeInterval}
-                        showFillRest={isFirstStaffingBlock && planBlocks.length > 1}
-                        onFillRest={(people) => fillRest(role.id, people)}
+                        showFillRest={showSlotFillRest}
+                        fillRestFilled={filled}
+                        onFillRest={(people) => fillRest(role.id, people, pb.block_start)}
                       />
-                    ))}
+                      );
+                    })}
                     <Typography
                       sx={{
                         mt: 0.85,
@@ -1692,7 +1748,14 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                       inputs.hybrid_intervals,
                       pb.block_start,
                       pb.block_end,
-                    ).map((assignment) => (
+                    ).map((assignment) => {
+                      const hybridFilled = isHybridFillRestComplete(
+                        inputs.hybrid_intervals,
+                        assignment.roles,
+                        assignment.start,
+                        planBlocks,
+                      );
+                      return (
                       <HybridAssignmentRow
                         key={assignment.id}
                         assignment={assignment}
@@ -1704,8 +1767,12 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                         processParams={inputs}
                         onEdit={openEditHybrid}
                         onDelete={deleteHybrid}
+                        showFillRest={showSlotFillRest}
+                        fillRestFilled={hybridFilled}
+                        onFillRest={fillRestHybrid}
                       />
-                    ))}
+                      );
+                    })}
                     <Button
                       size="small"
                       startIcon={<AddIcon sx={{ fontSize: 14 }} />}

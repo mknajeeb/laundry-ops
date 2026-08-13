@@ -407,20 +407,257 @@ export function setBasePeopleForBlock(intervals, roleId, blockStart, blockEnd, p
   return next;
 }
 
-/**
- * Copy one role's base people count from the first planning block into every later block.
- * Does not touch other roles, additional/temp intervals, or the first block itself.
- */
-export function fillRestBasePeopleForRole(intervals, roleId, planBlocks, people) {
+/** Plan horizon end (seconds) from planning blocks. */
+export function planHorizonEndSec(planBlocks) {
   const blocks = Array.isArray(planBlocks) ? planBlocks : [];
-  if (blocks.length < 2) return intervals || [];
-  const peopleN = Math.max(0, Math.floor(Number(people) || 0));
-  let next = intervals || [];
-  for (let i = 1; i < blocks.length; i += 1) {
-    const block = blocks[i];
-    next = setBasePeopleForBlock(next, roleId, block.block_start, block.block_end, peopleN);
+  if (!blocks.length) return null;
+  const last = blocks[blocks.length - 1];
+  if (last.end_sec != null) return Number(last.end_sec);
+  return parseClockToSec(last.block_end);
+}
+
+function _mergeHalfOpenRanges(ranges) {
+  const ordered = (ranges || [])
+    .filter(([a, b]) => a != null && b != null && b > a)
+    .sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  if (!ordered.length) return [];
+  const merged = [[ordered[0][0], ordered[0][1]]];
+  for (let i = 1; i < ordered.length; i += 1) {
+    const [s, e] = ordered[i];
+    const prev = merged[merged.length - 1];
+    if (s <= prev[1]) prev[1] = Math.max(prev[1], e);
+    else merged.push([s, e]);
   }
-  return next;
+  return merged;
+}
+
+function _gapsInWindow(fromSec, toSec, covered) {
+  if (fromSec == null || toSec == null || toSec <= fromSec) return [];
+  const merged = _mergeHalfOpenRanges(covered);
+  const gaps = [];
+  let cursor = fromSec;
+  for (const [s, e] of merged) {
+    if (e <= fromSec || s >= toSec) continue;
+    const cs = Math.max(s, fromSec);
+    const ce = Math.min(e, toSec);
+    if (cs > cursor) gaps.push([cursor, cs]);
+    cursor = Math.max(cursor, ce);
+  }
+  if (cursor < toSec) gaps.push([cursor, toSec]);
+  return gaps;
+}
+
+/** BASE coverage ranges for a dedicated role, clipped optionally. */
+export function baseCoverageRangesForRole(intervals, roleId) {
+  const ranges = [];
+  for (const row of intervals || []) {
+    if (normalizeRole(row.role) !== roleId) continue;
+    if (String(row.mode || "base").toLowerCase() === "additional") continue;
+    const s = parseClockToSec(row.start);
+    const e = parseClockToSec(row.end);
+    if (s == null || e == null || e <= s) continue;
+    ranges.push([s, e]);
+  }
+  return _mergeHalfOpenRanges(ranges);
+}
+
+/** BASE coverage ranges for a hybrid role set (additional/TEMP excluded). */
+export function baseCoverageRangesForHybrid(intervals, roles) {
+  const want = hybridRolesKey(roles);
+  if (!want) return [];
+  const ranges = [];
+  for (const row of intervals || []) {
+    if (String(row.mode || "base").toLowerCase() === "additional") continue;
+    const key = hybridRolesKey(resolveHybridRolesFromRow(row));
+    if (key !== want) continue;
+    const s = parseClockToSec(row.start);
+    const e = parseClockToSec(row.end);
+    if (s == null || e == null || e <= s) continue;
+    ranges.push([s, e]);
+  }
+  return _mergeHalfOpenRanges(ranges);
+}
+
+/**
+ * True when [fromBlockStart, plan end) already has continuous BASE coverage
+ * for the role (TEMP does not count). Nothing left for Fill rest to add.
+ */
+export function isRoleFillRestComplete(intervals, roleId, fromBlockStart, planBlocks) {
+  const fromSec = parseClockToSec(fromBlockStart);
+  const toSec = planHorizonEndSec(planBlocks);
+  if (fromSec == null || toSec == null || fromSec >= toSec) return true;
+  return _gapsInWindow(fromSec, toSec, baseCoverageRangesForRole(intervals, roleId)).length === 0;
+}
+
+export function isHybridFillRestComplete(intervals, roles, fromStart, planBlocks) {
+  const fromSec = parseClockToSec(fromStart);
+  const toSec = planHorizonEndSec(planBlocks);
+  if (fromSec == null || toSec == null || fromSec >= toSec) return true;
+  return _gapsInWindow(fromSec, toSec, baseCoverageRangesForHybrid(intervals, roles)).length === 0;
+}
+
+function _mergeAdjacentSamePeopleBase(intervals, roleId) {
+  const others = [];
+  const bases = [];
+  for (const row of intervals || []) {
+    if (
+      normalizeRole(row.role) === roleId
+      && String(row.mode || "base").toLowerCase() !== "additional"
+    ) {
+      bases.push(row);
+    } else {
+      others.push(row);
+    }
+  }
+  bases.sort((a, b) => (parseClockToSec(a.start) || 0) - (parseClockToSec(b.start) || 0));
+  const merged = [];
+  for (const row of bases) {
+    const s = parseClockToSec(row.start);
+    const e = parseClockToSec(row.end);
+    const people = Math.floor(Number(row.people) || 0);
+    if (s == null || e == null || people < 1) continue;
+    const prev = merged[merged.length - 1];
+    if (
+      prev
+      && Math.floor(Number(prev.people) || 0) === people
+      && parseClockToSec(prev.end) === s
+    ) {
+      merged[merged.length - 1] = {
+        ...prev,
+        end: formatClockFromSec(e),
+        id: `${prev.id}-m-${e}`,
+      };
+    } else {
+      merged.push({ ...row, start: formatClockFromSec(s), end: formatClockFromSec(e), people });
+    }
+  }
+  return [...others, ...merged];
+}
+
+function _mergeAdjacentSamePeopleHybrid(intervals, roles) {
+  const want = hybridRolesKey(roles);
+  const others = [];
+  const bases = [];
+  for (const row of intervals || []) {
+    const key = hybridRolesKey(resolveHybridRolesFromRow(row));
+    if (key === want && String(row.mode || "base").toLowerCase() !== "additional") {
+      bases.push(row);
+    } else {
+      others.push(row);
+    }
+  }
+  bases.sort((a, b) => (parseClockToSec(a.start) || 0) - (parseClockToSec(b.start) || 0));
+  const roleList = normalizeHybridRoles(roles);
+  const merged = [];
+  for (const row of bases) {
+    const s = parseClockToSec(row.start);
+    const e = parseClockToSec(row.end);
+    const people = Math.floor(Number(row.people) || 0);
+    if (s == null || e == null || people < 1) continue;
+    const prev = merged[merged.length - 1];
+    if (
+      prev
+      && Math.floor(Number(prev.people) || 0) === people
+      && parseClockToSec(prev.end) === s
+    ) {
+      merged[merged.length - 1] = {
+        ...prev,
+        end: formatClockFromSec(e),
+        id: `${prev.id}-m-${e}`,
+      };
+    } else {
+      merged.push({
+        ...row,
+        roles: roleList,
+        people,
+        start: formatClockFromSec(s),
+        end: formatClockFromSec(e),
+        mode: "base",
+      });
+    }
+  }
+  return [...others, ...merged];
+}
+
+/**
+ * Fill uncovered BASE time for a role from fromBlockStart through plan end.
+ * Preserves explicit later BASE and all TEMP/additional intervals.
+ * Does not overwrite overlapping BASE — only inserts into gaps.
+ */
+export function fillRestBasePeopleForRole(
+  intervals,
+  roleId,
+  planBlocks,
+  people,
+  fromBlockStart = null,
+) {
+  const blocks = Array.isArray(planBlocks) ? planBlocks : [];
+  if (!blocks.length) return intervals || [];
+  const peopleN = Math.max(0, Math.floor(Number(people) || 0));
+  if (peopleN < 1) return intervals || [];
+
+  const fromSec = parseClockToSec(fromBlockStart)
+    ?? blocks[0].start_sec
+    ?? parseClockToSec(blocks[0].block_start);
+  const toSec = planHorizonEndSec(blocks);
+  if (fromSec == null || toSec == null || fromSec >= toSec) return intervals || [];
+
+  const gaps = _gapsInWindow(fromSec, toSec, baseCoverageRangesForRole(intervals, roleId));
+  if (!gaps.length) return intervals || [];
+
+  let next = [...(intervals || [])];
+  for (const [gs, ge] of gaps) {
+    next.push({
+      id: `si-${roleId}-fill-${gs}-${ge}-${peopleN}`,
+      role: roleId,
+      people: peopleN,
+      start: formatClockFromSec(gs),
+      end: formatClockFromSec(ge),
+      mode: "base",
+    });
+  }
+  return _mergeAdjacentSamePeopleBase(next, roleId);
+}
+
+/**
+ * Fill uncovered BASE hybrid time for a role set from fromStart through plan end.
+ * Same shared-calendar semantics; does not overwrite existing BASE/TEMP hybrids.
+ */
+export function fillRestHybridPeople(
+  intervals,
+  roles,
+  planBlocks,
+  people,
+  fromStart = null,
+) {
+  const blocks = Array.isArray(planBlocks) ? planBlocks : [];
+  if (!blocks.length) return intervals || [];
+  const roleList = normalizeHybridRoles(roles);
+  if (roleList.length < 2) return intervals || [];
+  const peopleN = Math.max(0, Math.floor(Number(people) || 0));
+  if (peopleN < 1) return intervals || [];
+
+  const fromSec = parseClockToSec(fromStart)
+    ?? blocks[0].start_sec
+    ?? parseClockToSec(blocks[0].block_start);
+  const toSec = planHorizonEndSec(blocks);
+  if (fromSec == null || toSec == null || fromSec >= toSec) return intervals || [];
+
+  const gaps = _gapsInWindow(fromSec, toSec, baseCoverageRangesForHybrid(intervals, roleList));
+  if (!gaps.length) return intervals || [];
+
+  let next = [...(intervals || [])];
+  for (const [gs, ge] of gaps) {
+    next.push({
+      id: `hy-${hybridRolesKey(roleList)}-fill-${gs}-${ge}-${peopleN}`,
+      roles: roleList,
+      people: peopleN,
+      start: formatClockFromSec(gs),
+      end: formatClockFromSec(ge),
+      mode: "base",
+    });
+  }
+  return _mergeAdjacentSamePeopleHybrid(next, roleList);
 }
 
 /**

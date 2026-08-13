@@ -26,6 +26,9 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("data-testid=\"expanded-staffing\"");
     expect(boardSrc).toContain("data-testid=\"collapsed-staff-line\"");
     expect(boardSrc).toContain("Fill rest");
+    expect(boardSrc).toContain("isRoleFillRestComplete");
+    expect(boardSrc).toContain("fillRestHybrid");
+    expect(boardSrc).not.toContain("isFirstStaffingBlock");
     expect(boardSrc).toContain("Temp");
     expect(boardSrc).toContain("Collapse all staffing");
     expect(boardSrc).toContain("Expand all staffing");

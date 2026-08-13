@@ -10,6 +10,7 @@ import {
   buildSlotStaffingNotes,
   dedicatedPeopleInSlot,
   fillRestBasePeopleForRole,
+  fillRestHybridPeople,
   formatBlockStaffingLine,
   describeWorkCoverage,
   findWorkCoverageForHybrid,
@@ -28,6 +29,8 @@ import {
   getHybridPeopleForBlock,
   indexBlockPositionsByEnd,
   intervalsOverlap,
+  isHybridFillRestComplete,
+  isRoleFillRestComplete,
   listHybridsForBlock,
   normalizeHybridRoles,
   parseClockToSec,
@@ -245,7 +248,7 @@ describe("managementHelpers", () => {
     expect(getBasePeopleForBlock(next, "sorter", "11:00 AM")).toBe(1);
   });
 
-  it("Fill rest copies only the selected role into later blocks", () => {
+  it("Fill rest from first slot fills uncovered later blocks without overwriting explicit later BASE", () => {
     const blocks = buildPlanningBlocks("9:00 AM", "12:00 PM", 60);
     let intervals = [];
     intervals = setBasePeopleForBlock(intervals, "folder", "9:00 AM", "10:00 AM", 6);
@@ -253,30 +256,127 @@ describe("managementHelpers", () => {
     intervals = setBasePeopleForBlock(intervals, "sorter", "9:00 AM", "10:00 AM", 1);
     intervals = setBasePeopleForBlock(intervals, "washer", "9:00 AM", "10:00 AM", 1);
     intervals = setBasePeopleForBlock(intervals, "dryer", "9:00 AM", "10:00 AM", 1);
-    // Later blocks start empty / different.
+    // Explicit later BASE must be preserved.
     intervals = setBasePeopleForBlock(intervals, "folder", "10:00 AM", "11:00 AM", 2);
     intervals = setBasePeopleForBlock(intervals, "sorter", "10:00 AM", "11:00 AM", 3);
 
-    const afterFold = fillRestBasePeopleForRole(intervals, "folder", blocks, 6);
+    const afterFold = fillRestBasePeopleForRole(intervals, "folder", blocks, 6, "9:00 AM");
     expect(getBasePeopleForBlock(afterFold, "folder", "9:00 AM")).toBe(6);
-    expect(getBasePeopleForBlock(afterFold, "folder", "10:00 AM")).toBe(6);
-    expect(getBasePeopleForBlock(afterFold, "folder", "11:00 AM")).toBe(6);
-    // Other roles unchanged.
+    expect(getBasePeopleForBlock(afterFold, "folder", "10:00 AM")).toBe(2); // preserved
+    expect(getBasePeopleForBlock(afterFold, "folder", "11:00 AM")).toBe(6); // filled gap
     expect(getBasePeopleForBlock(afterFold, "weigher", "9:00 AM")).toBe(1);
     expect(getBasePeopleForBlock(afterFold, "weigher", "10:00 AM")).toBe(0);
     expect(getBasePeopleForBlock(afterFold, "sorter", "10:00 AM")).toBe(3);
-    expect(getBasePeopleForBlock(afterFold, "washer", "9:00 AM")).toBe(1);
-    expect(getBasePeopleForBlock(afterFold, "dryer", "9:00 AM")).toBe(1);
 
-    const afterWeigh = fillRestBasePeopleForRole(afterFold, "weigher", blocks, 1);
+    const afterWeigh = fillRestBasePeopleForRole(afterFold, "weigher", blocks, 1, "9:00 AM");
     expect(getBasePeopleForBlock(afterWeigh, "weigher", "9:00 AM")).toBe(1);
     expect(getBasePeopleForBlock(afterWeigh, "weigher", "10:00 AM")).toBe(1);
     expect(getBasePeopleForBlock(afterWeigh, "weigher", "11:00 AM")).toBe(1);
-    expect(getBasePeopleForBlock(afterWeigh, "folder", "10:00 AM")).toBe(6);
+    expect(getBasePeopleForBlock(afterWeigh, "folder", "10:00 AM")).toBe(2);
     expect(getBasePeopleForBlock(afterWeigh, "sorter", "10:00 AM")).toBe(3);
+    expect(isRoleFillRestComplete(afterWeigh, "weigher", "9:00 AM", blocks)).toBe(true);
   });
 
-  it("Fill rest propagates zero and leaves temps / first block alone", () => {
+  it("Fill rest from middle and last-normal slots; preserves TEMP; no duplicate overlaps", () => {
+    const blocks = buildPlanningBlocks("9:00 AM", "12:00 PM", 60);
+    let intervals = [
+      {
+        id: "temp-sort",
+        role: "sorter",
+        people: 1,
+        start: "9:15 AM",
+        end: "9:45 AM",
+        mode: "additional",
+      },
+    ];
+    intervals = setBasePeopleForBlock(intervals, "weigher", "10:00 AM", "11:00 AM", 1);
+    intervals = setBasePeopleForBlock(intervals, "sorter", "9:00 AM", "10:00 AM", 1);
+
+    const fromMiddle = fillRestBasePeopleForRole(intervals, "weigher", blocks, 1, "10:00 AM");
+    expect(getBasePeopleForBlock(fromMiddle, "weigher", "9:00 AM")).toBe(0); // earlier untouched
+    expect(getBasePeopleForBlock(fromMiddle, "weigher", "10:00 AM")).toBe(1);
+    expect(getBasePeopleForBlock(fromMiddle, "weigher", "11:00 AM")).toBe(1);
+    expect(getAdditionalForBlock(fromMiddle, "sorter", "9:00 AM", "10:00 AM")).toHaveLength(1);
+
+    // Idempotent: second fill does not duplicate overlapping BASE.
+    const again = fillRestBasePeopleForRole(fromMiddle, "weigher", blocks, 1, "10:00 AM");
+    const weighBase = again.filter(
+      (r) => r.role === "weigher" && String(r.mode || "base") !== "additional",
+    );
+    expect(weighBase).toHaveLength(1);
+    expect(weighBase[0].start).toBe("10:00 AM");
+    expect(weighBase[0].end).toBe("12:00 PM");
+
+    const fromLastNormal = setBasePeopleForBlock([], "dryer", "11:00 AM", "12:00 PM", 2);
+    const dryFilled = fillRestBasePeopleForRole(fromLastNormal, "dryer", blocks, 2, "11:00 AM");
+    expect(getBasePeopleForBlock(dryFilled, "dryer", "11:00 AM")).toBe(2);
+    expect(isRoleFillRestComplete(dryFilled, "dryer", "11:00 AM", blocks)).toBe(true);
+  });
+
+  it("Fill rest works for 30/45/60-min blocks and partial final slot", () => {
+    for (const size of [30, 45, 60]) {
+      const blocks = buildPlanningBlocks("9:00 AM", "10:15 AM", size);
+      expect(blocks.length).toBeGreaterThan(1);
+      let intervals = setBasePeopleForBlock(
+        [],
+        "washer",
+        blocks[0].block_start,
+        blocks[0].block_end,
+        1,
+      );
+      intervals = fillRestBasePeopleForRole(
+        intervals,
+        "washer",
+        blocks,
+        1,
+        blocks[0].block_start,
+      );
+      expect(isRoleFillRestComplete(intervals, "washer", blocks[0].block_start, blocks)).toBe(true);
+      const last = blocks[blocks.length - 1];
+      expect(getBasePeopleForBlock(intervals, "washer", last.block_start, last.block_end)).toBe(1);
+    }
+  });
+
+  it("custom hybrid Fill rest extends role set through uncovered horizon", () => {
+    const blocks = buildPlanningBlocks("9:00 AM", "12:00 PM", 60);
+    let hybrids = upsertHybridInterval([], {
+      id: "h1",
+      roles: ["washer", "dryer"],
+      people: 1,
+      start: "9:00 AM",
+      end: "10:00 AM",
+      mode: "base",
+    });
+    // Explicit later hybrid preserved
+    hybrids = upsertHybridInterval(hybrids, {
+      id: "h2",
+      roles: ["washer", "dryer"],
+      people: 2,
+      start: "10:00 AM",
+      end: "11:00 AM",
+      mode: "base",
+    });
+    hybrids = fillRestHybridPeople(hybrids, ["washer", "dryer"], blocks, 1, "9:00 AM");
+    expect(getHybridPeopleForBlock(hybrids, ["washer", "dryer"], "9:00 AM", "10:00 AM")).toBe(1);
+    expect(getHybridPeopleForBlock(hybrids, ["washer", "dryer"], "10:00 AM", "11:00 AM")).toBe(2);
+    expect(getHybridPeopleForBlock(hybrids, ["washer", "dryer"], "11:00 AM", "12:00 PM")).toBe(1);
+    expect(isHybridFillRestComplete(hybrids, ["washer", "dryer"], "9:00 AM", blocks)).toBe(true);
+
+    // TEMP hybrid preserved; fill still covers base gaps
+    hybrids = upsertHybridInterval([], {
+      id: "ht",
+      roles: ["sorter", "folder"],
+      people: 1,
+      start: "9:30 AM",
+      end: "10:00 AM",
+      mode: "additional",
+    });
+    hybrids = fillRestHybridPeople(hybrids, ["sorter", "folder"], blocks, 1, "9:00 AM");
+    expect(hybrids.some((r) => r.id === "ht" && r.mode === "additional")).toBe(true);
+    expect(isHybridFillRestComplete(hybrids, ["sorter", "folder"], "9:00 AM", blocks)).toBe(true);
+  });
+
+  it("Fill rest with zero people is a no-op and leaves temps alone", () => {
     const blocks = buildPlanningBlocks("9:00 AM", "11:00 AM", 60);
     let intervals = [
       {
@@ -292,16 +392,11 @@ describe("managementHelpers", () => {
     intervals = setBasePeopleForBlock(intervals, "weigher", "10:00 AM", "11:00 AM", 2);
     intervals = setBasePeopleForBlock(intervals, "sorter", "9:00 AM", "10:00 AM", 1);
 
-    const next = fillRestBasePeopleForRole(intervals, "weigher", blocks, 0);
+    const next = fillRestBasePeopleForRole(intervals, "weigher", blocks, 0, "9:00 AM");
     expect(getBasePeopleForBlock(next, "weigher", "9:00 AM")).toBe(0);
-    expect(getBasePeopleForBlock(next, "weigher", "10:00 AM")).toBe(0);
+    expect(getBasePeopleForBlock(next, "weigher", "10:00 AM")).toBe(2); // preserved
     expect(getBasePeopleForBlock(next, "sorter", "9:00 AM")).toBe(1);
     expect(getAdditionalForBlock(next, "sorter", "9:00 AM", "10:00 AM")).toHaveLength(1);
-
-    // Later block remains independently editable after fill.
-    const edited = setBasePeopleForBlock(next, "weigher", "10:00 AM", "11:00 AM", 4);
-    expect(getBasePeopleForBlock(edited, "weigher", "9:00 AM")).toBe(0);
-    expect(getBasePeopleForBlock(edited, "weigher", "10:00 AM")).toBe(4);
   });
 
   it("getBasePeopleForBlock reveals mid-block BASE that does not cover block start", () => {
@@ -799,7 +894,13 @@ describe("managementHelpers", () => {
       weigh_sec_per_bag: 45,
       staffing_intervals: setBasePeopleForBlock([], "folder", "9:00 AM", "10:00 AM", 6),
     };
-    const nextIntervals = fillRestBasePeopleForRole(inputs.staffing_intervals, "folder", blocks, 6);
+    const nextIntervals = fillRestBasePeopleForRole(
+      inputs.staffing_intervals,
+      "folder",
+      blocks,
+      6,
+      blocks[0].block_start,
+    );
     const body = buildManagementPayload({ ...inputs, staffing_intervals: nextIntervals });
     expect(body.bag_count).toBe(50);
     expect(body.washer_count).toBe(4);
