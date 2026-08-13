@@ -548,6 +548,7 @@ def load_canonical_completions_v2(
     from backend.rinse_cycle_boundary import (
         PENDING_REASON_ENTRY_NOT_FOUND,
         current_cycle_event_window,
+        manager_completion_belongs_to_cycle,
         resolve_current_cycle,
     )
     from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
@@ -714,7 +715,7 @@ def load_canonical_completions_v2(
                     )
                 cycle_start, cycle_end = cycle_windows[bid]
                 if ts is not None:
-                    if not _manager_completion_belongs_to_cycle(
+                    if not manager_completion_belongs_to_cycle(
                         ts, cycle_start=cycle_start, cycle_end=cycle_end
                     ):
                         continue
@@ -724,7 +725,7 @@ def load_canonical_completions_v2(
                     existing_at = (out.get(bid) or {}).get("completion_at")
                     if not isinstance(existing_at, datetime):
                         continue
-                    if not _manager_completion_belongs_to_cycle(
+                    if not manager_completion_belongs_to_cycle(
                         existing_at, cycle_start=cycle_start, cycle_end=cycle_end
                     ):
                         continue
@@ -744,27 +745,6 @@ def load_canonical_completions_v2(
             if pending_reasons_out is not None:
                 pending_reasons_out.pop(bid, None)
     return out
-
-
-def _manager_completion_belongs_to_cycle(
-    correction_at: datetime,
-    *,
-    cycle_start: datetime | None,
-    cycle_end: datetime | None,
-) -> bool:
-    """True when a manager correction's completion_at is in [anchor, next_stv).
-
-    ``cycle_end`` is exclusive (next sent-to-vendor). Open cycles pass
-    ``cycle_end=None``. Without a cycle anchor the correction cannot be
-    associated with the selected day's current cycle.
-    """
-    if cycle_start is None:
-        return False
-    if correction_at < cycle_start:
-        return False
-    if cycle_end is not None and correction_at >= cycle_end:
-        return False
-    return True
 
 
 def apply_cycle_pending_reasons(
