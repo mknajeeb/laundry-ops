@@ -20,7 +20,7 @@ class TestScanChronologyPayload:
                 None,
                 1,
                 selected_date_et=date(2026, 6, 18),
-                stage="folding",
+                stage="not-a-real-stage",
             )
 
     def test_valid_stages(self):
@@ -30,6 +30,7 @@ class TestScanChronologyPayload:
                 "sorting",
                 "washing",
                 "drying",
+                "folder",
                 "washer_utilization",
                 "dryer_utilization",
                 "coverage_audit",
@@ -38,6 +39,6 @@ class TestScanChronologyPayload:
                 "process_flow",
             }
         )
-        assert DURATION_STAGES == frozenset({"weighing", "sorting"})
+        assert DURATION_STAGES == frozenset({"weighing", "sorting", "folder"})
         assert EVENT_STAGES == frozenset({"washing", "drying"})
         assert UTIL_STAGES == frozenset({"washer_utilization", "dryer_utilization"})

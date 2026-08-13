@@ -176,5 +176,13 @@ class TestUserActivityPayloadValidation:
 
     def test_valid_activity_type_filters(self):
         assert VALID_ACTIVITY_TYPE_FILTERS == frozenset(
-            {"all", "weighing", "sorting", "washing", "drying", "post_processing_weight"}
+            {
+                "all",
+                "weighing",
+                "sorting",
+                "washing",
+                "drying",
+                "folder",
+                "post_processing_weight",
+            }
         )
