@@ -315,3 +315,54 @@ def finish_scrape_run(
             int(organization_id),
         ),
     )
+
+
+def merge_scrape_run_result_json(
+    cursor,
+    run_id: int,
+    organization_id: int,
+    patch: dict[str, Any],
+) -> None:
+    """Merge keys into a finished scrape's result_json without changing status.
+
+    Used for post-lock best-effort targeted refresh metadata. Never reopens a
+    terminal scrape as ``running``.
+    """
+    ensure_rinse_scrape_runs_table(cursor)
+    cursor.execute(
+        """
+        SELECT status, result_json
+        FROM rinse_scrape_runs
+        WHERE id = %s AND organization_id = %s
+        LIMIT 1
+        """,
+        (int(run_id), int(organization_id)),
+    )
+    row = cursor.fetchone() or {}
+    if not isinstance(row, dict):
+        return
+    status = str(row.get("status") or "")
+    if status == "running":
+        # Refuse to annotate an active main cycle — caller must finish first.
+        return
+    detail: dict[str, Any] = {}
+    raw = row.get("result_json")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                detail = parsed
+        except json.JSONDecodeError:
+            detail = {}
+    elif isinstance(raw, dict):
+        detail = dict(raw)
+    detail.update(patch)
+    cursor.execute(
+        """
+        UPDATE rinse_scrape_runs
+        SET result_json = %s
+        WHERE id = %s AND organization_id = %s
+          AND status <> 'running'
+        """,
+        (json.dumps(detail, default=str), int(run_id), int(organization_id)),
+    )

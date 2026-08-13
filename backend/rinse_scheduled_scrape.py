@@ -23,6 +23,7 @@ from backend.rinse_scrape_runs import (
     finish_scrape_run,
     insert_scrape_run,
     insert_skipped_scrape_run,
+    merge_scrape_run_result_json,
     release_scrape_lock,
 )
 from backend.rinse_vendor_config import resolve_rinse_vendor, rinse_scrape_env_for_organization
@@ -935,7 +936,8 @@ def run_rinse_combined_sync_for_org(
             rfv_error=rfv_result.error_message,
             combined_cycle=combined_ctx,
             av_presence_detail=av_presence_detail,
-            targeted_pending_refresh=targeted_pending_refresh,
+            # Targeted refresh runs post-lock after the main cycle is terminal.
+            targeted_pending_refresh=False,
         )
         result.status = import_result.status
         result.at_vendor_status = import_result.at_vendor_status or import_result.status
@@ -1014,7 +1016,6 @@ def run_rinse_combined_sync_for_org(
             ready_for_vendor_sync=rfv_detail,
             at_vendor_presence_sync=av_presence_detail,
         )
-        return result
     except Exception as exc:
         conn.rollback()
         result.status = "failed"
@@ -1043,11 +1044,29 @@ def run_rinse_combined_sync_for_org(
             ready_for_vendor_sync=rfv_detail or None,
             at_vendor_presence_sync=av_presence_detail or None,
         )
-        return result
     finally:
         log.close()
         release_scrape_lock(cursor, org_id)
         conn.commit()
+
+    # Post-lock: best-effort targeted refresh must not hold the main scrape lock.
+    if not dry_run and result.status not in ("skipped",):
+        post_log = _TeeLog(paths.log_path)
+        try:
+            _run_post_lock_targeted_refresh(
+                conn,
+                cursor,
+                org_id=org_id,
+                result=result,
+                run_type=run_type,
+                targeted_pending_refresh=targeted_pending_refresh,
+                log=post_log,
+                after_main_failure=str(result.status or "")
+                not in ("success", "needs_attention", "inspect_only"),
+            )
+        finally:
+            post_log.close()
+    return result
 
 
 def _build_gate_block_operational_log(
@@ -1067,6 +1086,159 @@ def _build_gate_block_operational_log(
         "scan_events_import_status": import_status,
         "scan_only_batch_id": scan_batch_id,
     }
+
+
+def _targeted_refresh_inserted_events(summary: Mapping[str, Any] | None) -> int:
+    if not isinstance(summary, Mapping):
+        return 0
+    for key in ("missing_scans_imported", "events_inserted"):
+        try:
+            n = int(summary.get(key) or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n > 0:
+            return n
+    return 0
+
+
+def _targeted_refresh_needs_reproject(summary: Mapping[str, Any] | None) -> bool:
+    """True only when targeted work committed new scan evidence worth a Stage-B pass."""
+    if not isinstance(summary, Mapping):
+        return False
+    if _targeted_refresh_inserted_events(summary) > 0:
+        return True
+    try:
+        if int(summary.get("bags_completed_after_refresh") or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    backfill = summary.get("near_complete_wf_weight_backfill")
+    if isinstance(backfill, Mapping):
+        try:
+            if int(backfill.get("applied") or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
+def _run_post_lock_targeted_refresh(
+    conn,
+    cursor,
+    *,
+    org_id: int,
+    result: ScheduledScrapeResult,
+    run_type: str,
+    targeted_pending_refresh: bool | None,
+    log,
+    after_main_failure: bool = False,
+) -> None:
+    """Best-effort targeted refresh after the main scrape is terminal and unlocked.
+
+    Must not reopen ``rinse_scrape_runs`` as running or change a successful main
+    status on targeted failure. New scan events may trigger a separate Today-only
+    Stage-B reprojection after commit.
+    """
+    if log is None:
+        return
+    upload_batch_id = result.batch_id
+    if after_main_failure and not upload_batch_id:
+        try:
+            cursor.execute(
+                """
+                SELECT batch_id FROM upload_batches
+                WHERE organization_id = %s AND state = 'CONFIRMED'
+                ORDER BY batch_id DESC LIMIT 1
+                """,
+                (org_id,),
+            )
+            brow = cursor.fetchone() or {}
+            upload_batch_id = brow.get("batch_id") if isinstance(brow, dict) else None
+        except Exception:
+            upload_batch_id = None
+
+    main_status_before = result.status
+    try:
+        summary = _run_targeted_pending_scan_refresh(
+            conn,
+            cursor,
+            org_id=org_id,
+            upload_batch_id=int(upload_batch_id) if upload_batch_id else None,
+            batch_date=_today_et(),
+            run_type=run_type,
+            targeted_pending_refresh=targeted_pending_refresh,
+            log=log,
+        )
+    except Exception as exc:
+        summary = {
+            "targeted_refresh_ran": False,
+            "error": str(exc),
+            "post_lock": True,
+        }
+        log.write(f"Post-lock targeted pending refresh ERROR (non-fatal): {exc}\n")
+
+    if summary is None:
+        return
+
+    patch: dict[str, Any] = {
+        "targeted_pending_scan_refresh": {**dict(summary), "post_lock": True},
+    }
+    if after_main_failure:
+        patch["targeted_refresh_after_scrape_failure"] = True
+
+    reproject_detail: dict[str, Any] | None = None
+    if _targeted_refresh_needs_reproject(summary):
+        try:
+            reproject_detail = _refresh_open_step1_day_after_scrape(
+                conn,
+                cursor,
+                org_id=org_id,
+                log=log,
+                scrape_batch_id=int(upload_batch_id) if upload_batch_id else None,
+                scrape_run_id=result.run_id,
+                detail={
+                    "targeted_pending_scan_refresh": summary,
+                    "post_lock_targeted_reproject": True,
+                },
+            )
+            patch["targeted_post_lock_step1_refresh"] = reproject_detail
+            log.write(
+                "Post-lock Stage-B reproject after targeted scan events "
+                f"inserted={_targeted_refresh_inserted_events(summary)}\n"
+            )
+        except Exception as reproject_exc:
+            reproject_detail = {
+                "ok": False,
+                "status": "failed",
+                "error": str(reproject_exc),
+                "post_lock": True,
+            }
+            patch["targeted_post_lock_step1_refresh"] = reproject_detail
+            log.write(
+                f"Post-lock Stage-B reproject ERROR (non-fatal): {reproject_exc}\n"
+            )
+    else:
+        patch["targeted_post_lock_step1_refresh"] = {
+            "skipped": True,
+            "reason": "no_targeted_events",
+            "post_lock": True,
+        }
+        log.write("Post-lock Stage-B reproject skipped (no targeted events)\n")
+
+    result.detail = {**(result.detail or {}), **patch}
+    # Never let post-lock work flip a terminal main status.
+    result.status = main_status_before
+
+    if result.run_id:
+        try:
+            merge_scrape_run_result_json(
+                cursor, int(result.run_id), int(org_id), patch
+            )
+            conn.commit()
+        except Exception as merge_exc:
+            log.write(
+                f"WARNING: could not persist post-lock targeted detail: {merge_exc}\n"
+            )
 
 
 def _run_targeted_pending_scan_refresh(
@@ -1384,7 +1556,6 @@ def run_scheduled_scrape_for_org(
                 result.at_vendor_status = "inspect_only"
                 result.error_message = gate_warning
                 scan_events_only_detail: dict[str, Any] | None = None
-                targeted_pending_refresh_detail: dict[str, Any] | None = None
                 batch_date = _today_et()
 
                 if not dry_run:
@@ -1411,17 +1582,6 @@ def run_scheduled_scrape_for_org(
                         if scan_batch_id:
                             result.batch_id = int(scan_batch_id)
 
-                    targeted_pending_refresh_detail = _run_targeted_pending_scan_refresh(
-                        conn,
-                        cursor,
-                        org_id=org_id,
-                        upload_batch_id=result.batch_id,
-                        batch_date=batch_date,
-                        run_type=run_type,
-                        targeted_pending_refresh=targeted_pending_refresh,
-                        log=log,
-                    )
-
                 result.detail = {
                     "portal_confirm_gate": portal_gate,
                     "sync_warning": gate_warning,
@@ -1436,10 +1596,9 @@ def run_scheduled_scrape_for_org(
                     f"scan_only_batch_id={result.detail.get('scan_only_batch_id')} "
                     f"portal_confirm_block_reason={result.detail.get('portal_confirm_block_reason')}\n"
                 )
-                if targeted_pending_refresh_detail is not None:
-                    result.detail["targeted_pending_scan_refresh"] = targeted_pending_refresh_detail
-                # Portal confirm may be gated, but scan-only / targeted imports still
-                # land events — refresh Step-1 so Completed/Pending do not freeze.
+                # Portal confirm may be gated, but scan-only imports still land
+                # events — refresh Step-1 so Completed/Pending do not freeze.
+                # Targeted pending refresh runs post-lock after main terminal.
                 if not dry_run:
                     result.detail["step1_day_refresh"] = _refresh_open_step1_day_after_scrape(
                         conn,
@@ -1543,22 +1702,10 @@ def run_scheduled_scrape_for_org(
             conn.commit()
 
             off_portal_refresh_detail: dict[str, Any] | None = None
-            targeted_pending_refresh_detail: dict[str, Any] | None = None
             step1_refresh_detail: dict[str, Any] | None = None
             if not dry_run and batch_id and final_status in ("success", "needs_attention"):
-                targeted_pending_refresh_detail = _run_targeted_pending_scan_refresh(
-                    conn,
-                    cursor,
-                    org_id=org_id,
-                    upload_batch_id=int(batch_id),
-                    batch_date=batch_date,
-                    run_type=run_type,
-                    targeted_pending_refresh=targeted_pending_refresh,
-                    log=log,
-                )
-                # After scans land (confirm + optional targeted refresh), rebuild
-                # today's Step-1 snapshot so Completed/Pending queues catch up.
-                # Never run Stage B against an import still marked incomplete.
+                # Main locked path: Stage-B after confirm. Targeted pending
+                # refresh runs only after this scrape is terminal + unlocked.
                 step1_refresh_detail = _refresh_open_step1_day_after_scrape(
                     conn,
                     cursor,
@@ -1586,8 +1733,6 @@ def run_scheduled_scrape_for_org(
                 result.detail["sync_warning"] = portal_gate.get("warning")
             if off_portal_refresh_detail is not None:
                 result.detail["off_portal_scan_refresh"] = off_portal_refresh_detail
-            if targeted_pending_refresh_detail is not None:
-                result.detail["targeted_pending_scan_refresh"] = targeted_pending_refresh_detail
             if step1_refresh_detail is not None:
                 result.detail["step1_day_refresh"] = step1_refresh_detail
                 _mark_step1_refresh_failed_on_result(result, step1_refresh_detail)
@@ -1598,62 +1743,8 @@ def run_scheduled_scrape_for_org(
             result.at_vendor_status = "failed"
             result.error_message = str(e)
             log.write(f"ERROR: {e}\n")
-            # Best-effort: still pull near-complete pending bags via direct
-            # ?q= lookup when the Events CSV scrape/import path fails.
-            if not dry_run:
-                try:
-                    fallback_batch_id = result.batch_id
-                    if not fallback_batch_id:
-                        cursor.execute(
-                            """
-                            SELECT batch_id FROM upload_batches
-                            WHERE organization_id = %s AND state = 'CONFIRMED'
-                            ORDER BY batch_id DESC LIMIT 1
-                            """,
-                            (org_id,),
-                        )
-                        brow = cursor.fetchone() or {}
-                        fallback_batch_id = brow.get("batch_id") if isinstance(brow, dict) else None
-                    targeted_pending_refresh_detail = _run_targeted_pending_scan_refresh(
-                        conn,
-                        cursor,
-                        org_id=org_id,
-                        upload_batch_id=int(fallback_batch_id) if fallback_batch_id else None,
-                        batch_date=_today_et(),
-                        run_type=run_type,
-                        targeted_pending_refresh=targeted_pending_refresh,
-                        log=log,
-                    )
-                    if targeted_pending_refresh_detail is not None:
-                        result.detail["targeted_pending_scan_refresh"] = (
-                            targeted_pending_refresh_detail
-                        )
-                        result.detail["targeted_refresh_after_scrape_failure"] = True
-                        step1_fallback = _refresh_open_step1_day_after_scrape(
-                            conn,
-                            cursor,
-                            org_id=org_id,
-                            log=log,
-                            scrape_batch_id=int(fallback_batch_id)
-                            if fallback_batch_id
-                            else None,
-                            scrape_run_id=run_id,
-                        )
-                        result.detail["step1_day_refresh"] = step1_fallback
-                        _mark_step1_refresh_failed_on_result(result, step1_fallback)
-                except Exception as refresh_exc:
-                    log.write(
-                        f"ERROR: Targeted pending / Step-1 refresh after scrape "
-                        f"failure: {refresh_exc}\n"
-                    )
-                    result.detail["step1_day_refresh"] = {
-                        "ok": False,
-                        "status": "failed",
-                        "error": str(refresh_exc),
-                    }
-                    _mark_step1_refresh_failed_on_result(
-                        result, result.detail.get("step1_day_refresh")
-                    )
+            # Targeted pending refresh runs post-lock after main terminal —
+            # do not hold the scrape lock for Playwright lookups on failure.
 
         if rfv_detail is not None:
             result.detail["ready_for_vendor_sync"] = rfv_detail
@@ -1701,6 +1792,24 @@ def run_scheduled_scrape_for_org(
         finally:
             release_scrape_lock(cursor, org_id)
             conn.commit()
+
+    # Standalone (non-combined) path: targeted refresh only after main terminal + unlock.
+    if not dry_run and result.status not in ("skipped",):
+        post_log = _TeeLog(paths.log_path)
+        try:
+            _run_post_lock_targeted_refresh(
+                conn,
+                cursor,
+                org_id=org_id,
+                result=result,
+                run_type=run_type,
+                targeted_pending_refresh=targeted_pending_refresh,
+                log=post_log,
+                after_main_failure=str(result.status or "")
+                not in ("success", "needs_attention", "inspect_only"),
+            )
+        finally:
+            post_log.close()
 
     return result
 
