@@ -408,8 +408,9 @@ describe("managementHelpers", () => {
       ["dry", 0, 0, 0, 3],
       ["fold", 0, 0, 0, 0],
     ]);
-    expect(view.columns.find((c) => c.id === "wash").waitingNextText).toBe("1 → Dry");
+    expect(view.columns.find((c) => c.id === "wash").waitingNextText).toBe("1 waiting to dry");
     expect(view.columns.find((c) => c.id === "fold").isTerminal).toBe(true);
+    expect(view.columns.find((c) => c.id === "dry").waitingNextText).toBe("0 waiting to fold");
     expect(view.checkpoints).toHaveLength(2);
 
     const at515 = buildPositionInventoryDisplay(

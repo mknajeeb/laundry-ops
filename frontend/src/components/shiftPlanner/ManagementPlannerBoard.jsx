@@ -407,8 +407,7 @@ const POSITION_AMBER = {
 };
 
 function PositionFlow({ block, targetBags }) {
-  const [selectedTimeSec, setSelectedTimeSec] = useState(null);
-  const view = buildPositionInventoryDisplay(block, targetBags, { selectedTimeSec });
+  const view = buildPositionInventoryDisplay(block, targetBags);
   if (!view) {
     return (
       <Typography sx={{ fontSize: "0.85rem", color: "text.disabled", py: 0.5 }}>
@@ -416,29 +415,34 @@ function PositionFlow({ block, targetBags }) {
       </Typography>
     );
   }
-  const cols = view.columns || [];
   const checkpoints = view.checkpoints || [];
-  const activeSec = view.selectedTimeSec;
+  const blockStart = block?.block_start || view.selectedCheckpoint?.raw?.block_start || "";
+  const blockEnd = block?.block_end || "";
   const stageGridColumns = {
-    xs: "48px repeat(5, minmax(0, 1fr))",
-    sm: "56px repeat(5, minmax(0, 1fr))",
-    md: "60px repeat(5, minmax(0, 1fr))",
+    xs: "72px repeat(5, minmax(0, 1fr))",
+    sm: "88px repeat(5, minmax(0, 1fr))",
+    md: "96px repeat(5, minmax(0, 1fr))",
   };
 
   return (
-    <Stack spacing={0.85} data-testid="position-two-row">
+    <Stack spacing={0.65} data-testid="position-two-row">
       <Stack direction="row" alignItems="baseline" justifyContent="space-between" flexWrap="wrap" useFlexGap>
-        <Typography
-          sx={{
-            fontWeight: 800,
-            fontSize: "0.72rem",
-            letterSpacing: 0.4,
-            color: "text.secondary",
-          }}
-          data-testid="position-selected-label"
-        >
-          POSITION · {view.selectedTime || "—"}
-        </Typography>
+        <Box>
+          <Typography
+            sx={{
+              fontWeight: 800,
+              fontSize: "0.72rem",
+              letterSpacing: 0.35,
+              color: "text.secondary",
+            }}
+            data-testid="position-selected-label"
+          >
+            POSITION — {blockStart || "—"} → {blockEnd || "—"}
+          </Typography>
+          <Typography sx={{ fontWeight: 650, fontSize: "0.62rem", color: "text.disabled" }}>
+            15-minute operating position
+          </Typography>
+        </Box>
         <Typography
           data-testid="position-reconciled"
           sx={{
@@ -451,153 +455,14 @@ function PositionFlow({ block, targetBags }) {
         </Typography>
       </Stack>
 
-      <Box
-        sx={{
-          display: "grid",
-          gridTemplateColumns: {
-            xs: "repeat(2, minmax(0, 1fr))",
-            sm: "repeat(3, minmax(0, 1fr))",
-            md: "repeat(5, minmax(0, 1fr))",
-          },
-          gap: 0.65,
-        }}
-        data-testid="position-stage-columns"
-      >
-        {cols.map((col) => (
-          <Box
-            key={col.id}
-            data-testid={`stage-col-${col.id}`}
-            sx={{
-              borderRadius: 1.25,
-              border: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
-              overflow: "hidden",
-              minWidth: 0,
-              px: 0.55,
-              py: 0.55,
-              bgcolor: "rgba(255,255,255,0.7)",
-            }}
-          >
-            <Typography
-              sx={{
-                textAlign: "center",
-                fontWeight: 800,
-                fontSize: "0.68rem",
-                letterSpacing: 0.5,
-                color: "text.secondary",
-                mb: 0.25,
-              }}
-            >
-              {col.title}
-            </Typography>
-            <Typography
-              data-testid={`total-done-${col.id}`}
-              sx={{
-                textAlign: "center",
-                fontWeight: 800,
-                fontSize: "1.35rem",
-                lineHeight: 1.05,
-                color: POSITION_TEAL.label,
-              }}
-            >
-              {col.totalDone}
-            </Typography>
-            <Typography
-              sx={{
-                textAlign: "center",
-                fontWeight: 700,
-                fontSize: "0.55rem",
-                letterSpacing: 0.3,
-                color: POSITION_TEAL.label,
-              }}
-            >
-              total done
-            </Typography>
-            <Typography
-              data-testid={`this-15-${col.id}`}
-              sx={{
-                textAlign: "center",
-                mt: 0.25,
-                fontSize: "0.72rem",
-                fontWeight: 800,
-                color: col.this15 > 0 ? "text.primary" : "text.disabled",
-              }}
-            >
-              {col.this15 > 0 ? `+${col.this15}` : "+0"}
-              <Box component="span" sx={{ fontWeight: 650, fontSize: "0.58rem", color: "text.secondary", ml: 0.4 }}>
-                this 15 min
-              </Box>
-            </Typography>
-            {col.isTerminal ? (
-              <Typography
-                sx={{
-                  textAlign: "center",
-                  mt: 0.35,
-                  fontSize: "0.62rem",
-                  fontWeight: 700,
-                  color: POSITION_TEAL.label,
-                }}
-              >
-                {col.terminalText || `${col.totalDone} complete`}
-              </Typography>
-            ) : (
-              <Typography
-                data-testid={`waiting-next-${col.id}`}
-                sx={{
-                  textAlign: "center",
-                  mt: 0.35,
-                  fontSize: "0.68rem",
-                  fontWeight: 750,
-                  color: col.waitingNext > 0 ? POSITION_AMBER.label : "text.disabled",
-                }}
-              >
-                {col.waitingNextText || `0 → ${col.waitingNextLabel || "next"}`}
-              </Typography>
-            )}
-            {col.inProcess > 0 ? (
-              <Typography
-                data-testid={`in-process-${col.id}`}
-                sx={{
-                  textAlign: "center",
-                  mt: 0.2,
-                  fontSize: "0.62rem",
-                  fontWeight: 650,
-                  color: "text.secondary",
-                }}
-              >
-                {col.inProcessText}
-                {(col.inLabor != null || col.inCycle != null) && (col.inLabor > 0 || col.inCycle > 0) ? (
-                  <Box component="span" sx={{ display: "block", fontSize: "0.55rem", color: "text.disabled" }}>
-                    {[
-                      col.inLabor > 0 ? `${col.inLabor} loading` : null,
-                      col.inCycle > 0 ? `${col.inCycle} in cycle` : null,
-                    ].filter(Boolean).join(" · ")}
-                  </Box>
-                ) : null}
-              </Typography>
-            ) : null}
-          </Box>
-        ))}
-      </Box>
-
       {checkpoints.length ? (
         <Box data-testid="availability-15min">
-          <Typography
-            sx={{
-              fontWeight: 800,
-              fontSize: "0.65rem",
-              letterSpacing: 0.4,
-              color: POSITION_AMBER.label,
-              mb: 0.35,
-            }}
-          >
-            15-MIN CHECKPOINTS
-          </Typography>
           <Box
             data-testid="availability-15min-panel"
             sx={{
               borderRadius: 1.25,
-              border: `1px solid ${POSITION_AMBER.border}`,
-              bgcolor: "rgba(255,251,235,0.45)",
+              border: `1px solid ${POSITION_TEAL.border}`,
+              bgcolor: "rgba(255,255,255,0.55)",
               overflow: "auto",
             }}
           >
@@ -605,83 +470,133 @@ function PositionFlow({ block, targetBags }) {
               sx={{
                 display: "grid",
                 gridTemplateColumns: stageGridColumns,
-                gap: 0.35,
+                gap: 0.4,
                 alignItems: "end",
-                px: 0.65,
-                pt: 0.5,
-                pb: 0.3,
-                borderBottom: `1px solid ${POSITION_AMBER.border}`,
-                minWidth: 520,
+                px: 0.75,
+                pt: 0.55,
+                pb: 0.35,
+                borderBottom: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
+                minWidth: 560,
+                bgcolor: "rgba(255,255,255,0.75)",
               }}
               data-testid="checkpoint-header"
             >
-              <Typography sx={{ fontWeight: 800, fontSize: "0.55rem", color: "text.disabled" }}>
+              <Typography sx={{ fontWeight: 800, fontSize: "0.58rem", color: "text.disabled", letterSpacing: 0.3 }}>
                 TIME
               </Typography>
               {["WEIGH", "SORT", "WASH", "DRY", "FOLD"].map((t) => (
                 <Typography
                   key={t}
-                  sx={{ textAlign: "center", fontWeight: 800, fontSize: "0.55rem", color: "text.secondary" }}
+                  sx={{ textAlign: "center", fontWeight: 800, fontSize: "0.62rem", letterSpacing: 0.4, color: "text.secondary" }}
                 >
                   {t}
                 </Typography>
               ))}
             </Box>
-            {checkpoints.map((cp) => {
-              const selected = Number(cp.time_sec) === Number(activeSec);
+            {checkpoints.map((cp, idx) => {
+              const isHourEnd = idx === checkpoints.length - 1;
               return (
                 <Box
                   key={cp.time_sec || cp.time}
-                  component="button"
-                  type="button"
-                  onClick={() => setSelectedTimeSec(cp.time_sec)}
                   data-testid={`checkpoint-${cp.time}`}
-                  data-selected={selected ? "true" : "false"}
+                  data-hour-end={isHourEnd ? "true" : "false"}
                   sx={{
                     display: "grid",
                     gridTemplateColumns: stageGridColumns,
-                    gap: 0.35,
+                    gap: 0.4,
                     alignItems: "start",
-                    width: "100%",
-                    textAlign: "left",
-                    cursor: "pointer",
-                    border: 0,
-                    borderBottom: `1px solid ${POSITION_AMBER.border}`,
-                    bgcolor: selected ? "rgba(13, 148, 136, 0.10)" : "transparent",
-                    px: 0.65,
-                    py: 0.45,
-                    minWidth: 520,
+                    px: 0.75,
+                    py: isHourEnd ? 0.65 : 0.5,
+                    minWidth: 560,
+                    borderBottom: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
+                    borderTop: isHourEnd ? `1px solid ${POSITION_TEAL.border}` : 0,
+                    bgcolor: isHourEnd ? "rgba(13, 148, 136, 0.08)" : "transparent",
                     "&:last-child": { borderBottom: 0 },
-                    "&:hover": { bgcolor: selected ? "rgba(13, 148, 136, 0.14)" : "rgba(217, 119, 6, 0.08)" },
                   }}
                 >
-                  <Typography sx={{ fontWeight: 800, fontSize: "0.68rem", color: selected ? POSITION_TEAL.label : "text.secondary" }}>
-                    {cp.time}
-                  </Typography>
+                  <Box sx={{ pt: 0.1 }}>
+                    <Typography
+                      sx={{
+                        fontWeight: 800,
+                        fontSize: "0.72rem",
+                        color: isHourEnd ? POSITION_TEAL.label : "text.secondary",
+                        lineHeight: 1.15,
+                      }}
+                    >
+                      {cp.time}
+                    </Typography>
+                    {isHourEnd ? (
+                      <Typography
+                        data-testid="hour-end-badge"
+                        sx={{
+                          mt: 0.15,
+                          display: "inline-block",
+                          fontWeight: 800,
+                          fontSize: "0.52rem",
+                          letterSpacing: 0.4,
+                          color: POSITION_TEAL.label,
+                          border: `1px solid ${POSITION_TEAL.border}`,
+                          borderRadius: 0.75,
+                          px: 0.45,
+                          py: 0.05,
+                          bgcolor: "rgba(13, 148, 136, 0.12)",
+                        }}
+                      >
+                        HOUR END
+                      </Typography>
+                    ) : null}
+                  </Box>
                   {(cp.stages || []).map((stage) => (
                     <Box
                       key={stage.id}
                       data-testid={`checkpoint-${cp.time}-${stage.id}`}
                       sx={{ minWidth: 0, textAlign: "center" }}
                     >
-                      <Typography sx={{ fontWeight: 800, fontSize: "0.78rem", color: POSITION_TEAL.label, lineHeight: 1.1 }}>
+                      <Typography
+                        sx={{
+                          fontWeight: 800,
+                          fontSize: isHourEnd ? "0.95rem" : "0.88rem",
+                          color: POSITION_TEAL.label,
+                          lineHeight: 1.05,
+                        }}
+                      >
                         {stage.totalDone}
                       </Typography>
-                      <Typography sx={{ fontSize: "0.55rem", fontWeight: 700, color: stage.this15 > 0 ? "text.primary" : "text.disabled" }}>
-                        {stage.this15 > 0 ? `+${stage.this15}` : "+0"}
+                      <Typography
+                        sx={{
+                          mt: 0.1,
+                          fontSize: "0.58rem",
+                          fontWeight: 700,
+                          color: stage.this15 > 0 ? POSITION_TEAL.label : "text.disabled",
+                        }}
+                      >
+                        {stage.this15 > 0 ? `+${stage.this15}` : "+0"} this 15 min
                       </Typography>
                       {!stage.isTerminal ? (
-                        <Typography sx={{ fontSize: "0.55rem", fontWeight: 700, color: stage.waitingNext > 0 ? POSITION_AMBER.label : "text.disabled" }}>
-                          {stage.waitingNext}→{stage.waitingNextLabel || "?"}
+                        <Typography
+                          sx={{
+                            mt: 0.15,
+                            fontSize: "0.58rem",
+                            fontWeight: 750,
+                            color: stage.waitingNext > 0 ? POSITION_AMBER.label : "text.disabled",
+                            lineHeight: 1.15,
+                          }}
+                        >
+                          {stage.waitingNextText || `0 waiting to ${(stage.waitingNextLabel || "next").toLowerCase()}`}
                         </Typography>
-                      ) : (
-                        <Typography sx={{ fontSize: "0.55rem", fontWeight: 700, color: POSITION_TEAL.label }}>
-                          done
+                      ) : null}
+                      {stage.inProcess > 0 ? (
+                        <Typography
+                          sx={{
+                            mt: 0.1,
+                            fontSize: "0.55rem",
+                            fontWeight: 650,
+                            color: "text.secondary",
+                          }}
+                        >
+                          {stage.inProcess} in process
                         </Typography>
-                      )}
-                      <Typography sx={{ fontSize: "0.52rem", fontWeight: 650, color: stage.inProcess > 0 ? "text.secondary" : "text.disabled" }}>
-                        {stage.inProcess > 0 ? `${stage.inProcess} in proc` : "—"}
-                      </Typography>
+                      ) : null}
                     </Box>
                   ))}
                 </Box>
@@ -689,7 +604,11 @@ function PositionFlow({ block, targetBags }) {
             })}
           </Box>
         </Box>
-      ) : null}
+      ) : (
+        <Typography sx={{ fontSize: "0.8rem", color: "text.disabled" }}>
+          No 15-minute checkpoints for this slot.
+        </Typography>
+      )}
     </Stack>
   );
 }
@@ -1657,19 +1576,7 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                 ↓
               </Box>
 
-              <Box sx={positionBandSx}>
-                <Typography
-                  sx={{
-                    fontWeight: 800,
-                    fontSize: "0.72rem",
-                    letterSpacing: 0.5,
-                    color: "text.secondary",
-                    mb: 0.5,
-                  }}
-                  data-testid="slot-position-label"
-                >
-                  {pb.block_end} POSITION
-                </Typography>
+              <Box sx={positionBandSx} data-testid="slot-position-label">
                 {hasStaffing ? (
                   <PositionFlow block={pos} targetBags={targetBags} />
                 ) : (

@@ -14,7 +14,7 @@ describe("one-slot recovery board structure", () => {
   it("renders one planning-slot-card per time slot (not separate STAFFING/POSITION cards)", () => {
     expect(boardSrc).toContain('data-testid="planning-slot-card"');
     expect(boardSrc).toContain("STAFF: {staffLine}");
-    expect(boardSrc).toContain("{pb.block_end} POSITION");
+    expect(boardSrc).toContain("POSITION —");
     expect(boardSrc).toContain("One card = one time slot");
     // Old two-card pattern removed
     expect(boardSrc).not.toContain('kind="staffing"');
@@ -43,8 +43,8 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toMatch(/>\s*Hybrid\s*</);
     expect(boardSrc).toContain("MANAGEMENT_HYBRIDS.map");
     expect(boardSrc).toContain("this 15 min");
-    expect(boardSrc).toContain("total-done-");
-    expect(boardSrc).toContain("this-15-");
+    expect(boardSrc).toContain("HOUR END");
+    expect(boardSrc).toContain("checkpoint-header");
   });
 
   it("keeps sticky Recalculate and auto-recalc debounce", () => {
@@ -59,22 +59,24 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("}, [inputs, settingsReady]");
   });
 
-  it("uses five-column POSITION checkpoint snapshot + 15-min timeline", () => {
+  it("uses five-column POSITION checkpoint table as primary view", () => {
     expect(boardSrc).toContain("buildPositionInventoryDisplay");
     expect(boardSrc).toContain("position-two-row");
-    expect(boardSrc).toContain("position-stage-columns");
-    expect(boardSrc).toContain("POSITION ·");
-    expect(boardSrc).toContain("total done");
+    expect(boardSrc).toContain("POSITION —");
+    expect(boardSrc).toContain("15-minute operating position");
     expect(boardSrc).toContain("this 15 min");
-    expect(boardSrc).toContain("15-MIN CHECKPOINTS");
-    expect(boardSrc).toContain("setSelectedTimeSec");
+    expect(boardSrc).toContain("HOUR END");
+    expect(boardSrc).toContain("hour-end-badge");
+    expect(boardSrc).toContain("waiting to");
     expect(boardSrc).toContain("position-reconciled");
     expect(boardSrc).toContain("availability-15min");
-    expect(helpersSrc).toContain("columnsFromCheckpoint");
-    expect(helpersSrc).toContain("waiting_next");
-    expect(helpersSrc).toContain("this_15_min");
-    expect(boardSrc).not.toContain("AVAILABLE TO START");
     expect(boardSrc).toContain("checkpoint-header");
+    expect(helpersSrc).toContain("columnsFromCheckpoint");
+    expect(helpersSrc).toContain("waiting to");
+    expect(helpersSrc).not.toContain("→ ${nextLabel}");
+    expect(boardSrc).not.toContain("position-stage-columns");
+    expect(boardSrc).not.toContain("setSelectedTimeSec");
+    expect(boardSrc).not.toContain("AVAILABLE TO START");
     expect(boardSrc).not.toContain("QueueBridge");
     expect(boardSrc).not.toContain("WAITING TO ENTER");
     expect(boardSrc).not.toContain("Weighing Now");
@@ -82,6 +84,9 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).not.toContain("Washing Now");
     expect(boardSrc).not.toContain("Drying Now");
     expect(boardSrc).not.toContain("Folding Now");
+    // No separate end-of-hour five-card summary
+    expect(boardSrc).not.toContain("total-done-");
+    expect(boardSrc).not.toContain("{pb.block_end} POSITION");
   });
 
   it("uses this 15 min labels and does not surface this block in UI copy", () => {
