@@ -19,6 +19,7 @@ from backend.shift_capacity.work_coverage import (
     attach_work_coverage_to_blocks,
     build_work_coverage,
 )
+from backend.shift_capacity.executive_summary import build_management_executive_summary
 
 
 def serialize_bag(bag: Bag, emp_names: dict[str, str]) -> dict[str, Any]:
@@ -181,6 +182,13 @@ def serialize_state(
     if work_coverage:
         attach_work_coverage_to_blocks(block_positions, work_coverage)
 
+    executive = build_management_executive_summary(
+        state,
+        work_coverage=work_coverage,
+        block_positions=block_positions,
+        kpis=kpis,
+    )
+
     return {
         "engine": "bag_des_v2",
         "scenario_id": state.scenario_id,
@@ -194,6 +202,7 @@ def serialize_state(
         "bags": bags,
         "bag_rows": bags,
         "work_coverage": work_coverage,
+        "management_executive_summary": executive,
         "batches": [
             {
                 "batch_number": b.sequence,

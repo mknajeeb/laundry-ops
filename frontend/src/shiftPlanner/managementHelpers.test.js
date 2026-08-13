@@ -19,7 +19,11 @@ import {
   formatHybridRolesLabel,
   formatHybridStaffChips,
   formatManagementOutcome,
+  formatSavedSimulationListChip,
   formatStageReconcile,
+  buildSavedSimulationPayload,
+  applySavedSimulationPayload,
+  simulationInputsFingerprint,
   formatTempStaffChips,
   formatWaitingToSortHint,
   formatWorkCoverageDetail,
@@ -1251,5 +1255,44 @@ describe("managementHelpers", () => {
     const washBase = findWorkCoverageForRole(rows, "washer", "6:00 AM", "7:00 AM", { mode: "base" });
     expect(washBase).toHaveLength(1);
     expect(findWorkCoverageForHybrid(rows, "wash_dry", "6:00 AM", "7:00 AM")).toHaveLength(0);
+  });
+
+  it("saved simulation payload keeps custom hybrids and fill-rest intervals", () => {
+    const inputs = {
+      ...DEFAULT_MANAGEMENT_INPUTS,
+      bag_count: 100,
+      staffing_intervals: [
+        { id: "a", role: "sorter", people: 2, start: "9:00 AM", end: "4:00 PM", mode: "base" },
+      ],
+      hybrid_intervals: [
+        {
+          id: "h1",
+          roles: ["sorter", "folder"],
+          people: 1,
+          start: "10:00 AM",
+          end: "2:00 PM",
+          mode: "base",
+        },
+      ],
+    };
+    const payload = buildSavedSimulationPayload(inputs);
+    expect(payload.payload_version).toBe("mgmt_sim_v1");
+    expect(payload.hybrid_intervals[0].roles).toEqual(["sorter", "folder"]);
+    expect(payload.staffing_intervals[0].end).toBe("4:00 PM");
+    expect(payload.block_positions).toBeUndefined();
+
+    const restored = applySavedSimulationPayload(DEFAULT_MANAGEMENT_INPUTS, payload);
+    expect(restored.bag_count).toBe(100);
+    expect(restored.hybrid_intervals[0].roles).toEqual(["sorter", "folder"]);
+    expect(simulationInputsFingerprint(restored)).toBe(simulationInputsFingerprint(inputs));
+
+    expect(
+      formatSavedSimulationListChip({
+        completed_by_target: 100,
+        target_bags: 100,
+        projected_finish: "2:35 PM",
+        productive_hours: 18.4,
+      }),
+    ).toMatch(/100\/100 · 2:35 PM · 18\.4 productive hrs/);
   });
 });

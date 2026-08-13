@@ -1889,6 +1889,104 @@ export function earlyMinutesBeforeTarget(targetTime, finishTime) {
   return Math.round((a - b) / 60);
 }
 
+/** Keys persisted in Saved Simulation scenario_payload (mgmt_sim_v1). */
+export const SAVED_SIMULATION_INPUT_KEYS = [
+  ...PERSISTED_PLANNER_PARAM_KEYS,
+  ...SESSION_PLANNER_PARAM_KEYS,
+  "batch_size",
+  "staffing_intervals",
+  "hybrid_intervals",
+];
+
+/**
+ * Build input-only mgmt_sim_v1 payload from live planner inputs.
+ * Stores normalized staffing/hybrid intervals (Fill rest results), not click flags.
+ */
+export function buildSavedSimulationPayload(inputs = {}) {
+  const staffing = (inputs.staffing_intervals || []).map((row) => ({
+    id: row.id,
+    role: normalizeRole(row.role) || row.role,
+    people: Number(row.people),
+    start: row.start,
+    end: row.end,
+    mode: String(row.mode || "base").toLowerCase() === "additional" ? "additional" : "base",
+  }));
+  const hybrids = (inputs.hybrid_intervals || [])
+    .map((row) => {
+      const roles = resolveHybridRolesFromRow(row);
+      if (roles.length < 2) return null;
+      return {
+        id: row.id,
+        roles,
+        people: Number(row.people),
+        start: row.start,
+        end: row.end,
+        mode: String(row.mode || "base").toLowerCase() === "additional" ? "additional" : "base",
+      };
+    })
+    .filter(Boolean);
+
+  const out = {
+    payload_version: "mgmt_sim_v1",
+  };
+  for (const key of [...PERSISTED_PLANNER_PARAM_KEYS, ...SESSION_PLANNER_PARAM_KEYS, "batch_size"]) {
+    if (inputs[key] !== undefined && inputs[key] !== null) out[key] = inputs[key];
+  }
+  out.staffing_intervals = staffing;
+  out.hybrid_intervals = hybrids;
+  return out;
+}
+
+/** Apply a saved scenario_payload onto live inputs (keeps unrelated UI state). */
+export function applySavedSimulationPayload(inputs, payload = {}) {
+  const next = { ...inputs };
+  for (const key of [...PERSISTED_PLANNER_PARAM_KEYS, ...SESSION_PLANNER_PARAM_KEYS, "batch_size"]) {
+    if (payload[key] !== undefined && payload[key] !== null) next[key] = payload[key];
+  }
+  next.staffing_intervals = Array.isArray(payload.staffing_intervals)
+    ? payload.staffing_intervals.map((row) => ({ ...row }))
+    : [];
+  next.hybrid_intervals = Array.isArray(payload.hybrid_intervals)
+    ? payload.hybrid_intervals.map((row) => {
+      const roles = resolveHybridRolesFromRow(row);
+      return {
+        id: row.id || `hy-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        roles,
+        people: Number(row.people) || 1,
+        start: row.start || row.start_time,
+        end: row.end || row.end_time,
+        mode: String(row.mode || "base").toLowerCase() === "additional" ? "additional" : "base",
+      };
+    })
+    : [];
+  return next;
+}
+
+/** Stable fingerprint for dirty detection (inputs only). */
+export function simulationInputsFingerprint(inputs = {}) {
+  return JSON.stringify(buildSavedSimulationPayload(inputs));
+}
+
+/** Browse-only chip line from last_run_summary / executive.compare. */
+export function formatSavedSimulationListChip(summary) {
+  if (!summary || typeof summary !== "object") return null;
+  const target = Number(summary.target_bags);
+  const done = Number(summary.completed_by_target);
+  const finish = summary.projected_finish;
+  const productive = summary.productive_hours;
+  const status = String(summary.status_label || "");
+  if (Number.isFinite(done) && Number.isFinite(target) && target > 0) {
+    if (finish && productive != null) {
+      return `${done}/${target} · ${finish} · ${Number(productive).toFixed(1)} productive hrs`;
+    }
+    if (status.toUpperCase().includes("STALL") || !finish) {
+      return `${done}/${target} by target`;
+    }
+    return `${done}/${target}${finish ? ` · ${finish}` : ""}`;
+  }
+  return status || null;
+}
+
 export function formatDeficitLines(deficits) {
   if (!Array.isArray(deficits) || !deficits.length) return [];
   return deficits.map((d) => {

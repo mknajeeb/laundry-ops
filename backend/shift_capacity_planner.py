@@ -4286,6 +4286,7 @@ def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
             "work_coverage": des.get("work_coverage") or [],
             "management_outcome": des.get("management_outcome")
             or summary.get("management_outcome"),
+            "management_executive_summary": des.get("management_executive_summary"),
             "staffing_deficits": des.get("staffing_deficits")
             or summary.get("staffing_deficits")
             or [],

@@ -911,6 +911,41 @@ export const getShiftCapacityPlannerSettings = () =>
 export const saveShiftCapacityPlannerSettings = (body = {}) =>
   axios.put(`${API_BASE}/rinse/shift-analysis/shift-capacity-planner/settings`, body, { timeout: 15000 });
 
+/** Saved Simulations (scenarios) — separate from org PARAMETERS. */
+export const listShiftCapacitySimulations = () =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/shift-capacity-planner/simulations`, { timeout: 15000 });
+
+export const getShiftCapacitySimulation = (id) =>
+  axios.get(
+    `${API_BASE}/rinse/shift-analysis/shift-capacity-planner/simulations/${encodeURIComponent(id)}`,
+    { timeout: 15000 },
+  );
+
+export const createShiftCapacitySimulation = (body = {}) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/shift-capacity-planner/simulations`, body, {
+    timeout: 15000,
+  });
+
+export const updateShiftCapacitySimulation = (id, body = {}) =>
+  axios.put(
+    `${API_BASE}/rinse/shift-analysis/shift-capacity-planner/simulations/${encodeURIComponent(id)}`,
+    body,
+    { timeout: 15000 },
+  );
+
+export const renameShiftCapacitySimulation = (id, name) =>
+  axios.patch(
+    `${API_BASE}/rinse/shift-analysis/shift-capacity-planner/simulations/${encodeURIComponent(id)}`,
+    { name },
+    { timeout: 15000 },
+  );
+
+export const deleteShiftCapacitySimulation = (id) =>
+  axios.delete(
+    `${API_BASE}/rinse/shift-analysis/shift-capacity-planner/simulations/${encodeURIComponent(id)}`,
+    { timeout: 15000 },
+  );
+
 export const listFoldingUsers = () =>
   axios.get(`${API_BASE}/rinse/folding/users`, { timeout: 30000 });
 

@@ -2327,6 +2327,193 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    def _planner_sim_auth(cursor):
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return None, err_resp, err_code
+        gate = require_admin_or_ops or require_admin
+        _, err_gate, code_gate = gate(cursor)
+        if err_gate:
+            return None, err_gate, code_gate
+        return me, None, None
+
+    @app.route("/rinse/shift-analysis/shift-capacity-planner/simulations", methods=["GET"])
+    def rinse_shift_capacity_planner_simulations_list():
+        from backend.shift_capacity_saved_simulations import list_saved_simulations
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = _planner_sim_auth(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            rows = list_saved_simulations(cursor, tenant_oid)
+            return jsonify(json_safe_rinse({"simulations": rows}))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/shift-capacity-planner/simulations", methods=["POST"])
+    def rinse_shift_capacity_planner_simulations_create():
+        from backend.shift_capacity_saved_simulations import create_saved_simulation
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = _planner_sim_auth(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            created = create_saved_simulation(
+                cursor,
+                tenant_oid,
+                name=body.get("name"),
+                scenario_payload=body.get("scenario_payload") or {},
+                user_id=me.get("id") if isinstance(me, dict) else None,
+                last_run_summary=body.get("last_run_summary"),
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(created)), 201
+        except ValueError as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/rinse/shift-analysis/shift-capacity-planner/simulations/<int:simulation_id>",
+        methods=["GET"],
+    )
+    def rinse_shift_capacity_planner_simulations_get(simulation_id: int):
+        from backend.shift_capacity_saved_simulations import get_saved_simulation
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = _planner_sim_auth(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            row = get_saved_simulation(cursor, tenant_oid, simulation_id)
+            if not row:
+                return jsonify({"error": "simulation not found"}), 404
+            return jsonify(json_safe_rinse(row))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/rinse/shift-analysis/shift-capacity-planner/simulations/<int:simulation_id>",
+        methods=["PUT"],
+    )
+    def rinse_shift_capacity_planner_simulations_put(simulation_id: int):
+        from backend.shift_capacity_saved_simulations import update_saved_simulation
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = _planner_sim_auth(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            updated = update_saved_simulation(
+                cursor,
+                tenant_oid,
+                simulation_id,
+                scenario_payload=body.get("scenario_payload"),
+                name=body.get("name"),
+                user_id=me.get("id") if isinstance(me, dict) else None,
+                last_run_summary=body.get("last_run_summary"),
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(updated))
+        except LookupError:
+            conn.rollback()
+            return jsonify({"error": "simulation not found"}), 404
+        except ValueError as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/rinse/shift-analysis/shift-capacity-planner/simulations/<int:simulation_id>",
+        methods=["PATCH"],
+    )
+    def rinse_shift_capacity_planner_simulations_patch(simulation_id: int):
+        from backend.shift_capacity_saved_simulations import rename_saved_simulation
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = _planner_sim_auth(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            updated = rename_saved_simulation(
+                cursor,
+                tenant_oid,
+                simulation_id,
+                name=body.get("name"),
+                user_id=me.get("id") if isinstance(me, dict) else None,
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(updated))
+        except LookupError:
+            conn.rollback()
+            return jsonify({"error": "simulation not found"}), 404
+        except ValueError as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/rinse/shift-analysis/shift-capacity-planner/simulations/<int:simulation_id>",
+        methods=["DELETE"],
+    )
+    def rinse_shift_capacity_planner_simulations_delete(simulation_id: int):
+        from backend.shift_capacity_saved_simulations import delete_saved_simulation
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = _planner_sim_auth(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            ok = delete_saved_simulation(cursor, tenant_oid, simulation_id)
+            if not ok:
+                return jsonify({"error": "simulation not found"}), 404
+            conn.commit()
+            return jsonify({"ok": True, "id": simulation_id})
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/shift-analysis/shift-capacity-planner/simulate", methods=["GET", "POST"])
     def rinse_shift_capacity_planner_simulate():
         conn = get_db()

@@ -9,11 +9,14 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Divider,
   FormControl,
   FormControlLabel,
   FormGroup,
   IconButton,
   InputLabel,
+  ListItemText,
+  Menu,
   MenuItem,
   Select,
   Stack,
@@ -30,9 +33,15 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import RemoveIcon from "@mui/icons-material/Remove";
 import PlanningTimePicker from "../datetime/PlanningTimePicker";
 import {
+  createShiftCapacitySimulation,
+  deleteShiftCapacitySimulation,
   getShiftCapacityPlannerSettings,
+  getShiftCapacitySimulation,
+  listShiftCapacitySimulations,
+  renameShiftCapacitySimulation,
   saveShiftCapacityPlannerSettings,
   simulateShiftCapacity,
+  updateShiftCapacitySimulation,
 } from "../../api";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import {
@@ -44,12 +53,12 @@ import {
 } from "../../shiftPlanner/managementConstants";
 import {
   applyPersistedPlannerParams,
+  applySavedSimulationPayload,
   buildManagementPayload,
   buildPlanningBlocks,
   buildPositionInventoryDisplay,
+  buildSavedSimulationPayload,
   clockToHm,
-  earlyMinutesBeforeTarget,
-  formatManagementOutcome,
   buildSlotStaffingNotes,
   fillRestBasePeopleForRole,
   fillRestHybridPeople,
@@ -58,6 +67,7 @@ import {
   findWorkCoverageForRole,
   formatCollapsedSlotStaffLine,
   formatHybridRolesLabel,
+  formatSavedSimulationListChip,
   getAdditionalForBlock,
   getBasePeopleForBlock,
   hmToClock,
@@ -69,6 +79,7 @@ import {
   pickPersistedPlannerParams,
   removeHybridInterval,
   setBasePeopleForBlock,
+  simulationInputsFingerprint,
   upsertHybridInterval,
   validateHybridDraft,
   validateManagementPlanInputs,
@@ -317,10 +328,337 @@ function RecalculateButton({ onClick, loading, disabled }) {
   );
 }
 
-function CompactSummary({ inputs, outcome, loading, hasStaffing, onRecalculate }) {
+function SimulationToolbar({
+  simulationName,
+  dirty,
+  loading,
+  savedList,
+  onNew,
+  onSave,
+  onSaveAs,
+  onOpen,
+  onRename,
+  onDelete,
+  onRecalculate,
+  onRefreshList,
+}) {
+  const [menuAnchor, setMenuAnchor] = useState(null);
+  const [nameDialog, setNameDialog] = useState(null); // { mode: 'save'|'saveAs'|'rename', id? }
+  const [nameDraft, setNameDraft] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [localError, setLocalError] = useState("");
+
+  const openMenu = async (e) => {
+    setMenuAnchor(e.currentTarget);
+    setLocalError("");
+    try {
+      await onRefreshList();
+    } catch {
+      /* list refresh errors shown by parent */
+    }
+  };
+
+  const closeMenu = () => setMenuAnchor(null);
+
+  const submitName = async () => {
+    const trimmed = String(nameDraft || "").trim();
+    if (!trimmed) {
+      setLocalError("Name is required");
+      return;
+    }
+    setBusy(true);
+    setLocalError("");
+    try {
+      if (nameDialog?.mode === "rename" && nameDialog.id != null) {
+        await onRename(nameDialog.id, trimmed);
+      } else if (nameDialog?.mode === "saveAs") {
+        await onSaveAs(trimmed);
+      } else {
+        await onSave(trimmed);
+      }
+      setNameDialog(null);
+      setNameDraft("");
+    } catch (err) {
+      setLocalError(err?.response?.data?.error || err.message || "Save failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setBusy(true);
+    setLocalError("");
+    try {
+      await onDelete(deleteTarget.id);
+      setDeleteTarget(null);
+    } catch (err) {
+      setLocalError(err?.response?.data?.error || err.message || "Delete failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const displayName = simulationName || "Untitled simulation";
+
+  return (
+    <Box sx={{ ...stripSx, py: 1 }} data-testid="simulation-toolbar">
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        spacing={1}
+        alignItems={{ xs: "stretch", sm: "center" }}
+        justifyContent="space-between"
+      >
+        <Stack spacing={0.15} sx={{ minWidth: 0, flex: 1 }}>
+          <Typography sx={{ fontWeight: 800, fontSize: "0.95rem" }} noWrap>
+            Simulation: {displayName}
+          </Typography>
+          <Typography
+            sx={{
+              fontWeight: 800,
+              fontSize: "0.68rem",
+              letterSpacing: 0.5,
+              color: dirty ? VEEWASH_DASHBOARD.pendingDark : VEEWASH_DASHBOARD.tealDark,
+            }}
+            data-testid="simulation-dirty-state"
+          >
+            {dirty ? "UNSAVED CHANGES" : "SAVED"}
+          </Typography>
+        </Stack>
+        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap justifyContent="flex-end">
+          <Button size="small" variant="outlined" onClick={onNew} sx={{ textTransform: "none", fontWeight: 700 }}>
+            New
+          </Button>
+          <Button
+            size="small"
+            variant="contained"
+            onClick={async () => {
+              if (simulationName) {
+                setBusy(true);
+                setLocalError("");
+                try {
+                  await onSave();
+                } catch (err) {
+                  setLocalError(err?.response?.data?.error || err.message || "Save failed");
+                } finally {
+                  setBusy(false);
+                }
+              } else {
+                setNameDraft("");
+                setNameDialog({ mode: "save" });
+              }
+            }}
+            sx={{
+              textTransform: "none",
+              fontWeight: 700,
+              bgcolor: VEEWASH_DASHBOARD.primaryBlue,
+              "&:hover": { bgcolor: VEEWASH_DASHBOARD.primaryBlueDark },
+            }}
+            data-testid="simulation-save"
+          >
+            Save
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={() => {
+              setNameDraft(simulationName ? `${simulationName} copy` : "");
+              setNameDialog({ mode: "saveAs" });
+            }}
+            sx={{ textTransform: "none", fontWeight: 700 }}
+          >
+            Save As
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={openMenu}
+            endIcon={<ExpandMoreIcon />}
+            sx={{ textTransform: "none", fontWeight: 700 }}
+            data-testid="saved-simulations-menu"
+          >
+            Saved Simulations
+          </Button>
+          <RecalculateButton onClick={onRecalculate} loading={loading} />
+        </Stack>
+      </Stack>
+
+      <Menu
+        anchorEl={menuAnchor}
+        open={Boolean(menuAnchor)}
+        onClose={closeMenu}
+        PaperProps={{ sx: { minWidth: 320, maxWidth: 420 } }}
+      >
+        {(savedList || []).length === 0 ? (
+          <MenuItem disabled>
+            <ListItemText primary="No saved simulations yet" />
+          </MenuItem>
+        ) : (
+          (savedList || []).map((row) => {
+            const chip = formatSavedSimulationListChip(row.last_run_summary);
+            return (
+              <MenuItem
+                key={row.id}
+                sx={{ alignItems: "flex-start", py: 1.1 }}
+                onClick={() => {
+                  closeMenu();
+                  onOpen(row.id);
+                }}
+              >
+                <ListItemText
+                  primary={row.name}
+                  secondary={chip || "Open to recalculate"}
+                  primaryTypographyProps={{ fontWeight: 700, fontSize: "0.88rem" }}
+                  secondaryTypographyProps={{ fontSize: "0.72rem" }}
+                />
+                <Stack direction="row" spacing={0.25} onClick={(e) => e.stopPropagation()}>
+                  <IconButton
+                    size="small"
+                    aria-label={`Rename ${row.name}`}
+                    onClick={() => {
+                      closeMenu();
+                      setNameDraft(row.name);
+                      setNameDialog({ mode: "rename", id: row.id });
+                    }}
+                  >
+                    <EditOutlinedIcon fontSize="inherit" />
+                  </IconButton>
+                  <IconButton
+                    size="small"
+                    aria-label={`Delete ${row.name}`}
+                    onClick={() => {
+                      closeMenu();
+                      setDeleteTarget(row);
+                    }}
+                  >
+                    <DeleteOutlineIcon fontSize="inherit" />
+                  </IconButton>
+                </Stack>
+              </MenuItem>
+            );
+          })
+        )}
+      </Menu>
+
+      <Dialog open={Boolean(nameDialog)} onClose={() => !busy && setNameDialog(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>
+          {nameDialog?.mode === "rename"
+            ? "Rename simulation"
+            : nameDialog?.mode === "saveAs"
+              ? "Save simulation as"
+              : "Name this simulation"}
+        </DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            size="small"
+            label="Simulation name"
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            sx={{ mt: 1 }}
+            inputProps={{ maxLength: 120 }}
+          />
+          {localError ? <Alert severity="error" sx={{ mt: 1 }}>{localError}</Alert> : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setNameDialog(null)} disabled={busy} sx={{ textTransform: "none" }}>
+            Cancel
+          </Button>
+          <Button onClick={submitName} disabled={busy} variant="contained" sx={{ textTransform: "none" }}>
+            {busy ? "Saving…" : "Save"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(deleteTarget)} onClose={() => !busy && setDeleteTarget(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Delete simulation?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Delete <strong>{deleteTarget?.name}</strong>? This cannot be undone.
+          </Typography>
+          {localError ? <Alert severity="error" sx={{ mt: 1 }}>{localError}</Alert> : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteTarget(null)} disabled={busy} sx={{ textTransform: "none" }}>
+            Cancel
+          </Button>
+          <Button color="error" onClick={confirmDelete} disabled={busy} variant="contained" sx={{ textTransform: "none" }}>
+            {busy ? "Deleting…" : "Delete"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  );
+}
+
+function formatOffsetPhrase(totalMin, kind) {
+  if (totalMin == null || !Number.isFinite(Number(totalMin))) return null;
+  const n = Math.max(0, Math.round(Number(totalMin)));
+  const h = Math.floor(n / 60);
+  const m = n % 60;
+  const body = h > 0 ? `${h}h ${m}m` : `${m}m`;
+  return kind === "early" ? `${body} EARLY` : `${body} LATE`;
+}
+
+function formatHoursLabel(h) {
+  if (h == null || !Number.isFinite(Number(h))) return "—";
+  return `${Number(h).toFixed(1)}h`;
+}
+
+function hybridAllocationPhrase(detail) {
+  const alloc = detail?.allocation_min || {};
+  const parts = [];
+  const labels = {
+    weigher: "Weigh",
+    sorter: "Sort",
+    washer: "Wash",
+    dryer: "Dry",
+    folder: "Fold",
+    idle: "Idle",
+  };
+  for (const key of ["weigher", "sorter", "washer", "dryer", "folder", "idle"]) {
+    const v = Number(alloc[key] || 0);
+    if (v > 0) parts.push(`${labels[key]} ${Math.round(v)}m`);
+  }
+  return parts.length ? parts.join(" · ") : null;
+}
+
+function SummaryMetric({ label, children, tone }) {
+  return (
+    <Box sx={{ minWidth: { xs: "42%", sm: 96 }, flex: "1 1 auto", maxWidth: 160 }}>
+      <Typography
+        sx={{
+          fontWeight: 800,
+          fontSize: "0.62rem",
+          letterSpacing: 0.55,
+          color: "text.secondary",
+          mb: 0.15,
+        }}
+      >
+        {label}
+      </Typography>
+      <Box sx={{ color: tone || "text.primary", fontWeight: 800, fontSize: "0.92rem", lineHeight: 1.25 }}>
+        {children}
+      </Box>
+    </Box>
+  );
+}
+
+function CompactSummary({
+  inputs,
+  executive,
+  loading,
+  hasStaffing,
+  onRecalculate,
+  hideRecalculate = false,
+}) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
   if (!hasStaffing) {
     return (
-      <Box sx={{ ...summaryStickySx, py: 1.5 }}>
+      <Box sx={{ ...summaryStickySx, py: 1.5 }} data-testid="planner-summary-bar">
         <Stack
           direction={{ xs: "column", sm: "row" }}
           alignItems={{ xs: "stretch", sm: "center" }}
@@ -329,72 +667,230 @@ function CompactSummary({ inputs, outcome, loading, hasStaffing, onRecalculate }
           <Typography sx={{ fontWeight: 700, color: "text.secondary", fontSize: "0.95rem", flex: 1 }}>
             Add staffing to build the plan.
           </Typography>
-          <RecalculateButton onClick={onRecalculate} loading={loading} disabled />
+          {!hideRecalculate ? (
+            <RecalculateButton onClick={onRecalculate} loading={loading} disabled />
+          ) : null}
         </Stack>
       </Box>
     );
   }
-  if (!outcome) {
+
+  if (loading || !executive) {
     return (
-      <Box sx={{ ...summaryStickySx, py: 1.5 }}>
+      <Box sx={{ ...summaryStickySx, py: 1.5 }} data-testid="planner-summary-bar">
         <Stack
           direction={{ xs: "column", sm: "row" }}
           alignItems={{ xs: "stretch", sm: "center" }}
           spacing={1}
         >
-          <Typography sx={{ color: "text.secondary", flex: 1 }}>
-            {loading ? "Updating plan…" : "Plan not ready — recalculate."}
-          </Typography>
-          <RecalculateButton onClick={onRecalculate} loading={loading} />
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ flex: 1 }}>
+            {loading ? <CircularProgress size={16} thickness={5} /> : null}
+            <Typography
+              sx={{ fontWeight: 800, letterSpacing: 0.6, color: "text.secondary", fontSize: "0.9rem" }}
+              data-testid="planner-calculating"
+            >
+              {loading ? "CALCULATING…" : "Plan not ready — recalculate."}
+            </Typography>
+          </Stack>
+          {!hideRecalculate ? (
+            <RecalculateButton onClick={onRecalculate} loading={loading} />
+          ) : null}
         </Stack>
       </Box>
     );
   }
 
-  const target = Number(outcome.targetBags ?? inputs.bag_count) || 0;
-  const projected = Number(outcome.completedByTarget) || 0;
-  const finish = outcome.projected || "—";
-  const early = earlyMinutesBeforeTarget(inputs.target_time, outcome.projected);
-  let statusText = outcome.statusLabel || "";
-  if (outcome.status === "completed" && early != null) {
-    statusText = `${early} min early`;
-  }
-
+  const targetBags = Number(executive.target_bags ?? inputs.bag_count) || 0;
+  const targetFinish = executive.target_finish || inputs.target_time || "—";
+  const completed = Number(executive.completed_by_target) || 0;
   const toneColor = {
     success: VEEWASH_DASHBOARD.tealDark,
     warning: VEEWASH_DASHBOARD.pendingDark,
+    danger: "#b91c1c",
     neutral: "#9a3412",
-  }[outcome.tone] || "text.primary";
+  }[executive.tone] || "text.primary";
+
+  let outcomeLabel = executive.status_label || "";
+  if (executive.completion_status === "completed") {
+    outcomeLabel = "TARGET MET";
+  } else if (executive.completion_status === "incomplete_by_target") {
+    outcomeLabel = "TARGET NOT MET";
+  } else if (executive.completion_status === "stalled") {
+    outcomeLabel = String(executive.status_label || "STALLED").replace(/^STALLED\s*—\s*/i, "STALLED");
+  }
+
+  const finishLine = executive.projected_finish || "—";
+  const offset =
+    formatOffsetPhrase(executive.minutes_early, "early")
+    || formatOffsetPhrase(executive.minutes_late, "late")
+    || (executive.completion_status === "stalled" ? "—" : null);
+
+  const bn = executive.bottleneck || {};
+  const laborRows = Array.isArray(executive.labor_by_role) ? executive.labor_by_role : [];
+  const roleOrder = ["weigher", "sorter", "washer", "dryer", "folder", "hybrid"];
+  const orderedLabor = roleOrder
+    .map((role) => laborRows.find((r) => r.role === role))
+    .filter(Boolean);
 
   return (
     <Box sx={summaryStickySx} data-testid="planner-summary-bar">
       <Stack
         direction={{ xs: "column", sm: "row" }}
-        spacing={{ xs: 0.75, sm: 1.5 }}
-        alignItems={{ xs: "stretch", sm: "center" }}
+        spacing={{ xs: 1, sm: 1.25 }}
+        alignItems={{ xs: "stretch", sm: "flex-start" }}
         flexWrap="wrap"
         useFlexGap
       >
-        <Typography sx={{ fontWeight: 800, fontSize: "0.8rem", color: "text.secondary", letterSpacing: 0.4 }}>
-          SUMMARY
-        </Typography>
-        <Typography sx={{ fontWeight: 700, fontSize: "0.95rem" }}>
-          {target} bags
-        </Typography>
-        <Typography sx={{ fontWeight: 700, fontSize: "0.95rem" }}>
-          Projected {projected} / {target}
-        </Typography>
-        <Typography sx={{ fontWeight: 700, fontSize: "0.95rem" }}>
-          Finish {finish}
-        </Typography>
-        <Typography sx={{ fontWeight: 800, fontSize: "0.95rem", color: toneColor }}>
-          {statusText}
-        </Typography>
-        <RecalculateButton onClick={onRecalculate} loading={loading} />
+        <SummaryMetric label="TARGET">
+          <Box>{targetBags} bags</Box>
+          <Typography sx={{ fontWeight: 700, fontSize: "0.72rem", color: "text.secondary" }}>
+            by {targetFinish}
+          </Typography>
+        </SummaryMetric>
+        <SummaryMetric label="OUTCOME" tone={toneColor}>
+          <Box>
+            {completed} / {targetBags}
+          </Box>
+          <Typography sx={{ fontWeight: 800, fontSize: "0.72rem", color: toneColor }}>
+            {outcomeLabel}
+          </Typography>
+        </SummaryMetric>
+        <SummaryMetric label="FINISH" tone={toneColor}>
+          <Box>{finishLine}</Box>
+          {offset ? (
+            <Typography sx={{ fontWeight: 800, fontSize: "0.72rem", color: toneColor }}>
+              {offset}
+            </Typography>
+          ) : null}
+        </SummaryMetric>
+        <SummaryMetric label="LABOR">
+          <Box>{formatHoursLabel(executive.productive_hours)} productive</Box>
+          <Typography sx={{ fontWeight: 700, fontSize: "0.72rem", color: "text.secondary" }}>
+            {formatHoursLabel(executive.staff_hours)} staffed
+          </Typography>
+        </SummaryMetric>
+        <SummaryMetric label="PEAK STAFF">
+          <Box>{executive.peak_staff ?? "—"}</Box>
+        </SummaryMetric>
+        <SummaryMetric label="LABOR / BAG">
+          <Box>
+            {executive.labor_min_per_bag != null ? `${executive.labor_min_per_bag} min` : "—"}
+          </Box>
+        </SummaryMetric>
+        <SummaryMetric label="BOTTLENECK" tone={bn.stage_label && bn.stage_label !== "NONE" ? VEEWASH_DASHBOARD.pendingDark : undefined}>
+          <Box>{bn.stage_label || "—"}</Box>
+          {bn.peak_queue != null && bn.peak_queue > 0 ? (
+            <Typography sx={{ fontWeight: 700, fontSize: "0.72rem", color: "text.secondary" }}>
+              Peak queue {bn.peak_queue}
+            </Typography>
+          ) : bn.note ? (
+            <Typography sx={{ fontWeight: 700, fontSize: "0.72rem", color: "text.secondary" }}>
+              {bn.note}
+            </Typography>
+          ) : null}
+        </SummaryMetric>
+        {!hideRecalculate ? (
+          <Box sx={{ ml: { sm: "auto" }, alignSelf: { sm: "center" } }}>
+            <RecalculateButton onClick={onRecalculate} loading={loading} />
+          </Box>
+        ) : null}
       </Stack>
-      <Typography sx={{ mt: 0.45, fontSize: "0.68rem", color: "text.disabled", fontWeight: 600 }}>
-        Auto-updates as you edit · use Recalculate anytime
-      </Typography>
+
+      <Button
+        size="small"
+        onClick={() => setDetailsOpen((v) => !v)}
+        endIcon={detailsOpen ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+        sx={{
+          mt: 0.75,
+          textTransform: "none",
+          fontWeight: 700,
+          fontSize: "0.72rem",
+          color: "text.secondary",
+          px: 0.5,
+        }}
+        data-testid="resource-details-toggle"
+      >
+        Resource Details
+      </Button>
+
+      {detailsOpen ? (
+        <Box
+          sx={{
+            mt: 0.5,
+            borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
+            pt: 1,
+          }}
+          data-testid="resource-details"
+        >
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: "minmax(72px, 1.2fr) 1fr 1fr",
+              gap: 0.5,
+              maxWidth: 420,
+              fontSize: "0.78rem",
+            }}
+          >
+            <Typography sx={{ fontWeight: 800, fontSize: "0.65rem", color: "text.secondary" }} />
+            <Typography sx={{ fontWeight: 800, fontSize: "0.65rem", color: "text.secondary", textAlign: "right" }}>
+              STAFFED
+            </Typography>
+            <Typography sx={{ fontWeight: 800, fontSize: "0.65rem", color: "text.secondary", textAlign: "right" }}>
+              PRODUCTIVE
+            </Typography>
+            {orderedLabor.map((row) => {
+              const label = row.label
+                || ({
+                  weigher: "Weigh",
+                  sorter: "Sort",
+                  washer: "Wash",
+                  dryer: "Dry",
+                  folder: "Fold",
+                  hybrid: "Hybrid",
+                }[row.role] || row.role);
+              const allocBits = (row.details || [])
+                .map((d) => hybridAllocationPhrase(d))
+                .filter(Boolean);
+              return (
+                <Box key={row.role} sx={{ display: "contents" }}>
+                  <Typography sx={{ fontWeight: 700 }}>
+                    {label}
+                    {allocBits.length ? (
+                      <Typography component="span" sx={{ display: "block", fontWeight: 600, fontSize: "0.68rem", color: "text.secondary" }}>
+                        {allocBits.join("; ")}
+                      </Typography>
+                    ) : null}
+                  </Typography>
+                  <Typography sx={{ textAlign: "right", fontWeight: 700 }}>
+                    {formatHoursLabel(row.staff_hours)}
+                  </Typography>
+                  <Typography sx={{ textAlign: "right", fontWeight: 700 }}>
+                    {formatHoursLabel(row.productive_hours)}
+                  </Typography>
+                </Box>
+              );
+            })}
+            <Typography sx={{ fontWeight: 900, borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`, pt: 0.5 }}>
+              TOTAL
+            </Typography>
+            <Typography sx={{ textAlign: "right", fontWeight: 900, borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`, pt: 0.5 }}>
+              {formatHoursLabel(executive.staff_hours)}
+            </Typography>
+            <Typography sx={{ textAlign: "right", fontWeight: 900, borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`, pt: 0.5 }}>
+              {formatHoursLabel(executive.productive_hours)}
+            </Typography>
+          </Box>
+          {executive.machines ? (
+            <Typography sx={{ mt: 1, fontSize: "0.72rem", color: "text.secondary", fontWeight: 600 }}>
+              Machines (separate): washers peak {executive.machines.peak_washers_active ?? 0}
+              /{executive.machines.washer_count ?? "—"}
+              {" · "}
+              dryers peak {executive.machines.peak_dryers_active ?? 0}
+              /{executive.machines.dryer_count ?? "—"}
+            </Typography>
+          ) : null}
+        </Box>
+      ) : null}
     </Box>
   );
 }
@@ -1115,9 +1611,17 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
   const [hybridEditExisting, setHybridEditExisting] = useState(false);
   /** Per-block staffing strip open state; default expanded. */
   const [staffingExpanded, setStaffingExpanded] = useState({});
+  const [activeSimId, setActiveSimId] = useState(null);
+  const [activeSimName, setActiveSimName] = useState(null);
+  const [savedFingerprint, setSavedFingerprint] = useState(() =>
+    simulationInputsFingerprint({ ...DEFAULT_MANAGEMENT_INPUTS, ...(initialInputs || {}) }),
+  );
+  const [savedSimList, setSavedSimList] = useState([]);
+  const [simError, setSimError] = useState("");
   const debounceRef = useRef(null);
   const seqRef = useRef(0);
   const paramsLocked = !paramsEditing;
+  const simDirty = simulationInputsFingerprint(inputs) !== savedFingerprint;
 
   useEffect(() => {
     if (skipSettingsLoad || initialInputs) {
@@ -1131,7 +1635,11 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
         if (cancelled) return;
         const saved = pickPersistedPlannerParams(res.data || {});
         setSavedParams(saved);
-        setInputs((prev) => applyPersistedPlannerParams(prev, saved));
+        setInputs((prev) => {
+          const next = applyPersistedPlannerParams(prev, saved);
+          setSavedFingerprint(simulationInputsFingerprint(next));
+          return next;
+        });
       } catch {
         if (cancelled) return;
         setSavedParams(pickPersistedPlannerParams(DEFAULT_MANAGEMENT_INPUTS));
@@ -1205,9 +1713,13 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
   const runSim = useCallback(async (nextInputs) => {
     const payloadInputs = nextInputs || inputs;
     const horizonEnd = payloadInputs.target_time;
+    const seq = ++seqRef.current;
+    setLoading(true);
+    setError("");
     const planCheck = validateManagementPlanInputs(payloadInputs);
     if (!planCheck.ok) {
       setError(planCheck.errors[0]?.message || "Fix plan parameters");
+      if (seq === seqRef.current) setLoading(false);
       return null;
     }
     const client = validateStaffingIntervals(payloadInputs.staffing_intervals, {
@@ -1216,12 +1728,10 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
     });
     if (!client.ok) {
       setError(client.errors[0]?.message || "Fix staffing before running");
+      if (seq === seqRef.current) setLoading(false);
       return null;
     }
 
-    const seq = ++seqRef.current;
-    setLoading(true);
-    setError("");
     try {
       const res = await simulateShiftCapacity(buildManagementPayload(payloadInputs));
       if (seq !== seqRef.current) return null;
@@ -1235,6 +1745,10 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
           raw.management_outcome
           || des.management_outcome
           || raw.summary?.management_outcome
+          || null,
+        management_executive_summary:
+          raw.management_executive_summary
+          || des.management_executive_summary
           || null,
         staffing_deficits:
           raw.staffing_deficits
@@ -1265,6 +1779,8 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
 
   useEffect(() => {
     if (!settingsReady) return undefined;
+    // Mark calculating immediately so stale executive numbers never look current.
+    setLoading(true);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       runSim(inputs);
@@ -1279,13 +1795,144 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
     runSim(inputs);
   }, [inputs, runSim]);
 
+  const refreshSavedList = useCallback(async () => {
+    const res = await listShiftCapacitySimulations();
+    setSavedSimList(res.data?.simulations || []);
+    return res.data?.simulations || [];
+  }, []);
+
+  const markSaved = useCallback((name, fingerprint, id = null) => {
+    setActiveSimName(name);
+    if (id != null) setActiveSimId(id);
+    setSavedFingerprint(fingerprint);
+  }, []);
+
+  const handleNewSimulation = useCallback(() => {
+    setActiveSimId(null);
+    setActiveSimName(null);
+    setResult(null);
+    setError("");
+    setSimError("");
+    const next = {
+      ...DEFAULT_MANAGEMENT_INPUTS,
+      ...applyPersistedPlannerParams(DEFAULT_MANAGEMENT_INPUTS, savedParams),
+      staffing_intervals: [],
+      hybrid_intervals: [],
+    };
+    setInputs(next);
+    setSavedFingerprint(simulationInputsFingerprint(next));
+  }, [savedParams]);
+
+  const lastRunSummaryFromResult = useCallback((simResult) => {
+    const exe = simResult?.management_executive_summary;
+    if (exe?.compare) return exe.compare;
+    if (exe) {
+      return {
+        projected_finish: exe.projected_finish,
+        completed_by_target: exe.completed_by_target,
+        target_bags: exe.target_bags,
+        staff_hours: exe.staff_hours,
+        productive_hours: exe.productive_hours,
+        peak_staff: exe.peak_staff,
+        labor_min_per_bag: exe.labor_min_per_bag,
+        bottleneck_stage: exe.bottleneck?.stage,
+        status_label: exe.status_label,
+      };
+    }
+    return null;
+  }, []);
+
+  const handleSaveSimulation = useCallback(async (nameFromDialog) => {
+    setSimError("");
+    const payload = buildSavedSimulationPayload(inputs);
+    const summary = lastRunSummaryFromResult(result);
+    if (activeSimId != null && activeSimName) {
+      const res = await updateShiftCapacitySimulation(activeSimId, {
+        name: activeSimName,
+        scenario_payload: payload,
+        last_run_summary: summary,
+      });
+      markSaved(res.data?.name || activeSimName, simulationInputsFingerprint(inputs), activeSimId);
+      await refreshSavedList().catch(() => {});
+      return;
+    }
+    const name = String(nameFromDialog || "").trim();
+    if (!name) {
+      throw new Error("Name is required");
+    }
+    const res = await createShiftCapacitySimulation({
+      name,
+      scenario_payload: payload,
+      last_run_summary: summary,
+    });
+    markSaved(res.data?.name || name, simulationInputsFingerprint(inputs), res.data?.id);
+    await refreshSavedList().catch(() => {});
+  }, [
+    activeSimId,
+    activeSimName,
+    inputs,
+    result,
+    lastRunSummaryFromResult,
+    markSaved,
+    refreshSavedList,
+  ]);
+
+  const handleSaveAsSimulation = useCallback(async (name) => {
+    setSimError("");
+    const payload = buildSavedSimulationPayload(inputs);
+    const summary = lastRunSummaryFromResult(result);
+    const res = await createShiftCapacitySimulation({
+      name,
+      scenario_payload: payload,
+      last_run_summary: summary,
+    });
+    markSaved(res.data?.name || name, simulationInputsFingerprint(inputs), res.data?.id);
+    await refreshSavedList().catch(() => {});
+  }, [inputs, result, lastRunSummaryFromResult, markSaved, refreshSavedList]);
+
+  const handleOpenSimulation = useCallback(async (id) => {
+    setSimError("");
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = await getShiftCapacitySimulation(id);
+      const row = res.data || {};
+      const next = applySavedSimulationPayload(inputs, row.scenario_payload || {});
+      setInputs(next);
+      setActiveSimId(row.id);
+      setActiveSimName(row.name);
+      setSavedFingerprint(simulationInputsFingerprint(next));
+      // Auto-recalc effect will run DES; keep loading until that completes.
+    } catch (err) {
+      setSimError(err.response?.data?.error || err.message || "Failed to open simulation");
+      setLoading(false);
+    }
+  }, [inputs]);
+
+  const handleRenameSimulation = useCallback(async (id, name) => {
+    const res = await renameShiftCapacitySimulation(id, name);
+    if (Number(id) === Number(activeSimId)) {
+      setActiveSimName(res.data?.name || name);
+    }
+    await refreshSavedList().catch(() => {});
+  }, [activeSimId, refreshSavedList]);
+
+  const handleDeleteSimulation = useCallback(async (id) => {
+    await deleteShiftCapacitySimulation(id);
+    if (Number(id) === Number(activeSimId)) {
+      setActiveSimId(null);
+      setActiveSimName(null);
+    }
+    await refreshSavedList().catch(() => {});
+  }, [activeSimId, refreshSavedList]);
+
   const hasStaffing = (
     (inputs.staffing_intervals || []).length > 0
     || (inputs.hybrid_intervals || []).length > 0
   );
-  const outcome = useMemo(
-    () => (result && hasStaffing ? formatManagementOutcome({ ...result, inputs }) : null),
-    [result, inputs, hasStaffing],
+  const executive = useMemo(
+    () => (result && hasStaffing ? result.management_executive_summary || null : null),
+    [result, hasStaffing],
   );
   const targetBags = Number(inputs.bag_count) || 0;
 
@@ -1432,6 +2079,30 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
 
   return (
     <Stack spacing={1.5}>
+      <SimulationToolbar
+        simulationName={activeSimName}
+        dirty={simDirty}
+        loading={loading}
+        savedList={savedSimList}
+        onNew={handleNewSimulation}
+        onSave={handleSaveSimulation}
+        onSaveAs={handleSaveAsSimulation}
+        onOpen={handleOpenSimulation}
+        onRename={handleRenameSimulation}
+        onDelete={handleDeleteSimulation}
+        onRecalculate={recalculateNow}
+        onRefreshList={refreshSavedList}
+      />
+      <CompactSummary
+        inputs={inputs}
+        executive={executive}
+        loading={loading}
+        hasStaffing={hasStaffing}
+        onRecalculate={recalculateNow}
+        hideRecalculate
+      />
+      {simError ? <Alert severity="error" sx={{ py: 0.5 }}>{simError}</Alert> : null}
+
       {/* PLAN */}
       <Box sx={stripSx}>
         <Stack
@@ -1605,14 +2276,6 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
           <CompactNum label="Fold" value={inputs.fold_min_per_bag} onChange={(v) => onChange("fold_min_per_bag", v)} min={0} step={0.5} suffix="m" width={84} disabled={paramsLocked} />
         </Stack>
       </Box>
-
-      <CompactSummary
-        inputs={inputs}
-        outcome={outcome}
-        loading={loading}
-        hasStaffing={hasStaffing}
-        onRecalculate={recalculateNow}
-      />
 
       {error ? <Alert severity="error" sx={{ py: 0.5 }}>{error}</Alert> : null}
 
