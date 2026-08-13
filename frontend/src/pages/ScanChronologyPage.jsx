@@ -54,6 +54,7 @@ const STAGE_TABS = [
   { id: "sorting", label: "Sorting" },
   { id: "washing", label: "Washing" },
   { id: "drying", label: "Drying" },
+  { id: "folder", label: "Folder" },
   { id: "ready_to_fold", label: "Ready to Fold" },
   { id: "process_flow", label: "Process Flow" },
   { id: "washer_utilization", label: "Washer Utilization" },
@@ -62,7 +63,7 @@ const STAGE_TABS = [
   { id: "user_activity", label: "User Activity" },
 ];
 
-const DURATION_STAGES = new Set(["weighing", "sorting"]);
+const DURATION_STAGES = new Set(["weighing", "sorting", "folder"]);
 const EVENT_STAGES = new Set(["washing", "drying"]);
 const UTIL_STAGES = new Set(["washer_utilization", "dryer_utilization"]);
 const DEFAULT_DRYING_DURATION_MINUTES = 40;
@@ -79,6 +80,7 @@ const ACTIVITY_TYPE_OPTIONS = [
   { id: "sorting", label: "Sorting" },
   { id: "washing", label: "Washing" },
   { id: "drying", label: "Drying" },
+  { id: "folder", label: "Folder" },
   { id: "post_processing_weight", label: "Post-processing weight" },
 ];
 
@@ -117,6 +119,14 @@ const STAGE_SUMMARY_LABELS = {
     uniqueMachines: "Unique Dryers Used",
     mostUsed: "Most Used Dryer",
   },
+  folder: {
+    firstStart: "First Folder Start",
+    lastEnd: "Last Folder End",
+    totalSessions: "Total Folder Sessions",
+    totalTime: "Total Folder Time",
+    avgDuration: "Average Folder Duration",
+    totalGap: "Total Gap Time",
+  },
   washer_utilization: {
     firstStart: "First Load",
     lastEnd: "Last Load",
@@ -138,6 +148,7 @@ const ACTIVITY_CHIP_COLORS = {
   sorting: { bg: "#ecfdf5", color: "#047857" },
   washing: { bg: "#eff6ff", color: "#1d4ed8" },
   drying: { bg: "#fff7ed", color: "#c2410c" },
+  folder: { bg: "#f0fdfa", color: "#0f766e" },
   post_processing_weight: { bg: "#fdf4ff", color: "#7e22ce" },
 };
 
@@ -257,6 +268,9 @@ function EmployeeActivityCard({ group, onBagClick }) {
           ) : null}
           {(summary.dryer_loads ?? 0) > 0 ? (
             <Chip label={`${summary.dryer_loads} dry`} size="small" variant="outlined" />
+          ) : null}
+          {(summary.folder_sessions ?? 0) > 0 ? (
+            <Chip label={`${summary.folder_sessions} folder`} size="small" variant="outlined" />
           ) : null}
         </Stack>
       </Stack>
@@ -746,6 +760,7 @@ export default function ScanChronologyPage() {
           <SummaryCard label="Sorting Sessions" value={summary.sorting_sessions ?? 0} />
           <SummaryCard label="Washer Loads" value={summary.washer_loads ?? 0} />
           <SummaryCard label="Dryer Loads" value={summary.dryer_loads ?? 0} />
+          <SummaryCard label="Folder Sessions" value={summary.folder_sessions ?? 0} />
           <SummaryCard label="First Activity" value={formatDateTime(summary.first_activity_et) || "—"} />
           <SummaryCard label="Last Activity" value={formatDateTime(summary.last_activity_et) || "—"} />
         </>
@@ -803,6 +818,12 @@ export default function ScanChronologyPage() {
         <SummaryCard label={labels.firstStart} value={formatDateTime(summary.first_start_et) || "—"} />
         <SummaryCard label={labels.lastEnd} value={formatDateTime(summary.last_end_et) || "—"} />
         <SummaryCard label={labels.totalSessions} value={summary.total_sessions ?? 0} />
+        {activeStage === "folder" ? (
+          <>
+            <SummaryCard label="Complete" value={summary.complete_sessions ?? 0} />
+            <SummaryCard label="Incomplete" value={summary.incomplete_sessions ?? 0} />
+          </>
+        ) : null}
         <SummaryCard label={labels.totalTime} value={formatDurationSeconds(summary.total_stage_seconds)} />
         <SummaryCard label={labels.avgDuration} value={formatDurationSeconds(summary.average_duration_seconds)} />
         <SummaryCard label={labels.totalGap} value={formatDurationSeconds(summary.total_gap_seconds)} />
@@ -990,6 +1011,8 @@ export default function ScanChronologyPage() {
               <TableCell>Start (ET)</TableCell>
               <TableCell>End (ET)</TableCell>
               <TableCell>Duration</TableCell>
+              {activeStage === "folder" ? <TableCell>Weight</TableCell> : null}
+              {activeStage === "folder" ? <TableCell>Status</TableCell> : null}
               <TableCell>Next start</TableCell>
               <TableCell>Gap</TableCell>
               <TableCell>Confidence</TableCell>
@@ -1000,12 +1023,15 @@ export default function ScanChronologyPage() {
             {sessions.map((row) => {
               const longGap =
                 row.gap_until_next_seconds != null && row.gap_until_next_seconds >= LONG_GAP_SECONDS;
+              const incomplete = activeStage === "folder" && row.status && row.status !== "complete";
               return (
                 <TableRow
-                  key={`${row.index}-${row.bag_id}-${row.start_et}`}
+                  key={`${row.index}-${row.bag_id}-${row.start_et || row.end_et}`}
                   sx={{
-                    bgcolor: longGap ? "warning.50" : undefined,
-                    "&:hover": { bgcolor: longGap ? "warning.100" : "action.hover" },
+                    bgcolor: incomplete ? "warning.50" : longGap ? "warning.50" : undefined,
+                    "&:hover": {
+                      bgcolor: incomplete || longGap ? "warning.100" : "action.hover",
+                    },
                   }}
                 >
                   <TableCell>{row.index}</TableCell>
@@ -1022,6 +1048,24 @@ export default function ScanChronologyPage() {
                   <TableCell>{formatDateTime(row.start_et)}</TableCell>
                   <TableCell>{formatDateTime(row.end_et)}</TableCell>
                   <TableCell>{formatDurationSeconds(row.duration_seconds)}</TableCell>
+                  {activeStage === "folder" ? (
+                    <TableCell>
+                      {row.weight_lbs != null && row.weight_lbs !== ""
+                        ? `${Number(row.weight_lbs)} lbs`
+                        : "—"}
+                    </TableCell>
+                  ) : null}
+                  {activeStage === "folder" ? (
+                    <TableCell>
+                      {row.status === "complete"
+                        ? "Complete"
+                        : row.status === "incomplete_open"
+                          ? "Open"
+                          : row.status === "incomplete_missing_start"
+                            ? "Missing start"
+                            : row.status || "—"}
+                    </TableCell>
+                  ) : null}
                   <TableCell>{formatDateTime(row.next_start_et) || "—"}</TableCell>
                   <TableCell
                     sx={{

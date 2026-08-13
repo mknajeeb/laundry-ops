@@ -69,6 +69,38 @@ function buildDurationRows(sessions) {
   return { headers, rows };
 }
 
+function buildFolderRows(sessions) {
+  const headers = [
+    "#",
+    "Bag ID",
+    "Employee",
+    "Start (ET)",
+    "End (ET)",
+    "Duration (seconds)",
+    "Weight (lbs)",
+    "Status",
+    "Next start (ET)",
+    "Gap (seconds)",
+    "Confidence",
+    "Source",
+  ];
+  const rows = sessions.map((row) => [
+    row.index ?? "",
+    row.bag_id ?? "",
+    row.employee ?? "",
+    formatExportDateTime(row.start_et),
+    formatExportDateTime(row.end_et),
+    formatExportDuration(row.duration_seconds),
+    row.weight_lbs ?? "",
+    row.status ?? "",
+    formatExportDateTime(row.next_start_et),
+    formatExportDuration(row.gap_until_next_seconds),
+    row.confidence ?? "",
+    row.source ?? "",
+  ]);
+  return { headers, rows };
+}
+
 function buildEventRows(sessions, { rackKey }) {
   const headers = ["#", "Bag ID", "Employee", "Time (ET)", "Machine/Rack", "Event", "Confidence"];
   const rows = sessions.map((row) => [
@@ -255,6 +287,8 @@ export function exportScanChronologyCsv({
     payload = buildEventRows(sessions, {
       rackKey: stageId === "washing" ? "washer_rack" : "dryer_rack",
     });
+  } else if (stageId === "folder") {
+    payload = buildFolderRows(sessions);
   } else {
     // weighing, sorting, and any future duration-style stages
     payload = buildDurationRows(sessions);
