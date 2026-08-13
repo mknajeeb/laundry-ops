@@ -575,16 +575,28 @@ function PositionFlow({ block, targetBags }) {
                       {!stage.isTerminal ? (
                         <Typography
                           sx={{
-                            mt: 0.15,
-                            fontSize: "0.58rem",
-                            fontWeight: 750,
+                            mt: 0.2,
+                            fontSize: "0.66rem",
+                            fontWeight: 800,
                             color: stage.waitingNext > 0 ? POSITION_AMBER.label : "text.disabled",
                             lineHeight: 1.15,
                           }}
                         >
-                          {stage.waitingNextText || `0 waiting to ${(stage.waitingNextLabel || "next").toLowerCase()}`}
+                          {stage.waitingNextText
+                            || `${stage.waitingNext} AVAILABLE FOR ${(stage.waitingNextLabel || "NEXT").toUpperCase()}`}
                         </Typography>
-                      ) : null}
+                      ) : (
+                        <Typography
+                          sx={{
+                            mt: 0.15,
+                            fontSize: "0.55rem",
+                            fontWeight: 700,
+                            color: POSITION_TEAL.label,
+                          }}
+                        >
+                          {stage.terminalText || "complete"}
+                        </Typography>
+                      )}
                       {stage.inProcess > 0 ? (
                         <Typography
                           sx={{

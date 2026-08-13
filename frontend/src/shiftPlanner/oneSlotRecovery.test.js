@@ -67,13 +67,14 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("this 15 min");
     expect(boardSrc).toContain("HOUR END");
     expect(boardSrc).toContain("hour-end-badge");
-    expect(boardSrc).toContain("waiting to");
+    expect(boardSrc).toContain("AVAILABLE FOR");
     expect(boardSrc).toContain("position-reconciled");
     expect(boardSrc).toContain("availability-15min");
     expect(boardSrc).toContain("checkpoint-header");
     expect(helpersSrc).toContain("columnsFromCheckpoint");
-    expect(helpersSrc).toContain("waiting to");
-    expect(helpersSrc).not.toContain("→ ${nextLabel}");
+    expect(helpersSrc).toContain("AVAILABLE FOR");
+    expect(helpersSrc).toContain("${n} AVAILABLE FOR ${dest}");
+    expect(boardSrc).not.toContain("waiting to");
     expect(boardSrc).not.toContain("position-stage-columns");
     expect(boardSrc).not.toContain("setSelectedTimeSec");
     expect(boardSrc).not.toContain("AVAILABLE TO START");

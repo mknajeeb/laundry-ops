@@ -1101,8 +1101,8 @@ export function columnsFromCheckpoint(checkpoint) {
     });
   const waitingPhrase = (n, label) => {
     if (!label) return null;
-    const dest = String(label).trim().toLowerCase();
-    return `${n} waiting to ${dest}`;
+    const dest = String(label).trim().toUpperCase();
+    return `${n} AVAILABLE FOR ${dest}`;
   };
   return stageList.map((s) => {
     const id = s.id;
@@ -1124,7 +1124,7 @@ export function columnsFromCheckpoint(checkpoint) {
       inProcess,
       inProcessText: inProcess > 0 ? `${inProcess} in process` : null,
       isTerminal,
-      terminalText: null,
+      terminalText: isTerminal ? "complete" : null,
       inLabor: s.in_labor != null ? Number(s.in_labor) || 0 : null,
       inCycle: s.in_cycle != null ? Number(s.in_cycle) || 0 : null,
       completed: totalDone,
@@ -1205,7 +1205,7 @@ export function buildPositionInventoryDisplay(block, targetBags, options = {}) {
       {
         id: "weigh", title: "WEIGH", this15: n("weighed_this_block"), totalDone: n("weighed_total"),
         waitingNext: n("waiting_to_sort"), waitingNextLabel: "Sort",
-        waitingNextText: `${n("waiting_to_sort")} waiting to sort`,
+        waitingNextText: `${n("waiting_to_sort")} AVAILABLE FOR SORT`,
         inProcess: inWeighLabor, inProcessText: inWeighLabor > 0 ? `${inWeighLabor} in process` : null,
         isTerminal: false, completed: n("weighed_total"), done: n("weighed_total"),
         thisSlot: n("weighed_this_block"), waiting: n("waiting_to_sort"), available: n("waiting_to_sort"),
@@ -1213,7 +1213,7 @@ export function buildPositionInventoryDisplay(block, targetBags, options = {}) {
       {
         id: "sort", title: "SORT", this15: n("sorted_this_block"), totalDone: n("sorted_total"),
         waitingNext: n("waiting_to_wash"), waitingNextLabel: "Wash",
-        waitingNextText: `${n("waiting_to_wash")} waiting to wash`,
+        waitingNextText: `${n("waiting_to_wash")} AVAILABLE FOR WASH`,
         inProcess: inSortLabor, inProcessText: inSortLabor > 0 ? `${inSortLabor} in process` : null,
         isTerminal: false, completed: n("sorted_total"), done: n("sorted_total"),
         thisSlot: n("sorted_this_block"), waiting: n("waiting_to_wash"), available: n("waiting_to_wash"),
@@ -1221,7 +1221,7 @@ export function buildPositionInventoryDisplay(block, targetBags, options = {}) {
       {
         id: "wash", title: "WASH", this15: n("washed_this_block"), totalDone: n("washed_total"),
         waitingNext: n("waiting_to_dry"), waitingNextLabel: "Dry",
-        waitingNextText: `${n("waiting_to_dry")} waiting to dry`,
+        waitingNextText: `${n("waiting_to_dry")} AVAILABLE FOR DRY`,
         inProcess: inWashLabor + inWashCycle,
         inProcessText: (inWashLabor + inWashCycle) > 0 ? `${inWashLabor + inWashCycle} in process` : null,
         inLabor: inWashLabor, inCycle: inWashCycle,
@@ -1231,7 +1231,7 @@ export function buildPositionInventoryDisplay(block, targetBags, options = {}) {
       {
         id: "dry", title: "DRY", this15: n("dried_this_block"), totalDone: n("dried_total"),
         waitingNext: n("waiting_to_fold"), waitingNextLabel: "Fold",
-        waitingNextText: `${n("waiting_to_fold")} waiting to fold`,
+        waitingNextText: `${n("waiting_to_fold")} AVAILABLE FOR FOLD`,
         inProcess: inDryLabor + inDryCycle,
         inProcessText: (inDryLabor + inDryCycle) > 0 ? `${inDryLabor + inDryCycle} in process` : null,
         inLabor: inDryLabor, inCycle: inDryCycle,
