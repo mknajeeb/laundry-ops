@@ -408,10 +408,16 @@ def _bags_canonically_completed_before_opening(
     Uses the Shift Monitor completion contract via ``load_canonical_completions_v2``:
       WF → resolve_current_cycle
       HD → _evaluate_bag_as_of
-    Manager ``correct_completion`` remains authoritative.
+    Manager ``correct_completion`` remains authoritative **within the cycle
+    active as of prior-day end** (same durable window as completion rebuild).
+    A prior-cycle manager correction must not exclude a newer cycle.
     Clean rack / processed-by-vendor alone do not complete.
     """
-    from backend.rinse_cycle_boundary import resolve_current_cycle
+    from backend.rinse_cycle_boundary import (
+        current_cycle_event_window,
+        manager_completion_belongs_to_cycle,
+        resolve_current_cycle,
+    )
     from backend.rinse_folding_et import naive_et_day_end_inclusive
     from backend.rinse_processing_settings import (
         DEFAULT_FACILITY_ENTRY_RACKS,
@@ -521,9 +527,13 @@ def _bags_canonically_completed_before_opening(
         ):
             completed.add(bid)
 
-    # Manager correct_completion before opening wins even without scan evidence.
+    # Manager correct_completion before opening wins even without scan evidence,
+    # but only when the correction belongs to the cycle active as of prior-day
+    # end (same window as load_canonical_completions_v2). Prior-cycle corrections
+    # must not exclude a newer cycle that started before opening.
     if table_exists(cursor, "rinse_step1_corrections"):
         still = [b for b in ids if b not in completed]
+        cycle_day = prior if prior >= STEP1_AUTHORITATIVE_START_ET else selected_date_et
         for i in range(0, len(still), chunk):
             part = still[i : i + chunk]
             if not part:
@@ -566,7 +576,23 @@ def _bags_canonically_completed_before_opening(
                         )
                     except ValueError:
                         continue
-                if ts < day_start:
+                if ts >= day_start:
+                    continue
+                timeline = by_bag.get(bid) or []
+                if not timeline:
+                    # Manager-only completion with no pre-opening scan timeline:
+                    # no newer cycle is visible, so the correction still excludes.
+                    completed.add(bid)
+                    continue
+                cycle_start, cycle_end = current_cycle_event_window(
+                    timeline,
+                    selected_date_et=cycle_day,
+                    entry_racks=racks,
+                    as_of_end=prior_end,
+                )
+                if manager_completion_belongs_to_cycle(
+                    ts, cycle_start=cycle_start, cycle_end=cycle_end
+                ):
                     completed.add(bid)
 
     return completed

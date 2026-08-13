@@ -533,6 +533,30 @@ def current_cycle_event_window(
     return start, next_send
 
 
+def manager_completion_belongs_to_cycle(
+    correction_at: datetime,
+    *,
+    cycle_start: datetime | None,
+    cycle_end: datetime | None,
+) -> bool:
+    """True when a manager correction's completion_at is in [anchor, next_stv).
+
+    ``cycle_end`` is exclusive (next sent-to-vendor). Open cycles pass
+    ``cycle_end=None``. Without a cycle anchor the correction cannot be
+    associated with the selected day's current cycle.
+
+    Shared by completion rebuild and opening-membership exclusion so both use
+    one durable cycle-window definition.
+    """
+    if cycle_start is None:
+        return False
+    if correction_at < cycle_start:
+        return False
+    if cycle_end is not None and correction_at >= cycle_end:
+        return False
+    return True
+
+
 def resolve_current_cycle(
     timeline: Sequence[Mapping[str, Any]],
     *,
