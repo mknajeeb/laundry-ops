@@ -3,12 +3,15 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
+  FormGroup,
   IconButton,
   InputLabel,
   MenuItem,
@@ -35,8 +38,8 @@ import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import {
   BLOCK_SIZE_OPTIONS,
   DEFAULT_MANAGEMENT_INPUTS,
-  MANAGEMENT_HYBRIDS,
   MANAGEMENT_ROLES,
+  newHybridInterval,
   newStaffingInterval,
 } from "../../shiftPlanner/managementConstants";
 import {
@@ -53,15 +56,18 @@ import {
   findWorkCoverageForHybrid,
   findWorkCoverageForRole,
   formatCollapsedSlotStaffLine,
+  formatHybridRolesLabel,
   getAdditionalForBlock,
   getBasePeopleForBlock,
-  getHybridPeopleForBlock,
   hmToClock,
   indexBlockPositionsByEnd,
+  listHybridsForBlock,
   pickEditablePlannerParamSnapshot,
   pickPersistedPlannerParams,
+  removeHybridInterval,
   setBasePeopleForBlock,
-  setHybridPeopleForBlock,
+  upsertHybridInterval,
+  validateHybridDraft,
   validateManagementPlanInputs,
   validatePersistedPlannerParams,
   validateStaffingIntervals,
@@ -820,79 +826,175 @@ function BlockRoleRow({
   );
 }
 
-function HybridRoleRow({
-  hybrid,
-  blockStart,
-  blockEnd,
-  intervals,
-  onChange,
+function HybridDialog({
+  open,
+  draft,
+  onClose,
+  onSave,
+  planStart,
+  planEnd,
+  isEdit = false,
+}) {
+  const [local, setLocal] = useState(draft);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setLocal(draft);
+    setError("");
+  }, [draft, open]);
+
+  const toggleRole = (roleId) => {
+    setLocal((prev) => {
+      const cur = new Set(prev?.roles || []);
+      if (cur.has(roleId)) cur.delete(roleId);
+      else cur.add(roleId);
+      return { ...prev, roles: MANAGEMENT_ROLES.map((r) => r.id).filter((id) => cur.has(id)) };
+    });
+  };
+
+  const save = () => {
+    const v = validateHybridDraft(local, { startTime: planStart, endTime: planEnd });
+    if (!v.ok) {
+      setError(v.message || "Invalid hybrid");
+      return;
+    }
+    onSave({
+      ...local,
+      roles: v.roles,
+      people: v.people,
+      mode: String(local.mode || "base").toLowerCase() === "additional" ? "additional" : "base",
+    });
+  };
+
+  if (!local) return null;
+  const selected = new Set(local.roles || []);
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+      <DialogTitle sx={{ fontWeight: 800, py: 1.5 }}>
+        {isEdit ? "Edit hybrid" : "Add hybrid"}
+      </DialogTitle>
+      <DialogContent>
+        <Stack spacing={1.25} sx={{ pt: 0.5 }}>
+          {error ? <Alert severity="warning">{error}</Alert> : null}
+          <TextField
+            label="People"
+            type="number"
+            size="small"
+            fullWidth
+            inputProps={{ min: 1, step: 1 }}
+            value={local.people}
+            onChange={(e) => setLocal((p) => ({ ...p, people: e.target.value }))}
+            sx={fieldSx}
+          />
+          <Box>
+            <Typography sx={{ fontWeight: 700, fontSize: "0.78rem", mb: 0.35 }}>
+              Roles
+            </Typography>
+            <FormGroup row>
+              {MANAGEMENT_ROLES.map((role) => (
+                <FormControlLabel
+                  key={role.id}
+                  control={(
+                    <Checkbox
+                      size="small"
+                      checked={selected.has(role.id)}
+                      onChange={() => toggleRole(role.id)}
+                    />
+                  )}
+                  label={role.label}
+                  sx={{ mr: 1.25, "& .MuiFormControlLabel-label": { fontSize: "0.8rem" } }}
+                />
+              ))}
+            </FormGroup>
+            <Typography sx={{ fontSize: "0.7rem", color: "text.secondary" }}>
+              Select at least two roles. One person may perform any selected role.
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={1}>
+            <Box sx={{ flex: 1 }}>
+              <ClockField
+                label="Start"
+                value={local.start}
+                onChange={(v) => setLocal((p) => ({ ...p, start: v }))}
+              />
+            </Box>
+            <Box sx={{ flex: 1 }}>
+              <ClockField
+                label="End"
+                value={local.end}
+                onChange={(v) => setLocal((p) => ({ ...p, end: v }))}
+              />
+            </Box>
+          </Stack>
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} sx={{ textTransform: "none" }}>Cancel</Button>
+        <Button variant="contained" onClick={save} sx={{ textTransform: "none", fontWeight: 700 }}>
+          Save
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+function HybridAssignmentRow({
+  assignment,
   coverageRows = [],
   processParams = null,
+  onEdit,
+  onDelete,
 }) {
-  const count = getHybridPeopleForBlock(intervals, hybrid.id, blockStart, blockEnd);
-  const hybridCoverage = count > 0
-    ? findWorkCoverageForHybrid(coverageRows, hybrid.id, blockStart, blockEnd)
-    : [];
+  const label = assignment.label || formatHybridRolesLabel(assignment.roles);
+  const peopleLabel = `${assignment.people} ${assignment.people === 1 ? "person" : "people"}`;
+  const hybridCoverage = findWorkCoverageForHybrid(
+    coverageRows,
+    assignment.roles,
+    assignment.start,
+    assignment.end,
+  );
   return (
     <Box
       sx={{
         borderBottom: `1px solid ${VEEWASH_DASHBOARD.monitoringBorder}`,
         "&:last-child": { borderBottom: 0 },
       }}
+      data-testid={`hybrid-assignment-${assignment.id}`}
     >
-    <Stack
-      direction="row"
-      alignItems="center"
-      spacing={1}
-      sx={{
-        py: 0.35,
-        minHeight: 32,
-      }}
-    >
-      <Typography
-        sx={{
-          width: 140,
-          flexShrink: 0,
-          fontWeight: 700,
-          fontSize: "0.72rem",
-          color: "text.secondary",
-        }}
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={0.75}
+        sx={{ py: 0.4, minHeight: 32 }}
+        flexWrap="wrap"
+        useFlexGap
       >
-        {hybrid.label}
-      </Typography>
-      <Stack direction="row" alignItems="center" spacing={0.25} sx={{ flexShrink: 0 }}>
-        <IconButton
-          size="small"
-          aria-label={`Decrease ${hybrid.label} hybrid staff`}
-          onClick={() => onChange(Math.max(0, count - 1))}
-          sx={{ p: 0.35 }}
-        >
-          <RemoveIcon sx={{ fontSize: 16 }} />
-        </IconButton>
-        <Typography
-          sx={{ width: 18, textAlign: "center", fontWeight: 800, fontSize: "0.95rem" }}
-          aria-label={`${hybrid.label} hybrid staff ${count}`}
-        >
-          {count}
+        <Typography sx={{ fontWeight: 700, fontSize: "0.75rem", color: "text.primary" }}>
+          {label} · {peopleLabel} · {assignment.start}–{assignment.end}
         </Typography>
+        <Button
+          size="small"
+          onClick={() => onEdit(assignment)}
+          startIcon={<EditOutlinedIcon sx={{ fontSize: 14 }} />}
+          sx={{ textTransform: "none", fontWeight: 700, fontSize: "0.68rem", minWidth: 0, px: 0.5 }}
+        >
+          Edit
+        </Button>
         <IconButton
           size="small"
-          aria-label={`Increase ${hybrid.label} hybrid staff`}
-          onClick={() => onChange(count + 1)}
-          sx={{ p: 0.35 }}
+          aria-label={`Delete hybrid ${label}`}
+          onClick={() => onDelete(assignment.id)}
+          sx={{ p: 0.3 }}
         >
-          <AddIcon sx={{ fontSize: 16 }} />
+          <DeleteOutlineIcon sx={{ fontSize: 16 }} />
         </IconButton>
       </Stack>
-      <Typography sx={{ fontSize: "0.72rem", color: "text.disabled" }}>
-        {count > 0 ? "shared calendar" : "—"}
-      </Typography>
-    </Stack>
-    <WorkCoverageHint
-      rows={hybridCoverage}
-      testId={`work-coverage-hybrid-${hybrid.id}`}
-      processParams={processParams}
-    />
+      <WorkCoverageHint
+        rows={hybridCoverage}
+        testId={`work-coverage-hybrid-${assignment.id}`}
+        processParams={processParams}
+      />
     </Box>
   );
 }
@@ -975,6 +1077,9 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
   const [dialogOpen, setDialogOpen] = useState(false);
   const [draft, setDraft] = useState(null);
   const [modeLocked, setModeLocked] = useState(true);
+  const [hybridDialogOpen, setHybridDialogOpen] = useState(false);
+  const [hybridDraft, setHybridDraft] = useState(null);
+  const [hybridEditExisting, setHybridEditExisting] = useState(false);
   /** Per-block staffing strip open state; default expanded. */
   const [staffingExpanded, setStaffingExpanded] = useState({});
   const debounceRef = useRef(null);
@@ -1206,16 +1311,43 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
     }));
   };
 
-  const changeHybrid = (hybridId, blockStart, blockEnd, people) => {
+  const openAddHybrid = (blockStart, blockEnd) => {
+    setHybridDraft(newHybridInterval({
+      start: blockStart,
+      end: blockEnd,
+      people: 1,
+      roles: ["washer", "dryer"],
+      mode: "base",
+    }));
+    setHybridEditExisting(false);
+    setHybridDialogOpen(true);
+  };
+
+  const openEditHybrid = (assignment) => {
+    setHybridDraft({
+      id: assignment.id,
+      roles: [...(assignment.roles || [])],
+      people: assignment.people,
+      start: assignment.start,
+      end: assignment.end,
+      mode: assignment.mode || "base",
+    });
+    setHybridEditExisting(true);
+    setHybridDialogOpen(true);
+  };
+
+  const saveHybrid = (row) => {
     setInputs((prev) => ({
       ...prev,
-      hybrid_intervals: setHybridPeopleForBlock(
-        prev.hybrid_intervals,
-        hybridId,
-        blockStart,
-        blockEnd,
-        people,
-      ),
+      hybrid_intervals: upsertHybridInterval(prev.hybrid_intervals, row),
+    }));
+    setHybridDialogOpen(false);
+  };
+
+  const deleteHybrid = (id) => {
+    setInputs((prev) => ({
+      ...prev,
+      hybrid_intervals: removeHybridInterval(prev.hybrid_intervals, id),
     }));
   };
 
@@ -1556,22 +1688,40 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
                     >
                       Hybrid
                     </Typography>
-                    {MANAGEMENT_HYBRIDS.map((hybrid) => (
-                      <HybridRoleRow
-                        key={hybrid.id}
-                        hybrid={hybrid}
-                        blockStart={pb.block_start}
-                        blockEnd={pb.block_end}
-                        intervals={inputs.hybrid_intervals}
+                    {listHybridsForBlock(
+                      inputs.hybrid_intervals,
+                      pb.block_start,
+                      pb.block_end,
+                    ).map((assignment) => (
+                      <HybridAssignmentRow
+                        key={assignment.id}
+                        assignment={assignment}
                         coverageRows={
                           (pos?.staffing?.work_coverage)
                           || result?.work_coverage
                           || []
                         }
                         processParams={inputs}
-                        onChange={(n) => changeHybrid(hybrid.id, pb.block_start, pb.block_end, n)}
+                        onEdit={openEditHybrid}
+                        onDelete={deleteHybrid}
                       />
                     ))}
+                    <Button
+                      size="small"
+                      startIcon={<AddIcon sx={{ fontSize: 14 }} />}
+                      onClick={() => openAddHybrid(pb.block_start, pb.block_end)}
+                      data-testid="add-hybrid"
+                      sx={{
+                        mt: 0.35,
+                        textTransform: "none",
+                        fontWeight: 700,
+                        fontSize: "0.72rem",
+                        minWidth: 0,
+                        px: 0.5,
+                      }}
+                    >
+                      Add Hybrid
+                    </Button>
                   </Box>
                 )}
                 <SlotStaffingNotes notes={staffingNotes} />
@@ -1614,6 +1764,15 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
         modeLocked={modeLocked}
         onClose={() => setDialogOpen(false)}
         onSave={saveInterval}
+      />
+      <HybridDialog
+        open={hybridDialogOpen}
+        draft={hybridDraft}
+        isEdit={hybridEditExisting}
+        planStart={inputs.start_time}
+        planEnd={inputs.target_time}
+        onClose={() => setHybridDialogOpen(false)}
+        onSave={saveHybrid}
       />
     </Stack>
   );

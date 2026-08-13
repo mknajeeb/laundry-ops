@@ -10,13 +10,31 @@ export const MANAGEMENT_ROLES = [
 
 export const ROLE_LABEL = Object.fromEntries(MANAGEMENT_ROLES.map((r) => [r.id, r.label]));
 
-/** Block-level hybrid staffing: one person, multiple qualified roles, one calendar. */
+/** Legacy preset hybrid ids → role sets (normalize into custom hybrids). */
+export const LEGACY_HYBRID_ROLES = {
+  weigh_wash: ["weigher", "washer"],
+  wash_dry: ["washer", "dryer"],
+  weigh_wash_dry: ["weigher", "washer", "dryer"],
+};
+
+/** @deprecated Prefer custom hybrid_intervals with roles[]; kept for migration helpers. */
 export const MANAGEMENT_HYBRIDS = [
   { id: "weigh_wash", label: "Weigh / Wash", roles: ["weigher", "washer"] },
   { id: "wash_dry", label: "Wash / Dry", roles: ["washer", "dryer"] },
   { id: "weigh_wash_dry", label: "Weigh / Wash / Dry", roles: ["weigher", "washer", "dryer"] },
 ];
 
+export function newHybridInterval(overrides = {}) {
+  return {
+    id: `hy-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    roles: ["washer", "dryer"],
+    people: 1,
+    start: "9:00 AM",
+    end: "3:00 PM",
+    mode: "base",
+    ...overrides,
+  };
+}
 export const BLOCK_SIZE_OPTIONS = [
   { value: 30, label: "30 min" },
   { value: 45, label: "45 min" },
@@ -73,7 +91,8 @@ export const DEFAULT_MANAGEMENT_INPUTS = {
   ...DEFAULT_PROCESS_PARAMS,
   // Authored intervals only — empty by default (no auto staff).
   staffing_intervals: [],
-  // Hybrid block staffing: { id, hybrid, people, start, end, mode: "base" }
+  // Custom hybrids: { id, roles[], people, start, end, mode: "base"|"additional" }
+  // Legacy { hybrid: "wash_dry", ... } still accepted and normalized.
   hybrid_intervals: [],
 };
 

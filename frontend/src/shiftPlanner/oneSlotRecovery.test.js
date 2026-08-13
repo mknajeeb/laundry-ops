@@ -41,7 +41,11 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain("Block size");
     expect(boardSrc).toContain("PlanningTimePicker");
     expect(boardSrc).toMatch(/>\s*Hybrid\s*</);
-    expect(boardSrc).toContain("MANAGEMENT_HYBRIDS.map");
+    expect(boardSrc).toContain("Add Hybrid");
+    expect(boardSrc).toContain("listHybridsForBlock");
+    expect(boardSrc).not.toContain("MANAGEMENT_HYBRIDS.map");
+    expect(boardSrc).not.toContain("Weigh / Wash");
+    expect(boardSrc).not.toContain("shared calendar");
     expect(boardSrc).toContain("this 15 min");
     expect(boardSrc).toContain("HOUR END");
     expect(boardSrc).toContain("checkpoint-header");

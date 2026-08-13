@@ -15,6 +15,7 @@ import {
   findWorkCoverageForHybrid,
   findWorkCoverageForRole,
   formatCollapsedSlotStaffLine,
+  formatHybridRolesLabel,
   formatHybridStaffChips,
   formatManagementOutcome,
   formatStageReconcile,
@@ -27,11 +28,16 @@ import {
   getHybridPeopleForBlock,
   indexBlockPositionsByEnd,
   intervalsOverlap,
+  listHybridsForBlock,
+  normalizeHybridRoles,
   parseClockToSec,
   pickPersistedPlannerParams,
+  removeHybridInterval,
   setBasePeopleForBlock,
   setHybridPeopleForBlock,
   stageRemaining,
+  upsertHybridInterval,
+  validateHybridDraft,
   validateManagementPlanInputs,
   validatePersistedPlannerParams,
   validateStaffingIntervals,
@@ -39,6 +45,53 @@ import {
 import { DEFAULT_MANAGEMENT_INPUTS, PERSISTED_PLANNER_PARAM_KEYS } from "./managementConstants";
 
 describe("managementHelpers", () => {
+  it("custom hybrid upsert/edit/delete and rejects fewer than two roles", () => {
+    expect(normalizeHybridRoles(["folder", "sorter", "sorter"])).toEqual(["sorter", "folder"]);
+    expect(formatHybridRolesLabel(["washer", "dryer"])).toBe("Wash+Dry");
+    expect(validateHybridDraft({ roles: ["washer"], people: 1, start: "9:00 AM", end: "10:00 AM" }).ok).toBe(false);
+
+    let hybrids = upsertHybridInterval([], {
+      id: "h1",
+      roles: ["sorter", "folder"],
+      people: 1,
+      start: "9:00 AM",
+      end: "10:00 AM",
+      mode: "base",
+    });
+    expect(listHybridsForBlock(hybrids, "9:00 AM", "10:00 AM")).toHaveLength(1);
+    expect(formatCollapsedSlotStaffLine(
+      [],
+      hybrids,
+      "9:00 AM",
+      "10:00 AM",
+    )).toContain("Hybrid: Sort+Fold 1");
+
+    hybrids = upsertHybridInterval(hybrids, {
+      id: "h1",
+      roles: ["washer", "dryer"],
+      people: 2,
+      start: "9:30 AM",
+      end: "10:00 AM",
+      mode: "additional",
+    });
+    expect(hybrids[0].roles).toEqual(["washer", "dryer"]);
+    expect(hybrids[0].people).toBe(2);
+    expect(hybrids[0].mode).toBe("additional");
+
+    const body = buildManagementPayload({
+      ...DEFAULT_MANAGEMENT_INPUTS,
+      hybrid_intervals: hybrids,
+    });
+    expect(body.staffing_plan.intervals[0]).toMatchObject({
+      roles: ["washer", "dryer"],
+      people: 2,
+      mode: "additional",
+    });
+
+    hybrids = removeHybridInterval(hybrids, "h1");
+    expect(hybrids).toHaveLength(0);
+  });
+
   it("builds payload with management_mode, process params, and end_time=target", () => {
     const body = buildManagementPayload(DEFAULT_MANAGEMENT_INPUTS);
     expect(body.management_mode).toBe(true);
@@ -295,11 +348,12 @@ describe("managementHelpers", () => {
       ],
       hybrid_intervals: hybrids,
     });
-    const kinds = body.staffing_plan.intervals.map((row) => row.hybrid || row.role);
-    expect(kinds).toContain("sorter");
-    expect(kinds).toContain("weigh_wash");
-    expect(body.staffing_plan.intervals.filter((r) => r.hybrid === "weigh_wash")).toHaveLength(1);
-    expect(body.staffing_plan.intervals.every((r) => r.role !== "weigher" || r.hybrid)).toBe(true);
+    const hybridRows = body.staffing_plan.intervals.filter((r) => r.roles || r.hybrid || r.mode === "hybrid");
+    expect(body.staffing_plan.intervals.some((r) => r.role === "sorter")).toBe(true);
+    expect(hybridRows).toHaveLength(1);
+    expect(hybridRows[0].roles).toEqual(["weigher", "washer"]);
+    expect(hybridRows[0].mode).toBe("hybrid");
+    expect(body.staffing_plan.intervals.every((r) => r.role !== "weigher")).toBe(true);
 
     hybrids = setHybridPeopleForBlock(hybrids, "weigh_wash", "9:00 AM", "10:00 AM", 0);
     expect(getHybridPeopleForBlock(hybrids, "weigh_wash", "9:00 AM", "10:00 AM")).toBe(0);
@@ -594,12 +648,12 @@ describe("managementHelpers", () => {
       [{ hybrid: "weigh_wash", people: 1, start: "6:00 AM", end: "7:00 AM", mode: "base" }],
       "6:00 AM",
       "7:00 AM",
-    )).toBe("Weigh 0 · Sort 1 · Wash 0 · Dry 1 · Fold 2 · Hybrid W/W 1");
+    )).toBe("Weigh 0 · Sort 1 · Wash 0 · Dry 1 · Fold 2 · Hybrid: Weigh+Wash 1");
     expect(formatHybridStaffChips(
       [{ hybrid: "weigh_wash", people: 1, start: "6:00 AM", end: "7:00 AM", mode: "base" }],
       "6:00 AM",
       "7:00 AM",
-    )).toEqual(["Hybrid W/W 1"]);
+    )).toEqual(["Weigh+Wash 1"]);
 
     // Collapsed TEMP staffing remains visible
     expect(formatCollapsedSlotStaffLine(
@@ -781,7 +835,7 @@ describe("managementHelpers", () => {
       "7:00 AM",
     );
     expect(hybridWwPlusDry.some((n) => /no Wash labor/i.test(n.text))).toBe(false);
-    expect(hybridWwPlusDry.some((n) => n.tone === "info" && /one calendar/i.test(n.text))).toBe(true);
+    expect(hybridWwPlusDry.some((n) => n.tone === "info" && /one person/i.test(n.text))).toBe(true);
 
     const foldNoDry = buildSlotStaffingNotes(
       [{ role: "folder", people: 2, start: "6:00 AM", end: "7:00 AM", mode: "base" }],
@@ -1024,6 +1078,7 @@ describe("managementHelpers", () => {
 
     const hybrid = describeWorkCoverage({
       hybrid: "wash_dry",
+      roles: ["washer", "dryer"],
       mode: "base",
       staff_min: 60,
       used_min: 60,
@@ -1031,7 +1086,8 @@ describe("managementHelpers", () => {
       status: "fully_utilized",
       role_allocation_min: { washer: 36, dryer: 24, idle: 0 },
     });
-    expect(hybrid.lines[0]).toBe("Labor used: 60 / 60 min");
+    expect(hybrid.lines[0]).toContain("HYBRID");
+    expect(hybrid.lines[1]).toBe("60 of 60 min productive · 100% utilized");
     expect(hybrid.lines.join("\n")).toContain("Wash 36m");
     expect(hybrid.lines.join("\n")).toContain("Dry 24m");
 

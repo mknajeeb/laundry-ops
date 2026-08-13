@@ -6,14 +6,12 @@
 
 import {
   DEFAULT_PROCESS_PARAMS,
-  MANAGEMENT_HYBRIDS,
+  LEGACY_HYBRID_ROLES,
   MANAGEMENT_ROLES,
   PERSISTED_PLANNER_PARAM_KEYS,
   ROLE_LABEL,
   SESSION_PLANNER_PARAM_KEYS,
 } from "./managementConstants";
-
-const HYBRID_IDS = new Set(MANAGEMENT_HYBRIDS.map((h) => h.id));
 
 const ROLE_ALIAS = {
   weigh: "weigher",
@@ -165,15 +163,136 @@ export function getAdditionalForBlock(intervals, roleId, blockStart, blockEnd) {
   });
 }
 
-/** Hybrid headcount for a planning block (base coverage at start, else max overlap). */
-export function getHybridPeopleForBlock(intervals, hybridId, blockStart, blockEnd = null) {
+/** Canonical workflow-ordered unique management roles (≥2) for a hybrid. */
+export function normalizeHybridRoles(roles) {
+  const seen = new Set();
+  for (const raw of roles || []) {
+    const id = normalizeRole(raw) || String(raw || "").trim().toLowerCase();
+    if (MANAGEMENT_ROLES.some((r) => r.id === id)) seen.add(id);
+  }
+  return MANAGEMENT_ROLES.map((r) => r.id).filter((id) => seen.has(id));
+}
+
+export function hybridRolesKey(roles) {
+  return normalizeHybridRoles(roles).join("+");
+}
+
+export function formatHybridRolesLabel(roles) {
+  return normalizeHybridRoles(roles)
+    .map((id) => ROLE_LABEL[id] || id)
+    .join("+");
+}
+
+/** Resolve roles from a hybrid interval (roles[] or legacy hybrid id). */
+export function resolveHybridRolesFromRow(row) {
+  if (!row) return [];
+  if (Array.isArray(row.roles) && row.roles.length) {
+    return normalizeHybridRoles(row.roles);
+  }
+  const legacy = String(row.hybrid || row.hybrid_type || "").trim().toLowerCase();
+  if (LEGACY_HYBRID_ROLES[legacy]) {
+    return [...LEGACY_HYBRID_ROLES[legacy]];
+  }
+  if (legacy.includes("+")) {
+    return normalizeHybridRoles(legacy.split("+"));
+  }
+  return [];
+}
+
+export function validateHybridDraft(draft, { startTime, endTime } = {}) {
+  const roles = normalizeHybridRoles(draft?.roles);
+  if (roles.length < 2) {
+    return { ok: false, message: "Select at least two roles for a hybrid." };
+  }
+  const people = Math.floor(Number(draft?.people) || 0);
+  if (people < 1) {
+    return { ok: false, message: "People must be at least 1." };
+  }
+  const s = parseClockToSec(draft?.start);
+  const e = parseClockToSec(draft?.end);
+  if (s == null || e == null || e <= s) {
+    return { ok: false, message: "End must be after start." };
+  }
+  const planStart = startTime != null ? parseClockToSec(startTime) : null;
+  const planEnd = endTime != null ? parseClockToSec(endTime) : null;
+  if (planStart != null && planEnd != null && (s < planStart || e > planEnd)) {
+    return { ok: false, message: "Hybrid interval is outside the plan window." };
+  }
+  return { ok: true, roles, people, startSec: s, endSec: e };
+}
+
+/** Hybrids overlapping a planning block (existing assignments only). */
+export function listHybridsForBlock(intervals, blockStart, blockEnd) {
   const bs = parseClockToSec(blockStart);
-  if (bs == null || !HYBRID_IDS.has(hybridId)) return 0;
+  const be = parseClockToSec(blockEnd);
+  if (bs == null || be == null) return [];
+  return (intervals || [])
+    .map((row) => {
+      const roles = resolveHybridRolesFromRow(row);
+      const s = parseClockToSec(row.start);
+      const e = parseClockToSec(row.end);
+      const people = Math.max(0, Math.floor(Number(row.people) || 0));
+      if (roles.length < 2 || s == null || e == null || people < 1) return null;
+      if (!intervalsOverlap(s, e, bs, be)) return null;
+      return {
+        ...row,
+        roles,
+        people,
+        rolesKey: hybridRolesKey(roles),
+        label: formatHybridRolesLabel(roles),
+      };
+    })
+    .filter(Boolean);
+}
+
+export function upsertHybridInterval(intervals, draft) {
+  const roles = normalizeHybridRoles(draft?.roles);
+  const people = Math.max(0, Math.floor(Number(draft?.people) || 0));
+  const mode = String(draft?.mode || "base").toLowerCase() === "additional"
+    ? "additional"
+    : "base";
+  const next = {
+    id: draft?.id || `hy-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    roles,
+    people,
+    start: draft.start,
+    end: draft.end,
+    mode,
+  };
+  // Drop legacy hybrid key when roles are present.
+  const list = [...(intervals || [])];
+  const idx = list.findIndex((row) => row.id === next.id);
+  if (people < 1 || roles.length < 2) {
+    return idx >= 0 ? list.filter((row) => row.id !== next.id) : list;
+  }
+  if (idx >= 0) {
+    list[idx] = next;
+    return list;
+  }
+  list.push(next);
+  return list;
+}
+
+export function removeHybridInterval(intervals, id) {
+  return (intervals || []).filter((row) => row.id !== id);
+}
+
+/** Hybrid headcount for a planning block (base coverage at start, else max overlap). */
+export function getHybridPeopleForBlock(intervals, hybridIdOrRoles, blockStart, blockEnd = null) {
+  const bs = parseClockToSec(blockStart);
+  if (bs == null) return 0;
+  const wantKey = Array.isArray(hybridIdOrRoles)
+    ? hybridRolesKey(hybridIdOrRoles)
+    : (LEGACY_HYBRID_ROLES[hybridIdOrRoles]
+      ? hybridRolesKey(LEGACY_HYBRID_ROLES[hybridIdOrRoles])
+      : String(hybridIdOrRoles || ""));
+  if (!wantKey) return 0;
   let atStart = 0;
   let maxOverlap = 0;
   const be = blockEnd != null ? parseClockToSec(blockEnd) : null;
   for (const row of intervals || []) {
-    if (String(row.hybrid || row.hybrid_type || "") !== hybridId) continue;
+    const key = hybridRolesKey(resolveHybridRolesFromRow(row));
+    if (key !== wantKey) continue;
     if (String(row.mode || "base").toLowerCase() === "additional") continue;
     const s = parseClockToSec(row.start);
     const e = parseClockToSec(row.end);
@@ -188,17 +307,20 @@ export function getHybridPeopleForBlock(intervals, hybridId, blockStart, blockEn
   return be != null ? maxOverlap : 0;
 }
 
-/** Set hybrid base headcount for one planning block. */
+/** Set hybrid base headcount for one planning block (legacy helper). */
 export function setHybridPeopleForBlock(intervals, hybridId, blockStart, blockEnd, people) {
   const bs = parseClockToSec(blockStart);
   const be = parseClockToSec(blockEnd);
   const peopleN = Math.max(0, Math.floor(Number(people) || 0));
-  if (bs == null || be == null || be <= bs || !HYBRID_IDS.has(hybridId)) {
+  const roleList = LEGACY_HYBRID_ROLES[hybridId] || normalizeHybridRoles(hybridId);
+  if (bs == null || be == null || be <= bs || roleList.length < 2) {
     return intervals || [];
   }
+  const wantKey = hybridRolesKey(roleList);
   const next = [];
   for (const row of intervals || []) {
-    if (String(row.hybrid || row.hybrid_type || "") !== hybridId) {
+    const key = hybridRolesKey(resolveHybridRolesFromRow(row));
+    if (key !== wantKey) {
       next.push(row);
       continue;
     }
@@ -221,8 +343,8 @@ export function setHybridPeopleForBlock(intervals, hybridId, blockStart, blockEn
   }
   if (peopleN >= 1) {
     next.push({
-      id: `hy-${hybridId}-${blockStart}-${blockEnd}-${peopleN}`.replace(/\s+/g, ""),
-      hybrid: hybridId,
+      id: `hy-${wantKey}-${blockStart}-${blockEnd}-${peopleN}`.replace(/\s+/g, ""),
+      roles: roleList,
       people: peopleN,
       start: blockStart,
       end: blockEnd,
@@ -377,14 +499,30 @@ export function buildManagementPayload(inputs) {
     mode: String(row.mode || "base").toLowerCase() === "additional" ? "additional" : "base",
   }));
   const hybrids = (inputs.hybrid_intervals || [])
-    .filter((row) => HYBRID_IDS.has(String(row.hybrid || row.hybrid_type || "")))
-    .map((row) => ({
-      hybrid: String(row.hybrid || row.hybrid_type),
-      people: Number(row.people),
-      start: row.start,
-      end: row.end,
-      mode: String(row.mode || "base").toLowerCase() === "additional" ? "additional" : "base",
-    }));
+    .map((row) => {
+      const roles = resolveHybridRolesFromRow(row);
+      if (roles.length < 2) return null;
+      const people = Number(row.people);
+      if (!Number.isFinite(people) || people < 1) return null;
+      const isTemp = String(row.mode || "base").toLowerCase() === "additional";
+      if (isTemp) {
+        return {
+          roles,
+          people,
+          start: row.start,
+          end: row.end,
+          mode: "additional",
+        };
+      }
+      return {
+        mode: "hybrid",
+        roles,
+        people,
+        start_time: row.start,
+        end_time: row.end,
+      };
+    })
+    .filter(Boolean);
   const intervals = [...dedicated, ...hybrids];
 
   // Horizon = start → target finish. Backend still accepts end_time; map it internally.
@@ -596,13 +734,26 @@ export function findWorkCoverageForRole(coverageRows, roleId, blockStart, blockE
   });
 }
 
-export function findWorkCoverageForHybrid(coverageRows, hybridId, blockStart, blockEnd) {
+export function findWorkCoverageForHybrid(coverageRows, hybridIdOrRoles, blockStart, blockEnd) {
   const bs = parseClockToSec(blockStart);
   const be = parseClockToSec(blockEnd);
   if (bs == null || be == null) return [];
+  const wantKey = Array.isArray(hybridIdOrRoles)
+    ? hybridRolesKey(hybridIdOrRoles)
+    : (LEGACY_HYBRID_ROLES[hybridIdOrRoles]
+      ? hybridRolesKey(LEGACY_HYBRID_ROLES[hybridIdOrRoles])
+      : String(hybridIdOrRoles || "").includes("+")
+        ? hybridRolesKey(String(hybridIdOrRoles).split("+"))
+        : String(hybridIdOrRoles || ""));
   const rows = Array.isArray(coverageRows) ? coverageRows : [];
   return rows.filter((row) => {
-    if (row.hybrid !== hybridId) return false;
+    if (!row.hybrid && !(row.roles && row.roles.length >= 2)) return false;
+    const rowKey = row.roles?.length
+      ? hybridRolesKey(row.roles)
+      : (LEGACY_HYBRID_ROLES[row.hybrid]
+        ? hybridRolesKey(LEGACY_HYBRID_ROLES[row.hybrid])
+        : String(row.hybrid || ""));
+    if (rowKey !== wantKey && row.hybrid !== hybridIdOrRoles) return false;
     const s = Number(row.start_sec);
     const e = Number(row.end_sec);
     if (!Number.isFinite(s) || !Number.isFinite(e)) return false;
@@ -703,7 +854,7 @@ export function describeWorkCoverage(row, options = {}) {
   });
 
   const alloc = row.role_allocation_min;
-  if (alloc && typeof alloc === "object" && !isTemp) {
+  if (alloc && typeof alloc === "object" && (row.hybrid || (row.roles && row.roles.length >= 2))) {
     const labels = { weigher: "Weigh", washer: "Wash", dryer: "Dry", sorter: "Sort", folder: "Fold" };
     const parts = [];
     Object.keys(labels).forEach((k) => {
@@ -712,12 +863,19 @@ export function describeWorkCoverage(row, options = {}) {
     });
     const idleAlloc = Number(alloc.idle);
     const idlePart = Number.isFinite(idleAlloc) ? idleAlloc : idleMin;
-    parts.push(`Spare ${_fmtCoverageMin(idlePart)}`);
+    const pct = staffMin > 0 ? Math.round((usedMin / staffMin) * 100) : 0;
+    const hybridTitle = row.roles?.length
+      ? `HYBRID · ${formatHybridRolesLabel(row.roles).replace(/\+/g, " + ")}`
+      : (COVERAGE_ROLE_TITLE[row.hybrid]
+        ? `HYBRID · ${String(COVERAGE_ROLE_TITLE[row.hybrid]).replace(/\//g, " + ")}`
+        : "HYBRID");
     const hybridLines = [
-      `Labor used: ${usedS} / ${staffS} min`,
+      hybridTitle,
+      `${usedS} of ${staffS} min productive · ${pct}% utilized`,
       parts.join(" · "),
+      `${_fmtCoverageMin(idlePart)}m idle`,
       ...reasonLines,
-    ];
+    ].filter(Boolean);
     return {
       level,
       levelLabel,
@@ -726,7 +884,7 @@ export function describeWorkCoverage(row, options = {}) {
       usedMin,
       staffMin,
       idleMin,
-      headline: hybridLines[0],
+      headline: hybridLines[1] || hybridLines[0],
       lines: hybridLines,
       detail: formatWorkCoverageDetail(row),
     };
@@ -851,18 +1009,44 @@ export function formatStageProgress(label, total, thisBlock) {
   return `${label} ${t}`;
 }
 
-/** Compact hybrid chips for collapsed slot summary (short labels). */
+/** Compact hybrid chips for collapsed slot summary. */
 export function formatHybridStaffChips(hybridIntervals, blockStart, blockEnd) {
-  const short = {
-    weigh_wash: "Hybrid W/W",
-    wash_dry: "Hybrid W/D",
-    weigh_wash_dry: "Hybrid W/W/D",
-  };
-  return MANAGEMENT_HYBRIDS.map((h) => {
-    const n = getHybridPeopleForBlock(hybridIntervals, h.id, blockStart, blockEnd);
-    if (n <= 0) return null;
-    return `${short[h.id] || h.label} ${n}`;
-  }).filter(Boolean);
+  const byKey = new Map();
+  for (const row of listHybridsForBlock(hybridIntervals, blockStart, blockEnd)) {
+    const prev = byKey.get(row.rolesKey) || 0;
+    byKey.set(row.rolesKey, prev + row.people);
+  }
+  return [...byKey.entries()].map(([key, n]) => {
+    const label = formatHybridRolesLabel(key.split("+"));
+    return `${label} ${n}`;
+  });
+}
+
+/**
+ * Collapsed STAFF line for one planning slot.
+ * Includes BASE headcount, inline TEMP windows, and Hybrid: Role+Role N.
+ */
+export function formatCollapsedSlotStaffLine(intervals, hybridIntervals, blockStart, blockEnd) {
+  const dedicated = MANAGEMENT_ROLES.map((role) => {
+    const n = getBasePeopleForBlock(intervals, role.id, blockStart, blockEnd);
+    const extras = getAdditionalForBlock(intervals, role.id, blockStart, blockEnd)
+      .filter((row) => (Number(row.people) || 0) > 0)
+      .map((row) => `+${Number(row.people)} ${row.start}–${row.end}`);
+    if (!extras.length) return `${role.short} ${n}`;
+    return `${role.short} ${n} (${extras.join(", ")})`;
+  }).join(" · ");
+  const hybrids = formatHybridStaffChips(hybridIntervals, blockStart, blockEnd);
+  return hybrids.length ? `${dedicated} · Hybrid: ${hybrids.join(" · ")}` : dedicated;
+}
+
+/** Effective dedicated headcount in a slot (BASE at/overlapping start + ADDITIONAL overlap). */
+export function dedicatedPeopleInSlot(intervals, roleId, blockStart, blockEnd) {
+  const base = getBasePeopleForBlock(intervals, roleId, blockStart, blockEnd);
+  const additional = getAdditionalForBlock(intervals, roleId, blockStart, blockEnd).reduce(
+    (sum, row) => sum + (Number(row.people) || 0),
+    0,
+  );
+  return base + additional;
 }
 
 /** Compact TEMP chips for collapsed slot summary (ADDITIONAL intervals only). */
@@ -879,31 +1063,13 @@ export function formatTempStaffChips(intervals, blockStart, blockEnd) {
   return chips;
 }
 
-/**
- * Collapsed STAFF line for one planning slot.
- * Includes BASE headcount, inline TEMP windows, and compact Hybrid chips.
- */
-export function formatCollapsedSlotStaffLine(intervals, hybridIntervals, blockStart, blockEnd) {
-  const dedicated = MANAGEMENT_ROLES.map((role) => {
-    const n = getBasePeopleForBlock(intervals, role.id, blockStart, blockEnd);
-    const extras = getAdditionalForBlock(intervals, role.id, blockStart, blockEnd)
-      .filter((row) => (Number(row.people) || 0) > 0)
-      .map((row) => `+${Number(row.people)} ${row.start}–${row.end}`);
-    if (!extras.length) return `${role.short} ${n}`;
-    return `${role.short} ${n} (${extras.join(", ")})`;
-  }).join(" · ");
-  const hybrids = formatHybridStaffChips(hybridIntervals, blockStart, blockEnd);
-  return hybrids.length ? `${dedicated} · ${hybrids.join(" · ")}` : dedicated;
-}
-
-/** Effective dedicated headcount in a slot (BASE at/overlapping start + ADDITIONAL overlap). */
-export function dedicatedPeopleInSlot(intervals, roleId, blockStart, blockEnd) {
-  const base = getBasePeopleForBlock(intervals, roleId, blockStart, blockEnd);
-  const additional = getAdditionalForBlock(intervals, roleId, blockStart, blockEnd).reduce(
-    (sum, row) => sum + (Number(row.people) || 0),
-    0,
-  );
-  return base + additional;
+/** People on hybrids that include a given role in this block. */
+export function hybridRoleCapacityInSlot(hybridIntervals, roleId, blockStart, blockEnd) {
+  let n = 0;
+  for (const row of listHybridsForBlock(hybridIntervals, blockStart, blockEnd)) {
+    if (row.roles.includes(roleId)) n += row.people;
+  }
+  return n;
 }
 
 /**
@@ -915,12 +1081,12 @@ export function buildSlotStaffingNotes(staffingIntervals, hybridIntervals, block
   const washer = dedicatedPeopleInSlot(staffingIntervals, "washer", blockStart, blockEnd);
   const dryer = dedicatedPeopleInSlot(staffingIntervals, "dryer", blockStart, blockEnd);
   const folder = dedicatedPeopleInSlot(staffingIntervals, "folder", blockStart, blockEnd);
-  const ww = getHybridPeopleForBlock(hybridIntervals, "weigh_wash", blockStart, blockEnd);
-  const wd = getHybridPeopleForBlock(hybridIntervals, "wash_dry", blockStart, blockEnd);
-  const wwd = getHybridPeopleForBlock(hybridIntervals, "weigh_wash_dry", blockStart, blockEnd);
-  const washCap = washer + ww + wd + wwd;
-  const dryCap = dryer + wd + wwd;
-  const hybridCap = ww + wd + wwd;
+  const washHybrid = hybridRoleCapacityInSlot(hybridIntervals, "washer", blockStart, blockEnd);
+  const dryHybrid = hybridRoleCapacityInSlot(hybridIntervals, "dryer", blockStart, blockEnd);
+  const washCap = washer + washHybrid;
+  const dryCap = dryer + dryHybrid;
+  const hybridCap = listHybridsForBlock(hybridIntervals, blockStart, blockEnd)
+    .reduce((sum, row) => sum + row.people, 0);
   const notes = [];
   if (dryCap > 0 && washCap === 0) {
     notes.push({
@@ -937,7 +1103,7 @@ export function buildSlotStaffingNotes(staffingIntervals, hybridIntervals, block
   if (hybridCap > 0) {
     notes.push({
       tone: "info",
-      text: "Hybrid is one person on one calendar — cannot work two roles at the same instant.",
+      text: "Hybrid is one person — cannot work two roles at the same instant.",
     });
   }
   return notes;

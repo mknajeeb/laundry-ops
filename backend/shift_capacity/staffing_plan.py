@@ -6,6 +6,7 @@ canonical effective-headcount segments (people summed over overlaps).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,19 +27,118 @@ ROLE_PREFIX = {
     "folder": "MGMT_FOLD",
 }
 
-# One human resource may qualify for these roles on a single shared calendar.
-# Key is the authored hybrid type; values are ordered qualified roles
-# (first becomes primary_role for stable IDs / tie-breaks).
-HYBRID_SPECS: dict[str, tuple[str, ...]] = {
+# Legacy fixed hybrid keys → ordered qualified roles (first = primary_role).
+# Custom hybrids use roles[] and normalize into the same compile path.
+LEGACY_HYBRID_SPECS: dict[str, tuple[str, ...]] = {
     "weigh_wash": ("weigher", "washer"),
     "wash_dry": ("washer", "dryer"),
     "weigh_wash_dry": ("weigher", "washer", "dryer"),
 }
+# Backward-compat alias used by older imports / tests.
+HYBRID_SPECS = LEGACY_HYBRID_SPECS
 HYBRID_ID_PREFIX = {
     "weigh_wash": "MGMT_HYBRID_WEIGH_WASH",
     "wash_dry": "MGMT_HYBRID_WASH_DRY",
     "weigh_wash_dry": "MGMT_HYBRID_WEIGH_WASH_DRY",
 }
+ROLE_ID_SHORT = {
+    "weigher": "WEIGH",
+    "sorter": "SORT",
+    "washer": "WASH",
+    "dryer": "DRY",
+    "folder": "FOLD",
+}
+
+
+def canonicalize_hybrid_roles(raw_roles: Any) -> tuple[str, ...]:
+    """Dedupe and order roles by workflow; require at least two management roles."""
+    if not isinstance(raw_roles, (list, tuple)):
+        raise ValueError("hybrid roles must be a list")
+    seen: set[str] = set()
+    for item in raw_roles:
+        role = _normalize_role(str(item or ""))
+        if role not in MANAGEMENT_ROLES:
+            raise ValueError(f"Unknown hybrid role {item!r}")
+        seen.add(role)
+    ordered = tuple(r for r in MANAGEMENT_ROLES if r in seen)
+    if len(ordered) < 2:
+        raise ValueError("hybrid requires at least two roles")
+    return ordered
+
+
+def hybrid_identity(
+    roles: tuple[str, ...],
+    *,
+    legacy_hint: str | None = None,
+) -> tuple[str, str]:
+    """Return (hybrid_type_key, employee_id_prefix). Prefer legacy keys when roles match."""
+    if (
+        legacy_hint
+        and legacy_hint in LEGACY_HYBRID_SPECS
+        and LEGACY_HYBRID_SPECS[legacy_hint] == roles
+    ):
+        return legacy_hint, HYBRID_ID_PREFIX[legacy_hint]
+    for legacy_key, legacy_roles in LEGACY_HYBRID_SPECS.items():
+        if legacy_roles == roles:
+            return legacy_key, HYBRID_ID_PREFIX[legacy_key]
+    key = "+".join(roles)
+    prefix = "MGMT_HYBRID_" + "_".join(ROLE_ID_SHORT[r] for r in roles)
+    return key, prefix
+
+
+def resolve_hybrid_roles(
+    hybrid_type: str | None,
+    hybrid_roles: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    if hybrid_roles:
+        return tuple(hybrid_roles)
+    if hybrid_type and hybrid_type in LEGACY_HYBRID_SPECS:
+        return LEGACY_HYBRID_SPECS[hybrid_type]
+    if hybrid_type and "+" in hybrid_type:
+        return canonicalize_hybrid_roles(hybrid_type.split("+"))
+    raise KeyError(hybrid_type or "hybrid")
+
+
+def hybrid_id_prefix_for(
+    hybrid_type: str | None,
+    hybrid_roles: tuple[str, ...] | None = None,
+) -> str:
+    if hybrid_type and hybrid_type in HYBRID_ID_PREFIX:
+        return HYBRID_ID_PREFIX[hybrid_type]
+    roles = resolve_hybrid_roles(hybrid_type, hybrid_roles)
+    _, prefix = hybrid_identity(roles, legacy_hint=hybrid_type)
+    return prefix
+
+
+def employee_matches_hybrid_prefix(employee_id: str, prefix: str) -> bool:
+    """True when id is exactly ``{prefix}_NNN`` (avoids WEIGH_WASH vs WEIGH_WASH_DRY)."""
+    return bool(re.match(rf"^{re.escape(prefix)}_\d{{3}}$", str(employee_id)))
+
+
+def authored_from_serialized(raw: dict[str, Any]) -> AuthoredInterval:
+    """Rebuild AuthoredInterval from staffing_plan authored_intervals dict."""
+    roles_raw = raw.get("roles")
+    hybrid_raw = raw.get("hybrid") or raw.get("hybrid_type")
+    hybrid_type = str(hybrid_raw).strip().lower() if hybrid_raw else None
+    hybrid_roles: tuple[str, ...] | None = None
+    if roles_raw is not None:
+        hybrid_roles = canonicalize_hybrid_roles(roles_raw)
+        hybrid_type, _ = hybrid_identity(hybrid_roles, legacy_hint=hybrid_type)
+    elif hybrid_type:
+        hybrid_roles = resolve_hybrid_roles(hybrid_type, None)
+    if hybrid_type:
+        role = hybrid_roles[0] if hybrid_roles else "weigher"
+    else:
+        role = str(raw.get("role") or "")
+    return AuthoredInterval(
+        role=role,
+        people=int(raw["people"]),
+        start_sec=int(raw["start_sec"]),
+        end_sec=int(raw["end_sec"]),
+        mode=str(raw.get("mode") or "base"),
+        hybrid_type=hybrid_type,
+        hybrid_roles=hybrid_roles,
+    )
 
 
 @dataclass
@@ -48,7 +148,8 @@ class AuthoredInterval:
     start_sec: int
     end_sec: int
     mode: str = "base"  # base | additional (authoring metadata only)
-    hybrid_type: str | None = None  # when set, role is unused for compilation
+    hybrid_type: str | None = None  # identity key; when set, dedicated role unused
+    hybrid_roles: tuple[str, ...] | None = None  # ordered qualified roles for custom hybrids
 
 
 @dataclass
@@ -86,6 +187,11 @@ class StaffingPlanResult:
                 {
                     "role": a.role if a.hybrid_type is None else None,
                     "hybrid": a.hybrid_type,
+                    "roles": list(a.hybrid_roles) if a.hybrid_roles else (
+                        list(LEGACY_HYBRID_SPECS[a.hybrid_type])
+                        if a.hybrid_type in LEGACY_HYBRID_SPECS
+                        else None
+                    ),
                     "people": a.people,
                     "start": label_seconds(a.start_sec),
                     "end": label_seconds(a.end_sec),
@@ -101,14 +207,7 @@ class StaffingPlanResult:
                     "id": e.employee_id,
                     "role": e.primary_role,
                     "qualified_roles": list(e.qualified_roles),
-                    "hybrid_type": next(
-                        (
-                            ht
-                            for ht, prefix in HYBRID_ID_PREFIX.items()
-                            if e.employee_id.startswith(prefix)
-                        ),
-                        None,
-                    ),
+                    "hybrid_type": _hybrid_type_for_employee(e),
                     "windows": [
                         {
                             "start": label_seconds(w.start_min),
@@ -167,18 +266,55 @@ def parse_and_compile_staffing_plan(
             continue
 
         hybrid_raw = row.get("hybrid") or row.get("hybrid_type")
-        hybrid_type = str(hybrid_raw).strip().lower() if hybrid_raw else None
-        if hybrid_type:
-            if hybrid_type not in HYBRID_SPECS:
+        roles_raw = row.get("roles")
+        mode_hint = str(row.get("mode") or "base").strip().lower()
+        hybrid_type: str | None = None
+        hybrid_roles: tuple[str, ...] | None = None
+
+        if roles_raw is not None or mode_hint == "hybrid" or hybrid_raw:
+            if roles_raw is not None:
+                try:
+                    hybrid_roles = canonicalize_hybrid_roles(roles_raw)
+                except ValueError as exc:
+                    result.errors.append(
+                        ValidationError(
+                            "STAFFING_HYBRID_INVALID",
+                            str(exc),
+                            {"index": idx, "roles": roles_raw},
+                        )
+                    )
+                    continue
+                legacy_hint = str(hybrid_raw).strip().lower() if hybrid_raw else None
+                hybrid_type, _ = hybrid_identity(hybrid_roles, legacy_hint=legacy_hint)
+            elif hybrid_raw:
+                hybrid_type = str(hybrid_raw).strip().lower()
+                try:
+                    if hybrid_type in LEGACY_HYBRID_SPECS:
+                        hybrid_roles = LEGACY_HYBRID_SPECS[hybrid_type]
+                    elif "+" in hybrid_type:
+                        hybrid_roles = canonicalize_hybrid_roles(hybrid_type.split("+"))
+                        hybrid_type, _ = hybrid_identity(hybrid_roles)
+                    else:
+                        raise ValueError(f"Unknown hybrid type {hybrid_raw!r}")
+                except (ValueError, KeyError) as exc:
+                    result.errors.append(
+                        ValidationError(
+                            "STAFFING_HYBRID_INVALID",
+                            str(exc),
+                            {"index": idx, "hybrid": hybrid_raw},
+                        )
+                    )
+                    continue
+            else:
                 result.errors.append(
                     ValidationError(
                         "STAFFING_HYBRID_INVALID",
-                        f"Unknown hybrid type {hybrid_raw!r}",
-                        {"index": idx, "hybrid": hybrid_raw},
+                        "hybrid mode requires roles (at least two)",
+                        {"index": idx},
                     )
                 )
                 continue
-            role = HYBRID_SPECS[hybrid_type][0]
+            role = hybrid_roles[0]
         else:
             role = _normalize_role(str(row.get("role") or ""))
             if role not in MANAGEMENT_ROLES:
@@ -226,8 +362,12 @@ def parse_and_compile_staffing_plan(
             continue
 
         try:
-            start_sec = _parse_bound(row.get("start") or row.get("start_time"), field="start")
-            end_sec = _parse_bound(row.get("end") or row.get("end_time"), field="end")
+            start_sec = _parse_bound(
+                row.get("start") or row.get("start_time"), field="start"
+            )
+            end_sec = _parse_bound(
+                row.get("end") or row.get("end_time"), field="end"
+            )
         except ValueError as exc:
             result.errors.append(
                 ValidationError("STAFFING_TIME_INVALID", str(exc), {"index": idx})
@@ -258,12 +398,14 @@ def parse_and_compile_staffing_plan(
             )
             continue
 
-        mode = str(row.get("mode") or "base").strip().lower()
+        mode = mode_hint
+        if hybrid_type is not None and mode == "hybrid":
+            mode = "base"
         if mode not in ("base", "additional"):
             result.errors.append(
                 ValidationError(
                     "STAFFING_MODE_INVALID",
-                    "mode must be 'base' or 'additional' when provided",
+                    "mode must be 'base', 'additional', or 'hybrid' when provided",
                     {"index": idx, "mode": row.get("mode")},
                 )
             )
@@ -277,6 +419,7 @@ def parse_and_compile_staffing_plan(
                 end_sec=end_sec,
                 mode=mode,
                 hybrid_type=hybrid_type,
+                hybrid_roles=hybrid_roles,
             )
         )
 
@@ -311,8 +454,9 @@ def parse_and_compile_staffing_plan(
                             },
                         )
                     )
-    # Reject overlapping BASE for the same hybrid type.
-    for hybrid_type in HYBRID_SPECS:
+    # Reject overlapping BASE for the same hybrid identity (role set).
+    hybrid_types = sorted({a.hybrid_type for a in authored if a.hybrid_type})
+    for hybrid_type in hybrid_types:
         bases = [
             a
             for a in authored
@@ -432,10 +576,20 @@ def compile_hybrid_employees(authored_hybrids: list[AuthoredInterval]) -> list[E
     that rule with dedicated MGMT_* slots — no separate optimizer.
     """
     employees: list[Employee] = []
-    for hybrid_type, roles in HYBRID_SPECS.items():
-        items = [a for a in authored_hybrids if a.hybrid_type == hybrid_type]
-        if not items:
+    by_type: dict[str, list[AuthoredInterval]] = {}
+    roles_by_type: dict[str, tuple[str, ...]] = {}
+    for item in authored_hybrids:
+        if not item.hybrid_type:
             continue
+        by_type.setdefault(item.hybrid_type, []).append(item)
+        if item.hybrid_type not in roles_by_type:
+            roles_by_type[item.hybrid_type] = resolve_hybrid_roles(
+                item.hybrid_type, item.hybrid_roles
+            )
+
+    for hybrid_type in sorted(by_type.keys()):
+        items = by_type[hybrid_type]
+        roles = roles_by_type[hybrid_type]
         # Normalize hybrid headcount the same way as a single pseudo-role.
         bounds = sorted({t for it in items for t in (it.start_sec, it.end_sec)})
         segments: list[tuple[int, int, int]] = []
@@ -455,7 +609,7 @@ def compile_hybrid_employees(authored_hybrids: list[AuthoredInterval]) -> list[E
                 slot_ranges[slot].append((start, end))
         primary = roles[0]
         qualified = list(roles[1:])
-        prefix = HYBRID_ID_PREFIX[hybrid_type]
+        prefix = hybrid_id_prefix_for(hybrid_type, roles)
         for slot_idx, ranges in enumerate(slot_ranges):
             if not ranges:
                 continue
@@ -480,6 +634,24 @@ def compile_hybrid_employees(authored_hybrids: list[AuthoredInterval]) -> list[E
             )
     return employees
 
+
+def _hybrid_type_for_employee(emp: Employee) -> str | None:
+    if not emp.qualified_roles:
+        return None
+    # Prefer longest matching legacy prefix to avoid WEIGH_WASH vs WEIGH_WASH_DRY.
+    best: tuple[int, str] | None = None
+    for ht, prefix in HYBRID_ID_PREFIX.items():
+        if employee_matches_hybrid_prefix(emp.employee_id, prefix):
+            cand = (len(prefix), ht)
+            if best is None or cand[0] > best[0]:
+                best = cand
+    if best:
+        return best[1]
+    roles = tuple(r for r in MANAGEMENT_ROLES if r in ((emp.primary_role,) + tuple(emp.qualified_roles)))
+    if len(roles) < 2:
+        roles = (emp.primary_role,) + tuple(emp.qualified_roles)
+    key, _prefix = hybrid_identity(roles)
+    return key
 
 def block_staffing_view(
     authored: list[AuthoredInterval],
@@ -547,7 +719,8 @@ def block_staffing_view(
             "effective_segments": effective,
         }
     hybrids: dict[str, Any] = {}
-    for hybrid_type in HYBRID_SPECS:
+    hybrid_types = sorted({a.hybrid_type for a in authored if a.hybrid_type})
+    for hybrid_type in hybrid_types:
         items = [
             a
             for a in authored
@@ -557,23 +730,42 @@ def block_staffing_view(
         ]
         at_start = 0
         peak = 0
+        roles_for_type: tuple[str, ...] = ()
         for a in items:
+            if not roles_for_type:
+                roles_for_type = resolve_hybrid_roles(a.hybrid_type, a.hybrid_roles)
             if a.mode == "base" and a.start_sec <= block_start_sec < a.end_sec:
                 at_start = max(at_start, a.people)
             if a.start_sec < block_end_sec and a.end_sec > block_start_sec:
                 peak = max(peak, a.people)
+        if not roles_for_type:
+            try:
+                roles_for_type = resolve_hybrid_roles(hybrid_type, None)
+            except KeyError:
+                roles_for_type = ()
         hybrids[hybrid_type] = {
             "people_at_block_start": at_start,
             "peak_people": peak,
-            "qualified_roles": list(HYBRID_SPECS[hybrid_type]),
+            "qualified_roles": list(roles_for_type),
             "base": [
                 {
                     "people": a.people,
                     "start": label_seconds(a.start_sec),
                     "end": label_seconds(a.end_sec),
+                    "roles": list(resolve_hybrid_roles(a.hybrid_type, a.hybrid_roles)),
                 }
                 for a in items
                 if a.mode == "base"
+            ],
+            "additional": [
+                {
+                    "people": a.people,
+                    "start": label_seconds(a.start_sec),
+                    "end": label_seconds(a.end_sec),
+                    "roles": list(resolve_hybrid_roles(a.hybrid_type, a.hybrid_roles)),
+                }
+                for a in items
+                if a.mode == "additional"
             ],
         }
     return {

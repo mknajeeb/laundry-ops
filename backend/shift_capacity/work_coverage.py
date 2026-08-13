@@ -10,12 +10,14 @@ from __future__ import annotations
 from typing import Any
 
 from backend.shift_capacity.staffing_plan import (
-    HYBRID_ID_PREFIX,
-    HYBRID_SPECS,
     MANAGEMENT_ROLES,
     ROLE_PREFIX,
     AuthoredInterval,
     _ready_sec_for_role,
+    authored_from_serialized,
+    hybrid_id_prefix_for,
+    employee_matches_hybrid_prefix,
+    resolve_hybrid_roles,
 )
 from backend.shift_capacity.timebase import label_seconds
 
@@ -37,7 +39,7 @@ def build_work_coverage(state: Any) -> list[dict[str, Any]]:
     if not authored_raw:
         return []
 
-    authored = [_parse_authored(a) for a in authored_raw]
+    authored = [authored_from_serialized(a) for a in authored_raw]
     authored = [a for a in authored if a.people > 0 and a.end_sec > a.start_sec]
     if not authored:
         return []
@@ -78,20 +80,8 @@ def build_work_coverage(state: Any) -> list[dict[str, Any]]:
 
 
 def _parse_authored(raw: dict[str, Any]) -> AuthoredInterval:
-    hybrid_type = raw.get("hybrid") or raw.get("hybrid_type")
-    hybrid_type = str(hybrid_type).strip().lower() if hybrid_type else None
-    if hybrid_type:
-        role = HYBRID_SPECS.get(hybrid_type, ("weigher",))[0]
-    else:
-        role = str(raw.get("role") or "")
-    return AuthoredInterval(
-        role=role,
-        people=int(raw["people"]),
-        start_sec=int(raw["start_sec"]),
-        end_sec=int(raw["end_sec"]),
-        mode=str(raw.get("mode") or "base"),
-        hybrid_type=hybrid_type,
-    )
+    """Deprecated wrapper — prefer authored_from_serialized."""
+    return authored_from_serialized(raw)
 
 
 def _load_sec_by_role(pt: Any) -> dict[str, int]:
@@ -122,9 +112,9 @@ def _employee_ids_for_interval(
     """Map authored people onto compiled MGMT_* slots (base = low ids, TEMP = high)."""
     w0, w1 = interval.start_sec, interval.end_sec
     if interval.hybrid_type:
-        prefix = HYBRID_ID_PREFIX[interval.hybrid_type]
+        prefix = hybrid_id_prefix_for(interval.hybrid_type, interval.hybrid_roles)
         emps = sorted(
-            [e for e in employees if str(e.employee_id).startswith(prefix)],
+            [e for e in employees if employee_matches_hybrid_prefix(e.employee_id, prefix)],
             key=lambda e: e.employee_id,
         )
         overlapping = [e for e in emps if _emp_overlaps_window(e, w0, w1)]
@@ -578,7 +568,7 @@ def _coverage_for_interval(
         staff_sec = interval.people * max(0, w1 - w0)
 
     if interval.hybrid_type:
-        roles = list(HYBRID_SPECS[interval.hybrid_type])
+        roles = list(resolve_hybrid_roles(interval.hybrid_type, interval.hybrid_roles))
         tasks = {ROLE_LABOR_TASK[r] for r in roles}
         used_sec, by_task = _used_labor(employee_ids, calendars, w0, w1, tasks=tasks)
         available_sec, eligible_bags, physical_loads, at_start, became = _hybrid_eligible_demand(
@@ -654,6 +644,9 @@ def _coverage_for_interval(
         "index": index,
         "role": primary_role,
         "hybrid": interval.hybrid_type,
+        "roles": list(resolve_hybrid_roles(interval.hybrid_type, interval.hybrid_roles))
+        if interval.hybrid_type
+        else ([primary_role] if primary_role else None),
         "mode": interval.mode,
         "people": interval.people,
         "start": label_seconds(w0),
