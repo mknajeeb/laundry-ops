@@ -1627,8 +1627,6 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                       Mark UNPAID
                                     </Button>
                                   ) : null}
-                                    </Select>
-                                  ) : null}
                                   {doc.vendor_receipt_available ||
                                   doc.vendor_receipt_preview_available ? (
                                     <>
