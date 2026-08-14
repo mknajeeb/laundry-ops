@@ -221,6 +221,24 @@ def count_clean_rack_completed_bags(completion_payload: dict[str, Any]) -> int:
     )
 
 
+def fetch_accepted_portal_rows_for_finalize(cursor, upload_batch_id: int) -> list[dict[str, Any]]:
+    """Accepted/overridden portal rows used by confirm-time and post-lock finalize."""
+    if not table_exists(cursor, "upload_batch_rows"):
+        return []
+    from backend.ta_helpers import table_has_column
+
+    ticket_sql = ", ticket_id" if table_has_column(cursor, "upload_batch_rows", "ticket_id") else ""
+    cursor.execute(
+        f"""
+        SELECT date_clean, name_clean, weight_num, service_type, rush_type{ticket_sql}
+        FROM upload_batch_rows
+        WHERE upload_batch_id = %s AND row_status IN ('ACCEPTED', 'OVERRIDDEN')
+        """,
+        (int(upload_batch_id),),
+    )
+    return [row for row in (cursor.fetchall() or []) if isinstance(row, dict)]
+
+
 def summarize_confirm_batch_portal_rows(cursor, upload_batch_id: int) -> dict[str, int]:
     """Portal row counts from upload_batch_rows for confirm response."""
     if not table_exists(cursor, "upload_batch_rows"):

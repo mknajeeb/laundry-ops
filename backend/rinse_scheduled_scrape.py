@@ -199,8 +199,16 @@ def _merge_import_incomplete(detail: Mapping[str, Any] | None) -> bool:
         ):
             return True
     finalize = detail.get("rinse_finalize")
-    if isinstance(finalize, Mapping):
+    if isinstance(finalize, Mapping) and not finalize.get("deferred"):
         merge = finalize.get("persistent_merge") or finalize.get("persistent_scan_merge")
+        if isinstance(merge, Mapping) and (
+            merge.get("import_incomplete")
+            or merge.get("timeline_replacement_deferred")
+        ):
+            return True
+    draft = detail.get("draft")
+    if isinstance(draft, Mapping):
+        merge = draft.get("persistent_scan_merge") or draft.get("persistent_merge")
         if isinstance(merge, Mapping) and (
             merge.get("import_incomplete")
             or merge.get("timeline_replacement_deferred")
@@ -209,7 +217,7 @@ def _merge_import_incomplete(detail: Mapping[str, Any] | None) -> bool:
     confirm = detail.get("confirm")
     if isinstance(confirm, Mapping):
         finalize = confirm.get("rinse_finalize") or {}
-        if isinstance(finalize, Mapping):
+        if isinstance(finalize, Mapping) and not finalize.get("deferred"):
             merge = finalize.get("persistent_merge") or finalize.get(
                 "persistent_scan_merge"
             )
@@ -248,11 +256,19 @@ def _refresh_open_step1_day_after_scrape(
     if isinstance(detail, Mapping):
         merge_payload = detail.get("persistent_merge")  # type: ignore[assignment]
         if not isinstance(merge_payload, Mapping):
+            merge_payload = detail.get("persistent_scan_merge")  # type: ignore[assignment]
+        if not isinstance(merge_payload, Mapping):
+            draft = detail.get("draft") if isinstance(detail.get("draft"), Mapping) else {}
+            if isinstance(draft, Mapping):
+                merge_payload = draft.get("persistent_scan_merge") or draft.get(
+                    "persistent_merge"
+                )
+        if not isinstance(merge_payload, Mapping):
             confirm = detail.get("confirm") if isinstance(detail.get("confirm"), Mapping) else {}
             finalize = (
                 confirm.get("rinse_finalize") if isinstance(confirm, Mapping) else None
             )
-            if isinstance(finalize, Mapping):
+            if isinstance(finalize, Mapping) and not finalize.get("deferred"):
                 merge_payload = finalize.get("persistent_merge") or finalize.get(
                     "persistent_scan_merge"
                 )
@@ -953,7 +969,13 @@ def run_rinse_combined_sync_for_org(
             import_status=import_result.status,
         )
         confirm_payload = (import_result.detail or {}).get("confirm") or {}
-        merge_payload = (confirm_payload.get("rinse_finalize") or {}).get("persistent_merge") or {}
+        draft_payload = (import_result.detail or {}).get("draft") or {}
+        finalize_payload = confirm_payload.get("rinse_finalize") or {}
+        merge_payload = {}
+        if isinstance(finalize_payload, Mapping) and not finalize_payload.get("deferred"):
+            merge_payload = finalize_payload.get("persistent_merge") or {}
+        if not merge_payload and isinstance(draft_payload, Mapping):
+            merge_payload = draft_payload.get("persistent_scan_merge") or {}
         scan_inserted = merge_payload.get("events_inserted")
         scan_already = merge_payload.get("events_already_present")
         if scan_already is None:
@@ -1122,6 +1144,50 @@ def _targeted_refresh_needs_reproject(summary: Mapping[str, Any] | None) -> bool
     return False
 
 
+def _rinse_finalize_deferred(detail: Mapping[str, Any] | None) -> bool:
+    """True when scheduled confirm skipped in-process finalize for post-lock."""
+    if not isinstance(detail, Mapping):
+        return False
+    if detail.get("rinse_finalize_deferred"):
+        return True
+    confirm = detail.get("confirm")
+    if not isinstance(confirm, Mapping):
+        return False
+    finalize = confirm.get("rinse_finalize")
+    return isinstance(finalize, Mapping) and bool(finalize.get("deferred"))
+
+
+def _run_post_lock_rinse_finalize(
+    conn,
+    cursor,
+    *,
+    org_id: int,
+    batch_id: int,
+    log,
+) -> dict[str, Any]:
+    """Best-effort registry/folding finalize after Stage-B + main lock release."""
+    from backend.rinse_upload_finalize import (
+        fetch_accepted_portal_rows_for_finalize,
+        finalize_rinse_after_batch_confirm,
+    )
+
+    rows = fetch_accepted_portal_rows_for_finalize(cursor, batch_id)
+    payload = finalize_rinse_after_batch_confirm(
+        cursor,
+        org_id,
+        batch_id,
+        accepted_portal_rows=rows,
+        source_filename=f"batch_confirm_{batch_id}",
+    )
+    conn.commit()
+    log.write(
+        "Post-lock rinse finalize: "
+        f"events_inserted={(payload.get('persistent_merge') or {}).get('events_inserted')} "
+        f"bags_merged={(payload.get('persistent_merge') or {}).get('bags_merged')}\n"
+    )
+    return payload
+
+
 def _run_post_lock_targeted_refresh(
     conn,
     cursor,
@@ -1141,6 +1207,45 @@ def _run_post_lock_targeted_refresh(
     """
     if log is None:
         return
+
+    main_status_before = result.status
+    upload_batch_id = result.batch_id
+    post_lock_patch: dict[str, Any] = {}
+    if _rinse_finalize_deferred(result.detail) and upload_batch_id:
+        try:
+            finalize_payload = _run_post_lock_rinse_finalize(
+                conn,
+                cursor,
+                org_id=org_id,
+                batch_id=int(upload_batch_id),
+                log=log,
+            )
+            post_lock_patch["rinse_finalize_post_lock"] = {
+                **dict(finalize_payload or {}),
+                "post_lock": True,
+            }
+        except Exception as finalize_exc:
+            post_lock_patch["rinse_finalize_post_lock"] = {
+                "ok": False,
+                "error": str(finalize_exc),
+                "post_lock": True,
+            }
+            log.write(
+                f"Post-lock rinse finalize ERROR (non-fatal): {finalize_exc}\n"
+            )
+        result.detail = {**(result.detail or {}), **post_lock_patch}
+        result.status = main_status_before
+        if result.run_id:
+            try:
+                merge_scrape_run_result_json(
+                    cursor, int(result.run_id), int(org_id), post_lock_patch
+                )
+                conn.commit()
+            except Exception as merge_exc:
+                log.write(
+                    f"WARNING: could not persist post-lock finalize detail: {merge_exc}\n"
+                )
+
     upload_batch_id = result.batch_id
     if after_main_failure and not upload_batch_id:
         try:
@@ -1691,10 +1796,21 @@ def run_scheduled_scrape_for_org(
                 )
 
                 try:
+                    # Staging + CONFIRMED only. Finalize is post-lock so Stage-B
+                    # can persist Today and the main scrape can become terminal
+                    # before optional registry/folding/targeted work.
                     confirm_payload = confirm_upload_batch_core(
-                        cursor, org_id, batch_id, force_confirm=False
+                        cursor,
+                        org_id,
+                        batch_id,
+                        force_confirm=False,
+                        run_finalize=False,
                     )
                     log.write(f"Auto-confirmed batch_id={batch_id}\n")
+                    log.write(
+                        "Rinse finalize deferred to post-lock "
+                        "(Stage-B persist + main lock release first)\n"
+                    )
                 except UploadBatchConfirmError as e:
                     conn.rollback()
                     raise RuntimeError(str(e)) from e
@@ -1729,6 +1845,10 @@ def run_scheduled_scrape_for_org(
                 "accepted_count": accepted,
                 "portal_confirm_gate": portal_gate,
             }
+            if isinstance(confirm_payload, dict) and (
+                (confirm_payload.get("rinse_finalize") or {}).get("deferred")
+            ):
+                result.detail["rinse_finalize_deferred"] = True
             if portal_gate.get("force_override"):
                 result.detail["sync_warning"] = portal_gate.get("warning")
             if off_portal_refresh_detail is not None:

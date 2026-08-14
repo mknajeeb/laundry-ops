@@ -1,7 +1,7 @@
 """Scheduled targeted refresh runs post-lock after main cycle is terminal."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -13,6 +13,7 @@ def _run_scheduled_with_mocks(
     refresh_side_effect=None,
     refresh_return=None,
     finish_side_effect=None,
+    finalize_side_effect=None,
 ):
     import tempfile
 
@@ -69,11 +70,8 @@ def _run_scheduled_with_mocks(
                 "batch_id": 99,
                 "rows_inserted": 1,
                 "portal_absence_allowed": True,
+                "persistent_scan_merge": {"events_inserted": 4, "bags_merged": 1},
             },
-        ),
-        patch(
-            "backend.upload_batch_confirm.confirm_upload_batch_core",
-            return_value={"ok": True},
         ),
         patch(
             "backend.rinse_off_portal_scan_refresh.off_portal_refresh_enabled",
@@ -96,6 +94,10 @@ def _run_scheduled_with_mocks(
             return_value={},
         ),
         patch("backend.rinse_scheduled_scrape.merge_scrape_run_result_json"),
+        patch(
+            "backend.rinse_upload_finalize.fetch_accepted_portal_rows_for_finalize",
+            return_value=[],
+        ),
     ]
 
     refresh_kw = {}
@@ -139,6 +141,27 @@ def _run_scheduled_with_mocks(
         call_order.append("stage_b_post")
         return {"ok": True, "shift_date_et": "2026-07-25", "post_lock": True}
 
+    def _confirm(*_a, **kwargs):
+        call_order.append("confirm")
+        assert kwargs.get("run_finalize") is False
+        return {
+            "status": "batch_confirmed",
+            "rinse_finalize": {
+                "deferred": True,
+                "reason": "post_lock_after_authoritative_cycle",
+            },
+        }
+
+    def _finalize(*_a, **_k):
+        call_order.append("finalize")
+        if finalize_side_effect is not None:
+            if isinstance(finalize_side_effect, BaseException):
+                raise finalize_side_effect
+            if callable(finalize_side_effect):
+                return finalize_side_effect(*_a, **_k)
+            raise finalize_side_effect
+        return {"persistent_merge": {"events_inserted": 0, "bags_merged": 0}}
+
     with patch(
         "backend.rinse_off_portal_scan_refresh.refresh_pending_workload_scans_via_direct_lookup",
         side_effect=_refresh,
@@ -151,7 +174,15 @@ def _run_scheduled_with_mocks(
     ) as mock_finish, patch(
         "backend.rinse_scheduled_scrape.release_scrape_lock",
         side_effect=_release,
-    ) as mock_release:
+    ) as mock_release, patch(
+        "backend.upload_batch_confirm.confirm_upload_batch_core",
+        side_effect=_confirm,
+    ) as mock_confirm, patch(
+        "backend.rinse_upload_finalize.finalize_rinse_after_batch_confirm",
+        side_effect=_finalize,
+    ) as mock_finalize, patch(
+        "backend.rinse_step1_scrape_refresh.ensure_today_snapshot_if_missing",
+    ) as mock_watchdog:
         for p in patches:
             p.start()
         try:
@@ -170,7 +201,17 @@ def _run_scheduled_with_mocks(
             for p in reversed(patches):
                 p.stop()
 
-    return result, mock_refresh, mock_finish, mock_release, mock_stage_b, call_order
+    return (
+        result,
+        mock_refresh,
+        mock_finish,
+        mock_release,
+        mock_stage_b,
+        call_order,
+        mock_confirm,
+        mock_finalize,
+        mock_watchdog,
+    )
 
 
 def test_scheduled_run_invokes_targeted_refresh_when_enabled():
@@ -200,7 +241,7 @@ def test_main_cycle_terminal_and_unlocked_before_targeted_hang():
     def _hang(*_a, **_k):
         raise TimeoutError("targeted hung past bound")
 
-    result, _refresh, mock_finish, mock_release, _stage_b, order = _run_scheduled_with_mocks(
+    result, _refresh, mock_finish, mock_release, _stage_b, order, *_rest = _run_scheduled_with_mocks(
         refresh_side_effect=_hang,
     )
     assert result.status == "success"
@@ -211,10 +252,12 @@ def test_main_cycle_terminal_and_unlocked_before_targeted_hang():
     assert order.index("finish") < order.index("targeted")
     assert order.index("release") < order.index("targeted")
     assert order.index("stage_b_main") < order.index("finish")
+    assert order.index("release") < order.index("finalize")
+    assert order.index("finalize") < order.index("targeted")
 
 
 def test_targeted_zero_events_skips_reproject():
-    result, _refresh, _finish, _release, mock_stage_b, order = _run_scheduled_with_mocks(
+    result, _refresh, _finish, _release, mock_stage_b, order, *_rest = _run_scheduled_with_mocks(
         refresh_return={
             "dry_run": False,
             "bag_ids_requested": ["BAG1"],
@@ -235,7 +278,7 @@ def test_targeted_zero_events_skips_reproject():
 
 
 def test_targeted_with_events_runs_separate_post_lock_reproject():
-    result, _refresh, _finish, _release, mock_stage_b, order = _run_scheduled_with_mocks(
+    result, _refresh, _finish, _release, mock_stage_b, order, *_rest = _run_scheduled_with_mocks(
         refresh_return={
             "dry_run": False,
             "bag_ids_requested": ["BAG1"],
@@ -356,3 +399,219 @@ def test_helpers_gate_reproject_on_events():
     assert _targeted_refresh_needs_reproject(
         {"events_inserted": 0, "near_complete_wf_weight_backfill": {"applied": 1}}
     ) is True
+
+
+def test_authoritative_confirm_runs_stage_b_before_targeted():
+    result, _refresh, _finish, _release, mock_stage_b, order, mock_confirm, *_rest = (
+        _run_scheduled_with_mocks()
+    )
+    assert result.status == "success"
+    mock_confirm.assert_called_once()
+    assert mock_confirm.call_args.kwargs.get("run_finalize") is False
+    assert order.index("confirm") < order.index("stage_b_main")
+    assert order.index("stage_b_main") < order.index("targeted")
+    assert order.index("stage_b_main") < order.index("finalize")
+    assert (result.detail or {}).get("rinse_finalize_deferred") is True
+    assert mock_stage_b.call_count >= 1
+
+
+def test_finalize_hang_leaves_today_current_and_main_terminal():
+    result, _refresh, mock_finish, mock_release, mock_stage_b, order, *_rest = (
+        _run_scheduled_with_mocks(
+            finalize_side_effect=TimeoutError("finalize hung past bound"),
+        )
+    )
+    assert result.status == "success"
+    mock_finish.assert_called_once()
+    assert mock_finish.call_args.kwargs.get("status") == "success"
+    mock_release.assert_called_once()
+    assert order.index("stage_b_main") < order.index("finish")
+    assert order.index("release") < order.index("finalize")
+    assert (result.detail or {}).get("step1_day_refresh", {}).get("ok") is True
+    assert mock_stage_b.call_count >= 1
+    post = (result.detail or {}).get("rinse_finalize_post_lock") or {}
+    assert post.get("post_lock") is True
+    assert "finalize hung" in str(post.get("error") or "")
+
+
+def test_authoritative_import_creates_today_without_watchdog():
+    result, _refresh, _finish, _release, mock_stage_b, order, _confirm, _fin, mock_watchdog = (
+        _run_scheduled_with_mocks()
+    )
+    assert result.status == "success"
+    assert "stage_b_main" in order
+    mock_stage_b.assert_called()
+    mock_watchdog.assert_not_called()
+    assert (result.detail or {}).get("step1_day_refresh", {}).get("ok") is True
+
+
+def test_combined_cycle_stage_b_unlock_before_targeted():
+    """Combined wrapper: Stage-B + terminal main + unlock, then post-lock finalize/targeted."""
+    from datetime import datetime
+    import os
+    import tempfile
+
+    from backend.rinse_presence_scrape import PresenceScrapeResult
+    from backend.rinse_scheduled_scrape import ScrapePaths, run_rinse_combined_sync_for_org
+
+    run_dir = Path(tempfile.mkdtemp())
+    paths = ScrapePaths(
+        run_dir=run_dir,
+        portal_csv=run_dir / "portal.csv",
+        scan_tickets_csv=run_dir / "t.csv",
+        scan_events_csv=run_dir / "e.csv",
+        log_path=run_dir / "log",
+    )
+    write_gate_passing_portal_csv(paths.portal_csv)
+    paths.scan_events_csv.write_text("h\n1\n")
+
+    conn = MagicMock()
+    cursor = MagicMock()
+    cursor.fetchone.return_value = {"c": 1}
+    conn.cursor.return_value = cursor
+    tenant = MagicMock()
+    tenant.is_dir.return_value = True
+    order: list[str] = []
+
+    def _presence(*_a, **_k):
+        order.append("presence")
+        return PresenceScrapeResult(
+            organization_id=3,
+            portal_status="at_vendor",
+            status="success",
+            started_at=datetime.utcnow(),
+            finished_at=datetime.utcnow(),
+            stats={"rows_found": 1, "active_rows": 1, "run_id": 50},
+        )
+
+    def _confirm(*_a, **kwargs):
+        order.append("confirm")
+        assert kwargs.get("run_finalize") is False
+        return {
+            "status": "batch_confirmed",
+            "rinse_finalize": {"deferred": True},
+        }
+
+    def _stage_b(*_a, **_k):
+        order.append("stage_b_main")
+        return {"ok": True, "shift_date_et": "2026-08-14", "persisted": True}
+
+    def _finish(*_a, **kwargs):
+        order.append("finish")
+        order.append(f"finish_status:{kwargs.get('status')}")
+
+    def _release(*_a, **_k):
+        order.append("release")
+
+    def _finalize(*_a, **_k):
+        order.append("finalize")
+        return {"persistent_merge": {"events_inserted": 0}}
+
+    def _targeted(*_a, **_k):
+        order.append("targeted")
+        return {
+            "dry_run": False,
+            "bag_ids_requested": [],
+            "bags_processed": 0,
+            "events_inserted": 0,
+            "lookup_failed": 0,
+            "bags": [],
+        }
+
+    patches = [
+        patch("backend.rinse_scheduled_scrape.tenant_script_dir", return_value=tenant),
+        patch("backend.rinse_scheduled_scrape.acquire_scrape_lock", return_value=(True, "")),
+        patch("backend.rinse_scheduled_scrape.insert_scrape_run", return_value=7),
+        patch("backend.rinse_scheduled_scrape.build_run_paths", return_value=paths),
+        patch("backend.rinse_scheduled_scrape._run_bash_script", return_value=0),
+        patch("backend.rinse_scheduled_scrape._subprocess_env_for_vendor", return_value={}),
+        patch("backend.rinse_scheduled_scrape._count_accepted_rows", return_value=1),
+        patch("backend.rinse_scheduled_scrape._count_attention_rows", return_value=0),
+        patch(
+            "backend.rinse_scheduled_scrape._org_slug_name",
+            return_value=("veewash", "VeeWash"),
+        ),
+        patch("backend.rinse_scheduled_scrape.resolve_rinse_vendor", return_value="veewash"),
+        patch(
+            "backend.rinse_presence_scrape.run_presence_scrape_for_org",
+            side_effect=_presence,
+        ),
+        patch(
+            "backend.rinse_portal_csv.portal_csv_to_orders_df",
+            return_value=pd.DataFrame([{"ticket_id": "ABC"}]),
+        ),
+        patch(
+            "backend.rinse_scan_events_upload.parse_scan_events_csv",
+            return_value=(MagicMock(), []),
+        ),
+        patch(
+            "backend.rinse_combined_upload.commit_rinse_combined_upload",
+            return_value={
+                "batch_id": 99,
+                "rows_inserted": 1,
+                "portal_absence_allowed": True,
+                "persistent_scan_merge": {"events_inserted": 4},
+            },
+        ),
+        patch(
+            "backend.upload_batch_confirm.confirm_upload_batch_core",
+            side_effect=_confirm,
+        ),
+        patch(
+            "backend.rinse_scheduled_scrape._refresh_open_step1_day_after_scrape",
+            side_effect=_stage_b,
+        ),
+        patch("backend.rinse_scheduled_scrape.finish_scrape_run", side_effect=_finish),
+        patch("backend.rinse_scheduled_scrape.release_scrape_lock", side_effect=_release),
+        patch(
+            "backend.rinse_upload_finalize.finalize_rinse_after_batch_confirm",
+            side_effect=_finalize,
+        ),
+        patch(
+            "backend.rinse_upload_finalize.fetch_accepted_portal_rows_for_finalize",
+            return_value=[],
+        ),
+        patch(
+            "backend.rinse_off_portal_scan_refresh.off_portal_refresh_enabled",
+            return_value=True,
+        ),
+        patch(
+            "backend.rinse_off_portal_scan_refresh.off_portal_refresh_dry_run",
+            return_value=False,
+        ),
+        patch(
+            "backend.rinse_off_portal_scan_refresh.off_portal_refresh_rush_only",
+            return_value=False,
+        ),
+        patch(
+            "backend.rinse_shift_monitor_baseline.build_baseline_context",
+            return_value={},
+        ),
+        patch(
+            "backend.rinse_shift_monitor_baseline.get_shift_monitor_baseline",
+            return_value={},
+        ),
+        patch(
+            "backend.rinse_off_portal_scan_refresh.refresh_pending_workload_scans_via_direct_lookup",
+            side_effect=_targeted,
+        ),
+        patch("backend.rinse_scheduled_scrape.merge_scrape_run_result_json"),
+    ]
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("RFV_SCRAPE_ENABLED", None)
+        for p in patches:
+            p.start()
+        try:
+            result = run_rinse_combined_sync_for_org(conn, 3, run_type="scheduled")
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
+    assert result.status == "success"
+    assert order.index("confirm") < order.index("stage_b_main")
+    assert order.index("stage_b_main") < order.index("finish")
+    assert order.index("finish") < order.index("release")
+    assert order.index("release") < order.index("finalize")
+    assert order.index("finalize") < order.index("targeted")
+    assert "stage_b_post" not in order
+    assert (result.detail or {}).get("rinse_finalize_deferred") is True

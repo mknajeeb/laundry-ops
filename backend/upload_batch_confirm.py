@@ -22,11 +22,17 @@ def confirm_upload_batch_core(
     batch_id: int,
     *,
     force_confirm: bool = False,
+    run_finalize: bool = True,
 ) -> dict[str, Any]:
     """
     Confirm a draft upload batch for one organization.
     Caller must commit or rollback the connection.
-  """
+
+    ``run_finalize=False`` applies staging + CONFIRMED only. Scheduled
+    authoritative cycles persist Stage-B and release the main scrape lock
+    before ``finalize_rinse_after_batch_confirm`` (post-lock, best-effort).
+    Flask/UI confirm keeps the default ``run_finalize=True``.
+    """
     from backend.app import (
         build_identity_key,
         ensure_ticket_id_columns,
@@ -350,27 +356,24 @@ def confirm_upload_batch_core(
             (batch_id,),
         )
 
-    ubr_tid = ", ticket_id" if table_has_column(cursor, "upload_batch_rows", "ticket_id") else ""
-    if ubr_tid:
-        cursor.execute(
-            f"""
-            SELECT date_clean, name_clean, weight_num, service_type, rush_type, ticket_id
-            FROM upload_batch_rows
-            WHERE upload_batch_id = %s AND row_status IN ('ACCEPTED', 'OVERRIDDEN')
-            """,
-            (batch_id,),
-        )
-        finalize_portal_rows = list(cursor.fetchall() or [])
-    else:
-        finalize_portal_rows = list(accepted_rows)
+    if run_finalize:
+        from backend.rinse_upload_finalize import fetch_accepted_portal_rows_for_finalize
 
-    rinse_finalize = finalize_rinse_after_batch_confirm(
-        cursor,
-        tenant_oid,
-        batch_id,
-        accepted_portal_rows=finalize_portal_rows,
-        source_filename=f"batch_confirm_{batch_id}",
-    )
+        finalize_portal_rows = fetch_accepted_portal_rows_for_finalize(cursor, batch_id)
+        if not finalize_portal_rows:
+            finalize_portal_rows = list(accepted_rows)
+        rinse_finalize = finalize_rinse_after_batch_confirm(
+            cursor,
+            tenant_oid,
+            batch_id,
+            accepted_portal_rows=finalize_portal_rows,
+            source_filename=f"batch_confirm_{batch_id}",
+        )
+    else:
+        rinse_finalize = {
+            "deferred": True,
+            "reason": "post_lock_after_authoritative_cycle",
+        }
 
     return {
         "status": "batch_confirmed",

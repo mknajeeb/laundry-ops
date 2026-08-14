@@ -90,7 +90,7 @@ def test_morning_invariant_successful_import_creates_open_snapshot():
 
 def test_targeted_hang_after_import_still_creates_snapshot():
     """Post-lock targeted hang cannot undo Stage-B persist from the import."""
-    result, _refresh, mock_finish, mock_release, mock_stage_b, order = (
+    result, _refresh, mock_finish, mock_release, mock_stage_b, order, *_rest = (
         _run_scheduled_with_mocks(
             refresh_side_effect=TimeoutError("targeted hung past bound"),
         )
@@ -449,3 +449,15 @@ def test_cycle_not_successful_until_snapshot_persisted():
     )
     assert result.status == "needs_attention"
     assert result.detail["step1_refresh_failed"] is True
+
+
+def test_first_complete_import_creates_today_without_watchdog():
+    """Morning Today comes from in-cycle Stage-B, not the missing-snapshot watchdog."""
+    result, _refresh, _finish, _release, mock_stage_b, order, _c, _fin, mock_watchdog = (
+        _run_scheduled_with_mocks()
+    )
+    assert result.status == "success"
+    assert order.index("confirm") < order.index("stage_b_main")
+    mock_stage_b.assert_called()
+    mock_watchdog.assert_not_called()
+    assert (result.detail or {}).get("step1_day_refresh", {}).get("ok") is True
