@@ -2960,6 +2960,104 @@ def list_close_audit(
     return out
 
 
+def step1_snapshot_present(cursor, organization_id: int, shift_date_et: date) -> bool:
+    """True when the day has a persisted headline and day_bags (usable Today)."""
+    rec = get_day_record(cursor, int(organization_id), shift_date_et)
+    if not rec:
+        return False
+    headline = rec.get("headline")
+    if not isinstance(headline, Mapping) or not headline:
+        return False
+    try:
+        if day_bag_count(cursor, int(organization_id), shift_date_et) > 0:
+            return True
+    except Exception:
+        pass
+    # Headline counts mean a snapshot was persisted even if day_bags cannot
+    # be queried (tests / transient DB). Do not treat that as missing.
+    if headline.get("completed") is not None or headline.get("pending") is not None:
+        return True
+    bag_ids = ((headline.get("segments") or {}).get("all") or {}).get("bag_ids") or {}
+    if isinstance(bag_ids, Mapping):
+        for key in ("pending", "completed", "review_required"):
+            ids = bag_ids.get(key)
+            if isinstance(ids, (list, tuple)) and ids:
+                return True
+    return False
+
+
+def _persist_snapshot_then_attach_specialty(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    *,
+    wl: Mapping[str, Any],
+    summary: Mapping[str, Any],
+    day: Mapping[str, Any] | None,
+    chronology_complete: bool,
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    """Persist OPEN day + day_bags + headline, then best-effort specialty.
+
+    Specialty attach is optional and must not block Today existing. A hang or
+    failure after the first persist leaves a usable snapshot in place.
+    """
+    from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
+    from backend.rinse_hd_day_presentation import finalize_hd_step1_summary
+
+    org = int(organization_id)
+    summary = dict(summary or {})
+    summary = finalize_hd_step1_summary(
+        summary,
+        selected_date_et=shift_date_et,
+        membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
+        cursor=cursor,
+        organization_id=org,
+    )
+    status = derive_shift_day_status(
+        summary,
+        current_status=(day or {}).get("status"),
+        membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
+    )
+    persisted = persist_day_snapshot(
+        cursor,
+        org,
+        shift_date_et,
+        workload=wl,
+        summary=summary,
+        status=status,
+        force=True,
+        chronology_complete=bool(chronology_complete),
+    )
+    _commit(cursor)
+    specialty_ok = False
+    before_spec = summary.get("specialty_metrics")
+    try:
+        attached = attach_specialty_metrics_to_summary(
+            cursor, org, shift_date_et, summary
+        )
+        summary = attached if isinstance(attached, dict) else summary
+        specialty_ok = True
+        if summary.get("specialty_metrics") != before_spec:
+            persisted = persist_day_snapshot(
+                cursor,
+                org,
+                shift_date_et,
+                workload=wl,
+                summary=summary,
+                status=status,
+                force=True,
+                chronology_complete=bool(chronology_complete),
+            )
+            _commit(cursor)
+    except Exception:
+        logger.exception(
+            "specialty metrics attach failed after Today snapshot persist org=%s date=%s",
+            org,
+            shift_date_et,
+        )
+    return persisted, summary, specialty_ok
+
+
 def reproject_day_bag_completions_from_chronology(
     cursor,
     organization_id: int,
@@ -2987,6 +3085,16 @@ def reproject_day_bag_completions_from_chronology(
     org = int(organization_id)
     day = get_day_record(cursor, org, shift_date_et)
     if not day:
+        if shift_date_et == today_et():
+            created = backfill_day_from_live(
+                cursor,
+                org,
+                shift_date_et,
+                chronology_complete=bool(chronology_complete),
+            )
+            created = dict(created or {})
+            created.setdefault("reason", "day_missing_created_today")
+            return created
         return {
             "ok": True,
             "skipped": True,
@@ -3063,35 +3171,15 @@ def reproject_day_bag_completions_from_chronology(
         summary = dict(summary)
         summary["membership"] = wl.get("membership")
 
-    from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
-    from backend.rinse_hd_day_presentation import finalize_hd_step1_summary
-
-    summary = finalize_hd_step1_summary(
-        summary,
-        selected_date_et=shift_date_et,
-        membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
-        cursor=cursor,
-        organization_id=org,
-    )
-    summary = attach_specialty_metrics_to_summary(
-        cursor, org, shift_date_et, summary
-    )
-
-    day = persist_day_snapshot(
+    day, summary, _specialty_ok = _persist_snapshot_then_attach_specialty(
         cursor,
         org,
         shift_date_et,
-        workload=wl,
+        wl=wl,
         summary=summary,
-        status=derive_shift_day_status(
-            summary,
-            current_status=(day or {}).get("status"),
-            membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
-        ),
-        force=True,
+        day=day,
         chronology_complete=bool(chronology_complete),
     )
-    _commit(cursor)
     bags_after = load_day_bags(cursor, org, shift_date_et)
     completed_n = sum(
         1
@@ -3210,38 +3298,20 @@ def backfill_day_from_live(
     if isinstance(wl.get("membership"), dict) and "membership" not in (summary or {}):
         summary = dict(summary)
         summary["membership"] = wl.get("membership")
-    # Match live rebuild: HD EDD presentation + specialty KPI packs before persist.
-    from backend.rinse_hd_day_presentation import finalize_hd_step1_summary
-    from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
-
-    summary = finalize_hd_step1_summary(
-        summary,
-        selected_date_et=shift_date_et,
-        membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
-        cursor=cursor,
-        organization_id=organization_id,
-    )
-    summary = attach_specialty_metrics_to_summary(
-        cursor, organization_id, shift_date_et, summary
-    )
-    review_n = int((summary.get("exceptions") or {}).get("review_required") or 0)
-    day = persist_day_snapshot(
+    # Persist membership + headline FIRST so Today is available even if
+    # specialty (or later optional work) hangs.
+    day, summary, specialty_ok = _persist_snapshot_then_attach_specialty(
         cursor,
         organization_id,
         shift_date_et,
-        workload=wl,
+        wl=wl,
         summary=summary,
-        status=derive_shift_day_status(
-            summary,
-            current_status=(day or {}).get("status"),
-            membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
-        ),
-        force=True,
+        day=day,
         chronology_complete=bool(chronology_complete),
     )
-    _commit(cursor)
     return {
         "ok": True,
+        "persisted": True,
         "day": day,
         "summary_totals": {
             "active": summary.get("active_workload"),
@@ -3253,4 +3323,5 @@ def backfill_day_from_live(
         "membership": wl.get("membership"),
         "bag_count": len(load_day_bags(cursor, organization_id, shift_date_et)),
         "chronology_complete": bool(chronology_complete),
+        "specialty_metrics_attached": specialty_ok,
     }

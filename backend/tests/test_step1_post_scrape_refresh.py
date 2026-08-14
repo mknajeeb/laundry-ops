@@ -469,6 +469,9 @@ def test_watchdog_retries_failed_stage_b_without_rescrape():
             }
         ],
     ), patch(
+        "backend.rinse_step1_scrape_refresh.ensure_today_snapshot_if_missing",
+        return_value={"ok": True, "skipped": True, "reason": "snapshot_present"},
+    ), patch(
         "backend.rinse_step1_scrape_refresh.refresh_step1_after_scrape",
         return_value={
             "ok": True,

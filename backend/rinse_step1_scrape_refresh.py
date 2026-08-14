@@ -293,6 +293,7 @@ def refresh_step1_after_scrape(
         STATUS_CLOSED,
         backfill_day_from_live,
         get_day_record,
+        step1_snapshot_present,
         today_et,
     )
 
@@ -404,49 +405,75 @@ def refresh_step1_after_scrape(
             scrape_run_id=scrape_run_id,
         )
         if gate.get("deferred") or not gate.get("allow_persist"):
+            from backend.rinse_scan_chronology_gate import (
+                STATUS_IMPORT_INCOMPLETE,
+                STATUS_SCAN_IMPORT_IN_PROGRESS,
+            )
+            from backend.rinse_step1_evidence_gate import REASON_IMPORT_BATCH_INCOMPLETE
+
             finished = _utcnow()
             reason = str(gate.get("reason") or "rebuild_deferred")
-            out = {
-                **base,
-                "ok": True,
-                "deferred": True,
-                "rebuild_deferred": True,
-                "reason": reason,
-                "step1_refresh_status": STATUS_DEFERRED,
-                "status": reason,
-                "finished_at": finished.isoformat(sep=" "),
-                "day_bags_rebuilt": 0,
-                "persisted": False,
-                "data_freshness": gate.get("data_freshness"),
-                "last_consistent_snapshot": gate.get("last_consistent_snapshot"),
-                "message": gate.get("message"),
-                "last_sync_at": before_sync,
-                "last_sync_at_before": before_sync,
-                "portal_presence_run_id": gate.get("portal_presence_run_id"),
-                "scan_import_batch_id": gate.get("import_batch_id") or resolved_batch,
-                "evidence_generation_id": gate.get("evidence_generation_id"),
-                "gate_decision": gate.get("gate_decision") or "defer",
-                "gate_reason": gate.get("gate_reason") or reason,
-                "gate_status": gate.get("gate_status"),
-                "durable_evidence_gate": gate.get("durable_evidence_gate"),
-            }
-            _update_refresh_row(
-                cursor,
-                refresh_row_id,
-                status=STATUS_DEFERRED,
-                finished_at=finished,
-                error=reason,
+            durable = gate.get("durable_evidence_gate") or {}
+            blocking = bool(durable.get("blocking")) or bool(
+                force_incomplete or import_incomplete
             )
-            try:
-                _persist_day_meta_diagnostics(cursor, org, day, out)
-                conn.commit()
-            except Exception:
-                pass
+            if reason in (
+                STATUS_SCAN_IMPORT_IN_PROGRESS,
+                STATUS_IMPORT_INCOMPLETE,
+                REASON_IMPORT_BATCH_INCOMPLETE,
+                "import_running",
+            ):
+                blocking = True
+            snapshot_ok = step1_snapshot_present(cursor, org, day)
+            # Incomplete/running import: never create or replace. Existing
+            # snapshot: retain it. New ET day with a non-blocking (complete)
+            # import: create the first snapshot even if freshness would defer.
+            if snapshot_ok or blocking:
+                out = {
+                    **base,
+                    "ok": True,
+                    "deferred": True,
+                    "rebuild_deferred": True,
+                    "reason": reason,
+                    "step1_refresh_status": STATUS_DEFERRED,
+                    "status": reason,
+                    "finished_at": finished.isoformat(sep=" "),
+                    "day_bags_rebuilt": 0,
+                    "persisted": False,
+                    "data_freshness": gate.get("data_freshness"),
+                    "last_consistent_snapshot": gate.get("last_consistent_snapshot"),
+                    "message": gate.get("message"),
+                    "last_sync_at": before_sync,
+                    "last_sync_at_before": before_sync,
+                    "portal_presence_run_id": gate.get("portal_presence_run_id"),
+                    "scan_import_batch_id": gate.get("import_batch_id") or resolved_batch,
+                    "evidence_generation_id": gate.get("evidence_generation_id"),
+                    "gate_decision": gate.get("gate_decision") or "defer",
+                    "gate_reason": gate.get("gate_reason") or reason,
+                    "gate_status": gate.get("gate_status"),
+                    "durable_evidence_gate": gate.get("durable_evidence_gate"),
+                }
+                _update_refresh_row(
+                    cursor,
+                    refresh_row_id,
+                    status=STATUS_DEFERRED,
+                    finished_at=finished,
+                    error=reason,
+                )
+                try:
+                    _persist_day_meta_diagnostics(cursor, org, day, out)
+                    conn.commit()
+                except Exception:
+                    pass
+                _log(
+                    f"Step-1 refresh DEFERRED for {day}: {reason} "
+                    f"(last consistent snapshot retained)\n"
+                )
+                return out
             _log(
-                f"Step-1 refresh DEFERRED for {day}: {reason} "
-                f"(last consistent snapshot retained)\n"
+                f"Step-1 refresh creating first Today snapshot for {day} "
+                f"despite freshness defer ({reason})\n"
             )
-            return out
 
         backfill = backfill_day_from_live(
             cursor,
@@ -599,6 +626,76 @@ def list_retryable_step1_refreshes(
     return [r for r in rows if isinstance(r, dict)]
 
 
+def ensure_today_snapshot_if_missing(
+    conn,
+    cursor,
+    organization_id: int,
+    *,
+    scrape_run_id: int | None = None,
+    import_batch_id: int | None = None,
+    log: Any = None,
+) -> dict[str, Any]:
+    """Create Today's OPEN snapshot when a complete authoritative import exists.
+
+    Does not replace an existing usable snapshot. Incomplete evidence gates
+    never create or replace. Recovers the Aug 14 failure mode: import
+    confirmed and gate complete, but Stage-B never started (zero refresh
+    rows) so Today stayed unavailable.
+    """
+    from backend.rinse_step1_evidence_gate import GATE_COMPLETE, evaluate_durable_evidence_gate
+    from backend.rinse_veewash_shift_day import step1_snapshot_present, today_et
+
+    org = int(organization_id)
+    today = today_et()
+    if step1_snapshot_present(cursor, org, today):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "snapshot_present",
+            "persisted": False,
+            "shift_date_et": today.isoformat(),
+        }
+    durable = evaluate_durable_evidence_gate(
+        cursor,
+        org,
+        import_batch_id=import_batch_id,
+        scrape_run_id=scrape_run_id,
+    )
+    if durable.get("blocking"):
+        return {
+            "ok": True,
+            "deferred": True,
+            "persisted": False,
+            "reason": durable.get("gate_reason") or "import_batch_incomplete",
+            "shift_date_et": today.isoformat(),
+            "durable_evidence_gate": durable,
+        }
+    if str(durable.get("gate_status") or "").strip().lower() != GATE_COMPLETE:
+        return {
+            "ok": True,
+            "skipped": True,
+            "persisted": False,
+            "reason": "no_complete_authoritative_import",
+            "shift_date_et": today.isoformat(),
+            "durable_evidence_gate": durable,
+        }
+    return refresh_step1_after_scrape(
+        conn,
+        cursor,
+        organization_id=org,
+        log=log,
+        scrape_run_id=(
+            scrape_run_id if scrape_run_id is not None else durable.get("scrape_run_id")
+        ),
+        import_batch_id=(
+            import_batch_id
+            if import_batch_id is not None
+            else durable.get("import_batch_id")
+        ),
+        operations_date_et=today,
+    )
+
+
 def retry_failed_step1_refreshes(
     conn,
     cursor,
@@ -608,6 +705,13 @@ def retry_failed_step1_refreshes(
     limit: int = 5,
 ) -> dict[str, Any]:
     """Watchdog: idempotent Stage-B retry for prior successful imports."""
+    heal: dict[str, Any] | None = None
+    try:
+        heal = ensure_today_snapshot_if_missing(
+            conn, cursor, organization_id, log=log
+        )
+    except Exception as exc:
+        heal = {"ok": False, "error": str(exc)[:500]}
     pending = list_retryable_step1_refreshes(cursor, organization_id, limit=limit)
     results: list[dict[str, Any]] = []
     for row in pending:
@@ -641,6 +745,7 @@ def retry_failed_step1_refreshes(
         "retried": len(results),
         "failed": len(failed),
         "results": results,
+        "today_snapshot_heal": heal,
         "alert": len(failed) > 0 and any(
             (r.get("attempt_count") or 0) >= _max_attempts() - 1 for r in pending
         ),

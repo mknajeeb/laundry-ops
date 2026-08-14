@@ -129,10 +129,13 @@ def acquire_scrape_lock(cursor, organization_id: int) -> tuple[bool, str]:
         (org, stale_cutoff),
     )
     stale_rows = cursor.fetchall() or []
+    stale_run_ids: list[int] = []
     for stale in stale_rows:
         if not isinstance(stale, dict):
             continue
         run_id = int(stale.get("id") or 0)
+        if run_id:
+            stale_run_ids.append(run_id)
         started = stale.get("started_at")
         failed_step = (
             _infer_failed_step_from_presence_runs(cursor, org, started)
@@ -176,6 +179,29 @@ def acquire_scrape_lock(cursor, organization_id: int) -> tuple[bool, str]:
                 org,
             ),
         )
+
+    if stale_run_ids:
+        # Import may have confirmed while Stage-B never started. Heal Today
+        # from the complete gate before the next cycle takes the lock.
+        try:
+            conn = getattr(cursor, "connection", None)
+            if conn is not None:
+                from backend.rinse_step1_scrape_refresh import (
+                    ensure_today_snapshot_if_missing,
+                )
+
+                ensure_today_snapshot_if_missing(
+                    conn,
+                    cursor,
+                    org,
+                    scrape_run_id=stale_run_ids[-1],
+                )
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     cursor.execute(
         """
