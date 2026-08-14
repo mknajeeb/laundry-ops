@@ -1875,10 +1875,16 @@ export const getBatchVendorReceiptsHtml = (batchId, { preview = false } = {}) =>
     responseType: "text",
   });
 
-export const listPayrollVendors = ({ includeInactive = true } = {}) =>
+export const listPayrollVendors = ({ includeInactive = true, paymentOnly = false } = {}) =>
   axios.get(`${API_BASE}/api/ta/payroll/vendors`, {
-    params: { include_inactive: includeInactive ? 1 : 0 },
+    params: {
+      include_inactive: includeInactive ? 1 : 0,
+      ...(paymentOnly ? { payment_only: 1 } : {}),
+    },
   });
+
+export const convertTryOut = (userId, body) =>
+  axios.post(`${API_BASE}/api/ta/users/${userId}/convert-tryout`, body);
 
 export const createPayrollVendor = (body) =>
   axios.post(`${API_BASE}/api/ta/payroll/vendors`, body);

@@ -4,7 +4,7 @@ const INCLUDE = new Set(["scheduled", "completed", "clocked_in"]);
 const EXCLUDE = new Set(["cancelled", "replaced", "absent", "no_show"]);
 const SICK = new Set(["sick"]);
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-const CAT_LABELS = { w2: "W-2", contractor_1099: "1099", temp: "Temp" };
+const CAT_LABELS = { w2: "W-2", contractor_1099: "1099", temp: "Temp", tryout: "Try Out" };
 
 export function addDaysYmd(ymd, n) {
   const d = new Date(`${ymd}T12:00:00`);

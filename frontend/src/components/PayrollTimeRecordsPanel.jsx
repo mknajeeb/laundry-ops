@@ -64,6 +64,7 @@ const CATEGORY_SHORT = {
   w2: "W-2",
   contractor_1099: "1099",
   temp: "Temp",
+  tryout: "Try Out",
 };
 
 const STATUS_OPTIONS = [

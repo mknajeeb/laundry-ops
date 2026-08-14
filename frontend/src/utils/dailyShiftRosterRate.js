@@ -5,7 +5,7 @@ export const ROSTER_DEFAULT_CONTRACTOR_RATE = 17;
 
 export function isContractorCategory(category) {
   const cat = String(category || "").trim().toLowerCase();
-  return cat === "contractor_1099" || cat === "temp" || cat === "1099";
+  return cat === "contractor_1099" || cat === "temp" || cat === "tryout" || cat === "1099";
 }
 
 export function categoryDefaultHourlyRate(category) {

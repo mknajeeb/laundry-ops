@@ -112,6 +112,7 @@ export const CATEGORY_FORM_LANES = {
   w2: ["employee_w2"],
   contractor_1099: ["contractor_1099"],
   temp: ["temp_worker", "contractor_temp", "temp", "temporary", "temp_contractor"],
+  tryout: ["tryout"],
 };
 
 function hasAnyLane(user, lanes) {
@@ -132,12 +133,18 @@ export function filterPayrollTimelineUsers(users, category) {
       (u) => hasAnyLane(u, CATEGORY_FORM_LANES.temp) && !isAccountantSystemUser(u),
     );
   }
+  if (category === "tryout") {
+    return list.filter(
+      (u) => hasAnyLane(u, CATEGORY_FORM_LANES.tryout) && !isAccountantSystemUser(u),
+    );
+  }
   return [];
 }
 
 export function workerLaneForCategory(category) {
   if (category === "contractor_1099") return "contractor_1099";
   if (category === "temp") return "temp_worker";
+  if (category === "tryout") return "tryout";
   return "employee_w2";
 }
 

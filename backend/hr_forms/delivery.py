@@ -5,18 +5,19 @@ Build HR form inventory for a user and infer W-2 vs 1099 lanes from employment c
 from __future__ import annotations
 
 import os
-import re
 from typing import Any, Optional
 
 from backend.hr_forms.registry import get_form_def, list_forms, resolve_form_asset_path
 
 
 def infer_user_form_lanes(conn, user_id: int) -> list[str]:
-    """employee_w2 / contractor_1099 / temp_worker from active employment categories.
+    """employee_w2 / contractor_1099 / temp_worker / tryout from current assignments.
 
     Avoid treating "Washmate 1099"–style rows as both W-2 and 1099. With no assignment
     rows, default to W-2 only (safest single packet); set a category for contractors.
+    Try Out is never classified as W-2 or 1099.
     """
+    from backend.payroll_worker_categories import classify_employment_category
     from backend.portal_system_users import is_portal_system_user
 
     if is_portal_system_user(conn, int(user_id)):
@@ -29,7 +30,7 @@ def infer_user_form_lanes(conn, user_id: int) -> list[str]:
             FROM user_employment_categories uec
             JOIN employment_categories ec ON ec.id = uec.employment_category_id
             WHERE uec.user_id=%s
-              AND uec.effective_from <= CURDATE()
+              AND (uec.effective_from IS NULL OR uec.effective_from <= CURDATE())
               AND (uec.effective_to IS NULL OR uec.effective_to >= CURDATE())
             """,
             (int(user_id),),
@@ -39,59 +40,20 @@ def infer_user_form_lanes(conn, user_id: int) -> list[str]:
         rows = []
     if not rows:
         return ["employee_w2"]
-    if any((r.get("code") or "").upper().strip() == "EC_SYSTEM" for r in rows):
+    kinds = [
+        classify_employment_category(r.get("code"), r.get("name")) for r in rows
+    ]
+    if "system" in kinds:
         return []
-    has_1099 = False
-    has_w2 = False
-    has_temp = False
-    for r in rows:
-        code_u = (r.get("code") or "").upper().strip()
-        name_blob = f"{(r.get('name') or '')} {code_u.lower()}".lower()
-        if code_u == "EC_SYSTEM":
-            return []
-        if code_u == "EC_TEMP":
-            has_temp = True
-            continue
-        if code_u in ("EC_1099", "WASHMATE_1099", "WASHPRO_1099"):
-            has_1099 = True
-            continue
-        if code_u in ("EC_W2", "WASHPRO_W2"):
-            has_w2 = True
-            continue
-        if "1099" in code_u or "CONTRACTOR" in code_u or re.search(
-            r"\b1099\b|contractor|independent|\bic\b", name_blob
-        ):
-            has_1099 = True
-        if "TEMP" in code_u or re.search(r"\btemp\b|temporary|seasonal", name_blob):
-            has_temp = True
-        row_1099 = bool(
-            "1099" in code_u
-            or "CONTRACTOR" in code_u
-            or re.search(r"\b1099\b|contractor|independent|\bic\b", name_blob)
-        )
-        explicit_w2 = bool(re.search(r"W[\s_-]*2|\bW2\b", code_u)) or bool(
-            re.search(r"\bw[\s-]*2\b", name_blob)
-        )
-        employee_like = bool(
-            re.search(
-                r"EMPLOYEE|HOURLY|SALARY|OPS|WASHPRO|STAFF|WASHMATE",
-                code_u,
-            )
-        ) or bool(
-            re.search(
-                r"\bemployee\b|hourly|salary|\bops\b|washpro|staff|washmate",
-                name_blob,
-            )
-        )
-        if explicit_w2 or (employee_like and not row_1099):
-            has_w2 = True
     out: list[str] = []
-    if has_w2:
+    if "w2" in kinds:
         out.append("employee_w2")
-    if has_1099:
+    if "contractor_1099" in kinds:
         out.append("contractor_1099")
-    if has_temp:
+    if "temp" in kinds:
         out.append("temp_worker")
+    if "tryout" in kinds:
+        out.append("tryout")
     if not out:
         return ["employee_w2"]
     return out

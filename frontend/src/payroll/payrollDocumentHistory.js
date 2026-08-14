@@ -18,10 +18,11 @@ export const DOC_HISTORY_CATEGORY_OPTIONS = [
   { value: "all", label: "All categories" },
   { value: "w2", label: "W-2" },
   { value: "temp", label: "Temp" },
+  { value: "tryout", label: "Try Out" },
   { value: "contractor_1099", label: "1099" },
 ];
 
-const VENDOR_RECEIPT_CATEGORIES = new Set(["temp", "contractor_1099"]);
+const VENDOR_RECEIPT_CATEGORIES = new Set(["temp", "contractor_1099", "tryout"]);
 
 export function isVendorReceiptCategory(category) {
   return VENDOR_RECEIPT_CATEGORIES.has(String(category || ""));
@@ -144,7 +145,7 @@ export function workersForCategory(users, category) {
   if (category === "all") {
     const seen = new Set();
     const out = [];
-    for (const cat of ["w2", "temp", "contractor_1099"]) {
+    for (const cat of ["w2", "temp", "tryout", "contractor_1099"]) {
       for (const u of filterPayrollTimelineUsers(list, cat)) {
         const id = u.id ?? u.user_id;
         if (id == null || seen.has(id)) continue;

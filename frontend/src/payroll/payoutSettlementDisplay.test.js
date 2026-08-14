@@ -23,6 +23,15 @@ describe("payoutSettlementDisplay", () => {
     expect(formatTaxWithheldDisplay(line)).toBe("$129.50");
   });
 
+  it("shows UNPAID instead of a paid amount", () => {
+    const line = {
+      payout_details_finalized: true,
+      net_paid: 68,
+      payment_recorded: "unpaid",
+    };
+    expect(formatNetPaidDisplay(line)).toBe("UNPAID");
+  });
+
   it("detects tax breakdown presence", () => {
     expect(
       hasTaxWithheldBreakdown({

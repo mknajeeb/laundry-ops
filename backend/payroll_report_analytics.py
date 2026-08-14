@@ -620,7 +620,7 @@ def category_breakdown(rows: list[dict]) -> list[dict[str, Any]]:
         cat = str(row.get("worker_category") or "unknown")
         by_cat[cat].append(row)
     out = []
-    order = ("w2", "temp", "contractor_1099")
+    order = ("w2", "temp", "tryout", "contractor_1099")
     keys = [k for k in order if k in by_cat] + sorted(
         k for k in by_cat if k not in order
     )

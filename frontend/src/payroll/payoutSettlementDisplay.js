@@ -10,11 +10,25 @@ export function isPayoutDetailsFinalized(lineOrBatch) {
 
 export function formatNetPaidDisplay(line, { pendingLabel = "Pending" } = {}) {
   if (!isPayoutDetailsFinalized(line)) return pendingLabel;
+  if (isPaymentRecordedUnpaid(line)) return "UNPAID";
   const val = line?.net_paid;
   if (val == null || val === "") return pendingLabel;
   const n = Number(val);
   if (!Number.isFinite(n)) return pendingLabel;
   return `$${n.toFixed(2)}`;
+}
+
+export function isPaymentRecordedUnpaid(line) {
+  const rec = String(line?.payment_recorded || line?.settlement?.payment_recorded || "").toLowerCase();
+  if (rec === "unpaid") return true;
+  if (rec === "paid") return false;
+  return String(line?.payment_status || "").toLowerCase() === "unpaid";
+}
+
+export function isPaymentRecordedPaid(line) {
+  if (isPaymentRecordedUnpaid(line)) return false;
+  if (String(line?.payment_recorded || "").toLowerCase() === "paid") return true;
+  return String(line?.payment_status || "").toLowerCase() === "paid";
 }
 
 export function formatTaxWithheldDisplay(line, { pendingLabel = "Pending" } = {}) {

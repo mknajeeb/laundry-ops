@@ -344,6 +344,17 @@ def parse_line_payout_details(
         base["settlement"]["preserve_amount_paid"] = bool(
             raw_settlement_early.get("preserve_amount_paid")
         )
+    from backend.payroll_worker_categories import normalize_payment_recorded
+
+    raw_recorded = normalize_payment_recorded(
+        (raw.get("settlement") if isinstance(raw.get("settlement"), dict) else {}).get(
+            "payment_recorded"
+        )
+    )
+    if raw_recorded:
+        base["settlement"]["payment_recorded"] = raw_recorded
+    else:
+        base["settlement"].pop("payment_recorded", None)
     if "withheld_from_payment" in base["settlement"]:
         wfp = base["settlement"].get("withheld_from_payment")
         if wfp is None or str(wfp).strip() == "":
@@ -687,6 +698,8 @@ def apply_settlement_math(details: dict, gross: float) -> dict:
         settlement["amount_paid"] = paid
         settlement["outstanding_balance"] = round(max(0.0, gross_f - paid), 2)
         settlement["preserve_amount_paid"] = True
+        if settlement.get("payment_recorded") not in ("paid", "unpaid"):
+            pass
         details["settlement"] = settlement
         return reconcile_tax_summary(details)
 
@@ -768,6 +781,13 @@ def enrich_line_settlement_fields(line: dict, batch: dict) -> dict:
         row["payment_date"] = payment.get("date")
         row["payment_method_settlement"] = payment_method_key(details)
         row["payment_method_label"] = _payment_method_label(payment.get("method"))
+        from backend.payroll_worker_categories import line_payment_recorded
+
+        recorded = line_payment_recorded(row, details, batch)
+        row["payment_recorded"] = recorded
+        if recorded == "unpaid":
+            row["payment_status"] = "unpaid"
+            row["payment_status_label"] = "UNPAID"
     else:
         row["net_paid"] = None
         row["tax_withheld"] = None
@@ -825,17 +845,19 @@ def compute_line_totals(line: dict, details: Optional[dict] = None) -> dict[str,
 
 # Categories whose finalized document is a vendor-branded Contractor Invoice &
 # Payment Receipt (replaces the paystub entirely). W-2 keeps official paystubs.
-VENDOR_RECEIPT_CATEGORIES = ("temp", "contractor_1099")
+from backend.payroll_worker_categories import VENDOR_RECEIPT_CATEGORIES
 
 
 def _is_vendor_receipt_category(worker_category: Optional[str]) -> bool:
-    return str(worker_category or "").strip() in VENDOR_RECEIPT_CATEGORIES
+    from backend.payroll_worker_categories import is_vendor_receipt_category
+
+    return is_vendor_receipt_category(worker_category)
 
 
 def apply_vendor_receipt_detail_defaults(
     details: dict, worker_category: Optional[str], *, force: bool = False
 ) -> dict:
-    """Temp / 1099 defaults: paid full gross ON, show tax balance on paystub OFF.
+    """Temp / 1099 / Try Out defaults: paid full gross ON, show tax balance on paystub OFF.
 
     When force=True (backfill), always write the defaults. Otherwise only fill
     missing keys so explicit user edits are preserved on new drafts.
@@ -892,7 +914,7 @@ def backfill_vendor_receipt_settlement_defaults(
         FROM payout_batch_lines pbl
         JOIN payout_batches pb ON pb.id = pbl.batch_id
         WHERE pb.organization_id = %s
-          AND pb.worker_category IN ('temp', 'contractor_1099')
+          AND pb.worker_category IN ('temp', 'contractor_1099', 'tryout')
           {batch_filter}
         ORDER BY pb.id, pbl.id
         """,
@@ -1038,12 +1060,29 @@ def finalize_blockers(batch: dict, lines: list[dict]) -> list[str]:
         return ["Batch is not ready to finalize payout details"]
     mode = batch_document_mode(batch)
     blockers: list[str] = []
+    from backend.payroll_worker_categories import (
+        is_payment_recorded_unpaid,
+        is_payment_vendor_name,
+        is_vendor_receipt_category,
+    )
+
     for ln in lines:
         details = ln.get("payout_details") or parse_line_payout_details(ln)
         details = apply_payment_defaults(batch, details)
         payment = details.get("payment") or {}
         settlement = details.get("settlement") or {}
         name = ln.get("worker_name_snapshot") or ln.get("id")
+        unpaid = is_payment_recorded_unpaid(ln, details, batch)
+        if is_vendor_receipt_category(batch.get("worker_category")):
+            vendor = details.get("vendor") if isinstance(details.get("vendor"), dict) else None
+            vendor_name = (vendor or {}).get("name") or (ln.get("vendor") or {}).get("name")
+            vendor_id = ln.get("vendor_id")
+            if not vendor_id and not vendor_name:
+                blockers.append(f"Vendor is required for {name}")
+            elif vendor_name and not is_payment_vendor_name(vendor_name):
+                blockers.append(f"Vendor must be VeeWash or Washmate for {name}")
+        if unpaid:
+            continue
         if mode == "payment_receipt":
             if not payment.get("date"):
                 blockers.append(f"Payment date required for {name}")
@@ -1073,7 +1112,7 @@ def can_generate_paystub_for_line(batch: dict, details: dict, *, preview: bool =
 def can_generate_vendor_receipt_for_line(
     batch: dict, details: dict, *, preview: bool = False
 ) -> bool:
-    """Vendor receipt is the finalized document for temp/1099 (preview when ready)."""
+    """Vendor receipt is the finalized document for temp/1099/tryout (preview when ready)."""
     if not batch_uses_vendor_receipt(batch):
         return False
     if preview:
@@ -1719,6 +1758,14 @@ def _merge_line_details(existing: dict, patch: dict, *, gross: float = 0) -> dic
                 if key in base[section]:
                     if section == "settlement" and key == "paid_full_gross_without_withholding":
                         base[section][key] = bool(val)
+                    elif section == "settlement" and key == "payment_recorded":
+                        from backend.payroll_worker_categories import normalize_payment_recorded
+
+                        rec = normalize_payment_recorded(val)
+                        if rec:
+                            base[section][key] = rec
+                        else:
+                            base[section].pop("payment_recorded", None)
                     elif section == "settlement" and key == "withheld_from_payment":
                         if val is None or str(val).strip() == "":
                             base[section][key] = None
@@ -1734,6 +1781,14 @@ def _merge_line_details(existing: dict, patch: dict, *, gross: float = 0) -> dic
         base["settlement"]["paid_full_gross_without_withholding"] = bool(
             patch["settlement"]["paid_full_gross_without_withholding"]
         )
+    if "payment_recorded" in (patch.get("settlement") or {}):
+        from backend.payroll_worker_categories import normalize_payment_recorded
+
+        rec = normalize_payment_recorded(patch["settlement"].get("payment_recorded"))
+        if rec:
+            base["settlement"]["payment_recorded"] = rec
+        else:
+            base["settlement"].pop("payment_recorded", None)
     if "estimated" in (patch.get("tax_summary") or {}):
         base["tax_summary"]["estimated"] = bool(patch["tax_summary"]["estimated"])
     if "use_payment_receipt" in patch:
@@ -2103,7 +2158,129 @@ def finalize_payout_details(
         ),
     )
     conn.commit()
+    _sync_line_payment_recorded_status(conn, organization_id, batch_id)
+    conn.commit()
     return get_payout_batch_details(conn, organization_id, batch_id) or {}
+
+
+def _sync_line_payment_recorded_status(conn, organization_id: int, batch_id: int) -> None:
+    """Copy settlement.payment_recorded onto payout_batch_lines.payment_status."""
+    from backend.payroll_worker_categories import normalize_payment_recorded
+
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, payout_details_json, payment_status
+        FROM payout_batch_lines
+        WHERE batch_id=%s AND organization_id=%s
+        """,
+        (int(batch_id), int(organization_id)),
+    )
+    rows = c.fetchall() or []
+    upd = conn.cursor()
+    for row in rows:
+        if isinstance(row, dict):
+            line_id, blob, current = row.get("id"), row.get("payout_details_json"), row.get("payment_status")
+        else:
+            line_id, blob, current = row[0], row[1], row[2]
+        details = parse_line_payout_details({"payout_details_json": blob})
+        recorded = normalize_payment_recorded((details.get("settlement") or {}).get("payment_recorded"))
+        if not recorded:
+            continue
+        if str(current or "") == recorded:
+            continue
+        upd.execute(
+            """
+            UPDATE payout_batch_lines
+            SET payment_status=%s, line_status='approved', updated_at=CURRENT_TIMESTAMP
+            WHERE id=%s AND batch_id=%s AND organization_id=%s
+            """,
+            (recorded, int(line_id), int(batch_id), int(organization_id)),
+        )
+
+
+def set_line_payment_recorded(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    line_id: int,
+    *,
+    recorded: str,
+    actor_id: Optional[int] = None,
+    payment_date: Optional[str] = None,
+    payment_reference: Optional[str] = None,
+) -> dict:
+    """Flip Paid/Unpaid on a finalized (or draft) line without recalculating payroll."""
+    from backend.payroll_worker_categories import normalize_payment_recorded
+
+    rec = normalize_payment_recorded(recorded)
+    if rec not in ("paid", "unpaid"):
+        raise ValueError("Payment status must be Paid or Unpaid")
+    batch = get_payout_batch(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT payout_details_json, payment_status, gross_amount, total_amount
+        FROM payout_batch_lines
+        WHERE id=%s AND batch_id=%s AND organization_id=%s
+        """,
+        (int(line_id), int(batch_id), int(organization_id)),
+    )
+    row = c.fetchone()
+    if not row:
+        raise ValueError("Line not found")
+    if isinstance(row, dict):
+        blob = row.get("payout_details_json")
+    else:
+        blob = row[0]
+    details = parse_line_payout_details({"payout_details_json": blob})
+    settlement = dict(details.get("settlement") or {})
+    old = settlement.get("payment_recorded")
+    settlement["payment_recorded"] = rec
+    details["settlement"] = settlement
+    extra_sql = ""
+    extra_vals: list[Any] = []
+    if rec == "paid":
+        extra_sql = ", payment_date=COALESCE(%s, payment_date), payment_reference=COALESCE(%s, payment_reference)"
+        extra_vals = [payment_date, payment_reference]
+    c.execute(
+        f"""
+        UPDATE payout_batch_lines SET
+          payout_details_json=%s,
+          payment_status=%s,
+          line_status='approved'
+          {extra_sql},
+          updated_at=CURRENT_TIMESTAMP
+        WHERE id=%s AND batch_id=%s AND organization_id=%s
+        """,
+        (
+            json.dumps(details),
+            rec,
+            *extra_vals,
+            int(line_id),
+            int(batch_id),
+            int(organization_id),
+        ),
+    )
+    events = _audit_append(
+        batch,
+        "payment_recorded_set",
+        actor_id or 0,
+        detail=f"line_id={line_id}",
+        old_value=old,
+        new_value=rec,
+        reason="payment_recorded",
+    )
+    c.execute(
+        """
+        UPDATE payout_batches SET payout_details_audit_json=%s, updated_at=CURRENT_TIMESTAMP
+        WHERE id=%s AND organization_id=%s
+        """,
+        (json.dumps({"events": events}), int(batch_id), int(organization_id)),
+    )
+    return details
 
 
 def set_official_pay_date(
@@ -3696,7 +3873,7 @@ def fetch_vendor_receipt_ytd_prior(
         JOIN payout_batches pb ON pb.id = pbl.batch_id
         WHERE pb.organization_id = %s
           AND pbl.user_id = %s
-          AND pb.worker_category IN ('temp', 'contractor_1099')
+          AND pb.worker_category IN ('temp', 'contractor_1099', 'tryout')
           AND pb.payout_details_finalized_at IS NOT NULL
           AND YEAR(COALESCE(pb.official_pay_date, pb.pay_period_end)) = %s
           {date_clause}{exclude_sql}

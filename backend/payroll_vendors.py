@@ -110,6 +110,47 @@ def get_vendor(conn, organization_id: int, vendor_id: int) -> Optional[dict]:
     return _vendor_row(row) if row else None
 
 
+def ensure_payment_vendors(conn, organization_id: int) -> list[dict]:
+    """Ensure VeeWash and Washmate exist. Does not rename existing Washmate Inc rows."""
+    ensure_default_vendor(conn, organization_id)
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        "SELECT * FROM payroll_vendors WHERE organization_id=%s AND name=%s",
+        (int(organization_id), "VeeWash"),
+    )
+    if not c.fetchone():
+        ins = conn.cursor()
+        try:
+            ins.execute(
+                """
+                INSERT INTO payroll_vendors (organization_id, name, active)
+                VALUES (%s, 'VeeWash', 1)
+                """,
+                (int(organization_id),),
+            )
+            conn.commit()
+        except Exception as exc:
+            if getattr(exc, "args", (None,))[0] != 1062:
+                raise
+    return list_vendors(conn, organization_id, include_inactive=False)
+
+
+def list_payment_vendors(conn, organization_id: int) -> list[dict]:
+    """VeeWash / Washmate only, for Finalize Payment."""
+    from backend.payroll_worker_categories import is_payment_vendor_name, payment_vendor_display_name
+
+    ensure_payment_vendors(conn, organization_id)
+    out = []
+    for v in list_vendors(conn, organization_id, include_inactive=False):
+        if not is_payment_vendor_name(v.get("name")):
+            continue
+        item = dict(v)
+        item["display_name"] = payment_vendor_display_name(v.get("name"))
+        out.append(item)
+    out.sort(key=lambda x: str(x.get("display_name") or ""))
+    return out
+
+
 def ensure_default_vendor(conn, organization_id: int) -> dict:
     """Return the seeded default vendor for the org, creating it if absent."""
     ensure_payroll_vendor_tables(conn.cursor())
@@ -278,7 +319,9 @@ def resolve_line_vendor(
     Only temp / contractor_1099 batches use vendors. Returns None for W-2.
     """
     cat = str((batch or {}).get("worker_category") or line.get("worker_category") or "")
-    if cat not in ("temp", "contractor_1099"):
+    from backend.payroll_worker_categories import is_vendor_receipt_category
+
+    if not is_vendor_receipt_category(cat):
         return None
     # 1) Immutable snapshot if already finalized onto the line JSON.
     snap = _line_vendor_snapshot(line)

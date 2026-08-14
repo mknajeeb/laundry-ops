@@ -250,7 +250,7 @@ def _report_net_pay(
     W-2: prefer settlement amount_paid when present (cash net after withholding).
     """
     cat = str(worker_category or line.get("worker_category") or "").strip()
-    if cat in ("temp", "contractor_1099"):
+    if cat in ("temp", "contractor_1099", "tryout"):
         return round(_money(gross_pay) - emp_tax - other_ded, 2)
 
     settlement = details.get("settlement") or {}
@@ -283,6 +283,7 @@ def _payment_status_label(st: str) -> str:
     key = str(st or "pending").strip().lower()
     labels = {
         "paid": "Paid",
+        "unpaid": "UNPAID",
         "partial": "Partial — balance due",
         "approved_unpaid": "Approved — unpaid",
         "pending": "Pending",
@@ -291,13 +292,23 @@ def _payment_status_label(st: str) -> str:
 
 
 def _effective_payment_status(batch: dict, line: dict, *, outstanding: float = 0.0) -> str:
-    """Line payment_status, corrected when the batch itself is already paid.
+    """Line payment status for reports.
 
-    Some historical batches were marked paid at batch level without updating
-    every line's payment_status (left as pending / approved_unpaid). For
-    reporting, a paid batch's lines are Paid — unless an outstanding OT/catch-up
-    balance remains, in which case status is Partial.
+    Explicit Unpaid always wins so finalized-unpaid records are never treated as
+    paid, even when the batch workflow status is paid. Legacy rows without
+    payment_recorded keep the prior rule: a paid batch's lines are Paid unless
+    an outstanding OT/catch-up balance remains.
     """
+    from backend.payroll_worker_categories import is_payment_recorded_unpaid, line_payment_recorded
+
+    details = line.get("payout_details") or _parse_details(line.get("payout_details_json"))
+    if is_payment_recorded_unpaid(line, details, batch):
+        return "unpaid"
+    recorded = line_payment_recorded(line, details, batch)
+    if recorded == "paid":
+        if float(outstanding or 0) > 0.005:
+            return "partial"
+        return "paid"
     if float(outstanding or 0) > 0.005:
         return "partial"
     batch_st = str(batch.get("status") or "").strip().lower()
@@ -354,7 +365,7 @@ def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = No
         amount_paid = None
     # Temp/1099 with zero withholding: EE taxes stay $0 for report when paid-full
     # or when amount_withheld is explicitly 0 / absent with no tax deductions taken.
-    if cat in ("temp", "contractor_1099"):
+    if cat in ("temp", "contractor_1099", "tryout"):
         emp_tax = round(_money(settlement.get("amount_withheld") or 0), 2)
 
     net = _report_net_pay(
@@ -377,6 +388,13 @@ def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = No
     total_payroll_cost = round(_money(gross_pay) + employer_taxes, 2)
 
     payment_st = _effective_payment_status(batch, line, outstanding=outstanding)
+    paid_for_totals = amount_paid if amount_paid is not None else 0.0
+    if payment_st == "unpaid":
+        paid_for_totals = 0.0
+        outstanding = round(_money(amount_paid if amount_paid is not None else gross_pay), 2)
+    vendor = details.get("vendor") if isinstance(details.get("vendor"), dict) else {}
+    from backend.payroll_worker_categories import payment_vendor_display_name
+
     return {
         "line_id": line.get("id"),
         "batch_id": batch.get("id"),
@@ -384,6 +402,7 @@ def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = No
         "employee_name": line.get("worker_name_snapshot") or "",
         "employee_category": CATEGORY_LABELS.get(cat, cat),
         "worker_category": cat,
+        "vendor_name": payment_vendor_display_name(vendor.get("name")) if vendor.get("name") else "",
         "payroll_period": period_label,
         "pay_period_start": str(ps)[:10] if ps else "",
         "pay_period_end": str(pe)[:10] if pe else "",
@@ -406,7 +425,7 @@ def build_report_row(batch: dict, line: dict, *, report_type: Optional[str] = No
         "employee_tax_deductions": emp_tax,
         "other_deductions": other_ded,
         "net_pay": net,
-        "amount_paid": amount_paid if amount_paid is not None else 0.0,
+        "amount_paid": paid_for_totals,
         "outstanding_balance": outstanding,
         "employer_taxes": employer_taxes,
         "total_payroll_cost": total_payroll_cost,
@@ -747,6 +766,8 @@ def query_payroll_report(
             "payout_details_json": raw.get("payout_details_json"),
         }
         row = build_report_row(batch, line, report_type=resolved_type)
+        if resolved_type == "monthly_paid" and row.get("payment_status_key") == "unpaid":
+            continue
         if use_custom_range and not _row_matches_date_range(row, df, dt, date_basis=basis):
             continue
         if payroll_status and payroll_status != "all":

@@ -18,17 +18,11 @@ from backend.payroll_identity import (
     get_or_create_payroll_cycle_unified,
     payroll_profiles_active,
 )
+from backend.payroll_worker_categories import (
+    CATEGORY_LABELS,
+    WORKER_CATEGORIES,
+)
 from backend.ta_helpers import invalidate_schema_cache, json_safe, table_exists, table_has_column
-
-
-WORKER_CATEGORIES = ("w2", "contractor_1099", "temp", "system")
-
-CATEGORY_LABELS = {
-    "w2": "W-2 Employee",
-    "contractor_1099": "1099 Contractor",
-    "temp": "Temp / One-Time",
-    "system": "System user (not on payroll)",
-}
 
 BATCH_STATUSES = (
     "draft",
@@ -50,14 +44,27 @@ def worker_category_for_user(conn, user_id: int) -> str:
     except Exception:
         pass
     try:
-        has_1099 = user_is_contractor(conn, user_id)
-        has_temp = user_is_short_term_temp(conn, user_id)
+        from backend.hr_forms.delivery import infer_user_form_lanes
+
+        lanes = infer_user_form_lanes(conn, user_id)
+        if "tryout" in lanes:
+            return "tryout"
+        has_1099 = "contractor_1099" in lanes
+        has_temp = "temp_worker" in lanes
         if has_temp and not has_1099:
             return "temp"
         if has_1099:
             return "contractor_1099"
     except Exception:
-        pass
+        try:
+            has_1099 = user_is_contractor(conn, user_id)
+            has_temp = user_is_short_term_temp(conn, user_id)
+            if has_temp and not has_1099:
+                return "temp"
+            if has_1099:
+                return "contractor_1099"
+        except Exception:
+            pass
     return "w2"
 
 
@@ -1163,7 +1170,7 @@ def create_payout_batch(
     ensure_payout_batches_tables(conn.cursor())
     cat = str(body.get("worker_category") or "").strip()
     if cat not in WORKER_CATEGORIES:
-        raise ValueError("worker_category must be w2, contractor_1099, or temp")
+        raise ValueError("worker_category must be w2, contractor_1099, temp, or tryout")
     freq = str(body.get("payout_frequency") or "biweekly").strip()
     if freq not in ("weekly", "biweekly"):
         freq = "biweekly"

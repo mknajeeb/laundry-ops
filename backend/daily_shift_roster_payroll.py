@@ -20,7 +20,7 @@ ROSTER_DEFAULT_CONTRACTOR_RATE = 17.0
 
 def _default_rate_for_category(category: str | None) -> float:
     cat = str(category or "").strip().lower()
-    if cat in ("contractor_1099", "temp", "1099"):
+    if cat in ("contractor_1099", "temp", "tryout", "1099"):
         return ROSTER_DEFAULT_CONTRACTOR_RATE
     return ROSTER_DEFAULT_W2_RATE
 

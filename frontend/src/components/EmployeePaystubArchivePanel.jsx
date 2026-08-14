@@ -28,6 +28,7 @@ const WORKER_CATEGORIES = [
   { value: "all", label: "All worker types" },
   { value: "w2", label: "W-2 employees" },
   { value: "temp", label: "Temp workers" },
+  { value: "tryout", label: "Try Out" },
   { value: "contractor_1099", label: "1099 contractors" },
 ];
 

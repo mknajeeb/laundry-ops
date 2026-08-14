@@ -42,6 +42,7 @@ export const WORKER_CATEGORY_OPTIONS = [
   { value: "w2", label: "W-2 Employee" },
   { value: "contractor_1099", label: "1099 Contractor" },
   { value: "temp", label: "Temp / One-Time" },
+  { value: "tryout", label: "Try Out" },
 ];
 
 /** Payroll Documents tab — payroll workers only (no system login accounts). */

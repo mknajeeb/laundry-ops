@@ -55,8 +55,9 @@ def compute_display_status(batch: dict) -> str:
 
 
 def _skips_accountant_review(batch: dict) -> bool:
-    cat = str(batch.get("worker_category") or "w2")
-    return cat in ("temp", "contractor_1099")
+    from backend.payroll_worker_categories import skips_accountant_review
+
+    return skips_accountant_review(batch.get("worker_category"))
 
 
 def compute_primary_action(batch: dict) -> dict[str, str]:
@@ -81,7 +82,7 @@ def compute_primary_action(batch: dict) -> dict[str, str]:
         cat = str(batch.get("worker_category") or "")
         if cat == "contractor_1099":
             return {"action": "enter_details", "label": "Enter Payment Record"}
-        if cat == "temp":
+        if cat in ("temp", "tryout"):
             return {"action": "enter_details", "label": "Enter Deductions & Payment"}
         return {"action": "enter_details", "label": "Enter Payroll Details"}
     if ds == "ready_to_pay":

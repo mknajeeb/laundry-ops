@@ -22,7 +22,13 @@ FORECAST_EXCLUDE_STATUSES = frozenset({"cancelled", "replaced", "absent", "no_sh
 FORECAST_SICK_STATUSES = frozenset({"sick"})
 
 CATEGORY_KEYS = ("w2", "contractor_1099", "temp")
-CATEGORY_LABELS = {"w2": "W-2", "contractor_1099": "1099", "temp": "Temp", "default": "All"}
+CATEGORY_LABELS = {
+    "w2": "W-2",
+    "contractor_1099": "1099",
+    "temp": "Temp",
+    "tryout": "Try Out",
+    "default": "All",
+}
 
 
 def ensure_payroll_calendar_settings(cursor) -> None:

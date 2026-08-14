@@ -246,7 +246,7 @@ def _tenant_id():
 
 
 # Bump when WORKSPACE_PAYROLL_EXTRA / seed lists change so each org re-runs ensure once per process.
-_PEOPLE_WORKSPACE_ENSURE_VERSION = 5
+_PEOPLE_WORKSPACE_ENSURE_VERSION = 6
 _people_workspace_ensured_version_by_org: dict[int, int] = {}
 
 
@@ -2465,14 +2465,9 @@ def users_get(user_id):
         u["geofence_ids"] = [g["geofence_id"] for g in gfs]
         primary = next((g["geofence_id"] for g in gfs if g["is_primary"]), None)
         u["primary_geofence_id"] = primary
-        c.execute(
-            """
-            SELECT employment_category_id, effective_from, effective_to
-            FROM user_employment_categories WHERE user_id=%s
-            """,
-            (user_id,),
-        )
-        u["employment_assignments"] = c.fetchall()
+        from backend.employment_category_history import load_user_employment_assignments
+
+        u["employment_assignments"] = load_user_employment_assignments(conn, user_id)
         if table_exists(c, "user_entity_tags"):
             c.execute(
                 """
@@ -2994,6 +2989,16 @@ def user_employment_cats(user_id):
     try:
         if payroll_profiles_active(conn) and not _user_belongs_to_tenant(conn, user_id):
             return jsonify({"error": "Not found"}), 404
+        from backend.employment_category_history import (
+            load_user_employment_assignments,
+            validate_employment_assignments,
+        )
+
+        existing = load_user_employment_assignments(conn, user_id)
+        try:
+            validate_employment_assignments(conn, rows, existing_rows=existing)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         c = conn.cursor()
         for r in rows:
             cid = int(r["employment_category_id"])
@@ -3005,6 +3010,9 @@ def user_employment_cats(user_id):
                 return jsonify({"error": "Invalid employment category"}), 400
         c.execute("DELETE FROM user_employment_categories WHERE user_id=%s", (user_id,))
         for r in rows:
+            start = r.get("effective_from")
+            if not start:
+                return jsonify({"error": "Each employment category period needs a start date."}), 400
             c.execute(
                 """
                 INSERT INTO user_employment_categories (user_id, employment_category_id, effective_from, effective_to)
@@ -3013,12 +3021,38 @@ def user_employment_cats(user_id):
                 (
                     user_id,
                     int(r["employment_category_id"]),
-                    r["effective_from"],
-                    r.get("effective_to"),
+                    start,
+                    r.get("effective_to") or None,
                 ),
             )
         conn.commit()
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "assignments": load_user_employment_assignments(conn, user_id)})
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/users/<int:user_id>/convert-tryout", methods=["POST"])
+@require_auth
+@require_perm("users.edit")
+def user_convert_tryout(user_id):
+    data = request.json or {}
+    conn = get_db()
+    try:
+        if payroll_profiles_active(conn) and not _user_belongs_to_tenant(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+        from backend.employment_category_history import convert_tryout
+
+        try:
+            assignments = convert_tryout(
+                conn,
+                user_id,
+                _tenant_id(),
+                new_category_id=int(data.get("employment_category_id") or 0),
+                start_date=str(data.get("start_date") or ""),
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify({"ok": True, "assignments": assignments})
     finally:
         conn.close()
 
@@ -6611,13 +6645,20 @@ def payroll_payout_vendor_receipts_batch(batch_id: int):
 def payroll_vendors_list():
     conn = get_db()
     try:
-        from backend.payroll_vendors import ensure_default_vendor, list_vendors
+        from backend.payroll_vendors import ensure_default_vendor, list_payment_vendors, list_vendors
 
         oid = _tenant_id()
         include_inactive = str(
             request.args.get("include_inactive") or "1"
         ).lower() in ("1", "true", "yes")
         ensure_default_vendor(conn, oid)
+        payment_only = str(request.args.get("payment_only") or "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if payment_only:
+            return jsonify({"vendors": list_payment_vendors(conn, oid)})
         return jsonify({"vendors": list_vendors(conn, oid, include_inactive=include_inactive)})
     except Exception as e:
         current_app.logger.exception("payroll_vendors_list failed")

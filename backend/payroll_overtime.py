@@ -276,7 +276,7 @@ def batch_allows_contractor_overtime_autosplit(batch: Optional[dict[str, Any]]) 
     status = str(batch.get("status") or "").strip().lower()
     if status in ("paid", "partially_paid", "closed"):
         return False
-    return str(batch.get("worker_category") or "").strip() in ("temp", "contractor_1099")
+    return str(batch.get("worker_category") or "").strip() in ("temp", "contractor_1099", "tryout")
 
 
 def resolve_batch_overtime_policy(

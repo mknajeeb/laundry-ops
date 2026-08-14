@@ -59,8 +59,11 @@ import {
 import {
   formatTaxWithheldDisplay,
   hasTaxWithheldBreakdown,
+  isPaymentRecordedPaid,
+  isPaymentRecordedUnpaid,
   isPayoutDetailsFinalized,
 } from "../payroll/payoutSettlementDisplay";
+import { isVendorReceiptCategory, paymentVendorDisplayName } from "../payroll/employmentCategory";
 import PayrollBatchSummaryCard from "./PayrollBatchSummaryCard";
 import TaxWithheldBreakdownDialog from "./TaxWithheldBreakdownDialog";
 
@@ -161,16 +164,21 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
   };
 
   const linePaidAmount = (ln) => {
+    if (isPaymentRecordedUnpaid(ln)) return 0;
     const settlement = ln.payout_details?.settlement || {};
     const gross = lineGross(ln);
     const paid = Number(settlement.amount_paid || 0);
     if (paid > 0) return paid;
     if (linePaidFullGross(ln) && gross > 0) return gross;
-    if (ln.payment_status === "paid") return lineNetAmount(ln) || 0;
+    if (isPaymentRecordedPaid(ln) || ln.payment_status === "paid") return lineNetAmount(ln) || 0;
     return 0;
   };
 
   const lineOutstandingAmount = (ln) => {
+    if (isPaymentRecordedUnpaid(ln)) {
+      const net = lineNetAmount(ln);
+      return net == null ? lineGross(ln) : net;
+    }
     const settlement = ln.payout_details?.settlement || {};
     if (linePaidFullGross(ln) && linePaidAmount(ln) >= lineGross(ln)) return 0;
     const out = Number(settlement.outstanding_balance || 0);
@@ -181,7 +189,8 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
   };
 
   const linePaymentHint = (ln) => {
-    if (ln.payment_status === "paid" || (linePaidFullGross(ln) && linePaidAmount(ln) >= lineGross(ln))) {
+    if (isPaymentRecordedUnpaid(ln)) return "UNPAID — not included in paid totals.";
+    if (isPaymentRecordedPaid(ln) || ln.payment_status === "paid" || (linePaidFullGross(ln) && linePaidAmount(ln) >= lineGross(ln))) {
       return "Payment completed for this employee.";
     }
     if (ln.payment_status === "approved_unpaid") return "Not yet paid.";
@@ -245,13 +254,24 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
                   </TableCell>
                   <TableCell>
                     <Tooltip title={linePaymentHint(ln)}>
-                      <span>{ln.worker_name_snapshot}</span>
+                      <Stack direction="row" spacing={0.75} alignItems="center">
+                        <span>{ln.worker_name_snapshot}</span>
+                        {isPaymentRecordedUnpaid(ln) ? (
+                          <Chip size="small" color="warning" label="UNPAID" sx={{ fontWeight: 700 }} />
+                        ) : null}
+                      </Stack>
                     </Tooltip>
                   </TableCell>
                   <TableCell align="right">${gross.toFixed(2)}</TableCell>
                   <TableCell align="right">{taxDisplay}</TableCell>
                   <TableCell align="right">{formatAmt(net)}</TableCell>
-                  <TableCell align="right">{formatAmt(paid)}</TableCell>
+                  <TableCell align="right">
+                    {isPaymentRecordedUnpaid(ln) ? (
+                      <Chip size="small" color="warning" label="UNPAID" sx={{ fontWeight: 700 }} />
+                    ) : (
+                      formatAmt(paid)
+                    )}
+                  </TableCell>
                   <TableCell align="right">{formatAmt(outstanding)}</TableCell>
                 </TableRow>
                 <TableRow key={`${ln.id}-exp`}>
@@ -278,11 +298,16 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
                         <Typography variant="caption" color="text.secondary">
                           {linePaymentHint(ln)}
                         </Typography>
-                        {canMarkPaid && ln.payment_status !== "paid" ? (
+                        {canMarkPaid && !isPaymentRecordedPaid(ln) ? (
                           <Button size="small" onClick={() => onMarkPaid(ln.id)}>Mark paid</Button>
                         ) : null}
-                        {ln.payment_status === "paid" ? (
+                        {isPaymentRecordedPaid(ln) ? (
                           <Button size="small" onClick={() => onMarkUnpaid(ln.id)}>Mark unpaid</Button>
+                        ) : null}
+                        {paymentVendorDisplayName(ln.vendor?.name || ln.payout_details?.vendor?.name) ? (
+                          <Typography variant="caption" color="text.secondary">
+                            Vendor: {paymentVendorDisplayName(ln.vendor?.name || ln.payout_details?.vendor?.name)}
+                          </Typography>
                         ) : null}
                         <IconButton size="small" onClick={() => onEditLine(ln)} disabled={!isEditable}>
                           <EditIcon fontSize="small" />
@@ -633,7 +658,7 @@ export default function PayoutBatchesPanel({
     !detail?.payout_details_finalized_at &&
     !["paid", "closed", "approved_for_payment"].includes(detail?.status);
   const isW2 = detail?.worker_category === "w2";
-  const isGrossOnly = detail?.worker_category === "temp" || detail?.worker_category === "contractor_1099";
+  const isGrossOnly = isVendorReceiptCategory(detail?.worker_category);
   const showSettlementColumns = Boolean(detail?.payout_details_finalized_at);
   const batchWarnings = detail?.warnings || [];
   const workerLines = detail?.lines || [];

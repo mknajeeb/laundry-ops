@@ -101,4 +101,18 @@ describe("accountantDocumentUsers", () => {
     ).toEqual([41, 42]);
     expect(workerLaneForCategory("temp")).toBe("temp_worker");
   });
+
+  it("filters Try Out workers without treating them as temp or W-2", () => {
+    const tryout = {
+      id: 51,
+      first_name: "Nely",
+      last_name: "Toxqu",
+      hr_form_lanes: ["tryout"],
+    };
+    const users = [w2Worker, tryout];
+    expect(filterPayrollTimelineUsers(users, "tryout").map((u) => u.id)).toEqual([51]);
+    expect(filterPayrollTimelineUsers(users, "temp")).toEqual([]);
+    expect(filterPayrollTimelineUsers(users, "w2")).toEqual([w2Worker]);
+    expect(workerLaneForCategory("tryout")).toBe("tryout");
+  });
 });

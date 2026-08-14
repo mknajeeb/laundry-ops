@@ -89,6 +89,7 @@ def seed_worker_categories_if_missing(cursor, organization_id: int) -> None:
         ("EC_W2", "W-2 Employee"),
         ("EC_1099", "1099 Contractor"),
         ("EC_TEMP", "Temporary / seasonal"),
+        ("EC_TRYOUT", "Try Out"),
         ("EC_SYSTEM", "System user (not on payroll)"),
     ]
     for code, name in specs:

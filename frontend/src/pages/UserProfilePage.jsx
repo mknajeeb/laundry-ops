@@ -46,6 +46,7 @@ import {
   getTaTaxFormYearSettings,
   putTaUserHrProfile,
 } from "../api";
+import EmploymentCategorySection from "../components/EmploymentCategorySection";
 import PayrollPtoSection from "../components/PayrollPtoSection";
 import WorkerSchedulingProfilePanel from "../components/worker/WorkerSchedulingProfilePanel";
 import I9DetailsForm, {
@@ -74,6 +75,14 @@ import {
   hasTenantPortalAccess,
   normalizedRoles,
 } from "../utils/platformAccess";
+import {
+  catalogLabel,
+  classifyEmploymentCategory,
+  currentAssignment,
+  emptyAssignmentRow,
+  mapAssignmentRow,
+  validateTryOutDates,
+} from "../payroll/employmentCategory";
 
 function emptyEmergencyRow() {
   return { name: "", relationship: "", phone: "", alt_phone: "" };
@@ -94,17 +103,14 @@ function validateDirectDepositForSave({ bankRouting, bankAccount, t }) {
   return null;
 }
 
-/** True for 1099/temp-style categories: payroll may collect TIN here. W-2 workers use Compliance / I-9. */
+/** True for 1099/temp/tryout: payroll may collect TIN here. W-2 workers use Compliance / I-9. */
 function employmentCategoryUsesPayrollTaxId(cats, catId) {
   const id = String(catId || "").trim();
   if (!id) return true;
   const c = cats.find((x) => String(x.id) === id);
   if (!c) return true;
-  const name = String(c.name || "").toLowerCase();
-  const code = String(c.code || "").toUpperCase();
-  if (code.includes("1099") || name.includes("1099") || name.includes("contractor")) return true;
-  if (code.includes("TEMP") || /\btemp\b|\btemporary\b/.test(name)) return true;
-  return false;
+  const kind = classifyEmploymentCategory(c);
+  return kind === "contractor_1099" || kind === "temp" || kind === "tryout";
 }
 
 function ProfileSection({ n, title, hint, children }) {
@@ -495,9 +501,7 @@ export default function UserProfilePage({ user: sessionUser }) {
   const [directDepositAccountType, setDirectDepositAccountType] = useState("checking");
 
   const [geofenceIds, setGeofenceIds] = useState([]);
-  const [catRows, setCatRows] = useState([
-    { employment_category_id: "", effective_from: new Date().toISOString().slice(0, 10), effective_to: "" },
-  ]);
+  const [catRows, setCatRows] = useState([emptyAssignmentRow()]);
 
   const [workspaceTab, setWorkspaceTab] = useState("basic");
   const [complianceI9, setComplianceI9] = useState(() => emptyI9());
@@ -599,8 +603,12 @@ export default function UserProfilePage({ user: sessionUser }) {
     return false;
   }, [platformMode, canWashproUserAdmin, sessionUser, canTaView, canTaEdit, canTaAdd]);
 
-  const hasCategory = Boolean(String(catRows[0]?.employment_category_id || "").trim());
-  const showPayrollTaxIdField = employmentCategoryUsesPayrollTaxId(cats, catRows[0]?.employment_category_id);
+  const currentCat = currentAssignment(catRows);
+  const hasCategory = Boolean(String(currentCat?.employment_category_id || "").trim());
+  const showPayrollTaxIdField = employmentCategoryUsesPayrollTaxId(
+    cats,
+    currentCat?.employment_category_id,
+  );
   const payrollCoreOk =
     firstName.trim() &&
     lastName.trim() &&
@@ -691,21 +699,7 @@ export default function UserProfilePage({ user: sessionUser }) {
     );
     setGeofenceIds((ta.geofence_ids || []).map(Number));
     const assigns = ta.employment_assignments || [];
-    setCatRows(
-      assigns.length > 0
-        ? assigns.map((a) => ({
-            employment_category_id: a.employment_category_id,
-            effective_from: String(a.effective_from).slice(0, 10),
-            effective_to: a.effective_to ? String(a.effective_to).slice(0, 10) : "",
-          }))
-        : [
-            {
-              employment_category_id: "",
-              effective_from: new Date().toISOString().slice(0, 10),
-              effective_to: "",
-            },
-          ],
-    );
+    setCatRows(assigns.length > 0 ? assigns.map(mapAssignmentRow) : [emptyAssignmentRow()]);
   }, [uid]);
 
   const buildHrExtendedPutBody = useCallback(
@@ -995,19 +989,7 @@ export default function UserProfilePage({ user: sessionUser }) {
         setGeofenceIds((auth.geofence_ids || []).map(Number));
         const assigns = auth.employment_assignments || [];
         setCatRows(
-          assigns.length > 0
-            ? assigns.map((a) => ({
-                employment_category_id: a.employment_category_id,
-                effective_from: String(a.effective_from).slice(0, 10),
-                effective_to: a.effective_to ? String(a.effective_to).slice(0, 10) : "",
-              }))
-            : [
-                {
-                  employment_category_id: cRes.data?.[0]?.id || "",
-                  effective_from: new Date().toISOString().slice(0, 10),
-                  effective_to: "",
-                },
-              ],
+          assigns.length > 0 ? assigns.map(mapAssignmentRow) : [emptyAssignmentRow()],
         );
       }
 
@@ -1125,9 +1107,24 @@ export default function UserProfilePage({ user: sessionUser }) {
         payrollBeingSaved &&
         canEditPayrollRecords &&
         (workspaceTab === "basic" || workspaceTab === "summary");
-      if (runCategoryGate && !String(catRows[0]?.employment_category_id || "").trim()) {
+      if (runCategoryGate && !String(currentCat?.employment_category_id || "").trim()) {
         setError(t("profile.errCategoryRequired"));
         return;
+      }
+      if (runCategoryGate && currentCat?.employment_category_id) {
+        const curCatObj = cats.find(
+          (c) => String(c.id) === String(currentCat.employment_category_id),
+        );
+        if (classifyEmploymentCategory(curCatObj || {}) === "tryout") {
+          const tryErr = validateTryOutDates(currentCat.effective_from, currentCat.effective_to);
+          if (tryErr) {
+            setError(tryErr);
+            return;
+          }
+        } else if (!String(currentCat.effective_from || "").trim()) {
+          setError(t("profile.errCategoryStartRequired"));
+          return;
+        }
       }
 
       if (payrollBeingSaved && canEditHrExtras) {
@@ -1615,37 +1612,14 @@ export default function UserProfilePage({ user: sessionUser }) {
                       </MenuItem>
                     ))}
                   </TextField>
-                  <FormControl fullWidth size="small" required={!!hasPayroll || !!canTaAdd}>
-                    <InputLabel id="cat-pick">{t("people.colCategory")}</InputLabel>
-                    <Select
-                      labelId="cat-pick"
-                      label={t("people.colCategory")}
-                     value={catRows[0]?.employment_category_id || ""}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setCatRows((prev) => {
-                          const next = [...prev];
-                          if (!next.length) {
-                            next.push({
-                              employment_category_id: v,
-                              effective_from: new Date().toISOString().slice(0, 10),
-                              effective_to: "",
-                            });
-                            return next;
-                          }
-                          next[0] = { ...next[0], employment_category_id: v };
-                          return next;
-                        });
-                      }}
-                    >
-                      <MenuItem value="">—</MenuItem>
-                      {cats.map((c) => (
-                        <MenuItem key={c.id} value={String(c.id)}>
-                          {c.name}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
+                  <EmploymentCategorySection
+                    userId={uid}
+                    cats={cats}
+                    catRows={catRows}
+                    setCatRows={setCatRows}
+                    canEdit={!!canEditPayrollRecords || !!canTaAdd}
+                    required={!!hasPayroll || !!canTaAdd}
+                  />
                 </>
               ) : null}
               <FormControl fullWidth size="small">
@@ -1704,14 +1678,7 @@ export default function UserProfilePage({ user: sessionUser }) {
                           size="small"
                           startIcon={<Add />}
                           onClick={() =>
-                            setCatRows([
-                              ...catRows,
-                              {
-                                employment_category_id: "",
-                                effective_from: new Date().toISOString().slice(0, 10),
-                                effective_to: "",
-                              },
-                            ])
+                            setCatRows([...catRows, emptyAssignmentRow()])
                           }
                         >
                           {t("profile.addEmploymentRow")}
@@ -1721,16 +1688,16 @@ export default function UserProfilePage({ user: sessionUser }) {
                     <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
                       {t("profile.sectionEmploymentAdvancedHint")}
                     </Typography>
-                    {(catRows || []).length < 2 ? (
+                    {(catRows || []).filter((r) => r !== currentCat).length < 1 ? (
                       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                         {t("profile.categoryHistoryEmpty")}
                       </Typography>
                     ) : null}
-                    {(catRows || []).slice(1).map((row, i) => {
-                      const idx = i + 1;
+                    {(catRows || []).map((row, idx) => {
+                      if (row === currentCat) return null;
                       return (
                         <Stack
-                          key={idx}
+                          key={row.id || idx}
                           direction={{ xs: "column", sm: "row" }}
                           spacing={1}
                           alignItems={{ sm: "center" }}
@@ -1752,7 +1719,7 @@ export default function UserProfilePage({ user: sessionUser }) {
                             <MenuItem value="">—</MenuItem>
                             {cats.map((c) => (
                               <MenuItem key={c.id} value={String(c.id)}>
-                                {c.name}
+                                {catalogLabel(c)}
                               </MenuItem>
                             ))}
                           </TextField>
@@ -2947,7 +2914,7 @@ export default function UserProfilePage({ user: sessionUser }) {
               workerName={`${firstName} ${lastName}`.trim()}
               workerEmail={email}
               workerLane={
-                employmentCategoryUsesPayrollTaxId(cats, catRows[0]?.employment_category_id)
+                employmentCategoryUsesPayrollTaxId(cats, currentCat?.employment_category_id)
                   ? "contractor_1099"
                   : "employee_w2"
               }

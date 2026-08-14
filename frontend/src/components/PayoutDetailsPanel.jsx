@@ -55,6 +55,7 @@ import {
   getVendorReceiptHtml,
   getBatchVendorReceiptsHtml,
   listPayrollVendors,
+  patchPayoutBatch,
   postPaystubPreviewHtml,
   postRefreshPriorBalances,
   putPayoutBatchDetails,
@@ -76,8 +77,14 @@ import {
   formatNetPaidDisplay,
   formatTaxWithheldDisplay,
   hasTaxWithheldBreakdown,
+  isPaymentRecordedPaid,
+  isPaymentRecordedUnpaid,
   isPayoutDetailsFinalized,
 } from "../payroll/payoutSettlementDisplay";
+import {
+  isVendorReceiptCategory,
+  paymentVendorDisplayName,
+} from "../payroll/employmentCategory";
 import {
   downloadPdfFromFetch,
   paystubBatchDownloadFilename,
@@ -117,11 +124,18 @@ function emptyLineState(line, batch = null) {
     payment.date = defaultPayDate;
   }
   const category = batch?.worker_category || line?.worker_category || "";
-  const isVendorReceipt = ["temp", "contractor_1099"].includes(category);
+  const isVendorReceipt = isVendorReceiptCategory(category);
   const settlement = { ...(pd.settlement || {}) };
-  // Temp / 1099: Paid full gross ON by default; show tax balance OFF.
+  // Temp / 1099 / Try Out: Paid full gross ON by default; show tax balance OFF.
   if (isVendorReceipt && settlement.paid_full_gross_without_withholding === undefined) {
     settlement.paid_full_gross_without_withholding = true;
+  }
+  if (!settlement.payment_recorded) {
+    if (String(line?.payment_status || "").toLowerCase() === "unpaid") {
+      settlement.payment_recorded = "unpaid";
+    } else if (!batch?.payout_details_finalized_at && String(line?.payment_status || "").toLowerCase() !== "paid") {
+      settlement.payment_recorded = "paid";
+    }
   }
   let showTax =
     pd.show_tax_payment_section === undefined
@@ -354,6 +368,24 @@ function LineDetailsReadonly({ draft, ln, totals, isReceiptMode }) {
               Cash amount: <strong>{formatDraftMoney(draft.payment.cash_amount)}</strong>
             </Typography>
           ) : null}
+          <Typography variant="body2">
+            Status:{" "}
+            <strong>
+              {isPaymentRecordedUnpaid({
+                ...ln,
+                settlement: draft.settlement,
+                payment_recorded: draft.settlement?.payment_recorded,
+              })
+                ? "UNPAID"
+                : isPaymentRecordedPaid({
+                    ...ln,
+                    settlement: draft.settlement,
+                    payment_recorded: draft.settlement?.payment_recorded,
+                  })
+                  ? "Paid"
+                  : "—"}
+            </strong>
+          </Typography>
         </Stack>
       </Box>
       {!isReceiptMode ? (
@@ -388,6 +420,15 @@ function LineDetailsReadonly({ draft, ln, totals, isReceiptMode }) {
                 Paid full gross (no withholding)
               </Typography>
             ) : null}
+            {isPaymentRecordedUnpaid({
+              ...ln,
+              settlement: draft.settlement,
+              payment_recorded: draft.settlement?.payment_recorded,
+            }) ? (
+              <Typography variant="body2" color="warning.main" fontWeight={700}>
+                UNPAID — not included in paid totals
+              </Typography>
+            ) : null}
           </Stack>
         </Box>
       ) : null}
@@ -410,7 +451,9 @@ function LineDetailsReadonly({ draft, ln, totals, isReceiptMode }) {
           Employee note: <strong>{draft.employee_note}</strong>
         </Typography>
       ) : null}
-      {ln.payment_status === "paid" ? (
+      {isPaymentRecordedUnpaid(ln) ? (
+        <Typography variant="caption" color="warning.main" fontWeight={700}>UNPAID — not treated as money paid</Typography>
+      ) : ln.payment_status === "paid" || isPaymentRecordedPaid(ln) ? (
         <Typography variant="caption" color="success.main">Line marked paid</Typography>
       ) : null}
     </Stack>
@@ -498,13 +541,11 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
     }
   }, [batches, selectedId, initialBatchId, loadDetail]);
 
-  const usesVendorReceiptCategory = ["temp", "contractor_1099"].includes(
-    detail?.worker_category,
-  );
+  const usesVendorReceiptCategory = isVendorReceiptCategory(detail?.worker_category);
 
   useEffect(() => {
     if (!usesVendorReceiptCategory) return;
-    listPayrollVendors({ includeInactive: false })
+    listPayrollVendors({ includeInactive: false, paymentOnly: true })
       .then((res) => setVendors(res.data?.vendors || []))
       .catch(() => setVendors([]));
   }, [usesVendorReceiptCategory]);
@@ -713,9 +754,28 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
     }
   };
 
+  const setLinePaymentRecorded = async (lineId, recorded) => {
+    if (!selectedId) return;
+    setError("");
+    try {
+      const action = recorded === "unpaid" ? "mark_line_unpaid" : "mark_line_paid";
+      const res = await patchPayoutBatch(selectedId, { action, line_id: lineId });
+      setDetail(res.data);
+      const drafts = {};
+      (res.data.lines || []).forEach((ln) => {
+        drafts[ln.id] = emptyLineState(ln, res.data);
+      });
+      setLineDrafts(drafts);
+      setInfo(recorded === "unpaid" ? "Marked UNPAID." : "Marked paid.");
+      await loadBatches();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Payment status update failed");
+    }
+  };
+
   const usesVendorReceipt = Boolean(
     detail?.payout_workflow?.uses_vendor_receipt ||
-      ["temp", "contractor_1099"].includes(detail?.worker_category),
+      isVendorReceiptCategory(detail?.worker_category),
   );
 
   const showPaystubActions =
@@ -1276,8 +1336,14 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                   const method = draft.payment?.method || "direct_deposit";
                   const doc = ln.document || {};
                   const isOpen = expanded[ln.id];
-                  const linePaid = ln.payment_status === "paid";
-                  const outstanding = totals.net - (linePaid ? totals.net : 0);
+                  const lineUnpaid = isPaymentRecordedUnpaid(ln);
+                  const linePaid = isPaymentRecordedPaid(ln);
+                  const outstanding = lineUnpaid
+                    ? totals.net
+                    : totals.net - (linePaid ? totals.net : 0);
+                  const vendorLabel = paymentVendorDisplayName(
+                    ln.vendor?.name || ln.vendor?.display_name || doc.vendor?.name || "",
+                  );
                   const taxWithheldDisplay = finalized
                     ? formatTaxWithheldDisplay(ln)
                     : totals.paidFullGross
@@ -1298,7 +1364,14 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                             />
                           </IconButton>
                         </TableCell>
-                        <TableCell>{ln.worker_name_snapshot}</TableCell>
+                        <TableCell>
+                          <Stack direction="row" spacing={0.75} alignItems="center">
+                            <span>{ln.worker_name_snapshot}</span>
+                            {finalized && lineUnpaid ? (
+                              <Chip size="small" color="warning" label="UNPAID" sx={{ fontWeight: 700 }} />
+                            ) : null}
+                          </Stack>
+                        </TableCell>
                         <TableCell align="right">${totals.gross.toFixed(2)}</TableCell>
                         <TableCell align="right">
                           ${num(draft.employee_deductions?.fit).toFixed(2)}
@@ -1334,14 +1407,24 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                         <TableCell align="right">
                           <Tooltip
                             title={
-                              linePaid
+                              lineUnpaid
+                                ? "UNPAID — not included in paid totals"
+                                : linePaid
                                 ? "Paid"
                                 : outstanding > 0
                                   ? `Outstanding $${outstanding.toFixed(2)}`
                                   : "Not yet paid"
                             }
                           >
-                            <span>{linePaid ? formatPayrollMoney(totals.net) : "—"}</span>
+                            <span>
+                              {lineUnpaid ? (
+                                <Chip size="small" color="warning" label="UNPAID" sx={{ fontWeight: 700 }} />
+                              ) : linePaid ? (
+                                formatPayrollMoney(totals.net)
+                              ) : (
+                                "—"
+                              )}
+                            </span>
                           </Tooltip>
                         </TableCell>
                         <TableCell align="right">
@@ -1425,6 +1508,28 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                   isReceiptMode={isReceiptMode}
                                 />
                               )}
+                              {finalized && !usesVendorReceipt ? (
+                                <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
+                                  {lineUnpaid ? (
+                                    <Button
+                                      size="small"
+                                      variant="contained"
+                                      color="success"
+                                      onClick={() => setLinePaymentRecorded(ln.id, "paid")}
+                                    >
+                                      Mark as Paid
+                                    </Button>
+                                  ) : linePaid ? (
+                                    <Button
+                                      size="small"
+                                      color="warning"
+                                      onClick={() => setLinePaymentRecorded(ln.id, "unpaid")}
+                                    >
+                                      Mark UNPAID
+                                    </Button>
+                                  ) : null}
+                                </Stack>
+                              ) : null}
                               {showPaystubActions ? (
                                 <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
                                   <Button
@@ -1480,16 +1585,13 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                     size="small"
                                     color="info"
                                     variant="outlined"
-                                    label={`Vendor: ${
-                                      ln.vendor?.name ||
-                                      doc.vendor?.name ||
-                                      "Not assigned"
-                                    }`}
+                                    label={`Vendor: ${vendorLabel || "Not assigned"}`}
                                   />
                                   {canEdit && !finalized ? (
                                     <Select
                                       size="small"
                                       displayEmpty
+                                      required
                                       value={ln.vendor_id ?? ""}
                                       onChange={(e) =>
                                         setLineVendor(ln.id, e.target.value || null)
@@ -1497,13 +1599,34 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                       sx={{ minWidth: 190, fontSize: "0.8rem" }}
                                     >
                                       <MenuItem value="">
-                                        <em>Use worker default</em>
+                                        <em>Select vendor…</em>
                                       </MenuItem>
                                       {vendors.map((v) => (
                                         <MenuItem key={v.id} value={v.id}>
-                                          {v.name}
+                                          {v.display_name || paymentVendorDisplayName(v.name) || v.name}
                                         </MenuItem>
                                       ))}
+                                    </Select>
+                                  ) : null}
+                                  {finalized && lineUnpaid ? (
+                                    <Button
+                                      size="small"
+                                      variant="contained"
+                                      color="success"
+                                      onClick={() => setLinePaymentRecorded(ln.id, "paid")}
+                                    >
+                                      Mark as Paid
+                                    </Button>
+                                  ) : null}
+                                  {finalized && linePaid && !lineUnpaid ? (
+                                    <Button
+                                      size="small"
+                                      color="warning"
+                                      onClick={() => setLinePaymentRecorded(ln.id, "unpaid")}
+                                    >
+                                      Mark UNPAID
+                                    </Button>
+                                  ) : null}
                                     </Select>
                                   ) : null}
                                   {doc.vendor_receipt_available ||

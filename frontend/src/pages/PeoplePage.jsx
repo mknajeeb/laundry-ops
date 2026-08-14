@@ -48,6 +48,7 @@ import {
 import SchedulingReadinessChip from "../components/worker/SchedulingReadinessChip";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
+import { catalogLabel, emptyAssignmentRow, mapAssignmentRow } from "../payroll/employmentCategory";
 
 function formatEmploymentStatusCell(ta, wpActive, t) {
   if (ta && ta.termination_date && String(ta.termination_date).trim() !== "") {
@@ -416,18 +417,8 @@ function PeoplePage({ user }) {
       const d = res.data;
       const catRows =
         d.employment_assignments?.length > 0
-          ? d.employment_assignments.map((a) => ({
-              employment_category_id: a.employment_category_id,
-              effective_from: String(a.effective_from).slice(0, 10),
-              effective_to: a.effective_to ? String(a.effective_to).slice(0, 10) : "",
-            }))
-          : [
-              {
-                employment_category_id: cats[0]?.id || "",
-                effective_from: new Date().toISOString().slice(0, 10),
-                effective_to: "",
-              },
-            ];
+          ? d.employment_assignments.map(mapAssignmentRow)
+          : [emptyAssignmentRow()];
       setTaForm({
         ...d,
         password: "",
@@ -619,7 +610,7 @@ function PeoplePage({ user }) {
                 <MenuItem value="">{t("people.all")}</MenuItem>
                 {cats.map((c) => (
                   <MenuItem key={c.id} value={String(c.id)}>
-                    {c.name}
+                    {catalogLabel(c)}
                   </MenuItem>
                 ))}
               </Select>
@@ -1428,7 +1419,7 @@ function PeoplePage({ user }) {
                 >
                   {cats.map((c) => (
                     <MenuItem key={c.id} value={c.id}>
-                      {c.name}
+                      {catalogLabel(c)}
                     </MenuItem>
                   ))}
                 </TextField>

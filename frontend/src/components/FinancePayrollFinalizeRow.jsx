@@ -121,6 +121,19 @@ export default function FinancePayrollFinalizeRow({
           <TextField
             size="small"
             select
+            label="Payment status"
+            value={draft.settlement?.payment_recorded === "unpaid" ? "unpaid" : "paid"}
+            onChange={(e) => onUpdateDraft(ln.id, "settlement", "payment_recorded", e.target.value)}
+            SelectProps={{ native: true }}
+            sx={{ minWidth: 140 }}
+            helperText="Unpaid finalizes the record without counting as money paid"
+          >
+            <option value="paid">Paid</option>
+            <option value="unpaid">UNPAID</option>
+          </TextField>
+          <TextField
+            size="small"
+            select
             label="Method"
             value={method}
             onChange={(e) => onUpdateDraft(ln.id, "payment", "method", e.target.value)}

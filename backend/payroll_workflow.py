@@ -398,6 +398,8 @@ def prepare_w2_line_tax_fields(conn, user_id: int, gross: float, organization_id
 def _line_payment_status_label(st: str) -> str:
     if st == "paid":
         return "Paid"
+    if st == "unpaid":
+        return "UNPAID"
     if st == "approved_unpaid":
         return "Approved — unpaid"
     return "Pending payment"
@@ -406,9 +408,14 @@ def _line_payment_status_label(st: str) -> str:
 def _batch_payment_status(lines: list[dict]) -> str:
     if not lines:
         return "pending"
-    paid = sum(1 for ln in lines if str(ln.get("payment_status") or "") == "paid")
+    from backend.payroll_worker_categories import is_payment_recorded_paid, is_payment_recorded_unpaid
+
+    paid = sum(1 for ln in lines if is_payment_recorded_paid(ln, ln.get("payout_details")))
+    unpaid = sum(1 for ln in lines if is_payment_recorded_unpaid(ln, ln.get("payout_details")))
     if paid == len(lines):
         return "paid"
+    if unpaid == len(lines):
+        return "unpaid"
     if paid > 0:
         return "partially_paid"
     if any(str(ln.get("payment_status") or "") == "approved_unpaid" for ln in lines):
@@ -707,11 +714,25 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
                 row["sick_hours_accrued_ytd"] = sb.get("ytd_accrued_hours")
                 row["sick_hours_used_ytd"] = sb.get("ytd_used_hours")
         ps = str(row.get("payment_status") or "pending")
-        row["payment_status_label"] = _line_payment_status_label(ps)
+        from backend.payroll_payout_details import parse_line_payout_details
+        from backend.payroll_worker_categories import (
+            is_payment_recorded_paid,
+            is_payment_recorded_unpaid,
+            line_payment_recorded,
+        )
+
+        details_for_status = row.get("payout_details") or parse_line_payout_details(row)
+        recorded = line_payment_recorded(row, details_for_status, batch)
+        row["payment_recorded"] = recorded
+        row["payment_status_label"] = _line_payment_status_label(
+            recorded if recorded in ("paid", "unpaid") else ps
+        )
         amt = _money(row.get("total_amount") or 0)
         gross_total += _money(row.get("gross_amount") or row.get("total_amount") or 0)
-        if ps == "paid":
+        if is_payment_recorded_paid(row, details_for_status, batch):
             paid_total += amt
+        elif is_payment_recorded_unpaid(row, details_for_status, batch):
+            unpaid_total += amt
         else:
             unpaid_total += amt
         from backend.payroll_payout_details import enrich_line_settlement_fields
@@ -809,8 +830,8 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
         if cat == "w2":
             warnings.append(ESTIMATE_DISCLAIMER)
             warnings.append(PAYROLL_ESTIMATE_PURPOSE)
-        elif cat in ("temp", "contractor_1099"):
-            warnings.append("Temp/1099 batches track gross payout only — tax engine does not run.")
+        elif cat in ("temp", "contractor_1099", "tryout"):
+            warnings.append("Temp/1099/Try Out batches track gross payout only — tax engine does not run.")
     batch["warnings"] = warnings
     batch["missing_rates"] = missing_rates
     batch["missing_w4"] = [] if MANUAL_TAX_DEDUCTIONS_ONLY else missing_w4
@@ -1114,31 +1135,45 @@ def apply_batch_workflow_action(
             """
             UPDATE payout_batch_lines SET payment_status='paid', payment_date=COALESCE(payment_date, %s),
             line_status='approved'
-            WHERE batch_id=%s AND organization_id=%s AND payment_status != 'paid'
+            WHERE batch_id=%s AND organization_id=%s
+              AND payment_status NOT IN ('paid', 'unpaid')
             """,
             (pd, int(batch_id), int(organization_id)),
         )
     elif action == "mark_line_paid":
         if not line_id:
             raise ValueError("line_id required")
-        c.execute(
-            """
-            UPDATE payout_batch_lines SET payment_status='paid', payment_date=%s,
-            payment_reference=COALESCE(%s, payment_reference), line_status='approved'
-            WHERE id=%s AND batch_id=%s AND organization_id=%s
-            """,
-            (pd, payment_reference, int(line_id), int(batch_id), int(organization_id)),
+        from backend.payroll_payout_details import set_line_payment_recorded
+
+        set_line_payment_recorded(
+            conn,
+            organization_id,
+            batch_id,
+            int(line_id),
+            recorded="paid",
+            actor_id=actor_id,
+            payment_date=pd,
+            payment_reference=payment_reference,
         )
+        conn.commit()
+        out = get_payout_batch(conn, organization_id, batch_id) or {}
+        return enrich_payout_batch(conn, organization_id, out)
     elif action == "mark_line_unpaid":
         if not line_id:
             raise ValueError("line_id required")
-        c.execute(
-            """
-            UPDATE payout_batch_lines SET payment_status='approved_unpaid', payment_date=NULL
-            WHERE id=%s AND batch_id=%s AND organization_id=%s
-            """,
-            (int(line_id), int(batch_id), int(organization_id)),
+        from backend.payroll_payout_details import set_line_payment_recorded
+
+        set_line_payment_recorded(
+            conn,
+            organization_id,
+            batch_id,
+            int(line_id),
+            recorded="unpaid",
+            actor_id=actor_id,
         )
+        conn.commit()
+        out = get_payout_batch(conn, organization_id, batch_id) or {}
+        return enrich_payout_batch(conn, organization_id, out)
     elif action == "refresh_rates":
         conn.commit()
         return refresh_batch_line_rates(conn, organization_id, batch_id)
@@ -1149,7 +1184,7 @@ def apply_batch_workflow_action(
             )
         if str(batch.get("worker_category")) != "w2":
             raise ValueError(
-                "Tax recalculation applies to W-2 batches only. Temp/1099 remain gross payout tracking."
+                "Tax recalculation applies to W-2 batches only. Temp/1099/Try Out remain gross payout tracking."
             )
         recalculate_w2_batch_taxes(conn, organization_id, batch_id)
         out = get_payout_batch(conn, organization_id, batch_id) or {}
