@@ -1664,6 +1664,10 @@ def apply_manager_edit_day_bag_patch(
 
     Must run only after the manager edit lock check has already succeeded.
     Does not bump ``manager_edit_version`` / ``updated_at``.
+
+    Reprojects ``headline.specialty_metrics`` from current membership + live
+    specialty classification inputs so bag status and Specialty cards stay
+    internally consistent after the edit.
     """
     from backend.rinse_bulk_workitems import REASON_WF_BULK_WORKITEM_REVIEW
 
@@ -1754,6 +1758,7 @@ def apply_manager_edit_day_bag_patch(
         proj = project_productivity_fields_for_day_bag(
             {
                 "effective_status": new_status,
+                "service_type": day_row.get("service_type"),
                 "canonical_completion_employee": completed_by
                 if completed_by is not None
                 else day_row.get("canonical_completion_employee"),
@@ -1761,6 +1766,9 @@ def apply_manager_edit_day_bag_patch(
                 if completion_at is not None
                 else day_row.get("canonical_completion_timestamp"),
                 "weight_lbs": weight_lbs,
+                "pre_weight_lbs": pre_weight_lbs
+                if pre_weight_lbs is not None
+                else day_row.get("pre_weight_lbs"),
                 "post_weight_lbs": post_weight_lbs
                 if post_weight_lbs is not None
                 else day_row.get("post_weight_lbs"),
@@ -1814,6 +1822,7 @@ def apply_manager_edit_day_bag_patch(
 
     # Patch headline counts from persisted day-bag effective_status (same source
     # as drawer membership). Do not depend on prior bag_ids list membership.
+    specialty_reprojected = False
     day = get_day_record(cursor, organization_id, shift_date_et)
     if day:
         try:
@@ -1891,6 +1900,30 @@ def apply_manager_edit_day_bag_patch(
             if "review_by_reason" in headline:
                 meta["review_by_reason"] = review_by_reason
             meta["headline_status_synced_from_day_bags"] = True
+            try:
+                headline = _reproject_specialty_metrics_on_headline(
+                    cursor, organization_id, shift_date_et, headline
+                )
+                specialty_reprojected = True
+                meta["specialty_metrics_reprojected"] = True
+            except Exception:
+                logger.exception(
+                    "specialty_reproject_failed org=%s date=%s bag=%s",
+                    organization_id,
+                    shift_date_et,
+                    bid,
+                )
+                # Drop the frozen pack so the next read rebuilds specialty only
+                # (membership / completion stay as just patched).
+                headline.pop("specialty_metrics", None)
+                for _k in (
+                    "comforter_order_count",
+                    "bath_mat_order_count",
+                    "rejected_order_count",
+                    "split_order_count",
+                ):
+                    headline.pop(_k, None)
+                meta["specialty_metrics_reprojected"] = False
             review_n = int(
                 (headline.get("exceptions") or {}).get("review_required") or 0
             )
@@ -1947,6 +1980,7 @@ def apply_manager_edit_day_bag_patch(
         "effective_status": new_status,
         "review_reason_codes": reasons,
         "headline_patched": bool(day),
+        "specialty_reprojected": specialty_reprojected,
     }
 
 
@@ -2006,6 +2040,24 @@ def day_bag_count(cursor, organization_id: int, shift_date_et: date) -> int:
     )
     row = cursor.fetchone() or {}
     return int(row.get("n") or 0)
+
+
+def _reproject_specialty_metrics_on_headline(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    headline: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Recompute specialty packs onto a headline after a manager bag edit.
+
+    Uses current headline membership plus live bulk-line / rejected / split
+    inputs. Does not rebuild bag membership or completion.
+    """
+    from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
+
+    return attach_specialty_metrics_to_summary(
+        cursor, organization_id, shift_date_et, dict(headline or {})
+    )
 
 
 def _ensure_specialty_metrics(
