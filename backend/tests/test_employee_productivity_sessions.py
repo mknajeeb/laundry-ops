@@ -6,8 +6,10 @@ from datetime import date, datetime
 
 from backend.rinse_employee_productivity_sessions import (
     ASSIGNMENT_AUTO,
+    ASSIGNMENT_MANUAL,
     ASSIGNMENT_NEEDS_REVIEW,
     ASSIGNMENT_UNASSIGNED,
+    REASON_OUTSIDE_SESSION_WINDOW,
     assign_bag_to_session,
     build_payroll_session,
     build_stable_session_id,
@@ -183,7 +185,7 @@ def test_no_qualifying_bag_idle_is_null():
     assert out["timing_conflict"] is False
 
 
-def test_bag_elapsed_first_uses_session_start():
+def test_first_bag_uses_folder_start_not_session_start():
     sess = build_payroll_session(
         _seg(),
         selected_date_et=date(2026, 7, 24),
@@ -194,20 +196,244 @@ def test_bag_elapsed_first_uses_session_start():
             "session_id": "WF-704",
             "session_assignment": ASSIGNMENT_AUTO,
             "completion_time": "2026-07-24 09:00:00",
+            "folder_start_et": datetime(2026, 7, 24, 8, 45, 0),
+            "folder_end_et": datetime(2026, 7, 24, 8, 50, 0),
+            "folder_duration_seconds": 300,
         },
         {
             "bag_id": "2",
             "session_id": "WF-704",
             "session_assignment": ASSIGNMENT_AUTO,
             "completion_time": "2026-07-24 09:30:00",
+            "folder_start_et": datetime(2026, 7, 24, 9, 10, 0),
+            "folder_end_et": datetime(2026, 7, 24, 9, 12, 0),
+            "folder_duration_seconds": 120,
         },
     ]
     timed = compute_bag_elapsed_timing(bags, {"WF-704": sess})
     by_id = {b["bag_id"]: b for b in timed}
-    assert by_id["1"]["bag_start"].startswith("2026-07-24 08:00")
-    assert by_id["1"]["elapsed_time_minutes"] == 60.0
-    assert by_id["2"]["bag_start"].startswith("2026-07-24 09:00")
-    assert by_id["2"]["elapsed_time_minutes"] == 30.0
+    assert by_id["1"]["bag_start"].startswith("2026-07-24 08:45")
+    assert not by_id["1"]["bag_start"].startswith("2026-07-24 08:00")
+    assert by_id["1"]["elapsed_time_minutes"] == 5.0
+    assert by_id["2"]["bag_start"].startswith("2026-07-24 09:10")
+    assert not by_id["2"]["bag_start"].startswith("2026-07-24 08:50")
+    assert not by_id["2"]["bag_start"].startswith("2026-07-24 09:00")
+    assert by_id["2"]["elapsed_time_minutes"] == 2.0
+
+
+def test_folder_clean_end_beats_completion_timestamp():
+    from backend.rinse_folder_chronology import extract_folder_session_for_bag
+
+    events = [
+        {
+            "id": 1,
+            "bag_id": "D7WYNNDH9Y",
+            "rack": "Folding-1-VW",
+            "user_name": "Varun (VeeWash)",
+            "purpose": "complete-cleaning",
+            "scanned_at_parsed": datetime(2026, 8, 14, 15, 24),
+            "scan_index": 1,
+        },
+        {
+            "id": 2,
+            "bag_id": "D7WYNNDH9Y",
+            "rack": "VeeWash Clean",
+            "user_name": "Varun (VeeWash)",
+            "purpose": "move-bag",
+            "scanned_at_parsed": datetime(2026, 8, 14, 15, 28),
+            "scan_index": 2,
+        },
+    ]
+    folder = extract_folder_session_for_bag(
+        "D7WYNNDH9Y", events, selected_date_et=date(2026, 8, 14)
+    )
+    assert folder["folder_start_et"] == datetime(2026, 8, 14, 15, 24)
+    assert folder["folder_end_et"] == datetime(2026, 8, 14, 15, 28)
+    payroll = build_payroll_session(
+        _seg(
+            id=337,
+            started_at=datetime(2026, 8, 14, 8, 17, 22),
+            ended_at=datetime(2026, 8, 14, 17, 40, 24),
+        ),
+        selected_date_et=date(2026, 8, 14),
+    )
+    timed = compute_bag_elapsed_timing(
+        [
+            {
+                "bag_id": "D7WYNNDH9Y",
+                "session_id": payroll["session_id"],
+                "session_assignment": ASSIGNMENT_AUTO,
+                "completion_time": "2026-08-14 15:26:00",
+                "folder_start_et": folder["folder_start_et"],
+                "folder_end_et": folder["folder_end_et"],
+                "folder_duration_seconds": folder["duration_seconds"],
+                "folder_timing_status": folder["status"],
+            }
+        ],
+        {payroll["session_id"]: payroll},
+    )
+    assert timed[0]["bag_start"].startswith("2026-08-14 15:24")
+    assert timed[0]["bag_end"].startswith("2026-08-14 15:28")
+    assert "15:26" not in (timed[0]["bag_end"] or "")
+    assert timed[0]["elapsed_time_minutes"] == 4.0
+
+
+def test_incomplete_folder_timing_not_fabricated():
+    sess = build_payroll_session(_seg(), selected_date_et=date(2026, 7, 24))
+    timed = compute_bag_elapsed_timing(
+        [
+            {
+                "bag_id": "OPEN",
+                "session_id": "WF-704",
+                "session_assignment": ASSIGNMENT_AUTO,
+                "completion_time": "2026-07-24 09:00:00",
+                "folder_start_et": datetime(2026, 7, 24, 8, 45),
+                "folder_end_et": None,
+            }
+        ],
+        {"WF-704": sess},
+    )
+    assert timed[0]["bag_start"].startswith("2026-07-24 08:45")
+    assert timed[0]["bag_end"] is None
+    assert timed[0]["elapsed_time_seconds"] is None
+    assert timed[0]["folder_timing_status"] == "incomplete_open"
+
+
+def test_missing_folder_timing_does_not_use_session_start():
+    sess = build_payroll_session(_seg(), selected_date_et=date(2026, 7, 24))
+    timed = compute_bag_elapsed_timing(
+        [
+            {
+                "bag_id": "1",
+                "session_id": "WF-704",
+                "session_assignment": ASSIGNMENT_AUTO,
+                "completion_time": "2026-07-24 09:00:00",
+            }
+        ],
+        {"WF-704": sess},
+    )
+    assert timed[0]["bag_start"] is None
+    assert timed[0]["bag_end"] is None
+    assert timed[0]["folder_timing_status"] == "missing"
+
+
+def _norma_closed_seg():
+    return _seg(
+        id=337,
+        started_at=datetime(2026, 8, 14, 8, 17, 22),
+        ended_at=datetime(2026, 8, 14, 17, 40, 24),
+    )
+
+
+def test_payroll_header_remains_actual_session_time():
+    emp = {
+        "employee": "Norma",
+        "completed_bags": 2,
+        "total_completed_lbs": 20.0,
+        "role_bags_per_hour": 1.0,
+        "role_lbs_per_hour": 10.0,
+        "productive_hours": 9.38,
+        "idle_time_hours": 0.1,
+        "bags": [
+            {
+                "bag_id": "DGEAVNHVLD",
+                "completion_time": "2026-08-14 14:21:00",
+                "folder_start_et": datetime(2026, 8, 14, 14, 19),
+                "folder_end_et": datetime(2026, 8, 14, 14, 21),
+                "credited_weight_lbs": 10,
+            },
+            {
+                "bag_id": "B3T3XM2IBA",
+                "completion_time": "2026-08-14 17:49:00",
+                "folder_start_et": datetime(2026, 8, 14, 17, 48),
+                "folder_end_et": datetime(2026, 8, 14, 17, 49),
+                "credited_weight_lbs": 10,
+            },
+        ],
+    }
+    out = enrich_employee_with_sessions(
+        emp,
+        [_norma_closed_seg()],
+        selected_date_et=date(2026, 8, 14),
+        now_et=datetime(2026, 8, 14, 20, 0),
+        manual_assignments={"B3T3XM2IBA": {"session_id": "WF-337"}},
+    )
+    sess = out["sessions"][0]
+    assert sess["start_time"].startswith("2026-08-14 08:17:22")
+    assert sess["end_time"].startswith("2026-08-14 17:40:24")
+    assert sess["role_status"] == "closed"
+
+
+def test_manual_assignment_outside_closed_session_is_flagged():
+    emp = {
+        "employee": "Norma",
+        "completed_bags": 1,
+        "total_completed_lbs": 10.0,
+        "role_bags_per_hour": 1.0,
+        "role_lbs_per_hour": 10.0,
+        "productive_hours": 9.38,
+        "idle_time_hours": 0.1,
+        "bags": [
+            {
+                "bag_id": "B3T3XM2IBA",
+                "completion_time": "2026-08-14 17:49:00",
+                "folder_start_et": datetime(2026, 8, 14, 17, 48),
+                "folder_end_et": datetime(2026, 8, 14, 17, 49),
+                "credited_weight_lbs": 10,
+            }
+        ],
+    }
+    out = enrich_employee_with_sessions(
+        emp,
+        [_norma_closed_seg()],
+        selected_date_et=date(2026, 8, 14),
+        now_et=datetime(2026, 8, 14, 20, 0),
+        manual_assignments={"B3T3XM2IBA": {"session_id": "WF-337"}},
+    )
+    bag = out["bags"][0]
+    assert bag["session_assignment"] == ASSIGNMENT_NEEDS_REVIEW
+    assert bag["session_assignment_reason"] == REASON_OUTSIDE_SESSION_WINDOW
+    assert bag["needs_review"] is True
+    assert bag["outside_session_window"] is True
+    assert bag["session_assignment_label"] == "Outside session"
+    assert out["sessions"][0]["completed_bags"] == 0
+    assert out["completed_bags"] == 1
+    assert out["role_bags_per_hour"] == 1.0
+    assert out["role_lbs_per_hour"] == 10.0
+
+
+def test_manual_assignment_within_session_window_remains_valid():
+    emp = {
+        "employee": "Norma",
+        "completed_bags": 1,
+        "total_completed_lbs": 10.0,
+        "role_bags_per_hour": 1.0,
+        "role_lbs_per_hour": 10.0,
+        "productive_hours": 9.38,
+        "idle_time_hours": 0.1,
+        "bags": [
+            {
+                "bag_id": "DGEAVNHVLD",
+                "completion_time": "2026-08-14 14:21:00",
+                "folder_start_et": datetime(2026, 8, 14, 14, 19),
+                "folder_end_et": datetime(2026, 8, 14, 14, 21),
+                "credited_weight_lbs": 10,
+            }
+        ],
+    }
+    out = enrich_employee_with_sessions(
+        emp,
+        [_norma_closed_seg()],
+        selected_date_et=date(2026, 8, 14),
+        now_et=datetime(2026, 8, 14, 20, 0),
+        manual_assignments={"DGEAVNHVLD": {"session_id": "WF-337"}},
+    )
+    bag = out["bags"][0]
+    assert bag["session_assignment"] == ASSIGNMENT_MANUAL
+    assert bag["needs_review"] is False
+    assert bag.get("session_assignment_reason") is None
+    assert bag["session_id"] == "WF-337"
+    assert out["sessions"][0]["completed_bags"] == 1
 
 
 def test_enrich_preserves_productivity_fields():

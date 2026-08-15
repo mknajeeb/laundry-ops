@@ -95,6 +95,12 @@ function normalizeProcessedBag(bag) {
 }
 
 function sessionDisplay(bag) {
+  if (
+    bag?.session_assignment_reason === "OUTSIDE_SESSION_WINDOW"
+    || bag?.outside_session_window
+  ) {
+    return "Outside session";
+  }
   if (bag?.session_assignment === "needs_review" || bag?.needs_review) return "Needs Review";
   if (bag?.session_assignment === "unassigned" || !bag?.session_id) return "Unassigned";
   // Never expose internal session_id in the UI.
@@ -272,7 +278,7 @@ function BagMobileRow({
             Bag Start: {shortTime(bag.bag_start)}
           </Typography>
           <Typography variant="caption" display="block" sx={{ mb: 0.75 }}>
-            Bag End: {shortTime(bag.bag_end || normalized.completion_time)}
+            Bag End: {shortTime(bag.bag_end)}
           </Typography>
           <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.35 }}>
             Assign Session
@@ -378,7 +384,7 @@ function BagTable({
                   </TableCell>
                   <TableCell sx={{ whiteSpace: "nowrap" }}>{shortTime(bag.bag_start)}</TableCell>
                   <TableCell sx={{ whiteSpace: "nowrap" }}>
-                    {shortTime(bag.bag_end || normalized.completion_time)}
+                    {shortTime(bag.bag_end)}
                   </TableCell>
                   <TableCell align="right">
                     {bag.elapsed_time_label || fmtDurationMinutes(bag.elapsed_time_minutes)}

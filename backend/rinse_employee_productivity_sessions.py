@@ -23,6 +23,8 @@ ASSIGNMENT_AUTO = "auto"
 ASSIGNMENT_MANUAL = "manual"
 ASSIGNMENT_NEEDS_REVIEW = "needs_review"
 ASSIGNMENT_UNASSIGNED = "unassigned"
+REASON_OUTSIDE_SESSION_WINDOW = "OUTSIDE_SESSION_WINDOW"
+FOLDER_TIMING_MISSING = "missing"
 
 DEFAULT_ROLE_FILTER_KEY = "RINSE_WF:FOLDER"
 
@@ -382,61 +384,172 @@ def assign_bag_to_session(
     }
 
 
+def load_folder_timing_for_bags(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    bag_ids: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """Read-only current-cycle Folder chronology sessions for productivity bag timing.
+
+    Reuses Scan Chronology Folder extraction. Does not modify Folder chronology.
+    """
+    from backend.rinse_folder_chronology import (
+        _load_scan_events_for_folder_bags,
+        extract_folder_session_for_bag,
+    )
+
+    ids: list[str] = []
+    seen: set[str] = set()
+    for raw in bag_ids or []:
+        bid = str(raw or "").strip()
+        if not bid:
+            continue
+        key = bid.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        ids.append(bid)
+    events_by_bag = _load_scan_events_for_folder_bags(cursor, organization_id, ids)
+    out: dict[str, dict[str, Any]] = {}
+    for bid in ids:
+        rows = events_by_bag.get(bid) or events_by_bag.get(bid.upper()) or []
+        sess = extract_folder_session_for_bag(
+            bid, rows, selected_date_et=selected_date_et
+        )
+        if sess:
+            out[bid.upper()] = sess
+    return out
+
+
+def _stamp_folder_timing(
+    bag: dict[str, Any],
+    folder_sess: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Attach canonical Folder start/end when a chronology session is available."""
+    if folder_sess:
+        bag["folder_start_et"] = folder_sess.get("folder_start_et")
+        bag["folder_end_et"] = folder_sess.get("folder_end_et")
+        bag["folder_duration_seconds"] = folder_sess.get("duration_seconds")
+        bag["folder_timing_status"] = folder_sess.get("status") or folder_sess.get(
+            "folder_timing_status"
+        )
+        return bag
+    if bag.get("folder_start_et") is None and bag.get("folder_end_et") is None:
+        bag.setdefault("folder_timing_status", FOLDER_TIMING_MISSING)
+    return bag
+
+
+def folder_work_outside_closed_session(
+    bag: Mapping[str, Any],
+    session: Mapping[str, Any] | None,
+) -> bool:
+    """True when Folder start or Clean-rack end falls outside a closed payroll window."""
+    if not session:
+        return False
+    if str(session.get("role_status") or "").strip().lower() != "closed":
+        return False
+    start = session.get("_start_dt") or _parse_dt(session.get("start_time"))
+    end = session.get("_end_dt") or _parse_dt(session.get("end_time"))
+    if start is None or end is None:
+        return False
+    times: list[datetime] = []
+    for key in ("folder_start_et", "folder_end_et"):
+        ts = _parse_dt(bag.get(key))
+        if ts is not None:
+            times.append(ts)
+    if not times:
+        return False
+    return any(ts < start or ts > end for ts in times)
+
+
+def reclassify_outside_closed_session(
+    bag: Mapping[str, Any],
+    session: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Manual/auto assignment to a closed session is not valid session work if Folder work is outside."""
+    b = dict(bag)
+    if not b.get("session_id"):
+        return b
+    if b.get("session_assignment") in (ASSIGNMENT_UNASSIGNED, ASSIGNMENT_NEEDS_REVIEW):
+        return b
+    if not folder_work_outside_closed_session(b, session):
+        return b
+    b["session_assignment"] = ASSIGNMENT_NEEDS_REVIEW
+    b["session_assignment_label"] = "Outside session"
+    b["session_assignment_reason"] = REASON_OUTSIDE_SESSION_WINDOW
+    b["needs_review"] = True
+    b["outside_session_window"] = True
+    return b
+
+
+def _folder_sort_ts(bag: Mapping[str, Any]) -> datetime:
+    return (
+        _parse_dt(bag.get("folder_start_et"))
+        or _parse_dt(bag.get("folder_end_et"))
+        or _bag_completion_ts(bag)
+        or datetime.min
+    )
+
+
 def compute_bag_elapsed_timing(
     bags: Sequence[Mapping[str, Any]],
     sessions_by_id: Mapping[str, Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Elapsed time between completions within each session (not folding start)."""
-    by_session: dict[str, list[dict[str, Any]]] = {}
-    unassigned: list[dict[str, Any]] = []
+    """Bag start/end/elapsed from current-cycle Folder chronology, not payroll chaining.
+
+    bag_start = canonical Folder start
+    bag_end = canonical Folder / Clean-rack end
+    elapsed = actual Folder duration
+
+    Incomplete Folder start/end is shown as incomplete. Does not use payroll
+    session start, previous-bag completion, or day-bag completion as substitutes.
+    ``sessions_by_id`` is unused for timing (kept for call-site compatibility).
+    """
+    del sessions_by_id
+    out: list[dict[str, Any]] = []
     for bag in bags or []:
         if not isinstance(bag, Mapping):
             continue
         b = dict(bag)
-        sid = b.get("session_id")
-        if not sid or b.get("session_assignment") in (
-            ASSIGNMENT_UNASSIGNED,
-            ASSIGNMENT_NEEDS_REVIEW,
-        ):
-            # Needs Review / Unassigned: still show bag end = completion, no session start chain
-            ts = _bag_completion_ts(b)
-            b["bag_start"] = None
-            b["bag_end"] = _iso(ts)
-            b["elapsed_time_seconds"] = None
-            b["elapsed_time_minutes"] = None
-            b["elapsed_time_label"] = None
-            unassigned.append(b)
-            continue
-        by_session.setdefault(str(sid), []).append(b)
+        start = _parse_dt(b.get("folder_start_et"))
+        end = _parse_dt(b.get("folder_end_et"))
+        b["folder_start_et"] = _iso(start)
+        b["folder_end_et"] = _iso(end)
+        b["bag_start"] = _iso(start)
+        b["bag_end"] = _iso(end)
 
-    out: list[dict[str, Any]] = []
-    for sid, group in by_session.items():
-        group.sort(key=lambda x: _bag_completion_ts(x) or datetime.min)
-        sess = sessions_by_id.get(str(sid)) or {}
-        session_start = sess.get("_start_dt") or _parse_dt(sess.get("start_time"))
-        prev_end: datetime | None = None
-        for idx, bag in enumerate(group):
-            end = _bag_completion_ts(bag)
-            if idx == 0:
-                start = session_start
-            else:
-                start = prev_end
-            elapsed_sec = None
-            if start is not None and end is not None and end >= start:
+        elapsed_sec = None
+        if start is not None and end is not None:
+            raw_dur = b.get("folder_duration_seconds")
+            if raw_dur is not None:
+                try:
+                    elapsed_sec = float(raw_dur)
+                except (TypeError, ValueError):
+                    elapsed_sec = None
+            if elapsed_sec is None and end >= start:
                 elapsed_sec = (end - start).total_seconds()
-            bag["bag_start"] = _iso(start)
-            bag["bag_end"] = _iso(end)
-            bag["elapsed_time_seconds"] = (
-                int(round(elapsed_sec)) if elapsed_sec is not None else None
-            )
-            bag["elapsed_time_minutes"] = _minutes(elapsed_sec)
-            bag["elapsed_time_label"] = _fmt_duration_minutes(
-                _minutes(elapsed_sec) if elapsed_sec is not None else None
-            )
-            prev_end = end
-            out.append(bag)
-    out.extend(unassigned)
-    out.sort(key=lambda b: _bag_completion_ts(b) or datetime.min)
+
+        if start is not None and end is not None:
+            status = b.get("folder_timing_status") or "complete"
+        elif start is not None:
+            status = b.get("folder_timing_status") or "incomplete_open"
+        elif end is not None:
+            status = b.get("folder_timing_status") or "incomplete_missing_start"
+        else:
+            status = b.get("folder_timing_status") or FOLDER_TIMING_MISSING
+        b["folder_timing_status"] = status
+
+        b["elapsed_time_seconds"] = (
+            int(round(elapsed_sec)) if elapsed_sec is not None else None
+        )
+        b["elapsed_time_minutes"] = (
+            _minutes(elapsed_sec) if elapsed_sec is not None else None
+        )
+        b["elapsed_time_label"] = _fmt_duration_minutes(b["elapsed_time_minutes"])
+        out.append(b)
+    out.sort(key=_folder_sort_ts)
     return out
 
 
@@ -630,6 +743,7 @@ def enrich_employee_with_sessions(
     manual_assignments: Mapping[str, Mapping[str, Any]] | None = None,
     now_et: datetime | None = None,
     role_filter_keys: Sequence[str] | None = None,
+    folder_sessions_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Add sessions / bag session fields without mutating productivity metrics."""
     out = dict(emp)
@@ -669,6 +783,7 @@ def enrich_employee_with_sessions(
     bags_in = list(out.get("bags") or out.get("workload_bags") or [])
     enriched_bags: list[dict[str, Any]] = []
     manuals = manual_assignments or {}
+    folder_by_bag = folder_sessions_by_bag or {}
     for bag in bags_in:
         if not isinstance(bag, Mapping):
             continue
@@ -684,6 +799,10 @@ def enrich_employee_with_sessions(
         )
         if resolved:
             b["customer_name"] = resolved
+        folder_sess = folder_by_bag.get(bid) if bid else None
+        if folder_sess is None and b.get("bag_id"):
+            folder_sess = folder_by_bag.get(str(b.get("bag_id")).strip())
+        _stamp_folder_timing(b, folder_sess)
         assign = assign_bag_to_session(
             b,
             visible,
@@ -693,7 +812,12 @@ def enrich_employee_with_sessions(
         enriched_bags.append(b)
 
     sessions_index = {str(s["session_id"]): s for s in visible if s.get("session_id")}
-    timed_bags = compute_bag_elapsed_timing(enriched_bags, sessions_index)
+    classified: list[dict[str, Any]] = []
+    for bag in enriched_bags:
+        sid = bag.get("session_id")
+        sess = sessions_index.get(str(sid)) if sid else None
+        classified.append(reclassify_outside_closed_session(bag, sess))
+    timed_bags = compute_bag_elapsed_timing(classified, sessions_index)
 
     bags_by_session: dict[str, list[dict[str, Any]]] = {}
     for bag in timed_bags:
@@ -741,7 +865,9 @@ def enrich_employee_with_sessions(
         if code:
             bag["session_code"] = code
         # Visible label must never be the internal session_id.
-        if bag.get("session_assignment") in (ASSIGNMENT_AUTO, ASSIGNMENT_MANUAL) and code:
+        if bag.get("session_assignment_reason") == REASON_OUTSIDE_SESSION_WINDOW:
+            bag["session_assignment_label"] = "Outside session"
+        elif bag.get("session_assignment") in (ASSIGNMENT_AUTO, ASSIGNMENT_MANUAL) and code:
             bag["session_assignment_label"] = code
         elif bag.get("session_assignment_label") and sid:
             if str(bag.get("session_assignment_label")) == str(sid):
@@ -837,6 +963,25 @@ def apply_productivity_session_context_to_section(
 
     org = int(organization_id)
     maps = user_maps or _load_rinse_user_maps(cursor, org)
+
+    all_bag_ids: list[str] = []
+    for emp in employees:
+        if not isinstance(emp, dict):
+            continue
+        for bag in emp.get("bags") or []:
+            bid = str((bag or {}).get("bag_id") or "").strip().upper()
+            if bid:
+                all_bag_ids.append(bid)
+    folder_sessions_by_bag = load_folder_timing_for_bags(
+        cursor,
+        org,
+        selected_date_et=selected_date_et,
+        bag_ids=all_bag_ids,
+    )
+    manuals = load_manual_bag_session_assignments(
+        cursor, org, selected_date_et=selected_date_et, bag_ids=all_bag_ids
+    )
+
     user_ids: list[int] = []
     emp_user: dict[int, list[int]] = {}
     for idx, emp in enumerate(employees):
@@ -852,6 +997,8 @@ def apply_productivity_session_context_to_section(
                 selected_date_et=selected_date_et,
                 now_et=now_et,
                 role_filter_keys=role_filter_keys,
+                folder_sessions_by_bag=folder_sessions_by_bag,
+                manual_assignments=manuals,
             )
             continue
         try:
@@ -874,18 +1021,6 @@ def apply_productivity_session_context_to_section(
                     pass
     shift_sessions = load_shift_sessions_by_id(cursor, org, session_ids)
 
-    all_bag_ids: list[str] = []
-    for emp in employees:
-        if not isinstance(emp, dict):
-            continue
-        for bag in emp.get("bags") or []:
-            bid = str((bag or {}).get("bag_id") or "").strip().upper()
-            if bid:
-                all_bag_ids.append(bid)
-    manuals = load_manual_bag_session_assignments(
-        cursor, org, selected_date_et=selected_date_et, bag_ids=all_bag_ids
-    )
-
     filters_seen: dict[str, dict[str, Any]] = {}
     for uid, indexes in emp_user.items():
         segs = all_segs.get(uid) or []
@@ -901,6 +1036,7 @@ def apply_productivity_session_context_to_section(
                 manual_assignments=manuals,
                 now_et=now_et,
                 role_filter_keys=role_filter_keys,
+                folder_sessions_by_bag=folder_sessions_by_bag,
             )
             for sess in enriched.get("sessions") or []:
                 key = str(sess.get("role_filter_key") or "")
