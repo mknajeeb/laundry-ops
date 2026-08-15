@@ -73,4 +73,6 @@ def test_step1_productivity_uses_snapshot_not_at_vendor_module():
     assert out["step1_lightweight_productivity"] is True
     assert out["step1_snapshot_productivity"] is True
     assert out["employee_completed_bags_today"]["employees"]
+    assert out["employee_completed_bags_today"]["bags_stripped_for_summary"] is True
+    assert out["employee_completed_bags_today"]["employees"][0]["bags"] == []
     assert out["completed_today_kpi"] == 1

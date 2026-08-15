@@ -2085,6 +2085,25 @@ _STEP1_PROD_CACHE: dict[tuple[int, str, str], tuple[float, dict[str, Any]]] = {}
 _STEP1_PROD_CACHE_TTL_SEC = 45.0
 
 
+def _strip_bags_from_productivity_section(section: dict[str, Any] | None) -> dict[str, Any]:
+    """Drop bag arrays from the summary payload. Rates stay on the employee row."""
+    out = dict(section or {})
+    employees = []
+    for emp in out.get("employees") or []:
+        if not isinstance(emp, dict):
+            employees.append(emp)
+            continue
+        row = dict(emp)
+        row["bags"] = []
+        row["workload_bags"] = []
+        row["processed_bags"] = []
+        row["bags_stripped_for_summary"] = True
+        employees.append(row)
+    out["employees"] = employees
+    out["bags_stripped_for_summary"] = True
+    return out
+
+
 def clear_step1_productivity_cache(
     organization_id: int | None = None,
     selected_date_et: date | str | None = None,
@@ -2161,7 +2180,8 @@ def _try_build_step1_employee_productivity_dashboard(
         return None
 
     include_hd = include_hd_in_employee_productivity(cursor, org)
-    # include_bag_details=True so drill-downs work without a second heavy rebuild.
+    # Compute from bag rows so Folder dual-productivity rates stay identical,
+    # then strip bags from the summary JSON (list-first).
     scoped_emp = build_step1_snapshot_productivity_section(
         cursor,
         org,
@@ -2187,7 +2207,6 @@ def _try_build_step1_employee_productivity_dashboard(
     )
     from backend.rinse_employee_productivity_sessions import (
         apply_productivity_session_context_to_section,
-        resolve_customer_names_for_bags,
     )
 
     scoped_emp = apply_folder_dual_productivity_to_section(
@@ -2197,27 +2216,9 @@ def _try_build_step1_employee_productivity_dashboard(
         selected_date_et=selected_date_et,
         user_maps=user_maps,
     )
-    # One batch customer resolve for all employees (day-bag snapshot → presence → registry).
-    all_bags: list = []
-    for emp in scoped_emp.get("employees") or []:
-        if isinstance(emp, dict) and emp.get("bags"):
-            all_bags.extend(emp["bags"])
-    if all_bags:
-        named = {
-            str(b.get("bag_id") or "").strip().upper(): b
-            for b in resolve_customer_names_for_bags(
-                cursor, org, all_bags, selected_date_et=selected_date_et
-            )
-            if b.get("bag_id")
-        }
-        for emp in scoped_emp.get("employees") or []:
-            if not isinstance(emp, dict) or not emp.get("bags"):
-                continue
-            emp["bags"] = [
-                named.get(str(b.get("bag_id") or "").strip().upper(), b) for b in emp["bags"]
-            ]
-            if "workload_bags" in emp:
-                emp["workload_bags"] = emp["bags"]
+    # Strip bags before session/folder-timing walks so summary JSON stays small.
+    # Dual-productivity rates were already computed from bag rows above.
+    scoped_emp = _strip_bags_from_productivity_section(scoped_emp)
     # Additive session context only — must not change productivity rates.
     scoped_emp = apply_productivity_session_context_to_section(
         cursor,

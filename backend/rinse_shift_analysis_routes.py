@@ -1304,10 +1304,6 @@ def register_rinse_shift_analysis_routes(
     @app.route("/rinse/shift-analysis/employee-productivity/bags", methods=["GET"])
     def rinse_shift_analysis_employee_productivity_bags():
         """Lazy employee expand — bags + payroll sessions for one employee."""
-        from backend.rinse_employee_completed_bags import (
-            build_employee_productivity_dashboard_payload,
-        )
-
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
@@ -1328,28 +1324,61 @@ def register_rinse_shift_analysis_routes(
             if not isinstance(selected, date):
                 return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
             rush_filter = (request.args.get("rush_filter") or "all").strip().lower()
-            payload = build_employee_productivity_dashboard_payload(
+            from backend.rinse_employee_productivity_settings import (
+                include_hd_in_employee_productivity,
+            )
+            from backend.rinse_employee_productivity_sessions import (
+                apply_productivity_session_context_to_section,
+                resolve_customer_names_for_bags,
+            )
+            from backend.rinse_simple_shift_performance import _load_rinse_user_maps
+            from backend.rinse_step1_productivity_fast import (
+                build_employee_productivity_bags_page,
+            )
+
+            include_hd = include_hd_in_employee_productivity(cursor, tenant_oid)
+            page = build_employee_productivity_bags_page(
                 cursor,
                 tenant_oid,
                 selected_date_et=selected,
+                employee=employee,
+                include_hd=include_hd,
                 rush_filter=rush_filter,
+                page=int(request.args.get("page") or 1),
+                page_size=int(request.args.get("page_size") or 100),
             )
-            section = payload.get("employee_completed_bags_today") or {}
-            match = None
-            for emp in section.get("employees") or []:
-                if str((emp or {}).get("employee") or "").strip() == employee:
-                    match = emp
-                    break
-            if match is None:
-                return jsonify({"error": "Employee not found for date"}), 404
+            bags = list(page.get("bags") or [])
+            if bags:
+                bags = resolve_customer_names_for_bags(
+                    cursor, tenant_oid, bags, selected_date_et=selected
+                )
+            mini = {
+                "employees": [
+                    {
+                        "employee": employee,
+                        "bags": bags,
+                        "completed_bags": (page.get("pagination") or {}).get("total"),
+                    }
+                ]
+            }
+            user_maps = _load_rinse_user_maps(cursor, tenant_oid)
+            mini = apply_productivity_session_context_to_section(
+                cursor,
+                tenant_oid,
+                mini,
+                selected_date_et=selected,
+                user_maps=user_maps,
+            )
+            match = (mini.get("employees") or [None])[0] or {}
             return jsonify(
                 json_safe_rinse(
                     {
                         "selected_date_et": selected.isoformat(),
                         "employee": employee,
                         "sessions": match.get("sessions") or [],
-                        "bags": match.get("bags") or [],
-                        "completed_bags": match.get("bags") or [],
+                        "bags": match.get("bags") or bags,
+                        "completed_bags": match.get("bags") or bags,
+                        "pagination": page.get("pagination"),
                         "summary": {
                             "total_sessions": match.get("total_sessions"),
                             "total_session_minutes": match.get("total_session_minutes"),

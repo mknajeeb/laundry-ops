@@ -2003,6 +2003,8 @@ def load_day_bags_by_ids(
     organization_id: int,
     shift_date_et: date,
     bag_ids: list[str],
+    *,
+    status_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Load only the requested day-bag rows (drawer page / single-bag detail)."""
     ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
@@ -2010,9 +2012,14 @@ def load_day_bags_by_ids(
         return []
     ensure_shift_monitor_day_tables(cursor)
     placeholders = ",".join(["%s"] * len(ids))
+    select_sql = (
+        "bag_id, effective_status"
+        if status_only
+        else "*"
+    )
     cursor.execute(
         f"""
-        SELECT *
+        SELECT {select_sql}
         FROM rinse_shift_monitor_day_bags
         WHERE organization_id = %s
           AND shift_date_et = %s

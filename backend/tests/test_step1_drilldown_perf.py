@@ -107,7 +107,10 @@ def test_drilldown_list_does_not_include_full_chronology():
         patch("backend.rinse_veewash_shift_day.summary_from_day_record", return_value=summary),
         patch(
             "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
-            return_value=[_snap("BAG00"), _snap("BAG01")],
+            return_value=[
+                {**_snap("BAG00"), "effective_status": "review_required"},
+                {**_snap("BAG01"), "effective_status": "review_required"},
+            ],
         ),
         patch("backend.rinse_bulk_workitems.load_bulk_workitem_scan_map") as bulk_scans,
         patch("backend.rinse_bulk_workitems.load_bag_bulk_lines") as bulk_lines,
@@ -141,7 +144,10 @@ def test_bulk_reason_drawer_loads_catalog_for_page():
         patch("backend.rinse_veewash_shift_day.summary_from_day_record", return_value=summary),
         patch(
             "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
-            return_value=[_snap("BAG00"), _snap("BAG01")],
+            return_value=[
+                {**_snap("BAG00"), "effective_status": "review_required"},
+                {**_snap("BAG01"), "effective_status": "review_required"},
+            ],
         ),
         patch("backend.rinse_bulk_workitems.load_bulk_workitem_scan_map") as bulk_scans,
         patch("backend.rinse_bulk_workitems.load_bag_bulk_lines") as bulk_lines,

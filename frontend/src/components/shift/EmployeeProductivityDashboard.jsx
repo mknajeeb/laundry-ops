@@ -28,7 +28,7 @@ import {
   Typography,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import { getBulkWorkitems, getEmployeeProductivityDashboard, getVeewashStep1BagDetail, postEmployeeBagSessionAssignment, postVeewashStep1Correction } from "../../api";
+import { getBulkWorkitems, getEmployeeProductivityBags, getEmployeeProductivityDashboard, getVeewashStep1BagDetail, postEmployeeBagSessionAssignment, postVeewashStep1Correction } from "../../api";
 import CopyableBagId from "../CopyableBagId";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import { yesterdayRange, todayRange } from "../../utils/foldingDateRange";
@@ -403,12 +403,15 @@ export default function EmployeeProductivityDashboard({
     setExpandedEmployee(null);
   }, [initialDateEt]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const fetchSection = useCallback(async (dateEt, rush = rushFilterProp || "all") => {
+  const fetchSection = useCallback(async (dateEt, rush = rushFilterProp || "all", signal) => {
     if (!dateEt) return;
     setLoading(true);
     setFetchError("");
     try {
-      const res = await getEmployeeProductivityDashboard({ date_et: dateEt, rush_filter: rush });
+      const res = await getEmployeeProductivityDashboard(
+        { date_et: dateEt, rush_filter: rush },
+        signal ? { signal } : {},
+      );
       setSection(res.data?.employee_completed_bags_today || null);
       setLaborSummary(res.data?.labor_summary || null);
       setScopeLabel(
@@ -418,6 +421,7 @@ export default function EmployeeProductivityDashboard({
       );
       setActiveDateEt(dateEt);
     } catch (e) {
+      if (e?.code === "ERR_CANCELED" || e?.name === "CanceledError") return;
       setFetchError(
         friendlyApiError(e?.response?.data?.error, "Unable to load employee productivity."),
       );
@@ -436,12 +440,15 @@ export default function EmployeeProductivityDashboard({
   useEffect(() => {
     const dateEt = initialDateEt || activeDateEt;
     if (!dateEt) return;
+    const controller = new AbortController();
     // Defer so metric drawer / summary requests win the connection pool first.
-    // Employee productivity is secondary UI and used to starve Shift Monitor drawers.
     const timer = window.setTimeout(() => {
-      fetchSection(dateEt, rushFilterProp || "all");
+      fetchSection(dateEt, rushFilterProp || "all", controller.signal);
     }, 250);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [initialDateEt, rushFilterProp, refreshToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const employees = section?.employees || [];
@@ -455,6 +462,43 @@ export default function EmployeeProductivityDashboard({
   const workload = banner.workload_completed_today ?? recon.workload_completed_today ?? 0;
   const selectedDate = section?.selected_date_et || activeDateEt;
   const productivityScopeLabel = section?.productivity_scope_label || scopeLabel || "WF Only";
+  const expandedBagCount = (
+    (section?.employees || []).find((e) => e.employee === expandedEmployee) || {}
+  ).bags?.length || 0;
+
+  useEffect(() => {
+    if (!expandedEmployee || !selectedDate) return;
+    if (expandedBagCount) return;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const res = await getEmployeeProductivityBags(
+          {
+            date_et: selectedDate,
+            employee: expandedEmployee,
+            rush_filter: rushFilter,
+          },
+          { signal: controller.signal },
+        );
+        const bags = res.data?.bags || [];
+        const sessions = res.data?.sessions || [];
+        setSection((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            employees: (prev.employees || []).map((row) =>
+              row.employee === expandedEmployee
+                ? { ...row, bags, sessions, bags_stripped_for_summary: false }
+                : row
+            ),
+          };
+        });
+      } catch (e) {
+        if (e?.code === "ERR_CANCELED" || e?.name === "CanceledError") return;
+      }
+    })();
+    return () => controller.abort();
+  }, [expandedEmployee, selectedDate, rushFilter, expandedBagCount]);
 
   const ensureReviewCatalog = useCallback(async () => {
     if (reviewCatalog.length) return reviewCatalog;

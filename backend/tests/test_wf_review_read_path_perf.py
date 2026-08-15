@@ -102,6 +102,37 @@ def test_queue_get_does_not_persist_or_rebuild_day():
         assert bag.get("corrections") == []
 
 
+def test_review_list_does_not_recompute_specialty_metrics():
+    cursor = MagicMock()
+    summary = _summary()
+    with (
+        patch(
+            "backend.rinse_veewash_shift_day.get_day_headline",
+            return_value={"status": "OPEN", "headline": summary},
+        ),
+        patch("backend.rinse_veewash_shift_day.summary_from_day_record", return_value=summary),
+        patch(
+            "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
+            return_value=[_snap("BAG00"), _snap("BAG01")],
+        ),
+        patch(
+            "backend.rinse_hd_day_metrics.attach_specialty_metrics_to_summary"
+        ) as specialty,
+        patch(
+            "backend.rinse_scan_freshness.freshness_from_day_and_presence",
+            return_value={"ok": True},
+        ),
+    ):
+        build_drilldown(
+            cursor,
+            3,
+            selected_date_et=D1,
+            metric="review_required",
+            include_details=False,
+        )
+    specialty.assert_not_called()
+
+
 def test_detail_get_does_not_persist_or_rebuild_day():
     cursor = MagicMock()
     summary = _summary()

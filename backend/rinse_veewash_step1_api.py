@@ -382,8 +382,19 @@ def build_drilldown(
     summary = summary_from_day_record(
         day_rec, cursor=cursor, organization_id=organization_id
     ) if day_rec else None
-    if summary and not ((summary.get("specialty_metrics") or {}).get("all") or {}).get(
-        "split_orders"
+    metric_norm = normalize_step1_queue_metric(metric)
+    specialty_queues = {
+        "comforter_orders",
+        "bath_mat_orders",
+        "rejected_orders",
+        "split_orders",
+    }
+    if (
+        summary
+        and metric_norm in specialty_queues
+        and not ((summary.get("specialty_metrics") or {}).get("all") or {}).get(
+            "split_orders"
+        )
     ):
         from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
 
@@ -442,7 +453,7 @@ def build_drilldown(
         and normalize_step1_queue_metric(metric) == "review_required"
     ):
         status_rows = load_day_bags_by_ids(
-            cursor, organization_id, selected_date_et, ids
+            cursor, organization_id, selected_date_et, ids, status_only=True
         )
         still_review = {
             normalize_bag_id(r.get("bag_id"))

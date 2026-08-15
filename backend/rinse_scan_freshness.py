@@ -287,18 +287,9 @@ def _load_pipeline_timestamps(cursor, organization_id: int) -> dict[str, Any]:
             if out["last_scan_refresh_at"] is not None:
                 break
 
-    if table_exists(cursor, "rinse_bag_scan_events"):
-        cursor.execute(
-            """
-            SELECT MAX(created_at) AS mx
-            FROM rinse_bag_scan_events
-            WHERE organization_id = %s
-            """,
-            (org,),
-        )
-        row = cursor.fetchone() or {}
-        created = row.get("mx") if isinstance(row, dict) else (row[0] if row else None)
-        out["last_scan_refresh_at"] = _max_dt(out.get("last_scan_refresh_at"), created)
+    # Do not SELECT MAX(created_at) FROM rinse_bag_scan_events for the whole org.
+    # That is a full-table scan on every Review Required / Shift Monitor open.
+    # Successful scrape_runs.finished_at is the ingestion-pipeline watermark.
 
     portal_at = out.get("last_portal_scrape_at")
     scan_at = out.get("last_scan_refresh_at")

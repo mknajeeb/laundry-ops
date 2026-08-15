@@ -121,3 +121,18 @@ def test_build_scan_data_freshness_includes_operator_watermarks():
     assert safe["operator_data_current_through_et"] == "2026-08-08T13:09:00-04:00"
     assert safe["last_portal_scrape_at"] == "2026-08-08T13:42:11-04:00"
     assert safe["most_recent_persisted_scan_at"] == "2026-08-08T13:09:00-04:00"
+
+
+def test_pipeline_timestamps_skip_org_wide_scan_created_at_max():
+    from unittest.mock import MagicMock, patch
+
+    from backend.rinse_scan_freshness import _load_pipeline_timestamps
+
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    cursor.fetchone.return_value = {}
+    with patch("backend.ta_helpers.table_exists", return_value=True):
+        _load_pipeline_timestamps(cursor, 3)
+    sqls = " ".join(str(call.args[0]) for call in cursor.execute.call_args_list)
+    assert "MAX(created_at)" not in sqls
+    assert "rinse_scrape_runs" in sqls
