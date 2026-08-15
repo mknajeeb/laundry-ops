@@ -19,7 +19,9 @@ from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from backend.rinse_scrape_runs import (
+    MYSQL_LOCK_HELD_REASON,
     acquire_scrape_lock,
+    ensure_scrape_run_terminal,
     finish_scrape_run,
     insert_scrape_run,
     insert_skipped_scrape_run,
@@ -660,6 +662,76 @@ def _build_sync_cycle_metadata(
     return out
 
 
+def _fmt_et_wall(dt: datetime | None) -> str | None:
+    if dt is None or not isinstance(dt, datetime):
+        return None
+    naive = dt.replace(tzinfo=None) if dt.tzinfo else dt
+    return naive.isoformat(sep=" ", timespec="seconds") + " ET"
+
+
+def _fmt_system_utc_as_et(dt: datetime | None) -> str | None:
+    from backend.rinse_scan_time import system_datetime_to_et
+
+    et = system_datetime_to_et(dt)
+    if et is None:
+        return None
+    return et.replace(tzinfo=None).isoformat(sep=" ", timespec="seconds") + " ET"
+
+
+def _newest_db_scan_et(cursor, organization_id: int) -> datetime | None:
+    try:
+        cursor.execute(
+            """
+            SELECT MAX(scanned_at_parsed) AS mx
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+            """,
+            (int(organization_id),),
+        )
+        row = cursor.fetchone() or {}
+        mx = row.get("mx") if isinstance(row, dict) else None
+        return mx if isinstance(mx, datetime) else None
+    except Exception:
+        return None
+
+
+def _newest_source_scan_et(events_df: Any) -> datetime | None:
+    try:
+        series = events_df["scanned_at_parsed"]
+        mx = series.max() if hasattr(series, "max") else None
+        if mx is None:
+            return None
+        try:
+            import pandas as pd
+
+            if pd.isna(mx):
+                return None
+        except Exception:
+            pass
+        if isinstance(mx, datetime):
+            return mx.replace(tzinfo=None) if mx.tzinfo else mx
+        return None
+    except Exception:
+        return None
+
+
+def _source_to_db_lag_seconds(
+    import_available_utc: datetime | None,
+    source_scan_et: datetime | None,
+) -> int | None:
+    """DB availability (UTC system) minus authoritative source scan (ET wall)."""
+    if import_available_utc is None or source_scan_et is None:
+        return None
+    from backend.rinse_scan_time import system_datetime_to_et
+
+    import_et = system_datetime_to_et(import_available_utc)
+    if import_et is None:
+        return None
+    import_naive = import_et.replace(tzinfo=None)
+    src = source_scan_et.replace(tzinfo=None) if source_scan_et.tzinfo else source_scan_et
+    return int((import_naive - src).total_seconds())
+
+
 def _finish_combined_cycle_run(
     conn,
     cursor,
@@ -759,9 +831,17 @@ def run_rinse_combined_sync_for_org(
         return result
 
     acquired, lock_reason = acquire_scrape_lock(cursor, org_id)
+    lock_acquired_at = datetime.utcnow()
     conn.commit()
     if not acquired:
-        skip_reason = CYCLE_ALREADY_RUNNING if "still active" in (lock_reason or "") else lock_reason
+        skip_reason = (
+            CYCLE_ALREADY_RUNNING
+            if (
+                "still active" in (lock_reason or "")
+                or lock_reason == MYSQL_LOCK_HELD_REASON
+            )
+            else lock_reason
+        )
         insert_skipped_scrape_run(
             cursor,
             org_id,
@@ -795,12 +875,18 @@ def run_rinse_combined_sync_for_org(
     result.run_id = run_id
     log = _TeeLog(paths.log_path)
     started_at = cycle_started_at
+    result.detail["ingestion_lifecycle"] = {
+        "scrape_run_id": run_id,
+        "cron_scheduled_et": _fmt_system_utc_as_et(cycle_started_at),
+        "main_lock_acquired_et": _fmt_system_utc_as_et(lock_acquired_at),
+    }
 
     rfv_detail: dict[str, Any] = {}
     av_presence_detail: dict[str, Any] = {}
     import_result: ScheduledScrapeResult | None = None
     delay_seconds: int | None = None
 
+    run_terminal = False
     try:
         log.write(
             f"Combined sync cycle run_id={run_id} org={org_id} vendor={vendor} run_type={run_type}\n"
@@ -961,7 +1047,15 @@ def run_rinse_combined_sync_for_org(
         result.portal_rows_count = import_result.portal_rows_count
         result.scan_events_count = import_result.scan_events_count
         result.error_message = import_result.error_message
+        prior_life = dict((result.detail or {}).get("ingestion_lifecycle") or {})
         result.detail = dict(import_result.detail or {})
+        import_life = dict(result.detail.get("ingestion_lifecycle") or {})
+        life = {**prior_life, **import_life}
+        life["scrape_run_id"] = run_id
+        life["batch_id"] = result.batch_id
+        if isinstance(av_presence_detail, Mapping) and av_presence_detail.get("run_id") is not None:
+            life["presence_run_id"] = av_presence_detail.get("run_id")
+        result.detail["ingestion_lifecycle"] = life
 
         cycle_status = _resolve_combined_cycle_status(
             rfv_status=rfv_result.status,
@@ -1038,6 +1132,7 @@ def run_rinse_combined_sync_for_org(
             ready_for_vendor_sync=rfv_detail,
             at_vendor_presence_sync=av_presence_detail,
         )
+        run_terminal = True
     except Exception as exc:
         conn.rollback()
         result.status = "failed"
@@ -1055,20 +1150,62 @@ def run_rinse_combined_sync_for_org(
             cycle_status="failed",
             failure_message=str(exc),
         )
-        _finish_combined_cycle_run(
-            conn,
-            cursor,
-            organization_id=org_id,
-            result=result,
-            started_at=started_at,
-            paths=paths,
-            sync_cycle=sync_cycle,
-            ready_for_vendor_sync=rfv_detail or None,
-            at_vendor_presence_sync=av_presence_detail or None,
-        )
+        try:
+            _finish_combined_cycle_run(
+                conn,
+                cursor,
+                organization_id=org_id,
+                result=result,
+                started_at=started_at,
+                paths=paths,
+                sync_cycle=sync_cycle,
+                ready_for_vendor_sync=rfv_detail or None,
+                at_vendor_presence_sync=av_presence_detail or None,
+            )
+            run_terminal = True
+        except Exception as finish_exc:
+            log.write(f"Combined sync finish ERROR: {finish_exc}\n")
     finally:
-        log.close()
+        if result.run_id and not run_terminal:
+            try:
+                term_status = str(result.status or "")
+                if term_status in ("", "running", "skipped"):
+                    term_status = "failed"
+                ensure_scrape_run_terminal(
+                    cursor,
+                    int(result.run_id),
+                    org_id,
+                    status=term_status,
+                    error_message=result.error_message
+                    or "cycle ended without finish_scrape_run",
+                    result_json=dict(result.detail or {}),
+                )
+                conn.commit()
+            except Exception as term_exc:
+                try:
+                    log.write(f"Combined sync terminalize ERROR: {term_exc}\n")
+                except Exception:
+                    pass
+        try:
+            log.close()
+        except Exception:
+            pass
         release_scrape_lock(cursor, org_id)
+        try:
+            if result.run_id:
+                life = dict((result.detail or {}).get("ingestion_lifecycle") or {})
+                life["main_lock_released_et"] = _fmt_system_utc_as_et(datetime.utcnow())
+                life["scrape_terminal_status"] = result.status
+                life["scrape_terminal_et"] = _fmt_system_utc_as_et(datetime.utcnow())
+                result.detail["ingestion_lifecycle"] = life
+                merge_scrape_run_result_json(
+                    cursor,
+                    int(result.run_id),
+                    org_id,
+                    {"ingestion_lifecycle": life},
+                )
+        except Exception:
+            pass
         conn.commit()
 
     # Post-lock: best-effort targeted refresh must not hold the main scrape lock.
@@ -1720,9 +1857,11 @@ def run_scheduled_scrape_for_org(
                 conn.commit()
                 return result
 
+            scan_download_started = datetime.utcnow()
             if _run_bash_script(scan_script, env, log) != 0:
                 raise RuntimeError("Scan-events scrape subprocess failed")
 
+            scan_download_completed = datetime.utcnow()
             scan_rows = count_csv_data_rows(paths.scan_events_csv)
             result.scan_events_count = scan_rows
 
@@ -1739,6 +1878,8 @@ def run_scheduled_scrape_for_org(
 
             orders_df = portal_csv_to_orders_df(str(paths.portal_csv))
             events_df, warnings = parse_scan_events_csv(str(paths.scan_events_csv))
+            newest_source_scan = _newest_source_scan_et(events_df)
+            newest_db_before = _newest_db_scan_et(cursor, org_id)
 
             if len(orders_df) < 1:
                 raise RuntimeError("Portal CSV parsed to zero order rows")
@@ -1758,6 +1899,8 @@ def run_scheduled_scrape_for_org(
                 portal_scrape_meta_path=str(portal_meta_path),
                 scrape_run_id=run_id,
             )
+            newest_db_after = _newest_db_scan_et(cursor, org_id)
+            merge_available_at = datetime.utcnow()
             if not draft_payload.get("portal_absence_allowed"):
                 log.write(
                     "WARNING: portal scrape hit max pages — "
@@ -1837,6 +1980,28 @@ def run_scheduled_scrape_for_org(
 
             result.status = final_status
             result.at_vendor_status = final_status
+            confirmed_at = datetime.utcnow() if confirm_payload else None
+            lag_seconds = _source_to_db_lag_seconds(
+                confirmed_at or merge_available_at, newest_source_scan
+            )
+            db_advanced = bool(
+                newest_db_after
+                and newest_db_before
+                and newest_db_after > newest_db_before
+            ) or bool(
+                newest_source_scan
+                and newest_db_after
+                and newest_db_after >= newest_source_scan
+            )
+            evidence = None
+            stage_b_status = None
+            if isinstance(step1_refresh_detail, dict):
+                durable = step1_refresh_detail.get("durable_evidence_gate") or {}
+                if isinstance(durable, dict):
+                    evidence = durable.get("gate_status") or durable.get("status")
+                stage_b_status = step1_refresh_detail.get("step1_refresh_status")
+                if step1_refresh_detail.get("deferred"):
+                    stage_b_status = stage_b_status or "DEFERRED"
             result.detail = {
                 "draft": draft_payload,
                 "confirm": confirm_payload,
@@ -1844,6 +2009,24 @@ def run_scheduled_scrape_for_org(
                 "attention_count": attention,
                 "accepted_count": accepted,
                 "portal_confirm_gate": portal_gate,
+                "ingestion_lifecycle": {
+                    "scrape_run_id": run_id,
+                    "batch_id": batch_id,
+                    "source_scan_download_started_et": _fmt_system_utc_as_et(
+                        scan_download_started
+                    ),
+                    "source_scan_download_completed_et": _fmt_system_utc_as_et(
+                        scan_download_completed
+                    ),
+                    "newest_source_scan_et": _fmt_et_wall(newest_source_scan),
+                    "newest_db_scan_et_before": _fmt_et_wall(newest_db_before),
+                    "newest_db_scan_et_after": _fmt_et_wall(newest_db_after),
+                    "source_to_db_lag_seconds": lag_seconds,
+                    "newest_scan_advanced": db_advanced,
+                    "batch_confirmed_et": _fmt_system_utc_as_et(confirmed_at),
+                    "evidence_gate": evidence,
+                    "stage_b": stage_b_status,
+                },
             }
             if isinstance(confirm_payload, dict) and (
                 (confirm_payload.get("rinse_finalize") or {}).get("deferred")
@@ -1909,6 +2092,26 @@ def run_scheduled_scrape_for_org(
                 result_json=result.detail,
             )
             conn.commit()
+        except Exception as finish_exc:
+            try:
+                log.write(f"Standalone finish ERROR: {finish_exc}\n")
+            except Exception:
+                pass
+            try:
+                term_status = str(result.status or "") or "failed"
+                if term_status == "running":
+                    term_status = "failed"
+                ensure_scrape_run_terminal(
+                    cursor,
+                    int(run_id),
+                    org_id,
+                    status=term_status,
+                    error_message=result.error_message or str(finish_exc),
+                    result_json=dict(result.detail or {}),
+                )
+                conn.commit()
+            except Exception:
+                pass
         finally:
             release_scrape_lock(cursor, org_id)
             conn.commit()

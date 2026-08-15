@@ -467,19 +467,25 @@ def get_scheduled_scrape_status(cursor, organization_id: int) -> dict[str, Any]:
             out["data_last_updated_at_et"] = detail.get("data_last_updated_at")
             out["timing_summary"] = detail.get("timing_summary")
 
-    cursor.execute(
-        """
-        SELECT id, status, started_at FROM rinse_scrape_runs
-        WHERE organization_id = %s AND status = 'running'
-        ORDER BY started_at DESC LIMIT 1
-        """,
-        (org,),
-    )
-    running = cursor.fetchone()
-    out["currently_running"] = bool(running)
-    if running and isinstance(running, dict):
-        out["running_run_id"] = running.get("id")
-        out["running_started_at"] = _fmt_system(running.get("started_at"))
+    from backend.rinse_scrape_runs import mysql_lock_is_held
+
+    lock_held, lock_hint = mysql_lock_is_held(cursor, org)
+    out["currently_running"] = bool(lock_held)
+    if lock_held:
+        cursor.execute(
+            """
+            SELECT id, status, started_at FROM rinse_scrape_runs
+            WHERE organization_id = %s AND status = 'running'
+            ORDER BY started_at DESC LIMIT 1
+            """,
+            (org,),
+        )
+        running = cursor.fetchone()
+        if running and isinstance(running, dict):
+            out["running_run_id"] = running.get("id")
+            out["running_started_at"] = _fmt_system(running.get("started_at"))
+        elif lock_hint:
+            out["running_hint"] = lock_hint
 
     from backend.rinse_presence_sync_status import (
         build_at_vendor_sync_status,

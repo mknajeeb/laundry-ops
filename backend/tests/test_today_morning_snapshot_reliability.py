@@ -380,6 +380,9 @@ def test_watchdog_stale_timeout_heals_missing_today_snapshot():
     cursor = MagicMock()
     conn = MagicMock()
     cursor.connection = conn
+    cursor.fetchone.side_effect = [
+        {"got": 1},
+    ]
     cursor.fetchall.side_effect = [
         [
             {
@@ -388,10 +391,6 @@ def test_watchdog_stale_timeout_heals_missing_today_snapshot():
                 "result_json": "{}",
             }
         ],
-    ]
-    cursor.fetchone.side_effect = [
-        None,  # no remaining running rows
-        {"got": 1},
     ]
     with patch(
         "backend.rinse_scrape_runs.ensure_rinse_scrape_runs_table"

@@ -359,6 +359,51 @@ def reconcile_stale_import_running_gates(cursor, organization_id: int) -> int:
     return cleared
 
 
+def terminalize_import_running_gates_for_scrape_runs(
+    cursor,
+    *,
+    organization_id: int,
+    scrape_run_ids: list[int],
+    error: str | None = None,
+) -> int:
+    """Clear import_running gates for dead scrape runs (lock already proven free)."""
+    if not scrape_run_ids or not table_exists(cursor, "rinse_step1_evidence_gate"):
+        return 0
+    ids = [int(x) for x in scrape_run_ids if x]
+    if not ids:
+        return 0
+    placeholders = ",".join(["%s"] * len(ids))
+    cursor.execute(
+        f"""
+        SELECT import_batch_id, scrape_run_id
+        FROM rinse_step1_evidence_gate
+        WHERE organization_id = %s
+          AND gate_status = %s
+          AND scrape_run_id IN ({placeholders})
+        """,
+        (int(organization_id), GATE_IMPORT_RUNNING, *ids),
+    )
+    cleared = 0
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, Mapping):
+            continue
+        bid = row.get("import_batch_id")
+        if bid is None:
+            continue
+        record_scan_import_terminal_failure(
+            cursor,
+            organization_id=organization_id,
+            import_batch_id=int(bid),
+            scrape_run_id=(
+                int(row["scrape_run_id"]) if row.get("scrape_run_id") is not None else None
+            ),
+            error=error or "import_running gate cleared because scrape lock was free",
+            detail={"dead_execution_reclaimed": True},
+        )
+        cleared += 1
+    return cleared
+
+
 def active_scan_import_running(
     cursor,
     organization_id: int,

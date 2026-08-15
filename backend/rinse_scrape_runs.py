@@ -83,106 +83,167 @@ def ensure_rinse_scrape_runs_table(cursor) -> None:
     )
 
 
+MYSQL_LOCK_HELD_REASON = "could not acquire MySQL lock"
+DEAD_EXECUTION_MESSAGE = (
+    "previous execution died before terminalizing (MySQL lock was free)"
+)
+
+
 def _mysql_lock_name(organization_id: int) -> str:
     return f"rinse_scrape_org_{int(organization_id)}"
 
 
+def mysql_lock_is_held(cursor, organization_id: int) -> tuple[bool, str | None]:
+    """True when GET_LOCK for this org is held by a live MySQL session."""
+    cursor.execute(
+        "SELECT IS_USED_LOCK(%s) AS used",
+        (_mysql_lock_name(int(organization_id)),),
+    )
+    row = cursor.fetchone() or {}
+    used = row.get("used") if isinstance(row, dict) else (row[0] if row else None)
+    if used is None:
+        return False, None
+    return True, f"MySQL lock held (connection_id={used})"
+
+
 def is_scrape_cycle_running(cursor, organization_id: int) -> tuple[bool, str | None]:
-    """Read-only: True when this org has a rinse_scrape_runs row still marked running."""
+    """True only when a live session owns the org scrape lock.
+
+    A leftover ``status='running'`` row is not evidence of a live process.
+    """
     ensure_rinse_scrape_runs_table(cursor)
-    org = int(organization_id)
+    return mysql_lock_is_held(cursor, organization_id)
+
+
+def _parse_result_json(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _terminalize_orphaned_running_row(
+    cursor,
+    organization_id: int,
+    row: dict[str, Any],
+    *,
+    now: datetime,
+    stale_cutoff: datetime,
+) -> int | None:
+    """Mark a leftover running row failed. Caller already owns GET_LOCK."""
+    run_id = int(row.get("id") or 0)
+    if not run_id:
+        return None
+    started = row.get("started_at")
+    timed_out = isinstance(started, datetime) and started < stale_cutoff
+    if timed_out:
+        failed_step = (
+            _infer_failed_step_from_presence_runs(cursor, organization_id, started)
+            if isinstance(started, datetime)
+            else "unknown"
+        )
+        failure_message = f"Combined sync cycle timed out after {_stale_minutes()} minutes"
+        cycle_status = "FAILED_TIMEOUT"
+    else:
+        failed_step = "died_before_terminal"
+        failure_message = DEAD_EXECUTION_MESSAGE
+        cycle_status = "FAILED_DEAD"
+    detail = _parse_result_json(row.get("result_json"))
+    sync_cycle = dict(detail.get("sync_cycle") or {})
+    sync_cycle.update(
+        {
+            "sync_cycle_id": run_id,
+            "cycle_status": cycle_status,
+            "failure_message": failure_message,
+            "failed_step": failed_step,
+            "lock_was_free": True,
+        }
+    )
+    detail["sync_cycle"] = sync_cycle
     cursor.execute(
         """
-        SELECT id, started_at
-        FROM rinse_scrape_runs
-        WHERE organization_id = %s AND status = 'running'
-        ORDER BY started_at DESC
-        LIMIT 1
+        UPDATE rinse_scrape_runs
+        SET status = 'failed',
+            finished_at = %s,
+            error_message = %s,
+            result_json = %s
+        WHERE id = %s AND organization_id = %s AND status = 'running'
         """,
-        (org,),
+        (
+            now,
+            failure_message,
+            json.dumps(detail, default=str),
+            run_id,
+            int(organization_id),
+        ),
     )
-    row = cursor.fetchone()
-    if row and isinstance(row, dict):
-        run_id = row.get("id")
-        return True, f"rinse_scrape_runs.id={run_id} still running"
-    return False, None
+    return run_id
 
 
 def acquire_scrape_lock(cursor, organization_id: int) -> tuple[bool, str]:
-    """
-    Returns (acquired, reason).
-    Uses GET_LOCK + clears stale `running` rows older than RINSE_SCRAPE_STALE_MINUTES.
+    """Acquire the org scrape lock. GET_LOCK is the authority for live execution.
+
+    If GET_LOCK fails, another process is alive — do not overlap.
+
+    If GET_LOCK succeeds, leftover ``status='running'`` rows are dead executions
+    (the previous session released the lock). Terminalize them here as part of
+    taking ownership so they cannot block the next natural cron.
     """
     ensure_rinse_scrape_runs_table(cursor)
     org = int(organization_id)
-    stale_cutoff = _utcnow() - timedelta(minutes=_stale_minutes())
+    now = _utcnow()
+    stale_cutoff = now - timedelta(minutes=_stale_minutes())
+
+    cursor.execute("SELECT GET_LOCK(%s, 0) AS got", (_mysql_lock_name(org),))
+    row = cursor.fetchone() or {}
+    got = row.get("got") if isinstance(row, dict) else row[0]
+    if int(got or 0) != 1:
+        return False, MYSQL_LOCK_HELD_REASON
 
     cursor.execute(
         """
         SELECT id, started_at, result_json
         FROM rinse_scrape_runs
-        WHERE organization_id = %s
-          AND status = 'running'
-          AND started_at < %s
+        WHERE organization_id = %s AND status = 'running'
         ORDER BY started_at ASC
         """,
-        (org, stale_cutoff),
+        (org,),
     )
-    stale_rows = cursor.fetchall() or []
-    stale_run_ids: list[int] = []
-    for stale in stale_rows:
-        if not isinstance(stale, dict):
-            continue
-        run_id = int(stale.get("id") or 0)
-        if run_id:
-            stale_run_ids.append(run_id)
-        started = stale.get("started_at")
-        failed_step = (
-            _infer_failed_step_from_presence_runs(cursor, org, started)
-            if isinstance(started, datetime)
-            else "unknown"
+    leftover_rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    leftover_ids: list[int] = []
+    for leftover in leftover_rows:
+        rid = _terminalize_orphaned_running_row(
+            cursor,
+            org,
+            leftover,
+            now=now,
+            stale_cutoff=stale_cutoff,
         )
-        failure_message = f"Combined sync cycle timed out after {_stale_minutes()} minutes"
-        detail: dict[str, Any] = {}
-        raw_detail = stale.get("result_json")
-        if isinstance(raw_detail, str):
-            try:
-                detail = json.loads(raw_detail)
-            except json.JSONDecodeError:
-                detail = {}
-        elif isinstance(raw_detail, dict):
-            detail = dict(raw_detail)
-        sync_cycle = dict(detail.get("sync_cycle") or {})
-        sync_cycle.update(
-            {
-                "sync_cycle_id": run_id,
-                "cycle_status": "FAILED_TIMEOUT",
-                "failure_message": failure_message,
-                "failed_step": failed_step,
-            }
-        )
-        detail["sync_cycle"] = sync_cycle
-        cursor.execute(
-            """
-            UPDATE rinse_scrape_runs
-            SET status = 'failed',
-                finished_at = %s,
-                error_message = %s,
-                result_json = %s
-            WHERE id = %s AND organization_id = %s
-            """,
-            (
-                _utcnow(),
-                failure_message,
-                json.dumps(detail, default=str),
-                run_id,
-                org,
-            ),
-        )
+        if rid:
+            leftover_ids.append(rid)
 
-    if stale_run_ids:
+    if leftover_ids:
+        try:
+            from backend.rinse_step1_evidence_gate import (
+                terminalize_import_running_gates_for_scrape_runs,
+            )
+
+            terminalize_import_running_gates_for_scrape_runs(
+                cursor,
+                organization_id=org,
+                scrape_run_ids=leftover_ids,
+                error=DEAD_EXECUTION_MESSAGE,
+            )
+        except Exception:
+            pass
         # Import may have confirmed while Stage-B never started. Heal Today
-        # from the complete gate before the next cycle takes the lock.
+        # from the complete gate before this cycle continues under the lock.
         try:
             conn = getattr(cursor, "connection", None)
             if conn is not None:
@@ -194,7 +255,7 @@ def acquire_scrape_lock(cursor, organization_id: int) -> tuple[bool, str]:
                     conn,
                     cursor,
                     org,
-                    scrape_run_id=stale_run_ids[-1],
+                    scrape_run_id=leftover_ids[-1],
                 )
                 try:
                     conn.commit()
@@ -202,23 +263,6 @@ def acquire_scrape_lock(cursor, organization_id: int) -> tuple[bool, str]:
                     pass
         except Exception:
             pass
-
-    cursor.execute(
-        """
-        SELECT id FROM rinse_scrape_runs
-        WHERE organization_id = %s AND status = 'running'
-        LIMIT 1
-        """,
-        (org,),
-    )
-    if cursor.fetchone():
-        return False, "previous run still active"
-
-    cursor.execute("SELECT GET_LOCK(%s, 0) AS got", (_mysql_lock_name(org),))
-    row = cursor.fetchone() or {}
-    got = row.get("got") if isinstance(row, dict) else row[0]
-    if int(got or 0) != 1:
-        return False, "could not acquire MySQL lock"
 
     return True, ""
 
@@ -341,6 +385,43 @@ def finish_scrape_run(
             int(organization_id),
         ),
     )
+
+
+def ensure_scrape_run_terminal(
+    cursor,
+    run_id: int,
+    organization_id: int,
+    *,
+    status: str,
+    error_message: str | None = None,
+    result_json: dict[str, Any] | None = None,
+) -> bool:
+    """Force a still-running row to a terminal status. No-op if already terminal.
+
+    Used from ``finally`` so a failed ``finish_scrape_run`` cannot leave the
+    cycle running after the lock is released.
+    """
+    ensure_rinse_scrape_runs_table(cursor)
+    finished = _utcnow()
+    cursor.execute(
+        """
+        UPDATE rinse_scrape_runs
+        SET status = %s,
+            finished_at = COALESCE(finished_at, %s),
+            error_message = COALESCE(%s, error_message),
+            result_json = COALESCE(%s, result_json)
+        WHERE id = %s AND organization_id = %s AND status = 'running'
+        """,
+        (
+            (status or "failed")[:24],
+            finished,
+            (error_message or "")[:65000] or None,
+            json.dumps(result_json, default=str) if result_json is not None else None,
+            int(run_id),
+            int(organization_id),
+        ),
+    )
+    return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
 
 def merge_scrape_run_result_json(
