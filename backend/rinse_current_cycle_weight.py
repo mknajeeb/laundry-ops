@@ -72,10 +72,12 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from backend.rinse_cycle_boundary import (
     _event_ts,
+    _is_cycle_boundary_sent_to_vendor,
     _norm_purpose,
     _operator,
     resolve_current_cycle,
 )
+from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
 from backend.rinse_scan_purpose import is_weight_entry_purpose
 from backend.rinse_wf_weight_events import normalize_scan_weight_lbs
 
@@ -263,10 +265,15 @@ def select_current_cycle_weight_events(
     cycle_weight_events: list[Mapping[str, Any]] = []
 
     if anchor is not None:
-        # Bound to this cycle: after anchor, before next sent-to-vendor.
+        # Bound to this cycle: after anchor, before next cycle-boundary STV.
         next_send = None
+        rack_keys = {
+            str(r).strip().lower()
+            for r in (entry_racks if entry_racks is not None else DEFAULT_FACILITY_ENTRY_RACKS)
+            if str(r).strip()
+        }
         for ev in timeline:
-            if _norm_purpose(ev.get("purpose")) != "sent-to-vendor":
+            if not _is_cycle_boundary_sent_to_vendor(ev, rack_keys):
                 continue
             ts = _event_ts(ev)
             if ts is None or ts <= anchor:

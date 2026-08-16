@@ -2361,8 +2361,13 @@ def _evaluate_bag_as_of(
     anchor_ts = anchor_ts_override
     if anchor_ts is None:
         from backend.rinse_cycle_boundary import resolve_cycle_anchor
+        from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
 
-        anchor_ts = resolve_cycle_anchor(timeline, selected_date_et=selected_date_et)
+        anchor_ts = resolve_cycle_anchor(
+            timeline,
+            selected_date_et=selected_date_et,
+            entry_racks=list(DEFAULT_FACILITY_ENTRY_RACKS),
+        )
     if anchor_ts is None:
         for ev in timeline:
             if is_sent_to_vendor_purpose(ev.get("purpose")):
@@ -2382,8 +2387,13 @@ def _evaluate_bag_as_of(
             timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
         )
         from backend.rinse_cycle_boundary import resolve_cycle_anchor
+        from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
 
-        shared_anchor = resolve_cycle_anchor(timeline, selected_date_et=selected_date_et)
+        shared_anchor = resolve_cycle_anchor(
+            timeline,
+            selected_date_et=selected_date_et,
+            entry_racks=list(DEFAULT_FACILITY_ENTRY_RACKS),
+        )
         if shared_anchor is not None:
             anchor_ts = shared_anchor
 

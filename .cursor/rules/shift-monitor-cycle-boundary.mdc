@@ -16,7 +16,7 @@ The correction must be **architectural**, not a five-order / ID-specific patch. 
 
 For every bag and selected ET day:
 
-1. `current_cycle_anchor` = latest valid `purpose='sent-to-vendor'` on or before the selected day cutoff (existing cycle boundary).
+1. `current_cycle_anchor` = latest valid `purpose='sent-to-vendor'` on or before the selected day cutoff. **Valid excludes** mis-tagged STV on washer/dryer/folding machine racks (`D##…`, `W##…`, `Folding…`) — those never start or end a cycle. Configured entry racks, rackless STV, and other facility racks (e.g. trucks) still bound cycles.
 2. `first_cycle_weight_entry` = earliest `weight-entry` **strictly after** that anchor. Never use a prior-cycle or lifetime first weight as the cutoff.
 3. **Entry candidates** = current-cycle scans with purpose `sent-to-vendor` **or** `move-bag`, rack in **configured** entry racks (default: `VeeWash Dirty`, `Rinse Zipvan`), occurring **before** `first_cycle_weight_entry` (equal purposes — not a fallback hierarchy).
 4. **selected_entry** = latest qualifying candidate before that cutoff. If no current-cycle weight exists yet, select the latest qualifying configured entry in the open cycle (bag stays pending until review + POST).

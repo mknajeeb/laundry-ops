@@ -1,0 +1,120 @@
+---
+description: Management Hub is the only live ops surface; legacy page retirement rules
+alwaysApply: true
+---
+
+# Management Hub Architecture (locked)
+
+## Product home
+
+`/management` is the **only** user-facing operational system.
+
+Compartments: Rinse WF · Rinse HD · Performance · Labor · Revenue · Rinse Flow · Analysis · Bag Search.
+
+Do **not** maintain Management + a legacy ops page as two simultaneously active systems once Management has absorbed that page’s useful functionality.
+
+## Validation standard
+
+Validate:
+
+**AUTHORITATIVE SOURCE / PERSISTED FACT → MANAGEMENT RESULT**
+
+Do **not** use “matches Shift Analysis / legacy page” as primary proof.
+
+## Per-compartment data isolation
+
+Each compartment fetches **only its own** data.
+
+- Rinse WF must **not** fetch HD / Performance / Labor / Revenue / Rinse Flow / Analysis / Bag Search
+- Revenue must **not** fetch WF bag detail
+- Labor must **not** fetch Review drawers
+- Supplies must **not** block WF core
+
+Shared globally: auth / nav / lightweight config only.
+
+**Summary first. Detail on demand.** No speculative bag arrays, chronologies, or legacy preload payloads.
+
+## Legacy page absorption rule
+
+For every legacy page absorbed into Management:
+
+1. Management gets the required functionality
+2. Validate Management against authoritative backend facts
+3. Stop legacy navigation
+4. Redirect old route **before** mounting the legacy component
+5. Confirm **0** unnecessary legacy API requests after redirect
+6. Keep useful backend functions temporarily (do not aggressively delete)
+7. Remove dead code later only after all dependencies are known
+
+Redirect must happen **before** any legacy page initialization (no effects, hooks, API fetches, monitors).
+
+---
+
+## DONE — Shift Analysis (`/performance`)
+
+- Retired as an **active page** (not merely hidden nav)
+- Redirect `/performance` → `/management/rinse-wf` before mount
+- Do not initialize Shift Monitor or preload SA APIs
+- Keep validated calculation functions for reuse/extract; delete later when safe
+
+---
+
+## PLANNED — Supply Usage (`/maintenance/supply-usage`)
+
+**Owner:** Management Rinse WF (operational Supply Usage).
+
+Compact authoritative supply-summary path (async, never blocks WF core):
+
+- Tide · Downy · Oxi · All Free & Clear
+- Summary first; order/bag detail on demand
+
+**Do not** keep the old Supply Usage page running/fetching in parallel once Management fully replaces its useful operational functionality.
+
+**When ready (not until Rinse WF supplies section covers manager needs):**
+
+- Remove Supply Usage from primary navigation
+- Redirect `/maintenance/supply-usage` → `/management/rinse-wf` (or supply detail) **before** mount
+- Confirm 0 legacy Supply Usage API requests after redirect
+- Keep authoritative supply mapping/calculation functions; do **not** duplicate formulas
+- Future Supply Master / cost config = small Management settings/detail surface, not another giant ops page
+
+**Current status:** Supplies are async on Rinse WF. **Route retirement NOT yet authorized** — still a planned retirement.
+
+---
+
+## PLANNED — Revenue & Cost (`/finance/daily-revenue-cost` and related)
+
+Management Revenue (`/management/revenue`) becomes the management-facing home:
+
+- RINSE WF
+- RINSE HD
+- NON-RINSE → Self Service · Drop Off · DHS
+
+Revenue & Cost is also a **data entry** surface. Rules:
+
+- **Do not** create two editable sources of truth
+- Initially Management Revenue may reuse existing Revenue & Cost write APIs/storage
+- Then move/reuse input controls into Management Revenue
+- Retire the old page **only after** Management supports the required entry/edit workflow
+
+**End-state:**
+
+- `/management/revenue` = view + entry/edit
+- Old Revenue & Cost route redirects to `/management/revenue` **before** legacy mount
+- No hidden legacy DRC dashboard requests
+
+### Canonical revenue sources (do not merge incompatible definitions)
+
+| Surface | Source |
+|---|---|
+| Rinse HD | Order-level # items + total order revenue from canonical HD production storage |
+| Non-Rinse | Self Service / Drop Off / DHS **daily** revenue |
+| Rinse WF | Do **not** silently present estimated production value as actual revenue; use approved/canonical WF revenue basis when finalized |
+
+**Current status:** **Do not migrate Revenue & Cost in the current ops pass.** Execute in the Revenue compartment phase.
+
+---
+
+## Bandwidth / mobile
+
+Management is mobile-first. Keep initial payloads measured. No desktop-scale speculative payloads.

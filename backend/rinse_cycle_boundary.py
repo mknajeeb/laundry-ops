@@ -9,7 +9,10 @@ current cycle's entry, completion, or status.
 Architectural rules (not an ID-specific patch)
 ----------------------------------------------
 * ``current_cycle_anchor`` = latest valid ``purpose='sent-to-vendor'`` on or
-  before the selected ET day cutoff (existing cycle boundary).
+  before the selected ET day cutoff. **Valid** excludes mis-tagged STV on
+  washer/dryer/folding machine racks (those never start or end a cycle).
+  Configured entry racks (default: VeeWash Dirty, Rinse Zipvan), rackless
+  STV, and other facility racks (e.g. trucks) still bound cycles.
 * ``first_cycle_weight_entry`` = earliest ``weight-entry`` **strictly after**
   that anchor (never a prior-cycle / lifetime weight).
 * Entry candidates = configured-rack ``sent-to-vendor`` or ``move-bag`` in the
@@ -148,6 +151,42 @@ def _entry_rack_keys(entry_racks: Iterable[str] | None) -> set[str]:
     return {str(r).strip().lower() for r in racks if str(r).strip()}
 
 
+def _is_plant_machine_rack(rack: str) -> bool:
+    """Washer/dryer/folding machine racks — never cycle boundaries."""
+    r = str(rack or "").strip().upper()
+    if not r:
+        return False
+    # D10-50-VW / W45-60-VW / D3-30-VW …
+    if len(r) >= 2 and r[0] in ("D", "W") and r[1].isdigit():
+        return True
+    if r.startswith("FOLDING"):
+        return True
+    return False
+
+
+def _is_cycle_boundary_sent_to_vendor(
+    ev: Mapping[str, Any],
+    rack_keys: set[str],
+) -> bool:
+    """True when STV may start/end a facility cycle.
+
+    Configured entry-rack STVs always count. Rackless STVs keep legacy
+    boundary behavior. Mis-tagged STV on washer/dryer/folding racks never
+    reset the cycle (proven 9IDG97VIS4 / D10-50-VW failure).
+    Other facility racks (trucks, etc.) still bound cycles.
+    """
+    if _norm_purpose(ev.get("purpose")) != "sent-to-vendor":
+        return False
+    rack = str(ev.get("rack") or "").strip()
+    if not rack:
+        return True
+    if rack.lower() in rack_keys:
+        return True
+    if _is_plant_machine_rack(rack):
+        return False
+    return True
+
+
 def _scan_index_num(ev: Mapping[str, Any]) -> int | None:
     raw = ev.get("scan_index")
     if raw is None or raw == "":
@@ -260,15 +299,17 @@ def _has_intervening_prior_cycle_boundary(
     *,
     after_ts: datetime,
     before_ts: datetime,
+    rack_keys: set[str] | None = None,
 ) -> bool:
     """True when a return or completed prior cycle sits between entry and STV."""
+    keys = rack_keys if rack_keys is not None else _entry_rack_keys(None)
     review_at: datetime | None = None
     for ev in timeline:
         ts = _event_ts(ev)
         if ts is None or ts <= after_ts or ts >= before_ts:
             continue
         purpose = _norm_purpose(ev.get("purpose"))
-        if purpose == "sent-to-vendor" or _is_return_boundary(purpose):
+        if _is_cycle_boundary_sent_to_vendor(ev, keys) or _is_return_boundary(purpose):
             return True
         if purpose == "garments-reviewed":
             if review_at is None:
@@ -283,15 +324,17 @@ def _latest_prior_completion_before(
     timed: Sequence[tuple[datetime, Mapping[str, Any]]],
     *,
     before_ts: datetime,
+    rack_keys: set[str] | None = None,
 ) -> datetime | None:
     """Latest post-review weight-entry strictly before ``before_ts`` (prior cycle end)."""
+    keys = rack_keys if rack_keys is not None else _entry_rack_keys(None)
     review_at: datetime | None = None
     best: datetime | None = None
     for ts, ev in timed:
         if ts >= before_ts:
             break
         purpose = _norm_purpose(ev.get("purpose"))
-        if purpose == "sent-to-vendor" or _is_return_boundary(purpose):
+        if _is_cycle_boundary_sent_to_vendor(ev, keys) or _is_return_boundary(purpose):
             review_at = None
             continue
         if purpose == "garments-reviewed":
@@ -398,7 +441,7 @@ def _collect_entry_candidates(
         if rack.lower() not in rack_keys:
             continue
         if ts < anchor and _has_intervening_prior_cycle_boundary(
-            timeline, after_ts=ts, before_ts=anchor
+            timeline, after_ts=ts, before_ts=anchor, rack_keys=rack_keys
         ):
             continue
         out.append(
@@ -479,12 +522,17 @@ def resolve_cycle_anchor(
     timeline: Sequence[Mapping[str, Any]],
     *,
     selected_date_et: date,
+    entry_racks: Iterable[str] | None = None,
 ) -> datetime | None:
-    """Latest valid sent-to-vendor on or before the selected ET day cutoff."""
+    """Latest valid cycle-boundary STV on or before the selected ET day cutoff.
+
+    Excludes washer/dryer/folding machine-rack STV mis-tags.
+    """
     cutoff = naive_et_day_end_inclusive(selected_date_et)
+    rack_keys = _entry_rack_keys(entry_racks)
     best: datetime | None = None
     for ev in timeline:
-        if _norm_purpose(ev.get("purpose")) != "sent-to-vendor":
+        if not _is_cycle_boundary_sent_to_vendor(ev, rack_keys):
             continue
         ts = _event_ts(ev)
         if ts is None or ts > cutoff:
@@ -504,8 +552,8 @@ def current_cycle_event_window(
     """Inclusive start / exclusive end for scans in the current resolved cycle.
 
     Start is ``resolve_current_cycle(...).cycle_anchor_at``. End is the next
-    ``sent-to-vendor`` after that anchor (exclusive), matching the resolver's
-    internal ``next_send`` bound. Open cycles have ``end=None``.
+    cycle-boundary ``sent-to-vendor`` after that anchor (exclusive), matching
+    the resolver's internal ``next_send`` bound. Open cycles have ``end=None``.
 
     Callers must not substitute selected-calendar-day bounds for this window —
     cycles may cross ET midnight.
@@ -519,9 +567,10 @@ def current_cycle_event_window(
     start = cycle.cycle_anchor_at
     if start is None:
         return None, None
+    rack_keys = _entry_rack_keys(entry_racks)
     next_send: datetime | None = None
     for ev in timeline:
-        if _norm_purpose(ev.get("purpose")) != "sent-to-vendor":
+        if not _is_cycle_boundary_sent_to_vendor(ev, rack_keys):
             continue
         ts = _event_ts(ev)
         if ts is None:
@@ -568,7 +617,8 @@ def resolve_current_cycle(
     """
     Resolve current-cycle entry and completion for one bag on an ET day.
 
-    Cycle membership is anchored by the latest sent-to-vendor.
+    Cycle membership is anchored by the latest valid cycle-boundary
+    sent-to-vendor (machine-rack STV mis-tags excluded).
     ``first_cycle_weight_entry`` is the earliest weight-entry strictly after
     that anchor. Entry is the latest configured-rack ``sent-to-vendor`` or
     ``move-bag`` before that cutoff. Completion requires:
@@ -582,9 +632,12 @@ def resolve_current_cycle(
     immutable same-day attribution across repeat trips). When omitted, the
     latest valid sent-to-vendor on/before the selected day cutoff is used.
     """
+    rack_keys = _entry_rack_keys(entry_racks)
     anchor = cycle_anchor_override
     if anchor is None:
-        anchor = resolve_cycle_anchor(timeline, selected_date_et=selected_date_et)
+        anchor = resolve_cycle_anchor(
+            timeline, selected_date_et=selected_date_et, entry_racks=entry_racks
+        )
     empty = CycleBoundaryResult(
         cycle_anchor_at=anchor,
         entry_at=None,
@@ -603,8 +656,6 @@ def resolve_current_cycle(
     if anchor is None:
         return empty
 
-    rack_keys = _entry_rack_keys(entry_racks)
-
     timed: list[tuple[datetime, Mapping[str, Any]]] = []
     for ev in timeline:
         ts = _event_ts(ev)
@@ -618,7 +669,7 @@ def resolve_current_cycle(
     prev_stv: datetime | None = None
     next_send: datetime | None = None
     for ts, ev in timed:
-        if _norm_purpose(ev.get("purpose")) != "sent-to-vendor":
+        if not _is_cycle_boundary_sent_to_vendor(ev, rack_keys):
             continue
         if ts < anchor and (prev_stv is None or ts > prev_stv):
             prev_stv = ts
@@ -630,7 +681,9 @@ def resolve_current_cycle(
     # *strictly after* the current-cycle anchor — never a prior-cycle weight.
     cycle_lower = prev_stv
     if cycle_lower is None:
-        cycle_lower = _latest_prior_completion_before(timed, before_ts=anchor)
+        cycle_lower = _latest_prior_completion_before(
+            timed, before_ts=anchor, rack_keys=rack_keys
+        )
 
     post_anchor_cycle = [
         (ts, ev)
