@@ -249,17 +249,25 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
     assert pound_totals["included_bags"][0]["bag_id"] not in dumped
 
 
-def test_wf_lbs_source_is_daily_ops_completed_pounds():
-    with patch(
-        "backend.daily_operations.daily_operations_enabled_for_org", return_value=True
+def test_wf_lbs_prefers_persisted_daily_ops_pounds():
+    class Cur:
+        def execute(self, sql, params=None):
+            self.sql = sql
+
+        def fetchone(self):
+            return {"today_wf_completed_pounds": 12.5}
+
+    with patch("backend.daily_operations.daily_operations_enabled_for_org", return_value=True), patch(
+        "backend.daily_operations.ensure_daily_operations_tables"
     ), patch(
-        "backend.daily_operations.compute_day_wf_pound_totals",
-        return_value={"today_wf_completed_pounds": 12.5, "included_bags": [{"bag_id": "X"}]},
+        "backend.management_today.table_exists", return_value=True
+    ), patch(
+        "backend.daily_operations.compute_day_wf_pound_totals"
     ) as compute:
         from backend.management_today import _load_wf_lbs
 
-        assert _load_wf_lbs(object(), 3, date(2026, 8, 15)) == 12.5
-        compute.assert_called_once()
+        assert _load_wf_lbs(Cur(), 3, date(2026, 8, 15)) == 12.5
+        compute.assert_not_called()
 
 
 def test_today_cache_returns_same_scalars_without_rebuild():

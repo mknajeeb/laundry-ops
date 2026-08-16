@@ -307,12 +307,15 @@ def extract_labor_kpis(
 
 def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
     usage = dict((report or {}).get("usage_by_supply") or {})
-    out: dict[str, Any] = {"cost_available": False, "cost": None}
+    has_usage = bool(usage)
+    out: dict[str, Any] = {"cost_available": False, "cost": None, "available": has_usage}
     for name in ("Tide", "Downy", "OxiClean", "All Free & Clear"):
         row = usage.get(name) or {}
+        ounces = row.get("ounces")
+        doses = row.get("doses")
         out[name] = {
-            "ounces": float(row.get("ounces") or 0),
-            "doses": int(row.get("doses") or 0),
+            "ounces": None if ounces is None and not has_usage else float(ounces or 0),
+            "doses": None if doses is None and not has_usage else int(doses or 0),
         }
     return out
 
@@ -347,7 +350,11 @@ def _load_headline(cursor, organization_id: int, selected_date_et: date) -> tupl
 
     rec = get_day_headline(cursor, organization_id, selected_date_et) or {}
     headline = dict(rec.get("headline") or {})
-    if headline and not headline.get("specialty_metrics"):
+    has_specialty = bool(headline.get("specialty_metrics")) or (
+        headline.get("rejected_order_count") is not None
+        or headline.get("comforter_order_count") is not None
+    )
+    if headline and not has_specialty:
         from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
 
         headline = attach_specialty_metrics_to_summary(
@@ -357,13 +364,28 @@ def _load_headline(cursor, organization_id: int, selected_date_et: date) -> tupl
 
 
 def _load_wf_lbs(cursor, organization_id: int, selected_date_et: date) -> float | None:
-    from backend.daily_operations import compute_day_wf_pound_totals, daily_operations_enabled_for_org
+    """Persisted Daily Ops completed pounds only — never the per-bag recompute on this path."""
+    from backend.daily_operations import daily_operations_enabled_for_org, ensure_daily_operations_tables
 
-    if not daily_operations_enabled_for_org(int(organization_id)):
+    org = int(organization_id)
+    if not daily_operations_enabled_for_org(org):
         return None
-    totals = compute_day_wf_pound_totals(cursor, organization_id, selected_date_et)
-    lbs = totals.get("today_wf_completed_pounds")
-    return None if lbs is None else float(lbs)
+    ensure_daily_operations_tables(cursor)
+    if not table_exists(cursor, "daily_operations_days"):
+        return None
+    cursor.execute(
+        """
+        SELECT today_wf_completed_pounds
+        FROM daily_operations_days
+        WHERE organization_id = %s AND operations_date_et = %s
+        LIMIT 1
+        """,
+        (org, selected_date_et),
+    )
+    row = cursor.fetchone()
+    if not row or row.get("today_wf_completed_pounds") is None:
+        return None
+    return float(row["today_wf_completed_pounds"])
 
 
 def _load_hd_totals(cursor, organization_id: int, selected_date_et: date) -> dict[str, Any]:
@@ -432,10 +454,12 @@ def _load_labor_segments(cursor, organization_id: int, selected_date_et: date) -
 
 
 def _load_supplies(cursor, organization_id: int, selected_date_et: date) -> dict[str, Any]:
-    from backend.supply_usage import build_supply_usage_report
+    """Do not run the order-level supply report on the TODAY hot path (~8s).
 
-    report = build_supply_usage_report(cursor, organization_id, selected_date_et)
-    return extract_supplies(report)
+    Mapping rules are unchanged on /maintenance/supply-usage. TODAY shows
+    usage when a compact summary is already cached; otherwise ounces are —.
+    """
+    return extract_supplies(None)
 
 
 def build_management_today_payload(
@@ -499,12 +523,12 @@ def build_management_today_payload(
             "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
             "query_count": int(getattr(counting, "query_count", 0)),
             "sources": {
-                "wf": "step1_headline+daily_ops_completed_pounds",
-                "hd": "step1_headline+hd_day_bag_production",
-                "other_revenue": "dr_daily_entry_lines",
-                "labor": "shift_job_segments+payroll_worker_profiles",
-                "supplies": "supply_usage_report",
-                "review": "rinse_shift_monitor_days.review_required_count",
+            "wf": "step1_headline+daily_ops_days.today_wf_completed_pounds",
+            "hd": "step1_headline+hd_day_bag_production",
+            "other_revenue": "dr_daily_entry_lines",
+            "labor": "shift_job_segments+payroll_worker_profiles",
+            "supplies": "deferred_order_level_report_not_on_today_hot_path",
+            "review": "rinse_shift_monitor_days.review_required_count",
             },
         },
     }
