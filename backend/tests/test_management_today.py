@@ -303,7 +303,9 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
     assert payload["other_revenue"]["dhs"] == 33.0
     assert payload["labor"]["rinse_wf_hours"] == 2.0
     assert payload["labor"]["total_dollars"] == 40.0
-    assert payload["supplies"]["Tide"]["ounces"] == 6.0
+    assert payload["supplies"]["Tide"]["ounces"] is None
+    assert payload["supplies"]["deferred"] is True
+    assert payload["supplies"]["available"] is False
     assert payload["review"]["review_required"] == 5
     assert payload["review"]["split_available"] is False
     rinse = payload["rinse"]
@@ -318,6 +320,7 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
     assert rinse["hd_dashboard_totals"]["total_hd_orders"] == 13
     assert rinse["weight_totals"]["pre_lbs"] == 2000.0
     assert rinse["weight_totals"]["post_lbs"] == 1940.25
+    assert rinse["supplies"]["deferred"] is True
     assert_compact_today_payload(payload)
     dumped = str(payload)
     assert "SHOULD_NOT_LEAK" not in dumped

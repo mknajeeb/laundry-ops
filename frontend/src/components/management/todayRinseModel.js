@@ -73,7 +73,9 @@ export function pickWfWeights(rinse, rushFilter = "all") {
 }
 
 export function pickWfSupplies(rinse, topLevelSupplies) {
-  return rinse?.supplies || topLevelSupplies || null;
+  // Prefer the dedicated async supplies payload when the page provides it.
+  if (topLevelSupplies != null) return topLevelSupplies;
+  return rinse?.supplies || null;
 }
 
 export function wfIdentityLine({ workload, completed, pending, review }) {

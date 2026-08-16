@@ -73,6 +73,8 @@ const SUPPLY_ROWS = [
 export default function ManagementRinseWfSection({
   rinse,
   supplies: suppliesProp,
+  suppliesLoading = false,
+  suppliesError = "",
   selectedDateEt,
   onRefresh,
 }) {
@@ -118,7 +120,7 @@ export default function ManagementRinseWfSection({
   const rejected = specialty?.rejected_orders?.count ?? 0;
   const split = specialty?.split_orders?.count ?? 0;
   const suppliesAvailable = Boolean(supplies?.available);
-  const supplyRushSupported = Boolean(supplies?.rush_filtering_supported);
+  const suppliesPending = Boolean(suppliesLoading) || (Boolean(supplies?.deferred) && !suppliesAvailable);
 
   const openMetric = (metric, title, opts = {}) => {
     if (snapshotUnavailable) return;
@@ -304,36 +306,48 @@ export default function ManagementRinseWfSection({
       </CardGrid>
 
       <Box sx={{ mt: 1.5 }}>
-        <BlockLabel>Supplies</BlockLabel>
+        <BlockLabel>Supplies · Day totals</BlockLabel>
         <CardGrid>
           {SUPPLY_ROWS.map((row) => (
             <TodayTapCard
               key={row.key}
               label={row.label}
               value={
-                snapshotUnavailable || !suppliesAvailable
-                  ? "—"
-                  : fmtOz(supplies?.[row.key]?.ounces)
+                suppliesPending
+                  ? "…"
+                  : snapshotUnavailable || !suppliesAvailable
+                    ? "—"
+                    : fmtOz(supplies?.[row.key]?.ounces)
               }
               sub={
-                snapshotUnavailable || !suppliesAvailable
-                  ? undefined
-                  : `${fmtInt(supplies?.[row.key]?.doses)} dose${
-                      Number(supplies?.[row.key]?.doses) === 1 ? "" : "s"
-                    }`
+                suppliesPending
+                  ? "Loading…"
+                  : snapshotUnavailable || !suppliesAvailable
+                    ? undefined
+                    : `${fmtInt(supplies?.[row.key]?.doses)} dose${
+                        Number(supplies?.[row.key]?.doses) === 1 ? "" : "s"
+                      }`
               }
             />
           ))}
         </CardGrid>
-        {snapshotUnavailable ? null : !suppliesAvailable ? (
+        {snapshotUnavailable ? null : suppliesPending ? (
+          <Typography sx={{ mt: 0.4, fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
+            Loading day totals…
+          </Typography>
+        ) : suppliesError ? (
+          <Typography sx={{ mt: 0.4, fontSize: 11, color: "#b91c1c", fontWeight: 600 }}>
+            Supplies failed to load — WF metrics above are still current.
+          </Typography>
+        ) : !suppliesAvailable ? (
           <Typography sx={{ mt: 0.4, fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
             Supply usage summary unavailable for this day.
           </Typography>
-        ) : !supplyRushSupported ? (
+        ) : (
           <Typography sx={{ mt: 0.4, fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
-            Supplies are day totals (Supply Usage has no Rush filter).
+            DAY TOTALS — not filtered by All / Rush / Non-Rush.
           </Typography>
-        ) : null}
+        )}
       </Box>
 
       <Step1MetricDrawer

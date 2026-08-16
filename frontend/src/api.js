@@ -2305,6 +2305,15 @@ export const getManagementToday = (dateEt, params = {}) => {
   });
 };
 
+export const getManagementTodaySupplies = (dateEt, params = {}) => {
+  const { signal, ...rest } = params || {};
+  return axios.get(`${API_BASE}/api/management/today/supplies`, {
+    params: { date_et: dateEt, ...rest },
+    signal,
+    timeout: 120000,
+  });
+};
+
 export const getManagementRinseHd = (dateEt, params = {}) =>
   axios.get(`${API_BASE}/api/management/rinse-hd`, {
     params: { date_et: dateEt, ...params },

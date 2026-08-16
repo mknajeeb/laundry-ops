@@ -92,10 +92,13 @@ class CountingCursor:
 def clear_management_today_cache(
     organization_id: int | None = None,
     date_et: date | str | None = None,
+    *,
+    include_supplies: bool = True,
 ) -> None:
     if organization_id is None and date_et is None:
         _TODAY_CACHE.clear()
-        _SUPPLY_SUMMARY_CACHE.clear()
+        if include_supplies:
+            _SUPPLY_SUMMARY_CACHE.clear()
         return
     org = int(organization_id) if organization_id is not None else None
     day_key = date_et.isoformat() if isinstance(date_et, date) else (str(date_et) if date_et else None)
@@ -105,6 +108,19 @@ def clear_management_today_cache(
         if day_key is not None and key[1] != day_key:
             continue
         _TODAY_CACHE.pop(key, None)
+    if include_supplies:
+        clear_management_supply_cache(organization_id=organization_id, date_et=date_et)
+
+
+def clear_management_supply_cache(
+    organization_id: int | None = None,
+    date_et: date | str | None = None,
+) -> None:
+    if organization_id is None and date_et is None:
+        _SUPPLY_SUMMARY_CACHE.clear()
+        return
+    org = int(organization_id) if organization_id is not None else None
+    day_key = date_et.isoformat() if isinstance(date_et, date) else (str(date_et) if date_et else None)
     for key in list(_SUPPLY_SUMMARY_CACHE):
         if org is not None and key[0] != org:
             continue
@@ -346,6 +362,7 @@ def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
         "cost_available": False,
         "cost": None,
         "available": has_usage,
+        "deferred": False,
         "rush_filtering_supported": rush_supported,
         "rush_filtering_reason": (report or {}).get("rush_filtering_reason")
         or (
@@ -354,6 +371,7 @@ def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
             else "supply_usage_engine_has_no_rush_status"
         ),
         "scope": "all",
+        "scope_label": "DAY TOTALS",
     }
     for name in ("Tide", "Downy", "OxiClean", "All Free & Clear"):
         row = usage.get(name) or {}
@@ -846,6 +864,18 @@ def _load_labor_segments(cursor, organization_id: int, selected_date_et: date) -
     return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
 
 
+def _deferred_supplies_stub() -> dict[str, Any]:
+    """Core WF payload never blocks on Supply Usage. UI loads supplies async."""
+    out = extract_supplies(None)
+    out["deferred"] = True
+    out["available"] = False
+    out["rush_filtering_supported"] = False
+    out["rush_filtering_reason"] = "supply_usage_engine_has_no_rush_status"
+    out["scope"] = "all"
+    out["scope_label"] = "DAY TOTALS"
+    return out
+
+
 def _load_supplies(
     cursor,
     organization_id: int,
@@ -863,17 +893,52 @@ def _load_supplies(
     is_live = day == business_today()
     ttl = _SUPPLY_SUMMARY_TTL_LIVE_SEC if is_live else _SUPPLY_SUMMARY_TTL_CLOSED_SEC
     now_mono = time.monotonic()
-    if not bypass_cache:
+    if bypass_cache:
+        clear_management_supply_cache(org, day)
+    elif not bypass_cache:
         cached = _SUPPLY_SUMMARY_CACHE.get(cache_key)
         if cached and (now_mono - cached[0]) < ttl:
-            return dict(cached[1])
+            out = dict(cached[1])
+            out["cached"] = True
+            out["deferred"] = False
+            return out
 
+    started = time.perf_counter()
     from backend.supply_usage import build_supply_usage_summary
 
     summary = build_supply_usage_summary(cursor, org, day)
     out = extract_supplies(summary)
+    out["deferred"] = False
+    out["cached"] = False
+    out["scope"] = "all"
+    out["scope_label"] = "DAY TOTALS"
+    out["elapsed_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
     _SUPPLY_SUMMARY_CACHE[cache_key] = (time.monotonic(), dict(out))
     return out
+
+
+def build_management_supply_summary(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    bypass_cache: bool = False,
+) -> dict[str, Any]:
+    """Dedicated Supply summary for async Rinse WF section."""
+    counting = cursor if isinstance(cursor, CountingCursor) else CountingCursor(cursor)
+    supplies = _load_supplies(
+        counting, int(organization_id), selected_date_et, bypass_cache=bypass_cache
+    )
+    return {
+        "date_et": selected_date_et.isoformat(),
+        "supplies": supplies,
+        "_meta": {
+            "elapsed_ms": supplies.get("elapsed_ms"),
+            "query_count": int(getattr(counting, "query_count", 0)),
+            "cached": bool(supplies.get("cached")),
+            "source": "supply_usage_summary_no_order_rows",
+        },
+    }
 
 
 def build_management_today_payload(
@@ -890,7 +955,8 @@ def build_management_today_payload(
     is_live = day == business_today()
     ttl = _TODAY_CACHE_TTL_LIVE_SEC if is_live else _TODAY_CACHE_TTL_CLOSED_SEC
     if bypass_cache:
-        clear_management_today_cache(org, day)
+        # Core refresh must not wait on / clear the independent supply cache.
+        clear_management_today_cache(org, day, include_supplies=False)
     elif not bypass_cache:
         cached = _TODAY_CACHE.get(cache_key)
         if cached and (now_mono - cached[0]) < ttl:
@@ -910,7 +976,8 @@ def build_management_today_payload(
     drc_lines = _load_drc_lines(counting, org, day)
     segments = _load_labor_segments(counting, org, day)
     rates = _load_labor_rates(counting, org)
-    supplies = _load_supplies(counting, org, day, bypass_cache=bypass_cache)
+    # Supplies are loaded via GET /api/management/today/supplies — never block core.
+    supplies = _deferred_supplies_stub()
 
     now_et = business_now()
     now_naive = now_et.replace(tzinfo=None) if getattr(now_et, "tzinfo", None) else now_et
@@ -956,7 +1023,7 @@ def build_management_today_payload(
             "wf_weights": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs_evidence",
             "other_revenue": "dr_daily_entry_lines",
             "labor": "shift_job_segments+payroll_worker_profiles",
-            "supplies": "supply_usage_summary_no_order_rows",
+            "supplies": "deferred_to_/api/management/today/supplies",
             "review": "rinse_shift_monitor_days.review_required_count",
             },
         },

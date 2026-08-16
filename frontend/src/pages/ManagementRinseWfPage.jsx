@@ -9,7 +9,7 @@ import {
   Typography,
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
-import { getManagementToday } from "../api";
+import { getManagementToday, getManagementTodaySupplies } from "../api";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import ManagementRinseWfSection from "../components/management/ManagementRinseWfSection";
 import { formatFriendlyEtWall } from "../utils/rinseTimeFormat";
@@ -36,25 +36,61 @@ function formatDayLabel(iso) {
   return dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+function isAbortError(err) {
+  return (
+    err?.code === "ERR_CANCELED"
+    || err?.name === "CanceledError"
+    || err?.name === "AbortError"
+  );
+}
+
 /**
  * Management → Rinse WF.
- * Reuses compact Step-1 headline scalars + existing Step1MetricDrawer drilldowns.
+ * Core WF loads immediately; Supplies load on a separate async request.
  */
 export default function ManagementRinseWfPage() {
   const [dateEt, setDateEt] = useState(todayEtIso);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const requestSeq = useRef(0);
-  const abortRef = useRef(null);
+  const [supplies, setSupplies] = useState(null);
+  const [suppliesLoading, setSuppliesLoading] = useState(false);
+  const [suppliesError, setSuppliesError] = useState("");
+  const coreSeq = useRef(0);
+  const supplySeq = useRef(0);
+  const coreAbortRef = useRef(null);
+  const supplyAbortRef = useRef(null);
 
-  const load = useCallback(async (day, refresh = false) => {
-    if (abortRef.current) {
-      abortRef.current.abort();
-    }
+  const loadSupplies = useCallback(async (day, refresh = false) => {
+    if (supplyAbortRef.current) supplyAbortRef.current.abort();
     const controller = new AbortController();
-    abortRef.current = controller;
-    const seq = ++requestSeq.current;
+    supplyAbortRef.current = controller;
+    const seq = ++supplySeq.current;
+    setSuppliesLoading(true);
+    setSuppliesError("");
+    try {
+      const res = await getManagementTodaySupplies(day, {
+        refresh: refresh ? 1 : undefined,
+        signal: controller.signal,
+      });
+      if (seq !== supplySeq.current || controller.signal.aborted) return;
+      setSupplies(res.data?.supplies || null);
+    } catch (err) {
+      if (controller.signal.aborted || isAbortError(err)) return;
+      if (seq !== supplySeq.current) return;
+      setSuppliesError(err?.response?.data?.error || err?.message || "Supplies unavailable");
+      // Keep prior supplies on refresh failure; clear only on hard miss.
+      setSupplies((prev) => (refresh && prev?.available ? prev : null));
+    } finally {
+      if (seq === supplySeq.current) setSuppliesLoading(false);
+    }
+  }, []);
+
+  const loadCore = useCallback(async (day, refresh = false) => {
+    if (coreAbortRef.current) coreAbortRef.current.abort();
+    const controller = new AbortController();
+    coreAbortRef.current = controller;
+    const seq = ++coreSeq.current;
 
     if (!refresh) setData(null);
     setLoading(true);
@@ -64,31 +100,30 @@ export default function ManagementRinseWfPage() {
         refresh: refresh ? 1 : undefined,
         signal: controller.signal,
       });
-      if (seq !== requestSeq.current || controller.signal.aborted) return;
+      if (seq !== coreSeq.current || controller.signal.aborted) return;
       setData(res.data || null);
     } catch (err) {
-      if (
-        controller.signal.aborted
-        || err?.code === "ERR_CANCELED"
-        || err?.name === "CanceledError"
-        || err?.name === "AbortError"
-      ) {
-        return;
-      }
-      if (seq !== requestSeq.current) return;
+      if (controller.signal.aborted || isAbortError(err)) return;
+      if (seq !== coreSeq.current) return;
       setData(null);
       setError(err?.response?.data?.error || err?.message || "Unable to load Rinse WF");
     } finally {
-      if (seq === requestSeq.current) {
-        setLoading(false);
-      }
+      if (seq === coreSeq.current) setLoading(false);
     }
   }, []);
+
+  const load = useCallback(async (day, refresh = false) => {
+    // Core and supplies refresh independently; do not block core on supply.
+    const corePromise = loadCore(day, refresh);
+    const supplyPromise = loadSupplies(day, refresh);
+    await Promise.allSettled([corePromise, supplyPromise]);
+  }, [loadCore, loadSupplies]);
 
   useEffect(() => {
     load(dateEt, false);
     return () => {
-      if (abortRef.current) abortRef.current.abort();
+      if (coreAbortRef.current) coreAbortRef.current.abort();
+      if (supplyAbortRef.current) supplyAbortRef.current.abort();
     };
   }, [dateEt, load]);
 
@@ -133,7 +168,7 @@ export default function ManagementRinseWfPage() {
           <IconButton
             aria-label="Refresh"
             onClick={() => load(dateEt, true)}
-            disabled={loading}
+            disabled={loading && suppliesLoading}
             size="small"
           >
             {loading ? <CircularProgress size={18} /> : <RefreshIcon />}
@@ -146,7 +181,9 @@ export default function ManagementRinseWfPage() {
       {data ? (
         <ManagementRinseWfSection
           rinse={data.rinse || null}
-          supplies={data.supplies || data.rinse?.supplies || null}
+          supplies={supplies}
+          suppliesLoading={suppliesLoading}
+          suppliesError={suppliesError}
           selectedDateEt={dateEt}
           onRefresh={() => load(dateEt, true)}
         />
