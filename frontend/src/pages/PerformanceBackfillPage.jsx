@@ -21,7 +21,7 @@ import { defaultWeekRange } from "../utils/foldingDateRange";
 
 function SettingsNav() {
   const links = [
-    { to: "/performance", label: "Dashboard" },
+    { to: "/management/rinse-wf", label: "Management" },
     { to: "/performance/settings", label: "Settings" },
     { to: "/performance/user-mapping", label: "User mapping" },
     { to: "/performance/backfill", label: "Historical Repair / Admin Tools" },

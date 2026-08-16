@@ -260,7 +260,7 @@ export default function DailyOperationsPage() {
               <MuiLink component={RouterLink} to="/finance/daily-revenue-cost">
                 WF rate maintenance / Finance DRC (existing)
               </MuiLink>
-              <MuiLink component={RouterLink} to="/performance">
+              <MuiLink component={RouterLink} to="/management/rinse-wf">
                 Shift Monitor (comparison)
               </MuiLink>
             </Stack>

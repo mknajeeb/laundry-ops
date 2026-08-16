@@ -4,7 +4,7 @@ import FoldingMaintenancePanel from "../components/folding/FoldingMaintenancePan
 
 function SettingsNav() {
   const links = [
-    { to: "/performance", label: "Dashboard" },
+    { to: "/management/rinse-wf", label: "Management" },
     { to: "/performance/settings", label: "Settings" },
     { to: "/performance/user-mapping", label: "User mapping" },
     { to: "/performance/backfill", label: "Backfill" },

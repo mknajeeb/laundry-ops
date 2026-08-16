@@ -1104,8 +1104,8 @@ export default function ScanChronologyPage() {
       </Stack>
 
       <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 2 }}>
-        <Button size="small" component={RouterLink} to="/performance" sx={{ textTransform: "none", fontWeight: 600 }}>
-          Shift Analysis
+        <Button size="small" component={RouterLink} to="/management/rinse-wf" sx={{ textTransform: "none", fontWeight: 600 }}>
+          Management
         </Button>
         <Button size="small" component={RouterLink} to="/performance/daily-roster" sx={{ textTransform: "none" }}>
           Daily Roster

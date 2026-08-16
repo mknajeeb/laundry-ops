@@ -185,6 +185,118 @@ def test_supplies_extract_usage_only_no_order_rows():
     assert "orders" not in supplies["Tide"]
 
 
+def test_rinse_wf_payload_skips_hd_labor_and_supplies_compute(monkeypatch):
+    from datetime import date, datetime
+    from unittest.mock import patch
+
+    from backend.management_today import (
+        build_management_rinse_wf_payload,
+        clear_management_today_cache,
+    )
+
+    clear_management_today_cache()
+    day = date(2026, 8, 16)
+    headline = {
+        "selected_date_et": "2026-08-16",
+        "segments": {
+            "wf": {
+                "total_workload": 10,
+                "completed": 8,
+                "pending": 1,
+                "exceptions": {"review_required": 1},
+            },
+            "wf_rush": {
+                "total_workload": 4,
+                "completed": 4,
+                "pending": 0,
+                "exceptions": {"review_required": 0},
+            },
+            "hd": {"total_workload": 99, "completed": 99, "pending": 0, "exceptions": {"review_required": 0}},
+        },
+        "specialty_metrics": {
+            "wf": {
+                "comforter_orders": {"count": 1},
+                "bath_mat_orders": {"count": 0},
+                "rejected_orders": {"count": 1},
+                "split_orders": {"count": 2},
+            },
+            "wf_rush": {
+                "comforter_orders": {"count": 0},
+                "bath_mat_orders": {"count": 0},
+                "rejected_orders": {"count": 0},
+                "split_orders": {"count": 1},
+            },
+        },
+    }
+    with patch(
+        "backend.management_today._load_headline",
+        return_value=({"status": "OPEN"}, headline),
+    ), patch(
+        "backend.management_today.load_wf_day_weight_totals",
+        return_value={
+            "pre_lbs": 100.0,
+            "post_lbs": 90.0,
+            "pre_weight_lbs": 100.0,
+            "post_weight_lbs": 90.0,
+            "pre_weight_bag_count": 10,
+            "post_weight_bag_count": 8,
+            "rush_filtering_supported": True,
+            "source": "test",
+            "by_rush": {
+                "all": {
+                    "pre_lbs": 100.0,
+                    "post_lbs": 90.0,
+                    "pre_weight_lbs": 100.0,
+                    "post_weight_lbs": 90.0,
+                    "pre_weight_bag_count": 10,
+                    "post_weight_bag_count": 8,
+                },
+                "rush": {
+                    "pre_lbs": 40.0,
+                    "post_lbs": 40.0,
+                    "pre_weight_lbs": 40.0,
+                    "post_weight_lbs": 40.0,
+                    "pre_weight_bag_count": 4,
+                    "post_weight_bag_count": 4,
+                },
+                "non_rush": {
+                    "pre_lbs": 60.0,
+                    "post_lbs": 50.0,
+                    "pre_weight_lbs": 60.0,
+                    "post_weight_lbs": 50.0,
+                    "pre_weight_bag_count": 6,
+                    "post_weight_bag_count": 4,
+                },
+            },
+        },
+    ), patch(
+        "backend.management_today._load_hd_totals"
+    ) as hd, patch(
+        "backend.management_today._load_drc_lines"
+    ) as drc, patch(
+        "backend.management_today._load_labor_segments"
+    ) as labor, patch(
+        "backend.management_today._load_supplies"
+    ) as supplies, patch(
+        "backend.management_today.business_today", return_value=day
+    ), patch(
+        "backend.management_today.business_now", return_value=datetime(2026, 8, 16, 18, 0, 0)
+    ):
+        payload = build_management_rinse_wf_payload(object(), 3, day, bypass_cache=True)
+
+    assert payload["rinse"]["segments"]["wf"]["total_workload"] == 10
+    assert "hd" not in payload["rinse"]["segments"]
+    assert "hd_dashboard_totals" not in payload["rinse"]
+    assert payload["supplies"]["deferred"] is True
+    assert "labor" not in payload
+    assert "hd" not in payload
+    assert "other_revenue" not in payload
+    hd.assert_not_called()
+    drc.assert_not_called()
+    labor.assert_not_called()
+    supplies.assert_not_called()
+
+
 def test_review_does_not_fake_specialty_vs_portal_split():
     review = extract_review({"review_required_count": 5}, _headline())
     assert review["split_available"] is False

@@ -33,7 +33,6 @@ import { hasPlatformAdminRole, isPayrollManagementOnlyUser, isPlatformOnlyUser, 
 import ProductionPage from "./pages/ProductionPage";
 import ScoreboardPage from "./pages/ScoreboardPage";
 import RinseFoldingDashboardPage from "./pages/RinseFoldingDashboardPage";
-import ShiftMonitorPage from "./pages/ShiftMonitorPage";
 import DailyShiftRosterPage from "./pages/DailyShiftRosterPage";
 import ScanChronologyPage from "./pages/ScanChronologyPage";
 import OperationsTimelinePage from "./pages/OperationsTimelinePage";
@@ -973,13 +972,7 @@ function AppShell() {
             <Route path="/scoreboard" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><ScoreboardPage /></GuardedRoute></TenantOnlyRoute>} />
             <Route
               path="/performance"
-              element={
-                <TenantOnlyRoute user={user}>
-                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
-                    <ShiftMonitorPage user={user} />
-                  </GuardedRoute>
-                </TenantOnlyRoute>
-              }
+              element={<Navigate to="/management/rinse-wf" replace />}
             />
             <Route
               path="/performance/daily-roster"
@@ -1077,11 +1070,11 @@ function AppShell() {
             />
             <Route
               path="/rinse/folding-dashboard"
-              element={<Navigate to="/performance" replace />}
+              element={<Navigate to="/management/rinse-wf" replace />}
             />
             <Route
               path="/rinse/folding-exceptions"
-              element={<Navigate to="/performance?activity=folding&status=exception" replace />}
+              element={<Navigate to="/management/rinse-wf" replace />}
             />
             <Route
               path="/rinse/folding-dashboard-legacy"

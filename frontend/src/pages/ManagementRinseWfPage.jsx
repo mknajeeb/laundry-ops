@@ -9,7 +9,7 @@ import {
   Typography,
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
-import { getManagementToday, getManagementTodaySupplies } from "../api";
+import { getManagementRinseWf, getManagementTodaySupplies } from "../api";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import ManagementRinseWfSection from "../components/management/ManagementRinseWfSection";
 import { formatFriendlyEtWall } from "../utils/rinseTimeFormat";
@@ -96,7 +96,7 @@ export default function ManagementRinseWfPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await getManagementToday(day, {
+      const res = await getManagementRinseWf(day, {
         refresh: refresh ? 1 : undefined,
         signal: controller.signal,
       });

@@ -19,6 +19,9 @@ from backend.ta_helpers import table_exists, table_has_column
 _TODAY_CACHE: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
 _TODAY_CACHE_TTL_LIVE_SEC = 45.0
 _TODAY_CACHE_TTL_CLOSED_SEC = 600.0
+_RINSE_WF_CACHE: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
+_RINSE_WF_CACHE_TTL_LIVE_SEC = 45.0
+_RINSE_WF_CACHE_TTL_CLOSED_SEC = 600.0
 # Supply summary is expensive (~authoritative first-weight walk). Cache separately
 # so warm Rinse WF stays fast while still using Supply Usage rules (no order rows).
 _SUPPLY_SUMMARY_CACHE: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
@@ -97,17 +100,19 @@ def clear_management_today_cache(
 ) -> None:
     if organization_id is None and date_et is None:
         _TODAY_CACHE.clear()
+        _RINSE_WF_CACHE.clear()
         if include_supplies:
             _SUPPLY_SUMMARY_CACHE.clear()
         return
     org = int(organization_id) if organization_id is not None else None
     day_key = date_et.isoformat() if isinstance(date_et, date) else (str(date_et) if date_et else None)
-    for key in list(_TODAY_CACHE):
-        if org is not None and key[0] != org:
-            continue
-        if day_key is not None and key[1] != day_key:
-            continue
-        _TODAY_CACHE.pop(key, None)
+    for store in (_TODAY_CACHE, _RINSE_WF_CACHE):
+        for key in list(store):
+            if org is not None and key[0] != org:
+                continue
+            if day_key is not None and key[1] != day_key:
+                continue
+            store.pop(key, None)
     if include_supplies:
         clear_management_supply_cache(organization_id=organization_id, date_et=date_et)
 
@@ -939,6 +944,85 @@ def build_management_supply_summary(
             "source": "supply_usage_summary_no_order_rows",
         },
     }
+
+
+def _extract_rinse_wf_only(
+    headline: Mapping[str, Any] | None,
+    day_rec: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """WF-only compact rinse block — no HD dashboard / labor / revenue side loads."""
+    full = extract_rinse_step1(headline, None, day_rec)
+    wf_seg_keys = ("wf", "wf_rush", "wf_non_rush")
+    segs = full.get("segments") or {}
+    full["segments"] = {k: segs[k] for k in wf_seg_keys if k in segs}
+    spec = full.get("specialty_metrics") or {}
+    full["specialty_metrics"] = {k: spec[k] for k in wf_seg_keys if k in spec}
+    full.pop("hd_dashboard_totals", None)
+    return full
+
+
+def build_management_rinse_wf_payload(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    bypass_cache: bool = False,
+) -> dict[str, Any]:
+    """Rinse WF compartment core — headline + weight aggregates only.
+
+    Does not load HD production, labor, DRC, or Supply Usage.
+    """
+    org = int(organization_id)
+    day = selected_date_et
+    cache_key = (org, day.isoformat())
+    now_mono = time.monotonic()
+    is_live = day == business_today()
+    ttl = _RINSE_WF_CACHE_TTL_LIVE_SEC if is_live else _RINSE_WF_CACHE_TTL_CLOSED_SEC
+    if bypass_cache:
+        _RINSE_WF_CACHE.pop(cache_key, None)
+    else:
+        cached = _RINSE_WF_CACHE.get(cache_key)
+        if cached and (now_mono - cached[0]) < ttl:
+            out = dict(cached[1])
+            meta = dict(out.get("_meta") or {})
+            meta["cached"] = True
+            out["_meta"] = meta
+            return out
+
+    counting = cursor if isinstance(cursor, CountingCursor) else CountingCursor(cursor)
+    started = time.perf_counter()
+    day_rec, headline = _load_headline(counting, org, day)
+    weight_totals = load_wf_day_weight_totals(counting, org, day)
+    rinse = _extract_rinse_wf_only(headline, day_rec)
+    rinse["weight_totals"] = weight_totals
+    rinse["supplies"] = _deferred_supplies_stub()
+
+    now_et = business_now()
+    if getattr(now_et, "tzinfo", None) is None:
+        generated_iso = now_et.isoformat(timespec="seconds")
+    else:
+        generated_iso = now_et.isoformat(timespec="seconds")
+
+    payload = {
+        "date_et": day.isoformat(),
+        "generated_at_et": generated_iso,
+        "rinse": rinse,
+        "supplies": rinse["supplies"],
+        "_meta": {
+            "cached": False,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            "query_count": int(getattr(counting, "query_count", 0)),
+            "compartment": "rinse_wf",
+            "sources": {
+                "rinse": "step1_build_or_load_persist_live_false",
+                "wf_weights": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs_evidence",
+                "supplies": "deferred_to_/api/management/today/supplies",
+            },
+        },
+    }
+    assert_compact_today_payload(payload)
+    _RINSE_WF_CACHE[cache_key] = (time.monotonic(), dict(payload))
+    return payload
 
 
 def build_management_today_payload(

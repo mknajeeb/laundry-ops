@@ -10,6 +10,7 @@ from backend.business_time import business_today
 from backend.db import get_db
 from backend.management_today import (
     CountingCursor,
+    build_management_rinse_wf_payload,
     build_management_supply_summary,
     build_management_today_payload,
 )
@@ -108,6 +109,40 @@ def register_management_today_routes(
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             return jsonify({"error": str(exc), "supplies": {"available": False, "deferred": False}}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/rinse-wf", methods=["GET"])
+    def management_rinse_wf():
+        """Rinse WF compartment core — WF headline + weights only (no HD/labor/supplies)."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            selected, err = _selected_date_et()
+            if err:
+                return err
+            bypass = str(request.args.get("refresh") or "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            counting = CountingCursor(cursor)
+            payload = build_management_rinse_wf_payload(
+                counting,
+                oid,
+                selected,
+                bypass_cache=bypass,
+            )
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()
             conn.close()

@@ -195,8 +195,8 @@ export default function ShiftCapacityPlannerPage() {
 
       <Box sx={{ px: { xs: 1.5, md: 2.5 }, pt: 1.5, maxWidth: showAdvanced ? 1600 : 1100, mx: "auto" }}>
         <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5, flexWrap: "wrap" }}>
-          <Button size="small" component={RouterLink} to="/performance" sx={{ textTransform: "none", fontWeight: 600 }}>
-            ← {t("nav.shiftAnalysis")}
+          <Button size="small" component={RouterLink} to="/management/rinse-wf" sx={{ textTransform: "none", fontWeight: 600 }}>
+            ← Management
           </Button>
           {showAdvanced && undoStack.length ? (
             <Button size="small" variant="outlined" onClick={onUndo} sx={{ textTransform: "none", fontWeight: 700 }}>

@@ -82,6 +82,10 @@ export function isPayrollManagementOnlyUser(user) {
 export function tenantDefaultRoute(user) {
   if (isPayrollManagementOnlyUser(user)) return "/payroll";
   if (isRinseScheduleOnlyUser(user)) return "/performance/weekly-schedule";
+  const roles = normalizedRoles(user);
+  if (roles.some((r) => ["ADMIN", "OPS", "MANAGER", "SUPER_ADMIN"].includes(r))) {
+    return "/management";
+  }
   return "/";
 }
 

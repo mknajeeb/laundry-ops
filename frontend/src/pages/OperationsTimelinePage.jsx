@@ -249,8 +249,8 @@ export default function OperationsTimelinePage() {
       </Stack>
 
       <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 2 }}>
-        <Button size="small" component={RouterLink} to="/performance" sx={{ textTransform: "none", fontWeight: 600 }}>
-          Shift Analysis
+        <Button size="small" component={RouterLink} to="/management/rinse-wf" sx={{ textTransform: "none", fontWeight: 600 }}>
+          Management
         </Button>
         <Button
           size="small"

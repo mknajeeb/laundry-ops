@@ -24,7 +24,7 @@ describe("accountant-only navigation", () => {
 
   it("uses payroll as default route for accountant-only users", () => {
     expect(tenantDefaultRoute(accountantOnly)).toBe("/payroll");
-    expect(tenantDefaultRoute(adminAccountant)).toBe("/");
+    expect(tenantDefaultRoute(adminAccountant)).toBe("/management");
     expect(tenantDefaultRoute(null)).toBe("/");
   });
 
@@ -106,7 +106,7 @@ describe("rinse schedule-only navigation", () => {
 
   it("uses weekly schedule as default route for rinse-only users", () => {
     expect(tenantDefaultRoute(rinseOnly)).toBe("/performance/weekly-schedule");
-    expect(tenantDefaultRoute(adminRinse)).toBe("/");
+    expect(tenantDefaultRoute(adminRinse)).toBe("/management");
   });
 
   it("shows only weekly schedule in sidebar nav", () => {
