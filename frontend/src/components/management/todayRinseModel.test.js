@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  hdHeadline,
-  hdIdentityLine,
   pickRinseSegments,
   pickWfSpecialty,
   wfHeadline,
@@ -22,18 +20,6 @@ const rinse = {
       pending: 0,
       exceptions: { review_required: 4 },
     },
-    hd: {
-      total_workload: 13,
-      completed: 0,
-      pending: 0,
-      exceptions: { review_required: 11 },
-    },
-    hd_rush: {
-      total_workload: 2,
-      completed: 0,
-      pending: 0,
-      exceptions: { review_required: 2 },
-    },
   },
   specialty_metrics: {
     wf: {
@@ -49,28 +35,13 @@ const rinse = {
       split_orders: { count: 9 },
     },
   },
-  hd_dashboard_totals: {
-    total_hd_orders: 13,
-    completed: 0,
-    review_required: 11,
-    total_items: 0,
-    hd_revenue: 0,
-  },
 };
 
-describe("TODAY rinse presentation model", () => {
+describe("Rinse WF presentation model", () => {
   it("keeps WF workload/completed/pending/review identity", () => {
     const wf = wfHeadline(rinse.segments.wf);
     expect(wf).toEqual({ workload: 97, completed: 70, pending: 1, review: 26 });
     expect(wfIdentityLine(wf)).toBe("97 = 70 Completed + 1 Pending + 26 Review");
-  });
-
-  it("keeps HD operational facts without combining WF+HD", () => {
-    const hd = hdHeadline(rinse.segments.hd, rinse.hd_dashboard_totals);
-    expect(hd.orders).toBe(13);
-    expect(hd.completed).toBe(0);
-    expect(hd.review).toBe(11);
-    expect(hdIdentityLine(hd)).toBe("13 = 0 Completed + 11 Review");
   });
 
   it("applies rush filter to WF segment and specialty counts", () => {

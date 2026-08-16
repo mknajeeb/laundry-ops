@@ -2,14 +2,20 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { Box } from "@mui/material";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
+/** Hub compartments. Only Rinse WF (+ transitional Today landing) are live. */
 export const HUB_DESTINATIONS = [
   { to: "/management", id: "today", label: "Today", enabled: true },
-  { to: "/management/rinse-flow", id: "rinse_flow", label: "Rinse Flow", enabled: false },
+  { to: "/management/rinse-wf", id: "rinse_wf", label: "Rinse WF", enabled: true },
+  { to: "/management/rinse-hd", id: "rinse_hd", label: "Rinse HD", enabled: false },
   { to: "/management/performance", id: "performance", label: "Performance", enabled: false },
   { to: "/management/labor", id: "labor", label: "Labor", enabled: false },
+  { to: "/management/revenue", id: "revenue", label: "Revenue", enabled: false },
+  { to: "/management/rinse-flow", id: "rinse_flow", label: "Rinse Flow", enabled: false },
   { to: "/management/analysis", id: "analysis", label: "Analysis", enabled: false },
   { to: "/management/bag-search", id: "bag_search", label: "Bag Search", enabled: false },
 ];
+
+export const MANAGEMENT_BUCKETS = ["rinse_wf", "rinse_hd", "non_rinse"];
 
 export default function ManagementHubNav({ activeId = "today" }) {
   const navigate = useNavigate();
