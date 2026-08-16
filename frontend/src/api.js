@@ -2297,6 +2297,11 @@ export const reviewDrcMobileSubmission = (submissionId, body) =>
     body,
   );
 
+export const getManagementToday = (dateEt, params = {}) =>
+  axios.get(`${API_BASE}/api/management/today`, {
+    params: { date_et: dateEt, ...params },
+  });
+
 export const getDailyOperationsMeta = () =>
   axios.get(`${API_BASE}/api/daily-operations/meta`);
 

@@ -76,6 +76,7 @@ import OrganizationSettingsPage from "./pages/OrganizationSettingsPage";
 import DailyRevenueCostPage from "./pages/DailyRevenueCostPage";
 import RevenueCostFloorPage from "./pages/RevenueCostFloorPage";
 import DailyOperationsPage from "./pages/DailyOperationsPage";
+import ManagementHubPage from "./pages/ManagementHubPage";
 import OrganizationsPlatformPage from "./pages/OrganizationsPlatformPage";
 import PlatformAdminPage from "./pages/PlatformAdminPage";
 import UserProfilePage from "./pages/UserProfilePage";
@@ -1171,6 +1172,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN"]}>
                     <OrganizationSettingsPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/management"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
+                    <ManagementHubPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }
