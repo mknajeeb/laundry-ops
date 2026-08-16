@@ -7,6 +7,7 @@ import TodayTapCard from "./TodayTapCard";
 import {
   pickRinseSegments,
   pickWfSpecialty,
+  pickWfSupplies,
   pickWfWeights,
   wfHeadline,
   wfIdentityLine,
@@ -20,6 +21,11 @@ function fmtInt(v) {
 function fmtLbs(v) {
   if (v == null || Number.isNaN(Number(v))) return null;
   return `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })} lb`;
+}
+
+function fmtOz(v) {
+  if (v == null || Number.isNaN(Number(v))) return "—";
+  return `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })} oz`;
 }
 
 function BlockLabel({ children }) {
@@ -56,9 +62,17 @@ function CardGrid({ children }) {
   );
 }
 
+const SUPPLY_ROWS = [
+  { key: "Tide", label: "Tide" },
+  { key: "Downy", label: "Downy" },
+  { key: "OxiClean", label: "Oxi" },
+  { key: "All Free & Clear", label: "All Free & Clear" },
+];
+
 /** Modernized WF Shift Analysis compartment — WF only; same drawers/endpoints. */
 export default function ManagementRinseWfSection({
   rinse,
+  supplies: suppliesProp,
   selectedDateEt,
   onRefresh,
 }) {
@@ -94,11 +108,17 @@ export default function ManagementRinseWfSection({
     () => pickWfWeights(rinse, rushFilter),
     [rinse, rushFilter],
   );
+  const supplies = useMemo(
+    () => pickWfSupplies(rinse, suppliesProp),
+    [rinse, suppliesProp],
+  );
   const wf = wfHeadline(wfSeg);
   const comforter = specialty?.comforter_orders?.count ?? 0;
   const bathMat = specialty?.bath_mat_orders?.count ?? 0;
   const rejected = specialty?.rejected_orders?.count ?? 0;
   const split = specialty?.split_orders?.count ?? 0;
+  const suppliesAvailable = Boolean(supplies?.available);
+  const supplyRushSupported = Boolean(supplies?.rush_filtering_supported);
 
   const openMetric = (metric, title, opts = {}) => {
     if (snapshotUnavailable) return;
@@ -141,6 +161,10 @@ export default function ManagementRinseWfSection({
           {rinse?.message || "Shift snapshot is not available yet."}
         </Alert>
       ) : null}
+
+      <Stack direction="row" alignItems="center" sx={{ mb: 1.5 }} spacing={1}>
+        <RushFilterChips value={rushFilter} onChange={onRushChange} disabled={snapshotUnavailable} />
+      </Stack>
 
       <BlockLabel>Workload</BlockLabel>
       <CardGrid>
@@ -200,30 +224,31 @@ export default function ManagementRinseWfSection({
         <TodayTapCard
           label="Pre Weight"
           value={snapshotUnavailable ? "—" : (fmtLbs(weights.preLbs) || "—")}
+          sub={
+            snapshotUnavailable
+              ? undefined
+              : `${fmtInt(weights.preBagCount)} bag${weights.preBagCount === 1 ? "" : "s"}`
+          }
           tone="workload"
         />
         <TodayTapCard
           label="Post Weight"
           value={snapshotUnavailable ? "—" : (fmtLbs(weights.postLbs) || "—")}
+          sub={
+            snapshotUnavailable
+              ? undefined
+              : `${fmtInt(weights.postBagCount)} bag${weights.postBagCount === 1 ? "" : "s"}`
+          }
           tone="completed"
         />
       </CardGrid>
-      {snapshotUnavailable || weights.rushFilteringSupported ? null : (
+      {snapshotUnavailable || weights.rushFilteringSupported ? (
+        <Box sx={{ mb: 1 }} />
+      ) : (
         <Typography sx={{ mt: 0.4, mb: 1, fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
           PRE/POST shown for all WF (rush filter not applied to weights).
         </Typography>
       )}
-      {snapshotUnavailable || !weights.rushFilteringSupported ? (
-        <Box sx={{ mb: 1 }} />
-      ) : (
-        <Typography sx={{ mt: 0.4, mb: 1, fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
-          PRE/POST follow the All / Rush / Non-Rush filter.
-        </Typography>
-      )}
-
-      <Stack direction="row" alignItems="center" sx={{ mb: 1.5 }} spacing={1}>
-        <RushFilterChips value={rushFilter} onChange={onRushChange} disabled={snapshotUnavailable} />
-      </Stack>
 
       <BlockLabel>Specialty / Quality</BlockLabel>
       <CardGrid>
@@ -277,6 +302,39 @@ export default function ManagementRinseWfSection({
           }
         />
       </CardGrid>
+
+      <Box sx={{ mt: 1.5 }}>
+        <BlockLabel>Supplies</BlockLabel>
+        <CardGrid>
+          {SUPPLY_ROWS.map((row) => (
+            <TodayTapCard
+              key={row.key}
+              label={row.label}
+              value={
+                snapshotUnavailable || !suppliesAvailable
+                  ? "—"
+                  : fmtOz(supplies?.[row.key]?.ounces)
+              }
+              sub={
+                snapshotUnavailable || !suppliesAvailable
+                  ? undefined
+                  : `${fmtInt(supplies?.[row.key]?.doses)} dose${
+                      Number(supplies?.[row.key]?.doses) === 1 ? "" : "s"
+                    }`
+              }
+            />
+          ))}
+        </CardGrid>
+        {snapshotUnavailable ? null : !suppliesAvailable ? (
+          <Typography sx={{ mt: 0.4, fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
+            Supply usage summary unavailable for this day.
+          </Typography>
+        ) : !supplyRushSupported ? (
+          <Typography sx={{ mt: 0.4, fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
+            Supplies are day totals (Supply Usage has no Rush filter).
+          </Typography>
+        ) : null}
+      </Box>
 
       <Step1MetricDrawer
         open={drawer.open}

@@ -58,14 +58,49 @@ describe("Rinse WF presentation model", () => {
         rush_filtering_supported: true,
         pre_lbs: 100,
         post_lbs: 80,
+        pre_weight_lbs: 100,
+        post_weight_lbs: 80,
+        pre_weight_bag_count: 10,
+        post_weight_bag_count: 8,
         by_rush: {
-          all: { pre_lbs: 100, post_lbs: 80 },
-          rush: { pre_lbs: 70, post_lbs: 60 },
-          non_rush: { pre_lbs: 30, post_lbs: 20 },
+          all: {
+            pre_lbs: 100,
+            post_lbs: 80,
+            pre_weight_lbs: 100,
+            post_weight_lbs: 80,
+            pre_weight_bag_count: 10,
+            post_weight_bag_count: 8,
+          },
+          rush: {
+            pre_lbs: 70,
+            post_lbs: 60,
+            pre_weight_lbs: 70,
+            post_weight_lbs: 60,
+            pre_weight_bag_count: 6,
+            post_weight_bag_count: 5,
+          },
+          non_rush: {
+            pre_lbs: 30,
+            post_lbs: 20,
+            pre_weight_lbs: 30,
+            post_weight_lbs: 20,
+            pre_weight_bag_count: 4,
+            post_weight_bag_count: 3,
+          },
         },
       },
     };
     expect(pickWfWeights(withWeights, "all").preLbs).toBe(100);
     expect(pickWfWeights(withWeights, "rush").postLbs).toBe(60);
+    expect(pickWfWeights(withWeights, "rush").preBagCount).toBe(6);
+    expect(pickWfWeights(withWeights, "rush").postBagCount).toBe(5);
+  });
+
+  it("does not fall specialty back to All under Rush", () => {
+    const missingRush = {
+      ...rinse,
+      specialty_metrics: { wf: rinse.specialty_metrics.wf },
+    };
+    expect(pickWfSpecialty(missingRush, "rush")).toBeNull();
   });
 });

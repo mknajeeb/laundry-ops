@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -39,32 +39,57 @@ function formatDayLabel(iso) {
 /**
  * Management → Rinse WF.
  * Reuses compact Step-1 headline scalars + existing Step1MetricDrawer drilldowns.
- * No HD / Labor / Revenue / Supplies on this page.
  */
 export default function ManagementRinseWfPage() {
   const [dateEt, setDateEt] = useState(todayEtIso);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const requestSeq = useRef(0);
+  const abortRef = useRef(null);
 
   const load = useCallback(async (day, refresh = false) => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const seq = ++requestSeq.current;
+
     if (!refresh) setData(null);
     setLoading(true);
     setError("");
     try {
-      // Compact TODAY read model already exposes Step-1 WF scalars without bag arrays.
-      const res = await getManagementToday(day, { refresh: refresh ? 1 : undefined });
+      const res = await getManagementToday(day, {
+        refresh: refresh ? 1 : undefined,
+        signal: controller.signal,
+      });
+      if (seq !== requestSeq.current || controller.signal.aborted) return;
       setData(res.data || null);
     } catch (err) {
+      if (
+        controller.signal.aborted
+        || err?.code === "ERR_CANCELED"
+        || err?.name === "CanceledError"
+        || err?.name === "AbortError"
+      ) {
+        return;
+      }
+      if (seq !== requestSeq.current) return;
       setData(null);
       setError(err?.response?.data?.error || err?.message || "Unable to load Rinse WF");
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     load(dateEt, false);
+    return () => {
+      if (abortRef.current) abortRef.current.abort();
+    };
   }, [dateEt, load]);
 
   const refreshedLabel = useMemo(() => {
@@ -121,6 +146,7 @@ export default function ManagementRinseWfPage() {
       {data ? (
         <ManagementRinseWfSection
           rinse={data.rinse || null}
+          supplies={data.supplies || data.rinse?.supplies || null}
           selectedDateEt={dateEt}
           onRefresh={() => load(dateEt, true)}
         />

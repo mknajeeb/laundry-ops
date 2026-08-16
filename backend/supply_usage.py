@@ -750,3 +750,28 @@ def build_supply_usage_report(
         "dosage_settings": dosages,
         "mapping_rules": mapping_rules_display(mapping_rules),
     }
+
+
+def build_supply_usage_summary(
+    cursor,
+    organization_id: int,
+    target_date: date,
+) -> dict[str, Any]:
+    """Authoritative usage_by_supply scalars only — no order-level rows.
+
+    Same membership/dosage rules as ``build_supply_usage_report``. Rush filtering
+    is not supported by the Supply Usage engine (orders have no rush_status).
+    """
+    dosages = get_supply_usage_dosages(cursor, organization_id)
+    mapping_rules = get_supply_usage_mapping_rules(cursor, organization_id)
+    order_rows = load_orders_for_supply_usage(
+        cursor, organization_id, target_date, mapping_rules=mapping_rules
+    )
+    return {
+        "date_et": target_date.isoformat(),
+        "usage_by_supply": _usage_by_supply(order_rows, dosages),
+        "summary": _summary_counts(order_rows),
+        "rush_filtering_supported": False,
+        "rush_filtering_reason": "supply_usage_engine_has_no_rush_status",
+        "data_source": "supply_usage_summary_same_rules_no_order_rows",
+    }

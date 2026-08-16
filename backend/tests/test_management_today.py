@@ -173,11 +173,15 @@ def test_supplies_extract_usage_only_no_order_rows():
             "OxiClean": {"orders": 2, "doses": 2, "ounces": 2.0},
             "All Free & Clear": {"orders": 1, "doses": 1, "ounces": 2.0},
         },
+        "rush_filtering_supported": False,
+        "rush_filtering_reason": "supply_usage_engine_has_no_rush_status",
     }
     supplies = extract_supplies(report)
     assert supplies["Tide"]["ounces"] == 24.0
     assert supplies["cost_available"] is False
     assert supplies["cost"] is None
+    assert supplies["available"] is True
+    assert supplies["rush_filtering_supported"] is False
     assert "orders" not in supplies["Tide"]
 
 
@@ -223,12 +227,37 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
         return_value={
             "pre_lbs": 2000.0,
             "post_lbs": 1940.25,
+            "pre_weight_lbs": 2000.0,
+            "post_weight_lbs": 1940.25,
+            "pre_weight_bag_count": 97,
+            "post_weight_bag_count": 70,
             "rush_filtering_supported": True,
             "source": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs",
             "by_rush": {
-                "all": {"pre_lbs": 2000.0, "post_lbs": 1940.25},
-                "rush": {"pre_lbs": 1500.0, "post_lbs": 1400.0},
-                "non_rush": {"pre_lbs": 500.0, "post_lbs": 540.25},
+                "all": {
+                    "pre_lbs": 2000.0,
+                    "post_lbs": 1940.25,
+                    "pre_weight_lbs": 2000.0,
+                    "post_weight_lbs": 1940.25,
+                    "pre_weight_bag_count": 97,
+                    "post_weight_bag_count": 70,
+                },
+                "rush": {
+                    "pre_lbs": 1500.0,
+                    "post_lbs": 1400.0,
+                    "pre_weight_lbs": 1500.0,
+                    "post_weight_lbs": 1400.0,
+                    "pre_weight_bag_count": 60,
+                    "post_weight_bag_count": 56,
+                },
+                "non_rush": {
+                    "pre_lbs": 500.0,
+                    "post_lbs": 540.25,
+                    "pre_weight_lbs": 500.0,
+                    "post_weight_lbs": 540.25,
+                    "pre_weight_bag_count": 37,
+                    "post_weight_bag_count": 14,
+                },
             },
         },
     ), patch(
@@ -327,12 +356,37 @@ def test_today_cache_returns_same_scalars_without_rebuild():
         return_value={
             "pre_lbs": 110.0,
             "post_lbs": 100.0,
+            "pre_weight_lbs": 110.0,
+            "post_weight_lbs": 100.0,
+            "pre_weight_bag_count": 10,
+            "post_weight_bag_count": 8,
             "rush_filtering_supported": True,
             "source": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs",
             "by_rush": {
-                "all": {"pre_lbs": 110.0, "post_lbs": 100.0},
-                "rush": {"pre_lbs": None, "post_lbs": None},
-                "non_rush": {"pre_lbs": None, "post_lbs": None},
+                "all": {
+                    "pre_lbs": 110.0,
+                    "post_lbs": 100.0,
+                    "pre_weight_lbs": 110.0,
+                    "post_weight_lbs": 100.0,
+                    "pre_weight_bag_count": 10,
+                    "post_weight_bag_count": 8,
+                },
+                "rush": {
+                    "pre_lbs": None,
+                    "post_lbs": None,
+                    "pre_weight_lbs": None,
+                    "post_weight_lbs": None,
+                    "pre_weight_bag_count": 0,
+                    "post_weight_bag_count": 0,
+                },
+                "non_rush": {
+                    "pre_lbs": None,
+                    "post_lbs": None,
+                    "pre_weight_lbs": None,
+                    "post_weight_lbs": None,
+                    "pre_weight_bag_count": 0,
+                    "post_weight_bag_count": 0,
+                },
             },
         },
     ), patch(

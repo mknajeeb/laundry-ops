@@ -2297,10 +2297,13 @@ export const reviewDrcMobileSubmission = (submissionId, body) =>
     body,
   );
 
-export const getManagementToday = (dateEt, params = {}) =>
-  axios.get(`${API_BASE}/api/management/today`, {
-    params: { date_et: dateEt, ...params },
+export const getManagementToday = (dateEt, params = {}) => {
+  const { signal, ...rest } = params || {};
+  return axios.get(`${API_BASE}/api/management/today`, {
+    params: { date_et: dateEt, ...rest },
+    signal,
   });
+};
 
 export const getManagementRinseHd = (dateEt, params = {}) =>
   axios.get(`${API_BASE}/api/management/rinse-hd`, {

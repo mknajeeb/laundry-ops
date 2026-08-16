@@ -6,7 +6,7 @@ function asInt(value) {
 }
 
 export function pickRinseSegments(rinse, rushFilter = "all") {
-  const keys = resolveStep1SegmentKeys("all", rushFilter);
+  const keys = resolveStep1SegmentKeys("wf", rushFilter);
   const segments = rinse?.segments || {};
   return {
     wfKey: keys.wf,
@@ -18,8 +18,9 @@ export function pickRinseSegments(rinse, rushFilter = "all") {
 
 export function pickWfSpecialty(rinse, rushFilter = "all") {
   const spec = rinse?.specialty_metrics || {};
-  if (rushFilter === "rush") return spec.wf_rush || spec.wf || null;
-  if (rushFilter === "non_rush") return spec.wf_non_rush || spec.wf || null;
+  // Do not silently fall back to All when a rush scope pack is missing.
+  if (rushFilter === "rush") return spec.wf_rush || null;
+  if (rushFilter === "non_rush") return spec.wf_non_rush || null;
   return spec.wf || spec.all || null;
 }
 
@@ -57,11 +58,22 @@ export function pickWfWeights(rinse, rushFilter = "all") {
   const key = rushFilter === "rush" || rushFilter === "non_rush" ? rushFilter : "all";
   const scoped = byRush[key] || byRush.all || {};
   return {
-    preLbs: scoped.pre_lbs ?? totals.pre_lbs ?? null,
-    postLbs: scoped.post_lbs ?? totals.post_lbs ?? null,
+    preLbs: scoped.pre_weight_lbs ?? scoped.pre_lbs ?? totals.pre_weight_lbs ?? totals.pre_lbs ?? null,
+    postLbs:
+      scoped.post_weight_lbs ?? scoped.post_lbs ?? totals.post_weight_lbs ?? totals.post_lbs ?? null,
+    preBagCount: asInt(
+      scoped.pre_weight_bag_count ?? totals.pre_weight_bag_count ?? 0,
+    ),
+    postBagCount: asInt(
+      scoped.post_weight_bag_count ?? totals.post_weight_bag_count ?? 0,
+    ),
     rushFilteringSupported: Boolean(totals.rush_filtering_supported),
     source: totals.source || null,
   };
+}
+
+export function pickWfSupplies(rinse, topLevelSupplies) {
+  return rinse?.supplies || topLevelSupplies || null;
 }
 
 export function wfIdentityLine({ workload, completed, pending, review }) {

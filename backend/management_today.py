@@ -19,6 +19,11 @@ from backend.ta_helpers import table_exists, table_has_column
 _TODAY_CACHE: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
 _TODAY_CACHE_TTL_LIVE_SEC = 45.0
 _TODAY_CACHE_TTL_CLOSED_SEC = 600.0
+# Supply summary is expensive (~authoritative first-weight walk). Cache separately
+# so warm Rinse WF stays fast while still using Supply Usage rules (no order rows).
+_SUPPLY_SUMMARY_CACHE: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
+_SUPPLY_SUMMARY_TTL_LIVE_SEC = 120.0
+_SUPPLY_SUMMARY_TTL_CLOSED_SEC = 600.0
 
 FORBIDDEN_COLLECTION_KEYS = frozenset(
     {
@@ -90,6 +95,7 @@ def clear_management_today_cache(
 ) -> None:
     if organization_id is None and date_et is None:
         _TODAY_CACHE.clear()
+        _SUPPLY_SUMMARY_CACHE.clear()
         return
     org = int(organization_id) if organization_id is not None else None
     day_key = date_et.isoformat() if isinstance(date_et, date) else (str(date_et) if date_et else None)
@@ -99,6 +105,12 @@ def clear_management_today_cache(
         if day_key is not None and key[1] != day_key:
             continue
         _TODAY_CACHE.pop(key, None)
+    for key in list(_SUPPLY_SUMMARY_CACHE):
+        if org is not None and key[0] != org:
+            continue
+        if day_key is not None and key[1] != day_key:
+            continue
+        _SUPPLY_SUMMARY_CACHE.pop(key, None)
 
 
 def _money(value: Any) -> float:
@@ -329,7 +341,20 @@ def extract_labor_kpis(
 def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
     usage = dict((report or {}).get("usage_by_supply") or {})
     has_usage = bool(usage)
-    out: dict[str, Any] = {"cost_available": False, "cost": None, "available": has_usage}
+    rush_supported = bool((report or {}).get("rush_filtering_supported"))
+    out: dict[str, Any] = {
+        "cost_available": False,
+        "cost": None,
+        "available": has_usage,
+        "rush_filtering_supported": rush_supported,
+        "rush_filtering_reason": (report or {}).get("rush_filtering_reason")
+        or (
+            None
+            if rush_supported
+            else "supply_usage_engine_has_no_rush_status"
+        ),
+        "scope": "all",
+    }
     for name in ("Tide", "Downy", "OxiClean", "All Free & Clear"):
         row = usage.get(name) or {}
         ounces = row.get("ounces")
@@ -553,15 +578,26 @@ def extract_review(day_rec: Mapping[str, Any] | None, headline: Mapping[str, Any
 
 
 def _load_headline(cursor, organization_id: int, selected_date_et: date) -> tuple[dict[str, Any], dict[str, Any]]:
-    from backend.rinse_veewash_shift_day import get_day_headline
+    """Same snapshot read path as Shift Analysis (persist_live=False).
 
-    rec = get_day_headline(cursor, organization_id, selected_date_et) or {}
-    headline = dict(rec.get("headline") or {})
+    Does not rebuild from raw scans. Uses persisted Step-1 day + headline.
+    """
+    from backend.rinse_veewash_shift_day import build_or_load_step1_for_date
+
+    _wl, summary, day_rec = build_or_load_step1_for_date(
+        cursor,
+        organization_id,
+        selected_date_et,
+        persist_live=False,
+        include_bag_rows=False,
+    )
+    headline = dict(summary or {})
+    rec = dict(day_rec or {})
     has_specialty = bool(headline.get("specialty_metrics")) or (
         headline.get("rejected_order_count") is not None
         or headline.get("comforter_order_count") is not None
     )
-    if headline and not has_specialty:
+    if headline and not has_specialty and not headline.get("data_unavailable"):
         from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
 
         headline = attach_specialty_metrics_to_summary(
@@ -613,22 +649,39 @@ def _lbs_or_none(value: Any) -> float | None:
         return None
 
 
+def _weight_bucket_empty() -> dict[str, Any]:
+    return {
+        "pre_lbs": None,
+        "post_lbs": None,
+        "pre_weight_lbs": None,
+        "post_weight_lbs": None,
+        "pre_weight_bag_count": 0,
+        "post_weight_bag_count": 0,
+    }
+
+
 def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: date) -> dict[str, Any]:
     """Compact PRE/POST lbs from day-bag projections — one GROUP BY, no per-bag scan walk.
 
-    PRE = SUM(pre_weight_lbs) for WF membership bags on the ET day.
-    POST = SUM(post_weight_lbs) for completed WF bags on the ET day.
-    Rush buckets come from day-bag rush_status (supported).
+    PRE WEIGHT = sum of pre_weight_lbs for WF bags in scope that have PRE evidence.
+    POST WEIGHT = sum of post_weight_lbs for WF bags in scope that have POST evidence.
+
+    Completion status is intentionally NOT used to gate POST — weight availability
+    and completion are separate concepts. Bag counts expose coverage vs workload.
     """
     empty = {
-        "pre_lbs": None,
-        "post_lbs": None,
+        **_weight_bucket_empty(),
         "rush_filtering_supported": True,
         "source": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs",
+        "semantics": {
+            "pre": "sum_pre_weight_lbs_where_present_for_wf_filter_scope",
+            "post": "sum_post_weight_lbs_where_present_for_wf_filter_scope",
+            "not": "pre_ne_workload_post_ne_completed",
+        },
         "by_rush": {
-            "all": {"pre_lbs": None, "post_lbs": None},
-            "rush": {"pre_lbs": None, "post_lbs": None},
-            "non_rush": {"pre_lbs": None, "post_lbs": None},
+            "all": _weight_bucket_empty(),
+            "rush": _weight_bucket_empty(),
+            "non_rush": _weight_bucket_empty(),
         },
     }
     if not table_exists(cursor, "rinse_shift_monitor_day_bags"):
@@ -642,14 +695,18 @@ def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: da
     cursor.execute(
         """
         SELECT rush_status,
-               SUM(pre_weight_lbs) AS pre_lbs,
                SUM(
-                 CASE
-                   WHEN UPPER(COALESCE(canonical_completion_status, '')) IN ('COMPLETED', 'COMPLETE')
-                     THEN post_weight_lbs
-                   ELSE NULL
-                 END
-               ) AS post_lbs
+                 CASE WHEN pre_weight_lbs IS NOT NULL THEN pre_weight_lbs ELSE 0 END
+               ) AS pre_lbs,
+               SUM(
+                 CASE WHEN pre_weight_lbs IS NOT NULL THEN 1 ELSE 0 END
+               ) AS pre_bag_count,
+               SUM(
+                 CASE WHEN post_weight_lbs IS NOT NULL THEN post_weight_lbs ELSE 0 END
+               ) AS post_lbs,
+               SUM(
+                 CASE WHEN post_weight_lbs IS NOT NULL THEN 1 ELSE 0 END
+               ) AS post_bag_count
         FROM rinse_shift_monitor_day_bags
         WHERE organization_id = %s
           AND shift_date_et = %s
@@ -660,50 +717,66 @@ def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: da
     )
     pre_all = 0.0
     post_all = 0.0
-    pre_seen = False
-    post_seen = False
+    pre_count_all = 0
+    post_count_all = 0
     by_rush = {
-        "all": {"pre_lbs": None, "post_lbs": None},
-        "rush": {"pre_lbs": None, "post_lbs": None},
-        "non_rush": {"pre_lbs": None, "post_lbs": None},
+        "all": _weight_bucket_empty(),
+        "rush": _weight_bucket_empty(),
+        "non_rush": _weight_bucket_empty(),
     }
     bucket_pre = {"rush": 0.0, "non_rush": 0.0}
     bucket_post = {"rush": 0.0, "non_rush": 0.0}
-    bucket_pre_seen = {"rush": False, "non_rush": False}
-    bucket_post_seen = {"rush": False, "non_rush": False}
+    bucket_pre_count = {"rush": 0, "non_rush": 0}
+    bucket_post_count = {"rush": 0, "non_rush": 0}
 
     for row in cursor.fetchall() or []:
         bucket = _rush_bucket(row.get("rush_status"))
-        pre = _lbs_or_none(row.get("pre_lbs"))
-        post = _lbs_or_none(row.get("post_lbs"))
+        pre_count = int(row.get("pre_bag_count") or 0)
+        post_count = int(row.get("post_bag_count") or 0)
+        pre = _lbs_or_none(row.get("pre_lbs")) if pre_count else None
+        post = _lbs_or_none(row.get("post_lbs")) if post_count else None
         if pre is not None:
             pre_all += pre
-            pre_seen = True
+            pre_count_all += pre_count
             if bucket in bucket_pre:
                 bucket_pre[bucket] += pre
-                bucket_pre_seen[bucket] = True
+                bucket_pre_count[bucket] += pre_count
         if post is not None:
             post_all += post
-            post_seen = True
+            post_count_all += post_count
             if bucket in bucket_post:
                 bucket_post[bucket] += post
-                bucket_post_seen[bucket] = True
+                bucket_post_count[bucket] += post_count
 
-    by_rush["all"] = {
-        "pre_lbs": round(pre_all, 1) if pre_seen else None,
-        "post_lbs": round(post_all, 1) if post_seen else None,
-    }
-    for key in ("rush", "non_rush"):
-        by_rush[key] = {
-            "pre_lbs": round(bucket_pre[key], 1) if bucket_pre_seen[key] else None,
-            "post_lbs": round(bucket_post[key], 1) if bucket_post_seen[key] else None,
+    def _pack(pre: float | None, post: float | None, pre_n: int, post_n: int) -> dict[str, Any]:
+        return {
+            "pre_lbs": round(pre, 1) if pre is not None and pre_n else None,
+            "post_lbs": round(post, 1) if post is not None and post_n else None,
+            "pre_weight_lbs": round(pre, 1) if pre is not None and pre_n else None,
+            "post_weight_lbs": round(post, 1) if post is not None and post_n else None,
+            "pre_weight_bag_count": int(pre_n),
+            "post_weight_bag_count": int(post_n),
         }
 
+    by_rush["all"] = _pack(
+        pre_all if pre_count_all else None,
+        post_all if post_count_all else None,
+        pre_count_all,
+        post_count_all,
+    )
+    for key in ("rush", "non_rush"):
+        by_rush[key] = _pack(
+            bucket_pre[key] if bucket_pre_count[key] else None,
+            bucket_post[key] if bucket_post_count[key] else None,
+            bucket_pre_count[key],
+            bucket_post_count[key],
+        )
+
     return {
-        "pre_lbs": by_rush["all"]["pre_lbs"],
-        "post_lbs": by_rush["all"]["post_lbs"],
+        **by_rush["all"],
         "rush_filtering_supported": True,
         "source": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs",
+        "semantics": empty["semantics"],
         "by_rush": by_rush,
     }
 
@@ -773,13 +846,34 @@ def _load_labor_segments(cursor, organization_id: int, selected_date_et: date) -
     return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
 
 
-def _load_supplies(cursor, organization_id: int, selected_date_et: date) -> dict[str, Any]:
-    """Do not run the order-level supply report on the TODAY hot path (~8s).
+def _load_supplies(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    bypass_cache: bool = False,
+) -> dict[str, Any]:
+    """Summary-only Supply Usage scalars (no order rows). Cached separately.
 
-    Mapping rules are unchanged on /maintenance/supply-usage. TODAY shows
-    usage when a compact summary is already cached; otherwise ounces are —.
+    Rush filtering is not supported by the authoritative Supply Usage engine.
     """
-    return extract_supplies(None)
+    org = int(organization_id)
+    day = selected_date_et
+    cache_key = (org, day.isoformat())
+    is_live = day == business_today()
+    ttl = _SUPPLY_SUMMARY_TTL_LIVE_SEC if is_live else _SUPPLY_SUMMARY_TTL_CLOSED_SEC
+    now_mono = time.monotonic()
+    if not bypass_cache:
+        cached = _SUPPLY_SUMMARY_CACHE.get(cache_key)
+        if cached and (now_mono - cached[0]) < ttl:
+            return dict(cached[1])
+
+    from backend.supply_usage import build_supply_usage_summary
+
+    summary = build_supply_usage_summary(cursor, org, day)
+    out = extract_supplies(summary)
+    _SUPPLY_SUMMARY_CACHE[cache_key] = (time.monotonic(), dict(out))
+    return out
 
 
 def build_management_today_payload(
@@ -795,7 +889,9 @@ def build_management_today_payload(
     now_mono = time.monotonic()
     is_live = day == business_today()
     ttl = _TODAY_CACHE_TTL_LIVE_SEC if is_live else _TODAY_CACHE_TTL_CLOSED_SEC
-    if not bypass_cache:
+    if bypass_cache:
+        clear_management_today_cache(org, day)
+    elif not bypass_cache:
         cached = _TODAY_CACHE.get(cache_key)
         if cached and (now_mono - cached[0]) < ttl:
             out = dict(cached[1])
@@ -814,7 +910,7 @@ def build_management_today_payload(
     drc_lines = _load_drc_lines(counting, org, day)
     segments = _load_labor_segments(counting, org, day)
     rates = _load_labor_rates(counting, org)
-    supplies = _load_supplies(counting, org, day)
+    supplies = _load_supplies(counting, org, day, bypass_cache=bypass_cache)
 
     now_et = business_now()
     now_naive = now_et.replace(tzinfo=None) if getattr(now_et, "tzinfo", None) else now_et
@@ -830,6 +926,7 @@ def build_management_today_payload(
 
     rinse = extract_rinse_step1(headline, hd_totals, day_rec)
     rinse["weight_totals"] = weight_totals
+    rinse["supplies"] = supplies
 
     # Prefer day-bag POST sum for operator-facing lbs; fall back to persisted Daily Ops.
     display_post = weight_totals.get("post_lbs")
@@ -853,13 +950,13 @@ def build_management_today_payload(
             "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
             "query_count": int(getattr(counting, "query_count", 0)),
             "sources": {
-            "wf": "step1_headline+day_bag_weight_totals",
+            "wf": "step1_build_or_load_persist_live_false+day_bag_weight_totals",
             "hd": "step1_headline+hd_day_bag_production",
             "rinse": "step1_headline_scalars_no_bag_arrays",
-            "wf_weights": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs",
+            "wf_weights": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs_evidence",
             "other_revenue": "dr_daily_entry_lines",
             "labor": "shift_job_segments+payroll_worker_profiles",
-            "supplies": "deferred_order_level_report_not_on_today_hot_path",
+            "supplies": "supply_usage_summary_no_order_rows",
             "review": "rinse_shift_monitor_days.review_required_count",
             },
         },
