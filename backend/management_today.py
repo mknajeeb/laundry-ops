@@ -600,12 +600,51 @@ def extract_review(day_rec: Mapping[str, Any] | None, headline: Mapping[str, Any
     }
 
 
-def _load_headline(cursor, organization_id: int, selected_date_et: date) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Same snapshot read path as Shift Analysis (persist_live=False).
+def _specialty_packs_current(headline: Mapping[str, Any] | None) -> bool:
+    packs = (headline or {}).get("specialty_metrics")
+    if not isinstance(packs, dict) or not packs:
+        return False
+    # Prefer WF pack when present; fall back to all.
+    probe = packs.get("wf") or packs.get("all") or {}
+    if not isinstance(probe.get("split_orders"), dict):
+        return False
+    try:
+        from backend.rinse_hd_day_metrics import CLASSIFICATION_VERSION
 
-    Does not rebuild from raw scans. Uses persisted Step-1 day + headline.
+        return int(probe.get("classification_version") or 0) >= CLASSIFICATION_VERSION
+    except Exception:
+        return False
+
+
+def _load_headline(cursor, organization_id: int, selected_date_et: date) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Persisted Step-1 headline for Management Rinse WF (read-only).
+
+    Fast path: day row + headline JSON only — skips the interactive Step-1
+    shell (rollover archive, HD presentation heal, bag-row loads) when a
+    usable snapshot already exists. Does not rebuild from raw scans.
     """
-    from backend.rinse_veewash_shift_day import build_or_load_step1_for_date
+    from backend.rinse_veewash_shift_day import (
+        build_or_load_step1_for_date,
+        get_day_record,
+        summary_from_day_record,
+    )
+
+    day = get_day_record(cursor, organization_id, selected_date_et)
+    if day and day.get("headline"):
+        # Omit cursor so summary_from_day_record skips HD presentation heal.
+        headline = summary_from_day_record(day) or {}
+        if headline and not headline.get("data_unavailable"):
+            if not _specialty_packs_current(headline):
+                from backend.rinse_hd_day_metrics import build_day_specialty_metrics
+
+                # WF-only specialty rebuild — do not compute HD packs for this page.
+                packs = dict(headline.get("specialty_metrics") or {})
+                packs["wf"] = build_day_specialty_metrics(
+                    cursor, organization_id, selected_date_et, headline, service="wf"
+                )
+                headline = dict(headline)
+                headline["specialty_metrics"] = packs
+            return dict(day), dict(headline)
 
     _wl, summary, day_rec = build_or_load_step1_for_date(
         cursor,
@@ -616,16 +655,14 @@ def _load_headline(cursor, organization_id: int, selected_date_et: date) -> tupl
     )
     headline = dict(summary or {})
     rec = dict(day_rec or {})
-    has_specialty = bool(headline.get("specialty_metrics")) or (
-        headline.get("rejected_order_count") is not None
-        or headline.get("comforter_order_count") is not None
-    )
-    if headline and not has_specialty and not headline.get("data_unavailable"):
-        from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
+    if headline and not _specialty_packs_current(headline) and not headline.get("data_unavailable"):
+        from backend.rinse_hd_day_metrics import build_day_specialty_metrics
 
-        headline = attach_specialty_metrics_to_summary(
-            cursor, organization_id, selected_date_et, headline
+        packs = dict(headline.get("specialty_metrics") or {})
+        packs["wf"] = build_day_specialty_metrics(
+            cursor, organization_id, selected_date_et, headline, service="wf"
         )
+        headline["specialty_metrics"] = packs
     return rec, headline
 
 
@@ -1014,7 +1051,7 @@ def build_management_rinse_wf_payload(
             "query_count": int(getattr(counting, "query_count", 0)),
             "compartment": "rinse_wf",
             "sources": {
-                "rinse": "step1_build_or_load_persist_live_false",
+                "rinse": "persisted_day_headline_compact_read",
                 "wf_weights": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs_evidence",
                 "supplies": "deferred_to_/api/management/today/supplies",
             },

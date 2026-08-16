@@ -147,15 +147,17 @@ export default function ManagementRinseWfPage() {
     >
       <ManagementHubNav activeId="rinse_wf" />
 
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mt: 1.5, mb: 1 }} spacing={1}>
-        <Box>
-          <Typography sx={{ fontSize: 22, fontWeight: 800, lineHeight: 1.1 }}>Rinse WF</Typography>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mt: 1.25, mb: 1.25 }} spacing={1}>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography sx={{ fontSize: 22, fontWeight: 800, lineHeight: 1.1, letterSpacing: 0.2 }}>
+            RINSE WF
+          </Typography>
           <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
             {formatDayLabel(dateEt)}
-            {refreshedLabel ? ` · refreshed ${refreshedLabel}` : ""}
+            {refreshedLabel ? ` · ${refreshedLabel}` : ""}
           </Typography>
         </Box>
-        <Stack direction="row" alignItems="center" spacing={0.5}>
+        <Stack direction="row" alignItems="center" spacing={0.5} sx={{ flexShrink: 0 }}>
           <TextField
             size="small"
             type="date"
@@ -163,7 +165,7 @@ export default function ManagementRinseWfPage() {
             onChange={(e) => setDateEt(e.target.value)}
             InputLabelProps={{ shrink: true }}
             inputProps={{ "aria-label": "Business date" }}
-            sx={{ width: 150 }}
+            sx={{ width: 142 }}
           />
           <IconButton
             aria-label="Refresh"
@@ -184,6 +186,7 @@ export default function ManagementRinseWfPage() {
           supplies={supplies}
           suppliesLoading={suppliesLoading}
           suppliesError={suppliesError}
+          onRetrySupplies={() => loadSupplies(dateEt, true)}
           selectedDateEt={dateEt}
           onRefresh={() => load(dateEt, true)}
         />

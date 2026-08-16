@@ -1,8 +1,7 @@
 import { useMemo, useState } from "react";
-import { Alert, Box, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import RushFilterChips from "../shift/RushFilterChips";
 import Step1MetricDrawer from "../shift/Step1MetricDrawer";
-import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import TodayTapCard from "./TodayTapCard";
 import {
   pickRinseSegments,
@@ -28,33 +27,40 @@ function fmtOz(v) {
   return `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })} oz`;
 }
 
-function BlockLabel({ children }) {
+function BlockLabel({ children, hint }) {
   return (
-    <Typography
-      sx={{
-        fontSize: 11,
-        fontWeight: 800,
-        letterSpacing: 0.8,
-        textTransform: "uppercase",
-        color: "#64748b",
-        mb: 0.75,
-      }}
-    >
-      {children}
-    </Typography>
+    <Stack direction="row" alignItems="baseline" spacing={0.75} sx={{ mb: 0.75 }}>
+      <Typography
+        sx={{
+          fontSize: 11,
+          fontWeight: 800,
+          letterSpacing: 0.8,
+          textTransform: "uppercase",
+          color: "#64748b",
+        }}
+      >
+        {children}
+      </Typography>
+      {hint ? (
+        <Typography sx={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: "#94a3b8" }}>
+          {hint}
+        </Typography>
+      ) : null}
+    </Stack>
   );
 }
 
-function CardGrid({ children }) {
+function CardGrid({ children, columns = { xs: 2, sm: 4 } }) {
   return (
     <Box
       sx={{
         display: "grid",
         gridTemplateColumns: {
-          xs: "repeat(2, minmax(0, 1fr))",
-          sm: "repeat(4, minmax(0, 1fr))",
+          xs: `repeat(${columns.xs}, minmax(0, 1fr))`,
+          sm: `repeat(${columns.sm}, minmax(0, 1fr))`,
         },
         gap: 0.75,
+        mb: 1.5,
       }}
     >
       {children}
@@ -69,12 +75,13 @@ const SUPPLY_ROWS = [
   { key: "All Free & Clear", label: "All Free & Clear" },
 ];
 
-/** Modernized WF Shift Analysis compartment — WF only; same drawers/endpoints. */
+/** Management Rinse WF — WF-only operational home. */
 export default function ManagementRinseWfSection({
   rinse,
   supplies: suppliesProp,
   suppliesLoading = false,
   suppliesError = "",
+  onRetrySupplies,
   selectedDateEt,
   onRefresh,
 }) {
@@ -149,24 +156,16 @@ export default function ManagementRinseWfSection({
   };
 
   return (
-    <Box
-      sx={{
-        p: 1.5,
-        borderRadius: 2,
-        border: "1px solid",
-        borderColor: VEEWASH_DASHBOARD.snapshotBorder,
-        bgcolor: "#fff",
-      }}
-    >
+    <Box>
       {snapshotUnavailable ? (
         <Alert severity="warning" sx={{ mb: 1.25 }}>
           {rinse?.message || "Shift snapshot is not available yet."}
         </Alert>
       ) : null}
 
-      <Stack direction="row" alignItems="center" sx={{ mb: 1.5 }} spacing={1}>
+      <Box sx={{ mb: 1.25 }}>
         <RushFilterChips value={rushFilter} onChange={onRushChange} disabled={snapshotUnavailable} />
-      </Stack>
+      </Box>
 
       <BlockLabel>Workload</BlockLabel>
       <CardGrid>
@@ -216,15 +215,15 @@ export default function ManagementRinseWfSection({
         />
       </CardGrid>
       {snapshotUnavailable ? null : (
-        <Typography sx={{ mt: 0.6, mb: 1, fontSize: 12, color: "#64748b", fontWeight: 600 }}>
+        <Typography sx={{ mt: -1, mb: 1.5, fontSize: 12, color: "#64748b", fontWeight: 600 }}>
           {wfIdentityLine(wf)}
         </Typography>
       )}
 
       <BlockLabel>Processed pounds</BlockLabel>
-      <CardGrid>
+      <CardGrid columns={{ xs: 2, sm: 2 }}>
         <TodayTapCard
-          label="Pre Weight"
+          label="PRE Weight"
           value={snapshotUnavailable ? "—" : (fmtLbs(weights.preLbs) || "—")}
           sub={
             snapshotUnavailable
@@ -234,7 +233,7 @@ export default function ManagementRinseWfSection({
           tone="workload"
         />
         <TodayTapCard
-          label="Post Weight"
+          label="POST Weight"
           value={snapshotUnavailable ? "—" : (fmtLbs(weights.postLbs) || "—")}
           sub={
             snapshotUnavailable
@@ -244,13 +243,6 @@ export default function ManagementRinseWfSection({
           tone="completed"
         />
       </CardGrid>
-      {snapshotUnavailable || weights.rushFilteringSupported ? (
-        <Box sx={{ mb: 1 }} />
-      ) : (
-        <Typography sx={{ mt: 0.4, mb: 1, fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
-          PRE/POST shown for all WF (rush filter not applied to weights).
-        </Typography>
-      )}
 
       <BlockLabel>Specialty / Quality</BlockLabel>
       <CardGrid>
@@ -305,50 +297,43 @@ export default function ManagementRinseWfSection({
         />
       </CardGrid>
 
-      <Box sx={{ mt: 1.5 }}>
-        <BlockLabel>Supplies · Day totals</BlockLabel>
-        <CardGrid>
-          {SUPPLY_ROWS.map((row) => (
-            <TodayTapCard
-              key={row.key}
-              label={row.label}
-              value={
-                suppliesPending
-                  ? "…"
-                  : snapshotUnavailable || !suppliesAvailable
-                    ? "—"
-                    : fmtOz(supplies?.[row.key]?.ounces)
-              }
-              sub={
-                suppliesPending
-                  ? "Loading…"
-                  : snapshotUnavailable || !suppliesAvailable
-                    ? undefined
-                    : `${fmtInt(supplies?.[row.key]?.doses)} dose${
-                        Number(supplies?.[row.key]?.doses) === 1 ? "" : "s"
-                      }`
-              }
-            />
-          ))}
-        </CardGrid>
-        {snapshotUnavailable ? null : suppliesPending ? (
-          <Typography sx={{ mt: 0.4, fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
-            Loading day totals…
-          </Typography>
-        ) : suppliesError ? (
-          <Typography sx={{ mt: 0.4, fontSize: 11, color: "#b91c1c", fontWeight: 600 }}>
-            Supplies failed to load — WF metrics above are still current.
-          </Typography>
-        ) : !suppliesAvailable ? (
-          <Typography sx={{ mt: 0.4, fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
-            Supply usage summary unavailable for this day.
-          </Typography>
-        ) : (
-          <Typography sx={{ mt: 0.4, fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
-            DAY TOTALS — not filtered by All / Rush / Non-Rush.
-          </Typography>
-        )}
-      </Box>
+      <BlockLabel hint="DAY TOTALS">Supplies</BlockLabel>
+      <CardGrid>
+        {SUPPLY_ROWS.map((row) => (
+          <TodayTapCard
+            key={row.key}
+            label={row.label}
+            value={
+              suppliesPending
+                ? "…"
+                : snapshotUnavailable || !suppliesAvailable
+                  ? "—"
+                  : fmtOz(supplies?.[row.key]?.ounces)
+            }
+            sub={
+              suppliesPending
+                ? "Loading…"
+                : snapshotUnavailable || !suppliesAvailable
+                  ? undefined
+                  : `${fmtInt(supplies?.[row.key]?.doses)} dose${
+                      Number(supplies?.[row.key]?.doses) === 1 ? "" : "s"
+                    }`
+            }
+          />
+        ))}
+      </CardGrid>
+      {suppliesError && !suppliesPending ? (
+        <Box sx={{ mt: -0.5, mb: 1 }}>
+          <Button
+            size="small"
+            variant="text"
+            onClick={onRetrySupplies}
+            sx={{ textTransform: "none", fontWeight: 700, px: 0.5 }}
+          >
+            Retry Supplies
+          </Button>
+        </Box>
+      ) : null}
 
       <Step1MetricDrawer
         open={drawer.open}
