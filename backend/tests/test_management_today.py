@@ -13,6 +13,7 @@ from backend.management_today import (
     extract_labor_kpis,
     extract_other_revenue,
     extract_review,
+    extract_rinse_step1,
     extract_supplies,
     extract_wf_kpis,
 )
@@ -33,18 +34,39 @@ def _headline():
                 "split_orders": {"count": 42, "order_ids": ["S1"]},
             }
         },
+        "hd_dashboard_totals": {
+            "total_hd_orders": 13,
+            "completed": 12,
+            "review_required": 1,
+            "total_items": 48,
+            "hd_revenue": 210.5,
+        },
         "segments": {
             "all": {"exceptions": {"review_required": 5}},
             "wf": {
                 "total_workload": 97,
                 "active_workload": 97,
-                "completed": 84,
-                "pending": 8,
-                "bag_ids": {"completed": ["SHOULD_NOT_LEAK"]},
+                "completed": 70,
+                "pending": 1,
+                "exceptions": {"review_required": 26},
+                "bag_ids": {
+                    "completed": ["SHOULD_NOT_LEAK", "A", "B"],
+                    "pending": ["C"],
+                    "review_required": ["D", "R1", "S1"],
+                },
+            },
+            "wf_rush": {
+                "total_workload": 12,
+                "completed": 8,
+                "pending": 0,
+                "exceptions": {"review_required": 4},
+                "bag_ids": {"review_required": ["R1"], "completed": ["A"]},
             },
             "hd": {
+                "total_workload": 13,
                 "completed": 12,
                 "pending": 3,
+                "exceptions": {"review_required": 1},
                 "bag_ids": {"completed": ["HD1"]},
             },
         },
@@ -54,7 +76,7 @@ def _headline():
 def test_wf_kpis_match_step1_headline_scalars():
     wf = extract_wf_kpis(_headline(), lbs_processed=1940.25)
     assert wf["bags"] == 97
-    assert wf["completed"] == 84
+    assert wf["completed"] == 70
     assert wf["lbs_processed"] == 1940.25
     assert wf["specialty"] == 5  # unique A,B,C,D,E
     assert wf["rejects"] == 8
@@ -230,7 +252,7 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
 
     assert payload["wf"]["bags"] == 97
     assert payload["wf"]["lbs_processed"] == 1940.25
-    assert payload["wf"]["completed"] == 84
+    assert payload["wf"]["completed"] == 70
     assert payload["hd"]["completed_orders"] == 12
     assert payload["hd"]["items"] == 48
     assert payload["hd"]["revenue"] == 210.5
@@ -242,6 +264,16 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
     assert payload["supplies"]["Tide"]["ounces"] == 6.0
     assert payload["review"]["review_required"] == 5
     assert payload["review"]["split_available"] is False
+    rinse = payload["rinse"]
+    assert rinse["segments"]["wf"]["total_workload"] == 97
+    assert rinse["segments"]["wf"]["completed"] == 70
+    assert rinse["segments"]["wf"]["pending"] == 1
+    assert rinse["segments"]["wf"]["exceptions"]["review_required"] == 26
+    assert "bag_ids" not in rinse["segments"]["wf"]
+    assert rinse["specialty_metrics"]["wf"]["rejected_orders"] == {"count": 1}
+    assert rinse["specialty_metrics"]["wf"]["comforter_orders"] == {"count": 4}
+    assert "order_ids" not in rinse["specialty_metrics"]["wf"]["comforter_orders"]
+    assert rinse["hd_dashboard_totals"]["total_hd_orders"] == 13
     assert_compact_today_payload(payload)
     dumped = str(payload)
     assert "SHOULD_NOT_LEAK" not in dumped
@@ -296,3 +328,24 @@ def test_today_cache_returns_same_scalars_without_rebuild():
     assert second["wf"]["bags"] == first["wf"]["bags"]
     assert second["_meta"]["cached"] is True
     assert hl.call_count == 1
+
+
+def test_extract_rinse_step1_keeps_shift_analysis_counts_without_ids():
+    rinse = extract_rinse_step1(_headline(), {"complete_total_items": 48, "complete_hd_revenue": 210.5}, {
+        "status": "OPEN",
+        "review_required_count": 27,
+    })
+    wf = rinse["segments"]["wf"]
+    assert wf["total_workload"] == 97
+    assert wf["completed"] == 70
+    assert wf["pending"] == 1
+    assert wf["exceptions"]["review_required"] == 26
+    assert "bag_ids" not in wf
+    assert rinse["specialty_metrics"]["wf"]["comforter_orders"]["count"] == 4
+    assert rinse["specialty_metrics"]["wf"]["bath_mat_orders"]["count"] == 1
+    assert rinse["specialty_metrics"]["wf"]["rejected_orders"]["count"] == 1
+    assert rinse["specialty_metrics"]["wf_rush"]["rejected_orders"]["count"] == 1
+    assert rinse["hd_dashboard_totals"]["total_hd_orders"] == 13
+    assert rinse["hd_dashboard_totals"]["completed"] == 12
+    assert rinse["hd_dashboard_totals"]["review_required"] == 1
+    assert_compact_today_payload({"rinse": rinse})

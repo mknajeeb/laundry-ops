@@ -37,11 +37,28 @@ FORBIDDEN_COLLECTION_KEYS = frozenset(
         "included_bags",
         "missing_post_bags",
         "orphan_production_facts",
-        "segments",
-        "specialty_metrics",
         "review_by_reason",
         "review_reasons_by_bag",
     }
+)
+
+RINSE_SEGMENT_KEYS = (
+    "all",
+    "wf",
+    "hd",
+    "rush",
+    "non_rush",
+    "wf_rush",
+    "wf_non_rush",
+    "hd_rush",
+    "hd_non_rush",
+)
+
+SPECIALTY_PACK_KEYS = (
+    "comforter_orders",
+    "bath_mat_orders",
+    "rejected_orders",
+    "split_orders",
 )
 
 LABOR_CATEGORY_KEYS = {
@@ -138,7 +155,11 @@ def _clip_seconds(
 
 
 def assert_compact_today_payload(payload: Mapping[str, Any]) -> None:
-    """Raise if the TODAY DTO ships collection payloads meant for later drilldowns."""
+    """Raise if the TODAY DTO ships collection payloads meant for later drilldowns.
+
+    Scalar maps (WF/HD segment counts, specialty counts, reason counts) are allowed.
+    Bag/order ID lists are not.
+    """
     stack: list[Any] = [payload]
     while stack:
         cur = stack.pop()
@@ -318,6 +339,192 @@ def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
             "doses": None if doses is None and not has_usage else int(doses or 0),
         }
     return out
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _compact_segment(seg: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not seg:
+        return None
+    review = _int_or_zero((seg.get("exceptions") or {}).get("review_required"))
+    if review == 0:
+        review = _int_or_zero((seg.get("exceptions") or {}).get("total"))
+    total = seg.get("total_workload")
+    if total is None:
+        total = seg.get("active_workload") or 0
+    out = {
+        "total_workload": _int_or_zero(total),
+        "active_workload": _int_or_zero(seg.get("active_workload") or total),
+        "completed": _int_or_zero(seg.get("completed")),
+        "pending": _int_or_zero(seg.get("pending")),
+        "exceptions": {"review_required": review, "total": review},
+    }
+    if seg.get("unfinished_at_close") is not None:
+        out["unfinished_at_close"] = _int_or_zero(seg.get("unfinished_at_close"))
+    if seg.get("partially_recorded") is not None:
+        out["partially_recorded"] = _int_or_zero(seg.get("partially_recorded"))
+    return out
+
+
+def _segment_member_ids(seg: Mapping[str, Any] | None) -> set[str]:
+    bags = ((seg or {}).get("bag_ids") or {}) if isinstance(seg, Mapping) else {}
+    ids: set[str] = set()
+    for bucket in ("new_today", "carryover", "completed", "pending", "review_required"):
+        for raw in bags.get(bucket) or []:
+            bid = str(raw or "").strip().upper()
+            if bid:
+                ids.add(bid)
+    return ids
+
+
+def _specialty_counts(
+    pack: Mapping[str, Any] | None,
+    member_ids: set[str] | None = None,
+) -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {}
+    src = pack or {}
+    for key in SPECIALTY_PACK_KEYS:
+        row = src.get(key) or {}
+        raw_ids = [
+            str(x).strip().upper()
+            for x in (row.get("order_ids") or [])
+            if str(x).strip()
+        ]
+        if member_ids is not None and raw_ids:
+            count = len([bid for bid in raw_ids if bid in member_ids])
+        elif raw_ids:
+            count = len(raw_ids)
+        else:
+            count = _int_or_zero(row.get("count"))
+        out[key] = {"count": count}
+    return out
+
+
+def _compact_freshness(raw: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(raw, Mapping) or not raw:
+        return None
+    out: dict[str, Any] = {}
+    for key, val in raw.items():
+        if isinstance(val, (list, dict)):
+            continue
+        out[key] = val
+    return out or None
+
+
+def _review_reason_counts(raw: Mapping[str, Any] | None) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for key, val in (raw or {}).items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        if isinstance(val, (list, tuple, set)):
+            out[name] = len(val)
+        else:
+            out[name] = _int_or_zero(val)
+    return out
+
+
+def extract_rinse_step1(
+    headline: Mapping[str, Any] | None,
+    hd_totals: Mapping[str, Any] | None,
+    day_rec: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Compact Step-1 scalars for Management TODAY. Same headline math; no bag arrays."""
+    hl = dict(headline or {})
+    rec = dict(day_rec or {})
+    segs = hl.get("segments") or {}
+    compact_segs: dict[str, Any] = {}
+    for key in RINSE_SEGMENT_KEYS:
+        compact = _compact_segment(segs.get(key))
+        if compact is not None:
+            compact_segs[key] = compact
+
+    spec_root = hl.get("specialty_metrics") or {}
+    specialty: dict[str, Any] = {}
+    spec_map = (
+        ("wf", "wf", "wf"),
+        ("wf_rush", "wf", "wf_rush"),
+        ("wf_non_rush", "wf", "wf_non_rush"),
+        ("hd", "hd", "hd"),
+        ("all", "all", "all"),
+        ("rush", "all", "rush"),
+        ("non_rush", "all", "non_rush"),
+    )
+    for out_key, pack_key, seg_key in spec_map:
+        pack = spec_root.get(pack_key) or spec_root.get("all") or {}
+        seg = segs.get(seg_key)
+        # Empty membership must stay empty (do not coerce set() to None).
+        members = _segment_member_ids(seg) if seg is not None else None
+        specialty[out_key] = _specialty_counts(pack, members)
+
+    hd_seg = compact_segs.get("hd") or {}
+    hd_dash_src = dict(hl.get("hd_dashboard_totals") or {})
+    totals = dict(hd_totals or {})
+    items = hd_dash_src.get("total_items")
+    if items is None:
+        items = totals.get("complete_total_items") or 0
+    revenue = (
+        hd_dash_src.get("hd_revenue")
+        if hd_dash_src.get("hd_revenue") is not None
+        else hd_dash_src.get("total_revenue")
+    )
+    if revenue is None:
+        revenue = totals.get("complete_hd_revenue") or 0
+    hd_dashboard = {
+        "total_hd_orders": _int_or_zero(
+            hd_dash_src.get("total_hd_orders")
+            if hd_dash_src.get("total_hd_orders") is not None
+            else hd_seg.get("total_workload")
+        ),
+        "completed": _int_or_zero(
+            hd_dash_src.get("completed")
+            if hd_dash_src.get("completed") is not None
+            else hd_seg.get("completed")
+        ),
+        "review_required": _int_or_zero(
+            hd_dash_src.get("review_required")
+            if hd_dash_src.get("review_required") is not None
+            else (hd_seg.get("exceptions") or {}).get("review_required")
+        ),
+        "total_items": _int_or_zero(items),
+        "total_revenue": _money(revenue),
+        "hd_revenue": _money(revenue),
+    }
+
+    status = str(rec.get("status") or hl.get("status") or "").upper() or None
+    snapshot_missing = bool(
+        hl.get("data_unavailable")
+        or hl.get("snapshot_available") is False
+        or hl.get("snapshot_missing")
+        or hl.get("unavailable_reason") == "step1_snapshot_missing"
+        or rec.get("data_unavailable")
+        or rec.get("snapshot_available") is False
+        or rec.get("snapshot_missing")
+        or not hl
+    )
+    return {
+        "selected_date_et": hl.get("selected_date_et"),
+        "snapshot_available": not snapshot_missing,
+        "data_unavailable": snapshot_missing,
+        "snapshot_missing": snapshot_missing,
+        "step1_history_unavailable": bool(hl.get("step1_history_unavailable")),
+        "message": hl.get("message") or rec.get("message"),
+        "shift_day": {
+            "status": rec.get("status") or status,
+            "read_only": status == "CLOSED",
+            "review_required_count": rec.get("review_required_count"),
+        },
+        "segments": compact_segs,
+        "specialty_metrics": specialty,
+        "hd_dashboard_totals": hd_dashboard,
+        "review_reason_counts": _review_reason_counts(hl.get("review_by_reason")),
+        "data_freshness": _compact_freshness(hl.get("data_freshness") or rec.get("data_freshness")),
+    }
 
 
 def extract_review(day_rec: Mapping[str, Any] | None, headline: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -512,6 +719,7 @@ def build_management_today_payload(
         "generated_at_et": generated_iso,
         "wf": extract_wf_kpis(headline, lbs_processed=lbs),
         "hd": extract_hd_kpis(headline, hd_totals),
+        "rinse": extract_rinse_step1(headline, hd_totals, day_rec),
         "other_revenue": extract_other_revenue(drc_lines),
         "labor": extract_labor_kpis(
             segments, day_start=day_start, clip_end=clip_end, rates_by_user=rates
@@ -525,6 +733,7 @@ def build_management_today_payload(
             "sources": {
             "wf": "step1_headline+daily_ops_days.today_wf_completed_pounds",
             "hd": "step1_headline+hd_day_bag_production",
+            "rinse": "step1_headline_scalars_no_bag_arrays",
             "other_revenue": "dr_daily_entry_lines",
             "labor": "shift_job_segments+payroll_worker_profiles",
             "supplies": "deferred_order_level_report_not_on_today_hot_path",

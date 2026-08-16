@@ -11,6 +11,7 @@ import {
 import RefreshIcon from "@mui/icons-material/Refresh";
 import { getManagementToday } from "../api";
 import ManagementHubNav from "../components/management/ManagementHubNav";
+import ManagementTodayRinseSection from "../components/management/ManagementTodayRinseSection";
 import { formatFriendlyEtWall } from "../utils/rinseTimeFormat";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 
@@ -27,24 +28,17 @@ function todayEtIso() {
   }
 }
 
-function fmtInt(v) {
-  if (v == null || Number.isNaN(Number(v))) return "—";
-  return Number(v).toLocaleString();
-}
-
-function fmtLbs(v) {
-  if (v == null || Number.isNaN(Number(v))) return "—";
-  return `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })} lb`;
+function formatDayLabel(iso) {
+  const parts = String(iso || "").split("-").map(Number);
+  if (parts.length !== 3 || parts.some((n) => !n && n !== 0)) return iso || "";
+  const [year, month, day] = parts;
+  const dt = new Date(year, month - 1, day);
+  return dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 function fmtMoney(v) {
   if (v == null || Number.isNaN(Number(v))) return "—";
   return `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-function fmtPct(v) {
-  if (v == null || Number.isNaN(Number(v))) return "—";
-  return `${Number(v).toFixed(1)}%`;
 }
 
 function fmtHours(v) {
@@ -57,14 +51,14 @@ function fmtOz(v) {
   return `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })} oz`;
 }
 
-function Section({ title, accent, children }) {
+function Section({ title, children }) {
   return (
     <Box
       sx={{
         p: 1.5,
         borderRadius: 2,
         border: "1px solid",
-        borderColor: accent || VEEWASH_DASHBOARD.snapshotBorder,
+        borderColor: VEEWASH_DASHBOARD.snapshotBorder,
         bgcolor: "#fff",
       }}
     >
@@ -89,13 +83,13 @@ function HeroPair({ leftLabel, leftValue, rightLabel, rightValue }) {
   return (
     <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1, mb: 1 }}>
       <Box>
-        <Typography sx={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, letterSpacing: -0.4 }}>
+        <Typography sx={{ fontSize: 22, fontWeight: 800, lineHeight: 1.1, letterSpacing: -0.3 }}>
           {leftValue}
         </Typography>
         <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>{leftLabel}</Typography>
       </Box>
       <Box>
-        <Typography sx={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, letterSpacing: -0.4 }}>
+        <Typography sx={{ fontSize: 22, fontWeight: 800, lineHeight: 1.1, letterSpacing: -0.3 }}>
           {rightValue}
         </Typography>
         <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>{rightLabel}</Typography>
@@ -130,6 +124,7 @@ export default function ManagementHubPage() {
   const [error, setError] = useState("");
 
   const load = useCallback(async (day, refresh = false) => {
+    if (!refresh) setData(null);
     setLoading(true);
     setError("");
     try {
@@ -152,11 +147,8 @@ export default function ManagementHubPage() {
     return formatFriendlyEtWall(data.generated_at_et);
   }, [data?.generated_at_et]);
 
-  const wf = data?.wf || {};
-  const hd = data?.hd || {};
   const labor = data?.labor || {};
   const revenue = data?.other_revenue || {};
-  const review = data?.review || {};
   const supplies = data?.supplies || {};
 
   return (
@@ -178,7 +170,8 @@ export default function ManagementHubPage() {
         <Box>
           <Typography sx={{ fontSize: 22, fontWeight: 800, lineHeight: 1.1 }}>Today</Typography>
           <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-            {refreshedLabel ? `Refreshed ${refreshedLabel}` : " "}
+            {formatDayLabel(dateEt)}
+            {refreshedLabel ? ` · refreshed ${refreshedLabel}` : ""}
           </Typography>
         </Box>
         <Stack direction="row" alignItems="center" spacing={0.5}>
@@ -204,49 +197,22 @@ export default function ManagementHubPage() {
 
       {error ? <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert> : null}
 
-      <Box
-        sx={{
-          display: "grid",
-          gap: 1.25,
-          gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
-        }}
-      >
-        <Box sx={{ gridColumn: { sm: "1 / -1" } }}>
-          <Section title="Rinse — Wash & Fold" accent={VEEWASH_DASHBOARD.wfBorder}>
-            <HeroPair
-              leftLabel="Bags"
-              leftValue={fmtInt(wf.bags)}
-              rightLabel="Processed"
-              rightValue={fmtLbs(wf.lbs_processed)}
-            />
-            <Typography sx={{ fontSize: 15, fontWeight: 700, mb: 1 }}>
-              {fmtInt(wf.completed)} complete
-            </Typography>
-            <MetricRow
-              items={[
-                { label: "Specialty", value: fmtInt(wf.specialty) },
-                { label: "Rejects", value: `${fmtInt(wf.rejects)} · ${fmtPct(wf.reject_pct)}` },
-                { label: "Split", value: fmtPct(wf.split_pct) },
-              ]}
-            />
-          </Section>
-        </Box>
-
-        <Section title="Rinse — Hang Dry" accent={VEEWASH_DASHBOARD.hdBorder}>
-          <HeroPair
-            leftLabel="Completed orders"
-            leftValue={fmtInt(hd.completed_orders)}
-            rightLabel="Items"
-            rightValue={fmtInt(hd.items)}
+      <Box sx={{ display: "grid", gap: 1.25 }}>
+        {data ? (
+          <ManagementTodayRinseSection
+            rinse={data.rinse || null}
+            lbsProcessed={data?.wf?.lbs_processed}
+            selectedDateEt={dateEt}
+            onRefresh={() => load(dateEt, true)}
           />
-          <MetricRow
-            items={[
-              { label: "Revenue", value: fmtMoney(hd.revenue) },
-              { label: "Open / in process", value: fmtInt(hd.open_in_process) },
-            ]}
-          />
-        </Section>
+        ) : loading ? (
+          <Box sx={{ py: 4, textAlign: "center" }}>
+            <CircularProgress size={22} />
+          </Box>
+        ) : null}
 
+        {data ? (
+          <>
         <Section title="Labor">
           <HeroPair
             leftLabel="Hours"
@@ -274,19 +240,6 @@ export default function ManagementHubPage() {
           />
         </Section>
 
-        <Section title="Review">
-          {review.split_available ? (
-            <MetricRow
-              items={[
-                { label: "Specialty items", value: fmtInt(review.specialty_items) },
-                { label: "Missing from portal", value: fmtInt(review.missing_from_portal) },
-              ]}
-            />
-          ) : (
-            <MetricRow items={[{ label: "Review required", value: fmtInt(review.review_required) }]} />
-          )}
-        </Section>
-
         <Section title="Supplies">
           <MetricRow
             items={[
@@ -297,6 +250,8 @@ export default function ManagementHubPage() {
             ]}
           />
         </Section>
+          </>
+        ) : null}
       </Box>
     </Box>
   );
