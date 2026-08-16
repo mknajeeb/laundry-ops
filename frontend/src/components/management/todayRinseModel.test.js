@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   pickRinseSegments,
   pickWfSpecialty,
+  pickWfWeights,
   wfHeadline,
   wfIdentityLine,
 } from "./todayRinseModel";
@@ -48,5 +49,23 @@ describe("Rinse WF presentation model", () => {
     expect(pickRinseSegments(rinse, "rush").wf.total_workload).toBe(12);
     expect(pickWfSpecialty(rinse, "all").rejected_orders.count).toBe(26);
     expect(pickWfSpecialty(rinse, "rush").rejected_orders.count).toBe(4);
+  });
+
+  it("picks PRE/POST lbs with rush filter when supported", () => {
+    const withWeights = {
+      ...rinse,
+      weight_totals: {
+        rush_filtering_supported: true,
+        pre_lbs: 100,
+        post_lbs: 80,
+        by_rush: {
+          all: { pre_lbs: 100, post_lbs: 80 },
+          rush: { pre_lbs: 70, post_lbs: 60 },
+          non_rush: { pre_lbs: 30, post_lbs: 20 },
+        },
+      },
+    };
+    expect(pickWfWeights(withWeights, "all").preLbs).toBe(100);
+    expect(pickWfWeights(withWeights, "rush").postLbs).toBe(60);
   });
 });

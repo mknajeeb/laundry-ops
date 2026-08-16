@@ -17,6 +17,7 @@ describe("Management Hub destinations", () => {
     expect(HUB_DESTINATIONS.filter((d) => d.enabled).map((d) => d.id)).toEqual([
       "today",
       "rinse_wf",
+      "rinse_hd",
     ]);
   });
 

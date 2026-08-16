@@ -121,7 +121,6 @@ export default function ManagementRinseWfPage() {
       {data ? (
         <ManagementRinseWfSection
           rinse={data.rinse || null}
-          lbsProcessed={data?.wf?.lbs_processed}
           selectedDateEt={dateEt}
           onRefresh={() => load(dateEt, true)}
         />

@@ -2302,6 +2302,25 @@ export const getManagementToday = (dateEt, params = {}) =>
     params: { date_et: dateEt, ...params },
   });
 
+export const getManagementRinseHd = (dateEt, params = {}) =>
+  axios.get(`${API_BASE}/api/management/rinse-hd`, {
+    params: { date_et: dateEt, ...params },
+  });
+
+export const getManagementRinseHdDetail = (bagId, params = {}) =>
+  axios.get(`${API_BASE}/api/management/rinse-hd/${encodeURIComponent(bagId)}`, {
+    params,
+  });
+
+export const saveManagementRinseHdProduction = (bagId, body) =>
+  axios.put(`${API_BASE}/api/management/rinse-hd/${encodeURIComponent(bagId)}/production`, body);
+
+export const markManagementRinseHdComplete = (bagId, body) =>
+  axios.post(
+    `${API_BASE}/api/management/rinse-hd/${encodeURIComponent(bagId)}/mark-complete`,
+    body,
+  );
+
 export const getDailyOperationsMeta = () =>
   axios.get(`${API_BASE}/api/daily-operations/meta`);
 

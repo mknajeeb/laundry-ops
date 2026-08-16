@@ -219,6 +219,19 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
     with patch("backend.management_today._load_headline", return_value=({"review_required_count": 5}, headline)), patch(
         "backend.management_today._load_wf_lbs", return_value=1940.25
     ), patch(
+        "backend.management_today.load_wf_day_weight_totals",
+        return_value={
+            "pre_lbs": 2000.0,
+            "post_lbs": 1940.25,
+            "rush_filtering_supported": True,
+            "source": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs",
+            "by_rush": {
+                "all": {"pre_lbs": 2000.0, "post_lbs": 1940.25},
+                "rush": {"pre_lbs": 1500.0, "post_lbs": 1400.0},
+                "non_rush": {"pre_lbs": 500.0, "post_lbs": 540.25},
+            },
+        },
+    ), patch(
         "backend.management_today._load_hd_totals", return_value=hd_totals
     ), patch(
         "backend.management_today._load_drc_lines",
@@ -274,6 +287,8 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
     assert rinse["specialty_metrics"]["wf"]["comforter_orders"] == {"count": 4}
     assert "order_ids" not in rinse["specialty_metrics"]["wf"]["comforter_orders"]
     assert rinse["hd_dashboard_totals"]["total_hd_orders"] == 13
+    assert rinse["weight_totals"]["pre_lbs"] == 2000.0
+    assert rinse["weight_totals"]["post_lbs"] == 1940.25
     assert_compact_today_payload(payload)
     dumped = str(payload)
     assert "SHOULD_NOT_LEAK" not in dumped
@@ -307,6 +322,19 @@ def test_today_cache_returns_same_scalars_without_rebuild():
     day = date(2026, 8, 14)
     with patch("backend.management_today._load_headline", return_value=({"review_required_count": 1}, _headline())) as hl, patch(
         "backend.management_today._load_wf_lbs", return_value=100.0
+    ), patch(
+        "backend.management_today.load_wf_day_weight_totals",
+        return_value={
+            "pre_lbs": 110.0,
+            "post_lbs": 100.0,
+            "rush_filtering_supported": True,
+            "source": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs",
+            "by_rush": {
+                "all": {"pre_lbs": 110.0, "post_lbs": 100.0},
+                "rush": {"pre_lbs": None, "post_lbs": None},
+                "non_rush": {"pre_lbs": None, "post_lbs": None},
+            },
+        },
     ), patch(
         "backend.management_today._load_hd_totals", return_value={}
     ), patch(

@@ -54,8 +54,10 @@ export default function ManagementHubPage() {
               <Typography sx={{ fontSize: 15, fontWeight: 800 }}>{item.label}</Typography>
               <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
                 {item.id === "rinse_wf"
-                  ? "Workload · Completed · Pending · Review · Specialty"
-                  : "Coming next"}
+                  ? "Workload · Completed · Pending · Review · Specialty · PRE/POST lbs"
+                  : item.id === "rinse_hd"
+                    ? "Open / Completed · items · revenue · new HD model"
+                    : "Coming next"}
               </Typography>
             </Box>
             <Button
@@ -86,7 +88,7 @@ export default function ManagementHubPage() {
             Next compartments
           </Typography>
           <Typography sx={{ mt: 0.35, fontSize: 12, color: "#94a3b8", fontWeight: 600 }}>
-            Rinse HD · Performance · Labor · Revenue · Rinse Flow · Analysis · Bag Search
+            Performance · Labor · Revenue · Rinse Flow · Analysis · Bag Search
           </Typography>
         </Box>
       </Box>

@@ -51,6 +51,19 @@ export function hdHeadline(seg, hdTotals) {
   return { orders, completed, review, items, revenue };
 }
 
+export function pickWfWeights(rinse, rushFilter = "all") {
+  const totals = rinse?.weight_totals || {};
+  const byRush = totals.by_rush || {};
+  const key = rushFilter === "rush" || rushFilter === "non_rush" ? rushFilter : "all";
+  const scoped = byRush[key] || byRush.all || {};
+  return {
+    preLbs: scoped.pre_lbs ?? totals.pre_lbs ?? null,
+    postLbs: scoped.post_lbs ?? totals.post_lbs ?? null,
+    rushFilteringSupported: Boolean(totals.rush_filtering_supported),
+    source: totals.source || null,
+  };
+}
+
 export function wfIdentityLine({ workload, completed, pending, review }) {
   return `${workload} = ${completed} Completed + ${pending} Pending + ${review} Review`;
 }

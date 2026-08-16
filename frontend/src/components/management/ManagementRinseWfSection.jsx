@@ -7,6 +7,7 @@ import TodayTapCard from "./TodayTapCard";
 import {
   pickRinseSegments,
   pickWfSpecialty,
+  pickWfWeights,
   wfHeadline,
   wfIdentityLine,
 } from "./todayRinseModel";
@@ -58,7 +59,6 @@ function CardGrid({ children }) {
 /** Modernized WF Shift Analysis compartment — WF only; same drawers/endpoints. */
 export default function ManagementRinseWfSection({
   rinse,
-  lbsProcessed = null,
   selectedDateEt,
   onRefresh,
 }) {
@@ -88,6 +88,10 @@ export default function ManagementRinseWfSection({
   );
   const specialty = useMemo(
     () => pickWfSpecialty(rinse, rushFilter),
+    [rinse, rushFilter],
+  );
+  const weights = useMemo(
+    () => pickWfWeights(rinse, rushFilter),
     [rinse, rushFilter],
   );
   const wf = wfHeadline(wfSeg);
@@ -153,7 +157,6 @@ export default function ManagementRinseWfSection({
         <TodayTapCard
           label="Completed"
           value={snapshotUnavailable ? "—" : fmtInt(wf.completed)}
-          sub={fmtLbs(lbsProcessed)}
           tone="completed"
           onClick={
             snapshotUnavailable
@@ -189,6 +192,32 @@ export default function ManagementRinseWfSection({
       {snapshotUnavailable ? null : (
         <Typography sx={{ mt: 0.6, mb: 1, fontSize: 12, color: "#64748b", fontWeight: 600 }}>
           {wfIdentityLine(wf)}
+        </Typography>
+      )}
+
+      <BlockLabel>Processed pounds</BlockLabel>
+      <CardGrid>
+        <TodayTapCard
+          label="Pre Weight"
+          value={snapshotUnavailable ? "—" : (fmtLbs(weights.preLbs) || "—")}
+          tone="workload"
+        />
+        <TodayTapCard
+          label="Post Weight"
+          value={snapshotUnavailable ? "—" : (fmtLbs(weights.postLbs) || "—")}
+          tone="completed"
+        />
+      </CardGrid>
+      {snapshotUnavailable || weights.rushFilteringSupported ? null : (
+        <Typography sx={{ mt: 0.4, mb: 1, fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
+          PRE/POST shown for all WF (rush filter not applied to weights).
+        </Typography>
+      )}
+      {snapshotUnavailable || !weights.rushFilteringSupported ? (
+        <Box sx={{ mb: 1 }} />
+      ) : (
+        <Typography sx={{ mt: 0.4, mb: 1, fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
+          PRE/POST follow the All / Rush / Non-Rush filter.
         </Typography>
       )}
 

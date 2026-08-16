@@ -595,6 +595,119 @@ def _load_wf_lbs(cursor, organization_id: int, selected_date_et: date) -> float 
     return float(row["today_wf_completed_pounds"])
 
 
+def _rush_bucket(raw: Any) -> str:
+    token = str(raw or "").strip().upper().replace(" ", "_").replace("-", "_")
+    if token == "RUSH":
+        return "rush"
+    if token in {"NON_RUSH", "NONRUSH"}:
+        return "non_rush"
+    return "other"
+
+
+def _lbs_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return round(float(value), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: date) -> dict[str, Any]:
+    """Compact PRE/POST lbs from day-bag projections — one GROUP BY, no per-bag scan walk.
+
+    PRE = SUM(pre_weight_lbs) for WF membership bags on the ET day.
+    POST = SUM(post_weight_lbs) for completed WF bags on the ET day.
+    Rush buckets come from day-bag rush_status (supported).
+    """
+    empty = {
+        "pre_lbs": None,
+        "post_lbs": None,
+        "rush_filtering_supported": True,
+        "source": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs",
+        "by_rush": {
+            "all": {"pre_lbs": None, "post_lbs": None},
+            "rush": {"pre_lbs": None, "post_lbs": None},
+            "non_rush": {"pre_lbs": None, "post_lbs": None},
+        },
+    }
+    if not table_exists(cursor, "rinse_shift_monitor_day_bags"):
+        empty["rush_filtering_supported"] = False
+        empty["source"] = None
+        return empty
+    if not table_has_column(cursor, "rinse_shift_monitor_day_bags", "pre_weight_lbs"):
+        empty["rush_filtering_supported"] = False
+        return empty
+
+    cursor.execute(
+        """
+        SELECT rush_status,
+               SUM(pre_weight_lbs) AS pre_lbs,
+               SUM(
+                 CASE
+                   WHEN UPPER(COALESCE(canonical_completion_status, '')) IN ('COMPLETED', 'COMPLETE')
+                     THEN post_weight_lbs
+                   ELSE NULL
+                 END
+               ) AS post_lbs
+        FROM rinse_shift_monitor_day_bags
+        WHERE organization_id = %s
+          AND shift_date_et = %s
+          AND UPPER(COALESCE(service_type, '')) = 'WF'
+        GROUP BY rush_status
+        """,
+        (int(organization_id), selected_date_et),
+    )
+    pre_all = 0.0
+    post_all = 0.0
+    pre_seen = False
+    post_seen = False
+    by_rush = {
+        "all": {"pre_lbs": None, "post_lbs": None},
+        "rush": {"pre_lbs": None, "post_lbs": None},
+        "non_rush": {"pre_lbs": None, "post_lbs": None},
+    }
+    bucket_pre = {"rush": 0.0, "non_rush": 0.0}
+    bucket_post = {"rush": 0.0, "non_rush": 0.0}
+    bucket_pre_seen = {"rush": False, "non_rush": False}
+    bucket_post_seen = {"rush": False, "non_rush": False}
+
+    for row in cursor.fetchall() or []:
+        bucket = _rush_bucket(row.get("rush_status"))
+        pre = _lbs_or_none(row.get("pre_lbs"))
+        post = _lbs_or_none(row.get("post_lbs"))
+        if pre is not None:
+            pre_all += pre
+            pre_seen = True
+            if bucket in bucket_pre:
+                bucket_pre[bucket] += pre
+                bucket_pre_seen[bucket] = True
+        if post is not None:
+            post_all += post
+            post_seen = True
+            if bucket in bucket_post:
+                bucket_post[bucket] += post
+                bucket_post_seen[bucket] = True
+
+    by_rush["all"] = {
+        "pre_lbs": round(pre_all, 1) if pre_seen else None,
+        "post_lbs": round(post_all, 1) if post_seen else None,
+    }
+    for key in ("rush", "non_rush"):
+        by_rush[key] = {
+            "pre_lbs": round(bucket_pre[key], 1) if bucket_pre_seen[key] else None,
+            "post_lbs": round(bucket_post[key], 1) if bucket_post_seen[key] else None,
+        }
+
+    return {
+        "pre_lbs": by_rush["all"]["pre_lbs"],
+        "post_lbs": by_rush["all"]["post_lbs"],
+        "rush_filtering_supported": True,
+        "source": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs",
+        "by_rush": by_rush,
+    }
+
+
 def _load_hd_totals(cursor, organization_id: int, selected_date_et: date) -> dict[str, Any]:
     from backend.daily_operations_hd import compute_hd_day_revenue_totals
 
@@ -696,6 +809,7 @@ def build_management_today_payload(
 
     day_rec, headline = _load_headline(counting, org, day)
     lbs = _load_wf_lbs(counting, org, day)
+    weight_totals = load_wf_day_weight_totals(counting, org, day)
     hd_totals = _load_hd_totals(counting, org, day)
     drc_lines = _load_drc_lines(counting, org, day)
     segments = _load_labor_segments(counting, org, day)
@@ -714,12 +828,20 @@ def build_management_today_payload(
     else:
         generated_iso = generated_at.isoformat(timespec="seconds")
 
+    rinse = extract_rinse_step1(headline, hd_totals, day_rec)
+    rinse["weight_totals"] = weight_totals
+
+    # Prefer day-bag POST sum for operator-facing lbs; fall back to persisted Daily Ops.
+    display_post = weight_totals.get("post_lbs")
+    if display_post is None:
+        display_post = lbs
+
     payload = {
         "date_et": day.isoformat(),
         "generated_at_et": generated_iso,
-        "wf": extract_wf_kpis(headline, lbs_processed=lbs),
+        "wf": extract_wf_kpis(headline, lbs_processed=display_post),
         "hd": extract_hd_kpis(headline, hd_totals),
-        "rinse": extract_rinse_step1(headline, hd_totals, day_rec),
+        "rinse": rinse,
         "other_revenue": extract_other_revenue(drc_lines),
         "labor": extract_labor_kpis(
             segments, day_start=day_start, clip_end=clip_end, rates_by_user=rates
@@ -731,9 +853,10 @@ def build_management_today_payload(
             "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
             "query_count": int(getattr(counting, "query_count", 0)),
             "sources": {
-            "wf": "step1_headline+daily_ops_days.today_wf_completed_pounds",
+            "wf": "step1_headline+day_bag_weight_totals",
             "hd": "step1_headline+hd_day_bag_production",
             "rinse": "step1_headline_scalars_no_bag_arrays",
+            "wf_weights": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs",
             "other_revenue": "dr_daily_entry_lines",
             "labor": "shift_job_segments+payroll_worker_profiles",
             "supplies": "deferred_order_level_report_not_on_today_hot_path",

@@ -78,6 +78,7 @@ import RevenueCostFloorPage from "./pages/RevenueCostFloorPage";
 import DailyOperationsPage from "./pages/DailyOperationsPage";
 import ManagementHubPage from "./pages/ManagementHubPage";
 import ManagementRinseWfPage from "./pages/ManagementRinseWfPage";
+import ManagementRinseHdPage from "./pages/ManagementRinseHdPage";
 import OrganizationsPlatformPage from "./pages/OrganizationsPlatformPage";
 import PlatformAdminPage from "./pages/PlatformAdminPage";
 import UserProfilePage from "./pages/UserProfilePage";
@@ -1193,6 +1194,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
                     <ManagementRinseWfPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/management/rinse-hd"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
+                    <ManagementRinseHdPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }
