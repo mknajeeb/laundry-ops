@@ -1811,7 +1811,11 @@ def run_scheduled_scrape_for_org(
                     "(portal + presence + scans from one expand walk)\n"
                 )
                 scan_download_started = datetime.utcnow()
-                if _run_bash_script(scan_script, env, log) != 0:
+                # One walk replaces three prior phases — use full scrape timeout
+                # (default 1800s), not the old 900s per-phase combined cap.
+                if _run_bash_script(
+                    scan_script, env, log, timeout_sec=scrape_timeout_sec()
+                ) != 0:
                     raise RuntimeError("Scan-events scrape subprocess failed")
                 scan_download_completed = datetime.utcnow()
                 _materialize_portal_csv_from_scan_tickets(paths, log)
