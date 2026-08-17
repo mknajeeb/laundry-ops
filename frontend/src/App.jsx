@@ -77,6 +77,7 @@ import RevenueCostFloorPage from "./pages/RevenueCostFloorPage";
 import DailyOperationsPage from "./pages/DailyOperationsPage";
 import ManagementHubPage from "./pages/ManagementHubPage";
 import ManagementRinseWfPage from "./pages/ManagementRinseWfPage";
+import ManagementSupplyMasterPage from "./pages/ManagementSupplyMasterPage";
 import ManagementRinseHdPage from "./pages/ManagementRinseHdPage";
 import OrganizationsPlatformPage from "./pages/OrganizationsPlatformPage";
 import PlatformAdminPage from "./pages/PlatformAdminPage";
@@ -1187,6 +1188,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
                     <ManagementRinseWfPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/management/supply-master"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
+                    <ManagementSupplyMasterPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

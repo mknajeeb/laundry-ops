@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
+import { Link as RouterLink } from "react-router-dom";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
+import { Link as RouterLink } from "react-router-dom";
 import RushFilterChips from "../shift/RushFilterChips";
 import Step1MetricDrawer from "../shift/Step1MetricDrawer";
 import TodayTapCard from "./TodayTapCard";
@@ -389,6 +391,16 @@ export default function ManagementRinseWfSection({
           </Button>
         </Box>
       ) : null}
+      <Box sx={{ mt: -0.5, mb: 1.25 }}>
+        <Button
+          size="small"
+          component={RouterLink}
+          to="/management/supply-master"
+          sx={{ textTransform: "none", fontWeight: 700, px: 0.5 }}
+        >
+          Supply Master · Products & Mappings
+        </Button>
+      </Box>
 
       <Step1MetricDrawer
         open={drawer.open}

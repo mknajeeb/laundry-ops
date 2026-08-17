@@ -1077,6 +1077,29 @@ export const updateSupplyUsageDosages = (body) =>
 export const updateSupplyUsageMappingRules = (body) =>
   axios.put(`${API_BASE}/maintenance/supply-usage/mapping-rules`, body, { timeout: 15000 });
 
+export const getManagementSupplyProductsMeta = () =>
+  axios.get(`${API_BASE}/api/management/supply-products/meta`, { timeout: 15000 });
+
+export const getManagementSupplyProducts = (params) =>
+  axios.get(`${API_BASE}/api/management/supply-products`, { params, timeout: 20000 });
+
+export const postManagementSupplyProduct = (body) =>
+  axios.post(`${API_BASE}/api/management/supply-products`, body, { timeout: 20000 });
+
+export const putManagementSupplyProduct = (productId, body) =>
+  axios.put(`${API_BASE}/api/management/supply-products/${productId}`, body, { timeout: 20000 });
+
+export const postManagementSupplyProductPrice = (productId, body) =>
+  axios.post(`${API_BASE}/api/management/supply-products/${productId}/prices`, body, {
+    timeout: 20000,
+  });
+
+export const getManagementSupplyMappings = () =>
+  axios.get(`${API_BASE}/api/management/supply-mappings`, { timeout: 15000 });
+
+export const putManagementSupplyMappings = (body) =>
+  axios.put(`${API_BASE}/api/management/supply-mappings`, body, { timeout: 15000 });
+
 export const getMachineConfiguration = () =>
   axios.get(`${API_BASE}/maintenance/machine-configuration`, { timeout: 15000 });
 
