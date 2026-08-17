@@ -88,6 +88,164 @@ export function hasCanonicalCompletion(bag) {
   return ["completed", "complete", "done"].includes(status) && Boolean(emp || ts);
 }
 
+/**
+ * Dirty = draft / qty / weight-correction toggles differ from baseline.
+ * Dirty must NOT disable unrelated actions (mark completed / return / exclude).
+ */
+export function isReviewFormDirty({
+  draft,
+  baselineBag,
+  lines = [],
+  baselineLines = null,
+  correctPre = false,
+  correctPost = false,
+}) {
+  if (!baselineBag) return false;
+  if (correctPre || correctPost) return true;
+  const basePre = baselineBag?.pre_weight_lbs;
+  const basePost = baselineBag?.post_weight_value ?? baselineBag?.post_weight_lbs;
+  if (weightsDiffer(draft?.pre_weight_lbs, basePre)) return true;
+  if (weightsDiffer(draft?.post_weight_lbs, basePost)) return true;
+  if (String(draft?.service_type || "").toUpperCase() !== String(baselineBag?.service_type || "WF").toUpperCase()) {
+    return true;
+  }
+  const rushDraft = String(draft?.rush_flag || "").toUpperCase();
+  const rushBase = String(baselineBag?.rush_flag || baselineBag?.rush_status || "").toUpperCase();
+  if (rushDraft && rushBase && rushDraft !== rushBase) return true;
+  if (
+    normalizeCompletionKey(draft?.completion_at) !==
+    normalizeCompletionKey(baselineBag?.completion_at || baselineBag?.canonical_completion_timestamp)
+  ) {
+    return true;
+  }
+  if (
+    String(draft?.completed_by || "").trim().toLowerCase() !==
+    String(baselineBag?.completed_by || baselineBag?.canonical_completion_employee || "")
+      .trim()
+      .toLowerCase()
+  ) {
+    return true;
+  }
+  if (Boolean(draft?.no_chargeable) !== Boolean(baselineBag?.bulk_resolution?.resolution_type === "no_charge")) {
+    return true;
+  }
+  const baseMap = {};
+  for (const line of baselineLines || baselineBag?.bulk_workitems || []) {
+    if (line?.workitem_id != null) {
+      baseMap[String(line.workitem_id)] = Number(line.quantity) || 0;
+    }
+  }
+  const draftMap = {};
+  for (const line of lines || []) {
+    if (line?.workitem_id != null) {
+      draftMap[String(line.workitem_id)] = Number(line.quantity) || 0;
+    }
+  }
+  const ids = new Set([...Object.keys(baseMap), ...Object.keys(draftMap)]);
+  for (const id of ids) {
+    if ((baseMap[id] || 0) !== (draftMap[id] || 0)) return true;
+  }
+  return false;
+}
+
+/**
+ * Per-action enablement — FORM VALIDITY separate from ACTION AVAILABILITY.
+ * Dirty alone never disables mark-completed / return-pending / exclude.
+ */
+export function reviewActionAvailability({
+  actionId = null,
+  saving = false,
+  lockReady = true,
+  dirty = false,
+  draft,
+  baselineBag,
+  lines = [],
+  isHd = false,
+}) {
+  if (saving) {
+    return { enabled: false, reason: "Save in progress" };
+  }
+  if (!lockReady) {
+    return { enabled: false, reason: "Bag details still loading" };
+  }
+
+  const status = String(baselineBag?.dashboard_status || baselineBag?.outcome || "")
+    .toLowerCase()
+    .replace(/-/g, "_");
+  const isCompleted = status === "completed" || status.includes("completed");
+  const isReview = status.includes("review");
+  const policy = classifyEditReasonRequirements({
+    draft,
+    baselineBag,
+    outcome: actionId,
+    lines,
+  });
+  const baseErr = validateEditBagDraft({
+    reason: draft?.reason,
+    reasonCode: draft?.reason_code || policy.suggestedReasonCode,
+    reasonNote: draft?.reason_note || draft?.reason,
+    noChargeable: draft?.no_chargeable,
+    noChargeReason: draft?.no_charge_reason,
+    lines,
+    isHd,
+    reasonRequired: false,
+  });
+
+  if (actionId == null || actionId === "save_review") {
+    if (!dirty) {
+      return { enabled: false, reason: "No unsaved changes" };
+    }
+    if (baseErr) {
+      return { enabled: false, reason: baseErr };
+    }
+    return { enabled: true, reason: null, reasonRequired: false };
+  }
+
+  if (actionId === "mark_completed") {
+    if (baseErr) {
+      return { enabled: false, reason: baseErr };
+    }
+    // Completion allowed for review bags and when confirming existing completion.
+    // Completed + unresolved specialty still allows confirm/save completed path.
+    const completionAllowed = !isHd || true;
+    if (!completionAllowed) {
+      return { enabled: false, reason: "Completion not allowed for this bag" };
+    }
+    return {
+      enabled: true,
+      reason: null,
+      reasonRequired: Boolean(policy.reasonRequired),
+      reasonHint: policy.reasonRequired
+        ? "A reason is required before marking completed"
+        : null,
+    };
+  }
+
+  if (actionId === "return_pending") {
+    const transitionAllowed = isReview || isCompleted || hasCanonicalCompletion(baselineBag);
+    if (!transitionAllowed) {
+      return { enabled: false, reason: "Return to pending is not available for this status" };
+    }
+    return {
+      enabled: true,
+      reason: null,
+      reasonRequired: true,
+      reasonHint: "Select a reason to return this bag to pending",
+    };
+  }
+
+  if (actionId === "exclude") {
+    return {
+      enabled: true,
+      reason: null,
+      reasonRequired: true,
+      reasonHint: "Select a reason to exclude this bag",
+    };
+  }
+
+  return { enabled: true, reason: null };
+}
+
 export function reasonOptionsForTriggers(triggers = []) {
   if (triggers.includes("post_weight_correction")) return REASON_CODES_POST_CORRECTION;
   if (triggers.includes("pre_weight_correction")) return REASON_CODES_PRE_CORRECTION;

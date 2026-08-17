@@ -361,6 +361,8 @@ def build_drilldown(
     service: str = "all",
     rush: str = "all",
     include_details: bool = False,
+    include_scans: bool | None = None,
+    include_audits: bool | None = None,
     bag_id: str | None = None,
     page: int = 1,
     page_size: int = 25,
@@ -371,6 +373,10 @@ def build_drilldown(
 
     Default: bag summaries only (fast). Pass bag_id + include_details for one-bag
     chronology/corrections. Paginate summary lists (default 25).
+
+    ``include_scans`` / ``include_audits`` default to ``include_details``. Management
+    Review core can pass include_details=True with include_scans=False so the modal
+    opens on weights/workitems/actions without waiting on full chronology.
 
     Uses persisted day headline for ID filtering, then loads only the current page
     of day-bag rows (never the full day snapshot set on list open).
@@ -393,6 +399,8 @@ def build_drilldown(
 
     t0 = time.perf_counter()
     t_snap = time.perf_counter()
+    load_scans = bool(include_details if include_scans is None else include_scans)
+    load_audits = bool(include_details if include_audits is None else include_audits)
     day_rec = get_day_headline(cursor, organization_id, selected_date_et)
     summary = summary_from_day_record(
         day_rec, cursor=cursor, organization_id=organization_id
@@ -569,7 +577,8 @@ def build_drilldown(
     detail_ms = 0.0
     if include_details and page_ids:
         t_detail = time.perf_counter()
-        scans = load_scans_for_bags(cursor, organization_id, page_ids)
+        if load_scans:
+            scans = load_scans_for_bags(cursor, organization_id, page_ids)
         if table_exists(cursor, "rinse_step1_corrections"):
             placeholders = ",".join(["%s"] * len(page_ids))
             cursor.execute(
@@ -620,10 +629,11 @@ def build_drilldown(
                     "last_edit_undoable": not bool(row.get("is_undo")),
                     "last_edit_at": row.get("created_at"),
                 }
-        for bid in page_ids:
-            bulk_audits[bid] = load_bag_bulk_audits(
-                cursor, organization_id, selected_date_et, bid
-            )
+        if load_audits:
+            for bid in page_ids:
+                bulk_audits[bid] = load_bag_bulk_audits(
+                    cursor, organization_id, selected_date_et, bid
+                )
         detail_ms = (time.perf_counter() - t_detail) * 1000.0
 
     bags = []
@@ -718,9 +728,9 @@ def build_drilldown(
             },
         }
         if include_details:
-            item["scans"] = scans.get(bid) or []
+            item["scans"] = scans.get(bid) or [] if load_scans else []
             item["corrections"] = corrections.get(bid) or []
-            item["bulk_audits"] = bulk_audits.get(bid) or []
+            item["bulk_audits"] = bulk_audits.get(bid) or [] if load_audits else []
             item["bulk_workitems"] = lines
             edit_meta = last_edits.get(bid) or {}
             item.update(edit_meta)
@@ -877,6 +887,8 @@ def build_drilldown(
             "has_more": start + page_size < total,
         },
         "include_details": bool(include_details),
+        "include_scans": bool(load_scans),
+        "include_audits": bool(load_audits),
         "timing_ms": {
             "total": round(elapsed_ms, 1),
             "headline": round(snap_ms, 1),

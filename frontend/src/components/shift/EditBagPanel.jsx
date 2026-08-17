@@ -25,12 +25,15 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { postVeewashStep1Correction, getDailyOperationsHdProductionDetail } from "../../api";
 import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { PayrollDateTimeField } from "../PayrollDateTimeField";
+import ManagementCopyableId from "../management/ManagementCopyableId";
 import {
   buildEditBagPayloadDraft,
   classifyEditReasonRequirements,
   describeWeightProvenance,
   diffEditBagDraftVsLatest,
   hasCanonicalCompletion,
+  isReviewFormDirty,
+  reviewActionAvailability,
   validateEditBagDraft,
 } from "./editBagHelpers";
 import HdReviewFields, { validateHdReviewDraft } from "./HdReviewFields";
@@ -77,6 +80,8 @@ export default function EditBagPanel({
   catalog = [],
   readOnly = false,
   initialOutcome = null,
+  embedded = false,
+  scansSection = null,
   onCancel,
   onSaved,
   onError,
@@ -249,7 +254,18 @@ export default function EditBagPanel({
   }, [catalog, qty, existing, isHd]);
 
   const bulkTotal = lines.reduce((s, l) => s + (l.line_total || 0), 0);
-  const lockReady = Boolean(bag?._detailsLoaded) && lockVersion != null;
+  // Detail-ready once Management/Step1 marked the bag loaded. Version 0 is valid.
+  const lockReady =
+    Boolean(bag?._detailsLoaded) &&
+    (lockVersion != null || bag?.manager_edit_version != null);
+  const dirty = isReviewFormDirty({
+    draft,
+    baselineBag: baselineBag || bag,
+    lines,
+    baselineLines: (baselineBag || bag)?.bulk_workitems,
+    correctPre,
+    correctPost,
+  });
 
   const bump = (id, delta) => {
     setQty((q) => ({ ...q, [id]: Math.max(0, Number(q[id] || 0) + delta) }));
@@ -508,6 +524,20 @@ export default function EditBagPanel({
       persist(outcomeAction);
       return;
     }
+    const availability = reviewActionAvailability({
+      actionId: outcomeAction,
+      saving,
+      lockReady,
+      dirty,
+      draft,
+      baselineBag: baselineBag || bag,
+      lines,
+      isHd,
+    });
+    if (!availability.enabled) {
+      setLocalError(availability.reason || "This action is not available");
+      return;
+    }
     const p = classifyEditReasonRequirements({
       draft,
       baselineBag,
@@ -520,6 +550,7 @@ export default function EditBagPanel({
         if (p.suggestedReasonCode) {
           setDraft((d) => ({ ...d, reason_code: p.suggestedReasonCode }));
         }
+        setLocalError(availability.reasonHint || "Select a reason to continue");
         return;
       }
       const err = validateEditBagDraft({
@@ -610,6 +641,58 @@ export default function EditBagPanel({
       }).reasonRequired
   );
 
+  const actionStates = Object.fromEntries(
+    FINAL_ACTIONS.map((a) => [
+      String(a.id),
+      reviewActionAvailability({
+        actionId: a.id,
+        saving,
+        lockReady,
+        dirty,
+        draft,
+        baselineBag: baselineBag || bag,
+        lines,
+        isHd,
+      }),
+    ])
+  );
+
+  const headerBlock = (
+    <>
+      <Typography variant="h6" fontWeight={800} component="div">
+        Review WF Bag
+      </Typography>
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        spacing={{ xs: 0.35, sm: 1 }}
+        alignItems={{ xs: "flex-start", sm: "center" }}
+        flexWrap="wrap"
+        sx={{ mt: 0.25 }}
+      >
+        <ManagementCopyableId value={bag?.bag_id} fontSize={13} fontWeight={800} />
+        <Typography variant="body2" color="text.secondary">
+          · {customer} · {draft.service_type || "WF"} / {rushLabel} · {reviewStatus}
+        </Typography>
+        {dirty ? (
+          <Typography
+            variant="caption"
+            data-testid="review-unsaved-indicator"
+            sx={{
+              fontWeight: 700,
+              color: "#b45309",
+              bgcolor: "#fffbeb",
+              px: 0.75,
+              py: 0.15,
+              borderRadius: 1,
+            }}
+          >
+            Unsaved changes
+          </Typography>
+        ) : null}
+      </Stack>
+    </>
+  );
+
   return (
     <>
       <Dialog
@@ -627,14 +710,7 @@ export default function EditBagPanel({
           },
         }}
       >
-        <DialogTitle sx={{ pb: 1 }}>
-          <Typography variant="h6" fontWeight={800} component="div">
-            Review WF Bag
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {bag?.bag_id} · {customer} · {draft.service_type || "WF"} / {rushLabel} · {reviewStatus}
-          </Typography>
-        </DialogTitle>
+        <DialogTitle sx={{ pb: 1 }}>{headerBlock}</DialogTitle>
         <DialogContent dividers sx={{ px: { xs: 1.5, sm: 3 } }}>
           {localError && !conflict ? (
             <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setLocalError("")}>
@@ -972,6 +1048,7 @@ export default function EditBagPanel({
                 Ordinary work-item review and confirming existing completion do not require a reason.
               </Typography>
             )}
+            {scansSection}
           </Stack>
         </DialogContent>
         <DialogActions
@@ -986,18 +1063,37 @@ export default function EditBagPanel({
             bgcolor: "background.paper",
           }}
         >
-          {(isHd ? HD_FINAL_ACTIONS : FINAL_ACTIONS).map((a) => (
-            <Button
-              key={String(a.id)}
-              variant={a.variant}
-              color={a.color}
-              disabled={saving || (!isHd && !lockReady)}
-              onClick={() => requestFinalAction(a.id)}
-              data-testid={`review-action-${a.id || "save_review"}`}
-            >
-              {saving && pendingOutcome === a.id ? "Saving…" : a.label}
-            </Button>
-          ))}
+          {(isHd ? HD_FINAL_ACTIONS : FINAL_ACTIONS).map((a) => {
+            const state =
+              actionStates[String(a.id)] || {
+                enabled: !saving && (isHd || lockReady),
+                reason: null,
+              };
+            const disabled = saving || (!isHd && !state.enabled);
+            return (
+              <Box key={String(a.id)} sx={{ display: "inline-flex", flexDirection: "column" }}>
+                <Button
+                  variant={a.variant}
+                  color={a.color}
+                  disabled={disabled}
+                  onClick={() => requestFinalAction(a.id)}
+                  data-testid={`review-action-${a.id || "save_review"}`}
+                  title={!state.enabled && state.reason ? state.reason : undefined}
+                >
+                  {saving && pendingOutcome === a.id ? "Saving…" : a.label}
+                </Button>
+                {!state.enabled && state.reason && !saving ? (
+                  <Typography
+                    variant="caption"
+                    sx={{ color: "#94a3b8", maxWidth: 150, lineHeight: 1.2, mt: 0.25 }}
+                    data-testid={`review-action-hint-${a.id || "save_review"}`}
+                  >
+                    {state.reason}
+                  </Typography>
+                ) : null}
+              </Box>
+            );
+          })}
           <Button onClick={onCancel} disabled={saving} sx={{ ml: { sm: "auto" } }}>
             Cancel
           </Button>

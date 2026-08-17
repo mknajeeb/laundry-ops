@@ -4,8 +4,10 @@ import {
   classifyEditSavePath,
   describeWeightProvenance,
   formatWeightObservedEt,
+  isReviewFormDirty,
   mergeBagListRow,
   parseWeightInput,
+  reviewActionAvailability,
   validateEditBagDraft,
 } from "./editBagHelpers.js";
 
@@ -326,5 +328,104 @@ describe("mergeBagListRow — 42EN4J3VRB stale cache reproducer", () => {
     });
     expect(merged._draftMarker).toBe(true);
     expect(merged.bulk_workitems).toEqual(bathMat);
+  });
+});
+
+describe("reviewActionAvailability / dirty", () => {
+  const baseline = {
+    bag_id: "5PGOA1KTZ0",
+    dashboard_status: "review_required",
+    service_type: "WF",
+    rush_flag: "NON-RUSH",
+    pre_weight_lbs: 10,
+    post_weight_lbs: 12,
+    bulk_workitems: [{ workitem_id: 1, quantity: 1 }],
+    completed_by: "Ada",
+    completion_at: "2026-08-17T10:00:00",
+  };
+  const draftClean = {
+    service_type: "WF",
+    rush_flag: "NON-RUSH",
+    pre_weight_lbs: "10",
+    post_weight_lbs: "12",
+    completed_by: "Ada",
+    completion_at: "2026-08-17T10:00",
+    no_chargeable: false,
+  };
+  const linesDirty = [{ workitem_id: 1, quantity: 2, line_total: 0 }];
+  const linesClean = [{ workitem_id: 1, quantity: 1, line_total: 0 }];
+
+  it("qty edit marks dirty but does not disable mark-completed", () => {
+    expect(
+      isReviewFormDirty({
+        draft: draftClean,
+        baselineBag: baseline,
+        lines: linesDirty,
+        baselineLines: baseline.bulk_workitems,
+      })
+    ).toBe(true);
+    const mark = reviewActionAvailability({
+      actionId: "mark_completed",
+      dirty: true,
+      lockReady: true,
+      draft: draftClean,
+      baselineBag: baseline,
+      lines: linesDirty,
+    });
+    expect(mark.enabled).toBe(true);
+    const save = reviewActionAvailability({
+      actionId: null,
+      dirty: true,
+      lockReady: true,
+      draft: draftClean,
+      baselineBag: baseline,
+      lines: linesDirty,
+    });
+    expect(save.enabled).toBe(true);
+  });
+
+  it("save review stays disabled when clean; mark-completed still available", () => {
+    expect(
+      isReviewFormDirty({
+        draft: draftClean,
+        baselineBag: baseline,
+        lines: linesClean,
+        baselineLines: baseline.bulk_workitems,
+      })
+    ).toBe(false);
+    expect(
+      reviewActionAvailability({
+        actionId: null,
+        dirty: false,
+        lockReady: true,
+        draft: draftClean,
+        baselineBag: baseline,
+        lines: linesClean,
+      }).enabled
+    ).toBe(false);
+    expect(
+      reviewActionAvailability({
+        actionId: "mark_completed",
+        dirty: false,
+        lockReady: true,
+        draft: draftClean,
+        baselineBag: baseline,
+        lines: linesClean,
+      }).enabled
+    ).toBe(true);
+  });
+
+  it("employee edit keeps mark-completed enabled (reason on attempt)", () => {
+    const draft = { ...draftClean, completed_by: "Grace" };
+    const mark = reviewActionAvailability({
+      actionId: "mark_completed",
+      dirty: true,
+      lockReady: true,
+      draft,
+      baselineBag: baseline,
+      lines: linesClean,
+    });
+    expect(mark.enabled).toBe(true);
+    expect(mark.reasonRequired).toBe(true);
   });
 });

@@ -154,3 +154,14 @@ def test_c_not_completed_resolved_specialty_leaves_queue():
     split = split_review_categories(headline)
     assert "PENDRESOL1" not in split[CATEGORY_SPECIALTY]
     assert split["counts"][CATEGORY_SPECIALTY] == 0
+
+
+def test_review_detail_defaults_scans_off():
+    """Modal core must not require include_scans=True (progressive load)."""
+    import inspect
+
+    from backend.management_rinse_wf_review import build_management_review_detail
+
+    params = inspect.signature(build_management_review_detail).parameters
+    assert "include_scans" in params
+    assert params["include_scans"].default is False

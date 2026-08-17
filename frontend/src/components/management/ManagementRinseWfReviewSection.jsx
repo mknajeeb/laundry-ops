@@ -11,6 +11,7 @@ import {
 } from "@mui/material";
 import { getManagementRinseWfReviewList } from "../../api";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
+import ManagementCopyableId from "./ManagementCopyableId";
 import ManagementRinseWfReviewModal from "./ManagementRinseWfReviewModal";
 
 function fmtTime(v) {
@@ -44,7 +45,7 @@ export default function ManagementRinseWfReviewSection({
     bags: [],
     meta: null,
   });
-  const [modal, setModal] = useState({ open: false, bagId: null });
+  const [modal, setModal] = useState({ open: false, bagId: null, seed: null });
 
   const loadList = useCallback(
     async (category) => {
@@ -227,10 +228,14 @@ export default function ManagementRinseWfReviewSection({
                   <Typography sx={{ fontWeight: 800, fontSize: 14, color: "#0f172a" }}>
                     {bag.customer_name || "—"}
                   </Typography>
-                  <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>
-                    {bag.bag_id}
-                    {bag.rush_flag ? ` · ${bag.rush_flag}` : ""}
-                  </Typography>
+                  <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.15 }}>
+                    <ManagementCopyableId value={bag.bag_id} fontSize={13} fontWeight={700} />
+                    {bag.rush_flag ? (
+                      <Typography sx={{ fontSize: 12, color: "#64748b" }}>
+                        · {bag.rush_flag}
+                      </Typography>
+                    ) : null}
+                  </Stack>
                   <Typography sx={{ fontSize: 12, color: "#64748b", mt: 0.25 }}>
                     {bag.short_reason || title}
                     {bag.specialty_summary ? ` · ${bag.specialty_summary}` : ""}
@@ -245,7 +250,9 @@ export default function ManagementRinseWfReviewSection({
                   <Button
                     size="small"
                     variant="contained"
-                    onClick={() => setModal({ open: true, bagId: bag.bag_id })}
+                    onClick={() =>
+                      setModal({ open: true, bagId: bag.bag_id, seed: bag })
+                    }
                     sx={{ mt: 0.75, textTransform: "none", fontWeight: 700 }}
                   >
                     Review
@@ -258,6 +265,9 @@ export default function ManagementRinseWfReviewSection({
             <Typography sx={{ mt: 1.5, fontSize: 10, color: "#94a3b8" }}>
               List {listState.meta.elapsed_ms} ms
               {listState.meta.scans_loaded ? " · scans loaded" : " · no scans"}
+              {listState.meta.query_count != null
+                ? ` · ${listState.meta.query_count} queries`
+                : ""}
             </Typography>
           ) : null}
         </Box>
@@ -266,9 +276,10 @@ export default function ManagementRinseWfReviewSection({
       <ManagementRinseWfReviewModal
         open={modal.open}
         bagId={modal.bagId}
+        seedBag={modal.seed}
         selectedDateEt={selectedDateEt}
         readOnly={readOnly}
-        onClose={() => setModal({ open: false, bagId: null })}
+        onClose={() => setModal({ open: false, bagId: null, seed: null })}
         onSaved={() => {
           onRefresh?.();
           if (drawer.category) loadList(drawer.category);
