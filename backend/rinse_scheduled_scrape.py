@@ -2116,6 +2116,16 @@ def run_scheduled_scrape_for_org(
                 if step1_refresh_detail.get("deferred"):
                     stage_b_status = stage_b_status or "DEFERRED"
             result.detail = {
+                **{
+                    k: v
+                    for k, v in (result.detail or {}).items()
+                    if k
+                    in (
+                        "at_vendor_presence_sync",
+                        "av_single_pass",
+                        "ready_for_vendor_sync",
+                    )
+                },
                 "draft": draft_payload,
                 "confirm": confirm_payload,
                 "warnings": warnings,
