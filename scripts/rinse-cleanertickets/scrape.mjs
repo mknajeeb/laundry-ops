@@ -2363,6 +2363,8 @@ export {
   isPortalTableStatusMarker,
   detectSpecialInstructionsColumnIndex,
   readVisibleTableSpecialInstructions,
+  buildPortalValidationMeta,
+  statusFromTicketsUrl,
 };
 
 if (isCliEntry()) {

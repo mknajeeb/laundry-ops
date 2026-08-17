@@ -29,6 +29,8 @@ import {
   detectSpecialInstructionsColumnIndex,
   readVisibleTableSpecialInstructions,
   normalizeCellMultilineText,
+  buildPortalValidationMeta,
+  statusFromTicketsUrl,
 } from "./scrape.mjs";
 import {
   __rinseDir,
@@ -364,6 +366,12 @@ async function main() {
     const allTickets = [];
     const seenFingerprints = new Set();
     const seenBagSigs = new Set();
+    let pagesScraped = 0;
+    let stoppedReason = "no_next_page_ui";
+    let reachedMaxPages = false;
+    let lastPageUrl = baseUrl;
+    let sessionAuthenticated = Boolean(storageState);
+    let pageLoaded = false;
 
     for (let p = pageStart; p < pageStart + maxPages; p++) {
       const url = urlForPage(baseUrl, p);
@@ -372,22 +380,29 @@ async function main() {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: Math.max(pwTimeout, 90000) });
       await page.waitForTimeout(pageSettleMs);
       await page.waitForSelector("table tbody tr", { timeout: 20000 }).catch(() => {});
+      lastPageUrl = page.url();
+      pageLoaded = true;
+      pagesScraped += 1;
 
       const landed = pageNumFromUrl(page.url());
       if (landed != null && landed !== p) {
         progressLine(`Stopping: requested page ${p}, landed on ${landed}.`);
+        stoppedReason = "pagination_redirect";
         break;
       }
 
       if (await isLikelyLoginPage(page)) {
         console.error("\nNot logged in — run npm run save-session and set RINSE_STORAGE_STATE.");
+        sessionAuthenticated = false;
         await browser.close();
         process.exit(3);
       }
+      sessionAuthenticated = true;
 
       const { tickets, tableRowCount } = await scrapeScanEventsOnPage(page);
       if (tableRowCount === 0) {
         progressLine(`Stopping: no table rows on page ${p}.`);
+        stoppedReason = "no_table_rows";
         break;
       }
 
@@ -404,12 +419,14 @@ async function main() {
         .catch(() => "");
       if (fp.length > 24 && seenFingerprints.has(fp)) {
         progressLine(`Stopping: page ${p} duplicates an earlier page.`);
+        stoppedReason = "duplicate_page_fingerprint";
         break;
       }
       if (fp.length > 24) seenFingerprints.add(fp);
 
       if (p > pageStart && tickets.length === 0) {
         progressLine(`Stopping: page ${p} had no extractable ticket rows after filtering.`);
+        stoppedReason = "no_extractable_rows";
         break;
       }
 
@@ -425,6 +442,7 @@ async function main() {
         progressLine(
           `Stopping: page ${p} has the same bag ID set as an earlier page (no new tickets).`,
         );
+        stoppedReason = "duplicate_bag_set";
         break;
       }
       if (pageBagSig.length > 0) seenBagSigs.add(pageBagSig);
@@ -433,7 +451,14 @@ async function main() {
 
       if (!(await hasNextPageInUi(page, p))) {
         progressLine(`Stopping: pagination UI shows no next page after ${p}.`);
+        stoppedReason = "no_next_page_ui";
         break;
+      }
+
+      if (p === pageStart + maxPages - 1) {
+        reachedMaxPages = true;
+        stoppedReason = "max_pages_reached";
+        progressLine(`Stopping: reached RINSE_MAX_PAGES limit (${maxPages}).`);
       }
     }
 
@@ -451,6 +476,28 @@ async function main() {
     let nTickets = 0;
     if (!eventsOnly && ticketsPath) {
       nTickets = writeTicketsCsv(allTickets, ticketsPath);
+      const metaPath =
+        (process.env.OUTPUT_PORTAL_SCRAPE_META && String(process.env.OUTPUT_PORTAL_SCRAPE_META).trim()) ||
+        `${ticketsPath}.meta.json`;
+      const portalScrapeMeta = {
+        stopped_reason: stoppedReason,
+        reached_max_pages: reachedMaxPages,
+        pages_scraped: pagesScraped,
+        max_pages_limit: maxPages,
+        page_start: pageStart,
+        row_count: nTickets,
+        scraped_at: new Date().toISOString(),
+        single_pass_source: "scan-events",
+        ...buildPortalValidationMeta({
+          baseUrl,
+          pageUrl: lastPageUrl,
+          sessionAuthenticated,
+          pageLoaded,
+          emptyTableDetected: nTickets === 0,
+        }),
+      };
+      fs.writeFileSync(metaPath, `${JSON.stringify(portalScrapeMeta, null, 2)}\n`, "utf8");
+      console.error("[rinse-scan-events] wrote portal scrape meta:", metaPath);
     }
     const nEvents = writeEventsCsv(allTickets, eventsPath);
 

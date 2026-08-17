@@ -523,3 +523,172 @@ def run_presence_scrape_for_org(
         _log(f"Presence scrape ERROR: {exc}\n")
         _persist_failed_run(error_message=result.error_message)
         return result
+
+
+def apply_at_vendor_presence_from_portal_csv(
+    conn,
+    organization_id: int,
+    *,
+    portal_csv_path: str | Path,
+    portal_scrape_meta_path: str | Path | None = None,
+    source_url: str | None = None,
+    run_type: str = "scheduled",
+    dry_run: bool = False,
+    mark_missing: bool = True,
+    log_write: Callable[[str], None] | None = None,
+    started_at: datetime | None = None,
+) -> PresenceScrapeResult:
+    """Apply At Vendor presence from an already-scraped portal/tickets CSV.
+
+    Used by the single-pass scheduled sync so presence does not launch a second
+    Playwright walk of the same At Vendor board.
+    """
+    org = int(organization_id)
+    result = PresenceScrapeResult(
+        organization_id=org,
+        portal_status=PORTAL_STATUS_AT_VENDOR,
+        started_at=started_at or _utcnow(),
+    )
+    csv_path = Path(portal_csv_path)
+    meta_path = (
+        Path(portal_scrape_meta_path)
+        if portal_scrape_meta_path
+        else Path(str(csv_path) + ".meta.json")
+    )
+
+    def _log(msg: str) -> None:
+        if log_write:
+            log_write(msg)
+
+    cursor = conn.cursor(dictionary=True)
+    batch_id = f"{run_type}-presence-from-csv-{uuid.uuid4().hex[:16]}"
+    try:
+        if not csv_path.is_file():
+            result.status = "failed"
+            result.error_message = f"Portal CSV missing for presence apply: {csv_path}"
+            result.finished_at = _utcnow()
+            return result
+
+        rows = parse_presence_rows_from_portal_csv(str(csv_path))
+        scrape_meta = read_portal_scrape_meta(str(meta_path)) or {}
+        if not extract_vendor_home_summary_from_scrape_meta(scrape_meta):
+            try:
+                from backend.rinse_bag_export_runner import run_vendor_home_summary_scrape
+                from backend.rinse_vendor_config import rinse_scrape_env_for_organization
+
+                _vendor, vendor_env = rinse_scrape_env_for_organization(org)
+                extra_env = _merge_presence_scrape_env(_vendor, vendor_env)
+                vendor_home, supplement_err = run_vendor_home_summary_scrape(extra_env)
+                if extract_vendor_home_summary_from_scrape_meta(
+                    {"vendor_home_summary": vendor_home}
+                ):
+                    scrape_meta = {
+                        **scrape_meta,
+                        "vendor_home_summary": vendor_home,
+                        "vendor_home_supplement": "scrape-vendor-home.mjs",
+                    }
+                elif supplement_err:
+                    scrape_meta = {
+                        **scrape_meta,
+                        "vendor_home_supplement_error": str(supplement_err)[:2000],
+                    }
+            except Exception as vh_exc:
+                scrape_meta = {
+                    **scrape_meta,
+                    "vendor_home_supplement_error": str(vh_exc)[:2000],
+                }
+
+        result.source_url = source_url or scrape_meta.get("resolved_url")
+        scrape_debug = build_presence_scrape_debug(
+            portal_status=PORTAL_STATUS_AT_VENDOR,
+            source_url=result.source_url,
+            rows=rows,
+            scrape_meta=scrape_meta,
+            exit_code=0,
+        )
+        scrape_debug["presence_source"] = "single_pass_portal_csv"
+        result.scrape_debug = scrape_debug
+
+        empty_validated = False
+        empty_checks: dict[str, bool] = {}
+        if len(rows) == 0:
+            empty_validated, empty_checks = validate_presence_empty_result(
+                scrape_meta,
+                exit_code=0,
+                parsed_row_count=0,
+            )
+            if mark_missing and not empty_validated:
+                result.status = "failed"
+                result.error_message = (
+                    "Zero-row presence CSV not validated — preserving existing active population"
+                )
+                result.finished_at = _utcnow()
+                result.stats = {
+                    "rows_found": 0,
+                    "empty_result_validated": False,
+                    "empty_result_checks": empty_checks,
+                }
+                return result
+
+        ensure_presence_tables(cursor)
+        result.finished_at = _utcnow()
+        effective_mark_missing = mark_missing and (len(rows) > 0 or empty_validated)
+        stats = apply_presence_scrape(
+            cursor,
+            org,
+            portal_status=PORTAL_STATUS_AT_VENDOR,
+            rows=rows,
+            source_batch_id=batch_id,
+            source_url=result.source_url,
+            dry_run=dry_run,
+            mark_missing=effective_mark_missing,
+            run_type=run_type,
+            started_at=result.started_at,
+            finished_at=result.finished_at,
+            status="success" if not dry_run else "dry_run",
+            scrape_meta={
+                **scrape_meta,
+                "empty_result_validated": empty_validated if len(rows) == 0 else None,
+                "empty_result_checks": empty_checks if len(rows) == 0 else None,
+                "presence_source": "single_pass_portal_csv",
+            },
+        )
+        if (
+            not dry_run
+            and stats.get("board_applied")
+            and stats.get("run_id")
+        ):
+            try:
+                from backend.rinse_presence_evidence_pipeline import (
+                    continue_presence_run_downstream,
+                )
+
+                stats["evidence_downstream"] = continue_presence_run_downstream(
+                    cursor, org, int(stats["run_id"])
+                )
+            except Exception as downstream_exc:
+                stats["evidence_downstream"] = {
+                    "ok": False,
+                    "error": str(downstream_exc),
+                }
+
+        if not dry_run:
+            conn.commit()
+        else:
+            conn.rollback()
+
+        result.stats = stats
+        result.status = "success" if not dry_run else "dry_run"
+        _log(
+            f"At Vendor presence from CSV rows_found={stats.get('rows_found')} "
+            f"inserted={stats.get('rows_inserted')} updated={stats.get('rows_updated')} "
+            f"unchanged={stats.get('rows_unchanged')}\n"
+        )
+        return result
+    except Exception as exc:
+        conn.rollback()
+        result.status = "failed"
+        result.error_message = str(exc)
+        result.finished_at = _utcnow()
+        _log(f"At Vendor presence-from-CSV ERROR: {exc}\n")
+        return result
