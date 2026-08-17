@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+import os
 
 import pandas as pd
 import pytest
@@ -72,6 +73,7 @@ class TestInspectOnlyScanImportIntegration:
             return_value=scan_payload,
         )
         patches = [
+            patch.dict(os.environ, {"RINSE_AV_SINGLE_PASS": "0"}),
             patch("backend.rinse_scheduled_scrape.tenant_script_dir", return_value=tenant),
             patch("backend.rinse_scheduled_scrape.acquire_scrape_lock", return_value=(True, "")),
             patch("backend.rinse_scheduled_scrape.insert_scrape_run", return_value=1),
@@ -96,7 +98,7 @@ class TestInspectOnlyScanImportIntegration:
         finally:
             for p in reversed(patches):
                 p.stop()
-        return result, started[6]
+        return result, started[7]
 
     def test_gate_blocked_scan_import_no_portal_batch(self, tmp_path):
         result, mock_import = self._run_gate_blocked_with_scan_import(tmp_path)

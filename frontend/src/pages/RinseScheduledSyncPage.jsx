@@ -45,7 +45,7 @@ function Row({ label, value }) {
   );
 }
 
-function SyncStatusPanel({ title, sync }) {
+function SyncStatusPanel({ title, sync, showNextHint = false }) {
   if (!sync) {
     return (
       <Paper variant="outlined" sx={{ p: 2 }}>
@@ -63,18 +63,21 @@ function SyncStatusPanel({ title, sync }) {
         <Chip size="small" label={chipStatus} color={statusColor(chipStatus)} />
         {sync.enabled === false ? <Chip size="small" variant="outlined" label="disabled" /> : null}
       </Stack>
-      <Row label="Latest attempt" value={formatSystemDateTime(sync.latest_attempt_at || sync.last_refreshed_at || run?.finished_at || run?.last_finished_at)} />
-      <Row label="Last success" value={formatSystemDateTime(sync.last_success_at || sync.last_success?.finished_at)} />
-      <Row label="Last refreshed" value={formatSystemDateTime(sync.last_refreshed_at || run?.finished_at || run?.last_finished_at)} />
-      <Row label="Last started" value={formatSystemDateTime(run?.started_at || run?.scrape_started_at || sync.last_started_at)} />
-      <Row label="Last finished" value={formatSystemDateTime(run?.finished_at || run?.scrape_finished_at || sync.last_finished_at)} />
+      <Row label="Started" value={formatSystemDateTime(run?.started_at || run?.scrape_started_at || sync.last_started_at || sync.latest_attempt_at)} />
+      <Row label="Finished" value={formatSystemDateTime(run?.finished_at || run?.scrape_finished_at || sync.last_finished_at || sync.last_refreshed_at)} />
       <Row label="Duration" value={run?.duration_label || sync.duration_label || (run?.duration_seconds != null ? `${run.duration_seconds}s` : "—")} />
       <Row label="Rows found" value={run?.rows_found ?? run?.portal_rows_count ?? run?.rows_imported} />
+      <Row label="New (inserted)" value={run?.rows_inserted} />
+      <Row label="Changed (updated)" value={run?.rows_updated} />
+      <Row label="Unchanged" value={run?.rows_unchanged} />
       <Row label="Active rows" value={sync.active_rows ?? run?.active_rows} />
-      <Row label="Rows inserted" value={run?.rows_inserted} />
-      <Row label="Rows updated" value={run?.rows_updated} />
-      <Row label="Rows unchanged" value={run?.rows_unchanged} />
       <Row label="Pages visited" value={run?.pages_visited} />
+      {showNextHint ? (
+        <Row
+          label="Next scheduled"
+          value={sync.next_scheduled_at_et || sync.next_run_hint || "Every 30 min (ACA cron UTC */30)"}
+        />
+      ) : null}
       {(sync.error || sync.error_message || run?.error_message) ? (
         <Alert severity="error" sx={{ mt: 1 }}>{String(sync.error || sync.error_message || run?.error_message)}</Alert>
       ) : null}
@@ -233,10 +236,22 @@ export default function RinseScheduledSyncPage() {
             ) : null}
           </Paper>
 
-          <SyncStatusPanel title="At Vendor Sync" sync={data.at_vendor_sync} />
-          {data.ready_for_vendor_sync?.enabled ? (
+          <SyncStatusPanel title="At Vendor Sync" sync={data.at_vendor_sync} showNextHint />
+          {/* RFV retired from scheduled runtime — do not show stale RFV health. */}
+          {data.ready_for_vendor_sync?.enabled === true &&
+          data.ready_for_vendor_sync?.status !== "disabled" ? (
             <SyncStatusPanel title="Ready for Vendor Sync" sync={data.ready_for_vendor_sync} />
-          ) : null}
+          ) : (
+            <Paper variant="outlined" sx={{ p: 2 }}>
+              <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                Ready for Vendor Sync
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Inactive — RFV is retired from scheduled At Vendor sync. Only At Vendor presence +
+                scan ingestion run on the cron.
+              </Typography>
+            </Paper>
+          )}
 
           <RunTimingPanel title="Latest At Vendor scrape run" run={latest} />
           {lastSuccess && lastSuccess.scrape_run_id !== latest?.scrape_run_id ? (

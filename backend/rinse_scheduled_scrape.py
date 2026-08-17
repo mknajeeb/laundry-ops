@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -47,6 +48,58 @@ def scheduled_scrape_enabled() -> bool:
 
 def portal_auto_confirm_force_enabled() -> bool:
     return _truthy(os.getenv("RINSE_PORTAL_AUTO_CONFIRM_FORCE"))
+
+
+def av_single_pass_enabled() -> bool:
+    """One Playwright At Vendor walk (scan-events) feeds portal CSV + presence + scans.
+
+    Default ON. Set ``RINSE_AV_SINGLE_PASS=0`` to restore the legacy triple scrape
+    (presence scrape.mjs + portal scrape.mjs + scan-events) for emergency rollback.
+    """
+    raw = os.getenv("RINSE_AV_SINGLE_PASS")
+    if raw is None or not str(raw).strip():
+        return True
+    return _truthy(raw)
+
+
+def _materialize_portal_csv_from_scan_tickets(paths: "ScrapePaths", log: "_TeeLog") -> None:
+    """Use scan-events tickets CSV as the portal import CSV (byte-compatible layout)."""
+    tickets = paths.scan_tickets_csv
+    portal = paths.portal_csv
+    if not tickets.is_file():
+        raise RuntimeError(f"Scan tickets CSV missing after single-pass scrape: {tickets}")
+    shutil.copyfile(tickets, portal)
+    tickets_meta = Path(str(tickets) + ".meta.json")
+    portal_meta = Path(str(portal) + ".meta.json")
+    if tickets_meta.is_file():
+        shutil.copyfile(tickets_meta, portal_meta)
+    elif not portal_meta.is_file():
+        # Minimal natural-end meta so portal absence / confirm gates stay trustworthy.
+        row_count = count_csv_data_rows(portal)
+        portal_meta.write_text(
+            json.dumps(
+                {
+                    "stopped_reason": "no_next_page_ui",
+                    "reached_max_pages": False,
+                    "pages_scraped": None,
+                    "max_pages_limit": None,
+                    "row_count": row_count,
+                    "scraped_at": datetime.utcnow().isoformat() + "Z",
+                    "page_loaded": True,
+                    "session_authenticated": True,
+                    "expected_status_in_url": True,
+                    "empty_table_detected": row_count == 0,
+                    "single_pass_source": "scan-events-tickets",
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    log.write(
+        f"Single-pass: materialized portal.csv from scan tickets "
+        f"({count_csv_data_rows(portal)} rows)\n"
+    )
 
 
 def _resolve_force_portal_confirm(explicit: bool | None) -> bool:
@@ -601,11 +654,11 @@ def _resolve_combined_cycle_status(
     import_status: str | None,
 ) -> str:
     """Map step outcomes to combined cycle status labels."""
-    # "disabled" = RFV globally off (RFV_SCRAPE_ENABLED=false): a clean skip, NOT a failure.
-    # The cycle status is then driven purely by the At Vendor + import steps.
+    # RFV is retired from scheduled runtime — disabled is the only expected RFV outcome.
     if rfv_status not in ("success", "dry_run", "disabled"):
         return "RFV_FAILED"
-    if av_presence_status not in ("success", "dry_run"):
+    # pending_single_pass: presence applied inside import; import outcome is authoritative.
+    if av_presence_status not in ("success", "dry_run", "pending_single_pass"):
         return "AT_VENDOR_FAILED"
     if import_status in ("failed", "skipped"):
         return "AT_VENDOR_IMPORT_FAILED"
@@ -897,15 +950,47 @@ def run_rinse_combined_sync_for_org(
         log.write(
             f"Combined sync cycle run_id={run_id} org={org_id} vendor={vendor} run_type={run_type}\n"
         )
-        if rfv_scrape_enabled():
+        # RFV is retired from scheduled/runtime cycles. Historical tables/code remain
+        # dormant; do not scrape, wait on, or retry Ready for Vendor here.
+        log.write(
+            f"Ready for Vendor sync skipped org={org_id}: retired from scheduled runtime "
+            f"(RFV_SCRAPE_ENABLED={os.getenv('RFV_SCRAPE_ENABLED') or 'unset'})\n"
+        )
+        rfv_result = PresenceScrapeResult(
+            organization_id=org_id,
+            portal_status="ready_for_vendor",
+            status="disabled",
+            skipped_reason="RFV retired from scheduled At Vendor sync",
+            started_at=cycle_started_at,
+            finished_at=datetime.utcnow(),
+        )
+        rfv_detail = build_ready_for_vendor_sync_detail(rfv_result)
+        result.ready_for_vendor_status = "disabled"
+
+        single_pass = av_single_pass_enabled()
+        if single_pass:
+            log.write(
+                f"At Vendor single-pass enabled org={org_id}: "
+                "one scan-events Playwright walk → portal CSV + presence + scans\n"
+            )
+            # Presence is applied inside run_scheduled_scrape_for_org after tickets land.
+            av_presence_result = PresenceScrapeResult(
+                organization_id=org_id,
+                portal_status=PORTAL_STATUS_AT_VENDOR,
+                status="pending_single_pass",
+                started_at=datetime.utcnow(),
+            )
+            av_presence_detail = {}
+            delay_seconds = 0
+        else:
             print(
-                f"Ready for Vendor sync org={org_id} vendor={vendor} run_type={run_type}",
+                f"At Vendor presence sync org={org_id} vendor={vendor} run_type={run_type}",
                 flush=True,
             )
-            rfv_result = run_presence_scrape_for_org(
+            av_presence_result = run_presence_scrape_for_org(
                 conn,
                 org_id,
-                portal_status="ready_for_vendor",
+                portal_status=PORTAL_STATUS_AT_VENDOR,
                 dry_run=False,
                 mark_missing=True,
                 run_type=run_type,
@@ -914,119 +999,58 @@ def run_rinse_combined_sync_for_org(
                 rinse_vendor=vendor,
                 log_write=log.write,
             )
-            rfv_detail = build_ready_for_vendor_sync_detail(rfv_result)
-            result.ready_for_vendor_status = rfv_result.status
+            av_presence_detail = build_presence_sync_detail(av_presence_result)
             conn.commit()
+            if isinstance(rfv_result.finished_at, datetime) and isinstance(
+                av_presence_result.started_at, datetime
+            ):
+                delay_seconds = max(
+                    0,
+                    int(
+                        (
+                            av_presence_result.started_at - rfv_result.finished_at
+                        ).total_seconds()
+                    ),
+                )
             print(
-                f"Ready for Vendor sync done org={org_id} status={rfv_result.status} "
-                f"rows_found={(rfv_result.stats or {}).get('rows_found')}",
+                f"At Vendor presence sync done org={org_id} status={av_presence_result.status} "
+                f"rows_found={(av_presence_result.stats or {}).get('rows_found')} "
+                f"delay_seconds={delay_seconds}",
                 flush=True,
             )
-        else:
-            # RFV scraping globally disabled (RFV_SCRAPE_ENABLED=false). Skip quietly and
-            # proceed straight to the independent At Vendor sync — RFV must not block it.
-            log.write(
-                f"Ready for Vendor sync skipped org={org_id}: RFV_SCRAPE_ENABLED=false\n"
-            )
-            rfv_result = PresenceScrapeResult(
-                organization_id=org_id,
-                portal_status="ready_for_vendor",
-                status="disabled",
-                skipped_reason="RFV_SCRAPE_ENABLED=false",
-                started_at=cycle_started_at,
-                finished_at=datetime.utcnow(),
-            )
-            rfv_detail = build_ready_for_vendor_sync_detail(rfv_result)
-            result.ready_for_vendor_status = "disabled"
 
-        if rfv_result.status not in ("success", "dry_run", "disabled"):
-            cycle_status = "RFV_FAILED"
-            result.status = "failed"
-            result.at_vendor_status = "skipped"
-            result.error_message = rfv_result.error_message or "Ready for Vendor presence scrape failed"
-            sync_cycle = _build_sync_cycle_metadata(
-                sync_cycle_id=run_id,
-                cycle_started_at=cycle_started_at,
-                rfv_detail=rfv_detail,
-                av_presence_detail=None,
-                import_started_at=None,
-                import_finished_at=None,
-                delay_seconds=None,
-                cycle_status=cycle_status,
-                at_vendor_ran=False,
-                at_vendor_skipped_reason="RFV presence scrape failed",
-                failure_message=result.error_message,
-            )
-            _finish_combined_cycle_run(
-                conn,
-                cursor,
-                organization_id=org_id,
-                result=result,
-                started_at=started_at,
-                paths=paths,
-                sync_cycle=sync_cycle,
-                ready_for_vendor_sync=rfv_detail,
-            )
-            return result
-
-        print(
-            f"At Vendor presence sync org={org_id} vendor={vendor} run_type={run_type}",
-            flush=True,
-        )
-        av_presence_result = run_presence_scrape_for_org(
-            conn,
-            org_id,
-            portal_status=PORTAL_STATUS_AT_VENDOR,
-            dry_run=False,
-            mark_missing=True,
-            run_type=run_type,
-            organization_slug=slug,
-            organization_name=org_name,
-            rinse_vendor=vendor,
-            log_write=log.write,
-        )
-        av_presence_detail = build_presence_sync_detail(av_presence_result)
-        conn.commit()
-        if isinstance(rfv_result.finished_at, datetime) and isinstance(av_presence_result.started_at, datetime):
-            delay_seconds = max(0, int((av_presence_result.started_at - rfv_result.finished_at).total_seconds()))
-        print(
-            f"At Vendor presence sync done org={org_id} status={av_presence_result.status} "
-            f"rows_found={(av_presence_result.stats or {}).get('rows_found')} delay_seconds={delay_seconds}",
-            flush=True,
-        )
-
-        if av_presence_result.status not in ("success", "dry_run"):
-            cycle_status = "AT_VENDOR_FAILED"
-            result.status = "failed"
-            result.at_vendor_status = "failed"
-            result.error_message = (
-                av_presence_result.error_message or "At Vendor presence scrape failed"
-            )
-            sync_cycle = _build_sync_cycle_metadata(
-                sync_cycle_id=run_id,
-                cycle_started_at=cycle_started_at,
-                rfv_detail=rfv_detail,
-                av_presence_detail=av_presence_detail,
-                import_started_at=None,
-                import_finished_at=None,
-                delay_seconds=delay_seconds,
-                cycle_status=cycle_status,
-                at_vendor_ran=False,
-                at_vendor_skipped_reason="At Vendor presence scrape failed",
-                failure_message=result.error_message,
-            )
-            _finish_combined_cycle_run(
-                conn,
-                cursor,
-                organization_id=org_id,
-                result=result,
-                started_at=started_at,
-                paths=paths,
-                sync_cycle=sync_cycle,
-                ready_for_vendor_sync=rfv_detail,
-                at_vendor_presence_sync=av_presence_detail,
-            )
-            return result
+            if av_presence_result.status not in ("success", "dry_run"):
+                cycle_status = "AT_VENDOR_FAILED"
+                result.status = "failed"
+                result.at_vendor_status = "failed"
+                result.error_message = (
+                    av_presence_result.error_message or "At Vendor presence scrape failed"
+                )
+                sync_cycle = _build_sync_cycle_metadata(
+                    sync_cycle_id=run_id,
+                    cycle_started_at=cycle_started_at,
+                    rfv_detail=rfv_detail,
+                    av_presence_detail=av_presence_detail,
+                    import_started_at=None,
+                    import_finished_at=None,
+                    delay_seconds=delay_seconds,
+                    cycle_status=cycle_status,
+                    at_vendor_ran=False,
+                    at_vendor_skipped_reason="At Vendor presence scrape failed",
+                    failure_message=result.error_message,
+                )
+                _finish_combined_cycle_run(
+                    conn,
+                    cursor,
+                    organization_id=org_id,
+                    result=result,
+                    started_at=started_at,
+                    paths=paths,
+                    sync_cycle=sync_cycle,
+                    ready_for_vendor_sync=rfv_detail,
+                    at_vendor_presence_sync=av_presence_detail,
+                )
+                return result
 
         combined_ctx = _CombinedCycleContext(
             run_id=int(run_id),
@@ -1043,7 +1067,7 @@ def run_rinse_combined_sync_for_org(
             rfv_status=rfv_result.status,
             rfv_error=rfv_result.error_message,
             combined_cycle=combined_ctx,
-            av_presence_detail=av_presence_detail,
+            av_presence_detail=av_presence_detail or None,
             # Targeted refresh runs post-lock after the main cycle is terminal.
             targeted_pending_refresh=False,
         )
@@ -1059,13 +1083,20 @@ def run_rinse_combined_sync_for_org(
         life = {**prior_life, **import_life}
         life["scrape_run_id"] = run_id
         life["batch_id"] = result.batch_id
+        # Prefer presence detail produced inside single-pass import when present.
+        if isinstance(result.detail.get("at_vendor_presence_sync"), Mapping):
+            av_presence_detail = dict(result.detail["at_vendor_presence_sync"])
         if isinstance(av_presence_detail, Mapping) and av_presence_detail.get("run_id") is not None:
             life["presence_run_id"] = av_presence_detail.get("run_id")
         result.detail["ingestion_lifecycle"] = life
 
+        if single_pass:
+            av_presence_status = (av_presence_detail or {}).get("status") or "pending_single_pass"
+        else:
+            av_presence_status = av_presence_result.status
         cycle_status = _resolve_combined_cycle_status(
             rfv_status=rfv_result.status,
-            av_presence_status=av_presence_result.status,
+            av_presence_status=av_presence_status,
             import_status=import_result.status,
         )
         confirm_payload = (import_result.detail or {}).get("confirm") or {}
@@ -1771,9 +1802,57 @@ def run_scheduled_scrape_for_org(
             )
             portal_script = tenant_dir / "run-production-scrape.sh"
             scan_script = tenant_dir / "run-scan-events.sh"
+            single_pass = av_single_pass_enabled()
 
-            if _run_bash_script(portal_script, env, log) != 0:
-                raise RuntimeError("Portal scrape subprocess failed")
+            if single_pass:
+                # One Playwright walk: scan-events writes tickets (=portal) + events.
+                # Tune settle waits slightly; keep correctness-first (no parallel browsers).
+                env.setdefault("RINSE_PAGE_SETTLE_MS", "900")
+                env.setdefault("RINSE_EXPAND_SETTLE_MS", "900")
+                env.setdefault("RINSE_BAG_DETAILS_SETTLE_MS", "900")
+                env.setdefault("RINSE_VENDORINLINE_SETTLE_MS", "500")
+                env["OUTPUT_PORTAL_SCRAPE_META"] = str(paths.scan_tickets_csv) + ".meta.json"
+                log.write(
+                    "Single-pass At Vendor: scan-events only "
+                    "(portal + presence + scans from one expand walk)\n"
+                )
+                scan_download_started = datetime.utcnow()
+                # One walk replaces three prior phases — use full scrape timeout
+                # (default 1800s), not the old 900s per-phase combined cap.
+                if _run_bash_script(
+                    scan_script, env, log, timeout_sec=scrape_timeout_sec()
+                ) != 0:
+                    raise RuntimeError("Scan-events scrape subprocess failed")
+                scan_download_completed = datetime.utcnow()
+                _materialize_portal_csv_from_scan_tickets(paths, log)
+
+                from backend.rinse_presence_scrape import (
+                    apply_at_vendor_presence_from_portal_csv,
+                )
+
+                presence_started = datetime.utcnow()
+                presence_result = apply_at_vendor_presence_from_portal_csv(
+                    conn,
+                    org_id,
+                    portal_csv_path=paths.portal_csv,
+                    portal_scrape_meta_path=Path(str(paths.portal_csv) + ".meta.json"),
+                    run_type=run_type,
+                    dry_run=False,
+                    mark_missing=True,
+                    log_write=log.write,
+                    started_at=presence_started,
+                )
+                presence_detail = build_presence_sync_detail(presence_result)
+                result.detail["at_vendor_presence_sync"] = presence_detail
+                result.detail["av_single_pass"] = True
+                if presence_result.status not in ("success", "dry_run"):
+                    raise RuntimeError(
+                        presence_result.error_message
+                        or "At Vendor presence apply from single-pass CSV failed"
+                    )
+            else:
+                if _run_bash_script(portal_script, env, log) != 0:
+                    raise RuntimeError("Portal scrape subprocess failed")
 
             if not paths.portal_csv.is_file() or count_csv_data_rows(paths.portal_csv) < 1:
                 raise RuntimeError("Portal CSV missing or empty after scrape")
@@ -1807,17 +1886,48 @@ def run_scheduled_scrape_for_org(
                 batch_date = _today_et()
 
                 if not dry_run:
-                    scan_events_only_detail = _import_scan_events_when_portal_gate_blocked(
-                        conn,
-                        cursor,
-                        org_id=org_id,
-                        paths=paths,
-                        scan_script=scan_script,
-                        env=env,
-                        log=log,
-                        batch_date=batch_date,
-                        scrape_run_id=run_id,
-                    )
+                    if single_pass and paths.scan_events_csv.is_file():
+                        # Events already scraped in the single-pass walk.
+                        from backend.rinse_combined_upload import commit_scheduled_scan_events_only
+                        from backend.rinse_scan_events_upload import parse_scan_events_csv
+
+                        scan_rows = count_csv_data_rows(paths.scan_events_csv)
+                        if scan_rows >= 1:
+                            events_name = f"scheduled-rinse-events-{_stamp_et()}.csv"
+                            events_df, _warnings = parse_scan_events_csv(
+                                str(paths.scan_events_csv)
+                            )
+                            scan_events_only_detail = commit_scheduled_scan_events_only(
+                                conn,
+                                cursor,
+                                org_id,
+                                batch_date,
+                                events_name,
+                                events_df,
+                                scrape_run_id=run_id,
+                            )
+                            scan_events_only_detail = {
+                                **(scan_events_only_detail or {}),
+                                "status": "scan_events_imported",
+                                "scan_rows": scan_rows,
+                            }
+                        else:
+                            scan_events_only_detail = {
+                                "status": "scan_events_csv_empty",
+                                "scan_rows": 0,
+                            }
+                    else:
+                        scan_events_only_detail = _import_scan_events_when_portal_gate_blocked(
+                            conn,
+                            cursor,
+                            org_id=org_id,
+                            paths=paths,
+                            scan_script=scan_script,
+                            env=env,
+                            log=log,
+                            batch_date=batch_date,
+                            scrape_run_id=run_id,
+                        )
                     if scan_events_only_detail:
                         result.scan_events_count = int(
                             scan_events_only_detail.get("scan_rows")
@@ -1831,6 +1941,7 @@ def run_scheduled_scrape_for_org(
                             result.batch_id = int(scan_batch_id)
 
                 result.detail = {
+                    **(result.detail or {}),
                     "portal_confirm_gate": portal_gate,
                     "sync_warning": gate_warning,
                     "scan_events_only_import": scan_events_only_detail,
@@ -1863,11 +1974,13 @@ def run_scheduled_scrape_for_org(
                 conn.commit()
                 return result
 
-            scan_download_started = datetime.utcnow()
-            if _run_bash_script(scan_script, env, log) != 0:
-                raise RuntimeError("Scan-events scrape subprocess failed")
+            if not single_pass:
+                scan_download_started = datetime.utcnow()
+                if _run_bash_script(scan_script, env, log) != 0:
+                    raise RuntimeError("Scan-events scrape subprocess failed")
+                scan_download_completed = datetime.utcnow()
+            # else: scan already completed in the single-pass block above
 
-            scan_download_completed = datetime.utcnow()
             scan_rows = count_csv_data_rows(paths.scan_events_csv)
             result.scan_events_count = scan_rows
 
@@ -2009,6 +2122,16 @@ def run_scheduled_scrape_for_org(
                 if step1_refresh_detail.get("deferred"):
                     stage_b_status = stage_b_status or "DEFERRED"
             result.detail = {
+                **{
+                    k: v
+                    for k, v in (result.detail or {}).items()
+                    if k
+                    in (
+                        "at_vendor_presence_sync",
+                        "av_single_pass",
+                        "ready_for_vendor_sync",
+                    )
+                },
                 "draft": draft_payload,
                 "confirm": confirm_payload,
                 "warnings": warnings,
