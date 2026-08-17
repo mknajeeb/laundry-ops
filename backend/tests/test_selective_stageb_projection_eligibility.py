@@ -19,6 +19,7 @@ from backend.rinse_step1_evidence_gate import (
     GATE_INCOMPLETE,
     evaluate_durable_evidence_gate,
     merge_flags_indicate_incomplete,
+    record_evidence_gate_for_batch,
     record_evidence_gate_from_merge,
 )
 from backend.rinse_step1_scrape_refresh import STATUS_SUCCESS, refresh_step1_after_scrape
@@ -300,3 +301,40 @@ def test_all_deferred_still_global_incomplete():
     assert recorded["gate_status"] == GATE_INCOMPLETE
     assert tip["blocking"] is True
     assert tip["allow_persist"] is False
+
+
+def test_legacy_incomplete_gate_upgrades_to_selective_from_merge_detail():
+    """Batch 3621-style: old global incomplete row + preserve reasons → allow."""
+    cur = _GateCursor()
+    detail = {
+        "draft": {
+            "persistent_scan_merge": {
+                "bags_replaced": ["3RIJ7IBJ16", "B48VEF88R8"],
+                "bags_preserve_existing_timeline": [
+                    "5KFCFB0TN8",
+                    "5PGOA1KTZ0",
+                ],
+                "bags_preserve_reasons": {
+                    "5KFCFB0TN8": ["incoming_materially_thinner"],
+                    "5PGOA1KTZ0": ["incoming_max_older_than_existing"],
+                },
+                "import_incomplete": True,
+            }
+        }
+    }
+    with patch("backend.rinse_step1_evidence_gate.table_exists", return_value=True):
+        record_evidence_gate_for_batch(
+            cur,
+            organization_id=3,
+            import_batch_id=3621,
+            scrape_run_id=4121,
+            import_incomplete=True,
+            timeline_replacement_deferred=True,
+            detail=detail,
+        )
+        tip = evaluate_durable_evidence_gate(cur, 3, import_batch_id=3621)
+    assert tip["blocking"] is False
+    assert tip["allow_persist"] is True
+    assert tip["selective_projection_upgrade"] is True
+    assert tip["projection_deferred_bag_ids"] == ["5PGOA1KTZ0"]
+    assert "3RIJ7IBJ16" not in tip["projection_deferred_bag_ids"]

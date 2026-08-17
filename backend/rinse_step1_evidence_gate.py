@@ -659,6 +659,109 @@ def resolve_batch_id_for_stage_b(
     return None
 
 
+def reconstruct_selective_projection_from_detail(
+    detail: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Upgrade legacy global-incomplete gate detail into bag-level eligibility.
+
+    Older scrapes stamped ``import_incomplete`` whenever any bag had
+    ``incoming_max_older_than_existing``, freezing Stage-B for the whole batch.
+    When detail still carries merge preserve/replace lists, rebuild selective
+    eligibility so safe bags can project.
+    """
+    if not isinstance(detail, Mapping):
+        return None
+    # Prefer already-normalized projection lists.
+    existing_deferred = projection_deferred_bag_ids_from_merge(
+        {
+            "bags_projection_deferred": detail.get("projection_deferred_bag_ids")
+            or detail.get("bags_projection_deferred")
+        }
+    )
+    existing_eligible = projection_deferred_bag_ids_from_merge(
+        {
+            "bags_projection_deferred": detail.get("projection_eligible_bag_ids")
+            or detail.get("bags_projection_eligible")
+        }
+    )
+    if existing_deferred or existing_eligible:
+        return {
+            "bags_projection_deferred": existing_deferred,
+            "bags_projection_eligible": existing_eligible,
+            "stage_b_global_incomplete": bool(existing_deferred and not existing_eligible),
+        }
+
+    merge = None
+    for key in ("persistent_scan_merge", "persistent_merge", "scan_events_only_import"):
+        payload = detail.get(key)
+        if isinstance(payload, Mapping):
+            merge = payload
+            break
+    if merge is None:
+        draft = detail.get("draft")
+        if isinstance(draft, Mapping):
+            merge = draft.get("persistent_scan_merge") or draft.get("persistent_merge")
+    if not isinstance(merge, Mapping):
+        return None
+
+    reasons = merge.get("bags_preserve_reasons") or {}
+    if not isinstance(reasons, Mapping):
+        reasons = {}
+    replaced = {
+        str(b).strip().upper()
+        for b in (merge.get("bags_replaced") or [])
+        if str(b).strip()
+    }
+    preserved = {
+        str(b).strip().upper()
+        for b in (merge.get("bags_preserve_existing_timeline") or [])
+        if str(b).strip()
+    }
+    bag_ids = {
+        str(b).strip().upper()
+        for b in (merge.get("bag_ids") or [])
+        if str(b).strip()
+    }
+    all_ids = sorted(bag_ids | replaced | preserved | {str(k).strip().upper() for k in reasons})
+    if not all_ids:
+        return None
+
+    deferred: list[str] = []
+    eligible: list[str] = []
+    deferred_reasons: dict[str, list[str]] = {}
+    unsafe = {
+        "incoming_max_older_than_existing",
+        "incoming_empty",
+        "incoming_missing_completion_stage_events",
+        "low_event_id_overlap",
+        "import_incomplete_marker",
+    }
+    for bid in all_ids:
+        if bid in replaced:
+            eligible.append(bid)
+            continue
+        rlist = [str(x) for x in (reasons.get(bid) or [])]
+        if "incoming_materially_thinner" in rlist and not (set(rlist) & unsafe):
+            eligible.append(bid)
+        elif set(rlist) & unsafe:
+            deferred.append(bid)
+            deferred_reasons[bid] = rlist
+        elif bid in preserved:
+            # Unknown preserve reason — keep deferred (safe default).
+            deferred.append(bid)
+            deferred_reasons[bid] = rlist or ["unknown_preserve"]
+        else:
+            eligible.append(bid)
+
+    return {
+        "bags_projection_deferred": deferred,
+        "bags_projection_eligible": eligible,
+        "bags_projection_deferred_reasons": deferred_reasons,
+        "stage_b_global_incomplete": bool(deferred and not eligible),
+        "import_incomplete": bool(deferred and not eligible),
+    }
+
+
 def evaluate_durable_evidence_gate(
     cursor,
     organization_id: int,
@@ -669,9 +772,10 @@ def evaluate_durable_evidence_gate(
     """
     Resolve batch-backed Stage-B gate.
 
-    Incomplete batch N always blocks Stage B for that batch. A later complete
-    batch N+1 is allowed. When no batch can be resolved, do not invent a block
-    from this durable table alone (other chronology gates still apply).
+    Incomplete batch N blocks Stage B only when the batch is *globally*
+    incomplete (no projection-eligible bags), or mid-cycle import_running /
+    coverage/invalid. Legacy rows that froze the whole batch for a few
+    deferred bags are upgraded to selective allow + deferred id list.
     """
     org = int(organization_id)
     resolved_batch = resolve_batch_id_for_stage_b(
@@ -718,6 +822,24 @@ def evaluate_durable_evidence_gate(
         out["blocking"] = False
         return out
     if blocking:
+        status = str(gate.get("gate_status") or "").strip().lower()
+        # Never upgrade mid-cycle mutation stamps.
+        if status != GATE_IMPORT_RUNNING:
+            detail = parse_evidence_gate_detail(gate.get("detail_json"))
+            selective = reconstruct_selective_projection_from_detail(detail)
+            if (
+                isinstance(selective, Mapping)
+                and selective.get("bags_projection_eligible")
+                and not selective.get("stage_b_global_incomplete")
+            ):
+                deferred = list(selective.get("bags_projection_deferred") or [])
+                out["allow_persist"] = True
+                out["blocking"] = False
+                out["gate_status"] = GATE_COMPLETE
+                out["gate_reason"] = "selective_projection_eligible"
+                out["projection_deferred_bag_ids"] = deferred
+                out["selective_projection_upgrade"] = True
+                return out
         out["allow_persist"] = False
         out["blocking"] = True
         out["gate_reason"] = out["gate_reason"] or REASON_IMPORT_BATCH_INCOMPLETE
