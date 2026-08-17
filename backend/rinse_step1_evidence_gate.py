@@ -6,6 +6,12 @@ against the upload batch so every Stage-B path — in-cycle, watchdog, retry,
 manual refresh — resolves the same batch-backed decision without relying on a
 transient ``force_incomplete`` argument.
 
+Bag-level projection deferral (e.g. ``incoming_max_older_than_existing``) is
+stored in ``detail_json`` and does **not** freeze unrelated eligible bags.
+Only a true global incomplete batch (no projection-eligible bags), mid-cycle
+``import_running``, coverage/invalid flags, or a later complete tip supersession
+rules Stage-B allow/deny.
+
 Only a later *complete* batch may clear the org tip. Batch N incomplete stays
 blocking for any Stage B that targets batch N.
 
@@ -108,14 +114,90 @@ def _json_dump(payload: Mapping[str, Any] | None) -> str | None:
 
 
 def merge_flags_indicate_incomplete(merge: Mapping[str, Any] | None) -> bool:
+    """True when Stage-B must globally defer (no eligible bags to project).
+
+    Selective deferred bags alone do **not** mark the batch globally incomplete.
+    """
     if not isinstance(merge, Mapping):
         return False
+    if merge.get("stage_b_global_incomplete") is True:
+        return True
+    deferred = merge.get("bags_projection_deferred")
+    eligible = merge.get("bags_projection_eligible")
+    if isinstance(deferred, (list, tuple)) or isinstance(eligible, (list, tuple)):
+        deferred_n = len(deferred or [])
+        eligible_n = len(eligible or [])
+        return deferred_n > 0 and eligible_n == 0
     return bool(
         merge.get("import_incomplete")
         or merge.get("timeline_replacement_deferred")
         or merge.get("coverage_incomplete")
         or merge.get("invalid_for_step1_rebuild")
     )
+
+
+def projection_deferred_bag_ids_from_merge(
+    merge: Mapping[str, Any] | None,
+) -> list[str]:
+    if not isinstance(merge, Mapping):
+        return []
+    raw = merge.get("bags_projection_deferred") or []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        bid = str(item or "").strip().upper()
+        if bid and bid not in seen:
+            seen.add(bid)
+            out.append(bid)
+    return out
+
+
+def parse_evidence_gate_detail(detail_json: Any) -> dict[str, Any]:
+    if isinstance(detail_json, Mapping):
+        return dict(detail_json)
+    if isinstance(detail_json, (bytes, bytearray)):
+        detail_json = detail_json.decode("utf-8", errors="replace")
+    if isinstance(detail_json, str) and detail_json.strip():
+        try:
+            parsed = json.loads(detail_json)
+            return dict(parsed) if isinstance(parsed, Mapping) else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+    return {}
+
+
+def projection_deferred_bag_ids_from_gate_row(
+    gate: Mapping[str, Any] | None,
+) -> list[str]:
+    if not isinstance(gate, Mapping):
+        return []
+    detail = parse_evidence_gate_detail(gate.get("detail_json"))
+    raw = detail.get("projection_deferred_bag_ids") or detail.get(
+        "bags_projection_deferred"
+    ) or []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        bid = str(item or "").strip().upper()
+        if bid and bid not in seen:
+            seen.add(bid)
+            out.append(bid)
+    return out
+
+
+def fetch_projection_deferred_bag_ids(
+    cursor,
+    organization_id: int,
+    import_batch_id: int | None,
+) -> list[str]:
+    if import_batch_id is None:
+        return []
+    gate = fetch_evidence_gate(cursor, int(organization_id), int(import_batch_id))
+    return projection_deferred_bag_ids_from_gate_row(gate)
 
 
 def record_evidence_gate_for_batch(
@@ -235,10 +317,47 @@ def record_evidence_gate_from_merge(
     merge: Mapping[str, Any] | None = None,
     detail: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Record gate from a persistent_merge payload. No-op without batch id."""
+    """Record gate from a persistent_merge payload. No-op without batch id.
+
+    Selective incomplete bags are stored in ``detail_json`` and do not block
+    Stage-B for projection-eligible bags in the same batch.
+    """
     if import_batch_id is None:
         return None
     incomplete = merge_flags_indicate_incomplete(merge)
+    deferred_ids = projection_deferred_bag_ids_from_merge(merge)
+    eligible_ids: list[str] = []
+    if isinstance(merge, Mapping):
+        raw_eligible = merge.get("bags_projection_eligible") or []
+        if isinstance(raw_eligible, (list, tuple)):
+            seen: set[str] = set()
+            for item in raw_eligible:
+                bid = str(item or "").strip().upper()
+                if bid and bid not in seen:
+                    seen.add(bid)
+                    eligible_ids.append(bid)
+    detail_payload: dict[str, Any] = {
+        **(dict(detail) if isinstance(detail, Mapping) else {}),
+        "merge_flags": {
+            "import_incomplete": bool(
+                isinstance(merge, Mapping) and merge.get("import_incomplete")
+            ),
+            "timeline_replacement_deferred": bool(
+                isinstance(merge, Mapping)
+                and merge.get("timeline_replacement_deferred")
+            ),
+            "stage_b_global_incomplete": incomplete,
+            "has_projection_deferred_bags": bool(deferred_ids),
+        },
+        "projection_deferred_bag_ids": deferred_ids,
+        "projection_eligible_bag_ids": eligible_ids,
+        "projection_eligible_count": len(eligible_ids),
+        "projection_deferred_count": len(deferred_ids),
+    }
+    if isinstance(merge, Mapping) and merge.get("bags_projection_deferred_reasons"):
+        detail_payload["bags_projection_deferred_reasons"] = merge.get(
+            "bags_projection_deferred_reasons"
+        )
     return record_evidence_gate_for_batch(
         cursor,
         organization_id=organization_id,
@@ -246,27 +365,14 @@ def record_evidence_gate_from_merge(
         scrape_run_id=scrape_run_id,
         portal_presence_run_id=portal_presence_run_id,
         import_incomplete=incomplete,
-        timeline_replacement_deferred=bool(
-            isinstance(merge, Mapping) and merge.get("timeline_replacement_deferred")
-        ),
+        timeline_replacement_deferred=incomplete,
         coverage_incomplete=bool(
             isinstance(merge, Mapping) and merge.get("coverage_incomplete")
         ),
         invalid_for_step1_rebuild=bool(
             isinstance(merge, Mapping) and merge.get("invalid_for_step1_rebuild")
         ),
-        detail={
-            **(dict(detail) if isinstance(detail, Mapping) else {}),
-            "merge_flags": {
-                "import_incomplete": bool(
-                    isinstance(merge, Mapping) and merge.get("import_incomplete")
-                ),
-                "timeline_replacement_deferred": bool(
-                    isinstance(merge, Mapping)
-                    and merge.get("timeline_replacement_deferred")
-                ),
-            },
-        },
+        detail=detail_payload,
     )
 
 
@@ -585,6 +691,7 @@ def evaluate_durable_evidence_gate(
         "allow_persist": True,
         "blocking": False,
         "durable_gate_checked": True,
+        "projection_deferred_bag_ids": [],
     }
     if resolved_batch is None:
         out["durable_gate_checked"] = False
@@ -602,6 +709,7 @@ def evaluate_durable_evidence_gate(
     out["scrape_run_id"] = gate.get("scrape_run_id") or out["scrape_run_id"]
     out["gate_status"] = gate.get("gate_status")
     out["gate_reason"] = gate.get("gate_reason")
+    out["projection_deferred_bag_ids"] = projection_deferred_bag_ids_from_gate_row(gate)
     blocking = _gate_is_blocking(gate)
     # Later complete batch supersedes earlier incomplete when Stage B resolved
     # to that complete batch. If we resolved to an incomplete batch, block.

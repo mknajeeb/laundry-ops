@@ -186,35 +186,32 @@ def _mark_step1_refresh_failed_on_result(
 
 
 def _merge_import_incomplete(detail: Mapping[str, Any] | None) -> bool:
-    """True when persistent scan merge marked the import incomplete/thinner."""
+    """True when persistent scan merge requires a *global* Stage-B freeze.
+
+    Selective bag-level projection deferral (some bags incomplete, others
+    eligible) does not count — those batches still run Stage-B for safe bags.
+    """
     if not isinstance(detail, Mapping):
         return False
+    from backend.rinse_step1_evidence_gate import merge_flags_indicate_incomplete
+
     for key in (
         "persistent_merge",
         "persistent_scan_merge",
         "scan_events_only_import",
     ):
         payload = detail.get(key)
-        if isinstance(payload, Mapping) and (
-            payload.get("import_incomplete")
-            or payload.get("timeline_replacement_deferred")
-        ):
+        if isinstance(payload, Mapping) and merge_flags_indicate_incomplete(payload):
             return True
     finalize = detail.get("rinse_finalize")
     if isinstance(finalize, Mapping) and not finalize.get("deferred"):
         merge = finalize.get("persistent_merge") or finalize.get("persistent_scan_merge")
-        if isinstance(merge, Mapping) and (
-            merge.get("import_incomplete")
-            or merge.get("timeline_replacement_deferred")
-        ):
+        if isinstance(merge, Mapping) and merge_flags_indicate_incomplete(merge):
             return True
     draft = detail.get("draft")
     if isinstance(draft, Mapping):
         merge = draft.get("persistent_scan_merge") or draft.get("persistent_merge")
-        if isinstance(merge, Mapping) and (
-            merge.get("import_incomplete")
-            or merge.get("timeline_replacement_deferred")
-        ):
+        if isinstance(merge, Mapping) and merge_flags_indicate_incomplete(merge):
             return True
     confirm = detail.get("confirm")
     if isinstance(confirm, Mapping):
@@ -223,10 +220,7 @@ def _merge_import_incomplete(detail: Mapping[str, Any] | None) -> bool:
             merge = finalize.get("persistent_merge") or finalize.get(
                 "persistent_scan_merge"
             )
-            if isinstance(merge, Mapping) and (
-                merge.get("import_incomplete")
-                or merge.get("timeline_replacement_deferred")
-            ):
+            if isinstance(merge, Mapping) and merge_flags_indicate_incomplete(merge):
                 return True
     return False
 
@@ -307,6 +301,18 @@ def _refresh_open_step1_day_after_scrape(
         log.write(
             "Step-1 Stage B deferred: scan chronology import incomplete / "
             "timeline replacement deferred — retaining last consistent snapshot\n"
+        )
+    elif (
+        isinstance(merge_payload, Mapping)
+        and merge_payload.get("has_projection_deferred_bags")
+        and log is not None
+        and hasattr(log, "write")
+    ):
+        log.write(
+            "Step-1 Stage B selective: "
+            f"eligible={len(merge_payload.get('bags_projection_eligible') or [])} "
+            f"deferred={len(merge_payload.get('bags_projection_deferred') or [])} "
+            "— projecting safe bags only\n"
         )
     return refresh_step1_after_scrape(
         conn,

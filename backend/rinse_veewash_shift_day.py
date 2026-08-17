@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_veewash_workload import (
@@ -1025,6 +1025,7 @@ def persist_day_snapshot(
     status: str | None = None,
     force: bool = False,
     chronology_complete: bool = True,
+    projection_deferred_bag_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Upsert day header + bag rows. No-op for CLOSED days unless force=True.
 
@@ -1035,6 +1036,9 @@ def persist_day_snapshot(
 
     When ``chronology_complete`` is False, previously persisted Completed bags
     are not downgraded to Pending/Review by temporary missing scan evidence.
+
+    ``projection_deferred_bag_ids`` are bag-scoped Stage-B holds: those rows
+    keep prior persisted status while eligible bags rebuild normally.
     """
     ensure_shift_monitor_day_tables(cursor)
     existing = get_day_record(cursor, organization_id, shift_date_et)
@@ -1095,9 +1099,15 @@ def persist_day_snapshot(
     from backend.rinse_step1_productivity_fast import project_productivity_fields_for_day_bag
     from backend.rinse_scan_chronology_gate import should_preserve_persisted_completion
 
-    # Prior statuses for incomplete-chronology completion protection.
+    deferred_ids = {
+        normalize_bag_id(b)
+        for b in (projection_deferred_bag_ids or [])
+        if normalize_bag_id(b)
+    }
+
+    # Prior statuses for incomplete-chronology / bag-level projection deferral.
     prior_by_id: dict[str, dict[str, Any]] = {}
-    if not chronology_complete:
+    if (not chronology_complete) or deferred_ids:
         try:
             for row in load_day_bags(cursor, organization_id, shift_date_et) or []:
                 bid = normalize_bag_id(row.get("bag_id"))
@@ -1110,13 +1120,18 @@ def persist_day_snapshot(
     for b in bags:
         bid = normalize_bag_id(b.get("bag_id"))
         prior = prior_by_id.get(bid) if bid else None
-        if prior and should_preserve_persisted_completion(
-            previous_status=prior.get("effective_status"),
-            incoming_status=b.get("effective_status"),
-            chronology_complete=chronology_complete,
-            manager_edit_version=int(prior.get("manager_edit_version") or 0),
+        bag_deferred = bool(bid and bid in deferred_ids)
+        if prior and (
+            bag_deferred
+            or should_preserve_persisted_completion(
+                previous_status=prior.get("effective_status"),
+                incoming_status=b.get("effective_status"),
+                chronology_complete=chronology_complete and not bag_deferred,
+                manager_edit_version=int(prior.get("manager_edit_version") or 0),
+            )
         ):
-            # Keep prior confirmed completion while chronology is incomplete.
+            # Keep prior confirmed completion while chronology is incomplete
+            # or this bag's merge was projection-deferred.
             b = dict(b)
             b["effective_status"] = prior.get("effective_status") or "completed"
             b["canonical_completion_status"] = (
@@ -3070,6 +3085,7 @@ def _persist_snapshot_then_attach_specialty(
     summary: Mapping[str, Any],
     day: Mapping[str, Any] | None,
     chronology_complete: bool,
+    projection_deferred_bag_ids: Sequence[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], bool]:
     """Persist OPEN day + day_bags + headline, then best-effort specialty.
 
@@ -3093,6 +3109,7 @@ def _persist_snapshot_then_attach_specialty(
         current_status=(day or {}).get("status"),
         membership=wl.get("membership") if isinstance(wl.get("membership"), dict) else None,
     )
+    deferred = list(projection_deferred_bag_ids or [])
     persisted = persist_day_snapshot(
         cursor,
         org,
@@ -3102,6 +3119,7 @@ def _persist_snapshot_then_attach_specialty(
         status=status,
         force=True,
         chronology_complete=bool(chronology_complete),
+        projection_deferred_bag_ids=deferred,
     )
     _commit(cursor)
     specialty_ok = False
@@ -3122,6 +3140,7 @@ def _persist_snapshot_then_attach_specialty(
                 status=status,
                 force=True,
                 chronology_complete=bool(chronology_complete),
+                projection_deferred_bag_ids=deferred,
             )
             _commit(cursor)
     except Exception:
@@ -3288,6 +3307,7 @@ def backfill_day_from_live(
     import_batch_id: int | None = None,
     scrape_run_id: int | None = None,
     bypass_evidence_gate: bool = False,
+    projection_deferred_bag_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Rebuild and persist a day from source (activation / cutover onward)."""
     activation = get_step1_activation_date(cursor, organization_id)
@@ -3315,8 +3335,12 @@ def backfill_day_from_live(
 
     # Durable incomplete-batch gate: refuse day-bag / headline writes while the
     # evidence batch Stage B would use is marked incomplete.
+    deferred_ids = [normalize_bag_id(b) for b in (projection_deferred_bag_ids or []) if normalize_bag_id(b)]
     if chronology_complete and not bypass_evidence_gate:
-        from backend.rinse_step1_evidence_gate import evaluate_durable_evidence_gate
+        from backend.rinse_step1_evidence_gate import (
+            evaluate_durable_evidence_gate,
+            fetch_projection_deferred_bag_ids,
+        )
         from backend.rinse_scan_chronology_gate import last_consistent_snapshot_counts
 
         durable = evaluate_durable_evidence_gate(
@@ -3325,6 +3349,14 @@ def backfill_day_from_live(
             import_batch_id=import_batch_id,
             scrape_run_id=scrape_run_id,
         )
+        if not deferred_ids:
+            deferred_ids = list(durable.get("projection_deferred_bag_ids") or [])
+            if not deferred_ids:
+                deferred_ids = fetch_projection_deferred_bag_ids(
+                    cursor,
+                    int(organization_id),
+                    durable.get("import_batch_id") or import_batch_id,
+                )
         if durable.get("blocking"):
             reason = str(durable.get("gate_reason") or "import_batch_incomplete")
             return {
@@ -3340,6 +3372,7 @@ def backfill_day_from_live(
                 "scrape_run_id": durable.get("scrape_run_id"),
                 "portal_presence_run_id": durable.get("portal_presence_run_id"),
                 "evidence_generation_id": durable.get("evidence_generation_id"),
+                "projection_deferred_bag_ids": deferred_ids,
                 "last_consistent_snapshot": last_consistent_snapshot_counts(
                     day,
                     cursor=cursor,
@@ -3383,6 +3416,7 @@ def backfill_day_from_live(
         summary=summary,
         day=day,
         chronology_complete=bool(chronology_complete),
+        projection_deferred_bag_ids=deferred_ids,
     )
     return {
         "ok": True,
@@ -3399,4 +3433,6 @@ def backfill_day_from_live(
         "bag_count": len(load_day_bags(cursor, organization_id, shift_date_et)),
         "chronology_complete": bool(chronology_complete),
         "specialty_metrics_attached": specialty_ok,
+        "projection_deferred_bag_ids": deferred_ids,
+        "projection_deferred_count": len(deferred_ids),
     }

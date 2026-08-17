@@ -910,11 +910,15 @@ def merge_scan_events_from_upload(
     bags_replace: list[str] = []
     bags_preserve_existing: list[str] = []
     bags_preserve_reasons: dict[str, list[str]] = {}
+    bags_projection_eligible: list[str] = []
+    bags_projection_deferred: list[str] = []
+    bags_projection_deferred_reasons: dict[str, list[str]] = {}
     preserved_weight_enrichment: dict[tuple[str, str], dict[str, Any]] = {}
-    import_incomplete = False
     if replace_existing and bag_ids:
         # Never wipe a richer persisted timeline with a truncated scrape export.
         # Additive upsert still runs for preserved bags so new rows can land.
+        # Incomplete bags defer only their own Stage-B projection — safe bags
+        # in the same batch remain projection-eligible (no global freeze).
         from backend.rinse_scan_chronology_gate import evaluate_timeline_replace_decision
 
         existing_bounds = _persistent_scan_bounds_for_bags(cursor, org, bag_ids)
@@ -935,21 +939,28 @@ def merge_scan_events_from_upload(
                 incoming_completion_events=_count_completion_stage_events(incoming_purposes),
                 import_complete=True,
             )
+            eligible = bool(
+                decision.get(
+                    "projection_eligible",
+                    not bool(decision.get("incomplete")),
+                )
+            )
             if decision.get("replace"):
                 bags_replace.append(bag_id)
+                bags_projection_eligible.append(bag_id)
             else:
                 bags_preserve_existing.append(bag_id)
                 reasons = list(decision.get("reasons") or [])
                 bags_preserve_reasons[bag_id] = reasons
-                # Only true incompleteness blocks Stage-B. Intentional preserve
-                # for richer lifetime timelines (incoming_materially_thinner)
-                # sets incomplete=False in evaluate_timeline_replace_decision.
-                if decision.get("incomplete"):
-                    import_incomplete = True
+                if eligible:
+                    bags_projection_eligible.append(bag_id)
+                else:
+                    bags_projection_deferred.append(bag_id)
+                    bags_projection_deferred_reasons[bag_id] = reasons
                 logger.warning(
                     "scan timeline preserve org=%s bag=%s reasons=%s "
                     "existing_n=%s incoming_n=%s existing_max=%s incoming_max=%s "
-                    "stage_b_incomplete=%s "
+                    "projection_eligible=%s "
                     "(partial export will not delete richer timeline)",
                     org,
                     bag_id,
@@ -958,14 +969,23 @@ def merge_scan_events_from_upload(
                     incoming_n,
                     existing_max,
                     incoming_max,
-                    bool(decision.get("incomplete")),
+                    eligible,
                 )
-        if bags_preserve_existing and import_incomplete:
+        if bags_projection_deferred and bags_projection_eligible:
             logger.warning(
-                "scan chronology import incomplete org=%s preserved_bags=%s "
+                "scan chronology selective projection org=%s deferred_bags=%s "
+                "eligible_bags=%s replaced_bags=%s — Stage B projects eligible only",
+                org,
+                len(bags_projection_deferred),
+                len(bags_projection_eligible),
+                len(bags_replace),
+            )
+        elif bags_projection_deferred and not bags_projection_eligible:
+            logger.warning(
+                "scan chronology import incomplete org=%s deferred_bags=%s "
                 "replaced_bags=%s — Stage B must not persist provisional Step-1 counts",
                 org,
-                len(bags_preserve_existing),
+                len(bags_projection_deferred),
                 len(bags_replace),
             )
         elif bags_preserve_existing:
@@ -985,6 +1005,8 @@ def merge_scan_events_from_upload(
 
             preserved_weight_enrichment = snapshot_weight_enrichment(cursor, org, bags_replace)
             events_deleted = delete_persistent_scan_events_for_bags(cursor, org, bags_replace)
+    elif bag_ids:
+        bags_projection_eligible = list(bag_ids)
     inserted = 0
     metadata_updated = 0
     skipped_no_time = 0
@@ -1085,6 +1107,12 @@ def merge_scan_events_from_upload(
             weight_enrichment_restore_stats.get("updated") or 0
         )
 
+    # Global Stage-B freeze only when every bag in this merge is projection-ineligible.
+    # One anomalous bag must not block unrelated safe bags.
+    stage_b_global_incomplete = bool(
+        bags_projection_deferred and not bags_projection_eligible
+    )
+
     return {
         "bags_merged": len(bag_ids),
         "events_inserted": inserted,
@@ -1099,8 +1127,14 @@ def merge_scan_events_from_upload(
         "bags_replaced": bags_replace if replace_existing else list(bag_ids),
         "bags_preserve_existing_timeline": bags_preserve_existing,
         "bags_preserve_reasons": bags_preserve_reasons,
-        "import_incomplete": bool(import_incomplete),
-        "timeline_replacement_deferred": bool(import_incomplete),
+        "bags_projection_eligible": bags_projection_eligible,
+        "bags_projection_deferred": bags_projection_deferred,
+        "bags_projection_deferred_reasons": bags_projection_deferred_reasons,
+        "has_projection_deferred_bags": bool(bags_projection_deferred),
+        "stage_b_global_incomplete": stage_b_global_incomplete,
+        # Legacy aliases: global incomplete only (selective deferred ≠ freeze).
+        "import_incomplete": stage_b_global_incomplete,
+        "timeline_replacement_deferred": stage_b_global_incomplete,
         "bag_ids": bag_ids,
         "weight_enrichment_preserved": len(preserved_weight_enrichment),
         "weight_enrichment_restored": weight_enrichment_restored,

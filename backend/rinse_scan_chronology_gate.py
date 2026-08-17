@@ -238,6 +238,9 @@ def evaluate_step1_rebuild_gate(
         "gate_reason": defer_reason,
         "gate_decision": "allow" if allow else "defer",
         "durable_evidence_gate": durable,
+        "projection_deferred_bag_ids": list(
+            durable.get("projection_deferred_bag_ids") or []
+        ),
         "message": (
             None
             if allow
@@ -295,16 +298,27 @@ def evaluate_timeline_replace_decision(
 
     Newer timestamps alone are never enough. Materially thinner or incomplete
     exports must preserve the richer existing timeline.
+
+    ``projection_eligible`` is bag-scoped: incompleteness defers only that bag's
+    Stage-B projection. Thinner incoming still leaves usable canonical DB
+    evidence (preserve + additive upsert) and remains projection-eligible.
     """
     reasons: list[str] = []
     if existing_n <= 0:
-        return {"replace": True, "reasons": ["no_existing_timeline"], "preserve": False}
+        return {
+            "replace": True,
+            "reasons": ["no_existing_timeline"],
+            "preserve": False,
+            "incomplete": False,
+            "projection_eligible": True,
+        }
     if incoming_n <= 0:
         return {
             "replace": False,
             "preserve": True,
             "reasons": ["incoming_empty"],
             "incomplete": True,
+            "projection_eligible": False,
         }
     if not import_complete:
         return {
@@ -312,6 +326,7 @@ def evaluate_timeline_replace_decision(
             "preserve": True,
             "reasons": ["import_incomplete_marker"],
             "incomplete": True,
+            "projection_eligible": False,
         }
     if existing_max is not None and incoming_max is not None and existing_max > incoming_max:
         return {
@@ -319,6 +334,7 @@ def evaluate_timeline_replace_decision(
             "preserve": True,
             "reasons": ["incoming_max_older_than_existing"],
             "incomplete": True,
+            "projection_eligible": False,
         }
     # Never wipe a richer timeline with a thinner export — even if newer.
     # Preserve only: additive upsert still lands new rows. Do NOT mark the
@@ -331,6 +347,7 @@ def evaluate_timeline_replace_decision(
             "preserve": True,
             "reasons": reasons,
             "incomplete": False,
+            "projection_eligible": True,
             "existing_n": existing_n,
             "incoming_n": incoming_n,
         }
@@ -344,6 +361,7 @@ def evaluate_timeline_replace_decision(
             "preserve": True,
             "reasons": reasons,
             "incomplete": True,
+            "projection_eligible": False,
         }
     if event_id_overlap is not None and existing_n > 0:
         overlap_ratio = float(event_id_overlap) / float(existing_n)
@@ -354,6 +372,13 @@ def evaluate_timeline_replace_decision(
                 "preserve": True,
                 "reasons": reasons,
                 "incomplete": True,
+                "projection_eligible": False,
                 "overlap_ratio": overlap_ratio,
             }
-    return {"replace": True, "preserve": False, "reasons": ["incoming_complete_or_richer"]}
+    return {
+        "replace": True,
+        "preserve": False,
+        "reasons": ["incoming_complete_or_richer"],
+        "incomplete": False,
+        "projection_eligible": True,
+    }

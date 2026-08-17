@@ -315,6 +315,7 @@ def test_retry_after_import_completes_rebuilds():
         import_batch_id=None,
         scrape_run_id=999,
         bypass_evidence_gate=True,
+        projection_deferred_bag_ids=[],
     )
 
 

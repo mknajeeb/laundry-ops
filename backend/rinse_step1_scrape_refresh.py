@@ -404,6 +404,18 @@ def refresh_step1_after_scrape(
             import_batch_id=resolved_batch,
             scrape_run_id=scrape_run_id,
         )
+        deferred_bag_ids = list(gate.get("projection_deferred_bag_ids") or [])
+        if not deferred_bag_ids and resolved_batch is not None:
+            try:
+                from backend.rinse_step1_evidence_gate import (
+                    fetch_projection_deferred_bag_ids,
+                )
+
+                deferred_bag_ids = fetch_projection_deferred_bag_ids(
+                    cursor, org, resolved_batch
+                )
+            except Exception:
+                deferred_bag_ids = []
         if gate.get("deferred") or not gate.get("allow_persist"):
             from backend.rinse_scan_chronology_gate import (
                 STATUS_IMPORT_INCOMPLETE,
@@ -452,6 +464,8 @@ def refresh_step1_after_scrape(
                     "gate_reason": gate.get("gate_reason") or reason,
                     "gate_status": gate.get("gate_status"),
                     "durable_evidence_gate": gate.get("durable_evidence_gate"),
+                    "projection_deferred_bag_ids": deferred_bag_ids,
+                    "projection_deferred_count": len(deferred_bag_ids),
                 }
                 _update_refresh_row(
                     cursor,
@@ -484,6 +498,7 @@ def refresh_step1_after_scrape(
             import_batch_id=resolved_batch,
             scrape_run_id=scrape_run_id,
             bypass_evidence_gate=True,  # Stage B already applied durable gate above
+            projection_deferred_bag_ids=deferred_bag_ids,
         )
         finished = _utcnow()
         ok = bool(backfill.get("ok"))
@@ -534,6 +549,15 @@ def refresh_step1_after_scrape(
             "gate_reason": gate.get("gate_reason"),
             "gate_status": gate.get("gate_status") or "ok",
             "durable_evidence_gate": gate.get("durable_evidence_gate"),
+            "projection_deferred_bag_ids": list(
+                backfill.get("projection_deferred_bag_ids") or deferred_bag_ids
+            ),
+            "projection_deferred_count": int(
+                backfill.get("projection_deferred_count")
+                if backfill.get("projection_deferred_count") is not None
+                else len(deferred_bag_ids)
+            ),
+            "projection_selective": bool(deferred_bag_ids),
         }
         _update_refresh_row(
             cursor,
@@ -552,9 +576,17 @@ def refresh_step1_after_scrape(
         except Exception:
             pass
         if ok:
+            try:
+                from backend.management_today import clear_management_today_cache
+
+                clear_management_today_cache(org, day, include_supplies=False)
+            except Exception:
+                pass
+            deferred_n = int(diag.get("projection_deferred_count") or 0)
             _log(
                 f"Step-1 day snapshot refreshed for {day} "
-                f"bags={bag_count} batch_id={import_batch_id} status={status}\n"
+                f"bags={bag_count} batch_id={import_batch_id} status={status}"
+                f"{f' projection_deferred={deferred_n}' if deferred_n else ''}\n"
             )
         else:
             _log(
