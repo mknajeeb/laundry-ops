@@ -11,6 +11,7 @@ from backend.db import get_db
 from backend.management_today import (
     CountingCursor,
     build_management_rinse_wf_payload,
+    build_management_supply_detail,
     build_management_supply_summary,
     build_management_today_payload,
 )
@@ -81,7 +82,7 @@ def register_management_today_routes(
 
     @app.route("/api/management/today/supplies", methods=["GET"])
     def management_today_supplies():
-        """Async compact Supply Usage summary — never block WF core."""
+        """Async compact Management WF Supply summary — never block WF core."""
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
@@ -99,16 +100,66 @@ def register_management_today_routes(
                 "true",
                 "yes",
             )
+            rush = str(
+                request.args.get("rush")
+                or request.args.get("scope")
+                or "all"
+            ).strip().lower()
             counting = CountingCursor(cursor)
             payload = build_management_supply_summary(
                 counting,
                 oid,
                 selected,
+                rush_scope=rush,
                 bypass_cache=bypass,
             )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             return jsonify({"error": str(exc), "supplies": {"available": False, "deferred": False}}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/today/supplies/detail", methods=["GET"])
+    def management_today_supplies_detail():
+        """Lazy product order detail — loaded only on card click."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            selected, err = _selected_date_et()
+            if err:
+                return err
+            rush = str(
+                request.args.get("rush")
+                or request.args.get("scope")
+                or "all"
+            ).strip().lower()
+            product_id_raw = request.args.get("product_id")
+            product_id = None
+            if product_id_raw not in (None, ""):
+                try:
+                    product_id = int(product_id_raw)
+                except (TypeError, ValueError):
+                    return jsonify({"error": "product_id must be an integer"}), 400
+            legacy = str(request.args.get("legacy_report_key") or "").strip() or None
+            counting = CountingCursor(cursor)
+            payload = build_management_supply_detail(
+                counting,
+                oid,
+                selected,
+                rush_scope=rush,
+                product_id=product_id,
+                legacy_report_key=legacy,
+            )
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()
             conn.close()

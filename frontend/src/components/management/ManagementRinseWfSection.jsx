@@ -1,10 +1,23 @@
 import { useMemo, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
-import { Alert, Box, Button, Stack, Typography } from "@mui/material";
+import {
+  Alert,
+  Box,
+  Button,
+  CircularProgress,
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  IconButton,
+  Stack,
+  Typography,
+} from "@mui/material";
+import CloseIcon from "@mui/icons-material/Close";
 import RushFilterChips from "../shift/RushFilterChips";
 import Step1MetricDrawer from "../shift/Step1MetricDrawer";
 import TodayTapCard from "./TodayTapCard";
 import ManagementRinseWfReviewSection from "./ManagementRinseWfReviewSection";
+import { getManagementTodaySuppliesDetail } from "../../api";
 import {
   pickRinseSegments,
   pickWfSpecialty,
@@ -24,9 +37,15 @@ function fmtLbs(v) {
   return `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })} lb`;
 }
 
-function fmtOz(v) {
+function fmtQty(v, unit) {
   if (v == null || Number.isNaN(Number(v))) return "—";
-  return `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })} oz`;
+  const u = unit ? ` ${unit}` : "";
+  return `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}${u}`;
+}
+
+function fmtMoney(v) {
+  if (v == null || Number.isNaN(Number(v))) return "—";
+  return `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function BlockLabel({ children, hint }) {
@@ -70,11 +89,11 @@ function CardGrid({ children, columns = { xs: 2, sm: 4 } }) {
   );
 }
 
-const SUPPLY_ROWS = [
-  { key: "Tide", label: "Tide" },
-  { key: "Downy", label: "Downy" },
-  { key: "OxiClean", label: "Oxi" },
-  { key: "All Free & Clear", label: "All Free & Clear" },
+const FALLBACK_SUPPLY_ROWS = [
+  { legacy_report_key: "Tide", label: "Tide" },
+  { legacy_report_key: "Downy", label: "Downy" },
+  { legacy_report_key: "OxiClean", label: "Oxi" },
+  { legacy_report_key: "All Free & Clear", label: "All Free & Clear" },
 ];
 
 /** Management Rinse WF — WF-only operational home. */
@@ -85,10 +104,13 @@ export default function ManagementRinseWfSection({
   suppliesLoading = false,
   suppliesError = "",
   onRetrySupplies,
+  rushFilter: rushFilterProp,
+  onRushFilterChange,
   selectedDateEt,
   onRefresh,
 }) {
-  const [rushFilter, setRushFilter] = useState("all");
+  const [rushFilterLocal, setRushFilterLocal] = useState("all");
+  const rushFilter = rushFilterProp ?? rushFilterLocal;
   const [drawer, setDrawer] = useState({
     open: false,
     metric: null,
@@ -96,6 +118,13 @@ export default function ManagementRinseWfSection({
     reasonCode: null,
     service: "wf",
     queue: null,
+  });
+  const [supplyDetail, setSupplyDetail] = useState({
+    open: false,
+    loading: false,
+    error: "",
+    product: null,
+    rows: [],
   });
 
   const snapshotUnavailable = Boolean(
@@ -151,8 +180,26 @@ export default function ManagementRinseWfSection({
   const suppliesAvailable = Boolean(supplies?.available);
   const suppliesPending = Boolean(suppliesLoading) || (Boolean(supplies?.deferred) && !suppliesAvailable);
   const supplyBanner = supplies?.supply_banner || null;
+  const supplyStatus = String(supplies?.supply_status || "").toUpperCase();
+  const pendingSplitReviews = Number(supplies?.pending_split_reviews || 0);
   const supplyFinalizable = supplies?.supply_finalizable !== false;
   const reviewSummary = reviewProp || rinse?.review || null;
+  const supplyProducts = useMemo(() => {
+    const products = Array.isArray(supplies?.products) ? supplies.products : [];
+    if (products.length) return products;
+    return FALLBACK_SUPPLY_ROWS.map((row) => {
+      const legacy = supplies?.[row.legacy_report_key] || {};
+      return {
+        ...row,
+        orders_using: legacy.orders_using,
+        confirmed_loads: legacy.confirmed_loads ?? legacy.doses,
+        confirmed_doses: legacy.doses,
+        quantity_used: legacy.quantity_used ?? legacy.ounces,
+        quantity_unit: "oz",
+        estimated_cost: legacy.estimated_cost,
+      };
+    });
+  }, [supplies]);
 
   const openMetric = (metric, title, opts = {}) => {
     if (snapshotUnavailable) return;
@@ -177,8 +224,51 @@ export default function ManagementRinseWfSection({
         queue: null,
       });
     }
-    setRushFilter(next);
+    if (onRushFilterChange) onRushFilterChange(next);
+    else setRushFilterLocal(next);
   };
+
+  const openSupplyDetail = async (product) => {
+    if (snapshotUnavailable || suppliesPending || !suppliesAvailable) return;
+    setSupplyDetail({
+      open: true,
+      loading: true,
+      error: "",
+      product,
+      rows: [],
+    });
+    try {
+      const res = await getManagementTodaySuppliesDetail(
+        selectedDateEt || rinse?.selected_date_et,
+        {
+          rush: rushFilter,
+          product_id: product?.product_id || undefined,
+          legacy_report_key: product?.legacy_report_key || undefined,
+        },
+      );
+      setSupplyDetail({
+        open: true,
+        loading: false,
+        error: "",
+        product,
+        rows: res.data?.orders || [],
+      });
+    } catch (err) {
+      setSupplyDetail({
+        open: true,
+        loading: false,
+        error: err?.response?.data?.error || err?.message || "Detail unavailable",
+        product,
+        rows: [],
+      });
+    }
+  };
+
+  const supplyHint = suppliesPending
+    ? "LOADING"
+    : supplyStatus
+      ? `${supplyStatus}${pendingSplitReviews > 0 ? ` · ${pendingSplitReviews} PENDING SPLIT` : ""}`
+      : "DAY TOTALS";
 
   return (
     <Box>
@@ -348,35 +438,55 @@ export default function ManagementRinseWfSection({
         />
       </Box>
 
-      <BlockLabel hint="DAY TOTALS">Supplies</BlockLabel>
+      <BlockLabel hint={supplyHint}>Supplies</BlockLabel>
       {!snapshotUnavailable && suppliesAvailable && !supplyFinalizable && supplyBanner ? (
         <Alert severity="warning" sx={{ mb: 0.75, py: 0.35 }}>
           {supplyBanner}
         </Alert>
       ) : null}
-      <CardGrid>
-        {SUPPLY_ROWS.map((row) => (
-          <TodayTapCard
-            key={row.key}
-            label={row.label}
-            value={
-              suppliesPending
-                ? "…"
-                : snapshotUnavailable || !suppliesAvailable
-                  ? "—"
-                  : fmtOz(supplies?.[row.key]?.ounces)
-            }
-            sub={
-              suppliesPending
-                ? "Loading…"
-                : snapshotUnavailable || !suppliesAvailable
+      {!snapshotUnavailable && suppliesAvailable && supplyStatus ? (
+        <Typography sx={{ fontSize: 11, fontWeight: 700, color: "#64748b", mb: 0.75 }}>
+          Status {supplyStatus}
+          {pendingSplitReviews > 0
+            ? ` · Pending Split Reviews = ${pendingSplitReviews}`
+            : ""}
+        </Typography>
+      ) : null}
+      <CardGrid columns={{ xs: 1, sm: 2 }}>
+        {supplyProducts.map((row) => {
+          const key = row.legacy_report_key || row.label;
+          const shortLabel =
+            key === "OxiClean" ? "Oxi" : key === "All Free & Clear" ? "All Free & Clear" : (row.label || key);
+          return (
+            <TodayTapCard
+              key={key}
+              label={shortLabel}
+              value={
+                suppliesPending
+                  ? "…"
+                  : snapshotUnavailable || !suppliesAvailable
+                    ? "—"
+                    : fmtInt(row.confirmed_loads ?? row.confirmed_doses)
+              }
+              sub={
+                suppliesPending
+                  ? "Loading…"
+                  : snapshotUnavailable || !suppliesAvailable
+                    ? undefined
+                    : [
+                        `${fmtInt(row.orders_using)} orders`,
+                        `${fmtQty(row.quantity_used, row.quantity_unit)}`,
+                        `est ${fmtMoney(row.estimated_cost)}`,
+                      ].join(" · ")
+              }
+              onClick={
+                snapshotUnavailable || suppliesPending || !suppliesAvailable
                   ? undefined
-                  : `${fmtInt(supplies?.[row.key]?.doses)} dose${
-                      Number(supplies?.[row.key]?.doses) === 1 ? "" : "s"
-                    }`
-            }
-          />
-        ))}
+                  : () => openSupplyDetail(row)
+              }
+            />
+          );
+        })}
       </CardGrid>
       {suppliesError && !suppliesPending ? (
         <Box sx={{ mt: -0.5, mb: 1 }}>
@@ -400,6 +510,58 @@ export default function ManagementRinseWfSection({
           Supply Master · Products & Mappings
         </Button>
       </Box>
+
+      <Dialog
+        open={supplyDetail.open}
+        onClose={() => setSupplyDetail((s) => ({ ...s, open: false }))}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle sx={{ pr: 6 }}>
+          {supplyDetail.product?.label || supplyDetail.product?.legacy_report_key || "Supply detail"}
+          <IconButton
+            aria-label="Close"
+            onClick={() => setSupplyDetail((s) => ({ ...s, open: false }))}
+            sx={{ position: "absolute", right: 8, top: 8 }}
+          >
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent dividers>
+          {supplyDetail.loading ? (
+            <Box sx={{ py: 3, textAlign: "center" }}>
+              <CircularProgress size={22} />
+            </Box>
+          ) : supplyDetail.error ? (
+            <Alert severity="error">{supplyDetail.error}</Alert>
+          ) : supplyDetail.rows.length === 0 ? (
+            <Typography sx={{ fontSize: 13, color: "#64748b" }}>No orders for this product.</Typography>
+          ) : (
+            <Stack spacing={0.75}>
+              {supplyDetail.rows.map((row) => (
+                <Box
+                  key={row.order_id}
+                  sx={{
+                    borderBottom: "1px solid #e2e8f0",
+                    pb: 0.75,
+                  }}
+                >
+                  <Typography sx={{ fontSize: 13, fontWeight: 700 }}>
+                    {row.order_id}
+                    {row.customer ? ` · ${row.customer}` : ""}
+                  </Typography>
+                  <Typography sx={{ fontSize: 11, color: "#64748b" }}>
+                    {row.confirmed_for_supply
+                      ? `Confirmed ${fmtInt(row.confirmed_loads)} load${Number(row.confirmed_loads) === 1 ? "" : "s"}`
+                      : `Provisional · ${row.split_state || "unresolved"}`}
+                    {row.supply_interpretation ? ` · ${row.supply_interpretation}` : ""}
+                  </Typography>
+                </Box>
+              ))}
+            </Stack>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Step1MetricDrawer
         open={drawer.open}

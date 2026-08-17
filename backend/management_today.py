@@ -127,9 +127,10 @@ def clear_management_supply_cache(
     org = int(organization_id) if organization_id is not None else None
     day_key = date_et.isoformat() if isinstance(date_et, date) else (str(date_et) if date_et else None)
     for key in list(_SUPPLY_SUMMARY_CACHE):
+        # Phase B keys: (org, date_et, rush_scope); legacy: (org, date_et)
         if org is not None and key[0] != org:
             continue
-        if day_key is not None and key[1] != day_key:
+        if day_key is not None and (len(key) < 2 or key[1] != day_key):
             continue
         _SUPPLY_SUMMARY_CACHE.pop(key, None)
 
@@ -360,43 +361,234 @@ def extract_labor_kpis(
 
 
 def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
-    usage = dict((report or {}).get("usage_by_supply") or {})
-    has_usage = bool(usage)
-    rush_supported = bool((report or {}).get("rush_filtering_supported"))
-    fin = (report or {}).get("split_finalizability") or {}
+    """Normalize Supply summary for Management Rinse WF (Phase B shape)."""
+    report = report or {}
+    usage = dict(report.get("usage_by_supply") or {})
+    products = list(report.get("products") or [])
+    has_usage = bool(usage) or bool(products) or bool(report.get("available"))
+    rush_supported = bool(report.get("rush_filtering_supported"))
+    fin = report.get("split_finalizability") or {}
+    raw_status = (
+        report.get("supply_status")
+        or fin.get("supply_status")
+        or ("FINAL" if report.get("supply_finalizable") else None)
+    )
+    status_u = str(raw_status or "").strip().upper()
+    if status_u in ("FINAL", "FINALIZABLE", "FINALIZED"):
+        supply_status = "FINAL"
+    elif status_u in ("PROVISIONAL", "NOT_FINAL", "NOT-FINAL"):
+        supply_status = "PROVISIONAL"
+    elif report.get("supply_finalizable") is False or fin.get("finalizable") is False:
+        supply_status = "PROVISIONAL"
+    elif has_usage:
+        supply_status = "FINAL"
+    else:
+        supply_status = None
+
+    pending = report.get("pending_split_reviews")
+    if pending is None:
+        pending = int(fin.get("split_pending_count") or 0) + int(
+            fin.get("split_review_count") or 0
+        )
+
     out: dict[str, Any] = {
-        "cost_available": False,
-        "cost": None,
+        "cost_available": bool(report.get("cost_available")),
+        "cost": report.get("cost"),
         "available": has_usage,
         "deferred": False,
         "rush_filtering_supported": rush_supported,
-        "rush_filtering_reason": (report or {}).get("rush_filtering_reason")
+        "rush_filtering_reason": report.get("rush_filtering_reason")
         or (
             None
             if rush_supported
             else "supply_usage_engine_has_no_rush_status"
         ),
-        "scope": "all",
-        "scope_label": "DAY TOTALS",
+        "scope": report.get("scope") or "all",
+        "scope_label": report.get("scope_label") or "DAY TOTALS",
         "supply_finalizable": bool(
-            (report or {}).get("supply_finalizable")
-            if (report or {}).get("supply_finalizable") is not None
+            report.get("supply_finalizable")
+            if report.get("supply_finalizable") is not None
             else fin.get("finalizable", True)
         ),
-        "supply_status": (report or {}).get("supply_status") or fin.get("supply_status"),
-        "supply_banner": (report or {}).get("supply_banner") or fin.get("supply_banner"),
-        "split_pending_count": int(fin.get("split_pending_count") or 0),
-        "split_review_count": int(fin.get("split_review_count") or 0),
+        "supply_status": supply_status,
+        "supply_banner": report.get("supply_banner") or fin.get("supply_banner"),
+        "pending_split_reviews": int(pending or 0),
+        "split_pending_count": int(
+            report.get("split_pending_count")
+            if report.get("split_pending_count") is not None
+            else fin.get("split_pending_count")
+            or 0
+        ),
+        "split_review_count": int(
+            report.get("split_review_count")
+            if report.get("split_review_count") is not None
+            else fin.get("split_review_count")
+            or 0
+        ),
+        "population": dict(report.get("population") or {}),
+        "products": products,
+        "data_source": report.get("data_source"),
+        "price_basis": report.get("price_basis"),
+        "as_of_date_et": report.get("as_of_date_et") or report.get("date_et"),
     }
+    # Legacy brand keys (Tide / Downy / …) for transitional cards / tests.
     for name in ("Tide", "Downy", "OxiClean", "All Free & Clear"):
         row = usage.get(name) or {}
+        card = next(
+            (p for p in products if str(p.get("legacy_report_key") or "") == name),
+            None,
+        )
         ounces = row.get("ounces")
+        if ounces is None and card is not None:
+            ounces = card.get("quantity_used")
         doses = row.get("doses")
+        if doses is None and card is not None:
+            doses = card.get("confirmed_doses")
         out[name] = {
             "ounces": None if ounces is None and not has_usage else float(ounces or 0),
             "doses": None if doses is None and not has_usage else int(doses or 0),
+            "orders_using": (
+                int(
+                    (card or {}).get("orders_using")
+                    or row.get("orders_using")
+                    or row.get("orders")
+                    or 0
+                )
+                if (card is not None or row)
+                else (None if not has_usage else 0)
+            ),
+            "confirmed_loads": (
+                int((card or {}).get("confirmed_loads") or doses or 0)
+                if (card is not None or doses is not None)
+                else (None if not has_usage else 0)
+            ),
+            "quantity_used": (
+                float((card or {}).get("quantity_used") or ounces or 0)
+                if (card is not None or ounces is not None)
+                else (None if not has_usage else 0.0)
+            ),
+            "estimated_cost": (
+                card.get("estimated_cost")
+                if card is not None
+                else row.get("estimated_cost")
+            ),
         }
     return out
+
+
+def _deferred_supplies_stub() -> dict[str, Any]:
+    out = extract_supplies(None)
+    out["deferred"] = True
+    out["available"] = False
+    out["rush_filtering_supported"] = True
+    out["rush_filtering_reason"] = None
+    out["scope"] = "all"
+    out["scope_label"] = "ALL"
+    out["products"] = []
+    return out
+
+
+def _load_supplies(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    rush_scope: str = "all",
+    bypass_cache: bool = False,
+) -> dict[str, Any]:
+    """Management WF Supply summary — membership-scoped, rush-aware, Product Master cost."""
+    from backend.management_rinse_wf_supplies import (
+        build_management_wf_supply_summary,
+        normalize_rush_scope,
+    )
+
+    org = int(organization_id)
+    day = selected_date_et
+    scope = normalize_rush_scope(rush_scope)
+    cache_key = (org, day.isoformat(), scope)
+    is_live = day == business_today()
+    ttl = _SUPPLY_SUMMARY_TTL_LIVE_SEC if is_live else _SUPPLY_SUMMARY_TTL_CLOSED_SEC
+    now_mono = time.monotonic()
+    if bypass_cache:
+        clear_management_supply_cache(org, day)
+    else:
+        cached = _SUPPLY_SUMMARY_CACHE.get(cache_key)
+        if cached and (now_mono - cached[0]) < ttl:
+            out = dict(cached[1])
+            out["cached"] = True
+            out["deferred"] = False
+            return out
+
+    started = time.perf_counter()
+    summary = build_management_wf_supply_summary(
+        cursor, org, day, rush_scope=scope
+    )
+    out = extract_supplies(summary)
+    out["deferred"] = False
+    out["cached"] = False
+    out["scope"] = scope
+    out["scope_label"] = summary.get("scope_label") or scope.upper()
+    out["elapsed_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
+    _SUPPLY_SUMMARY_CACHE[cache_key] = (time.monotonic(), dict(out))
+    return out
+
+
+def build_management_supply_summary(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    rush_scope: str = "all",
+    bypass_cache: bool = False,
+) -> dict[str, Any]:
+    """Dedicated Supply summary for async Rinse WF section."""
+    counting = cursor if isinstance(cursor, CountingCursor) else CountingCursor(cursor)
+    supplies = _load_supplies(
+        counting,
+        int(organization_id),
+        selected_date_et,
+        rush_scope=rush_scope,
+        bypass_cache=bypass_cache,
+    )
+    return {
+        "date_et": selected_date_et.isoformat(),
+        "rush": supplies.get("scope") or "all",
+        "supplies": supplies,
+        "_meta": {
+            "elapsed_ms": supplies.get("elapsed_ms"),
+            "query_count": int(getattr(counting, "query_count", 0)),
+            "cached": bool(supplies.get("cached")),
+            "source": "management_wf_supplies_phase_b",
+        },
+    }
+
+
+def build_management_supply_detail(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    rush_scope: str = "all",
+    product_id: int | None = None,
+    legacy_report_key: str | None = None,
+) -> dict[str, Any]:
+    """Lazy product order detail — not part of WF core / summary path."""
+    from backend.management_rinse_wf_supplies import build_management_wf_supply_detail
+
+    counting = cursor if isinstance(cursor, CountingCursor) else CountingCursor(cursor)
+    detail = build_management_wf_supply_detail(
+        counting,
+        int(organization_id),
+        selected_date_et,
+        rush_scope=rush_scope,
+        product_id=product_id,
+        legacy_report_key=legacy_report_key,
+    )
+    detail["_meta"] = {
+        "query_count": int(getattr(counting, "query_count", 0)),
+        "source": "management_wf_supplies_detail_phase_b",
+    }
+    return detail
 
 
 def _int_or_zero(value: Any) -> int:
@@ -973,83 +1165,6 @@ def _load_labor_segments(cursor, organization_id: int, selected_date_et: date) -
         (int(organization_id), day_end, day_start),
     )
     return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
-
-
-def _deferred_supplies_stub() -> dict[str, Any]:
-    """Core WF payload never blocks on Supply Usage. UI loads supplies async."""
-    out = extract_supplies(None)
-    out["deferred"] = True
-    out["available"] = False
-    out["rush_filtering_supported"] = False
-    out["rush_filtering_reason"] = "supply_usage_engine_has_no_rush_status"
-    out["scope"] = "all"
-    out["scope_label"] = "DAY TOTALS"
-    return out
-
-
-def _load_supplies(
-    cursor,
-    organization_id: int,
-    selected_date_et: date,
-    *,
-    bypass_cache: bool = False,
-) -> dict[str, Any]:
-    """Summary-only Supply Usage scalars (no order rows). Cached separately.
-
-    Rush filtering is not supported by the authoritative Supply Usage engine.
-    """
-    org = int(organization_id)
-    day = selected_date_et
-    cache_key = (org, day.isoformat())
-    is_live = day == business_today()
-    ttl = _SUPPLY_SUMMARY_TTL_LIVE_SEC if is_live else _SUPPLY_SUMMARY_TTL_CLOSED_SEC
-    now_mono = time.monotonic()
-    if bypass_cache:
-        clear_management_supply_cache(org, day)
-    elif not bypass_cache:
-        cached = _SUPPLY_SUMMARY_CACHE.get(cache_key)
-        if cached and (now_mono - cached[0]) < ttl:
-            out = dict(cached[1])
-            out["cached"] = True
-            out["deferred"] = False
-            return out
-
-    started = time.perf_counter()
-    from backend.supply_usage import build_supply_usage_summary
-
-    summary = build_supply_usage_summary(cursor, org, day)
-    out = extract_supplies(summary)
-    out["deferred"] = False
-    out["cached"] = False
-    out["scope"] = "all"
-    out["scope_label"] = "DAY TOTALS"
-    out["elapsed_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
-    _SUPPLY_SUMMARY_CACHE[cache_key] = (time.monotonic(), dict(out))
-    return out
-
-
-def build_management_supply_summary(
-    cursor,
-    organization_id: int,
-    selected_date_et: date,
-    *,
-    bypass_cache: bool = False,
-) -> dict[str, Any]:
-    """Dedicated Supply summary for async Rinse WF section."""
-    counting = cursor if isinstance(cursor, CountingCursor) else CountingCursor(cursor)
-    supplies = _load_supplies(
-        counting, int(organization_id), selected_date_et, bypass_cache=bypass_cache
-    )
-    return {
-        "date_et": selected_date_et.isoformat(),
-        "supplies": supplies,
-        "_meta": {
-            "elapsed_ms": supplies.get("elapsed_ms"),
-            "query_count": int(getattr(counting, "query_count", 0)),
-            "cached": bool(supplies.get("cached")),
-            "source": "supply_usage_summary_no_order_rows",
-        },
-    }
 
 
 def _extract_rinse_wf_only(

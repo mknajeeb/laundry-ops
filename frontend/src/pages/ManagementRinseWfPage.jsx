@@ -53,6 +53,7 @@ export default function ManagementRinseWfPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [rushFilter, setRushFilter] = useState("all");
   const [supplies, setSupplies] = useState(null);
   const [suppliesLoading, setSuppliesLoading] = useState(false);
   const [suppliesError, setSuppliesError] = useState("");
@@ -61,7 +62,7 @@ export default function ManagementRinseWfPage() {
   const coreAbortRef = useRef(null);
   const supplyAbortRef = useRef(null);
 
-  const loadSupplies = useCallback(async (day, refresh = false) => {
+  const loadSupplies = useCallback(async (day, { refresh = false, rush = "all" } = {}) => {
     if (supplyAbortRef.current) supplyAbortRef.current.abort();
     const controller = new AbortController();
     supplyAbortRef.current = controller;
@@ -71,6 +72,7 @@ export default function ManagementRinseWfPage() {
     try {
       const res = await getManagementTodaySupplies(day, {
         refresh: refresh ? 1 : undefined,
+        rush,
         signal: controller.signal,
       });
       if (seq !== supplySeq.current || controller.signal.aborted) return;
@@ -112,20 +114,27 @@ export default function ManagementRinseWfPage() {
     }
   }, []);
 
-  const load = useCallback(async (day, refresh = false) => {
+  const load = useCallback(async (day, refresh = false, rush = rushFilter) => {
     // Core and supplies refresh independently; do not block core on supply.
     const corePromise = loadCore(day, refresh);
-    const supplyPromise = loadSupplies(day, refresh);
+    const supplyPromise = loadSupplies(day, { refresh, rush });
     await Promise.allSettled([corePromise, supplyPromise]);
-  }, [loadCore, loadSupplies]);
+  }, [loadCore, loadSupplies, rushFilter]);
 
   useEffect(() => {
-    load(dateEt, false);
+    load(dateEt, false, rushFilter);
     return () => {
       if (coreAbortRef.current) coreAbortRef.current.abort();
       if (supplyAbortRef.current) supplyAbortRef.current.abort();
     };
-  }, [dateEt, load]);
+    // Initial + date change only — rush handled separately to avoid double core fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateEt]);
+
+  const onRushFilterChange = useCallback((next) => {
+    setRushFilter(next);
+    loadSupplies(dateEt, { rush: next });
+  }, [dateEt, loadSupplies]);
 
   const refreshedLabel = useMemo(() => {
     if (!data?.generated_at_et) return "";
@@ -169,7 +178,7 @@ export default function ManagementRinseWfPage() {
           />
           <IconButton
             aria-label="Refresh"
-            onClick={() => load(dateEt, true)}
+            onClick={() => load(dateEt, true, rushFilter)}
             disabled={loading && suppliesLoading}
             size="small"
           >
@@ -187,9 +196,11 @@ export default function ManagementRinseWfPage() {
           supplies={supplies}
           suppliesLoading={suppliesLoading}
           suppliesError={suppliesError}
-          onRetrySupplies={() => loadSupplies(dateEt, true)}
+          onRetrySupplies={() => loadSupplies(dateEt, { refresh: true, rush: rushFilter })}
+          rushFilter={rushFilter}
+          onRushFilterChange={onRushFilterChange}
           selectedDateEt={dateEt}
-          onRefresh={() => load(dateEt, true)}
+          onRefresh={() => load(dateEt, true, rushFilter)}
         />
       ) : loading ? (
         <Box sx={{ py: 4, textAlign: "center" }}>
