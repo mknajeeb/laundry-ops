@@ -18,7 +18,6 @@ import {
 import {
   getManagementRinseWfReviewDetail,
   getManagementRinseWfReviewScans,
-  postManagementRinseWfSplitDecision,
 } from "../../api";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import EditBagPanel from "../shift/EditBagPanel";
@@ -122,14 +121,11 @@ export default function ManagementRinseWfReviewModal({
     scans: [],
     meta: null,
   });
-  const [splitSaving, setSplitSaving] = useState(false);
-  const [splitMsg, setSplitMsg] = useState("");
 
   useEffect(() => {
     if (!open || !bagId || !selectedDateEt) {
       setDetail(null);
       setError("");
-      setSplitMsg("");
       setScansState({ loading: false, error: "", scans: [], meta: null });
       return undefined;
     }
@@ -215,66 +211,21 @@ export default function ManagementRinseWfReviewModal({
   const catalog = Array.isArray(detail?.active_bulk_workitems)
     ? detail.active_bulk_workitems
     : [];
-  const isSplitReview =
-    bag?.review_category === "split_order_review"
-    || bag?.split_state === "REVIEW_REQUIRED";
 
-  const saveSplitDecision = async (decision) => {
-    if (!bagId || !selectedDateEt || readOnly) return;
-    setSplitSaving(true);
-    setSplitMsg("");
-    try {
-      const res = await postManagementRinseWfSplitDecision(selectedDateEt, bagId, {
-        decision,
-      });
-      if (res?.data?.ok === false) {
-        setSplitMsg(res.data.error || "Save failed");
-      } else {
-        setSplitMsg(decision === "split" ? "Marked as Split" : "Marked as Not Split");
-        onSaved?.();
-        onClose?.();
-      }
-    } catch (err) {
-      setSplitMsg(err?.response?.data?.error || err?.message || "Save failed");
-    } finally {
-      setSplitSaving(false);
-    }
-  };
-
+  // Split Order Review resolves in the drawer only — never via this modal.
+  // Specialty / Missing may still show incidental split facts as read-only context.
   const scansSection = (
     <>
-      {(isSplitReview || bag?.split_state || bag?.canonical_split_evaluation) ? (
+      {(bag?.split_state || bag?.canonical_split_evaluation || bag?.split_marker_present != null) ? (
         <Section title="Split evidence">
           <Typography sx={{ fontSize: 13, mb: 0.35 }}>
             Marker: {bag.split_marker_present ? "Yes" : "No"}
             {bag.washer_load_count != null ? ` · Washer loads: ${bag.washer_load_count}` : ""}
             {bag.split_state ? ` · State: ${bag.split_state}` : ""}
           </Typography>
-          {!readOnly && isSplitReview ? (
-            <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-              <Button
-                variant="contained"
-                disabled={splitSaving}
-                onClick={() => saveSplitDecision("split")}
-                sx={{ textTransform: "none", fontWeight: 700 }}
-              >
-                Mark as Split
-              </Button>
-              <Button
-                variant="outlined"
-                disabled={splitSaving}
-                onClick={() => saveSplitDecision("not_split")}
-                sx={{ textTransform: "none", fontWeight: 700 }}
-              >
-                Mark as Not Split
-              </Button>
-            </Stack>
-          ) : null}
-          {splitMsg ? (
-            <Alert severity="info" sx={{ mt: 1, py: 0.25 }}>
-              {splitMsg}
-            </Alert>
-          ) : null}
+          <Typography sx={{ fontSize: 12, color: "#64748b", mt: 0.5 }}>
+            Split decisions are made in Split Order Review (drawer), not here.
+          </Typography>
         </Section>
       ) : null}
       {detail?.portal_evidence ? (

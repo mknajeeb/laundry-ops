@@ -1,15 +1,20 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Box,
   Button,
   CircularProgress,
+  Collapse,
   Divider,
   Drawer,
+  Popover,
   Stack,
   Typography,
 } from "@mui/material";
-import { getManagementRinseWfReviewList } from "../../api";
+import {
+  getManagementRinseWfReviewList,
+  postManagementRinseWfSplitDecision,
+} from "../../api";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import ManagementCopyableId from "./ManagementCopyableId";
 import ManagementRinseWfReviewModal from "./ManagementRinseWfReviewModal";
@@ -23,9 +28,153 @@ function fmtTime(v) {
   }
 }
 
+function rushLabel(flag) {
+  const raw = String(flag || "").trim().toLowerCase();
+  if (!raw || raw === "non-rush" || raw === "non_rush" || raw === "nonrush") {
+    return "Non-Rush";
+  }
+  if (raw === "rush" || raw.includes("rush")) return "Rush";
+  return String(flag);
+}
+
+function washerRacksText(racks) {
+  if (Array.isArray(racks) && racks.length) {
+    return racks.filter(Boolean).join(", ");
+  }
+  if (typeof racks === "string" && racks.trim()) return racks.trim();
+  return null;
+}
+
+function evidenceSummaryLine(bag) {
+  const marker = bag.split_marker_present ? "YES" : "NO";
+  const loads =
+    bag.washer_load_count != null
+      ? `${bag.washer_load_count} washer load${bag.washer_load_count === 1 ? "" : "s"}`
+      : null;
+  const racks = washerRacksText(bag.washer_racks);
+  const closeEv = bag.close_event_purpose
+    ? `wash-close ${bag.close_event_purpose}`
+    : null;
+  const when = fmtTime(bag.relevant_time);
+  return [
+    `Marker ${marker}`,
+    loads,
+    racks ? `washers ${racks}` : null,
+    closeEv,
+    when,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 /**
- * Dedicated REVIEW working queue — Specialty Items vs Missing From Portal.
- * List is lightweight; REVIEW opens one-bag modal (detail on demand).
+ * Split Order Review row — drawer-only binary decision (no Review modal).
+ */
+function SplitOrderReviewRow({
+  bag,
+  readOnly,
+  busyBagId,
+  onRequestDecision,
+  perfHint,
+}) {
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const saving = busyBagId === bag.bag_id;
+
+  return (
+    <Box sx={{ py: 1.1 }} data-testid="split-order-review-row">
+      <Typography sx={{ fontWeight: 800, fontSize: 14, color: "#0f172a" }}>
+        {bag.customer_name || "—"}
+      </Typography>
+      <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.15 }} flexWrap="wrap">
+        <ManagementCopyableId value={bag.bag_id} fontSize={13} fontWeight={700} />
+        <Typography sx={{ fontSize: 12, color: "#64748b" }}>
+          · {rushLabel(bag.rush_flag)}
+        </Typography>
+      </Stack>
+      <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#334155", mt: 0.45 }}>
+        {bag.short_reason || "Split order review"}
+      </Typography>
+      <Typography sx={{ fontSize: 12, color: "#64748b", mt: 0.25 }}>
+        {evidenceSummaryLine(bag)}
+      </Typography>
+
+      {!readOnly ? (
+        <Stack direction="row" spacing={1} sx={{ mt: 0.9 }} flexWrap="wrap" useFlexGap>
+          <Button
+            size="small"
+            variant="contained"
+            disabled={!!busyBagId}
+            onClick={(e) => onRequestDecision(e, bag, "split")}
+            sx={{ textTransform: "none", fontWeight: 800, letterSpacing: 0.3 }}
+          >
+            {saving ? "Saving…" : "MARK SPLIT"}
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            disabled={!!busyBagId}
+            onClick={(e) => onRequestDecision(e, bag, "not_split")}
+            sx={{ textTransform: "none", fontWeight: 800, letterSpacing: 0.3 }}
+          >
+            MARK NOT SPLIT
+          </Button>
+        </Stack>
+      ) : (
+        <Typography sx={{ mt: 0.75, fontSize: 12, color: "#94a3b8" }}>
+          Day closed — read only
+        </Typography>
+      )}
+
+      <Button
+        size="small"
+        onClick={() => setEvidenceOpen((v) => !v)}
+        sx={{ mt: 0.5, px: 0, minWidth: 0, textTransform: "none", fontSize: 12, color: "#64748b" }}
+      >
+        {evidenceOpen ? "Hide evidence" : "VIEW EVIDENCE"}
+      </Button>
+      <Collapse in={evidenceOpen}>
+        <Box
+          sx={{
+            mt: 0.5,
+            mb: 0.25,
+            p: 1,
+            bgcolor: "#f8fafc",
+            borderRadius: 1,
+            border: "1px solid #e2e8f0",
+          }}
+        >
+          <Typography sx={{ fontSize: 12, color: "#475569" }}>
+            Split marker: {bag.split_marker_present ? "YES" : "NO"}
+          </Typography>
+          <Typography sx={{ fontSize: 12, color: "#475569" }}>
+            Washer loads: {bag.washer_load_count != null ? bag.washer_load_count : "—"}
+            {washerRacksText(bag.washer_racks)
+              ? ` · ${washerRacksText(bag.washer_racks)}`
+              : ""}
+          </Typography>
+          <Typography sx={{ fontSize: 12, color: "#475569" }}>
+            Wash-close: {bag.close_event_purpose || "—"}
+            {fmtTime(bag.relevant_time) ? ` · ${fmtTime(bag.relevant_time)}` : ""}
+          </Typography>
+          {bag.split_state ? (
+            <Typography sx={{ fontSize: 12, color: "#94a3b8", mt: 0.35 }}>
+              State: {bag.split_state}
+              {bag.review_reason ? ` · ${bag.review_reason}` : ""}
+            </Typography>
+          ) : null}
+          {perfHint ? (
+            <Typography sx={{ fontSize: 10, color: "#94a3b8", mt: 0.5 }}>{perfHint}</Typography>
+          ) : null}
+        </Box>
+      </Collapse>
+    </Box>
+  );
+}
+
+/**
+ * Dedicated REVIEW working queue — Specialty Items vs Missing From Portal vs Split Order Review.
+ * Specialty / Missing: list is lightweight; REVIEW opens one-bag modal (detail on demand).
+ * Split Order Review: drawer-only MARK SPLIT / MARK NOT SPLIT (no generic WF Review modal).
  */
 export default function ManagementRinseWfReviewSection({
   selectedDateEt,
@@ -46,10 +195,24 @@ export default function ManagementRinseWfReviewSection({
     meta: null,
   });
   const [modal, setModal] = useState({ open: false, bagId: null, seed: null });
+  const [confirm, setConfirm] = useState({
+    anchorEl: null,
+    bag: null,
+    decision: null,
+  });
+  const [busyBagId, setBusyBagId] = useState(null);
+  const [decisionMsg, setDecisionMsg] = useState("");
+  const [perf, setPerf] = useState({
+    drawerOpenMs: null,
+    lastDecisionSaveMs: null,
+    lastDecisionRequests: null,
+  });
+  const drawerOpenStarted = useRef(null);
 
   const loadList = useCallback(
     async (category) => {
       if (!selectedDateEt || !category) return;
+      const t0 = performance.now();
       setListState({ loading: true, error: "", bags: [], meta: null });
       try {
         const res = await getManagementRinseWfReviewList(selectedDateEt, {
@@ -59,11 +222,24 @@ export default function ManagementRinseWfReviewSection({
           page_size: 50,
         });
         const data = res?.data || {};
+        const clientMs = Math.round(performance.now() - t0);
+        const serverMs = data._meta?.elapsed_ms;
+        if (category === "split_order_review" && drawerOpenStarted.current != null) {
+          setPerf((p) => ({
+            ...p,
+            drawerOpenMs: Math.round(performance.now() - drawerOpenStarted.current),
+          }));
+          drawerOpenStarted.current = null;
+        }
         setListState({
           loading: false,
           error: data.ok === false ? data.message || data.error || "Failed to load" : "",
           bags: Array.isArray(data.bags) ? data.bags : [],
-          meta: data._meta || null,
+          meta: {
+            ...(data._meta || {}),
+            client_elapsed_ms: clientMs,
+            server_elapsed_ms: serverMs,
+          },
         });
       } catch (err) {
         setListState({
@@ -85,12 +261,18 @@ export default function ManagementRinseWfReviewSection({
 
   const openCategory = (category) => {
     if (snapshotUnavailable) return;
+    if (category === "split_order_review") {
+      drawerOpenStarted.current = performance.now();
+    }
+    setDecisionMsg("");
     setDrawer({ open: true, category });
   };
 
   const closeDrawer = () => {
     setDrawer({ open: false, category: null });
     setListState({ loading: false, error: "", bags: [], meta: null });
+    setConfirm({ anchorEl: null, bag: null, decision: null });
+    setDecisionMsg("");
   };
 
   const title =
@@ -99,6 +281,67 @@ export default function ManagementRinseWfReviewSection({
       : drawer.category === "split_order_review"
         ? "Split Order Review"
         : "Specialty Items";
+
+  const isSplitDrawer = drawer.category === "split_order_review";
+
+  const requestDecision = (event, bag, decision) => {
+    if (readOnly || busyBagId) return;
+    setConfirm({
+      anchorEl: event.currentTarget,
+      bag,
+      decision,
+    });
+  };
+
+  const closeConfirm = () => {
+    if (busyBagId) return;
+    setConfirm({ anchorEl: null, bag: null, decision: null });
+  };
+
+  const executeDecision = async () => {
+    const bag = confirm.bag;
+    const decision = confirm.decision;
+    if (!bag?.bag_id || !decision || !selectedDateEt || readOnly) return;
+    const t0 = performance.now();
+    setBusyBagId(bag.bag_id);
+    setDecisionMsg("");
+    try {
+      const res = await postManagementRinseWfSplitDecision(selectedDateEt, bag.bag_id, {
+        decision,
+      });
+      if (res?.data?.ok === false) {
+        setDecisionMsg(res.data.error || "Save failed");
+        return;
+      }
+      const saveMs = Math.round(performance.now() - t0);
+      // 1 POST + list reload + parent refresh (WF headline / supplies invalidate)
+      setPerf((p) => ({
+        ...p,
+        lastDecisionSaveMs: saveMs,
+        lastDecisionRequests: 3,
+      }));
+      setConfirm({ anchorEl: null, bag: null, decision: null });
+      setDecisionMsg(
+        decision === "split"
+          ? `Marked ${bag.bag_id} as Split`
+          : `Marked ${bag.bag_id} as Not Split`,
+      );
+      // Optimistic remove from queue
+      setListState((prev) => ({
+        ...prev,
+        bags: (prev.bags || []).filter((b) => b.bag_id !== bag.bag_id),
+      }));
+      onRefresh?.();
+      await loadList("split_order_review");
+    } catch (err) {
+      setDecisionMsg(err?.response?.data?.error || err?.message || "Save failed");
+    } finally {
+      setBusyBagId(null);
+    }
+  };
+
+  const confirmOpen = Boolean(confirm.anchorEl);
+  const confirmIsSplit = confirm.decision === "split";
 
   return (
     <Box sx={{ mt: 0.5, mb: 1.5 }}>
@@ -192,7 +435,7 @@ export default function ManagementRinseWfReviewSection({
         anchor="right"
         open={drawer.open}
         onClose={closeDrawer}
-        PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, p: 0 } }}
+        PaperProps={{ sx: { width: { xs: "100%", sm: isSplitDrawer ? 440 : 420 }, p: 0 } }}
       >
         <Box sx={{ p: 1.5 }}>
           <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
@@ -206,9 +449,14 @@ export default function ManagementRinseWfReviewSection({
               Data / evidence exception — not an automatic employee quality issue.
             </Alert>
           ) : null}
-          {drawer.category === "split_order_review" ? (
+          {isSplitDrawer ? (
             <Alert severity="info" sx={{ mb: 1, py: 0.5 }}>
-              Marker / washer-load contradiction — mark as Split or Not Split.
+              Marker / washer-load contradiction — mark as Split or Not Split. Affects Supply.
+            </Alert>
+          ) : null}
+          {decisionMsg ? (
+            <Alert severity="success" sx={{ mb: 1, py: 0.5 }} onClose={() => setDecisionMsg("")}>
+              {decisionMsg}
             </Alert>
           ) : null}
           {listState.loading ? (
@@ -223,56 +471,115 @@ export default function ManagementRinseWfReviewSection({
             </Typography>
           ) : (
             <Stack spacing={0} divider={<Divider />}>
-              {listState.bags.map((bag) => (
-                <Box key={bag.bag_id} sx={{ py: 1.1 }}>
-                  <Typography sx={{ fontWeight: 800, fontSize: 14, color: "#0f172a" }}>
-                    {bag.customer_name || "—"}
-                  </Typography>
-                  <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.15 }}>
-                    <ManagementCopyableId value={bag.bag_id} fontSize={13} fontWeight={700} />
-                    {bag.rush_flag ? (
-                      <Typography sx={{ fontSize: 12, color: "#64748b" }}>
-                        · {bag.rush_flag}
-                      </Typography>
-                    ) : null}
-                  </Stack>
-                  <Typography sx={{ fontSize: 12, color: "#64748b", mt: 0.25 }}>
-                    {bag.short_reason || title}
-                    {bag.specialty_summary ? ` · ${bag.specialty_summary}` : ""}
-                    {bag.washer_load_count != null
-                      ? ` · ${bag.washer_load_count} washer load${bag.washer_load_count === 1 ? "" : "s"}`
-                      : ""}
-                    {bag.split_marker_present ? " · marker" : ""}
-                  </Typography>
-                  <Typography sx={{ fontSize: 12, color: "#94a3b8" }}>
-                    {[bag.employee, fmtTime(bag.relevant_time)].filter(Boolean).join(" · ") || "—"}
-                  </Typography>
-                  <Button
-                    size="small"
-                    variant="contained"
-                    onClick={() =>
-                      setModal({ open: true, bagId: bag.bag_id, seed: bag })
+              {listState.bags.map((bag) =>
+                isSplitDrawer ? (
+                  <SplitOrderReviewRow
+                    key={bag.bag_id}
+                    bag={bag}
+                    readOnly={readOnly}
+                    busyBagId={busyBagId}
+                    onRequestDecision={requestDecision}
+                    perfHint={
+                      perf.lastDecisionSaveMs != null && busyBagId == null
+                        ? `Last save ${perf.lastDecisionSaveMs} ms · ${perf.lastDecisionRequests} requests`
+                        : null
                     }
-                    sx={{ mt: 0.75, textTransform: "none", fontWeight: 700 }}
-                  >
-                    Review
-                  </Button>
-                </Box>
-              ))}
+                  />
+                ) : (
+                  <Box key={bag.bag_id} sx={{ py: 1.1 }}>
+                    <Typography sx={{ fontWeight: 800, fontSize: 14, color: "#0f172a" }}>
+                      {bag.customer_name || "—"}
+                    </Typography>
+                    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.15 }}>
+                      <ManagementCopyableId value={bag.bag_id} fontSize={13} fontWeight={700} />
+                      {bag.rush_flag ? (
+                        <Typography sx={{ fontSize: 12, color: "#64748b" }}>
+                          · {bag.rush_flag}
+                        </Typography>
+                      ) : null}
+                    </Stack>
+                    <Typography sx={{ fontSize: 12, color: "#64748b", mt: 0.25 }}>
+                      {bag.short_reason || title}
+                      {bag.specialty_summary ? ` · ${bag.specialty_summary}` : ""}
+                    </Typography>
+                    <Typography sx={{ fontSize: 12, color: "#94a3b8" }}>
+                      {[bag.employee, fmtTime(bag.relevant_time)].filter(Boolean).join(" · ") ||
+                        "—"}
+                    </Typography>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      onClick={() => setModal({ open: true, bagId: bag.bag_id, seed: bag })}
+                      sx={{ mt: 0.75, textTransform: "none", fontWeight: 700 }}
+                    >
+                      Review
+                    </Button>
+                  </Box>
+                ),
+              )}
             </Stack>
           )}
-          {listState.meta?.elapsed_ms != null ? (
+          {listState.meta?.elapsed_ms != null || perf.drawerOpenMs != null ? (
             <Typography sx={{ mt: 1.5, fontSize: 10, color: "#94a3b8" }}>
-              List {listState.meta.elapsed_ms} ms
-              {listState.meta.scans_loaded ? " · scans loaded" : " · no scans"}
-              {listState.meta.query_count != null
+              {isSplitDrawer && perf.drawerOpenMs != null
+                ? `Drawer open ${perf.drawerOpenMs} ms`
+                : null}
+              {listState.meta?.elapsed_ms != null
+                ? `${isSplitDrawer && perf.drawerOpenMs != null ? " · " : ""}List ${listState.meta.elapsed_ms} ms`
+                : ""}
+              {listState.meta?.scans_loaded ? " · scans loaded" : " · no scans"}
+              {listState.meta?.query_count != null
                 ? ` · ${listState.meta.query_count} queries`
+                : ""}
+              {perf.lastDecisionSaveMs != null
+                ? ` · last decision ${perf.lastDecisionSaveMs} ms / ${perf.lastDecisionRequests} req`
                 : ""}
             </Typography>
           ) : null}
         </Box>
       </Drawer>
 
+      <Popover
+        open={confirmOpen}
+        anchorEl={confirm.anchorEl}
+        onClose={closeConfirm}
+        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+        transformOrigin={{ vertical: "top", horizontal: "left" }}
+        slotProps={{ paper: { sx: { p: 1.25, maxWidth: 280 } } }}
+      >
+        <Typography sx={{ fontSize: 13, fontWeight: 700, mb: 1 }}>
+          {confirmIsSplit ? "Mark this order as Split?" : "Mark this order as Not Split?"}
+        </Typography>
+        <Typography sx={{ fontSize: 11, color: "#64748b", mb: 1.25 }}>
+          Affects Supply dosing. {confirm.bag?.bag_id}
+        </Typography>
+        <Stack direction="row" spacing={1} justifyContent="flex-end">
+          <Button
+            size="small"
+            disabled={!!busyBagId}
+            onClick={closeConfirm}
+            sx={{ textTransform: "none" }}
+          >
+            CANCEL
+          </Button>
+          <Button
+            size="small"
+            variant="contained"
+            color={confirmIsSplit ? "primary" : "inherit"}
+            disabled={!!busyBagId}
+            onClick={executeDecision}
+            sx={{ textTransform: "none", fontWeight: 800 }}
+          >
+            {busyBagId
+              ? "Saving…"
+              : confirmIsSplit
+                ? "MARK SPLIT"
+                : "MARK NOT SPLIT"}
+          </Button>
+        </Stack>
+      </Popover>
+
+      {/* Specialty / Missing only — Split Order Review never opens this modal */}
       <ManagementRinseWfReviewModal
         open={modal.open}
         bagId={modal.bagId}
@@ -282,7 +589,9 @@ export default function ManagementRinseWfReviewSection({
         onClose={() => setModal({ open: false, bagId: null, seed: null })}
         onSaved={() => {
           onRefresh?.();
-          if (drawer.category) loadList(drawer.category);
+          if (drawer.category && drawer.category !== "split_order_review") {
+            loadList(drawer.category);
+          }
         }}
       />
     </Box>
