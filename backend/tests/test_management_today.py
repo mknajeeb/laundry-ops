@@ -322,6 +322,35 @@ def test_review_splits_specialty_vs_portal_from_reason_codes():
     assert review["missing_from_portal"] == 1
 
 
+def test_extract_review_never_inflates_specialty_from_day_hd_count():
+    """Day-level review_required_count may be HD-only; Specialty Items must stay 0."""
+    headline = {
+        "exceptions": {"review_required": 9},
+        "review_reasons_by_bag": {},
+        "review_by_reason": {},
+        "segments": {
+            "wf": {
+                "exceptions": {"review_required": 0},
+                "bag_ids": {"review_required": []},
+            },
+            "hd": {
+                "exceptions": {"review_required": 9},
+                "bag_ids": {
+                    "review_required": [
+                        "0NKNPZKKOL",
+                        "1PIIWYNNDP",
+                        "2MBRGFIB8C",
+                    ]
+                },
+            },
+        },
+    }
+    review = extract_review({"review_required_count": 9}, headline)
+    assert review["specialty_items"] == 0
+    assert review["missing_from_portal"] == 0
+    assert review["review_required"] == 0
+
+
 def test_compact_payload_uses_upstream_builders_and_strips_collections():
     clear_management_today_cache()
     day = date(2026, 8, 15)
@@ -436,10 +465,12 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
     assert payload["supplies"]["deferred"] is True
     assert payload["supplies"]["available"] is False
     assert payload["review"]["split_available"] is True
-    # Fixture day_rec count=5; short bag_ids in headline are not usable → all → specialty.
-    assert payload["review"]["review_required"] == 5
-    assert payload["review"]["specialty_items"] == 5
+    # Short fixture bag IDs are not valid membership tokens; specialty must stay 0
+    # (never invent specialty_items from day-level review_required_count / HD).
+    assert payload["review"]["review_required"] == 0
+    assert payload["review"]["specialty_items"] == 0
     assert payload["review"]["missing_from_portal"] == 0
+    assert payload["review"]["by_rush"]["all"]["specialty_items"] == 0
     rinse = payload["rinse"]
     assert rinse["segments"]["wf"]["total_workload"] == 97
     assert rinse["segments"]["wf"]["completed"] == 70

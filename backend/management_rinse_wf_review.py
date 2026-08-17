@@ -272,6 +272,109 @@ def split_review_categories(
     }
 
 
+def specialty_review_membership_ids(
+    headline: Mapping[str, Any] | None,
+) -> list[str]:
+    """Canonical unresolved Specialty Review bag IDs (summary + drawer share this)."""
+    return list(split_review_categories(headline).get(CATEGORY_SPECIALTY) or [])
+
+
+def review_category_count_payload(
+    headline: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Scalar Review counts from the same membership as the Specialty drawer list.
+
+    Never invent specialty_items from day-level review_required_count (that total
+    includes HD and bags without specialty reason codes).
+    """
+    split = split_review_categories(headline)
+    counts = split["counts"]
+    return {
+        "split_available": True,
+        "review_required": int(counts.get("review_required") or 0),
+        "specialty_items": int(counts.get(CATEGORY_SPECIALTY) or 0),
+        "missing_from_portal": int(counts.get(CATEGORY_MISSING_PORTAL) or 0),
+        "split_order_review": int(counts.get(CATEGORY_SPLIT_ORDER) or 0),
+        "reason_category_map": split["reason_category_map"],
+        "precedence": split["precedence"],
+        "employee_performance_hint": split["employee_performance_hint"],
+        "_membership": {
+            CATEGORY_SPECIALTY: list(split.get(CATEGORY_SPECIALTY) or []),
+            CATEGORY_MISSING_PORTAL: list(split.get(CATEGORY_MISSING_PORTAL) or []),
+            CATEGORY_SPLIT_ORDER: list(split.get(CATEGORY_SPLIT_ORDER) or []),
+        },
+    }
+
+
+def _bag_is_rush(row: Mapping[str, Any] | None) -> bool:
+    snap = (row or {}).get("bag_snapshot") or {}
+    flag = str(
+        snap.get("rush_flag") or (row or {}).get("rush_status") or ""
+    ).strip().upper()
+    return flag in ("RUSH", "1", "TRUE", "YES")
+
+
+def enrich_review_counts_by_rush(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    headline: Mapping[str, Any] | None,
+    base: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Attach by_rush scalars using the same membership + day-bag rush flags as the list."""
+    from backend.rinse_veewash_shift_day import load_day_bags_by_ids
+
+    out = dict(base or {})
+    membership = dict(out.pop("_membership", None) or {})
+    if not membership:
+        membership = dict(
+            (review_category_count_payload(headline).get("_membership") or {})
+        )
+    specialty = list(membership.get(CATEGORY_SPECIALTY) or [])
+    missing = list(membership.get(CATEGORY_MISSING_PORTAL) or [])
+    split_ids = list(membership.get(CATEGORY_SPLIT_ORDER) or [])
+    all_ids = list(dict.fromkeys([*specialty, *missing, *split_ids]))
+    rush_ids: set[str] = set()
+    non_rush_ids: set[str] = set()
+    if all_ids:
+        rows = load_day_bags_by_ids(
+            cursor, organization_id, selected_date_et, all_ids, status_only=False
+        )
+        for row in rows:
+            bid = normalize_bag_id(row.get("bag_id"))
+            if not bid:
+                continue
+            if _bag_is_rush(row):
+                rush_ids.add(bid)
+            else:
+                non_rush_ids.add(bid)
+
+    def _pack(want: set[str] | None) -> dict[str, int]:
+        if want is None:
+            return {
+                "specialty_items": len(specialty),
+                "missing_from_portal": len(missing),
+                "split_order_review": len(split_ids),
+                "review_required": int(out.get("review_required") or 0),
+            }
+        spec_n = sum(1 for b in specialty if b in want)
+        miss_n = sum(1 for b in missing if b in want)
+        split_n = sum(1 for b in split_ids if b in want)
+        return {
+            "specialty_items": spec_n,
+            "missing_from_portal": miss_n,
+            "split_order_review": split_n,
+            "review_required": spec_n + miss_n,
+        }
+
+    out["by_rush"] = {
+        "all": _pack(None),
+        "rush": _pack(rush_ids),
+        "non_rush": _pack(non_rush_ids),
+    }
+    return out
+
+
 def build_management_review_summary(
     cursor,
     organization_id: int,
@@ -282,34 +385,41 @@ def build_management_review_summary(
 
     day = get_day_record(cursor, organization_id, selected_date_et)
     headline = summary_from_day_record(day) or {}
-    split = split_review_categories(headline)
+    base = review_category_count_payload(headline)
+    membership = base.pop("_membership", {})
+    enriched = enrich_review_counts_by_rush(
+        cursor, organization_id, selected_date_et, headline, {**base, "_membership": membership}
+    )
     return {
         "date_et": selected_date_et.isoformat(),
-        "split_available": True,
-        "review_required": split["counts"]["review_required"],
-        "specialty_items": split["counts"][CATEGORY_SPECIALTY],
-        "missing_from_portal": split["counts"][CATEGORY_MISSING_PORTAL],
-        "split_order_review": split["counts"].get(CATEGORY_SPLIT_ORDER) or 0,
+        **{k: enriched[k] for k in (
+            "split_available",
+            "review_required",
+            "specialty_items",
+            "missing_from_portal",
+            "split_order_review",
+            "reason_category_map",
+            "precedence",
+            "employee_performance_hint",
+            "by_rush",
+        ) if k in enriched},
         "categories": {
             CATEGORY_SPECIALTY: {
                 "id": CATEGORY_SPECIALTY,
                 "label": "Specialty Items",
-                "count": split["counts"][CATEGORY_SPECIALTY],
+                "count": enriched["specialty_items"],
             },
             CATEGORY_MISSING_PORTAL: {
                 "id": CATEGORY_MISSING_PORTAL,
                 "label": "Missing From Portal",
-                "count": split["counts"][CATEGORY_MISSING_PORTAL],
+                "count": enriched["missing_from_portal"],
             },
             CATEGORY_SPLIT_ORDER: {
                 "id": CATEGORY_SPLIT_ORDER,
                 "label": "Split Order Review",
-                "count": split["counts"].get(CATEGORY_SPLIT_ORDER) or 0,
+                "count": enriched["split_order_review"],
             },
         },
-        "reason_category_map": split["reason_category_map"],
-        "precedence": split["precedence"],
-        "employee_performance_hint": split["employee_performance_hint"],
     }
 
 
@@ -417,7 +527,10 @@ def build_management_review_list(
     day = get_day_record(cursor, organization_id, selected_date_et)
     headline = summary_from_day_record(day) or {}
     split = split_review_categories(headline)
-    bag_ids = list(split.get(cat) or [])
+    if cat == CATEGORY_SPECIALTY:
+        bag_ids = specialty_review_membership_ids(headline)
+    else:
+        bag_ids = list(split.get(cat) or [])
     by_reason, by_bag = _headline_maps(headline)
 
     # Heal membership from day_bag rows — NEVER drop Specialty Items solely
@@ -496,6 +609,10 @@ def build_management_review_list(
     total = len(bag_ids)
     start = (page - 1) * page_size
     page_ids = bag_ids[start : start + page_size]
+
+    # Counts for the active category+rush scope must match drawer total.
+    scoped_counts = dict(split["counts"])
+    scoped_counts[cat] = total
 
     rows = (
         load_day_bags_by_ids(cursor, organization_id, selected_date_et, page_ids)
@@ -624,7 +741,8 @@ def build_management_review_list(
         "ok": True,
         "date_et": selected_date_et.isoformat(),
         "category": cat,
-        "counts": split["counts"],
+        "counts": scoped_counts,
+        "counts_all": split["counts"],
         "bags": bags_out,
         "pagination": {
             "page": page,

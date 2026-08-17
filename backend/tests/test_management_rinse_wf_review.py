@@ -156,6 +156,36 @@ def test_c_not_completed_resolved_specialty_leaves_queue():
     assert split["counts"][CATEGORY_SPECIALTY] == 0
 
 
+def test_specialty_membership_shared_helper_matches_split():
+    headline = {
+        "segments": {
+            "wf": {
+                "bag_ids": {
+                    "review_required": ["BAGAAA01", "BAGBBB02"],
+                }
+            }
+        },
+        "review_reasons_by_bag": {
+            "BAGAAA01": ["WF_BULK_WORKITEM_REVIEW"],
+            "BAGBBB02": ["DISAPPEARED_WITHOUT_COMPLETION"],
+        },
+        "review_by_reason": {
+            "WF_BULK_WORKITEM_REVIEW": ["BAGAAA01"],
+            "DISAPPEARED_WITHOUT_COMPLETION": ["BAGBBB02"],
+        },
+    }
+    from backend.management_rinse_wf_review import (
+        review_category_count_payload,
+        specialty_review_membership_ids,
+    )
+
+    assert specialty_review_membership_ids(headline) == ["BAGAAA01"]
+    counts = review_category_count_payload(headline)
+    assert counts["specialty_items"] == 1
+    assert counts["missing_from_portal"] == 1
+    assert counts["specialty_items"] == len(specialty_review_membership_ids(headline))
+
+
 def test_review_detail_defaults_scans_off():
     """Modal core must not require include_scans=True (progressive load)."""
     import inspect

@@ -18,6 +18,7 @@ import {
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import ManagementCopyableId from "./ManagementCopyableId";
 import ManagementRinseWfReviewModal from "./ManagementRinseWfReviewModal";
+import { pickReviewSummary } from "./todayRinseModel";
 
 function fmtTime(v) {
   if (!v) return null;
@@ -184,9 +185,10 @@ export default function ManagementRinseWfReviewSection({
   readOnly = false,
   onRefresh,
 }) {
-  const specialtyCount = reviewSummary?.specialty_items ?? null;
-  const missingCount = reviewSummary?.missing_from_portal ?? null;
-  const splitOrderCount = reviewSummary?.split_order_review ?? null;
+  const scopedReview = pickReviewSummary(reviewSummary, rushFilter);
+  const specialtyCount = scopedReview?.specialty_items ?? null;
+  const missingCount = scopedReview?.missing_from_portal ?? null;
+  const splitOrderCount = scopedReview?.split_order_review ?? null;
   const [drawer, setDrawer] = useState({ open: false, category: null });
   const [listState, setListState] = useState({
     loading: false,

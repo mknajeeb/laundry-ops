@@ -5,6 +5,22 @@ function asInt(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Review category scalars for the active rush chip (backend by_rush; no local formulas). */
+export function pickReviewSummary(review, rushFilter = "all") {
+  if (!review || typeof review !== "object") return null;
+  const by = review.by_rush;
+  if (rushFilter === "rush" && by?.rush) {
+    return { ...review, ...by.rush };
+  }
+  if ((rushFilter === "non_rush" || rushFilter === "non-rush") && by?.non_rush) {
+    return { ...review, ...by.non_rush };
+  }
+  if (by?.all) {
+    return { ...review, ...by.all };
+  }
+  return review;
+}
+
 export function pickRinseSegments(rinse, rushFilter = "all") {
   const keys = resolveStep1SegmentKeys("wf", rushFilter);
   const segments = rinse?.segments || {};

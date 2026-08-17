@@ -654,40 +654,19 @@ def extract_rinse_step1(
 def extract_review(day_rec: Mapping[str, Any] | None, headline: Mapping[str, Any] | None) -> dict[str, Any]:
     """Review Required total + Specialty Items / Missing From Portal counts.
 
-    Counts only (no bag ID arrays). Mapping lives in management_rinse_wf_review.
+    Counts only (no bag ID arrays). Same canonical membership as the Specialty
+    Items drawer (``specialty_review_membership_ids`` /
+    ``review_category_count_payload``). Never invent specialty_items from
+    day-level ``review_required_count`` (that includes HD + empty-reason rows).
     """
-    from backend.management_rinse_wf_review import split_review_categories
+    from backend.management_rinse_wf_review import review_category_count_payload
 
-    rec = dict(day_rec or {})
-    hl = dict(headline or {})
-    split = split_review_categories(hl)
-    count = rec.get("review_required_count")
-    if count is None:
-        count = ((hl.get("exceptions") or {}).get("review_required"))
-    if count is None:
-        count = (((hl.get("segments") or {}).get("wf") or {}).get("exceptions") or {}).get(
-            "review_required"
-        )
-    wf_total = int(split["counts"]["review_required"] or 0)
-    specialty = int(split["counts"]["specialty_items"] or 0)
-    missing = int(split["counts"]["missing_from_portal"] or 0)
-    split_order = int(split["counts"].get("split_order_review") or 0)
-    # When headline bag IDs are missing/unusable, keep a reconcilable total and
-    # route the whole population to specialty_items (not a fake portal split).
-    if wf_total == 0 and int(count or 0) > 0:
-        wf_total = int(count or 0)
-        specialty = wf_total
-        missing = 0
-    return {
-        "split_available": True,
-        "review_required": wf_total,
-        "specialty_items": specialty,
-        "missing_from_portal": missing,
-        "split_order_review": split_order,
-        "reason_category_map": split["reason_category_map"],
-        "precedence": split["precedence"],
-        "employee_performance_hint": split["employee_performance_hint"],
-    }
+    # day_rec retained for call-site compatibility; membership is headline-only.
+    _ = day_rec
+    payload = review_category_count_payload(headline)
+    # Strip internal membership IDs — compact TODAY payload forbids bag arrays.
+    payload.pop("_membership", None)
+    return payload
 
 
 def _specialty_packs_current(headline: Mapping[str, Any] | None) -> bool:
@@ -1130,7 +1109,17 @@ def build_management_rinse_wf_payload(
     else:
         generated_iso = now_et.isoformat(timespec="seconds")
 
-    review = extract_review(day_rec, headline)
+    from backend.management_rinse_wf_review import (
+        enrich_review_counts_by_rush,
+        review_category_count_payload,
+    )
+
+    review_base = review_category_count_payload(headline)
+    review = enrich_review_counts_by_rush(
+        counting, org, day, headline, review_base
+    )
+    # Compact payload: never leak membership bag ID arrays.
+    review.pop("_membership", None)
     payload = {
         "date_et": day.isoformat(),
         "generated_at_et": generated_iso,
@@ -1146,7 +1135,7 @@ def build_management_rinse_wf_payload(
                 "rinse": "persisted_day_headline_compact_read",
                 "wf_weights": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs_evidence",
                 "supplies": "deferred_to_/api/management/today/supplies",
-                "review": "headline_review_reasons_split_specialty_vs_missing_portal",
+                "review": "canonical_specialty_review_membership_shared_with_drawer",
             },
         },
     }
@@ -1214,6 +1203,20 @@ def build_management_today_payload(
     if display_post is None:
         display_post = lbs
 
+    from backend.management_rinse_wf_review import (
+        enrich_review_counts_by_rush,
+        review_category_count_payload,
+    )
+
+    review = enrich_review_counts_by_rush(
+        counting,
+        org,
+        day,
+        headline,
+        review_category_count_payload(headline),
+    )
+    review.pop("_membership", None)
+
     payload = {
         "date_et": day.isoformat(),
         "generated_at_et": generated_iso,
@@ -1225,7 +1228,7 @@ def build_management_today_payload(
             segments, day_start=day_start, clip_end=clip_end, rates_by_user=rates
         ),
         "supplies": supplies,
-        "review": extract_review(day_rec, headline),
+        "review": review,
         "_meta": {
             "cached": False,
             "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
@@ -1238,7 +1241,7 @@ def build_management_today_payload(
             "other_revenue": "dr_daily_entry_lines",
             "labor": "shift_job_segments+payroll_worker_profiles",
             "supplies": "deferred_to_/api/management/today/supplies",
-            "review": "rinse_shift_monitor_days.review_required_count",
+            "review": "canonical_specialty_review_membership_shared_with_drawer",
             },
         },
     }
