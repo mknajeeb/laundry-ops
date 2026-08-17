@@ -448,6 +448,9 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
     assert "bag_ids" not in rinse["segments"]["wf"]
     assert rinse["specialty_metrics"]["wf"]["rejected_orders"]["count"] == 1
     assert rinse["specialty_metrics"]["wf"]["comforter_orders"]["count"] == 4
+    assert rinse["specialty_metrics"]["wf"]["comforter_orders"]["order_count"] == 4
+    assert "item_qty" in rinse["specialty_metrics"]["wf"]["comforter_orders"]
+    assert "total_quantity" in rinse["specialty_metrics"]["wf"]["comforter_orders"]
     assert "order_ids" not in rinse["specialty_metrics"]["wf"]["comforter_orders"]
     assert rinse["hd_dashboard_totals"]["total_hd_orders"] == 13
     assert rinse["weight_totals"]["pre_lbs"] == 2000.0
@@ -569,3 +572,45 @@ def test_extract_rinse_step1_keeps_shift_analysis_counts_without_ids():
     assert rinse["hd_dashboard_totals"]["completed"] == 12
     assert rinse["hd_dashboard_totals"]["review_required"] == 1
     assert_compact_today_payload({"rinse": rinse})
+
+
+def test_specialty_counts_resums_item_qty_under_rush_membership():
+    from backend.management_today import _specialty_counts
+
+    pack = {
+        "comforter_orders": {
+            "count": 3,
+            "order_count": 3,
+            "total_quantity": 9,
+            "order_ids": ["A", "B", "C"],
+            "orders": [
+                {"bag_id": "A", "quantity": 2},
+                {"bag_id": "B", "quantity": 3},
+                {"bag_id": "C", "quantity": 4},
+            ],
+        },
+        "bath_mat_orders": {
+            "count": 2,
+            "order_count": 2,
+            "total_quantity": 5,
+            "order_ids": ["B", "D"],
+            "orders": [
+                {"bag_id": "B", "quantity": 2},
+                {"bag_id": "D", "quantity": 3},
+            ],
+        },
+        "rejected_orders": {"count": 1, "order_ids": ["R1"], "orders": []},
+        "split_orders": {"count": 0, "order_ids": [], "orders": []},
+    }
+    all_counts = _specialty_counts(pack, None)
+    assert all_counts["comforter_orders"]["order_count"] == 3
+    assert all_counts["comforter_orders"]["item_qty"] == 9
+    assert all_counts["comforter_orders"]["total_quantity"] == 9
+
+    rush = _specialty_counts(pack, {"A", "B"})
+    assert rush["comforter_orders"]["order_count"] == 2
+    assert rush["comforter_orders"]["count"] == 2
+    assert rush["comforter_orders"]["item_qty"] == 5  # 2+3, not unscoped 9
+    assert rush["comforter_orders"]["total_quantity"] == 5
+    assert rush["bath_mat_orders"]["order_count"] == 1
+    assert rush["bath_mat_orders"]["item_qty"] == 2

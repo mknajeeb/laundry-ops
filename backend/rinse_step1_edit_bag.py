@@ -1398,6 +1398,15 @@ def apply_unified_bag_edit(
     except Exception:
         pass
 
+    try:
+        from backend.management_today import clear_management_today_cache
+
+        clear_management_today_cache(
+            organization_id, selected_date_et, include_supplies=False
+        )
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "edit_id": edit_id,
@@ -1409,6 +1418,7 @@ def apply_unified_bag_edit(
         "outcome_result": outcome_result,
         "headline_patch_error": headline_patch_error,
         "headline_patch_detail": headline_patch_detail,
+        "management_cache_cleared": True,
     }
 
 

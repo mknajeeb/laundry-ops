@@ -27,6 +27,21 @@ from backend.ta_helpers import table_exists
 logger = logging.getLogger(__name__)
 
 
+def _clear_management_today_after_specialty_mutation(
+    organization_id: int,
+    day: date,
+) -> None:
+    """Invalidate Management Rinse WF summaries immediately (no scrape/TTL wait)."""
+    try:
+        from backend.management_today import clear_management_today_cache
+
+        clear_management_today_cache(
+            organization_id, day, include_supplies=False
+        )
+    except Exception:
+        pass
+
+
 def _refresh_step1_day_snapshot_after_mutation(
     cursor,
     organization_id: int,
@@ -1024,6 +1039,7 @@ def apply_step1_correction(
                 )
             except Exception:
                 pass
+            _clear_management_today_after_specialty_mutation(organization_id, day)
         return out
 
     if not reason and action not in (
@@ -1141,6 +1157,7 @@ def apply_step1_correction(
             clear_step1_productivity_cache(organization_id, day)
         except Exception:
             pass
+        _clear_management_today_after_specialty_mutation(organization_id, day)
         return {
             "ok": True,
             "action": action,
@@ -1188,6 +1205,7 @@ def apply_step1_correction(
                     **out,
                     "warning": "day_snapshot_refresh_failed",
                 }
+            _clear_management_today_after_specialty_mutation(organization_id, day)
         return out
 
     try:
@@ -1238,6 +1256,7 @@ def apply_step1_correction(
             actor_user_id=actor_user_id,
             actor_display_name=actor_display_name,
         )
+        _clear_management_today_after_specialty_mutation(organization_id, day)
         return {"ok": True, "action": action, "result": out}
 
     if action == "correct_weight":

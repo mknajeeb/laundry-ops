@@ -124,15 +124,22 @@ export default function ManagementRinseWfSection({
     [rinse, suppliesProp],
   );
   const wf = wfHeadline(wfSeg);
-  // Dashboard cards: order counts. Order detail / Review list: item quantities.
+  // Dashboard cards: item quantities (not order counts). Review Specialty Items
+  // is a separate unresolved-order concept — do not merge.
+  const comforterQty =
+    specialty?.comforter_orders?.item_qty
+    ?? specialty?.comforter_orders?.total_quantity
+    ?? 0;
+  const bathMatQty =
+    specialty?.bath_mat_orders?.item_qty
+    ?? specialty?.bath_mat_orders?.total_quantity
+    ?? 0;
   const comforterOrders = specialty?.comforter_orders?.order_count
     ?? specialty?.comforter_orders?.count
-    ?? 0;
-  const comforterQty = specialty?.comforter_orders?.total_quantity ?? null;
+    ?? null;
   const bathMatOrders = specialty?.bath_mat_orders?.order_count
     ?? specialty?.bath_mat_orders?.count
-    ?? 0;
-  const bathMatQty = specialty?.bath_mat_orders?.total_quantity ?? null;
+    ?? null;
   const rejected = specialty?.rejected_orders?.count ?? 0;
   const split = specialty?.split_orders?.count ?? 0;
   const suppliesAvailable = Boolean(supplies?.available);
@@ -257,35 +264,35 @@ export default function ManagementRinseWfSection({
       <BlockLabel>Specialty / Quality</BlockLabel>
       <CardGrid>
         <TodayTapCard
-          label="Comforter Orders"
-          value={snapshotUnavailable ? "—" : fmtInt(comforterOrders)}
+          label="COMFORTERS"
+          value={snapshotUnavailable ? "—" : fmtInt(comforterQty)}
           sub={
-            snapshotUnavailable || comforterQty == null
+            snapshotUnavailable || comforterOrders == null
               ? undefined
-              : `${fmtInt(comforterQty)} item${Number(comforterQty) === 1 ? "" : "s"}`
+              : `${fmtInt(comforterOrders)} order${Number(comforterOrders) === 1 ? "" : "s"}`
           }
           onClick={
             snapshotUnavailable
               ? undefined
               : () =>
-                  openMetric("comforter_orders", "Comforter Orders", {
+                  openMetric("comforter_orders", "Comforters", {
                     queue: "comforter_orders",
                   })
           }
         />
         <TodayTapCard
-          label="Bath Mat Orders"
-          value={snapshotUnavailable ? "—" : fmtInt(bathMatOrders)}
+          label="BATH MATS"
+          value={snapshotUnavailable ? "—" : fmtInt(bathMatQty)}
           sub={
-            snapshotUnavailable || bathMatQty == null
+            snapshotUnavailable || bathMatOrders == null
               ? undefined
-              : `${fmtInt(bathMatQty)} item${Number(bathMatQty) === 1 ? "" : "s"}`
+              : `${fmtInt(bathMatOrders)} order${Number(bathMatOrders) === 1 ? "" : "s"}`
           }
           onClick={
             snapshotUnavailable
               ? undefined
               : () =>
-                  openMetric("bath_mat_orders", "Bath Mat Orders", {
+                  openMetric("bath_mat_orders", "Bath Mats", {
                     queue: "bath_mat_orders",
                   })
           }

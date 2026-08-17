@@ -433,33 +433,89 @@ def _segment_member_ids(seg: Mapping[str, Any] | None) -> set[str]:
 def _specialty_counts(
     pack: Mapping[str, Any] | None,
     member_ids: set[str] | None = None,
-) -> dict[str, dict[str, int]]:
-    out: dict[str, dict[str, int]] = {}
+) -> dict[str, dict[str, Any]]:
+    """Compact specialty packs: order_count and item_qty stay distinct.
+
+    ``count`` / ``order_count`` = number of orders.
+    ``item_qty`` / ``total_quantity`` = sum of line quantities.
+    When ``member_ids`` is set (rush scope), both are recomputed from matching
+    orders — never reuse the unscoped item total with a scoped order count.
+    """
+    out: dict[str, dict[str, Any]] = {}
     src = pack or {}
     for key in SPECIALTY_PACK_KEYS:
         row = src.get(key) or {}
+        orders = [o for o in (row.get("orders") or []) if isinstance(o, dict)]
         raw_ids = [
             str(x).strip().upper()
             for x in (row.get("order_ids") or [])
             if str(x).strip()
         ]
-        if member_ids is not None and raw_ids:
-            count = len([bid for bid in raw_ids if bid in member_ids])
-        elif raw_ids:
-            count = len(raw_ids)
+        if not raw_ids and orders:
+            raw_ids = [
+                str(o.get("bag_id") or "").strip().upper()
+                for o in orders
+                if str(o.get("bag_id") or "").strip()
+            ]
+
+        if member_ids is not None:
+            if orders:
+                filtered = [
+                    o
+                    for o in orders
+                    if str(o.get("bag_id") or "").strip().upper() in member_ids
+                ]
+                count = len(filtered)
+                item_qty = 0.0
+                for o in filtered:
+                    try:
+                        item_qty += float(o.get("quantity") or 0)
+                    except (TypeError, ValueError):
+                        continue
+            else:
+                count = len([bid for bid in raw_ids if bid in member_ids])
+                # No per-order qty available under membership filter — do not
+                # keep the unscoped total_quantity (would mix scopes).
+                item_qty = float(count) if key in ("rejected_orders", "split_orders") else 0.0
+                if key in ("comforter_orders", "bath_mat_orders") and count and row.get(
+                    "total_quantity"
+                ) is not None:
+                    # Best-effort: if every order_id is in scope, keep pack total.
+                    if raw_ids and all(bid in member_ids for bid in raw_ids):
+                        try:
+                            item_qty = float(row.get("total_quantity") or 0)
+                        except (TypeError, ValueError):
+                            item_qty = 0.0
+        elif orders:
+            count = len(orders)
+            item_qty = 0.0
+            for o in orders:
+                try:
+                    item_qty += float(o.get("quantity") or 0)
+                except (TypeError, ValueError):
+                    continue
         else:
-            count = _int_or_zero(row.get("count"))
-        entry: dict[str, Any] = {
-            "count": count,
-            "order_count": _int_or_zero(row.get("order_count")) or count,
-        }
-        # Preserve item-quantity totals when present (no order_ids leak).
-        if row.get("total_quantity") is not None:
+            count = len(raw_ids) if raw_ids else _int_or_zero(row.get("count"))
             try:
-                entry["total_quantity"] = float(row.get("total_quantity") or 0)
+                item_qty = float(
+                    row.get("total_quantity")
+                    if row.get("total_quantity") is not None
+                    else row.get("item_qty")
+                    if row.get("item_qty") is not None
+                    else (count if key in ("rejected_orders", "split_orders") else 0)
+                )
             except (TypeError, ValueError):
-                entry["total_quantity"] = 0
-        out[key] = entry
+                item_qty = 0.0
+
+        order_count = _int_or_zero(row.get("order_count")) or count
+        if member_ids is not None or orders:
+            order_count = count
+        out[key] = {
+            "count": count,
+            "order_count": order_count,
+            "item_qty": round(item_qty, 1) if item_qty else 0,
+            "total_quantity": round(item_qty, 1) if item_qty else 0,
+        }
     return out
 
 

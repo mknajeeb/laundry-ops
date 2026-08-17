@@ -84,6 +84,36 @@ def category_for_reason_codes(codes: list[str] | tuple[str, ...] | None) -> str:
     return CATEGORY_SPECIALTY
 
 
+def specialty_review_is_unresolved(
+    codes: list[str] | tuple[str, ...] | None,
+    *,
+    bulk_cleared: bool | None = None,
+) -> bool:
+    """True when Specialty Items review is still open.
+
+    Independent of day-bag ``completed`` / ``pending`` status.
+    A bag leaves active Specialty Review only when specialty itself is resolved
+    (reason codes cleared / bulk cleared) — never merely because status=completed.
+    """
+    normalized = [str(c) for c in (codes or []) if c]
+    if bulk_cleared is True:
+        normalized = [
+            c for c in normalized if c != REASON_WF_BULK_WORKITEM_REVIEW
+        ]
+    if not normalized:
+        return False
+    return category_for_reason_codes(normalized) == CATEGORY_SPECIALTY
+
+
+def specialty_review_is_resolved(
+    codes: list[str] | tuple[str, ...] | None,
+    *,
+    bulk_cleared: bool | None = None,
+) -> bool:
+    """Inverse of ``specialty_review_is_unresolved`` (canonical specialty exit)."""
+    return not specialty_review_is_unresolved(codes, bulk_cleared=bulk_cleared)
+
+
 def _headline_maps(headline: Mapping[str, Any] | None) -> tuple[dict, dict]:
     hl = headline or {}
     by_reason = hl.get("review_by_reason") if isinstance(hl.get("review_by_reason"), dict) else {}
@@ -129,21 +159,63 @@ def _wf_review_ids(headline: Mapping[str, Any] | None) -> list[str]:
     return out
 
 
+def _specialty_candidate_ids(
+    headline: Mapping[str, Any] | None,
+    by_reason: Mapping[str, Any],
+    by_bag: Mapping[str, Any],
+) -> list[str]:
+    """Review-required IDs plus any bag with unresolved specialty reasons.
+
+    Completed status alone must not exclude a bag that still has unresolved
+    specialty review (e.g. WF_BULK_WORKITEM_REVIEW still on the bag).
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def _add(raw: Any) -> None:
+        key = normalize_bag_id(raw)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(key)
+
+    for bid in _wf_review_ids(headline):
+        _add(bid)
+    for bid, codes in (by_bag or {}).items():
+        if specialty_review_is_unresolved(codes if isinstance(codes, (list, tuple)) else []):
+            _add(bid)
+    for code, ids in (by_reason or {}).items():
+        if category_for_reason_codes([str(code)]) != CATEGORY_SPECIALTY:
+            continue
+        if not isinstance(ids, (list, tuple)):
+            continue
+        for bid in ids:
+            _add(bid)
+    return out
+
+
 def split_review_categories(
     headline: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """Partition WF Review Required into Specialty Items vs Missing From Portal."""
+    """Partition into Specialty Items vs Missing From Portal.
+
+    Specialty Items = unresolved specialty-review orders (not \"completed\").
+    A completed bag with unresolved specialty review remains in Specialty Items.
+    A completed bag with resolved specialty review does not.
+    """
     by_reason, by_bag = _headline_maps(headline)
     review_ids = _wf_review_ids(headline)
+    review_set = set(review_ids)
+    candidates = _specialty_candidate_ids(headline, by_reason, by_bag)
     specialty: list[str] = []
     missing: list[str] = []
-    for bid in review_ids:
+    for bid in candidates:
         codes = _bag_codes(by_bag, by_reason, bid)
-        cat = category_for_reason_codes(codes)
-        if cat == CATEGORY_MISSING_PORTAL:
-            missing.append(bid)
-        else:
+        if specialty_review_is_unresolved(codes):
             specialty.append(bid)
+            continue
+        # Missing-from-portal only while still in the Review Required population.
+        if bid in review_set and category_for_reason_codes(codes) == CATEGORY_MISSING_PORTAL:
+            missing.append(bid)
     return {
         CATEGORY_SPECIALTY: specialty,
         CATEGORY_MISSING_PORTAL: missing,
@@ -154,9 +226,10 @@ def split_review_categories(
         },
         "reason_category_map": dict(REASON_CATEGORY_MAP),
         "precedence": (
+            "Specialty Items = unresolved specialty review (independent of completed); "
             "WF_BULK_WORKITEM_REVIEW → specialty_items; "
             "DISAPPEARED_WITHOUT_COMPLETION alone → missing_from_portal; "
-            "other review reasons → specialty_items; no double-count"
+            "resolved specialty leaves specialty_items; no double-count"
         ),
         "employee_performance_hint": {
             CATEGORY_SPECIALTY: "may_associate_with_employee_or_resource",
@@ -294,17 +367,32 @@ def build_management_review_list(
     headline = summary_from_day_record(day) or {}
     split = split_review_categories(headline)
     bag_ids = list(split.get(cat) or [])
+    by_reason, by_bag = _headline_maps(headline)
 
-    # Heal: drop bags no longer review_required on day_bag row.
+    # Heal membership from day_bag rows — NEVER drop Specialty Items solely
+    # because status=completed. Specialty exits only when specialty is resolved.
     if bag_ids:
+        # Need review_reason_codes for specialty resolution (not status_only).
         status_rows = load_day_bags_by_ids(
-            cursor, organization_id, selected_date_et, bag_ids, status_only=True
+            cursor, organization_id, selected_date_et, bag_ids, status_only=False
         )
-        still = {
-            normalize_bag_id(r.get("bag_id"))
-            for r in status_rows
-            if str(r.get("effective_status") or "").strip().lower() == "review_required"
+        by_status = {
+            normalize_bag_id(r.get("bag_id")): r for r in status_rows
         }
+        still: set[str] = set()
+        for bid in bag_ids:
+            row = by_status.get(bid) or {}
+            status = str(row.get("effective_status") or "").strip().lower()
+            codes = list(row.get("review_reason_codes") or []) or _bag_codes(
+                by_bag, by_reason, bid
+            )
+            if cat == CATEGORY_SPECIALTY:
+                if specialty_review_is_unresolved(codes):
+                    still.add(bid)
+                continue
+            # Missing From Portal: still requires review_required day-bag status.
+            if status == "review_required":
+                still.add(bid)
         bag_ids = [b for b in bag_ids if b in still]
 
     rush = str(rush_filter or "all").strip().lower()

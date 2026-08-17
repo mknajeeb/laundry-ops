@@ -24,6 +24,20 @@ export function pickWfSpecialty(rinse, rushFilter = "all") {
   return spec.wf || spec.all || null;
 }
 
+/** Item quantity for a specialty pack row (COMFORTERS / BATH MATS cards). */
+export function specialtyItemQty(row) {
+  if (!row || typeof row !== "object") return 0;
+  const raw = row.item_qty ?? row.total_quantity;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Order count for a specialty pack row (subtitle / distinct from item qty). */
+export function specialtyOrderCount(row) {
+  if (!row || typeof row !== "object") return 0;
+  return asInt(row.order_count ?? row.count);
+}
+
 export function wfHeadline(seg) {
   const review = asInt(seg?.exceptions?.review_required ?? seg?.exceptions?.total);
   const completed = asInt(seg?.completed);

@@ -624,7 +624,21 @@ export default function Step1MetricDrawer({
                   </Typography>
 
                   {editingBag === bag.bag_id ? null : (() => {
-                    const acts = actionsForBagStatus(bag.dashboard_status || bag.outcome);
+                    const acts = actionsForBagStatus(bag.dashboard_status || bag.outcome, {
+                      specialtyReviewResolved: Boolean(
+                        bag.specialty_review_resolved
+                          || bag.bulk_review_cleared
+                          || bag.bulk_cleared,
+                      ),
+                      specialtyReviewUnresolved: Boolean(
+                        bag.specialty_review_unresolved
+                          || (bag.reason_codes || []).includes("WF_BULK_WORKITEM_REVIEW"),
+                      ),
+                      bulkReviewCleared: Boolean(
+                        bag.bulk_review_cleared || bag.bulk_cleared,
+                      ),
+                      reasonCodes: bag.reason_codes || [],
+                    });
                     return (
                       <Box
                         data-testid="bag-action-bar"
@@ -640,12 +654,30 @@ export default function Step1MetricDrawer({
                         }}
                       >
                         <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                          {acts.statusLabel ? (
+                            <Chip
+                              size="small"
+                              label={acts.statusLabel}
+                              color={acts.isCompleted ? "success" : "default"}
+                              variant="outlined"
+                            />
+                          ) : null}
                           {readOnly ? (
                             <Typography variant="caption" color="text.secondary">
                               Shift is closed — reopen to make corrections.
                             </Typography>
                           ) : (
                             <>
+                              {acts.viewDetails ? (
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  data-testid="view-details-button"
+                                  onClick={() => startAction(bag, "edit_bag")}
+                                >
+                                  View Details
+                                </Button>
+                              ) : null}
                               {acts.editBag ? (
                                 <Button
                                   size="small"
@@ -662,7 +694,7 @@ export default function Step1MetricDrawer({
                                   variant="outlined"
                                   onClick={() => startAction(bag, "move_to_review")}
                                 >
-                                  {acts.isCompleted ? "Send for Review" : "Move to Review Required"}
+                                  Move to Review Required
                                 </Button>
                               ) : null}
                               {acts.correctEntry ? (

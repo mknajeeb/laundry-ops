@@ -436,6 +436,8 @@ def attach_specialty_metrics_to_summary(
     all_pack = packs["all"]
     out["comforter_order_count"] = all_pack["comforter_orders"]["count"]
     out["bath_mat_order_count"] = all_pack["bath_mat_orders"]["count"]
+    out["comforter_item_qty"] = all_pack["comforter_orders"].get("total_quantity") or 0
+    out["bath_mat_item_qty"] = all_pack["bath_mat_orders"].get("total_quantity") or 0
     out["rejected_order_count"] = all_pack["rejected_orders"]["count"]
     out["split_order_count"] = all_pack["split_orders"]["count"]
     return out
