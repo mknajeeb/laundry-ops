@@ -36,6 +36,7 @@ export default function ManagementRinseWfReviewSection({
 }) {
   const specialtyCount = reviewSummary?.specialty_items ?? null;
   const missingCount = reviewSummary?.missing_from_portal ?? null;
+  const splitOrderCount = reviewSummary?.split_order_review ?? null;
   const [drawer, setDrawer] = useState({ open: false, category: null });
   const [listState, setListState] = useState({
     loading: false,
@@ -94,7 +95,9 @@ export default function ManagementRinseWfReviewSection({
   const title =
     drawer.category === "missing_from_portal"
       ? "Missing From Portal"
-      : "Specialty Items";
+      : drawer.category === "split_order_review"
+        ? "Split Order Review"
+        : "Specialty Items";
 
   return (
     <Box sx={{ mt: 0.5, mb: 1.5 }}>
@@ -118,7 +121,7 @@ export default function ManagementRinseWfReviewSection({
       <Box
         sx={{
           display: "grid",
-          gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+          gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr 1fr" },
           gap: 0.75,
         }}
       >
@@ -162,6 +165,26 @@ export default function ManagementRinseWfReviewSection({
             {snapshotUnavailable || missingCount == null ? "—" : missingCount}
           </Typography>
         </Button>
+        <Button
+          variant="outlined"
+          disabled={snapshotUnavailable}
+          onClick={() => openCategory("split_order_review")}
+          sx={{
+            justifyContent: "space-between",
+            textTransform: "none",
+            px: 1.25,
+            py: 1.1,
+            borderColor: "#cbd5e1",
+            bgcolor: "#fff",
+          }}
+        >
+          <Typography sx={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
+            Split Order Review
+          </Typography>
+          <Typography sx={{ fontWeight: 800, fontSize: 18, color: "#0f172a" }}>
+            {snapshotUnavailable || splitOrderCount == null ? "—" : splitOrderCount}
+          </Typography>
+        </Button>
       </Box>
 
       <Drawer
@@ -180,6 +203,11 @@ export default function ManagementRinseWfReviewSection({
           {drawer.category === "missing_from_portal" ? (
             <Alert severity="info" sx={{ mb: 1, py: 0.5 }}>
               Data / evidence exception — not an automatic employee quality issue.
+            </Alert>
+          ) : null}
+          {drawer.category === "split_order_review" ? (
+            <Alert severity="info" sx={{ mb: 1, py: 0.5 }}>
+              Marker / washer-load contradiction — mark as Split or Not Split.
             </Alert>
           ) : null}
           {listState.loading ? (
@@ -201,10 +229,15 @@ export default function ManagementRinseWfReviewSection({
                   </Typography>
                   <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>
                     {bag.bag_id}
+                    {bag.rush_flag ? ` · ${bag.rush_flag}` : ""}
                   </Typography>
                   <Typography sx={{ fontSize: 12, color: "#64748b", mt: 0.25 }}>
                     {bag.short_reason || title}
                     {bag.specialty_summary ? ` · ${bag.specialty_summary}` : ""}
+                    {bag.washer_load_count != null
+                      ? ` · ${bag.washer_load_count} washer load${bag.washer_load_count === 1 ? "" : "s"}`
+                      : ""}
+                    {bag.split_marker_present ? " · marker" : ""}
                   </Typography>
                   <Typography sx={{ fontSize: 12, color: "#94a3b8" }}>
                     {[bag.employee, fmtTime(bag.relevant_time)].filter(Boolean).join(" · ") || "—"}

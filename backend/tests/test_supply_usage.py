@@ -469,6 +469,7 @@ class TestFirstWeightEtDayMembership:
                 eid=6,
                 rack="W27-20-VW",
             ),
+            _ev("drying", datetime(2026, 7, 14, 10, 20, 0), eid=7, rack="D4-50-VW"),
         ]
         out = first_weight_on_et_day(events, self.DAY)
         assert out["processing_units"] == 2
@@ -476,6 +477,30 @@ class TestFirstWeightEtDayMembership:
         assert set(out["washer_racks"]) == {"W27-20-VW", "W28-20-VW"}
         assert out["washer_load_count"] == 2
         assert processing_units_from_split_confirmation(split_confirmed=True) == 2
+
+    def test_dual_washer_without_marker_is_review_not_auto_confirmed(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 7, 14, 8, 0, 0), eid=1),
+            _ev("weight-entry", datetime(2026, 7, 14, 9, 28, 0), eid=2),
+            _ev(
+                "start-cleaning",
+                datetime(2026, 7, 14, 9, 46, 0),
+                eid=5,
+                rack="W28-20-VW",
+            ),
+            _ev(
+                "start-cleaning",
+                datetime(2026, 7, 14, 9, 46, 0),
+                eid=6,
+                rack="W27-20-VW",
+            ),
+            _ev("drying", datetime(2026, 7, 14, 10, 20, 0), eid=7, rack="D4-50-VW"),
+        ]
+        out = first_weight_on_et_day(events, self.DAY)
+        assert out["processing_units"] == 1
+        assert out["split_confirmed"] is False
+        assert out["split_state"] == "REVIEW_REQUIRED"
+        assert out["washer_load_count"] == 2
 
     def test_single_washer_start_cleaning_is_one_unit(self):
         events = [
@@ -702,18 +727,112 @@ class TestLoadOrdersFirstWeightPopulation:
 
     def _load(self, membership, meta):
         from backend import supply_usage as su
+        from backend import rinse_wf_canonical_split as csplit
 
         cursor = MagicMock()
-        cursor.fetchone.return_value = None
+        cursor.fetchone.return_value = []
+        cursor.fetchall.return_value = []
         original_fw = su._bags_with_first_weight_on_et_day
         original_meta = su._load_approved_order_metadata
+        original_events = csplit._load_events_for_bags
+        original_mgr = su.load_manager_split_decisions
+
+        def fake_events(cursor, org, bag_ids):
+            # Synthesize closed confirmed-split cycles when membership says so.
+            out = {}
+            for bid in bag_ids:
+                fw = membership.get(bid) or {}
+                if fw.get("split_confirmed") or int(fw.get("processing_units") or 1) >= 2:
+                    out[bid] = [
+                        {
+                            "id": 1,
+                            "bag_id": bid,
+                            "purpose": "sent-to-vendor",
+                            "scanned_at_parsed": datetime(2026, 7, 14, 8, 0, 0),
+                            "rack": "VeeWash Dirty",
+                            "user_name": "T",
+                            "scan_index": 1,
+                        },
+                        {
+                            "id": 2,
+                            "bag_id": bid,
+                            "purpose": "split-load",
+                            "scanned_at_parsed": datetime(2026, 7, 14, 9, 30, 0),
+                            "rack": None,
+                            "user_name": "T",
+                            "scan_index": 2,
+                        },
+                        {
+                            "id": 3,
+                            "bag_id": bid,
+                            "purpose": "start-cleaning",
+                            "scanned_at_parsed": datetime(2026, 7, 14, 9, 40, 0),
+                            "rack": "W28-20-VW",
+                            "user_name": "T",
+                            "scan_index": 3,
+                        },
+                        {
+                            "id": 4,
+                            "bag_id": bid,
+                            "purpose": "start-cleaning",
+                            "scanned_at_parsed": datetime(2026, 7, 14, 9, 41, 0),
+                            "rack": "W27-20-VW",
+                            "user_name": "T",
+                            "scan_index": 4,
+                        },
+                        {
+                            "id": 5,
+                            "bag_id": bid,
+                            "purpose": "drying",
+                            "scanned_at_parsed": datetime(2026, 7, 14, 10, 20, 0),
+                            "rack": "D4-50-VW",
+                            "user_name": "T",
+                            "scan_index": 5,
+                        },
+                    ]
+                else:
+                    out[bid] = [
+                        {
+                            "id": 1,
+                            "bag_id": bid,
+                            "purpose": "sent-to-vendor",
+                            "scanned_at_parsed": datetime(2026, 7, 14, 8, 0, 0),
+                            "rack": "VeeWash Dirty",
+                            "user_name": "T",
+                            "scan_index": 1,
+                        },
+                        {
+                            "id": 2,
+                            "bag_id": bid,
+                            "purpose": "start-cleaning",
+                            "scanned_at_parsed": datetime(2026, 7, 14, 9, 40, 0),
+                            "rack": "W28-20-VW",
+                            "user_name": "T",
+                            "scan_index": 3,
+                        },
+                        {
+                            "id": 3,
+                            "bag_id": bid,
+                            "purpose": "drying",
+                            "scanned_at_parsed": datetime(2026, 7, 14, 10, 20, 0),
+                            "rack": "D4-50-VW",
+                            "user_name": "T",
+                            "scan_index": 5,
+                        },
+                    ]
+            return out
+
         su._bags_with_first_weight_on_et_day = lambda *a, **k: membership
         su._load_approved_order_metadata = lambda *a, **k: meta
+        csplit._load_events_for_bags = fake_events
+        su.load_manager_split_decisions = lambda *a, **k: {}
         try:
             return load_orders_for_supply_usage(cursor, 3, self.DAY)
         finally:
             su._bags_with_first_weight_on_et_day = original_fw
             su._load_approved_order_metadata = original_meta
+            csplit._load_events_for_bags = original_events
+            su.load_manager_split_decisions = original_mgr
 
     def test_accepted_counts_with_first_weight(self):
         orders = self._load(self._membership("ACC00001"), self._meta("ACC00001"))

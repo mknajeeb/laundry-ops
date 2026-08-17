@@ -424,6 +424,11 @@ export default function SupplyUsagePage() {
       </Paper>
 
       {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
+      {!loading && report?.supply_banner && report?.supply_finalizable === false ? (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {report.supply_banner}
+        </Alert>
+      ) : null}
 
       {loading ? (
         <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}>

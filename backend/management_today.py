@@ -363,6 +363,7 @@ def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
     usage = dict((report or {}).get("usage_by_supply") or {})
     has_usage = bool(usage)
     rush_supported = bool((report or {}).get("rush_filtering_supported"))
+    fin = (report or {}).get("split_finalizability") or {}
     out: dict[str, Any] = {
         "cost_available": False,
         "cost": None,
@@ -377,6 +378,15 @@ def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
         ),
         "scope": "all",
         "scope_label": "DAY TOTALS",
+        "supply_finalizable": bool(
+            (report or {}).get("supply_finalizable")
+            if (report or {}).get("supply_finalizable") is not None
+            else fin.get("finalizable", True)
+        ),
+        "supply_status": (report or {}).get("supply_status") or fin.get("supply_status"),
+        "supply_banner": (report or {}).get("supply_banner") or fin.get("supply_banner"),
+        "split_pending_count": int(fin.get("split_pending_count") or 0),
+        "split_review_count": int(fin.get("split_review_count") or 0),
     }
     for name in ("Tide", "Downy", "OxiClean", "All Free & Clear"):
         row = usage.get(name) or {}
@@ -661,6 +671,7 @@ def extract_review(day_rec: Mapping[str, Any] | None, headline: Mapping[str, Any
     wf_total = int(split["counts"]["review_required"] or 0)
     specialty = int(split["counts"]["specialty_items"] or 0)
     missing = int(split["counts"]["missing_from_portal"] or 0)
+    split_order = int(split["counts"].get("split_order_review") or 0)
     # When headline bag IDs are missing/unusable, keep a reconcilable total and
     # route the whole population to specialty_items (not a fake portal split).
     if wf_total == 0 and int(count or 0) > 0:
@@ -672,6 +683,7 @@ def extract_review(day_rec: Mapping[str, Any] | None, headline: Mapping[str, Any
         "review_required": wf_total,
         "specialty_items": specialty,
         "missing_from_portal": missing,
+        "split_order_review": split_order,
         "reason_category_map": split["reason_category_map"],
         "precedence": split["precedence"],
         "employee_performance_hint": split["employee_performance_hint"],

@@ -298,7 +298,11 @@ def select_current_cycle_washing_rows(
     )
 
 
-def build_washing_chronology_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def build_washing_chronology_summary(
+    rows: list[dict[str, Any]],
+    *,
+    events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+) -> dict[str, Any]:
     if not rows:
         return {
             "total_washer_loads": 0,
@@ -323,8 +327,33 @@ def build_washing_chronology_summary(rows: list[dict[str, Any]]) -> dict[str, An
         if str(r.get("bag_id") or "").strip()
     )
     unique_bags_washed = len(bag_load_counts)
-    split_bags_washed = sum(1 for count in bag_load_counts.values() if count > 1)
-    single_bags_washed = sum(1 for count in bag_load_counts.values() if count == 1)
+    # Canonical split count — same evaluator as Management / Supply.
+    if events_by_bag is not None:
+        from backend.rinse_wf_canonical_split import count_canonical_splits_from_events_by_bag
+
+        # Only evaluate bags that appear in washing rows for this day.
+        scoped = {
+            bid: events_by_bag.get(bid) or events_by_bag.get(bid.upper()) or []
+            for bid in bag_load_counts
+        }
+        # Also try normalized keys.
+        from backend.rinse_bag_completion import normalize_bag_id
+
+        scoped_norm: dict[str, list] = {}
+        for bid in bag_load_counts:
+            key = normalize_bag_id(bid) or bid
+            scoped_norm[key] = list(
+                events_by_bag.get(key)
+                or events_by_bag.get(bid)
+                or events_by_bag.get(str(bid).upper())
+                or []
+            )
+        canon = count_canonical_splits_from_events_by_bag(scoped_norm)
+        split_bags_washed = int(canon.get("split_bags_washed") or 0)
+    else:
+        # Fallback only when full cycle events are unavailable (tests/legacy).
+        split_bags_washed = sum(1 for count in bag_load_counts.values() if count > 1)
+    single_bags_washed = max(0, unique_bags_washed - split_bags_washed)
     counts = Counter(racks)
     timestamps = [r["timestamp_et"] for r in rows if ts_valid(r.get("timestamp_et"))]
     return {
@@ -418,7 +447,22 @@ def build_washing_chronology_payload(
     for idx, row in enumerate(rows):
         row["index"] = idx + 1
 
-    summary = build_washing_chronology_summary(rows)
+    # Full bag event histories for canonical split (day window alone is insufficient
+    # for STV lifecycle anchors that may precede the selected day).
+    from backend.rinse_bag_completion import normalize_bag_id
+    from backend.rinse_wf_canonical_split import _load_events_for_bags
+
+    bag_ids = sorted(
+        {
+            normalize_bag_id(r.get("bag_id")) or str(r.get("bag_id") or "").strip()
+            for r in rows
+            if r.get("bag_id")
+        }
+    )
+    events_by_bag = (
+        _load_events_for_bags(cursor, organization_id, bag_ids) if bag_ids else {}
+    )
+    summary = build_washing_chronology_summary(rows, events_by_bag=events_by_bag)
 
     return {
         "date_et": selected_date_et.isoformat(),
@@ -436,7 +480,8 @@ def build_washing_chronology_payload(
             "same event id or same bag, employee, timestamp, and rack collapse to one "
             "row; split loads at the same timestamp with different washer racks "
             "produce separate rows; at most two start-cleaning loads per bag per day "
-            "(earliest two by time)."
+            "(earliest two by time). Split bag count uses "
+            "rinse_wf_canonical_split.evaluate_bag_split (same as Management / Supply)."
         ),
     }
 

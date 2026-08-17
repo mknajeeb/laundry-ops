@@ -16,7 +16,7 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
-import { getManagementRinseWfReviewDetail } from "../../api";
+import { getManagementRinseWfReviewDetail, postManagementRinseWfSplitDecision } from "../../api";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import EditBagPanel from "../shift/EditBagPanel";
 
@@ -78,11 +78,14 @@ export default function ManagementRinseWfReviewModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [detail, setDetail] = useState(null);
+  const [splitSaving, setSplitSaving] = useState(false);
+  const [splitMsg, setSplitMsg] = useState("");
 
   useEffect(() => {
     if (!open || !bagId || !selectedDateEt) {
       setDetail(null);
       setError("");
+      setSplitMsg("");
       return undefined;
     }
     let cancelled = false;
@@ -120,6 +123,31 @@ export default function ManagementRinseWfReviewModal({
   const catalog = Array.isArray(detail?.active_bulk_workitems)
     ? detail.active_bulk_workitems
     : [];
+  const isSplitReview =
+    bag?.review_category === "split_order_review"
+    || bag?.split_state === "REVIEW_REQUIRED";
+
+  const saveSplitDecision = async (decision) => {
+    if (!bagId || !selectedDateEt || readOnly) return;
+    setSplitSaving(true);
+    setSplitMsg("");
+    try {
+      const res = await postManagementRinseWfSplitDecision(selectedDateEt, bagId, {
+        decision,
+      });
+      if (res?.data?.ok === false) {
+        setSplitMsg(res.data.error || "Save failed");
+      } else {
+        setSplitMsg(decision === "split" ? "Marked as Split" : "Marked as Not Split");
+        onSaved?.();
+        onClose?.();
+      }
+    } catch (err) {
+      setSplitMsg(err?.response?.data?.error || err?.message || "Save failed");
+    } finally {
+      setSplitSaving(false);
+    }
+  };
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="md" scroll="paper">
@@ -155,8 +183,52 @@ export default function ManagementRinseWfReviewModal({
               <KV label="Rush" value={bag.rush_flag || "—"} />
               <KV label="Status" value={bag.dashboard_status || bag.outcome} />
               <KV label="Review category" value={bag.review_category_label} />
-              <KV label="Review reason" value={bag.short_reason || (bag.reason_codes || []).join(", ")} />
+              <KV label="Review reason" value={bag.short_reason || bag.review_reason || (bag.reason_codes || []).join(", ")} />
             </Section>
+
+            {(isSplitReview || bag.split_state || bag.canonical_split_evaluation) ? (
+              <Section title="Split evidence">
+                <KV
+                  label="Split marker"
+                  value={bag.split_marker_present ? "Yes" : "No"}
+                />
+                <KV
+                  label="Washer loads"
+                  value={
+                    bag.washer_load_count != null
+                      ? `${bag.washer_load_count}${(bag.washer_racks || []).length ? ` · ${(bag.washer_racks || []).join(", ")}` : ""}`
+                      : "—"
+                  }
+                />
+                <KV label="Close event" value={bag.close_event_purpose || "—"} />
+                <KV label="Split state" value={bag.split_state || "—"} />
+                {!readOnly && isSplitReview ? (
+                  <Stack direction="row" spacing={1} sx={{ mt: 1.25 }}>
+                    <Button
+                      variant="contained"
+                      disabled={splitSaving}
+                      onClick={() => saveSplitDecision("split")}
+                      sx={{ textTransform: "none", fontWeight: 700 }}
+                    >
+                      Mark as Split
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      disabled={splitSaving}
+                      onClick={() => saveSplitDecision("not_split")}
+                      sx={{ textTransform: "none", fontWeight: 700 }}
+                    >
+                      Mark as Not Split
+                    </Button>
+                  </Stack>
+                ) : null}
+                {splitMsg ? (
+                  <Alert severity="info" sx={{ mt: 1, py: 0.25 }}>
+                    {splitMsg}
+                  </Alert>
+                ) : null}
+              </Section>
+            ) : null}
 
             <Section title="Employee / Resource">
               <KV

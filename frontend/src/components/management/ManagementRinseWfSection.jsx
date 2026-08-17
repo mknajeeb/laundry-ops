@@ -142,8 +142,15 @@ export default function ManagementRinseWfSection({
     ?? null;
   const rejected = specialty?.rejected_orders?.count ?? 0;
   const split = specialty?.split_orders?.count ?? 0;
+  const splitReview =
+    specialty?.split_review?.count
+    ?? reviewProp?.split_order_review
+    ?? rinse?.review?.split_order_review
+    ?? 0;
   const suppliesAvailable = Boolean(supplies?.available);
   const suppliesPending = Boolean(suppliesLoading) || (Boolean(supplies?.deferred) && !suppliesAvailable);
+  const supplyBanner = supplies?.supply_banner || null;
+  const supplyFinalizable = supplies?.supply_finalizable !== false;
   const reviewSummary = reviewProp || rinse?.review || null;
 
   const openMetric = (metric, title, opts = {}) => {
@@ -313,6 +320,11 @@ export default function ManagementRinseWfSection({
         <TodayTapCard
           label="Splits"
           value={snapshotUnavailable ? "—" : fmtInt(split)}
+          sub={
+            !snapshotUnavailable && splitReview > 0
+              ? `SPLIT REVIEW ${splitReview}`
+              : undefined
+          }
           onClick={
             snapshotUnavailable
               ? undefined
@@ -336,6 +348,11 @@ export default function ManagementRinseWfSection({
       </Box>
 
       <BlockLabel hint="DAY TOTALS">Supplies</BlockLabel>
+      {!snapshotUnavailable && suppliesAvailable && !supplyFinalizable && supplyBanner ? (
+        <Alert severity="warning" sx={{ mb: 0.75, py: 0.35 }}>
+          {supplyBanner}
+        </Alert>
+      ) : null}
       <CardGrid>
         {SUPPLY_ROWS.map((row) => (
           <TodayTapCard

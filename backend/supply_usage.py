@@ -25,7 +25,11 @@ from backend.rinse_special_instructions import (
     _classify_part,
     _parts_for_interpretation,
 )
-from backend.rinse_washing_chronology import extract_washing_rows_from_events
+from backend.rinse_wf_canonical_split import (
+    evaluate_bag_split,
+    load_manager_split_decisions,
+    supply_day_finalizable,
+)
 from backend.supply_usage_settings import (
     DEFAULT_DOSAGES,
     DEFAULT_MAPPING_RULES,
@@ -189,49 +193,29 @@ def processing_units_from_washer_loads(
     bag_id: str,
 ) -> dict[str, Any]:
     """
-    Canonical split evidence for Supply Usage.
+    Supply processing units from the canonical WF split evaluator.
 
-    Reuses washing chronology: distinct post-first-weight ``start-cleaning`` scans
-    at washer racks (W-*). One wash load → 1 unit; two loads → 2 units.
-
-    ``split-load`` purpose alone is NOT used — it co-occurs with normal add-photos
-    completion on most bags and is not a dedicated split-confirm action.
+    Dosage formulas are unchanged — only the IS-SPLIT / unit source is canonical.
+    ``split-load`` purpose alone never forces 2 units (matrix + close required).
     """
     bid = normalize_bag_id(bag_id) or str(bag_id or "").strip()
-    enriched: list[dict[str, Any]] = []
-    for ev in events_after_first_weight:
-        row = dict(ev)
-        if not row.get("bag_id"):
-            row["bag_id"] = bid
-        enriched.append(row)
-    # Physical W-prefix loads only — inferred chronology rows are display-only.
-    wash_rows = extract_washing_rows_from_events(
-        enriched,
-        require_direct_washer_rack=True,
-    )
-    racks = sorted(
-        {
-            str(r.get("washer_rack") or "").strip()
-            for r in wash_rows
-            if str(r.get("washer_rack") or "").strip()
-        }
-    )
-    load_count = len(wash_rows)
-    split_confirmed = load_count >= 2
-    latest_ts = None
-    if wash_rows:
-        latest_ts = max(
-            (_as_naive_et(r.get("timestamp_et")) for r in wash_rows),
-            default=None,
-        )
+    # Prefer full-cycle evaluation when callers pass post-weight-only events;
+    # evaluate_bag_split still counts W* loads and the split-load marker in-window.
+    result = evaluate_bag_split(events_after_first_weight, bag_id=bid)
+    confirmed = result.get("canonical_split") is True
     return {
         "processing_units": processing_units_from_split_confirmation(
-            split_confirmed=split_confirmed
+            split_confirmed=confirmed
         ),
-        "split_confirmed": split_confirmed,
-        "washer_load_count": load_count,
-        "washer_racks": racks,
-        "latest_washer_load_et": latest_ts,
+        "split_confirmed": confirmed,
+        "washer_load_count": int(result.get("washer_load_count") or 0),
+        "washer_racks": list(result.get("washer_racks") or []),
+        "latest_washer_load_et": result.get("latest_washer_load_et"),
+        "split_state": result.get("state"),
+        "canonical_split": result.get("canonical_split"),
+        "split_finalized": bool(result.get("split_finalized")),
+        "review_reason": result.get("review_reason"),
+        "has_split_load_scan": bool(result.get("split_marker_present")),
     }
 
 
@@ -293,30 +277,28 @@ def first_weight_on_et_day(
     if not (day_start <= first_weight_ts < day_end_excl):
         return None
 
-    post_weight = events_after_ts(anchored, first_weight_ts)
-    # Informational only — not used for unit confirmation.
-    split_load_events = [
-        ev
-        for ev in post_weight
-        if is_split_load_purpose(ev.get("purpose")) and ts_valid(event_ts(ev))
-    ]
     bag_hint = ""
     for ev in events:
         bag_hint = normalize_bag_id(ev.get("bag_id")) or str(ev.get("bag_id") or "").strip()
         if bag_hint:
             break
-    washer = processing_units_from_washer_loads(post_weight, bag_id=bag_hint)
+    # Full cycle events (not post-weight-only) — canonical split owns IS-SPLIT.
+    split_ev = evaluate_bag_split(anchored, bag_id=bag_hint or "")
     return {
         "lifecycle_anchor_et": anchor_ts,
         "first_weight_et": first_weight_ts,
-        "split_confirmed": bool(washer["split_confirmed"]),
-        "latest_split_scan_et": washer.get("latest_washer_load_et"),
-        "latest_washer_load_et": washer.get("latest_washer_load_et"),
-        "processing_units": int(washer["processing_units"]),
-        "washer_load_count": int(washer["washer_load_count"]),
-        "washer_racks": list(washer.get("washer_racks") or []),
-        "split_load_scan_count": len(split_load_events),
-        "has_split_load_scan": bool(split_load_events),
+        "split_confirmed": split_ev.get("canonical_split") is True,
+        "canonical_split": split_ev.get("canonical_split"),
+        "split_state": split_ev.get("state"),
+        "split_finalized": bool(split_ev.get("split_finalized")),
+        "review_reason": split_ev.get("review_reason"),
+        "latest_split_scan_et": split_ev.get("latest_washer_load_et"),
+        "latest_washer_load_et": split_ev.get("latest_washer_load_et"),
+        "processing_units": int(split_ev.get("processing_units") or 1),
+        "washer_load_count": int(split_ev.get("washer_load_count") or 0),
+        "washer_racks": list(split_ev.get("washer_racks") or []),
+        "split_load_scan_count": 1 if split_ev.get("split_marker_present") else 0,
+        "has_split_load_scan": bool(split_ev.get("split_marker_present")),
     }
 
 
@@ -332,6 +314,10 @@ def _order_row_from_staging(
     washer_load_count: int | None = None,
     washer_racks: Sequence[str] | None = None,
     has_split_load_scan: bool = False,
+    split_state: str | None = None,
+    canonical_split: bool | None = None,
+    split_finalized: bool = False,
+    review_reason: str | None = None,
 ) -> dict[str, Any]:
     raw = row.get("special_instructions_raw")
     mapped = supplies_for_usage(raw, mapping_rules)
@@ -340,7 +326,7 @@ def _order_row_from_staging(
     supplies = list(mapped["supplies_used"])
     doses_by_supply = {s: units for s in supplies}
     racks = [str(r).strip() for r in (washer_racks or []) if str(r).strip()]
-    confirmed = bool(split_confirmed)
+    confirmed = bool(split_confirmed) or canonical_split is True
     # Informational only: SI "Split Order" may mark pending expectation; never affects doses.
     expects_split = si_expects_split_order(
         raw,
@@ -348,10 +334,14 @@ def _order_row_from_staging(
         row.get("notes"),
         mapped.get("supply_interpretation"),
     )
-    pending = (not confirmed) and expects_split
+    state = str(split_state or "").strip().upper() or None
+    pending = state == "PENDING" or ((not confirmed) and expects_split and not split_finalized)
+    review = state == "REVIEW_REQUIRED"
     if confirmed:
         split_status = "confirmed"
-    elif pending:
+    elif review:
+        split_status = "review"
+    elif pending or state == "PENDING":
         split_status = "pending"
     else:
         split_status = "unresolved"
@@ -362,10 +352,17 @@ def _order_row_from_staging(
         "special_instructions": _display_special_instructions(raw),
         "special_instructions_raw": raw,
         "supply_interpretation": mapped.get("supply_interpretation"),
-        "split_order": units > 1,
+        "split_order": confirmed,
         "split_confirmed": confirmed,
-        "split_pending": pending,
+        "canonical_split": canonical_split if canonical_split is not None else (
+            True if confirmed else (False if split_finalized else None)
+        ),
+        "split_state": state,
+        "split_finalized": bool(split_finalized),
+        "split_pending": bool(pending),
+        "split_review": bool(review),
         "split_status": split_status,
+        "review_reason": review_reason,
         "split_load_scan": bool(has_split_load_scan),
         "multiplier": units,
         "processing_units": units,
@@ -641,8 +638,8 @@ def load_orders_for_supply_usage(
     """
     Orders whose current-lifecycle first weight falls on the selected ET day.
 
-    Requires an approved upload/staging metadata row. Processing units come from
-    lifecycle-scoped split-load scan confirmation only (not portal SI text).
+    Requires an approved upload/staging metadata row. Processing units / IS-SPLIT
+    come from the canonical WF split evaluator (manager decisions applied).
     """
     rules = list(mapping_rules or get_supply_usage_mapping_rules(cursor, organization_id))
     membership = _bags_with_first_weight_on_et_day(cursor, organization_id, target_date)
@@ -651,24 +648,42 @@ def load_orders_for_supply_usage(
     meta_by_ticket = _load_approved_order_metadata(
         cursor, organization_id, list(membership.keys())
     )
+    mgr = load_manager_split_decisions(
+        cursor, organization_id, target_date, list(membership.keys())
+    )
+    # Re-evaluate with manager decisions when present (membership path may omit them).
+    from backend.rinse_wf_canonical_split import _load_events_for_bags
+
+    events_by_bag = _load_events_for_bags(
+        cursor, organization_id, list(membership.keys())
+    )
     orders: list[dict[str, Any]] = []
     for bag_id, fw in membership.items():
         meta = meta_by_ticket.get(bag_id)
         if not meta:
             continue
+        split_ev = evaluate_bag_split(
+            events_by_bag.get(bag_id) or [],
+            bag_id=bag_id,
+            manager_decision=mgr.get(bag_id),
+        )
         orders.append(
             _order_row_from_staging(
                 meta,
                 mapping_rules=rules,
-                processing_units=int(fw.get("processing_units") or 1),
-                split_confirmed=bool(fw.get("split_confirmed")),
+                processing_units=int(split_ev.get("processing_units") or 1),
+                split_confirmed=split_ev.get("canonical_split") is True,
                 first_weight_et=fw.get("first_weight_et"),
-                lifecycle_anchor_et=fw.get("lifecycle_anchor_et"),
-                latest_split_scan_et=fw.get("latest_washer_load_et")
-                or fw.get("latest_split_scan_et"),
-                washer_load_count=int(fw.get("washer_load_count") or 0),
-                washer_racks=list(fw.get("washer_racks") or []),
-                has_split_load_scan=bool(fw.get("has_split_load_scan")),
+                lifecycle_anchor_et=fw.get("lifecycle_anchor_et")
+                or split_ev.get("lifecycle_anchor_et"),
+                latest_split_scan_et=split_ev.get("latest_washer_load_et"),
+                washer_load_count=int(split_ev.get("washer_load_count") or 0),
+                washer_racks=list(split_ev.get("washer_racks") or []),
+                has_split_load_scan=bool(split_ev.get("split_marker_present")),
+                split_state=split_ev.get("state"),
+                canonical_split=split_ev.get("canonical_split"),
+                split_finalized=bool(split_ev.get("split_finalized")),
+                review_reason=split_ev.get("review_reason"),
             )
         )
     return orders
@@ -724,6 +739,22 @@ def _usage_by_supply(
     return usage
 
 
+def _split_finalizability_from_orders(
+    order_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Day-level Supply finalizability from canonical split states on orders."""
+    evaluations = {
+        str(r.get("order_id") or r.get("ticket_id") or ""): {
+            "state": r.get("split_state"),
+            "split_finalized": bool(r.get("split_finalized")),
+        }
+        for r in order_rows
+        if r.get("order_id") or r.get("ticket_id")
+    }
+    fin = supply_day_finalizable(evaluations)
+    return fin
+
+
 def build_supply_usage_report(
     cursor,
     organization_id: int,
@@ -735,20 +766,25 @@ def build_supply_usage_report(
         cursor, organization_id, target_date, mapping_rules=mapping_rules
     )
     order_rows.sort(key=lambda r: (str(r.get("customer") or "").lower(), str(r.get("order_id") or "")))
+    fin = _split_finalizability_from_orders(order_rows)
     return {
         "date_et": target_date.isoformat(),
         "data_source": (
             "first_weight_et day (lifecycle_anchor + first_weight_after_anchor) "
             "+ approved ACCEPTED/OVERRIDDEN metadata "
             "(staging preferred on duplicate ticket_id); "
-            "processing_units from post-first-weight washer start-cleaning loads "
-            "(2 units when ≥2 distinct W-racks; split-load purpose is informational only)"
+            "IS-SPLIT / processing_units from rinse_wf_canonical_split.evaluate_bag_split "
+            "(canonical_split=YES → 2 units; dosage mapping formulas unchanged)"
         ),
         "summary": _summary_counts(order_rows),
         "usage_by_supply": _usage_by_supply(order_rows, dosages),
         "orders": order_rows,
         "dosage_settings": dosages,
         "mapping_rules": mapping_rules_display(mapping_rules),
+        "split_finalizability": fin,
+        "supply_finalizable": bool(fin.get("finalizable")),
+        "supply_status": fin.get("supply_status"),
+        "supply_banner": fin.get("supply_banner"),
     }
 
 
@@ -761,12 +797,14 @@ def build_supply_usage_summary(
 
     Same membership/dosage rules as ``build_supply_usage_report``. Rush filtering
     is not supported by the Supply Usage engine (orders have no rush_status).
+    Not shown as final while any applicable WF order is PENDING or REVIEW_REQUIRED.
     """
     dosages = get_supply_usage_dosages(cursor, organization_id)
     mapping_rules = get_supply_usage_mapping_rules(cursor, organization_id)
     order_rows = load_orders_for_supply_usage(
         cursor, organization_id, target_date, mapping_rules=mapping_rules
     )
+    fin = _split_finalizability_from_orders(order_rows)
     return {
         "date_et": target_date.isoformat(),
         "usage_by_supply": _usage_by_supply(order_rows, dosages),
@@ -774,4 +812,8 @@ def build_supply_usage_summary(
         "rush_filtering_supported": False,
         "rush_filtering_reason": "supply_usage_engine_has_no_rush_status",
         "data_source": "supply_usage_summary_same_rules_no_order_rows",
+        "split_finalizability": fin,
+        "supply_finalizable": bool(fin.get("finalizable")),
+        "supply_status": fin.get("supply_status"),
+        "supply_banner": fin.get("supply_banner"),
     }

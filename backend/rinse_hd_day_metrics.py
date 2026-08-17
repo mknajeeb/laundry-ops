@@ -19,7 +19,7 @@ from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_scan_purpose import is_create_issue_purpose
 from backend.ta_helpers import table_exists
 
-CLASSIFICATION_VERSION = 2
+CLASSIFICATION_VERSION = 3
 
 ITEM_CLASS_COMFORTER = "comforter"
 ITEM_CLASS_BATH_MAT = "bath_mat"
@@ -206,33 +206,65 @@ def _load_create_issue_rejections(
     return out
 
 
+def _load_canonical_split_orders(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    bag_ids: Sequence[str],
+    *,
+    ctx: Mapping[str, Mapping[str, Any]] | None = None,
+    customers: Mapping[str, str | None] | None = None,
+    disappeared_ids: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Canonical WF split packs — same evaluator as Supply / Chronology."""
+    from backend.rinse_wf_canonical_split import (
+        evaluate_day_wf_splits,
+        pack_canonical_split_orders,
+    )
+
+    member = [normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)]
+    if not member:
+        return pack_canonical_split_orders({})
+    evaluations = evaluate_day_wf_splits(
+        cursor,
+        organization_id,
+        selected_date_et,
+        member,
+        disappeared_ids=disappeared_ids,
+    )
+    return pack_canonical_split_orders(
+        evaluations,
+        ctx_by_bag=ctx or {},
+        customers=customers or {},
+    )
+
+
+def _disappeared_ids_from_summary(summary: Mapping[str, Any]) -> list[str]:
+    by_reason = summary.get("review_by_reason") if isinstance(summary, Mapping) else None
+    if not isinstance(by_reason, dict):
+        return []
+    raw = by_reason.get("DISAPPEARED_WITHOUT_COMPLETION") or []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [normalize_bag_id(b) for b in raw if normalize_bag_id(b)]
+
+
 def _load_split_orders_from_supply_usage(
     cursor,
     organization_id: int,
     selected_date_et: date,
     bag_ids: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
-    """Reuse Supply Usage split_order flags — do not reimplement detection."""
-    member = {normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)}
-    if not member:
-        return {}
-    try:
-        from backend.supply_usage import load_orders_for_supply_usage
-    except Exception:
-        return {}
-    out: dict[str, dict[str, Any]] = {}
-    try:
-        rows = load_orders_for_supply_usage(cursor, organization_id, selected_date_et)
-    except Exception:
-        return {}
-    for row in rows or []:
-        if not isinstance(row, dict) or not row.get("split_order"):
-            continue
-        bid = normalize_bag_id(row.get("order_id") or row.get("ticket_id") or row.get("bag_id"))
-        if not bid or bid not in member:
-            continue
-        out[bid] = dict(row)
-    return out
+    """Deprecated path — prefer ``_load_canonical_split_orders``. Kept for tests."""
+    pack = _load_canonical_split_orders(
+        cursor, organization_id, selected_date_et, bag_ids
+    )
+    orders = (pack.get("split_orders") or {}).get("orders") or []
+    return {
+        normalize_bag_id(o.get("bag_id")): dict(o)
+        for o in orders
+        if normalize_bag_id(o.get("bag_id"))
+    }
 
 
 def _load_customer_names(
@@ -322,8 +354,15 @@ def build_day_specialty_metrics(
         cursor, organization_id, selected_date_et, member_ids
     )
     customers = _load_customer_names(cursor, organization_id, member_ids)
-    split_rows = _load_split_orders_from_supply_usage(
-        cursor, organization_id, selected_date_et, member_ids
+    disappeared = _disappeared_ids_from_summary(summary)
+    split_pack = _load_canonical_split_orders(
+        cursor,
+        organization_id,
+        selected_date_et,
+        member_ids,
+        ctx=ctx,
+        customers=customers,
+        disappeared_ids=disappeared,
     )
 
     comforter_orders: dict[str, dict[str, Any]] = {}
@@ -367,23 +406,6 @@ def build_day_specialty_metrics(
         )
         rejected_orders[bid]["status"] = "rejected"
 
-    split_orders: dict[str, dict[str, Any]] = {}
-    for bid, row in split_rows.items():
-        entry = _order_entry(
-            bid,
-            ctx=ctx.get(bid) or {"bag_id": bid, "status": "split"},
-            customer=customers.get(bid) or row.get("customer"),
-        )
-        if not entry.get("service") and row.get("service_type"):
-            entry["service"] = row.get("service_type")
-        entry["status"] = "split"
-        entry["split_order"] = True
-        entry["split_status"] = row.get("split_status")
-        entry["split_confirmed"] = row.get("split_confirmed")
-        entry["washer_load_count"] = row.get("washer_load_count")
-        entry["washer_racks"] = list(row.get("washer_racks") or [])
-        split_orders[bid] = entry
-
     def _pack(orders: dict[str, dict[str, Any]], key: str) -> dict[str, Any]:
         ordered = [orders[k] for k in sorted(orders.keys())]
         total_quantity = 0.0
@@ -408,7 +430,12 @@ def build_day_specialty_metrics(
         "comforter_orders": _pack(comforter_orders, "comforter_orders"),
         "bath_mat_orders": _pack(bath_mat_orders, "bath_mat_orders"),
         "rejected_orders": _pack(rejected_orders, "rejected_orders"),
-        "split_orders": _pack(split_orders, "split_orders"),
+        "split_orders": split_pack.get("split_orders")
+        or _pack({}, "split_orders"),
+        "split_review": split_pack.get("split_review")
+        or _pack({}, "split_review"),
+        "split_pending": split_pack.get("split_pending")
+        or _pack({}, "split_pending"),
     }
 
 
@@ -440,6 +467,8 @@ def attach_specialty_metrics_to_summary(
     out["bath_mat_item_qty"] = all_pack["bath_mat_orders"].get("total_quantity") or 0
     out["rejected_order_count"] = all_pack["rejected_orders"]["count"]
     out["split_order_count"] = all_pack["split_orders"]["count"]
+    out["split_review_count"] = (all_pack.get("split_review") or {}).get("count") or 0
+    out["split_pending_count"] = (all_pack.get("split_pending") or {}).get("count") or 0
     return out
 
 

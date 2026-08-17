@@ -2322,13 +2322,36 @@ export const getManagementRinseWfReviewList = (dateEt, params = {}) => {
 };
 
 export const getManagementRinseWfReviewDetail = (dateEt, bagId, params = {}) => {
-  const { signal, ...rest } = params || {};
+  const { signal, include_scans, ...rest } = params || {};
   return axios.get(
     `${API_BASE}/api/management/rinse-wf/review/${encodeURIComponent(bagId)}`,
+    {
+      params: {
+        date_et: dateEt,
+        include_scans: include_scans ? 1 : 0,
+        ...rest,
+      },
+      signal,
+    },
+  );
+};
+
+export const getManagementRinseWfReviewScans = (dateEt, bagId, params = {}) => {
+  const { signal, ...rest } = params || {};
+  return axios.get(
+    `${API_BASE}/api/management/rinse-wf/review/${encodeURIComponent(bagId)}/scans`,
     {
       params: { date_et: dateEt, ...rest },
       signal,
     },
+  );
+};
+
+export const postManagementRinseWfSplitDecision = (dateEt, bagId, body = {}) => {
+  return axios.post(
+    `${API_BASE}/api/management/rinse-wf/review/${encodeURIComponent(bagId)}/split-decision`,
+    body,
+    { params: { date_et: dateEt } },
   );
 };
 

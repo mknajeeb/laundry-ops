@@ -622,22 +622,11 @@ export default function ScanChronologyPage() {
         notSplit: apiSingle ?? Math.max(0, apiUnique - split),
       };
     }
-    const loadCounts = new Map();
-    sessions.forEach((row) => {
-      const bagId = String(row.bag_id || "").trim();
-      if (!bagId) return;
-      loadCounts.set(bagId, (loadCounts.get(bagId) || 0) + 1);
-    });
-    let split = 0;
-    let notSplit = 0;
-    loadCounts.forEach((count) => {
-      if (count > 1) split += 1;
-      else notSplit += 1;
-    });
+    // No client-side >1 start-cleaning heuristic — wait for API canonical count.
     return {
-      unique: loadCounts.size,
-      split,
-      notSplit,
+      unique: apiUnique ?? 0,
+      split: apiSplit ?? 0,
+      notSplit: apiSingle ?? 0,
     };
   }, [activeStage, summary, sessions]);
 
