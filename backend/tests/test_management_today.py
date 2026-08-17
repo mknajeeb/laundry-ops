@@ -297,12 +297,29 @@ def test_rinse_wf_payload_skips_hd_labor_and_supplies_compute(monkeypatch):
     supplies.assert_not_called()
 
 
-def test_review_does_not_fake_specialty_vs_portal_split():
-    review = extract_review({"review_required_count": 5}, _headline())
-    assert review["split_available"] is False
-    assert review["review_required"] == 5
-    assert review["specialty_items"] is None
-    assert review["missing_from_portal"] is None
+def test_review_splits_specialty_vs_portal_from_reason_codes():
+    headline = _headline()
+    headline["review_by_reason"] = {
+        "WF_BULK_WORKITEM_REVIEW": ["SPEC1", "SPEC2"],
+        "DISAPPEARED_WITHOUT_COMPLETION": ["MISS1"],
+    }
+    headline["review_reasons_by_bag"] = {
+        "SPEC1": ["WF_BULK_WORKITEM_REVIEW"],
+        "SPEC2": ["WF_BULK_WORKITEM_REVIEW"],
+        "MISS1": ["DISAPPEARED_WITHOUT_COMPLETION"],
+    }
+    headline["segments"]["wf"]["bag_ids"] = {
+        "review_required": ["SPEC1", "SPEC2", "MISS1"],
+        "completed": [],
+        "pending": [],
+        "new_today": [],
+        "carryover": [],
+    }
+    review = extract_review({"review_required_count": 3}, headline)
+    assert review["split_available"] is True
+    assert review["review_required"] == 3
+    assert review["specialty_items"] == 2
+    assert review["missing_from_portal"] == 1
 
 
 def test_compact_payload_uses_upstream_builders_and_strips_collections():
@@ -319,7 +336,7 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
     }
     pound_totals = {
         "today_wf_completed_pounds": 1940.25,
-        "included_bags": [{"bag_id": "Z"}],
+        "included_bags": [{"bag_id": "LEAKBAG99"}],
         "missing_post_bags": [],
     }
     supply_report = {
@@ -418,16 +435,19 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
     assert payload["supplies"]["Tide"]["ounces"] is None
     assert payload["supplies"]["deferred"] is True
     assert payload["supplies"]["available"] is False
+    assert payload["review"]["split_available"] is True
+    # Fixture day_rec count=5; short bag_ids in headline are not usable → all → specialty.
     assert payload["review"]["review_required"] == 5
-    assert payload["review"]["split_available"] is False
+    assert payload["review"]["specialty_items"] == 5
+    assert payload["review"]["missing_from_portal"] == 0
     rinse = payload["rinse"]
     assert rinse["segments"]["wf"]["total_workload"] == 97
     assert rinse["segments"]["wf"]["completed"] == 70
     assert rinse["segments"]["wf"]["pending"] == 1
     assert rinse["segments"]["wf"]["exceptions"]["review_required"] == 26
     assert "bag_ids" not in rinse["segments"]["wf"]
-    assert rinse["specialty_metrics"]["wf"]["rejected_orders"] == {"count": 1}
-    assert rinse["specialty_metrics"]["wf"]["comforter_orders"] == {"count": 4}
+    assert rinse["specialty_metrics"]["wf"]["rejected_orders"]["count"] == 1
+    assert rinse["specialty_metrics"]["wf"]["comforter_orders"]["count"] == 4
     assert "order_ids" not in rinse["specialty_metrics"]["wf"]["comforter_orders"]
     assert rinse["hd_dashboard_totals"]["total_hd_orders"] == 13
     assert rinse["weight_totals"]["pre_lbs"] == 2000.0
@@ -437,7 +457,10 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
     dumped = str(payload)
     assert "SHOULD_NOT_LEAK" not in dumped
     assert "orphan_production_facts" not in dumped
-    assert pound_totals["included_bags"][0]["bag_id"] not in dumped
+    leak_id = str(pound_totals["included_bags"][0]["bag_id"])
+    # Require a whole bag-id token, not a character that may appear in reason codes.
+    assert f"'{leak_id}'" not in dumped
+    assert f'"{leak_id}"' not in dumped
 
 
 def test_wf_lbs_prefers_persisted_daily_ops_pounds():

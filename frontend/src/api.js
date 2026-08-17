@@ -2313,6 +2313,25 @@ export const getManagementRinseWf = (dateEt, params = {}) => {
   });
 };
 
+export const getManagementRinseWfReviewList = (dateEt, params = {}) => {
+  const { signal, ...rest } = params || {};
+  return axios.get(`${API_BASE}/api/management/rinse-wf/review`, {
+    params: { date_et: dateEt, ...rest },
+    signal,
+  });
+};
+
+export const getManagementRinseWfReviewDetail = (dateEt, bagId, params = {}) => {
+  const { signal, ...rest } = params || {};
+  return axios.get(
+    `${API_BASE}/api/management/rinse-wf/review/${encodeURIComponent(bagId)}`,
+    {
+      params: { date_et: dateEt, ...rest },
+      signal,
+    },
+  );
+};
+
 export const getManagementTodaySupplies = (dateEt, params = {}) => {
   const { signal, ...rest } = params || {};
   return axios.get(`${API_BASE}/api/management/today/supplies`, {

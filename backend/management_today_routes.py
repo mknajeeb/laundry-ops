@@ -146,3 +146,89 @@ def register_management_today_routes(
         finally:
             cursor.close()
             conn.close()
+
+    @app.route("/api/management/rinse-wf/review", methods=["GET"])
+    def management_rinse_wf_review_list():
+        """Lightweight Review list — Specialty Items or Missing From Portal."""
+        from backend.management_rinse_wf_review import build_management_review_list
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            selected, err = _selected_date_et()
+            if err:
+                return err
+            category = (request.args.get("category") or "").strip()
+            rush = (request.args.get("rush") or request.args.get("rush_filter") or "all").strip()
+            try:
+                page = int(request.args.get("page") or 1)
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                page_size = int(request.args.get("page_size") or 50)
+            except (TypeError, ValueError):
+                page_size = 50
+            counting = CountingCursor(cursor)
+            payload = build_management_review_list(
+                counting,
+                oid,
+                selected,
+                category=category,
+                rush_filter=rush,
+                page=page,
+                page_size=page_size,
+            )
+            if payload.get("ok") is False:
+                return jsonify(json_safe_rinse(payload)), 400
+            meta = dict(payload.get("_meta") or {})
+            meta["query_count"] = int(getattr(counting, "query_count", 0))
+            payload["_meta"] = meta
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/rinse-wf/review/<bag_id>", methods=["GET"])
+    def management_rinse_wf_review_detail(bag_id: str):
+        """On-demand Review modal detail for ONE bag (scans included)."""
+        from backend.management_rinse_wf_review import build_management_review_detail
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            selected, err = _selected_date_et()
+            if err:
+                return err
+            counting = CountingCursor(cursor)
+            payload = build_management_review_detail(
+                counting,
+                oid,
+                selected,
+                bag_id,
+            )
+            if payload.get("ok") is False:
+                code = 404 if payload.get("error") == "bag_not_found" else 400
+                return jsonify(json_safe_rinse(payload)), code
+            meta = dict(payload.get("_meta") or {})
+            meta["query_count"] = int(getattr(counting, "query_count", 0))
+            payload["_meta"] = meta
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()

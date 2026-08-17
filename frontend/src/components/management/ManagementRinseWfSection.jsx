@@ -3,6 +3,7 @@ import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import RushFilterChips from "../shift/RushFilterChips";
 import Step1MetricDrawer from "../shift/Step1MetricDrawer";
 import TodayTapCard from "./TodayTapCard";
+import ManagementRinseWfReviewSection from "./ManagementRinseWfReviewSection";
 import {
   pickRinseSegments,
   pickWfSpecialty,
@@ -78,6 +79,7 @@ const SUPPLY_ROWS = [
 /** Management Rinse WF — WF-only operational home. */
 export default function ManagementRinseWfSection({
   rinse,
+  review: reviewProp,
   supplies: suppliesProp,
   suppliesLoading = false,
   suppliesError = "",
@@ -122,12 +124,20 @@ export default function ManagementRinseWfSection({
     [rinse, suppliesProp],
   );
   const wf = wfHeadline(wfSeg);
-  const comforter = specialty?.comforter_orders?.count ?? 0;
-  const bathMat = specialty?.bath_mat_orders?.count ?? 0;
+  // Dashboard cards: order counts. Order detail / Review list: item quantities.
+  const comforterOrders = specialty?.comforter_orders?.order_count
+    ?? specialty?.comforter_orders?.count
+    ?? 0;
+  const comforterQty = specialty?.comforter_orders?.total_quantity ?? null;
+  const bathMatOrders = specialty?.bath_mat_orders?.order_count
+    ?? specialty?.bath_mat_orders?.count
+    ?? 0;
+  const bathMatQty = specialty?.bath_mat_orders?.total_quantity ?? null;
   const rejected = specialty?.rejected_orders?.count ?? 0;
   const split = specialty?.split_orders?.count ?? 0;
   const suppliesAvailable = Boolean(supplies?.available);
   const suppliesPending = Boolean(suppliesLoading) || (Boolean(supplies?.deferred) && !suppliesAvailable);
+  const reviewSummary = reviewProp || rinse?.review || null;
 
   const openMetric = (metric, title, opts = {}) => {
     if (snapshotUnavailable) return;
@@ -207,10 +217,10 @@ export default function ManagementRinseWfSection({
           onClick={
             snapshotUnavailable
               ? undefined
-              : () =>
-                  openMetric("review_required", "Rinse WF · Review Required", {
-                    queue: "review_required",
-                  })
+              : () => {
+                  const el = document.getElementById("management-rinse-wf-review");
+                  el?.scrollIntoView({ behavior: "smooth", block: "start" });
+                }
           }
         />
       </CardGrid>
@@ -247,25 +257,35 @@ export default function ManagementRinseWfSection({
       <BlockLabel>Specialty / Quality</BlockLabel>
       <CardGrid>
         <TodayTapCard
-          label="Comforters"
-          value={snapshotUnavailable ? "—" : fmtInt(comforter)}
+          label="Comforter Orders"
+          value={snapshotUnavailable ? "—" : fmtInt(comforterOrders)}
+          sub={
+            snapshotUnavailable || comforterQty == null
+              ? undefined
+              : `${fmtInt(comforterQty)} item${Number(comforterQty) === 1 ? "" : "s"}`
+          }
           onClick={
             snapshotUnavailable
               ? undefined
               : () =>
-                  openMetric("comforter_orders", "Comforters", {
+                  openMetric("comforter_orders", "Comforter Orders", {
                     queue: "comforter_orders",
                   })
           }
         />
         <TodayTapCard
-          label="Bath Mats"
-          value={snapshotUnavailable ? "—" : fmtInt(bathMat)}
+          label="Bath Mat Orders"
+          value={snapshotUnavailable ? "—" : fmtInt(bathMatOrders)}
+          sub={
+            snapshotUnavailable || bathMatQty == null
+              ? undefined
+              : `${fmtInt(bathMatQty)} item${Number(bathMatQty) === 1 ? "" : "s"}`
+          }
           onClick={
             snapshotUnavailable
               ? undefined
               : () =>
-                  openMetric("bath_mat_orders", "Bath Mats", {
+                  openMetric("bath_mat_orders", "Bath Mat Orders", {
                     queue: "bath_mat_orders",
                   })
           }
@@ -296,6 +316,17 @@ export default function ManagementRinseWfSection({
           }
         />
       </CardGrid>
+
+      <Box id="management-rinse-wf-review">
+        <ManagementRinseWfReviewSection
+          selectedDateEt={selectedDateEt || rinse?.selected_date_et}
+          rushFilter={rushFilter}
+          reviewSummary={reviewSummary}
+          snapshotUnavailable={snapshotUnavailable}
+          readOnly={readOnly}
+          onRefresh={onRefresh}
+        />
+      </Box>
 
       <BlockLabel hint="DAY TOTALS">Supplies</BlockLabel>
       <CardGrid>

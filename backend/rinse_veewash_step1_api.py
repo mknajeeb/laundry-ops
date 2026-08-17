@@ -735,6 +735,10 @@ def build_drilldown(
                 "post_weight_attach_reason",
                 "pre_weight_at",
                 "post_weight_at",
+                "pre_weight_employee",
+                "post_weight_employee",
+                "pre_weight_event_employee",
+                "post_weight_event_employee",
                 "weight_entry_count",
                 "post_weight_event_exists",
                 "pre_resolution_status",
@@ -749,6 +753,14 @@ def build_drilldown(
             ):
                 if resolved.get(key) is not None:
                     item[key] = resolved.get(key)
+            if item.get("pre_weight_employee") is None and resolved.get(
+                "pre_weight_event_employee"
+            ):
+                item["pre_weight_employee"] = resolved.get("pre_weight_event_employee")
+            if item.get("post_weight_employee") is None and resolved.get(
+                "post_weight_event_employee"
+            ):
+                item["post_weight_employee"] = resolved.get("post_weight_event_employee")
             if has_pre_lock:
                 item["pre_weight_lbs"] = resolved.get("pre_weight_lbs")
             elif resolved.get("pre_weight_lbs") is not None:

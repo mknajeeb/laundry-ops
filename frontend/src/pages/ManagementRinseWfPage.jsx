@@ -183,6 +183,7 @@ export default function ManagementRinseWfPage() {
       {data ? (
         <ManagementRinseWfSection
           rinse={data.rinse || null}
+          review={data.review || null}
           supplies={supplies}
           suppliesLoading={suppliesLoading}
           suppliesError={suppliesError}

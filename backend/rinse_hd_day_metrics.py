@@ -386,9 +386,17 @@ def build_day_specialty_metrics(
 
     def _pack(orders: dict[str, dict[str, Any]], key: str) -> dict[str, Any]:
         ordered = [orders[k] for k in sorted(orders.keys())]
+        total_quantity = 0.0
+        for order in ordered:
+            try:
+                total_quantity += float(order.get("quantity") or 0)
+            except (TypeError, ValueError):
+                continue
         return {
             "key": key,
             "count": len(ordered),
+            "order_count": len(ordered),
+            "total_quantity": round(total_quantity, 1) if total_quantity else 0,
             "order_ids": [o["bag_id"] for o in ordered],
             "orders": ordered,
         }

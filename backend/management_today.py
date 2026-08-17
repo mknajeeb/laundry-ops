@@ -449,7 +449,17 @@ def _specialty_counts(
             count = len(raw_ids)
         else:
             count = _int_or_zero(row.get("count"))
-        out[key] = {"count": count}
+        entry: dict[str, Any] = {
+            "count": count,
+            "order_count": _int_or_zero(row.get("order_count")) or count,
+        }
+        # Preserve item-quantity totals when present (no order_ids leak).
+        if row.get("total_quantity") is not None:
+            try:
+                entry["total_quantity"] = float(row.get("total_quantity") or 0)
+            except (TypeError, ValueError):
+                entry["total_quantity"] = 0
+        out[key] = entry
     return out
 
 
@@ -576,27 +586,39 @@ def extract_rinse_step1(
 
 
 def extract_review(day_rec: Mapping[str, Any] | None, headline: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Phase 1: expose the existing combined Review Required count only.
+    """Review Required total + Specialty Items / Missing From Portal counts.
 
-    Specialty Items vs Missing From Portal is not a persisted Review split.
-    Existing reason codes do not map onto those two Hub buckets without
-    changing membership semantics — that remains Phase 3.
+    Counts only (no bag ID arrays). Mapping lives in management_rinse_wf_review.
     """
+    from backend.management_rinse_wf_review import split_review_categories
+
     rec = dict(day_rec or {})
     hl = dict(headline or {})
+    split = split_review_categories(hl)
     count = rec.get("review_required_count")
     if count is None:
         count = ((hl.get("exceptions") or {}).get("review_required"))
     if count is None:
-        count = (((hl.get("segments") or {}).get("all") or {}).get("exceptions") or {}).get(
+        count = (((hl.get("segments") or {}).get("wf") or {}).get("exceptions") or {}).get(
             "review_required"
         )
+    wf_total = int(split["counts"]["review_required"] or 0)
+    specialty = int(split["counts"]["specialty_items"] or 0)
+    missing = int(split["counts"]["missing_from_portal"] or 0)
+    # When headline bag IDs are missing/unusable, keep a reconcilable total and
+    # route the whole population to specialty_items (not a fake portal split).
+    if wf_total == 0 and int(count or 0) > 0:
+        wf_total = int(count or 0)
+        specialty = wf_total
+        missing = 0
     return {
-        "split_available": False,
-        "review_required": int(count or 0),
-        "specialty_items": None,
-        "missing_from_portal": None,
-        "split_reason": "existing_review_is_one_combined_bucket",
+        "split_available": True,
+        "review_required": wf_total,
+        "specialty_items": specialty,
+        "missing_from_portal": missing,
+        "reason_category_map": split["reason_category_map"],
+        "precedence": split["precedence"],
+        "employee_performance_hint": split["employee_performance_hint"],
     }
 
 
@@ -1040,11 +1062,13 @@ def build_management_rinse_wf_payload(
     else:
         generated_iso = now_et.isoformat(timespec="seconds")
 
+    review = extract_review(day_rec, headline)
     payload = {
         "date_et": day.isoformat(),
         "generated_at_et": generated_iso,
         "rinse": rinse,
         "supplies": rinse["supplies"],
+        "review": review,
         "_meta": {
             "cached": False,
             "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
@@ -1054,6 +1078,7 @@ def build_management_rinse_wf_payload(
                 "rinse": "persisted_day_headline_compact_read",
                 "wf_weights": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs_evidence",
                 "supplies": "deferred_to_/api/management/today/supplies",
+                "review": "headline_review_reasons_split_specialty_vs_missing_portal",
             },
         },
     }
