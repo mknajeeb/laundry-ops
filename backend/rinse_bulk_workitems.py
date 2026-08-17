@@ -680,7 +680,7 @@ def save_bag_bulk_workitems(
         return {"ok": False, "error": "invalid_bag_id"}
 
     # WF-only: reject HD bags (effective service after bulk/registry resolution).
-    from backend.rinse_veewash_review import load_registry_service_map
+    from backend.rinse_veewash_review import load_registry_service_classification
     from backend.rinse_veewash_workload import SERVICE_HD, SERVICE_WF, _norm_bag
 
     portal_svc = None
@@ -697,7 +697,13 @@ def save_bag_bulk_workitems(
         portal_svc = str(prow.get("service_type") or "").strip().upper()
     except Exception:
         portal_svc = None
-    reg_svc = (load_registry_service_map(cursor, organization_id, [bid]).get(bid) or "").upper()
+    reg_map, reg_historical = load_registry_service_classification(
+        cursor, organization_id, [bid]
+    )
+    reg_svc = (reg_map.get(bid) or "").upper()
+    # COMPLETED prior-cycle registry must not force HD for current WF portal bags.
+    if bid in {_norm_bag(b) for b in reg_historical}:
+        reg_svc = ""
     bulk_map = load_bulk_workitem_scan_map(
         cursor, organization_id, [bid], selected_date_et=shift_date_et
     )

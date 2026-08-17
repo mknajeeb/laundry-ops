@@ -1301,7 +1301,7 @@ def build_veewash_daily_workload(
     from backend.rinse_veewash_review import (
         expand_review_required,
         load_bag_weight_map,
-        load_registry_service_map,
+        load_registry_service_classification,
     )
 
     weight_ids = sorted(
@@ -1314,7 +1314,9 @@ def build_veewash_daily_workload(
     weights = load_bag_weight_map(
         cursor, organization_id, weight_ids, selected_date_et=selected_date_et
     )
-    registry_services = load_registry_service_map(cursor, organization_id, weight_ids)
+    registry_services, registry_historical = load_registry_service_classification(
+        cursor, organization_id, weight_ids
+    )
 
     from backend.rinse_bulk_workitems import (
         load_bag_bulk_lines,
@@ -1348,6 +1350,7 @@ def build_veewash_daily_workload(
         bulk_resolution_by_bag=bulk_resolutions,
         bulk_lines_by_bag=bulk_lines,
         registry_service_by_bag=registry_services,
+        registry_historical_completed_bags=registry_historical,
         last_scan_at_by_bag=last_scans,
     )
     result = apply_cycle_pending_reasons(result, cycle_pending_reasons)
@@ -1596,14 +1599,16 @@ def build_veewash_daily_workload_from_membership(
     from backend.rinse_veewash_review import (
         expand_review_required,
         load_bag_weight_map,
-        load_registry_service_map,
+        load_registry_service_classification,
     )
 
     weight_ids = sorted(member_set | set(presence.keys()))
     weights = load_bag_weight_map(
         cursor, organization_id, weight_ids, selected_date_et=selected_date_et
     )
-    registry_services = load_registry_service_map(cursor, organization_id, weight_ids)
+    registry_services, registry_historical = load_registry_service_classification(
+        cursor, organization_id, weight_ids
+    )
 
     from backend.rinse_bulk_workitems import (
         load_bag_bulk_lines,
@@ -1637,6 +1642,7 @@ def build_veewash_daily_workload_from_membership(
         bulk_resolution_by_bag=bulk_resolutions,
         bulk_lines_by_bag=bulk_lines,
         registry_service_by_bag=registry_services,
+        registry_historical_completed_bags=registry_historical,
         last_scan_at_by_bag=last_scans,
     )
     result = apply_cycle_pending_reasons(result, cycle_pending_reasons)

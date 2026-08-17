@@ -225,6 +225,7 @@ def expand_review_required(
     bulk_resolution_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
     bulk_lines_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     registry_service_by_bag: Mapping[str, str] | None = None,
+    registry_historical_completed_bags: Sequence[str] | None = None,
     last_scan_at_by_bag: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
@@ -253,8 +254,9 @@ def expand_review_required(
         signal from upstream tagging; e.g. 04FRSEC71H)
 
     So bulk does not redefine a bag that has relevant workitems-added + HD
-    portal/registry. Bulk without relevant WIA forces WF. Registry WF still
-    overrides portal HD.
+    portal/registry. Bulk without relevant WIA forces WF. Current-cycle
+    registry WF still overrides portal HD. COMPLETED prior-cycle registry is
+    historical context only and must not override clear portal/staging.
 
     WF_ZERO_OR_MISSING_POST_WEIGHT / WF_BULK_WORKITEM_REVIEW only when the bag
     is canonically completed. Missing POST also requires exactly one
@@ -273,6 +275,11 @@ def expand_review_required(
         _norm_bag(k): str(v or "").strip().upper()
         for k, v in (registry_service_by_bag or {}).items()
         if _norm_bag(k)
+    }
+    registry_historical = {
+        _norm_bag(b)
+        for b in (registry_historical_completed_bags or [])
+        if _norm_bag(b)
     }
 
     from backend.rinse_bulk_workitems import bag_bulk_review_cleared
@@ -334,11 +341,17 @@ def expand_review_required(
         """
         Effective Step-1 service from portal/registry + scan purposes.
 
-        - Registry WF overrides portal HD (explicit WF identity).
+        Current-cycle scoped:
+        - Clear portal/staging/current-cycle evidence wins over COMPLETED
+          prior-cycle registry (historical = fallback/context only).
+        - Current-cycle (non-COMPLETED) registry WF overrides portal HD.
+        - Genuine current-cycle portal↔registry conflict: keep determinable
+          portal membership; flag mismatch for Review without remapping
+          known WF into HD workload.
         - Hang Dry has classification-relevant workitems-added (often with
           create-workitem-bulk too). WIA before first weight-entry is ignored.
         - WF with work items has create-workitem-bulk only — no relevant WIA.
-        - Therefore: bulk + HD portal/registry + relevant WIA → keep HD;
+        - Therefore: bulk + HD portal/current registry + relevant WIA → keep HD;
           bulk without relevant WIA → WF.
         - Facility racks never determine service.
         """
@@ -346,7 +359,10 @@ def expand_review_required(
             _service_of(pres)
             or str(pres.get("service_type") or row.get("service_type") or "").upper()
         )
-        reg = registry_svc.get(bid) or ""
+        reg_raw = registry_svc.get(bid) or ""
+        historical = bid in registry_historical and bool(reg_raw)
+        # Prior-cycle COMPLETED registry must not override current portal.
+        reg = "" if historical else reg_raw
         has_bulk = bool(bulk_scans.get(bid) and int((bulk_scans.get(bid) or {}).get("count") or 0) > 0)
         has_wia = has_workitems_added(bid)
 
@@ -365,9 +381,13 @@ def expand_review_required(
 
         if has_bulk:
             return SERVICE_WF, portal == SERVICE_HD or reg == SERVICE_HD
+        # Current-cycle conflict: membership follows clear portal; Review may remain.
         if reg in (SERVICE_WF, SERVICE_HD) and portal and reg != portal:
-            return reg, True
-        return portal or reg or SERVICE_WF, False
+            return portal, True
+        # Historical registry vs portal: portal wins; no mismatch (stale only).
+        if historical and portal:
+            return portal, False
+        return portal or reg or reg_raw or SERVICE_WF, False
 
     # --- Remap service for bulk / registry WF (before other reviews) ----------
     active = new_today | carryover
@@ -384,6 +404,7 @@ def expand_review_required(
             "service_type": svc,
             "portal_service_type": portal or row.get("portal_service_type"),
             "registry_service_type": registry_svc.get(bid) or row.get("registry_service_type"),
+            "registry_service_historical": bid in registry_historical,
         }
         if mismatched:
             add_reason(bid, REASON_SERVICE_CLASSIFICATION_MISMATCH)
@@ -1019,28 +1040,50 @@ def load_bag_weight_map(
     return out
 
 
-def load_registry_service_map(
+def load_registry_service_classification(
     cursor, organization_id: int, bag_ids: list[str]
-) -> dict[str, str]:
-    """bag_id → registry service_type (WF/HD) when present."""
+) -> tuple[dict[str, str], list[str]]:
+    """
+    Registry service types plus prior-cycle COMPLETED bag ids.
+
+    Returns:
+      service_by_bag: bag_id → WF/HD (includes COMPLETED rows for context)
+      historical_completed_bag_ids: bags whose registry completion_status is
+        COMPLETED — prior-cycle identity; must not override current portal.
+    """
+    from backend.rinse_bag_completion import COMPLETION_COMPLETED
     from backend.ta_helpers import table_exists
 
     ids = sorted({_norm_bag(b) for b in bag_ids if _norm_bag(b)})
     if not ids or not table_exists(cursor, "rinse_bag_registry"):
-        return {}
+        return {}, []
     placeholders = ",".join(["%s"] * len(ids))
     cursor.execute(
         f"""
-        SELECT bag_id, service_type
+        SELECT bag_id, service_type, completion_status
         FROM rinse_bag_registry
         WHERE organization_id = %s AND bag_id IN ({placeholders})
         """,
         (int(organization_id), *ids),
     )
     out: dict[str, str] = {}
+    historical: list[str] = []
     for row in cursor.fetchall() or []:
         bid = _norm_bag(row.get("bag_id"))
         svc = str(row.get("service_type") or "").strip().upper()
+        status = str(row.get("completion_status") or "").strip().upper()
         if bid and svc in (SERVICE_WF, SERVICE_HD):
             out[bid] = svc
-    return out
+            if status == COMPLETION_COMPLETED:
+                historical.append(bid)
+    return out, historical
+
+
+def load_registry_service_map(
+    cursor, organization_id: int, bag_ids: list[str]
+) -> dict[str, str]:
+    """bag_id → registry service_type (WF/HD) when present (incl. COMPLETED)."""
+    service_by_bag, _historical = load_registry_service_classification(
+        cursor, organization_id, bag_ids
+    )
+    return service_by_bag
