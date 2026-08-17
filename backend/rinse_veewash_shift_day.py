@@ -667,6 +667,30 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
             new_or_carry = "added_during_day"
         else:
             new_or_carry = "opening_new"
+        # Columns and snapshot must carry the same resolved PRE/POST facts.
+        pre_lbs = row.get("pre_weight_lbs")
+        post_lbs = row.get("post_weight_lbs")
+        weight_lbs = row.get("weight_lbs")
+        if weight_lbs is None and post_lbs is not None:
+            weight_lbs = post_lbs
+        snap["pre_weight_lbs"] = pre_lbs
+        snap["post_weight_lbs"] = post_lbs
+        if weight_lbs is not None:
+            snap["weight_lbs"] = weight_lbs
+        for _wk in (
+            "pre_weight_at",
+            "post_weight_at",
+            "pre_weight_employee",
+            "post_weight_employee",
+            "pre_weight_attach_reason",
+            "post_weight_attach_reason",
+            "pre_weight_source",
+            "post_weight_source",
+            "pre_resolution_status",
+            "post_resolution_status",
+        ):
+            if row.get(_wk) is not None:
+                snap[_wk] = row.get(_wk)
         rows_out.append(
             {
                 "bag_id": bid,
@@ -677,9 +701,9 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
                 "workload_entry_timestamp": row.get("first_entry_at")
                 or row.get("entry_at")
                 or row.get("original_entry_date"),
-                "pre_weight_lbs": row.get("pre_weight_lbs"),
-                "post_weight_lbs": row.get("post_weight_lbs"),
-                "weight_lbs": row.get("weight_lbs"),
+                "pre_weight_lbs": pre_lbs,
+                "post_weight_lbs": post_lbs,
+                "weight_lbs": weight_lbs,
                 "canonical_completion_status": row.get("canonical_status")
                 or snap.get("outcome")
                 or row.get("outcome"),
@@ -768,9 +792,53 @@ def _day_bag_manager_lock_upsert_sql() -> str:
                 rinse_shift_monitor_day_bags.disposition,
                 COALESCE(incoming.disposition, rinse_shift_monitor_day_bags.disposition)
               ),
+              -- Manager lock preserves decision fields in the snapshot, but PRE/POST
+              -- weight facts must stay aligned with day-bag columns (no dual-state).
               bag_snapshot_json=IF(
                 rinse_shift_monitor_day_bags.manager_edit_version > 0,
-                rinse_shift_monitor_day_bags.bag_snapshot_json,
+                JSON_SET(
+                  CAST(
+                    COALESCE(
+                      rinse_shift_monitor_day_bags.bag_snapshot_json,
+                      '{}'
+                    ) AS JSON
+                  ),
+                  '$.pre_weight_lbs', incoming.pre_weight_lbs,
+                  '$.post_weight_lbs', incoming.post_weight_lbs,
+                  '$.weight_lbs', incoming.weight_lbs,
+                  '$.pre_weight_at',
+                    JSON_EXTRACT(CAST(incoming.bag_snapshot_json AS JSON), '$.pre_weight_at'),
+                  '$.post_weight_at',
+                    JSON_EXTRACT(CAST(incoming.bag_snapshot_json AS JSON), '$.post_weight_at'),
+                  '$.pre_weight_employee',
+                    JSON_EXTRACT(CAST(incoming.bag_snapshot_json AS JSON), '$.pre_weight_employee'),
+                  '$.post_weight_employee',
+                    JSON_EXTRACT(CAST(incoming.bag_snapshot_json AS JSON), '$.post_weight_employee'),
+                  '$.pre_weight_attach_reason',
+                    JSON_EXTRACT(
+                      CAST(incoming.bag_snapshot_json AS JSON),
+                      '$.pre_weight_attach_reason'
+                    ),
+                  '$.post_weight_attach_reason',
+                    JSON_EXTRACT(
+                      CAST(incoming.bag_snapshot_json AS JSON),
+                      '$.post_weight_attach_reason'
+                    ),
+                  '$.pre_weight_source',
+                    JSON_EXTRACT(CAST(incoming.bag_snapshot_json AS JSON), '$.pre_weight_source'),
+                  '$.post_weight_source',
+                    JSON_EXTRACT(CAST(incoming.bag_snapshot_json AS JSON), '$.post_weight_source'),
+                  '$.pre_resolution_status',
+                    JSON_EXTRACT(
+                      CAST(incoming.bag_snapshot_json AS JSON),
+                      '$.pre_resolution_status'
+                    ),
+                  '$.post_resolution_status',
+                    JSON_EXTRACT(
+                      CAST(incoming.bag_snapshot_json AS JSON),
+                      '$.post_resolution_status'
+                    )
+                ),
                 incoming.bag_snapshot_json
               ),
               productivity_employee_name=IF(

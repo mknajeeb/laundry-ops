@@ -66,6 +66,12 @@ def test_upsert_sql_uses_qualified_manager_lock_not_unguarded_values():
     assert "effective_status=VALUES(effective_status)" not in sql
     assert "review_reason_codes_json=VALUES(review_reason_codes_json)" not in sql
     assert "bag_snapshot_json=VALUES(bag_snapshot_json)" not in sql
+    # Manager-locked rows still sync PRE/POST weight facts into the snapshot.
+    assert "JSON_SET(" in sql
+    assert "$.pre_weight_lbs" in sql
+    assert "$.post_weight_lbs" in sql
+    assert "incoming.pre_weight_lbs" in sql
+    assert "incoming.post_weight_lbs" in sql
 
 
 def test_headline_projection_uses_day_bag_status_not_live_summary():

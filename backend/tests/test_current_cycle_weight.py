@@ -117,6 +117,7 @@ def test_lifetime_ordinal_not_used_for_lbs_when_observations_present():
 
 
 def test_portal_still_showing_pre_after_post_scan_stays_provisional():
+    """Portal-only path (no event lbs): stale PRE echo stays provisional."""
     events = _cycle_base(old_weights=False)
     observations = [
         _obs(datetime(2026, 7, 29, 8, 0), 23.5, run=1),
@@ -720,3 +721,174 @@ def test_pre_fallback_does_not_override_when_entry_exists():
     assert selected["entry_at"] is not None
     assert selected["pre_event"]["id"] == 12
     assert selected["post_event"]["id"] == 14
+
+
+def test_ctqg55k5xd_stale_portal_does_not_override_post_event_lbs():
+    """CTQG55K5XD: POST event 14.2 must win over portal still echoing PRE 23.7."""
+    day = date(2026, 8, 17)
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 17, 5, 17), eid=1),
+        _ev("move-bag", datetime(2026, 8, 17, 5, 17), eid=2, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 17, 5, 33),
+            eid=3,
+            lbs=23.7,
+            user="Varun",
+        ),
+        _ev("garments-reviewed", datetime(2026, 8, 17, 10, 9), eid=4),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 17, 10, 11),
+            eid=5,
+            lbs=14.2,
+            user="Maria",
+        ),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 17, 10, 11, 1),
+            eid=6,
+            lbs=23.7,
+            user="Maria",
+        ),
+    ]
+    observations = [
+        _obs(datetime(2026, 8, 17, 6, 0), 23.7, run=1),
+        _obs(datetime(2026, 8, 17, 11, 9), 23.7, run=2),
+        _obs(datetime(2026, 8, 17, 12, 11), 23.7, run=3),
+        _obs(datetime(2026, 8, 17, 14, 11), 23.7, run=4),
+    ]
+    resolved = resolve_current_cycle_weights(
+        events, selected_date_et=day, observations=observations
+    )
+    assert resolved.pre_weight_lbs == 23.7
+    assert resolved.post_weight_lbs == 14.2
+    assert resolved.pre_weight_event_employee == "Varun"
+    assert resolved.post_weight_event_employee == "Maria"
+    assert resolved.post_weight_event_id == 5
+    assert "stale_pre_portal" in (resolved.post_weight_attach_reason or "")
+
+
+def test_9idg97vis4_event_lbs_immediate_while_portal_still_pre():
+    """9IDG97VIS4 shape: selected POST event lbs win immediately over stale portal."""
+    day = date(2026, 8, 16)
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 16, 5, 47), eid=1),
+        _ev("move-bag", datetime(2026, 8, 16, 5, 47), eid=2, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 16, 5, 53),
+            eid=3,
+            lbs=34.2,
+            user="Varun",
+        ),
+        _ev("garments-reviewed", datetime(2026, 8, 16, 8, 3), eid=4),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 16, 9, 1),
+            eid=5,
+            lbs=32.9,
+            user="Jennifer",
+        ),
+    ]
+    observations = [
+        _obs(datetime(2026, 8, 16, 6, 30), 34.2, run=1),
+        _obs(datetime(2026, 8, 16, 9, 30), 34.2, run=2),
+        _obs(datetime(2026, 8, 16, 10, 30), 34.2, run=3),
+    ]
+    resolved = resolve_current_cycle_weights(
+        events, selected_date_et=day, observations=observations
+    )
+    assert resolved.pre_weight_lbs == 34.2
+    assert resolved.post_weight_lbs == 32.9
+    assert resolved.post_resolution_status == STATUS_CONFIRMED
+
+
+def test_legitimate_pre_equals_post_from_selected_events_without_portal():
+    """Equal PRE/POST on the events themselves — no portal confirmation required."""
+    events = _cycle_base(old_weights=False)
+    for ev in events:
+        if ev["id"] == 12:
+            ev["weight_lbs"] = 20.0
+        if ev["id"] == 14:
+            ev["weight_lbs"] = 20.0
+    resolved = resolve_current_cycle_weights(
+        events, selected_date_et=DAY, observations=[]
+    )
+    assert resolved.pre_weight_lbs == 20.0
+    assert resolved.post_weight_lbs == 20.0
+    assert resolved.post_resolution_status == STATUS_EQUAL_VALUES_CONFIRMED
+
+
+def test_selected_post_without_numeric_falls_back_to_portal():
+    events = _cycle_base(old_weights=False)
+    observations = [
+        _obs(datetime(2026, 7, 29, 8, 0), 18.0, run=1),
+        _obs(datetime(2026, 7, 29, 10, 30), 16.5, run=2),
+        _obs(datetime(2026, 7, 29, 11, 30), 16.5, run=3),
+    ]
+    resolved = resolve_current_cycle_weights(
+        events, selected_date_et=DAY, observations=observations
+    )
+    assert resolved.pre_weight_lbs == 18.0
+    assert resolved.post_weight_lbs == 16.5
+    assert resolved.post_resolution_status == STATUS_CONFIRMED
+
+
+def test_portal_can_correct_erroneous_selected_post_event_lbs():
+    """Credible later portal ≠ event and ≠ PRE may correct the scan lbs."""
+    events = _cycle_base(old_weights=False)
+    for ev in events:
+        if ev["id"] == 12:
+            ev["weight_lbs"] = 23.5
+        if ev["id"] == 14:
+            ev["weight_lbs"] = 23.5  # erroneous scan echoed PRE
+    observations = [
+        _obs(datetime(2026, 7, 29, 8, 0), 23.5, run=1),
+        _obs(datetime(2026, 7, 29, 10, 30), 23.5, run=2),
+        _obs(datetime(2026, 7, 29, 13, 0), 21.5, run=3),
+        _obs(datetime(2026, 7, 29, 14, 0), 21.5, run=4),
+    ]
+    resolved = resolve_current_cycle_weights(
+        events, selected_date_et=DAY, observations=observations
+    )
+    assert resolved.pre_weight_lbs == 23.5
+    assert resolved.post_weight_lbs == 21.5
+    assert resolved.post_resolution_status == STATUS_CONFIRMED
+    assert "portal_corrects_selected_post_event_weight" in (resolved.resolution_reason or "")
+
+
+def test_machine_rack_stv_between_pre_and_post_keeps_cycle_weights():
+    """Machine-rack STV must not restart the cycle or drop POST."""
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 7, 29, 5, 0), eid=1),
+        _ev("move-bag", datetime(2026, 7, 29, 5, 30), eid=2, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 7, 29, 6, 0),
+            eid=3,
+            lbs=34.2,
+            user="Varun",
+        ),
+        _ev(
+            "sent-to-vendor",
+            datetime(2026, 7, 29, 7, 0),
+            eid=4,
+            rack="D10-50-VW",
+        ),
+        _ev("garments-reviewed", datetime(2026, 7, 29, 10, 0), eid=5),
+        _ev(
+            "weight-entry",
+            datetime(2026, 7, 29, 10, 5),
+            eid=6,
+            lbs=32.9,
+            user="Jennifer",
+        ),
+    ]
+    resolved = resolve_current_cycle_weights(
+        events, selected_date_et=DAY, observations=[]
+    )
+    assert resolved.pre_weight_lbs == 34.2
+    assert resolved.post_weight_lbs == 32.9
+    assert resolved.pre_weight_event_id == 3
+    assert resolved.post_weight_event_id == 6

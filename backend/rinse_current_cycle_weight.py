@@ -24,21 +24,31 @@ completion / review / garments-reviewed logic. Prefer ``weight_role=PRE``;
 otherwise the earliest in-window weight-entry.
 
 Role comes from event ordering relative to review.
-Numeric pounds come from portal / presence observations (or audited manual
-correction). POST may start provisional and later correct when a later eligible
-observation differs from PRE.
+
+Numeric pounds authority (selected weight-entry event first)
+-----------------------------------------------------------
+Once PRE/POST **events** are selected, ``weight_lbs`` on that scan event is
+authoritative for that role.
+
+Portal / presence observations are used only to:
+  1. fall back when the selected event has no usable ``weight_lbs``;
+  2. correct the selected event when credible later portal evidence shows a
+     different settled value (not a stale PRE echo);
+  3. populate cases where the scan never carried a numeric weight.
+
+A portal observation that merely echoes PRE must **not** replace a selected
+POST event that already has a distinct numeric weight (CTQG55K5XD).
 
 Finalization (deterministic, no silent freeze)
 ----------------------------------------------
 * MANUAL_CORRECTION — audited override wins and is never auto-overwritten
-* CONFIRMED — post-event observation(s) settled on a value that differs from PRE
-  with two consecutive agreeing observations (distinct scrape/run IDs), OR a
-  single differing value that is also the latest eligible observation
-* EQUAL_VALUES_CONFIRMED — two consecutive post-event observations (distinct
-  scrape/run IDs) equal PRE (legitimate equal PRE/POST)
-* PROVISIONAL — first post-event observation equals PRE (or only one post-event
-  obs so far); may still correct
-* WAITING_FOR_POST_VALUE — POST event exists, no post-event observation yet
+* CONFIRMED — selected event lbs (or portal confirmation / correction)
+* EQUAL_VALUES_CONFIRMED — selected PRE and POST event lbs equal, or portal
+  confirms equal PRE/POST when event lbs are absent
+* PROVISIONAL — portal-only POST still equaling PRE (no authoritative POST
+  event lbs yet); may still correct
+* WAITING_FOR_POST_VALUE — POST event exists, no event lbs and no post-event
+  observation yet
 * CONFLICTING_OBSERVATIONS — post-event observations disagree without two
   consecutive agreements
 
@@ -48,13 +58,8 @@ Finalization (deterministic, no silent freeze)
   * same normalized pounds (tol 0.05)
   * ordered by observed_at
 
-State transitions:
-  missing → provisional → confirmed
-  provisional → corrected confirmed (later value ≠ PRE with consecutive evidence)
-
-A confirmed portal POST may be superseded only by a stronger portal rule:
-two consecutive distinct-run observations agreeing on a new value that still
-differs from PRE. Ordinary single later scrapes do not rewrite confirmed.
+Portal may correct a selected event lbs only with confirmed/equal-settled
+evidence that differs from the event and is not a stale PRE echo.
 Manual corrections are never auto-rewritten.
 
 Proposed reconciliation window (reported, not hard-required for correction):
@@ -610,6 +615,121 @@ def _resolve_lbs_from_observations(
     }
 
 
+def _event_attached_lbs_result(
+    event: Mapping[str, Any] | None, *, role: str
+) -> dict[str, Any] | None:
+    """Authoritative lbs from the selected weight-entry event, if present."""
+    if event is None:
+        return None
+    seeded = _parse_weight(event.get("weight_lbs"))
+    if seeded is None:
+        return None
+    return {
+        "lbs": seeded,
+        "observation_at": _coerce_dt(event.get("weight_observed_at")),
+        "observation_run": event.get("weight_presence_run_id"),
+        "status": STATUS_CONFIRMED,
+        "reason": f"selected_{role.lower()}_event_weight_lbs_authoritative",
+        "source": event.get("weight_source") or "scan_event_weight_lbs",
+        "attach_reason": event.get("weight_attach_reason")
+        or "selected_event_authoritative",
+    }
+
+
+def _portal_is_stale_pre_echo(
+    portal_lbs: float | None, *, event_lbs: float, peer_lbs: float | None, role: str
+) -> bool:
+    """True when portal merely repeats PRE while the POST event has a distinct lbs."""
+    if role != "POST" or portal_lbs is None or peer_lbs is None:
+        return False
+    if _weights_equal(event_lbs, peer_lbs):
+        return False
+    return _weights_equal(portal_lbs, peer_lbs) and not _weights_equal(
+        portal_lbs, event_lbs
+    )
+
+
+def _portal_credibly_corrects_event(
+    portal: Mapping[str, Any],
+    *,
+    event_lbs: float,
+    peer_lbs: float | None,
+    role: str,
+) -> bool:
+    """Portal may override event lbs only with settled evidence ≠ event (≠ PRE echo)."""
+    portal_lbs = portal.get("lbs")
+    if portal_lbs is None:
+        return False
+    if _weights_equal(portal_lbs, event_lbs):
+        return False
+    if _portal_is_stale_pre_echo(
+        portal_lbs, event_lbs=event_lbs, peer_lbs=peer_lbs, role=role
+    ):
+        return False
+    status = str(portal.get("status") or "")
+    return status in (STATUS_CONFIRMED, STATUS_EQUAL_VALUES_CONFIRMED)
+
+
+def _combine_event_and_portal_lbs(
+    *,
+    event: Mapping[str, Any] | None,
+    portal: Mapping[str, Any],
+    role: str,
+    peer_lbs: float | None,
+    prefer_event_attached_lbs: bool,
+    notes: list[str],
+) -> dict[str, Any]:
+    """
+    Numeric authority:
+
+      manual (caller) > selected event weight_lbs > portal fallback/correction
+
+    Portal never outranks a selected event's distinct lbs merely by echoing PRE.
+    """
+    if not prefer_event_attached_lbs:
+        return dict(portal)
+
+    event_seed = _event_attached_lbs_result(event, role=role)
+    if event_seed is None:
+        return dict(portal)
+
+    portal_lbs = portal.get("lbs")
+    if _portal_credibly_corrects_event(
+        portal, event_lbs=float(event_seed["lbs"]), peer_lbs=peer_lbs, role=role
+    ):
+        notes.append(f"{role.lower()}_portal_corrects_selected_event_weight")
+        out = dict(portal)
+        out["reason"] = f"portal_corrects_selected_{role.lower()}_event_weight"
+        out["attach_reason"] = (
+            portal.get("attach_reason") or "portal_correction_of_event_lbs"
+        )
+        return out
+
+    # Event wins. Enrich status when PRE==POST on the events themselves.
+    out = dict(event_seed)
+    if (
+        role == "POST"
+        and peer_lbs is not None
+        and _weights_equal(out["lbs"], peer_lbs)
+    ):
+        out["status"] = STATUS_EQUAL_VALUES_CONFIRMED
+        out["reason"] = "selected_post_event_equals_pre"
+        out["attach_reason"] = "selected_event_authoritative_equals_pre"
+        notes.append("post_event_equals_pre")
+    elif _portal_is_stale_pre_echo(
+        portal_lbs, event_lbs=float(out["lbs"]), peer_lbs=peer_lbs, role=role
+    ):
+        out["reason"] = "selected_post_event_weight_lbs_authoritative_over_stale_pre_portal"
+        out["attach_reason"] = "selected_event_authoritative_ignores_stale_pre_portal"
+        notes.append("post_event_overrides_stale_pre_portal")
+    elif portal_lbs is not None and _weights_equal(portal_lbs, out["lbs"]):
+        out["reason"] = f"{out['reason']};portal_agrees"
+        notes.append(f"{role.lower()}_portal_agrees_with_event")
+    else:
+        notes.append(f"{role.lower()}_event_weight_lbs_authoritative")
+    return out
+
+
 def resolve_current_cycle_weights(
     timeline: Sequence[Mapping[str, Any]],
     *,
@@ -625,9 +745,10 @@ def resolve_current_cycle_weights(
     Canonical current-cycle PRE/POST resolver for all surfaces.
 
     Precedence for pounds:
-      audited manual correction > confirmed/provisional portal > missing
-    Event-attached lbs on the selected scan may seed when no observations list
-    is provided (offline / fixture mode).
+      audited manual correction
+        > selected weight-entry event weight_lbs
+        > portal observation fallback / credible correction
+        > missing
     """
     selected = select_current_cycle_weight_events(
         timeline,
@@ -644,7 +765,7 @@ def resolve_current_cycle_weights(
 
     notes: list[str] = []
     # Interval ends: PRE ends at POST event (or +inf); POST open-ended within cycle.
-    pre_resolved = _resolve_lbs_from_observations(
+    pre_portal = _resolve_lbs_from_observations(
         obs,
         event_ts=pre_ts,
         interval_end=post_ts,
@@ -652,58 +773,30 @@ def resolve_current_cycle_weights(
         role="PRE",
         allow_pre_fallback_after_end=True,
     )
-    # Seed from scan-attached lbs when observations absent / empty interval.
-    if pre_resolved["lbs"] is None and prefer_event_attached_lbs and pre_event is not None:
-        seeded = _parse_weight(pre_event.get("weight_lbs"))
-        if seeded is not None:
-            pre_resolved = {
-                "lbs": seeded,
-                "observation_at": _coerce_dt(pre_event.get("weight_observed_at")),
-                "observation_run": pre_event.get("weight_presence_run_id"),
-                "status": STATUS_CONFIRMED
-                if pre_event.get("weight_source")
-                else STATUS_PROVISIONAL,
-                "reason": "seeded_from_selected_pre_event_weight_lbs",
-                "source": pre_event.get("weight_source") or "scan_event_weight_lbs",
-                "attach_reason": pre_event.get("weight_attach_reason")
-                or "selected_event_seed",
-            }
-            notes.append("pre_seeded_from_event_weight_lbs")
+    pre_resolved = _combine_event_and_portal_lbs(
+        event=pre_event,
+        portal=pre_portal,
+        role="PRE",
+        peer_lbs=None,
+        prefer_event_attached_lbs=prefer_event_attached_lbs,
+        notes=notes,
+    )
 
-    post_resolved = _resolve_lbs_from_observations(
+    post_portal = _resolve_lbs_from_observations(
         obs,
         event_ts=post_ts,
         interval_end=None,
         peer_lbs=pre_resolved.get("lbs"),
         role="POST",
     )
-    if post_resolved["lbs"] is None and prefer_event_attached_lbs and post_event is not None:
-        seeded = _parse_weight(post_event.get("weight_lbs"))
-        if seeded is not None:
-            # If seeded equals PRE, keep provisional unless manual.
-            status = STATUS_PROVISIONAL
-            reason = "seeded_from_selected_post_event_weight_lbs"
-            if pre_resolved.get("lbs") is not None and _weights_equal(
-                seeded, pre_resolved.get("lbs")
-            ):
-                status = STATUS_PROVISIONAL
-                reason = "seeded_post_equals_pre_pending_reconciliation"
-            elif pre_resolved.get("lbs") is not None and not _weights_equal(
-                seeded, pre_resolved.get("lbs")
-            ):
-                status = STATUS_CONFIRMED
-                reason = "seeded_post_differs_from_pre"
-            post_resolved = {
-                "lbs": seeded,
-                "observation_at": _coerce_dt(post_event.get("weight_observed_at")),
-                "observation_run": post_event.get("weight_presence_run_id"),
-                "status": status,
-                "reason": reason,
-                "source": post_event.get("weight_source") or "scan_event_weight_lbs",
-                "attach_reason": post_event.get("weight_attach_reason")
-                or "selected_event_seed",
-            }
-            notes.append("post_seeded_from_event_weight_lbs")
+    post_resolved = _combine_event_and_portal_lbs(
+        event=post_event,
+        portal=post_portal,
+        role="POST",
+        peer_lbs=pre_resolved.get("lbs"),
+        prefer_event_attached_lbs=prefer_event_attached_lbs,
+        notes=notes,
+    )
 
     # Manual correction precedence.
     pre_status = pre_resolved["status"]
