@@ -394,6 +394,7 @@ def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
     out: dict[str, Any] = {
         "cost_available": bool(report.get("cost_available")),
         "cost": report.get("cost"),
+        "dashboard": dict(report.get("dashboard") or {}),
         "available": has_usage,
         "deferred": False,
         "rush_filtering_supported": rush_supported,
@@ -412,6 +413,7 @@ def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
         ),
         "supply_status": supply_status,
         "supply_banner": report.get("supply_banner") or fin.get("supply_banner"),
+        "supply_banner_detail": report.get("supply_banner_detail"),
         "pending_split_reviews": int(pending or 0),
         "split_pending_count": int(
             report.get("split_pending_count")
@@ -430,6 +432,7 @@ def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
         "data_source": report.get("data_source"),
         "price_basis": report.get("price_basis"),
         "as_of_date_et": report.get("as_of_date_et") or report.get("date_et"),
+        "terminology": dict(report.get("terminology") or {}),
     }
     # Legacy brand keys (Tide / Downy / …) for transitional cards / tests.
     for name in ("Tide", "Downy", "OxiClean", "All Free & Clear"):
@@ -471,6 +474,16 @@ def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
                 card.get("estimated_cost")
                 if card is not None
                 else row.get("estimated_cost")
+            ),
+            "cost_per_dose": (
+                card.get("cost_per_dose")
+                if card is not None
+                else row.get("cost_per_dose")
+            ),
+            "average_dose": (
+                card.get("average_dose")
+                if card is not None
+                else row.get("average_dose")
             ),
         }
     return out

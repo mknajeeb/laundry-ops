@@ -1,4 +1,4 @@
-import { Box, Typography } from "@mui/material";
+import { Box, Tooltip, Typography } from "@mui/material";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
 const TONES = {
@@ -41,13 +41,14 @@ export default function TodayTapCard({
   onClick,
   tone = "specialty",
   warn = false,
+  tooltip,
 }) {
   const palette = TONES[tone] || TONES.specialty;
   const color = warn && tone === "review" ? palette.color : warn ? "#b91c1c" : palette.color;
   const border = warn ? (tone === "review" ? palette.border : "rgba(185, 28, 28, 0.35)") : palette.border;
   const bg = warn && tone === "review" ? "#fef2f2" : palette.bg;
 
-  return (
+  const card = (
     <Box
       component={onClick ? "button" : "div"}
       type={onClick ? "button" : undefined}
@@ -102,5 +103,12 @@ export default function TodayTapCard({
         </Typography>
       ) : null}
     </Box>
+  );
+
+  if (!tooltip) return card;
+  return (
+    <Tooltip title={tooltip} enterDelay={400} placement="top" arrow>
+      <Box sx={{ width: "100%" }}>{card}</Box>
+    </Tooltip>
   );
 }

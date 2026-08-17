@@ -144,6 +144,7 @@ def load_orders_for_management_wf_supplies(
     *,
     rush_scope: str = SCOPE_ALL,
     mapping_rules: Sequence[Mapping[str, Any]] | None = None,
+    membership: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """
     Build supply order rows for Management WF membership.
@@ -157,9 +158,10 @@ def load_orders_for_management_wf_supplies(
         if mapping_rules is not None
         else get_supply_usage_mapping_rules(cursor, organization_id)
     )
-    membership = management_wf_supply_membership(
-        cursor, organization_id, selected_date_et, rush_scope=rush_scope
-    )
+    if membership is None:
+        membership = management_wf_supply_membership(
+            cursor, organization_id, selected_date_et, rush_scope=rush_scope
+        )
     bag_ids = membership_bag_ids(membership)
     if not bag_ids:
         return [], []
@@ -316,6 +318,126 @@ def _provisional_load_range(order_rows: Sequence[Mapping[str, Any]]) -> dict[str
     }
 
 
+def _population_pounds(
+    membership: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """PRE/POST lbs for membership bags — used for cost/lb when available."""
+    pre_sum = 0.0
+    post_sum = 0.0
+    pre_n = 0
+    post_n = 0
+    for bag in membership or []:
+        pre = bag.get("pre_weight_lbs")
+        post = bag.get("post_weight_lbs")
+        if pre is None and isinstance(bag.get("bag_snapshot"), Mapping):
+            pre = (bag.get("bag_snapshot") or {}).get("pre_weight_lbs")
+        if post is None and isinstance(bag.get("bag_snapshot"), Mapping):
+            post = (bag.get("bag_snapshot") or {}).get("post_weight_lbs")
+        try:
+            if pre is not None and pre != "":
+                pre_sum += float(pre)
+                pre_n += 1
+        except (TypeError, ValueError):
+            pass
+        try:
+            if post is not None and post != "":
+                post_sum += float(post)
+                post_n += 1
+        except (TypeError, ValueError):
+            pass
+    # Prefer POST when any POST evidence exists; else PRE.
+    lbs = None
+    basis = None
+    if post_n > 0:
+        lbs = round(post_sum, 1)
+        basis = "post_weight_lbs"
+    elif pre_n > 0:
+        lbs = round(pre_sum, 1)
+        basis = "pre_weight_lbs"
+    return {
+        "pounds": lbs,
+        "pounds_basis": basis,
+        "pounds_available": lbs is not None and lbs > 0,
+        "pre_weight_lbs": round(pre_sum, 1) if pre_n else None,
+        "post_weight_lbs": round(post_sum, 1) if post_n else None,
+        "pre_weight_bag_count": pre_n,
+        "post_weight_bag_count": post_n,
+    }
+
+
+def _build_cost_dashboard(
+    *,
+    selected_date_et: date,
+    cards: Sequence[Mapping[str, Any]],
+    population_orders: int,
+    confirmed_orders: int,
+    confirmed_loads: int,
+    total_cost: float | None,
+    pounds_info: Mapping[str, Any],
+) -> dict[str, Any]:
+    """
+    Day-grain cost dashboard — same shape can later roll up Daily/Weekly/Monthly
+    by summing period rows (do not bake UI-only period logic here).
+    """
+    total_doses = sum(int(c.get("confirmed_doses") or 0) for c in cards)
+    total_qty = 0.0
+    qty_any = False
+    for c in cards:
+        if c.get("quantity_used") is not None:
+            total_qty += float(c.get("quantity_used") or 0)
+            qty_any = True
+    units = sorted(
+        {
+            str(c.get("quantity_unit") or "oz").strip() or "oz"
+            for c in cards
+            if c.get("quantity_unit")
+        }
+    )
+    quantity_unit = units[0] if len(units) == 1 else ("oz" if not units else "mixed")
+
+    lbs = pounds_info.get("pounds")
+    cost_per_order = None
+    cost_per_load = None
+    cost_per_lb = None
+    if total_cost is not None and confirmed_orders > 0:
+        cost_per_order = round(float(total_cost) / confirmed_orders, 4)
+    if total_cost is not None and confirmed_loads > 0:
+        cost_per_load = round(float(total_cost) / confirmed_loads, 4)
+    if (
+        total_cost is not None
+        and pounds_info.get("pounds_available")
+        and lbs is not None
+        and float(lbs) > 0
+    ):
+        cost_per_lb = round(float(total_cost) / float(lbs), 4)
+
+    return {
+        "period_grain": "day",
+        "period_start_et": selected_date_et.isoformat(),
+        "period_end_et": selected_date_et.isoformat(),
+        "total_supply_cost": total_cost,
+        "total_doses": total_doses,
+        "total_quantity_used": round(total_qty, 4) if qty_any else None,
+        "quantity_unit": quantity_unit,
+        # Unique workload bags (not sum of per-product order counts).
+        "unique_orders": int(population_orders),
+        "confirmed_orders": int(confirmed_orders),
+        # Canonical processing units across workload (not sum of product doses).
+        "confirmed_loads": int(confirmed_loads),
+        "pounds": lbs,
+        "pounds_basis": pounds_info.get("pounds_basis"),
+        "pounds_available": bool(pounds_info.get("pounds_available")),
+        "kpis": {
+            "cost_per_order": cost_per_order,
+            "cost_per_load": cost_per_load,
+            "cost_per_lb": cost_per_lb,
+            "orders_basis": "confirmed_unique_orders",
+            "loads_basis": "confirmed_canonical_processing_units",
+            "pounds_basis": pounds_info.get("pounds_basis"),
+        },
+    }
+
+
 def build_management_wf_supply_summary(
     cursor,
     organization_id: int,
@@ -326,15 +448,20 @@ def build_management_wf_supply_summary(
     """Compact confirmed product cards + status for Management Rinse WF."""
     scope = normalize_rush_scope(rush_scope)
     mapping_rules = get_supply_usage_mapping_rules(cursor, organization_id)
+    membership = management_wf_supply_membership(
+        cursor, organization_id, selected_date_et, rush_scope=scope
+    )
     order_rows, population_ids = load_orders_for_management_wf_supplies(
         cursor,
         organization_id,
         selected_date_et,
         rush_scope=scope,
         mapping_rules=mapping_rules,
+        membership=membership,
     )
     products = _active_products_as_of(cursor, organization_id, selected_date_et)
     cards = _product_usage_cards(order_rows, products)
+    pounds_info = _population_pounds(membership)
 
     evaluations = {
         str(r.get("order_id") or ""): {
@@ -363,6 +490,16 @@ def build_management_wf_supply_summary(
             2,
         )
 
+    dashboard = _build_cost_dashboard(
+        selected_date_et=selected_date_et,
+        cards=cards,
+        population_orders=len(population_ids),
+        confirmed_orders=confirmed_orders,
+        confirmed_loads=confirmed_loads,
+        total_cost=total_cost,
+        pounds_info=pounds_info,
+    )
+
     # Legacy key map for transitional UI / tests
     by_legacy: dict[str, dict[str, Any]] = {}
     for card in cards:
@@ -375,15 +512,29 @@ def build_management_wf_supply_summary(
             "estimated_cost": card["estimated_cost"],
             "orders_using": card["orders_using"],
             "confirmed_loads": card["confirmed_loads"],
+            "cost_per_dose": card.get("cost_per_dose"),
+            "average_dose": card.get("average_dose"),
         }
 
     status = "FINAL" if fin.get("finalizable") else "PROVISIONAL"
+    banner = None
+    banner_detail = None
+    if not fin.get("finalizable"):
+        banner = (
+            f"PROVISIONAL · {pending_reviews} split review"
+            f"{'s' if pending_reviews != 1 else ''} pending"
+        )
+        banner_detail = (
+            "Costs may increase after pending split reviews are resolved. "
+            "Confirmed totals exclude unresolved split increments."
+        )
     return {
         "date_et": selected_date_et.isoformat(),
         "available": True,
         "deferred": False,
         "cost_available": cost_available,
         "cost": total_cost,
+        "dashboard": dashboard,
         "rush_filtering_supported": True,
         "rush_filtering_reason": None,
         "scope": scope,
@@ -396,19 +547,25 @@ def build_management_wf_supply_summary(
             "unresolved_split_orders": provisional["unresolved_orders"],
             "additional_loads_min": provisional["additional_loads_min"],
             "additional_loads_max": provisional["additional_loads_max"],
+            **{
+                k: pounds_info[k]
+                for k in (
+                    "pounds",
+                    "pounds_basis",
+                    "pounds_available",
+                    "pre_weight_lbs",
+                    "post_weight_lbs",
+                    "pre_weight_bag_count",
+                    "post_weight_bag_count",
+                )
+            },
         },
         "products": cards,
         "usage_by_supply": by_legacy,
         "supply_finalizable": bool(fin.get("finalizable")),
         "supply_status": status,
-        "supply_banner": (
-            None
-            if fin.get("finalizable")
-            else (
-                f"PROVISIONAL · {pending_reviews} pending split review"
-                f"{'s' if pending_reviews != 1 else ''}"
-            )
-        ),
+        "supply_banner": banner,
+        "supply_banner_detail": banner_detail,
         "pending_split_reviews": pending_reviews,
         "split_pending_count": int(fin.get("split_pending_count") or 0),
         "split_review_count": int(fin.get("split_review_count") or 0),
@@ -419,7 +576,25 @@ def build_management_wf_supply_summary(
         ),
         "as_of_date_et": selected_date_et.isoformat(),
         "price_basis": "effective_dated_as_of_selected_et_date",
+        # Terminology: confirmed_doses == confirmed processing loads per product
+        # (Not Split → 1 · Split → 2). Doses can exceed orders when splits apply.
+        "terminology": {
+            "doses": "confirmed_processing_loads_per_product",
+            "orders": "unique_bags_using_product",
+            "loads_population": "canonical_processing_units_across_workload",
+            "split_rule": "not_split_1_split_2",
+        },
     }
+
+
+def _split_label(row: Mapping[str, Any]) -> str:
+    if not row.get("confirmed_for_supply"):
+        return "Pending"
+    if row.get("canonical_split") is True:
+        return "Yes"
+    if row.get("canonical_split") is False:
+        return "No"
+    return "—"
 
 
 def build_management_wf_supply_detail(
@@ -446,43 +621,84 @@ def build_management_wf_supply_detail(
     )
     legacy = str(legacy_report_key or "").strip()
     pid = int(product_id) if product_id is not None else None
-    if pid is not None and not legacy:
+    product_card: dict[str, Any] | None = None
+    if pid is not None or legacy:
         for card in summary.get("products") or []:
-            if card.get("product_id") == pid:
-                legacy = str(card.get("legacy_report_key") or "")
+            if pid is not None and card.get("product_id") == pid:
+                product_card = card
+                legacy = str(card.get("legacy_report_key") or legacy or "")
                 break
+            if legacy and str(card.get("legacy_report_key") or "") == legacy:
+                product_card = card
+                break
+
+    avg_dose = _qty((product_card or {}).get("average_dose"))
+    cost_per_dose = _money((product_card or {}).get("cost_per_dose"))
+    qty_unit = (product_card or {}).get("quantity_unit") or "oz"
 
     detail_rows: list[dict[str, Any]] = []
     for row in order_rows:
         supplies = list(row.get("supplies_used") or [])
         if legacy and legacy not in supplies:
             continue
+        confirmed = bool(row.get("confirmed_for_supply"))
+        loads = (
+            int(row.get("confirmed_processing_units") or 0)
+            if confirmed
+            else 0
+        )
+        # Dose == confirmed processing loads for this product (split=2, normal=1).
+        dose = loads if confirmed else None
+        qty = None
+        est_cost = None
+        if dose is not None and avg_dose is not None:
+            qty = round(float(dose) * float(avg_dose), 4)
+        if dose is not None and cost_per_dose is not None:
+            est_cost = round(float(dose) * float(cost_per_dose), 2)
         detail_rows.append(
             {
                 "order_id": row.get("order_id"),
+                "bag_id": row.get("order_id"),
                 "customer": row.get("customer"),
-                "supplies_used": supplies,
+                "preference": row.get("supply_interpretation"),
                 "supply_interpretation": row.get("supply_interpretation"),
+                "supplies_used": supplies,
+                "split": _split_label(row),
                 "split_state": row.get("split_state"),
                 "canonical_split": row.get("canonical_split"),
                 "split_finalized": bool(row.get("split_finalized")),
-                "confirmed_for_supply": bool(row.get("confirmed_for_supply")),
-                "confirmed_loads": int(row.get("confirmed_processing_units") or 0),
+                "confirmed_for_supply": confirmed,
+                "loads": loads,
+                "confirmed_loads": loads,
                 "processing_units": int(row.get("processing_units") or 0),
+                "dose": dose,
+                "quantity_used": qty,
+                "quantity_unit": qty_unit,
+                "average_dose": avg_dose,
+                "cost_per_dose": cost_per_dose,
+                "estimated_cost": est_cost,
                 "rush_status": row.get("rush_status"),
             }
         )
-    detail_rows.sort(key=lambda r: (str(r.get("customer") or "").lower(), str(r.get("order_id") or "")))
+    detail_rows.sort(
+        key=lambda r: (
+            0 if r.get("confirmed_for_supply") else 1,
+            str(r.get("customer") or "").lower(),
+            str(r.get("order_id") or ""),
+        )
+    )
     return {
         "date_et": selected_date_et.isoformat(),
         "scope": scope,
         "scope_label": _SCOPE_LABELS[scope],
-        "product_id": pid,
+        "product_id": pid or (product_card or {}).get("product_id"),
         "legacy_report_key": legacy or None,
+        "product": product_card,
         "orders": detail_rows,
         "order_count": len(detail_rows),
         "supply_status": summary.get("supply_status"),
         "pending_split_reviews": summary.get("pending_split_reviews"),
+        "period_grain": "day",
     }
 
 

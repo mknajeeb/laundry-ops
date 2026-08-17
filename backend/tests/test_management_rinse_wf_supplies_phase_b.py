@@ -202,8 +202,21 @@ def test_extract_supplies_phase_b_status_and_products():
         "scope_label": "RUSH",
         "supply_finalizable": False,
         "supply_status": "PROVISIONAL",
+        "supply_banner": "PROVISIONAL · 2 split reviews pending",
+        "supply_banner_detail": (
+            "Costs may increase after pending split reviews are resolved. "
+            "Confirmed totals exclude unresolved split increments."
+        ),
         "pending_split_reviews": 2,
         "population": {"orders": 10, "confirmed_orders": 8},
+        "dashboard": {
+            "period_grain": "day",
+            "total_supply_cost": 1.5,
+            "total_doses": 6,
+            "unique_orders": 10,
+            "confirmed_loads": 9,
+            "kpis": {"cost_per_order": 0.1875, "cost_per_load": 0.1667},
+        },
         "products": [
             {
                 "legacy_report_key": "Tide",
@@ -213,6 +226,7 @@ def test_extract_supplies_phase_b_status_and_products():
                 "confirmed_doses": 6,
                 "quantity_used": 12.0,
                 "estimated_cost": 1.5,
+                "cost_per_dose": 0.25,
             }
         ],
         "usage_by_supply": {
@@ -229,6 +243,8 @@ def test_extract_supplies_phase_b_status_and_products():
     assert out["pending_split_reviews"] == 2
     assert out["rush_filtering_supported"] is True
     assert out["cost_available"] is True
+    assert out["dashboard"]["total_doses"] == 6
+    assert out["supply_banner_detail"]
     assert out["Tide"]["confirmed_loads"] == 6
     assert out["Tide"]["estimated_cost"] == 1.5
     assert out["products"][0]["orders_using"] == 5
@@ -292,6 +308,14 @@ def test_summary_wires_product_master(monkeypatch):
             "is_active": True,
         }
     ]
+    membership = [
+        {"bag_id": "X1", "service_type": "WF", "pre_weight_lbs": 10.0, "post_weight_lbs": 9.0},
+        {"bag_id": "X2", "service_type": "WF", "pre_weight_lbs": 8.0},
+    ]
+    monkeypatch.setattr(
+        "backend.management_rinse_wf_supplies.management_wf_supply_membership",
+        lambda *a, **k: membership,
+    )
     monkeypatch.setattr(
         "backend.management_rinse_wf_supplies.load_orders_for_management_wf_supplies",
         lambda *a, **k: (fake_orders, ["X1", "X2"]),
@@ -310,8 +334,21 @@ def test_summary_wires_product_master(monkeypatch):
     assert summary["population"]["unresolved_split_orders"] == 1
     assert summary["supply_status"] == "PROVISIONAL"
     assert summary["pending_split_reviews"] == 1
+    assert "split review" in (summary["supply_banner"] or "").lower()
+    assert "Costs may increase" in (summary["supply_banner_detail"] or "")
     tide = summary["products"][0]
     assert tide["confirmed_loads"] == 1
     assert tide["quantity_used"] == 2.0
     assert tide["estimated_cost"] == 0.5
     assert summary["cost_available"] is True
+    dash = summary["dashboard"]
+    assert dash["period_grain"] == "day"
+    assert dash["unique_orders"] == 2
+    assert dash["confirmed_loads"] == 1
+    assert dash["total_doses"] == 1
+    assert dash["total_supply_cost"] == 0.5
+    assert dash["kpis"]["cost_per_order"] == 0.5
+    assert dash["kpis"]["cost_per_load"] == 0.5
+    assert dash["pounds_available"] is True
+    assert dash["pounds"] == 9.0
+    assert dash["kpis"]["cost_per_lb"] == round(0.5 / 9.0, 4)
