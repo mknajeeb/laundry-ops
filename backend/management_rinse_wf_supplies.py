@@ -14,10 +14,12 @@ Standalone Supply Usage (first-weight) is unchanged.
 
 from __future__ import annotations
 
+import time
 from datetime import date
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
+from backend.business_time import business_today
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_veewash_shift_day import (
     _matches_segment_filters,
@@ -25,11 +27,10 @@ from backend.rinse_veewash_shift_day import (
     load_day_bags,
 )
 from backend.rinse_wf_canonical_split import (
-    evaluate_bag_split,
-    load_manager_split_decisions,
+    evaluate_day_wf_splits,
     supply_day_finalizable,
 )
-from backend.supply_product_constants import LEGACY_REPORT_KEYS
+from backend.supply_product_constants import LEGACY_REPORT_KEYS, SUPPLY_TYPE_LABELS
 from backend.supply_product_master import list_supply_products
 from backend.supply_usage import (
     _load_approved_order_metadata,
@@ -51,6 +52,12 @@ _SCOPE_SEGMENT = {
     SCOPE_NON_RUSH: "wf_non_rush",
 }
 
+# In-process workset: membership + order rows + products for summary/detail reuse.
+# Same TTL family as management_today supply summary (live 120s / closed 600s).
+_WF_SUPPLY_WORKSET_CACHE: dict[tuple[int, str, str], tuple[float, dict[str, Any]]] = {}
+_WORKSET_TTL_LIVE_SEC = 120.0
+_WORKSET_TTL_CLOSED_SEC = 600.0
+
 
 def normalize_rush_scope(raw: Any) -> str:
     v = str(raw or SCOPE_ALL).strip().lower().replace("-", "_")
@@ -59,6 +66,27 @@ def normalize_rush_scope(raw: Any) -> str:
     if v in (SCOPE_NON_RUSH, "nonrush", "wf_non_rush"):
         return SCOPE_NON_RUSH
     return SCOPE_ALL
+
+
+def clear_wf_supply_workset(
+    organization_id: int | None = None,
+    date_et: date | str | None = None,
+) -> None:
+    if organization_id is None and date_et is None:
+        _WF_SUPPLY_WORKSET_CACHE.clear()
+        return
+    org = int(organization_id) if organization_id is not None else None
+    day_key = (
+        date_et.isoformat()
+        if isinstance(date_et, date)
+        else (str(date_et) if date_et else None)
+    )
+    for key in list(_WF_SUPPLY_WORKSET_CACHE):
+        if org is not None and key[0] != org:
+            continue
+        if day_key is not None and key[1] != day_key:
+            continue
+        _WF_SUPPLY_WORKSET_CACHE.pop(key, None)
 
 
 def _money(value: Any) -> float | None:
@@ -152,6 +180,9 @@ def load_orders_for_management_wf_supplies(
     Returns (order_rows, population_bag_ids). Every membership bag is included
     in population; mapping falls back to default detergent when SI metadata is
     missing.
+
+    Split math is unchanged — ``evaluate_day_wf_splits`` / ``evaluate_bag_split``.
+    Events are loaded slim (no raw_json) for the Supply hot path only.
     """
     rules = list(
         mapping_rules
@@ -167,12 +198,13 @@ def load_orders_for_management_wf_supplies(
         return [], []
 
     meta_by_ticket = _load_approved_order_metadata(cursor, organization_id, bag_ids)
-    mgr = load_manager_split_decisions(
-        cursor, organization_id, selected_date_et, bag_ids
+    evaluations = evaluate_day_wf_splits(
+        cursor,
+        organization_id,
+        selected_date_et,
+        bag_ids,
+        slim_events=True,
     )
-    from backend.rinse_wf_canonical_split import _load_events_for_bags
-
-    events_by_bag = _load_events_for_bags(cursor, organization_id, bag_ids)
     by_id = {
         normalize_bag_id(b.get("bag_id")): b
         for b in membership
@@ -182,11 +214,15 @@ def load_orders_for_management_wf_supplies(
     orders: list[dict[str, Any]] = []
     for bid in bag_ids:
         bag = by_id.get(bid) or {"bag_id": bid}
-        split_ev = evaluate_bag_split(
-            events_by_bag.get(bid) or [],
-            bag_id=bid,
-            manager_decision=mgr.get(bid),
-        )
+        split_ev = evaluations.get(bid) or {
+            "processing_units": 1,
+            "canonical_split": False,
+            "split_finalized": True,
+            "state": "CONFIRMED_NOT_SPLIT",
+            "washer_load_count": 0,
+            "washer_racks": [],
+            "split_marker_present": False,
+        }
         finalized = bool(split_ev.get("split_finalized"))
         units = int(split_ev.get("processing_units") or 1)
         # Confirmed totals only — unresolved never count as silent 1×.
@@ -209,7 +245,6 @@ def load_orders_for_management_wf_supplies(
         row["rush_status"] = bag.get("rush_status") or bag.get("rush_flag")
         row["confirmed_for_supply"] = finalized
         row["confirmed_processing_units"] = confirmed_units
-        # doses_by_supply for confirmed accounting
         if finalized:
             row["confirmed_doses_by_supply"] = {
                 s: confirmed_units for s in (row.get("supplies_used") or [])
@@ -231,7 +266,6 @@ def _active_products_as_of(cursor, organization_id: int, as_of: date) -> list[di
         products = []
     if products:
         return products
-    # Seeded master may be empty locally — still emit legacy card shells.
     return [
         {
             "id": None,
@@ -249,6 +283,16 @@ def _active_products_as_of(cursor, organization_id: int, as_of: date) -> list[di
     ]
 
 
+def _display_product_name(product: Mapping[str, Any], legacy: str) -> str:
+    name = str(product.get("product_name") or "").strip()
+    brand = str(product.get("brand") or "").strip()
+    if name:
+        return name
+    if brand:
+        return brand
+    return legacy
+
+
 def _product_usage_cards(
     order_rows: Sequence[Mapping[str, Any]],
     products: Sequence[Mapping[str, Any]],
@@ -260,6 +304,8 @@ def _product_usage_cards(
             continue
         orders_using = 0
         confirmed_loads = 0
+        not_split_orders = 0
+        split_orders = 0
         for row in order_rows:
             supplies = set(row.get("supplies_used") or [])
             if legacy not in supplies:
@@ -267,11 +313,16 @@ def _product_usage_cards(
             if not row.get("confirmed_for_supply"):
                 continue
             orders_using += 1
-            confirmed_loads += int(
+            units = int(
                 (row.get("confirmed_doses_by_supply") or {}).get(legacy)
                 or row.get("confirmed_processing_units")
                 or 0
             )
+            confirmed_loads += units
+            if units >= 2 or row.get("canonical_split") is True:
+                split_orders += 1
+            else:
+                not_split_orders += 1
         avg_dose = _qty(product.get("average_dose"))
         cost_per_dose = _money(product.get("cost_per_dose"))
         qty = None
@@ -280,20 +331,27 @@ def _product_usage_cards(
         est_cost = None
         if cost_per_dose is not None:
             est_cost = round(confirmed_loads * float(cost_per_dose), 2)
-        label = str(product.get("brand") or legacy).strip() or legacy
-        if product.get("product_name") and str(product.get("product_name")) != label:
-            label = f"{label}".strip()
+        supply_type = str(product.get("supply_type") or "")
         cards.append(
             {
                 "product_id": product.get("id"),
                 "legacy_report_key": legacy,
-                "supply_type": product.get("supply_type"),
-                "label": legacy,
+                "supply_type": supply_type,
+                "supply_type_label": (
+                    product.get("supply_type_label")
+                    or SUPPLY_TYPE_LABELS.get(supply_type, supply_type)
+                ),
+                "label": _display_product_name(product, legacy),
                 "brand": product.get("brand"),
                 "product_name": product.get("product_name"),
+                "vendor": product.get("vendor"),
+                "package_qty": product.get("package_qty"),
+                "package_unit": product.get("package_unit"),
                 "orders_using": orders_using,
                 "confirmed_loads": confirmed_loads,
                 "confirmed_doses": confirmed_loads,
+                "not_split_orders": not_split_orders,
+                "split_orders": split_orders,
                 "quantity_used": qty,
                 "quantity_unit": product.get("dose_unit") or product.get("package_unit") or "oz",
                 "average_dose": avg_dose,
@@ -303,8 +361,15 @@ def _product_usage_cards(
                 "purchase_price_per_package": _money(
                     product.get("purchase_price_per_package")
                 ),
+                "doses_per_package": product.get("doses_per_package"),
             }
         )
+    cards.sort(
+        key=lambda c: (
+            -(float(c["estimated_cost"]) if c.get("estimated_cost") is not None else -1.0),
+            str(c.get("label") or ""),
+        )
+    )
     return cards
 
 
@@ -318,42 +383,87 @@ def _provisional_load_range(order_rows: Sequence[Mapping[str, Any]]) -> dict[str
     }
 
 
-def _population_pounds(
-    membership: Sequence[Mapping[str, Any]],
+def _provisional_cost_range(
+    order_rows: Sequence[Mapping[str, Any]],
+    products: Sequence[Mapping[str, Any]],
+    *,
+    confirmed_total: float | None,
 ) -> dict[str, Any]:
-    """PRE/POST lbs for membership bags — used for cost/lb when available."""
+    """Confirmed cost + unresolved as 1× (min) or 2× (max) of mapped products."""
+    cost_by_legacy: dict[str, float] = {}
+    for p in products:
+        legacy = str(p.get("legacy_report_key") or "").strip()
+        cpd = _money(p.get("cost_per_dose"))
+        if legacy and cpd is not None:
+            cost_by_legacy[legacy] = float(cpd)
+    if confirmed_total is None or not cost_by_legacy:
+        return {
+            "potential_final_cost_min": None,
+            "potential_final_cost_max": None,
+        }
+    add_min = 0.0
+    add_max = 0.0
+    for row in order_rows:
+        if row.get("confirmed_for_supply"):
+            continue
+        bag_cost = 0.0
+        for legacy in row.get("supplies_used") or []:
+            bag_cost += float(cost_by_legacy.get(str(legacy), 0.0))
+        add_min += bag_cost * 1
+        add_max += bag_cost * 2
+    return {
+        "potential_final_cost_min": round(float(confirmed_total) + add_min, 2),
+        "potential_final_cost_max": round(float(confirmed_total) + add_max, 2),
+    }
+
+
+def _bag_weight(bag: Mapping[str, Any], field: str) -> float | None:
+    val = bag.get(field)
+    if val is None and isinstance(bag.get("bag_snapshot"), Mapping):
+        val = (bag.get("bag_snapshot") or {}).get(field)
+    try:
+        if val is None or val == "":
+            return None
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _confirmed_population_pounds(
+    membership: Sequence[Mapping[str, Any]],
+    order_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """POST (preferred) / PRE lbs for bags with confirmed supply only — cost/lb scope."""
+    confirmed_ids = {
+        normalize_bag_id(r.get("order_id") or r.get("bag_id"))
+        for r in order_rows
+        if r.get("confirmed_for_supply")
+        and normalize_bag_id(r.get("order_id") or r.get("bag_id"))
+    }
     pre_sum = 0.0
     post_sum = 0.0
     pre_n = 0
     post_n = 0
     for bag in membership or []:
-        pre = bag.get("pre_weight_lbs")
-        post = bag.get("post_weight_lbs")
-        if pre is None and isinstance(bag.get("bag_snapshot"), Mapping):
-            pre = (bag.get("bag_snapshot") or {}).get("pre_weight_lbs")
-        if post is None and isinstance(bag.get("bag_snapshot"), Mapping):
-            post = (bag.get("bag_snapshot") or {}).get("post_weight_lbs")
-        try:
-            if pre is not None and pre != "":
-                pre_sum += float(pre)
-                pre_n += 1
-        except (TypeError, ValueError):
-            pass
-        try:
-            if post is not None and post != "":
-                post_sum += float(post)
-                post_n += 1
-        except (TypeError, ValueError):
-            pass
-    # Prefer POST when any POST evidence exists; else PRE.
+        bid = normalize_bag_id(bag.get("bag_id"))
+        if not bid or bid not in confirmed_ids:
+            continue
+        pre = _bag_weight(bag, "pre_weight_lbs")
+        post = _bag_weight(bag, "post_weight_lbs")
+        if pre is not None:
+            pre_sum += pre
+            pre_n += 1
+        if post is not None:
+            post_sum += post
+            post_n += 1
     lbs = None
     basis = None
     if post_n > 0:
         lbs = round(post_sum, 1)
-        basis = "post_weight_lbs"
+        basis = "confirmed_post_weight_lbs"
     elif pre_n > 0:
         lbs = round(pre_sum, 1)
-        basis = "pre_weight_lbs"
+        basis = "confirmed_pre_weight_lbs"
     return {
         "pounds": lbs,
         "pounds_basis": basis,
@@ -362,6 +472,7 @@ def _population_pounds(
         "post_weight_lbs": round(post_sum, 1) if post_n else None,
         "pre_weight_bag_count": pre_n,
         "post_weight_bag_count": post_n,
+        "pounds_scope": "confirmed_supply_orders",
     }
 
 
@@ -372,13 +483,12 @@ def _build_cost_dashboard(
     population_orders: int,
     confirmed_orders: int,
     confirmed_loads: int,
+    pending_split_reviews: int,
     total_cost: float | None,
     pounds_info: Mapping[str, Any],
+    potential_cost_min: float | None,
+    potential_cost_max: float | None,
 ) -> dict[str, Any]:
-    """
-    Day-grain cost dashboard — same shape can later roll up Daily/Weekly/Monthly
-    by summing period rows (do not bake UI-only period logic here).
-    """
     total_doses = sum(int(c.get("confirmed_doses") or 0) for c in cards)
     total_qty = 0.0
     qty_any = False
@@ -419,14 +529,18 @@ def _build_cost_dashboard(
         "total_doses": total_doses,
         "total_quantity_used": round(total_qty, 4) if qty_any else None,
         "quantity_unit": quantity_unit,
-        # Unique workload bags (not sum of per-product order counts).
+        "workload_orders": int(population_orders),
         "unique_orders": int(population_orders),
         "confirmed_orders": int(confirmed_orders),
-        # Canonical processing units across workload (not sum of product doses).
+        "confirmed_supply_orders": int(confirmed_orders),
         "confirmed_loads": int(confirmed_loads),
+        "pending_split_reviews": int(pending_split_reviews),
         "pounds": lbs,
         "pounds_basis": pounds_info.get("pounds_basis"),
         "pounds_available": bool(pounds_info.get("pounds_available")),
+        "pounds_scope": pounds_info.get("pounds_scope") or "confirmed_supply_orders",
+        "potential_final_cost_min": potential_cost_min,
+        "potential_final_cost_max": potential_cost_max,
         "kpis": {
             "cost_per_order": cost_per_order,
             "cost_per_load": cost_per_load,
@@ -434,34 +548,22 @@ def _build_cost_dashboard(
             "orders_basis": "confirmed_unique_orders",
             "loads_basis": "confirmed_canonical_processing_units",
             "pounds_basis": pounds_info.get("pounds_basis"),
+            "pounds_scope": "confirmed_supply_orders",
         },
     }
 
 
-def build_management_wf_supply_summary(
-    cursor,
-    organization_id: int,
-    selected_date_et: date,
+def _build_summary_from_rows(
     *,
-    rush_scope: str = SCOPE_ALL,
+    selected_date_et: date,
+    scope: str,
+    membership: Sequence[Mapping[str, Any]],
+    order_rows: Sequence[Mapping[str, Any]],
+    population_ids: Sequence[str],
+    products: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Compact confirmed product cards + status for Management Rinse WF."""
-    scope = normalize_rush_scope(rush_scope)
-    mapping_rules = get_supply_usage_mapping_rules(cursor, organization_id)
-    membership = management_wf_supply_membership(
-        cursor, organization_id, selected_date_et, rush_scope=scope
-    )
-    order_rows, population_ids = load_orders_for_management_wf_supplies(
-        cursor,
-        organization_id,
-        selected_date_et,
-        rush_scope=scope,
-        mapping_rules=mapping_rules,
-        membership=membership,
-    )
-    products = _active_products_as_of(cursor, organization_id, selected_date_et)
     cards = _product_usage_cards(order_rows, products)
-    pounds_info = _population_pounds(membership)
+    pounds_info = _confirmed_population_pounds(membership, order_rows)
 
     evaluations = {
         str(r.get("order_id") or ""): {
@@ -486,9 +588,16 @@ def build_management_wf_supply_summary(
     total_cost = None
     if cost_available:
         total_cost = round(
-            sum(float(c.get("estimated_cost") or 0) for c in cards if c.get("estimated_cost") is not None),
+            sum(
+                float(c.get("estimated_cost") or 0)
+                for c in cards
+                if c.get("estimated_cost") is not None
+            ),
             2,
         )
+    pot = _provisional_cost_range(
+        order_rows, products, confirmed_total=total_cost
+    )
 
     dashboard = _build_cost_dashboard(
         selected_date_et=selected_date_et,
@@ -496,11 +605,13 @@ def build_management_wf_supply_summary(
         population_orders=len(population_ids),
         confirmed_orders=confirmed_orders,
         confirmed_loads=confirmed_loads,
+        pending_split_reviews=pending_reviews,
         total_cost=total_cost,
         pounds_info=pounds_info,
+        potential_cost_min=pot.get("potential_final_cost_min"),
+        potential_cost_max=pot.get("potential_final_cost_max"),
     )
 
-    # Legacy key map for transitional UI / tests
     by_legacy: dict[str, dict[str, Any]] = {}
     for card in cards:
         key = card["legacy_report_key"]
@@ -514,6 +625,9 @@ def build_management_wf_supply_summary(
             "confirmed_loads": card["confirmed_loads"],
             "cost_per_dose": card.get("cost_per_dose"),
             "average_dose": card.get("average_dose"),
+            "label": card.get("label"),
+            "product_name": card.get("product_name"),
+            "brand": card.get("brand"),
         }
 
     status = "FINAL" if fin.get("finalizable") else "PROVISIONAL"
@@ -521,13 +635,23 @@ def build_management_wf_supply_summary(
     banner_detail = None
     if not fin.get("finalizable"):
         banner = (
-            f"PROVISIONAL · {pending_reviews} split review"
+            f"PROVISIONAL — {pending_reviews} split review"
             f"{'s' if pending_reviews != 1 else ''} pending"
         )
         banner_detail = (
-            "Costs may increase after pending split reviews are resolved. "
-            "Confirmed totals exclude unresolved split increments."
+            "Confirmed costs shown below. "
+            "Final cost may increase after pending split reviews resolve."
         )
+        if (
+            pot.get("potential_final_cost_min") is not None
+            and pot.get("potential_final_cost_max") is not None
+        ):
+            banner_detail += (
+                f" Potential final supply cost range: "
+                f"${pot['potential_final_cost_min']:.2f} – "
+                f"${pot['potential_final_cost_max']:.2f}."
+            )
+
     return {
         "date_et": selected_date_et.isoformat(),
         "available": True,
@@ -541,9 +665,12 @@ def build_management_wf_supply_summary(
         "scope_label": _SCOPE_LABELS[scope],
         "population": {
             "orders": len(population_ids),
+            "workload_orders": len(population_ids),
             "bag_ids_count": len(population_ids),
             "confirmed_orders": confirmed_orders,
+            "confirmed_supply_orders": confirmed_orders,
             "confirmed_loads": confirmed_loads,
+            "pending_split_reviews": pending_reviews,
             "unresolved_split_orders": provisional["unresolved_orders"],
             "additional_loads_min": provisional["additional_loads_min"],
             "additional_loads_max": provisional["additional_loads_max"],
@@ -557,6 +684,7 @@ def build_management_wf_supply_summary(
                     "post_weight_lbs",
                     "pre_weight_bag_count",
                     "post_weight_bag_count",
+                    "pounds_scope",
                 )
             },
         },
@@ -570,21 +698,96 @@ def build_management_wf_supply_summary(
         "split_pending_count": int(fin.get("split_pending_count") or 0),
         "split_review_count": int(fin.get("split_review_count") or 0),
         "split_finalizability": fin,
+        "potential_final_cost_min": pot.get("potential_final_cost_min"),
+        "potential_final_cost_max": pot.get("potential_final_cost_max"),
         "data_source": (
             "management_wf_day_bags membership + rinse_wf_canonical_split "
             "+ supply_product_master effective-dated cost"
         ),
         "as_of_date_et": selected_date_et.isoformat(),
         "price_basis": "effective_dated_as_of_selected_et_date",
-        # Terminology: confirmed_doses == confirmed processing loads per product
-        # (Not Split → 1 · Split → 2). Doses can exceed orders when splits apply.
         "terminology": {
             "doses": "confirmed_processing_loads_per_product",
             "orders": "unique_bags_using_product",
             "loads_population": "canonical_processing_units_across_workload",
             "split_rule": "not_split_1_split_2",
+            "cost_per_lb": "confirmed_cost_over_confirmed_order_post_lbs",
         },
     }
+
+
+def _get_or_build_workset(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    rush_scope: str = SCOPE_ALL,
+    bypass_cache: bool = False,
+) -> dict[str, Any]:
+    scope = normalize_rush_scope(rush_scope)
+    org = int(organization_id)
+    key = (org, selected_date_et.isoformat(), scope)
+    ttl = (
+        _WORKSET_TTL_LIVE_SEC
+        if selected_date_et == business_today()
+        else _WORKSET_TTL_CLOSED_SEC
+    )
+    now = time.monotonic()
+    if not bypass_cache:
+        hit = _WF_SUPPLY_WORKSET_CACHE.get(key)
+        if hit and (now - hit[0]) < ttl:
+            return hit[1]
+
+    mapping_rules = get_supply_usage_mapping_rules(cursor, org)
+    membership = management_wf_supply_membership(
+        cursor, org, selected_date_et, rush_scope=scope
+    )
+    order_rows, population_ids = load_orders_for_management_wf_supplies(
+        cursor,
+        org,
+        selected_date_et,
+        rush_scope=scope,
+        mapping_rules=mapping_rules,
+        membership=membership,
+    )
+    products = _active_products_as_of(cursor, org, selected_date_et)
+    summary = _build_summary_from_rows(
+        selected_date_et=selected_date_et,
+        scope=scope,
+        membership=membership,
+        order_rows=order_rows,
+        population_ids=population_ids,
+        products=products,
+    )
+    workset = {
+        "membership": membership,
+        "order_rows": order_rows,
+        "population_ids": population_ids,
+        "products": products,
+        "summary": summary,
+        "scope": scope,
+    }
+    _WF_SUPPLY_WORKSET_CACHE[key] = (time.monotonic(), workset)
+    return workset
+
+
+def build_management_wf_supply_summary(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    rush_scope: str = SCOPE_ALL,
+    bypass_cache: bool = False,
+) -> dict[str, Any]:
+    """Compact confirmed product cards + status for Management Rinse WF."""
+    workset = _get_or_build_workset(
+        cursor,
+        organization_id,
+        selected_date_et,
+        rush_scope=rush_scope,
+        bypass_cache=bypass_cache,
+    )
+    return dict(workset["summary"])
 
 
 def _split_label(row: Mapping[str, Any]) -> str:
@@ -606,19 +809,17 @@ def build_management_wf_supply_detail(
     product_id: int | None = None,
     legacy_report_key: str | None = None,
 ) -> dict[str, Any]:
-    """Lazy order-level rows for one product (or all products)."""
+    """Lazy order-level rows for one product — reuses summary workset (no rebuild)."""
     scope = normalize_rush_scope(rush_scope)
-    summary = build_management_wf_supply_summary(
-        cursor, organization_id, selected_date_et, rush_scope=scope
-    )
-    mapping_rules = get_supply_usage_mapping_rules(cursor, organization_id)
-    order_rows, _ = load_orders_for_management_wf_supplies(
+    workset = _get_or_build_workset(
         cursor,
         organization_id,
         selected_date_et,
         rush_scope=scope,
-        mapping_rules=mapping_rules,
+        bypass_cache=False,
     )
+    summary = workset["summary"]
+    order_rows = workset["order_rows"]
     legacy = str(legacy_report_key or "").strip()
     pid = int(product_id) if product_id is not None else None
     product_card: dict[str, Any] | None = None
@@ -647,7 +848,6 @@ def build_management_wf_supply_detail(
             if confirmed
             else 0
         )
-        # Dose == confirmed processing loads for this product (split=2, normal=1).
         dose = loads if confirmed else None
         qty = None
         est_cost = None
@@ -699,6 +899,7 @@ def build_management_wf_supply_detail(
         "supply_status": summary.get("supply_status"),
         "pending_split_reviews": summary.get("pending_split_reviews"),
         "period_grain": "day",
+        "workset_reused": True,
     }
 
 

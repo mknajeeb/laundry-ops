@@ -123,16 +123,22 @@ def clear_management_supply_cache(
 ) -> None:
     if organization_id is None and date_et is None:
         _SUPPLY_SUMMARY_CACHE.clear()
-        return
-    org = int(organization_id) if organization_id is not None else None
-    day_key = date_et.isoformat() if isinstance(date_et, date) else (str(date_et) if date_et else None)
-    for key in list(_SUPPLY_SUMMARY_CACHE):
-        # Phase B keys: (org, date_et, rush_scope); legacy: (org, date_et)
-        if org is not None and key[0] != org:
-            continue
-        if day_key is not None and (len(key) < 2 or key[1] != day_key):
-            continue
-        _SUPPLY_SUMMARY_CACHE.pop(key, None)
+    else:
+        org = int(organization_id) if organization_id is not None else None
+        day_key = date_et.isoformat() if isinstance(date_et, date) else (str(date_et) if date_et else None)
+        for key in list(_SUPPLY_SUMMARY_CACHE):
+            # Phase B keys: (org, date_et, rush_scope); legacy: (org, date_et)
+            if org is not None and key[0] != org:
+                continue
+            if day_key is not None and (len(key) < 2 or key[1] != day_key):
+                continue
+            _SUPPLY_SUMMARY_CACHE.pop(key, None)
+    try:
+        from backend.management_rinse_wf_supplies import clear_wf_supply_workset
+
+        clear_wf_supply_workset(organization_id=organization_id, date_et=date_et)
+    except Exception:
+        pass
 
 
 def _money(value: Any) -> float:
@@ -433,6 +439,8 @@ def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
         "price_basis": report.get("price_basis"),
         "as_of_date_et": report.get("as_of_date_et") or report.get("date_et"),
         "terminology": dict(report.get("terminology") or {}),
+        "potential_final_cost_min": report.get("potential_final_cost_min"),
+        "potential_final_cost_max": report.get("potential_final_cost_max"),
     }
     # Legacy brand keys (Tide / Downy / …) for transitional cards / tests.
     for name in ("Tide", "Downy", "OxiClean", "All Free & Clear"):

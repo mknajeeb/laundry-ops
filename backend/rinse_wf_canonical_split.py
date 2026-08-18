@@ -556,16 +556,30 @@ def _load_events_for_bags(
     cursor,
     organization_id: int,
     bag_ids: Sequence[str],
+    *,
+    slim: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
+    """Load scan events for bags.
+
+    ``slim=True`` omits ``raw_json`` / ``last_scan`` payloads — enough for
+    canonical split evaluation (Supply summary hot path). Math unchanged.
+    """
     ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
     out: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
     if not ids or not table_exists(cursor, "rinse_bag_scan_events"):
         return out
     ph = ",".join(["%s"] * len(ids))
+    cols = (
+        "bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index, last_location"
+        if slim
+        else (
+            "bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index, "
+            "last_location, last_scan, raw_json"
+        )
+    )
     cursor.execute(
         f"""
-        SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index,
-               last_location, last_scan, raw_json
+        SELECT {cols}
         FROM rinse_bag_scan_events
         WHERE organization_id = %s
           AND UPPER(TRIM(bag_id)) IN ({ph})
@@ -612,12 +626,15 @@ def evaluate_day_wf_splits(
     bag_ids: Sequence[str],
     *,
     disappeared_ids: Sequence[str] | None = None,
+    slim_events: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Evaluate split for a day membership set (Management / Supply)."""
     ids = [normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)]
     if not ids:
         return {}
-    events_by_bag = _load_events_for_bags(cursor, organization_id, ids)
+    events_by_bag = _load_events_for_bags(
+        cursor, organization_id, ids, slim=bool(slim_events)
+    )
     mgr = load_manager_split_decisions(
         cursor, organization_id, selected_date_et, ids
     )

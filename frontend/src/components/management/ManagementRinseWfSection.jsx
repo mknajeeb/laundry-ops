@@ -251,6 +251,15 @@ export default function ManagementRinseWfSection({
       };
     });
   }, [supplies]);
+  const sortedSupplyProducts = useMemo(() => {
+    const rows = [...supplyProducts];
+    rows.sort((a, b) => {
+      const ca = a?.estimated_cost != null ? Number(a.estimated_cost) : -1;
+      const cb = b?.estimated_cost != null ? Number(b.estimated_cost) : -1;
+      return cb - ca;
+    });
+    return rows;
+  }, [supplyProducts]);
 
   const openMetric = (metric, title, opts = {}) => {
     if (snapshotUnavailable) return;
@@ -322,8 +331,16 @@ export default function ManagementRinseWfSection({
       : supplyStatus || "DAY TOTALS";
 
   const uniqueOrders =
-    dashboard?.unique_orders
+    dashboard?.workload_orders
+    ?? dashboard?.unique_orders
+    ?? population?.workload_orders
     ?? population?.orders
+    ?? null;
+  const confirmedSupplyOrders =
+    dashboard?.confirmed_supply_orders
+    ?? dashboard?.confirmed_orders
+    ?? population?.confirmed_supply_orders
+    ?? population?.confirmed_orders
     ?? null;
   const confirmedLoads =
     dashboard?.confirmed_loads
@@ -333,6 +350,13 @@ export default function ManagementRinseWfSection({
   const totalQty = dashboard?.total_quantity_used ?? null;
   const totalQtyUnit = dashboard?.quantity_unit || "oz";
   const totalCost = dashboard?.total_supply_cost ?? supplies?.cost ?? null;
+  const potentialMin = dashboard?.potential_final_cost_min
+    ?? supplies?.potential_final_cost_min
+    ?? null;
+  const potentialMax = dashboard?.potential_final_cost_max
+    ?? supplies?.potential_final_cost_max
+    ?? null;
+  
 
   return (
     <Box>
@@ -536,44 +560,21 @@ export default function ManagementRinseWfSection({
           <Box
             sx={{
               display: "grid",
-              gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", sm: "repeat(4, minmax(0, 1fr))" },
+              gridTemplateColumns: { xs: "1fr", sm: "minmax(0, 1.2fr) repeat(3, minmax(0, 1fr))" },
               gap: 0.75,
               mb: 0.75,
             }}
           >
             <SupplyMetric label="Total Supply Cost" value={fmtMoney(totalCost)} />
             <SupplyMetric
-              label="Total Doses"
-              value={fmtInt(totalDoses)}
-              hint="Sum of confirmed product doses (chemical uses)."
-            />
-            <SupplyMetric
-              label="Total Qty Used"
-              value={fmtQty(totalQty, totalQtyUnit)}
-            />
-            <SupplyMetric
-              label="Orders · Loads"
-              value={`${fmtInt(uniqueOrders)} · ${fmtInt(confirmedLoads)}`}
-              hint="Orders = unique workload bags. Loads = canonical processing units (not sum of product doses)."
-            />
-          </Box>
-          <Box
-            sx={{
-              display: "grid",
-              gridTemplateColumns: { xs: "repeat(3, minmax(0, 1fr))" },
-              gap: 0.75,
-              mb: 1.25,
-            }}
-          >
-            <SupplyMetric
               label="Cost / Order"
               value={fmtMoney(kpis.cost_per_order, 4)}
-              hint="Total supply cost ÷ confirmed unique orders."
+              hint="Confirmed supply cost ÷ confirmed supply orders."
             />
             <SupplyMetric
               label="Cost / Load"
               value={fmtMoney(kpis.cost_per_load, 4)}
-              hint="Total supply cost ÷ confirmed canonical loads."
+              hint="Confirmed supply cost ÷ confirmed canonical loads."
             />
             <SupplyMetric
               label="Cost / Lb"
@@ -584,52 +585,186 @@ export default function ManagementRinseWfSection({
               }
               hint={
                 dashboard?.pounds_available
-                  ? `Based on ${dashboard.pounds_basis || "population"} (${fmtLbs(dashboard.pounds)}).`
-                  : "Pounds not yet available for selected population."
+                  ? `Confirmed cost ÷ confirmed-order ${dashboard.pounds_basis || "POST"} (${fmtLbs(dashboard.pounds)}).`
+                  : "Confirmed-order pounds not yet available."
               }
             />
           </Box>
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", sm: "repeat(3, minmax(0, 1fr))" },
+              gap: 0.75,
+              mb: 0.5,
+            }}
+          >
+            <SupplyMetric
+              label="Workload Orders"
+              value={fmtInt(uniqueOrders)}
+              hint="Canonical Management WF membership for this scope."
+            />
+            <SupplyMetric
+              label="Confirmed Supply Orders"
+              value={fmtInt(confirmedSupplyOrders)}
+              hint="Workload orders with finalized split state (pending split reviews excluded)."
+            />
+            <SupplyMetric
+              label="Confirmed Loads"
+              value={fmtInt(confirmedLoads)}
+              hint="Canonical processing units: not-split=1, confirmed split=2."
+            />
+            <SupplyMetric
+              label="Pending Split Reviews"
+              value={fmtInt(pendingSplitReviews)}
+              hint="Excluded from confirmed supply totals until resolved."
+            />
+            <SupplyMetric
+              label="Total Doses"
+              value={fmtInt(totalDoses)}
+              hint={DOSE_TOOLTIP}
+            />
+            <SupplyMetric
+              label="Total Qty Used"
+              value={fmtQty(totalQty, totalQtyUnit)}
+            />
+          </Box>
+          {potentialMin != null && potentialMax != null && !supplyFinalizable ? (
+            <Typography sx={{ fontSize: 11, color: "#64748b", mb: 1, fontWeight: 600 }}>
+              Potential final supply cost range: {fmtMoney(potentialMin)} – {fmtMoney(potentialMax)}
+            </Typography>
+          ) : (
+            <Box sx={{ mb: 0.75 }} />
+          )}
+          <Typography
+            sx={{
+              fontSize: 11,
+              fontWeight: 800,
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
+              color: "#64748b",
+              mb: 0.5,
+            }}
+          >
+            Cost by Product
+          </Typography>
         </>
       ) : null}
 
       <CardGrid columns={{ xs: 1, sm: 2 }}>
-        {supplyProducts.map((row) => {
-          const key = row.legacy_report_key || row.label;
-          const shortLabel =
-            key === "OxiClean" ? "Oxi" : key === "All Free & Clear" ? "All Free & Clear" : (row.label || key);
+        {sortedSupplyProducts.map((row) => {
+          const key = row.product_id || row.legacy_report_key || row.label;
+          const productName =
+            row.product_name
+            || row.label
+            || row.brand
+            || row.legacy_report_key
+            || "Product";
+          const typeLabel = row.supply_type_label || row.supply_type || null;
           const doses = row.confirmed_doses ?? row.confirmed_loads;
           const orders = row.orders_using;
+          const productTooltip = [
+            typeLabel ? `Type: ${typeLabel}` : null,
+            row.vendor ? `Vendor: ${row.vendor}` : null,
+            row.package_qty != null
+              ? `Package: ${row.package_qty} ${row.package_unit || "oz"}`
+              : null,
+            row.purchase_price_per_package != null
+              ? `Package price: ${fmtMoney(row.purchase_price_per_package)}`
+              : null,
+            row.average_dose != null
+              ? `Avg dose: ${row.average_dose} ${row.quantity_unit || "oz"}`
+              : null,
+            row.doses_per_package != null
+              ? `Doses/package: ${row.doses_per_package}`
+              : null,
+            row.cost_per_dose != null
+              ? `Cost/dose: ${fmtMoney(row.cost_per_dose, 4)}`
+              : null,
+            DOSE_TOOLTIP,
+            row.not_split_orders != null && row.split_orders != null
+              ? `${fmtInt(row.not_split_orders)}×1 + ${fmtInt(row.split_orders)}×2 = ${fmtInt(doses)} doses`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" · ");
           return (
-            <TodayTapCard
-              key={key}
-              label={shortLabel}
-              value={
-                suppliesPending
-                  ? "…"
-                  : snapshotUnavailable || !suppliesAvailable
-                    ? "—"
-                    : `${fmtInt(doses)} doses`
-              }
-              sub={
-                suppliesPending
-                  ? "Loading…"
-                  : snapshotUnavailable || !suppliesAvailable
+            <Tooltip key={key} title={productTooltip} enterDelay={400} placement="top" arrow>
+              <Box
+                component="button"
+                type="button"
+                onClick={
+                  snapshotUnavailable || suppliesPending || !suppliesAvailable
                     ? undefined
-                    : [
-                        `${fmtInt(orders)} orders · ${fmtQty(row.quantity_used, row.quantity_unit)}`,
-                        `${fmtMoney(row.estimated_cost)}`,
-                        row.cost_per_dose != null ? `${fmtMoney(row.cost_per_dose, 4)}/dose` : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")
-              }
-              tooltip={DOSE_TOOLTIP}
-              onClick={
-                snapshotUnavailable || suppliesPending || !suppliesAvailable
-                  ? undefined
-                  : () => openSupplyDetail(row)
-              }
-            />
+                    : () => openSupplyDetail(row)
+                }
+                disabled={snapshotUnavailable || suppliesPending || !suppliesAvailable}
+                sx={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  m: 0,
+                  px: 1.1,
+                  py: 1,
+                  minHeight: 72,
+                  borderRadius: 1.5,
+                  border: "1px solid #e2e8f0",
+                  bgcolor: "#fff",
+                  cursor:
+                    snapshotUnavailable || suppliesPending || !suppliesAvailable
+                      ? "default"
+                      : "pointer",
+                  appearance: "none",
+                  fontFamily: "inherit",
+                  WebkitTapHighlightColor: "transparent",
+                  "&:hover":
+                    snapshotUnavailable || suppliesPending || !suppliesAvailable
+                      ? undefined
+                      : { borderColor: "#334155", boxShadow: "0 1px 6px rgba(15, 23, 42, 0.08)" },
+                }}
+              >
+                <Typography
+                  sx={{
+                    fontSize: { xs: 22, sm: 24 },
+                    fontWeight: 800,
+                    lineHeight: 1.05,
+                    letterSpacing: -0.3,
+                    color: "#0f172a",
+                  }}
+                >
+                  {suppliesPending
+                    ? "…"
+                    : snapshotUnavailable || !suppliesAvailable
+                      ? "—"
+                      : fmtMoney(row.estimated_cost)}
+                </Typography>
+                <Typography
+                  sx={{
+                    mt: 0.35,
+                    fontSize: 14,
+                    fontWeight: 800,
+                    color: "#1e293b",
+                    lineHeight: 1.2,
+                  }}
+                >
+                  {productName}
+                </Typography>
+                {typeLabel ? (
+                  <Typography sx={{ mt: 0.15, fontSize: 10, fontWeight: 600, color: "#94a3b8" }}>
+                    {typeLabel}
+                  </Typography>
+                ) : null}
+                <Typography sx={{ mt: 0.35, fontSize: 11, color: "#64748b", fontWeight: 600 }}>
+                  {suppliesPending
+                    ? "Loading…"
+                    : snapshotUnavailable || !suppliesAvailable
+                      ? "—"
+                      : `${fmtInt(orders)} orders · ${fmtInt(doses)} doses · ${fmtQty(row.quantity_used, row.quantity_unit)}`}
+                </Typography>
+                <Typography sx={{ mt: 0.15, fontSize: 11, color: "#94a3b8", fontWeight: 700 }}>
+                  {row.cost_per_dose != null ? `${fmtMoney(row.cost_per_dose, 4)} / dose` : "—"}
+                </Typography>
+              </Box>
+            </Tooltip>
           );
         })}
       </CardGrid>
@@ -663,7 +798,10 @@ export default function ManagementRinseWfSection({
         maxWidth="sm"
       >
         <DialogTitle sx={{ pr: 6 }}>
-          {supplyDetail.product?.label || supplyDetail.product?.legacy_report_key || "Supply detail"}
+          {supplyDetail.product?.product_name
+            || supplyDetail.product?.label
+            || supplyDetail.product?.legacy_report_key
+            || "Supply detail"}
           <IconButton
             aria-label="Close"
             onClick={() => setSupplyDetail((s) => ({ ...s, open: false }))}

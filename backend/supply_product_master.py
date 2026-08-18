@@ -316,6 +316,22 @@ def _serialize_product(
     }
 
 
+def _serialize_price_row(r: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": int(r["id"]),
+        "organization_id": int(r["organization_id"]),
+        "product_id": int(r["product_id"]),
+        "purchase_price_per_package": _money(r.get("purchase_price_per_package")),
+        "effective_from": str(_parse_date(r.get("effective_from")) or ""),
+        "effective_to": (
+            str(_parse_date(r.get("effective_to")))
+            if _parse_date(r.get("effective_to"))
+            else None
+        ),
+        "notes": r.get("notes"),
+    }
+
+
 def list_product_prices(cursor, organization_id: int, product_id: int) -> list[dict[str, Any]]:
     if not table_exists(cursor, "supply_product_prices"):
         return []
@@ -329,24 +345,32 @@ def list_product_prices(cursor, organization_id: int, product_id: int) -> list[d
         """,
         (int(organization_id), int(product_id)),
     )
-    rows = cursor.fetchall() or []
-    out: list[dict[str, Any]] = []
-    for r in rows:
-        out.append(
-            {
-                "id": int(r["id"]),
-                "organization_id": int(r["organization_id"]),
-                "product_id": int(r["product_id"]),
-                "purchase_price_per_package": _money(r.get("purchase_price_per_package")),
-                "effective_from": str(_parse_date(r.get("effective_from")) or ""),
-                "effective_to": (
-                    str(_parse_date(r.get("effective_to")))
-                    if _parse_date(r.get("effective_to"))
-                    else None
-                ),
-                "notes": r.get("notes"),
-            }
-        )
+    return [_serialize_price_row(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+
+
+def list_all_product_prices_for_org(
+    cursor,
+    organization_id: int,
+) -> dict[int, list[dict[str, Any]]]:
+    """One query: product_id → price history rows (newest first)."""
+    if not table_exists(cursor, "supply_product_prices"):
+        return {}
+    cursor.execute(
+        """
+        SELECT id, organization_id, product_id, purchase_price_per_package,
+               effective_from, effective_to, notes, created_at
+        FROM supply_product_prices
+        WHERE organization_id = %s
+        ORDER BY product_id ASC, effective_from DESC, id DESC
+        """,
+        (int(organization_id),),
+    )
+    out: dict[int, list[dict[str, Any]]] = {}
+    for r in cursor.fetchall() or []:
+        if not isinstance(r, dict):
+            continue
+        pid = int(r["product_id"])
+        out.setdefault(pid, []).append(_serialize_price_row(r))
     return out
 
 
@@ -382,9 +406,11 @@ def list_supply_products(
     sql += " ORDER BY sort_order ASC, id ASC"
     cursor.execute(sql, tuple(params))
     rows = cursor.fetchall() or []
+    prices_by_product = list_all_product_prices_for_org(cursor, organization_id)
     out: list[dict[str, Any]] = []
     for row in rows:
-        price = get_price_as_of(cursor, organization_id, int(row["id"]), day)
+        pid = int(row["id"])
+        price = resolve_price_as_of(prices_by_product.get(pid) or [], day)
         out.append(_serialize_product(row, price_row=price, as_of=day))
     return out
 

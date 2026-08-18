@@ -93,29 +93,27 @@ def test_unresolved_split_excluded_from_confirmed_totals():
         },
     }
 
-    def _eval(events, *, bag_id, manager_decision=None, **_kw):
-        if bag_id == "SPLIT1":
-            return {
-                "processing_units": 2,
-                "canonical_split": True,
-                "split_finalized": True,
-                "state": "CONFIRMED_SPLIT",
-                "washer_load_count": 2,
-                "washer_racks": ["W1", "W2"],
-                "split_marker_present": True,
-            }
-        if bag_id == "PEND1":
-            return {
-                "processing_units": 1,
-                "canonical_split": None,
-                "split_finalized": False,
-                "state": "REVIEW_REQUIRED",
-                "washer_load_count": 1,
-                "washer_racks": ["W1"],
-                "split_marker_present": True,
-                "review_reason": "split_marked_but_second_washer_not_found",
-            }
-        return {
+    evaluations = {
+        "SPLIT1": {
+            "processing_units": 2,
+            "canonical_split": True,
+            "split_finalized": True,
+            "state": "CONFIRMED_SPLIT",
+            "washer_load_count": 2,
+            "washer_racks": ["W1", "W2"],
+            "split_marker_present": True,
+        },
+        "PEND1": {
+            "processing_units": 1,
+            "canonical_split": None,
+            "split_finalized": False,
+            "state": "REVIEW_REQUIRED",
+            "washer_load_count": 1,
+            "washer_racks": ["W1"],
+            "split_marker_present": True,
+            "review_reason": "split_marked_but_second_washer_not_found",
+        },
+        "CONF1": {
             "processing_units": 1,
             "canonical_split": False,
             "split_finalized": True,
@@ -123,7 +121,8 @@ def test_unresolved_split_excluded_from_confirmed_totals():
             "washer_load_count": 1,
             "washer_racks": ["W1"],
             "split_marker_present": False,
-        }
+        },
+    }
 
     with (
         patch(
@@ -135,16 +134,8 @@ def test_unresolved_split_excluded_from_confirmed_totals():
             return_value=meta,
         ),
         patch(
-            "backend.management_rinse_wf_supplies.load_manager_split_decisions",
-            return_value={},
-        ),
-        patch(
-            "backend.rinse_wf_canonical_split._load_events_for_bags",
-            return_value={},
-        ),
-        patch(
-            "backend.management_rinse_wf_supplies.evaluate_bag_split",
-            side_effect=_eval,
+            "backend.management_rinse_wf_supplies.evaluate_day_wf_splits",
+            return_value=evaluations,
         ),
         patch(
             "backend.management_rinse_wf_supplies.get_supply_usage_mapping_rules",
@@ -170,6 +161,7 @@ def test_unresolved_split_excluded_from_confirmed_totals():
                 "id": 1,
                 "legacy_report_key": "Tide",
                 "brand": "Tide",
+                "product_name": "Tide Original",
                 "average_dose": 2.0,
                 "dose_unit": "oz",
                 "cost_per_dose": 0.25,
@@ -188,6 +180,7 @@ def test_unresolved_split_excluded_from_confirmed_totals():
     # CONF1 (1) + SPLIT1 (2) — PEND1 excluded
     assert tide["orders_using"] == 2
     assert tide["confirmed_loads"] == 3
+    assert tide["label"] == "Tide Original"
     assert tide["quantity_used"] == 6.0
     assert tide["estimated_cost"] == 0.75
 
@@ -335,15 +328,18 @@ def test_summary_wires_product_master(monkeypatch):
     assert summary["supply_status"] == "PROVISIONAL"
     assert summary["pending_split_reviews"] == 1
     assert "split review" in (summary["supply_banner"] or "").lower()
-    assert "Costs may increase" in (summary["supply_banner_detail"] or "")
+    assert "Final cost may increase" in (summary["supply_banner_detail"] or "")
     tide = summary["products"][0]
     assert tide["confirmed_loads"] == 1
     assert tide["quantity_used"] == 2.0
     assert tide["estimated_cost"] == 0.5
+    assert tide["label"] == "Tide Liquid"
     assert summary["cost_available"] is True
     dash = summary["dashboard"]
     assert dash["period_grain"] == "day"
     assert dash["unique_orders"] == 2
+    assert dash["workload_orders"] == 2
+    assert dash["confirmed_supply_orders"] == 1
     assert dash["confirmed_loads"] == 1
     assert dash["total_doses"] == 1
     assert dash["total_supply_cost"] == 0.5
@@ -352,3 +348,4 @@ def test_summary_wires_product_master(monkeypatch):
     assert dash["pounds_available"] is True
     assert dash["pounds"] == 9.0
     assert dash["kpis"]["cost_per_lb"] == round(0.5 / 9.0, 4)
+    assert dash["pounds_scope"] == "confirmed_supply_orders"
