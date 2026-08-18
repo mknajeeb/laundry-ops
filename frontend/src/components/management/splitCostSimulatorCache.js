@@ -1,4 +1,4 @@
-"""Client cache for Split Cost Simulator closed-day baselines."""
+/** Client cache for Split Cost Simulator closed-day baselines. */
 
 const mem = new Map();
 

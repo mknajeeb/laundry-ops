@@ -1,4 +1,4 @@
-"""Canonical Supply Cost Simulator UI — Shift + Planning modes, one engine."""
+/** Canonical Supply Cost Simulator UI — Shift + Planning modes, one engine. */
 
 import { useEffect, useMemo, useState } from "react";
 import {
