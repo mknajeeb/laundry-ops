@@ -2359,6 +2359,17 @@ export const getManagementRinseWfReviewDetail = (dateEt, bagId, params = {}) => 
   );
 };
 
+export const getManagementRinseWfReviewAction = (dateEt, bagId, params = {}) => {
+  const { signal, ...rest } = params || {};
+  return axios.get(
+    `${API_BASE}/api/management/rinse-wf/review/${encodeURIComponent(bagId)}/action`,
+    {
+      params: { date_et: dateEt, ...rest },
+      signal,
+    },
+  );
+};
+
 export const getManagementRinseWfReviewScans = (dateEt, bagId, params = {}) => {
   const { signal, ...rest } = params || {};
   return axios.get(

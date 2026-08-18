@@ -115,25 +115,32 @@ export default function ManagementRinseWfReviewModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [detail, setDetail] = useState(null);
+  const [scansRequested, setScansRequested] = useState(false);
   const [scansState, setScansState] = useState({
     loading: false,
     error: "",
     scans: [],
     meta: null,
   });
+  const [coreMs, setCoreMs] = useState(null);
 
   useEffect(() => {
     if (!open || !bagId || !selectedDateEt) {
       setDetail(null);
       setError("");
+      setScansRequested(false);
       setScansState({ loading: false, error: "", scans: [], meta: null });
+      setCoreMs(null);
       return undefined;
     }
     let cancelled = false;
+    const t0 = typeof performance !== "undefined" ? performance.now() : 0;
     (async () => {
       setLoading(true);
       setError("");
       setDetail(null);
+      setScansRequested(false);
+      setScansState({ loading: false, error: "", scans: [], meta: null });
       try {
         const res = await getManagementRinseWfReviewDetail(selectedDateEt, bagId, {
           include_scans: false,
@@ -150,6 +157,9 @@ export default function ManagementRinseWfReviewModal({
           };
           setDetail({ ...data, bag });
         }
+        if (typeof performance !== "undefined") {
+          setCoreMs(Math.round(performance.now() - t0));
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err?.response?.data?.error || err?.message || "Failed to load detail");
@@ -164,9 +174,9 @@ export default function ManagementRinseWfReviewModal({
     };
   }, [open, bagId, selectedDateEt]);
 
-  // Scans load after core — never block the action panel.
+  // Scans load only after VIEW SCANS — never on modal open.
   useEffect(() => {
-    if (!open || !bagId || !selectedDateEt || !detail?.bag) {
+    if (!open || !bagId || !selectedDateEt || !scansRequested) {
       return undefined;
     }
     let cancelled = false;
@@ -205,7 +215,7 @@ export default function ManagementRinseWfReviewModal({
     return () => {
       cancelled = true;
     };
-  }, [open, bagId, selectedDateEt, detail?.bag?.bag_id]);
+  }, [open, bagId, selectedDateEt, scansRequested]);
 
   const bag = detail?.bag || null;
   const catalog = Array.isArray(detail?.active_bulk_workitems)
@@ -241,17 +251,36 @@ export default function ManagementRinseWfReviewModal({
           </Typography>
         </Section>
       ) : null}
-      <ScansBlock
-        loading={scansState.loading}
-        error={scansState.error}
-        scans={scansState.scans}
-        meta={scansState.meta}
-      />
-      {detail?._meta?.elapsed_ms != null ? (
-        <Typography sx={{ fontSize: 10, color: "#94a3b8" }}>
-          Core {detail._meta.elapsed_ms} ms
-          {detail._meta.query_count != null ? ` · ${detail._meta.query_count} queries` : ""}
-          {detail._meta.scans_loaded ? " · scans in core" : " · scans separate"}
+      {scansRequested ? (
+        <ScansBlock
+          loading={scansState.loading}
+          error={scansState.error}
+          scans={scansState.scans}
+          meta={scansState.meta}
+        />
+      ) : (
+        <Section title="Scans">
+          <Button
+            data-testid="review-view-scans"
+            size="small"
+            variant="outlined"
+            onClick={() => setScansRequested(true)}
+            sx={{ textTransform: "none", fontWeight: 800 }}
+          >
+            VIEW SCANS
+          </Button>
+          <Typography sx={{ mt: 0.5, fontSize: 11, color: "#94a3b8" }}>
+            Not loaded until requested
+          </Typography>
+        </Section>
+      )}
+      {detail?._meta?.elapsed_ms != null || coreMs != null ? (
+        <Typography sx={{ fontSize: 10, color: "#94a3b8" }} data-testid="review-modal-perf">
+          Core {coreMs ?? detail?._meta?.elapsed_ms} ms
+          {detail?._meta?.query_count != null ? ` · ${detail._meta.query_count} queries` : ""}
+          {scansRequested && scansState.meta?.elapsed_ms != null
+            ? ` · scans ${scansState.meta.elapsed_ms} ms`
+            : " · scans not fetched"}
         </Typography>
       ) : null}
     </>

@@ -291,6 +291,38 @@ def register_management_today_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/api/management/rinse-wf/review/<bag_id>/action", methods=["GET"])
+    def management_rinse_wf_review_action(bag_id: str):
+        """Expand-only drawer action metadata — no scans / chronology."""
+        from backend.management_rinse_wf_review import build_management_review_action
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            selected, err = _selected_date_et()
+            if err:
+                return err
+            counting = CountingCursor(cursor)
+            payload = build_management_review_action(counting, oid, selected, bag_id)
+            if payload.get("ok") is False:
+                code = 404 if payload.get("error") == "bag_not_found" else 400
+                return jsonify(json_safe_rinse(payload)), code
+            meta = dict(payload.get("_meta") or {})
+            meta["query_count"] = int(getattr(counting, "query_count", 0))
+            payload["_meta"] = meta
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/api/management/rinse-wf/review/<bag_id>/scans", methods=["GET"])
     def management_rinse_wf_review_scans(bag_id: str):
         """Async scan chronology for ONE Review bag — does not block modal core."""

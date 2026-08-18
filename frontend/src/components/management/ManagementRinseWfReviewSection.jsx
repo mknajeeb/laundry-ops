@@ -17,7 +17,9 @@ import {
 } from "../../api";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import ManagementCopyableId from "./ManagementCopyableId";
+import ManagementRinseWfReviewDrawerRow from "./ManagementRinseWfReviewDrawerRow";
 import ManagementRinseWfReviewModal from "./ManagementRinseWfReviewModal";
+import { fmtLbs } from "./reviewDrawerModel";
 import { pickReviewSummary } from "./todayRinseModel";
 
 function fmtTime(v) {
@@ -95,6 +97,20 @@ function SplitOrderReviewRow({
       <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#334155", mt: 0.45 }}>
         {bag.short_reason || "Split order review"}
       </Typography>
+      {(fmtLbs(bag.pre_weight_lbs) || fmtLbs(bag.post_weight_lbs)) ? (
+        <Stack direction="row" spacing={1.25} sx={{ mt: 0.2 }}>
+          {fmtLbs(bag.pre_weight_lbs) ? (
+            <Typography data-testid="review-drawer-pre" sx={{ fontSize: 12, color: "#475569" }}>
+              PRE {fmtLbs(bag.pre_weight_lbs)}
+            </Typography>
+          ) : null}
+          {fmtLbs(bag.post_weight_lbs) ? (
+            <Typography data-testid="review-drawer-post" sx={{ fontSize: 12, color: "#475569" }}>
+              POST {fmtLbs(bag.post_weight_lbs)}
+            </Typography>
+          ) : null}
+        </Stack>
+      ) : null}
       <Typography sx={{ fontSize: 12, color: "#64748b", mt: 0.25 }}>
         {evidenceSummaryLine(bag)}
       </Typography>
@@ -174,7 +190,7 @@ function SplitOrderReviewRow({
 
 /**
  * Dedicated REVIEW working queue — Specialty Items vs Missing From Portal vs Split Order Review.
- * Specialty / Missing: list is lightweight; REVIEW opens one-bag modal (detail on demand).
+ * Specialty / Missing: list is lightweight; Resolve in drawer; DETAILED REVIEW opens modal.
  * Split Order Review: drawer-only MARK SPLIT / MARK NOT SPLIT (no generic WF Review modal).
  */
 export default function ManagementRinseWfReviewSection({
@@ -226,10 +242,14 @@ export default function ManagementRinseWfReviewSection({
         const data = res?.data || {};
         const clientMs = Math.round(performance.now() - t0);
         const serverMs = data._meta?.elapsed_ms;
-        if (category === "split_order_review" && drawerOpenStarted.current != null) {
+        if (drawerOpenStarted.current != null) {
           setPerf((p) => ({
             ...p,
             drawerOpenMs: Math.round(performance.now() - drawerOpenStarted.current),
+            lastListClientMs: clientMs,
+            lastListServerMs: serverMs ?? null,
+            lastListQueries: data._meta?.query_count ?? null,
+            scansOnList: Boolean(data._meta?.scans_loaded),
           }));
           drawerOpenStarted.current = null;
         }
@@ -263,9 +283,7 @@ export default function ManagementRinseWfReviewSection({
 
   const openCategory = (category) => {
     if (snapshotUnavailable) return;
-    if (category === "split_order_review") {
-      drawerOpenStarted.current = performance.now();
-    }
+    drawerOpenStarted.current = performance.now();
     setDecisionMsg("");
     setDrawer({ open: true, category });
   };
@@ -437,7 +455,7 @@ export default function ManagementRinseWfReviewSection({
         anchor="right"
         open={drawer.open}
         onClose={closeDrawer}
-        PaperProps={{ sx: { width: { xs: "100%", sm: isSplitDrawer ? 440 : 420 }, p: 0 } }}
+        PaperProps={{ sx: { width: { xs: "100%", sm: isSplitDrawer ? 440 : 460 }, p: 0 } }}
       >
         <Box sx={{ p: 1.5 }}>
           <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
@@ -488,46 +506,32 @@ export default function ManagementRinseWfReviewSection({
                     }
                   />
                 ) : (
-                  <Box key={bag.bag_id} sx={{ py: 1.1 }}>
-                    <Typography sx={{ fontWeight: 800, fontSize: 14, color: "#0f172a" }}>
-                      {bag.customer_name || "—"}
-                    </Typography>
-                    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.15 }}>
-                      <ManagementCopyableId value={bag.bag_id} fontSize={13} fontWeight={700} />
-                      {bag.rush_flag ? (
-                        <Typography sx={{ fontSize: 12, color: "#64748b" }}>
-                          · {bag.rush_flag}
-                        </Typography>
-                      ) : null}
-                    </Stack>
-                    <Typography sx={{ fontSize: 12, color: "#64748b", mt: 0.25 }}>
-                      {bag.short_reason || title}
-                      {bag.specialty_summary ? ` · ${bag.specialty_summary}` : ""}
-                    </Typography>
-                    <Typography sx={{ fontSize: 12, color: "#94a3b8" }}>
-                      {[bag.employee, fmtTime(bag.relevant_time)].filter(Boolean).join(" · ") ||
-                        "—"}
-                    </Typography>
-                    <Button
-                      size="small"
-                      variant="contained"
-                      onClick={() => setModal({ open: true, bagId: bag.bag_id, seed: bag })}
-                      sx={{ mt: 0.75, textTransform: "none", fontWeight: 700 }}
-                    >
-                      Review
-                    </Button>
-                  </Box>
+                  <ManagementRinseWfReviewDrawerRow
+                    key={bag.bag_id}
+                    bag={bag}
+                    selectedDateEt={selectedDateEt}
+                    readOnly={readOnly}
+                    onDetailedReview={(seed) =>
+                      setModal({ open: true, bagId: seed.bag_id, seed })
+                    }
+                    onSaved={() => {
+                      setListState((prev) => ({
+                        ...prev,
+                        bags: (prev.bags || []).filter((b) => b.bag_id !== bag.bag_id),
+                      }));
+                      onRefresh?.();
+                      if (drawer.category) loadList(drawer.category);
+                    }}
+                  />
                 ),
               )}
             </Stack>
           )}
           {listState.meta?.elapsed_ms != null || perf.drawerOpenMs != null ? (
-            <Typography sx={{ mt: 1.5, fontSize: 10, color: "#94a3b8" }}>
-              {isSplitDrawer && perf.drawerOpenMs != null
-                ? `Drawer open ${perf.drawerOpenMs} ms`
-                : null}
+            <Typography sx={{ mt: 1.5, fontSize: 10, color: "#94a3b8" }} data-testid="review-drawer-perf">
+              {perf.drawerOpenMs != null ? `Drawer open ${perf.drawerOpenMs} ms` : null}
               {listState.meta?.elapsed_ms != null
-                ? `${isSplitDrawer && perf.drawerOpenMs != null ? " · " : ""}List ${listState.meta.elapsed_ms} ms`
+                ? `${perf.drawerOpenMs != null ? " · " : ""}List ${listState.meta.elapsed_ms} ms`
                 : ""}
               {listState.meta?.scans_loaded ? " · scans loaded" : " · no scans"}
               {listState.meta?.query_count != null

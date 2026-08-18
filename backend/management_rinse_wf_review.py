@@ -477,6 +477,15 @@ def _short_reason(codes: list[str], category: str) -> str:
     return "Specialty review"
 
 
+def review_drawer_section_flags(codes: list[str] | tuple[str, ...] | None) -> dict[str, bool]:
+    """Which compact drawer action sections apply (multi-reason bags can have both)."""
+    code_set = {str(c) for c in (codes or []) if c}
+    return {
+        "has_specialty_bulk": REASON_WF_BULK_WORKITEM_REVIEW in code_set,
+        "has_missing_portal": bool(code_set & MISSING_FROM_PORTAL_REASONS),
+    }
+
+
 def _short_specialty_summary(qty_info: Mapping[str, Any]) -> str | None:
     c = qty_info.get("comforter_quantity") or 0
     b = qty_info.get("bath_mat_quantity") or 0
@@ -675,6 +684,13 @@ def build_management_review_list(
             reason = sev.get("review_reason") or smeta.get("review_reason")
             if reason and reason not in codes:
                 codes = [str(reason)] + codes
+        flags = review_drawer_section_flags(codes)
+        completion_employee = (
+            snap.get("completed_by") or row.get("canonical_completion_employee")
+        )
+        completion_at = (
+            snap.get("completion_at") or row.get("canonical_completion_timestamp")
+        )
         bags_out.append(
             {
                 "bag_id": bid,
@@ -693,6 +709,8 @@ def build_management_review_list(
                 "bath_mat_quantity": qty_info.get("bath_mat_quantity") or 0,
                 "specialty_quantity": qty_info.get("specialty_quantity"),
                 "specialty_item_class": qty_info.get("specialty_item_class"),
+                "has_specialty_bulk": flags["has_specialty_bulk"],
+                "has_missing_portal": flags["has_missing_portal"],
                 "employee": (
                     sev.get("split_marker_employee")
                     or snap.get("completed_by")
@@ -700,6 +718,9 @@ def build_management_review_list(
                     or snap.get("pre_weight_employee")
                     or snap.get("post_weight_employee")
                 ),
+                "completion_employee": completion_employee,
+                "completion_at": completion_at,
+                "completed_by": completion_employee,
                 "pre_weight_lbs": snap.get("pre_weight_lbs", row.get("pre_weight_lbs")),
                 "pre_weight_at": snap.get("pre_weight_at"),
                 "post_weight_lbs": snap.get("post_weight_lbs", row.get("post_weight_lbs")),
@@ -713,6 +734,9 @@ def build_management_review_list(
                     or row.get("workload_entry_timestamp")
                 ),
                 "dashboard_status": snap.get("outcome") or row.get("effective_status"),
+                "manager_edit_version": int(row.get("manager_edit_version") or 0),
+                "updated_at": row.get("updated_at"),
+                "day_bag_updated_at": row.get("updated_at"),
                 "employee_performance_eligible": cat == CATEGORY_SPECIALTY,
                 "split_marker_present": sev.get("split_marker_present")
                 if sev
@@ -755,6 +779,7 @@ def build_management_review_list(
         "_meta": {
             "include_details": False,
             "scans_loaded": False,
+            "action_metadata": False,
             "elapsed_ms": elapsed_ms,
             "source": "day_bags_light+optional_bulk_lines",
         },
@@ -946,5 +971,104 @@ def build_management_review_scans(
             "elapsed_ms": elapsed_ms,
             "scan_count": len(scans),
             "source": "load_scans_for_bags",
+        },
+    }
+
+
+def build_management_review_action(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    bag_id: str,
+) -> dict[str, Any]:
+    """Expand-only drawer action metadata for ONE bag.
+
+    Lock version, weights, completion, bulk lines, and catalog — no scans,
+    chronology, photos, or full drilldown payload.
+    """
+    import time
+
+    from backend.rinse_bulk_workitems import (
+        list_workitems,
+        load_bag_bulk_lines,
+        load_bulk_resolutions,
+    )
+    from backend.rinse_veewash_shift_day import load_day_bags_by_ids
+
+    t0 = time.perf_counter()
+    bid = normalize_bag_id(bag_id)
+    if not bid:
+        return {"ok": False, "error": "bag_id_required"}
+
+    rows = load_day_bags_by_ids(cursor, organization_id, selected_date_et, [bid])
+    if not rows:
+        return {"ok": False, "error": "bag_not_found", "bag_id": bid}
+
+    row = rows[0]
+    snap = dict(row.get("bag_snapshot") or {})
+    codes = [str(c) for c in (row.get("review_reason_codes") or snap.get("reason_codes") or []) if c]
+    flags = review_drawer_section_flags(codes)
+    category = category_for_reason_codes(codes)
+
+    bulk_lines = load_bag_bulk_lines(
+        cursor, organization_id, selected_date_et, [bid]
+    ).get(bid) or []
+    bulk_res = load_bulk_resolutions(
+        cursor, organization_id, selected_date_et, [bid]
+    ).get(bid)
+    need_catalog = bool(flags["has_specialty_bulk"] or bulk_lines or bulk_res)
+    catalog: list[dict[str, Any]] = []
+    if need_catalog:
+        catalog = list_workitems(cursor, organization_id, active_only=True)
+
+    qty_info = _specialty_qty_from_lines(bulk_lines)
+    completion_employee = snap.get("completed_by") or row.get("canonical_completion_employee")
+    completion_at = snap.get("completion_at") or row.get("canonical_completion_timestamp")
+    pre_lbs = snap.get("pre_weight_lbs", row.get("pre_weight_lbs"))
+    post_lbs = snap.get("post_weight_lbs", row.get("post_weight_lbs"))
+
+    bag = {
+        "bag_id": bid,
+        "customer_name": snap.get("customer_name") or row.get("customer_name"),
+        "service_type": snap.get("service_type") or row.get("service_type") or "WF",
+        "rush_flag": snap.get("rush_flag") or row.get("rush_status"),
+        "reason_codes": codes,
+        "short_reason": _short_reason(codes, category),
+        "dashboard_status": snap.get("outcome") or row.get("effective_status"),
+        "pre_weight_lbs": pre_lbs,
+        "post_weight_lbs": post_lbs,
+        "post_weight_value": post_lbs,
+        "pre_weight_at": snap.get("pre_weight_at"),
+        "post_weight_at": snap.get("post_weight_at"),
+        "completion_employee": completion_employee,
+        "completion_at": completion_at,
+        "completed_by": completion_employee,
+        "canonical_completion_timestamp": completion_at,
+        "canonical_completion_employee": completion_employee,
+        "manager_edit_version": int(row.get("manager_edit_version") or 0),
+        "updated_at": row.get("updated_at"),
+        "day_bag_updated_at": row.get("updated_at"),
+        "comforter_quantity": qty_info.get("comforter_quantity") or 0,
+        "bath_mat_quantity": qty_info.get("bath_mat_quantity") or 0,
+        "bulk_workitems": bulk_lines,
+        "bulk_resolution": bulk_res,
+        "has_specialty_bulk": flags["has_specialty_bulk"],
+        "has_missing_portal": flags["has_missing_portal"],
+        "review_category": category,
+        "_detailsLoaded": True,
+        "_actionMetaOnly": True,
+    }
+    elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+    return {
+        "ok": True,
+        "date_et": selected_date_et.isoformat(),
+        "bag": bag,
+        "active_bulk_workitems": catalog,
+        "_meta": {
+            "include_details": False,
+            "scans_loaded": False,
+            "action_metadata": True,
+            "elapsed_ms": elapsed_ms,
+            "source": "day_bag+optional_bulk_catalog",
         },
     }
