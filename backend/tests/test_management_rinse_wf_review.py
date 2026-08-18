@@ -213,6 +213,247 @@ def test_drawer_section_flags_allow_both():
     assert weight_only["has_missing_portal"] is False
 
 
+def test_a_hd_disappeared_not_on_wf_missing_portal():
+    """A. HD + DISAPPEARED → not WF Missing From Portal (HD review only)."""
+    headline = {
+        "segments": {
+            "wf": {
+                "bag_ids": {
+                    "review_required": [],
+                    "pending": ["WFONLY01"],
+                    "completed": [],
+                }
+            },
+            "hd": {
+                "bag_ids": {
+                    "review_required": ["84GBGYG38M"],
+                }
+            },
+        },
+        "review_reasons_by_bag": {
+            "84GBGYG38M": ["DISAPPEARED_WITHOUT_COMPLETION"],
+        },
+        "review_by_reason": {
+            "DISAPPEARED_WITHOUT_COMPLETION": ["84GBGYG38M"],
+        },
+    }
+    split = split_review_categories(headline)
+    assert "84GBGYG38M" not in split[CATEGORY_MISSING_PORTAL]
+    assert split["counts"][CATEGORY_MISSING_PORTAL] == 0
+    assert split["counts"]["review_required"] == 0
+
+
+def test_b_wf_disappeared_on_wf_missing_portal():
+    """B. WF + DISAPPEARED → WF Missing From Portal."""
+    headline = {
+        "segments": {
+            "wf": {
+                "bag_ids": {
+                    "review_required": ["WFMISS01"],
+                    "pending": [],
+                    "completed": [],
+                }
+            },
+            "hd": {"bag_ids": {"review_required": []}},
+        },
+        "review_reasons_by_bag": {
+            "WFMISS01": ["DISAPPEARED_WITHOUT_COMPLETION"],
+        },
+        "review_by_reason": {
+            "DISAPPEARED_WITHOUT_COMPLETION": ["WFMISS01"],
+        },
+    }
+    split = split_review_categories(headline)
+    assert set(split[CATEGORY_MISSING_PORTAL]) == {"WFMISS01"}
+    assert split["counts"][CATEGORY_MISSING_PORTAL] == 1
+
+
+def test_c_empty_wf_review_required_ignores_hd_review_by_reason():
+    """C. Empty WF review_required + HD in review_by_reason → WF queues empty."""
+    headline = {
+        "segments": {
+            "wf": {
+                "bag_ids": {
+                    "review_required": [],
+                    "pending": ["WFPEND01"],
+                    "completed": ["WFCOMP01"],
+                }
+            },
+            "hd": {
+                "bag_ids": {
+                    "review_required": ["HDREV01", "HDREV02"],
+                }
+            },
+        },
+        "review_reasons_by_bag": {
+            "HDREV01": ["DISAPPEARED_WITHOUT_COMPLETION"],
+            "HDREV02": ["DISAPPEARED_WITHOUT_COMPLETION"],
+        },
+        "review_by_reason": {
+            "DISAPPEARED_WITHOUT_COMPLETION": ["HDREV01", "HDREV02"],
+        },
+    }
+    split = split_review_categories(headline)
+    assert split[CATEGORY_MISSING_PORTAL] == []
+    assert split[CATEGORY_SPECIALTY] == []
+    assert split["counts"]["review_required"] == 0
+
+
+def test_d_mixed_wf_hd_review_by_reason_service_isolated():
+    """D. Mixed WF/HD review_by_reason → WF tab receives WF only."""
+    headline = {
+        "segments": {
+            "wf": {
+                "bag_ids": {
+                    "review_required": ["WFMISS01"],
+                    "pending": [],
+                    "completed": ["WFSPEC01"],
+                }
+            },
+            "hd": {
+                "bag_ids": {
+                    "review_required": ["HDMISS01"],
+                }
+            },
+        },
+        "review_reasons_by_bag": {
+            "WFMISS01": ["DISAPPEARED_WITHOUT_COMPLETION"],
+            "HDMISS01": ["DISAPPEARED_WITHOUT_COMPLETION"],
+            "WFSPEC01": ["WF_BULK_WORKITEM_REVIEW"],
+            "HDSPEC01": ["WF_BULK_WORKITEM_REVIEW"],
+        },
+        "review_by_reason": {
+            "DISAPPEARED_WITHOUT_COMPLETION": ["WFMISS01", "HDMISS01"],
+            "WF_BULK_WORKITEM_REVIEW": ["WFSPEC01", "HDSPEC01"],
+        },
+    }
+    split = split_review_categories(headline)
+    wf_review = set(split[CATEGORY_MISSING_PORTAL]) | set(split[CATEGORY_SPECIALTY])
+    assert wf_review == {"WFMISS01", "WFSPEC01"}
+    assert "HDMISS01" not in wf_review
+    assert "HDSPEC01" not in wf_review
+    # Authoritative HD IDs must not intersect WF review queues.
+    hd_ids = {"HDMISS01", "HDSPEC01"}
+    assert wf_review.isdisjoint(hd_ids)
+
+
+def test_e_wf_missing_portal_list_workflow_still_works():
+    """E. Existing WF Missing From Portal list path still returns the WF bag."""
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_rinse_wf_review import build_management_review_list
+
+    headline = {
+        "segments": {"wf": {"bag_ids": {"review_required": ["BAGMISS01"]}}},
+        "review_reasons_by_bag": {
+            "BAGMISS01": ["DISAPPEARED_WITHOUT_COMPLETION"],
+        },
+        "review_by_reason": {
+            "DISAPPEARED_WITHOUT_COMPLETION": ["BAGMISS01"],
+        },
+    }
+    row = {
+        "bag_id": "BAGMISS01",
+        "service_type": "WF",
+        "effective_status": "review_required",
+        "review_reason_codes": ["DISAPPEARED_WITHOUT_COMPLETION"],
+        "pre_weight_lbs": 12.5,
+        "post_weight_lbs": None,
+        "canonical_completion_employee": None,
+        "canonical_completion_timestamp": None,
+        "manager_edit_version": 0,
+        "updated_at": "2026-08-17T12:00:00",
+        "bag_snapshot": {
+            "customer_name": "Ada",
+            "rush_flag": "RUSH",
+            "pre_weight_lbs": 12.5,
+            "reason_codes": ["DISAPPEARED_WITHOUT_COMPLETION"],
+        },
+    }
+    with (
+        patch(
+            "backend.rinse_veewash_shift_day.get_day_record",
+            return_value={"headline": headline, "status": "OPEN"},
+        ),
+        patch(
+            "backend.rinse_veewash_shift_day.summary_from_day_record",
+            return_value=headline,
+        ),
+        patch(
+            "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
+            return_value=[row],
+        ),
+        patch("backend.rinse_bulk_workitems.load_bag_bulk_lines") as bulk,
+        patch("backend.rinse_veewash_step1_api.load_scans_for_bags") as scans,
+    ):
+        out = build_management_review_list(
+            MagicMock(),
+            3,
+            date(2026, 8, 17),
+            category="missing_from_portal",
+        )
+    scans.assert_not_called()
+    bulk.assert_not_called()
+    assert out["ok"] is True
+    assert out["bags"][0]["bag_id"] == "BAGMISS01"
+    assert out["bags"][0]["has_missing_portal"] is True
+
+
+def test_hd_day_bag_dropped_from_wf_missing_list_even_if_headline_leaks():
+    """List heal drops explicit HD day-bag rows from WF Missing From Portal."""
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_rinse_wf_review import build_management_review_list
+
+    # Simulate a leaked headline ID that should still be blocked by day_bag service.
+    headline = {
+        "segments": {
+            "wf": {"bag_ids": {"review_required": ["84GBGYG38M"]}},
+        },
+        "review_reasons_by_bag": {
+            "84GBGYG38M": ["DISAPPEARED_WITHOUT_COMPLETION"],
+        },
+        "review_by_reason": {
+            "DISAPPEARED_WITHOUT_COMPLETION": ["84GBGYG38M"],
+        },
+    }
+    row = {
+        "bag_id": "84GBGYG38M",
+        "service_type": "HD",
+        "effective_status": "review_required",
+        "review_reason_codes": ["DISAPPEARED_WITHOUT_COMPLETION"],
+        "bag_snapshot": {"rush_flag": "RUSH"},
+    }
+    with (
+        patch(
+            "backend.rinse_veewash_shift_day.get_day_record",
+            return_value={"headline": headline, "status": "OPEN"},
+        ),
+        patch(
+            "backend.rinse_veewash_shift_day.summary_from_day_record",
+            return_value=headline,
+        ),
+        patch(
+            "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
+            return_value=[row],
+        ),
+        patch("backend.rinse_bulk_workitems.load_bag_bulk_lines"),
+        patch("backend.rinse_veewash_step1_api.load_scans_for_bags"),
+    ):
+        out = build_management_review_list(
+            MagicMock(),
+            3,
+            date(2026, 8, 17),
+            category="missing_from_portal",
+        )
+    assert out["ok"] is True
+    assert out["bags"] == []
+    assert out["pagination"]["total"] == 0
+    assert out["counts"].get("missing_from_portal") == 0
+
+
 def test_review_list_is_summary_only_no_scans():
     from datetime import date
     from unittest.mock import MagicMock, patch
@@ -230,6 +471,7 @@ def test_review_list_is_summary_only_no_scans():
     }
     row = {
         "bag_id": "BAGMISS01",
+        "service_type": "WF",
         "effective_status": "review_required",
         "review_reason_codes": ["DISAPPEARED_WITHOUT_COMPLETION"],
         "pre_weight_lbs": 12.5,

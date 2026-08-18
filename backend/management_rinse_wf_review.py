@@ -148,24 +148,72 @@ def _bag_codes(by_bag: Mapping[str, Any], by_reason: Mapping[str, Any], bag_id: 
     return codes
 
 
+_WF_MEMBERSHIP_BAG_ID_BUCKETS = (
+    "review_required",
+    "pending",
+    "completed",
+    "new_today",
+    "carryover",
+    "disappeared_without_completion",
+    "missing_workload_entry_scan",
+    "completed_awaiting_workload_assignment",
+)
+
+
+def _wf_membership_ids(headline: Mapping[str, Any] | None) -> set[str]:
+    """Canonical WF day membership from segments.wf bag_ids (all status buckets).
+
+    Used to keep Management Rinse WF review queues service-isolated. HD bags that
+    only appear in org-wide review_by_reason must never enter WF review surfaces.
+    """
+    segs = (headline or {}).get("segments") or {}
+    bags_map = ((segs.get("wf") or {}).get("bag_ids") or {})
+    if not isinstance(bags_map, dict):
+        return set()
+    out: set[str] = set()
+    for bucket in _WF_MEMBERSHIP_BAG_ID_BUCKETS:
+        for raw in bags_map.get(bucket) or []:
+            key = normalize_bag_id(raw)
+            if key:
+                out.add(key)
+    # Also accept any other bag_ids lists under wf (forward-compatible).
+    for vals in bags_map.values():
+        if not isinstance(vals, (list, tuple)):
+            continue
+        for raw in vals:
+            key = normalize_bag_id(raw)
+            if key:
+                out.add(key)
+    return out
+
+
+def _service_is_wf(row: Mapping[str, Any] | None) -> bool:
+    """True when a day-bag row is WF.
+
+    Blank service does not prove non-WF (legacy rows); only an explicit non-WF
+    service_type excludes a bag from WF review surfaces.
+    """
+    svc = str((row or {}).get("service_type") or "").strip().upper()
+    if not svc:
+        return True
+    return svc == "WF"
+
+
 def _wf_review_ids(headline: Mapping[str, Any] | None) -> list[str]:
+    """WF Review Required IDs only — never admit HD via org-wide reason maps.
+
+    Source of truth: ``segments.wf.bag_ids.review_required``.
+
+    When that list is empty, return empty — do **not** fall back to org-wide
+    ``review_by_reason`` / ``review_reasons_by_bag``. Those maps include HD bags
+    (e.g. DISAPPEARED_WITHOUT_COMPLETION) and leaked them into WF Missing From
+    Portal. Specialty Items for completed-but-unresolved WF bags still come from
+    ``_specialty_candidate_ids`` via WF membership ∩ specialty reasons.
+    """
     segs = (headline or {}).get("segments") or {}
     seg = segs.get("wf") or {}
     ids = list(((seg.get("bag_ids") or {}).get("review_required")) or [])
-    if ids:
-        return [normalize_bag_id(b) for b in ids if normalize_bag_id(b)]
-    by_reason, _ = _headline_maps(headline)
-    seen: set[str] = set()
-    out: list[str] = []
-    for ids in by_reason.values():
-        if not isinstance(ids, (list, tuple)):
-            continue
-        for bid in ids:
-            key = normalize_bag_id(bid)
-            if key and key not in seen:
-                seen.add(key)
-                out.append(key)
-    return out
+    return [normalize_bag_id(b) for b in ids if normalize_bag_id(b)]
 
 
 def _specialty_candidate_ids(
@@ -173,19 +221,27 @@ def _specialty_candidate_ids(
     by_reason: Mapping[str, Any],
     by_bag: Mapping[str, Any],
 ) -> list[str]:
-    """Review-required IDs plus any bag with unresolved specialty reasons.
+    """Review-required IDs plus any WF bag with unresolved specialty reasons.
 
     Completed status alone must not exclude a bag that still has unresolved
     specialty review (e.g. WF_BULK_WORKITEM_REVIEW still on the bag).
+
+    HD bags in org-wide reason maps are excluded — Specialty Items is WF-only.
     """
+    segs = (headline or {}).get("segments") or {}
+    enforce_wf = "wf" in segs
+    wf_members = _wf_membership_ids(headline) if enforce_wf else set()
     seen: set[str] = set()
     out: list[str] = []
 
     def _add(raw: Any) -> None:
         key = normalize_bag_id(raw)
-        if key and key not in seen:
-            seen.add(key)
-            out.append(key)
+        if not key or key in seen:
+            return
+        if enforce_wf and key not in wf_members:
+            return
+        seen.add(key)
+        out.append(key)
 
     for bid in _wf_review_ids(headline):
         _add(bid)
@@ -262,7 +318,9 @@ def split_review_categories(
             "DISAPPEARED_WITHOUT_COMPLETION alone → missing_from_portal; "
             "canonical split REVIEW_REQUIRED → split_order_review (separate); "
             "resolved specialty leaves specialty_items; no double-count between "
-            "specialty and missing"
+            "specialty and missing; "
+            "WF review queues intersect segments.wf membership only — HD review "
+            "reasons never enter WF Missing/Specialty via review_by_reason fallback"
         ),
         "employee_performance_hint": {
             CATEGORY_SPECIALTY: "may_associate_with_employee_or_resource",
@@ -544,6 +602,7 @@ def build_management_review_list(
 
     # Heal membership from day_bag rows — NEVER drop Specialty Items solely
     # because status=completed. Specialty exits only when specialty is resolved.
+    # Always drop non-WF day-bag rows (service isolation defense in depth).
     if bag_ids and cat != CATEGORY_SPLIT_ORDER:
         # Need review_reason_codes for specialty resolution (not status_only).
         status_rows = load_day_bags_by_ids(
@@ -555,6 +614,9 @@ def build_management_review_list(
         still: set[str] = set()
         for bid in bag_ids:
             row = by_status.get(bid) or {}
+            if row and not _service_is_wf(row):
+                # Explicit HD (or other non-WF) day-bag must not appear on WF queues.
+                continue
             status = str(row.get("effective_status") or "").strip().lower()
             codes = list(row.get("review_reason_codes") or []) or _bag_codes(
                 by_bag, by_reason, bid
