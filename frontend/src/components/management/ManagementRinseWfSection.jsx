@@ -227,12 +227,39 @@ export default function ManagementRinseWfSection({
   const supplyBanner = supplies?.supply_banner || null;
   const supplyBannerDetail = supplies?.supply_banner_detail || null;
   const supplyStatus = String(supplies?.supply_status || "").toUpperCase();
-  const pendingSplitReviews = Number(supplies?.pending_split_reviews || 0);
   const supplyFinalizable = supplies?.supply_finalizable !== false;
   const reviewSummary = reviewProp || rinse?.review || null;
   const dashboard = supplies?.dashboard || null;
   const population = supplies?.population || {};
   const kpis = dashboard?.kpis || {};
+  const splitDecisionPending = Number(
+    supplies?.split_decision_pending
+    ?? population?.split_decision_pending
+    ?? supplies?.pending_split_reviews
+    ?? dashboard?.split_decision_pending
+    ?? 0
+  );
+  const confirmedSplitOrders = Number(
+    supplies?.confirmed_split_orders
+    ?? population?.confirmed_split_orders
+    ?? dashboard?.confirmed_split_orders
+    ?? 0
+  );
+  const confirmedNotSplitOrders = Number(
+    supplies?.confirmed_not_split_orders
+    ?? population?.confirmed_not_split_orders
+    ?? dashboard?.confirmed_not_split_orders
+    ?? 0
+  );
+  const supplyStatusLine =
+    supplies?.supply_status_line
+    || population?.status_line
+    || null;
+  const loadsIdentity =
+    supplies?.loads_identity
+    || population?.loads_identity
+    || null;
+
   const supplyProducts = useMemo(() => {
     const products = Array.isArray(supplies?.products) ? supplies.products : [];
     if (products.length) return products;
@@ -326,8 +353,8 @@ export default function ManagementRinseWfSection({
 
   const supplyHint = suppliesPending
     ? "LOADING"
-    : supplyStatus === "PROVISIONAL" && pendingSplitReviews > 0
-      ? `PROVISIONAL · ${pendingSplitReviews} PENDING`
+    : supplyStatus === "PROVISIONAL" && splitDecisionPending > 0
+      ? `PROVISIONAL · ${splitDecisionPending} SPLIT DECISION PENDING`
       : supplyStatus || "DAY TOTALS";
 
   const uniqueOrders =
@@ -506,8 +533,10 @@ export default function ManagementRinseWfSection({
           value={snapshotUnavailable ? "—" : fmtInt(split)}
           sub={
             !snapshotUnavailable && splitReview > 0
-              ? `SPLIT REVIEW ${splitReview}`
-              : undefined
+              ? `SPLIT ORDER REVIEW ${splitReview}`
+              : !snapshotUnavailable
+                ? "Operational (not supply)"
+                : undefined
           }
           onClick={
             snapshotUnavailable
@@ -541,8 +570,8 @@ export default function ManagementRinseWfSection({
             </Typography>
           ) : (
             <Typography sx={{ fontSize: 11, color: "#64748b", mt: 0.35, fontWeight: 500 }}>
-              Costs may increase after pending split reviews are resolved. Confirmed totals
-              exclude unresolved split increments.
+              Pending orders are not included in confirmed supply cost until their
+              split status is finalized. This is not Split Order Review.
             </Typography>
           )}
         </Alert>
@@ -567,7 +596,7 @@ export default function ManagementRinseWfSection({
               display: "grid",
               gridTemplateColumns: { xs: "1fr", sm: "minmax(0, 1.2fr) repeat(3, minmax(0, 1fr))" },
               gap: 0.75,
-              mb: 0.75,
+              mb: 0.5,
             }}
           >
             <SupplyMetric label="Total Supply Cost" value={fmtMoney(totalCost)} />
@@ -611,6 +640,30 @@ export default function ManagementRinseWfSection({
               }
             />
           </Box>
+          <Typography sx={{ fontSize: 11, color: "#64748b", mb: 0.75, fontWeight: 600 }}>
+            {fmtInt(confirmedSupplyOrders)} confirmed supply orders
+            {" · "}
+            {fmtInt(confirmedLoads)} confirmed loads
+            {splitDecisionPending > 0
+              ? ` · ${fmtInt(splitDecisionPending)} split decisions pending`
+              : ""}
+          </Typography>
+          {(supplyStatusLine || loadsIdentity) ? (
+            <Box sx={{ mb: 0.75 }}>
+              {supplyStatusLine ? (
+                <Typography sx={{ fontSize: 12, fontWeight: 700, color: "#334155" }}>
+                  Supply Status · {supplyStatusLine}
+                </Typography>
+              ) : null}
+              {loadsIdentity ? (
+                <Typography sx={{ fontSize: 11, color: "#64748b", fontWeight: 600, mt: 0.2 }}>
+                  Confirmed loads: {fmtInt(confirmedLoads)}
+                  {" · "}
+                  {loadsIdentity}
+                </Typography>
+              ) : null}
+            </Box>
+          ) : null}
           <Box
             sx={{
               display: "grid",
@@ -627,7 +680,7 @@ export default function ManagementRinseWfSection({
             <SupplyMetric
               label="Confirmed Supply Orders"
               value={fmtInt(confirmedSupplyOrders)}
-              hint="Workload orders with finalized split state (pending split reviews excluded)."
+              hint="Workload orders with finalized split state (split decision pending excluded)."
             />
             <SupplyMetric
               label="Confirmed Loads"
@@ -635,9 +688,19 @@ export default function ManagementRinseWfSection({
               hint="Canonical processing units: not-split=1, confirmed split=2."
             />
             <SupplyMetric
-              label="Pending Split Reviews"
-              value={fmtInt(pendingSplitReviews)}
-              hint="Excluded from confirmed supply totals until resolved."
+              label="Confirmed Split"
+              value={fmtInt(confirmedSplitOrders)}
+              hint="Supply-confirmed split orders (2 loads each). Separate from Specialty Splits."
+            />
+            <SupplyMetric
+              label="Confirmed Not Split"
+              value={fmtInt(confirmedNotSplitOrders)}
+              hint="Supply-confirmed not-split orders (1 load each)."
+            />
+            <SupplyMetric
+              label="Split Decision Pending"
+              value={fmtInt(splitDecisionPending)}
+              hint="Awaiting split/not-split determination — not Split Order Review."
             />
             <SupplyMetric
               label="Total Doses"
@@ -651,7 +714,7 @@ export default function ManagementRinseWfSection({
           </Box>
           {potentialMin != null && potentialMax != null && !supplyFinalizable ? (
             <Typography sx={{ fontSize: 11, color: "#64748b", mb: 1, fontWeight: 600 }}>
-              Potential final supply cost range: {fmtMoney(potentialMin)} – {fmtMoney(potentialMax)}
+              Estimated final supply cost range: {fmtMoney(potentialMin)} – {fmtMoney(potentialMax)}
             </Typography>
           ) : (
             <Box sx={{ mb: 0.75 }} />

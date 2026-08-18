@@ -277,6 +277,7 @@ def test_summary_wires_product_master(monkeypatch):
             "confirmed_processing_units": 1,
             "confirmed_doses_by_supply": {"Tide": 1},
             "split_state": "CONFIRMED_NOT_SPLIT",
+            "canonical_split": False,
             "split_finalized": True,
         },
         {
@@ -286,6 +287,7 @@ def test_summary_wires_product_master(monkeypatch):
             "confirmed_processing_units": 0,
             "confirmed_doses_by_supply": {},
             "split_state": "PENDING",
+            "canonical_split": None,
             "split_finalized": False,
         },
     ]
@@ -337,8 +339,17 @@ def test_summary_wires_product_master(monkeypatch):
     assert summary["population"]["unresolved_split_orders"] == 1
     assert summary["supply_status"] == "PROVISIONAL"
     assert summary["pending_split_reviews"] == 1
-    assert "split review" in (summary["supply_banner"] or "").lower()
-    assert "Final cost may increase" in (summary["supply_banner_detail"] or "")
+    assert summary["split_decision_pending"] == 1
+    assert "PROVISIONAL" in (summary["supply_banner"] or "").upper()
+    assert "awaiting split/not-split" in (summary["supply_banner_detail"] or "").lower()
+    assert "not Split Order Review" in (summary["supply_banner_detail"] or "")
+    assert "split review" not in (summary["supply_banner"] or "").lower()
+    assert summary["confirmed_split_orders"] == 0 or summary["confirmed_not_split_orders"] >= 0
+    # Confirmed row is not-split in this fixture
+    assert summary["confirmed_not_split_orders"] == 1
+    assert summary["confirmed_split_orders"] == 0
+    assert "1×2 + 1×1" not in (summary.get("loads_identity") or "")
+    assert summary["loads_identity"] == "0×2 + 1×1 = 1 confirmed loads"
     tide = summary["products"][0]
     assert tide["confirmed_loads"] == 1
     assert tide["quantity_used"] == 2.0

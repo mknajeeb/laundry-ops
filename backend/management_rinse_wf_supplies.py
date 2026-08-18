@@ -821,9 +821,6 @@ def _build_summary_from_rows(
         if r.get("order_id")
     }
     fin = supply_day_finalizable(evaluations)
-    pending_reviews = int(fin.get("split_review_count") or 0) + int(
-        fin.get("split_pending_count") or 0
-    )
     provisional = _provisional_load_range(order_rows)
     confirmed_orders = sum(1 for r in order_rows if r.get("confirmed_for_supply"))
     confirmed_loads = sum(
@@ -831,6 +828,24 @@ def _build_summary_from_rows(
         for r in order_rows
         if r.get("confirmed_for_supply")
     )
+    confirmed_split_orders = sum(
+        1
+        for r in order_rows
+        if r.get("confirmed_for_supply") and r.get("canonical_split") is True
+    )
+    confirmed_not_split_orders = sum(
+        1
+        for r in order_rows
+        if r.get("confirmed_for_supply") and r.get("canonical_split") is False
+    )
+    # Unresolved for supply confirmation (PENDING + REVIEW_REQUIRED). This is
+    # NOT Management Split Order Review — do not call it "split reviews".
+    split_decision_pending = int(provisional["unresolved_orders"])
+    split_pending_count = int(fin.get("split_pending_count") or 0)
+    split_review_count = int(fin.get("split_review_count") or 0)
+    # Backward-compat alias (old field name); UI must not present as "reviews".
+    pending_reviews = split_decision_pending
+
     cost_available = any(c.get("cost_per_dose") is not None for c in cards)
     total_cost = _cards_total_cost(cards) if cost_available else None
     pot = _provisional_cost_range(
@@ -849,6 +864,11 @@ def _build_summary_from_rows(
         potential_cost_min=pot.get("potential_final_cost_min"),
         potential_cost_max=pot.get("potential_final_cost_max"),
     )
+    dashboard["confirmed_split_orders"] = confirmed_split_orders
+    dashboard["confirmed_not_split_orders"] = confirmed_not_split_orders
+    dashboard["split_decision_pending"] = split_decision_pending
+    dashboard["split_pending_count"] = split_pending_count
+    dashboard["split_review_count"] = split_review_count
 
     by_legacy: dict[str, dict[str, Any]] = {}
     for card in cards:
@@ -872,23 +892,47 @@ def _build_summary_from_rows(
     banner = None
     banner_detail = None
     if not fin.get("finalizable"):
-        banner = (
-            f"PROVISIONAL — {pending_reviews} split review"
-            f"{'s' if pending_reviews != 1 else ''} pending"
-        )
-        banner_detail = (
-            "Confirmed costs shown below. "
-            "Final cost may increase after pending split reviews resolve."
-        )
+        banner = "SUPPLY COST STILL PROVISIONAL"
+        detail_parts = [
+            (
+                f"{split_decision_pending} order"
+                f"{'s' if split_decision_pending != 1 else ''} still awaiting "
+                f"split/not-split determination."
+            )
+        ]
+        if total_cost is not None:
+            detail_parts.append(f"Confirmed supply cost: ${total_cost:.2f}.")
         if (
             pot.get("potential_final_cost_min") is not None
             and pot.get("potential_final_cost_max") is not None
         ):
-            banner_detail += (
-                f" Potential final supply cost range: "
+            detail_parts.append(
+                f"Estimated final range: "
                 f"${pot['potential_final_cost_min']:.2f} – "
                 f"${pot['potential_final_cost_max']:.2f}."
             )
+        detail_parts.append(
+            f"{confirmed_split_orders} confirmed split · "
+            f"{confirmed_not_split_orders} confirmed not split · "
+            f"{split_decision_pending} pending."
+        )
+        detail_parts.append(
+            "Pending orders are not included in confirmed supply cost until "
+            "their split status is finalized. "
+            "This is not Split Order Review."
+        )
+        banner_detail = " ".join(detail_parts)
+
+    loads_identity = (
+        f"{confirmed_split_orders}×2 + {confirmed_not_split_orders}×1 "
+        f"= {confirmed_loads} confirmed loads"
+    )
+    status_line = (
+        f"{confirmed_orders} confirmed orders · "
+        f"{confirmed_split_orders} split · "
+        f"{confirmed_not_split_orders} not split · "
+        f"{split_decision_pending} pending"
+    )
 
     return {
         "date_et": selected_date_et.isoformat(),
@@ -908,10 +952,15 @@ def _build_summary_from_rows(
             "confirmed_orders": confirmed_orders,
             "confirmed_supply_orders": confirmed_orders,
             "confirmed_loads": confirmed_loads,
-            "pending_split_reviews": pending_reviews,
+            "confirmed_split_orders": confirmed_split_orders,
+            "confirmed_not_split_orders": confirmed_not_split_orders,
+            "split_decision_pending": split_decision_pending,
+            "pending_split_reviews": pending_reviews,  # legacy alias
             "unresolved_split_orders": provisional["unresolved_orders"],
             "additional_loads_min": provisional["additional_loads_min"],
             "additional_loads_max": provisional["additional_loads_max"],
+            "loads_identity": loads_identity,
+            "status_line": status_line,
             **{
                 k: pounds_info[k]
                 for k in (
@@ -940,9 +989,14 @@ def _build_summary_from_rows(
         "supply_status": status,
         "supply_banner": banner,
         "supply_banner_detail": banner_detail,
-        "pending_split_reviews": pending_reviews,
-        "split_pending_count": int(fin.get("split_pending_count") or 0),
-        "split_review_count": int(fin.get("split_review_count") or 0),
+        "supply_status_line": status_line,
+        "loads_identity": loads_identity,
+        "confirmed_split_orders": confirmed_split_orders,
+        "confirmed_not_split_orders": confirmed_not_split_orders,
+        "split_decision_pending": split_decision_pending,
+        "pending_split_reviews": pending_reviews,  # legacy alias ≠ Management Review
+        "split_pending_count": split_pending_count,
+        "split_review_count": split_review_count,
         "split_finalizability": fin,
         "potential_final_cost_min": pot.get("potential_final_cost_min"),
         "potential_final_cost_max": pot.get("potential_final_cost_max"),
@@ -962,6 +1016,17 @@ def _build_summary_from_rows(
             ),
             "cost_per_order": "all_confirmed_cost_over_confirmed_orders",
             "cost_per_load": "all_confirmed_cost_over_confirmed_loads",
+            "split_decision_pending": (
+                "unresolved_split_or_not_split_for_supply — not management "
+                "Split Order Review"
+            ),
+            "split_order_review": (
+                "management_exception_queue — separate from supply pending"
+            ),
+            "specialty_splits": (
+                "operational_split_orders_metric — may differ from supply "
+                "confirmed_split_orders"
+            ),
         },
     }
 
@@ -1149,6 +1214,9 @@ def build_management_wf_supply_detail(
         "order_count": len(detail_rows),
         "supply_status": summary.get("supply_status"),
         "pending_split_reviews": summary.get("pending_split_reviews"),
+        "split_decision_pending": summary.get("split_decision_pending"),
+        "confirmed_split_orders": summary.get("confirmed_split_orders"),
+        "confirmed_not_split_orders": summary.get("confirmed_not_split_orders"),
         "period_grain": "day",
         "workset_reused": True,
     }

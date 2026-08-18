@@ -421,6 +421,18 @@ def extract_supplies(report: Mapping[str, Any] | None) -> dict[str, Any]:
         "supply_banner": report.get("supply_banner") or fin.get("supply_banner"),
         "supply_banner_detail": report.get("supply_banner_detail"),
         "pending_split_reviews": int(pending or 0),
+        "split_decision_pending": int(
+            report.get("split_decision_pending")
+            if report.get("split_decision_pending") is not None
+            else pending
+            or 0
+        ),
+        "confirmed_split_orders": int(report.get("confirmed_split_orders") or 0),
+        "confirmed_not_split_orders": int(
+            report.get("confirmed_not_split_orders") or 0
+        ),
+        "supply_status_line": report.get("supply_status_line"),
+        "loads_identity": report.get("loads_identity"),
         "split_pending_count": int(
             report.get("split_pending_count")
             if report.get("split_pending_count") is not None
