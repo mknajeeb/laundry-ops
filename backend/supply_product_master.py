@@ -28,6 +28,9 @@ from backend.ta_helpers import invalidate_schema_cache, table_exists
 MONEY_Q = Decimal("0.0001")
 QTY_Q = Decimal("0.0001")
 
+# Skip repeated INFORMATION_SCHEMA / CREATE IF NOT EXISTS on read hot paths.
+_SUPPLY_PRODUCT_TABLES_READY = False
+
 
 def _d(val: Any, default: str = "0") -> Decimal:
     if val is None:
@@ -100,6 +103,14 @@ def calculate_cost_metrics(
 
 def ensure_supply_product_tables(cursor) -> None:
     """Create supply product master tables. Idempotent."""
+    global _SUPPLY_PRODUCT_TABLES_READY
+    if _SUPPLY_PRODUCT_TABLES_READY:
+        return
+    if table_exists(cursor, "supply_products") and table_exists(
+        cursor, "supply_product_prices"
+    ):
+        _SUPPLY_PRODUCT_TABLES_READY = True
+        return
     created = False
     if not table_exists(cursor, "supply_products"):
         cursor.execute(
@@ -155,6 +166,7 @@ def ensure_supply_product_tables(cursor) -> None:
         created = True
     if created:
         invalidate_schema_cache()
+    _SUPPLY_PRODUCT_TABLES_READY = True
 
 
 def _validate_product_payload(data: Mapping[str, Any], *, partial: bool = False) -> dict[str, Any]:
@@ -353,8 +365,6 @@ def list_all_product_prices_for_org(
     organization_id: int,
 ) -> dict[int, list[dict[str, Any]]]:
     """One query: product_id → price history rows (newest first)."""
-    if not table_exists(cursor, "supply_product_prices"):
-        return {}
     cursor.execute(
         """
         SELECT id, organization_id, product_id, purchase_price_per_package,
@@ -391,7 +401,6 @@ def list_supply_products(
     active_only: bool = False,
     as_of: date | None = None,
 ) -> list[dict[str, Any]]:
-    ensure_supply_product_tables(cursor)
     day = as_of or business_today()
     sql = """
         SELECT id, organization_id, product_code, supply_type, brand, product_name,
@@ -404,9 +413,17 @@ def list_supply_products(
     if active_only:
         sql += " AND is_active = 1"
     sql += " ORDER BY sort_order ASC, id ASC"
-    cursor.execute(sql, tuple(params))
+    try:
+        cursor.execute(sql, tuple(params))
+    except Exception:
+        ensure_supply_product_tables(cursor)
+        cursor.execute(sql, tuple(params))
     rows = cursor.fetchall() or []
-    prices_by_product = list_all_product_prices_for_org(cursor, organization_id)
+    try:
+        prices_by_product = list_all_product_prices_for_org(cursor, organization_id)
+    except Exception:
+        ensure_supply_product_tables(cursor)
+        prices_by_product = list_all_product_prices_for_org(cursor, organization_id)
     out: list[dict[str, Any]] = []
     for row in rows:
         pid = int(row["id"])

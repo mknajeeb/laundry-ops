@@ -369,7 +369,16 @@ class TestInMemoryProductCrud:
                     self._rows = [dict(p) for p in products.values() if p["organization_id"] == params[0]]
                     return
                 if "from supply_product_prices" in sql_n:
-                    self._rows = list(prices.get(params[1], []))
+                    if len(params) >= 2:
+                        self._rows = list(prices.get(params[1], []))
+                    else:
+                        # list_all_product_prices_for_org(org) — all products
+                        self._rows = [
+                            dict(row)
+                            for pid_rows in prices.values()
+                            for row in pid_rows
+                            if row.get("organization_id") == params[0]
+                        ]
                     return
 
             def fetchone(self):

@@ -43,12 +43,47 @@ from backend.rinse_bag_stage_bounds import (
 from backend.rinse_scan_purpose import (
     is_complete_cleaning_purpose,
     is_drying_purpose,
+    is_sent_to_vendor_purpose,
     is_split_load_purpose,
     is_start_cleaning_purpose,
-    normalize_scan_purpose,
 )
 from backend.rinse_washing_chronology import extract_washing_rows_from_events
 from backend.ta_helpers import table_exists
+
+# Purposes required by evaluate_bag_split (lifecycle + marker + loads + close).
+# Slim supply loads filter to these so we never pull full bag chronologies.
+_SPLIT_EVAL_PURPOSE_SQL = """
+  (
+    purpose LIKE %s OR purpose LIKE %s
+    OR purpose LIKE %s OR purpose LIKE %s
+    OR purpose LIKE %s OR purpose LIKE %s
+    OR purpose LIKE %s OR purpose LIKE %s
+    OR purpose LIKE %s OR purpose LIKE %s
+  )
+"""
+_SPLIT_EVAL_PURPOSE_LIKE_ARGS = (
+    "%sent-to-vendor%",
+    "%sent to vendor%",
+    "%split-load%",
+    "%split load%",
+    "%start-cleaning%",
+    "%start cleaning%",
+    "%complete-cleaning%",
+    "%complete cleaning%",
+    "%drying%",
+    "drying",
+)
+
+
+def _is_split_eval_purpose(raw: Any) -> bool:
+    """Exact helper filter — preserves evaluate_bag_split evidence set."""
+    return (
+        is_sent_to_vendor_purpose(raw)
+        or is_split_load_purpose(raw)
+        or is_start_cleaning_purpose(raw)
+        or is_drying_purpose(raw)
+        or is_complete_cleaning_purpose(raw)
+    )
 
 # ---------------------------------------------------------------------------
 # States / reasons
@@ -429,9 +464,6 @@ def load_manager_split_decisions(
     bag_ids: Sequence[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Return bag_id → manager decision dict. Survives rebuild (dedicated table)."""
-    ensure_split_decision_tables(cursor)
-    if not table_exists(cursor, "rinse_wf_bag_split_decisions"):
-        return {}
     params: list[Any] = [int(organization_id), shift_date_et]
     sql = """
         SELECT bag_id, decision, note, decided_by_user_id,
@@ -446,7 +478,14 @@ def load_manager_split_decisions(
         ph = ",".join(["%s"] * len(ids))
         sql += f" AND UPPER(TRIM(bag_id)) IN ({ph})"
         params.extend(ids)
-    cursor.execute(sql, tuple(params))
+    try:
+        cursor.execute(sql, tuple(params))
+    except Exception:
+        ensure_split_decision_tables(cursor)
+        try:
+            cursor.execute(sql, tuple(params))
+        except Exception:
+            return {}
     out: dict[str, dict[str, Any]] = {}
     for row in cursor.fetchall() or []:
         if not isinstance(row, dict):
@@ -561,12 +600,14 @@ def _load_events_for_bags(
 ) -> dict[str, list[dict[str, Any]]]:
     """Load scan events for bags.
 
-    ``slim=True`` omits ``raw_json`` / ``last_scan`` payloads — enough for
-    canonical split evaluation (Supply summary hot path). Math unchanged.
+    ``slim=True`` (Supply / Management split hot path):
+      - omits ``raw_json`` / ``last_scan``
+      - SQL-prefilters to split-eval purposes, then exact helper filter
+      Evaluate math is unchanged vs full timelines (proven on org-3 day sets).
     """
     ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
     out: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
-    if not ids or not table_exists(cursor, "rinse_bag_scan_events"):
+    if not ids:
         return out
     ph = ",".join(["%s"] * len(ids))
     cols = (
@@ -577,22 +618,43 @@ def _load_events_for_bags(
             "last_location, last_scan, raw_json"
         )
     )
-    cursor.execute(
-        f"""
-        SELECT {cols}
-        FROM rinse_bag_scan_events
-        WHERE organization_id = %s
-          AND UPPER(TRIM(bag_id)) IN ({ph})
-        ORDER BY scanned_at_parsed, scan_index, id
-        """,
-        (int(organization_id), *ids),
-    )
+    try:
+        if slim:
+            cursor.execute(
+                f"""
+                SELECT {cols}
+                FROM rinse_bag_scan_events
+                WHERE organization_id = %s
+                  AND UPPER(TRIM(bag_id)) IN ({ph})
+                  AND {_SPLIT_EVAL_PURPOSE_SQL}
+                ORDER BY scanned_at_parsed, scan_index, id
+                """,
+                (int(organization_id), *ids, *_SPLIT_EVAL_PURPOSE_LIKE_ARGS),
+            )
+        else:
+            if not table_exists(cursor, "rinse_bag_scan_events"):
+                return out
+            cursor.execute(
+                f"""
+                SELECT {cols}
+                FROM rinse_bag_scan_events
+                WHERE organization_id = %s
+                  AND UPPER(TRIM(bag_id)) IN ({ph})
+                ORDER BY scanned_at_parsed, scan_index, id
+                """,
+                (int(organization_id), *ids),
+            )
+    except Exception:
+        return out
     for row in cursor.fetchall() or []:
         if not isinstance(row, dict):
             continue
         bid = normalize_bag_id(row.get("bag_id"))
-        if bid in out:
-            out[bid].append(dict(row))
+        if bid not in out:
+            continue
+        if slim and not _is_split_eval_purpose(row.get("purpose")):
+            continue
+        out[bid].append(dict(row))
     return out
 
 

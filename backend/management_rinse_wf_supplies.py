@@ -14,6 +14,7 @@ Standalone Supply Usage (first-weight) is unchanged.
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import date
 from decimal import Decimal
@@ -24,19 +25,27 @@ from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_veewash_shift_day import (
     _matches_segment_filters,
     _segment_filters,
-    load_day_bags,
 )
 from backend.rinse_wf_canonical_split import (
     evaluate_day_wf_splits,
     supply_day_finalizable,
 )
 from backend.supply_product_constants import LEGACY_REPORT_KEYS, SUPPLY_TYPE_LABELS
+from backend.supply_product_mapping import (
+    active_products_by_supply_type,
+    default_mapping_rules,
+    normalize_mapping_rule,
+    project_rules_with_active_products,
+)
 from backend.supply_product_master import list_supply_products
 from backend.supply_usage import (
     _load_approved_order_metadata,
     _order_row_from_staging,
 )
-from backend.supply_usage_settings import get_supply_usage_mapping_rules
+from backend.supply_usage_settings import (
+    KEY_SUPPLY_USAGE_MAPPING_RULES,
+    get_supply_usage_mapping_rules,
+)
 
 SCOPE_ALL = "all"
 SCOPE_RUSH = "rush"
@@ -107,6 +116,28 @@ def _qty(value: Any) -> float | None:
         return None
 
 
+def _load_day_bags_slim_for_supply(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+) -> list[dict[str, Any]]:
+    """Membership columns only — no bag_snapshot LONGTEXT, no DDL on read."""
+    try:
+        cursor.execute(
+            """
+            SELECT bag_id, service_type, rush_status,
+                   pre_weight_lbs, post_weight_lbs, weight_lbs
+            FROM rinse_shift_monitor_day_bags
+            WHERE organization_id = %s AND shift_date_et = %s
+            ORDER BY bag_id
+            """,
+            (int(organization_id), selected_date_et),
+        )
+    except Exception:
+        return []
+    return [dict(row) for row in (cursor.fetchall() or []) if isinstance(row, dict)]
+
+
 def management_wf_supply_membership(
     cursor,
     organization_id: int,
@@ -117,7 +148,9 @@ def management_wf_supply_membership(
     """Canonical Management WF day-bag rows for the selected scope."""
     scope = normalize_rush_scope(rush_scope)
     service, rush = _segment_filters(_SCOPE_SEGMENT[scope])
-    bags = load_day_bags(cursor, int(organization_id), selected_date_et)
+    bags = _load_day_bags_slim_for_supply(
+        cursor, int(organization_id), selected_date_et
+    )
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for bag in bags or []:
@@ -130,6 +163,131 @@ def management_wf_supply_membership(
         out.append(dict(bag))
     out.sort(key=lambda b: str(b.get("bag_id") or ""))
     return out
+
+
+def _load_si_metadata_fast(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """SI metadata without INFORMATION_SCHEMA probes (known production columns).
+
+    Staging first (wins for mapping). Upload fill only for tickets still missing —
+    avoids the heavy upload_batch_rows join when staging already covers membership.
+    """
+    ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
+    if not ids:
+        return {}
+    by_ticket: dict[str, dict[str, Any]] = {}
+    ph = ",".join(["%s"] * len(ids))
+    try:
+        cursor.execute(
+            f"""
+            SELECT ticket_id, name_clean, date_clean, service_type,
+                   special_instructions_raw, supply_interpretation,
+                   special_instruction_review
+            FROM orders_staging
+            WHERE UPPER(TRIM(ticket_id)) IN ({ph})
+              AND organization_id = %s
+            ORDER BY name_clean, ticket_id
+            """,
+            (*ids, int(organization_id)),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            tid = normalize_bag_id(row.get("ticket_id"))
+            if tid:
+                item = dict(row)
+                item["_source"] = "orders_staging"
+                by_ticket[tid] = item
+    except Exception:
+        return _load_approved_order_metadata(cursor, organization_id, ids)
+
+    missing = [tid for tid in ids if tid not in by_ticket]
+    if not missing:
+        return by_ticket
+
+    mph = ",".join(["%s"] * len(missing))
+    try:
+        cursor.execute(
+            f"""
+            SELECT ubr.date_clean, ubr.name_clean, ubr.service_type, ubr.ticket_id,
+                   ubr.row_status, ubr.special_instructions_raw,
+                   ubr.supply_interpretation, ubr.special_instruction_review
+            FROM upload_batch_rows ubr
+            INNER JOIN upload_batches ub ON ub.batch_id = ubr.upload_batch_id
+            WHERE UPPER(TRIM(ubr.ticket_id)) IN ({mph})
+              AND ubr.row_status IN ('ACCEPTED', 'OVERRIDDEN')
+              AND ub.organization_id = %s
+            ORDER BY ubr.name_clean, ubr.ticket_id
+            """,
+            (*missing, int(organization_id)),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            tid = normalize_bag_id(row.get("ticket_id"))
+            if tid and tid not in by_ticket:
+                item = dict(row)
+                item["_source"] = "upload_batch_rows"
+                by_ticket[tid] = item
+    except Exception:
+        # Staging rows already kept; fill gaps via legacy path if upload schema differs.
+        legacy = _load_approved_order_metadata(cursor, organization_id, missing)
+        for tid, row in legacy.items():
+            by_ticket.setdefault(tid, row)
+    return by_ticket
+
+
+def _mapping_rules_for_products(
+    cursor,
+    organization_id: int,
+    products: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Project mapping rules using an already-loaded product list (no re-list)."""
+    products_by_type = active_products_by_supply_type(list(products))
+    raw = None
+    try:
+        cursor.execute(
+            "SELECT svalue FROM system_settings WHERE organization_id=%s AND skey=%s LIMIT 1",
+            (int(organization_id), KEY_SUPPLY_USAGE_MAPPING_RULES),
+        )
+        row = cursor.fetchone()
+        if isinstance(row, dict):
+            raw = row.get("svalue")
+        elif row:
+            raw = row[0]
+    except Exception:
+        raw = None
+
+    if not raw:
+        rules = default_mapping_rules(products_by_type=products_by_type or None)
+    else:
+        try:
+            parsed = json.loads(str(raw))
+        except (TypeError, json.JSONDecodeError):
+            parsed = None
+        if not isinstance(parsed, list):
+            rules = default_mapping_rules(products_by_type=products_by_type or None)
+        else:
+            out: list[dict[str, Any]] = []
+            for item in parsed:
+                if isinstance(item, dict):
+                    norm = normalize_mapping_rule(
+                        item, products_by_type=products_by_type or None
+                    )
+                    if norm:
+                        out.append(norm)
+            rules = out or default_mapping_rules(
+                products_by_type=products_by_type or None
+            )
+
+    if products_by_type:
+        return project_rules_with_active_products(
+            rules, products_by_type=products_by_type
+        )
+    return rules
 
 
 def membership_bag_ids(rows: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -182,7 +340,8 @@ def load_orders_for_management_wf_supplies(
     missing.
 
     Split math is unchanged — ``evaluate_day_wf_splits`` / ``evaluate_bag_split``.
-    Events are loaded slim (no raw_json) for the Supply hot path only.
+    Events are loaded slim (no raw_json) and purpose-filtered for the Supply
+    hot path only — no full scan timelines.
     """
     rules = list(
         mapping_rules
@@ -197,7 +356,7 @@ def load_orders_for_management_wf_supplies(
     if not bag_ids:
         return [], []
 
-    meta_by_ticket = _load_approved_order_metadata(cursor, organization_id, bag_ids)
+    meta_by_ticket = _load_si_metadata_fast(cursor, organization_id, bag_ids)
     evaluations = evaluate_day_wf_splits(
         cursor,
         organization_id,
@@ -738,7 +897,9 @@ def _get_or_build_workset(
         if hit and (now - hit[0]) < ttl:
             return hit[1]
 
-    mapping_rules = get_supply_usage_mapping_rules(cursor, org)
+    # Products once → mapping projects from that list (no seed/re-list).
+    products = _active_products_as_of(cursor, org, selected_date_et)
+    mapping_rules = _mapping_rules_for_products(cursor, org, products)
     membership = management_wf_supply_membership(
         cursor, org, selected_date_et, rush_scope=scope
     )
@@ -750,7 +911,6 @@ def _get_or_build_workset(
         mapping_rules=mapping_rules,
         membership=membership,
     )
-    products = _active_products_as_of(cursor, org, selected_date_et)
     summary = _build_summary_from_rows(
         selected_date_et=selected_date_et,
         scope=scope,

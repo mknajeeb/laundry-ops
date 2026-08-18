@@ -36,7 +36,7 @@ def test_membership_filters_wf_and_rush():
         {"bag_id": "0HHHHHHHH1", "service_type": "HD", "rush_status": "RUSH"},
     ]
     with patch(
-        "backend.management_rinse_wf_supplies.load_day_bags",
+        "backend.management_rinse_wf_supplies._load_day_bags_slim_for_supply",
         return_value=bags,
     ):
         all_rows = management_wf_supply_membership(MagicMock(), 3, DAY, rush_scope="all")
@@ -56,7 +56,7 @@ def test_scope_reconcile_unique_bags():
         {"bag_id": "0NNNNNNNN2", "service_type": "WF", "rush_status": "NON_RUSH"},
     ]
     with patch(
-        "backend.management_rinse_wf_supplies.load_day_bags",
+        "backend.management_rinse_wf_supplies._load_day_bags_slim_for_supply",
         return_value=bags,
     ):
         out = reconcile_scope_populations(MagicMock(), 3, DAY)
@@ -130,7 +130,7 @@ def test_unresolved_split_excluded_from_confirmed_totals():
             return_value=membership,
         ),
         patch(
-            "backend.management_rinse_wf_supplies._load_approved_order_metadata",
+            "backend.management_rinse_wf_supplies._load_si_metadata_fast",
             return_value=meta,
         ),
         patch(
@@ -271,7 +271,7 @@ def test_historical_price_as_of_selected_date():
 def test_summary_wires_product_master(monkeypatch):
     fake_orders = [
         {
-            "order_id": "X1",
+            "order_id": "BAGX0001",
             "supplies_used": ["Tide"],
             "confirmed_for_supply": True,
             "confirmed_processing_units": 1,
@@ -280,7 +280,7 @@ def test_summary_wires_product_master(monkeypatch):
             "split_finalized": True,
         },
         {
-            "order_id": "X2",
+            "order_id": "BAGX0002",
             "supplies_used": ["Tide"],
             "confirmed_for_supply": False,
             "confirmed_processing_units": 0,
@@ -302,8 +302,13 @@ def test_summary_wires_product_master(monkeypatch):
         }
     ]
     membership = [
-        {"bag_id": "X1", "service_type": "WF", "pre_weight_lbs": 10.0, "post_weight_lbs": 9.0},
-        {"bag_id": "X2", "service_type": "WF", "pre_weight_lbs": 8.0},
+        {
+            "bag_id": "BAGX0001",
+            "service_type": "WF",
+            "pre_weight_lbs": 10.0,
+            "post_weight_lbs": 9.0,
+        },
+        {"bag_id": "BAGX0002", "service_type": "WF", "pre_weight_lbs": 8.0},
     ]
     monkeypatch.setattr(
         "backend.management_rinse_wf_supplies.management_wf_supply_membership",
@@ -311,17 +316,22 @@ def test_summary_wires_product_master(monkeypatch):
     )
     monkeypatch.setattr(
         "backend.management_rinse_wf_supplies.load_orders_for_management_wf_supplies",
-        lambda *a, **k: (fake_orders, ["X1", "X2"]),
+        lambda *a, **k: (fake_orders, ["BAGX0001", "BAGX0002"]),
     )
     monkeypatch.setattr(
         "backend.management_rinse_wf_supplies._active_products_as_of",
         lambda *a, **k: products,
     )
     monkeypatch.setattr(
-        "backend.management_rinse_wf_supplies.get_supply_usage_mapping_rules",
+        "backend.management_rinse_wf_supplies._mapping_rules_for_products",
         lambda *a, **k: [],
     )
-    summary = build_management_wf_supply_summary(MagicMock(), 3, DAY, rush_scope="all")
+    from backend.management_rinse_wf_supplies import clear_wf_supply_workset
+
+    clear_wf_supply_workset()
+    summary = build_management_wf_supply_summary(
+        MagicMock(), 3, DAY, rush_scope="all", bypass_cache=True
+    )
     assert summary["population"]["orders"] == 2
     assert summary["population"]["confirmed_orders"] == 1
     assert summary["population"]["unresolved_split_orders"] == 1
