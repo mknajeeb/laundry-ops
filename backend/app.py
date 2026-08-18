@@ -66,6 +66,9 @@ from backend.drc_mobile_entry_routes import register_drc_mobile_entry_routes
 from backend.daily_operations_routes import register_daily_operations_routes
 from backend.management_today_routes import register_management_today_routes
 from backend.management_rinse_hd_routes import register_management_rinse_hd_routes
+from backend.management_wf_folder_performance_routes import (
+    register_management_wf_folder_performance_routes,
+)
 from backend.inventory_routes import register_inventory_routes
 from backend.maintenance_task_list_routes import register_maintenance_task_list_routes
 from backend.machine_configuration_routes import register_machine_configuration_routes
@@ -10790,6 +10793,12 @@ register_management_today_routes(
     parse_date_value=parse_date_value,
 )
 register_management_rinse_hd_routes(
+    app,
+    require_user=require_user,
+    user_org_id=user_org_id,
+    parse_date_value=parse_date_value,
+)
+register_management_wf_folder_performance_routes(
     app,
     require_user=require_user,
     user_org_id=user_org_id,

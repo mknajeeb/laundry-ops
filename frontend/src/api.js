@@ -2454,6 +2454,41 @@ export const markManagementRinseHdComplete = (bagId, body) =>
     body,
   );
 
+/** Management → Performance → WF Folder Performance */
+export const getManagementWfFolderPerformance = (dateEt, params = {}) =>
+  axios.get(`${API_BASE}/api/management/performance/wf-folder`, {
+    params: { date_et: dateEt, ...params },
+    timeout: 60000,
+  });
+
+export const getManagementWfFolderSessionOrders = (sessionId, dateEt, params = {}) =>
+  axios.get(
+    `${API_BASE}/api/management/performance/wf-folder/sessions/${encodeURIComponent(sessionId)}/orders`,
+    { params: { date_et: dateEt, ...params }, timeout: 45000 },
+  );
+
+export const getManagementWfFolderUnmapped = (dateEt, params = {}) =>
+  axios.get(`${API_BASE}/api/management/performance/wf-folder/unmapped`, {
+    params: { date_et: dateEt, ...params },
+    timeout: 45000,
+  });
+
+export const getManagementWfFolderDestinations = (dateEt, params = {}) =>
+  axios.get(`${API_BASE}/api/management/performance/wf-folder/destinations`, {
+    params: { date_et: dateEt, ...params },
+    timeout: 30000,
+  });
+
+export const postManagementWfFolderAttributionMove = (body) =>
+  axios.post(`${API_BASE}/api/management/performance/wf-folder/attribution/move`, body, {
+    timeout: 60000,
+  });
+
+export const postManagementWfFolderAttributionReset = (body) =>
+  axios.post(`${API_BASE}/api/management/performance/wf-folder/attribution/reset`, body, {
+    timeout: 60000,
+  });
+
 export const getDailyOperationsMeta = () =>
   axios.get(`${API_BASE}/api/daily-operations/meta`);
 
