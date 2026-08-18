@@ -335,7 +335,7 @@ az containerapp job update \
 # (RINSE_SCRAPE_POST_RUN_COOLDOWN_MINUTES). No catch-up queue; lock prevents overlap.
 ```
 
-Cron is **UTC**. Overlap: if org 3’s scrape exceeds 30 minutes, the next trigger may start but org 3 will **`skipped`** (per-org lock); other orgs can still run when added.
+Cron is **UTC**. Cadence is **completion-driven**: ACA polls every 5 minutes, but a scheduled scrape starts only when `finished_at + 30m` has elapsed. Overlap is still blocked by per-org MySQL `GET_LOCK` (manual shares the same lock). Missed poll ticks are not queued.
 
 ---
 
