@@ -2407,6 +2407,24 @@ export const getManagementTodaySuppliesDetail = (dateEt, params = {}) => {
   });
 };
 
+/** Split Cost Simulator — CLOSED-day historical baseline (read-only). */
+export const getManagementSplitCostSimulatorBaseline = (dateEt, params = {}) => {
+  const { signal, ...rest } = params || {};
+  return axios.get(`${API_BASE}/api/management/today/supplies/split-cost-simulator`, {
+    params: { date_et: dateEt, ...rest },
+    signal,
+    timeout: 120000,
+  });
+};
+
+/** Split Cost Simulator — baseline vs target (read-only; no writes). */
+export const postManagementSplitCostSimulate = (dateEt, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/today/supplies/split-cost-simulate`,
+    body,
+    { params: { date_et: dateEt }, timeout: 120000 },
+  );
+
 export const getManagementRinseHd = (dateEt, params = {}) =>
   axios.get(`${API_BASE}/api/management/rinse-hd`, {
     params: { date_et: dateEt, ...params },

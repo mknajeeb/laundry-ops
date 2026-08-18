@@ -164,6 +164,125 @@ def register_management_today_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/api/management/today/supplies/split-cost-simulator", methods=["GET"])
+    def management_split_cost_simulator_baseline():
+        """Historical baseline for Split Cost Simulator (CLOSED days only)."""
+        from backend.management_split_cost_simulator import (
+            VALID_WINDOWS,
+            WINDOW_7,
+            build_split_cost_simulator_baseline,
+        )
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            selected, err = _selected_date_et()
+            if err:
+                return err
+            raw_window = str(request.args.get("window") or WINDOW_7).strip()
+            try:
+                window = int(raw_window)
+            except (TypeError, ValueError):
+                return jsonify({"error": "window must be 7 or 30"}), 400
+            if window not in VALID_WINDOWS:
+                return jsonify({"error": "window must be 7 or 30"}), 400
+            today_orders = None
+            raw_orders = request.args.get("today_orders")
+            if raw_orders not in (None, ""):
+                try:
+                    today_orders = max(0, int(raw_orders))
+                except (TypeError, ValueError):
+                    return jsonify({"error": "today_orders must be an integer"}), 400
+            payload = build_split_cost_simulator_baseline(
+                cursor,
+                oid,
+                window_days=window,
+                as_of_prices=selected,
+                today_workload_orders=today_orders,
+            )
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc), "available": False}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/today/supplies/split-cost-simulate", methods=["POST"])
+    def management_split_cost_simulate():
+        """Run baseline vs target simulation (read-only; no writes)."""
+        from backend.management_split_cost_simulator import (
+            VALID_WINDOWS,
+            WINDOW_7,
+            build_split_cost_simulator_baseline,
+            run_split_cost_simulation,
+        )
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            selected, err = _selected_date_et()
+            if err:
+                return err
+            body = request.get_json(silent=True) or {}
+            raw_window = body.get("window", WINDOW_7)
+            try:
+                window = int(raw_window)
+            except (TypeError, ValueError):
+                return jsonify({"error": "window must be 7 or 30"}), 400
+            if window not in VALID_WINDOWS:
+                return jsonify({"error": "window must be 7 or 30"}), 400
+            try:
+                total_orders = max(0, int(body.get("total_orders")))
+                baseline_split_pct = float(body.get("baseline_split_pct"))
+                target_split_pct = float(body.get("target_split_pct"))
+                avg_lb = float(body.get("avg_lb_per_bag"))
+            except (TypeError, ValueError):
+                return jsonify(
+                    {
+                        "error": (
+                            "total_orders, baseline_split_pct, target_split_pct, "
+                            "and avg_lb_per_bag are required numbers"
+                        )
+                    }
+                ), 400
+            if avg_lb < 0:
+                return jsonify({"error": "avg_lb_per_bag must be >= 0"}), 400
+            baseline = build_split_cost_simulator_baseline(
+                cursor,
+                oid,
+                window_days=window,
+                as_of_prices=selected,
+                today_workload_orders=total_orders,
+            )
+            if body.get("combinations"):
+                # Manual override of mix shares / cost_per_load (still read-only sim).
+                baseline = {**baseline, "combinations": body["combinations"]}
+            payload = run_split_cost_simulation(
+                baseline,
+                total_orders=total_orders,
+                baseline_split_pct=baseline_split_pct,
+                target_split_pct=target_split_pct,
+                avg_lb_per_bag=avg_lb,
+            )
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc), "estimated": True}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/api/management/rinse-wf", methods=["GET"])
     def management_rinse_wf():
         """Rinse WF compartment core — WF headline + weights only (no HD/labor/supplies)."""

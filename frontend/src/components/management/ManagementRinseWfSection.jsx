@@ -20,6 +20,7 @@ import TodayTapCard from "./TodayTapCard";
 import ManagementRinseWfReviewSection from "./ManagementRinseWfReviewSection";
 import ManagementCopyableId from "./ManagementCopyableId";
 import { getManagementTodaySuppliesDetail } from "../../api";
+import ManagementSplitCostSimulatorModal from "./ManagementSplitCostSimulatorModal";
 import {
   pickRinseSegments,
   pickWfSpecialty,
@@ -164,6 +165,7 @@ export default function ManagementRinseWfSection({
     service: "wf",
     queue: null,
   });
+  const [splitSimOpen, setSplitSimOpen] = useState(false);
   const [supplyDetail, setSupplyDetail] = useState({
     open: false,
     loading: false,
@@ -864,7 +866,15 @@ export default function ManagementRinseWfSection({
           </Button>
         </Box>
       ) : null}
-      <Box sx={{ mt: -0.5, mb: 1.25 }}>
+      <Box sx={{ mt: -0.5, mb: 1.25, display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={() => setSplitSimOpen(true)}
+          sx={{ textTransform: "none", fontWeight: 700 }}
+        >
+          Split Cost Simulator
+        </Button>
         <Button
           size="small"
           component={RouterLink}
@@ -874,6 +884,13 @@ export default function ManagementRinseWfSection({
           Supply Master · Products & Mappings
         </Button>
       </Box>
+
+      <ManagementSplitCostSimulatorModal
+        open={splitSimOpen}
+        onClose={() => setSplitSimOpen(false)}
+        selectedDateEt={selectedDateEt || rinse?.selected_date_et}
+        todayWorkloadOrders={uniqueOrders ?? 100}
+      />
 
       <Dialog
         open={supplyDetail.open}
