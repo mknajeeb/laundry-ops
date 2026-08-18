@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import {
   Alert,
@@ -19,8 +19,12 @@ import Step1MetricDrawer from "../shift/Step1MetricDrawer";
 import TodayTapCard from "./TodayTapCard";
 import ManagementRinseWfReviewSection from "./ManagementRinseWfReviewSection";
 import ManagementCopyableId from "./ManagementCopyableId";
-import { getManagementTodaySuppliesDetail } from "../../api";
+import {
+  getManagementSplitCostSimulatorBaseline,
+  getManagementTodaySuppliesDetail,
+} from "../../api";
 import ManagementSplitCostSimulatorModal from "./ManagementSplitCostSimulatorModal";
+import { setSplitCostBaselineCache } from "./splitCostSimulatorCache";
 import {
   pickRinseSegments,
   pickWfSpecialty,
@@ -385,7 +389,26 @@ export default function ManagementRinseWfSection({
   const potentialMax = dashboard?.potential_final_cost_max
     ?? supplies?.potential_final_cost_max
     ?? null;
-  
+
+  // Warm Split Cost Simulator closed-day baseline while Supplies is on screen.
+  const dateEtForSim = selectedDateEt || rinse?.selected_date_et;
+  useEffect(() => {
+    if (!dateEtForSim || snapshotUnavailable || suppliesPending) return undefined;
+    const ac = new AbortController();
+    (async () => {
+      try {
+        const res = await getManagementSplitCostSimulatorBaseline(dateEtForSim, {
+          window: 7,
+          today_orders: uniqueOrders ?? undefined,
+          signal: ac.signal,
+        });
+        setSplitCostBaselineCache(dateEtForSim, 7, res?.data);
+      } catch {
+        /* non-blocking prefetch */
+      }
+    })();
+    return () => ac.abort();
+  }, [dateEtForSim, snapshotUnavailable, suppliesPending, uniqueOrders]);
 
   return (
     <Box>

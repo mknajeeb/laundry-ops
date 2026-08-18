@@ -199,12 +199,18 @@ def register_management_today_routes(
                     today_orders = max(0, int(raw_orders))
                 except (TypeError, ValueError):
                     return jsonify({"error": "today_orders must be an integer"}), 400
+            bypass = str(request.args.get("refresh") or "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
             payload = build_split_cost_simulator_baseline(
                 cursor,
                 oid,
                 window_days=window,
                 as_of_prices=selected,
                 today_workload_orders=today_orders,
+                bypass_cache=bypass,
             )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
@@ -259,6 +265,10 @@ def register_management_today_routes(
                 ), 400
             if avg_lb < 0:
                 return jsonify({"error": "avg_lb_per_bag must be >= 0"}), 400
+            try:
+                shifts_per_week = float(body.get("shifts_per_week", 7))
+            except (TypeError, ValueError):
+                return jsonify({"error": "shifts_per_week must be a number"}), 400
             baseline = build_split_cost_simulator_baseline(
                 cursor,
                 oid,
@@ -275,6 +285,7 @@ def register_management_today_routes(
                 baseline_split_pct=baseline_split_pct,
                 target_split_pct=target_split_pct,
                 avg_lb_per_bag=avg_lb,
+                shifts_per_week=shifts_per_week,
             )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
