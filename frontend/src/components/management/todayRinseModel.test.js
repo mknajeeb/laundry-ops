@@ -41,8 +41,37 @@ const rinse = {
 describe("Rinse WF presentation model", () => {
   it("keeps WF workload/completed/pending/review identity", () => {
     const wf = wfHeadline(rinse.segments.wf);
-    expect(wf).toEqual({ workload: 97, completed: 70, pending: 1, review: 26 });
+    expect(wf).toEqual({
+      workload: 97,
+      completed: 70,
+      pending: 1,
+      review: 26,
+      carriedForward: 0,
+      dayClosed: false,
+    });
     expect(wfIdentityLine(wf)).toBe("97 = 70 Completed + 1 Pending + 26 Review");
+  });
+
+  it("closed day uses carried forward instead of pending", () => {
+    const closedSeg = {
+      total_workload: 231,
+      completed: 121,
+      pending: 0,
+      carried_forward: 108,
+      exceptions: { review_required: 2 },
+    };
+    const wf = wfHeadline(closedSeg, { dayClosed: true });
+    expect(wf).toEqual({
+      workload: 231,
+      completed: 121,
+      pending: 108,
+      review: 2,
+      carriedForward: 108,
+      dayClosed: true,
+    });
+    expect(wfIdentityLine(wf)).toBe(
+      "231 = 121 Completed + 108 Carried Forward + 2 Review",
+    );
   });
 
   it("applies rush filter to WF segment and specialty counts", () => {

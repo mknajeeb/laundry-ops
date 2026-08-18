@@ -390,3 +390,48 @@ def test_dual_w_with_marker_confirmed():
     out = evaluate_bag_split(events, bag_id="4CD3HO10DC")
     assert out["state"] == STATE_CONFIRMED_SPLIT
     assert out["canonical_split"] is True
+
+
+def test_evaluate_day_wf_splits_truncates_next_day_evidence():
+    """D+1 split-load / washer must not create REVIEW_REQUIRED as-of day D."""
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from backend.rinse_folding_et import naive_et_day_end_inclusive
+    from backend.rinse_wf_canonical_split import evaluate_day_wf_splits
+
+    day = date(2026, 8, 17)
+    # Aug-17-style: bag still operationally pending at D close; split contradiction
+    # only appears from D+1 marker + close (still only 1 washer).
+    d_only = _base_cycle(bag="3WXRM6SYAR") + [
+        _ev("start-cleaning", W1, eid=2, bag="3WXRM6SYAR", rack="W61-30-VW"),
+    ]
+    d_plus_next = d_only + [
+        _ev("split-load", datetime(2026, 8, 18, 7, 50, 0), eid=3, bag="3WXRM6SYAR"),
+        _ev("drying", datetime(2026, 8, 18, 9, 0, 0), eid=4, bag="3WXRM6SYAR", rack="D10-50-VW"),
+    ]
+    end = naive_et_day_end_inclusive(day)
+    truncated = [e for e in d_plus_next if e["scanned_at_parsed"] <= end]
+    assert truncated == d_only
+
+    cur = MagicMock()
+    with (
+        patch(
+            "backend.rinse_wf_canonical_split._load_events_for_bags",
+            return_value={"3WXRM6SYAR": truncated},
+        ) as load,
+        patch(
+            "backend.rinse_wf_canonical_split.load_manager_split_decisions",
+            return_value={},
+        ),
+    ):
+        out = evaluate_day_wf_splits(
+            cur, 3, day, ["3WXRM6SYAR"], truncate_to_selected_day=True
+        )
+    assert load.call_args.kwargs.get("as_of_end") == end
+    # Mid-wash / no close on D → PENDING, not Split Order Review.
+    assert out["3WXRM6SYAR"]["state"] == STATE_PENDING
+    assert out["3WXRM6SYAR"]["state"] != STATE_REVIEW_REQUIRED
+    # Full live timeline (no cutoff) → REVIEW (marker YES + loads < 2 after close).
+    full = evaluate_bag_split(d_plus_next, bag_id="3WXRM6SYAR")
+    assert full["state"] == STATE_REVIEW_REQUIRED

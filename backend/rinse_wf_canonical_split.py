@@ -591,12 +591,22 @@ def clear_manager_split_decision(
 # ---------------------------------------------------------------------------
 
 
+def _event_at_or_before(ev: Mapping[str, Any], as_of_end: datetime) -> bool:
+    """True when scan wall time is on or before ``as_of_end`` (naive ET)."""
+    ts = _as_naive_et(event_ts(ev))
+    if ts is None:
+        return False
+    end = _as_naive_et(as_of_end) or as_of_end
+    return ts <= end
+
+
 def _load_events_for_bags(
     cursor,
     organization_id: int,
     bag_ids: Sequence[str],
     *,
     slim: bool = False,
+    as_of_end: datetime | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Load scan events for bags.
 
@@ -604,6 +614,9 @@ def _load_events_for_bags(
       - omits ``raw_json`` / ``last_scan``
       - SQL-prefilters to split-eval purposes, then exact helper filter
       Evaluate math is unchanged vs full timelines (proven on org-3 day sets).
+
+    ``as_of_end`` (optional naive ET wall datetime): truncate evidence so
+    historical / closed-day Split Review cannot see later-day scans.
     """
     ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
     out: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
@@ -618,6 +631,12 @@ def _load_events_for_bags(
             "last_location, last_scan, raw_json"
         )
     )
+    as_of = _as_naive_et(as_of_end) if as_of_end is not None else None
+    as_of_sql = ""
+    as_of_args: tuple[Any, ...] = ()
+    if as_of is not None:
+        as_of_sql = " AND scanned_at_parsed <= %s"
+        as_of_args = (as_of,)
     try:
         if slim:
             cursor.execute(
@@ -627,9 +646,10 @@ def _load_events_for_bags(
                 WHERE organization_id = %s
                   AND UPPER(TRIM(bag_id)) IN ({ph})
                   AND {_SPLIT_EVAL_PURPOSE_SQL}
+                  {as_of_sql}
                 ORDER BY scanned_at_parsed, scan_index, id
                 """,
-                (int(organization_id), *ids, *_SPLIT_EVAL_PURPOSE_LIKE_ARGS),
+                (int(organization_id), *ids, *_SPLIT_EVAL_PURPOSE_LIKE_ARGS, *as_of_args),
             )
         else:
             if not table_exists(cursor, "rinse_bag_scan_events"):
@@ -640,9 +660,10 @@ def _load_events_for_bags(
                 FROM rinse_bag_scan_events
                 WHERE organization_id = %s
                   AND UPPER(TRIM(bag_id)) IN ({ph})
+                  {as_of_sql}
                 ORDER BY scanned_at_parsed, scan_index, id
                 """,
-                (int(organization_id), *ids),
+                (int(organization_id), *ids, *as_of_args),
             )
     except Exception:
         return out
@@ -653,6 +674,8 @@ def _load_events_for_bags(
         if bid not in out:
             continue
         if slim and not _is_split_eval_purpose(row.get("purpose")):
+            continue
+        if as_of is not None and not _event_at_or_before(row, as_of):
             continue
         out[bid].append(dict(row))
     return out
@@ -689,13 +712,31 @@ def evaluate_day_wf_splits(
     *,
     disappeared_ids: Sequence[str] | None = None,
     slim_events: bool = False,
+    as_of_end: datetime | None = None,
+    truncate_to_selected_day: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Evaluate split for a day membership set (Management / Supply)."""
+    """Evaluate split for a day membership set (Management / Supply).
+
+    When ``truncate_to_selected_day`` is True (or ``as_of_end`` is set), scan
+    evidence is capped at end of ``selected_date_et`` ET (≤ 23:59:59). Manager
+    decisions remain scoped to ``shift_date_et = selected_date_et`` only.
+    Use this for historical / closed-day Split Order Review so D+1 markers or
+    washer loads cannot retroactively create REVIEW_REQUIRED on day D.
+    """
     ids = [normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)]
     if not ids:
         return {}
+    end = as_of_end
+    if end is None and truncate_to_selected_day:
+        from backend.rinse_folding_et import naive_et_day_end_inclusive
+
+        end = naive_et_day_end_inclusive(selected_date_et)
     events_by_bag = _load_events_for_bags(
-        cursor, organization_id, ids, slim=bool(slim_events)
+        cursor,
+        organization_id,
+        ids,
+        slim=bool(slim_events),
+        as_of_end=end,
     )
     mgr = load_manager_split_decisions(
         cursor, organization_id, selected_date_et, ids

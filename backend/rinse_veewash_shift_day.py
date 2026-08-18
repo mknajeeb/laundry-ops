@@ -1227,6 +1227,8 @@ def _headline_bucket_for_status(status: str | None) -> str | None:
         return "review_required"
     if s == OUTCOME_COMPLETED or s == "completed" or s.endswith("_completed"):
         return "completed"
+    if s in ("carried_forward",):
+        return "carried_forward"
     if s in ("stale", "unfinished_at_close", "stale_for_day"):
         return "unfinished_at_close"
     if s == OUTCOME_PENDING or s == "pending" or "pending" in s:
@@ -1240,6 +1242,7 @@ _STATUS_BAG_ID_KEYS = (
     "completed",
     "pending",
     "review_required",
+    "carried_forward",
     "unfinished_at_close",
     "disappeared_without_completion",
 )
@@ -1305,22 +1308,30 @@ def _matches_segment_filters(
 
 
 def _recalc_status_counts_from_ids(seg: Mapping[str, Any]) -> dict[str, Any]:
-    """Set completed/pending/review counts from unique bag_ids lists. Preserve totals."""
+    """Set completed/pending/review/carried counts from unique bag_ids lists."""
     out = dict(seg or {})
     bag_ids = dict(out.get("bag_ids") or {})
     completed = _unique_bag_id_list(bag_ids.get("completed"))
     pending = _unique_bag_id_list(bag_ids.get("pending"))
     review = _unique_bag_id_list(bag_ids.get("review_required"))
+    carried = _unique_bag_id_list(bag_ids.get("carried_forward"))
+    unfinished = _unique_bag_id_list(bag_ids.get("unfinished_at_close"))
     bag_ids["completed"] = completed
     bag_ids["pending"] = pending
     bag_ids["review_required"] = review
+    bag_ids["carried_forward"] = carried
+    bag_ids["unfinished_at_close"] = unfinished
     bag_ids["disappeared_without_completion"] = list(review)
     out["bag_ids"] = bag_ids
     out["completed"] = len(completed)
     out["pending"] = len(pending)
+    out["carried_forward"] = len(carried)
+    out["unfinished_at_close"] = len(unfinished)
     out["exceptions"] = {
         **dict(out.get("exceptions") or {}),
         "review_required": len(review),
+        "carried_forward": len(carried),
+        "unfinished_at_close": len(unfinished),
         "disappeared_without_completion": len(review),
         "total": len(review),
     }
@@ -1461,7 +1472,7 @@ def _apply_day_bag_statuses_to_headline(
 
         svc_filter, rush_filter = _segment_filters(name)
         prior_bucket: dict[str, str] = {}
-        for key in ("completed", "pending", "review_required"):
+        for key in ("completed", "pending", "review_required", "carried_forward", "unfinished_at_close"):
             for bid in _unique_bag_id_list(bag_ids.get(key)):
                 prior_bucket[bid] = key
 
@@ -1477,7 +1488,13 @@ def _apply_day_bag_statuses_to_headline(
                     meta, service=svc_filter, rush=rush_filter
                 )
                 and _headline_bucket_for_status(meta.get("effective_status"))
-                in ("completed", "pending", "review_required")
+                in (
+                    "completed",
+                    "pending",
+                    "review_required",
+                    "carried_forward",
+                    "unfinished_at_close",
+                )
             }
         if (new_today or carryover) and (svc_filter or rush_filter):
             filtered = set()
@@ -1495,6 +1512,8 @@ def _apply_day_bag_statuses_to_headline(
         completed: list[str] = []
         pending: list[str] = []
         review: list[str] = []
+        carried: list[str] = []
+        unfinished: list[str] = []
         for bid in sorted(members):
             meta = status_by_bag.get(bid)
             if meta:
@@ -1507,12 +1526,18 @@ def _apply_day_bag_statuses_to_headline(
                 pending.append(bid)
             elif bucket == "review_required":
                 review.append(bid)
+            elif bucket == "carried_forward":
+                carried.append(bid)
+            elif bucket == "unfinished_at_close":
+                unfinished.append(bid)
 
         bag_ids["new_today"] = new_today
         bag_ids["carryover"] = carryover
         bag_ids["completed"] = completed
         bag_ids["pending"] = pending
         bag_ids["review_required"] = review
+        bag_ids["carried_forward"] = carried
+        bag_ids["unfinished_at_close"] = unfinished
         bag_ids["disappeared_without_completion"] = list(review)
         seg_out["bag_ids"] = bag_ids
         seg_out = _recalc_status_counts_from_ids(seg_out)
@@ -1533,6 +1558,8 @@ def _apply_day_bag_statuses_to_headline(
             total_i = (
                 int(seg_out.get("completed") or 0)
                 + int(seg_out.get("pending") or 0)
+                + int(seg_out.get("carried_forward") or 0)
+                + int(seg_out.get("unfinished_at_close") or 0)
                 + int((seg_out.get("exceptions") or {}).get("review_required") or 0)
             )
             seg_out["total_workload"] = total_i
@@ -1544,6 +1571,7 @@ def _apply_day_bag_statuses_to_headline(
     all_seg = dict(segments.get("all") or {})
     out["completed"] = all_seg.get("completed", out.get("completed"))
     out["pending"] = all_seg.get("pending", out.get("pending"))
+    out["carried_forward"] = all_seg.get("carried_forward", out.get("carried_forward"))
     out["exceptions"] = dict(
         all_seg.get("exceptions") or out.get("exceptions") or {}
     )
@@ -1555,6 +1583,7 @@ def _apply_day_bag_statuses_to_headline(
     # Canonical day-level status counts (projection of day-bag effective_status).
     out["completed_count"] = int(out.get("completed") or 0)
     out["pending_count"] = int(out.get("pending") or 0)
+    out["carried_forward_count"] = int(out.get("carried_forward") or 0)
     out["review_required_count"] = int(
         (out.get("exceptions") or {}).get("review_required") or 0
     )
@@ -1567,7 +1596,7 @@ def count_day_bag_status_buckets(
     member_ids: set[str] | None = None,
 ) -> dict[str, int]:
     """Count authoritative day-bag statuses (optionally scoped to membership)."""
-    completed = pending = review = unfinished = 0
+    completed = pending = review = unfinished = carried = 0
     for bid, meta in (status_by_bag or {}).items():
         if member_ids is not None and bid not in member_ids:
             continue
@@ -1578,15 +1607,18 @@ def count_day_bag_status_buckets(
             pending += 1
         elif bucket == "review_required":
             review += 1
+        elif bucket == "carried_forward":
+            carried += 1
         elif bucket == "unfinished_at_close":
             unfinished += 1
     return {
         "completed_count": completed,
         "pending_count": pending,
         "review_required_count": review,
+        "carried_forward_count": carried,
         "unfinished_at_close_count": unfinished,
-        # Open days: completed+pending+review. Closed days: completed+unfinished.
-        "status_total": completed + pending + review + unfinished,
+        # Open: completed+pending+review. Closed: completed+review+carried(+legacy stale).
+        "status_total": completed + pending + review + carried + unfinished,
     }
 
 
@@ -2956,7 +2988,8 @@ def reopen_shift_day(
         return {"ok": False, "error": "not_closed", "day": day}
     prev = day.get("status")
 
-    # Restore pre-close statuses so managers can continue working after reopen.
+    # Restore close-time statuses so managers can continue working after reopen.
+    # carried_forward → pending; legacy stale → pre_close_status; review stays review.
     bags = load_day_bags(cursor, organization_id, shift_date_et)
     for bag in bags:
         bid = normalize_bag_id(bag.get("bag_id"))
@@ -2965,10 +2998,24 @@ def reopen_shift_day(
         snap = dict(bag.get("bag_snapshot") or {})
         pre = str(snap.get("pre_close_status") or "").strip().lower()
         eff = str(bag.get("effective_status") or "").strip().lower()
-        if eff not in ("stale", "unfinished_at_close", "stale_for_day"):
+        if eff == "carried_forward":
+            restore = OUTCOME_PENDING
+            reasons: list[Any] = []
+        elif eff in ("stale", "unfinished_at_close", "stale_for_day"):
+            restore = (
+                pre
+                if pre
+                in (
+                    OUTCOME_PENDING,
+                    OUTCOME_REVIEW_REQUIRED,
+                    "pending",
+                    "review_required",
+                )
+                else OUTCOME_PENDING
+            )
+            reasons = snap.get("pre_close_review_reason_codes") or []
+        else:
             continue
-        restore = pre if pre in (OUTCOME_PENDING, OUTCOME_REVIEW_REQUIRED, "pending", "review_required") else OUTCOME_PENDING
-        reasons = snap.get("pre_close_review_reason_codes") or []
         snap.pop("day_close_status", None)
         snap.pop("day_close_label", None)
         cursor.execute(

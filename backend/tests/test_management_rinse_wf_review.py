@@ -592,3 +592,105 @@ def test_review_action_metadata_loads_no_scans():
     assert out["bag"]["manager_edit_version"] == 2
     assert out["active_bulk_workitems"] == catalog
     assert out["bag"]["bulk_workitems"] == lines
+
+
+def test_split_order_list_filters_persisted_ids_with_as_of_day_cutoff():
+    """Persisted split_review polluted by D+1 must not list bags as-of D."""
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_rinse_wf_review import build_management_review_list
+    from backend.rinse_wf_canonical_split import STATE_PENDING, STATE_REVIEW_REQUIRED
+
+    headline = {
+        "segments": {
+            "wf": {
+                "bag_ids": {
+                    "pending": ["3WXRM6SYAR", "6IU2WPCXNL"],
+                    "carried_forward": [],
+                }
+            }
+        },
+        "specialty_metrics": {
+            "wf": {
+                "split_review": {
+                    "count": 2,
+                    "order_ids": ["3WXRM6SYAR", "6IU2WPCXNL"],
+                    "orders": [
+                        {"bag_id": "3WXRM6SYAR"},
+                        {"bag_id": "6IU2WPCXNL"},
+                    ],
+                }
+            }
+        },
+    }
+    # As-of D both bags are PENDING (D+1 evidence truncated away).
+    as_of_evals = {
+        "3WXRM6SYAR": {"state": STATE_PENDING},
+        "6IU2WPCXNL": {"state": STATE_PENDING},
+    }
+    with (
+        patch(
+            "backend.rinse_veewash_shift_day.get_day_record",
+            return_value={"headline": headline, "status": "CLOSED"},
+        ),
+        patch(
+            "backend.rinse_veewash_shift_day.summary_from_day_record",
+            return_value=headline,
+        ),
+        patch(
+            "backend.management_rinse_wf_review._split_eval_as_of_day",
+            return_value=as_of_evals,
+        ) as eval_as_of,
+        patch(
+            "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
+            return_value=[],
+        ),
+    ):
+        out = build_management_review_list(
+            MagicMock(),
+            3,
+            date(2026, 8, 17),
+            category="split_order_review",
+        )
+    eval_as_of.assert_called()
+    assert out["ok"] is True
+    assert out["bags"] == []
+    assert out["pagination"]["total"] == 0
+    # Sanity: if as-of said REVIEW, they would remain.
+    as_of_evals["3WXRM6SYAR"] = {"state": STATE_REVIEW_REQUIRED}
+    with (
+        patch(
+            "backend.rinse_veewash_shift_day.get_day_record",
+            return_value={"headline": headline, "status": "CLOSED"},
+        ),
+        patch(
+            "backend.rinse_veewash_shift_day.summary_from_day_record",
+            return_value=headline,
+        ),
+        patch(
+            "backend.management_rinse_wf_review._split_eval_as_of_day",
+            return_value=as_of_evals,
+        ),
+        patch(
+            "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
+            return_value=[
+                {
+                    "bag_id": "3WXRM6SYAR",
+                    "service_type": "WF",
+                    "effective_status": "carried_forward",
+                    "bag_snapshot": {},
+                    "review_reason_codes": [],
+                    "manager_edit_version": 0,
+                }
+            ],
+        ),
+    ):
+        out2 = build_management_review_list(
+            MagicMock(),
+            3,
+            date(2026, 8, 17),
+            category="split_order_review",
+        )
+    assert out2["pagination"]["total"] == 1
+    assert out2["bags"][0]["bag_id"] == "3WXRM6SYAR"

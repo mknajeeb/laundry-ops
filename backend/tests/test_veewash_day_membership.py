@@ -374,26 +374,45 @@ def test_prior_bulk_or_review_resolution_does_not_admit():
     assert "create-workitem-bulk" not in sql
 
 
-def test_stale_prior_day_bags_union_live_membership():
-    """Stale CLOSED day_bags must not hide live prior-day portal members."""
+def test_prior_day_membership_only_carried_forward():
+    """Opening Carryover ids = prior-day carried_forward only (no full prior scrape)."""
     from backend.rinse_veewash_day_membership import _load_prior_day_membership_ids
 
     cursor = MagicMock()
-    cursor.fetchall.return_value = [{"bag_id": "SNAP1"}]
+    cursor.fetchall.return_value = [{"bag_id": "CARRY1"}, {"bag_id": "CARRY2"}]
+    with patch("backend.ta_helpers.table_exists", return_value=True):
+        prior = _load_prior_day_membership_ids(cursor, 3, date(2026, 7, 25))
+    assert prior == {"CARRY1", "CARRY2"}
+    sql = cursor.execute.call_args[0][0].lower()
+    assert "carried_forward" in sql
+    assert "service_type" in sql
+    assert "'wf'" in sql.replace(" ", "")
+    # Must not union live scrape / all prior bags.
+    assert "rinse_at_vendor" not in sql
+    assert cursor.execute.call_count == 1
+
+
+def test_stale_prior_day_bags_union_live_membership():
+    """Legacy name: prior membership is carried_forward-only (no live union)."""
+    from backend.rinse_veewash_day_membership import _load_prior_day_membership_ids
+
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [{"bag_id": "CARRYONLY"}]
     with (
         patch("backend.ta_helpers.table_exists", return_value=True),
         patch(
             "backend.rinse_veewash_day_membership.build_append_only_membership",
             return_value={
                 "membership": {
-                    "SNAP1": {"bag_id": "SNAP1"},
+                    "CARRYONLY": {"bag_id": "CARRYONLY"},
                     "LIVEONLY": {"bag_id": "LIVEONLY"},
                 }
             },
-        ),
+        ) as live,
     ):
         prior = _load_prior_day_membership_ids(cursor, 3, date(2026, 7, 25))
-    assert prior == {"SNAP1", "LIVEONLY"}
+    assert prior == {"CARRYONLY"}
+    live.assert_not_called()
 
 
 def test_cutover_day_prior_empty_keeps_opening_new():

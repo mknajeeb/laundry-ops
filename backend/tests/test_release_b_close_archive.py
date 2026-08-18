@@ -1,4 +1,4 @@
-"""Release B: fresh-day close-and-archive validation suite."""
+"""Operational carryforward close-and-archive validation suite."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ from datetime import date
 from unittest.mock import MagicMock, patch
 
 from backend.rinse_shift_day_close_archive import (
-    BAG_CLOSE_REASON_UNRESOLVED,
+    CLOSE_ARCHIVE_MODEL,
     CLOSE_CONFLICT_ERROR,
+    OUTCOME_CARRIED_FORWARD,
     OUTCOME_STALE,
-    STALE_DISPLAY_LABEL,
     apply_closed_day_headline,
     archive_unresolved_day_bags,
     build_close_confirmation_summary,
@@ -81,7 +81,7 @@ def _patch_lock(day):
     )
 
 
-def test_close_archive_counts_pending_and_review_as_unfinished():
+def test_close_archive_counts_pending_to_carried_review_stays():
     bags = [
         _bag("COMP01", OUTCOME_COMPLETED),
         _bag("PEND01", OUTCOME_PENDING),
@@ -89,28 +89,34 @@ def test_close_archive_counts_pending_and_review_as_unfinished():
     ]
     c = close_archive_counts_from_bags(bags)
     assert c["completed"] == 1
-    assert c["unfinished"] == 2
-    assert c["unfinished_from_pending"] == 1
-    assert c["unfinished_from_review_required"] == 1
+    assert c["review"] == 1
+    assert c["carried_forward"] == 1
+    assert c["unfinished"] == 1  # alias = carried
+    assert c["unfinished_from_review_required"] == 0
     conf = build_close_confirmation_summary(bags)
     assert conf["counts_are_advisory"] is True
-    assert conf["carryover_used"] is False
+    assert conf["carryover_used"] is True
+    assert conf["model"] == CLOSE_ARCHIVE_MODEL
+    assert conf["carried_forward"] == 1
+    assert conf["review"] == 1
 
 
-def test_pending_becomes_stale_preserving_pre_close_status():
+def test_pending_becomes_carried_forward_preserving_pre_close_status():
     cur = _cursor()
     bags = [_bag("PEND01", OUTCOME_PENDING), _bag("COMP01", OUTCOME_COMPLETED)]
     out = archive_unresolved_day_bags(cur, ORG, DAY, day_bags=bags)
     assert out["changed"] == 1
-    assert bags[0]["effective_status"] == OUTCOME_STALE
+    assert bags[0]["effective_status"] == OUTCOME_CARRIED_FORWARD
     assert bags[0]["bag_snapshot"]["pre_close_status"] == OUTCOME_PENDING
-    assert bags[0]["bag_snapshot"]["day_close_status"] == "stale"
-    assert bags[0]["bag_snapshot"]["close_reason"] == BAG_CLOSE_REASON_UNRESOLVED
+    assert bags[0]["bag_snapshot"]["day_close_status"] == "carried_forward"
+    assert bags[0]["bag_snapshot"]["close_reason"] == "carried_forward_at_close"
     assert bags[0]["bag_snapshot"]["pre_close_was_pending"] is True
     assert bags[1]["effective_status"] == OUTCOME_COMPLETED
+    assert out["carried_forward_ids"] == ["PEND01"]
+    assert out["review_ids"] == []
 
 
-def test_review_required_becomes_stale_preserving_review_history():
+def test_review_required_stays_review_preserving_review_history():
     cur = _cursor()
     bags = [
         _bag(
@@ -120,22 +126,29 @@ def test_review_required_becomes_stale_preserving_review_history():
         )
     ]
     out = archive_unresolved_day_bags(cur, ORG, DAY, day_bags=bags)
-    assert out["changed"] == 1
+    assert out["changed"] == 0
     snap = bags[0]["bag_snapshot"]
+    assert bags[0]["effective_status"] == OUTCOME_REVIEW_REQUIRED
+    assert bags[0]["review_reason_codes"] == [
+        "SERVICE_CLASSIFICATION_MISMATCH",
+        "DISAPPEARED_WITHOUT_COMPLETION",
+    ]
+    assert out["review_ids"] == ["REVI01"]
+    assert out["carried_forward_ids"] == []
+    assert "day_close_status" not in snap or snap.get("day_close_status") != "stale"
+
+
+def test_hd_pending_becomes_stale_not_carried_forward():
+    cur = _cursor()
+    bags = [
+        _bag("HDPEND1", OUTCOME_PENDING, service="HD"),
+        _bag("WFPEND1", OUTCOME_PENDING, service="WF"),
+    ]
+    out = archive_unresolved_day_bags(cur, ORG, DAY, day_bags=bags)
     assert bags[0]["effective_status"] == OUTCOME_STALE
-    assert snap["pre_close_status"] == OUTCOME_REVIEW_REQUIRED
-    assert snap["day_close_status"] == "stale"
-    assert snap["close_reason"] == BAG_CLOSE_REASON_UNRESOLVED
-    assert snap["pre_close_was_review_required"] is True
-    assert snap["pre_close_review_reason_codes"] == [
-        "SERVICE_CLASSIFICATION_MISMATCH",
-        "DISAPPEARED_WITHOUT_COMPLETION",
-    ]
-    assert snap["review_reason_codes"] == [
-        "SERVICE_CLASSIFICATION_MISMATCH",
-        "DISAPPEARED_WITHOUT_COMPLETION",
-    ]
-    assert out["unfinished_from_review_required_ids"] == ["REVI01"]
+    assert bags[1]["effective_status"] == OUTCOME_CARRIED_FORWARD
+    assert out["carried_forward_ids"] == ["WFPEND1"]
+    assert out["hd_stale_ids"] == ["HDPEND1"]
 
 
 def test_completed_remains_completed_at_close():
@@ -144,10 +157,11 @@ def test_completed_remains_completed_at_close():
     out = archive_unresolved_day_bags(cur, ORG, DAY, day_bags=bags)
     assert out["changed"] == 0
     assert out["completed"] == 2
-    assert out["unfinished"] == 0
+    assert out["carried_forward"] == 0
+    assert out["review"] == 0
 
 
-def test_closed_day_headline_identities():
+def test_closed_day_headline_no_pending_has_carried_forward():
     headline = {
         "completed": 5,
         "pending": 2,
@@ -193,18 +207,22 @@ def test_closed_day_headline_identities():
     out = apply_closed_day_headline(
         headline,
         completed_ids=["COMP01", "COMP02", "COMP03", "COMP04", "COMP05"],
-        unfinished_ids=["PEND01", "PEND02", "REVI01"],
-        unfinished_from_pending_ids=["PEND01", "PEND02"],
-        unfinished_from_review_required_ids=["REVI01"],
+        review_ids=["REVI01"],
+        carried_forward_ids=["PEND01", "PEND02"],
     )
-    assert out["completed"] + out["unfinished_at_close"] == out["total_workload"] == 8
     assert out["pending"] == 0
-    assert out["exceptions"]["review_required"] == 0
-    assert out["new_today"] == 8
-    assert out["unfinished_from_pending"] == 2
-    assert out["unfinished_from_review_required"] == 1
-    assert out["segments"]["all"]["bag_ids"]["new_today"]
-    assert out["close_archive"]["carryover_used"] is False
+    assert out["carried_forward"] == 2
+    assert out["completed"] == 5
+    assert out["review_required_count"] == 1
+    assert out["completed"] + out["review_required_count"] + out["carried_forward"] == 8
+    assert out["total_workload"] == 8
+    assert out["segments"]["all"]["bag_ids"]["pending"] == []
+    assert set(out["segments"]["all"]["bag_ids"]["carried_forward"]) == {
+        "PEND01",
+        "PEND02",
+    }
+    assert out["close_archive"]["model"] == CLOSE_ARCHIVE_MODEL
+    assert out["close_archive"]["carryover_used"] is True
 
 
 def test_manual_and_automatic_close_use_same_backend_function():
@@ -269,16 +287,16 @@ def test_manual_and_automatic_close_use_same_backend_function():
     ):
         auto = finalize_day_close_archive(cur2, ORG, DAY, mode="automatic")
     assert manual["ok"] and auto["ok"]
-    assert manual["final_counts"] == auto["final_counts"]
-    assert manual["archive"]["unfinished"] == auto["archive"]["unfinished"] == 2
-    assert manual["archive"]["completed"] == auto["archive"]["completed"] == 1
+    assert manual["final_counts"]["completed"] == auto["final_counts"]["completed"] == 1
+    assert manual["final_counts"]["carried_forward"] == auto["final_counts"]["carried_forward"] == 1
+    assert manual["final_counts"]["review"] == auto["final_counts"]["review"] == 1
 
 
 def test_already_closed_day_is_not_modified():
     closed = {
         "organization_id": ORG,
         "status": STATUS_CLOSED,
-        "headline": {"completed": 1, "unfinished_at_close": 1},
+        "headline": {"completed": 1, "carried_forward": 1},
     }
     cur = _cursor()
     with (
@@ -290,7 +308,6 @@ def test_already_closed_day_is_not_modified():
     assert out["ok"] is True
     assert out["already_closed"] is True
     assert out["modified"] is False
-    # No bag UPDATE / status rewrite beyond the lock SELECT.
     update_sqls = [
         str(c.args[0])
         for c in cur.execute.call_args_list
@@ -310,7 +327,6 @@ def test_automatic_rollover_refuses_today():
 def test_automatic_rollover_only_yesterday():
     cur = _cursor()
     with patch("backend.rinse_veewash_workload.today_et", return_value=NEXT):
-        # Two days ago is not eligible.
         out = finalize_day_close_archive(
             cur, ORG, NEXT - __import__("datetime").timedelta(days=2), mode="automatic"
         )
@@ -340,14 +356,14 @@ def test_automatic_rollover_closes_unclosed_prior_day():
         out = ensure_prior_et_day_archived_on_rollover(cur, ORG, today=NEXT)
     assert out["ok"] is True
     assert out["mode"] == "automatic"
-    assert bags[1]["effective_status"] == OUTCOME_STALE
+    assert bags[1]["effective_status"] == OUTCOME_CARRIED_FORWARD
 
 
 def test_close_confirmation_conflict_when_dialog_stale():
     bags = [
         _bag("COMP01", OUTCOME_COMPLETED),
         _bag("PEND01", OUTCOME_PENDING),
-        _bag("PEND02", OUTCOME_PENDING),  # work continued — unfinished now 2
+        _bag("PEND02", OUTCOME_PENDING),
     ]
     day = {
         "organization_id": ORG,
@@ -366,12 +382,12 @@ def test_close_confirmation_conflict_when_dialog_stale():
             DAY,
             mode="manual",
             expected_completed=1,
-            expected_unfinished=1,  # dialog showed 1 unfinished; live has 2
+            expected_unfinished=1,
         )
     assert out["ok"] is False
     assert out["error"] == CLOSE_CONFLICT_ERROR
-    assert out["live"]["unfinished"] == 2
-    assert "unfinished" in out["mismatches"]
+    assert out["live"]["carried_forward"] == 2
+    assert "carried_forward" in out["mismatches"] or "unfinished" in out["mismatches"]
 
 
 def test_close_recomputes_final_counts_when_expected_matches():
@@ -404,23 +420,20 @@ def test_close_recomputes_final_counts_when_expected_matches():
             DAY,
             mode="manual",
             expected_completed=1,
-            expected_unfinished=1,
+            expected_carried_forward=1,
         )
     assert out["ok"] is True
-    assert out["final_counts"] == {
-        "completed": 1,
-        "unfinished": 1,
-        "unfinished_from_pending": 1,
-        "unfinished_from_review_required": 0,
-        "total": 2,
-    }
+    assert out["final_counts"]["completed"] == 1
+    assert out["final_counts"]["carried_forward"] == 1
+    assert out["final_counts"]["review"] == 0
+    assert out["final_counts"]["total"] == 2
 
 
 def test_conditional_update_lost_race_is_idempotent():
     bags = [_bag("PEND01", OUTCOME_PENDING)]
     day = {"organization_id": ORG, "status": STATUS_OPEN, "headline": {}}
     cur = _cursor()
-    cur.rowcount = 0  # lost race on conditional UPDATE
+    cur.rowcount = 0
     with (
         _patch_lock(day),
         patch(
@@ -446,8 +459,8 @@ def test_prior_day_unresolved_does_not_seed_next_day():
     assert cur.execute.call_count == 0
 
 
-def test_three_day_same_order_history():
-    """Day1 stale, Day2 stale, Day3 completed — one row per date, no carryover."""
+def test_three_day_same_order_history_carried_forward():
+    """Day1 carried, Day2 carried, Day3 completed — one row per date."""
     store: dict[tuple[int, date, str], dict] = {}
 
     def upsert(d: date, bid: str, status: str, entry_class="new_today"):
@@ -465,82 +478,49 @@ def test_three_day_same_order_history():
         for key, row in list(store.items()):
             if key[1] != d:
                 continue
-            if row["effective_status"] in (OUTCOME_PENDING, OUTCOME_REVIEW_REQUIRED):
-                row["effective_status"] = OUTCOME_STALE
+            if row["effective_status"] == OUTCOME_PENDING:
+                row["effective_status"] = OUTCOME_CARRIED_FORWARD
                 row["pre_close_status"] = OUTCOME_PENDING
-                row["day_close_status"] = "stale"
+                row["day_close_status"] = "carried_forward"
+            # review_required stays review
 
-    # Day 1
     upsert(DAY1, "ABCD01", OUTCOME_PENDING)
     close_day(DAY1)
-    assert store[(ORG, DAY1, "ABCD01")]["effective_status"] == OUTCOME_STALE
+    assert store[(ORG, DAY1, "ABCD01")]["effective_status"] == OUTCOME_CARRIED_FORWARD
 
-    # Day 2 reappearance — new row, not seeded
     assert (ORG, DAY2, "ABCD01") not in store
     upsert(DAY2, "ABCD01", OUTCOME_PENDING)
     close_day(DAY2)
-    assert store[(ORG, DAY2, "ABCD01")]["effective_status"] == OUTCOME_STALE
+    assert store[(ORG, DAY2, "ABCD01")]["effective_status"] == OUTCOME_CARRIED_FORWARD
 
-    # Day 3 reappearance + complete
     upsert(DAY3, "ABCD01", OUTCOME_PENDING)
     store[(ORG, DAY3, "ABCD01")]["effective_status"] = OUTCOME_COMPLETED
 
-    assert store[(ORG, DAY1, "ABCD01")]["effective_status"] == OUTCOME_STALE
-    assert store[(ORG, DAY2, "ABCD01")]["effective_status"] == OUTCOME_STALE
+    assert store[(ORG, DAY1, "ABCD01")]["effective_status"] == OUTCOME_CARRIED_FORWARD
+    assert store[(ORG, DAY2, "ABCD01")]["effective_status"] == OUTCOME_CARRIED_FORWARD
     assert store[(ORG, DAY3, "ABCD01")]["effective_status"] == OUTCOME_COMPLETED
     assert len([k for k in store if k[2] == "ABCD01"]) == 3
-    assert all(store[k]["entry_class"] == "new_today" for k in store)
 
 
-def test_absent_next_day_does_not_create_membership_row():
-    store: dict[tuple[int, date, str], dict] = {
-        (ORG, DAY1, "ABCD01"): {
-            "effective_status": OUTCOME_STALE,
-            "entry_class": "new_today",
-        }
-    }
-    day2_scrape_ids: set[str] = set()  # ABC absent
-    # Admission only from today's scrape.
-    for bid in day2_scrape_ids:
-        store[(ORG, DAY2, bid)] = {
-            "effective_status": OUTCOME_PENDING,
-            "entry_class": "new_today",
-        }
-    assert (ORG, DAY2, "ABCD01") not in store
-    assert store[(ORG, DAY1, "ABCD01")]["effective_status"] == OUTCOME_STALE
-
-
-def test_repeated_same_day_scrapes_one_row():
-    members: set[str] = set()
-    for _scrape in range(5):
-        members.add("ABCD01")
-    assert len(members) == 1
-
-
-def test_later_same_day_scrape_admits_as_new_today():
-    members: dict[str, dict] = {}
-    # First scrape — empty for ABC
-    # Later scrape admits ABC
-    members["ABCD01"] = {"entry_class": "new_today", "effective_status": OUTCOME_PENDING}
-    assert members["ABCD01"]["entry_class"] == "new_today"
-
-
-def test_disappear_from_later_scrape_keeps_append_only_membership():
-    members = {"ABCD01": {"entry_class": "new_today", "effective_status": OUTCOME_PENDING}}
-    later_scrape = set()  # disappeared
-    # Append-only: do not drop.
-    for bid in later_scrape:
-        members.pop(bid, None)
-    assert "ABCD01" in members
-
-
-def test_post_auto_close_appearance_belongs_only_to_current_day():
-    prior = {(ORG, DAY1, "ABCD01"): {"effective_status": OUTCOME_STALE}}
-    # Auto-close already froze DAY1. New scrape on DAY2:
-    current = {(ORG, DAY2, "ABCD01"): {"effective_status": OUTCOME_PENDING, "entry_class": "new_today"}}
-    assert prior[(ORG, DAY1, "ABCD01")]["effective_status"] == OUTCOME_STALE
-    assert (ORG, DAY1, "ABCD01") not in current
-    assert current[(ORG, DAY2, "ABCD01")]["entry_class"] == "new_today"
+def test_legacy_stale_still_readable_in_counts():
+    bags = [
+        _bag(
+            "OLD01",
+            OUTCOME_STALE,
+            snap={"pre_close_status": OUTCOME_PENDING, "day_close_status": "stale"},
+        ),
+        _bag(
+            "OLD02",
+            OUTCOME_STALE,
+            snap={
+                "pre_close_status": OUTCOME_REVIEW_REQUIRED,
+                "day_close_status": "stale",
+            },
+        ),
+    ]
+    c = close_archive_counts_from_bags(bags)
+    assert c["carried_forward"] == 1
+    assert c["review"] == 1
 
 
 def test_release_a_cycle_boundary_module_untouched():
@@ -583,4 +563,4 @@ def test_close_shift_day_wrapper_passes_expected_counts():
             expected_unfinished=1,
         )
     assert out["ok"] is True
-    assert out["final_counts"]["unfinished"] == 1
+    assert out["final_counts"]["carried_forward"] == 1

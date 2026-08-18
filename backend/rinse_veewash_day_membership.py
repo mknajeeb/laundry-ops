@@ -264,12 +264,11 @@ def _load_prior_day_membership_ids(
     organization_id: int,
     selected_date_et: date,
 ) -> set[str]:
-    """Prior ET-day membership ids = persisted day bags ∪ live prior scrape membership.
+    """Prior-day Opening Carryover ids = WF bags with effective_status carried_forward.
 
-    Persisted day_bags alone is insufficient: a stale CLOSED snapshot can omit
-    bags that were still on the portal overnight, which then leak into today as
-    FIRST_SCRAPE_BASELINE. Union with the live prior rebuild closes that hole
-    without rewriting prior-day history rows.
+    Only operational unfinished **WF** bags closed as ``carried_forward`` feed
+    next-day Opening Carryover. HD / review / completed / excluded / legacy stale
+    rows do not. New Today admits still come from today's scrape separately.
     """
     from backend.ta_helpers import table_exists
 
@@ -278,24 +277,23 @@ def _load_prior_day_membership_ids(
     out: set[str] = set()
     if prior < STEP1_AUTHORITATIVE_START_ET:
         return set()
-    if table_exists(cursor, "rinse_shift_monitor_day_bags"):
-        cursor.execute(
-            """
-            SELECT bag_id
-            FROM rinse_shift_monitor_day_bags
-            WHERE organization_id = %s AND shift_date_et = %s
-            """,
-            (org, prior),
-        )
-        for r in cursor.fetchall() or []:
-            bid = str((r.get("bag_id") if isinstance(r, dict) else r[0]) or "").strip().upper()
-            if bid:
-                out.add(bid)
-    # Always union live prior scrape membership (no recursive prior filter).
-    prior_mem = build_append_only_membership(
-        cursor, organization_id, prior, apply_prior_day_filter=False
+    if not table_exists(cursor, "rinse_shift_monitor_day_bags"):
+        return set()
+    cursor.execute(
+        """
+        SELECT bag_id
+        FROM rinse_shift_monitor_day_bags
+        WHERE organization_id = %s
+          AND shift_date_et = %s
+          AND LOWER(TRIM(COALESCE(effective_status, ''))) = 'carried_forward'
+          AND UPPER(TRIM(COALESCE(service_type, 'WF'))) = 'WF'
+        """,
+        (org, prior),
     )
-    out |= set(membership_bag_ids(prior_mem))
+    for r in cursor.fetchall() or []:
+        bid = str((r.get("bag_id") if isinstance(r, dict) else r[0]) or "").strip().upper()
+        if bid:
+            out.add(bid)
     return out
 
 

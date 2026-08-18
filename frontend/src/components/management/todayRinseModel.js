@@ -54,16 +54,27 @@ export function specialtyOrderCount(row) {
   return asInt(row.order_count ?? row.count);
 }
 
-export function wfHeadline(seg) {
+export function wfHeadline(seg, { dayClosed = false } = {}) {
   const review = asInt(seg?.exceptions?.review_required ?? seg?.exceptions?.total);
   const completed = asInt(seg?.completed);
-  const pending = asInt(seg?.pending);
+  const carriedForward = asInt(
+    seg?.carried_forward ?? seg?.carried_forward_count ?? 0,
+  );
+  const pendingRaw = asInt(seg?.pending);
+  const pending = dayClosed ? carriedForward : pendingRaw;
   const workload = asInt(
     seg?.total_workload ??
       seg?.active_workload ??
-      completed + pending + review,
+      completed + (dayClosed ? carriedForward : pendingRaw) + review,
   );
-  return { workload, completed, pending, review };
+  return {
+    workload,
+    completed,
+    pending,
+    review,
+    carriedForward: dayClosed ? carriedForward : 0,
+    dayClosed: Boolean(dayClosed),
+  };
 }
 
 export function hdHeadline(seg, hdTotals) {
@@ -108,7 +119,18 @@ export function pickWfSupplies(rinse, topLevelSupplies) {
   return rinse?.supplies || null;
 }
 
-export function wfIdentityLine({ workload, completed, pending, review }) {
+export function wfIdentityLine({
+  workload,
+  completed,
+  pending,
+  review,
+  carriedForward = 0,
+  dayClosed = false,
+}) {
+  if (dayClosed) {
+    const carried = asInt(carriedForward || pending);
+    return `${workload} = ${completed} Completed + ${carried} Carried Forward + ${review} Review`;
+  }
   return `${workload} = ${completed} Completed + ${pending} Pending + ${review} Review`;
 }
 

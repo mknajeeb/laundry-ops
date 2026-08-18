@@ -68,6 +68,32 @@ REASON_CATEGORY_MAP: dict[str, str] = {
 }
 
 
+def _split_eval_as_of_day(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    bag_ids: list[str] | tuple[str, ...],
+    *,
+    slim_events: bool = False,
+):
+    """Evaluate splits with scan evidence truncated to end of selected_date_et ET.
+
+    Manager decisions are always for ``shift_date_et = selected_date_et`` only.
+    Prefer persisted headline ``specialty_metrics.split_review`` when present;
+    this live path is the as-of-day fallback for historical / closed days.
+    """
+    from backend.rinse_wf_canonical_split import evaluate_day_wf_splits
+
+    return evaluate_day_wf_splits(
+        cursor,
+        organization_id,
+        selected_date_et,
+        bag_ids,
+        slim_events=slim_events,
+        truncate_to_selected_day=True,
+    )
+
+
 def category_for_reason_codes(codes: list[str] | tuple[str, ...] | None) -> str:
     """Deterministic single category for a bag's reason codes (no double-count)."""
     normalized = [str(c) for c in (codes or []) if c]
@@ -629,30 +655,37 @@ def build_management_review_list(
             if status == "review_required":
                 still.add(bid)
         bag_ids = [b for b in bag_ids if b in still]
-    elif cat == CATEGORY_SPLIT_ORDER and not bag_ids:
-        # Live fallback when headline specialty_metrics lacks split_review yet.
-        from backend.rinse_wf_canonical_split import (
-            STATE_REVIEW_REQUIRED,
-            evaluate_day_wf_splits,
-        )
+    elif cat == CATEGORY_SPLIT_ORDER:
+        # Prefer persisted specialty_metrics.split_review, then as-of-day filter.
+        # Live fallback when pack empty. Never let D+1 scans create day-D review.
+        from backend.rinse_wf_canonical_split import STATE_REVIEW_REQUIRED
 
-        member = _wf_review_ids(headline)
-        segs = (headline or {}).get("segments") or {}
-        wf_seg = segs.get("wf") or {}
-        bags_map = wf_seg.get("bag_ids") or {}
-        for bucket in ("completed", "pending", "review_required", "new_today", "carryover"):
-            for bid in bags_map.get(bucket) or []:
-                nb = normalize_bag_id(bid)
-                if nb and nb not in member:
-                    member.append(nb)
-        if member:
-            evaluations = evaluate_day_wf_splits(
-                cursor, organization_id, selected_date_et, member
+        if not bag_ids:
+            member = _wf_review_ids(headline)
+            segs = (headline or {}).get("segments") or {}
+            wf_seg = segs.get("wf") or {}
+            bags_map = wf_seg.get("bag_ids") or {}
+            for bucket in (
+                "completed",
+                "pending",
+                "review_required",
+                "carried_forward",
+                "new_today",
+                "carryover",
+            ):
+                for bid in bags_map.get(bucket) or []:
+                    nb = normalize_bag_id(bid)
+                    if nb and nb not in member:
+                        member.append(nb)
+            bag_ids = list(member)
+        if bag_ids:
+            evaluations = _split_eval_as_of_day(
+                cursor, organization_id, selected_date_et, bag_ids
             )
             bag_ids = [
                 bid
-                for bid, ev in evaluations.items()
-                if ev.get("state") == STATE_REVIEW_REQUIRED
+                for bid in bag_ids
+                if (evaluations.get(bid) or {}).get("state") == STATE_REVIEW_REQUIRED
             ]
 
     rush = str(rush_filter or "all").strip().lower()
@@ -702,14 +735,11 @@ def build_management_review_list(
 
     split_evals: dict[str, dict[str, Any]] = {}
     if cat == CATEGORY_SPLIT_ORDER and page_ids:
-        from backend.rinse_wf_canonical_split import (
-            evaluate_day_wf_splits,
-            evaluation_to_jsonable,
-        )
+        from backend.rinse_wf_canonical_split import evaluation_to_jsonable
 
         split_evals = {
             bid: evaluation_to_jsonable(ev)
-            for bid, ev in evaluate_day_wf_splits(
+            for bid, ev in _split_eval_as_of_day(
                 cursor, organization_id, selected_date_et, page_ids
             ).items()
         }
@@ -939,12 +969,9 @@ def build_management_review_detail(
     )
     if needs_split:
         try:
-            from backend.rinse_wf_canonical_split import (
-                evaluate_day_wf_splits,
-                evaluation_to_jsonable,
-            )
+            from backend.rinse_wf_canonical_split import evaluation_to_jsonable
 
-            split_map = evaluate_day_wf_splits(
+            split_map = _split_eval_as_of_day(
                 cursor, organization_id, selected_date_et, [bid]
             )
             sev = split_map.get(bid)

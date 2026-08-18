@@ -198,7 +198,7 @@ export default function ManagementRinseWfSection({
     () => pickWfSupplies(rinse, suppliesProp),
     [rinse, suppliesProp],
   );
-  const wf = wfHeadline(wfSeg);
+  const wf = wfHeadline(wfSeg, { dayClosed: readOnly });
   // Dashboard cards: item quantities (not order counts). Review Specialty Items
   // is a separate unresolved-order concept — do not merge.
   const comforterQty =
@@ -393,13 +393,18 @@ export default function ManagementRinseWfSection({
           }
         />
         <TodayTapCard
-          label="Pending"
+          label={readOnly ? "Carried Forward" : "Pending"}
           value={snapshotUnavailable ? "—" : fmtInt(wf.pending)}
           tone="pending"
           onClick={
             snapshotUnavailable
               ? undefined
-              : () => openMetric("pending", "Rinse WF · Pending", { queue: "pending" })
+              : () =>
+                  openMetric(
+                    readOnly ? "carried_forward" : "pending",
+                    readOnly ? "Rinse WF · Carried Forward" : "Rinse WF · Pending",
+                    { queue: readOnly ? "carried_forward" : "pending" },
+                  )
           }
         />
         <TodayTapCard
