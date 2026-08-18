@@ -87,6 +87,120 @@ MYSQL_LOCK_HELD_REASON = "could not acquire MySQL lock"
 DEAD_EXECUTION_MESSAGE = (
     "previous execution died before terminalizing (MySQL lock was free)"
 )
+POST_RUN_COOLDOWN_REASON = "post_run_cooldown"
+# Completion-driven cadence: wait this long after a run finishes before the next
+# *scheduled* scrape may start. Manual runs bypass the cooldown but share GET_LOCK.
+DEFAULT_POST_RUN_COOLDOWN_MINUTES = 30
+_TERMINAL_SCRAPE_STATUSES = frozenset(
+    {
+        "success",
+        "failed",
+        "partial_success",
+        "needs_attention",
+        "anomalous",
+    }
+)
+
+
+def post_run_cooldown_minutes() -> int:
+    try:
+        return max(1, int(os.getenv("RINSE_SCRAPE_POST_RUN_COOLDOWN_MINUTES", str(DEFAULT_POST_RUN_COOLDOWN_MINUTES))))
+    except (TypeError, ValueError):
+        return DEFAULT_POST_RUN_COOLDOWN_MINUTES
+
+
+def compute_next_run_at(finished_at: datetime | None, *, cooldown_minutes: int | None = None) -> datetime | None:
+    """Next eligible scheduled start = previous finished_at + cooldown (not started_at)."""
+    if finished_at is None:
+        return None
+    mins = post_run_cooldown_minutes() if cooldown_minutes is None else max(1, int(cooldown_minutes))
+    fin = finished_at.replace(tzinfo=None) if finished_at.tzinfo else finished_at
+    return fin + timedelta(minutes=mins)
+
+
+def latest_terminal_scrape_finished_at(cursor, organization_id: int) -> datetime | None:
+    """Most recent finished_at among terminal (non-skipped) scrape runs for the org."""
+    ensure_rinse_scrape_runs_table(cursor)
+    statuses = tuple(sorted(_TERMINAL_SCRAPE_STATUSES))
+    placeholders = ", ".join(["%s"] * len(statuses))
+    cursor.execute(
+        f"""
+        SELECT finished_at
+        FROM rinse_scrape_runs
+        WHERE organization_id = %s
+          AND status IN ({placeholders})
+          AND finished_at IS NOT NULL
+        ORDER BY finished_at DESC
+        LIMIT 1
+        """,
+        (int(organization_id), *statuses),
+    )
+    row = cursor.fetchone() or {}
+    finished = row.get("finished_at") if isinstance(row, dict) else None
+    if isinstance(finished, datetime):
+        return finished.replace(tzinfo=None) if finished.tzinfo else finished
+    return None
+
+
+def scheduled_post_run_cooldown(
+    cursor,
+    organization_id: int,
+    *,
+    now: datetime | None = None,
+    run_type: str = "scheduled",
+) -> dict[str, Any]:
+    """Gate scheduled starts until finished_at + cooldown. Manual always allowed.
+
+    Returns:
+      ok_to_run, reason, last_finished_at, next_run_at, remaining_seconds
+    """
+    rt = str(run_type or "scheduled").strip().lower()
+    if rt != "scheduled":
+        return {
+            "ok_to_run": True,
+            "reason": None,
+            "last_finished_at": None,
+            "next_run_at": None,
+            "remaining_seconds": 0,
+            "bypassed": True,
+        }
+    now_utc = now or _utcnow()
+    if now_utc.tzinfo:
+        now_utc = now_utc.replace(tzinfo=None)
+    last_finished = latest_terminal_scrape_finished_at(cursor, organization_id)
+    next_run = compute_next_run_at(last_finished)
+    if last_finished is None or next_run is None:
+        return {
+            "ok_to_run": True,
+            "reason": None,
+            "last_finished_at": last_finished,
+            "next_run_at": next_run,
+            "remaining_seconds": 0,
+            "bypassed": False,
+        }
+    if now_utc >= next_run:
+        return {
+            "ok_to_run": True,
+            "reason": None,
+            "last_finished_at": last_finished,
+            "next_run_at": next_run,
+            "remaining_seconds": 0,
+            "bypassed": False,
+        }
+    remaining = max(0, int((next_run - now_utc).total_seconds()))
+    return {
+        "ok_to_run": False,
+        "reason": (
+            f"{POST_RUN_COOLDOWN_REASON}: next scheduled run at "
+            f"{next_run.isoformat()}Z "
+            f"(last finished {last_finished.isoformat()}Z + "
+            f"{post_run_cooldown_minutes()}m)"
+        ),
+        "last_finished_at": last_finished,
+        "next_run_at": next_run,
+        "remaining_seconds": remaining,
+        "bypassed": False,
+    }
 
 
 def _mysql_lock_name(organization_id: int) -> str:
@@ -351,6 +465,18 @@ def finish_scrape_run(
 ) -> None:
     finished = _utcnow()
     duration = max(0, int((finished - started_at).total_seconds()))
+    payload = dict(result_json) if isinstance(result_json, dict) else {}
+    next_run = compute_next_run_at(finished)
+    payload["next_run_at"] = next_run.isoformat() + "Z" if next_run else None
+    payload["post_run_cooldown_minutes"] = post_run_cooldown_minutes()
+    payload["started_at"] = (
+        started_at.replace(tzinfo=None).isoformat() + "Z"
+        if isinstance(started_at, datetime)
+        else None
+    )
+    payload["finished_at"] = finished.isoformat() + "Z"
+    payload["duration_seconds"] = duration
+    payload["outcome"] = status[:24]
     cursor.execute(
         """
         UPDATE rinse_scrape_runs
@@ -380,7 +506,7 @@ def finish_scrape_run(
             imported_batch_id,
             (error_message or "")[:65000] or None,
             (log_path or "")[:1024] or None,
-            json.dumps(result_json, default=str) if result_json is not None else None,
+            json.dumps(payload, default=str),
             int(run_id),
             int(organization_id),
         ),

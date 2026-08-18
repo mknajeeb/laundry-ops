@@ -28,6 +28,7 @@ from backend.rinse_scrape_runs import (
     insert_skipped_scrape_run,
     merge_scrape_run_result_json,
     release_scrape_lock,
+    scheduled_post_run_cooldown,
 )
 from backend.rinse_vendor_config import resolve_rinse_vendor, rinse_scrape_env_for_organization
 
@@ -887,6 +888,37 @@ def run_rinse_combined_sync_for_org(
         result.status = "skipped"
         result.at_vendor_status = "skipped"
         result.detail = {"dry_run": True, "sync_cycle": {"cycle_status": "dry_run"}}
+        return result
+
+    # Completion-driven cadence: scheduled runs wait until previous finished_at + 30m.
+    # Manual runs bypass this gate but still share MySQL GET_LOCK (no overlap).
+    cooldown = scheduled_post_run_cooldown(cursor, org_id, run_type=run_type)
+    if not cooldown.get("ok_to_run"):
+        next_run = cooldown.get("next_run_at")
+        reason = cooldown.get("reason") or "post_run_cooldown"
+        print(
+            f"rinse scrape org={org_id} deferred ({reason})",
+            flush=True,
+        )
+        result.status = "skipped"
+        result.error_message = reason
+        result.detail = {
+            "sync_cycle": {
+                "cycle_status": "skipped",
+                "failure_message": reason,
+                "skip_reason": "post_run_cooldown",
+                "last_finished_at": (
+                    cooldown["last_finished_at"].isoformat() + "Z"
+                    if cooldown.get("last_finished_at")
+                    else None
+                ),
+                "next_run_at": (
+                    next_run.isoformat() + "Z" if next_run else None
+                ),
+                "remaining_seconds": cooldown.get("remaining_seconds"),
+            }
+        }
+        # No DB skip row — ACA may poll frequently; avoid flooding rinse_scrape_runs.
         return result
 
     acquired, lock_reason = acquire_scrape_lock(cursor, org_id)

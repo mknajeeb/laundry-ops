@@ -358,4 +358,105 @@ def test_summary_wires_product_master(monkeypatch):
     assert dash["pounds_available"] is True
     assert dash["pounds"] == 9.0
     assert dash["kpis"]["cost_per_lb"] == round(0.5 / 9.0, 4)
-    assert dash["pounds_scope"] == "confirmed_supply_orders"
+    assert dash["pounds_scope"] == "confirmed_supply_orders_with_post"
+    assert dash["post_coverage"]["with_post"] == 1
+    assert dash["post_coverage"]["confirmed"] == 1
+    assert dash["post_coverage"]["complete"] is True
+    assert dash["cost_lb_populations_aligned"] is True
+    assert dash["cost_lb_numerator"] == 0.5
+    assert dash["cost_per_lb_label"] == "Cost / Lb"
+    assert dash["kpis"]["cost_per_order"] == 0.5  # all confirmed, not POST subset
+
+
+def test_cost_per_lb_uses_post_covered_intersection_only(monkeypatch):
+    """Cost/Lb numerator must match POST-covered confirmed orders — not all confirmed cost."""
+    fake_orders = [
+        {
+            "order_id": "BAGPOST01",
+            "bag_id": "BAGPOST01",
+            "confirmed_for_supply": True,
+            "confirmed_processing_units": 2,
+            "canonical_split": True,
+            "split_finalized": True,
+            "split_state": "CONFIRMED_SPLIT",
+            "supplies_used": ["Tide"],
+            "confirmed_doses_by_supply": {"Tide": 2},
+        },
+        {
+            "order_id": "BAGNOPOST",
+            "bag_id": "BAGNOPOST",
+            "confirmed_for_supply": True,
+            "confirmed_processing_units": 1,
+            "canonical_split": False,
+            "split_finalized": True,
+            "split_state": "CONFIRMED_NOT_SPLIT",
+            "supplies_used": ["Tide"],
+            "confirmed_doses_by_supply": {"Tide": 1},
+        },
+    ]
+    products = [
+        {
+            "id": 1,
+            "legacy_report_key": "Tide",
+            "brand": "Tide",
+            "product_name": "Tide Liquid",
+            "average_dose": 2.0,
+            "dose_unit": "oz",
+            "package_unit": "oz",
+            "cost_per_dose": 1.0,
+            "is_active": True,
+        }
+    ]
+    membership = [
+        {
+            "bag_id": "BAGPOST01",
+            "service_type": "WF",
+            "pre_weight_lbs": 20.0,
+            "post_weight_lbs": 10.0,
+        },
+        {
+            "bag_id": "BAGNOPOST",
+            "service_type": "WF",
+            "pre_weight_lbs": 15.0,
+        },
+    ]
+    monkeypatch.setattr(
+        "backend.management_rinse_wf_supplies.management_wf_supply_membership",
+        lambda *a, **k: membership,
+    )
+    monkeypatch.setattr(
+        "backend.management_rinse_wf_supplies.load_orders_for_management_wf_supplies",
+        lambda *a, **k: (fake_orders, ["BAGPOST01", "BAGNOPOST"]),
+    )
+    monkeypatch.setattr(
+        "backend.management_rinse_wf_supplies._active_products_as_of",
+        lambda *a, **k: products,
+    )
+    monkeypatch.setattr(
+        "backend.management_rinse_wf_supplies._mapping_rules_for_products",
+        lambda *a, **k: [],
+    )
+    from backend.management_rinse_wf_supplies import clear_wf_supply_workset
+
+    clear_wf_supply_workset()
+    summary = build_management_wf_supply_summary(
+        MagicMock(), 3, DAY, rush_scope="all", bypass_cache=True
+    )
+    dash = summary["dashboard"]
+    # All confirmed: 2 orders, 3 loads, $3.00
+    assert dash["confirmed_supply_orders"] == 2
+    assert dash["confirmed_loads"] == 3
+    assert dash["total_supply_cost"] == 3.0
+    assert dash["kpis"]["cost_per_order"] == 1.5
+    assert dash["kpis"]["cost_per_load"] == 1.0
+    # Cost/Lb: only POST-covered order ($2 / 10 lb)
+    assert dash["post_coverage"]["with_post"] == 1
+    assert dash["post_coverage"]["confirmed"] == 2
+    assert dash["post_coverage"]["complete"] is False
+    assert dash["cost_lb_numerator"] == 2.0
+    assert dash["pounds"] == 10.0
+    assert dash["kpis"]["cost_per_lb"] == 0.2
+    assert dash["cost_per_lb_label"] == "Cost / Completed Lb"
+    assert dash["cost_lb_populations_aligned"] is True
+    # Must NOT be inflated $3/10 = 0.3
+    assert dash["kpis"]["cost_per_lb"] != round(3.0 / 10.0, 4)

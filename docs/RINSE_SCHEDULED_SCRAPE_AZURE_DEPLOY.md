@@ -329,7 +329,10 @@ az containerapp job update \
   --name "$ACA_JOB" \
   --resource-group "$AZ_RG" \
   --trigger-type Schedule \
-  --cron-expression "*/30 * * * *"
+  --cron-expression "*/5 * * * *"
+# Poll every 5 minutes UTC. App enforces completion-driven cadence:
+# next scrape is eligible only after previous finished_at + 30 minutes
+# (RINSE_SCRAPE_POST_RUN_COOLDOWN_MINUTES). No catch-up queue; lock prevents overlap.
 ```
 
 Cron is **UTC**. Overlap: if org 3’s scrape exceeds 30 minutes, the next trigger may start but org 3 will **`skipped`** (per-org lock); other orgs can still run when added.

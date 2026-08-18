@@ -588,21 +588,43 @@ def _bag_weight(bag: Mapping[str, Any], field: str) -> float | None:
         return None
 
 
-def _confirmed_population_pounds(
-    membership: Sequence[Mapping[str, Any]],
-    order_rows: Sequence[Mapping[str, Any]],
-) -> dict[str, Any]:
-    """POST (preferred) / PRE lbs for bags with confirmed supply only — cost/lb scope."""
-    confirmed_ids = {
+def _confirmed_order_ids(order_rows: Sequence[Mapping[str, Any]]) -> set[str]:
+    return {
         normalize_bag_id(r.get("order_id") or r.get("bag_id"))
         for r in order_rows
         if r.get("confirmed_for_supply")
         and normalize_bag_id(r.get("order_id") or r.get("bag_id"))
     }
-    pre_sum = 0.0
+
+
+def _cards_total_cost(cards: Sequence[Mapping[str, Any]]) -> float | None:
+    if not any(c.get("cost_per_dose") is not None for c in cards):
+        return None
+    return round(
+        sum(
+            float(c.get("estimated_cost") or 0)
+            for c in cards
+            if c.get("estimated_cost") is not None
+        ),
+        2,
+    )
+
+
+def _confirmed_population_pounds(
+    membership: Sequence[Mapping[str, Any]],
+    order_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """POST lbs for confirmed supply orders that already have POST (Cost/Lb population).
+
+    Cost/Lb uses only the intersection: confirmed_for_supply AND post_weight present.
+    PRE is reported for transparency but never used as a Cost/Lb substitute.
+    """
+    confirmed_ids = _confirmed_order_ids(order_rows)
     post_sum = 0.0
-    pre_n = 0
     post_n = 0
+    post_ids: set[str] = set()
+    pre_sum = 0.0
+    pre_n = 0
     for bag in membership or []:
         bid = normalize_bag_id(bag.get("bag_id"))
         if not bid or bid not in confirmed_ids:
@@ -615,23 +637,74 @@ def _confirmed_population_pounds(
         if post is not None:
             post_sum += post
             post_n += 1
-    lbs = None
-    basis = None
-    if post_n > 0:
-        lbs = round(post_sum, 1)
-        basis = "confirmed_post_weight_lbs"
-    elif pre_n > 0:
-        lbs = round(pre_sum, 1)
-        basis = "confirmed_pre_weight_lbs"
+            post_ids.add(bid)
+    lbs = round(post_sum, 1) if post_n else None
     return {
         "pounds": lbs,
-        "pounds_basis": basis,
+        "pounds_basis": "confirmed_post_weight_lbs" if post_n else None,
         "pounds_available": lbs is not None and lbs > 0,
         "pre_weight_lbs": round(pre_sum, 1) if pre_n else None,
         "post_weight_lbs": round(post_sum, 1) if post_n else None,
         "pre_weight_bag_count": pre_n,
         "post_weight_bag_count": post_n,
-        "pounds_scope": "confirmed_supply_orders",
+        "pounds_scope": "confirmed_supply_orders_with_post",
+        "confirmed_order_ids": sorted(confirmed_ids),
+        "confirmed_orders_with_post_ids": sorted(post_ids),
+        "confirmed_orders_count": len(confirmed_ids),
+        "confirmed_orders_with_post_count": post_n,
+        "post_coverage_complete": bool(confirmed_ids)
+        and len(post_ids) == len(confirmed_ids),
+    }
+
+
+def _cost_lb_population(
+    membership: Sequence[Mapping[str, Any]],
+    order_rows: Sequence[Mapping[str, Any]],
+    products: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Apples-to-apples Cost/Lb: same order IDs in numerator cost and POST denominator."""
+    pounds_info = _confirmed_population_pounds(membership, order_rows)
+    post_ids = set(pounds_info.get("confirmed_orders_with_post_ids") or [])
+    confirmed_ids = set(pounds_info.get("confirmed_order_ids") or [])
+    post_rows = [
+        r
+        for r in order_rows
+        if r.get("confirmed_for_supply")
+        and normalize_bag_id(r.get("order_id") or r.get("bag_id")) in post_ids
+    ]
+    cost_lb_cards = _product_usage_cards(post_rows, products)
+    cost_lb_numerator = _cards_total_cost(cost_lb_cards)
+    numerator_ids = sorted(
+        {
+            normalize_bag_id(r.get("order_id") or r.get("bag_id"))
+            for r in post_rows
+            if normalize_bag_id(r.get("order_id") or r.get("bag_id"))
+        }
+    )
+    denominator_ids = sorted(post_ids)
+    aligned = numerator_ids == denominator_ids
+    lbs = pounds_info.get("pounds")
+    cost_per_lb = None
+    if (
+        cost_lb_numerator is not None
+        and pounds_info.get("pounds_available")
+        and lbs is not None
+        and float(lbs) > 0
+        and aligned
+    ):
+        cost_per_lb = round(float(cost_lb_numerator) / float(lbs), 4)
+    return {
+        **pounds_info,
+        "cost_lb_numerator": cost_lb_numerator,
+        "cost_per_lb": cost_per_lb,
+        "cost_lb_numerator_order_ids": numerator_ids,
+        "cost_lb_denominator_order_ids": denominator_ids,
+        "cost_lb_populations_aligned": aligned,
+        "post_coverage": {
+            "with_post": len(post_ids),
+            "confirmed": len(confirmed_ids),
+            "complete": bool(pounds_info.get("post_coverage_complete")),
+        },
     }
 
 
@@ -667,18 +740,20 @@ def _build_cost_dashboard(
     lbs = pounds_info.get("pounds")
     cost_per_order = None
     cost_per_load = None
-    cost_per_lb = None
     if total_cost is not None and confirmed_orders > 0:
         cost_per_order = round(float(total_cost) / confirmed_orders, 4)
     if total_cost is not None and confirmed_loads > 0:
         cost_per_load = round(float(total_cost) / confirmed_loads, 4)
-    if (
-        total_cost is not None
-        and pounds_info.get("pounds_available")
-        and lbs is not None
-        and float(lbs) > 0
-    ):
-        cost_per_lb = round(float(total_cost) / float(lbs), 4)
+
+    cost_per_lb = pounds_info.get("cost_per_lb")
+    post_cov = pounds_info.get("post_coverage") or {}
+    with_post = int(post_cov.get("with_post") or pounds_info.get("post_weight_bag_count") or 0)
+    confirmed_n = int(post_cov.get("confirmed") or confirmed_orders or 0)
+    coverage_complete = bool(post_cov.get("complete")) or (
+        confirmed_n > 0 and with_post == confirmed_n
+    )
+    # Live/partial day: "Cost / Completed Lb"; full POST coverage: "Cost / Lb".
+    cost_per_lb_label = "Cost / Lb" if coverage_complete else "Cost / Completed Lb"
 
     return {
         "period_grain": "day",
@@ -697,17 +772,30 @@ def _build_cost_dashboard(
         "pounds": lbs,
         "pounds_basis": pounds_info.get("pounds_basis"),
         "pounds_available": bool(pounds_info.get("pounds_available")),
-        "pounds_scope": pounds_info.get("pounds_scope") or "confirmed_supply_orders",
+        "pounds_scope": pounds_info.get("pounds_scope")
+        or "confirmed_supply_orders_with_post",
+        "cost_lb_numerator": pounds_info.get("cost_lb_numerator"),
+        "post_coverage": {
+            "with_post": with_post,
+            "confirmed": confirmed_n,
+            "complete": coverage_complete,
+        },
+        "cost_lb_populations_aligned": bool(
+            pounds_info.get("cost_lb_populations_aligned")
+        ),
+        "cost_per_lb_label": cost_per_lb_label,
         "potential_final_cost_min": potential_cost_min,
         "potential_final_cost_max": potential_cost_max,
         "kpis": {
             "cost_per_order": cost_per_order,
             "cost_per_load": cost_per_load,
             "cost_per_lb": cost_per_lb,
+            "cost_per_lb_label": cost_per_lb_label,
             "orders_basis": "confirmed_unique_orders",
             "loads_basis": "confirmed_canonical_processing_units",
             "pounds_basis": pounds_info.get("pounds_basis"),
-            "pounds_scope": "confirmed_supply_orders",
+            "pounds_scope": "confirmed_supply_orders_with_post",
+            "cost_lb_scope": "confirmed_orders_with_post_only",
         },
     }
 
@@ -722,7 +810,7 @@ def _build_summary_from_rows(
     products: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     cards = _product_usage_cards(order_rows, products)
-    pounds_info = _confirmed_population_pounds(membership, order_rows)
+    pounds_info = _cost_lb_population(membership, order_rows, products)
 
     evaluations = {
         str(r.get("order_id") or ""): {
@@ -744,16 +832,7 @@ def _build_summary_from_rows(
         if r.get("confirmed_for_supply")
     )
     cost_available = any(c.get("cost_per_dose") is not None for c in cards)
-    total_cost = None
-    if cost_available:
-        total_cost = round(
-            sum(
-                float(c.get("estimated_cost") or 0)
-                for c in cards
-                if c.get("estimated_cost") is not None
-            ),
-            2,
-        )
+    total_cost = _cards_total_cost(cards) if cost_available else None
     pot = _provisional_cost_range(
         order_rows, products, confirmed_total=total_cost
     )
@@ -844,8 +923,16 @@ def _build_summary_from_rows(
                     "pre_weight_bag_count",
                     "post_weight_bag_count",
                     "pounds_scope",
+                    "confirmed_orders_with_post_count",
+                    "post_coverage_complete",
                 )
+                if k in pounds_info
             },
+            "post_coverage": pounds_info.get("post_coverage"),
+            "cost_lb_numerator": pounds_info.get("cost_lb_numerator"),
+            "cost_lb_populations_aligned": pounds_info.get(
+                "cost_lb_populations_aligned"
+            ),
         },
         "products": cards,
         "usage_by_supply": by_legacy,
@@ -870,7 +957,11 @@ def _build_summary_from_rows(
             "orders": "unique_bags_using_product",
             "loads_population": "canonical_processing_units_across_workload",
             "split_rule": "not_split_1_split_2",
-            "cost_per_lb": "confirmed_cost_over_confirmed_order_post_lbs",
+            "cost_per_lb": (
+                "post_covered_confirmed_cost_over_same_orders_post_lbs"
+            ),
+            "cost_per_order": "all_confirmed_cost_over_confirmed_orders",
+            "cost_per_load": "all_confirmed_cost_over_confirmed_loads",
         },
     }
 

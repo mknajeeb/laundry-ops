@@ -24,7 +24,7 @@ Washpro (`organization_id = 1`) uses the same pipeline when added to `RINSE_SCHE
 ### How the ACA job starts
 
 - **Azure Container Apps job:** `rinse-scrape-scheduled` in resource group `mkn_resgrp_centralus`.
-- **Schedule:** cron `*/30 * * * *` in **UTC** (not Eastern).
+- **Schedule:** ACA polls cron `*/5 * * * *` in **UTC**; app gate starts a scrape only when `finished_at + 30m` has elapsed (completion-driven, not fixed wall-clock starts).
 - **Container command:** `python -m backend.jobs.run_scheduled_rinse_scrape` (`Dockerfile.rinse-scheduler` `CMD`).
 - **Entry module:** `backend/jobs/run_scheduled_rinse_scrape.py` → `run_all_scheduled_scrapes()` in `backend/rinse_scheduled_scrape.py`.
 

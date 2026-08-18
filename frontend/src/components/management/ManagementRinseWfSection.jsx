@@ -582,7 +582,11 @@ export default function ManagementRinseWfSection({
               hint="Confirmed supply cost ÷ confirmed canonical loads."
             />
             <SupplyMetric
-              label="Cost / Lb"
+              label={
+                kpis.cost_per_lb_label
+                || dashboard?.cost_per_lb_label
+                || "Cost / Completed Lb"
+              }
               value={
                 dashboard?.pounds_available
                   ? fmtMoney(kpis.cost_per_lb, 4)
@@ -590,8 +594,20 @@ export default function ManagementRinseWfSection({
               }
               hint={
                 dashboard?.pounds_available
-                  ? `Confirmed cost ÷ confirmed-order ${dashboard.pounds_basis || "POST"} (${fmtLbs(dashboard.pounds)}).`
-                  : "Confirmed-order pounds not yet available."
+                  ? (
+                    `${dashboard.post_coverage?.with_post ?? "?"} of ${
+                      dashboard.post_coverage?.confirmed
+                      ?? confirmedSupplyOrders
+                      ?? "?"
+                    } confirmed orders have POST`
+                    + (dashboard.pounds != null
+                      ? ` · Based on ${fmtLbs(dashboard.pounds)} completed lb`
+                      : "")
+                    + (dashboard.cost_lb_populations_aligned === false
+                      ? " · population mismatch"
+                      : "")
+                  )
+                  : "Confirmed orders with POST weight not yet available."
               }
             />
           </Box>

@@ -11,8 +11,9 @@ from backend.ta_helpers import table_exists
 
 ET = ZoneInfo("America/New_York")
 
-# ACA job schedule in deploy docs (UTC cron)
-DEFAULT_CRON_UTC = "*/30 * * * *"
+# ACA polls frequently; app gate enforces finish → wait 30m → next (completion-driven).
+DEFAULT_CRON_UTC = "*/5 * * * *"
+DEFAULT_POLL_CRON_UTC = "*/5 * * * *"
 DEFAULT_INTERVAL_MINUTES = 30
 
 
@@ -257,11 +258,20 @@ def attach_scrape_runs_to_batches(
             b["batch_time_label"] = "Imported at"
 
 
-def _next_run_estimate_utc(last_started: datetime | None) -> datetime | None:
-    """Best-effort next run: last start + 30m (matches */30 cron), not exact ACA scheduler."""
+def _next_run_estimate_utc(
+    last_finished: datetime | None = None,
+    *,
+    last_started: datetime | None = None,
+) -> datetime | None:
+    """Next scheduled eligibility = last finished_at + cooldown (completion-driven)."""
+    from backend.rinse_scrape_runs import compute_next_run_at, post_run_cooldown_minutes
+
+    mins = post_run_cooldown_minutes()
+    if last_finished is not None:
+        return compute_next_run_at(last_finished, cooldown_minutes=mins)
     if last_started is None:
-        return _utcnow_naive() + timedelta(minutes=DEFAULT_INTERVAL_MINUTES)
-    return last_started + timedelta(minutes=DEFAULT_INTERVAL_MINUTES)
+        return _utcnow_naive() + timedelta(minutes=mins)
+    return last_started + timedelta(minutes=mins)
 
 
 def _batch_row_counts(
@@ -395,8 +405,16 @@ def get_scheduled_scrape_status(cursor, organization_id: int) -> dict[str, Any]:
     out: dict[str, Any] = {
         "organization_id": org,
         "schedule_cron_utc": os.getenv("RINSE_SCHEDULE_CRON_UTC", DEFAULT_CRON_UTC),
+        "schedule_poll_cron_utc": os.getenv(
+            "RINSE_SCHEDULE_POLL_CRON_UTC", DEFAULT_POLL_CRON_UTC
+        ),
         "schedule_interval_minutes": DEFAULT_INTERVAL_MINUTES,
-        "schedule_timezone_note": "Cron runs in UTC. Display times use America/New_York.",
+        "schedule_mode": "completion_driven_post_run_cooldown",
+        "schedule_timezone_note": (
+            "ACA polls on a short UTC cron; the next scrape is eligible only after "
+            "previous finished_at + schedule_interval_minutes. "
+            "Display times use America/New_York."
+        ),
         "latest_run": None,
         "last_success": None,
         "data_last_updated_at": None,
@@ -435,9 +453,13 @@ def get_scheduled_scrape_status(cursor, organization_id: int) -> dict[str, Any]:
                 "rinse_vendor": latest.get("rinse_vendor"),
                 "tenant_slug": latest.get("tenant_slug"),
             }
+        finished = latest.get("finished_at")
         started = latest.get("started_at")
-        if isinstance(started, datetime):
-            nxt = _next_run_estimate_utc(started)
+        if isinstance(finished, datetime) or isinstance(started, datetime):
+            nxt = _next_run_estimate_utc(
+                finished if isinstance(finished, datetime) else None,
+                last_started=started if isinstance(started, datetime) else None,
+            )
             out["next_run_estimate_utc"] = nxt.isoformat() + "Z" if nxt else None
             out["next_run_estimate_et"] = _fmt_system(nxt)
 
