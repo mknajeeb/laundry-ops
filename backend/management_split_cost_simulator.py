@@ -1,11 +1,20 @@
-"""Split Cost Simulator — forward planning only (read-only).
+"""Canonical Supply Cost Simulator engine — one math, contextual presets.
+
+Modes (UI only):
+  - shift: prefill from selected day/shift workload
+  - planning: free-hand + historical Last 7 / 30 / Manual
+
+Manager model (not combination cards):
+  Tide % + Ultra Clean % ≈ 100% (base detergent)
+  Downy % and OxiClean % are independent order rates
+
+Cost model (independence assumption, labeled in UI):
+  E[cost/load] = p_tide·c_tide + p_ultra·c_ultra + p_downy·c_downy + p_oxi·c_oxi
+  loads = non_split + split×2
+  cost = loads × E[cost/load]
 
 Isolated from live Supply Cost dashboard formulas.
-Historical baseline uses CLOSED ET business days only (not today-in-progress).
-Avg lb/bag uses canonical PRE weight only (never POST).
-Pricing uses current effective Supply Master (forward-looking).
-
-Closed-day baselines are cached aggressively (immutable during the business day).
+PRE weight only for avg lb/bag. Pricing = current Supply Master.
 """
 
 from __future__ import annotations
@@ -13,7 +22,7 @@ from __future__ import annotations
 import copy
 import time
 from collections import Counter
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Mapping, Sequence
 
 from backend.business_time import business_today
@@ -37,22 +46,27 @@ WINDOW_7 = 7
 WINDOW_30 = 30
 VALID_WINDOWS = frozenset({WINDOW_7, WINDOW_30})
 
-# Closed-day history does not change mid-day; warm modal opens from memory.
-_BASELINE_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
-_BASELINE_CACHE_TTL_SEC = 6 * 60 * 60  # 6h
-_BASELINE_CACHE_MAX = 48
+SERVICE_WF = "WF"
+SERVICE_HD = "HD"
+VALID_SERVICES = frozenset({SERVICE_WF, SERVICE_HD})
+
+# Closed-day aggregates — do not recompute from raw events every open.
+_DAY_AGG_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+_PLAN_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+_CACHE_TTL_SEC = 6 * 60 * 60
+_CACHE_MAX = 128
 
 
-def clear_split_cost_simulator_cache(
-    organization_id: int | None = None,
-) -> None:
+def clear_split_cost_simulator_cache(organization_id: int | None = None) -> None:
     if organization_id is None:
-        _BASELINE_CACHE.clear()
+        _DAY_AGG_CACHE.clear()
+        _PLAN_CACHE.clear()
         return
     oid = int(organization_id)
-    for key in list(_BASELINE_CACHE.keys()):
-        if key and key[0] == oid:
-            _BASELINE_CACHE.pop(key, None)
+    for store in (_DAY_AGG_CACHE, _PLAN_CACHE):
+        for key in list(store.keys()):
+            if key and key[0] == oid:
+                store.pop(key, None)
 
 
 def _money(v: Any) -> float | None:
@@ -60,15 +74,6 @@ def _money(v: Any) -> float | None:
         return None
     try:
         return round(float(v), 4)
-    except (TypeError, ValueError):
-        return None
-
-
-def _qty(v: Any) -> float | None:
-    if v is None or v == "":
-        return None
-    try:
-        return float(v)
     except (TypeError, ValueError):
         return None
 
@@ -84,45 +89,11 @@ def _is_completed_status(status: Any) -> bool:
     return "complet" in st
 
 
-def combo_key_from_supplies(supplies: Sequence[str] | None) -> str:
-    parts = [str(s).strip() for s in (supplies or []) if str(s).strip()]
-    return " + ".join(parts) if parts else LEGACY_KEY_TIDE
-
-
-def short_combo_label(
-    key: str,
-    product_by_legacy: Mapping[str, Mapping[str, Any]] | None = None,
-) -> str:
-    """Compact display: Tide only, Hypo + Oxi, etc."""
-    parts = [p.strip() for p in str(key or "").split(" + ") if p.strip()]
-    if not parts:
-        return "Tide only"
-    labels: list[str] = []
-    for p in parts:
-        meta = (product_by_legacy or {}).get(p) or {}
-        st = str(meta.get("supply_type") or "").upper()
-        if st == SUPPLY_TYPE_HYPO_DETERGENT or p in ("All Free & Clear", "Kirkland"):
-            brand = str(meta.get("brand") or "").strip()
-            labels.append("Hypo" if not brand else ("Hypo" if brand == "Kirkland" else brand))
-        elif st == SUPPLY_TYPE_DETERGENT or p == LEGACY_KEY_TIDE:
-            labels.append("Tide")
-        elif st == SUPPLY_TYPE_FABRIC_SOFTENER or p == LEGACY_KEY_DOWNY:
-            labels.append("Downy")
-        elif st == SUPPLY_TYPE_BOOSTER_OXI or p == LEGACY_KEY_OXICLEAN:
-            labels.append("Oxi")
-        else:
-            labels.append(str(meta.get("brand") or p))
-    if len(labels) == 1:
-        return f"{labels[0]} only"
-    return " + ".join(labels)
-
-
 def period_savings(
     dollar_savings_per_shift: float,
     *,
     shifts_per_week: float = 7.0,
 ) -> dict[str, Any]:
-    """Weekly = shift × shifts/week; Monthly = weekly × 52/12."""
     shift = round(float(dollar_savings_per_shift or 0), 2)
     spw = max(0.0, float(shifts_per_week))
     weekly = round(shift * spw, 2)
@@ -130,10 +101,288 @@ def period_savings(
     return {
         "shifts_per_week": spw,
         "per_shift": shift,
+        "per_day": shift,  # alias for planning UI
         "per_week": weekly,
         "per_month": monthly,
         "monthly_basis": "weekly × 52 / 12",
     }
+
+
+def normalize_detergent_pcts(tide_pct: float, ultra_pct: float) -> tuple[float, float]:
+    t = max(0.0, float(tide_pct or 0))
+    u = max(0.0, float(ultra_pct or 0))
+    s = t + u
+    if s <= 0:
+        return 100.0, 0.0
+    return round(t / s * 100.0, 4), round(u / s * 100.0, 4)
+
+
+def expected_cost_per_load(
+    *,
+    tide_pct: float,
+    ultra_clean_pct: float,
+    downy_pct: float,
+    oxiclean_pct: float,
+    unit_costs: Mapping[str, Any],
+) -> float:
+    """Independence model — primary simulator cost basis."""
+    t, u = normalize_detergent_pcts(tide_pct, ultra_clean_pct)
+    c_tide = float(unit_costs.get("tide") or unit_costs.get(LEGACY_KEY_TIDE) or 0)
+    c_ultra = float(
+        unit_costs.get("ultra_clean")
+        or unit_costs.get("kirkland")
+        or unit_costs.get("All Free & Clear")
+        or 0
+    )
+    c_downy = float(unit_costs.get("downy") or unit_costs.get(LEGACY_KEY_DOWNY) or 0)
+    c_oxi = float(unit_costs.get("oxiclean") or unit_costs.get(LEGACY_KEY_OXICLEAN) or 0)
+    return round(
+        (t / 100.0) * c_tide
+        + (u / 100.0) * c_ultra
+        + (max(0.0, float(downy_pct)) / 100.0) * c_downy
+        + (max(0.0, float(oxiclean_pct)) / 100.0) * c_oxi,
+        6,
+    )
+
+
+def simulate_supply_cost(
+    *,
+    total_orders: int,
+    split_pct: float,
+    avg_lb_per_bag: float,
+    tide_pct: float,
+    ultra_clean_pct: float,
+    downy_pct: float,
+    oxiclean_pct: float,
+    unit_costs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Canonical simulation — used by Shift and Planning modes."""
+    orders = max(0, int(total_orders))
+    rate = max(0.0, min(1.0, float(split_pct) / 100.0))
+    avg_lb = max(0.0, float(avg_lb_per_bag or 0))
+    t, u = normalize_detergent_pcts(tide_pct, ultra_clean_pct)
+    d_pct = max(0.0, min(100.0, float(downy_pct or 0)))
+    o_pct = max(0.0, min(100.0, float(oxiclean_pct or 0)))
+
+    split_orders = round(orders * rate)
+    if split_orders > orders:
+        split_orders = orders
+    non_split = orders - split_orders
+    total_loads = non_split + (split_orders * 2)
+    estimated_lbs = round(orders * avg_lb, 1)
+    cpl = expected_cost_per_load(
+        tide_pct=t,
+        ultra_clean_pct=u,
+        downy_pct=d_pct,
+        oxiclean_pct=o_pct,
+        unit_costs=unit_costs,
+    )
+    total_cost = round(total_loads * cpl, 2)
+
+    return {
+        "simulation": True,
+        "estimated": True,
+        "engine": "supply_cost_v2_independent_mix",
+        "total_orders": orders,
+        "split_pct": round(rate * 100.0, 2),
+        "split_orders": split_orders,
+        "non_split_orders": non_split,
+        "total_loads": total_loads,
+        "avg_lb_per_bag": round(avg_lb, 2),
+        "estimated_lbs": estimated_lbs,
+        "mix": {
+            "tide_pct": round(t, 2),
+            "ultra_clean_pct": round(u, 2),
+            "downy_pct": round(d_pct, 2),
+            "oxiclean_pct": round(o_pct, 2),
+            "basis": "orders",
+            "note": (
+                "Tide + Ultra Clean ≈ 100% base detergent. "
+                "Downy and OxiClean are independent order rates."
+            ),
+        },
+        "cost_per_load_expected": round(cpl, 4),
+        "estimated_supply_cost": total_cost,
+        "cost_per_order": round(total_cost / orders, 4) if orders else None,
+        "cost_per_load": round(total_cost / total_loads, 4) if total_loads else None,
+        "est_cost_per_lb": (
+            round(total_cost / estimated_lbs, 4) if estimated_lbs > 0 else None
+        ),
+        "unit_costs": {
+            "tide": _money(unit_costs.get("tide") or unit_costs.get(LEGACY_KEY_TIDE)),
+            "ultra_clean": _money(
+                unit_costs.get("ultra_clean")
+                or unit_costs.get("kirkland")
+                or unit_costs.get("All Free & Clear")
+            ),
+            "downy": _money(unit_costs.get("downy") or unit_costs.get(LEGACY_KEY_DOWNY)),
+            "oxiclean": _money(
+                unit_costs.get("oxiclean") or unit_costs.get(LEGACY_KEY_OXICLEAN)
+            ),
+        },
+        "assumption": (
+            "Expected cost/load uses independent detergent + addon rates "
+            "(not joint combination shares)."
+        ),
+    }
+
+
+def compare_scenarios(
+    current: Mapping[str, Any],
+    target: Mapping[str, Any],
+    *,
+    shifts_per_week: float = 7.0,
+) -> dict[str, Any]:
+    c_loads = int(current.get("total_loads") or 0)
+    t_loads = int(target.get("total_loads") or 0)
+    c_cost = float(current.get("estimated_supply_cost") or 0)
+    t_cost = float(target.get("estimated_supply_cost") or 0)
+    loads_delta = c_loads - t_loads  # positive = saved
+    dollar_delta = round(c_cost - t_cost, 2)  # positive = savings
+    periods = period_savings(dollar_delta, shifts_per_week=shifts_per_week)
+    return {
+        "current": dict(current),
+        "target": dict(target),
+        "loads_saved": loads_delta,
+        "dollar_savings": dollar_delta,
+        "savings_pct": (
+            round((dollar_delta / c_cost) * 100.0, 2) if c_cost > 0 else None
+        ),
+        "period_savings": periods,
+        "headline": {
+            "split_pct_from": current.get("split_pct"),
+            "split_pct_to": target.get("split_pct"),
+            "loads_from": c_loads,
+            "loads_to": t_loads,
+            "loads_saved": loads_delta,
+            "cost_from": c_cost,
+            "cost_to": t_cost,
+            "dollar_savings": dollar_delta,
+            "est_cost_per_lb_from": current.get("est_cost_per_lb"),
+            "est_cost_per_lb_to": target.get("est_cost_per_lb"),
+            "per_week": periods["per_week"],
+            "per_month": periods["per_month"],
+        },
+    }
+
+
+# --- product / classification helpers ---------------------------------------
+
+
+def _product_unit_costs(
+    cursor,
+    organization_id: int,
+    *,
+    as_of: date,
+) -> dict[str, float | None]:
+    try:
+        products = list_supply_products(
+            cursor, int(organization_id), active_only=True, as_of=as_of
+        )
+    except Exception:
+        products = []
+    costs: dict[str, float | None] = {
+        "tide": None,
+        "ultra_clean": None,
+        "downy": None,
+        "oxiclean": None,
+    }
+    labels: dict[str, str] = {
+        "tide": "Tide",
+        "ultra_clean": "Ultra Clean",
+        "downy": "Downy",
+        "oxiclean": "OxiClean",
+    }
+    for p in products or []:
+        legacy = str(p.get("legacy_report_key") or "").strip()
+        st = str(p.get("supply_type") or "").upper()
+        cpd = _money(p.get("cost_per_dose"))
+        brand = str(p.get("brand") or p.get("product_name") or legacy)
+        if st == SUPPLY_TYPE_DETERGENT or legacy == LEGACY_KEY_TIDE:
+            costs["tide"] = cpd
+            labels["tide"] = brand or "Tide"
+        elif st == SUPPLY_TYPE_HYPO_DETERGENT or legacy in (
+            "Kirkland",
+            "All Free & Clear",
+        ):
+            costs["ultra_clean"] = cpd
+            labels["ultra_clean"] = brand or "Ultra Clean"
+        elif st == SUPPLY_TYPE_FABRIC_SOFTENER or legacy == LEGACY_KEY_DOWNY:
+            costs["downy"] = cpd
+            labels["downy"] = brand or "Downy"
+        elif st == SUPPLY_TYPE_BOOSTER_OXI or legacy == LEGACY_KEY_OXICLEAN:
+            costs["oxiclean"] = cpd
+            labels["oxiclean"] = brand or "OxiClean"
+    return {**costs, "_labels": labels}  # type: ignore[return-value]
+
+
+def _classify_supplies(
+    supplies: Sequence[str],
+    product_types: Mapping[str, str] | None = None,
+) -> tuple[str, bool, bool]:
+    """(detergent standard|hypo, has_downy, has_oxi)."""
+    detergent = "standard"
+    has_downy = False
+    has_oxi = False
+    saw = False
+    types = product_types or {}
+    for legacy in supplies:
+        st = str(types.get(legacy) or "").upper()
+        if not st:
+            if legacy == LEGACY_KEY_DOWNY:
+                st = SUPPLY_TYPE_FABRIC_SOFTENER
+            elif legacy == LEGACY_KEY_OXICLEAN:
+                st = SUPPLY_TYPE_BOOSTER_OXI
+            elif legacy in ("All Free & Clear", "Kirkland"):
+                st = SUPPLY_TYPE_HYPO_DETERGENT
+            elif legacy == LEGACY_KEY_TIDE:
+                st = SUPPLY_TYPE_DETERGENT
+        if st == SUPPLY_TYPE_FABRIC_SOFTENER:
+            has_downy = True
+        elif st == SUPPLY_TYPE_BOOSTER_OXI:
+            has_oxi = True
+        elif st == SUPPLY_TYPE_HYPO_DETERGENT:
+            detergent = "hypo"
+            saw = True
+        elif st == SUPPLY_TYPE_DETERGENT:
+            if not saw:
+                detergent = "standard"
+            saw = True
+    return detergent, has_downy, has_oxi
+
+
+def mix_pcts_from_counts(
+    *,
+    total: int,
+    tide_n: int,
+    ultra_n: int,
+    downy_n: int,
+    oxi_n: int,
+) -> dict[str, Any]:
+    denom = max(int(total), 1)
+
+    def pct(n: int) -> float:
+        return round((n / denom) * 100.0, 2)
+
+    return {
+        "total_orders": int(total),
+        "tide_pct": pct(tide_n),
+        "ultra_clean_pct": pct(ultra_n),
+        "downy_pct": pct(downy_n),
+        "oxiclean_pct": pct(oxi_n),
+        "tide_orders": tide_n,
+        "ultra_clean_orders": ultra_n,
+        "downy_orders": downy_n,
+        "oxiclean_orders": oxi_n,
+        "basis": "orders",
+        "note": (
+            "Tide + Ultra Clean ≈ 100% of orders with a base detergent. "
+            "Downy / OxiClean are independent (may overlap)."
+        ),
+    }
+
+
+# --- day aggregate (cached) -------------------------------------------------
 
 
 def list_closed_shift_dates(
@@ -143,7 +392,6 @@ def list_closed_shift_dates(
     limit: int,
     before: date | None = None,
 ) -> list[date]:
-    """Most recent CLOSED ET business days, excluding `before` (default: today)."""
     if not table_exists(cursor, "rinse_shift_monitor_days"):
         return []
     cutoff = before or business_today()
@@ -168,45 +416,565 @@ def list_closed_shift_dates(
     return out
 
 
-def _load_completed_wf_bags_multi(
-    cursor,
-    organization_id: int,
-    shift_dates: Sequence[date],
-) -> dict[date, list[dict[str, Any]]]:
-    """One query for all closed days → bags by date."""
-    by_day: dict[date, list[dict[str, Any]]] = {d: [] for d in shift_dates}
-    if not shift_dates:
-        return by_day
-    ph = ",".join(["%s"] * len(shift_dates))
+def _load_completed_wf_bags(cursor, organization_id: int, shift_date_et: date) -> list[dict]:
     cursor.execute(
-        f"""
-        SELECT shift_date_et, bag_id, effective_status, pre_weight_lbs
+        """
+        SELECT bag_id, effective_status, pre_weight_lbs
         FROM rinse_shift_monitor_day_bags
         WHERE organization_id = %s
-          AND shift_date_et IN ({ph})
+          AND shift_date_et = %s
           AND service_type = 'WF'
         """,
-        (int(organization_id), *shift_dates),
+        (int(organization_id), shift_date_et),
     )
+    out = []
     for row in cursor.fetchall() or []:
-        if not isinstance(row, dict):
-            continue
-        if not _is_completed_status(row.get("effective_status")):
-            continue
-        day = row.get("shift_date_et")
-        if not isinstance(day, date) or day not in by_day:
+        if not isinstance(row, dict) or not _is_completed_status(row.get("effective_status")):
             continue
         bid = normalize_bag_id(row.get("bag_id"))
-        if not bid:
-            continue
-        by_day[day].append(
-            {
-                "bag_id": bid,
-                "pre_weight_lbs": row.get("pre_weight_lbs"),
-                "effective_status": row.get("effective_status"),
-            }
+        if bid:
+            out.append({"bag_id": bid, "pre_weight_lbs": row.get("pre_weight_lbs")})
+    return out
+
+
+def _compute_day_aggregate(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    *,
+    rules: Sequence[Mapping[str, Any]],
+    product_types: Mapping[str, str],
+) -> dict[str, Any]:
+    from backend.management_rinse_wf_supplies import _load_si_metadata_fast
+
+    bags = _load_completed_wf_bags(cursor, organization_id, shift_date_et)
+    ids = [b["bag_id"] for b in bags]
+    pre_sum = 0.0
+    pre_n = 0
+    for b in bags:
+        try:
+            pre = float(b["pre_weight_lbs"]) if b.get("pre_weight_lbs") is not None else None
+        except (TypeError, ValueError):
+            pre = None
+        if pre is not None:
+            pre_sum += pre
+            pre_n += 1
+
+    finalized = split_yes = 0
+    tide_n = ultra_n = downy_n = oxi_n = 0
+    if ids:
+        evaluations = evaluate_day_wf_splits(
+            cursor,
+            organization_id,
+            shift_date_et,
+            ids,
+            slim_events=True,
+            truncate_to_selected_day=True,
         )
-    return by_day
+        meta = _load_si_metadata_fast(cursor, organization_id, ids)
+        for bid in ids:
+            ev = evaluations.get(bid) or {}
+            if ev.get("split_finalized"):
+                finalized += 1
+                if ev.get("canonical_split") is True:
+                    split_yes += 1
+            raw = (meta.get(bid) or {}).get("special_instructions_raw")
+            mapped = supplies_for_usage(raw, rules)
+            supplies = list((mapped or {}).get("supplies_used") or [LEGACY_KEY_TIDE])
+            if not supplies:
+                supplies = [LEGACY_KEY_TIDE]
+            kind, has_d, has_o = _classify_supplies(supplies, product_types)
+            if kind == "hypo":
+                ultra_n += 1
+            else:
+                tide_n += 1
+            if has_d:
+                downy_n += 1
+            if has_o:
+                oxi_n += 1
+
+    n = len(ids)
+    split_rate = (split_yes / finalized) if finalized else 0.0
+    return {
+        "date_et": shift_date_et.isoformat(),
+        "orders": n,
+        "pre_lbs": round(pre_sum, 1) if pre_n else 0.0,
+        "bags_with_pre": pre_n,
+        "finalized": finalized,
+        "split_orders": split_yes,
+        "split_pct": round(split_rate * 100.0, 2),
+        "tide_n": tide_n,
+        "ultra_n": ultra_n,
+        "downy_n": downy_n,
+        "oxi_n": oxi_n,
+    }
+
+
+def get_day_aggregate(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    *,
+    rules: Sequence[Mapping[str, Any]] | None = None,
+    product_types: Mapping[str, str] | None = None,
+    bypass_cache: bool = False,
+) -> dict[str, Any]:
+    org = int(organization_id)
+    key = (org, shift_date_et.isoformat())
+    if not bypass_cache:
+        hit = _DAY_AGG_CACHE.get(key)
+        if hit and (time.monotonic() - hit[0]) < _CACHE_TTL_SEC:
+            return copy.deepcopy(hit[1])
+
+    if rules is None:
+        try:
+            rules = get_supply_usage_mapping_rules(cursor, org)
+        except Exception:
+            rules = []
+    if product_types is None:
+        costs = _product_unit_costs(cursor, org, as_of=shift_date_et)
+        # rebuild types from products list
+        product_types = {}
+        try:
+            for p in list_supply_products(cursor, org, active_only=True, as_of=shift_date_et) or []:
+                legacy = str(p.get("legacy_report_key") or "").strip()
+                if legacy:
+                    product_types[legacy] = str(p.get("supply_type") or "").upper()
+        except Exception:
+            pass
+        _ = costs
+
+    agg = _compute_day_aggregate(
+        cursor, org, shift_date_et, rules=rules or [], product_types=product_types or {}
+    )
+    _DAY_AGG_CACHE[key] = (time.monotonic(), copy.deepcopy(agg))
+    while len(_DAY_AGG_CACHE) > _CACHE_MAX:
+        oldest = min(_DAY_AGG_CACHE.items(), key=lambda kv: kv[1][0])[0]
+        _DAY_AGG_CACHE.pop(oldest, None)
+    return agg
+
+
+def _sum_aggregates(aggs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    orders = pre = pre_n = finalized = split_yes = 0
+    tide_n = ultra_n = downy_n = oxi_n = 0
+    dates = []
+    for a in aggs:
+        orders += int(a.get("orders") or 0)
+        pre += float(a.get("pre_lbs") or 0)
+        pre_n += int(a.get("bags_with_pre") or 0)
+        finalized += int(a.get("finalized") or 0)
+        split_yes += int(a.get("split_orders") or 0)
+        tide_n += int(a.get("tide_n") or 0)
+        ultra_n += int(a.get("ultra_n") or 0)
+        downy_n += int(a.get("downy_n") or 0)
+        oxi_n += int(a.get("oxi_n") or 0)
+        if a.get("date_et"):
+            dates.append(a["date_et"])
+    avg_lb = round(pre / pre_n, 2) if pre_n else None
+    split_pct = round((split_yes / finalized) * 100.0, 2) if finalized else 0.0
+    mix = mix_pcts_from_counts(
+        total=orders, tide_n=tide_n, ultra_n=ultra_n, downy_n=downy_n, oxi_n=oxi_n
+    )
+    return {
+        "orders": orders,
+        "pre_lbs": round(pre, 1) if pre_n else None,
+        "bags_with_pre": pre_n,
+        "avg_lb_per_bag": avg_lb,
+        "finalized": finalized,
+        "split_orders": split_yes,
+        "split_pct": split_pct,
+        "mix": mix,
+        "dates_et": sorted(dates),
+        "days_used": len(dates),
+    }
+
+
+def build_planning_preset(
+    cursor,
+    organization_id: int,
+    *,
+    window_days: int = WINDOW_7,
+    as_of_prices: date | None = None,
+    today_workload_orders: int | None = None,
+    bypass_cache: bool = False,
+) -> dict[str, Any]:
+    """Historical planning preset from last N CLOSED ET days."""
+    window = int(window_days) if int(window_days) in VALID_WINDOWS else WINDOW_7
+    price_as_of = as_of_prices or business_today()
+    org = int(organization_id)
+    cache_key = (org, window, price_as_of.isoformat(), business_today().isoformat())
+
+    cached = False
+    payload = None
+    if not bypass_cache:
+        hit = _PLAN_CACHE.get(cache_key)
+        if hit and (time.monotonic() - hit[0]) < _CACHE_TTL_SEC:
+            payload = copy.deepcopy(hit[1])
+            cached = True
+
+    if payload is None:
+        closed = list_closed_shift_dates(cursor, org, limit=window)
+        try:
+            rules = get_supply_usage_mapping_rules(cursor, org)
+        except Exception:
+            rules = []
+        product_types: dict[str, str] = {}
+        try:
+            for p in list_supply_products(cursor, org, active_only=True, as_of=price_as_of) or []:
+                legacy = str(p.get("legacy_report_key") or "").strip()
+                if legacy:
+                    product_types[legacy] = str(p.get("supply_type") or "").upper()
+        except Exception:
+            pass
+        unit_costs = _product_unit_costs(cursor, org, as_of=price_as_of)
+        aggs = [
+            get_day_aggregate(
+                cursor,
+                org,
+                d,
+                rules=rules,
+                product_types=product_types,
+                bypass_cache=bypass_cache,
+            )
+            for d in closed
+        ]
+        summed = _sum_aggregates(aggs)
+        labels = unit_costs.pop("_labels", {}) if isinstance(unit_costs, dict) else {}
+        payload = {
+            "available": bool(closed),
+            "mode": "planning",
+            "service": SERVICE_WF,
+            "window_days": window,
+            "price_as_of_et": price_as_of.isoformat(),
+            "basis": {
+                "label": f"Last {window} closed business days",
+                "days_used": summed["days_used"],
+                "dates_et": summed["dates_et"],
+                "orders": summed["orders"],
+                "pre_lbs": summed["pre_lbs"],
+                "avg_lb_per_bag": summed["avg_lb_per_bag"],
+                "split_pct": summed["split_pct"],
+                "note": "Closed ET days only — today excluded.",
+            },
+            "mix": summed["mix"],
+            "unit_costs": {
+                "tide": unit_costs.get("tide"),
+                "ultra_clean": unit_costs.get("ultra_clean"),
+                "downy": unit_costs.get("downy"),
+                "oxiclean": unit_costs.get("oxiclean"),
+            },
+            "product_labels": labels,
+            "defaults": {
+                "total_orders": summed["orders"] // max(summed["days_used"], 1)
+                if summed["days_used"]
+                else 100,
+                "split_pct": summed["split_pct"],
+                "avg_lb_per_bag": summed["avg_lb_per_bag"],
+                "tide_pct": (summed["mix"] or {}).get("tide_pct"),
+                "ultra_clean_pct": (summed["mix"] or {}).get("ultra_clean_pct"),
+                "downy_pct": (summed["mix"] or {}).get("downy_pct"),
+                "oxiclean_pct": (summed["mix"] or {}).get("oxiclean_pct"),
+                "shifts_per_week": 7,
+            },
+            "read_only": True,
+            "estimated": True,
+        }
+        _PLAN_CACHE[cache_key] = (time.monotonic(), copy.deepcopy(payload))
+        while len(_PLAN_CACHE) > _CACHE_MAX:
+            oldest = min(_PLAN_CACHE.items(), key=lambda kv: kv[1][0])[0]
+            _PLAN_CACHE.pop(oldest, None)
+
+    defaults = dict(payload.get("defaults") or {})
+    if today_workload_orders is not None:
+        defaults["total_orders"] = int(today_workload_orders)
+    out = dict(payload)
+    out["defaults"] = defaults
+    out["cached"] = cached
+    return out
+
+
+def build_shift_preset_from_live_summary(
+    supplies_payload: Mapping[str, Any] | None,
+    *,
+    selected_date_et: date | None = None,
+    service: str = SERVICE_WF,
+) -> dict[str, Any]:
+    """Build Shift-mode preset from already-loaded Management supplies summary.
+
+    Instant open — no extra historical recompute.
+    """
+    supplies = supplies_payload or {}
+    dash = supplies.get("dashboard") or {}
+    pop = supplies.get("population") or {}
+    products = supplies.get("products") or []
+
+    orders = int(
+        dash.get("workload_orders")
+        or dash.get("unique_orders")
+        or pop.get("workload_orders")
+        or pop.get("orders")
+        or 0
+    )
+    split_y = int(dash.get("confirmed_split_orders") or pop.get("confirmed_split_orders") or 0)
+    split_n = int(
+        dash.get("confirmed_not_split_orders") or pop.get("confirmed_not_split_orders") or 0
+    )
+    finalized = split_y + split_n
+    split_pct = round((split_y / finalized) * 100.0, 2) if finalized else 0.0
+
+    pre_lbs = pop.get("pre_weight_lbs")
+    pre_n = int(pop.get("pre_weight_bag_count") or 0)
+    try:
+        pre_lbs_f = float(pre_lbs) if pre_lbs is not None else None
+    except (TypeError, ValueError):
+        pre_lbs_f = None
+    avg_lb = round(pre_lbs_f / pre_n, 2) if pre_lbs_f is not None and pre_n else None
+
+    tide_n = ultra_n = downy_n = oxi_n = 0
+    unit_costs: dict[str, float | None] = {
+        "tide": None,
+        "ultra_clean": None,
+        "downy": None,
+        "oxiclean": None,
+    }
+    labels = {
+        "tide": "Tide",
+        "ultra_clean": "Ultra Clean",
+        "downy": "Downy",
+        "oxiclean": "OxiClean",
+    }
+    for p in products:
+        legacy = str(p.get("legacy_report_key") or "").strip()
+        st = str(p.get("supply_type") or "").upper()
+        n = int(p.get("orders_using") or p.get("orders") or 0)
+        cpd = _money(p.get("cost_per_dose"))
+        name = str(p.get("product_name") or p.get("label") or p.get("brand") or legacy)
+        if st == SUPPLY_TYPE_DETERGENT or legacy == LEGACY_KEY_TIDE:
+            tide_n = n
+            unit_costs["tide"] = cpd
+            labels["tide"] = name or "Tide"
+        elif st == SUPPLY_TYPE_HYPO_DETERGENT or legacy in ("Kirkland", "All Free & Clear"):
+            ultra_n = n
+            unit_costs["ultra_clean"] = cpd
+            labels["ultra_clean"] = name or "Ultra Clean"
+        elif st == SUPPLY_TYPE_FABRIC_SOFTENER or legacy == LEGACY_KEY_DOWNY:
+            downy_n = n
+            unit_costs["downy"] = cpd
+        elif st == SUPPLY_TYPE_BOOSTER_OXI or legacy == LEGACY_KEY_OXICLEAN:
+            oxi_n = n
+            unit_costs["oxiclean"] = cpd
+
+    # Detergent counts should be vs workload; if product cards under-count, fall back
+    det_total = tide_n + ultra_n
+    mix_base = det_total if det_total > 0 else orders
+    mix = mix_pcts_from_counts(
+        total=mix_base if mix_base else 1,
+        tide_n=tide_n,
+        ultra_n=ultra_n,
+        downy_n=downy_n,
+        oxi_n=oxi_n,
+    )
+    # Re-express addon % on workload orders when available
+    if orders > 0:
+        mix["downy_pct"] = round((downy_n / orders) * 100.0, 2)
+        mix["oxiclean_pct"] = round((oxi_n / orders) * 100.0, 2)
+        mix["total_orders"] = orders
+        if det_total > 0:
+            mix["tide_pct"] = round((tide_n / det_total) * 100.0, 2)
+            mix["ultra_clean_pct"] = round((ultra_n / det_total) * 100.0, 2)
+
+    day = selected_date_et.isoformat() if isinstance(selected_date_et, date) else None
+    return {
+        "available": orders > 0 or bool(products),
+        "mode": "shift",
+        "service": service if service in VALID_SERVICES else SERVICE_WF,
+        "date_et": day,
+        "basis": {
+            "label": "Selected shift / day",
+            "orders": orders,
+            "pre_lbs": pre_lbs_f,
+            "avg_lb_per_bag": avg_lb,
+            "split_pct": split_pct,
+            "finalized_split_orders": finalized,
+            "note": "Prefill from live Management supplies for this day.",
+        },
+        "mix": mix,
+        "unit_costs": unit_costs,
+        "product_labels": labels,
+        "defaults": {
+            "total_orders": orders or 100,
+            "split_pct": split_pct,
+            "avg_lb_per_bag": avg_lb or 20.0,
+            "tide_pct": mix.get("tide_pct") or 100.0,
+            "ultra_clean_pct": mix.get("ultra_clean_pct") or 0.0,
+            "downy_pct": mix.get("downy_pct") or 0.0,
+            "oxiclean_pct": mix.get("oxiclean_pct") or 0.0,
+            "shifts_per_week": 7,
+        },
+        "read_only": True,
+        "estimated": True,
+        "cached": False,
+    }
+
+
+# --- period dashboard -------------------------------------------------------
+
+
+def resolve_period_dates(
+    period: str,
+    *,
+    today: date | None = None,
+    custom_start: date | None = None,
+    custom_end: date | None = None,
+) -> tuple[date, date, str]:
+    """Return (start_et, end_et inclusive, label). Business ET calendar."""
+    day = today or business_today()
+    p = str(period or "today").strip().lower()
+    if p == "yesterday":
+        d = day - timedelta(days=1)
+        return d, d, "Yesterday"
+    if p == "last_7":
+        return day - timedelta(days=6), day, "Last 7 Days"
+    if p == "this_week":
+        start = day - timedelta(days=day.weekday())  # Monday
+        return start, day, "This Week"
+    if p == "previous_week":
+        this_mon = day - timedelta(days=day.weekday())
+        start = this_mon - timedelta(days=7)
+        end = this_mon - timedelta(days=1)
+        return start, end, "Previous Week"
+    if p == "mtd":
+        start = day.replace(day=1)
+        return start, day, "Month-to-Date"
+    if p == "previous_month":
+        first = day.replace(day=1)
+        end = first - timedelta(days=1)
+        start = end.replace(day=1)
+        return start, end, "Previous Month"
+    if p == "custom" and custom_start and custom_end:
+        a, b = (custom_start, custom_end) if custom_start <= custom_end else (custom_end, custom_start)
+        return a, b, "Custom"
+    return day, day, "Today"
+
+
+def build_supplies_period_dashboard(
+    cursor,
+    organization_id: int,
+    *,
+    period: str = "today",
+    custom_start: date | None = None,
+    custom_end: date | None = None,
+    service: str = SERVICE_WF,
+) -> dict[str, Any]:
+    """Compact multi-day supplies reporting for the Supplies Dashboard."""
+    org = int(organization_id)
+    start, end, label = resolve_period_dates(
+        period, custom_start=custom_start, custom_end=custom_end
+    )
+    unit_costs = _product_unit_costs(cursor, org, as_of=end)
+    labels = unit_costs.pop("_labels", {}) if isinstance(unit_costs, dict) else {}
+
+    # Prefer closed-day aggregates inside range; include open today via live path caller.
+    days: list[date] = []
+    d = start
+    while d <= end:
+        days.append(d)
+        d += timedelta(days=1)
+
+    try:
+        rules = get_supply_usage_mapping_rules(cursor, org)
+    except Exception:
+        rules = []
+    product_types: dict[str, str] = {}
+    try:
+        for p in list_supply_products(cursor, org, active_only=True, as_of=end) or []:
+            legacy = str(p.get("legacy_report_key") or "").strip()
+            if legacy:
+                product_types[legacy] = str(p.get("supply_type") or "").upper()
+    except Exception:
+        pass
+
+    aggs = []
+    for day in days:
+        # Skip future; for today still try aggregate from day bags (may be in progress)
+        if day > business_today():
+            continue
+        try:
+            aggs.append(
+                get_day_aggregate(
+                    cursor, org, day, rules=rules, product_types=product_types
+                )
+            )
+        except Exception:
+            continue
+
+    summed = _sum_aggregates(aggs)
+    mix = summed.get("mix") or {}
+    orders = int(summed.get("orders") or 0)
+    split_pct = float(summed.get("split_pct") or 0)
+    avg_lb = summed.get("avg_lb_per_bag") or 0.0
+
+    # Estimated period cost at observed split (planning estimate, not live confirmed)
+    sim = simulate_supply_cost(
+        total_orders=orders,
+        split_pct=split_pct,
+        avg_lb_per_bag=float(avg_lb or 0),
+        tide_pct=float(mix.get("tide_pct") or 100),
+        ultra_clean_pct=float(mix.get("ultra_clean_pct") or 0),
+        downy_pct=float(mix.get("downy_pct") or 0),
+        oxiclean_pct=float(mix.get("oxiclean_pct") or 0),
+        unit_costs=unit_costs,
+    )
+
+    return {
+        "available": orders > 0,
+        "period": period,
+        "period_label": label,
+        "period_start_et": start.isoformat(),
+        "period_end_et": end.isoformat(),
+        "service": service if service in VALID_SERVICES else SERVICE_WF,
+        "wf_orders": orders if service != SERVICE_HD else 0,
+        "hd_orders": 0,  # HD supply rules not wired yet
+        "orders": orders,
+        "pre_lbs": summed.get("pre_lbs"),
+        "avg_lb_per_bag": avg_lb,
+        "loads": sim["total_loads"],
+        "split_pct": split_pct,
+        "tide_pct": mix.get("tide_pct"),
+        "ultra_clean_pct": mix.get("ultra_clean_pct"),
+        "downy_pct": mix.get("downy_pct"),
+        "oxiclean_pct": mix.get("oxiclean_pct"),
+        "estimated_supply_cost": sim["estimated_supply_cost"],
+        "cost_per_order": sim["cost_per_order"],
+        "cost_per_load": sim["cost_per_load"],
+        "est_cost_per_lb": sim["est_cost_per_lb"],
+        "unit_costs": {
+            "tide": unit_costs.get("tide"),
+            "ultra_clean": unit_costs.get("ultra_clean"),
+            "downy": unit_costs.get("downy"),
+            "oxiclean": unit_costs.get("oxiclean"),
+        },
+        "product_labels": labels,
+        "mix": mix,
+        "estimated": True,
+        "note": (
+            "Period totals from day aggregates (PRE · order mix · finalized split). "
+            "Cost is simulated from Supply Master doses — not live confirmed supply cost."
+        ),
+        "planning_defaults": {
+            "total_orders": orders // max(len(aggs), 1) if aggs else orders,
+            "split_pct": split_pct,
+            "avg_lb_per_bag": avg_lb,
+            "tide_pct": mix.get("tide_pct"),
+            "ultra_clean_pct": mix.get("ultra_clean_pct"),
+            "downy_pct": mix.get("downy_pct"),
+            "oxiclean_pct": mix.get("oxiclean_pct"),
+            "shifts_per_week": 7,
+        },
+    }
+
+
+# --- backward-compatible aliases -------------------------------------------
 
 
 def simulate_split_cost(
@@ -214,468 +982,48 @@ def simulate_split_cost(
     total_orders: int,
     split_rate: float,
     avg_lb_per_bag: float,
-    combinations: Sequence[Mapping[str, Any]],
+    combinations: Sequence[Mapping[str, Any]] | None = None,
+    tide_pct: float | None = None,
+    ultra_clean_pct: float | None = None,
+    downy_pct: float | None = None,
+    oxiclean_pct: float | None = None,
+    unit_costs: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Pure simulation — no DB. Split rate applied uniformly across combinations."""
-    orders = max(0, int(total_orders))
-    rate = max(0.0, min(1.0, float(split_rate)))
-    avg_lb = max(0.0, float(avg_lb_per_bag))
-
-    split_orders = round(orders * rate)
-    if split_orders > orders:
-        split_orders = orders
-    non_split_orders = orders - split_orders
-    total_loads = non_split_orders + (split_orders * 2)
-    estimated_lbs = round(orders * avg_lb, 1)
-
-    raw = []
+    """Compat wrapper. Prefer simulate_supply_cost."""
+    if unit_costs is not None and tide_pct is not None:
+        return simulate_supply_cost(
+            total_orders=total_orders,
+            split_pct=float(split_rate) * 100.0,
+            avg_lb_per_bag=avg_lb_per_bag,
+            tide_pct=tide_pct,
+            ultra_clean_pct=ultra_clean_pct or 0,
+            downy_pct=downy_pct or 0,
+            oxiclean_pct=oxiclean_pct or 0,
+            unit_costs=unit_costs,
+        )
+    # Derive effective cost/load from combination shares if provided
+    cpl = 0.0
+    share_sum = 0.0
     for c in combinations or []:
         share = float(c.get("share") or 0)
-        if share < 0:
-            share = 0.0
-        raw.append((c, share))
-    share_sum = sum(s for _, s in raw) or 1.0
-
-    combo_rows: list[dict[str, Any]] = []
-    total_cost = 0.0
-    assigned = 0
-    for i, (c, share) in enumerate(raw):
-        norm = share / share_sum
-        if i == len(raw) - 1:
-            c_orders = max(0, orders - assigned)
-        else:
-            c_orders = int(round(orders * norm))
-            assigned += c_orders
-        c_split = int(round(c_orders * rate))
-        if c_split > c_orders:
-            c_split = c_orders
-        c_non = c_orders - c_split
-        c_loads = c_non + (c_split * 2)
-        cpl = _money(c.get("cost_per_load")) or 0.0
-        c_cost = round(c_loads * cpl, 2)
-        total_cost += c_cost
-        combo_rows.append(
-            {
-                "key": c.get("key") or c.get("label"),
-                "label": c.get("label") or c.get("key"),
-                "short_label": c.get("short_label") or c.get("label") or c.get("key"),
-                "share": round(norm, 6),
-                "share_pct": round(norm * 100.0, 2),
-                "estimated_orders": c_orders,
-                "split_orders": c_split,
-                "non_split_orders": c_non,
-                "estimated_loads": c_loads,
-                "cost_per_load": cpl,
-                "cost_per_split_order": round(cpl * 2, 4),
-                "estimated_cost": c_cost,
-                "products": list(c.get("products") or []),
-            }
-        )
-
-    total_cost = round(total_cost, 2)
-    cost_per_order = round(total_cost / orders, 4) if orders else None
-    cost_per_load = round(total_cost / total_loads, 4) if total_loads else None
-    cost_per_lb = (
-        round(total_cost / estimated_lbs, 4) if estimated_lbs and estimated_lbs > 0 else None
+        share_sum += max(0.0, share)
+        cpl += max(0.0, share) * float(c.get("cost_per_load") or 0)
+    if share_sum > 0:
+        cpl = cpl / share_sum
+    return simulate_supply_cost(
+        total_orders=total_orders,
+        split_pct=float(split_rate) * 100.0,
+        avg_lb_per_bag=avg_lb_per_bag,
+        tide_pct=100.0,
+        ultra_clean_pct=0.0,
+        downy_pct=0.0,
+        oxiclean_pct=0.0,
+        unit_costs={"tide": cpl, "ultra_clean": 0, "downy": 0, "oxiclean": 0},
     )
 
-    return {
-        "simulation": True,
-        "estimated": True,
-        "total_orders": orders,
-        "split_rate": rate,
-        "split_pct": round(rate * 100.0, 2),
-        "split_orders": split_orders,
-        "non_split_orders": non_split_orders,
-        "total_loads": total_loads,
-        "avg_lb_per_bag": round(avg_lb, 2),
-        "estimated_lbs": estimated_lbs,
-        "estimated_supply_cost": total_cost,
-        "cost_per_order": cost_per_order,
-        "cost_per_load": cost_per_load,
-        "est_cost_per_lb": cost_per_lb,
-        "combinations": combo_rows,
-        "assumption": (
-            "Split rate applied uniformly across all supply combinations."
-        ),
-    }
 
-
-def compare_baseline_target(
-    baseline: Mapping[str, Any],
-    target: Mapping[str, Any],
-    *,
-    shifts_per_week: float = 7.0,
-) -> dict[str, Any]:
-    b_loads = int(baseline.get("total_loads") or 0)
-    t_loads = int(target.get("total_loads") or 0)
-    b_cost = float(baseline.get("estimated_supply_cost") or 0)
-    t_cost = float(target.get("estimated_supply_cost") or 0)
-    loads_saved = b_loads - t_loads
-    dollar_savings = round(b_cost - t_cost, 2)
-    savings_pct = (
-        round((dollar_savings / b_cost) * 100.0, 2) if b_cost > 0 else None
-    )
-    periods = period_savings(dollar_savings, shifts_per_week=shifts_per_week)
-    return {
-        "baseline": dict(baseline),
-        "target": dict(target),
-        "loads_saved": loads_saved,
-        "dollar_savings": dollar_savings,
-        "savings_pct": savings_pct,
-        "period_savings": periods,
-        "headline": {
-            "split_pct_from": baseline.get("split_pct"),
-            "split_pct_to": target.get("split_pct"),
-            "loads_saved": loads_saved,
-            "dollar_savings": dollar_savings,
-            "est_cost_per_lb_from": baseline.get("est_cost_per_lb"),
-            "est_cost_per_lb_to": target.get("est_cost_per_lb"),
-            "per_week": periods["per_week"],
-            "per_month": periods["per_month"],
-        },
-        "labels": {
-            "est_cost_per_lb": (
-                "EST. COST / LB — planning metric from PRE avg lb/bag; "
-                "not live Cost / Completed Lb (POST)"
-            ),
-        },
-    }
-
-
-def _product_cost_map(
-    cursor,
-    organization_id: int,
-    *,
-    as_of: date,
-) -> dict[str, dict[str, Any]]:
-    try:
-        products = list_supply_products(
-            cursor, int(organization_id), active_only=True, as_of=as_of
-        )
-    except Exception:
-        products = []
-    by_legacy: dict[str, dict[str, Any]] = {}
-    for p in products or []:
-        legacy = str(p.get("legacy_report_key") or "").strip()
-        if not legacy:
-            continue
-        by_legacy[legacy] = {
-            "legacy_report_key": legacy,
-            "label": str(p.get("product_name") or p.get("brand") or legacy),
-            "brand": p.get("brand"),
-            "product_name": p.get("product_name"),
-            "supply_type": str(p.get("supply_type") or "").upper(),
-            "average_dose": _qty(p.get("average_dose")),
-            "dose_unit": p.get("dose_unit") or "oz",
-            "cost_per_dose": _money(p.get("cost_per_dose")),
-        }
-    return by_legacy
-
-
-def _combo_cost_per_load(
-    supplies: Sequence[str],
-    product_by_legacy: Mapping[str, Mapping[str, Any]],
-) -> tuple[float | None, list[dict[str, Any]]]:
-    parts: list[dict[str, Any]] = []
-    total = 0.0
-    any_cost = False
-    for legacy in supplies:
-        meta = product_by_legacy.get(legacy) or {
-            "legacy_report_key": legacy,
-            "label": legacy,
-            "cost_per_dose": None,
-            "average_dose": None,
-            "dose_unit": "oz",
-        }
-        cpd = _money(meta.get("cost_per_dose"))
-        parts.append(
-            {
-                "legacy_report_key": legacy,
-                "label": meta.get("label") or legacy,
-                "cost_per_dose": cpd,
-                "average_dose": meta.get("average_dose"),
-                "dose_unit": meta.get("dose_unit") or "oz",
-            }
-        )
-        if cpd is not None:
-            total += float(cpd)
-            any_cost = True
-    return (round(total, 4) if any_cost else None, parts)
-
-
-def _classify_order_supplies(
-    supplies: Sequence[str],
-    product_by_legacy: Mapping[str, Mapping[str, Any]],
-) -> tuple[str, bool, bool]:
-    """Return (detergent_kind standard|hypo, has_downy, has_oxi)."""
-    detergent = "standard"
-    has_downy = False
-    has_oxi = False
-    saw_detergent = False
-    for legacy in supplies:
-        meta = product_by_legacy.get(legacy) or {}
-        st = str(meta.get("supply_type") or "").upper()
-        if not st:
-            if legacy == LEGACY_KEY_DOWNY:
-                st = SUPPLY_TYPE_FABRIC_SOFTENER
-            elif legacy == LEGACY_KEY_OXICLEAN:
-                st = SUPPLY_TYPE_BOOSTER_OXI
-            elif legacy in ("All Free & Clear", "Kirkland"):
-                st = SUPPLY_TYPE_HYPO_DETERGENT
-            elif legacy == LEGACY_KEY_TIDE:
-                st = SUPPLY_TYPE_DETERGENT
-        if st == SUPPLY_TYPE_FABRIC_SOFTENER:
-            has_downy = True
-        elif st == SUPPLY_TYPE_BOOSTER_OXI:
-            has_oxi = True
-        elif st == SUPPLY_TYPE_HYPO_DETERGENT:
-            detergent = "hypo"
-            saw_detergent = True
-        elif st == SUPPLY_TYPE_DETERGENT:
-            if not saw_detergent:
-                detergent = "standard"
-            saw_detergent = True
-    return detergent, has_downy, has_oxi
-
-
-def _build_order_mix(
-    *,
-    total_orders: int,
-    standard_n: int,
-    hypo_n: int,
-    downy_n: int,
-    oxi_n: int,
-    no_addon_n: int,
-    both_addon_n: int,
-) -> dict[str, Any]:
-    denom = max(int(total_orders), 1)
-
-    def pct(n: int) -> float:
-        return round((n / denom) * 100.0, 2)
-
-    return {
-        "basis": "orders",
-        "note": (
-            "Percentages of ORDERS (one bag = one order even if split). "
-            "Not loads or doses."
-        ),
-        "total_completed_wf_orders": int(total_orders),
-        "detergent_standard_order_pct": pct(standard_n),
-        "detergent_hypo_order_pct": pct(hypo_n),
-        "detergent_standard_orders": standard_n,
-        "detergent_hypo_orders": hypo_n,
-        "downy_order_pct": pct(downy_n),
-        "oxiclean_order_pct": pct(oxi_n),
-        "no_addon_order_pct": pct(no_addon_n),
-        "downy_and_oxi_order_pct": pct(both_addon_n),
-        "downy_orders": downy_n,
-        "oxiclean_orders": oxi_n,
-        "no_addon_orders": no_addon_n,
-        "downy_and_oxi_orders": both_addon_n,
-    }
-
-
-def _compute_baseline(
-    cursor,
-    organization_id: int,
-    *,
-    window_days: int,
-    as_of_prices: date,
-) -> dict[str, Any]:
-    """Heavy path — called only on cache miss."""
-    from backend.management_rinse_wf_supplies import _load_si_metadata_fast
-
-    window = int(window_days) if int(window_days) in VALID_WINDOWS else WINDOW_7
-    price_as_of = as_of_prices
-    org = int(organization_id)
-
-    closed_days = list_closed_shift_dates(cursor, org, limit=window)
-    product_by_legacy = _product_cost_map(cursor, org, as_of=price_as_of)
-    try:
-        rules = get_supply_usage_mapping_rules(cursor, org)
-    except Exception:
-        rules = []
-
-    bags_by_day = _load_completed_wf_bags_multi(cursor, org, closed_days)
-    all_ids: list[str] = []
-    for day in closed_days:
-        all_ids.extend(b["bag_id"] for b in bags_by_day.get(day) or [])
-    # Dedup for SI load (same bag across days is rare but possible)
-    unique_ids = sorted(set(all_ids))
-    meta_all = (
-        _load_si_metadata_fast(cursor, org, unique_ids) if unique_ids else {}
-    )
-
-    bag_count = 0
-    pre_sum = 0.0
-    pre_n = 0
-    finalized = 0
-    split_yes = 0
-    split_no = 0
-    mix_counter: Counter[str] = Counter()
-    standard_n = hypo_n = downy_n = oxi_n = no_addon_n = both_addon_n = 0
-
-    for day in closed_days:
-        bags = bags_by_day.get(day) or []
-        ids = [b["bag_id"] for b in bags]
-        for b in bags:
-            bag_count += 1
-            try:
-                pre = (
-                    float(b["pre_weight_lbs"])
-                    if b.get("pre_weight_lbs") is not None
-                    else None
-                )
-            except (TypeError, ValueError):
-                pre = None
-            if pre is not None:
-                pre_sum += pre
-                pre_n += 1
-
-        evaluations: dict[str, dict[str, Any]] = {}
-        if ids:
-            evaluations = evaluate_day_wf_splits(
-                cursor,
-                org,
-                day,
-                ids,
-                slim_events=True,
-                truncate_to_selected_day=True,
-            )
-
-        for bid in ids:
-            ev = evaluations.get(bid) or {}
-            if ev.get("split_finalized"):
-                finalized += 1
-                if ev.get("canonical_split") is True:
-                    split_yes += 1
-                else:
-                    split_no += 1
-            m = meta_all.get(bid) or {}
-            raw_si = m.get("special_instructions_raw")
-            mapped = supplies_for_usage(raw_si, rules)
-            supplies = list((mapped or {}).get("supplies_used") or [LEGACY_KEY_TIDE])
-            if not supplies:
-                supplies = [LEGACY_KEY_TIDE]
-            mix_counter[combo_key_from_supplies(supplies)] += 1
-            kind, has_downy, has_oxi = _classify_order_supplies(
-                supplies, product_by_legacy
-            )
-            if kind == "hypo":
-                hypo_n += 1
-            else:
-                standard_n += 1
-            if has_downy:
-                downy_n += 1
-            if has_oxi:
-                oxi_n += 1
-            if has_downy and has_oxi:
-                both_addon_n += 1
-            if not has_downy and not has_oxi:
-                no_addon_n += 1
-
-    avg_lb = round(pre_sum / pre_n, 2) if pre_n else None
-    split_rate = (split_yes / finalized) if finalized else 0.0
-    mix_total = sum(mix_counter.values()) or 1
-
-    combinations: list[dict[str, Any]] = []
-    for key, n in mix_counter.most_common():
-        if " + " in key:
-            supplies = [p.strip() for p in key.split(" + ") if p.strip()]
-        else:
-            supplies = [key] if key else [LEGACY_KEY_TIDE]
-        cpl, products = _combo_cost_per_load(supplies, product_by_legacy)
-        share = n / mix_total
-        short = short_combo_label(key, product_by_legacy)
-        combinations.append(
-            {
-                "key": key,
-                "label": short,
-                "short_label": short,
-                "full_label": key,
-                "order_count": n,
-                "share": round(share, 6),
-                "share_pct": round(share * 100.0, 2),
-                "cost_per_load": cpl,
-                "cost_per_split_order": round(cpl * 2, 4) if cpl is not None else None,
-                # Keep product dose lines for detail sheet only (still compact).
-                "products": products,
-            }
-        )
-
-    cost_ref = [
-        {
-            "key": c["key"],
-            "label": c["short_label"],
-            "cost_per_load": c["cost_per_load"],
-            "cost_per_split_order": c["cost_per_split_order"],
-        }
-        for c in combinations
-        if c.get("cost_per_load") is not None
-    ]
-
-    order_mix = _build_order_mix(
-        total_orders=bag_count,
-        standard_n=standard_n,
-        hypo_n=hypo_n,
-        downy_n=downy_n,
-        oxi_n=oxi_n,
-        no_addon_n=no_addon_n,
-        both_addon_n=both_addon_n,
-    )
-
-    return {
-        "available": bool(closed_days),
-        "read_only": True,
-        "estimated": True,
-        "window_days": window,
-        "price_as_of_et": price_as_of.isoformat(),
-        "basis": {
-            "label": f"{window}-Day Baseline",
-            "days_used": len(closed_days),
-            "dates_et": [d.isoformat() for d in closed_days],
-            "completed_bags": bag_count,
-            "total_completed_wf_orders": bag_count,
-            "pre_lbs_total": round(pre_sum, 1) if pre_n else None,
-            "total_pre_lbs": round(pre_sum, 1) if pre_n else None,
-            "bags_with_pre": pre_n,
-            "avg_lb_per_bag": avg_lb,
-            "avg_pre_lb_per_bag": avg_lb,
-            "avg_lb_basis": "weighted_pre_lbs_over_bags_with_pre",
-            "finalized_orders": finalized,
-            "split_orders": split_yes,
-            "not_split_orders": split_no,
-            "split_rate": round(split_rate, 6),
-            "split_pct": round(split_rate * 100.0, 2),
-            "finalized_split_rate": round(split_rate, 6),
-            "note": (
-                "Last completed/closed ET business days only — "
-                "today's in-progress day is excluded."
-            ),
-        },
-        "order_mix": order_mix,
-        "combinations": combinations,
-        "cost_per_load_reference": cost_ref,
-        "defaults": {
-            "split_pct": round(split_rate * 100.0, 2),
-            "avg_lb_per_bag": avg_lb,
-            "avg_lb_mode": f"last_{window}",
-            "shifts_per_week": 7,
-        },
-        "assumption": (
-            "V1 applies the overall split rate uniformly across all "
-            "supply combinations."
-        ),
-        "labels": {
-            "est_cost_per_lb": "EST. COST / LB",
-            "disclaimer": (
-                "Planning simulation using PRE avg lb/bag. Separate from live "
-                "Cost / Completed Lb (actual POST)."
-            ),
-            "order_mix": "Order % — not loads or doses",
-        },
-    }
+def compare_baseline_target(baseline, target, *, shifts_per_week: float = 7.0):
+    return compare_scenarios(baseline, target, shifts_per_week=shifts_per_week)
 
 
 def build_split_cost_simulator_baseline(
@@ -687,44 +1035,45 @@ def build_split_cost_simulator_baseline(
     today_workload_orders: int | None = None,
     bypass_cache: bool = False,
 ) -> dict[str, Any]:
-    """Weighted historical baseline from last N CLOSED ET business days."""
-    window = int(window_days) if int(window_days) in VALID_WINDOWS else WINDOW_7
-    price_as_of = as_of_prices or business_today()
-    org = int(organization_id)
-    # Cutoff date is part of the key so midnight ET rotates naturally.
-    cache_key = (org, window, price_as_of.isoformat(), business_today().isoformat())
-
-    cached_hit = False
-    payload: dict[str, Any] | None = None
-    if not bypass_cache:
-        hit = _BASELINE_CACHE.get(cache_key)
-        if hit and (time.monotonic() - hit[0]) < _BASELINE_CACHE_TTL_SEC:
-            payload = copy.deepcopy(hit[1])
-            cached_hit = True
-
-    if payload is None:
-        payload = _compute_baseline(
-            cursor, org, window_days=window, as_of_prices=price_as_of
-        )
-        _BASELINE_CACHE[cache_key] = (time.monotonic(), copy.deepcopy(payload))
-        # Bound cache size
-        while len(_BASELINE_CACHE) > _BASELINE_CACHE_MAX:
-            oldest = min(_BASELINE_CACHE.items(), key=lambda kv: kv[1][0])[0]
-            _BASELINE_CACHE.pop(oldest, None)
-
-    # today_orders is request-specific — apply after cache
-    bag_count = int((payload.get("basis") or {}).get("completed_bags") or 0)
-    days_used = int((payload.get("basis") or {}).get("days_used") or 1) or 1
-    defaults = dict(payload.get("defaults") or {})
-    defaults["total_orders"] = (
-        int(today_workload_orders)
-        if today_workload_orders is not None
-        else (bag_count // days_used if days_used else 100)
+    """Compat — returns planning preset shaped for older clients."""
+    plan = build_planning_preset(
+        cursor,
+        organization_id,
+        window_days=window_days,
+        as_of_prices=as_of_prices,
+        today_workload_orders=today_workload_orders,
+        bypass_cache=bypass_cache,
     )
-    out = dict(payload)
-    out["defaults"] = defaults
-    out["cached"] = cached_hit
-    return out
+    mix = plan.get("mix") or {}
+    return {
+        **plan,
+        "combinations": [],  # no longer primary
+        "order_mix": {
+            "total_completed_wf_orders": mix.get("total_orders"),
+            "detergent_standard_order_pct": mix.get("tide_pct"),
+            "detergent_hypo_order_pct": mix.get("ultra_clean_pct"),
+            "downy_order_pct": mix.get("downy_pct"),
+            "oxiclean_order_pct": mix.get("oxiclean_pct"),
+            "basis": "orders",
+        },
+        "cost_per_load_reference": [
+            {"label": "Tide only", "cost_per_load": (plan.get("unit_costs") or {}).get("tide")},
+            {
+                "label": "Ultra Clean only",
+                "cost_per_load": (plan.get("unit_costs") or {}).get("ultra_clean"),
+            },
+            {"label": "Downy add-on", "cost_per_load": (plan.get("unit_costs") or {}).get("downy")},
+            {
+                "label": "OxiClean add-on",
+                "cost_per_load": (plan.get("unit_costs") or {}).get("oxiclean"),
+            },
+        ],
+        "basis": {
+            **(plan.get("basis") or {}),
+            "completed_bags": (plan.get("basis") or {}).get("orders"),
+            "pre_lbs_total": (plan.get("basis") or {}).get("pre_lbs"),
+        },
+    }
 
 
 def run_split_cost_simulation(
@@ -735,27 +1084,50 @@ def run_split_cost_simulation(
     target_split_pct: float,
     avg_lb_per_bag: float,
     shifts_per_week: float = 7.0,
+    tide_pct: float | None = None,
+    ultra_clean_pct: float | None = None,
+    downy_pct: float | None = None,
+    oxiclean_pct: float | None = None,
 ) -> dict[str, Any]:
-    combos = baseline.get("combinations") or []
-    b = simulate_split_cost(
-        total_orders=total_orders,
-        split_rate=float(baseline_split_pct) / 100.0,
-        avg_lb_per_bag=avg_lb_per_bag,
-        combinations=combos,
+    defaults = baseline.get("defaults") or {}
+    mix = baseline.get("mix") or {}
+    costs = baseline.get("unit_costs") or {}
+    t = tide_pct if tide_pct is not None else float(defaults.get("tide_pct") or mix.get("tide_pct") or 100)
+    u = (
+        ultra_clean_pct
+        if ultra_clean_pct is not None
+        else float(defaults.get("ultra_clean_pct") or mix.get("ultra_clean_pct") or 0)
     )
-    t = simulate_split_cost(
+    d = downy_pct if downy_pct is not None else float(defaults.get("downy_pct") or mix.get("downy_pct") or 0)
+    o = (
+        oxiclean_pct
+        if oxiclean_pct is not None
+        else float(defaults.get("oxiclean_pct") or mix.get("oxiclean_pct") or 0)
+    )
+    cur = simulate_supply_cost(
         total_orders=total_orders,
-        split_rate=float(target_split_pct) / 100.0,
+        split_pct=baseline_split_pct,
         avg_lb_per_bag=avg_lb_per_bag,
-        combinations=combos,
+        tide_pct=t,
+        ultra_clean_pct=u,
+        downy_pct=d,
+        oxiclean_pct=o,
+        unit_costs=costs,
+    )
+    tgt = simulate_supply_cost(
+        total_orders=total_orders,
+        split_pct=target_split_pct,
+        avg_lb_per_bag=avg_lb_per_bag,
+        tide_pct=t,
+        ultra_clean_pct=u,
+        downy_pct=d,
+        oxiclean_pct=o,
+        unit_costs=costs,
     )
     return {
-        **compare_baseline_target(b, t, shifts_per_week=shifts_per_week),
-        "historical_basis": baseline.get("basis"),
-        "order_mix": baseline.get("order_mix"),
-        "cost_per_load_reference": baseline.get("cost_per_load_reference"),
-        "assumption": baseline.get("assumption"),
-        "labels": baseline.get("labels"),
+        **compare_scenarios(cur, tgt, shifts_per_week=shifts_per_week),
+        "baseline": cur,
+        "target": tgt,
         "read_only": True,
         "estimated": True,
     }

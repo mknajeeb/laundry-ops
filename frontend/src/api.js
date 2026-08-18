@@ -2425,6 +2425,16 @@ export const postManagementSplitCostSimulate = (dateEt, body = {}) =>
     { params: { date_et: dateEt }, timeout: 120000 },
   );
 
+/** Supplies Dashboard period aggregates. */
+export const getManagementSuppliesDashboard = (params = {}) => {
+  const { signal, ...rest } = params || {};
+  return axios.get(`${API_BASE}/api/management/supplies/dashboard`, {
+    params: { ...rest },
+    signal,
+    timeout: 120000,
+  });
+};
+
 export const getManagementRinseHd = (dateEt, params = {}) =>
   axios.get(`${API_BASE}/api/management/rinse-hd`, {
     params: { date_et: dateEt, ...params },

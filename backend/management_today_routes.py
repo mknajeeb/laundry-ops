@@ -286,10 +286,57 @@ def register_management_today_routes(
                 target_split_pct=target_split_pct,
                 avg_lb_per_bag=avg_lb,
                 shifts_per_week=shifts_per_week,
+                tide_pct=body.get("tide_pct"),
+                ultra_clean_pct=body.get("ultra_clean_pct"),
+                downy_pct=body.get("downy_pct"),
+                oxiclean_pct=body.get("oxiclean_pct"),
             )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             return jsonify({"error": str(exc), "estimated": True}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/supplies/dashboard", methods=["GET"])
+    def management_supplies_dashboard():
+        """Period Supplies Dashboard — compact aggregates + planning defaults."""
+        from backend.management_split_cost_simulator import build_supplies_period_dashboard
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            period = str(request.args.get("period") or "today").strip().lower()
+            custom_start = None
+            custom_end = None
+            if period == "custom":
+                raw_s = (request.args.get("start_et") or "").strip()
+                raw_e = (request.args.get("end_et") or "").strip()
+                try:
+                    custom_start = parse_date_value(raw_s) if raw_s else None
+                    custom_end = parse_date_value(raw_e) if raw_e else None
+                except (TypeError, ValueError):
+                    return jsonify({"error": "Invalid start_et/end_et"}), 400
+                if not custom_start or not custom_end:
+                    return jsonify({"error": "custom period requires start_et and end_et"}), 400
+            service = str(request.args.get("service") or "WF").strip().upper()
+            payload = build_supplies_period_dashboard(
+                cursor,
+                oid,
+                period=period,
+                custom_start=custom_start,
+                custom_end=custom_end,
+                service=service,
+            )
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc), "available": False}), 500
         finally:
             cursor.close()
             conn.close()

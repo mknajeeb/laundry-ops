@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import {
   Alert,
@@ -20,11 +20,9 @@ import TodayTapCard from "./TodayTapCard";
 import ManagementRinseWfReviewSection from "./ManagementRinseWfReviewSection";
 import ManagementCopyableId from "./ManagementCopyableId";
 import {
-  getManagementSplitCostSimulatorBaseline,
   getManagementTodaySuppliesDetail,
 } from "../../api";
-import ManagementSplitCostSimulatorModal from "./ManagementSplitCostSimulatorModal";
-import { setSplitCostBaselineCache } from "./splitCostSimulatorCache";
+import SupplyCostSimulatorModal from "./SupplyCostSimulatorModal";
 import {
   pickRinseSegments,
   pickWfSpecialty,
@@ -389,26 +387,6 @@ export default function ManagementRinseWfSection({
   const potentialMax = dashboard?.potential_final_cost_max
     ?? supplies?.potential_final_cost_max
     ?? null;
-
-  // Warm Split Cost Simulator closed-day baseline while Supplies is on screen.
-  const dateEtForSim = selectedDateEt || rinse?.selected_date_et;
-  useEffect(() => {
-    if (!dateEtForSim || snapshotUnavailable || suppliesPending) return undefined;
-    const ac = new AbortController();
-    (async () => {
-      try {
-        const res = await getManagementSplitCostSimulatorBaseline(dateEtForSim, {
-          window: 7,
-          today_orders: uniqueOrders ?? undefined,
-          signal: ac.signal,
-        });
-        setSplitCostBaselineCache(dateEtForSim, 7, res?.data);
-      } catch {
-        /* non-blocking prefetch */
-      }
-    })();
-    return () => ac.abort();
-  }, [dateEtForSim, snapshotUnavailable, suppliesPending, uniqueOrders]);
 
   return (
     <Box>
@@ -896,7 +874,15 @@ export default function ManagementRinseWfSection({
           onClick={() => setSplitSimOpen(true)}
           sx={{ textTransform: "none", fontWeight: 700 }}
         >
-          Split Cost Simulator
+          Simulate Split Cost
+        </Button>
+        <Button
+          size="small"
+          component={RouterLink}
+          to="/management/supplies"
+          sx={{ textTransform: "none", fontWeight: 700, px: 0.5 }}
+        >
+          Supplies Dashboard
         </Button>
         <Button
           size="small"
@@ -904,14 +890,16 @@ export default function ManagementRinseWfSection({
           to="/management/supply-master"
           sx={{ textTransform: "none", fontWeight: 700, px: 0.5 }}
         >
-          Supply Master · Products & Mappings
+          Supply Master
         </Button>
       </Box>
 
-      <ManagementSplitCostSimulatorModal
+      <SupplyCostSimulatorModal
+        mode="shift"
         open={splitSimOpen}
         onClose={() => setSplitSimOpen(false)}
         selectedDateEt={selectedDateEt || rinse?.selected_date_et}
+        shiftSupplies={supplies}
         todayWorkloadOrders={uniqueOrders ?? 100}
       />
 
