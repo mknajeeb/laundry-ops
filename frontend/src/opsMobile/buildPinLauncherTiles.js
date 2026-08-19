@@ -97,10 +97,10 @@ export function buildPinLauncherTiles({ features = {}, featureOrder = null, atte
   const order =
     Array.isArray(featureOrder) && featureOrder.length
       ? featureOrder
-      : ["switch_role", "checklist", "inventory", "revenue_cost"];
+      : ["switch_role", "checklist", "inventory"];
 
   for (const id of order) {
-    if (id === "clock" || id === "break") continue;
+    if (id === "clock" || id === "break" || id === "revenue_cost") continue;
     const feat = feats[id];
     if (!feat?.allowed) continue;
 

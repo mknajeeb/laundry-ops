@@ -103,9 +103,6 @@ export default function AttendanceRoleSwitchPage() {
   // from=hub: skip PIN keypad flash — show opening until select/unavailable.
   const [phase, setPhase] = useState(fromHub ? "opening" : "pin"); // opening | pin | select | success | unavailable
   const [selectionTree, setSelectionTree] = useState([]);
-  const [flowStep, setFlowStep] = useState("role"); // role | category
-  const [roleId, setRoleId] = useState(null);
-  const [categoryId, setCategoryId] = useState(null);
   const [currentCategoryId, setCurrentCategoryId] = useState(null);
   const [currentRoleId, setCurrentRoleId] = useState(null);
   const [firstName, setFirstName] = useState("");
@@ -114,6 +111,7 @@ export default function AttendanceRoleSwitchPage() {
   const [flowError, setFlowError] = useState("");
   const [pending, setPending] = useState(false);
   const [pendingCategoryId, setPendingCategoryId] = useState(null);
+  const [pendingRoleId, setPendingRoleId] = useState(null);
   const [successLabel, setSuccessLabel] = useState("");
   const [branding, setBranding] = useState(null);
   const [unavailableMessage, setUnavailableMessage] = useState(
@@ -339,20 +337,13 @@ export default function AttendanceRoleSwitchPage() {
     });
     controllerRef.current = controller;
     const unsub = controller.subscribe((snap) => {
-      setFlowStep(snap.step);
-      setRoleId(snap.roleId);
-      setCategoryId(snap.categoryId);
       setPending(snap.pending);
       setPendingCategoryId(snap.pendingCategoryId);
+      setPendingRoleId(snap.pendingRoleId);
       setFlowError(snap.error);
       setSuccessLabel(snap.successLabel);
       if (snap.phase === "success") setPhase("success");
     });
-    // Sync initial controller snapshot (always role-first).
-    const snap0 = controller.getState();
-    setFlowStep(snap0.step);
-    setRoleId(snap0.roleId);
-    setCategoryId(snap0.categoryId);
     return () => {
       unsub();
       controllerRef.current = null;
@@ -400,15 +391,12 @@ export default function AttendanceRoleSwitchPage() {
       <OpsSwitchRoleFlow
         employeeName={firstName}
         selectionTree={selectionTree}
-        step={flowStep}
-        roleId={roleId}
-        onSelectRole={(role) => controllerRef.current?.setRole(role)}
-        onSelectCategory={(cat) => controllerRef.current?.selectCategory(cat)}
-        onBackToRoles={() => controllerRef.current?.backToRoles()}
+        onSelectCombo={(combo) => controllerRef.current?.selectCombo(combo)}
         currentCategoryId={currentCategoryId}
         currentRoleId={currentRoleId}
         pending={pending}
         pendingCategoryId={pendingCategoryId}
+        pendingRoleId={pendingRoleId}
         error={flowError}
         onClearError={() => {
           setFlowError("");

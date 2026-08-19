@@ -2489,6 +2489,25 @@ export const postManagementWfFolderAttributionReset = (body) =>
     timeout: 60000,
   });
 
+export const getManagementRevenue = (dateEt) =>
+  axios.get(`${API_BASE}/api/management/revenue`, { params: { date_et: dateEt } });
+
+export const saveManagementRevenueNonRinse = (body) =>
+  axios.put(`${API_BASE}/api/management/revenue/non-rinse`, body);
+
+export const createManagementCashPayout = (body) =>
+  axios.post(`${API_BASE}/api/management/revenue/cash-payouts`, body);
+
+export const updateManagementCashPayout = (payoutId, body) =>
+  axios.put(`${API_BASE}/api/management/revenue/cash-payouts/${payoutId}`, body);
+
+export const deleteManagementCashPayout = (payoutId) =>
+  axios.delete(`${API_BASE}/api/management/revenue/cash-payouts/${payoutId}`);
+
+export const getManagementCashActivity = (params = {}) =>
+  axios.get(`${API_BASE}/api/management/revenue/cash-activity`, { params });
+
+
 export const getDailyOperationsMeta = () =>
   axios.get(`${API_BASE}/api/daily-operations/meta`);
 

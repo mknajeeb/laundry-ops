@@ -1,6 +1,6 @@
 /**
  * Imperative controller for Switch Role selection (testable without React Testing Library).
- * Flow: Role → Category → API (or no-op when already current).
+ * One-screen flow: tap category×role combo → API (or no-op when already current).
  */
 import {
   categoriesForRole,
@@ -24,13 +24,11 @@ export function createSwitchRoleController({
   onSuccess,
   successDelayMs = 900,
 }) {
-  // Always open on Operator / Folder (role list). Never skip to categories just because
-  // a current role exists — that felt like an intermediate screen from the PIN Hub.
   let roleId = null;
   let categoryId = null;
-  let step = "role";
   let pending = false;
   let pendingCategoryId = null;
+  let pendingRoleId = null;
   let error = "";
   let successLabel = "";
   let phase = "select"; // select | success
@@ -38,12 +36,11 @@ export function createSwitchRoleController({
   let listeners = new Set();
 
   const snapshot = () => ({
-    step,
     roleId,
     categoryId,
     pending,
     pendingCategoryId,
-    pendingRoleId: roleId, // alias for older UI that keyed busy on role
+    pendingRoleId,
     error,
     successLabel,
     phase,
@@ -70,6 +67,9 @@ export function createSwitchRoleController({
     }
     pending = true;
     pendingCategoryId = cid;
+    pendingRoleId = rid;
+    roleId = rid;
+    categoryId = cid;
     error = "";
     if (!idempotencyKey) idempotencyKey = createIdempotencyKey();
     emit();
@@ -88,6 +88,7 @@ export function createSwitchRoleController({
         phase = "success";
         pending = false;
         pendingCategoryId = null;
+        pendingRoleId = null;
         idempotencyKey = null;
         emit();
         globalThis.setTimeout(() => onSuccess?.(body), successDelayMs);
@@ -96,6 +97,7 @@ export function createSwitchRoleController({
       error = switchRoleEmployeeError(body, status);
       pending = false;
       pendingCategoryId = null;
+      pendingRoleId = null;
       emit();
       return { called: true, ok: false, body };
     } catch (e) {
@@ -105,6 +107,7 @@ export function createSwitchRoleController({
       });
       pending = false;
       pendingCategoryId = null;
+      pendingRoleId = null;
       emit();
       return { called: true, ok: false, error };
     }
@@ -116,16 +119,25 @@ export function createSwitchRoleController({
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
+    /** One-tap combo selection — primary path for one-screen UI. */
+    async selectCombo(combo) {
+      if (!combo || pending) return { called: false, reason: "blocked" };
+      const cid =
+        combo.categoryId ??
+        resolveCategoryId(combo.category ?? combo);
+      const rid =
+        combo.roleId ??
+        resolveRoleId(combo.role ?? combo);
+      return runSwitch(cid, rid);
+    },
+    /** Legacy two-step helpers — kept for tests and clock-in flows. */
     setRole(role) {
       if (pending) return;
-      const rid = resolveRoleId(role);
-      roleId = rid;
+      roleId = resolveRoleId(role);
       categoryId = null;
-      step = "category";
       error = "";
       emit();
     },
-    /** Legacy alias — category-first callers. */
     setCategory(id) {
       if (pending) return;
       categoryId = id;
@@ -134,7 +146,6 @@ export function createSwitchRoleController({
     },
     backToRoles() {
       if (pending) return;
-      step = "role";
       categoryId = null;
       error = "";
       emit();
@@ -147,18 +158,11 @@ export function createSwitchRoleController({
       const rid = resolveRoleId(role);
       return Number(rid) === Number(currentRoleId) && currentRoleId != null;
     },
-    /**
-     * Confirm category for the selected role (API or no-op).
-     */
     async selectCategory(category) {
       const cid = typeof category === "object" ? resolveCategoryId(category) : category;
       categoryId = cid;
       return runSwitch(cid, roleId);
     },
-    /**
-     * Legacy: select role while category may already be set (tests / old UI).
-     * If category is unset, prefer current category or the only category for that role.
-     */
     async selectRole(role) {
       const rid = resolveRoleId(role);
       roleId = rid;

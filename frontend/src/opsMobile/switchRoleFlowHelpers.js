@@ -17,23 +17,83 @@ export function resolveRoleName(role) {
 }
 
 /**
- * Employee-facing role label. Stored value may remain "Folder" for compatibility.
+ * Employee-facing role label. Stored value may remain "Folder" / "Operator" for compatibility.
  */
 export function displayRoleLabel(roleOrName) {
   const name =
     typeof roleOrName === "string" ? String(roleOrName || "").trim() : resolveRoleName(roleOrName);
-  if (/^folder$/i.test(name)) return "Folding";
+  const key = name.toLowerCase();
+  if (key === "folder" || key === "folding" || key === "fold") return "Fold";
+  if (key === "operator") return "Wash-Dry";
+  if (key === "sort" || key === "sorter") return "Sort";
+  if (key === "wash-dry" || key === "wash dry" || key === "wash_dry") return "Wash-Dry";
   return name;
 }
 
-/** Compact helper under Operator / Folding cards. */
+/** Compact helper under role cards. */
 export function roleHelperText(roleOrName) {
   const name =
     typeof roleOrName === "string" ? String(roleOrName || "").trim() : resolveRoleName(roleOrName);
   const key = name.toLowerCase();
-  if (key === "operator") return "Weighing, Sorting, Washing & Drying";
-  if (key === "folder" || key === "folding") return "Folding completed laundry orders";
+  if (key === "operator" || key === "wash-dry" || key === "wash dry" || key === "wash_dry") {
+    return "Sorting, washing & drying";
+  }
+  if (key === "sort" || key === "sorter") return "Sorting & prep";
+  if (key === "folder" || key === "folding" || key === "fold") return "Folding completed orders";
   return "";
+}
+
+/** Visual bucket for one-screen role selector (Rinse WF / Rinse HD / Non-Rinse). */
+export function categoryDisplayBucket(category) {
+  const name = resolveCategoryName(category).toLowerCase();
+  const code = String(category?.code || category?.category_code || "").toLowerCase();
+  if (name.includes("rinse wf") || code === "rinse_wf") return "Rinse WF";
+  if (name.includes("rinse hd") || code === "rinse_hd") return "Rinse HD";
+  return "Non-Rinse";
+}
+
+const CATEGORY_BUCKET_ORDER = ["Rinse WF", "Rinse HD", "Non-Rinse"];
+
+/**
+ * Flatten selection tree into category×role combos for one-tap switching.
+ * Preserves backend category_id + role_id pairs unchanged.
+ */
+export function flattenRoleCombos(selectionTree) {
+  const tree = Array.isArray(selectionTree) ? selectionTree : [];
+  const combos = [];
+  for (const cat of tree) {
+    const roles = Array.isArray(cat?.roles) ? cat.roles : [];
+    for (const role of roles) {
+      const categoryId = resolveCategoryId(cat);
+      const roleId = resolveRoleId(role);
+      if (categoryId == null || roleId == null) continue;
+      combos.push({
+        categoryId,
+        roleId,
+        category: cat,
+        role,
+        bucket: categoryDisplayBucket(cat),
+        categoryName: resolveCategoryName(cat),
+        roleLabel: displayRoleLabel(role),
+        comboLabel: `${displayRoleLabel(role)} · ${resolveCategoryName(cat)}`,
+      });
+    }
+  }
+  return combos;
+}
+
+/** Group flat combos by visual bucket for one-screen layout. */
+export function groupCombosByBucket(combos) {
+  const groups = Object.fromEntries(CATEGORY_BUCKET_ORDER.map((b) => [b, []]));
+  for (const combo of combos || []) {
+    const bucket = combo.bucket || "Non-Rinse";
+    if (!groups[bucket]) groups[bucket] = [];
+    groups[bucket].push(combo);
+  }
+  return CATEGORY_BUCKET_ORDER.filter((b) => groups[b]?.length).map((bucket) => ({
+    bucket,
+    combos: groups[bucket],
+  }));
 }
 
 export function resolveCategoryId(category) {

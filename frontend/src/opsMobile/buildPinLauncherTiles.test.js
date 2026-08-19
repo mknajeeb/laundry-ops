@@ -99,8 +99,8 @@ describe("buildPinLauncherTiles", () => {
     expect(tiles.map((t) => t.id)).toEqual(["clock", "inventory"]);
   });
 
-  it("shows Revenue & Cost and Inventory labels; hides when not allowed", () => {
-    const on = buildPinLauncherTiles({
+  it("never shows Revenue & Cost tile (retired from Mobile PIN)", () => {
+    const tiles = buildPinLauncherTiles({
       features: {
         inventory: { allowed: true },
         revenue_cost: { allowed: true },
@@ -108,18 +108,8 @@ describe("buildPinLauncherTiles", () => {
       featureOrder: ["inventory", "revenue_cost"],
       attendance: { clocked_in: false, allow_clock_from_hub: true },
     });
-    expect(on.find((t) => t.id === "inventory")?.label).toBe("Inventory");
-    expect(on.find((t) => t.id === "revenue_cost")?.label).toBe("Revenue & Cost");
-
-    const off = buildPinLauncherTiles({
-      features: {
-        inventory: { allowed: false },
-        revenue_cost: { allowed: false },
-      },
-      featureOrder: ["inventory", "revenue_cost"],
-      attendance: { clocked_in: false, allow_clock_from_hub: true },
-    });
-    expect(off.map((t) => t.id)).toEqual(["clock"]);
+    expect(tiles.map((t) => t.id)).toEqual(["clock", "inventory"]);
+    expect(tiles.find((t) => t.id === "revenue_cost")).toBeUndefined();
   });
 
   it("disables Tasks tile when checklist is not assigned today", () => {

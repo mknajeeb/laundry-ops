@@ -9,7 +9,7 @@ export const HUB_DESTINATIONS = [
   { to: "/management/rinse-hd", id: "rinse_hd", label: "Rinse HD", enabled: true },
   { to: "/management/performance", id: "performance", label: "Performance", enabled: true },
   { to: "/management/labor", id: "labor", label: "Labor", enabled: false },
-  { to: "/management/revenue", id: "revenue", label: "Revenue", enabled: false },
+  { to: "/management/revenue", id: "revenue", label: "Revenue", enabled: true },
   { to: "/management/rinse-flow", id: "rinse_flow", label: "Rinse Flow", enabled: false },
   { to: "/management/analysis", id: "analysis", label: "Analysis", enabled: false },
   { to: "/management/bag-search", id: "bag_search", label: "Bag Search", enabled: false },

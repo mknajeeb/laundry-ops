@@ -1,56 +1,9 @@
-import { useCallback, useEffect, useMemo } from "react";
-import { Box } from "@mui/material";
-import { authLogout, clearAuthSession } from "../api";
-import RevenueCostFloorFlow from "../opsMobile/RevenueCostFloorFlow";
-import {
-  clearPinHubSession,
-  loadPinHubAppSession,
-} from "../utils/pinHubSession";
+import { Navigate } from "react-router-dom";
 
 /**
- * Dedicated PIN Revenue & Cost route — never loads manager Finance dashboard.
+ * Employee PIN Revenue & Cost route retired — Management Revenue is the entry surface.
+ * Historical mobile submissions remain in drc_mobile_section_submissions.
  */
-export default function RevenueCostFloorPage({ user, onPinHubDone }) {
-  const pinHubApp = useMemo(() => loadPinHubAppSession(), []);
-
-  useEffect(() => {
-    if (!pinHubApp && user) {
-      window.location.replace("/finance/daily-revenue-cost");
-    }
-  }, [pinHubApp, user]);
-
-  const clearWashproSession = useCallback(async () => {
-    try {
-      await authLogout();
-    } catch {
-      /* ignore */
-    }
-    clearAuthSession();
-    try {
-      localStorage.removeItem("ta_token");
-    } catch {
-      /* ignore */
-    }
-    onPinHubDone?.();
-  }, [onPinHubDone]);
-
-  const returnToPinMenu = useCallback(async () => {
-    await clearWashproSession();
-  }, [clearWashproSession]);
-
-  const lockToPinEntry = useCallback(async () => {
-    clearPinHubSession();
-    await clearWashproSession();
-  }, [clearWashproSession]);
-
-  return (
-    <Box sx={{ minHeight: "100%", width: "100%" }}>
-      <RevenueCostFloorFlow
-        user={user}
-        onBack={returnToPinMenu}
-        onDone={returnToPinMenu}
-        onLock={lockToPinEntry}
-      />
-    </Box>
-  );
+export default function RevenueCostFloorPage() {
+  return <Navigate to="/management/revenue" replace />;
 }
