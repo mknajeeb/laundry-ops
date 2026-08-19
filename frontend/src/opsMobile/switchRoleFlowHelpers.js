@@ -47,12 +47,17 @@ export function roleHelperText(roleOrName) {
 export function categoryDisplayBucket(category) {
   const name = resolveCategoryName(category).toLowerCase();
   const code = String(category?.code || category?.category_code || "").toLowerCase();
-  if (name.includes("rinse wf") || code === "rinse_wf") return "Rinse WF";
-  if (name.includes("rinse hd") || code === "rinse_hd") return "Rinse HD";
+  if (name.includes("rinse wf") || name.includes("wash & fold") || name.includes("wash and fold") || code === "rinse_wf") {
+    return "Rinse Wash & Fold";
+  }
+  if (name.includes("rinse hd") || name.includes("hang dry") || code === "rinse_hd") {
+    return "Rinse Hang Dry";
+  }
   return "Non-Rinse";
 }
 
-const CATEGORY_BUCKET_ORDER = ["Rinse WF", "Rinse HD", "Non-Rinse"];
+const CATEGORY_BUCKET_ORDER = ["Rinse Wash & Fold", "Rinse Hang Dry", "Non-Rinse"];
+const ROLE_LABEL_ORDER = ["Sort", "Wash-Dry", "Fold"];
 
 /**
  * Flatten selection tree into category×role combos for one-tap switching.
@@ -92,7 +97,11 @@ export function groupCombosByBucket(combos) {
   }
   return CATEGORY_BUCKET_ORDER.filter((b) => groups[b]?.length).map((bucket) => ({
     bucket,
-    combos: groups[bucket],
+    combos: [...groups[bucket]].sort((a, b) => {
+      const ai = ROLE_LABEL_ORDER.indexOf(a.roleLabel);
+      const bi = ROLE_LABEL_ORDER.indexOf(b.roleLabel);
+      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+    }),
   }));
 }
 

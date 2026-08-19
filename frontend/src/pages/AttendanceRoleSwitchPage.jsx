@@ -223,14 +223,10 @@ export default function AttendanceRoleSwitchPage() {
       body.current_category_id != null ? Number(body.current_category_id) : null,
     );
     setCurrentRoleId(body.current_role_id != null ? Number(body.current_role_id) : null);
-    // Always open on the role list (Operator / Folder, …). Do not skip to category
-    // just because a current role already exists — that felt like an intermediate screen.
-    setRoleId(null);
-    setCategoryId(null);
-    setFlowStep("role");
     setFlowError("");
     setPending(false);
     setPendingCategoryId(null);
+    setPendingRoleId(null);
     setSuccessLabel("");
     setPhase("select");
     setPin("");

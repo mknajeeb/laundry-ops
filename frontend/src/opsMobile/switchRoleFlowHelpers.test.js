@@ -2,7 +2,10 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   autoSelectCategoryId,
   categoriesForRole,
+  categoryDisplayBucket,
   displayRoleLabel,
+  flattenRoleCombos,
+  groupCombosByBucket,
   initialCategoryId,
   initialRoleId,
   isCurrentRoleAssignment,
@@ -137,6 +140,43 @@ describe("switchRoleFlowHelpers", () => {
     expect(switchRoleEmployeeError({ error: "You must be clocked in" }, 400)).toBe(
       "Role change isn’t available right now.",
     );
+  });
+
+  it("flattens production selection_tree using role_id not assignment id", () => {
+    const prodTree = [
+      {
+        id: 20,
+        code: "rinse_hd",
+        name: "Rinse HD",
+        roles: [
+          {
+            id: 501,
+            role_id: 2,
+            role_name: "Folder",
+            category_id: 20,
+          },
+          {
+            id: 500,
+            role_id: 1,
+            role_name: "Operator",
+            category_id: 20,
+          },
+        ],
+      },
+      {
+        id: 10,
+        code: "rinse_wf",
+        name: "Rinse WF",
+        roles: [{ id: 400, role_id: 1, role_name: "Operator", category_id: 10 }],
+      },
+    ];
+    const combos = flattenRoleCombos(prodTree);
+    expect(combos.map((c) => c.roleId)).toEqual([2, 1, 1]);
+    expect(combos.every((c) => c.roleId !== 501 && c.roleId !== 500 && c.roleId !== 400)).toBe(true);
+    const groups = groupCombosByBucket(combos);
+    expect(groups.map((g) => g.bucket)).toEqual(["Rinse Wash & Fold", "Rinse Hang Dry"]);
+    expect(groups[1].combos.map((c) => c.roleLabel)).toEqual(["Wash-Dry", "Fold"]);
+    expect(categoryDisplayBucket({ name: "Rinse HD", code: "rinse_hd" })).toBe("Rinse Hang Dry");
   });
 
   it("keeps long role names as full strings (no forced truncation helper)", () => {
@@ -291,6 +331,23 @@ describe("createSwitchRoleController", () => {
     expect(state.phase).toBe("select");
     expect(state.error).toBe("Couldn’t change role. Try again.");
     expect(state.pending).toBe(false);
+  });
+});
+
+describe("AttendanceRoleSwitchPage open path", () => {
+  it("does not call removed two-step setters that crash a successful API open", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const { dirname, join } = await import("node:path");
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "../pages/AttendanceRoleSwitchPage.jsx"),
+      "utf8",
+    );
+    expect(src).not.toMatch(/\bsetFlowStep\b/);
+    expect(src).not.toMatch(/\bsetRoleId\(/);
+    expect(src).not.toMatch(/\bsetCategoryId\(/);
+    expect(src).toContain("needs_selection");
+    expect(src).toContain("setPhase(\"select\")");
   });
 });
 
