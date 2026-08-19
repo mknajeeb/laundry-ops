@@ -1281,6 +1281,8 @@ def apply_unified_bag_edit(
             completed_by=patch_completed_by,
             pre_weight_lbs=after.get("pre_weight_lbs"),
             post_weight_lbs=after.get("post_weight_lbs"),
+            actor_user_id=actor_user_id,
+            actor_display_name=actor_display_name,
         )
         if isinstance(patch_out, dict) and patch_out.get("headline_patch_error"):
             headline_patch_error = str(patch_out.get("headline_patch_error"))

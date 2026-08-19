@@ -10,6 +10,7 @@ describe("actionsForBagStatus", () => {
     expect(acts.correctWeight).toBe(false);
     expect(acts.returnPending).toBe(false);
     expect(acts.moveToReview).toBe(true);
+    expect(acts.sendBackToReview).toBe(false);
   });
 
   it("shows Return to Pending for Review Required", () => {
@@ -17,6 +18,7 @@ describe("actionsForBagStatus", () => {
     expect(acts.returnPending).toBe(true);
     expect(acts.editBag).toBe(true);
     expect(acts.moveToReview).toBe(false);
+    expect(acts.sendBackToReview).toBe(false);
     expect(acts.isSettled).toBe(false);
   });
 
@@ -27,6 +29,7 @@ describe("actionsForBagStatus", () => {
     expect(acts.editBag).toBe(false);
     expect(acts.viewDetails).toBe(true);
     expect(acts.moveToReview).toBe(false);
+    expect(acts.sendBackToReview).toBe(true);
     expect(acts.isSettled).toBe(true);
     expect(acts.statusLabel).toBe("COMPLETED");
   });
@@ -39,6 +42,7 @@ describe("actionsForBagStatus", () => {
     expect(acts.isSettled).toBe(false);
     expect(acts.editBag).toBe(true);
     expect(acts.viewDetails).toBe(false);
+    expect(acts.sendBackToReview).toBe(true);
     expect(acts.statusLabel).toBe(null);
   });
 
@@ -47,6 +51,7 @@ describe("actionsForBagStatus", () => {
     expect(acts.editBag).toBe(false);
     expect(acts.viewDetails).toBe(true);
     expect(acts.moveToReview).toBe(false);
+    expect(acts.sendBackToReview).toBe(true);
     expect(acts.statusLabel).toBe("REVIEWED");
   });
 });

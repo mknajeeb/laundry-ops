@@ -7,10 +7,15 @@ import {
   Collapse,
   Divider,
   Drawer,
+  IconButton,
+  InputAdornment,
   Popover,
   Stack,
+  TextField,
   Typography,
 } from "@mui/material";
+import ClearIcon from "@mui/icons-material/Clear";
+import SearchIcon from "@mui/icons-material/Search";
 import {
   getManagementRinseWfReviewList,
   postManagementRinseWfSplitDecision,
@@ -220,6 +225,7 @@ export default function ManagementRinseWfReviewSection({
   });
   const [busyBagId, setBusyBagId] = useState(null);
   const [decisionMsg, setDecisionMsg] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [perf, setPerf] = useState({
     drawerOpenMs: null,
     lastDecisionSaveMs: null,
@@ -285,6 +291,7 @@ export default function ManagementRinseWfReviewSection({
     if (snapshotUnavailable) return;
     drawerOpenStarted.current = performance.now();
     setDecisionMsg("");
+    setSearchInput("");
     setDrawer({ open: true, category });
   };
 
@@ -293,6 +300,7 @@ export default function ManagementRinseWfReviewSection({
     setListState({ loading: false, error: "", bags: [], meta: null });
     setConfirm({ anchorEl: null, bag: null, decision: null });
     setDecisionMsg("");
+    setSearchInput("");
   };
 
   const title =
@@ -362,6 +370,15 @@ export default function ManagementRinseWfReviewSection({
 
   const confirmOpen = Boolean(confirm.anchorEl);
   const confirmIsSplit = confirm.decision === "split";
+
+  const searchQ = String(searchInput || "").trim().toLowerCase();
+  const filteredBags = !searchQ
+    ? listState.bags || []
+    : (listState.bags || []).filter((bag) => {
+        const bagId = String(bag.bag_id || "").toLowerCase();
+        const customer = String(bag.customer_name || "").toLowerCase();
+        return bagId.includes(searchQ) || customer.includes(searchQ);
+      });
 
   return (
     <Box sx={{ mt: 0.5, mb: 1.5 }}>
@@ -479,19 +496,48 @@ export default function ManagementRinseWfReviewSection({
               {decisionMsg}
             </Alert>
           ) : null}
+          <TextField
+            size="small"
+            fullWidth
+            placeholder="Search bag or customer"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            sx={{ mb: 1 }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" sx={{ color: "text.secondary" }} />
+                </InputAdornment>
+              ),
+              endAdornment: searchInput ? (
+                <InputAdornment position="end">
+                  <IconButton
+                    size="small"
+                    aria-label="Clear search"
+                    onClick={() => setSearchInput("")}
+                    edge="end"
+                  >
+                    <ClearIcon fontSize="small" />
+                  </IconButton>
+                </InputAdornment>
+              ) : null,
+            }}
+          />
           {listState.loading ? (
             <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
               <CircularProgress size={28} />
             </Box>
           ) : listState.error ? (
             <Alert severity="error">{listState.error}</Alert>
-          ) : listState.bags.length === 0 ? (
+          ) : filteredBags.length === 0 ? (
             <Typography sx={{ color: "#64748b", fontSize: 13, py: 2 }}>
-              No bags in this queue.
+              {searchQ && (listState.bags || []).length
+                ? "No bags match this search."
+                : "No bags in this queue."}
             </Typography>
           ) : (
             <Stack spacing={0} divider={<Divider />}>
-              {listState.bags.map((bag) =>
+              {filteredBags.map((bag) =>
                 isSplitDrawer ? (
                   <SplitOrderReviewRow
                     key={bag.bag_id}

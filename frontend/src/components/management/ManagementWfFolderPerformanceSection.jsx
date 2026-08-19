@@ -25,6 +25,7 @@ import {
   getManagementWfFolderDestinations,
   postManagementWfFolderAttributionMove,
   postManagementWfFolderAttributionReset,
+  postVeewashStep1Correction,
 } from "../../api";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
@@ -220,20 +221,81 @@ function EmployeeCard({ employee, onOpenSession }) {
   );
 }
 
-function OrderRow({ order, selectable, selected, onToggle }) {
+function OrderRow({
+  order,
+  selectable,
+  selected,
+  onToggle,
+  selectedDateEt,
+  onSentBack,
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sentOk, setSentOk] = useState(false);
+
+  const status = String(
+    order.dashboard_status || order.effective_status || order.status || ""
+  )
+    .toLowerCase()
+    .replace(/-/g, "_");
+  const alreadyReview =
+    status.includes("review")
+    || order.review_required === true
+    || Boolean(order.in_review);
+  const showSendBack = !alreadyReview;
+
+  const handleSendBack = async (e) => {
+    e?.stopPropagation?.();
+    if (!order?.bag_id || sending) return;
+    const dateEt = order.selected_date_et || selectedDateEt;
+    if (!dateEt) return;
+    if (!window.confirm(`Send ${order.bag_id} back to Review Required?`)) return;
+    setSending(true);
+    setSentOk(false);
+    try {
+      const reasonCodes = order.manual_review_reason_codes || order.reason_codes || [];
+      const reasonCode = String(reasonCodes[0] || "MANAGER_SENT_FOR_REVIEW")
+        .trim()
+        .toUpperCase();
+      const res = await postVeewashStep1Correction({
+        action: "move_to_review",
+        bag_id: order.bag_id,
+        selected_date_et: dateEt,
+        reason_code: reasonCode,
+        reason: "Manager sent bag back to review",
+      });
+      if (!res?.data?.ok) {
+        window.alert(res?.data?.error || "Send back to review failed");
+        return;
+      }
+      setSentOk(true);
+      await onSentBack?.(order);
+    } catch (err) {
+      window.alert(err?.response?.data?.error || err?.message || "Send back to review failed");
+    } finally {
+      setSending(false);
+    }
+  };
+
   return (
     <Box
       sx={{
         py: 1,
         borderBottom: "1px solid #f1f5f9",
+        cursor: "pointer",
       }}
+      onClick={() => setExpanded((v) => !v)}
     >
       <Stack direction="row" spacing={1} alignItems="flex-start">
         {selectable ? (
           <Checkbox
             size="small"
             checked={selected}
-            onChange={() => onToggle(order.bag_id)}
+            onChange={(e) => {
+              e.stopPropagation();
+              onToggle(order.bag_id);
+            }}
+            onClick={(e) => e.stopPropagation()}
             sx={{ p: 0.25, mt: 0.1 }}
           />
         ) : null}
@@ -260,6 +322,30 @@ function OrderRow({ order, selectable, selected, onToggle }) {
             <Typography sx={{ mt: 0.2, fontSize: 11, color: "#b45309", fontWeight: 700 }}>
               {order.unmapped_reason.replaceAll("_", " ")}
             </Typography>
+          ) : null}
+          {expanded ? (
+            <Box sx={{ mt: 0.75 }} onClick={(e) => e.stopPropagation()}>
+              {sentOk ? (
+                <Typography sx={{ fontSize: 12, color: "#047857", fontWeight: 700 }}>
+                  Sent back to Review
+                </Typography>
+              ) : showSendBack ? (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="warning"
+                  disabled={sending}
+                  onClick={handleSendBack}
+                  sx={{ textTransform: "none", fontWeight: 800 }}
+                >
+                  {sending ? "Sending…" : "Send Back to Review"}
+                </Button>
+              ) : (
+                <Typography sx={{ fontSize: 12, color: "#94a3b8" }}>
+                  Already in Review Required
+                </Typography>
+              )}
+            </Box>
           ) : null}
         </Box>
       </Stack>
@@ -495,6 +581,16 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
     }
   };
 
+  const handleOrderSentBack = async (order) => {
+    await load();
+    if (sessionModal) {
+      await openSession({
+        ...sessionModal,
+        selected_date_et: order?.selected_date_et || sessionModal.selected_date_et || dateEt,
+      });
+    }
+  };
+
   const presets = data?.ui_presets || [
     { key: "today", label: "Today" },
     { key: "same_weekday_last_week", label: "Same Day Last Week" },
@@ -690,6 +786,8 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
                     selectable
                     selected={selectedBagIds.has(o.bag_id)}
                     onToggle={toggleBag}
+                    selectedDateEt={o.selected_date_et || dateEt}
+                    onSentBack={handleOrderSentBack}
                   />
                 ))
               )}
@@ -768,6 +866,10 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
                 selectable
                 selected={selectedBagIds.has(o.bag_id)}
                 onToggle={toggleBag}
+                selectedDateEt={
+                  o.selected_date_et || sessionModal?.selected_date_et || dateEt
+                }
+                onSentBack={handleOrderSentBack}
               />
             ))
           )}

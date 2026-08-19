@@ -9,6 +9,8 @@ import {
   Divider,
   Drawer,
   FormControl,
+  IconButton,
+  InputAdornment,
   InputLabel,
   MenuItem,
   Select,
@@ -23,7 +25,9 @@ import {
   CircularProgress,
   Alert,
 } from "@mui/material";
+import ClearIcon from "@mui/icons-material/Clear";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import SearchIcon from "@mui/icons-material/Search";
 import {
   getBulkWorkitems,
   getVeewashStep1BagDetail,
@@ -86,6 +90,8 @@ const REASON_LABELS = {
   SERVICE_CLASSIFICATION_MISMATCH: "Service classification mismatch",
   COMPLETION_DETAILS_MISSING: "Completion details missing",
   SCAN_CHRONOLOGY_STALE: "Scan chronology behind portal last-seen",
+  MANAGER_SENT_FOR_REVIEW: "Manager sent for review",
+  MISSING_PRE_EVIDENCE: "Missing PRE evidence",
 };
 
 const PAGE_SIZE = 25;
@@ -132,11 +138,37 @@ export default function Step1MetricDrawer({
   const editingBagRef = useRef(null);
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
-  const resolvedMetric = queue || metric;
+  const [completedTab, setCompletedTab] = useState("completed");
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQ, setSearchQ] = useState("");
+  const baseMetric = queue || metric;
+  const showCompletedTabs =
+    baseMetric === "completed"
+    || baseMetric === "manually_reviewed"
+    || metric === "completed"
+    || metric === "manually_reviewed"
+    || /completed/i.test(String(title || ""));
+  const resolvedMetric = showCompletedTabs ? completedTab : baseMetric;
 
   useEffect(() => {
     editingBagRef.current = editingBag;
   }, [editingBag]);
+
+  useEffect(() => {
+    if (!open) return;
+    setCompletedTab(
+      baseMetric === "manually_reviewed" || metric === "manually_reviewed"
+        ? "manually_reviewed"
+        : "completed"
+    );
+    setSearchInput("");
+    setSearchQ("");
+  }, [open, selectedDateEt, baseMetric, metric]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQ(String(searchInput || "").trim()), 150);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
   const load = useCallback(
     async (nextPage = 1, signal, opts = {}) => {
@@ -165,6 +197,7 @@ export default function Step1MetricDrawer({
           page_size: PAGE_SIZE,
           include_details: false,
           reason_code: reasonCode || undefined,
+          q: searchQ || undefined,
           signal,
         });
         if (signal?.aborted) return;
@@ -222,7 +255,7 @@ export default function Step1MetricDrawer({
         if (!signal?.aborted) setLoading(false);
       }
     },
-    [open, selectedDateEt, resolvedMetric, serviceFilter, rushFilter, reasonCode]
+    [open, selectedDateEt, resolvedMetric, serviceFilter, rushFilter, reasonCode, searchQ]
   );
 
   useEffect(() => {
@@ -269,6 +302,7 @@ export default function Step1MetricDrawer({
         bag_id: bagId,
         include_details: true,
         reason_code: reasonCode || undefined,
+        q: searchQ || undefined,
       });
       const detail = (res?.data?.bags || [])[0];
       if (detail) {
@@ -415,6 +449,53 @@ export default function Step1MetricDrawer({
     }
   };
 
+  const sendBackToReview = async (bag) => {
+    if (!bag?.bag_id || !selectedDateEt || readOnly) return;
+    const reasonCodes =
+      bag.manual_review_reason_codes?.length
+        ? bag.manual_review_reason_codes
+        : bag.reason_codes || [];
+    const reasonCode = String(reasonCodes[0] || "MANAGER_SENT_FOR_REVIEW").trim().toUpperCase();
+    if (
+      !window.confirm(
+        `Send ${bag.bag_id} back to Review Required?`
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const res = await postVeewashStep1Correction({
+        action: "move_to_review",
+        bag_id: bag.bag_id,
+        selected_date_et: selectedDateEt,
+        reason_code: reasonCode,
+        reason: "Manager sent bag back to review",
+      });
+      if (!res?.data?.ok) {
+        setError(res?.data?.error || "Send back to review failed");
+        return;
+      }
+      bagDetailCache.delete(detailCacheKey(selectedDateEt, bag.bag_id));
+      if (resolvedMetric === "manually_reviewed") {
+        setBags((prev) => (prev || []).filter((b) => b.bag_id !== bag.bag_id));
+        setTotal((t) => Math.max(0, Number(t || 0) - 1));
+        setExpanded(null);
+      }
+      try {
+        await load(1, undefined, { preserveExpanded: true, skipCacheMerge: true });
+      } catch (_) {
+        /* non-blocking */
+      }
+      onCorrected?.();
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || "Send back to review failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <Drawer
       anchor="right"
@@ -440,6 +521,62 @@ export default function Step1MetricDrawer({
         </Box>
         <Button onClick={onClose}>Close</Button>
       </Stack>
+      {showCompletedTabs ? (
+        <Stack
+          direction="row"
+          spacing={0.75}
+          sx={{ mb: 1 }}
+          flexWrap="wrap"
+          useFlexGap
+        >
+          <Button
+            size="small"
+            variant={completedTab === "completed" ? "contained" : "outlined"}
+            onClick={() => setCompletedTab("completed")}
+            sx={{ textTransform: "none", fontWeight: 700, minHeight: 30, py: 0.25 }}
+          >
+            Completed
+          </Button>
+          <Button
+            size="small"
+            variant={completedTab === "manually_reviewed" ? "contained" : "outlined"}
+            onClick={() => setCompletedTab("manually_reviewed")}
+            sx={{ textTransform: "none", fontWeight: 700, minHeight: 30, py: 0.25 }}
+          >
+            Manually Reviewed
+          </Button>
+        </Stack>
+      ) : null}
+      <TextField
+        size="small"
+        fullWidth
+        placeholder="Search bag or customer"
+        value={searchInput}
+        onChange={(e) => setSearchInput(e.target.value)}
+        sx={{ mb: 1 }}
+        InputProps={{
+          startAdornment: (
+            <InputAdornment position="start">
+              <SearchIcon fontSize="small" sx={{ color: "text.secondary" }} />
+            </InputAdornment>
+          ),
+          endAdornment: searchInput ? (
+            <InputAdornment position="end">
+              <IconButton
+                size="small"
+                aria-label="Clear search"
+                onClick={() => {
+                  setSearchInput("");
+                  setSearchQ("");
+                }}
+                edge="end"
+              >
+                <ClearIcon fontSize="small" />
+              </IconButton>
+            </InputAdornment>
+          ) : null,
+        }}
+      />
       <Divider sx={{ mb: 1.5 }} />
       {error ? (
         <Alert
@@ -567,7 +704,9 @@ export default function Step1MetricDrawer({
                           : ""}
                       </Typography>
                     ) : null}
-                    {(bag.reason_codes || []).length > 0 ? (
+                    {(bag.reason_codes || []).length > 0
+                    && resolvedMetric !== "manually_reviewed"
+                    && !bag.manually_reviewed ? (
                       <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
                         {(bag.reason_codes || []).map((c) => (
                           <Chip
@@ -578,6 +717,34 @@ export default function Step1MetricDrawer({
                           />
                         ))}
                       </Stack>
+                    ) : null}
+                    {resolvedMetric === "manually_reviewed" || bag.manually_reviewed ? (
+                      <Box sx={{ mt: 0.5 }}>
+                        {(() => {
+                          const mrCodes =
+                            (bag.manual_review_reason_codes || []).length
+                              ? bag.manual_review_reason_codes
+                              : bag.reason_codes || [];
+                          return mrCodes.length ? (
+                            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mb: 0.25 }}>
+                              {mrCodes.map((c) => (
+                                <Chip
+                                  key={`mr-${c}`}
+                                  size="small"
+                                  label={REASON_LABELS[c] || c}
+                                  color="info"
+                                  variant="outlined"
+                                  sx={{ height: 20, fontSize: "0.68rem" }}
+                                />
+                              ))}
+                            </Stack>
+                          ) : null;
+                        })()}
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          Reviewed by {bag.reviewed_by || "—"}
+                          {bag.reviewed_at ? ` · ${fmtTs(bag.reviewed_at)}` : ""}
+                        </Typography>
+                      </Box>
                     ) : null}
                   </Box>
                 </AccordionSummary>
@@ -639,6 +806,10 @@ export default function Step1MetricDrawer({
                       ),
                       reasonCodes: bag.reason_codes || [],
                     });
+                    const showSendBack =
+                      acts.sendBackToReview
+                      || resolvedMetric === "manually_reviewed"
+                      || ((acts.isSettled || acts.isCompleted) && !acts.isReview);
                     return (
                       <Box
                         data-testid="bag-action-bar"
@@ -695,6 +866,18 @@ export default function Step1MetricDrawer({
                                   onClick={() => startAction(bag, "move_to_review")}
                                 >
                                   Move to Review Required
+                                </Button>
+                              ) : null}
+                              {showSendBack && !acts.moveToReview ? (
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  color="warning"
+                                  disabled={saving}
+                                  onClick={() => sendBackToReview(bag)}
+                                  sx={{ textTransform: "none", fontWeight: 700 }}
+                                >
+                                  Send Back to Review
                                 </Button>
                               ) : null}
                               {acts.correctEntry ? (

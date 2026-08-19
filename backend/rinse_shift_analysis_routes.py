@@ -467,6 +467,7 @@ def register_rinse_shift_analysis_routes(
                 page=int(request.args.get("page") or 1),
                 page_size=int(request.args.get("page_size") or 25),
                 reason_code=request.args.get("reason_code") or request.args.get("reason"),
+                q=request.args.get("q") or request.args.get("search"),
             )
             if isinstance(out, dict):
                 out["queue"] = metric

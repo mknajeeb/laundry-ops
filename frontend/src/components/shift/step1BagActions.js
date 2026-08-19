@@ -57,6 +57,8 @@ export function actionsForBagStatus(status, opts = {}) {
     returnPending: isReview || isCompleted,
     // Unresolved pending bags can still be sent to Review Required.
     moveToReview: isPending && !isSettled && !specialtyUnresolved,
+    // Settled/completed bags (not currently in review) can be sent back.
+    sendBackToReview: (isSettled || isCompleted) && !isReview,
     correctEntry: false,
     correctWeight: false,
     correctCompletion: false,

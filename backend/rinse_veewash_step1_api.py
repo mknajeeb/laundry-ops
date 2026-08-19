@@ -198,6 +198,9 @@ def normalize_step1_queue_metric(raw: str | None) -> str:
         "production_missing": "pending",
         "review": "review_required",
         "review_required": "review_required",
+        "manually_reviewed": "manually_reviewed",
+        "manual_review": "manually_reviewed",
+        "manual_reviewed": "manually_reviewed",
         "unfinished_at_close": "unfinished_at_close",
         "unfinished": "unfinished_at_close",
         "stale": "unfinished_at_close",
@@ -230,9 +233,8 @@ def _filter_bag_ids(
     service: str,
     rush: str,
     reason_code: str | None = None,
+    manually_reviewed_ids: list[str] | None = None,
 ) -> list[str]:
-    from backend.rinse_veewash_workload import _rush_bucket
-
     segs = summary.get("segments") or {}
     # Resolve segment key
     svc = (service or "all").lower()
@@ -265,6 +267,8 @@ def _filter_bag_ids(
         seg = segs.get("all") or {}
     bags = seg.get("bag_ids") or {}
     metric_norm = normalize_step1_queue_metric(metric)
+    if metric_norm == "manually_reviewed":
+        return sorted(set(manually_reviewed_ids or []))
     if metric_norm in (
         "comforter_orders",
         "bath_mat_orders",
@@ -367,6 +371,7 @@ def build_drilldown(
     page: int = 1,
     page_size: int = 25,
     reason_code: str | None = None,
+    q: str | None = None,
 ) -> dict[str, Any]:
     """
     Step-1 metric drawer payload.
@@ -457,12 +462,28 @@ def build_drilldown(
             },
         }
 
+    metric_norm = normalize_step1_queue_metric(metric)
+    manually_reviewed_ids: list[str] | None = None
+    if metric_norm == "manually_reviewed":
+        from backend.rinse_manual_review import (
+            filter_manually_reviewed_ids,
+            load_manually_reviewed_day_bags,
+        )
+
+        mr_rows = load_manually_reviewed_day_bags(
+            cursor, organization_id, selected_date_et
+        )
+        manually_reviewed_ids = filter_manually_reviewed_ids(
+            mr_rows, service=service, rush=rush
+        )
+
     ids = _filter_bag_ids(
         summary or {},
         metric=metric,
         service=service,
         rush=rush,
         reason_code=reason_code,
+        manually_reviewed_ids=manually_reviewed_ids,
     )
     if bag_id:
         bid = normalize_bag_id(bag_id)
@@ -470,10 +491,12 @@ def build_drilldown(
 
     # Heal stale headline membership: Review drawers must not show bags already
     # marked completed/pending on the day_bag row (segment patch lag / older bugs).
+    # Exception: send-back keeps operationally completed bags in Completed while
+    # also listing them under Review Required.
     if (
         not bag_id
         and ids
-        and normalize_step1_queue_metric(metric) == "review_required"
+        and metric_norm == "review_required"
     ):
         status_rows = load_day_bags_by_ids(
             cursor, organization_id, selected_date_et, ids, status_only=True
@@ -484,6 +507,31 @@ def build_drilldown(
             if str(r.get("effective_status") or "").strip().lower() == "review_required"
         }
         ids = [b for b in ids if normalize_bag_id(b) in still_review]
+
+    # Optional search within the selected queue only (bag id / customer / order id).
+    search_q = str(q or "").strip()
+    if search_q and ids and not bag_id:
+        from backend.rinse_manual_review import bag_matches_search
+
+        preview = load_day_bags_by_ids(
+            cursor, organization_id, selected_date_et, ids
+        )
+        matched: list[str] = []
+        for row in preview:
+            snap = row.get("bag_snapshot") or {}
+            probe = {
+                "bag_id": row.get("bag_id"),
+                "customer_name": snap.get("customer_name"),
+                "order_id": snap.get("order_id") or snap.get("reference_id"),
+                "reference_id": snap.get("reference_id"),
+                "rinse_order_id": snap.get("rinse_order_id"),
+                "portal_order_id": snap.get("portal_order_id"),
+            }
+            if bag_matches_search(probe, search_q):
+                bid = normalize_bag_id(row.get("bag_id"))
+                if bid:
+                    matched.append(bid)
+        ids = matched
 
     page = max(1, int(page or 1))
     page_size = max(1, min(100, int(page_size or 25)))
@@ -639,6 +687,7 @@ def build_drilldown(
     bags = []
     specialty_by_id: dict[str, dict] = {}
     metric_norm_for_specialty = normalize_step1_queue_metric(metric)
+    from backend.rinse_manual_review import public_manual_review_fields
     if metric_norm_for_specialty in (
         "comforter_orders",
         "bath_mat_orders",
@@ -727,6 +776,18 @@ def build_drilldown(
                 "completed_by": r.get("completed_by"),
             },
         }
+        sb_row = next(
+            (x for x in snap_bags if normalize_bag_id(x.get("bag_id")) == bid),
+            None,
+        )
+        mr_fields = public_manual_review_fields(
+            (sb_row or {}).get("bag_snapshot") if sb_row else (r if isinstance(r, dict) else {})
+        )
+        item.update(mr_fields)
+        if normalize_step1_queue_metric(metric) == "manually_reviewed":
+            prior = item.get("manual_review_reason_codes") or []
+            if prior:
+                item["reason_codes"] = list(prior)
         if include_details:
             item["scans"] = scans.get(bid) or [] if load_scans else []
             item["corrections"] = corrections.get(bid) or []
@@ -1110,31 +1171,47 @@ def apply_step1_correction(
             apply_manager_edit_day_bag_patch,
             load_day_bags_by_ids,
         )
+        from backend.rinse_manual_review import resolve_send_back_reasons
         from backend.rinse_veewash_workload import (
             REASON_MANAGER_SENT_FOR_REVIEW,
             REASON_MISSING_PRE_EVIDENCE,
         )
 
+        rows = load_day_bags_by_ids(cursor, organization_id, day, [bid])
+        day_row = rows[0] if rows else {}
+        prev_status = str(day_row.get("effective_status") or "").strip().lower() or None
+        # Already in Review Required — no-op (idempotent).
+        if prev_status == "review_required":
+            return {
+                "ok": True,
+                "action": action,
+                "bag_id": bid,
+                "effective_status": "review_required",
+                "already_in_review": True,
+            }
+        snap = day_row.get("bag_snapshot") or {}
+        restored = resolve_send_back_reasons(
+            snap=snap,
+            previous_reason_codes=list(day_row.get("review_reason_codes") or []),
+            explicit_reason_code=body.get("reason_code"),
+        )
         reason_code = str(
-            body.get("reason_code") or REASON_MANAGER_SENT_FOR_REVIEW
+            body.get("reason_code") or (restored[0] if restored else REASON_MANAGER_SENT_FOR_REVIEW)
         ).strip().upper() or REASON_MANAGER_SENT_FOR_REVIEW
         if reason_code not in (
             REASON_MANAGER_SENT_FOR_REVIEW,
             REASON_MISSING_PRE_EVIDENCE,
             "SCAN_CHRONOLOGY_STALE",
-        ):
-            reason_code = REASON_MANAGER_SENT_FOR_REVIEW
+        ) and reason_code not in restored:
+            # Allow restoring original review reasons from manual-review stamp.
+            if not restored:
+                reason_code = REASON_MANAGER_SENT_FOR_REVIEW
         reason_text = reason or (
             "Missing PRE evidence — sent for review"
             if reason_code == REASON_MISSING_PRE_EVIDENCE
-            else "Manager sent bag for review"
+            else "Manager sent bag back to review"
         )
-        rows = load_day_bags_by_ids(cursor, organization_id, day, [bid])
-        day_row = rows[0] if rows else {}
-        prev_status = str(day_row.get("effective_status") or "").strip().lower() or None
-        prev_reasons = list(day_row.get("review_reason_codes") or [])
-        if reason_code not in prev_reasons:
-            prev_reasons = [*prev_reasons, reason_code]
+        prev_reasons = list(restored)
         patch = apply_manager_edit_day_bag_patch(
             cursor,
             organization_id,
@@ -1143,21 +1220,39 @@ def apply_step1_correction(
             previous_effective_status=prev_status,
             previous_reason_codes=prev_reasons,
             outcome_action="move_to_review",
+            actor_user_id=actor_user_id,
+            actor_display_name=actor_display_name,
+            reason_code=reason_code,
         )
+        # Bump manager edit lock so subsequent resolves stay optimistic-locked.
+        try:
+            cursor.execute(
+                """
+                UPDATE rinse_shift_monitor_day_bags
+                SET manager_edit_version = manager_edit_version + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+                """,
+                (int(organization_id), day, bid),
+            )
+        except Exception:
+            pass
         _record_correction(
             cursor,
             organization_id,
             bag_id=bid,
-            action=action,
+            action="send_back_to_review",
             reason_text=reason_text,
             reason_code=reason_code,
             previous_values={
                 "effective_status": prev_status,
                 "review_reason_codes": day_row.get("review_reason_codes"),
+                "manual_review": (snap or {}).get("manual_review"),
             },
             new_values={
                 "status": "review_required",
                 "reason_code": reason_code,
+                "reason_codes": prev_reasons,
                 "patch": patch,
             },
             actor_user_id=actor_user_id,
@@ -1176,6 +1271,7 @@ def apply_step1_correction(
             "bag_id": bid,
             "effective_status": "review_required",
             "reason_code": reason_code,
+            "reason_codes": prev_reasons,
             "patch": patch,
         }
 

@@ -1418,11 +1418,12 @@ def _strip_bag_from_review_segments(
 def _load_day_bag_status_projection(
     cursor, organization_id: int, shift_date_et: date
 ) -> dict[str, dict[str, Any]]:
-    """bag_id → {effective_status, service_type, rush_status} for headline sync."""
+    """bag_id → status projection fields for headline sync."""
     ensure_shift_monitor_day_tables(cursor)
     cursor.execute(
         """
-        SELECT bag_id, effective_status, service_type, rush_status
+        SELECT bag_id, effective_status, service_type, rush_status,
+               disposition, canonical_completion_status, bag_snapshot_json
         FROM rinse_shift_monitor_day_bags
         WHERE organization_id = %s AND shift_date_et = %s
         """,
@@ -1438,10 +1439,16 @@ def _load_day_bag_status_projection(
         bid = normalize_bag_id(row.get("bag_id"))
         if not bid:
             continue
+        snap = _json_load(row.get("bag_snapshot_json")) or {}
         out[bid] = {
             "effective_status": row.get("effective_status"),
             "service_type": row.get("service_type"),
             "rush_status": row.get("rush_status"),
+            "disposition": row.get("disposition"),
+            "canonical_completion_status": row.get("canonical_completion_status"),
+            "keep_completed_while_in_review": bool(
+                snap.get("keep_completed_while_in_review")
+            ),
         }
     return out
 
@@ -1774,6 +1781,9 @@ def apply_manager_edit_day_bag_patch(
     completed_by: str | None = None,
     pre_weight_lbs: Any = None,
     post_weight_lbs: Any = None,
+    actor_user_id: int | None = None,
+    actor_display_name: str | None = None,
+    reason_code: str | None = None,
 ) -> dict[str, Any]:
     """Fast post-edit sync: one day_bag + headline counts (no full day rebuild).
 
@@ -1783,8 +1793,17 @@ def apply_manager_edit_day_bag_patch(
     Reprojects ``headline.specialty_metrics`` from current membership + live
     specialty classification inputs so bag status and Specialty cards stay
     internally consistent after the edit.
+
+    ``move_to_review`` / send-back preserves operational completion facts
+    (disposition + canonical completion timestamp/employee) when the bag
+    was already completed — only management-review membership changes.
     """
     from backend.rinse_bulk_workitems import REASON_WF_BULK_WORKITEM_REVIEW
+    from backend.rinse_manual_review import (
+        resolve_send_back_reasons,
+        stamp_manual_review_resolved,
+        stamp_manual_review_sent_back,
+    )
 
     ensure_shift_monitor_day_tables(cursor)
     bid = normalize_bag_id(bag_id)
@@ -1802,7 +1821,21 @@ def apply_manager_edit_day_bag_patch(
     if bulk_cleared:
         reasons = [r for r in reasons if str(r) != REASON_WF_BULK_WORKITEM_REVIEW]
 
+    snap = dict(day_row.get("bag_snapshot") or {})
+    prior_canon = str(day_row.get("canonical_completion_status") or "").strip() or None
+    prior_disposition = day_row.get("disposition")
+    was_operationally_completed = (
+        prev_status in (OUTCOME_COMPLETED, "completed")
+        or str(prior_disposition or "").upper() == DISPOSITION_COMPLETED
+        or (prior_canon and ("completed" in prior_canon.lower()))
+        or bool(day_row.get("canonical_completion_timestamp"))
+        or bool(snap.get("completion_at"))
+    )
+
     outcome = str(outcome_action or "").strip().lower() or None
+    stamp_resolved = False
+    stamp_sent_back = False
+    reasons_for_stamp: list[str] | None = None
     if outcome == "mark_completed":
         # Confirm Completed must not fake-clear bulk review — rebuild would put it
         # back unless items/no-charge were saved (bulk_cleared).
@@ -1814,38 +1847,94 @@ def apply_manager_edit_day_bag_patch(
             new_status = OUTCOME_REVIEW_REQUIRED
             reasons = [REASON_WF_BULK_WORKITEM_REVIEW]
             disposition = day_row.get("disposition") or DISPOSITION_COMPLETED
+            canon_status = prior_canon or OUTCOME_COMPLETED
         else:
             new_status = OUTCOME_COMPLETED
+            # Capture prior review reasons before clearing for Manually Reviewed.
+            if prev_status == OUTCOME_REVIEW_REQUIRED or reasons:
+                stamp_resolved = True
+                reasons_for_stamp = list(reasons)
             reasons = []
             disposition = DISPOSITION_COMPLETED
+            canon_status = OUTCOME_COMPLETED
     elif outcome == "return_pending":
         new_status = OUTCOME_PENDING
         reasons = []
         disposition = DISPOSITION_CARRY_FORWARD
+        canon_status = OUTCOME_PENDING
     elif outcome == "exclude":
         new_status = "excluded"
         reasons = []
         disposition = DISPOSITION_EXCLUDE
+        canon_status = "excluded"
     elif outcome == "move_to_review":
         new_status = OUTCOME_REVIEW_REQUIRED
-        if not reasons:
-            reasons = ["MANAGER_SENT_FOR_REVIEW"]
-        disposition = day_row.get("disposition")
+        reasons = resolve_send_back_reasons(
+            snap=snap,
+            previous_reason_codes=reasons,
+            explicit_reason_code=reason_code,
+        )
+        disposition = prior_disposition or (
+            DISPOSITION_COMPLETED if was_operationally_completed else day_row.get("disposition")
+        )
+        # Keep operational completion status when bag was already completed.
+        if was_operationally_completed:
+            canon_status = prior_canon or OUTCOME_COMPLETED
+        else:
+            canon_status = OUTCOME_REVIEW_REQUIRED
+        stamp_sent_back = True
     else:
         if reasons:
             new_status = OUTCOME_REVIEW_REQUIRED
             disposition = day_row.get("disposition")
+            canon_status = (
+                prior_canon or OUTCOME_COMPLETED
+                if was_operationally_completed
+                else OUTCOME_REVIEW_REQUIRED
+            )
         else:
             # Bulk/fields-only save cleared the last review reason.
             canon = str(day_row.get("canonical_completion_status") or "").lower()
             if completion_at or canon in (OUTCOME_COMPLETED, "completed") or "completed" in canon:
                 new_status = OUTCOME_COMPLETED
                 disposition = DISPOSITION_COMPLETED
+                canon_status = OUTCOME_COMPLETED
+                if prev_status == OUTCOME_REVIEW_REQUIRED:
+                    stamp_resolved = True
+                    reasons_for_stamp = list(
+                        previous_reason_codes
+                        if previous_reason_codes is not None
+                        else (day_row.get("review_reason_codes") or [])
+                    )
             else:
                 new_status = OUTCOME_PENDING
                 disposition = DISPOSITION_CARRY_FORWARD
+                canon_status = OUTCOME_PENDING
 
-    snap = dict(day_row.get("bag_snapshot") or {})
+    if stamp_resolved:
+        prior_for_stamp = list(reasons_for_stamp) if reasons_for_stamp is not None else list(
+            previous_reason_codes
+            if previous_reason_codes is not None
+            else (day_row.get("review_reason_codes") or [])
+        )
+        snap = stamp_manual_review_resolved(
+            snap,
+            prior_reason_codes=prior_for_stamp,
+            actor_user_id=actor_user_id,
+            actor_display_name=actor_display_name,
+        )
+    if stamp_sent_back:
+        snap = stamp_manual_review_sent_back(
+            snap,
+            reason_codes=reasons,
+            actor_user_id=actor_user_id,
+            actor_display_name=actor_display_name,
+        )
+        if was_operationally_completed:
+            snap["keep_completed_while_in_review"] = True
+    if stamp_resolved or new_status == OUTCOME_COMPLETED:
+        snap.pop("keep_completed_while_in_review", None)
+
     snap.update(
         {
             "outcome": new_status,
@@ -1867,12 +1956,19 @@ def apply_manager_edit_day_bag_patch(
         snap["weight_lbs"] = post_weight_lbs
 
     weight_lbs = post_weight_lbs if post_weight_lbs is not None else day_row.get("weight_lbs")
+    # Productivity / completion credit still follows operational completion when
+    # the bag is only in management review (send-back), not unfinished.
+    productivity_status = (
+        OUTCOME_COMPLETED
+        if (new_status == OUTCOME_REVIEW_REQUIRED and was_operationally_completed)
+        else new_status
+    )
     try:
         from backend.rinse_step1_productivity_fast import project_productivity_fields_for_day_bag
 
         proj = project_productivity_fields_for_day_bag(
             {
-                "effective_status": new_status,
+                "effective_status": productivity_status,
                 "service_type": day_row.get("service_type"),
                 "canonical_completion_employee": completed_by
                 if completed_by is not None
@@ -1916,7 +2012,7 @@ def apply_manager_edit_day_bag_patch(
         (
             new_status,
             _json_dump(reasons),
-            new_status,
+            canon_status,
             _dt(completion_at) if completion_at is not None else None,
             completed_by,
             pre_weight_lbs,
@@ -1954,6 +2050,11 @@ def apply_manager_edit_day_bag_patch(
                 or day_row.get("service_type"),
                 "rush_status": (status_by_bag.get(bid) or {}).get("rush_status")
                 or day_row.get("rush_status"),
+                "disposition": disposition or day_row.get("disposition"),
+                "canonical_completion_status": canon_status,
+                "keep_completed_while_in_review": bool(
+                    snap.get("keep_completed_while_in_review")
+                ),
             }
             old_bucket = _headline_bucket_for_status(prev_status)
             new_bucket = _headline_bucket_for_status(new_status)
