@@ -221,6 +221,8 @@ def save_non_rinse_revenue(
 
 def _payout_row(row: dict) -> dict[str, Any]:
     ed = row.get("payout_date_et")
+    created = row.get("created_at")
+    updated = row.get("updated_at")
     return {
         "id": int(row["id"]),
         "date_et": ed.isoformat() if hasattr(ed, "isoformat") else str(ed),
@@ -228,8 +230,8 @@ def _payout_row(row: dict) -> dict[str, Any]:
         "amount": _money(row.get("amount")),
         "note": row.get("note"),
         "entered_by": row.get("entered_by_name_snapshot"),
-        "created_at": row.get("created_at"),
-        "updated_at": row.get("updated_at"),
+        "created_at": created.isoformat() if hasattr(created, "isoformat") else created,
+        "updated_at": updated.isoformat() if hasattr(updated, "isoformat") else updated,
     }
 
 
