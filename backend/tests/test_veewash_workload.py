@@ -487,6 +487,36 @@ def test_headline_summary_simplified_exceptions_and_service_segments():
     assert "HD_NEW" not in summ["segments"]["wf"]["bag_ids"]["new_today"]
 
 
+def test_headline_future_edd_is_non_rush_even_when_stored_flag_is_rush():
+    """Portal / At Vendor: EDD after selected ET date is Non-Rush (not stored RUSH cell)."""
+    presence = {
+        "FUTURE_NR": {
+            **_pres(rush="RUSH"),
+            "estimated_delivery_date": D0 + timedelta(days=1),
+            "raw_row_json": {
+                "estimated_delivery_text": "Thu 08/20/2026 RUSH",
+                "Date_Clean": (D0 + timedelta(days=1)).isoformat(),
+            },
+        },
+        "TODAY_RUSH": {
+            **_pres(rush="RUSH"),
+            "estimated_delivery_date": D0,
+            "raw_row_json": {"estimated_delivery_text": "Wed 08/19/2026 TODAY"},
+        },
+    }
+    entry = {
+        "FUTURE_NR": _entry(D0),
+        "TODAY_RUSH": _entry(D0),
+    }
+    out = _run(D0, presence, entry, {})
+    summ = build_step1_headline_summary(out, selected_date_et=D0, activation_date=D0)
+    assert "FUTURE_NR" in summ["segments"]["wf_non_rush"]["bag_ids"]["new_today"]
+    assert "FUTURE_NR" not in summ["segments"]["wf_rush"]["bag_ids"]["new_today"]
+    assert "TODAY_RUSH" in summ["segments"]["wf_rush"]["bag_ids"]["new_today"]
+    assert summ["segments"]["wf_rush"]["total_workload"] == 1
+    assert summ["segments"]["wf_non_rush"]["total_workload"] == 1
+
+
 def test_jul21_fixture_locks_validated_dirty_entry_completion_model():
     """Offline lock of Dirty-only WF/HD entry + v2 completion for 2026-07-21 org-3."""
     payload, presence, entry, completion, state = _load_jul21_fixture()

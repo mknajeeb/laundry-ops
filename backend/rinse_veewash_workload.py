@@ -147,6 +147,60 @@ def _service_of(pres: Mapping[str, Any]) -> str:
     return str(pres.get("service_type") or "").strip().upper()
 
 
+def _presence_edd_date(pres: Mapping[str, Any]) -> date | None:
+    raw = pres.get("estimated_delivery_date")
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    return _scan_et_date(raw) if isinstance(raw, datetime) else None
+
+
+def _presence_delivery_texts(pres: Mapping[str, Any]) -> list[str]:
+    import json
+
+    texts: list[str] = []
+    rj = pres.get("raw_row_json")
+    if isinstance(rj, str) and rj.strip():
+        try:
+            rj = json.loads(rj)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            rj = {}
+    if isinstance(rj, Mapping):
+        for key in ("estimated_delivery_text", "Date_Clean"):
+            val = rj.get(key)
+            if val:
+                texts.append(str(val))
+    for key in ("customer_name", "estimated_delivery_text"):
+        val = pres.get(key)
+        if val:
+            texts.append(str(val))
+    return texts
+
+
+def _effective_portal_rush_flag(
+    pres: Mapping[str, Any], selected_date_et: date
+) -> Any:
+    """Portal / At Vendor rush for the selected ET day.
+
+    Future EDD is Non-Rush even when the stored portal cell still says RUSH.
+    Stored ``rush_flag`` is the fallback when EDD / TODAY cannot be resolved.
+    """
+    from backend.rinse_at_vendor_module import AV_NON_RUSH, AV_RUSH, classify_at_vendor_rush
+
+    bucket, _reason = classify_at_vendor_rush(
+        latest_edd=_presence_edd_date(pres),
+        delivery_texts=_presence_delivery_texts(pres),
+        selected_date_et=selected_date_et,
+        pending=True,
+    )
+    if bucket == AV_RUSH:
+        return "RUSH"
+    if bucket == AV_NON_RUSH:
+        return "NON-RUSH"
+    return pres.get("rush_flag")
+
+
 def _is_rfv_status(portal_status: Any) -> bool:
     return str(portal_status or "").strip().lower() in {PORTAL_RFV, "rfv"}
 
@@ -1014,7 +1068,8 @@ def classify_veewash_workload(
         base = {
             "bag_id": bid,
             "service_type": _service_of(pres) or pres.get("service_type"),
-            "rush_flag": pres.get("rush_flag"),
+            "rush_flag": _effective_portal_rush_flag(pres, D),
+            "estimated_delivery_date": _presence_edd_date(pres),
             "active": active,
             "portal_status": pres.get("portal_status"),
             "customer_name": pres.get("customer_name"),

@@ -409,6 +409,9 @@ def _bags_canonically_completed_before_opening(
     Manager ``correct_completion`` remains authoritative **within the cycle
     active as of prior-day end** (same durable window as completion rebuild).
     A prior-cycle manager correction must not exclude a newer cycle.
+    A newer cycle whose configured entry / STV is **on the selected ET day**
+    (including exactly midnight) must not be excluded — pre-opening
+    ``as_of_end`` cannot see events at ``day_start``.
     Clean rack / processed-by-vendor alone do not complete.
     """
     from backend.rinse_cycle_boundary import (
@@ -466,12 +469,10 @@ def _bags_canonically_completed_before_opening(
     # As-of prior-day-end resolve catches completions earlier than the prior
     # calendar day that still leave the bag on the opening portal.
     remaining = [b for b in ids if b not in completed]
-    if not remaining:
-        return completed
-
     org = int(organization_id)
     by_bag: dict[str, list[dict[str, Any]]] = {b: [] for b in remaining}
     chunk = 200
+    prior_end = naive_et_day_end_inclusive(prior)
     for i in range(0, len(remaining), chunk):
         part = remaining[i : i + chunk]
         ph = ",".join(["%s"] * len(part))
@@ -494,7 +495,6 @@ def _bags_canonically_completed_before_opening(
             if bid in by_bag:
                 by_bag[bid].append(row)
 
-    prior_end = naive_et_day_end_inclusive(prior)
     for bid, timeline in by_bag.items():
         if not timeline:
             continue
@@ -593,7 +593,100 @@ def _bags_canonically_completed_before_opening(
                 ):
                     completed.add(bid)
 
+    _drop_completed_bags_with_selected_day_cycle(
+        cursor,
+        org,
+        selected_date_et,
+        completed,
+        svc_map=svc_map,
+        racks=racks,
+        day_start=day_start,
+        by_bag=by_bag,
+    )
     return completed
+
+
+def _drop_completed_bags_with_selected_day_cycle(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    completed: set[str],
+    *,
+    svc_map: Mapping[str, str],
+    racks: list[str],
+    day_start: datetime,
+    by_bag: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Keep bags whose current cycle starts on the selected ET day.
+
+    Recurring WF tickets often STV onto a configured entry rack at exactly
+    midnight. Those events are not visible to the pre-opening ``as_of_end``
+    window, so a prior-cycle completion would otherwise exclude today's work.
+    """
+    from backend.rinse_cycle_boundary import resolve_current_cycle
+    from backend.rinse_folding_et import naive_et_day_start
+
+    if not completed:
+        return
+    org = int(organization_id)
+    next_start = naive_et_day_start(selected_date_et + timedelta(days=1))
+    ids = sorted(completed)
+    chunk = 200
+    for i in range(0, len(ids), chunk):
+        part = ids[i : i + chunk]
+        ph = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT bag_id, purpose, rack, scanned_at_parsed, user_name, weight_lbs, id, raw_json
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND bag_id IN ({ph})
+              AND scanned_at_parsed IS NOT NULL
+              AND scanned_at_parsed >= %s
+              AND scanned_at_parsed < %s
+            ORDER BY scanned_at_parsed ASC, id ASC
+            """,
+            (org, *part, day_start, next_start),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            bid = str(row.get("bag_id") or "").strip().upper()
+            if bid not in completed:
+                continue
+            by_bag.setdefault(bid, []).append(row)
+
+    for bid in list(completed):
+        timeline = by_bag.get(bid) or []
+        if not timeline:
+            continue
+        svc = str(svc_map.get(bid) or "WF").strip().upper()
+        if svc == "HD":
+            from backend.rinse_at_vendor_module import AV_STATUS_COMPLETED, _evaluate_bag_as_of
+            from backend.rinse_folding_et import naive_et_day_end_inclusive
+
+            status, _signal, comp_ts, _anchor, _fields = _evaluate_bag_as_of(
+                timeline,
+                service_type="HD",
+                as_of_end=naive_et_day_end_inclusive(selected_date_et),
+            )
+            if status != AV_STATUS_COMPLETED:
+                completed.discard(bid)
+            elif isinstance(comp_ts, datetime) and comp_ts >= day_start:
+                completed.discard(bid)
+            continue
+
+        boundary = resolve_current_cycle(
+            timeline,
+            selected_date_et=selected_date_et,
+            entry_racks=racks,
+        )
+        entry_at = getattr(boundary, "entry_at", None)
+        anchor_at = getattr(boundary, "cycle_anchor_at", None)
+        if isinstance(entry_at, datetime) and entry_at >= day_start:
+            completed.discard(bid)
+        elif isinstance(anchor_at, datetime) and anchor_at >= day_start:
+            completed.discard(bid)
 
 
 def classify_opening_scrape_membership(
