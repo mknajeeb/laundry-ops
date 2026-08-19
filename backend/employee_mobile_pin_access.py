@@ -32,11 +32,12 @@ MODULE_KEYS = (
     "checklist",
     "inventory",
     "revenue_cost",
+    "hang_dry",
 )
 
 # Hub / PIN enforcement AND-gates. Clock remains stored but not activated.
 ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES = frozenset(
-    {"switch_role", "checklist", "inventory", "revenue_cost"}
+    {"switch_role", "checklist", "inventory", "revenue_cost", "hang_dry"}
 )
 
 # DB column ↔ API/feature key
@@ -46,6 +47,7 @@ COLUMN_BY_KEY = {
     "checklist": "allow_checklist",
     "inventory": "allow_inventory",
     "revenue_cost": "allow_revenue_cost",
+    "hang_dry": "allow_hang_dry",
 }
 
 KEY_BY_COLUMN = {v: k for k, v in COLUMN_BY_KEY.items()}
@@ -96,6 +98,7 @@ def ensure_employee_mobile_pin_access_tables(cursor) -> None:
           allow_checklist TINYINT(1) NOT NULL DEFAULT 0,
           allow_inventory TINYINT(1) NOT NULL DEFAULT 0,
           allow_revenue_cost TINYINT(1) NOT NULL DEFAULT 0,
+          allow_hang_dry TINYINT(1) NOT NULL DEFAULT 0,
           updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
           updated_by_user_id INT NULL,
           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -125,6 +128,22 @@ def ensure_employee_mobile_pin_access_tables(cursor) -> None:
             """
         )
         invalidate_schema_cache()
+    _ensure_hang_dry_column(cursor)
+
+
+def _ensure_hang_dry_column(cursor) -> None:
+    """Additive Hang Dry PIN module column for existing orgs."""
+    if not table_exists(cursor, ACCESS_TABLE):
+        return
+    if table_has_column(cursor, ACCESS_TABLE, "allow_hang_dry"):
+        return
+    cursor.execute(
+        f"""
+        ALTER TABLE {ACCESS_TABLE}
+          ADD COLUMN allow_hang_dry TINYINT(1) NOT NULL DEFAULT 0
+        """
+    )
+    invalidate_schema_cache()
 
 
 def _org_is_backfilled(cursor, organization_id: int) -> bool:
@@ -168,6 +187,7 @@ def ensure_org_mobile_pin_access_backfill(cursor, organization_id: int) -> None:
     """
     _ = int(organization_id)
     if table_exists(cursor, ACCESS_TABLE) and table_exists(cursor, BACKFILL_MARKER_TABLE):
+        _ensure_hang_dry_column(cursor)
         return
     ensure_employee_mobile_pin_access_tables(cursor)
 
@@ -249,7 +269,7 @@ def _insert_all_true_rows(
 ) -> int:
     if not user_ids:
         return 0
-    values_sql = ", ".join(["(%s, %s, 1, 1, 1, 1, 1, NOW())"] * len(user_ids))
+    values_sql = ", ".join(["(%s, %s, 1, 1, 1, 1, 1, 1, NOW())"] * len(user_ids))
     params: list[Any] = []
     for uid in user_ids:
         params.extend([int(organization_id), int(uid)])
@@ -258,7 +278,7 @@ def _insert_all_true_rows(
         INSERT INTO {ACCESS_TABLE}
           (organization_id, user_id,
            allow_clock, allow_switch_role, allow_checklist,
-           allow_inventory, allow_revenue_cost, created_at)
+           allow_inventory, allow_revenue_cost, allow_hang_dry, created_at)
         VALUES {values_sql}
         """,
         tuple(params),
@@ -479,7 +499,7 @@ def get_access_row(cursor, organization_id: int, user_id: int) -> Optional[dict]
         f"""
         SELECT organization_id, user_id,
                allow_clock, allow_switch_role, allow_checklist,
-               allow_inventory, allow_revenue_cost,
+               allow_inventory, allow_revenue_cost, allow_hang_dry,
                updated_at, updated_by_user_id, created_at
         FROM {ACCESS_TABLE}
         WHERE organization_id = %s AND user_id = %s
@@ -579,9 +599,9 @@ def ensure_new_employee_mobile_pin_access(
         INSERT IGNORE INTO {ACCESS_TABLE}
           (organization_id, user_id,
            allow_clock, allow_switch_role, allow_checklist,
-           allow_inventory, allow_revenue_cost,
+           allow_inventory, allow_revenue_cost, allow_hang_dry,
            updated_by_user_id, created_at)
-        VALUES (%s, %s, 0, 0, 0, 0, 0, %s, NOW())
+        VALUES (%s, %s, 0, 0, 0, 0, 0, 0, %s, NOW())
         """,
         (
             int(organization_id),
@@ -592,7 +612,7 @@ def ensure_new_employee_mobile_pin_access(
 
 
 def serialize_mobile_pin_access(cursor, organization_id: int, user_id: int) -> dict[str, bool]:
-    """Manager API payload — always five booleans (resolved effective grants)."""
+    """Manager API payload — always module booleans (resolved effective grants)."""
     return resolve_employee_mobile_pin_access(cursor, organization_id, user_id)
 
 
@@ -639,7 +659,7 @@ def save_employee_mobile_pin_access(
     write_audit_fn: Optional[Callable] = None,
 ) -> dict[str, bool]:
     """
-    Upsert all five booleans. Audits only changed modules.
+    Upsert all module booleans. Audits only changed modules.
     """
     ensure_employee_mobile_pin_access_tables(cursor)
     oid = int(organization_id)
@@ -665,15 +685,16 @@ def save_employee_mobile_pin_access(
         INSERT INTO {ACCESS_TABLE}
           (organization_id, user_id,
            allow_clock, allow_switch_role, allow_checklist,
-           allow_inventory, allow_revenue_cost,
+           allow_inventory, allow_revenue_cost, allow_hang_dry,
            updated_by_user_id, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON DUPLICATE KEY UPDATE
           allow_clock = VALUES(allow_clock),
           allow_switch_role = VALUES(allow_switch_role),
           allow_checklist = VALUES(allow_checklist),
           allow_inventory = VALUES(allow_inventory),
           allow_revenue_cost = VALUES(allow_revenue_cost),
+          allow_hang_dry = VALUES(allow_hang_dry),
           updated_by_user_id = VALUES(updated_by_user_id),
           updated_at = NOW()
         """,
@@ -685,6 +706,7 @@ def save_employee_mobile_pin_access(
             1 if after["checklist"] else 0,
             1 if after["inventory"] else 0,
             1 if after["revenue_cost"] else 0,
+            1 if after["hang_dry"] else 0,
             int(actor_user_id) if actor_user_id is not None else None,
         ),
     )

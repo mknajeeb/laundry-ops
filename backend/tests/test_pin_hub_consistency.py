@@ -1,4 +1,4 @@
-"""PIN Hub consistency: Role visibility, current role, Inventory + R&C employee gates."""
+"""PIN Hub consistency: Role visibility, current role, Inventory + R&C + Hang Dry gates."""
 
 from __future__ import annotations
 
@@ -14,20 +14,29 @@ from backend.employee_pin_hub import (
 def _pin_menu(**feats):
     base = {
         "switch_role": True,
+        "revenue_cost": True,
+        "hang_dry": True,
         "checklist": True,
         "inventory": True,
-        "revenue_cost": True,
     }
     base.update(feats)
     return {"enabled": True, "allow_clock_from_hub": True, "features": base}
 
 
-def test_feature_defs_include_revenue_cost_and_inventory_labels():
+def test_feature_defs_include_revenue_hang_dry_and_inventory_labels():
     ids = [d["id"] for d in PIN_HUB_FEATURE_DEFS]
-    assert "revenue_cost" in ids
-    assert "inventory" in ids
+    assert ids == [
+        "switch_role",
+        "revenue_cost",
+        "hang_dry",
+        "checklist",
+        "inventory",
+    ]
     by_id = {d["id"]: d for d in PIN_HUB_FEATURE_DEFS}
-    assert by_id["revenue_cost"]["label"] == "Revenue & Cost"
+    assert by_id["revenue_cost"]["label"] == "Revenue & Cash"
+    assert by_id["revenue_cost"]["path"] == "/revenue-cost/floor"
+    assert by_id["hang_dry"]["label"] == "Hang Dry"
+    assert by_id["hang_dry"]["path"] == "/hang-dry/floor"
     assert by_id["inventory"]["label"] == "Inventory"
 
 
@@ -38,13 +47,14 @@ def test_role_stays_allowed_when_clocked_out():
     assert gated["switch_role"]["requires_clock_in"] is True
 
 
-def test_hub_hides_inventory_and_revenue_when_employee_off():
+def test_hub_hides_inventory_revenue_and_hang_dry_when_employee_off():
     emp = {
         "clock": False,
         "switch_role": True,
         "checklist": True,
         "inventory": False,
         "revenue_cost": False,
+        "hang_dry": False,
     }
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings", return_value=_pin_menu()
@@ -64,15 +74,17 @@ def test_hub_hides_inventory_and_revenue_when_employee_off():
     assert feats["switch_role"]["allowed"] is True
     assert feats["inventory"]["allowed"] is False
     assert feats["revenue_cost"]["allowed"] is False
+    assert feats["hang_dry"]["allowed"] is False
 
 
-def test_hub_shows_inventory_and_revenue_when_employee_on():
+def test_hub_shows_inventory_revenue_and_hang_dry_when_employee_on():
     emp = {
         "clock": False,
         "switch_role": True,
         "checklist": False,
         "inventory": True,
         "revenue_cost": True,
+        "hang_dry": True,
     }
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings", return_value=_pin_menu()
@@ -92,4 +104,6 @@ def test_hub_shows_inventory_and_revenue_when_employee_on():
     assert feats["inventory"]["allowed"] is True
     assert feats["inventory"]["label"] == "Inventory"
     assert feats["revenue_cost"]["allowed"] is True
-    assert feats["revenue_cost"]["label"] == "Revenue & Cost"
+    assert feats["revenue_cost"]["label"] == "Revenue & Cash"
+    assert feats["hang_dry"]["allowed"] is True
+    assert feats["hang_dry"]["label"] == "Hang Dry"

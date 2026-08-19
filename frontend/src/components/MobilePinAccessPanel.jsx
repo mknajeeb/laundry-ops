@@ -15,7 +15,8 @@ export const MOBILE_PIN_ACCESS_MODULES = [
   { key: "switch_role", label: "Role" },
   { key: "checklist", label: "End-of-Day Checklist" },
   { key: "inventory", label: "Inventory" },
-  { key: "revenue_cost", label: "Revenue & Cost" },
+  { key: "revenue_cost", label: "Revenue & Cash" },
+  { key: "hang_dry", label: "Hang Dry" },
 ];
 
 export function normalizeMobilePinAccess(data = {}) {
@@ -25,6 +26,7 @@ export function normalizeMobilePinAccess(data = {}) {
     checklist: !!data.checklist,
     inventory: !!data.inventory,
     revenue_cost: !!data.revenue_cost,
+    hang_dry: !!data.hang_dry,
   };
 }
 
@@ -36,7 +38,7 @@ const EMPTY = normalizeMobilePinAccess({});
 
 /**
  * People → Employee → Mobile PIN Access
- * Five checkboxes only. Separate from Allowed Work Assignments.
+ * Module checkboxes only. Separate from Allowed Work Assignments.
  */
 export default function MobilePinAccessPanel({ userId, canEdit = false }) {
   const [loading, setLoading] = useState(false);

@@ -1,4 +1,8 @@
-"""Management Hub — Revenue & Cash routes."""
+"""Management Hub — Revenue & Cash routes.
+
+Managers use hub roles. PIN employees with Mobile PIN Access ``revenue_cost``
+use the same entry endpoints (same tables) — no dashboard/settings/accounts.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +12,12 @@ from flask import jsonify, request
 
 from backend.business_time import business_today
 from backend.db import get_db
+from backend.management_pin_access import (
+    access_denied_payload,
+    actor_name,
+    allows_management_revenue_pin,
+    is_hub_manager,
+)
 from backend.management_revenue import (
     build_cash_activity,
     build_revenue_day,
@@ -20,24 +30,6 @@ from backend.management_revenue import (
 from backend.management_revenue_accounts import build_revenue_dashboard, save_dhs_account_revenue
 from backend.rinse_scan_time import json_safe_rinse
 
-HUB_READ_ROLES = frozenset({"ADMIN", "OPS", "MANAGER", "SUPER_ADMIN", "PLATFORM_ADMIN"})
-HUB_WRITE_ROLES = frozenset({"ADMIN", "OPS", "MANAGER", "SUPER_ADMIN", "PLATFORM_ADMIN"})
-
-
-def _role_set(me: dict) -> set[str]:
-    raw = me.get("roles") or []
-    if isinstance(raw, str):
-        raw = [x for x in raw.split(",") if x]
-    return {str(r).upper() for r in raw}
-
-
-def _actor_name(me: dict) -> str | None:
-    for key in ("display_name", "name", "full_name", "username", "email"):
-        val = me.get(key)
-        if val:
-            return str(val)
-    return None
-
 
 def register_management_revenue_routes(
     app,
@@ -46,6 +38,27 @@ def register_management_revenue_routes(
     user_org_id,
     parse_date_value,
 ) -> None:
+    def _gate(cursor, me, oid: int):
+        if allows_management_revenue_pin(cursor, me, org_id=oid):
+            return None
+        body, code = access_denied_payload()
+        return jsonify(body), code
+
+    def _selected_date(raw: str, *, employee: bool):
+        if employee:
+            return business_today()
+        selected = parse_date_value(raw) if raw else business_today()
+        if not isinstance(selected, date):
+            raise ValueError("Invalid date_et; use YYYY-MM-DD")
+        return selected
+
+    def _user_id(me: dict) -> int | None:
+        try:
+            uid = int(me.get("user_id") or me.get("id") or 0)
+        except (TypeError, ValueError):
+            return None
+        return uid or None
+
     @app.route("/api/management/revenue", methods=["GET"])
     def management_revenue_day():
         conn = get_db()
@@ -54,13 +67,16 @@ def register_management_revenue_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not (_role_set(me) & HUB_READ_ROLES):
-                return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
             raw_date = (request.args.get("date_et") or "").strip()
-            selected = parse_date_value(raw_date) if raw_date else business_today()
-            if not isinstance(selected, date):
-                return jsonify({"error": "Invalid date_et; use YYYY-MM-DD"}), 400
+            try:
+                selected = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
             payload = build_revenue_day(cursor, oid, selected)
             conn.commit()
             return jsonify(json_safe_rinse(payload))
@@ -79,18 +95,23 @@ def register_management_revenue_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not (_role_set(me) & HUB_WRITE_ROLES):
-                return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
             body = request.get_json(silent=True) or {}
             raw_date = (body.get("date_et") or request.args.get("date_et") or "").strip()
-            selected = parse_date_value(raw_date) if raw_date else business_today()
+            try:
+                selected = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
             payload = save_non_rinse_revenue(
                 cursor,
                 oid,
                 selected,
                 body,
-                user_id=int(me.get("id") or 0) or None,
+                user_id=_user_id(me),
             )
             conn.commit()
             return jsonify(json_safe_rinse(payload))
@@ -112,16 +133,21 @@ def register_management_revenue_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not (_role_set(me) & HUB_WRITE_ROLES):
-                return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
             body = request.get_json(silent=True) or {}
+            if employee:
+                body = dict(body)
+                body["date_et"] = business_today().isoformat()
             payout = create_cash_payout(
                 cursor,
                 oid,
                 body,
-                user_id=int(me.get("id") or 0) or None,
-                actor_name=_actor_name(me),
+                user_id=_user_id(me),
+                actor_name=actor_name(me),
             )
             conn.commit()
             return jsonify(json_safe_rinse({"payout": payout})), 201
@@ -143,16 +169,17 @@ def register_management_revenue_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not (_role_set(me) & HUB_WRITE_ROLES):
-                return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
             if request.method == "DELETE":
                 delete_cash_payout(
                     cursor,
                     oid,
                     payout_id,
-                    user_id=int(me.get("id") or 0) or None,
-                    actor_name=_actor_name(me),
+                    user_id=_user_id(me),
+                    actor_name=actor_name(me),
                 )
                 conn.commit()
                 return jsonify({"ok": True})
@@ -162,8 +189,8 @@ def register_management_revenue_routes(
                 oid,
                 payout_id,
                 body,
-                user_id=int(me.get("id") or 0) or None,
-                actor_name=_actor_name(me),
+                user_id=_user_id(me),
+                actor_name=actor_name(me),
             )
             conn.commit()
             return jsonify(json_safe_rinse({"payout": payout}))
@@ -188,8 +215,9 @@ def register_management_revenue_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not (_role_set(me) & HUB_READ_ROLES):
-                return jsonify({"error": "Forbidden"}), 403
+            if not is_hub_manager(me):
+                body, code = access_denied_payload()
+                return jsonify(body), code
             oid = int(user_org_id(me))
             audits = list_cash_payout_audits(cursor, oid, payout_id)
             return jsonify(json_safe_rinse({"audits": audits}))
@@ -207,18 +235,23 @@ def register_management_revenue_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not (_role_set(me) & HUB_WRITE_ROLES):
-                return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
             body = request.get_json(silent=True) or {}
             raw_date = (body.get("date_et") or request.args.get("date_et") or "").strip()
-            selected = parse_date_value(raw_date) if raw_date else business_today()
+            try:
+                selected = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
             payload = save_dhs_account_revenue(
                 cursor,
                 oid,
                 selected,
                 body.get("accounts") or [],
-                user_id=int(me.get("id") or 0) or None,
+                user_id=_user_id(me),
             )
             conn.commit()
             return jsonify(json_safe_rinse(payload))
@@ -240,8 +273,9 @@ def register_management_revenue_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not (_role_set(me) & HUB_READ_ROLES):
-                return jsonify({"error": "Forbidden"}), 403
+            if not is_hub_manager(me):
+                body, code = access_denied_payload()
+                return jsonify(body), code
             oid = int(user_org_id(me))
             period = (request.args.get("period") or "today").strip().lower()
             raw_date = (request.args.get("date") or request.args.get("date_et") or "").strip()
@@ -268,8 +302,9 @@ def register_management_revenue_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not (_role_set(me) & HUB_READ_ROLES):
-                return jsonify({"error": "Forbidden"}), 403
+            if not is_hub_manager(me):
+                body, code = access_denied_payload()
+                return jsonify(body), code
             oid = int(user_org_id(me))
             period = (request.args.get("period") or "today").strip().lower()
             raw_date = (request.args.get("date") or request.args.get("date_et") or "").strip()

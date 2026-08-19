@@ -1,24 +1,23 @@
 import { useCallback, useEffect, useMemo } from "react";
 import { Box } from "@mui/material";
 import { authLogout, clearAuthSession } from "../api";
-import RevenueCostFloorFlow from "../opsMobile/RevenueCostFloorFlow";
+import HangDryFloorFlow from "../opsMobile/HangDryFloorFlow";
 import {
   clearPinHubSession,
   loadPinHubAppSession,
 } from "../utils/pinHubSession";
 
 /**
- * Dedicated PIN Revenue & Cash route — never loads manager Finance dashboard.
- * Reconnects the existing DRC mobile floor (RevenueCostFloorFlow).
+ * PIN Hang Dry route — thin wrapper over Management Rinse HD production APIs.
  */
-export default function RevenueCostFloorPage({ user, onPinHubDone }) {
+export default function HangDryFloorPage({ onPinHubDone }) {
   const pinHubApp = useMemo(() => loadPinHubAppSession(), []);
 
   useEffect(() => {
-    if (!pinHubApp && user) {
-      window.location.replace("/management/revenue");
+    if (!pinHubApp) {
+      window.location.replace("/management/rinse-hd");
     }
-  }, [pinHubApp, user]);
+  }, [pinHubApp]);
 
   const clearWashproSession = useCallback(async () => {
     try {
@@ -46,12 +45,7 @@ export default function RevenueCostFloorPage({ user, onPinHubDone }) {
 
   return (
     <Box sx={{ minHeight: "100%", width: "100%" }}>
-      <RevenueCostFloorFlow
-        user={user}
-        onBack={returnToPinMenu}
-        onDone={returnToPinMenu}
-        onLock={lockToPinEntry}
-      />
+      <HangDryFloorFlow onBack={returnToPinMenu} onLock={lockToPinEntry} />
     </Box>
   );
 }

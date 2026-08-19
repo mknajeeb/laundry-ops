@@ -19,6 +19,7 @@ import {
   AccessTime,
   AssignmentTurnedIn,
   Backspace,
+  DryCleaning,
   Inventory2,
   Login,
   Logout,
@@ -75,6 +76,7 @@ const TILE_ICONS = {
   tasks: AssignmentTurnedIn,
   stock: Inventory2,
   revenue: RequestQuote,
+  hang_dry: DryCleaning,
 };
 
 function sanitizeSlug(raw) {
@@ -123,7 +125,7 @@ function iconForTile(tile) {
 }
 
 /**
- * Phone PIN hub — launcher for Clock, Role, Tasks, Stock (permission/state gated).
+ * Phone PIN hub — launcher for Role, Revenue & Cash, Hang Dry, Tasks, Stock, Clock.
  * Route: /pin/:orgSlug
  */
 export default function EmployeePinHubPage({ onLoggedIn }) {
@@ -404,6 +406,42 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         setAuthSession(payload);
         onLoggedIn?.(payload.user);
         navigate("/inventory", { replace: true });
+        return;
+      }
+            if (featureId === "revenue_cost") {
+        if (tile?.disabled || hub?.features?.revenue_cost?.disabled) {
+          return;
+        }
+        const res = await authAttendancePinUnlock(slug, hub.pin, {
+          hubToken: hub.token,
+          pinHubModule: "revenue_cost",
+        });
+        const payload = res?.data || {};
+        if (!payload?.token || !payload?.user) {
+          throw new Error(payload?.error || "Could not unlock Revenue & Cash");
+        }
+        markPinHubAppSession(slug);
+        setAuthSession(payload);
+        onLoggedIn?.(payload.user);
+        navigate("/revenue-cost/floor", { replace: true });
+        return;
+      }
+      if (featureId === "hang_dry") {
+        if (tile?.disabled || hub?.features?.hang_dry?.disabled) {
+          return;
+        }
+        const res = await authAttendancePinUnlock(slug, hub.pin, {
+          hubToken: hub.token,
+          pinHubModule: "hang_dry",
+        });
+        const payload = res?.data || {};
+        if (!payload?.token || !payload?.user) {
+          throw new Error(payload?.error || "Could not unlock Hang Dry");
+        }
+        markPinHubAppSession(slug);
+        setAuthSession(payload);
+        onLoggedIn?.(payload.user);
+        navigate("/hang-dry/floor", { replace: true });
         return;
       }
     } catch (e) {

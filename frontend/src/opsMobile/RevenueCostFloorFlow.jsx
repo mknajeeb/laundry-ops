@@ -55,7 +55,7 @@ function BusinessDateHeading({ businessDate }) {
 }
 
 /**
- * Phase 5E dedicated mobile Revenue & Cost — never loads manager Finance dashboard.
+ * Phase 5E dedicated mobile Revenue & Cash — never loads manager Finance dashboard.
  */
 export default function RevenueCostFloorFlow({ onBack, onDone, onLock }) {
   const [phase, setPhase] = useState("loading"); // loading | entry | review | submitted | empty
@@ -178,7 +178,7 @@ export default function RevenueCostFloorFlow({ onBack, onDone, onLock }) {
         setPhase("entry");
       }
     } catch (e) {
-      setLoadError(e?.response?.data?.error || e?.message || "Could not load Revenue & Cost");
+      setLoadError(e?.response?.data?.error || e?.message || "Could not load Revenue & Cash");
       setPhase("empty");
     }
   }, []);
@@ -324,7 +324,7 @@ export default function RevenueCostFloorFlow({ onBack, onDone, onLock }) {
   if (phase === "loading") {
     return (
       <OpsMobileShell>
-        <OpsTopBar title="Revenue & Cost" onBack={onBack} onLock={onLock} />
+        <OpsTopBar title="Revenue & Cash" onBack={onBack} onLock={onLock} />
         <Box sx={{ py: 6, display: "grid", placeItems: "center" }}>
           <CircularProgress size={28} />
         </Box>
@@ -336,11 +336,11 @@ export default function RevenueCostFloorFlow({ onBack, onDone, onLock }) {
     const first = (payload?.assigned_sections || [])[0];
     return (
       <OpsMobileShell>
-        <OpsTopBar title="Revenue & Cost" onBack={onBack} onLock={onLock} />
+        <OpsTopBar title="Revenue & Cash" onBack={onBack} onLock={onLock} />
         <BusinessDateHeading businessDate={payload?.business_date} />
         <Stack spacing={1.5} sx={{ py: 4, px: 1, textAlign: "center" }}>
           <Typography fontWeight={800} sx={{ fontSize: "1.15rem" }}>
-            Revenue & Cost Submitted
+            Revenue & Cash Submitted
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.85rem" }}>
             Pending manager review
@@ -366,10 +366,10 @@ export default function RevenueCostFloorFlow({ onBack, onDone, onLock }) {
   if (phase === "empty") {
     return (
       <OpsMobileShell>
-        <OpsTopBar title="Revenue & Cost" onBack={onBack} onLock={onLock} />
+        <OpsTopBar title="Revenue & Cash" onBack={onBack} onLock={onLock} />
         <BusinessDateHeading businessDate={payload?.business_date} />
         <Alert severity="info" sx={{ mt: 2 }}>
-          {loadError || "No Revenue & Cost entry assigned today."}
+          {loadError || "No entry assigned today."}
         </Alert>
       </OpsMobileShell>
     );
@@ -377,7 +377,7 @@ export default function RevenueCostFloorFlow({ onBack, onDone, onLock }) {
 
   return (
     <OpsMobileShell>
-      <OpsTopBar title="Revenue & Cost" onBack={onBack} onLock={onLock} />
+      <OpsTopBar title="Revenue & Cash" onBack={onBack} onLock={onLock} />
       <BusinessDateHeading businessDate={payload?.business_date} />
       <Stack spacing={1} sx={{ pb: 10 }}>
         <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.85rem" }}>

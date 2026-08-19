@@ -20,13 +20,10 @@ describe("R&C manager weekday assignment UI contracts", () => {
     expect(panel).toContain("DAY_ORDER");
   });
 
-  it("employee floor still uses API business_date, not browser today", () => {
-    const flow = readFileSync(
-      path.join(root, "../../opsMobile/RevenueCostFloorFlow.jsx"),
-      "utf8",
-    );
-    expect(flow).toContain("BusinessDateHeading");
-    expect(flow).toContain("payload?.business_date");
-    expect(flow).not.toContain("new Date().toISOString()");
+  it("PIN Revenue & Cash floor uses America/New_York business helpers via DRC mobile", () => {
+    const flow = readFileSync(path.join(root, "../../opsMobile/RevenueCostFloorFlow.jsx"), "utf8");
+    expect(flow).toContain("getDrcMobileToday");
+    expect(flow).toContain("submitDrcMobileAll");
+    expect(flow).toContain("formatBusinessDateLong");
   });
 });

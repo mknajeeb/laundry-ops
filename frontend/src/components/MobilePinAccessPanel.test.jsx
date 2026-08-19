@@ -6,24 +6,26 @@ import {
 } from "./MobilePinAccessPanel";
 
 describe("MobilePinAccessPanel contracts", () => {
-  it("exposes exactly five module checkboxes", () => {
+  it("exposes module checkboxes including Hang Dry", () => {
     expect(MOBILE_PIN_ACCESS_MODULES.map((m) => m.key)).toEqual([
       "clock",
       "switch_role",
       "checklist",
       "inventory",
       "revenue_cost",
+      "hang_dry",
     ]);
     expect(MOBILE_PIN_ACCESS_MODULES.map((m) => m.label)).toEqual([
       "Clock",
       "Role",
       "End-of-Day Checklist",
       "Inventory",
-      "Revenue & Cost",
+      "Revenue & Cash",
+      "Hang Dry",
     ]);
   });
 
-  it("normalizes loaded API values into five booleans", () => {
+  it("normalizes loaded API values into module booleans", () => {
     expect(
       normalizeMobilePinAccess({
         clock: 1,
@@ -31,6 +33,7 @@ describe("MobilePinAccessPanel contracts", () => {
         checklist: true,
         inventory: false,
         revenue_cost: "1",
+        hang_dry: 1,
         extra: true,
       }),
     ).toEqual({
@@ -39,14 +42,16 @@ describe("MobilePinAccessPanel contracts", () => {
       checklist: true,
       inventory: false,
       revenue_cost: true,
+      hang_dry: true,
     });
   });
 
-  it("save body always sends all five booleans", () => {
+  it("save body always sends all module booleans", () => {
     expect(
       mobilePinAccessSaveBody({
         clock: true,
         inventory: true,
+        hang_dry: true,
       }),
     ).toEqual({
       clock: true,
@@ -54,6 +59,7 @@ describe("MobilePinAccessPanel contracts", () => {
       checklist: false,
       inventory: true,
       revenue_cost: false,
+      hang_dry: true,
     });
   });
 });

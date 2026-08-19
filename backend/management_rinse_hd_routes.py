@@ -1,4 +1,8 @@
-"""Management Hub — Rinse HD routes (new operating model)."""
+"""Management Hub — Rinse HD routes (new operating model).
+
+Managers and PIN employees with Mobile PIN Access ``revenue_cost`` share the
+same Hang Dry production APIs / ``hd_day_bag_production`` records.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +12,12 @@ from flask import jsonify, request
 
 from backend.business_time import business_today
 from backend.db import get_db
+from backend.management_pin_access import (
+    access_denied_payload,
+    actor_name,
+    allows_management_revenue_pin,
+    is_hub_manager,
+)
 from backend.management_rinse_hd import (
     build_rinse_hd_day,
     get_rinse_hd_order_detail,
@@ -15,24 +25,6 @@ from backend.management_rinse_hd import (
     save_rinse_hd_items_revenue,
 )
 from backend.rinse_scan_time import json_safe_rinse
-
-HUB_READ_ROLES = frozenset({"ADMIN", "OPS", "MANAGER", "SUPER_ADMIN", "PLATFORM_ADMIN"})
-HUB_WRITE_ROLES = frozenset({"ADMIN", "OPS", "MANAGER", "SUPER_ADMIN", "PLATFORM_ADMIN"})
-
-
-def _role_set(me: dict) -> set[str]:
-    raw = me.get("roles") or []
-    if isinstance(raw, str):
-        raw = [x for x in raw.split(",") if x]
-    return {str(r).upper() for r in raw}
-
-
-def _actor_name(me: dict) -> str | None:
-    for key in ("display_name", "name", "full_name", "username", "email"):
-        val = me.get(key)
-        if val:
-            return str(val)
-    return None
 
 
 def register_management_rinse_hd_routes(
@@ -42,6 +34,23 @@ def register_management_rinse_hd_routes(
     user_org_id,
     parse_date_value,
 ) -> None:
+    def _gate(cursor, me, oid: int):
+        if allows_management_revenue_pin(cursor, me, org_id=oid):
+            return None
+        body, code = access_denied_payload()
+        return jsonify(body), code
+
+    def _selected_date(raw: str, *, employee: bool):
+        if employee:
+            return business_today()
+        selected = parse_date_value(raw) if raw else business_today()
+        if not isinstance(selected, date):
+            raise ValueError("Invalid date_et; use YYYY-MM-DD")
+        return selected
+
+    def _actor_user_id(me: dict):
+        return me.get("user_id") or me.get("id")
+
     @app.route("/api/management/rinse-hd", methods=["GET"])
     def management_rinse_hd_day():
         conn = get_db()
@@ -50,19 +59,16 @@ def register_management_rinse_hd_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not (_role_set(me) & HUB_READ_ROLES):
-                return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
             raw_date = (request.args.get("date_et") or "").strip()
-            if raw_date:
-                try:
-                    selected = parse_date_value(raw_date)
-                except (TypeError, ValueError):
-                    return jsonify({"error": "Invalid date_et; use YYYY-MM-DD"}), 400
-            else:
-                selected = business_today()
-            if not isinstance(selected, date):
-                return jsonify({"error": "Invalid date_et; use YYYY-MM-DD"}), 400
+            try:
+                selected = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
             status = (request.args.get("status") or "all").strip().lower()
             payload = build_rinse_hd_day(cursor, oid, selected, status=status)
             return jsonify(json_safe_rinse(payload))
@@ -80,11 +86,16 @@ def register_management_rinse_hd_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not (_role_set(me) & HUB_READ_ROLES):
-                return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
             raw_date = (request.args.get("date_et") or "").strip()
-            selected = parse_date_value(raw_date) if raw_date else business_today()
+            try:
+                selected = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
             payload = get_rinse_hd_order_detail(cursor, oid, bag_id, selected_date_et=selected)
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
@@ -101,12 +112,17 @@ def register_management_rinse_hd_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not (_role_set(me) & HUB_WRITE_ROLES):
-                return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
             body = request.get_json(silent=True) or {}
             raw_date = str(body.get("date_et") or request.args.get("date_et") or "").strip()
-            selected = parse_date_value(raw_date) if raw_date else business_today()
+            try:
+                selected = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
             result = save_rinse_hd_items_revenue(
                 cursor,
                 oid,
@@ -115,8 +131,8 @@ def register_management_rinse_hd_routes(
                 total_items=body.get("total_items"),
                 revenue=body.get("revenue"),
                 version=int(body.get("version") or 0),
-                actor_user_id=me.get("id") or me.get("user_id"),
-                actor_display_name=_actor_name(me),
+                actor_user_id=_actor_user_id(me),
+                actor_display_name=actor_name(me),
             )
             if not result.get("ok"):
                 conn.rollback()
@@ -138,20 +154,25 @@ def register_management_rinse_hd_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not (_role_set(me) & HUB_WRITE_ROLES):
-                return jsonify({"error": "Forbidden"}), 403
             oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
             body = request.get_json(silent=True) or {}
             raw_date = str(body.get("date_et") or request.args.get("date_et") or "").strip()
-            selected = parse_date_value(raw_date) if raw_date else business_today()
+            try:
+                selected = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
             result = mark_rinse_hd_complete(
                 cursor,
                 oid,
                 bag_id,
                 selected_date_et=selected,
                 version=int(body.get("version") or 0),
-                actor_user_id=me.get("id") or me.get("user_id"),
-                actor_display_name=_actor_name(me),
+                actor_user_id=_actor_user_id(me),
+                actor_display_name=actor_name(me),
             )
             if not result.get("ok"):
                 conn.rollback()

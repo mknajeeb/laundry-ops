@@ -18,6 +18,7 @@ export {
   ROLE_CLOCK_IN_FIRST_MESSAGE,
   isClockAllowedFromHub,
   PIN_LAUNCHER_META,
+  PIN_HOME_FEATURE_ORDER,
 } from "./buildPinLauncherTiles";
 export {
   autoSelectCategoryId,

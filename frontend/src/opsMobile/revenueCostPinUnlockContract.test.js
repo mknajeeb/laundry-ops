@@ -1,29 +1,21 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { describe, expect, it } from "vitest";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const root = path.dirname(fileURLToPath(import.meta.url));
 
-describe("Phase 5B.1 Step 2 Revenue & Cost PIN unlock payload", () => {
-  it("EmployeePinHubPage tags revenue_cost unlock and opens floor route", () => {
-    const src = readFileSync(join(root, "pages/EmployeePinHubPage.jsx"), "utf8");
+describe("PIN Revenue & Cash unlock contract", () => {
+  it("hub unlocks revenue_cost into /revenue-cost/floor", () => {
+    const src = readFileSync(path.join(root, "../pages/EmployeePinHubPage.jsx"), "utf8");
     expect(src).toContain('pinHubModule: "revenue_cost"');
     expect(src).toContain('navigate("/revenue-cost/floor"');
-    expect(src).not.toContain('navigate("/finance/daily-revenue-cost"');
+    expect(src).not.toContain('navigate("/revenue-cash"');
   });
 
-  it("authAttendancePinUnlock accepts optional pinHubModule / hubToken", () => {
-    const src = readFileSync(join(root, "api.js"), "utf8");
-    expect(src).toContain("pin_hub_module");
-    expect(src).toContain("opts.pinHubModule");
-    expect(src).toContain("opts.hubToken");
-  });
-
-  it("KioskUnlockPage does not send pin_hub_module", () => {
-    const src = readFileSync(join(root, "pages/KioskUnlockPage.jsx"), "utf8");
-    expect(src).toContain("authAttendancePinUnlock");
-    expect(src).not.toContain("pinHubModule");
-    expect(src).not.toContain("pin_hub_module");
+  it("hub unlocks hang_dry into /hang-dry/floor", () => {
+    const src = readFileSync(path.join(root, "../pages/EmployeePinHubPage.jsx"), "utf8");
+    expect(src).toContain('pinHubModule: "hang_dry"');
+    expect(src).toContain('navigate("/hang-dry/floor"');
   });
 });

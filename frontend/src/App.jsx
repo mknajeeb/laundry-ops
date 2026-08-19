@@ -74,6 +74,7 @@ import NotificationsPage from "./pages/NotificationsPage";
 import OrganizationSettingsPage from "./pages/OrganizationSettingsPage";
 import DailyRevenueCostPage from "./pages/DailyRevenueCostPage";
 import RevenueCostFloorPage from "./pages/RevenueCostFloorPage";
+import HangDryFloorPage from "./pages/HangDryFloorPage";
 import DailyOperationsPage from "./pages/DailyOperationsPage";
 import ManagementHubPage from "./pages/ManagementHubPage";
 import ManagementRinseWfPage from "./pages/ManagementRinseWfPage";
@@ -207,9 +208,14 @@ function isRevenueCostFloorRoute(path) {
   return p === "/revenue-cost/floor" || p.startsWith("/revenue-cost/");
 }
 
-/** @deprecated pin hub employees use /revenue-cost/floor — kept for any stale app sessions */
+function isHangDryFloorRoute(path) {
+  const p = normalizePathname(path);
+  return p === "/hang-dry/floor" || p.startsWith("/hang-dry/");
+}
+
+/** PIN hub employee floors (Revenue & Cash + Hang Dry). */
 function isPinHubFinanceRoute(path) {
-  return isRevenueCostFloorRoute(path);
+  return isRevenueCostFloorRoute(path) || isHangDryFloorRoute(path);
 }
 
 /** Kiosk clock in/out only: /attendance or /attendance/:orgSlug (no app session). */
@@ -621,13 +627,13 @@ function AppShell() {
   }
 
   /**
-   * Phone PIN menu → Inventory / Revenue & Cost floor: fullscreen feature
+   * Phone PIN menu → Inventory / Revenue & Cash / Hang Dry: fullscreen feature
    * (no sidebar / idle kiosk lock / ADMIN gate). Mobile PIN Access is the
    * employee permission source; manager Daily Revenue & Cost stays separate.
    */
   if (
     isPinHubAppSessionActive() &&
-    (isInventoryRoute(pathname) || isRevenueCostFloorRoute(pathname))
+    (isInventoryRoute(pathname) || isPinHubFinanceRoute(pathname))
   ) {
     if (authLoading) {
       return (
@@ -670,6 +676,17 @@ function AppShell() {
             element={
               <RevenueCostFloorPage
                 user={user}
+                onPinHubDone={() => {
+                  washproSessionSyncedRef.current = false;
+                  setUser(null);
+                }}
+              />
+            }
+          />
+          <Route
+            path="/hang-dry/floor"
+            element={
+              <HangDryFloorPage
                 onPinHubDone={() => {
                   washproSessionSyncedRef.current = false;
                   setUser(null);
