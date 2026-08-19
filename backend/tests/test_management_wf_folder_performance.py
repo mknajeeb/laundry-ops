@@ -9,6 +9,8 @@ from backend.management_wf_folder_performance import (
     COMPARE_7D,
     COMPARE_SAME_WEEKDAY_LAST_WEEK,
     COMPARE_TODAY,
+    _assign_bag_into_folder_sessions,
+    _employee_picker_label,
     _public_session_card,
     compute_order_completion_timing,
     resolve_comparison_window,
@@ -146,6 +148,69 @@ class TestUnmappedExclusionFromRates:
         assert mapped["bags_per_hour"] == 1.0
         assert mapped["lbs_per_hour"] == 25.0
         assert with_unmapped_wrong["bags_per_hour"] != mapped["bags_per_hour"]
+
+
+class TestMoveDestinationLabels:
+    def test_picker_label_includes_display_when_different_from_rinse(self):
+        assert (
+            _employee_picker_label(
+                "Mrs Chen (VeeWash)",
+                {"display_name": "Guiying Lin", "rinse_user_name": "Mrs Chen (VeeWash)"},
+            )
+            == "Guiying Lin · Mrs Chen (VeeWash)"
+        )
+
+    def test_picker_label_plain_when_names_match(self):
+        assert (
+            _employee_picker_label(
+                "Francis (Veewash)",
+                {"display_name": "Francis (Veewash)"},
+            )
+            == "Francis (Veewash)"
+        )
+
+
+class TestOverrideOntoSignedInNonFolderSession:
+    def test_manual_destination_session_accepts_override(self):
+        sessions = [
+            {
+                "session_id": "WF-430",
+                "session_code": "WF-01",
+                "manual_destination_only": True,
+                "role_code": "OPERATOR",
+            }
+        ]
+        bag = {
+            "bag_id": "XYZ",
+            "override_session_id": "WF-430",
+            "credited_employee": "Mrs Chen (VeeWash)",
+            "completion_time": "2026-08-19 14:00:00",
+        }
+        out = _assign_bag_into_folder_sessions(bag, sessions)
+        assert out["session_id"] == "WF-430"
+        assert out.get("unmapped_reason") is None
+
+    def test_auto_assign_ignores_manual_destination_only_sessions(self):
+        sessions = [
+            {
+                "session_id": "WF-430",
+                "session_code": "WF-01",
+                "manual_destination_only": True,
+                "_start_dt": datetime(2026, 8, 19, 13, 54, 0),
+                "_end_dt": datetime(2026, 8, 19, 18, 0, 0),
+                "start_time": "2026-08-19 13:54:00",
+                "end_time": "2026-08-19 18:00:00",
+            }
+        ]
+        bag = {
+            "bag_id": "XYZ",
+            "credited_employee": "Mrs Chen (VeeWash)",
+            "completion_time": "2026-08-19 14:00:00",
+            "credit_timestamp": "2026-08-19 14:00:00",
+        }
+        out = _assign_bag_into_folder_sessions(bag, sessions)
+        assert out["session_id"] is None
+        assert out["unmapped_reason"] == "OUTSIDE_FOLDER_SESSION"
 
 
 class TestOpenSessionPerformanceEnd:

@@ -344,20 +344,40 @@ def _is_folder_segment(seg: Mapping[str, Any]) -> bool:
     return cat == CATEGORY_CODE_RINSE_WF and role == ROLE_CODE_FOLDER
 
 
-def _build_folder_sessions_for_user(
+def _segment_is_open(seg: Mapping[str, Any]) -> bool:
+    return _parse_dt(seg.get("ended_at")) is None
+
+
+def _employee_picker_label(rinse_name: str, mapping: Mapping[str, Any] | None) -> str:
+    """Show WashPro display name when it differs from the Rinse scan name."""
+    rinse = str(rinse_name or "").strip()
+    if not isinstance(mapping, Mapping):
+        return rinse
+    display = str(mapping.get("display_name") or mapping.get("user_name") or "").strip()
+    if display and display.casefold() != rinse.casefold():
+        return f"{display} · {rinse}"
+    return rinse or display
+
+
+def _build_sessions_from_segments(
     segments: Sequence[Mapping[str, Any]],
     *,
     selected_date_et: date,
     sessions_by_id: Mapping[int, Mapping[str, Any]],
     now_et: datetime | None,
+    folder_only: bool = True,
+    open_only: bool = False,
+    manual_destination_only: bool = False,
 ) -> list[dict[str, Any]]:
     segs = sorted(
         [s for s in segments if isinstance(s, Mapping)],
         key=lambda s: (_parse_dt(s.get("started_at")) or datetime.min, int(s.get("id") or 0)),
     )
-    folder_built: list[dict[str, Any]] = []
+    built: list[dict[str, Any]] = []
     for idx, seg in enumerate(segs):
-        if not _is_folder_segment(seg):
+        if folder_only and not _is_folder_segment(seg):
+            continue
+        if open_only and not _segment_is_open(seg):
             continue
         sid = None
         try:
@@ -377,8 +397,61 @@ def _build_folder_sessions_for_user(
             next_segment_start=next_start,
         )
         if payload:
-            folder_built.append(payload)
-    return assign_session_display_codes(folder_built)
+            if manual_destination_only:
+                payload["manual_destination_only"] = True
+            built.append(payload)
+    coded = assign_session_display_codes(built)
+    if not manual_destination_only:
+        return coded
+    out: list[dict[str, Any]] = []
+    for payload in coded:
+        role = str(payload.get("role") or payload.get("role_code") or "Role").strip()
+        tr = str(payload.get("time_range_label") or "").strip()
+        if role and tr and not tr.lower().startswith(role.casefold()):
+            payload["time_range_label"] = f"{role} · {tr}"
+            code = payload.get("session_code") or "SESSION"
+            payload["option_label"] = f"{code}\n{payload['time_range_label']}"
+        out.append(payload)
+    return out
+
+
+def _build_folder_sessions_for_user(
+    segments: Sequence[Mapping[str, Any]],
+    *,
+    selected_date_et: date,
+    sessions_by_id: Mapping[int, Mapping[str, Any]],
+    now_et: datetime | None,
+) -> list[dict[str, Any]]:
+    return _build_sessions_from_segments(
+        segments,
+        selected_date_et=selected_date_et,
+        sessions_by_id=sessions_by_id,
+        now_et=now_et,
+        folder_only=True,
+    )
+
+
+def _public_destination_sessions(sessions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for s in sessions or []:
+        out.append(
+            {
+                "session_id": s.get("session_id"),
+                "session_code": s.get("session_code"),
+                "segment_id": s.get("segment_id"),
+                "time_range_label": s.get("time_range_label")
+                or (
+                    f"{_fmt_clock(s.get('_start_dt')) or '—'} – "
+                    f"{'Open' if str(s.get('role_status') or '').lower() == 'open' else (_fmt_clock(s.get('_end_dt')) or '—')}"
+                ),
+                "start_time": s.get("start_time"),
+                "end_time": s.get("end_time"),
+                "role_status": s.get("role_status"),
+                "role_code": s.get("role_code"),
+                "manual_destination_only": bool(s.get("manual_destination_only")),
+            }
+        )
+    return out
 
 
 def _order_completion_ts(order: Mapping[str, Any]) -> datetime | None:
@@ -560,9 +633,14 @@ def _assign_bag_into_folder_sessions(
     bag: Mapping[str, Any],
     sessions: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Assign bag to Folder session; honor explicit override session when present."""
+    """Assign bag to Folder session; honor explicit override session when present.
+
+    Auto-assignment uses Folder sessions only. Manual overrides may target a
+    signed-in non-Folder session marked ``manual_destination_only``.
+    """
     b = dict(bag)
     override_sid = b.get("override_session_id")
+    auto_sessions = [s for s in sessions if not s.get("manual_destination_only")]
     if override_sid:
         assign = assign_bag_to_session(
             b,
@@ -572,7 +650,7 @@ def _assign_bag_into_folder_sessions(
                 "segment_id": b.get("override_segment_id"),
             },
         )
-        # If override session is not among this employee's Folder sessions, unmapped.
+        # If override session is not among this employee's eligible sessions, unmapped.
         if assign.get("session_id") and not any(
             str(s.get("session_id")) == str(assign.get("session_id")) for s in sessions
         ):
@@ -587,7 +665,7 @@ def _assign_bag_into_folder_sessions(
         b.update(assign)
         return b
 
-    assign = assign_bag_to_session(b, sessions, manual_override=None)
+    assign = assign_bag_to_session(b, auto_sessions, manual_override=None)
     b.update(assign)
     if assign.get("session_assignment") in (ASSIGNMENT_UNASSIGNED, ASSIGNMENT_NEEDS_REVIEW):
         b["unmapped_reason"] = (
@@ -680,10 +758,10 @@ def build_day_folder_performance(
         except (TypeError, ValueError):
             continue
         all_mapped_uids.append(uid)
-        # Prefer a bag's casing when available.
+        # Prefer a bag's casing when available; else Rinse scan name (attribution key).
         display = next((n for n in emp_names if n.casefold() == rinse_name), None)
         uid_to_display[uid] = display or str(
-            mapping.get("display_name") or mapping.get("user_name") or rinse_name
+            mapping.get("rinse_user_name") or mapping.get("display_name") or rinse_name
         )
 
     user_ids = sorted(set(all_mapped_uids) | set(name_to_uid.values()))
@@ -724,6 +802,51 @@ def build_day_folder_performance(
     # Ensure employees with bags but no Folder sessions still appear for unmapped routing.
     for emp in emp_names:
         sessions_by_employee.setdefault(emp, sessions_by_employee.get(emp) or [])
+
+    # Inject signed-in (non-Folder) sessions when an active override targets them, so
+    # Move into a mapped signed-in Operator/etc. session can leave Unmapped.
+    override_targets: dict[str, set[str]] = defaultdict(set)
+    for bag in attributed:
+        emp = str(bag.get("effective_employee") or "").strip()
+        sid = bag.get("override_session_id")
+        if emp and sid:
+            override_targets[emp].add(str(sid))
+    for emp, needed_sids in override_targets.items():
+        existing = sessions_by_employee.setdefault(emp, [])
+        have = {str(s.get("session_id")) for s in existing}
+        missing = needed_sids - have
+        if not missing:
+            continue
+        mapping = (user_maps or {}).get(emp.casefold())
+        uid = None
+        if mapping and mapping.get("user_id") is not None:
+            try:
+                uid = int(mapping["user_id"])
+            except (TypeError, ValueError):
+                uid = None
+        if uid is None:
+            uid = name_to_uid.get(emp)
+        if uid is None:
+            continue
+        signed_in = _build_sessions_from_segments(
+            segs_by_user.get(uid) or [],
+            selected_date_et=selected_date_et,
+            sessions_by_id=sessions_by_id,
+            now_et=now,
+            folder_only=False,
+            open_only=False,
+            manual_destination_only=True,
+        )
+        for s in signed_in:
+            if str(s.get("session_id")) not in missing:
+                continue
+            if str(s.get("session_id")) in have:
+                continue
+            s["employee"] = emp
+            s["selected_date_et"] = selected_date_et.isoformat()
+            s["user_id"] = uid
+            existing.append(s)
+            have.add(str(s.get("session_id")))
 
     mapped_orders_by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
     unmapped: list[dict[str, Any]] = []
@@ -1207,32 +1330,101 @@ def list_move_destinations(
     organization_id: int,
     *,
     selected_date_et: date,
+    now_et: datetime | None = None,
 ) -> dict[str, Any]:
-    """Employees with valid WF Folder sessions for Move picker."""
-    day = build_day_folder_performance(
-        cursor,
-        organization_id,
-        selected_date_et=selected_date_et,
-        attach_customers=False,
+    """Move picker destinations for the selected ET day only.
+
+    Includes mapped users who have job segments overlapping ``selected_date_et``:
+    - Prefer RINSE_WF / FOLDER sessions when present
+    - Otherwise offer that day's signed-in role segment(s) (e.g. Operator)
+
+    Never lists mapped users with no activity on the selected day.
+    """
+    from backend.rinse_simple_shift_performance import _load_rinse_user_maps
+
+    org = int(organization_id)
+    now = now_et or eastern_now().replace(tzinfo=None)
+    user_maps = _load_rinse_user_maps(cursor, org)
+
+    uid_to_meta: dict[int, dict[str, Any]] = {}
+    for rinse_key, mapping in (user_maps or {}).items():
+        if not isinstance(mapping, dict) or mapping.get("user_id") is None:
+            continue
+        try:
+            uid = int(mapping["user_id"])
+        except (TypeError, ValueError):
+            continue
+        rinse_name = str(mapping.get("rinse_user_name") or rinse_key).strip()
+        if not rinse_name:
+            continue
+        # Prefer the canonical rinse name; keep first seen mapping.
+        uid_to_meta.setdefault(
+            uid,
+            {
+                "rinse_name": rinse_name,
+                "mapping": mapping,
+                "employee_label": _employee_picker_label(rinse_name, mapping),
+            },
+        )
+
+    user_ids = sorted(uid_to_meta.keys())
+    # Day-scoped: only segments overlapping selected_date_et.
+    segs_by_user = load_day_job_segments_by_user(
+        cursor, org, user_ids, selected_date_et=selected_date_et, folder_only=False
     )
-    destinations = []
-    for emp in day.get("employees") or []:
-        sessions = []
-        for s in emp.get("sessions") or []:
-            sessions.append(
-                {
-                    "session_id": s.get("session_id"),
-                    "session_code": s.get("session_code"),
-                    "segment_id": s.get("segment_id"),
-                    "time_range_label": s.get("time_range_label"),
-                    "start_time": s.get("start_time"),
-                    "end_time": s.get("end_time"),
-                    "role_status": s.get("role_status"),
-                }
+    session_ids: list[int] = []
+    for segs in segs_by_user.values():
+        for seg in segs:
+            if seg.get("shift_session_id") is not None:
+                try:
+                    session_ids.append(int(seg["shift_session_id"]))
+                except (TypeError, ValueError):
+                    pass
+    sessions_by_id = load_shift_sessions_by_id(cursor, org, session_ids)
+
+    destinations: list[dict[str, Any]] = []
+    for uid in user_ids:
+        meta = uid_to_meta[uid]
+        segs = segs_by_user.get(uid) or []
+        if not segs:
+            # No activity on selected day → exclude (even if mapped).
+            continue
+        folder = _build_folder_sessions_for_user(
+            segs,
+            selected_date_et=selected_date_et,
+            sessions_by_id=sessions_by_id,
+            now_et=now,
+        )
+        if folder:
+            sessions = folder
+        else:
+            # Same-day non-Folder role segments (Operator, etc.).
+            sessions = _build_sessions_from_segments(
+                segs,
+                selected_date_et=selected_date_et,
+                sessions_by_id=sessions_by_id,
+                now_et=now,
+                folder_only=False,
+                open_only=False,
+                manual_destination_only=True,
             )
-        if sessions:
-            destinations.append({"employee": emp.get("employee"), "sessions": sessions})
-    # Also include Folder-session employees with zero mapped orders (already in day employees)
+        if not sessions:
+            continue
+        destinations.append(
+            {
+                "employee": meta["rinse_name"],
+                "employee_label": meta["employee_label"],
+                "display_name": str(
+                    (meta["mapping"] or {}).get("display_name") or ""
+                ).strip()
+                or None,
+                "sessions": _public_destination_sessions(sessions),
+            }
+        )
+
+    destinations.sort(
+        key=lambda d: str(d.get("employee_label") or d.get("employee") or "").casefold()
+    )
     return {
         "selected_date_et": selected_date_et.isoformat(),
         "destinations": destinations,

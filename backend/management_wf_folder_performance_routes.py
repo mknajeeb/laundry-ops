@@ -180,7 +180,7 @@ def register_management_wf_folder_performance_routes(
 
     @app.route("/api/management/performance/wf-folder/destinations", methods=["GET"])
     def management_wf_folder_destinations():
-        """Move picker destinations: employees with valid WF Folder sessions."""
+        """Move picker: mapped users with activity on the selected ET day only."""
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:

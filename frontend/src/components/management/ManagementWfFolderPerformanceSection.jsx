@@ -313,7 +313,7 @@ function MoveDialog({
             >
               {(destinations || []).map((d) => (
                 <MenuItem key={d.employee} value={d.employee}>
-                  {d.employee}
+                  {d.employee_label || d.employee}
                 </MenuItem>
               ))}
             </Select>
