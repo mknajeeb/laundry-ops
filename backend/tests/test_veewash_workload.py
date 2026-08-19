@@ -517,6 +517,45 @@ def test_headline_future_edd_is_non_rush_even_when_stored_flag_is_rush():
     assert summ["segments"]["wf_non_rush"]["total_workload"] == 1
 
 
+def test_effective_portal_rush_edd_matrix_matches_at_vendor():
+    """EDD before/on/after selected day + stale RUSH text follow classify_at_vendor_rush."""
+    from backend.rinse_at_vendor_module import AV_NON_RUSH, AV_RUSH, classify_at_vendor_rush
+    from backend.rinse_veewash_workload import _effective_portal_rush_flag, _rush_bucket
+
+    cases = [
+        ("OVERDUE", D0 - timedelta(days=1), "RUSH", "Mon 08/17/2026", "RUSH"),
+        ("SAME_DAY", D0, "NON-RUSH", "Wed 08/19/2026", "RUSH"),
+        ("FUTURE", D0 + timedelta(days=1), "RUSH", "Thu 08/20/2026", "NON_RUSH"),
+        (
+            "FUTURE_RUSH_TEXT",
+            D0 + timedelta(days=1),
+            "RUSH",
+            "Thu 08/20/2026 RUSH",
+            "NON_RUSH",
+        ),
+    ]
+    for bid, edd, stored, text, expect in cases:
+        pres = {
+            "rush_flag": stored,
+            "estimated_delivery_date": edd,
+            "raw_row_json": {"estimated_delivery_text": text},
+            "customer_name": bid,
+        }
+        got = _effective_portal_rush_flag(pres, D0)
+        av, _ = classify_at_vendor_rush(
+            latest_edd=edd,
+            delivery_texts=[text],
+            selected_date_et=D0,
+            pending=True,
+        )
+        assert _rush_bucket(got) == expect, bid
+        assert (AV_RUSH if expect == "RUSH" else AV_NON_RUSH) == av, bid
+        # Stale stored flag alone must not win over future EDD.
+        if bid.startswith("FUTURE"):
+            assert _rush_bucket(stored) == "RUSH"
+            assert _rush_bucket(got) == "NON_RUSH"
+
+
 def test_jul21_fixture_locks_validated_dirty_entry_completion_model():
     """Offline lock of Dirty-only WF/HD entry + v2 completion for 2026-07-21 org-3."""
     payload, presence, entry, completion, state = _load_jul21_fixture()

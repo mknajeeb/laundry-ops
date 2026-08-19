@@ -303,32 +303,38 @@ def test_e_multi_cycle_manager_correction_affects_only_own_cycle():
     assert bid not in out
 
 
-def test_f_newer_cycle_at_selected_day_midnight_not_excluded():
-    """Prior-cycle completion must not exclude a new STV at selected-day 00:00 ET."""
-    bid = "AXYMIDN"
-    tl = [
+def _prior_completed_cycle(bid: str, *, day: date = date(2026, 8, 12)) -> list[dict]:
+    """Completed prior-day cycle ending before selected-day opening."""
+    return [
         _scan(
             bag_id=bid,
-            ts=datetime(2026, 8, 12, 6, 3),
+            ts=datetime(day.year, day.month, day.day, 6, 3),
             purpose="sent-to-vendor",
             rack="VeeWash Dirty",
             scan_id=1,
         ),
         _scan(
             bag_id=bid,
-            ts=datetime(2026, 8, 12, 16, 44),
+            ts=datetime(day.year, day.month, day.day, 16, 44),
             purpose="garments-reviewed",
             user="Evelin",
             scan_id=2,
         ),
         _scan(
             bag_id=bid,
-            ts=datetime(2026, 8, 12, 16, 45),
+            ts=datetime(day.year, day.month, day.day, 16, 45),
             purpose="weight-entry",
             user="Evelin",
             weight=19.5,
             scan_id=3,
         ),
+    ]
+
+
+def test_f_newer_cycle_at_selected_day_midnight_not_excluded():
+    """Prior-cycle completion must not exclude a new STV at selected-day 00:00 ET."""
+    bid = "AXYMIDN"
+    tl = _prior_completed_cycle(bid) + [
         _scan(
             bag_id=bid,
             ts=datetime(2026, 8, 13, 0, 0),
@@ -340,6 +346,73 @@ def test_f_newer_cycle_at_selected_day_midnight_not_excluded():
     ]
     out = _run_helper({bid: tl}, [])
     assert bid not in out
+
+
+def test_f2_newer_cycle_just_after_midnight_not_excluded():
+    """STV at 00:00:01 ET on the selected day is still a selected-day cycle."""
+    bid = "AFTERMID"
+    tl = _prior_completed_cycle(bid) + [
+        _scan(
+            bag_id=bid,
+            ts=datetime(2026, 8, 13, 0, 0, 1),
+            purpose="sent-to-vendor",
+            rack="VeeWash Dirty",
+            user="Shaquille",
+            scan_id=4,
+        ),
+    ]
+    out = _run_helper({bid: tl}, [])
+    assert bid not in out
+
+
+def test_f3_cycle_starting_at_prior_day_end_not_excluded():
+    """STV at 23:59:59 ET before opening is a newer pre-opening cycle (not excluded)."""
+    bid = "BEFOREMID"
+    tl = _prior_completed_cycle(bid, day=date(2026, 8, 11)) + [
+        _scan(
+            bag_id=bid,
+            ts=datetime(2026, 8, 12, 23, 59, 59),
+            purpose="sent-to-vendor",
+            rack="VeeWash Dirty",
+            user="Shaquille",
+            scan_id=4,
+        ),
+    ]
+    out = _run_helper({bid: tl}, [])
+    assert bid not in out
+
+
+def test_f4_multi_cycle_bag_admitted_once_not_duplicated():
+    """Opening membership admits a multi-cycle bag once (new selected-day cycle)."""
+    from backend.rinse_veewash_day_membership import (
+        INCLUSION_OPENING_NEW,
+        classify_opening_scrape_membership,
+    )
+
+    bid = "ONCE1"
+    membership = {
+        bid: {
+            "bag_id": bid,
+            "inclusion_source": INCLUSION_OPENING_NEW,
+            "service_type_portal": "WF",
+            "rush_flag": "RUSH",
+        }
+    }
+    cursor = MagicMock()
+    with patch(
+        "backend.rinse_veewash_day_membership._bags_canonically_completed_before_opening",
+        return_value=set(),
+    ), patch(
+        "backend.rinse_veewash_day_membership._load_prior_day_membership_ids",
+        return_value=set(),
+    ):
+        kept, excluded, meta = classify_opening_scrape_membership(
+            cursor, ORG, DAY, membership
+        )
+    assert bid not in excluded
+    assert bid in kept
+    assert meta["opening_new_bag_ids"].count(bid) == 1
+    assert list(kept.keys()).count(bid) == 1
 
 
 def test_g_comps_prior_plus_midnight_stv_not_excluded():
