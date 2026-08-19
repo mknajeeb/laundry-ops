@@ -2300,6 +2300,7 @@ export const submitDrcMobileSection = (sectionKey, payload = {}) =>
 export const submitDrcMobileAll = (payload = {}) =>
   axios.post(`${API_BASE}/finance/daily-revenue-cost/mobile/submit`, payload);
 
+/** Manager Cost Maintenance — weekday section assignments. */
 export const getDrcMobileWeekdayAssignments = () =>
   axios.get(`${API_BASE}/finance/daily-revenue-cost/mobile/weekday-assignments`);
 
