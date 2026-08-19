@@ -381,33 +381,136 @@ def _build_folder_sessions_for_user(
     return assign_session_display_codes(folder_built)
 
 
-def _public_session_card(sess: Mapping[str, Any], orders: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _order_completion_ts(order: Mapping[str, Any]) -> datetime | None:
+    return _parse_dt(
+        order.get("completion_time_et")
+        or order.get("completion_time")
+        or order.get("completion_timestamp")
+    )
+
+
+def _latest_credited_completion_ts(orders: Sequence[Mapping[str, Any]]) -> datetime | None:
+    times = [_order_completion_ts(o) for o in orders or []]
+    times = [t for t in times if t is not None]
+    return max(times) if times else None
+
+
+def resolve_folder_performance_window(
+    sess: Mapping[str, Any],
+    orders: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Role session window vs performance rate denominator.
+
+    OPEN: performance_end = latest credited completion (never now).
+    CLOSED: performance_end = actual Folder role/session end.
+    OPEN with zero completions: no performance denominator.
+    """
     start = sess.get("_start_dt") or _parse_dt(sess.get("start_time"))
-    end = sess.get("_end_dt") or _parse_dt(sess.get("end_time"))
-    hours = None
-    if start is not None and end is not None and end >= start:
-        hours = _hours((end - start).total_seconds())
+    role_end = sess.get("_end_dt") or _parse_dt(sess.get("end_time"))
+    role_status = str(sess.get("role_status") or "").strip().lower()
+    is_open = role_status == "open"
+    latest = _latest_credited_completion_ts(orders)
+
+    role_session_hours = None
+    if start is not None and role_end is not None and role_end >= start:
+        role_session_hours = _hours((role_end - start).total_seconds())
+
+    performance_end = None
+    performance_hours = None
+    performance_basis = None
+
+    if is_open:
+        if latest is not None and start is not None and latest >= start:
+            performance_end = latest
+            performance_hours = _hours((latest - start).total_seconds())
+            performance_basis = "last_completion"
+        else:
+            performance_basis = "open_no_completions"
+    elif role_status == "closed":
+        if start is not None and role_end is not None and role_end >= start:
+            performance_end = role_end
+            performance_hours = role_session_hours
+            performance_basis = "session_end"
+
+    return {
+        "role_session_start": start,
+        "role_session_end": role_end,
+        "latest_completion": latest,
+        "performance_end": performance_end,
+        "role_session_hours": role_session_hours,
+        "performance_hours": performance_hours,
+        "performance_basis": performance_basis,
+        "role_status": role_status,
+    }
+
+
+def _session_timing_labels(
+    sess: Mapping[str, Any],
+    perf: Mapping[str, Any],
+) -> dict[str, str | None]:
+    """Human labels separating role session window from performance denominator."""
+    start = perf.get("role_session_start")
+    role_end = perf.get("role_session_end")
+    latest = perf.get("latest_completion")
+    role_status = str(perf.get("role_status") or "")
+    role_hours = perf.get("role_session_hours")
+    perf_hours = perf.get("performance_hours")
+
+    if role_status == "open":
+        time_range_label = f"{_fmt_clock(start) or '—'} – Open"
+        performance_through_label = (
+            f"Performance through last completion: {_fmt_clock(latest)}"
+            if latest is not None
+            else None
+        )
+        duration_label = _fmt_duration_hours(perf_hours) if perf_hours else None
+        return {
+            "time_range_label": time_range_label,
+            "performance_through_label": performance_through_label,
+            "duration_label": duration_label,
+        }
+
+    end_clock = _fmt_clock(role_end) if role_end is not None else "—"
+    duration_label = _fmt_duration_hours(role_hours) if role_hours else None
+    time_range_label = f"{_fmt_clock(start) or '—'} – {end_clock}"
+    if duration_label:
+        time_range_label = f"{time_range_label} · {duration_label}"
+    return {
+        "time_range_label": time_range_label,
+        "performance_through_label": None,
+        "duration_label": duration_label,
+    }
+
+
+def _public_session_card(sess: Mapping[str, Any], orders: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    perf = resolve_folder_performance_window(sess, orders)
+    start = perf.get("role_session_start")
     order_count = len(orders)
     pre_lbs = round(sum(_bag_credited_lbs_pre(o) for o in orders), 2)
+    perf_hours = perf.get("performance_hours")
     rates = weighted_aggregate_rates(
         total_orders=order_count,
         total_pre_lbs=pre_lbs,
-        total_session_hours=hours,
+        total_session_hours=perf_hours,
     )
+    labels = _session_timing_labels(sess, perf)
     return {
         "session_id": sess.get("session_id"),
         "session_code": sess.get("session_code"),
         "segment_id": sess.get("segment_id"),
         "employee": sess.get("employee"),
         "start_time": _iso(start),
-        "end_time": _iso(end),
+        "end_time": _iso(perf.get("role_session_end")),
         "end_display": sess.get("end_display"),
-        "time_range_label": (
-            f"{_fmt_clock(start) or '—'} – "
-            f"{'Open' if sess.get('role_status') == 'open' else (_fmt_clock(end) or '—')}"
-        ),
-        "duration_label": _fmt_duration_hours(hours),
-        "session_hours": hours,
+        "time_range_label": labels["time_range_label"],
+        "performance_through_label": labels["performance_through_label"],
+        "duration_label": labels["duration_label"],
+        "role_session_hours": perf.get("role_session_hours"),
+        "performance_hours": perf_hours,
+        "performance_end": _iso(perf.get("performance_end")),
+        "latest_completion": _iso(perf.get("latest_completion")),
+        "performance_basis": perf.get("performance_basis"),
+        "session_hours": perf_hours,
         "role_status": sess.get("role_status"),
         "include_in_authoritative_aggregate": sess.get("role_status") != "unresolved",
         "orders_completed": order_count,
@@ -657,8 +760,8 @@ def build_day_folder_performance(
         emp_sessions: list[dict[str, Any]] = []
         emp_orders = 0
         emp_lbs = 0.0
-        emp_hours = 0.0
-        authoritative_hours = 0.0
+        perf_hours_total = 0.0
+        has_perf_hours = False
         for sess in sessions:
             sid = str(sess.get("session_id") or "")
             raw_orders = mapped_orders_by_session.get(sid) or []
@@ -675,11 +778,11 @@ def build_day_folder_performance(
             session_cards.append(card)
             emp_orders += int(card["orders_completed"])
             emp_lbs += float(card["total_pre_lbs"] or 0)
-            if card.get("session_hours") is not None and card.get(
+            if card.get("performance_hours") is not None and card.get(
                 "include_in_authoritative_aggregate", True
             ):
-                emp_hours += float(card["session_hours"])
-                authoritative_hours += float(card["session_hours"])
+                perf_hours_total += float(card["performance_hours"])
+                has_perf_hours = True
 
         # Employees with Folder sessions OR mapped orders
         if not emp_sessions and emp not in employee_orders:
@@ -688,7 +791,7 @@ def build_day_folder_performance(
         rates = weighted_aggregate_rates(
             total_orders=emp_orders,
             total_pre_lbs=emp_lbs,
-            total_session_hours=authoritative_hours if emp_sessions else None,
+            total_session_hours=perf_hours_total if has_perf_hours else None,
         )
         # Time range across sessions
         starts = [_parse_dt(s.get("start_time")) for s in emp_sessions]
@@ -703,14 +806,15 @@ def build_day_folder_performance(
                 "total_pre_lbs": round(emp_lbs, 2),
                 "bags_per_hour": rates["bags_per_hour"],
                 "lbs_per_hour": rates["lbs_per_hour"],
-                "session_hours": round(authoritative_hours, 4) if emp_sessions else None,
+                "performance_hours": round(perf_hours_total, 4) if has_perf_hours else None,
+                "session_hours": round(perf_hours_total, 4) if has_perf_hours else None,
                 "session_count": len(emp_sessions),
                 "time_range_label": (
                     f"{_fmt_clock(min(starts)) if starts else '—'} – "
                     f"{'Open' if any_open else (_fmt_clock(max(ends)) if ends else '—')}"
                 ),
                 "duration_label": _fmt_duration_hours(
-                    authoritative_hours if emp_sessions else None
+                    perf_hours_total if has_perf_hours else None
                 ),
                 "sessions": emp_sessions,
                 "credited_weight_basis": "EVIDENCE_PRE",
@@ -729,7 +833,11 @@ def build_day_folder_performance(
     total_orders = sum(int(e.get("orders_completed") or 0) for e in employees_out)
     total_lbs = round(sum(float(e.get("total_pre_lbs") or 0) for e in employees_out), 2)
     total_hours = round(
-        sum(float(e.get("session_hours") or 0) for e in employees_out if e.get("session_hours") is not None),
+        sum(
+            float(e.get("performance_hours") or e.get("session_hours") or 0)
+            for e in employees_out
+            if (e.get("performance_hours") is not None or e.get("session_hours") is not None)
+        ),
         4,
     )
     totals = weighted_aggregate_rates(
@@ -780,6 +888,7 @@ def merge_day_payloads(day_payloads: Sequence[Mapping[str, Any]]) -> dict[str, A
                     "employee": name,
                     "orders_completed": 0,
                     "total_pre_lbs": 0.0,
+                    "performance_hours": 0.0,
                     "session_hours": 0.0,
                     "session_count": 0,
                     "sessions": [],
@@ -790,10 +899,14 @@ def merge_day_payloads(day_payloads: Sequence[Mapping[str, Any]]) -> dict[str, A
             slot["total_pre_lbs"] = round(
                 float(slot["total_pre_lbs"]) + float(emp.get("total_pre_lbs") or 0), 2
             )
-            if emp.get("session_hours") is not None:
-                slot["session_hours"] = round(
-                    float(slot["session_hours"]) + float(emp["session_hours"]), 4
+            perf_h = emp.get("performance_hours")
+            if perf_h is None:
+                perf_h = emp.get("session_hours")
+            if perf_h is not None:
+                slot["performance_hours"] = round(
+                    float(slot["performance_hours"]) + float(perf_h), 4
                 )
+                slot["session_hours"] = slot["performance_hours"]
             slot["session_count"] += int(emp.get("session_count") or 0)
             for sess in emp.get("sessions") or []:
                 if isinstance(sess, Mapping):
@@ -808,11 +921,12 @@ def merge_day_payloads(day_payloads: Sequence[Mapping[str, Any]]) -> dict[str, A
         rates = weighted_aggregate_rates(
             total_orders=int(emp["orders_completed"]),
             total_pre_lbs=float(emp["total_pre_lbs"]),
-            total_session_hours=float(emp["session_hours"]) if emp["session_hours"] else None,
+            total_session_hours=float(emp["performance_hours"]) if emp["performance_hours"] else None,
         )
         emp["bags_per_hour"] = rates["bags_per_hour"]
         emp["lbs_per_hour"] = rates["lbs_per_hour"]
-        emp["duration_label"] = _fmt_duration_hours(emp.get("session_hours"))
+        emp["duration_label"] = _fmt_duration_hours(emp.get("performance_hours"))
+        emp["session_hours"] = emp.get("performance_hours")
         # Compact card: drop nested order arrays in multi-day merge to keep payload small
         compact_sessions = []
         for s in emp.get("sessions") or []:
@@ -832,7 +946,8 @@ def merge_day_payloads(day_payloads: Sequence[Mapping[str, Any]]) -> dict[str, A
     total_orders = sum(int(e.get("orders_completed") or 0) for e in employees_out)
     total_lbs = round(sum(float(e.get("total_pre_lbs") or 0) for e in employees_out), 2)
     total_hours = round(
-        sum(float(e.get("session_hours") or 0) for e in employees_out), 4
+        sum(float(e.get("performance_hours") or e.get("session_hours") or 0) for e in employees_out),
+        4,
     )
     totals = weighted_aggregate_rates(
         total_orders=total_orders,
@@ -879,7 +994,11 @@ def _limit_last_n_sessions(merged: Mapping[str, Any], last_n: int) -> dict[str, 
         orders = sum(int(s.get("orders_completed") or 0) for s in sess)
         lbs = round(sum(float(s.get("total_pre_lbs") or 0) for s in sess), 2)
         hours = round(
-            sum(float(s.get("session_hours") or 0) for s in sess if s.get("session_hours") is not None),
+            sum(
+                float(s.get("performance_hours") or s.get("session_hours") or 0)
+                for s in sess
+                if (s.get("performance_hours") is not None or s.get("session_hours") is not None)
+            ),
             4,
         )
         rates = weighted_aggregate_rates(
@@ -891,6 +1010,7 @@ def _limit_last_n_sessions(merged: Mapping[str, Any], last_n: int) -> dict[str, 
                 "sessions": sess,
                 "orders_completed": orders,
                 "total_pre_lbs": lbs,
+                "performance_hours": hours or None,
                 "session_hours": hours or None,
                 "session_count": len(sess),
                 "bags_per_hour": rates["bags_per_hour"],
@@ -1033,8 +1153,10 @@ def build_folder_performance_dashboard(
         "deltas": deltas,
         "credited_weight_basis": "EVIDENCE_PRE",
         "formulas": {
-            "bags_per_hour": "Σ orders / Σ Folder session hours",
-            "lbs_per_hour": "Σ PRE lb / Σ Folder session hours",
+            "bags_per_hour": "Σ orders / Σ performance hours",
+            "lbs_per_hour": "Σ PRE lb / Σ performance hours",
+            "open_performance_end": "latest credited completion (never now)",
+            "closed_performance_end": "actual Folder role/session end",
             "order_time_first": "first_completion − session_start",
             "order_time_next": "completion − previous_completion",
             "weight_basis": "EVIDENCE_PRE",

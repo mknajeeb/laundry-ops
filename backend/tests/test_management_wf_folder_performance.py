@@ -9,8 +9,10 @@ from backend.management_wf_folder_performance import (
     COMPARE_7D,
     COMPARE_SAME_WEEKDAY_LAST_WEEK,
     COMPARE_TODAY,
+    _public_session_card,
     compute_order_completion_timing,
     resolve_comparison_window,
+    resolve_folder_performance_window,
     weighted_aggregate_rates,
 )
 
@@ -144,3 +146,80 @@ class TestUnmappedExclusionFromRates:
         assert mapped["bags_per_hour"] == 1.0
         assert mapped["lbs_per_hour"] == 25.0
         assert with_unmapped_wrong["bags_per_hour"] != mapped["bags_per_hour"]
+
+
+class TestOpenSessionPerformanceEnd:
+    def test_open_session_uses_last_completion_not_now(self):
+        session_start = datetime(2026, 8, 19, 8, 31, 0)
+        latest = datetime(2026, 8, 19, 12, 34, 0)
+        now = datetime(2026, 8, 19, 14, 0, 0)
+        sess = {
+            "session_id": "WF-1",
+            "role_status": "open",
+            "start_time": session_start.isoformat(),
+            "end_time": now.isoformat(),
+            "_start_dt": session_start,
+            "_end_dt": now,
+            "end_display": "Open",
+        }
+        orders = [
+            {
+                "bag_id": "B1",
+                "completion_time": latest.isoformat(),
+                "credited_weight_lbs": 20.0,
+                "credited_weight_source": "EVIDENCE_PRE",
+            }
+        ]
+        perf = resolve_folder_performance_window(sess, orders)
+        assert perf["performance_basis"] == "last_completion"
+        assert perf["performance_end"] == latest
+        assert perf["role_session_hours"] == 5.4833  # role window to now (display only)
+        assert perf["performance_hours"] == 4.05  # to last completion
+
+        card = _public_session_card(sess, orders)
+        assert card["bags_per_hour"] == round(1 / 4.05, 4)
+        assert card["performance_through_label"] == "Performance through last completion: 12:34 PM"
+        assert card["duration_label"] == "4h 3m"
+        assert "Open" in card["time_range_label"]
+
+    def test_open_session_zero_bags_shows_dash_rates(self):
+        session_start = datetime(2026, 8, 19, 8, 31, 0)
+        now = datetime(2026, 8, 19, 14, 0, 0)
+        sess = {
+            "session_id": "WF-2",
+            "role_status": "open",
+            "_start_dt": session_start,
+            "_end_dt": now,
+        }
+        card = _public_session_card(sess, [])
+        assert card["bags_per_hour"] is None
+        assert card["lbs_per_hour"] is None
+        assert card["performance_hours"] is None
+
+    def test_closed_session_uses_actual_session_end(self):
+        session_start = datetime(2026, 8, 18, 8, 31, 0)
+        session_end = datetime(2026, 8, 18, 16, 0, 0)
+        latest = datetime(2026, 8, 18, 15, 30, 0)
+        sess = {
+            "session_id": "WF-3",
+            "role_status": "closed",
+            "_start_dt": session_start,
+            "_end_dt": session_end,
+        }
+        orders = [
+            {
+                "bag_id": "B1",
+                "completion_time": latest.isoformat(),
+                "credited_weight_lbs": 30.0,
+                "credited_weight_source": "EVIDENCE_PRE",
+            }
+        ]
+        perf = resolve_folder_performance_window(sess, orders)
+        assert perf["performance_basis"] == "session_end"
+        assert perf["performance_end"] == session_end
+        assert perf["performance_hours"] == 7.4833
+
+        card = _public_session_card(sess, orders)
+        assert card["performance_through_label"] is None
+        assert "4:00 PM" in card["time_range_label"]
+        assert card["duration_label"] == "7h 29m"

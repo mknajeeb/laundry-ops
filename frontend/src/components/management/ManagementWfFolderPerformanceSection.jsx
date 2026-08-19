@@ -46,6 +46,27 @@ function fmtDelta(pct) {
   return `${sign}${n.toFixed(0)}%`;
 }
 
+function SessionTiming({ session, employee }) {
+  const target = session || employee;
+  if (!target) return null;
+  return (
+    <>
+      <Typography sx={{ mt: 1, fontSize: 12, color: "#475569", fontWeight: 600 }}>
+        {target.time_range_label || "—"}
+        {target.duration_label && !target.performance_through_label
+          ? ` · ${target.duration_label}`
+          : ""}
+      </Typography>
+      {target.performance_through_label ? (
+        <Typography sx={{ mt: 0.25, fontSize: 11, color: "#64748b", fontWeight: 600 }}>
+          {target.performance_through_label}
+          {target.duration_label ? ` · ${target.duration_label}` : ""}
+        </Typography>
+      ) : null}
+    </>
+  );
+}
+
 function DeltaChip({ label, pct }) {
   const text = fmtDelta(pct);
   if (!text) return null;
@@ -117,10 +138,7 @@ function SessionCard({ session, onOpen, selectedIds, onToggle }) {
         </Box>
       </Stack>
 
-      <Typography sx={{ mt: 1, fontSize: 12, color: "#475569", fontWeight: 600 }}>
-        {session.time_range_label}
-        {session.duration_label ? ` · ${session.duration_label}` : ""}
-      </Typography>
+      <SessionTiming session={session} />
 
       <Button
         size="small"
@@ -177,10 +195,7 @@ function EmployeeCard({ employee, onOpenSession }) {
         </Box>
       </Stack>
 
-      <Typography sx={{ mt: 1.1, fontSize: 12, color: "#475569", fontWeight: 600 }}>
-        {employee.time_range_label || primary?.time_range_label || "—"}
-        {employee.duration_label ? ` · ${employee.duration_label}` : ""}
-      </Typography>
+      <SessionTiming employee={employee} />
 
       {(employee.sessions || []).map((sess) => (
         <Button
@@ -708,9 +723,18 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
         </DialogTitle>
         <DialogContent>
           <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600, mb: 1 }}>
-            {sessionModal?.time_range_label}
-            {sessionModal?.duration_label ? ` · ${sessionModal.duration_label}` : ""}
+            {sessionModal?.time_range_label || "—"}
           </Typography>
+          {sessionModal?.performance_through_label ? (
+            <Typography sx={{ fontSize: 11, color: "#64748b", fontWeight: 600, mb: 1 }}>
+              {sessionModal.performance_through_label}
+              {sessionModal.duration_label ? ` · ${sessionModal.duration_label}` : ""}
+            </Typography>
+          ) : sessionModal?.duration_label ? (
+            <Typography sx={{ fontSize: 11, color: "#64748b", fontWeight: 600, mb: 1 }}>
+              {sessionModal.duration_label}
+            </Typography>
+          ) : null}
           <Stack direction="row" spacing={0.75} sx={{ mb: 1, flexWrap: "wrap" }}>
             <Button size="small" onClick={() => selectAllVisible(sessionOrders)} sx={{ textTransform: "none" }}>
               Select All
