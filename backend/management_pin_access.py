@@ -1,7 +1,8 @@
-"""Shared gate: Management hub roles OR employee Mobile PIN Access (revenue_cost).
+"""Shared gate: Management hub roles OR employee Mobile PIN Access modules.
 
-PIN employees use the same Management Revenue / Hang Dry APIs and tables as
-managers. They must not get a parallel write path.
+PIN employees use the same Management APIs/tables as managers for surfaces
+that intentionally share write paths (e.g. Hang Dry production). They must
+not get a parallel write path.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ def allows_management_revenue_pin(
     *,
     org_id: int,
 ) -> bool:
-    """True when caller may use Management Revenue / Hang Dry entry APIs."""
+    """True when caller may use Management Revenue APIs (managers or revenue_cost)."""
     if is_hub_manager(me):
         return True
     try:
@@ -48,6 +49,24 @@ def allows_management_revenue_pin(
     if uid <= 0:
         return False
     return bool(employee_allows_module(cursor, int(org_id), uid, "revenue_cost"))
+
+
+def allows_management_hang_dry_pin(
+    cursor,
+    me: dict,
+    *,
+    org_id: int,
+) -> bool:
+    """True when caller may use Management Rinse HD / Hang Dry production APIs."""
+    if is_hub_manager(me):
+        return True
+    try:
+        uid = int(me.get("user_id") or 0)
+    except (TypeError, ValueError):
+        return False
+    if uid <= 0:
+        return False
+    return bool(employee_allows_module(cursor, int(org_id), uid, "hang_dry"))
 
 
 def access_denied_payload() -> tuple[dict[str, Any], int]:

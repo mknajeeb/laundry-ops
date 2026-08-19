@@ -17,6 +17,7 @@ export const DEFAULT_PIN_MENU = {
   features: {
     switch_role: true,
     revenue_cost: true,
+    hang_dry: true,
     checklist: true,
     inventory: true,
   },
@@ -31,8 +32,13 @@ export const PIN_MENU_FEATURE_OPTIONS = [
   },
   {
     id: "revenue_cost",
-    label: "Revenue / Cash",
-    help: "Open Revenue / Cash after PIN unlock (finance module must be on).",
+    label: "Revenue & Cash",
+    help: "Open Revenue & Cash after PIN unlock (finance module must be on).",
+  },
+  {
+    id: "hang_dry",
+    label: "Hang Dry",
+    help: "Enter Hang Dry production after PIN unlock (same records as Management Rinse HD).",
   },
   {
     id: "checklist",

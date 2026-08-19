@@ -57,7 +57,9 @@ export function categoryDisplayBucket(category) {
 }
 
 const CATEGORY_BUCKET_ORDER = ["Rinse Wash & Fold", "Rinse Hang Dry", "Non-Rinse"];
-const ROLE_LABEL_ORDER = ["Sort", "Wash-Dry", "Fold"];
+const ROLE_LABEL_ORDER = ["Wash-Dry", "Sort", "Fold"];
+export const PRIMARY_ROLE_ORDER = ROLE_LABEL_ORDER;
+const RINSE_WORK_TYPE_ORDER = ["Rinse Wash & Fold", "Rinse Hang Dry"];
 
 /**
  * Flatten selection tree into category×role combos for one-tap switching.
@@ -103,6 +105,96 @@ export function groupCombosByBucket(combos) {
       return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
     }),
   }));
+}
+
+/** Compact work-type label shown under a primary role. */
+export function workTypeLabel(combo) {
+  if (!combo) return "";
+  if (combo.bucket === "Non-Rinse") return combo.categoryName || "Non-Rinse";
+  return combo.bucket || combo.categoryName || "";
+}
+
+/**
+ * Role-first grouping: Wash-Dry / Sort / Fold, each with available work types.
+ * Rinse buckets stay as named work types; Non-Rinse uses the real category (DHS / Drop Off).
+ */
+export function groupCombosByPrimaryRole(combos) {
+  const byRole = new Map();
+  for (const combo of combos || []) {
+    const roleLabel = combo.roleLabel || "Other";
+    if (!byRole.has(roleLabel)) byRole.set(roleLabel, []);
+    byRole.get(roleLabel).push(combo);
+  }
+  const roleOrder = [...PRIMARY_ROLE_ORDER];
+  for (const key of byRole.keys()) {
+    if (!roleOrder.includes(key)) roleOrder.push(key);
+  }
+  return roleOrder
+    .filter((roleLabel) => (byRole.get(roleLabel) || []).length)
+    .map((roleLabel) => {
+      const list = byRole.get(roleLabel) || [];
+      const workTypes = [];
+      for (const bucket of RINSE_WORK_TYPE_ORDER) {
+        const match = list.find((c) => c.bucket === bucket);
+        if (match) {
+          workTypes.push({
+            key: `${roleLabel}:${bucket}:${match.categoryId}`,
+            label: workTypeLabel(match),
+            combo: match,
+          });
+        }
+      }
+      const nonRinse = list
+        .filter((c) => c.bucket === "Non-Rinse")
+        .sort((a, b) => String(a.categoryName || "").localeCompare(String(b.categoryName || "")));
+      for (const combo of nonRinse) {
+        workTypes.push({
+          key: `${roleLabel}:nr:${combo.categoryId}`,
+          label: workTypeLabel(combo),
+          combo,
+        });
+      }
+      return { roleLabel, workTypes };
+    });
+}
+
+/** Caption on the primary role tile when this role is the current assignment. */
+export function currentRoleCaption(combo) {
+  if (!combo) return "Current";
+  if (combo.bucket === "Non-Rinse" && combo.categoryName) {
+    return `${combo.categoryName} · Current`;
+  }
+  const label = workTypeLabel(combo);
+  return label ? `${label} · Current` : "Current";
+}
+
+/**
+ * Role-first tap: one work type switches immediately; several work types expand in place.
+ */
+export function resolvePrimaryRoleTap({
+  workTypes = [],
+  expandedRole = null,
+  roleLabel,
+  currentCategoryId = null,
+  currentRoleId = null,
+}) {
+  if (!workTypes.length) return { action: "noop" };
+  if (workTypes.length === 1) {
+    const combo = workTypes[0].combo;
+    if (
+      isCurrentRoleAssignment(
+        combo?.categoryId,
+        combo?.roleId,
+        currentCategoryId,
+        currentRoleId,
+      )
+    ) {
+      return { action: "noop" };
+    }
+    return { action: "switch", combo };
+  }
+  if (expandedRole === roleLabel) return { action: "collapse" };
+  return { action: "expand", roleLabel };
 }
 
 export function resolveCategoryId(category) {

@@ -32,6 +32,10 @@ export {
   shouldCallRoleSwitchApi,
   switchRoleEmployeeError,
   uniqueRolesFromTree,
+  groupCombosByPrimaryRole,
+  currentRoleCaption,
+  resolvePrimaryRoleTap,
+  workTypeLabel,
 } from "./switchRoleFlowHelpers";
 export { createSwitchRoleController } from "./createSwitchRoleController";
 export { createTaskToggleController } from "./createTaskToggleController";

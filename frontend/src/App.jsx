@@ -61,6 +61,7 @@ import LoginPage from "./pages/LoginPage";
 import KioskUnlockPage from "./pages/KioskUnlockPage";
 import AttendancePinPage from "./pages/AttendancePinPage";
 import AttendanceRoleSwitchPage from "./pages/AttendanceRoleSwitchPage";
+import ChangeRolePreviewPage from "./pages/ChangeRolePreviewPage";
 import MaintenanceTaskListPinPage from "./pages/MaintenanceTaskListPinPage";
 import EmployeePinHubPage from "./pages/EmployeePinHubPage";
 import MaintenanceTaskListReportsPage from "./pages/MaintenanceTaskListReportsPage";
@@ -73,7 +74,8 @@ import PermissionsPage from "./pages/PermissionsPage";
 import NotificationsPage from "./pages/NotificationsPage";
 import OrganizationSettingsPage from "./pages/OrganizationSettingsPage";
 import DailyRevenueCostPage from "./pages/DailyRevenueCostPage";
-import PinRevenueCashPage from "./pages/PinRevenueCashPage";
+import RevenueCostFloorPage from "./pages/RevenueCostFloorPage";
+import HangDryFloorPage from "./pages/HangDryFloorPage";
 import DailyOperationsPage from "./pages/DailyOperationsPage";
 import ManagementHubPage from "./pages/ManagementHubPage";
 import ManagementRinseWfPage from "./pages/ManagementRinseWfPage";
@@ -202,19 +204,19 @@ function isInventoryRoute(path) {
   return p === "/inventory" || p.startsWith("/inventory/");
 }
 
-function isPinRevenueCashRoute(path) {
-  const p = normalizePathname(path);
-  return p === "/revenue-cash" || p.startsWith("/revenue-cash/");
-}
-
-function isLegacyRevenueCostFloorRoute(path) {
+function isRevenueCostFloorRoute(path) {
   const p = normalizePathname(path);
   return p === "/revenue-cost/floor" || p.startsWith("/revenue-cost/");
 }
 
-/** PIN hub employee Revenue / Cash (Management APIs). */
+function isHangDryFloorRoute(path) {
+  const p = normalizePathname(path);
+  return p === "/hang-dry/floor" || p.startsWith("/hang-dry/");
+}
+
+/** PIN hub employee floors (Revenue & Cash + Hang Dry). */
 function isPinHubFinanceRoute(path) {
-  return isPinRevenueCashRoute(path) || isLegacyRevenueCostFloorRoute(path);
+  return isRevenueCostFloorRoute(path) || isHangDryFloorRoute(path);
 }
 
 /** Kiosk clock in/out only: /attendance or /attendance/:orgSlug (no app session). */
@@ -223,8 +225,15 @@ function isAttendanceRoute(path) {
   return p === "/attendance" || p.startsWith("/attendance/");
 }
 
+/** Local visual review only (Vite DEV). */
+function isDevPreviewRoute(path) {
+  if (!import.meta.env.DEV) return false;
+  const p = normalizePathname(path);
+  return p === "/dev/change-role" || p.startsWith("/dev/change-role/");
+}
+
 function isPublicPinSurface(path) {
-  return isKioskRoute(path) || isAttendanceRoute(path) || isPinHubRoute(path);
+  return isKioskRoute(path) || isAttendanceRoute(path) || isPinHubRoute(path) || isDevPreviewRoute(path);
 }
 
 /** Same rules as LoginPage — kept in sync for tenant bookmark URLs. */
@@ -626,9 +635,9 @@ function AppShell() {
   }
 
   /**
-   * Phone PIN menu → Inventory / Revenue / Cash: fullscreen feature
+   * Phone PIN menu → Inventory / Revenue & Cash / Hang Dry: fullscreen feature
    * (no sidebar / idle kiosk lock / ADMIN gate). Mobile PIN Access is the
-   * employee permission source; Hang Dry lives inside Revenue / Cash.
+   * employee permission source; manager Daily Revenue & Cost stays separate.
    */
   if (
     isPinHubAppSessionActive() &&
@@ -671,9 +680,10 @@ function AppShell() {
             }
           />
           <Route
-            path="/revenue-cash"
+            path="/revenue-cost/floor"
             element={
-              <PinRevenueCashPage
+              <RevenueCostFloorPage
+                user={user}
                 onPinHubDone={() => {
                   washproSessionSyncedRef.current = false;
                   setUser(null);
@@ -681,9 +691,27 @@ function AppShell() {
               />
             }
           />
-          <Route path="/revenue-cost/floor" element={<Navigate to="/revenue-cash" replace />} />
+          <Route
+            path="/hang-dry/floor"
+            element={
+              <HangDryFloorPage
+                onPinHubDone={() => {
+                  washproSessionSyncedRef.current = false;
+                  setUser(null);
+                }}
+              />
+            }
+          />
         </Routes>
       </Box>
+    );
+  }
+
+  if (isDevPreviewRoute(pathname)) {
+    return (
+      <Routes>
+        <Route path="/dev/change-role" element={<ChangeRolePreviewPage />} />
+      </Routes>
     );
   }
 

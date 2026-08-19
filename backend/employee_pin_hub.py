@@ -56,8 +56,13 @@ PIN_HUB_FEATURE_DEFS = (
     },
     {
         "id": "revenue_cost",
-        "label": "Revenue / Cash",
-        "path": "/revenue-cash",
+        "label": "Revenue & Cash",
+        "path": "/revenue-cost/floor",
+    },
+    {
+        "id": "hang_dry",
+        "label": "Hang Dry",
+        "path": "/hang-dry/floor",
     },
     {
         "id": "checklist",
@@ -323,6 +328,10 @@ def _user_may_use_feature(
         if mods is not None:
             return bool(mods.get("finance", True))
         return bool(_tenant_module_enabled(conn, org_id, "finance"))
+
+    if feature_id == "hang_dry":
+        # Permission gating only for v1 (no weekday assignment model).
+        return True
 
     return False
 

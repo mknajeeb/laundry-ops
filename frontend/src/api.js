@@ -2281,6 +2281,25 @@ export const getDrcDashboard = (params) =>
 export const postDrcEntryWorkflow = (entryDate, body) =>
   axios.post(`${API_BASE}/finance/daily-revenue-cost/entries/${entryDate}/workflow`, body);
 
+/** Employee PIN Revenue & Cost floor (Phase 5E) — not the manager Daily Entry APIs. */
+export const getDrcMobileToday = (params = {}) =>
+  axios.get(`${API_BASE}/finance/daily-revenue-cost/mobile/today`, { params });
+
+export const putDrcMobileSectionDraft = (sectionKey, payload) =>
+  axios.put(
+    `${API_BASE}/finance/daily-revenue-cost/mobile/sections/${encodeURIComponent(sectionKey)}/draft`,
+    payload,
+  );
+
+export const submitDrcMobileSection = (sectionKey, payload = {}) =>
+  axios.post(
+    `${API_BASE}/finance/daily-revenue-cost/mobile/sections/${encodeURIComponent(sectionKey)}/submit`,
+    payload,
+  );
+
+export const submitDrcMobileAll = (payload = {}) =>
+  axios.post(`${API_BASE}/finance/daily-revenue-cost/mobile/submit`, payload);
+
 /** Manager Cost Maintenance — weekday section assignments. */
 export const getDrcMobileWeekdayAssignments = () =>
   axios.get(`${API_BASE}/finance/daily-revenue-cost/mobile/weekday-assignments`);
@@ -2289,6 +2308,18 @@ export const putDrcMobileWeekdayAssignments = (assignments) =>
   axios.put(`${API_BASE}/finance/daily-revenue-cost/mobile/weekday-assignments`, {
     assignments,
   });
+
+export const getDrcMobileSubmissions = (params = {}) =>
+  axios.get(`${API_BASE}/finance/daily-revenue-cost/mobile/submissions`, { params });
+
+export const getDrcMobileSubmission = (submissionId) =>
+  axios.get(`${API_BASE}/finance/daily-revenue-cost/mobile/submissions/${submissionId}`);
+
+export const reviewDrcMobileSubmission = (submissionId, body) =>
+  axios.post(
+    `${API_BASE}/finance/daily-revenue-cost/mobile/submissions/${submissionId}/review`,
+    body,
+  );
 
 export const getManagementToday = (dateEt, params = {}) => {
   const { signal, ...rest } = params || {};

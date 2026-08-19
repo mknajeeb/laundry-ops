@@ -137,6 +137,7 @@ class FakeCursor:
                     "checklist": True,
                     "inventory": True,
                     "revenue_cost": True,
+                    "hang_dry": True,
                 }
             self.rowcount = len(params) // 2
             return
@@ -188,6 +189,7 @@ class FakeCursor:
                     "allow_checklist": 1 if a["checklist"] else 0,
                     "allow_inventory": 1 if a["inventory"] else 0,
                     "allow_revenue_cost": 1 if a["revenue_cost"] else 0,
+                    "allow_hang_dry": 1 if a.get("hang_dry") else 0,
                     "updated_at": None,
                     "updated_by_user_id": None,
                     "created_at": None,
@@ -217,6 +219,7 @@ class FakeCursor:
                     "checklist": False,
                     "inventory": False,
                     "revenue_cost": False,
+                    "hang_dry": False,
                 }
             return
         if "INSERT INTO employee_mobile_pin_access" in sql_n and "ON DUPLICATE KEY" in sql_n:
@@ -227,6 +230,7 @@ class FakeCursor:
                 "checklist": bool(params[4]),
                 "inventory": bool(params[5]),
                 "revenue_cost": bool(params[6]),
+                "hang_dry": bool(params[7]),
             }
             return
         self._result = None
@@ -289,6 +293,7 @@ def test_migration_pin_employee_gets_all_true():
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,
+        "hang_dry": True,
     }
     # Idempotent
     report2 = _legacy_backfill(cur, 3)
@@ -346,6 +351,7 @@ def test_new_org_marker_then_new_employee_all_false():
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "hang_dry": False,
     }
 
 
@@ -360,6 +366,7 @@ def test_new_employee_after_backfill_gets_all_false():
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "hang_dry": False,
     }
 
 
@@ -410,6 +417,7 @@ def test_save_and_audit_only_changed():
             "checklist": True,
             "inventory": True,
             "revenue_cost": False,
+            "hang_dry": False,
         },
         actor_user_id=5,
         write_audit_fn=audit,
@@ -417,7 +425,7 @@ def test_save_and_audit_only_changed():
     assert len(events) == 1
     assert events[0][0][3] == AUDIT_ACTION
     modules = events[0][1]["new"]["modules"]
-    assert set(modules.keys()) == {"switch_role", "revenue_cost"}
+    assert set(modules.keys()) == {"switch_role", "revenue_cost", "hang_dry"}
     assert modules["switch_role"] is False
 
     # No-op save → no audit
@@ -432,6 +440,7 @@ def test_save_and_audit_only_changed():
             "checklist": True,
             "inventory": True,
             "revenue_cost": False,
+            "hang_dry": False,
         },
         actor_user_id=5,
         write_audit_fn=audit,
@@ -446,7 +455,7 @@ def test_assert_denies_module():
     )
 
     assert ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES == frozenset(
-        {"switch_role", "checklist", "inventory", "revenue_cost"}
+        {"switch_role", "checklist", "inventory", "revenue_cost", "hang_dry"}
     )
     cur = FakeCursor()
     cur.backfill_orgs[3] = 0
@@ -456,6 +465,7 @@ def test_assert_denies_module():
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "hang_dry": False,
     }
     with pytest.raises(MobilePinAccessDeniedError):
         assert_employee_allows_module(cur, 3, 10, "switch_role")
@@ -487,6 +497,7 @@ def test_resolve_hub_features_enforces_role_checklist_inventory_and_revenue_cost
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "hang_dry": False,
     }
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings",
@@ -498,7 +509,8 @@ def test_resolve_hub_features_enforces_role_checklist_inventory_and_revenue_cost
                 "checklist": True,
                 "inventory": True,
                 "revenue_cost": True,
-                },
+                "hang_dry": True,
+            },
         },
     ), patch(
         "backend.employee_pin_hub.is_category_role_tracking_enabled", return_value=True
@@ -533,6 +545,7 @@ def test_resolve_hub_features_role_allowed_when_employee_grants():
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "hang_dry": False,
     }
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings",
@@ -544,7 +557,8 @@ def test_resolve_hub_features_role_allowed_when_employee_grants():
                 "checklist": True,
                 "inventory": True,
                 "revenue_cost": True,
-                },
+                "hang_dry": True,
+            },
         },
     ), patch(
         "backend.employee_pin_hub.is_category_role_tracking_enabled", return_value=True
@@ -575,6 +589,7 @@ def test_resolve_hub_features_inventory_off_hides_tile():
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "hang_dry": False,
     }
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings",
@@ -586,7 +601,8 @@ def test_resolve_hub_features_inventory_off_hides_tile():
                 "checklist": True,
                 "inventory": True,
                 "revenue_cost": True,
-                },
+                "hang_dry": True,
+            },
         },
     ), patch(
         "backend.employee_pin_hub.is_category_role_tracking_enabled", return_value=True
@@ -611,7 +627,7 @@ def test_org_feature_off_overrides_employee_allow():
     from backend.employee_pin_hub import resolve_hub_features
 
     matched = {"id": 10, "_roles": []}
-    emp = {k: True for k in ("clock", "switch_role", "checklist", "inventory", "revenue_cost")}
+    emp = {k: True for k in ("clock", "switch_role", "checklist", "inventory", "revenue_cost", "hang_dry")}
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings",
         return_value={
@@ -622,7 +638,8 @@ def test_org_feature_off_overrides_employee_allow():
                 "checklist": True,
                 "inventory": True,
                 "revenue_cost": True,
-                },
+                "hang_dry": True,
+            },
         },
     ), patch(
         "backend.employee_pin_hub.is_category_role_tracking_enabled", return_value=True
@@ -659,7 +676,8 @@ def test_attendance_snapshot_employee_allow_clock():
                 "checklist": True,
                 "inventory": True,
                 "revenue_cost": True,
-                },
+                "hang_dry": True,
+            },
         )
     assert snap["allow_clock_from_hub"] is False
     assert snap["employee_allow_clock"] is False
@@ -677,6 +695,7 @@ def test_role_switch_open_denied_without_employee_access():
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "hang_dry": False,
     }
     conn.cursor.return_value = access_cur
 
@@ -721,6 +740,7 @@ def test_role_change_mutation_denied_without_employee_access():
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,
+        "hang_dry": True,
     }
     conn.cursor.return_value = access_cur
 
@@ -776,6 +796,7 @@ def test_role_mutation_revoked_mid_session_blocks_next_call():
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,
+        "hang_dry": True,
     }
     conn.cursor.return_value = access_cur
 
@@ -800,6 +821,8 @@ def test_role_mutation_revoked_mid_session_blocks_next_call():
         return_value=True,
     ), patch(
         "backend.attendance_pin_role_switch.record_pin_attempt"
+    ), patch(
+        "backend.attendance_pin_role_switch.seed_default_categories_and_roles"
     ), patch(
         "backend.attendance_pin_role_switch.get_open_job_segment", return_value=None
     ), patch(
@@ -867,6 +890,7 @@ def test_role_allowed_returns_unfiltered_selection_tree():
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,
+        "hang_dry": True,
     }
     conn.cursor.return_value = access_cur
     tree = {
@@ -896,6 +920,8 @@ def test_role_allowed_returns_unfiltered_selection_tree():
         return_value=True,
     ), patch(
         "backend.attendance_pin_role_switch.record_pin_attempt"
+    ), patch(
+        "backend.attendance_pin_role_switch.seed_default_categories_and_roles"
     ), patch(
         "backend.attendance_pin_role_switch.get_open_job_segment", return_value=None
     ), patch(

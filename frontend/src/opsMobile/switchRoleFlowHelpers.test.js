@@ -6,6 +6,9 @@ import {
   displayRoleLabel,
   flattenRoleCombos,
   groupCombosByBucket,
+  groupCombosByPrimaryRole,
+  currentRoleCaption,
+  resolvePrimaryRoleTap,
   initialCategoryId,
   initialRoleId,
   isCurrentRoleAssignment,
@@ -177,6 +180,52 @@ describe("switchRoleFlowHelpers", () => {
     expect(groups.map((g) => g.bucket)).toEqual(["Rinse Wash & Fold", "Rinse Hang Dry"]);
     expect(groups[1].combos.map((c) => c.roleLabel)).toEqual(["Wash-Dry", "Fold"]);
     expect(categoryDisplayBucket({ name: "Rinse HD", code: "rinse_hd" })).toBe("Rinse Hang Dry");
+  });
+
+  it("groups by primary role with compact Non-Rinse category labels", () => {
+    const combos = flattenRoleCombos(multiCatTree);
+    const groups = groupCombosByPrimaryRole(combos);
+    expect(groups.map((g) => g.roleLabel)).toEqual(["Wash-Dry", "Fold"]);
+    const wash = groups.find((g) => g.roleLabel === "Wash-Dry");
+    expect(wash.workTypes.map((w) => w.label)).toEqual([
+      "Rinse Wash & Fold",
+      "Rinse Hang Dry",
+      "DHS",
+    ]);
+    const fold = groups.find((g) => g.roleLabel === "Fold");
+    expect(fold.workTypes.map((w) => w.label)).toEqual(["Rinse Wash & Fold", "Rinse Hang Dry"]);
+    expect(currentRoleCaption(fold.workTypes[1].combo)).toBe("Rinse Hang Dry · Current");
+  });
+
+  it("switches immediately when a role has one work type", () => {
+    const one = [{ combo: { categoryId: 20, roleId: 2 } }];
+    expect(
+      resolvePrimaryRoleTap({
+        workTypes: one,
+        expandedRole: null,
+        roleLabel: "Fold",
+        currentCategoryId: 10,
+        currentRoleId: 1,
+      }),
+    ).toEqual({ action: "switch", combo: one[0].combo });
+    expect(
+      resolvePrimaryRoleTap({
+        workTypes: one,
+        roleLabel: "Fold",
+        currentCategoryId: 20,
+        currentRoleId: 2,
+      }).action,
+    ).toBe("noop");
+  });
+
+  it("expands in place when a role has multiple work types", () => {
+    const many = [{ combo: { categoryId: 1 } }, { combo: { categoryId: 2 } }];
+    expect(
+      resolvePrimaryRoleTap({ workTypes: many, expandedRole: null, roleLabel: "Wash-Dry" }),
+    ).toEqual({ action: "expand", roleLabel: "Wash-Dry" });
+    expect(
+      resolvePrimaryRoleTap({ workTypes: many, expandedRole: "Wash-Dry", roleLabel: "Wash-Dry" }),
+    ).toEqual({ action: "collapse" });
   });
 
   it("keeps long role names as full strings (no forced truncation helper)", () => {
