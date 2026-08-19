@@ -13,22 +13,29 @@ from decimal import Decimal
 from typing import Any
 
 from backend.business_time import business_today
-from backend.daily_operations_hd import compute_hd_day_revenue_totals
 from backend.daily_revenue_cost import (
     _line_amount,
     _load_entry_lines,
+    _log_audit,
     _money,
+    _upsert_line,
     ensure_daily_revenue_cost_tables,
-    get_daily_entry,
-    save_daily_entry,
 )
 from backend.daily_revenue_cost_constants import (
+    ENTRY_STATUS_OPEN,
     LK_DROP_OFF_CARD,
     LK_DROP_OFF_CASH,
     LK_SELF_SERVICE_CARD,
     LK_SELF_SERVICE_CASH,
+    SOURCE_MANUAL,
 )
+from backend.daily_revenue_cost_schema import assert_entry_editable
 from backend.ta_helpers import table_exists
+from backend.management_revenue_accounts import (
+    build_account_revenue_day,
+    build_revenue_dashboard,
+    save_dhs_account_revenue,
+)
 
 def ensure_management_revenue_tables(cursor) -> None:
     if table_exists(cursor, "mgmt_cash_payouts"):
@@ -118,22 +125,25 @@ def _load_drc_lines_for_date(cursor, org_id: int, entry_date: date) -> dict[str,
     return _load_entry_lines(cursor, entry_id)
 
 
-def build_revenue_day(cursor, org_id: int, entry_date: date) -> dict[str, Any]:
-    """Single-day revenue view for Management Revenue entry."""
-    ensure_management_revenue_tables(cursor)
-    drc = get_daily_entry(cursor, org_id, entry_date)
-    entry = drc.get("entry") or {}
-    lines = _load_drc_lines_for_date(cursor, org_id, entry_date)
-    cash = _cash_revenue_from_lines(lines)
-
-    hd_totals = compute_hd_day_revenue_totals(cursor, org_id, entry_date)
-    hd_revenue = _money(hd_totals.get("complete_hd_revenue") or hd_totals.get("total_hd_revenue") or 0)
-    hd_orders = int(hd_totals.get("complete") or 0)
-
-    non_rinse_total = _money(
-        Decimal(str(cash["self_service_total"]))
-        + Decimal(str(cash["drop_off_total"]))
+def _load_entry_header(cursor, org_id: int, entry_date: date) -> dict | None:
+    ensure_daily_revenue_cost_tables(cursor)
+    cursor.execute(
+        "SELECT id, status FROM dr_daily_entries WHERE organization_id = %s AND entry_date = %s",
+        (org_id, entry_date),
     )
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def build_revenue_day(cursor, org_id: int, entry_date: date) -> dict[str, Any]:
+    """Single-day revenue view for Management Revenue entry.
+
+    Does not call DRC get_daily_entry (payroll + at-vendor workload rebuild).
+    """
+    ensure_management_revenue_tables(cursor)
+    header = _load_entry_header(cursor, org_id, entry_date)
+    lines = _load_drc_lines_for_date(cursor, org_id, entry_date)
+    account_block = build_account_revenue_day(cursor, org_id, entry_date, lines)
 
     cursor.execute(
         """
@@ -148,36 +158,12 @@ def build_revenue_day(cursor, org_id: int, entry_date: date) -> dict[str, Any]:
     payouts = [dict(r) for r in (cursor.fetchall() or [])]
     paid_out = _money(sum(Decimal(str(p.get("amount") or 0)) for p in payouts))
 
+    cash = _cash_revenue_from_lines(lines)
     return {
         "date_et": entry_date.isoformat(),
-        "entry_id": entry.get("id"),
-        "entry_status": entry.get("status") or "open",
-        "rinse": {
-            "wf": {
-                "placeholder": True,
-                "revenue": None,
-                "note": "WF revenue calculation will be supplied later.",
-            },
-            "hd": {
-                "source": "hd_day_bag_production",
-                "orders": hd_orders,
-                "revenue": hd_revenue,
-                "read_only": True,
-            },
-        },
-        "non_rinse": {
-            "self_service": {
-                "cash": cash["self_service_cash"],
-                "card": cash["self_service_card"],
-                "total": cash["self_service_total"],
-            },
-            "drop_off": {
-                "cash": cash["drop_off_cash"],
-                "card": cash["drop_off_card"],
-                "total": cash["drop_off_total"],
-            },
-            "total": non_rinse_total,
-        },
+        "entry_id": header.get("id") if header else None,
+        "entry_status": (header or {}).get("status") or "open",
+        **account_block,
         "cash_payouts": payouts,
         "cash_activity": {
             "self_service_cash": cash["self_service_cash"],
@@ -199,23 +185,66 @@ def save_non_rinse_revenue(
     *,
     user_id: int | None = None,
 ) -> dict[str, Any]:
-    """Write Self Service / Drop Off cash+card via existing DRC storage."""
-    existing = get_daily_entry(cursor, org_id, entry_date)
-    entry = existing.get("entry") or {}
-    save_payload = {
-        "self_service_cash": payload.get("self_service_cash", entry.get("self_service_cash") or 0),
-        "self_service_card": payload.get("self_service_card", entry.get("self_service_card") or 0),
-        "drop_off_cash": payload.get("drop_off_cash", entry.get("drop_off_cash") or 0),
-        "drop_off_card": payload.get("drop_off_card", entry.get("drop_off_card") or 0),
-        "rinse_wf_pounds": entry.get("rinse_wf_pounds") or 0,
-        "rinse_hd_orders": entry.get("rinse_hd_orders") or 0,
-        "rinse_hd_revenue": entry.get("rinse_hd_revenue") or 0,
-        "rinse_wi_orders": entry.get("rinse_wi_orders") or 0,
-        "rinse_wi_revenue": entry.get("rinse_wi_revenue") or 0,
-        "payroll_total": entry.get("payroll_total") or 0,
-        "commercial_lines": entry.get("commercial_lines") or [],
-    }
-    save_daily_entry(cursor, org_id, entry_date, save_payload, user_id=user_id)
+    """Write Self Service / Drop Off cash+card only.
+
+    Does not run DRC save_daily_entry (payroll, at-vendor workload, costs, commercial).
+    """
+    ensure_management_revenue_tables(cursor)
+    ensure_daily_revenue_cost_tables(cursor)
+    cursor.execute(
+        "SELECT * FROM dr_daily_entries WHERE organization_id = %s AND entry_date = %s",
+        (org_id, entry_date),
+    )
+    header = cursor.fetchone()
+    assert_entry_editable(header, payload)
+
+    if header:
+        entry_id = int(header["id"])
+        existing_lines = _load_entry_lines(cursor, entry_id)
+        cursor.execute(
+            "UPDATE dr_daily_entries SET modified_by = %s WHERE id = %s",
+            (user_id, entry_id),
+        )
+        was_existing = True
+    else:
+        cursor.execute(
+            """
+            INSERT INTO dr_daily_entries
+              (organization_id, entry_date, status, created_by, modified_by)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (org_id, entry_date, ENTRY_STATUS_OPEN, user_id, user_id),
+        )
+        entry_id = int(cursor.lastrowid)
+        existing_lines = {}
+        _log_audit(cursor, entry_id, "created", actor_user_id=user_id)
+        was_existing = False
+
+    def _field(key: str, payload_key: str):
+        if payload_key in payload and payload.get(payload_key) is not None:
+            return _money(payload.get(payload_key))
+        return _money(_line_amount(existing_lines, key))
+
+    for line_key, payload_key in (
+        (LK_SELF_SERVICE_CASH, "self_service_cash"),
+        (LK_SELF_SERVICE_CARD, "self_service_card"),
+        (LK_DROP_OFF_CASH, "drop_off_cash"),
+        (LK_DROP_OFF_CARD, "drop_off_card"),
+    ):
+        _upsert_line(
+            cursor,
+            entry_id,
+            line_key,
+            "revenue",
+            _field(line_key, payload_key),
+            None,
+            source_system=SOURCE_MANUAL,
+            user_id=user_id,
+            existing_lines=existing_lines,
+        )
+
+    if was_existing:
+        _log_audit(cursor, entry_id, "updated", actor_user_id=user_id)
     return build_revenue_day(cursor, org_id, entry_date)
 
 

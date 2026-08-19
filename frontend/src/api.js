@@ -2507,6 +2507,18 @@ export const deleteManagementCashPayout = (payoutId) =>
 export const getManagementCashActivity = (params = {}) =>
   axios.get(`${API_BASE}/api/management/revenue/cash-activity`, { params });
 
+export const getManagementRevenueDashboard = (params = {}) =>
+  axios.get(`${API_BASE}/api/management/revenue/dashboard`, { params });
+
+export const getManagementRevenueAccounts = () =>
+  axios.get(`${API_BASE}/api/management/revenue/accounts`);
+
+export const saveManagementRevenueAccount = (body) =>
+  axios.post(`${API_BASE}/api/management/revenue/accounts`, body);
+
+export const saveManagementRevenueDhs = (body) =>
+  axios.put(`${API_BASE}/api/management/revenue/dhs`, body);
+
 
 export const getDailyOperationsMeta = () =>
   axios.get(`${API_BASE}/api/daily-operations/meta`);

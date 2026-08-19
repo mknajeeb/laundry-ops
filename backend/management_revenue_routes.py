@@ -17,6 +17,7 @@ from backend.management_revenue import (
     save_non_rinse_revenue,
     update_cash_payout,
 )
+from backend.management_revenue_accounts import build_revenue_dashboard, save_dhs_account_revenue
 from backend.rinse_scan_time import json_safe_rinse
 
 HUB_READ_ROLES = frozenset({"ADMIN", "OPS", "MANAGER", "SUPER_ADMIN", "PLATFORM_ADMIN"})
@@ -193,6 +194,67 @@ def register_management_revenue_routes(
             audits = list_cash_payout_audits(cursor, oid, payout_id)
             return jsonify(json_safe_rinse({"audits": audits}))
         except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/revenue/dhs", methods=["PUT"])
+    def management_revenue_dhs_save():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            body = request.get_json(silent=True) or {}
+            raw_date = (body.get("date_et") or request.args.get("date_et") or "").strip()
+            selected = parse_date_value(raw_date) if raw_date else business_today()
+            payload = save_dhs_account_revenue(
+                cursor,
+                oid,
+                selected,
+                body.get("accounts") or [],
+                user_id=int(me.get("id") or 0) or None,
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except ValueError as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/revenue/dashboard", methods=["GET"])
+    def management_revenue_dashboard():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            period = (request.args.get("period") or "today").strip().lower()
+            raw_date = (request.args.get("date") or request.args.get("date_et") or "").strip()
+            ref = parse_date_value(raw_date) if raw_date else business_today()
+            raw_start = (request.args.get("start") or "").strip()
+            raw_end = (request.args.get("end") or "").strip()
+            start = parse_date_value(raw_start) if raw_start else None
+            end = parse_date_value(raw_end) if raw_end else None
+            payload = build_revenue_dashboard(cursor, oid, period, ref, start, end)
+            conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
             return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()

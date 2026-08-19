@@ -82,6 +82,7 @@ import ManagementSuppliesDashboardPage from "./pages/ManagementSuppliesDashboard
 import ManagementRinseHdPage from "./pages/ManagementRinseHdPage";
 import ManagementPerformancePage from "./pages/ManagementPerformancePage";
 import ManagementRevenuePage from "./pages/ManagementRevenuePage";
+import ManagementRevenueAccountsPage from "./pages/ManagementRevenueAccountsPage";
 import OrganizationsPlatformPage from "./pages/OrganizationsPlatformPage";
 import PlatformAdminPage from "./pages/PlatformAdminPage";
 import UserProfilePage from "./pages/UserProfilePage";
@@ -1241,6 +1242,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
                     <ManagementRevenuePage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/management/revenue-accounts"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
+                    <ManagementRevenueAccountsPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }
