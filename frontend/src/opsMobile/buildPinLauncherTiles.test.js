@@ -27,7 +27,7 @@ describe("isClockAllowedFromHub", () => {
 });
 
 describe("buildPinLauncherTiles", () => {
-  it("puts Clock last; disables when allow_clock_from_hub is false", () => {
+  it("puts Clock first; disables when allow_clock_from_hub is false", () => {
     const enabled = buildPinLauncherTiles({
       features: {
         switch_role: { allowed: true },
@@ -37,7 +37,7 @@ describe("buildPinLauncherTiles", () => {
       featureOrder: ["switch_role", "checklist", "inventory"],
       attendance: { shared_device_enabled: true, clocked_in: false, on_break: false },
     });
-    expect(enabled.map((t) => t.id)).toEqual(["switch_role", "checklist", "inventory", "clock"]);
+    expect(enabled.map((t) => t.id)).toEqual(["clock", "switch_role", "checklist", "inventory"]);
     expect(enabled.find((t) => t.id === "clock")?.label).toBe("Clock In");
     expect(enabled.find((t) => t.id === "clock")?.disabled).toBe(false);
 
@@ -52,7 +52,7 @@ describe("buildPinLauncherTiles", () => {
     const clock = disabled.find((t) => t.id === "clock");
     expect(clock.disabled).toBe(true);
     expect(clock.disabledHelper).toBe(CLOCK_DISABLED_HELPER);
-    expect(disabled.map((t) => t.id)).toEqual(["inventory", "clock"]);
+    expect(disabled.map((t) => t.id)).toEqual(["clock", "inventory"]);
   });
 
   it("keeps Clock visible even when shared-device attendance is off", () => {
@@ -60,7 +60,7 @@ describe("buildPinLauncherTiles", () => {
       features: { inventory: { allowed: true } },
       attendance: { shared_device_enabled: false, clocked_in: false },
     });
-    expect(tiles.map((t) => t.id)).toEqual(["inventory", "clock"]);
+    expect(tiles.map((t) => t.id)).toEqual(["clock", "inventory"]);
   });
 
   it("shows Role when allowed even if clocked out (requiresClockIn)", () => {
@@ -72,7 +72,7 @@ describe("buildPinLauncherTiles", () => {
       },
       attendance: { shared_device_enabled: true, clocked_in: false },
     });
-    expect(out.map((t) => t.id)).toEqual(["switch_role", "clock"]);
+    expect(out.map((t) => t.id)).toEqual(["clock", "switch_role"]);
     expect(out.find((t) => t.id === "switch_role")?.requiresClockIn).toBe(true);
     expect(ROLE_CLOCK_IN_FIRST_MESSAGE).toMatch(/shared attendance tablet/i);
   });
@@ -82,10 +82,10 @@ describe("buildPinLauncherTiles", () => {
       features: { switch_role: { allowed: false }, inventory: { allowed: true } },
       attendance: { shared_device_enabled: true, clocked_in: true },
     });
-    expect(tiles.map((t) => t.id)).toEqual(["inventory", "clock"]);
+    expect(tiles.map((t) => t.id)).toEqual(["clock", "inventory"]);
   });
 
-  it("shows Revenue & Cash and Hang Dry when allowed", () => {
+  it("shows Revenue / Cash when allowed (Hang Dry is inside that flow)", () => {
     const tiles = buildPinLauncherTiles({
       features: {
         switch_role: { allowed: true },
@@ -94,12 +94,12 @@ describe("buildPinLauncherTiles", () => {
       },
       attendance: { clocked_in: true, allow_clock_from_hub: true },
     });
-    expect(tiles.map((t) => t.id)).toEqual(["switch_role", "revenue_cost", "hang_dry", "clock"]);
-    expect(tiles.find((t) => t.id === "revenue_cost")?.label).toBe("Revenue & Cash");
-    expect(tiles.find((t) => t.id === "hang_dry")?.label).toBe("Hang Dry");
+    expect(tiles.map((t) => t.id)).toEqual(["clock", "switch_role", "revenue_cost"]);
+    expect(tiles.find((t) => t.id === "revenue_cost")?.label).toBe("Revenue / Cash");
+    expect(tiles.find((t) => t.id === "hang_dry")).toBeUndefined();
   });
 
-  it("hides Revenue & Cash / Hang Dry when not allowed", () => {
+  it("hides Revenue / Cash when not allowed", () => {
     const tiles = buildPinLauncherTiles({
       features: {
         switch_role: { allowed: true },
@@ -108,7 +108,7 @@ describe("buildPinLauncherTiles", () => {
       },
       attendance: { clocked_in: true },
     });
-    expect(tiles.map((t) => t.id)).toEqual(["switch_role", "clock"]);
+    expect(tiles.map((t) => t.id)).toEqual(["clock", "switch_role"]);
   });
 
   it("disables Tasks tile when checklist is not assigned today", () => {
@@ -126,5 +126,6 @@ describe("buildPinLauncherTiles", () => {
     const tasks = tiles.find((t) => t.id === "checklist");
     expect(tasks?.disabled).toBe(true);
     expect(tasks?.disabledHelper).toBe("No maintenance checklist assigned today.");
+    expect(tiles.map((t) => t.id)).toEqual(["clock", "checklist"]);
   });
 });

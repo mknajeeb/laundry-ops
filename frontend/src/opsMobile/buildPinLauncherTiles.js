@@ -5,7 +5,8 @@
  * Break is intentionally omitted: the PIN attendance PWA has no break
  * start/end action (break lives on authenticated Time Clock only).
  *
- * Clock is always last so operational tiles stay compact/mobile-first.
+ * Hang Dry is not a separate hub tile — it lives inside Revenue / Cash.
+ * Clock is always first: Clock → Role → Revenue / Cash → Checklist → Inventory.
  */
 
 export const PIN_LAUNCHER_META = {
@@ -19,14 +20,9 @@ export const PIN_LAUNCHER_META = {
     iconKey: "role",
   },
   revenue_cost: {
-    label: "Revenue & Cash",
+    label: "Revenue / Cash",
     color: "#b45309",
     iconKey: "revenue",
-  },
-  hang_dry: {
-    label: "Hang Dry",
-    color: "#0f766e",
-    iconKey: "hang_dry",
   },
   checklist: {
     label: "End-of-Day Checklist",
@@ -40,11 +36,10 @@ export const PIN_LAUNCHER_META = {
   },
 };
 
-/** Preferred PIN Home order; Clock is appended last by buildPinLauncherTiles. */
+/** Preferred PIN Home order after Clock. */
 export const PIN_HOME_FEATURE_ORDER = [
   "switch_role",
   "revenue_cost",
-  "hang_dry",
   "checklist",
   "inventory",
 ];
@@ -83,12 +78,23 @@ export function buildPinLauncherTiles({ features = {}, featureOrder = null, atte
 
   const tiles = [];
 
+  const clockAllowed = isClockAllowedFromHub(att);
+  tiles.push({
+    id: "clock",
+    label: clockTileLabel(att),
+    color: PIN_LAUNCHER_META.clock.color,
+    iconKey: PIN_LAUNCHER_META.clock.iconKey,
+    href: "attendance",
+    disabled: !clockAllowed,
+    disabledHelper: clockAllowed ? "" : CLOCK_DISABLED_HELPER,
+  });
+
   const requested =
     Array.isArray(featureOrder) && featureOrder.length ? featureOrder : PIN_HOME_FEATURE_ORDER;
   const seen = new Set();
   const order = [];
   for (const id of [...PIN_HOME_FEATURE_ORDER, ...requested]) {
-    if (!id || seen.has(id) || id === "clock" || id === "break") continue;
+    if (!id || seen.has(id) || id === "clock" || id === "break" || id === "hang_dry") continue;
     seen.add(id);
     order.push(id);
   }
@@ -117,17 +123,6 @@ export function buildPinLauncherTiles({ features = {}, featureOrder = null, atte
     }
     tiles.push(tile);
   }
-
-  const clockAllowed = isClockAllowedFromHub(att);
-  tiles.push({
-    id: "clock",
-    label: clockTileLabel(att),
-    color: PIN_LAUNCHER_META.clock.color,
-    iconKey: PIN_LAUNCHER_META.clock.iconKey,
-    href: "attendance",
-    disabled: !clockAllowed,
-    disabledHelper: clockAllowed ? "" : CLOCK_DISABLED_HELPER,
-  });
 
   return tiles;
 }
