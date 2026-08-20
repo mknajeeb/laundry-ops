@@ -223,7 +223,7 @@ export default function CategoryRoleMaintenancePage() {
         Category & Role Maintenance
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Categories and roles employees select during check-in. New categories automatically get Operator and Folder.
+        Categories and roles employees select during check-in. New categories automatically get Operator, Sort, and Folder.
       </Typography>
 
       {error ? (
@@ -381,7 +381,7 @@ export default function CategoryRoleMaintenancePage() {
               onChange={(e) => setCatDialog((p) => ({ ...p, name: e.target.value }))}
               fullWidth
               autoFocus
-              helperText={catDialog?.id ? "Code stays the same when renamed." : "Operator and Folder will be assigned automatically."}
+              helperText={catDialog?.id ? "Code stays the same when renamed." : "Operator, Sort, and Folder will be assigned automatically."}
             />
             <Stack direction="row" alignItems="center" justifyContent="space-between">
               <Typography variant="body2">Active</Typography>

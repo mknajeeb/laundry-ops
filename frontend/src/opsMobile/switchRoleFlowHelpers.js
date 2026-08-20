@@ -17,15 +17,19 @@ export function resolveRoleName(role) {
 }
 
 /**
- * Employee-facing role label. Stored value may remain "Folder" / "Operator" for compatibility.
+ * Employee-facing role label. Stored value may remain "Folder" / "Operator" / "Sort".
  */
 export function displayRoleLabel(roleOrName) {
   const name =
     typeof roleOrName === "string" ? String(roleOrName || "").trim() : resolveRoleName(roleOrName);
+  const code =
+    typeof roleOrName === "object" && roleOrName
+      ? String(roleOrName.role_code || roleOrName.code || "").trim().toUpperCase()
+      : "";
   const key = name.toLowerCase();
-  if (key === "folder" || key === "folding" || key === "fold") return "Fold";
-  if (key === "operator") return "Wash-Dry";
-  if (key === "sort" || key === "sorter") return "Sort";
+  if (code === "FOLDER" || key === "folder" || key === "folding" || key === "fold") return "Fold";
+  if (code === "OPERATOR" || key === "operator") return "Wash-Dry";
+  if (code === "SORT" || key === "sort" || key === "sorter" || key === "sorting") return "Sort";
   if (key === "wash-dry" || key === "wash dry" || key === "wash_dry") return "Wash-Dry";
   return name;
 }
@@ -36,9 +40,9 @@ export function roleHelperText(roleOrName) {
     typeof roleOrName === "string" ? String(roleOrName || "").trim() : resolveRoleName(roleOrName);
   const key = name.toLowerCase();
   if (key === "operator" || key === "wash-dry" || key === "wash dry" || key === "wash_dry") {
-    return "Sorting, washing & drying";
+    return "Washing & drying";
   }
-  if (key === "sort" || key === "sorter") return "Sorting & prep";
+  if (key === "sort" || key === "sorter" || key === "sorting") return "Sorting & prep";
   if (key === "folder" || key === "folding" || key === "fold") return "Folding completed orders";
   return "";
 }
@@ -54,6 +58,25 @@ export function categoryDisplayBucket(category) {
     return "Rinse Hang Dry";
   }
   return "Non-Rinse";
+}
+
+/** Employee-facing "Wash-Dry | Rinse Wash & Fold" status line. */
+export function formatEmployeeAssignmentLabel({
+  roleName,
+  roleCode,
+  categoryName,
+  categoryCode,
+  role,
+  category,
+} = {}) {
+  const roleLabel = displayRoleLabel(
+    role || { role_name: roleName, role_code: roleCode, name: roleName, code: roleCode },
+  );
+  const work = categoryDisplayBucket(
+    category || { name: categoryName, code: categoryCode, category_code: categoryCode },
+  );
+  if (roleLabel && work) return `${roleLabel} | ${work}`;
+  return roleLabel || work || "";
 }
 
 const CATEGORY_BUCKET_ORDER = ["Rinse Wash & Fold", "Rinse Hang Dry", "Non-Rinse"];
@@ -82,7 +105,7 @@ export function flattenRoleCombos(selectionTree) {
         bucket: categoryDisplayBucket(cat),
         categoryName: resolveCategoryName(cat),
         roleLabel: displayRoleLabel(role),
-        comboLabel: `${displayRoleLabel(role)} · ${resolveCategoryName(cat)}`,
+        comboLabel: formatEmployeeAssignmentLabel({ role, category: cat }),
       });
     }
   }

@@ -2288,7 +2288,10 @@ def break_end():
         body = json_safe(c.fetchone()) or {}
         if segment:
             body["segment"] = segment
-            body["task_tracking"] = {"current_display_label": segment.get("display_label")}
+            body["task_tracking"] = {
+                "current_display_label": segment.get("employee_display_label")
+                or segment.get("display_label")
+            }
         return jsonify(body)
     except ValueError as e:
         try:

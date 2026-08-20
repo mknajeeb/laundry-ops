@@ -215,13 +215,10 @@ def attendance_snapshot_for_hub(
 
         on_break = bool(get_open_break(conn, active["id"]))
         open_seg = get_open_job_segment(conn, int(active["id"])) or {}
-        cat = (open_seg.get("category_name_snapshot") or "").strip()
-        role = (open_seg.get("role_name_snapshot") or "").strip()
-        if role and cat:
-            current_display_label = f"{role} · {cat}"
-        elif role:
-            current_display_label = role
-        else:
+        from backend.mobile_ops_labels import employee_assignment_label_from_segment
+
+        current_display_label = employee_assignment_label_from_segment(open_seg) or None
+        if not current_display_label:
             label = (open_seg.get("display_label") or "").strip()
             current_display_label = label or None
     return {

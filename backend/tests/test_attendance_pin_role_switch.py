@@ -127,7 +127,7 @@ def test_pin_role_switch_opens_selection_tree():
     assert body["ok"] is True
     assert body["needs_selection"] is True
     assert body["selection_tree"] == tree
-    assert body["current_display_label"] == "DHS — Operator"
+    assert body["current_display_label"] == "Wash-Dry | Non-Rinse"
     assert body["employee_first_name"] == "Vee"
     tree_fn.assert_called_once()
 
@@ -138,6 +138,7 @@ def test_pin_role_switch_performs_switch():
     seg = {
         "id": 8,
         "display_label": "Rinse WF — Folder",
+        "employee_display_label": "Fold | Rinse Wash & Fold",
         "replayed": False,
         "noop": False,
         "unchanged": False,
@@ -184,7 +185,7 @@ def test_pin_role_switch_performs_switch():
         )
     assert status == 200
     assert body["action"] == "ROLE_SWITCHED"
-    assert body["display_label"] == "Rinse WF — Folder"
+    assert body["display_label"] == "Fold | Rinse Wash & Fold"
     assert start.call_args.kwargs["idempotency_key"] == "abc"
     conn.commit.assert_called()
 

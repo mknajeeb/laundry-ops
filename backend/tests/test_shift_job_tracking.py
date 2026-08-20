@@ -24,7 +24,11 @@ def test_default_categories_and_standard_roles():
     assert len(DEFAULT_CATEGORIES) == 4
     assert [c for c, _ in DEFAULT_CATEGORIES] == ["RINSE_WF", "RINSE_HD", "DHS", "DROP_OFF"]
     assert [n for _, n in DEFAULT_CATEGORIES] == ["Rinse WF", "Rinse HD", "DHS", "Drop Off"]
-    assert STANDARD_ROLES == (("OPERATOR", "Operator"), ("FOLDER", "Folder"))
+    assert STANDARD_ROLES == (
+        ("OPERATOR", "Operator"),
+        ("SORT", "Sort"),
+        ("FOLDER", "Folder"),
+    )
 
 
 def test_resolve_scheduled_end_at_from_schedule():
@@ -56,12 +60,13 @@ def test_switch_category_role_calls_start_segment():
     )
 
 
-def test_create_category_auto_assigns_operator_and_folder():
+def test_create_category_auto_assigns_operator_sort_and_folder():
     cursor = MagicMock()
     cursor.fetchone.side_effect = [
         None,  # duplicate code check
         (0,),  # max sort_order
         {"id": 11, "code": "OPERATOR"},  # OPERATOR exists
+        {"id": 13, "code": "SORT"},  # SORT exists
         {"id": 12, "code": "FOLDER"},  # FOLDER exists
         {
             "id": 50,
@@ -86,13 +91,13 @@ def test_create_category_auto_assigns_operator_and_folder():
         for c in cursor.execute.call_args_list
         if "INSERT INTO ta_task_category_roles" in str(c.args[0])
     ]
-    assert len(insert_sqls) == 2
+    assert len(insert_sqls) == 3
     role_ids_assigned = [
         c.args[1][2]
         for c in cursor.execute.call_args_list
         if "INSERT INTO ta_task_category_roles" in str(c.args[0])
     ]
-    assert role_ids_assigned == [11, 12]
+    assert role_ids_assigned == [11, 13, 12]
 
 
 def test_delete_category_rejects_when_used():
@@ -211,7 +216,7 @@ def test_enrich_session_job_tracking_payload():
         "backend.shift_job_tracking.json_safe", side_effect=lambda x: x
     ):
         out = enrich_session_job_tracking(conn, sess, 10)
-    assert out["current_display_label"] == "Rinse WF — Operator"
+    assert out["current_display_label"] == "Wash-Dry | Rinse Wash & Fold"
     assert out["current_category_id"] == 1
     assert out["current_role_id"] == 2
     assert "force_checkout_blocked" not in out

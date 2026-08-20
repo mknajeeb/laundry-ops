@@ -84,7 +84,11 @@ export function createSwitchRoleController({
       const body = res?.data && typeof res.data === "object" ? res.data : {};
       if (status >= 200 && status < 300 && body.ok) {
         successLabel =
-          body.display_label || body.segment?.display_label || "Role updated";
+          body.display_label ||
+          body.employee_display_label ||
+          body.segment?.employee_display_label ||
+          body.segment?.display_label ||
+          "Role updated";
         phase = "success";
         pending = false;
         pendingCategoryId = null;

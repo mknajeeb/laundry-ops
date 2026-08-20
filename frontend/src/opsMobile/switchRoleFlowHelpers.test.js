@@ -5,6 +5,7 @@ import {
   categoryDisplayBucket,
   displayRoleLabel,
   flattenRoleCombos,
+  formatEmployeeAssignmentLabel,
   groupCombosByBucket,
   groupCombosByPrimaryRole,
   currentRoleCaption,
@@ -73,7 +74,9 @@ describe("switchRoleFlowHelpers", () => {
     expect(displayRoleLabel({ role_name: "Folder" })).toBe("Fold");
     expect(displayRoleLabel("Folder")).toBe("Fold");
     expect(displayRoleLabel({ role_name: "Operator" })).toBe("Wash-Dry");
-    expect(roleHelperText("Operator")).toBe("Sorting, washing & drying");
+    expect(roleHelperText("Operator")).toBe("Washing & drying");
+    expect(displayRoleLabel({ role_name: "Sort", role_code: "SORT" })).toBe("Sort");
+    expect(displayRoleLabel("Sorting")).toBe("Sort");
     expect(roleHelperText("Folder")).toBe("Folding completed orders");
   });
 
@@ -208,6 +211,41 @@ describe("switchRoleFlowHelpers", () => {
     const fold = groups.find((g) => g.roleLabel === "Fold");
     expect(fold.workTypes.map((w) => w.label)).toEqual(["Rinse Wash & Fold", "Rinse Hang Dry"]);
     expect(currentRoleCaption(wash.workTypes[2].combo)).toBe("Non-Rinse · Current");
+  });
+
+  it("shows Sort as its own primary role when SORT is in the tree", () => {
+    const tree = [
+      {
+        id: 10,
+        name: "Rinse WF",
+        code: "RINSE_WF",
+        roles: [
+          { role_id: 1, role_name: "Operator", role_code: "OPERATOR" },
+          { role_id: 3, role_name: "Sort", role_code: "SORT" },
+          { role_id: 2, role_name: "Folder", role_code: "FOLDER" },
+        ],
+      },
+      {
+        id: 20,
+        name: "Rinse HD",
+        code: "RINSE_HD",
+        roles: [
+          { role_id: 1, role_name: "Operator", role_code: "OPERATOR" },
+          { role_id: 3, role_name: "Sort", role_code: "SORT" },
+          { role_id: 2, role_name: "Folder", role_code: "FOLDER" },
+        ],
+      },
+    ];
+    const groups = groupCombosByPrimaryRole(flattenRoleCombos(tree));
+    expect(groups.map((g) => g.roleLabel)).toEqual(["Wash-Dry", "Sort", "Fold"]);
+    const sort = groups.find((g) => g.roleLabel === "Sort");
+    expect(sort.workTypes.map((w) => w.label)).toEqual([
+      "Rinse Wash & Fold",
+      "Rinse Hang Dry",
+    ]);
+    expect(formatEmployeeAssignmentLabel({ roleName: "Sort", categoryName: "Rinse WF" })).toBe(
+      "Sort | Rinse Wash & Fold",
+    );
   });
 
   it("prefers Drop Off when switching into Non-Rinse with no current Non-Rinse category", () => {

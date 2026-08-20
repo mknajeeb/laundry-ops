@@ -21,10 +21,14 @@ DEFAULT_CATEGORIES = (
     ("DROP_OFF", "Drop Off"),
 )
 
+# Attendance roles persisted on shift_job_segments (distinct role_id / role_code).
+# Employee-facing labels map Operator→Wash-Dry, Sort→Sort, Folder→Fold.
 STANDARD_ROLES = (
     ("OPERATOR", "Operator"),
+    ("SORT", "Sort"),
     ("FOLDER", "Folder"),
 )
+STANDARD_ROLE_CODES = tuple(code for code, _ in STANDARD_ROLES)
 
 # Legacy alias used by older tests / imports
 DEFAULT_TASKS = tuple(f"{name} — {role}" for _, name in DEFAULT_CATEGORIES for _, role in STANDARD_ROLES)
@@ -364,7 +368,16 @@ def _ensure_standard_roles(cursor, organization_id: int) -> dict[str, int]:
         )
         row = cursor.fetchone()
         if row:
-            role_ids[code] = int(row["id"] if isinstance(row, dict) else row[0])
+            rid = int(row["id"] if isinstance(row, dict) else row[0])
+            role_ids[code] = rid
+            cursor.execute(
+                """
+                UPDATE ta_task_roles
+                SET name=%s, sort_order=%s, active=1
+                WHERE id=%s AND organization_id=%s
+                """,
+                (name, idx, rid, oid),
+            )
             continue
         cursor.execute(
             """
@@ -387,7 +400,7 @@ def _ensure_standard_assignments(cursor, organization_id: int) -> None:
     cats = cursor.fetchall() or []
     for cat in cats:
         cat_id = int(cat["id"] if isinstance(cat, dict) else cat[0])
-        for sort_idx, code in enumerate(("OPERATOR", "FOLDER")):
+        for sort_idx, code in enumerate(STANDARD_ROLE_CODES):
             role_id = role_ids.get(code)
             if not role_id:
                 continue
@@ -398,7 +411,17 @@ def _ensure_standard_assignments(cursor, organization_id: int) -> None:
                 """,
                 (cat_id, role_id),
             )
-            if cursor.fetchone():
+            existing = cursor.fetchone()
+            if existing:
+                asg_id = int(existing["id"] if isinstance(existing, dict) else existing[0])
+                cursor.execute(
+                    """
+                    UPDATE ta_task_category_roles
+                    SET sort_order=%s, active=1
+                    WHERE id=%s AND organization_id=%s
+                    """,
+                    (sort_idx, asg_id, oid),
+                )
                 continue
             cursor.execute(
                 """
@@ -483,9 +506,9 @@ def create_category(
         (oid, code, name, sort_order, 1 if active else 0),
     )
     cat_id = int(cursor.lastrowid)
-    # Auto-assign Operator + Folder
+    # Auto-assign Operator + Sort + Folder (same set as STANDARD_ROLES)
     role_ids = _ensure_standard_roles(cursor, oid)
-    for idx, role_code in enumerate(("OPERATOR", "FOLDER")):
+    for idx, role_code in enumerate(STANDARD_ROLE_CODES):
         rid = role_ids.get(role_code)
         if not rid:
             continue
@@ -1070,9 +1093,20 @@ def _segment_response_from_row(
     r = json_safe(row) if row else {}
     cat = (assignment or {}).get("category_name") or r.get("category_name_snapshot")
     role = (assignment or {}).get("role_name") or r.get("role_name_snapshot")
+    cat_code = r.get("category_code") or (assignment or {}).get("category_code")
+    role_code = r.get("role_code") or (assignment or {}).get("role_code")
+    # Internal snapshot label (manager / history).
     label = None
     if cat and role:
         label = f"{cat} — {role}"
+    from backend.mobile_ops_labels import employee_assignment_label
+
+    employee_label = employee_assignment_label(
+        role_name=role,
+        role_code=role_code,
+        category_name=cat,
+        category_code=cat_code,
+    )
     started = r.get("started_at")
     if isinstance(started, datetime):
         started = started.isoformat()
@@ -1082,11 +1116,12 @@ def _segment_response_from_row(
         "category_id": r.get("category_id"),
         "role_id": r.get("role_id"),
         "category_role_id": r.get("category_role_id"),
-        "category_code": r.get("category_code") or (assignment or {}).get("category_code"),
-        "role_code": r.get("role_code") or (assignment or {}).get("role_code"),
+        "category_code": cat_code,
+        "role_code": role_code,
         "category_name": cat,
         "role_name": role,
         "display_label": label or (assignment or {}).get("display_label"),
+        "employee_display_label": employee_label or None,
         "started_at": started,
         "ended_at": r.get("ended_at"),
         "change_source": r.get("change_source"),
@@ -1484,7 +1519,11 @@ def enrich_session_job_tracking(conn, sess: dict, user_id: int) -> dict:
     current_role_name = None
     current_started_at = None
     if open_seg:
-        current_label = open_seg.get("display_label")
+        from backend.mobile_ops_labels import employee_assignment_label_from_segment
+
+        current_label = employee_assignment_label_from_segment(open_seg) or open_seg.get(
+            "display_label"
+        )
         current_category_id = open_seg.get("category_id") or current_category_id
         current_role_id = open_seg.get("role_id") or current_role_id
         current_category_name = open_seg.get("category_name_snapshot")

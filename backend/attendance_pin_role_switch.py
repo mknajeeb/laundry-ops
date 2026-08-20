@@ -50,11 +50,9 @@ def _employee_first_name(matched: dict) -> str:
 
 def _current_assignment_payload(conn, session_id: int) -> dict:
     open_seg = get_open_job_segment(conn, int(session_id)) or {}
-    cat = open_seg.get("category_name_snapshot")
-    role = open_seg.get("role_name_snapshot")
-    label = None
-    if cat and role:
-        label = f"{cat} — {role}"
+    from backend.mobile_ops_labels import employee_assignment_label_from_segment
+
+    label = employee_assignment_label_from_segment(open_seg) or None
     return {
         "current_category_id": open_seg.get("category_id"),
         "current_role_id": open_seg.get("role_id"),
@@ -308,7 +306,7 @@ def perform_pin_role_switch(
             "action": "ROLE_SWITCHED",
             "employee_first_name": first_name,
             "segment": seg,
-            "display_label": seg.get("display_label"),
+            "display_label": seg.get("employee_display_label") or seg.get("display_label"),
             "replayed": bool(seg.get("replayed")),
             "noop": bool(seg.get("noop")),
             "unchanged": bool(seg.get("unchanged") or seg.get("noop") or seg.get("replayed")),
