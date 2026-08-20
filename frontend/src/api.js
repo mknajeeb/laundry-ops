@@ -2532,6 +2532,21 @@ export const saveManagementRevenueAccount = (body) =>
 export const saveManagementRevenueDhs = (body) =>
   axios.put(`${API_BASE}/api/management/revenue/dhs`, body);
 
+export const getManagementRevenueMissingWork = (params = {}) =>
+  axios.get(`${API_BASE}/api/management/revenue/missing-work`, { params });
+
+export const createManagementRevenueDisposition = (body) =>
+  axios.post(`${API_BASE}/api/management/revenue/dispositions`, body);
+
+export const reverseManagementRevenueDisposition = (dispositionId) =>
+  axios.post(`${API_BASE}/api/management/revenue/dispositions/${dispositionId}/reverse`);
+
+export const getManagementRevenueSchedulePreview = (accountId, params = {}) =>
+  axios.get(`${API_BASE}/api/management/revenue/accounts/${accountId}/schedule-preview`, { params });
+
+export const saveManagementRevenueAccountSchedule = (accountId, body) =>
+  axios.post(`${API_BASE}/api/management/revenue/accounts/${accountId}/schedule`, body);
+
 
 export const getDailyOperationsMeta = () =>
   axios.get(`${API_BASE}/api/daily-operations/meta`);

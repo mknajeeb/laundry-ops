@@ -300,6 +300,11 @@ export const TRANSLATIONS = {
     "mobileOps.revenue.payoutDate": "Payout Date (required)",
     "mobileOps.revenue.payoutDateHelp": "Payout Date is the business day this cash-out belongs to — not when you enter it.",
 
+    "mobileOps.revenue.missingWork": "Missing Work",
+    "mobileOps.revenue.dailyShort": "Daily",
+    "mobileOps.revenue.open": "Open",
+    "mobileOps.revenue.newPickupDate": "New Pickup Date (YYYY-MM-DD)",
+
     "mobileOps.team.title": "Team Status",
     "mobileOps.team.unlockFailed": "Could not unlock Team Status",
     "mobileOps.team.loadFailed": "Unable to load Team Status",
@@ -1723,6 +1728,11 @@ export const TRANSLATIONS = {
     "mobileOps.revenue.calculatedRevenue": "Ingreso calculado",
     "mobileOps.revenue.payoutDate": "Fecha de pago (requerida)",
     "mobileOps.revenue.payoutDateHelp": "La fecha de pago es el día de negocio al que pertenece este egreso — no cuándo lo capturas.",
+
+    "mobileOps.revenue.missingWork": "Trabajo pendiente",
+    "mobileOps.revenue.dailyShort": "Diario",
+    "mobileOps.revenue.open": "Abrir",
+    "mobileOps.revenue.newPickupDate": "Nueva fecha de recolección (AAAA-MM-DD)",
 
     "mobileOps.team.title": "Estado del Equipo",
     "mobileOps.team.unlockFailed": "No se pudo abrir Estado del Equipo",

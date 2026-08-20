@@ -216,7 +216,9 @@ def _parse_snapshot_dates(row: dict | None) -> dict[str, str | None]:
 def _account_row_to_dict(row: dict, pricing: dict | None = None) -> dict[str, Any]:
     sd = row.get("start_date")
     ed = row.get("end_date")
-    return {
+    from backend.management_revenue_obligations import default_cadence_for_account
+
+    base = {
         "id": int(row["id"]),
         "parent_id": int(row["parent_id"]) if row.get("parent_id") else None,
         "account_code": row.get("account_code"),
@@ -229,6 +231,7 @@ def _account_row_to_dict(row: dict, pricing: dict | None = None) -> dict[str, An
         "use_pickup_date": bool(row.get("use_pickup_date", 0)),
         "use_processing_date": bool(row.get("use_processing_date", 1)),
         "use_delivery_date": bool(row.get("use_delivery_date", 0)),
+        "entry_cadence": row.get("entry_cadence"),
         "start_date": sd.isoformat() if hasattr(sd, "isoformat") else sd,
         "end_date": ed.isoformat() if hasattr(ed, "isoformat") else ed,
         "dr_commercial_account_id": int(row["dr_commercial_account_id"]) if row.get("dr_commercial_account_id") else None,
@@ -236,11 +239,21 @@ def _account_row_to_dict(row: dict, pricing: dict | None = None) -> dict[str, An
         "sort_order": int(row.get("sort_order") or 0),
         "pricing": pricing,
     }
+    base["entry_cadence"] = default_cadence_for_account(base)
+    return base
 
 
 def list_accounts(cursor, org_id: int, *, as_of: date | None = None, active_only: bool = False) -> list[dict]:
     ensure_mgmt_revenue_account_tables(cursor)
+    from backend.management_revenue_obligations import (
+        ensure_account_obligation_columns,
+        get_schedule_for_account,
+        seed_default_cadences_and_schedules,
+    )
+
+    ensure_account_obligation_columns(cursor)
     seed_mgmt_revenue_accounts(cursor, org_id)
+    seed_default_cadences_and_schedules(cursor, org_id)
     as_of = as_of or business_today()
     sql = "SELECT * FROM mgmt_revenue_accounts WHERE organization_id = %s"
     params: list[Any] = [org_id]
@@ -252,7 +265,9 @@ def list_accounts(cursor, org_id: int, *, as_of: date | None = None, active_only
     for row in cursor.fetchall() or []:
         acct = dict(row)
         pricing = get_pricing_for_account(cursor, int(acct["id"]), as_of)
-        out.append(_account_row_to_dict(acct, pricing))
+        item = _account_row_to_dict(acct, pricing)
+        item["schedule"] = get_schedule_for_account(cursor, int(acct["id"]), as_of)
+        out.append(item)
     return out
 
 
@@ -840,6 +855,23 @@ def build_revenue_dashboard(
         "trend": trend,
         "payouts": cash_act.get("payouts") or [],
     }
+    from backend.management_revenue_obligations import build_daily_completeness, build_dhs_obligations
+
+    day_complete = build_daily_completeness(cursor, org_id, end_date)
+    dhs_obs = build_dhs_obligations(cursor, org_id, as_of=end_date)
+    dhs_due_total = len(dhs_obs)
+    dhs_complete = len([r for r in dhs_obs if r.get("resolved")])
+    dhs_pending = len([r for r in dhs_obs if not r.get("resolved")])
+    payload["completeness"] = {
+        "processing_date_et": end_date.isoformat(),
+        "daily_entries": f"{day_complete.get('label')} complete",
+        "daily": day_complete,
+        "dhs_due": dhs_due_total,
+        "dhs_complete": dhs_complete,
+        "dhs_pending": dhs_pending,
+        "dhs_label": f"DHS due {dhs_due_total} · Complete {dhs_complete} · Pending {dhs_pending}",
+        "attribution": "processing_date",
+    }
     if previous is not None:
         payload["compare"] = {
             "start_date": previous["start_date"],
@@ -878,6 +910,13 @@ def save_account(
     use_pickup_date = 1 if payload.get("use_pickup_date") else 0
     use_processing_date = 1 if payload.get("use_processing_date", True) else 0
     use_delivery_date = 1 if payload.get("use_delivery_date") else 0
+    entry_cadence = (payload.get("entry_cadence") or "").strip().lower() or None
+    if entry_cadence and entry_cadence not in ("daily", "scheduled", "optional"):
+        raise ValueError("Invalid entry_cadence")
+
+    from backend.management_revenue_obligations import ensure_account_obligation_columns, save_account_schedule
+
+    ensure_account_obligation_columns(cursor)
 
     if acct_id:
         cursor.execute(
@@ -886,13 +925,13 @@ def save_account(
             SET name = %s, revenue_group = %s, service_type = %s, revenue_mode = %s,
                 parent_id = %s, active = %s, notes = %s,
                 allow_override = %s, use_pickup_date = %s, use_processing_date = %s,
-                use_delivery_date = %s
+                use_delivery_date = %s, entry_cadence = COALESCE(%s, entry_cadence)
             WHERE id = %s AND organization_id = %s
             """,
             (
                 name, revenue_group, service_type, revenue_mode, parent_id, active, notes,
                 allow_override, use_pickup_date, use_processing_date, use_delivery_date,
-                acct_id, org_id,
+                entry_cadence, acct_id, org_id,
             ),
         )
     else:
@@ -923,6 +962,11 @@ def save_account(
         )
         if notes:
             cursor.execute("UPDATE mgmt_revenue_accounts SET notes = %s WHERE id = %s", (notes, acct_id))
+        if entry_cadence:
+            cursor.execute(
+                "UPDATE mgmt_revenue_accounts SET entry_cadence = %s WHERE id = %s",
+                (entry_cadence, acct_id),
+            )
 
     pricing_payload = payload.get("pricing") or {}
     if pricing_payload:
@@ -952,6 +996,17 @@ def save_account(
             user_id=user_id,
         )
 
+    if "pickup_weekdays" in payload or "delivery_weekdays" in payload:
+        sched_from = payload.get("schedule_effective_from") or business_today().isoformat()
+        save_account_schedule(
+            cursor,
+            int(acct_id),
+            effective_from=date.fromisoformat(str(sched_from)[:10]),
+            pickup_weekdays=payload.get("pickup_weekdays"),
+            delivery_weekdays=payload.get("delivery_weekdays"),
+            user_id=user_id,
+        )
+
     cursor.execute(
         "SELECT * FROM mgmt_revenue_accounts WHERE id = %s AND organization_id = %s",
         (acct_id, org_id),
@@ -960,7 +1015,11 @@ def save_account(
     if not row:
         raise LookupError("Account not found")
     pricing = get_pricing_for_account(cursor, int(acct_id))
-    return _account_row_to_dict(dict(row), pricing)
+    out = _account_row_to_dict(dict(row), pricing)
+    from backend.management_revenue_obligations import get_schedule_for_account
+
+    out["schedule"] = get_schedule_for_account(cursor, int(acct_id), business_today())
+    return out
 
 
 def _ensure_entry_id(cursor, org_id: int, entry_date: date, user_id: int | None = None) -> int:
@@ -1061,6 +1120,9 @@ def save_dhs_account_revenue(
             "pickup_date": str(pickup)[:10] if pickup else None,
             "processing_date": str(processing)[:10] if processing else None,
             "delivery_date": str(delivery)[:10] if delivery else None,
+            "scheduled_pickup_date": str(item.get("scheduled_pickup_date") or pickup or "")[:10] or None,
+            "scheduled_delivery_date": str(item.get("scheduled_delivery_date") or delivery or "")[:10] or None,
+            "date_override": bool(item.get("date_override")),
             "use_revenue_override": use_override,
             "date_basis": [
                 k for k, enabled in (

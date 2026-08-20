@@ -157,25 +157,15 @@ def build_revenue_day(cursor, org_id: int, entry_date: date) -> dict[str, Any]:
 
     cash = _cash_revenue_from_lines(lines)
     payout_rows = [_payout_row(p) for p in payouts]
-    nr = account_block.get("non_rinse") or {}
-    dhs = account_block.get("dhs") or {}
-    hd = (account_block.get("rinse") or {}).get("hd") or {}
-    ss_entered = (nr.get("self_service") or {}).get("total") is not None
-    do_entered = (nr.get("drop_off") or {}).get("total") is not None
-    dhs_accounts = dhs.get("accounts") or []
-    dhs_entered_n = sum(1 for a in dhs_accounts if a.get("entered"))
-    dhs_complete = bool(dhs_accounts) and dhs_entered_n == len(dhs_accounts)
-    hd_entered = hd.get("revenue") is not None or int(hd.get("orders") or 0) > 0
-    cash_entered = bool(payout_rows)  # optional section — complete if any payouts or explicitly visited later
-    sections = [
-        {"id": "self_service", "entered": ss_entered, "required": True},
-        {"id": "drop_off", "entered": do_entered, "required": True},
-        {"id": "dhs", "entered": dhs_complete if dhs_accounts else True, "required": bool(dhs_accounts)},
-        {"id": "cash", "entered": cash_entered, "required": False},
-        {"id": "hang_dry", "entered": hd_entered, "required": False},
-    ]
-    required = [s for s in sections if s["required"]]
-    complete_n = sum(1 for s in required if s["entered"])
+    from backend.management_revenue_obligations import build_daily_completeness, build_missing_work
+
+    daily_completeness = build_daily_completeness(cursor, org_id, entry_date)
+    missing = build_missing_work(cursor, org_id, as_of=entry_date, filter_kind="all")
+    dhs_due = missing["summary"]["dhs_pending"]
+    dhs_complete = max(
+        0,
+        len([a for a in (account_block.get("dhs") or {}).get("accounts") or [] if a.get("entered")]),
+    )
     return {
         "date_et": entry_date.isoformat(),
         "entry_id": header.get("id") if header else None,
@@ -192,11 +182,27 @@ def build_revenue_day(cursor, org_id: int, entry_date: date) -> dict[str, Any]:
             ),
             "payout_count": len(payout_rows),
         },
+        "daily_completeness": daily_completeness,
+        "missing_work_summary": missing["summary"],
         "section_status": {
-            "sections": sections,
-            "complete": complete_n,
-            "required": len(required),
-            "label": f"{complete_n}/{len(required)}",
+            "sections": [
+                {
+                    "id": s["key"],
+                    "entered": s["status"] == "entered",
+                    "status": s["status"],
+                    "required": True,
+                    "label": s["label"],
+                }
+                for s in daily_completeness["sections"]
+            ],
+            "complete": daily_completeness["complete"],
+            "required": daily_completeness["required"],
+            "label": daily_completeness["label"],
+        },
+        "dhs_completeness": {
+            "due": dhs_due,
+            "complete": dhs_complete,
+            "pending": dhs_due,
         },
     }
 

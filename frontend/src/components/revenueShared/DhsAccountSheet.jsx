@@ -58,6 +58,15 @@ export default function DhsAccountSheet({
     <Stack spacing={1.5} sx={{ pb: 2 }}>
       <Typography sx={{ fontSize: 18, fontWeight: 900 }}>{account?.name}</Typography>
 
+      {draft?.scheduled_pickup_date || draft?.scheduled_delivery_date ? (
+        <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#64748b" }}>
+          Schedule defaults
+          {draft?.scheduled_pickup_date ? ` · Pickup ${draft.scheduled_pickup_date}` : ""}
+          {draft?.scheduled_delivery_date ? ` · Delivery ${draft.scheduled_delivery_date}` : ""}
+          {" "}(editable)
+        </Typography>
+      ) : null}
+
       {account?.use_pickup_date ? (
         <PlanningDatePicker
           label={labels.pickupDate || "Pickup Date"}
@@ -143,12 +152,19 @@ export default function DhsAccountSheet({
               revenue_mode: mode,
               use_revenue_override: Boolean(showOverride && allowOverride),
               pickup_date: account?.use_pickup_date ? draft?.pickup_date || null : null,
-              // Visible prefill: send processing date (entryDate) when enabled
               processing_date:
                 account?.use_processing_date !== false
                   ? draft?.processing_date || entryDate || null
                   : null,
               delivery_date: account?.use_delivery_date ? draft?.delivery_date || null : null,
+              scheduled_pickup_date: draft?.scheduled_pickup_date || null,
+              scheduled_delivery_date: draft?.scheduled_delivery_date || null,
+              date_override: Boolean(
+                (draft?.scheduled_pickup_date && draft?.pickup_date && draft.pickup_date !== draft.scheduled_pickup_date) ||
+                  (draft?.scheduled_delivery_date &&
+                    draft?.delivery_date &&
+                    draft.delivery_date !== draft.scheduled_delivery_date),
+              ),
             };
             if (isAbsolute) {
               body.revenue = parseMoneyInput(draft?.revenue);

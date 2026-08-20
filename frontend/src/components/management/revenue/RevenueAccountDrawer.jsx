@@ -87,6 +87,7 @@ export default function RevenueAccountDrawer({
   onClose,
   onSaveNonRinse,
   onSaveDhsAccount,
+  focusAccountId = null,
 }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
@@ -116,6 +117,14 @@ export default function RevenueAccountDrawer({
   }, [open, groupId]);
 
   useEffect(() => {
+    if (!open || groupId !== "dhs" || !focusAccountId) return;
+    const row = (data?.dhs?.accounts || []).find((a) => a.account_id === focusAccountId);
+    if (row) openDhs(row);
+    // openDhs is stable enough for focus open; intentionally omit from deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, groupId, focusAccountId, data?.dhs?.accounts]);
+
+  useEffect(() => {
     const nr = data?.non_rinse_revenue || data?.non_rinse || {};
     setSsCash(moneyToInput(nr.self_service?.cash));
     setSsCard(moneyToInput(nr.self_service?.card));
@@ -132,14 +141,37 @@ export default function RevenueAccountDrawer({
     return "Accounts";
   }, [groupId, selected, step]);
 
-  const openDhs = (row) => {
+  const openDhs = async (row) => {
     setSelected(row);
     setVolume(moneyToInput(row.volume));
     setOverrideOn(Boolean(row.use_revenue_override));
     setOverrideAmt(moneyToInput(row.use_revenue_override ? row.revenue : null));
-    setPickupDate(row.pickup_date || "");
+    let pickup = row.pickup_date || "";
+    let delivery = row.delivery_date || "";
+    let scheduledPickup = "";
+    let scheduledDelivery = "";
+    try {
+      const { getManagementRevenueSchedulePreview } = await import("../../../api");
+      const res = await getManagementRevenueSchedulePreview(row.account_id, {
+        processing_date: dateEt,
+      });
+      const defaults = res.data?.defaults || {};
+      scheduledPickup = defaults.scheduled_pickup_date || "";
+      scheduledDelivery = defaults.scheduled_delivery_date || "";
+      if (!pickup && row.use_pickup_date) pickup = defaults.pickup_date || "";
+      if (!delivery && row.use_delivery_date) delivery = defaults.delivery_date || "";
+    } catch {
+      /* ignore preview failures */
+    }
+    setPickupDate(pickup);
     setProcessingDate(row.processing_date || dateEt);
-    setDeliveryDate(row.delivery_date || "");
+    setDeliveryDate(delivery);
+    setSelected((prev) => ({
+      ...row,
+      ...prev,
+      _scheduled_pickup_date: scheduledPickup,
+      _scheduled_delivery_date: scheduledDelivery,
+    }));
     setStep("dhs_account");
   };
 
@@ -178,6 +210,14 @@ export default function RevenueAccountDrawer({
       processing_date:
         selected.use_processing_date !== false ? processingDate || dateEt || null : null,
       delivery_date: selected.use_delivery_date ? deliveryDate || null : null,
+      scheduled_pickup_date: selected._scheduled_pickup_date || null,
+      scheduled_delivery_date: selected._scheduled_delivery_date || null,
+      date_override: Boolean(
+        (selected._scheduled_pickup_date && pickupDate && pickupDate !== selected._scheduled_pickup_date) ||
+          (selected._scheduled_delivery_date &&
+            deliveryDate &&
+            deliveryDate !== selected._scheduled_delivery_date),
+      ),
     };
     if (selected.revenue_mode !== "absolute" && !overrideOn) {
       body.volume = parseMoneyInput(volume);

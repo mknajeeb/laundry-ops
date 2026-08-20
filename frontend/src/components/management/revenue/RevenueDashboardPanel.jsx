@@ -155,6 +155,16 @@ export default function RevenueDashboardPanel({
             <Kpi label="Card Revenue" value={fmtMoney(d.card_revenue)} />
             <Kpi label="Cash Paid Out" value={fmtMoney(d.cash_paid_out)} onClick={() => setDrill("payouts")} sub="Tap for payouts" />
             <Kpi label="Net Cash Movement" value={fmtMoney(d.net_cash_movement)} />
+            <Kpi
+              label="Daily entries"
+              value={d.completeness?.daily_entries || "—"}
+              sub={
+                d.completeness
+                  ? d.completeness.dhs_label ||
+                    `DHS due ${d.completeness.dhs_due ?? 0} · Complete ${d.completeness.dhs_complete ?? 0} · Pending ${d.completeness.dhs_pending ?? 0}`
+                  : undefined
+              }
+            />
           </Box>
 
           <Box

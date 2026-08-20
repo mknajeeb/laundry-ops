@@ -28,6 +28,14 @@ from backend.management_revenue import (
     update_cash_payout,
 )
 from backend.management_revenue_accounts import build_revenue_dashboard, save_dhs_account_revenue
+from backend.management_revenue_obligations import (
+    build_missing_work,
+    create_disposition,
+    derive_dates_from_schedule,
+    get_schedule_for_account,
+    reverse_disposition,
+    save_account_schedule,
+)
 from backend.rinse_scan_time import json_safe_rinse
 
 
@@ -314,6 +322,166 @@ def register_management_revenue_routes(
             payload = build_cash_activity(cursor, oid, period, ref, start, end)
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/revenue/missing-work", methods=["GET"])
+    def management_revenue_missing_work():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
+            raw_date = (request.args.get("date_et") or request.args.get("as_of") or "").strip()
+            try:
+                as_of = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            filter_kind = (request.args.get("filter") or "all").strip().lower()
+            payload = build_missing_work(cursor, oid, as_of=as_of, filter_kind=filter_kind)
+            conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/revenue/dispositions", methods=["POST"])
+    def management_revenue_disposition_create():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            body = request.get_json(silent=True) or {}
+            disp = create_disposition(
+                cursor,
+                oid,
+                body,
+                user_id=_user_id(me),
+                actor_name=actor_name(me),
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse({"disposition": disp})), 201
+        except ValueError as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/revenue/dispositions/<int:disposition_id>/reverse", methods=["POST"])
+    def management_revenue_disposition_reverse(disposition_id: int):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            disp = reverse_disposition(
+                cursor,
+                oid,
+                disposition_id,
+                user_id=_user_id(me),
+                actor_name=actor_name(me),
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse({"disposition": disp}))
+        except LookupError as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 404
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/revenue/accounts/<int:account_id>/schedule-preview", methods=["GET"])
+    def management_revenue_schedule_preview(account_id: int):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
+            raw_date = (request.args.get("processing_date") or request.args.get("date_et") or "").strip()
+            try:
+                processing = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            sched = get_schedule_for_account(cursor, account_id, processing)
+            derived = derive_dates_from_schedule(processing, sched)
+            conn.commit()
+            return jsonify(json_safe_rinse({
+                "account_id": account_id,
+                "processing_date": processing.isoformat(),
+                "schedule": sched,
+                "defaults": derived,
+            }))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/revenue/accounts/<int:account_id>/schedule", methods=["POST"])
+    def management_revenue_account_schedule_save(account_id: int):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not is_hub_manager(me):
+                body, code = access_denied_payload()
+                return jsonify(body), code
+            oid = int(user_org_id(me))
+            body = request.get_json(silent=True) or {}
+            raw_from = (body.get("effective_from") or "").strip()
+            effective_from = parse_date_value(raw_from) if raw_from else business_today()
+            if not isinstance(effective_from, date):
+                return jsonify({"error": "Invalid effective_from"}), 400
+            sched = save_account_schedule(
+                cursor,
+                account_id,
+                effective_from=effective_from,
+                pickup_weekdays=body.get("pickup_weekdays"),
+                delivery_weekdays=body.get("delivery_weekdays"),
+                user_id=_user_id(me),
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse({"schedule": sched}))
+        except Exception as exc:
+            conn.rollback()
             return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()

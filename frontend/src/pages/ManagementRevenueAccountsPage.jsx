@@ -63,6 +63,9 @@ function emptyForm() {
     use_pickup_date: false,
     use_processing_date: true,
     use_delivery_date: false,
+    entry_cadence: "scheduled",
+    pickup_weekdays: [],
+    delivery_weekdays: [],
     notes: "",
     pricing_method: "flat_lb",
     rate_per_unit: "",
@@ -149,6 +152,9 @@ export default function ManagementRevenueAccountsPage() {
       use_pickup_date: Boolean(acct.use_pickup_date),
       use_processing_date: acct.use_processing_date !== false,
       use_delivery_date: Boolean(acct.use_delivery_date),
+      entry_cadence: acct.entry_cadence || "scheduled",
+      pickup_weekdays: acct.schedule?.pickup_weekdays || [],
+      delivery_weekdays: acct.schedule?.delivery_weekdays || [],
       notes: acct.notes || "",
       pricing_method: pr.pricing_method || "flat_lb",
       rate_per_unit: pr.rate_per_unit ?? "",
@@ -180,6 +186,9 @@ export default function ManagementRevenueAccountsPage() {
         use_pickup_date: form.use_pickup_date,
         use_processing_date: form.use_processing_date,
         use_delivery_date: form.use_delivery_date,
+        entry_cadence: form.entry_cadence,
+        pickup_weekdays: form.pickup_weekdays,
+        delivery_weekdays: form.delivery_weekdays,
         notes: form.notes || null,
         parent_id: parentId,
         pricing: {
@@ -414,6 +423,66 @@ export default function ManagementRevenueAccountsPage() {
               }
               label="Use Delivery Date"
             />
+            <FormControl fullWidth size="small">
+              <InputLabel>Entry cadence</InputLabel>
+              <Select
+                label="Entry cadence"
+                value={form.entry_cadence || "scheduled"}
+                onChange={(e) => setForm({ ...form, entry_cadence: e.target.value })}
+              >
+                <MenuItem value="daily">Daily</MenuItem>
+                <MenuItem value="scheduled">Scheduled</MenuItem>
+                <MenuItem value="optional">Optional / ad hoc</MenuItem>
+              </Select>
+            </FormControl>
+            {form.entry_cadence === "scheduled" ? (
+              <Box>
+                <Typography sx={{ fontSize: 12, fontWeight: 700, mb: 0.75 }}>Pickup weekdays</Typography>
+                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                  {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((lab, idx) => {
+                    const on = (form.pickup_weekdays || []).includes(idx);
+                    return (
+                      <Button
+                        key={`p-${idx}`}
+                        size="small"
+                        variant={on ? "contained" : "outlined"}
+                        onClick={() => {
+                          const set = new Set(form.pickup_weekdays || []);
+                          if (on) set.delete(idx);
+                          else set.add(idx);
+                          setForm({ ...form, pickup_weekdays: [...set].sort() });
+                        }}
+                        sx={{ textTransform: "none", minWidth: 44 }}
+                      >
+                        {lab}
+                      </Button>
+                    );
+                  })}
+                </Stack>
+                <Typography sx={{ fontSize: 12, fontWeight: 700, mt: 1, mb: 0.75 }}>Delivery weekdays</Typography>
+                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                  {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((lab, idx) => {
+                    const on = (form.delivery_weekdays || []).includes(idx);
+                    return (
+                      <Button
+                        key={`d-${idx}`}
+                        size="small"
+                        variant={on ? "contained" : "outlined"}
+                        onClick={() => {
+                          const set = new Set(form.delivery_weekdays || []);
+                          if (on) set.delete(idx);
+                          else set.add(idx);
+                          setForm({ ...form, delivery_weekdays: [...set].sort() });
+                        }}
+                        sx={{ textTransform: "none", minWidth: 44 }}
+                      >
+                        {lab}
+                      </Button>
+                    );
+                  })}
+                </Stack>
+              </Box>
+            ) : null}
             <FormControlLabel
               control={
                 <Switch

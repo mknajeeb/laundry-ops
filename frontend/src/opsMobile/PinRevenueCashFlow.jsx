@@ -10,8 +10,11 @@ import {
 import AddIcon from "@mui/icons-material/Add";
 import {
   createManagementCashPayout,
+  createManagementRevenueDisposition,
   deleteManagementCashPayout,
   getManagementRevenue,
+  getManagementRevenueMissingWork,
+  getManagementRevenueSchedulePreview,
   getManagementRinseHd,
   getManagementRinseHdDetail,
   markManagementRinseHdComplete,
@@ -20,8 +23,10 @@ import {
   saveManagementRinseHdProduction,
 } from "../api";
 import CashPayoutForm, { CashPayoutList } from "../components/revenueShared/CashPayoutForm";
+import DailyCompletenessStrip from "../components/revenueShared/DailyCompletenessStrip";
 import DhsAccountRow from "../components/revenueShared/DhsAccountRow";
 import DhsAccountSheet from "../components/revenueShared/DhsAccountSheet";
+import MissingWorkPanel from "../components/revenueShared/MissingWorkPanel";
 import MoneyAmountField from "../components/revenueShared/MoneyAmountField";
 import NonRinseEntryPanel from "../components/revenueShared/NonRinseEntryPanel";
 import SectionStatusCard from "../components/revenueShared/SectionStatusCard";
@@ -68,6 +73,7 @@ const SCREEN_TITLE_KEYS = {
   cash: "mobileOps.revenue.cashPaidOut",
   hang_dry: "mobileOps.revenue.hangDry",
   hang_dry_detail: "mobileOps.revenue.hangDry",
+  missing: "mobileOps.revenue.missingWork",
 };
 
 /**
@@ -105,6 +111,12 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
   const [hdRevenue, setHdRevenue] = useState(null);
   const [hdSaving, setHdSaving] = useState(false);
 
+  const [missingFilter, setMissingFilter] = useState("all");
+  const [missing, setMissing] = useState(null);
+  const [missingLoading, setMissingLoading] = useState(false);
+  const [dispBusy, setDispBusy] = useState("");
+  const [returnScreen, setReturnScreen] = useState("home");
+
   const nonRinseRef = useRef({ ssCash: null, ssCard: null, doCash: null, doCard: null });
   const autosaveTimerRef = useRef(null);
   const saveGenRef = useRef(0);
@@ -125,12 +137,18 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     try {
       const res = await getManagementRevenue(dateEt);
       applyDayPayload(res.data || null);
+      try {
+        const miss = await getManagementRevenueMissingWork({ date_et: dateEt, filter: missingFilter });
+        setMissing(miss.data || null);
+      } catch {
+        /* optional */
+      }
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadFailed"));
     } finally {
       setLoading(false);
     }
-  }, [applyDayPayload, dateEt, t]);
+  }, [applyDayPayload, dateEt, missingFilter, t]);
 
   useEffect(() => {
     loadRevenue();
@@ -203,19 +221,53 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     scheduleNonRinseAutosave();
   };
 
-  const openDhsAccount = (row) => {
+  const openDhsAccount = async (row, { fromScreen } = {}) => {
+    if (fromScreen) setReturnScreen(fromScreen);
+    else if (screen === "missing") setReturnScreen("missing");
+    else setReturnScreen("dhs");
     setDhsAccount(row);
+    let pickup = row.pickup_date || "";
+    let delivery = row.delivery_date || "";
+    let scheduledPickup = "";
+    let scheduledDelivery = "";
+    try {
+      const res = await getManagementRevenueSchedulePreview(row.account_id, {
+        processing_date: dateEt,
+      });
+      const defaults = res.data?.defaults || {};
+      scheduledPickup = defaults.scheduled_pickup_date || "";
+      scheduledDelivery = defaults.scheduled_delivery_date || "";
+      if (!pickup && row.use_pickup_date) pickup = defaults.pickup_date || "";
+      if (!delivery && row.use_delivery_date) delivery = defaults.delivery_date || "";
+    } catch {
+      /* ignore */
+    }
     setDhsDraft({
       volume: moneyToInput(row.volume) === "" ? null : row.volume,
       revenue: moneyToInput(row.revenue) === "" ? null : row.revenue,
-      pickup_date: row.pickup_date || "",
-      // Visible prefill with entry date when processing enabled and no saved value
+      pickup_date: pickup,
       processing_date: row.processing_date || (row.use_processing_date !== false ? dateEt : ""),
-      delivery_date: row.delivery_date || "",
+      delivery_date: delivery,
+      scheduled_pickup_date: scheduledPickup,
+      scheduled_delivery_date: scheduledDelivery,
       use_revenue_override: Boolean(row.use_revenue_override),
     });
     setScreen("dhs_account");
     setSaveState("");
+  };
+
+  const postDisposition = async (body, busyKey) => {
+    setDispBusy(busyKey);
+    setError("");
+    try {
+      await createManagementRevenueDisposition(body);
+      await loadRevenue();
+      setSaveState("saved");
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.saveFailed"));
+    } finally {
+      setDispBusy("");
+    }
   };
 
   const saveDhsAccount = async (body) => {
@@ -356,8 +408,12 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       return;
     }
     if (screen === "dhs_account") {
-      setScreen("dhs");
+      setScreen(returnScreen === "missing" ? "missing" : "dhs");
       setDhsAccount(null);
+      return;
+    }
+    if (screen === "missing") {
+      setScreen("home");
       return;
     }
     if (screen === "self_service" || screen === "drop_off") {
@@ -531,10 +587,44 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
               {t("mobileOps.revenue.summaryLine", {
                 revenue: fmtMoney(totalRev),
                 cashOut: fmtMoney(cashOut ?? 0),
-                complete: section.label || "—",
+                complete: data?.daily_completeness?.label || section.label || "—",
               })}
             </Typography>
           </Box>
+
+          <DailyCompletenessStrip
+            completeness={data?.daily_completeness}
+            onOpenSection={(s) => {
+              if (s.key === "self_service") setScreen("self_service");
+              else if (s.key === "drop_off") setScreen("drop_off");
+              else if (s.key === "rinse_hd") openHangDry();
+              else setScreen("home");
+            }}
+            onNoActivity={(s) =>
+              postDisposition(
+                {
+                  source_key: s.key,
+                  processing_date_et: dateEt,
+                  disposition: "no_activity",
+                  reason: "No activity",
+                },
+                `${s.key}:${dateEt}`,
+              )
+            }
+          />
+
+          <SectionStatusCard
+            title={t("mobileOps.revenue.missingWork")}
+            primary={missing?.summary?.missing_total ?? data?.missing_work_summary?.missing_total}
+            secondary={
+              missing?.summary
+                ? `${missing.summary.daily_missing || 0} ${t("mobileOps.revenue.dailyShort")} · ${missing.summary.dhs_pending || 0} DHS`
+                : null
+            }
+            statusLabel={t("mobileOps.revenue.open")}
+            statusTone={(missing?.summary?.missing_total || 0) > 0 ? "warn" : "ok"}
+            onClick={() => setScreen("missing")}
+          />
 
           <Box
             sx={{
@@ -557,6 +647,74 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
           </Box>
           <OpsLockButton onClick={onLock} fullWidth label={t("mobileOps.lock")} />
         </Stack>
+      ) : null}
+
+      {screen === "missing" ? (
+        <MissingWorkPanel
+          loading={missingLoading}
+          data={missing}
+          filter={missingFilter}
+          onFilterChange={async (f) => {
+            setMissingFilter(f);
+            setMissingLoading(true);
+            try {
+              const res = await getManagementRevenueMissingWork({ date_et: dateEt, filter: f });
+              setMissing(res.data || null);
+            } finally {
+              setMissingLoading(false);
+            }
+          }}
+          busyId={dispBusy}
+          onOpenItem={(item) => {
+            if (item.kind === "dhs") {
+              const row = (data?.dhs?.accounts || []).find((a) => a.account_id === item.account_id);
+              if (row) openDhsAccount(row, { fromScreen: "missing" });
+              else setScreen("dhs");
+              return;
+            }
+            if (item.source_key === "self_service") setScreen("self_service");
+            else if (item.source_key === "drop_off") setScreen("drop_off");
+            else if (item.source_key === "rinse_hd") openHangDry();
+          }}
+          onNoActivity={(item, reason) =>
+            postDisposition(
+              {
+                source_key: item.source_key,
+                processing_date_et: item.processing_date_et || dateEt,
+                disposition: "no_activity",
+                reason,
+              },
+              `${item.source_key}:${item.processing_date_et}`,
+            )
+          }
+          onNoPickup={(item, reason) =>
+            postDisposition(
+              {
+                source_key: item.source_key,
+                account_id: item.account_id,
+                scheduled_pickup_date: item.scheduled_pickup_date,
+                disposition: "no_pickup",
+                reason,
+              },
+              `${item.source_key}:${item.scheduled_pickup_date}`,
+            )
+          }
+          onReschedule={(item, reason) => {
+            const next = window.prompt(t("mobileOps.revenue.newPickupDate"), item.scheduled_pickup_date);
+            if (!next) return;
+            postDisposition(
+              {
+                source_key: item.source_key,
+                account_id: item.account_id,
+                scheduled_pickup_date: item.scheduled_pickup_date,
+                disposition: "rescheduled",
+                new_pickup_date: next,
+                reason,
+              },
+              `${item.source_key}:${item.scheduled_pickup_date}`,
+            );
+          }}
+        />
       ) : null}
 
       {screen === "self_service" ? (

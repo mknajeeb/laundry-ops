@@ -15,10 +15,12 @@ import SettingsIcon from "@mui/icons-material/Settings";
 import { Link as RouterLink } from "react-router-dom";
 import {
   createManagementCashPayout,
+  createManagementRevenueDisposition,
   deleteManagementCashPayout,
   getManagementCashActivity,
   getManagementRevenue,
   getManagementRevenueDashboard,
+  getManagementRevenueMissingWork,
   saveManagementRevenueDhs,
   saveManagementRevenueNonRinse,
 } from "../api";
@@ -31,6 +33,8 @@ import RevenueDashboardPanel from "../components/management/revenue/RevenueDashb
 import RevenueSummaryStrip, {
   RevenueGroupCards,
 } from "../components/management/revenue/RevenueSummaryStrip";
+import DailyCompletenessStrip from "../components/revenueShared/DailyCompletenessStrip";
+import MissingWorkPanel from "../components/revenueShared/MissingWorkPanel";
 import {
   parseMoneyInput,
   todayEtIso,
@@ -64,6 +68,12 @@ export default function ManagementRevenuePage() {
   const [dashPeriod, setDashPeriod] = useState("week");
   const [dashboard, setDashboard] = useState(null);
   const [dashLoading, setDashLoading] = useState(false);
+
+  const [missingFilter, setMissingFilter] = useState("all");
+  const [missing, setMissing] = useState(null);
+  const [missingLoading, setMissingLoading] = useState(false);
+  const [dispBusy, setDispBusy] = useState("");
+  const [focusAccountId, setFocusAccountId] = useState(null);
 
   const applyPayload = useCallback((payload) => {
     setData(payload);
@@ -116,6 +126,21 @@ export default function ManagementRevenuePage() {
     }
   }, [customEnd, customStart, dashPeriod, dateEt]);
 
+  const loadMissing = useCallback(async () => {
+    setMissingLoading(true);
+    try {
+      const res = await getManagementRevenueMissingWork({
+        date_et: dateEt,
+        filter: missingFilter,
+      });
+      setMissing(res.data || null);
+    } catch {
+      setMissing(null);
+    } finally {
+      setMissingLoading(false);
+    }
+  }, [dateEt, missingFilter]);
+
   useEffect(() => {
     loadDay();
   }, [loadDay]);
@@ -128,6 +153,41 @@ export default function ManagementRevenuePage() {
     if (view === "dashboard") loadDashboard();
   }, [view, loadDashboard]);
 
+  useEffect(() => {
+    loadMissing();
+  }, [loadMissing]);
+
+  const openMissingItem = (item) => {
+    setView("entry");
+    if (item.kind === "dhs") {
+      setFocusAccountId(item.account_id || null);
+      setDrawerGroup("dhs");
+      return;
+    }
+    setFocusAccountId(null);
+    if (item.source_key === "self_service" || item.source_key === "drop_off") {
+      setDrawerGroup("non_rinse");
+      return;
+    }
+    if (item.source_key === "rinse_wf" || item.source_key === "rinse_hd") {
+      setDrawerGroup("rinse");
+    }
+  };
+
+  const postDisposition = async (body, busyKey) => {
+    setDispBusy(busyKey);
+    setError("");
+    try {
+      await createManagementRevenueDisposition(body);
+      setSuccess("Disposition saved");
+      await loadDay();
+      await loadMissing();
+    } catch (e) {
+      setError(e?.response?.data?.error || e.message || "Disposition failed");
+    } finally {
+      setDispBusy("");
+    }
+  };
   const saveNonRinse = async (fields) => {
     setSaving(true);
     setError("");
@@ -261,7 +321,11 @@ export default function ManagementRevenuePage() {
         sx={{ mb: 2, minHeight: 40, "& .MuiTab-root": { minHeight: 40, fontWeight: 800, textTransform: "none" } }}
       >
         <Tab value="entry" label="Daily Entry" />
-        <Tab value="dashboard" label="Dashboard" />
+        <Tab value="dashboard" label="Stats" />
+        <Tab
+          value="missing"
+          label={`Missing Work${missing?.summary?.missing_total != null ? ` · ${missing.summary.missing_total}` : ""}`}
+        />
       </Tabs>
 
       {error ? (
@@ -288,6 +352,57 @@ export default function ManagementRevenuePage() {
         />
       ) : null}
 
+      {view === "missing" ? (
+        <MissingWorkPanel
+          loading={missingLoading}
+          data={missing}
+          filter={missingFilter}
+          onFilterChange={setMissingFilter}
+          onOpenItem={openMissingItem}
+          busyId={dispBusy}
+          onNoActivity={(item, reason) =>
+            postDisposition(
+              {
+                source_key: item.source_key,
+                processing_date_et: item.processing_date_et || dateEt,
+                disposition: "no_activity",
+                reason,
+              },
+              `${item.source_key}:${item.processing_date_et}`,
+            )
+          }
+          onNoPickup={(item, reason) =>
+            postDisposition(
+              {
+                source_key: item.source_key,
+                account_id: item.account_id,
+                scheduled_pickup_date: item.scheduled_pickup_date,
+                scheduled_delivery_date: item.scheduled_delivery_date,
+                disposition: "no_pickup",
+                reason,
+              },
+              `${item.source_key}:${item.scheduled_pickup_date}`,
+            )
+          }
+          onReschedule={(item, reason) => {
+            const next = window.prompt("New Pickup Date (YYYY-MM-DD)", item.scheduled_pickup_date);
+            if (!next) return;
+            postDisposition(
+              {
+                source_key: item.source_key,
+                account_id: item.account_id,
+                scheduled_pickup_date: item.scheduled_pickup_date,
+                scheduled_delivery_date: item.scheduled_delivery_date,
+                disposition: "rescheduled",
+                new_pickup_date: next,
+                reason,
+              },
+              `${item.source_key}:${item.scheduled_pickup_date}`,
+            );
+          }}
+        />
+      ) : null}
+
       {view === "entry" && loading ? (
         <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
           <CircularProgress />
@@ -296,6 +411,25 @@ export default function ManagementRevenuePage() {
 
       {view === "entry" && !loading ? (
         <Stack spacing={1.75}>
+          <DailyCompletenessStrip
+            completeness={data?.daily_completeness}
+            onOpenSection={(s) => {
+              if (s.key === "self_service" || s.key === "drop_off") setDrawerGroup("non_rinse");
+              else setDrawerGroup("rinse");
+            }}
+            onNoActivity={(s) =>
+              postDisposition(
+                {
+                  source_key: s.key,
+                  processing_date_et: dateEt,
+                  disposition: "no_activity",
+                  reason: "No activity",
+                },
+                `${s.key}:${dateEt}`,
+              )
+            }
+          />
+
           <RevenueSummaryStrip
             data={data}
             cashDay={cashDay}
@@ -341,9 +475,15 @@ export default function ManagementRevenuePage() {
             >
               <Typography sx={{ fontWeight: 800, fontSize: 15, mb: 1 }}>How to enter</Typography>
               <Typography sx={{ fontSize: 13, color: "#64748b", lineHeight: 1.5 }}>
-                Tap a revenue group card to open accounts. DHS accounts open one at a time — only the
-                fields that account needs. Blank means not entered; type 0 only when you mean zero.
+                Daily sources must be Entered or No Activity. DHS obligations appear from account
+                pickup schedules. Blank is never treated as $0.
               </Typography>
+              {data?.missing_work_summary ? (
+                <Typography sx={{ mt: 1, fontSize: 13, fontWeight: 700, color: "#d97706" }}>
+                  Missing: {data.missing_work_summary.missing_total} ({data.missing_work_summary.daily_missing}{" "}
+                  daily · {data.missing_work_summary.dhs_pending} DHS)
+                </Typography>
+              ) : null}
             </Box>
           </Box>
         </Stack>
@@ -355,7 +495,11 @@ export default function ManagementRevenuePage() {
         data={data}
         dateEt={dateEt}
         saving={saving}
-        onClose={() => setDrawerGroup(null)}
+        focusAccountId={focusAccountId}
+        onClose={() => {
+          setDrawerGroup(null);
+          setFocusAccountId(null);
+        }}
         onSaveNonRinse={saveNonRinse}
         onSaveDhsAccount={saveDhsAccount}
       />
