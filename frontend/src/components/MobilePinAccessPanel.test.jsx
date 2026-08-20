@@ -6,22 +6,20 @@ import {
 } from "./MobilePinAccessPanel";
 
 describe("MobilePinAccessPanel contracts", () => {
-  it("exposes module checkboxes including Hang Dry", () => {
+  it("exposes module checkboxes without Hang Dry", () => {
     expect(MOBILE_PIN_ACCESS_MODULES.map((m) => m.key)).toEqual([
       "clock",
       "switch_role",
       "checklist",
       "inventory",
       "revenue_cost",
-      "hang_dry",
     ]);
     expect(MOBILE_PIN_ACCESS_MODULES.map((m) => m.label)).toEqual([
       "Clock",
       "Role",
       "End-of-Day Checklist",
       "Inventory",
-      "Revenue & Cash",
-      "Hang Dry",
+      "Revenue / Cash",
     ]);
   });
 
@@ -42,7 +40,6 @@ describe("MobilePinAccessPanel contracts", () => {
       checklist: true,
       inventory: false,
       revenue_cost: true,
-      hang_dry: true,
     });
   });
 
@@ -59,7 +56,6 @@ describe("MobilePinAccessPanel contracts", () => {
       checklist: false,
       inventory: true,
       revenue_cost: false,
-      hang_dry: true,
     });
   });
 });

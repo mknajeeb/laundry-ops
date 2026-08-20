@@ -5,6 +5,7 @@
  * Break is intentionally omitted: the PIN attendance PWA has no break
  * start/end action (break lives on authenticated Time Clock only).
  *
+ * Hang Dry is not a separate hub tile — it lives inside Revenue / Cash.
  * Clock is always last so operational tiles stay compact/mobile-first.
  */
 
@@ -19,14 +20,9 @@ export const PIN_LAUNCHER_META = {
     iconKey: "role",
   },
   revenue_cost: {
-    label: "Revenue & Cash",
+    label: "Revenue / Cash",
     color: "#b45309",
     iconKey: "revenue",
-  },
-  hang_dry: {
-    label: "Hang Dry",
-    color: "#0f766e",
-    iconKey: "hang_dry",
   },
   checklist: {
     label: "End-of-Day Checklist",
@@ -44,7 +40,6 @@ export const PIN_LAUNCHER_META = {
 export const PIN_HOME_FEATURE_ORDER = [
   "switch_role",
   "revenue_cost",
-  "hang_dry",
   "checklist",
   "inventory",
 ];
@@ -88,7 +83,7 @@ export function buildPinLauncherTiles({ features = {}, featureOrder = null, atte
   const seen = new Set();
   const order = [];
   for (const id of [...PIN_HOME_FEATURE_ORDER, ...requested]) {
-    if (!id || seen.has(id) || id === "clock" || id === "break") continue;
+    if (!id || seen.has(id) || id === "clock" || id === "break" || id === "hang_dry") continue;
     seen.add(id);
     order.push(id);
   }

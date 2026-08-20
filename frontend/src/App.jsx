@@ -74,8 +74,7 @@ import PermissionsPage from "./pages/PermissionsPage";
 import NotificationsPage from "./pages/NotificationsPage";
 import OrganizationSettingsPage from "./pages/OrganizationSettingsPage";
 import DailyRevenueCostPage from "./pages/DailyRevenueCostPage";
-import RevenueCostFloorPage from "./pages/RevenueCostFloorPage";
-import HangDryFloorPage from "./pages/HangDryFloorPage";
+import PinRevenueCashPage from "./pages/PinRevenueCashPage";
 import DailyOperationsPage from "./pages/DailyOperationsPage";
 import ManagementHubPage from "./pages/ManagementHubPage";
 import ManagementRinseWfPage from "./pages/ManagementRinseWfPage";
@@ -204,19 +203,28 @@ function isInventoryRoute(path) {
   return p === "/inventory" || p.startsWith("/inventory/");
 }
 
-function isRevenueCostFloorRoute(path) {
+function isPinRevenueCashRoute(path) {
+  const p = normalizePathname(path);
+  return p === "/revenue-cash" || p.startsWith("/revenue-cash/");
+}
+
+function isLegacyRevenueCostFloorRoute(path) {
   const p = normalizePathname(path);
   return p === "/revenue-cost/floor" || p.startsWith("/revenue-cost/");
 }
 
-function isHangDryFloorRoute(path) {
+function isLegacyHangDryFloorRoute(path) {
   const p = normalizePathname(path);
   return p === "/hang-dry/floor" || p.startsWith("/hang-dry/");
 }
 
-/** PIN hub employee floors (Revenue & Cash + Hang Dry). */
+/** PIN hub employee Revenue / Cash (Management APIs) + legacy redirects. */
 function isPinHubFinanceRoute(path) {
-  return isRevenueCostFloorRoute(path) || isHangDryFloorRoute(path);
+  return (
+    isPinRevenueCashRoute(path) ||
+    isLegacyRevenueCostFloorRoute(path) ||
+    isLegacyHangDryFloorRoute(path)
+  );
 }
 
 /** Kiosk clock in/out only: /attendance or /attendance/:orgSlug (no app session). */
@@ -680,10 +688,9 @@ function AppShell() {
             }
           />
           <Route
-            path="/revenue-cost/floor"
+            path="/revenue-cash"
             element={
-              <RevenueCostFloorPage
-                user={user}
+              <PinRevenueCashPage
                 onPinHubDone={() => {
                   washproSessionSyncedRef.current = false;
                   setUser(null);
@@ -691,17 +698,8 @@ function AppShell() {
               />
             }
           />
-          <Route
-            path="/hang-dry/floor"
-            element={
-              <HangDryFloorPage
-                onPinHubDone={() => {
-                  washproSessionSyncedRef.current = false;
-                  setUser(null);
-                }}
-              />
-            }
-          />
+          <Route path="/revenue-cost/floor" element={<Navigate to="/revenue-cash" replace />} />
+          <Route path="/hang-dry/floor" element={<Navigate to="/revenue-cash" replace />} />
         </Routes>
       </Box>
     );

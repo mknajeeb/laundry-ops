@@ -19,7 +19,6 @@ import {
   AccessTime,
   AssignmentTurnedIn,
   Backspace,
-  DryCleaning,
   Inventory2,
   Login,
   Logout,
@@ -76,7 +75,6 @@ const TILE_ICONS = {
   tasks: AssignmentTurnedIn,
   stock: Inventory2,
   revenue: RequestQuote,
-  hang_dry: DryCleaning,
 };
 
 function sanitizeSlug(raw) {
@@ -408,7 +406,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         navigate("/inventory", { replace: true });
         return;
       }
-            if (featureId === "revenue_cost") {
+      if (featureId === "revenue_cost") {
         if (tile?.disabled || hub?.features?.revenue_cost?.disabled) {
           return;
         }
@@ -418,30 +416,12 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         });
         const payload = res?.data || {};
         if (!payload?.token || !payload?.user) {
-          throw new Error(payload?.error || "Could not unlock Revenue & Cash");
+          throw new Error(payload?.error || "Could not unlock Revenue / Cash");
         }
         markPinHubAppSession(slug);
         setAuthSession(payload);
         onLoggedIn?.(payload.user);
-        navigate("/revenue-cost/floor", { replace: true });
-        return;
-      }
-      if (featureId === "hang_dry") {
-        if (tile?.disabled || hub?.features?.hang_dry?.disabled) {
-          return;
-        }
-        const res = await authAttendancePinUnlock(slug, hub.pin, {
-          hubToken: hub.token,
-          pinHubModule: "hang_dry",
-        });
-        const payload = res?.data || {};
-        if (!payload?.token || !payload?.user) {
-          throw new Error(payload?.error || "Could not unlock Hang Dry");
-        }
-        markPinHubAppSession(slug);
-        setAuthSession(payload);
-        onLoggedIn?.(payload.user);
-        navigate("/hang-dry/floor", { replace: true });
+        navigate("/revenue-cash", { replace: true });
         return;
       }
     } catch (e) {

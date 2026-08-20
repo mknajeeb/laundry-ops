@@ -19,7 +19,6 @@ CREATE TABLE IF NOT EXISTS employee_mobile_pin_access (
   allow_checklist TINYINT(1) NOT NULL DEFAULT 0,
   allow_inventory TINYINT(1) NOT NULL DEFAULT 0,
   allow_revenue_cost TINYINT(1) NOT NULL DEFAULT 0,
-  allow_hang_dry TINYINT(1) NOT NULL DEFAULT 0,
   updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
   updated_by_user_id INT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -34,22 +33,8 @@ CREATE TABLE IF NOT EXISTS employee_mobile_pin_access_backfill (
   init_mode VARCHAR(32) NOT NULL DEFAULT 'legacy_grant'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Existing DBs created before allow_hang_dry:
-SET @db = DATABASE();
-SET @has_hd := (
-  SELECT COUNT(*) FROM information_schema.COLUMNS
-  WHERE TABLE_SCHEMA = @db
-    AND TABLE_NAME = 'employee_mobile_pin_access'
-    AND COLUMN_NAME = 'allow_hang_dry'
-);
-SET @sql_hd := IF(
-  @has_hd = 0,
-  'ALTER TABLE employee_mobile_pin_access ADD COLUMN allow_hang_dry TINYINT(1) NOT NULL DEFAULT 0',
-  'SELECT ''skip allow_hang_dry'' AS _note'
-);
-PREPARE _hd FROM @sql_hd; EXECUTE _hd; DEALLOCATE PREPARE _hd;
-
 -- Existing DBs created before init_mode:
+SET @db = DATABASE();
 SET @has := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
   WHERE TABLE_SCHEMA = @db
