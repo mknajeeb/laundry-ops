@@ -226,7 +226,7 @@ export function groupCombosByPrimaryRole(
 /**
  * Family-first grouping for the shared selector:
  * Rinse → Wash-Dry / Sort / Fold (work types: Rinse Wash & Fold, Rinse Hang Dry)
- * Non-Rinse → Wash-Dry / Fold only (Sort absent; DHS/Drop Off collapsed)
+ * Non-Rinse (VeeWash) → one Wash-Dry-Fold card; DHS/Drop Off collapsed via pickNonRinseCombo
  */
 export function groupCombosByFamily(
   combos,
@@ -236,15 +236,64 @@ export function groupCombosByFamily(
   for (const combo of combos || []) {
     byFamily[comboFamily(combo)].push(combo);
   }
-  return FAMILY_ORDER.filter((familyLabel) => (byFamily[familyLabel] || []).length).map(
-    (familyLabel) => ({
-      familyLabel,
-      roleGroups: groupCombosByPrimaryRole(byFamily[familyLabel], {
+  const out = [];
+  if (byFamily.Rinse.length) {
+    out.push({
+      familyLabel: "Rinse",
+      roleGroups: groupCombosByPrimaryRole(byFamily.Rinse, {
         currentCategoryId,
         currentRoleId,
       }),
-    }),
+    });
+  }
+  if (byFamily["Non-Rinse"].length) {
+    const picked = pickNonRinseUnifiedCombo(
+      byFamily["Non-Rinse"],
+      currentCategoryId,
+      currentRoleId,
+    );
+    out.push({
+      familyLabel: "Non-Rinse",
+      roleGroups: picked
+        ? [
+            {
+              roleLabel: "Wash-Dry-Fold",
+              workTypes: [
+                {
+                  key: `Wash-Dry-Fold:non_rinse:${picked.categoryId}:${picked.roleId}`,
+                  label: "Non-Rinse",
+                  combo: picked,
+                  nonRinseCombos: byFamily["Non-Rinse"],
+                },
+              ],
+            },
+          ]
+        : [],
+    });
+  }
+  return out;
+}
+
+/**
+ * Single Non-Rinse card persistence: prefer current Non-Rinse assignment,
+ * else Wash-Dry on preferred Non-Rinse category, else any Non-Rinse combo.
+ */
+export function pickNonRinseUnifiedCombo(
+  nonRinseCombos = [],
+  currentCategoryId = null,
+  currentRoleId = null,
+) {
+  const list = Array.isArray(nonRinseCombos) ? nonRinseCombos.filter(Boolean) : [];
+  if (!list.length) return null;
+  const current = list.find((c) =>
+    isCurrentRoleAssignment(c.categoryId, c.roleId, currentCategoryId, currentRoleId),
   );
+  if (current) return current;
+  const washDry = list.filter((c) => c.roleLabel === "Wash-Dry");
+  if (washDry.length) {
+    return pickNonRinseCombo(washDry, currentCategoryId, currentRoleId);
+  }
+  return pickNonRinseCombo(list, currentCategoryId, currentRoleId);
 }
 
 /** Caption on the primary role tile when this role is the current assignment. */

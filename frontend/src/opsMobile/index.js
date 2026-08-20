@@ -36,6 +36,7 @@ export {
   uniqueRolesFromTree,
   groupCombosByPrimaryRole,
   groupCombosByFamily,
+  pickNonRinseUnifiedCombo,
   currentRoleCaption,
   resolvePrimaryRoleTap,
   workTypeLabel,

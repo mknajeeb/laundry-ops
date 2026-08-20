@@ -18,7 +18,9 @@ describe("shared Role-first selector consolidation", () => {
     expect(selector).toContain("groupCombosByFamily");
     expect(selector).toContain("resolvePrimaryRoleTap");
     expect(selector).toContain("currentRoleCaption");
-    expect(selector).toMatch(/Rinse|Non-Rinse/);
+    expect(selector).toContain("role-family-rinse.png");
+    expect(selector).toContain("role-family-veewash.png");
+    expect(selector).toContain("Wash-Dry-Fold");
     expect(switchFlow).toContain("OpsRoleFirstSelector");
     expect(rolePage).toContain("OpsSwitchRoleFlow");
     expect(pinPage).toContain("OpsRoleFirstSelector");

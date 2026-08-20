@@ -257,7 +257,7 @@ describe("switchRoleFlowHelpers", () => {
     ]);
   });
 
-  it("groups family-first: Rinse has Sort; Non-Rinse hides Sort and DHS/Drop Off", () => {
+  it("groups family-first: Rinse has Sort; Non-Rinse is one Wash-Dry-Fold card", () => {
     const tree = [
       {
         id: 10,
@@ -310,12 +310,16 @@ describe("switchRoleFlowHelpers", () => {
     ).toEqual(["Rinse Wash & Fold", "Rinse Hang Dry"]);
 
     const non = families[1];
-    expect(non.roleGroups.map((g) => g.roleLabel)).toEqual(["Wash-Dry", "Fold"]);
+    expect(non.roleGroups.map((g) => g.roleLabel)).toEqual(["Wash-Dry-Fold"]);
     expect(non.roleGroups.some((g) => g.roleLabel === "Sort")).toBe(false);
-    const nrWash = non.roleGroups.find((g) => g.roleLabel === "Wash-Dry");
-    expect(nrWash.workTypes.map((w) => w.label)).toEqual(["Non-Rinse"]);
-    expect(nrWash.workTypes[0].combo.categoryId).toBe(30);
-    expect(nrWash.workTypes.some((w) => w.label === "DHS" || w.label === "Drop Off")).toBe(false);
+    expect(non.roleGroups.some((g) => g.roleLabel === "Wash-Dry" || g.roleLabel === "Fold")).toBe(
+      false,
+    );
+    const card = non.roleGroups[0];
+    expect(card.workTypes).toHaveLength(1);
+    expect(card.workTypes[0].label).toBe("Non-Rinse");
+    expect(card.workTypes[0].combo.categoryId).toBe(30);
+    expect(card.workTypes[0].combo.roleLabel).toBe("Wash-Dry");
   });
 
   it("prefers Drop Off when switching into Non-Rinse with no current Non-Rinse category", () => {

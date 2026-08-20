@@ -19,6 +19,28 @@ const ROLE_ICONS = {
   "Wash-Dry": LocalLaundryServiceOutlinedIcon,
   Sort: SortOutlinedIcon,
   Fold: CheckroomOutlinedIcon,
+  "Wash-Dry-Fold": LocalLaundryServiceOutlinedIcon,
+};
+
+const FAMILY_LOGOS = {
+  Rinse: {
+    src: "/assets/role-family-rinse.png",
+    alt: "Rinse",
+    // Orange R mark on white — keep transparent framing.
+    height: { xs: 44, sm: 52 },
+    maxWidth: { xs: 72, sm: 84 },
+    wrapBg: "transparent",
+    wrapPx: 0,
+  },
+  "Non-Rinse": {
+    src: "/assets/role-family-veewash.png",
+    alt: "VeeWash",
+    // VW mark ships on black — frame it cleanly on the light shell.
+    height: { xs: 40, sm: 46 },
+    maxWidth: { xs: 120, sm: 140 },
+    wrapBg: "#000",
+    wrapPx: { xs: 1, sm: 1.25 },
+  },
 };
 
 function expandKey(familyLabel, roleLabel) {
@@ -102,22 +124,59 @@ export default function OpsRoleFirstSelector({
         mx: "auto",
       }}
     >
-      {families.map((family) => (
+      {families.map((family) => {
+        const logo = FAMILY_LOGOS[family.familyLabel];
+        return (
         <Box key={family.familyLabel} sx={{ width: "100%" }}>
-          <Typography
-            component="h2"
+          <Box
             sx={{
-              fontWeight: 900,
-              fontSize: { xs: "0.78rem", sm: "0.82rem" },
-              letterSpacing: "0.14em",
-              textTransform: "uppercase",
-              color: OPS_MOBILE.blue,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: { xs: "flex-start", md: "flex-start" },
               mb: { xs: 1.5, sm: 1.75 },
               px: 0.25,
             }}
           >
-            {family.familyLabel}
-          </Typography>
+            {logo ? (
+              <Box
+                sx={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  bgcolor: logo.wrapBg,
+                  borderRadius: logo.wrapBg === "transparent" ? 0 : 1.5,
+                  px: logo.wrapPx,
+                  py: logo.wrapBg === "transparent" ? 0 : 0.75,
+                }}
+              >
+                <Box
+                  component="img"
+                  src={logo.src}
+                  alt={logo.alt}
+                  sx={{
+                    height: logo.height,
+                    maxWidth: logo.maxWidth,
+                    width: "auto",
+                    objectFit: "contain",
+                    display: "block",
+                  }}
+                />
+              </Box>
+            ) : (
+              <Typography
+                component="h2"
+                sx={{
+                  fontWeight: 900,
+                  fontSize: { xs: "0.78rem", sm: "0.82rem" },
+                  letterSpacing: "0.14em",
+                  textTransform: "uppercase",
+                  color: OPS_MOBILE.blue,
+                }}
+              >
+                {family.familyLabel}
+              </Typography>
+            )}
+          </Box>
 
           <Box
             sx={{
@@ -142,10 +201,12 @@ export default function OpsRoleFirstSelector({
               const isExpanded = expandedKey === key;
               const isCurrentRole = Boolean(
                 currentCombo &&
-                  currentCombo.roleLabel === group.roleLabel &&
-                  (family.familyLabel === "Non-Rinse"
+                  (group.roleLabel === "Wash-Dry-Fold"
                     ? currentCombo.bucket === "Non-Rinse"
-                    : currentCombo.bucket !== "Non-Rinse"),
+                    : currentCombo.roleLabel === group.roleLabel &&
+                      (family.familyLabel === "Non-Rinse"
+                        ? currentCombo.bucket === "Non-Rinse"
+                        : currentCombo.bucket !== "Non-Rinse")),
               );
               const canExpand = group.workTypes.length > 1;
               const pendingOnRole =
@@ -166,8 +227,8 @@ export default function OpsRoleFirstSelector({
                     aria-expanded={canExpand ? isExpanded : undefined}
                     aria-label={
                       isCurrentRole
-                        ? `${family.familyLabel} ${group.roleLabel}, ${currentRoleCaption(currentCombo)}`
-                        : `${family.familyLabel} ${group.roleLabel}`
+                        ? `${logo?.alt || family.familyLabel} ${group.roleLabel}, ${currentRoleCaption(currentCombo)}`
+                        : `${logo?.alt || family.familyLabel} ${group.roleLabel}`
                     }
                     sx={{
                       display: "flex",
@@ -363,7 +424,8 @@ export default function OpsRoleFirstSelector({
             })}
           </Box>
         </Box>
-      ))}
+        );
+      })}
     </Stack>
   );
 }
