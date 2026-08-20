@@ -110,15 +110,51 @@ export function groupCombosByBucket(combos) {
 /** Compact work-type label shown under a primary role. */
 export function workTypeLabel(combo) {
   if (!combo) return "";
-  if (combo.bucket === "Non-Rinse") return combo.categoryName || "Non-Rinse";
+  if (combo.bucket === "Non-Rinse") return "Non-Rinse";
   return combo.bucket || combo.categoryName || "";
 }
 
 /**
- * Role-first grouping: Wash-Dry / Sort / Fold, each with available work types.
- * Rinse buckets stay as named work types; Non-Rinse uses the real category (DHS / Drop Off).
+ * Pick which Non-Rinse category×role combo to use for switch/current.
+ * Preserves backend category_id: prefer the current assignment, else the
+ * same category as the current segment, else a stable Drop Off → DHS order.
+ * Never invents category ids — only selects among provided combos.
  */
-export function groupCombosByPrimaryRole(combos) {
+export function pickNonRinseCombo(
+  nonRinseCombos = [],
+  currentCategoryId = null,
+  currentRoleId = null,
+) {
+  const list = Array.isArray(nonRinseCombos) ? nonRinseCombos.filter(Boolean) : [];
+  if (!list.length) return null;
+  const current = list.find((c) =>
+    isCurrentRoleAssignment(c.categoryId, c.roleId, currentCategoryId, currentRoleId),
+  );
+  if (current) return current;
+  if (currentCategoryId != null) {
+    const sameCat = list.find((c) => Number(c.categoryId) === Number(currentCategoryId));
+    if (sameCat) return sameCat;
+  }
+  if (list.length === 1) return list[0];
+  return [...list].sort((a, b) => nonRinseCategoryRank(a) - nonRinseCategoryRank(b))[0];
+}
+
+function nonRinseCategoryRank(combo) {
+  const name = String(combo?.categoryName || "").toLowerCase();
+  const code = String(combo?.category?.code || combo?.category?.category_code || "").toLowerCase();
+  if (name.includes("drop") || code.includes("drop")) return 0;
+  if (name.includes("dhs") || code.includes("dhs")) return 1;
+  return 2;
+}
+
+/**
+ * Role-first grouping: Wash-Dry / Sort / Fold, each with available work types.
+ * Rinse buckets stay named; DHS / Drop Off collapse to one employee-facing Non-Rinse.
+ */
+export function groupCombosByPrimaryRole(
+  combos,
+  { currentCategoryId = null, currentRoleId = null } = {},
+) {
   const byRole = new Map();
   for (const combo of combos || []) {
     const roleLabel = combo.roleLabel || "Other";
@@ -144,14 +180,14 @@ export function groupCombosByPrimaryRole(combos) {
           });
         }
       }
-      const nonRinse = list
-        .filter((c) => c.bucket === "Non-Rinse")
-        .sort((a, b) => String(a.categoryName || "").localeCompare(String(b.categoryName || "")));
-      for (const combo of nonRinse) {
+      const nonRinse = list.filter((c) => c.bucket === "Non-Rinse");
+      const picked = pickNonRinseCombo(nonRinse, currentCategoryId, currentRoleId);
+      if (picked) {
         workTypes.push({
-          key: `${roleLabel}:nr:${combo.categoryId}`,
-          label: workTypeLabel(combo),
-          combo,
+          key: `${roleLabel}:non_rinse`,
+          label: "Non-Rinse",
+          combo: picked,
+          nonRinseCombos: nonRinse,
         });
       }
       return { roleLabel, workTypes };
@@ -161,9 +197,6 @@ export function groupCombosByPrimaryRole(combos) {
 /** Caption on the primary role tile when this role is the current assignment. */
 export function currentRoleCaption(combo) {
   if (!combo) return "Current";
-  if (combo.bucket === "Non-Rinse" && combo.categoryName) {
-    return `${combo.categoryName} · Current`;
-  }
   const label = workTypeLabel(combo);
   return label ? `${label} · Current` : "Current";
 }

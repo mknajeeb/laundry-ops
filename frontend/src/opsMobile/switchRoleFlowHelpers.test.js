@@ -182,19 +182,52 @@ describe("switchRoleFlowHelpers", () => {
     expect(categoryDisplayBucket({ name: "Rinse HD", code: "rinse_hd" })).toBe("Rinse Hang Dry");
   });
 
-  it("groups by primary role with compact Non-Rinse category labels", () => {
-    const combos = flattenRoleCombos(multiCatTree);
-    const groups = groupCombosByPrimaryRole(combos);
+  it("groups by primary role with one Non-Rinse label (hides DHS/Drop Off)", () => {
+    const treeWithDrop = [
+      ...multiCatTree,
+      {
+        id: 40,
+        name: "Drop Off",
+        roles: [{ role_id: 1, role_name: "Operator" }],
+      },
+    ];
+    const combos = flattenRoleCombos(treeWithDrop);
+    const groups = groupCombosByPrimaryRole(combos, {
+      currentCategoryId: 30,
+      currentRoleId: 1,
+    });
     expect(groups.map((g) => g.roleLabel)).toEqual(["Wash-Dry", "Fold"]);
     const wash = groups.find((g) => g.roleLabel === "Wash-Dry");
     expect(wash.workTypes.map((w) => w.label)).toEqual([
       "Rinse Wash & Fold",
       "Rinse Hang Dry",
-      "DHS",
+      "Non-Rinse",
     ]);
+    expect(wash.workTypes.find((w) => w.label === "Non-Rinse")?.combo.categoryId).toBe(30);
+    expect(wash.workTypes.some((w) => w.label === "DHS" || w.label === "Drop Off")).toBe(false);
     const fold = groups.find((g) => g.roleLabel === "Fold");
     expect(fold.workTypes.map((w) => w.label)).toEqual(["Rinse Wash & Fold", "Rinse Hang Dry"]);
-    expect(currentRoleCaption(fold.workTypes[1].combo)).toBe("Rinse Hang Dry · Current");
+    expect(currentRoleCaption(wash.workTypes[2].combo)).toBe("Non-Rinse · Current");
+  });
+
+  it("prefers Drop Off when switching into Non-Rinse with no current Non-Rinse category", () => {
+    const treeWithDrop = [
+      ...multiCatTree,
+      {
+        id: 40,
+        name: "Drop Off",
+        roles: [{ role_id: 1, role_name: "Operator" }],
+      },
+    ];
+    const combos = flattenRoleCombos(treeWithDrop);
+    const groups = groupCombosByPrimaryRole(combos, {
+      currentCategoryId: 10,
+      currentRoleId: 1,
+    });
+    const wash = groups.find((g) => g.roleLabel === "Wash-Dry");
+    const nr = wash.workTypes.find((w) => w.label === "Non-Rinse");
+    expect(nr.combo.categoryId).toBe(40);
+    expect(nr.combo.categoryName).toBe("Drop Off");
   });
 
   it("switches immediately when a role has one work type", () => {

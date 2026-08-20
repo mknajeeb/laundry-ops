@@ -36,6 +36,7 @@ export {
   currentRoleCaption,
   resolvePrimaryRoleTap,
   workTypeLabel,
+  pickNonRinseCombo,
 } from "./switchRoleFlowHelpers";
 export { createSwitchRoleController } from "./createSwitchRoleController";
 export { createTaskToggleController } from "./createTaskToggleController";
