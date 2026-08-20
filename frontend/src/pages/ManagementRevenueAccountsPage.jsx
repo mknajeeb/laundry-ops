@@ -238,7 +238,7 @@ export default function ManagementRevenueAccountsPage() {
         </Box>
         <Stack direction="row" spacing={1}>
           <Button component={RouterLink} to="/management/revenue" variant="outlined" size="small" sx={{ textTransform: "none" }}>
-            Daily Entry
+            Entry
           </Button>
           <IconButton onClick={load} aria-label="Refresh">
             <RefreshIcon />
