@@ -8,6 +8,7 @@ import {
   formatEmployeeAssignmentLabel,
   groupCombosByBucket,
   groupCombosByPrimaryRole,
+  groupCombosByFamily,
   currentRoleCaption,
   resolvePrimaryRoleTap,
   initialCategoryId,
@@ -254,6 +255,67 @@ describe("switchRoleFlowHelpers", () => {
       "Rinse Hang Dry",
       "Non-Rinse",
     ]);
+  });
+
+  it("groups family-first: Rinse has Sort; Non-Rinse hides Sort and DHS/Drop Off", () => {
+    const tree = [
+      {
+        id: 10,
+        name: "Rinse WF",
+        code: "RINSE_WF",
+        roles: [
+          { role_id: 1, role_name: "Operator", role_code: "OPERATOR" },
+          { role_id: 3, role_name: "Sort", role_code: "SORT" },
+          { role_id: 2, role_name: "Folder", role_code: "FOLDER" },
+        ],
+      },
+      {
+        id: 20,
+        name: "Rinse HD",
+        code: "RINSE_HD",
+        roles: [
+          { role_id: 1, role_name: "Operator", role_code: "OPERATOR" },
+          { role_id: 2, role_name: "Folder", role_code: "FOLDER" },
+        ],
+      },
+      {
+        id: 30,
+        name: "DHS",
+        code: "DHS",
+        roles: [
+          { role_id: 1, role_name: "Operator", role_code: "OPERATOR" },
+          { role_id: 2, role_name: "Folder", role_code: "FOLDER" },
+        ],
+      },
+      {
+        id: 40,
+        name: "Drop Off",
+        code: "DROP_OFF",
+        roles: [{ role_id: 1, role_name: "Operator", role_code: "OPERATOR" }],
+      },
+    ];
+    const families = groupCombosByFamily(flattenRoleCombos(tree), {
+      currentCategoryId: 30,
+      currentRoleId: 1,
+    });
+    expect(families.map((f) => f.familyLabel)).toEqual(["Rinse", "Non-Rinse"]);
+
+    const rinse = families[0];
+    expect(rinse.roleGroups.map((g) => g.roleLabel)).toEqual(["Wash-Dry", "Sort", "Fold"]);
+    expect(rinse.roleGroups.find((g) => g.roleLabel === "Sort").workTypes.map((w) => w.label)).toEqual([
+      "Rinse Wash & Fold",
+    ]);
+    expect(
+      rinse.roleGroups.find((g) => g.roleLabel === "Wash-Dry").workTypes.map((w) => w.label),
+    ).toEqual(["Rinse Wash & Fold", "Rinse Hang Dry"]);
+
+    const non = families[1];
+    expect(non.roleGroups.map((g) => g.roleLabel)).toEqual(["Wash-Dry", "Fold"]);
+    expect(non.roleGroups.some((g) => g.roleLabel === "Sort")).toBe(false);
+    const nrWash = non.roleGroups.find((g) => g.roleLabel === "Wash-Dry");
+    expect(nrWash.workTypes.map((w) => w.label)).toEqual(["Non-Rinse"]);
+    expect(nrWash.workTypes[0].combo.categoryId).toBe(30);
+    expect(nrWash.workTypes.some((w) => w.label === "DHS" || w.label === "Drop Off")).toBe(false);
   });
 
   it("prefers Drop Off when switching into Non-Rinse with no current Non-Rinse category", () => {

@@ -83,6 +83,12 @@ const CATEGORY_BUCKET_ORDER = ["Rinse Wash & Fold", "Rinse Hang Dry", "Non-Rinse
 const ROLE_LABEL_ORDER = ["Wash-Dry", "Sort", "Fold"];
 export const PRIMARY_ROLE_ORDER = ROLE_LABEL_ORDER;
 const RINSE_WORK_TYPE_ORDER = ["Rinse Wash & Fold", "Rinse Hang Dry"];
+export const FAMILY_ORDER = ["Rinse", "Non-Rinse"];
+
+/** Top-level employee family: Rinse (WF/HD) vs Non-Rinse (DHS/Drop Off collapsed). */
+export function comboFamily(combo) {
+  return combo?.bucket === "Non-Rinse" ? "Non-Rinse" : "Rinse";
+}
 
 /**
  * Flatten selection tree into category×role combos for one-tap switching.
@@ -215,6 +221,30 @@ export function groupCombosByPrimaryRole(
       }
       return { roleLabel, workTypes };
     });
+}
+
+/**
+ * Family-first grouping for the shared selector:
+ * Rinse → Wash-Dry / Sort / Fold (work types: Rinse Wash & Fold, Rinse Hang Dry)
+ * Non-Rinse → Wash-Dry / Fold only (Sort absent; DHS/Drop Off collapsed)
+ */
+export function groupCombosByFamily(
+  combos,
+  { currentCategoryId = null, currentRoleId = null } = {},
+) {
+  const byFamily = { Rinse: [], "Non-Rinse": [] };
+  for (const combo of combos || []) {
+    byFamily[comboFamily(combo)].push(combo);
+  }
+  return FAMILY_ORDER.filter((familyLabel) => (byFamily[familyLabel] || []).length).map(
+    (familyLabel) => ({
+      familyLabel,
+      roleGroups: groupCombosByPrimaryRole(byFamily[familyLabel], {
+        currentCategoryId,
+        currentRoleId,
+      }),
+    }),
+  );
 }
 
 /** Caption on the primary role tile when this role is the current assignment. */

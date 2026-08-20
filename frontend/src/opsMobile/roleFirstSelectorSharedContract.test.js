@@ -15,9 +15,10 @@ describe("shared Role-first selector consolidation", () => {
     const timeClock = readFileSync(path.join(root, "../pages/TimeClockPage.jsx"), "utf8");
 
     expect(selector).toContain('ROLE_ICONS');
-    expect(selector).toContain("groupCombosByPrimaryRole");
+    expect(selector).toContain("groupCombosByFamily");
     expect(selector).toContain("resolvePrimaryRoleTap");
     expect(selector).toContain("currentRoleCaption");
+    expect(selector).toMatch(/Rinse|Non-Rinse/);
     expect(switchFlow).toContain("OpsRoleFirstSelector");
     expect(rolePage).toContain("OpsSwitchRoleFlow");
     expect(pinPage).toContain("OpsRoleFirstSelector");

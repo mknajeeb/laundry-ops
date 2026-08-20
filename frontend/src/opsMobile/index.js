@@ -35,6 +35,7 @@ export {
   switchRoleEmployeeError,
   uniqueRolesFromTree,
   groupCombosByPrimaryRole,
+  groupCombosByFamily,
   currentRoleCaption,
   resolvePrimaryRoleTap,
   workTypeLabel,
