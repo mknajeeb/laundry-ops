@@ -24,6 +24,7 @@ import {
   taClockOut,
 } from "../api";
 import { useAuth } from "../context/AuthContext";
+import { useI18n } from "../i18n/I18nContext";
 import OpsRoleFirstSelector from "../opsMobile/OpsRoleFirstSelector";
 import OpsTopBar from "../opsMobile/OpsTopBar";
 import { OPS_MOBILE } from "../opsMobile/tokens";
@@ -38,6 +39,7 @@ function formatDuration(sec) {
 
 function TimeClockPage() {
   const { hasPerm } = useAuth();
+  const { t } = useI18n();
   const [session, setSession] = useState(null);
   const [operational, setOperational] = useState(null);
   const [error, setError] = useState("");
@@ -337,9 +339,9 @@ function TimeClockPage() {
       >
         <Box sx={{ px: { xs: 1.5, sm: 2.5, md: 3 }, py: { xs: 1.5, sm: 2 }, maxWidth: 880, mx: "auto", width: "100%" }}>
           <OpsTopBar
-            title="Select Role to Resume"
+            title={t("mobileOps.selectRoleResume")}
             onBack={busy ? undefined : () => setResumeOpen(false)}
-            backLabel="Back"
+            backLabel={t("mobileOps.back")}
             sticky
           />
           <OpsRoleFirstSelector
@@ -350,9 +352,9 @@ function TimeClockPage() {
               if (!combo) return;
               void endBreak({ category_id: combo.categoryId, role_id: combo.roleId });
             }}
-            emptyMessage="Role selection isn’t available right now."
-            singleWorkTypeHint="Tap to resume"
-            multiWorkTypeHint="Tap to choose work type"
+            emptyMessage={t("mobileOps.roleUnavailable")}
+            singleWorkTypeHint={t("mobileOps.tapToResume")}
+            multiWorkTypeHint={t("mobileOps.tapToChooseWork")}
           />
         </Box>
       </Dialog>

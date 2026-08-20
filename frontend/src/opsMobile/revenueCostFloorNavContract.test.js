@@ -19,7 +19,10 @@ describe("PIN Revenue / Cash nav contract", () => {
     expect(flowSrc).toContain("getManagementRevenue");
     expect(flowSrc).toContain("getManagementRinseHd");
     expect(flowSrc).toContain("saveManagementRinseHdProduction");
-    expect(flowSrc).toContain('{ id: "hang_dry", title: "Hang Dry" }');
+    expect(flowSrc).toContain("HOME_CARD_IDS");
+    expect(flowSrc).toContain('"hang_dry"');
+    expect(flowSrc).toContain("mobileOps.revenue.hangDry");
+    expect(flowSrc).toContain("OpsLocaleToggle");
     expect(flowSrc).not.toContain("getDrcMobileToday");
     expect(flowSrc).not.toContain("ManagementHubNav");
   });

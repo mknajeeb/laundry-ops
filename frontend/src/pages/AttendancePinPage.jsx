@@ -25,6 +25,7 @@ import {
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
+import OpsLocaleToggle from "../opsMobile/OpsLocaleToggle";
 import OpsMobileShell from "../opsMobile/OpsMobileShell";
 import OpsRoleFirstSelector from "../opsMobile/OpsRoleFirstSelector";
 import OpsTopBar from "../opsMobile/OpsTopBar";
@@ -601,6 +602,9 @@ export default function AttendancePinPage() {
         }}
       >
         <Stack spacing={isVeeWash ? 1.25 : 2} alignItems="center" sx={{ width: "100%" }}>
+          <Box sx={{ width: "100%", display: "flex", justifyContent: "flex-end" }}>
+            <OpsLocaleToggle />
+          </Box>
           {logoSrc ? (
             <Box
               component="img"
@@ -798,9 +802,9 @@ export default function AttendancePinPage() {
             contentSx={{ gap: { xs: 1.5, sm: 2 } }}
           >
             <OpsTopBar
-              title="Select Role"
+              title={t("mobileOps.selectRole")}
               onBack={loading ? undefined : clearRolePick}
-              backLabel="PIN"
+              backLabel={t("mobileOps.backPin")}
               sticky
             />
             <OpsRoleFirstSelector
@@ -810,9 +814,9 @@ export default function AttendancePinPage() {
               pendingCategoryId={pendingCategoryId}
               pendingRoleId={pendingRoleId}
               onSelectCombo={onSelectPunchCombo}
-              emptyMessage="Role selection isn’t available right now."
-              singleWorkTypeHint="Tap to clock in"
-              multiWorkTypeHint="Tap to choose work type"
+              emptyMessage={t("mobileOps.roleUnavailable")}
+              singleWorkTypeHint={t("mobileOps.tapToClockIn")}
+              multiWorkTypeHint={t("mobileOps.tapToChooseWork")}
             />
           </OpsMobileShell>
         </Box>

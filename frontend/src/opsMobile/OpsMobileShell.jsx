@@ -1,11 +1,18 @@
 import { Box } from "@mui/material";
+import OpsLocaleToggle from "./OpsLocaleToggle";
 import { opsMobilePageSx } from "./tokens";
 
 /**
  * Full-viewport ops mobile page shell.
  * Avoids page-level overflow:hidden so content can grow with keyboard / large text.
  */
-export default function OpsMobileShell({ children, maxWidth = 420, sx = {}, contentSx = {} }) {
+export default function OpsMobileShell({
+  children,
+  maxWidth = 420,
+  sx = {},
+  contentSx = {},
+  showLocaleToggle = false,
+}) {
   return (
     <Box sx={{ ...opsMobilePageSx, display: "flex", justifyContent: "center", ...sx }}>
       <Box
@@ -18,6 +25,11 @@ export default function OpsMobileShell({ children, maxWidth = 420, sx = {}, cont
           ...contentSx,
         }}
       >
+        {showLocaleToggle ? (
+          <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+            <OpsLocaleToggle />
+          </Box>
+        ) : null}
         {children}
       </Box>
     </Box>

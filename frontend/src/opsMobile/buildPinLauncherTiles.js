@@ -52,12 +52,18 @@ export const ROLE_CLOCK_IN_FIRST_MESSAGE =
 export const ROLE_ON_BREAK_MESSAGE =
   "Finish your break before changing role. Use Resume after Break to pick your role.";
 
-/** Clock label from reliable attendance state only. */
-export function clockTileLabel(attendance) {
+export const PIN_LAUNCHER_I18N = {
+  switch_role: "mobileOps.tile.role",
+  revenue_cost: "mobileOps.tile.revenueCash",
+  checklist: "mobileOps.tile.checklist",
+  inventory: "mobileOps.tile.inventory",
+};
+
+export function clockTileLabel(attendance, t = null) {
   const att = attendance && typeof attendance === "object" ? attendance : {};
-  if (att.clocked_in === true) return "Clock Out";
-  if (att.clocked_in === false) return "Clock In";
-  return "Clock";
+  if (att.clocked_in === true) return t ? t("mobileOps.tile.clockOut") : "Clock Out";
+  if (att.clocked_in === false) return t ? t("mobileOps.tile.clockIn") : "Clock In";
+  return t ? t("mobileOps.tile.clock") : "Clock";
 }
 
 /**
@@ -70,14 +76,17 @@ export function isClockAllowedFromHub(attendance) {
 }
 
 /**
- * @param {object} opts
- * @param {Record<string, { allowed?: boolean, label?: string, requires_clock_in?: boolean }>|null} opts.features
- * @param {string[]|null} opts.featureOrder
- * @param {object|null} opts.attendance
+ * @param {(key: string) => string} [opts.t] optional translator
  */
-export function buildPinLauncherTiles({ features = {}, featureOrder = null, attendance = null } = {}) {
+export function buildPinLauncherTiles({
+  features = {},
+  featureOrder = null,
+  attendance = null,
+  t = null,
+} = {}) {
   const feats = features && typeof features === "object" ? features : {};
   const att = attendance && typeof attendance === "object" ? attendance : {};
+  const tr = typeof t === "function" ? t : null;
 
   const tiles = [];
 
@@ -100,9 +109,10 @@ export function buildPinLauncherTiles({ features = {}, featureOrder = null, atte
       color: "#2d3d9c",
       iconKey: "tasks",
     };
+    const i18nKey = PIN_LAUNCHER_I18N[id];
     const tile = {
       id,
-      label: meta.label || feat.label || id,
+      label: (tr && i18nKey ? tr(i18nKey) : null) || meta.label || feat.label || id,
       color: meta.color,
       iconKey: meta.iconKey,
     };
@@ -111,7 +121,8 @@ export function buildPinLauncherTiles({ features = {}, featureOrder = null, atte
     }
     if (id === "switch_role" && (feat.blocked_reason === "on_break" || att.on_break === true)) {
       tile.disabled = true;
-      tile.disabledHelper = feat.disabled_helper || ROLE_ON_BREAK_MESSAGE;
+      tile.disabledHelper =
+        feat.disabled_helper || (tr ? tr("mobileOps.roleOnBreak") : ROLE_ON_BREAK_MESSAGE);
       tile.blockedReason = "on_break";
     }
     if (feat.disabled) {
@@ -124,12 +135,16 @@ export function buildPinLauncherTiles({ features = {}, featureOrder = null, atte
   const clockAllowed = isClockAllowedFromHub(att);
   tiles.push({
     id: "clock",
-    label: clockTileLabel(att),
+    label: clockTileLabel(att, tr),
     color: PIN_LAUNCHER_META.clock.color,
     iconKey: PIN_LAUNCHER_META.clock.iconKey,
     href: "attendance",
     disabled: !clockAllowed,
-    disabledHelper: clockAllowed ? "" : CLOCK_DISABLED_HELPER,
+    disabledHelper: clockAllowed
+      ? ""
+      : tr
+        ? tr("mobileOps.clockDisabledHelper")
+        : CLOCK_DISABLED_HELPER,
   });
 
   return tiles;

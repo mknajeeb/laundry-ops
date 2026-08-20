@@ -6,13 +6,18 @@ import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import LocalLaundryServiceOutlinedIcon from "@mui/icons-material/LocalLaundryServiceOutlined";
 import SortOutlinedIcon from "@mui/icons-material/SortOutlined";
 import CheckroomOutlinedIcon from "@mui/icons-material/CheckroomOutlined";
+import { useI18n } from "../i18n/I18nContext";
 import { OPS_MOBILE } from "./tokens";
 import {
-  currentRoleCaption,
+  translateCanonicalRoleLabel,
+  translateCanonicalWorkLabel,
+} from "./mobileOpsCopy";
+import {
   flattenRoleCombos,
   groupCombosByFamily,
   isCurrentRoleAssignment,
   resolvePrimaryRoleTap,
+  workTypeLabel,
 } from "./switchRoleFlowHelpers";
 
 const ROLE_ICONS = {
@@ -60,6 +65,7 @@ export default function OpsRoleFirstSelector({
   singleWorkTypeHint = "Tap to select",
   multiWorkTypeHint = "Tap to choose work type",
 }) {
+  const { t } = useI18n();
   const combos = flattenRoleCombos(selectionTree);
   const families = groupCombosByFamily(combos, {
     currentCategoryId,
@@ -71,6 +77,13 @@ export default function OpsRoleFirstSelector({
     combos.find((c) =>
       isCurrentRoleAssignment(c.categoryId, c.roleId, currentCategoryId, currentRoleId),
     );
+  const localizedRole = (label) => translateCanonicalRoleLabel(label, t);
+  const localizedWork = (combo) => translateCanonicalWorkLabel(workTypeLabel(combo), t);
+  const currentCaption = (() => {
+    if (!currentCombo) return t("mobileOps.current");
+    const work = localizedWork(currentCombo);
+    return work ? t("mobileOps.currentDot", { work }) : t("mobileOps.current");
+  })();
 
   const tapRole = (familyLabel, roleLabel, workTypes) => {
     if (pending) return;
@@ -209,8 +222,8 @@ export default function OpsRoleFirstSelector({
                     aria-expanded={canExpand ? isExpanded : undefined}
                     aria-label={
                       isCurrentRole
-                        ? `${logo?.alt || family.familyLabel} ${group.roleLabel}, ${currentRoleCaption(currentCombo)}`
-                        : `${logo?.alt || family.familyLabel} ${group.roleLabel}`
+                        ? `${logo?.alt || family.familyLabel} ${localizedRole(group.roleLabel)}, ${currentCaption}`
+                        : `${logo?.alt || family.familyLabel} ${localizedRole(group.roleLabel)}`
                     }
                     sx={{
                       display: "flex",
@@ -274,7 +287,7 @@ export default function OpsRoleFirstSelector({
                             lineHeight: 1.1,
                           }}
                         >
-                          {group.roleLabel}
+                          {localizedRole(group.roleLabel)}
                         </Typography>
                         {isCurrentRole ? (
                           <Typography
@@ -285,7 +298,7 @@ export default function OpsRoleFirstSelector({
                               mt: 0.4,
                             }}
                           >
-                            {currentRoleCaption(currentCombo)}
+                            {currentCaption}
                           </Typography>
                         ) : (
                           <Typography
@@ -346,7 +359,11 @@ export default function OpsRoleFirstSelector({
                             fullWidth
                             disabled={pending && !isBusy}
                             onClick={() => tapWorkType(wt.combo)}
-                            aria-label={isCurrent ? `${wt.label}, current` : wt.label}
+                            aria-label={
+                              isCurrent
+                                ? `${localizedWork(wt.combo)}, ${t("mobileOps.current")}`
+                                : localizedWork(wt.combo)
+                            }
                             sx={{
                               justifyContent: "space-between",
                               minHeight: { xs: 58, sm: 62 },
@@ -372,7 +389,7 @@ export default function OpsRoleFirstSelector({
                               },
                             }}
                           >
-                            <Box component="span">{wt.label}</Box>
+                            <Box component="span">{localizedWork(wt.combo)}</Box>
                             {isBusy ? (
                               <CircularProgress size={18} />
                             ) : isCurrent ? (
@@ -392,7 +409,7 @@ export default function OpsRoleFirstSelector({
                                     letterSpacing: 0.2,
                                   }}
                                 >
-                                  Current
+                                  {t("mobileOps.current")}
                                 </Typography>
                               </Box>
                             ) : null}

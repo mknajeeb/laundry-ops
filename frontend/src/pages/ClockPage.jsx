@@ -348,7 +348,7 @@ function ClockPage({ user: washproUser }) {
                       onClick={openPicker}
                       sx={{ textTransform: "none", fontWeight: 700, py: 1.5 }}
                     >
-                      Change Role
+                      {t("mobileOps.changeRole")}
                     </Button>
                   </>
                 )}
@@ -375,13 +375,17 @@ function ClockPage({ user: washproUser }) {
       >
         <Box sx={{ px: { xs: 1.5, sm: 2.5, md: 3 }, py: { xs: 1.5, sm: 2 }, maxWidth: 880, mx: "auto", width: "100%" }}>
           <OpsTopBar
-            title={pickMode === "break_resume" ? "Select Role to Resume" : "Change Role"}
+            title={
+              pickMode === "break_resume"
+                ? t("mobileOps.selectRoleResume")
+                : t("mobileOps.changeRole")
+            }
             onBack={
               pickMode === "break_resume" || switchBusy
                 ? undefined
                 : () => setPickOpen(false)
             }
-            backLabel="Back"
+            backLabel={t("mobileOps.back")}
             sticky
           />
           <OpsRoleFirstSelector
@@ -396,9 +400,13 @@ function ClockPage({ user: washproUser }) {
               if (!combo) return;
               void confirmRoleSelection(combo.categoryId, combo.roleId);
             }}
-            emptyMessage="Role selection isn’t available right now."
-            singleWorkTypeHint={pickMode === "break_resume" ? "Tap to resume" : "Tap to switch"}
-            multiWorkTypeHint="Tap to choose work type"
+            emptyMessage={t("mobileOps.roleUnavailable")}
+            singleWorkTypeHint={
+              pickMode === "break_resume"
+                ? t("mobileOps.tapToResume")
+                : t("mobileOps.tapToSwitch")
+            }
+            multiWorkTypeHint={t("mobileOps.tapToChooseWork")}
           />
         </Box>
       </Dialog>

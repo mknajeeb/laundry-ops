@@ -40,10 +40,9 @@ import {
   OpsMobileShell,
   OpsTopBar,
   OPS_MOBILE,
-  ROLE_CLOCK_IN_FIRST_MESSAGE,
-  ROLE_ON_BREAK_MESSAGE,
   buildPinLauncherTiles,
 } from "../opsMobile";
+import OpsLocaleToggle from "../opsMobile/OpsLocaleToggle";
 import { VEEWASH_LOGO_URL } from "../theme/veewashBrand";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
@@ -157,12 +156,13 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       features: hub?.features,
       featureOrder: hub?.feature_order,
       attendance: hub?.attendance,
+      t,
     });
     return built.map((tile) => ({
       ...tile,
       icon: iconForTile(tile),
     }));
-  }, [hub]);
+  }, [hub, t]);
 
   useLayoutEffect(() => {
     return applyAttendancePwaManifest(routeSlug || selectedSlug, "hub");
@@ -277,7 +277,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         setPin("");
         prevPinLenRef.current = 0;
       } catch (e) {
-        setError(e?.response?.data?.error || e?.message || "Could not open VeeWash Mobile Ops");
+        setError(e?.response?.data?.error || e?.message || t("mobileOps.error.openHub"));
         setPin("");
         prevPinLenRef.current = 0;
       } finally {
@@ -367,11 +367,11 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       }
       if (featureId === "switch_role") {
         if (tile?.blockedReason === "on_break" || hub?.attendance?.on_break === true || tile?.disabled) {
-          setError(tile?.disabledHelper || ROLE_ON_BREAK_MESSAGE);
+          setError(tile?.disabledHelper || t("mobileOps.roleOnBreak"));
           return;
         }
         if (tile?.requiresClockIn || hub?.attendance?.clocked_in !== true) {
-          setError(ROLE_CLOCK_IN_FIRST_MESSAGE);
+          setError(t("mobileOps.clockInFirst"));
           return;
         }
         // Full-screen shared flow on /attendance/role (not an in-hub dialog).
@@ -454,7 +454,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       : "";
 
   return (
-    <OpsMobileShell>
+    <OpsMobileShell showLocaleToggle={phase !== "menu"}>
       <Paper
         elevation={0}
         sx={{
@@ -471,7 +471,8 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
               identity={identity}
               logoSrc={logoSrc}
               onLock={lockSession}
-              lockLabel="Lock"
+              lockLabel={t("mobileOps.lock")}
+              right={<OpsLocaleToggle />}
             />
           ) : (
             <Stack spacing={1.25} alignItems="center">
@@ -493,7 +494,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
                   textAlign: "center",
                 }}
               >
-                VeeWash Mobile Ops
+                {t("mobileOps.title")}
               </Typography>
             </Stack>
           )}
@@ -520,7 +521,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
           {error ? (
             <Alert
               severity={
-                error === ROLE_CLOCK_IN_FIRST_MESSAGE || error === ROLE_ON_BREAK_MESSAGE
+                error === t("mobileOps.clockInFirst") || error === t("mobileOps.roleOnBreak")
                   ? "info"
                   : "error"
               }

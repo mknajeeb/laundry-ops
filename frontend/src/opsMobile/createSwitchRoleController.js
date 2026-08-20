@@ -12,6 +12,8 @@ import {
   uniqueRolesFromTree,
 } from "./switchRoleFlowHelpers";
 
+export const ROLE_SUCCESS_DELAY_MS = 5000;
+
 export function createSwitchRoleController({
   selectionTree = [],
   currentCategoryId = null,
@@ -22,7 +24,8 @@ export function createSwitchRoleController({
   switchRoleApi,
   createIdempotencyKey,
   onSuccess,
-  successDelayMs = 900,
+  successDelayMs = ROLE_SUCCESS_DELAY_MS,
+  employeeErrorFn = null,
 }) {
   let roleId = null;
   let categoryId = null;
@@ -31,8 +34,11 @@ export function createSwitchRoleController({
   let pendingRoleId = null;
   let error = "";
   let successLabel = "";
+  let successBody = null;
   let phase = "select"; // select | success
   let idempotencyKey = null;
+  let successTimer = null;
+  let completed = false;
   let listeners = new Set();
 
   const snapshot = () => ({
@@ -43,6 +49,7 @@ export function createSwitchRoleController({
     pendingRoleId,
     error,
     successLabel,
+    successBody,
     phase,
     roles: uniqueRolesFromTree(selectionTree),
     categories: categoriesForRole(selectionTree, roleId),
@@ -51,6 +58,20 @@ export function createSwitchRoleController({
   const emit = () => {
     const snap = snapshot();
     listeners.forEach((fn) => fn(snap));
+  };
+
+  const clearSuccessTimer = () => {
+    if (successTimer != null) {
+      globalThis.clearTimeout(successTimer);
+      successTimer = null;
+    }
+  };
+
+  const finishSuccess = () => {
+    if (completed) return;
+    completed = true;
+    clearSuccessTimer();
+    onSuccess?.(successBody);
   };
 
   const runSwitch = async (cid, rid) => {
@@ -83,29 +104,38 @@ export function createSwitchRoleController({
       const status = res?.status ?? 0;
       const body = res?.data && typeof res.data === "object" ? res.data : {};
       if (status >= 200 && status < 300 && body.ok) {
+        successBody = body;
         successLabel =
-          body.display_label ||
           body.employee_display_label ||
+          body.display_label ||
           body.segment?.employee_display_label ||
           body.segment?.display_label ||
-          "Role updated";
+          "";
         phase = "success";
         pending = false;
         pendingCategoryId = null;
         pendingRoleId = null;
         idempotencyKey = null;
         emit();
-        globalThis.setTimeout(() => onSuccess?.(body), successDelayMs);
+        clearSuccessTimer();
+        const delay = Math.max(0, Number(successDelayMs) || 0);
+        if (delay === 0) {
+          finishSuccess();
+        } else {
+          successTimer = globalThis.setTimeout(() => finishSuccess(), delay);
+        }
         return { called: true, ok: true, body };
       }
-      error = switchRoleEmployeeError(body, status);
+      const errFn = employeeErrorFn || switchRoleEmployeeError;
+      error = errFn(body, status);
       pending = false;
       pendingCategoryId = null;
       pendingRoleId = null;
       emit();
       return { called: true, ok: false, body };
     } catch (e) {
-      error = switchRoleEmployeeError(e?.response?.data, e?.response?.status, {
+      const errFn = employeeErrorFn || switchRoleEmployeeError;
+      error = errFn(e?.response?.data, e?.response?.status, {
         network: !e?.response,
         timeout: e?.code === "ECONNABORTED",
       });
@@ -125,7 +155,7 @@ export function createSwitchRoleController({
     },
     /** One-tap combo selection — primary path for one-screen UI. */
     async selectCombo(combo) {
-      if (!combo || pending) return { called: false, reason: "blocked" };
+      if (!combo || pending || phase === "success") return { called: false, reason: "blocked" };
       const cid =
         combo.categoryId ??
         resolveCategoryId(combo.category ?? combo);
@@ -136,20 +166,20 @@ export function createSwitchRoleController({
     },
     /** Legacy two-step helpers — kept for tests and clock-in flows. */
     setRole(role) {
-      if (pending) return;
+      if (pending || phase === "success") return;
       roleId = resolveRoleId(role);
       categoryId = null;
       error = "";
       emit();
     },
     setCategory(id) {
-      if (pending) return;
+      if (pending || phase === "success") return;
       categoryId = id;
       error = "";
       emit();
     },
     backToRoles() {
-      if (pending) return;
+      if (pending || phase === "success") return;
       categoryId = null;
       error = "";
       emit();
@@ -188,6 +218,14 @@ export function createSwitchRoleController({
     clearError() {
       error = "";
       emit();
+    },
+    /** Skip remaining confirmation wait; clears session via onSuccess. */
+    dismissSuccess() {
+      if (phase !== "success") return;
+      finishSuccess();
+    },
+    dispose() {
+      clearSuccessTimer();
     },
   };
 }

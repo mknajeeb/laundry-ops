@@ -476,6 +476,44 @@ describe("createSwitchRoleController", () => {
     expect(onSuccess).toHaveBeenCalledTimes(1);
   });
 
+  it("dismissSuccess skips remaining delay and clears only once", async () => {
+    vi.useFakeTimers();
+    const switchRoleApi = vi.fn(async () => ({
+      status: 200,
+      data: {
+        ok: true,
+        employee_display_label: "Wash-Dry | Rinse Wash & Fold",
+        segment: { role_code: "OPERATOR", category_code: "RINSE_WF" },
+      },
+    }));
+    const onSuccess = vi.fn();
+    const controller = createSwitchRoleController({
+      selectionTree: multiCatTree,
+      currentCategoryId: 10,
+      currentRoleId: 1,
+      pin: "1234",
+      slug: "veewash",
+      switchRoleApi,
+      createIdempotencyKey: () => "key-done",
+      onSuccess,
+      successDelayMs: 5000,
+    });
+    await controller.selectCombo({
+      categoryId: 20,
+      roleId: 2,
+      category: { id: 20, name: "Rinse HD" },
+      role: { role_id: 2, role_name: "Folder" },
+    });
+    expect(controller.getState().phase).toBe("success");
+    expect(onSuccess).not.toHaveBeenCalled();
+    controller.dismissSuccess();
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(5000);
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    controller.dispose();
+    vi.useRealTimers();
+  });
+
   it("legacy selectRole still works on single-category trees", async () => {
     const switchRoleApi = vi.fn(async () => ({
       status: 200,

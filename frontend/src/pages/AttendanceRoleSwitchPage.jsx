@@ -27,8 +27,13 @@ import {
   OpsSwitchRoleFlow,
   OPS_MOBILE,
 } from "../opsMobile";
-import { createSwitchRoleController } from "../opsMobile/createSwitchRoleController";
+import {
+  createSwitchRoleController,
+  ROLE_SUCCESS_DELAY_MS,
+} from "../opsMobile/createSwitchRoleController";
 import { openRoleFlowEmployeeError } from "../opsMobile/switchRoleFlowHelpers";
+import { useI18n } from "../i18n/I18nContext";
+import OpsLocaleToggle from "../opsMobile/OpsLocaleToggle";
 import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import {
@@ -44,7 +49,7 @@ import TenantLogo from "../components/TenantLogo";
 
 const PIN_LEN = 4;
 const STORAGE_KEY = "washpro_attendance_org_slug";
-const SUCCESS_DELAY_MS = 900;
+const SUCCESS_DELAY_MS = ROLE_SUCCESS_DELAY_MS;
 
 function sanitizeSlug(raw) {
   if (!raw) return "";
@@ -113,10 +118,10 @@ export default function AttendanceRoleSwitchPage() {
   const [pendingCategoryId, setPendingCategoryId] = useState(null);
   const [pendingRoleId, setPendingRoleId] = useState(null);
   const [successLabel, setSuccessLabel] = useState("");
+  const [successBody, setSuccessBody] = useState(null);
   const [branding, setBranding] = useState(null);
-  const [unavailableMessage, setUnavailableMessage] = useState(
-    "Role change isn’t available right now.",
-  );
+  const [unavailableMessage, setUnavailableMessage] = useState("");
+  const { t } = useI18n();
 
   const punchInFlightRef = useRef(false);
   const prevPinLenRef = useRef(0);
@@ -325,9 +330,21 @@ export default function AttendanceRoleSwitchPage() {
   }, [fromHub, slug, phase, openPickerFromPin, applySelectionBody]);
 
   // Bind controller whenever selection context is ready.
+  // Keep the same controller through the success confirmation so the 5s timer
+  // (and Done → dismissSuccess) are not torn down by the phase change.
   useEffect(() => {
-    if (phase !== "select" || !pendingPin || !slug) {
+    if (!pendingPin || !slug) {
+      controllerRef.current?.dispose?.();
       controllerRef.current = null;
+      return undefined;
+    }
+    if (phase !== "select" && phase !== "success") {
+      return undefined;
+    }
+    if (phase === "success" && controllerRef.current) {
+      return undefined;
+    }
+    if (phase !== "select") {
       return undefined;
     }
     const hubToken =
@@ -344,8 +361,9 @@ export default function AttendanceRoleSwitchPage() {
       switchRoleApi: attendancePinSwitchRole,
       createIdempotencyKey: createTaskTrackingSwitchIdempotencyKey,
       successDelayMs: SUCCESS_DELAY_MS,
+      employeeErrorFn: () => t("mobileOps.error.switch"),
       onSuccess: () => {
-        // After confirmed switch: clear hub session and return to PIN pad for next employee.
+        // After confirmation: clear hub session and return to PIN pad for next employee.
         goPinLauncher({ lock: true });
       },
     });
@@ -354,15 +372,24 @@ export default function AttendanceRoleSwitchPage() {
       setPending(snap.pending);
       setPendingCategoryId(snap.pendingCategoryId);
       setPendingRoleId(snap.pendingRoleId);
-      setFlowError(snap.error);
+      setFlowError(snap.error ? t("mobileOps.error.switch") : "");
       setSuccessLabel(snap.successLabel);
+      setSuccessBody(snap.successBody || null);
       if (snap.phase === "success") setPhase("success");
     });
     return () => {
       unsub();
-      controllerRef.current = null;
+      // Preserve timer + dismissSuccess while confirmation is visible.
+      if (controller.getState().phase === "success") {
+        return;
+      }
+      controller.dispose?.();
+      if (controllerRef.current === controller) {
+        controllerRef.current = null;
+      }
     };
     // Recreate when assignment context changes; role/category taps go through controller.
+    // phase is included so we enter bind on select, but success reuses the controller above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     phase,
@@ -394,7 +421,9 @@ export default function AttendanceRoleSwitchPage() {
       <OpsMobileShell>
         <Stack spacing={2} alignItems="center" sx={{ py: 6 }}>
           <CircularProgress size={36} />
-          <Typography sx={{ fontWeight: 700, color: OPS_MOBILE.muted }}>Opening role…</Typography>
+          <Typography sx={{ fontWeight: 700, color: OPS_MOBILE.muted }}>
+            {t("mobileOps.openingRole")}
+          </Typography>
         </Stack>
       </OpsMobileShell>
     );
@@ -419,17 +448,19 @@ export default function AttendanceRoleSwitchPage() {
         onRetry={() => controllerRef.current?.clearError()}
         onBack={onBack}
         onLock={onLock}
+        onSuccessDone={() => controllerRef.current?.dismissSuccess()}
         unavailable={phase === "unavailable"}
-        unavailableMessage={unavailableMessage}
+        unavailableMessage={unavailableMessage || t("mobileOps.roleUnavailable")}
         success={phase === "success"}
         successLabel={successLabel}
+        successBody={successBody}
       />
     );
   }
 
   // Direct-navigation PIN entry (standalone role PWA without hub session).
   return (
-    <OpsMobileShell>
+    <OpsMobileShell showLocaleToggle>
       <Paper
         elevation={0}
         sx={{
@@ -452,15 +483,15 @@ export default function AttendanceRoleSwitchPage() {
             <TenantLogo size={40} />
           )}
           <Typography sx={{ fontWeight: 900, fontSize: "1.35rem", color: OPS_MOBILE.navy }}>
-            Role
+            {t("mobileOps.tile.role")}
           </Typography>
 
           {!routeSlug && (
             <FormControl fullWidth size="small">
-              <InputLabel id="role-org">Organization</InputLabel>
+              <InputLabel id="role-org">{t("mobileOps.organization")}</InputLabel>
               <Select
                 labelId="role-org"
-                label="Organization"
+                label={t("mobileOps.organization")}
                 value={selectedSlug}
                 disabled={orgsLoading}
                 onChange={(e) => {

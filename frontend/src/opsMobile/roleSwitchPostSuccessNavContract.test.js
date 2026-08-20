@@ -31,9 +31,12 @@ describe("role switch post-success navigation contract", () => {
   it("controller only invokes onSuccess after backend ok", () => {
     const src = readFileSync(join(root, "opsMobile/createSwitchRoleController.js"), "utf8");
     expect(src).toContain("if (status >= 200 && status < 300 && body.ok)");
-    expect(src).toContain("onSuccess?.(body)");
+    expect(src).toContain("onSuccess?.(successBody)");
+    expect(src).toContain("ROLE_SUCCESS_DELAY_MS = 5000");
+    expect(src).toContain("dismissSuccess()");
     // Failure path must not call onSuccess
-    const failBlock = src.slice(src.indexOf("error = switchRoleEmployeeError"));
-    expect(failBlock).not.toContain("onSuccess?.(");
+    expect(src).toMatch(/error = errFn\([\s\S]*?emit\(\);\s*return \{ called: true, ok: false/);
+    const afterOk = src.slice(src.indexOf("return { called: true, ok: true, body }"));
+    expect(afterOk.indexOf("onSuccess?.(")).toBe(-1);
   });
 });

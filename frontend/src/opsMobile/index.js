@@ -42,7 +42,14 @@ export {
   workTypeLabel,
   pickNonRinseCombo,
 } from "./switchRoleFlowHelpers";
-export { createSwitchRoleController } from "./createSwitchRoleController";
+export { createSwitchRoleController, ROLE_SUCCESS_DELAY_MS } from "./createSwitchRoleController";
+export {
+  displayRole,
+  displayWorkType,
+  formatEmployeeAssignmentLabel,
+  successAssignmentLabelFromBody,
+} from "./mobileOpsCopy";
+export { default as OpsLocaleToggle } from "./OpsLocaleToggle";
 export { createTaskToggleController } from "./createTaskToggleController";
 export { createTaskSubmitController } from "./createTaskSubmitController";
 export {

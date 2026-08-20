@@ -57,9 +57,15 @@ export function I18nProvider({ children }) {
   }, []);
 
   const t = useCallback(
-    (key) => {
+    (key, vars) => {
       const table = TRANSLATIONS[locale] || TRANSLATIONS.en;
-      return table[key] ?? TRANSLATIONS.en[key] ?? key;
+      let out = table[key] ?? TRANSLATIONS.en[key] ?? key;
+      if (vars && typeof vars === "object" && typeof out === "string") {
+        out = out.replace(/\{(\w+)\}/g, (_, name) =>
+          vars[name] != null ? String(vars[name]) : `{${name}}`,
+        );
+      }
+      return out;
     },
     [locale]
   );
