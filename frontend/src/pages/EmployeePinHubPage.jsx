@@ -288,7 +288,8 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
     [slug, t, applyHubBody],
   );
 
-  // Restore hub session and always refresh so Current Role updates after role switch.
+  // Restore hub session when present (e.g. Back from Role without switching).
+  // Successful Role switch clears the hub session and lands on the PIN pad instead.
   useEffect(() => {
     if (!slug) return undefined;
     const existing = loadPinHubSession();

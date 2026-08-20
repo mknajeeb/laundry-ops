@@ -345,7 +345,8 @@ export default function AttendanceRoleSwitchPage() {
       createIdempotencyKey: createTaskTrackingSwitchIdempotencyKey,
       successDelayMs: SUCCESS_DELAY_MS,
       onSuccess: () => {
-        goPinLauncher({ lock: false });
+        // After confirmed switch: clear hub session and return to PIN pad for next employee.
+        goPinLauncher({ lock: true });
       },
     });
     controllerRef.current = controller;
