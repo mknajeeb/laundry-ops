@@ -16,7 +16,18 @@ import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import { getTeamStatus, getTeamStatusUpcoming, getTeamStatusWeek } from "../api";
 import { useI18n } from "../i18n/I18nContext";
-import { formatEmployeeAssignmentLabel, translateCanonicalRoleLabel } from "./mobileOpsCopy";
+import {
+  formatEmployeeAssignmentLabel,
+  translateCanonicalRoleLabel,
+  translateCanonicalWorkLabel,
+} from "./mobileOpsCopy";
+import {
+  TEAM_ROLE_COLORS,
+  resolveTeamRoleColorKey,
+  teamRoleChipSx,
+  teamRoleColors,
+  teamRoleEdgeSx,
+} from "./roleColors";
 import OpsLocaleToggle from "./OpsLocaleToggle";
 import OpsLockButton from "./OpsLockButton";
 import OpsMobileShell from "./OpsMobileShell";
@@ -25,6 +36,40 @@ import { OPS_MOBILE } from "./tokens";
 
 const GOLD = "#c4a052";
 const TABS = ["today", "week", "upcoming"];
+
+function RoleTintChip({ roleCode, roleLabel, kind, label, t, size = "sm" }) {
+  const key = resolveTeamRoleColorKey({ roleCode, roleLabel, kind, label });
+  const canonical =
+    key === "wash_dry"
+      ? "Wash-Dry"
+      : key === "sort"
+        ? "Sort"
+        : key === "fold"
+          ? "Fold"
+          : key === "break"
+            ? null
+            : roleLabel || label || "";
+  const text =
+    key === "break"
+      ? t("mobileOps.team.breakShort")
+      : translateCanonicalRoleLabel(canonical || roleLabel || label, t) ||
+        roleLabel ||
+        label ||
+        "—";
+  return (
+    <Chip
+      size="small"
+      label={text}
+      sx={teamRoleChipSx({ roleCode, roleLabel: canonical || roleLabel, kind, label }, { size })}
+    />
+  );
+}
+
+function workTypeDisplay(empOrEv, t) {
+  const src = empOrEv?.assignment || empOrEv || {};
+  const raw = src.work_type_label || "";
+  return translateCanonicalWorkLabel(raw, t) || raw;
+}
 
 function etTodayYmd() {
   return new Intl.DateTimeFormat("en-CA", {
@@ -123,14 +168,10 @@ function localizeAssignment(empOrEv, t) {
   return label || src.assignment_label || empOrEv?.assignment_label || "";
 }
 
-function localizeRoleSummaryLabel(row, t) {
-  if (row?.kind === "break") return t("mobileOps.team.break");
-  return translateCanonicalRoleLabel(row?.label, t) || row?.label || "";
-}
-
 function statusMeta(emp, t) {
   if (emp.status === "on_break" || emp.on_break) {
-    return { label: t("mobileOps.team.onBreak"), color: "#b45309" };
+    const c = TEAM_ROLE_COLORS.break;
+    return { label: t("mobileOps.team.onBreak"), color: c.text, bg: c.bg };
   }
   if (emp.status === "working") {
     return { label: t("mobileOps.team.working"), color: OPS_MOBILE.success };
@@ -222,9 +263,11 @@ function SummaryStrip({ items }) {
 function RoleCoverageLine({ title, parts, note, t }) {
   const [showHours, setShowHours] = useState(false);
   if (!parts?.length) return null;
+  const visible = parts.filter((p) => (p.count ?? p.unique_employees ?? 0) > 0 || showHours);
+  if (!visible.length) return null;
   return (
     <Box sx={{ mb: 0.85 }}>
-      <Stack direction="row" alignItems="center" spacing={0.75} sx={{ mb: 0.2 }}>
+      <Stack direction="row" alignItems="center" spacing={0.75} sx={{ mb: 0.35 }}>
         <Typography
           sx={{
             fontWeight: 900,
@@ -259,29 +302,31 @@ function RoleCoverageLine({ title, parts, note, t }) {
           </Typography>
         ) : null}
       </Stack>
-      <Typography
-        sx={{
-          fontWeight: 800,
-          fontSize: "0.8rem",
-          color: OPS_MOBILE.navy,
-          lineHeight: 1.35,
-        }}
-      >
-        {parts
-          .filter((p) => (p.count ?? p.unique_employees ?? 0) > 0 || showHours)
-          .map((p, i) => {
-            const n = p.count ?? p.unique_employees ?? 0;
-            const label = p.label === "Break" ? t("mobileOps.team.breakShort") : p.label;
-            const hoursBit =
-              showHours && p.duration_seconds != null
-                ? ` ${formatDuration(p.duration_seconds)}`
-                : "";
-            return `${i ? " · " : ""}${label} ${n}${hoursBit}`;
-          })
-          .join("")}
-      </Typography>
+      <Stack direction="row" spacing={0.45} useFlexGap flexWrap="wrap" sx={{ rowGap: 0.45 }}>
+        {visible.map((p) => {
+          const n = p.count ?? p.unique_employees ?? 0;
+          const isBreak = p.label === "Break";
+          const hoursBit =
+            showHours && p.duration_seconds != null ? ` · ${formatDuration(p.duration_seconds)}` : "";
+          return (
+            <Chip
+              key={p.label}
+              size="small"
+              label={`${
+                isBreak
+                  ? t("mobileOps.team.breakShort")
+                  : translateCanonicalRoleLabel(p.label, t) || p.label
+              } ${n}${hoursBit}`}
+              sx={teamRoleChipSx(
+                isBreak ? { kind: "break" } : { roleLabel: p.label },
+                { size: "sm" },
+              )}
+            />
+          );
+        })}
+      </Stack>
       {note ? (
-        <Typography sx={{ mt: 0.15, fontSize: "0.65rem", fontWeight: 650, color: OPS_MOBILE.muted }}>
+        <Typography sx={{ mt: 0.25, fontSize: "0.65rem", fontWeight: 650, color: OPS_MOBILE.muted }}>
           {note}
         </Typography>
       ) : null}
@@ -291,12 +336,6 @@ function RoleCoverageLine({ title, parts, note, t }) {
 
 function CompactEmployeeRow({ emp, onOpen, t, locale, mode, dense }) {
   const chip = statusMeta(emp, t);
-  const assignment = localizeAssignment(emp, t);
-  const roleLine =
-    assignment ||
-    (emp.role_chips || [])
-      .map((r) => translateCanonicalRoleLabel(r, t) || r)
-      .join(" · ");
   const isActive = mode === "working";
   const hours = formatDuration(emp.worked_seconds);
   const breakBit =
@@ -304,6 +343,15 @@ function CompactEmployeeRow({ emp, onOpen, t, locale, mode, dense }) {
       ? formatDuration(emp.open_break_seconds)
       : "";
   const onBreak = isActive && (emp.on_break || emp.status === "on_break");
+  const assign = emp.assignment || {};
+  const roleColorInput = onBreak
+    ? { kind: "break" }
+    : {
+        roleCode: emp.role_code || assign.role_code,
+        roleLabel: emp.role_label || assign.role_label,
+      };
+  const edge = teamRoleEdgeSx(roleColorInput);
+  const workType = workTypeDisplay(emp, t);
 
   return (
     <Box
@@ -315,13 +363,13 @@ function CompactEmployeeRow({ emp, onOpen, t, locale, mode, dense }) {
         width: "100%",
         textAlign: "left",
         m: 0,
-        px: dense ? 1 : 1.1,
+        pl: dense ? 1 : 1.05,
+        pr: dense ? 1 : 1.1,
         py: dense ? 0.7 : 0.85,
         borderRadius: 1.75,
-        border: `1px solid ${
-          onBreak ? alpha("#b45309", 0.28) : alpha(OPS_MOBILE.navy, 0.08)
-        }`,
-        bgcolor: onBreak ? alpha("#b45309", 0.06) : alpha("#fff", 0.97),
+        border: `1px solid ${alpha(OPS_MOBILE.navy, 0.08)}`,
+        bgcolor: alpha("#fff", 0.97),
+        ...edge,
         cursor: "pointer",
         appearance: "none",
         fontFamily: "inherit",
@@ -354,23 +402,46 @@ function CompactEmployeeRow({ emp, onOpen, t, locale, mode, dense }) {
           {hours}
         </Typography>
       </Stack>
-      {roleLine ? (
-        <Typography
-          sx={{
-            mt: 0.15,
-            fontWeight: 700,
-            fontSize: "0.78rem",
-            color: OPS_MOBILE.blue,
-            lineHeight: 1.25,
-          }}
-          noWrap
-        >
-          {roleLine}
-        </Typography>
-      ) : null}
+      <Stack
+        direction="row"
+        spacing={0.5}
+        alignItems="center"
+        sx={{ mt: 0.25, flexWrap: "wrap", rowGap: 0.25, minWidth: 0 }}
+      >
+        {onBreak ? (
+          <RoleTintChip kind="break" t={t} />
+        ) : (
+          <RoleTintChip
+            roleCode={emp.role_code || assign.role_code}
+            roleLabel={emp.role_label || assign.role_label}
+            t={t}
+          />
+        )}
+        {!onBreak && workType ? (
+          <Typography
+            sx={{
+              fontWeight: 700,
+              fontSize: "0.76rem",
+              color: OPS_MOBILE.muted,
+              lineHeight: 1.25,
+              minWidth: 0,
+            }}
+            noWrap
+          >
+            {workType}
+          </Typography>
+        ) : null}
+      </Stack>
       <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.3, flexWrap: "wrap" }}>
         {onBreak ? (
-          <Typography sx={{ fontSize: "0.76rem", fontWeight: 900, color: "#b45309", letterSpacing: 0.2 }}>
+          <Typography
+            sx={{
+              fontSize: "0.76rem",
+              fontWeight: 900,
+              color: TEAM_ROLE_COLORS.break.text,
+              letterSpacing: 0.2,
+            }}
+          >
             {t("mobileOps.team.onBreak").toUpperCase()}
             {breakBit ? ` · ${breakBit}` : ""}
           </Typography>
@@ -395,20 +466,10 @@ function CompactEmployeeRow({ emp, onOpen, t, locale, mode, dense }) {
           </Typography>
         ) : null}
       </Stack>
-      {!isActive && Array.isArray(emp.role_chips) && emp.role_chips.length > 1 ? (
+      {!isActive && Array.isArray(emp.role_chips) && emp.role_chips.length ? (
         <Stack direction="row" spacing={0.4} sx={{ mt: 0.4, flexWrap: "wrap", rowGap: 0.35 }}>
           {emp.role_chips.slice(0, 4).map((r) => (
-            <Chip
-              key={r}
-              size="small"
-              label={translateCanonicalRoleLabel(r, t) || r}
-              sx={{
-                height: 20,
-                fontSize: "0.68rem",
-                fontWeight: 750,
-                bgcolor: alpha(OPS_MOBILE.navy, 0.05),
-              }}
-            />
+            <RoleTintChip key={r} roleLabel={r} t={t} />
           ))}
         </Stack>
       ) : null}
@@ -559,18 +620,20 @@ function EmployeeDetailDrawer({
                     );
                   }
                   if (ev.type === "break") {
+                    const bc = TEAM_ROLE_COLORS.break;
                     return (
                       <Box
                         key={`br-${idx}`}
                         sx={{
                           px: 1,
-                          py: 0.7,
+                          py: 0.65,
                           borderRadius: 1.5,
-                          bgcolor: alpha("#b45309", 0.08),
-                          border: `1px solid ${alpha("#b45309", 0.18)}`,
+                          bgcolor: bc.bg,
+                          border: `1px solid ${bc.border}`,
+                          borderLeft: `3px solid ${bc.accent}`,
                         }}
                       >
-                        <Typography sx={{ fontWeight: 800, fontSize: "0.82rem" }}>
+                        <Typography sx={{ fontWeight: 800, fontSize: "0.82rem", color: bc.text }}>
                           {formatTime(ev.started_at, locale)}
                           {ev.ended_at
                             ? `–${formatTime(ev.ended_at, locale)}`
@@ -580,27 +643,43 @@ function EmployeeDetailDrawer({
                       </Box>
                     );
                   }
+                  const rc = teamRoleColors({
+                    roleCode: ev.role_code,
+                    roleLabel: ev.role_label || ev.assignment_label,
+                  });
                   return (
                     <Box
                       key={`role-${idx}`}
                       sx={{
                         px: 1,
-                        py: 0.7,
+                        py: 0.65,
                         borderRadius: 1.5,
                         bgcolor: alpha("#fff", 0.95),
                         border: `1px solid ${alpha(OPS_MOBILE.navy, 0.08)}`,
+                        borderLeft: `3px solid ${rc.accent}`,
                       }}
                     >
-                      <Typography sx={{ fontWeight: 800, fontSize: "0.82rem", color: OPS_MOBILE.navy }}>
-                        {formatTime(ev.started_at, locale)}
-                        {ev.ended_at
-                          ? `–${formatTime(ev.ended_at, locale)}`
-                          : `–${t("mobileOps.team.now")}`}{" "}
-                        {localizeAssignment(ev, t) || "—"}{" "}
-                        <Box component="span" sx={{ color: OPS_MOBILE.muted, fontWeight: 700 }}>
+                      <Stack direction="row" spacing={0.6} alignItems="center" flexWrap="wrap">
+                        <Typography sx={{ fontWeight: 800, fontSize: "0.82rem", color: OPS_MOBILE.muted }}>
+                          {formatTime(ev.started_at, locale)}
+                          {ev.ended_at
+                            ? `–${formatTime(ev.ended_at, locale)}`
+                            : `–${t("mobileOps.team.now")}`}
+                        </Typography>
+                        <RoleTintChip
+                          roleCode={ev.role_code}
+                          roleLabel={ev.role_label}
+                          t={t}
+                        />
+                        {workTypeDisplay(ev, t) ? (
+                          <Typography sx={{ fontWeight: 700, fontSize: "0.78rem", color: OPS_MOBILE.muted }}>
+                            {workTypeDisplay(ev, t)}
+                          </Typography>
+                        ) : null}
+                        <Typography sx={{ fontWeight: 700, fontSize: "0.78rem", color: OPS_MOBILE.muted }}>
                           {formatDuration(ev.duration_seconds)}
-                        </Box>
-                      </Typography>
+                        </Typography>
+                      </Stack>
                     </Box>
                   );
                 })}
@@ -718,10 +797,15 @@ function EmployeeDetailDrawer({
                 </Typography>
                 <Stack spacing={0.4}>
                   {emp.role_hours.map((r) => (
-                    <Stack key={r.label} direction="row" justifyContent="space-between" sx={{ px: 0.5 }}>
-                      <Typography sx={{ fontWeight: 750, fontSize: "0.84rem" }}>
-                        {translateCanonicalRoleLabel(r.label, t) || r.label}
-                      </Typography>
+                    <Stack
+                      key={r.label}
+                      direction="row"
+                      justifyContent="space-between"
+                      alignItems="center"
+                      spacing={1}
+                      sx={{ px: 0.25 }}
+                    >
+                      <RoleTintChip roleLabel={r.label} t={t} />
                       <Typography sx={{ fontWeight: 850, fontSize: "0.84rem" }}>
                         {formatDuration(r.duration_seconds)}
                       </Typography>
@@ -1271,7 +1355,19 @@ export default function TeamStatusFlow({ onBack, onLock }) {
                     {formatHhMm(g.start_time, locale)}
                   </Typography>
                   <Stack spacing={0.55}>
-                    {(g.entries || []).map((row) => (
+                    {(g.entries || []).map((row) => {
+                      const plannedRoleLabel = (() => {
+                        const fromRoles = Array.isArray(row.roles) ? row.roles[0] : null;
+                        const key = resolveTeamRoleColorKey({
+                          roleLabel: row.role_label || fromRoles || row.assignment_label,
+                          label: fromRoles,
+                        });
+                        if (key === "wash_dry") return "Wash-Dry";
+                        if (key === "sort") return "Sort";
+                        if (key === "fold") return "Fold";
+                        return row.role_label || null;
+                      })();
+                      return (
                       <Box
                         key={`${row.user_id}-${row.start_time}-${row.end_time}`}
                         sx={{
@@ -1280,6 +1376,9 @@ export default function TeamStatusFlow({ onBack, onLock }) {
                           borderRadius: 1.75,
                           bgcolor: alpha("#fff", 0.97),
                           border: `1px solid ${alpha(OPS_MOBILE.navy, 0.08)}`,
+                          ...(plannedRoleLabel
+                            ? teamRoleEdgeSx({ roleLabel: plannedRoleLabel })
+                            : null),
                         }}
                       >
                         <Stack direction="row" justifyContent="space-between" alignItems="baseline">
@@ -1300,13 +1399,19 @@ export default function TeamStatusFlow({ onBack, onLock }) {
                         <Typography sx={{ fontSize: "0.76rem", fontWeight: 700, color: OPS_MOBILE.muted }}>
                           {formatHhMm(row.start_time, locale)}–{formatHhMm(row.end_time, locale)}
                         </Typography>
-                        {row.assignment_label ? (
-                          <Typography sx={{ fontSize: "0.78rem", fontWeight: 750, color: OPS_MOBILE.blue }}>
-                            {row.assignment_label}
-                          </Typography>
-                        ) : null}
+                        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.25, flexWrap: "wrap" }}>
+                          {plannedRoleLabel ? (
+                            <RoleTintChip roleLabel={plannedRoleLabel} t={t} />
+                          ) : null}
+                          {row.work_type_label ? (
+                            <Typography sx={{ fontSize: "0.76rem", fontWeight: 700, color: OPS_MOBILE.muted }}>
+                              {translateCanonicalWorkLabel(row.work_type_label, t) || row.work_type_label}
+                            </Typography>
+                          ) : null}
+                        </Stack>
                       </Box>
-                    ))}
+                      );
+                    })}
                   </Stack>
                 </Box>
               ))
@@ -1339,6 +1444,13 @@ export default function TeamStatusFlow({ onBack, onLock }) {
 
 function DesktopEmpRow({ emp, onOpen, t, locale, active }) {
   const chip = statusMeta(emp, t);
+  const onBreak = active && (emp.on_break || emp.status === "on_break");
+  const assign = emp.assignment || {};
+  const edge = teamRoleEdgeSx(
+    onBreak
+      ? { kind: "break" }
+      : { roleCode: emp.role_code || assign.role_code, roleLabel: emp.role_label || assign.role_label },
+  );
   return (
     <Box
       component="button"
@@ -1357,6 +1469,7 @@ function DesktopEmpRow({ emp, onOpen, t, locale, active }) {
         borderRadius: 1.5,
         border: `1px solid ${alpha(OPS_MOBILE.navy, 0.08)}`,
         bgcolor: alpha("#fff", 0.97),
+        ...edge,
         cursor: "pointer",
         appearance: "none",
         fontFamily: "inherit",
@@ -1367,11 +1480,26 @@ function DesktopEmpRow({ emp, onOpen, t, locale, active }) {
         {emp.display_name}
       </Typography>
       <Typography sx={{ fontWeight: 800, fontSize: "0.78rem", color: chip.color }}>{chip.label}</Typography>
-      <Typography sx={{ fontWeight: 750, fontSize: "0.8rem", color: OPS_MOBILE.blue }} noWrap>
-        {localizeAssignment(emp, t) ||
-          (emp.role_chips || []).map((r) => translateCanonicalRoleLabel(r, t) || r).join(" · ") ||
-          "—"}
-      </Typography>
+      <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0, flexWrap: "wrap" }}>
+        {onBreak ? (
+          <RoleTintChip kind="break" t={t} />
+        ) : emp.role_label || assign.role_label || emp.role_code ? (
+          <RoleTintChip
+            roleCode={emp.role_code || assign.role_code}
+            roleLabel={emp.role_label || assign.role_label}
+            t={t}
+          />
+        ) : (emp.role_chips || []).length ? (
+          (emp.role_chips || []).slice(0, 3).map((r) => <RoleTintChip key={r} roleLabel={r} t={t} />)
+        ) : (
+          <Typography sx={{ fontWeight: 750, fontSize: "0.8rem", color: OPS_MOBILE.muted }}>—</Typography>
+        )}
+        {!onBreak && workTypeDisplay(emp, t) ? (
+          <Typography sx={{ fontWeight: 700, fontSize: "0.76rem", color: OPS_MOBILE.muted }} noWrap>
+            {workTypeDisplay(emp, t)}
+          </Typography>
+        ) : null}
+      </Stack>
       <Typography sx={{ fontWeight: 700, fontSize: "0.78rem", color: OPS_MOBILE.muted }}>
         {active
           ? formatTime(emp.clock_in_at, locale)

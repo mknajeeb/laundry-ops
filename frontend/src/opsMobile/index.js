@@ -49,6 +49,14 @@ export {
   formatEmployeeAssignmentLabel,
   successAssignmentLabelFromBody,
 } from "./mobileOpsCopy";
+export {
+  TEAM_ROLE_COLORS,
+  TEAM_ROLE_COLOR_KEYS,
+  resolveTeamRoleColorKey,
+  teamRoleColors,
+  teamRoleChipSx,
+  teamRoleEdgeSx,
+} from "./roleColors";
 export { default as OpsLocaleToggle } from "./OpsLocaleToggle";
 export { createTaskToggleController } from "./createTaskToggleController";
 export { createTaskSubmitController } from "./createTaskSubmitController";
