@@ -17,6 +17,7 @@ import {
 import { alpha } from "@mui/material/styles";
 import { Backspace } from "@mui/icons-material";
 import {
+  attendancePinBreakResume,
   attendancePinSwitchRole,
   createTaskTrackingSwitchIdempotencyKey,
   getPublicOrgBranding,
@@ -95,8 +96,11 @@ export default function AttendanceRoleSwitchPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const fromHub = searchParams.get("from") === "hub";
+  const resumeFromBreak = searchParams.get("mode") === "resume";
   const { orgSlug: orgSlugParam } = useParams();
   const routeSlug = useMemo(() => sanitizeSlug(orgSlugParam), [orgSlugParam]);
+
+  const roleApi = resumeFromBreak ? attendancePinBreakResume : attendancePinSwitchRole;
 
   const [selectedSlug, setSelectedSlug] = useState("");
   const [orgs, setOrgs] = useState([]);
@@ -248,7 +252,7 @@ export default function AttendanceRoleSwitchPage() {
       setLoading(true);
       setError("");
       try {
-        const res = await attendancePinSwitchRole(slug, clean, {
+        const res = await roleApi(slug, clean, {
           ...(hubToken ? { hubToken } : {}),
         });
         const status = res?.status ?? 0;
@@ -278,7 +282,7 @@ export default function AttendanceRoleSwitchPage() {
         setLoading(false);
       }
     },
-    [slug, applySelectionBody],
+    [slug, applySelectionBody, roleApi],
   );
 
   useEffect(() => {
@@ -311,23 +315,28 @@ export default function AttendanceRoleSwitchPage() {
 
     const cachedTree = Array.isArray(hub?.selection_tree) ? hub.selection_tree : null;
     const att = hub?.attendance && typeof hub.attendance === "object" ? hub.attendance : null;
-    if (cachedTree && cachedTree.length && att?.clocked_in === true && att?.on_break !== true) {
+    if (
+      cachedTree &&
+      cachedTree.length &&
+      att?.clocked_in === true &&
+      (resumeFromBreak ? att?.on_break === true : att?.on_break !== true)
+    ) {
       applySelectionBody(
         {
           selection_tree: cachedTree,
           employee_first_name: hub.employee_first_name || "",
-          current_category_id: att.current_category_id,
-          current_role_id: att.current_role_id,
+          current_category_id: resumeFromBreak ? null : att.current_category_id,
+          current_role_id: resumeFromBreak ? null : att.current_role_id,
         },
         hubPin || "hub",
       );
-      // Soft-refresh tree/current in background; switch mutate still validates server-side.
+      // Soft-refresh tree/current in background; mutate still validates server-side.
       void openPickerFromPin(hubPin || "", { hubToken }).catch(() => {});
       return;
     }
 
     void openPickerFromPin(hubPin || "", { hubToken });
-  }, [fromHub, slug, phase, openPickerFromPin, applySelectionBody]);
+  }, [fromHub, slug, phase, openPickerFromPin, applySelectionBody, resumeFromBreak]);
 
   // Bind controller whenever selection context is ready.
   // Keep the same controller through the success confirmation so the 5s timer
@@ -358,10 +367,11 @@ export default function AttendanceRoleSwitchPage() {
       pin: pendingPin === "hub" ? "" : pendingPin,
       hubToken,
       slug,
-      switchRoleApi: attendancePinSwitchRole,
+      switchRoleApi: roleApi,
       createIdempotencyKey: createTaskTrackingSwitchIdempotencyKey,
       successDelayMs: SUCCESS_DELAY_MS,
-      employeeErrorFn: () => t("mobileOps.error.switch"),
+      employeeErrorFn: () =>
+        resumeFromBreak ? t("mobileOps.error.resume") : t("mobileOps.error.switch"),
       onSuccess: () => {
         // After confirmation: clear hub session and return to PIN pad for next employee.
         goPinLauncher({ lock: true });
@@ -372,7 +382,13 @@ export default function AttendanceRoleSwitchPage() {
       setPending(snap.pending);
       setPendingCategoryId(snap.pendingCategoryId);
       setPendingRoleId(snap.pendingRoleId);
-      setFlowError(snap.error ? t("mobileOps.error.switch") : "");
+      setFlowError(
+        snap.error
+          ? resumeFromBreak
+            ? t("mobileOps.error.resume")
+            : t("mobileOps.error.switch")
+          : "",
+      );
       setSuccessLabel(snap.successLabel);
       setSuccessBody(snap.successBody || null);
       if (snap.phase === "success") setPhase("success");
@@ -399,6 +415,9 @@ export default function AttendanceRoleSwitchPage() {
     currentCategoryId,
     currentRoleId,
     goPinLauncher,
+    roleApi,
+    resumeFromBreak,
+    t,
   ]);
 
   const appendDigit = (d) => {
@@ -433,6 +452,7 @@ export default function AttendanceRoleSwitchPage() {
     return (
       <OpsSwitchRoleFlow
         employeeName={firstName}
+        title={resumeFromBreak ? t("mobileOps.tile.resumeWork") : t("mobileOps.changeRole")}
         selectionTree={selectionTree}
         onSelectCombo={(combo) => controllerRef.current?.selectCombo(combo)}
         currentCategoryId={currentCategoryId}

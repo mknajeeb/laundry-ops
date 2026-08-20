@@ -453,11 +453,14 @@ def kiosk_clock_out(conn, user_id: int, organization_id: int) -> tuple[Optional[
     if not sess:
         return None, "No active session", 400
 
+    now = eastern_now_naive()
     if get_open_break(conn, sess["id"]):
-        return None, OPEN_BREAK_MESSAGE, 403
+        from backend.shift_break_ops import close_open_break_at
+
+        # Safe clock-out: close open break at out time (no new role), then finish shift.
+        close_open_break_at(conn, int(sess["id"]), now=now)
 
     br = sum_break_seconds(conn, sess["id"])
-    now = eastern_now_naive()
     clock_in = _parse_mysql_dt(sess.get("clock_in_at"))
     if not clock_in:
         return None, "Invalid session", 500

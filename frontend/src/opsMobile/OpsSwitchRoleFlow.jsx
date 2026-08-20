@@ -34,6 +34,7 @@ export default function OpsSwitchRoleFlow({
   successLabel = "",
   successBody = null,
   defaultExpandedRole = null,
+  title = null,
 }) {
   void employeeName;
   const { t } = useI18n();
@@ -52,7 +53,7 @@ export default function OpsSwitchRoleFlow({
       contentSx={{ gap: { xs: 1.5, sm: 2 } }}
     >
       <OpsTopBar
-        title={t("mobileOps.changeRole")}
+        title={title || t("mobileOps.changeRole")}
         identity=""
         onBack={success ? null : onBack}
         backLabel={t("mobileOps.backPin")}

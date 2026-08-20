@@ -5,6 +5,10 @@ import {
   Box,
   Button,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
   IconButton,
   InputLabel,
@@ -19,6 +23,7 @@ import {
   AccessTime,
   AssignmentTurnedIn,
   Backspace,
+  FreeBreakfast,
   Groups,
   Inventory2,
   Login,
@@ -27,6 +32,7 @@ import {
   SwapHoriz,
 } from "@mui/icons-material";
 import {
+  attendancePinBreakStart,
   attendancePinHub,
   authAttendancePinUnlock,
   getPublicOrgBranding,
@@ -73,6 +79,7 @@ const TILE_ICONS = {
   clock_in: Login,
   clock_out: Logout,
   role: SwapHoriz,
+  break: FreeBreakfast,
   tasks: AssignmentTurnedIn,
   stock: Inventory2,
   revenue: RequestQuote,
@@ -146,6 +153,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
   const [featureLoading, setFeatureLoading] = useState("");
   const [error, setError] = useState("");
   const [branding, setBranding] = useState(null);
+  const [breakConfirmOpen, setBreakConfirmOpen] = useState(false);
 
   const punchInFlightRef = useRef(false);
   const prevPinLenRef = useRef(0);
@@ -380,6 +388,26 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         navigate(`/attendance/role/${encodeURIComponent(slug)}?from=hub`);
         return;
       }
+      if (featureId === "resume_work") {
+        if (hub?.attendance?.on_break !== true) {
+          setError(t("mobileOps.break.notOnBreak"));
+          return;
+        }
+        navigate(`/attendance/role/${encodeURIComponent(slug)}?from=hub&mode=resume`);
+        return;
+      }
+      if (featureId === "take_break") {
+        if (hub?.attendance?.clocked_in !== true) {
+          setError(t("mobileOps.clockInFirst"));
+          return;
+        }
+        if (hub?.attendance?.on_break === true) {
+          setError(t("mobileOps.break.alreadyOnBreak"));
+          return;
+        }
+        setBreakConfirmOpen(true);
+        return;
+      }
       if (featureId === "checklist") {
         if (tile?.disabled || hub?.features?.checklist?.disabled) {
           return;
@@ -456,6 +484,27 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         e?.response?.data?.error ||
           e?.message ||
           (!e?.response ? t("attendance.networkError") : "Could not open feature"),
+      );
+    } finally {
+      setFeatureLoading("");
+    }
+  };
+
+  const confirmStartBreak = async () => {
+    if (!hub || !slug) return;
+    setBreakConfirmOpen(false);
+    setFeatureLoading("take_break");
+    setError("");
+    try {
+      const res = await attendancePinBreakStart(slug, hub.pin, { hubToken: hub.token });
+      const body = res?.data || {};
+      if (!body.ok) {
+        throw new Error(body.error || t("mobileOps.break.startFailed"));
+      }
+      lockSession();
+    } catch (e) {
+      setError(
+        e?.response?.data?.error || e?.message || t("mobileOps.break.startFailed"),
       );
     } finally {
       setFeatureLoading("");
@@ -640,6 +689,34 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
             ))}
         </Stack>
       </Paper>
+
+      <Dialog open={breakConfirmOpen} onClose={() => setBreakConfirmOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle sx={{ fontWeight: 900, color: OPS_MOBILE.navy }}>
+          {t("mobileOps.tile.takeBreak")}
+        </DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontWeight: 650, color: OPS_MOBILE.muted }}>
+            {t("mobileOps.break.confirmBody")}
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2.5, pb: 2 }}>
+          <Button onClick={() => setBreakConfirmOpen(false)} sx={{ textTransform: "none", fontWeight: 800 }}>
+            {t("mobileOps.cancel")}
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => void confirmStartBreak()}
+            sx={{
+              textTransform: "none",
+              fontWeight: 900,
+              bgcolor: OPS_MOBILE.success,
+              "&:hover": { bgcolor: "#0d9488" },
+            }}
+          >
+            {t("mobileOps.break.start")}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </OpsMobileShell>
   );
 }

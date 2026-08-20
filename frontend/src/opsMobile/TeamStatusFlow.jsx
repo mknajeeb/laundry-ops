@@ -219,6 +219,76 @@ function SummaryStrip({ items }) {
   );
 }
 
+function RoleCoverageLine({ title, parts, note, t }) {
+  const [showHours, setShowHours] = useState(false);
+  if (!parts?.length) return null;
+  return (
+    <Box sx={{ mb: 0.85 }}>
+      <Stack direction="row" alignItems="center" spacing={0.75} sx={{ mb: 0.2 }}>
+        <Typography
+          sx={{
+            fontWeight: 900,
+            fontSize: "0.68rem",
+            letterSpacing: 0.6,
+            color: GOLD,
+            textTransform: "uppercase",
+          }}
+        >
+          {title}
+        </Typography>
+        {note ? (
+          <Typography
+            component="button"
+            type="button"
+            onClick={() => setShowHours((v) => !v)}
+            title={note}
+            sx={{
+              border: 0,
+              background: "none",
+              p: 0,
+              m: 0,
+              cursor: "pointer",
+              fontSize: "0.68rem",
+              fontWeight: 800,
+              color: OPS_MOBILE.blue,
+              textDecoration: "underline",
+              fontFamily: "inherit",
+            }}
+          >
+            {showHours ? t("mobileOps.team.hideRoleHours") : t("mobileOps.team.showRoleHours")}
+          </Typography>
+        ) : null}
+      </Stack>
+      <Typography
+        sx={{
+          fontWeight: 800,
+          fontSize: "0.8rem",
+          color: OPS_MOBILE.navy,
+          lineHeight: 1.35,
+        }}
+      >
+        {parts
+          .filter((p) => (p.count ?? p.unique_employees ?? 0) > 0 || showHours)
+          .map((p, i) => {
+            const n = p.count ?? p.unique_employees ?? 0;
+            const label = p.label === "Break" ? t("mobileOps.team.breakShort") : p.label;
+            const hoursBit =
+              showHours && p.duration_seconds != null
+                ? ` ${formatDuration(p.duration_seconds)}`
+                : "";
+            return `${i ? " · " : ""}${label} ${n}${hoursBit}`;
+          })
+          .join("")}
+      </Typography>
+      {note ? (
+        <Typography sx={{ mt: 0.15, fontSize: "0.65rem", fontWeight: 650, color: OPS_MOBILE.muted }}>
+          {note}
+        </Typography>
+      ) : null}
+    </Box>
+  );
+}
+
 function CompactEmployeeRow({ emp, onOpen, t, locale, mode, dense }) {
   const chip = statusMeta(emp, t);
   const assignment = localizeAssignment(emp, t);
@@ -231,8 +301,9 @@ function CompactEmployeeRow({ emp, onOpen, t, locale, mode, dense }) {
   const hours = formatDuration(emp.worked_seconds);
   const breakBit =
     isActive && (emp.on_break || emp.status === "on_break") && emp.open_break_seconds
-      ? ` ${formatDuration(emp.open_break_seconds)}`
+      ? formatDuration(emp.open_break_seconds)
       : "";
+  const onBreak = isActive && (emp.on_break || emp.status === "on_break");
 
   return (
     <Box
@@ -247,8 +318,10 @@ function CompactEmployeeRow({ emp, onOpen, t, locale, mode, dense }) {
         px: dense ? 1 : 1.1,
         py: dense ? 0.7 : 0.85,
         borderRadius: 1.75,
-        border: `1px solid ${alpha(OPS_MOBILE.navy, 0.08)}`,
-        bgcolor: alpha("#fff", 0.97),
+        border: `1px solid ${
+          onBreak ? alpha("#b45309", 0.28) : alpha(OPS_MOBILE.navy, 0.08)
+        }`,
+        bgcolor: onBreak ? alpha("#b45309", 0.06) : alpha("#fff", 0.97),
         cursor: "pointer",
         appearance: "none",
         fontFamily: "inherit",
@@ -296,18 +369,31 @@ function CompactEmployeeRow({ emp, onOpen, t, locale, mode, dense }) {
         </Typography>
       ) : null}
       <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.3, flexWrap: "wrap" }}>
-        <Typography sx={{ fontSize: "0.74rem", fontWeight: 700, color: OPS_MOBILE.muted }}>
-          {isActive
-            ? `${t("mobileOps.team.in")} ${formatTime(emp.clock_in_at, locale)}`
-            : `${formatTime(emp.clock_in_at, locale)} – ${formatTime(emp.clock_out_at, locale)}`}
-        </Typography>
-        <Typography sx={{ fontSize: "0.74rem", fontWeight: 650, color: alpha(OPS_MOBILE.navy, 0.35) }}>
-          ·
-        </Typography>
-        <Typography sx={{ fontSize: "0.74rem", fontWeight: 800, color: chip.color }}>
-          {chip.label}
-          {breakBit}
-        </Typography>
+        {onBreak ? (
+          <Typography sx={{ fontSize: "0.76rem", fontWeight: 900, color: "#b45309", letterSpacing: 0.2 }}>
+            {t("mobileOps.team.onBreak").toUpperCase()}
+            {breakBit ? ` · ${breakBit}` : ""}
+          </Typography>
+        ) : (
+          <>
+            <Typography sx={{ fontSize: "0.74rem", fontWeight: 700, color: OPS_MOBILE.muted }}>
+              {isActive
+                ? `${t("mobileOps.team.in")} ${formatTime(emp.clock_in_at, locale)}`
+                : `${formatTime(emp.clock_in_at, locale)} – ${formatTime(emp.clock_out_at, locale)}`}
+            </Typography>
+            <Typography sx={{ fontSize: "0.74rem", fontWeight: 650, color: alpha(OPS_MOBILE.navy, 0.35) }}>
+              ·
+            </Typography>
+            <Typography sx={{ fontSize: "0.74rem", fontWeight: 800, color: chip.color }}>
+              {chip.label}
+            </Typography>
+          </>
+        )}
+        {onBreak ? (
+          <Typography sx={{ fontSize: "0.74rem", fontWeight: 700, color: OPS_MOBILE.muted }}>
+            · {t("mobileOps.team.in")} {formatTime(emp.clock_in_at, locale)}
+          </Typography>
+        ) : null}
       </Stack>
       {!isActive && Array.isArray(emp.role_chips) && emp.role_chips.length > 1 ? (
         <Stack direction="row" spacing={0.4} sx={{ mt: 0.4, flexWrap: "wrap", rowGap: 0.35 }}>
@@ -434,8 +520,44 @@ function EmployeeDetailDrawer({
             </Typography>
             <Stack spacing={0.65}>
               {(emp.timeline || [])
-                .filter((ev) => ev.type === "role" || ev.type === "break")
+                .filter((ev) => ev.type === "role" || ev.type === "break" || ev.type === "gap" || ev.type === "clock_in" || ev.type === "clock_out")
                 .map((ev, idx) => {
+                  if (ev.type === "clock_in") {
+                    return (
+                      <Typography key={`ci-${idx}`} sx={{ fontWeight: 800, fontSize: "0.82rem" }}>
+                        {formatTime(ev.at, locale)} {t("mobileOps.team.clockedIn")}
+                      </Typography>
+                    );
+                  }
+                  if (ev.type === "clock_out") {
+                    return (
+                      <Typography key={`co-${idx}`} sx={{ fontWeight: 800, fontSize: "0.82rem" }}>
+                        {formatTime(ev.at, locale)} {t("mobileOps.team.clockedOut")}
+                      </Typography>
+                    );
+                  }
+                  if (ev.type === "gap") {
+                    return (
+                      <Box
+                        key={`gap-${idx}`}
+                        sx={{
+                          px: 1,
+                          py: 0.7,
+                          borderRadius: 1.5,
+                          bgcolor: alpha(OPS_MOBILE.danger, 0.06),
+                          border: `1px dashed ${alpha(OPS_MOBILE.danger, 0.35)}`,
+                        }}
+                      >
+                        <Typography sx={{ fontWeight: 800, fontSize: "0.82rem", color: OPS_MOBILE.danger }}>
+                          {formatTime(ev.started_at, locale)}
+                          {ev.ended_at
+                            ? `–${formatTime(ev.ended_at, locale)}`
+                            : `–${t("mobileOps.team.now")}`}{" "}
+                          {t("mobileOps.team.dataGap")} {formatDuration(ev.duration_seconds)}
+                        </Typography>
+                      </Box>
+                    );
+                  }
                   if (ev.type === "break") {
                     return (
                       <Box
@@ -925,6 +1047,20 @@ export default function TeamStatusFlow({ onBack, onLock }) {
                     },
                   ]
             }
+          />
+
+          {isToday ? (
+            <RoleCoverageLine
+              title={t("mobileOps.team.activeRoles")}
+              parts={summary.active_roles || []}
+              t={t}
+            />
+          ) : null}
+          <RoleCoverageLine
+            title={t("mobileOps.team.workedTodayRoles")}
+            parts={summary.worked_today_roles || []}
+            note={summary.worked_today_roles_note || t("mobileOps.team.workedTodayRolesNote")}
+            t={t}
           />
 
           {isToday ? (

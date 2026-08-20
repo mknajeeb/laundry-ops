@@ -77,6 +77,7 @@ axios.interceptors.request.use((config) => {
     url.includes("/auth/attendance-pin-unlock") ||
     url.includes("/api/public/attendance/pin-punch") ||
     url.includes("/api/public/attendance/pin-switch-role") ||
+    url.includes("/api/public/attendance/pin-break/") ||
     url.includes("/api/public/attendance/pin-maintenance-tasks") ||
     url.includes("/api/public/attendance/pin-hub")
   ) {
@@ -253,6 +254,46 @@ export const attendancePinSwitchRole = (organization_slug, pin, options = {}) =>
     {
       timeout: ATTENDANCE_PIN_PUNCH_TIMEOUT_MS,
       /** Same as pin-punch: surface 4xx/5xx bodies in UI instead of throwing first. */
+      validateStatus: (status) => status >= 200 && status < 600,
+    },
+  );
+};
+
+/** Mobile Ops Take a Break (closes open role segment; keeps shift open). */
+export const attendancePinBreakStart = (organization_slug, pin, options = {}) => {
+  const hubToken = options.hubToken ? String(options.hubToken) : "";
+  return axios.post(
+    `${API_BASE}/api/public/attendance/pin-break/start`,
+    {
+      organization_slug: String(organization_slug || "").trim().toLowerCase(),
+      ...(hubToken ? { hub_token: hubToken } : { pin: String(pin || "").trim() }),
+    },
+    {
+      timeout: ATTENDANCE_PIN_PUNCH_TIMEOUT_MS,
+      validateStatus: (status) => status >= 200 && status < 600,
+    },
+  );
+};
+
+/** Mobile Ops Resume Work — end break + start role. */
+export const attendancePinBreakResume = (organization_slug, pin, options = {}) => {
+  const idempotency_key =
+    (options.idempotency_key || "").trim() ||
+    (options.category_id != null && options.role_id != null
+      ? createTaskTrackingSwitchIdempotencyKey()
+      : undefined);
+  const hubToken = options.hubToken ? String(options.hubToken) : "";
+  return axios.post(
+    `${API_BASE}/api/public/attendance/pin-break/resume`,
+    {
+      organization_slug: String(organization_slug || "").trim().toLowerCase(),
+      ...(hubToken ? { hub_token: hubToken } : { pin: String(pin || "").trim() }),
+      ...(options.category_id != null ? { category_id: options.category_id } : {}),
+      ...(options.role_id != null ? { role_id: options.role_id } : {}),
+      ...(idempotency_key ? { idempotency_key } : {}),
+    },
+    {
+      timeout: ATTENDANCE_PIN_PUNCH_TIMEOUT_MS,
       validateStatus: (status) => status >= 200 && status < 600,
     },
   );

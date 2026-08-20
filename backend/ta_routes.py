@@ -2036,9 +2036,6 @@ def clock_out():
         if not sess:
             return jsonify({"error": "No active session"}), 400
 
-        if get_open_break(conn, sess["id"]):
-            return jsonify({"error": "End break before clocking out"}), 400
-
         ui = load_clock_payroll_ui(conn, _tenant_id())
         clock_cfg = ui.get("clock") or {}
         require_inside_co = as_bool(
@@ -2077,8 +2074,14 @@ def clock_out():
                     }
                 ), 400
 
-        br = sum_break_seconds(conn, sess["id"])
         now = eastern_now_naive()
+        if get_open_break(conn, sess["id"]):
+            from backend.shift_break_ops import close_open_break_at
+
+            # Safe clock-out: close open break at out time (no new role), then finish shift.
+            close_open_break_at(conn, int(sess["id"]), now=now)
+
+        br = sum_break_seconds(conn, sess["id"])
         clock_in = _parse_mysql_dt(sess.get("clock_in_at"))
         if not clock_in:
             return jsonify({"error": "Invalid session clock_in"}), 400
@@ -2180,6 +2183,8 @@ def clock_out():
 def break_start():
     conn = get_db()
     try:
+        from backend.shift_break_ops import BreakOpError, start_break_on_session
+
         c = conn.cursor(dictionary=True)
         c.execute(
             """
@@ -2191,23 +2196,13 @@ def break_start():
         sess = c.fetchone()
         if not sess:
             return jsonify({"error": "No active session"}), 400
-        if get_open_break(conn, sess["id"]):
-            return jsonify({"error": "Break already in progress"}), 400
-
-        now = eastern_now_naive()
-        c2 = conn.cursor()
-        c2.execute(
-            """
-            INSERT INTO shift_breaks (shift_session_id, break_start_at)
-            VALUES (%s,%s)
-            """,
-            (sess["id"], now),
-        )
-        bid = c2.lastrowid
-        c.execute("SELECT * FROM shift_breaks WHERE id=%s", (bid,))
-        b = c.fetchone()
-        conn.commit()
-        return jsonify(json_safe(b)), 201
+        try:
+            b = start_break_on_session(conn, int(sess["id"]))
+            conn.commit()
+            return jsonify(json_safe(b)), 201
+        except BreakOpError as e:
+            conn.rollback()
+            return jsonify({"error": e.message, **(e.payload or {})}), e.status
     finally:
         conn.close()
 
@@ -2225,12 +2220,7 @@ def break_end():
     role_id = data.get("role_id")
     conn = get_db()
     try:
-        from backend.category_role_tracking_settings import is_category_role_tracking_enabled
-        from backend.shift_job_tracking import (
-            list_active_selection_tree,
-            seed_default_categories_and_roles,
-            start_category_role_segment,
-        )
+        from backend.shift_break_ops import BreakOpError, end_break_on_session
 
         c = conn.cursor(dictionary=True)
         c.execute(
@@ -2243,49 +2233,25 @@ def break_end():
         sess = c.fetchone()
         if not sess:
             return jsonify({"error": "No active session"}), 400
-        ob = get_open_break(conn, sess["id"])
-        if not ob:
-            return jsonify({"error": "No active break"}), 400
 
         oid = _tenant_id()
-        tracking_on = is_category_role_tracking_enabled(conn, oid)
-        if tracking_on and (not category_id or not role_id):
-            seed_default_categories_and_roles(c, oid)
-            tree = list_active_selection_tree(c, oid)
-            return (
-                jsonify(
-                    {
-                        "error": "Select a category and role to resume work",
-                        "needs_category_role": True,
-                        "selection_tree": tree,
-                    }
-                ),
-                400,
-            )
-
-        now = eastern_now_naive()
-        c2 = conn.cursor()
-        c2.execute(
-            """
-            UPDATE shift_breaks SET break_end_at=%s WHERE id=%s
-            """,
-            (now, ob["id"]),
-        )
-        segment = None
-        if tracking_on and category_id and role_id:
-            segment = start_category_role_segment(
+        try:
+            row, segment = end_break_on_session(
                 conn,
                 int(sess["id"]),
                 oid,
                 int(g.ta_user["id"]),
-                int(category_id),
-                int(role_id),
-                started_at=now,
-                change_source="break_resume",
+                category_id=category_id,
+                role_id=role_id,
+                require_role_when_tracking=True,
             )
-        conn.commit()
-        c.execute("SELECT * FROM shift_breaks WHERE id=%s", (ob["id"],))
-        body = json_safe(c.fetchone()) or {}
+            conn.commit()
+        except BreakOpError as e:
+            conn.rollback()
+            body = {"error": e.message, **(e.payload or {})}
+            return jsonify(body), e.status
+
+        body = json_safe(row) or {}
         if segment:
             body["segment"] = segment
             body["task_tracking"] = {
@@ -2293,12 +2259,6 @@ def break_end():
                 or segment.get("display_label")
             }
         return jsonify(body)
-    except ValueError as e:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        return jsonify({"error": str(e)}), 400
     finally:
         conn.close()
 

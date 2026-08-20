@@ -472,7 +472,153 @@ def _build_timeline(
     events.sort(key=lambda e: (e.get("sort_at") or datetime.min, e.get("type") or ""))
     for e in events:
         e.pop("sort_at", None)
-    return events
+    return _inject_timeline_gaps(events, clock_in=clock_in, clock_out=clock_out, now=now)
+
+
+def _inject_timeline_gaps(
+    events: list[dict],
+    *,
+    clock_in: Optional[datetime],
+    clock_out: Optional[datetime],
+    now: datetime,
+) -> list[dict]:
+    """Insert explicit data-gap rows for intervals covered by neither role nor break."""
+    if not clock_in:
+        return events
+    end_bound = clock_out or now
+    covered: list[tuple[datetime, datetime]] = []
+    for ev in events:
+        if ev.get("type") not in ("role", "break"):
+            continue
+        start = _parse_dt(ev.get("started_at"))
+        end = _parse_dt(ev.get("ended_at")) or (now if ev.get("open") else None)
+        if start and end and end > start:
+            covered.append((start, end))
+    covered.sort(key=lambda x: x[0])
+    merged: list[tuple[datetime, datetime]] = []
+    for s, e in covered:
+        if not merged or s > merged[-1][1]:
+            merged.append((s, e))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+
+    gaps: list[dict] = []
+    cursor = clock_in
+    for s, e in merged:
+        if s > cursor and int((s - cursor).total_seconds()) >= 60:
+            gaps.append(
+                {
+                    "type": "gap",
+                    "started_at": _iso(cursor),
+                    "ended_at": _iso(s),
+                    "duration_seconds": int((s - cursor).total_seconds()),
+                    "label": "Data gap",
+                }
+            )
+        cursor = max(cursor, e)
+    if end_bound > cursor and int((end_bound - cursor).total_seconds()) >= 60:
+        gaps.append(
+            {
+                "type": "gap",
+                "started_at": _iso(cursor),
+                "ended_at": _iso(end_bound) if clock_out else None,
+                "open": clock_out is None,
+                "duration_seconds": int((end_bound - cursor).total_seconds()),
+                "label": "Data gap",
+            }
+        )
+
+    if not gaps:
+        return events
+    out = list(events) + gaps
+    out.sort(
+        key=lambda e: (
+            _parse_dt(e.get("at") or e.get("started_at")) or datetime.min,
+            e.get("type") or "",
+        )
+    )
+    return out
+
+
+def _canonical_role_bucket(label: str) -> Optional[str]:
+    key = (label or "").strip().lower()
+    if key in ("wash-dry", "wash dry", "operator"):
+        return "Wash-Dry"
+    if key in ("sort", "sorting", "sorter"):
+        return "Sort"
+    if key in ("fold", "folder", "folding"):
+        return "Fold"
+    if label:
+        return label
+    return None
+
+
+def _build_role_coverage(
+    working_now: list[dict],
+    all_cards: list[dict],
+) -> dict[str, Any]:
+    """Active headcounts + unique worked-today role participation."""
+    active_order = ("Wash-Dry", "Sort", "Fold")
+    active_counts = {k: 0 for k in active_order}
+    break_count = 0
+    for emp in working_now:
+        if emp.get("on_break") or emp.get("status") == "on_break":
+            break_count += 1
+            continue
+        label = emp.get("role_label") or ""
+        if not label and emp.get("assignment"):
+            label = (emp["assignment"] or {}).get("role_label") or ""
+        bucket = _canonical_role_bucket(label)
+        if bucket in active_counts:
+            active_counts[bucket] += 1
+        elif bucket:
+            active_counts[bucket] = active_counts.get(bucket, 0) + 1
+
+    active_roles = [{"label": k, "count": active_counts[k]} for k in active_order]
+    for k, v in active_counts.items():
+        if k not in active_order and v > 0:
+            active_roles.append({"label": k, "count": v})
+    active_roles.append({"label": "Break", "count": break_count})
+
+    participation: dict[str, set[int]] = {k: set() for k in active_order}
+    role_seconds: dict[str, int] = {k: 0 for k in active_order}
+    for emp in all_cards:
+        uid = int(emp.get("user_id") or 0)
+        for row in emp.get("role_summary") or []:
+            if row.get("kind") != "role":
+                continue
+            bucket = _canonical_role_bucket(str(row.get("label") or ""))
+            if not bucket:
+                continue
+            if bucket not in participation:
+                participation[bucket] = set()
+                role_seconds[bucket] = 0
+            if uid:
+                participation[bucket].add(uid)
+            role_seconds[bucket] = int(role_seconds.get(bucket) or 0) + int(
+                row.get("duration_seconds") or 0
+            )
+
+    worked_today_roles = []
+    for k in list(active_order) + [x for x in participation if x not in active_order]:
+        users = participation.get(k) or set()
+        if not users and not role_seconds.get(k):
+            continue
+        worked_today_roles.append(
+            {
+                "label": k,
+                "unique_employees": len(users),
+                "duration_seconds": int(role_seconds.get(k) or 0),
+            }
+        )
+
+    return {
+        "active_roles": active_roles,
+        "worked_today_roles": worked_today_roles,
+        "worked_today_roles_note": (
+            "People who worked each role today; employees may appear in more than one role."
+        ),
+    }
 
 
 def _assignment_payload(seg: dict | None) -> dict:
@@ -731,6 +877,8 @@ def build_team_status(
     total_hrs_seconds = sum(int(e["worked_seconds"]) for e in by_user.values())
     unique_worked = len(by_user)
     break_count = sum(1 for e in working_now if e.get("on_break") or e.get("status") == "on_break")
+    all_cards = (working_now if is_today else []) + worked_list
+    coverage = _build_role_coverage(working_now if is_today else [], all_cards)
 
     return {
         "ok": True,
@@ -745,6 +893,9 @@ def build_team_status(
             "break_count": break_count if is_today else 0,
             "worked_count": unique_worked,
             "total_worked_seconds": total_hrs_seconds,
+            "active_roles": coverage["active_roles"] if is_today else [],
+            "worked_today_roles": coverage["worked_today_roles"],
+            "worked_today_roles_note": coverage["worked_today_roles_note"],
         },
         "working_now": working_now if is_today else [],
         "worked": worked_list,

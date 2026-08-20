@@ -245,22 +245,47 @@ def apply_attendance_gates_to_features(
     """
     Keep Role allowed when clocked out so the tile stays visible; mark requires_clock_in
     for the client to show the shared-tablet clock-in message on tap.
-    On break: tile stays visible but blocked — Resume flow handles role selection.
+    On break: hide Change Role; expose Resume Work instead.
+    When clocked in and not on break: expose Take a Break.
     """
     out = {k: dict(v) if isinstance(v, dict) else v for k, v in (features or {}).items()}
     role = out.get("switch_role")
+    clocked_in = bool(attendance.get("clocked_in"))
+    on_break = bool(attendance.get("on_break"))
+
     if isinstance(role, dict) and role.get("allowed"):
-        if not attendance.get("clocked_in"):
+        if not clocked_in:
             role = dict(role)
             role["requires_clock_in"] = True
             role["blocked_reason"] = "not_clocked_in"
             out["switch_role"] = role
-        elif attendance.get("on_break"):
+        elif on_break:
+            # Change Role is not available on break — Resume Work handles role selection.
             role = dict(role)
-            role["disabled"] = True
+            role["allowed"] = False
+            role["hidden"] = True
             role["blocked_reason"] = "on_break"
-            role["disabled_helper"] = "Finish your break before changing role."
             out["switch_role"] = role
+
+    if clocked_in and not on_break:
+        out["take_break"] = {
+            "allowed": True,
+            "label": "Take a Break",
+            "path": None,
+        }
+    else:
+        out.pop("take_break", None)
+
+    if on_break:
+        out["resume_work"] = {
+            "allowed": True,
+            "label": "Resume Work",
+            "path": "/attendance/role",
+            "resume_from_break": True,
+        }
+    else:
+        out.pop("resume_work", None)
+
     return out
 
 
@@ -510,17 +535,21 @@ def perform_pin_hub_open(
             checklist["disabled_helper"] = "No maintenance checklist assigned today."
         features["checklist"] = checklist
 
-    # Prefetch org selection tree when Role is usable from hub (clocked in, not on break).
-    # Change Role page can render immediately from this cache; switch API still validates.
+    # Prefetch org selection tree when Role or Resume Work is usable from hub.
     selection_tree = None
     switch = features.get("switch_role") if isinstance(features.get("switch_role"), dict) else {}
-    if (
-        switch.get("allowed")
-        and attendance.get("clocked_in")
-        and not attendance.get("on_break")
-        and not switch.get("requires_clock_in")
-        and not switch.get("disabled")
-    ):
+    resume = features.get("resume_work") if isinstance(features.get("resume_work"), dict) else {}
+    need_tree = (
+        (
+            switch.get("allowed")
+            and attendance.get("clocked_in")
+            and not attendance.get("on_break")
+            and not switch.get("requires_clock_in")
+            and not switch.get("disabled")
+        )
+        or (resume.get("allowed") and attendance.get("on_break"))
+    )
+    if need_tree:
         from backend.shift_job_tracking import list_active_selection_tree
 
         tree_c = conn.cursor(dictionary=True)
@@ -532,8 +561,14 @@ def perform_pin_hub_open(
             except Exception:
                 pass
 
-    # Stable button order for the client.
+    # Stable button order for the client (dynamic attendance tiles injected after Role).
     feature_order = [d["id"] for d in PIN_HUB_FEATURE_DEFS]
+    if features.get("resume_work", {}).get("allowed"):
+        feature_order = ["resume_work"] + [x for x in feature_order if x != "switch_role"]
+    elif features.get("take_break", {}).get("allowed"):
+        feature_order = ["switch_role", "take_break"] + [
+            x for x in feature_order if x not in ("switch_role", "take_break")
+        ]
 
     record_pin_attempt(conn, org_id, ip_address, True)
     hub_token = issue_hub_session_token(organization_id=org_id, employee_id=employee_id)

@@ -2,8 +2,8 @@
  * Build PIN Menu launcher tiles from hub features + attendance snapshot.
  * Presentation only — does not invent permissions or punch rules.
  *
- * Break is intentionally omitted: the PIN attendance PWA has no break
- * start/end action (break lives on authenticated Time Clock only).
+ * Take a Break / Resume Work are attendance tiles driven by hub snapshot
+ * (clocked in / on break). Change Role is hidden while on break.
  *
  * Hang Dry is not a separate hub tile — it lives inside Revenue / Cash.
  * Clock is always last so operational tiles stay compact/mobile-first.
@@ -16,6 +16,16 @@ export const PIN_LAUNCHER_META = {
   },
   switch_role: {
     label: "Role",
+    color: "#4338ca",
+    iconKey: "role",
+  },
+  take_break: {
+    label: "Take a Break",
+    color: "#0f766e",
+    iconKey: "break",
+  },
+  resume_work: {
+    label: "Resume Work",
     color: "#4338ca",
     iconKey: "role",
   },
@@ -43,7 +53,9 @@ export const PIN_LAUNCHER_META = {
 
 /** Preferred PIN Home order; Clock is appended last by buildPinLauncherTiles. */
 export const PIN_HOME_FEATURE_ORDER = [
+  "resume_work",
   "switch_role",
+  "take_break",
   "team_status",
   "revenue_cost",
   "checklist",
@@ -56,10 +68,12 @@ export const ROLE_CLOCK_IN_FIRST_MESSAGE =
   "Clock in first using the shared attendance tablet, then return here to change your role.";
 
 export const ROLE_ON_BREAK_MESSAGE =
-  "Finish your break before changing role. Use Resume after Break to pick your role.";
+  "Finish your break before changing role. Use Resume Work to pick your role.";
 
 export const PIN_LAUNCHER_I18N = {
   switch_role: "mobileOps.tile.role",
+  take_break: "mobileOps.tile.takeBreak",
+  resume_work: "mobileOps.tile.resumeWork",
   team_status: "mobileOps.tile.teamStatus",
   revenue_cost: "mobileOps.tile.revenueCash",
   checklist: "mobileOps.tile.checklist",
@@ -68,6 +82,8 @@ export const PIN_LAUNCHER_I18N = {
 
 export const PIN_LAUNCHER_HELPER_I18N = {
   team_status: "mobileOps.tile.teamStatusHelper",
+  take_break: "mobileOps.tile.takeBreakHelper",
+  resume_work: "mobileOps.tile.resumeWorkHelper",
 };
 
 export function clockTileLabel(attendance, t = null) {
@@ -106,14 +122,14 @@ export function buildPinLauncherTiles({
   const seen = new Set();
   const order = [];
   for (const id of [...PIN_HOME_FEATURE_ORDER, ...requested]) {
-    if (!id || seen.has(id) || id === "clock" || id === "break" || id === "hang_dry") continue;
+    if (!id || seen.has(id) || id === "clock" || id === "hang_dry") continue;
     seen.add(id);
     order.push(id);
   }
 
   for (const id of order) {
     const feat = feats[id];
-    if (!feat?.allowed) continue;
+    if (!feat?.allowed || feat?.hidden) continue;
 
     const meta = PIN_LAUNCHER_META[id] || {
       label: feat.label || id,
@@ -136,10 +152,11 @@ export function buildPinLauncherTiles({
       tile.requiresClockIn = true;
     }
     if (id === "switch_role" && (feat.blocked_reason === "on_break" || att.on_break === true)) {
-      tile.disabled = true;
-      tile.disabledHelper =
-        feat.disabled_helper || (tr ? tr("mobileOps.roleOnBreak") : ROLE_ON_BREAK_MESSAGE);
-      tile.blockedReason = "on_break";
+      // Should be hidden by backend; keep as safety net.
+      continue;
+    }
+    if (id === "resume_work") {
+      tile.resumeFromBreak = true;
     }
     if (feat.disabled) {
       tile.disabled = true;

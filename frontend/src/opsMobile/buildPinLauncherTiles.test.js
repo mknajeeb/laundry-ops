@@ -128,4 +128,27 @@ describe("buildPinLauncherTiles", () => {
     expect(tasks?.disabledHelper).toBe("No maintenance checklist assigned today.");
     expect(tiles.map((t) => t.id)).toEqual(["checklist", "clock"]);
   });
+
+  it("shows Take a Break when working; Resume Work when on break (hides Role)", () => {
+    const working = buildPinLauncherTiles({
+      features: {
+        switch_role: { allowed: true },
+        take_break: { allowed: true, label: "Take a Break" },
+      },
+      attendance: { clocked_in: true, on_break: false },
+    });
+    expect(working.map((t) => t.id)).toEqual(["switch_role", "take_break", "clock"]);
+
+    const onBreak = buildPinLauncherTiles({
+      features: {
+        switch_role: { allowed: false, hidden: true, blocked_reason: "on_break" },
+        resume_work: { allowed: true, label: "Resume Work", resume_from_break: true },
+      },
+      attendance: { clocked_in: true, on_break: true },
+    });
+    expect(onBreak.map((t) => t.id)).toEqual(["resume_work", "clock"]);
+    expect(onBreak.find((t) => t.id === "resume_work")?.resumeFromBreak).toBe(true);
+    expect(onBreak.find((t) => t.id === "switch_role")).toBeUndefined();
+    expect(onBreak.find((t) => t.id === "take_break")).toBeUndefined();
+  });
 });

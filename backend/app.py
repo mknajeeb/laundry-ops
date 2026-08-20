@@ -5199,6 +5199,83 @@ def public_attendance_pin_switch_role():
             pass
 
 
+@app.route("/api/public/attendance/pin-break/start", methods=["POST"])
+def public_attendance_pin_break_start():
+    """Mobile Ops Take a Break (PIN / hub_token). Closes open role segment; keeps shift open."""
+    from backend.attendance_pin_break import perform_pin_break_start
+
+    data = request.json or {}
+    org_slug = (data.get("organization_slug") or data.get("organization") or "").strip().lower()
+    pin = data.get("pin")
+    hub_token = str(data.get("hub_token") or "").strip() or None
+    conn = get_db()
+    try:
+        body, status = perform_pin_break_start(
+            conn,
+            org_slug,
+            pin,
+            fetch_user_roles,
+            get_request_ip(),
+            hub_token=hub_token,
+        )
+        return jsonify(body), status
+    except Exception:
+        logger = __import__("logging").getLogger(__name__)
+        logger.exception("public_attendance_pin_break_start failed")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": "Attendance service error. Contact your manager."}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.route("/api/public/attendance/pin-break/resume", methods=["POST"])
+def public_attendance_pin_break_resume():
+    """Mobile Ops Resume Work — end break + start role via shared Role selector."""
+    from backend.attendance_pin_break import perform_pin_break_resume
+
+    data = request.json or {}
+    org_slug = (data.get("organization_slug") or data.get("organization") or "").strip().lower()
+    pin = data.get("pin")
+    hub_token = str(data.get("hub_token") or "").strip() or None
+    idempotency_key = (
+        (data.get("idempotency_key") or "").strip()
+        or (request.headers.get("Idempotency-Key") or "").strip()
+    )
+    conn = get_db()
+    try:
+        body, status = perform_pin_break_resume(
+            conn,
+            org_slug,
+            pin,
+            fetch_user_roles,
+            get_request_ip(),
+            hub_token=hub_token,
+            category_id=data.get("category_id"),
+            role_id=data.get("role_id"),
+            idempotency_key=idempotency_key or None,
+        )
+        return jsonify(body), status
+    except Exception:
+        logger = __import__("logging").getLogger(__name__)
+        logger.exception("public_attendance_pin_break_resume failed")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": "Attendance service error. Contact your manager."}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @app.route("/api/public/attendance/pin-hub", methods=["POST"])
 def public_attendance_pin_hub():
     """
