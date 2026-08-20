@@ -16,7 +16,8 @@ Per-organization marker in ``employee_mobile_pin_access_backfill`` (no global cu
    active PIN employees, verifies completeness, then writes marker
    ``init_mode=legacy_grant``. Request paths never auto-grant.
 3. **New org:** platform create/bootstrap writes marker ``init_mode=new_org`` with
-   zero grants. New / first-PIN employees get explicit all-false rows.
+   zero grants. New / first-PIN employees get explicit rows with ``switch_role`` ON
+   and other modules OFF (Role is the universal Mobile Ops default).
 4. **Marked org:** missing row → all-deny (never "missing = allow all").
 """
 
@@ -558,6 +559,13 @@ def assert_optional_pin_hub_module(
     assert_employee_allows_module(cursor, organization_id, user_id, key)
 
 
+def _new_employee_default_grants() -> dict[str, bool]:
+    """Canonical defaults for newly created / newly PIN'd employees."""
+    grants = _all_false()
+    grants["switch_role"] = True
+    return grants
+
+
 def ensure_new_employee_mobile_pin_access(
     cursor,
     organization_id: int,
@@ -566,7 +574,9 @@ def ensure_new_employee_mobile_pin_access(
     actor_user_id: Optional[int] = None,
 ) -> None:
     """
-    Explicit all-false row for a new / newly PIN'd employee *after* the org is marked.
+    Explicit default row for a new / newly PIN'd employee *after* the org is marked.
+
+    Defaults: ``switch_role`` ON; clock / checklist / inventory / revenue_cost OFF.
     Before the org marker exists, do nothing so controlled legacy all-true backfill
     can still apply to employees present at migration.
     INSERT IGNORE so existing manager grants are never overwritten.
@@ -574,6 +584,7 @@ def ensure_new_employee_mobile_pin_access(
     ensure_org_mobile_pin_access_backfill(cursor, int(organization_id))
     if not _org_is_backfilled(cursor, int(organization_id)):
         return
+    defaults = _new_employee_default_grants()
     cursor.execute(
         f"""
         INSERT IGNORE INTO {ACCESS_TABLE}
@@ -581,14 +592,161 @@ def ensure_new_employee_mobile_pin_access(
            allow_clock, allow_switch_role, allow_checklist,
            allow_inventory, allow_revenue_cost,
            updated_by_user_id, created_at)
-        VALUES (%s, %s, 0, 0, 0, 0, 0, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
         """,
         (
             int(organization_id),
             int(user_id),
+            1 if defaults["clock"] else 0,
+            1 if defaults["switch_role"] else 0,
+            1 if defaults["checklist"] else 0,
+            1 if defaults["inventory"] else 0,
+            1 if defaults["revenue_cost"] else 0,
             int(actor_user_id) if actor_user_id is not None else None,
         ),
     )
+
+
+def _list_active_user_ids(cursor, organization_id: int) -> list[int]:
+    if not table_exists(cursor, "users"):
+        return []
+    cursor.execute(
+        """
+        SELECT id AS user_id
+        FROM users
+        WHERE organization_id = %s AND active = 1
+        ORDER BY id
+        """,
+        (int(organization_id),),
+    )
+    return _fetch_int_ids(cursor.fetchall())
+
+
+def enable_switch_role_for_org_active_users(
+    conn,
+    organization_id: int,
+    *,
+    dry_run: bool = True,
+    actor_user_id: Optional[int] = None,
+) -> dict[str, Any]:
+    """
+    Enable Mobile PIN Access ``switch_role`` for every active user in an org.
+
+    Does not grant checklist / inventory / revenue_cost / clock.
+    INSERT missing rows with Role-only defaults; UPDATE existing rows to set
+    ``allow_switch_role=1`` without changing other module flags.
+    """
+    oid = int(organization_id)
+    report: dict[str, Any] = {
+        "organization_id": oid,
+        "dry_run": bool(dry_run),
+        "active_users": 0,
+        "role_on_before": 0,
+        "role_on_after": 0,
+        "rows_inserted": 0,
+        "rows_updated": 0,
+        "already_on": 0,
+        "excluded_inactive": 0,
+        "user_ids_enabled": [],
+        "excluded_users": [],
+    }
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ensure_employee_mobile_pin_access_tables(cursor)
+        ensure_org_mobile_pin_access_backfill(cursor, oid)
+        active_ids = _list_active_user_ids(cursor, oid)
+        report["active_users"] = len(active_ids)
+
+        if table_exists(cursor, "users"):
+            cursor.execute(
+                """
+                SELECT id AS user_id
+                FROM users
+                WHERE organization_id = %s AND (active = 0 OR active IS NULL)
+                ORDER BY id
+                """,
+                (oid,),
+            )
+            inactive = _fetch_int_ids(cursor.fetchall())
+            report["excluded_inactive"] = len(inactive)
+            report["excluded_users"] = [
+                {"user_id": uid, "reasons": ["inactive"]} for uid in inactive
+            ]
+
+        before_on = 0
+        to_insert: list[int] = []
+        to_update: list[int] = []
+        already: list[int] = []
+        for uid in active_ids:
+            row = get_access_row(cursor, oid, uid)
+            if row is None:
+                to_insert.append(uid)
+                continue
+            if bool(row.get("allow_switch_role")):
+                before_on += 1
+                already.append(uid)
+            else:
+                to_update.append(uid)
+        report["role_on_before"] = before_on
+        report["already_on"] = len(already)
+
+        if dry_run:
+            report["rows_inserted"] = len(to_insert)
+            report["rows_updated"] = len(to_update)
+            report["role_on_after"] = before_on + len(to_insert) + len(to_update)
+            report["user_ids_enabled"] = sorted(to_insert + to_update)
+            return report
+
+        actor = int(actor_user_id) if actor_user_id is not None else None
+        defaults = _new_employee_default_grants()
+        for uid in to_insert:
+            cursor.execute(
+                f"""
+                INSERT INTO {ACCESS_TABLE}
+                  (organization_id, user_id,
+                   allow_clock, allow_switch_role, allow_checklist,
+                   allow_inventory, allow_revenue_cost,
+                   updated_by_user_id, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                """,
+                (
+                    oid,
+                    int(uid),
+                    1 if defaults["clock"] else 0,
+                    1 if defaults["switch_role"] else 0,
+                    1 if defaults["checklist"] else 0,
+                    1 if defaults["inventory"] else 0,
+                    1 if defaults["revenue_cost"] else 0,
+                    actor,
+                ),
+            )
+        for uid in to_update:
+            cursor.execute(
+                f"""
+                UPDATE {ACCESS_TABLE}
+                SET allow_switch_role = 1,
+                    updated_by_user_id = %s
+                WHERE organization_id = %s AND user_id = %s
+                """,
+                (actor, oid, int(uid)),
+            )
+        conn.commit()
+        report["rows_inserted"] = len(to_insert)
+        report["rows_updated"] = len(to_update)
+        report["role_on_after"] = before_on + len(to_insert) + len(to_update)
+        report["user_ids_enabled"] = sorted(to_insert + to_update)
+        return report
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            cursor.close()
+        except Exception:
+            pass
 
 
 def serialize_mobile_pin_access(cursor, organization_id: int, user_id: int) -> dict[str, bool]:

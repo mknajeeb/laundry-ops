@@ -8,9 +8,9 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta id="apple-app-title" name="apple-mobile-web-app-title" content="Laundry Ops" />
-    <link id="app-icon-svg" rel="icon" href="/icons/veewash-favicon-32-v1.png" type="image/png" sizes="32x32" />
-    <link id="app-icon-png" rel="icon" type="image/png" sizes="192x192" href="/icons/veewash-icon-192-v1.png" />
-    <link id="app-icon-apple" rel="apple-touch-icon" href="/icons/veewash-apple-touch-180-v1.png" />
+    <link id="app-icon-svg" rel="icon" href="/icons/veewash-favicon-32-v2.png" type="image/png" sizes="32x32" />
+    <link id="app-icon-png" rel="icon" type="image/png" sizes="192x192" href="/icons/veewash-icon-192-v2.png" />
+    <link id="app-icon-apple" rel="apple-touch-icon" href="/icons/veewash-apple-touch-180-v2.png" />
     <!--
       CRITICAL for iOS Add to Home Screen:
       Do NOT put <link rel="manifest" href="/manifest.webmanifest"> in static HTML.
@@ -35,7 +35,7 @@
 
           var href = "/manifest.webmanifest";
           var appleTitle = "Laundry Ops";
-          var icon = "/icons/veewash-apple-touch-180-v1.png";
+          var icon = "/icons/veewash-apple-touch-180-v2.png";
           var pinSurface = false;
 
           if (/^\/attendance\/maintenance\/veewash\/?$/i.test(path)) {
@@ -48,7 +48,7 @@
             pinSurface = true;
           } else if (/^\/pin\/veewash\/?$/i.test(path)) {
             href = "/pin.manifest.webmanifest";
-            appleTitle = "PIN Menu";
+            appleTitle = "VeeWash Mobile Ops";
             pinSurface = true;
           } else if (/^\/attendance\/veewash\/?$/i.test(path)) {
             href = "/attendance.manifest.webmanifest";
@@ -66,12 +66,12 @@
             if (RegExp.$1.toLowerCase() !== "veewash") icon = "";
           } else if (/^\/pin\/([^/]+)\/?$/i.test(path)) {
             href = "/pin-manifests/" + RegExp.$1.toLowerCase() + ".webmanifest";
-            appleTitle = "PIN Menu";
+            appleTitle = "VeeWash Mobile Ops";
             pinSurface = true;
             if (RegExp.$1.toLowerCase() !== "veewash") icon = "";
           } else if (/^\/pin\/?$/i.test(path)) {
             href = "/pin-manifests/default.webmanifest";
-            appleTitle = "PIN Menu";
+            appleTitle = "VeeWash Mobile Ops";
             pinSurface = true;
             icon = "";
           } else if (/^\/kiosk\/([^/]+)\/?$/i.test(path)) {
@@ -89,7 +89,7 @@
             }
           } else {
             // Main Laundry Ops home-screen / browser tab defaults to VeeWash icons.
-            icon = "/icons/veewash-apple-touch-180-v1.png";
+            icon = "/icons/veewash-apple-touch-180-v2.png";
           }
 
           // Remember last PIN path (diagnostics / future recovery only — do not auto-redirect

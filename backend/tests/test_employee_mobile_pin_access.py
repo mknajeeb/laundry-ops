@@ -15,6 +15,7 @@ from backend.employee_mobile_pin_access import (
     MobilePinAccessDeniedError,
     assert_employee_allows_module,
     employee_allows_module,
+    enable_switch_role_for_org_active_users,
     ensure_new_employee_mobile_pin_access,
     ensure_org_mobile_pin_access_backfill,
     initialize_new_org_mobile_pin_access_marker,
@@ -124,6 +125,22 @@ class FakeCursor:
             and "INSERT IGNORE" not in sql_n
             and "allow_clock, allow_switch_role" in sql_n
         ):
+            # Single-row insert with explicit module flags (org, uid, 5 flags, …)
+            if (
+                len(params) >= 7
+                and int(params[2]) in (0, 1)
+                and int(params[3]) in (0, 1)
+            ):
+                org, uid = int(params[0]), int(params[1])
+                self.access[(org, uid)] = {
+                    "clock": bool(params[2]),
+                    "switch_role": bool(params[3]),
+                    "checklist": bool(params[4]),
+                    "inventory": bool(params[5]),
+                    "revenue_cost": bool(params[6]),
+                }
+                self.rowcount = 1
+                return
             # Multi-row all-true insert: (org, uid) pairs in params
             for i in range(0, len(params), 2):
                 org, uid = int(params[i]), int(params[i + 1])
@@ -211,13 +228,55 @@ class FakeCursor:
         ):
             org, uid = int(params[0]), int(params[1])
             if (org, uid) not in self.access:
-                self.access[(org, uid)] = {
-                    "clock": False,
-                    "switch_role": False,
-                    "checklist": False,
-                    "inventory": False,
-                    "revenue_cost": False,
-                }
+                if len(params) >= 7:
+                    self.access[(org, uid)] = {
+                        "clock": bool(params[2]),
+                        "switch_role": bool(params[3]),
+                        "checklist": bool(params[4]),
+                        "inventory": bool(params[5]),
+                        "revenue_cost": bool(params[6]),
+                    }
+                else:
+                    self.access[(org, uid)] = {
+                        "clock": False,
+                        "switch_role": True,
+                        "checklist": False,
+                        "inventory": False,
+                        "revenue_cost": False,
+                    }
+            return
+        if (
+            "UPDATE employee_mobile_pin_access" in sql_n
+            and "allow_switch_role = 1" in sql_n
+        ):
+            oid, uid = int(params[1]), int(params[2])
+            a = self.access.get((oid, uid))
+            if a is not None:
+                a["switch_role"] = True
+            self.rowcount = 1 if a is not None else 0
+            return
+        if (
+            "SELECT id AS user_id FROM users" in sql_n
+            and "active = 1" in sql_n
+            and "organization_id" in sql_n
+        ):
+            oid = int(params[0])
+            self._results = [
+                {"user_id": uid}
+                for porg, uid in self.users
+                if porg == oid and (porg, uid) not in self.inactive_users
+            ]
+            return
+        if (
+            "SELECT id AS user_id FROM users" in sql_n
+            and "active = 0 OR active IS NULL" in sql_n
+        ):
+            oid = int(params[0])
+            self._results = [
+                {"user_id": uid}
+                for porg, uid in self.inactive_users
+                if porg == oid
+            ]
             return
         if "INSERT INTO employee_mobile_pin_access" in sql_n and "ON DUPLICATE KEY" in sql_n:
             org, uid = int(params[0]), int(params[1])
@@ -333,7 +392,7 @@ def test_legacy_backfill_rolls_back_without_marker_on_failure():
     assert 3 not in cur.backfill_orgs
 
 
-def test_new_org_marker_then_new_employee_all_false():
+def test_new_org_marker_then_new_employee_role_default_on():
     cur = FakeCursor()
     assert initialize_new_org_mobile_pin_access_marker(cur, 3) is True
     assert cur.backfill_modes[3] == INIT_MODE_NEW_ORG
@@ -342,21 +401,68 @@ def test_new_org_marker_then_new_employee_all_false():
     ensure_new_employee_mobile_pin_access(cur, 3, 12, actor_user_id=1)
     assert resolve_employee_mobile_pin_access(cur, 3, 12) == {
         "clock": False,
-        "switch_role": False,
+        "switch_role": True,
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
     }
 
 
-def test_new_employee_after_backfill_gets_all_false():
+def test_new_employee_after_backfill_gets_role_default_on():
     cur = FakeCursor()
     cur.pin_users = [(3, 10)]
     _legacy_backfill(cur, 3)
     ensure_new_employee_mobile_pin_access(cur, 3, 12, actor_user_id=1)
     assert resolve_employee_mobile_pin_access(cur, 3, 12) == {
         "clock": False,
+        "switch_role": True,
+        "checklist": False,
+        "inventory": False,
+        "revenue_cost": False,
+    }
+
+
+def test_enable_switch_role_for_org_active_users_preserves_other_modules():
+    cur = FakeCursor()
+    cur.users = {(3, 10), (3, 11), (3, 12)}
+    cur.inactive_users = {(3, 99)}
+    cur.users.add((3, 99))
+    cur.backfill_orgs[3] = 0
+    cur.backfill_modes[3] = INIT_MODE_LEGACY_GRANT
+    cur.access[(3, 10)] = {
+        "clock": False,
         "switch_role": False,
+        "checklist": True,
+        "inventory": False,
+        "revenue_cost": True,
+    }
+    cur.access[(3, 11)] = {
+        "clock": False,
+        "switch_role": True,
+        "checklist": False,
+        "inventory": True,
+        "revenue_cost": False,
+    }
+    # user 12 has no row yet
+    conn = FakeConn(cur)
+    report = enable_switch_role_for_org_active_users(conn, 3, dry_run=False, actor_user_id=1)
+    assert report["active_users"] == 3
+    assert report["role_on_before"] == 1
+    assert report["role_on_after"] == 3
+    assert report["rows_updated"] == 1
+    assert report["rows_inserted"] == 1
+    assert report["excluded_inactive"] == 1
+    assert resolve_employee_mobile_pin_access(cur, 3, 10) == {
+        "clock": False,
+        "switch_role": True,
+        "checklist": True,
+        "inventory": False,
+        "revenue_cost": True,
+    }
+    assert resolve_employee_mobile_pin_access(cur, 3, 11)["inventory"] is True
+    assert resolve_employee_mobile_pin_access(cur, 3, 12) == {
+        "clock": False,
+        "switch_role": True,
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,

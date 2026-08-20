@@ -42,8 +42,8 @@ const MODE_META = {
     fileInfix: "-maintenance",
   },
   hub: {
-    shortName: "PIN Menu",
-    titleSuffix: "PIN Menu",
+    shortName: "VeeWash Mobile Ops",
+    titleSuffix: "Mobile Ops",
     description: "Switch role, checklist, and inventory with your attendance PIN.",
     pathPrefix: (slug) => (slug ? `/pin/${slug}` : "/pin"),
     fileInfix: "-hub",

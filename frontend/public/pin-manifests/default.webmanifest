@@ -1,6 +1,6 @@
 {
-  "name": "PIN Menu",
-  "short_name": "PIN Menu",
+  "name": "VeeWash Mobile Ops",
+  "short_name": "VeeWash Mobile Ops",
   "description": "Switch role, checklist, and inventory with your attendance PIN.",
   "start_url": "/pin",
   "scope": "/",

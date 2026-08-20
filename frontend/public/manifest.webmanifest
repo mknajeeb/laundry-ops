@@ -6,29 +6,29 @@
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#000000",
+  "background_color": "#ffffff",
   "theme_color": "#16192b",
   "icons": [
     {
-      "src": "/icons/veewash-icon-192-v1.png",
+      "src": "/icons/veewash-icon-192-v2.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/veewash-icon-512-v1.png",
+      "src": "/icons/veewash-icon-512-v2.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/veewash-icon-192-maskable-v1.png",
+      "src": "/icons/veewash-icon-192-maskable-v2.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "maskable"
     },
     {
-      "src": "/icons/veewash-icon-512-maskable-v1.png",
+      "src": "/icons/veewash-icon-512-maskable-v2.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"

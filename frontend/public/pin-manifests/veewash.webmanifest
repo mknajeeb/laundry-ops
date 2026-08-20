@@ -1,34 +1,34 @@
 {
-  "name": "VeeWash PIN Menu",
-  "short_name": "PIN Menu",
+  "name": "VeeWash Mobile Ops",
+  "short_name": "VeeWash Mobile Ops",
   "description": "Switch role, checklist, and inventory with your attendance PIN.",
   "start_url": "/pin/veewash",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#eef2ff",
+  "background_color": "#ffffff",
   "theme_color": "#2d3d9c",
   "icons": [
     {
-      "src": "/icons/veewash-icon-192-v1.png",
+      "src": "/icons/veewash-icon-192-v2.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/veewash-icon-512-v1.png",
+      "src": "/icons/veewash-icon-512-v2.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/veewash-icon-192-maskable-v1.png",
+      "src": "/icons/veewash-icon-192-maskable-v2.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "maskable"
     },
     {
-      "src": "/icons/veewash-icon-512-maskable-v1.png",
+      "src": "/icons/veewash-icon-512-maskable-v2.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"

@@ -1,9 +1,9 @@
 import { resolveOrgLogoUrl } from "./resolveOrgLogoUrl";
 
 /** Default VeeWash home-screen / favicon set (versioned; replaces legacy LO mark). */
-const DEFAULT_FAVICON = "/icons/veewash-favicon-32-v1.png";
-const DEFAULT_PNG = "/icons/veewash-icon-192-v1.png";
-const DEFAULT_APPLE = "/icons/veewash-apple-touch-180-v1.png";
+const DEFAULT_FAVICON = "/icons/veewash-favicon-32-v2.png";
+const DEFAULT_PNG = "/icons/veewash-icon-192-v2.png";
+const DEFAULT_APPLE = "/icons/veewash-apple-touch-180-v2.png";
 
 /**
  * Set tab / home-screen icons to the tenant organization logo when available.

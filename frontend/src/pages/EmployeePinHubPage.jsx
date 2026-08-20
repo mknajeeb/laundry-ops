@@ -275,7 +275,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         setPin("");
         prevPinLenRef.current = 0;
       } catch (e) {
-        setError(e?.response?.data?.error || e?.message || "Could not open PIN menu");
+        setError(e?.response?.data?.error || e?.message || "Could not open VeeWash Mobile Ops");
         setPin("");
         prevPinLenRef.current = 0;
       } finally {
@@ -486,7 +486,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
                   textAlign: "center",
                 }}
               >
-                PIN
+                VeeWash Mobile Ops
               </Typography>
             </Stack>
           )}
