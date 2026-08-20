@@ -80,12 +80,32 @@ def _job_settings() -> tuple[str, str, str, str]:
 
 
 def _get_management_token() -> str:
-    """Managed Identity on App Service/ACA, else client-credentials env vars."""
+    """Managed Identity on App Service/ACA jobs, else client-credentials env vars.
+
+    Container Apps inject IDENTITY_ENDPOINT + IDENTITY_HEADER, not classic VM IMDS.
+    """
+    resource = urllib.parse.quote(MANAGEMENT_SCOPE, safe="")
+    client_id = (os.getenv("AZURE_CLIENT_ID") or os.getenv("RINSE_ACA_MSI_CLIENT_ID") or "").strip()
+    identity_endpoint = (os.getenv("IDENTITY_ENDPOINT") or "").strip()
+    identity_header = (os.getenv("IDENTITY_HEADER") or "").strip()
+    if identity_endpoint and identity_header:
+        ident_url = f"{identity_endpoint}?api-version=2019-08-01&resource={resource}"
+        if client_id:
+            ident_url += f"&client_id={urllib.parse.quote(client_id, safe='')}"
+        req = urllib.request.Request(ident_url, headers={"X-IDENTITY-HEADER": identity_header})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+                token = payload.get("access_token")
+                if token:
+                    return str(token)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, OSError):
+            pass
+
     imds_url = (
         "http://169.254.169.254/metadata/identity/oauth2/token"
-        f"?api-version=2019-08-01&resource={urllib.parse.quote(MANAGEMENT_SCOPE, safe='')}"
+        f"?api-version=2019-08-01&resource={resource}"
     )
-    client_id = (os.getenv("AZURE_CLIENT_ID") or os.getenv("RINSE_ACA_MSI_CLIENT_ID") or "").strip()
     if client_id:
         imds_url += f"&client_id={urllib.parse.quote(client_id, safe='')}"
 
@@ -96,7 +116,7 @@ def _get_management_token() -> str:
             token = payload.get("access_token")
             if token:
                 return str(token)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError):
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, OSError):
         pass
 
     tenant = (os.getenv("AZURE_TENANT_ID") or "").strip()
@@ -144,23 +164,23 @@ def build_job_start_template(
     container_name: str = "rinse-scheduler",
 ) -> dict[str, Any]:
     org = int(organization_id)
+    # Azure Jobs StartJobExecutionTemplate expects top-level containers[],
+    # not a nested template wrapper.
     return {
-        "template": {
-            "containers": [
-                {
-                    "name": container_name,
-                    "command": ["/opt/laundry_venv/bin/python"],
-                    "args": [
-                        "-m",
-                        "backend.jobs.run_scheduled_rinse_scrape",
-                        "--organization-id",
-                        str(org),
-                        "--run-type",
-                        str(run_type or "manual"),
-                    ],
-                }
-            ]
-        }
+        "containers": [
+            {
+                "name": container_name,
+                "command": ["/opt/laundry_venv/bin/python"],
+                "args": [
+                    "-m",
+                    "backend.jobs.run_scheduled_rinse_scrape",
+                    "--organization-id",
+                    str(org),
+                    "--run-type",
+                    str(run_type or "manual"),
+                ],
+            }
+        ]
     }
 
 
@@ -229,3 +249,107 @@ def start_rinse_scrape_aca_job(
             ok=False,
             error_message=f"ACA job start failed: {exc}",
         )
+
+
+def _job_url(subscription_id: str, resource_group: str, job_name: str, suffix: str) -> str:
+    path = (
+        f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}"
+        f"/providers/Microsoft.App/jobs/{job_name}{suffix}"
+    )
+    return f"https://management.azure.com{path}?api-version={ACA_API_VERSION}"
+
+
+def _azure_json(method: str, url: str, token: str, body: bytes | None = None) -> tuple[int, Any]:
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+            payload = json.loads(raw) if raw else {}
+            return int(getattr(resp, "status", 200) or 200), payload
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        raise RuntimeError(f"Azure {method} {url} HTTP {exc.code}: {err_body[-600:]}") from exc
+
+
+def start_rinse_scrape_chain_job(*, run_type: str = "scheduled") -> AcaJobStartResult:
+    """Start the job with its default command (continuous sequential loop)."""
+    if not aca_job_trigger_configured():
+        return AcaJobStartResult(
+            ok=False,
+            error_message="ACA job trigger is not configured",
+        )
+    try:
+        sub, rg, job, _container = _job_settings()
+        token = _get_management_token()
+        url = _job_start_url(sub, rg, job)
+        status, payload = _azure_json("POST", url, token, b"{}")
+        execution_name = None
+        if isinstance(payload, dict):
+            execution_name = payload.get("name")
+            if not execution_name and isinstance(payload.get("id"), str):
+                execution_name = payload["id"].rstrip("/").split("/")[-1]
+        return AcaJobStartResult(
+            ok=True,
+            execution_name=execution_name,
+            http_status=status,
+            detail=payload if isinstance(payload, dict) else None,
+        )
+    except Exception as exc:
+        return AcaJobStartResult(ok=False, error_message=str(exc))
+
+
+def list_running_job_executions() -> list[str]:
+    if not aca_job_trigger_configured():
+        return []
+    sub, rg, job, _container = _job_settings()
+    token = _get_management_token()
+    url = _job_url(sub, rg, job, "/executions")
+    _status, payload = _azure_json("GET", url, token)
+    names: list[str] = []
+    items = payload.get("value") if isinstance(payload, dict) else payload
+    if not isinstance(items, list):
+        return []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        props = item.get("properties") if isinstance(item.get("properties"), dict) else {}
+        st = str(props.get("status") or item.get("status") or "")
+        if st.lower() != "running":
+            continue
+        name = item.get("name") or (str(item.get("id") or "").rstrip("/").split("/")[-1])
+        if name:
+            names.append(str(name))
+    return names
+
+
+def stop_job_execution(execution_name: str) -> bool:
+    name = (execution_name or "").strip()
+    if not name or not aca_job_trigger_configured():
+        return False
+    sub, rg, job, _container = _job_settings()
+    token = _get_management_token()
+    url = _job_url(sub, rg, job, f"/executions/{urllib.parse.quote(name, safe='')}/stop")
+    try:
+        _azure_json("POST", url, token, b"{}")
+        return True
+    except Exception:
+        return False
+
+
+def stop_foreign_running_executions(*, keep_execution_name: str | None = None) -> list[str]:
+    keep = (keep_execution_name or "").strip()
+    if not keep:
+        # Never mass-stop when this replica cannot identify itself.
+        return []
+    stopped: list[str] = []
+    for name in list_running_job_executions():
+        if name == keep:
+            continue
+        if stop_job_execution(name):
+            stopped.append(name)
+    return stopped

@@ -225,7 +225,7 @@ cat > /tmp/rinse-scrape-job.yaml <<EOF
 properties:
   configuration:
     triggerType: Manual
-    replicaTimeout: 3600
+    replicaTimeout: 7200
     replicaRetryLimit: 0
     registries:
       - server: ${ACR_LOGIN_SERVER}
@@ -290,7 +290,13 @@ az containerapp job create \
 
 ---
 
-## 6. Manual test (before `*/30` schedule)
+## 6. Manual start (continuous sequential chain)
+
+Production cadence is **Manual trigger + continuous successor handoff**.
+
+There is **no** fixed `*/30` (or `*/5`) cron and **no** 30-minute post-run cooldown.
+After each cycle terminals, cleanup releases lock/lease and the next run starts immediately
+(in-process loop while the replica is alive; ACA successor start on process exit).
 
 ```bash
 az containerapp job start --name "$ACA_JOB" --resource-group "$AZ_RG"
@@ -307,7 +313,8 @@ az containerapp job logs show \
   --follow
 ```
 
-Expect log lines: `rinse scheduled scrape: 1 organization(s) sequential — [3]` then `organization 3 (1/1)`.
+Expect log lines: `rinse scheduled scrape: 1 organization(s) sequential — [3]` then `organization 3 (1/1)`,
+plus `CHAIN_BOUNDARY` successor handoff markers when a replica exits.
 
 **Local:**
 
@@ -322,20 +329,24 @@ python3 -m backend.jobs.run_scheduled_rinse_scrape --organization-id 3
 
 ---
 
-## 7. Enable schedule (after manual success)
+## 7. Keep Manual trigger (do not re-enable poll cron)
 
 ```bash
+# REQUIRED production shape:
+az containerapp job show -n "$ACA_JOB" -g "$AZ_RG" \
+  --query "{trigger:properties.configuration.triggerType,cron:properties.configuration.scheduleTriggerConfig}" -o json
+# Expect: trigger=Manual, cron=null
+
+# If someone re-enabled Schedule by mistake, restore Manual:
 az containerapp job update \
   --name "$ACA_JOB" \
   --resource-group "$AZ_RG" \
-  --trigger-type Schedule \
-  --cron-expression "*/5 * * * *"
-# Poll every 5 minutes UTC. App enforces completion-driven cadence:
-# next scrape is eligible only after previous finished_at + 30 minutes
-# (RINSE_SCRAPE_POST_RUN_COOLDOWN_MINUTES). No catch-up queue; lock prevents overlap.
+  --trigger-type Manual
 ```
 
-Cron is **UTC**. Cadence is **completion-driven**: ACA polls every 5 minutes, but a scheduled scrape starts only when `finished_at + 30m` has elapsed. Overlap is still blocked by per-org MySQL `GET_LOCK` (manual shares the same lock). Missed poll ticks are not queued.
+Do **not** set `--cron-expression "*/5 * * * *"` for continuous freshness.
+Overlap is prevented by per-org MySQL `GET_LOCK` + lease fencing, not by a wait interval.
+`RINSE_SCRAPE_POST_RUN_COOLDOWN_MINUTES` defaults to **0** (sequential immediate).
 
 ---
 

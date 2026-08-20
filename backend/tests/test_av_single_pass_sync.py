@@ -75,6 +75,8 @@ class TestMaterializePortalFromTickets:
 
 class TestSinglePassSkipsPortalBash:
     def test_run_scheduled_uses_scan_only_when_single_pass(self, tmp_path: Path):
+        from contextlib import ExitStack
+
         from backend.rinse_scheduled_scrape import run_scheduled_scrape_for_org
         from backend.rinse_presence_scrape import PresenceScrapeResult
 
@@ -143,66 +145,71 @@ class TestSinglePassSkipsPortalBash:
         confirm = {
             "status": "batch_confirmed",
             "batch_id": 1,
-            "rinse_finalize": {"deferred": True},
         }
 
-        with patch.dict(os.environ, {"RINSE_AV_SINGLE_PASS": "1"}), patch(
-            "backend.rinse_scheduled_scrape.tenant_script_dir", return_value=tenant
-        ), patch(
-            "backend.rinse_scheduled_scrape.acquire_scrape_lock", return_value=(True, "")
-        ), patch(
-            "backend.rinse_scheduled_scrape.insert_scrape_run", return_value=42
-        ), patch(
-            "backend.rinse_scheduled_scrape.build_run_paths", return_value=paths
-        ), patch(
-            "backend.rinse_scheduled_scrape._run_bash_script", side_effect=fake_bash
-        ), patch(
-            "backend.rinse_scheduled_scrape._subprocess_env_for_vendor", return_value={}
-        ), patch(
-            "backend.rinse_scheduled_scrape.resolve_rinse_vendor", return_value="veewash"
-        ), patch(
-            "backend.rinse_scheduled_scrape._org_slug_name",
-            return_value=("veewash", "VeeWash"),
-        ), patch(
-            "backend.rinse_presence_scrape.apply_at_vendor_presence_from_portal_csv",
-            return_value=presence,
-        ), patch(
-            "backend.rinse_combined_upload.commit_rinse_combined_upload",
-            return_value=draft,
-        ), patch(
-            "backend.upload_batch_confirm.confirm_upload_batch_core",
-            return_value=confirm,
-        ), patch(
-            "backend.rinse_scheduled_scrape._refresh_open_step1_day_after_scrape",
-            return_value={"ok": True, "step1_refresh_status": "SUCCESS"},
-        ), patch(
-            "backend.rinse_scheduled_scrape.finish_scrape_run"
-        ), patch(
-            "backend.rinse_scheduled_scrape.release_scrape_lock"
-        ), patch(
-            "backend.rinse_scheduled_scrape._newest_source_scan_et", return_value=None
-        ), patch(
-            "backend.rinse_scheduled_scrape._newest_db_scan_et", return_value=None
-        ), patch(
-            "backend.rinse_scan_events_upload.parse_scan_events_csv",
-            return_value=(
-                pd.DataFrame(
-                    [
-                        {
-                            "Bag ID": "ABC1234567",
-                            "Time Scanned": "06/26/2026 10:00 AM",
-                            "Purpose": "weight-entry",
-                        }
-                    ]
-                ),
-                [],
+        patches = [
+            patch.dict(os.environ, {"RINSE_AV_SINGLE_PASS": "1"}),
+            patch("backend.rinse_scheduled_scrape.tenant_script_dir", return_value=tenant),
+            patch("backend.rinse_scheduled_scrape.acquire_scrape_lock", return_value=(True, "")),
+            patch("backend.rinse_scheduled_scrape.insert_scrape_run", return_value=42),
+            patch("backend.rinse_scheduled_scrape.build_run_paths", return_value=paths),
+            patch("backend.rinse_scheduled_scrape._run_bash_script", side_effect=fake_bash),
+            patch("backend.rinse_scheduled_scrape._subprocess_env_for_vendor", return_value={}),
+            patch("backend.rinse_scheduled_scrape.resolve_rinse_vendor", return_value="veewash"),
+            patch(
+                "backend.rinse_scheduled_scrape._org_slug_name",
+                return_value=("veewash", "VeeWash"),
             ),
-        ), patch(
-            "backend.rinse_portal_csv.portal_csv_to_orders_df",
-            return_value=pd.DataFrame([{"bag_id": "ABC1234567"}]),
-        ), patch(
-            "backend.manual_checkout_eligibility.resolve_stale_portal_attention_rows_before_confirm"
-        ):
+            patch(
+                "backend.rinse_presence_scrape.apply_at_vendor_presence_from_portal_csv",
+                return_value=presence,
+            ),
+            patch(
+                "backend.rinse_combined_upload.commit_rinse_combined_upload",
+                return_value=draft,
+            ),
+            patch(
+                "backend.upload_batch_confirm.confirm_upload_batch_core",
+                return_value=confirm,
+            ),
+            patch(
+                "backend.rinse_scheduled_scrape._refresh_open_step1_day_after_scrape",
+                return_value={"ok": True, "step1_refresh_status": "SUCCESS"},
+            ),
+            patch(
+                "backend.rinse_scheduled_scrape._run_in_lock_rinse_finalize",
+                return_value={"persistent_merge": {"events_inserted": 0}},
+            ),
+            patch("backend.rinse_scheduled_scrape.finish_scrape_run"),
+            patch("backend.rinse_scheduled_scrape.release_scrape_lock"),
+            patch("backend.rinse_scheduled_scrape._newest_source_scan_et", return_value=None),
+            patch("backend.rinse_scheduled_scrape._newest_db_scan_et", return_value=None),
+            patch(
+                "backend.rinse_scan_events_upload.parse_scan_events_csv",
+                return_value=(
+                    pd.DataFrame(
+                        [
+                            {
+                                "Bag ID": "ABC1234567",
+                                "Time Scanned": "06/26/2026 10:00 AM",
+                                "Purpose": "weight-entry",
+                            }
+                        ]
+                    ),
+                    [],
+                ),
+            ),
+            patch(
+                "backend.rinse_portal_csv.portal_csv_to_orders_df",
+                return_value=pd.DataFrame([{"bag_id": "ABC1234567"}]),
+            ),
+            patch(
+                "backend.manual_checkout_eligibility.resolve_stale_portal_attention_rows_before_confirm"
+            ),
+        ]
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
             result = run_scheduled_scrape_for_org(conn, 3, run_type="scheduled")
 
         assert "run-production-scrape.sh" not in bash_calls

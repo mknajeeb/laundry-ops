@@ -53,10 +53,32 @@ def main(argv: list[str] | None = None) -> int:
         help="Recorded in rinse_scrape_runs.run_type",
     )
     p.add_argument("--dry-run", action="store_true", help="Resolve paths only; no scrape or DB writes")
+    p.add_argument(
+        "--max-cycles",
+        type=int,
+        default=None,
+        help="Stop the sequential loop after N cycles (tests / probes). Default: until replica handoff.",
+    )
+    p.add_argument(
+        "--once",
+        action="store_true",
+        help="Run a single cycle then exit (no sequential loop, no successor start).",
+    )
+    p.add_argument(
+        "--force-fail",
+        action="store_true",
+        help="Fail the first cycle after lock+lease (self-heal failure proof).",
+    )
+    p.add_argument(
+        "--force-stall",
+        action="store_true",
+        help="Hold lock without heartbeats after lease (self-heal stall proof).",
+    )
     args = p.parse_args(argv)
 
     from backend.db import get_db
     from backend.release_revision import load_release_revision_stamps
+    from backend.rinse_scrape_chain import run_continuous_scheduled_loop
     from backend.rinse_scheduled_scrape import run_all_scheduled_scrapes
 
     stamps = load_release_revision_stamps()
@@ -73,14 +95,40 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     conn = get_db()
+    results = []
     try:
-        results = run_all_scheduled_scrapes(
-            conn,
-            organization_ids=args.organization_ids,
-            run_type=args.run_type,
-            dry_run=args.dry_run,
-        )
+        if args.once or args.dry_run:
+            results = run_all_scheduled_scrapes(
+                conn,
+                organization_ids=args.organization_ids,
+                run_type=args.run_type,
+                dry_run=args.dry_run,
+            )
+        else:
+            results = run_continuous_scheduled_loop(
+                conn,
+                organization_ids=args.organization_ids,
+                run_type=args.run_type,
+                dry_run=False,
+                max_cycles=args.max_cycles,
+                force_fail=bool(args.force_fail),
+                force_stall=bool(args.force_stall),
+            )
     finally:
+        owned_cycle = any(
+            str(getattr(r, "status", "") or "") not in ("skipped", "")
+            for r in results
+        )
+        if not args.once and not args.dry_run and owned_cycle:
+            try:
+                from backend.rinse_scrape_chain import start_successor_execution
+
+                print("CHAIN_BOUNDARY aca_identity_cleanup_start", flush=True)
+                handoff = start_successor_execution(run_type=args.run_type)
+                print(f"rinse chain successor {handoff}", flush=True)
+                print("CHAIN_BOUNDARY aca_identity_cleanup_complete", flush=True)
+            except Exception as exc:
+                print(f"rinse chain successor failed: {exc}", flush=True)
         try:
             conn.close()
         except Exception:
@@ -126,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
             default=str,
         )
     )
+    print(f"CHAIN_BOUNDARY process_exit exit_code={exit_code}", flush=True)
     return exit_code
 
 

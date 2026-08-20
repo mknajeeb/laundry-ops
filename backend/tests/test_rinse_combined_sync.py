@@ -411,6 +411,12 @@ class TestScheduledScrapeRunsBoth:
         ), patch(
             "backend.rinse_scheduled_scrape._refresh_open_step1_day_after_scrape",
             return_value={"ok": True, "step1_refresh_status": "SUCCESS", "deferred": False},
+        ), patch(
+            "backend.rinse_scheduled_scrape.take_lease", return_value=1
+        ), patch(
+            "backend.rinse_scheduled_scrape.bind_run_lease"
+        ), patch(
+            "backend.rinse_scheduled_scrape.assert_lease_writable"
         ), patch.dict(os.environ, {"RINSE_AV_SINGLE_PASS": "1", "RFV_SCRAPE_ENABLED": "true"}):
             import pandas as pd
 
@@ -512,6 +518,12 @@ class TestScheduledScrapeRunsBoth:
         ), patch(
             "backend.rinse_scheduled_scrape._refresh_open_step1_day_after_scrape",
             return_value={"ok": True, "step1_refresh_status": "SUCCESS"},
+        ), patch(
+            "backend.rinse_scheduled_scrape.take_lease", return_value=1
+        ), patch(
+            "backend.rinse_scheduled_scrape.bind_run_lease"
+        ), patch(
+            "backend.rinse_scheduled_scrape.assert_lease_writable"
         ):
             import pandas as pd
 
@@ -687,6 +699,24 @@ class TestCombinedSyncOrchestration:
         assert result.status == "skipped"
         assert result.error_message == CYCLE_ALREADY_RUNNING
         assert (result.detail.get("sync_cycle") or {}).get("cycle_status") == "skipped"
+        _skip.assert_called_once()
+
+    @patch("backend.rinse_scheduled_scrape.insert_skipped_scrape_run")
+    @patch("backend.rinse_scheduled_scrape.acquire_scrape_lock", return_value=(False, "could not acquire MySQL lock"))
+    @patch("backend.rinse_scheduled_scrape.scheduled_post_run_cooldown", return_value={"ok_to_run": True})
+    @patch("backend.rinse_scheduled_scrape.resolve_rinse_vendor", return_value="veewash")
+    @patch("backend.rinse_scheduled_scrape._org_slug_name", return_value=("veewash", "VeeWash"))
+    def test_scheduled_overlap_does_not_insert_skip_row(
+        self, _slug, _vendor, _cooldown, _lock, _skip
+    ):
+        from backend.rinse_scheduled_scrape import CYCLE_ALREADY_RUNNING, run_rinse_combined_sync_for_org
+
+        conn = MagicMock()
+        conn.cursor.return_value = MagicMock()
+        result = run_rinse_combined_sync_for_org(conn, 3, run_type="scheduled")
+        assert result.status == "skipped"
+        assert result.error_message == CYCLE_ALREADY_RUNNING
+        _skip.assert_not_called()
 
     @patch("backend.rinse_scheduled_scrape.run_rinse_combined_sync_for_org")
     def test_run_all_scheduled_scrapes_uses_combined_orchestrator(self, mock_combined):

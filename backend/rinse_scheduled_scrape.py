@@ -9,19 +9,23 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 from backend.rinse_scrape_runs import (
     MYSQL_LOCK_HELD_REASON,
     acquire_scrape_lock,
+    bind_run_lease,
     ensure_scrape_run_terminal,
     finish_scrape_run,
     insert_scrape_run,
@@ -29,7 +33,15 @@ from backend.rinse_scrape_runs import (
     merge_scrape_run_result_json,
     release_scrape_lock,
     scheduled_post_run_cooldown,
+    scrape_run_heartbeat_interval_sec,
+    touch_scrape_run_progress,
 )
+from backend.rinse_scrape_lease import (
+    FencedWriterError,
+    assert_lease_writable,
+    take_lease,
+)
+from backend.rinse_scrape_chain import hard_runtime_ceiling_seconds, stall_seconds
 from backend.rinse_vendor_config import resolve_rinse_vendor, rinse_scrape_env_for_organization
 
 ET = ZoneInfo("America/New_York")
@@ -482,52 +494,147 @@ class ScheduledScrapeResult:
     detail: dict[str, Any] = field(default_factory=dict)
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    lease_generation: int | None = None
 
 
 class _TeeLog:
     def __init__(self, path: Path):
         self._path = path
         self._file = path.open("a", encoding="utf-8")
+        self._lock = threading.Lock()
+        self._stdout_q: queue.Queue[str | None] = queue.Queue(maxsize=500)
+        self._stdout_thread = threading.Thread(
+            target=self._drain_stdout, name="rinse-tee-stdout", daemon=True
+        )
+        self._stdout_thread.start()
+
+    def _drain_stdout(self) -> None:
+        """Never let a blocked ACA log pipe freeze scrape/Stage-B."""
+        while True:
+            msg = self._stdout_q.get()
+            if msg is None:
+                return
+            try:
+                sys.stdout.write(msg)
+                sys.stdout.flush()
+            except Exception:
+                pass
 
     def write(self, msg: str) -> None:
-        sys.stdout.write(msg)
-        self._file.write(msg)
-        self._file.flush()
+        with self._lock:
+            try:
+                self._file.write(msg)
+                self._file.flush()
+            except Exception:
+                pass
+            try:
+                self._stdout_q.put_nowait(msg)
+            except queue.Full:
+                pass
 
     def close(self) -> None:
-        self._file.close()
+        try:
+            self._stdout_q.put_nowait(None)
+        except queue.Full:
+            pass
+        try:
+            self._file.close()
+        except Exception:
+            pass
 
 
-def _run_bash_script(script: Path, extra_env: dict[str, str], log: _TeeLog, *, timeout_sec: int | None = None) -> int:
+def _run_bash_script(
+    script: Path,
+    extra_env: dict[str, str],
+    log: _TeeLog,
+    *,
+    timeout_sec: int | None = None,
+    heartbeat_fn: Callable[[], None] | None = None,
+    progress_fn: Callable[[str], None] | None = None,
+    hard_deadline_mono: float | None = None,
+) -> int:
     env = {**os.environ, **extra_env}
     log.write(f"\n--- bash {script} ---\n")
     timeout = int(timeout_sec) if timeout_sec is not None else combined_phase_timeout_sec()
+    hb_interval = scrape_run_heartbeat_interval_sec()
+    started = time.monotonic()
+    last_hb = started
+    last_progress = started
+    stall_after = stall_seconds()
+    proc = subprocess.Popen(
+        ["bash", str(script)],
+        cwd=str(REPO_ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    def _pump(stream) -> None:
+        nonlocal last_progress
+        if stream is None:
+            return
+        for line in stream:
+            log.write(line)
+            last_progress = time.monotonic()
+            if progress_fn:
+                try:
+                    progress_fn(line)
+                except Exception:
+                    pass
+
+    t_out = threading.Thread(target=_pump, args=(proc.stdout,), daemon=True)
+    t_err = threading.Thread(target=_pump, args=(proc.stderr,), daemon=True)
+    t_out.start()
+    t_err.start()
+    timed_out = False
+    stalled = False
     try:
-        proc = subprocess.run(
-            ["bash", str(script)],
-            cwd=str(REPO_ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
+        while proc.poll() is None:
+            now_m = time.monotonic()
+            elapsed = now_m - started
+            if elapsed >= timeout:
+                timed_out = True
+                proc.kill()
+                proc.wait(timeout=30)
+                break
+            if hard_deadline_mono is not None and now_m >= hard_deadline_mono:
+                timed_out = True
+                proc.kill()
+                proc.wait(timeout=30)
+                break
+            if (now_m - last_progress) >= stall_after:
+                stalled = True
+                proc.kill()
+                proc.wait(timeout=30)
+                break
+            if heartbeat_fn and (now_m - last_hb) >= hb_interval:
+                try:
+                    heartbeat_fn()
+                except FencedWriterError:
+                    proc.kill()
+                    proc.wait(timeout=30)
+                    raise
+                except Exception:
+                    pass
+                last_hb = time.monotonic()
+            time.sleep(2)
+    except FencedWriterError:
+        raise
+    except Exception:
+        proc.kill()
+        raise
+    t_out.join(timeout=30)
+    t_err.join(timeout=30)
+    if stalled:
+        log.write(f"exit code: stalled after {stall_after}s without progress\n")
+        return -2
+    if timed_out:
         log.write(f"exit code: timeout after {timeout}s\n")
-        if exc.stdout:
-            log.write(exc.stdout if isinstance(exc.stdout, str) else exc.stdout.decode("utf-8", errors="replace"))
-        if exc.stderr:
-            log.write(exc.stderr if isinstance(exc.stderr, str) else exc.stderr.decode("utf-8", errors="replace"))
         return -1
-    if proc.stdout:
-        log.write(proc.stdout)
-        if not proc.stdout.endswith("\n"):
-            log.write("\n")
-    if proc.stderr:
-        log.write(proc.stderr)
-        if not proc.stderr.endswith("\n"):
-            log.write("\n")
     log.write(f"exit code: {proc.returncode}\n")
-    return int(proc.returncode)
+    return int(proc.returncode or 0)
 
 
 def _subprocess_env_for_vendor(
@@ -646,6 +753,7 @@ class _CombinedCycleContext:
     paths: ScrapePaths
     log: "_TeeLog"
     started_at: datetime
+    lease_generation: int | None = None
 
 
 def _resolve_combined_cycle_status(
@@ -803,6 +911,7 @@ def _finish_combined_cycle_run(
     sync_cycle: Mapping[str, Any],
     ready_for_vendor_sync: Mapping[str, Any] | None = None,
     at_vendor_presence_sync: Mapping[str, Any] | None = None,
+    log=None,
 ) -> None:
     detail = dict(result.detail or {})
     detail["sync_cycle"] = dict(sync_cycle)
@@ -812,6 +921,12 @@ def _finish_combined_cycle_run(
         detail["at_vendor_presence_sync"] = dict(at_vendor_presence_sync)
     result.detail = detail
     result.finished_at = datetime.utcnow()
+    _chain_boundary(
+        log,
+        "terminal_db_update_start",
+        run_id=result.run_id,
+        status=result.status,
+    )
     if result.run_id:
         finish_scrape_run(
             cursor,
@@ -830,6 +945,13 @@ def _finish_combined_cycle_run(
             result_json=detail,
         )
         conn.commit()
+    _chain_boundary(
+        log,
+        "terminal_db_update_complete",
+        run_id=result.run_id,
+        status=result.status,
+        finished_at=result.finished_at.isoformat() + "Z" if result.finished_at else None,
+    )
 
 
 def _apply_rfv_to_scheduled_result(
@@ -890,8 +1012,8 @@ def run_rinse_combined_sync_for_org(
         result.detail = {"dry_run": True, "sync_cycle": {"cycle_status": "dry_run"}}
         return result
 
-    # Completion-driven cadence: scheduled runs wait until previous finished_at + 30m.
-    # Manual runs bypass this gate but still share MySQL GET_LOCK (no overlap).
+    # Sequential chain: scheduled runs are eligible immediately (GET_LOCK + lease).
+    # Manual runs share the same overlap protection.
     cooldown = scheduled_post_run_cooldown(cursor, org_id, run_type=run_type)
     if not cooldown.get("ok_to_run"):
         next_run = cooldown.get("next_run_at")
@@ -933,21 +1055,29 @@ def run_rinse_combined_sync_for_org(
             )
             else lock_reason
         )
-        insert_skipped_scrape_run(
-            cursor,
-            org_id,
-            tenant_slug=slug,
-            rinse_vendor=vendor,
-            run_type=run_type,
-            reason=skip_reason or CYCLE_ALREADY_RUNNING,
-        )
-        conn.commit()
+        is_scheduled = str(run_type or "scheduled").strip().lower() == "scheduled"
+        if not is_scheduled:
+            insert_skipped_scrape_run(
+                cursor,
+                org_id,
+                tenant_slug=slug,
+                rinse_vendor=vendor,
+                run_type=run_type,
+                reason=skip_reason or CYCLE_ALREADY_RUNNING,
+            )
+            conn.commit()
+        else:
+            print(
+                f"rinse scrape org={org_id} deferred ({skip_reason or CYCLE_ALREADY_RUNNING})",
+                flush=True,
+            )
         result.status = "skipped"
         result.error_message = skip_reason or CYCLE_ALREADY_RUNNING
         result.detail = {
             "sync_cycle": {
                 "cycle_status": "skipped",
                 "failure_message": result.error_message,
+                "skip_reason": skip_reason or CYCLE_ALREADY_RUNNING,
             }
         }
         return result
@@ -962,6 +1092,9 @@ def run_rinse_combined_sync_for_org(
         run_type=run_type,
         log_path=str(paths.log_path),
     )
+    gen = take_lease(cursor, org_id, run_id=run_id)
+    bind_run_lease(cursor, run_id, org_id, gen)
+    result.lease_generation = gen
     conn.commit()
     result.run_id = run_id
     log = _TeeLog(paths.log_path)
@@ -971,6 +1104,11 @@ def run_rinse_combined_sync_for_org(
         "cron_scheduled_et": _fmt_system_utc_as_et(cycle_started_at),
         "main_lock_acquired_et": _fmt_system_utc_as_et(lock_acquired_at),
     }
+    touch_scrape_run_progress(
+        cursor, run_id, org_id, stage="starting", detail_patch=result.detail,
+        lease_generation=gen,
+    )
+    conn.commit()
 
     rfv_detail: dict[str, Any] = {}
     av_presence_detail: dict[str, Any] = {}
@@ -982,6 +1120,18 @@ def run_rinse_combined_sync_for_org(
         log.write(
             f"Combined sync cycle run_id={run_id} org={org_id} vendor={vendor} run_type={run_type}\n"
         )
+        if str(os.getenv("RINSE_SCRAPE_FORCE_FAIL") or "").strip() in ("1", "true", "yes"):
+            raise RuntimeError("forced ordinary failure (self-heal probe)")
+        if str(os.getenv("RINSE_SCRAPE_FORCE_STALL") or "").strip() in ("1", "true", "yes"):
+            # Hold the org lock with no further heartbeats so an external
+            # watchdog/replacement execution can prove in-lock stall recovery.
+            log.write(
+                "FORCE_STALL: holding scrape lock without heartbeats "
+                "(self-heal stall probe)\n"
+            )
+            print("FORCE_STALL holding lock without heartbeats", flush=True)
+            while True:
+                time.sleep(3600)
         # RFV is retired from scheduled/runtime cycles. Historical tables/code remain
         # dormant; do not scrape, wait on, or retry Ready for Vendor here.
         log.write(
@@ -1081,6 +1231,7 @@ def run_rinse_combined_sync_for_org(
                     sync_cycle=sync_cycle,
                     ready_for_vendor_sync=rfv_detail,
                     at_vendor_presence_sync=av_presence_detail,
+                    log=log,
                 )
                 return result
 
@@ -1089,6 +1240,7 @@ def run_rinse_combined_sync_for_org(
             paths=paths,
             log=log,
             started_at=started_at,
+            lease_generation=result.lease_generation,
         )
         import_result = run_scheduled_scrape_for_org(
             conn,
@@ -1200,6 +1352,7 @@ def run_rinse_combined_sync_for_org(
             sync_cycle=sync_cycle,
             ready_for_vendor_sync=rfv_detail,
             at_vendor_presence_sync=av_presence_detail,
+            log=log,
         )
         run_terminal = True
     except Exception as exc:
@@ -1230,6 +1383,7 @@ def run_rinse_combined_sync_for_org(
                 sync_cycle=sync_cycle,
                 ready_for_vendor_sync=rfv_detail or None,
                 at_vendor_presence_sync=av_presence_detail or None,
+                log=log,
             )
             run_terminal = True
         except Exception as finish_exc:
@@ -1259,7 +1413,9 @@ def run_rinse_combined_sync_for_org(
             log.close()
         except Exception:
             pass
+        _chain_boundary(log, "lock_release_start", run_id=result.run_id, org_id=org_id)
         release_scrape_lock(cursor, org_id)
+        _chain_boundary(log, "lock_release_complete", run_id=result.run_id, org_id=org_id)
         try:
             if result.run_id:
                 life = dict((result.detail or {}).get("ingestion_lifecycle") or {})
@@ -1281,7 +1437,7 @@ def run_rinse_combined_sync_for_org(
     if not dry_run and result.status not in ("skipped",):
         post_log = _TeeLog(paths.log_path)
         try:
-            _run_post_lock_targeted_refresh(
+            _run_post_lock_or_abandon(
                 conn,
                 cursor,
                 org_id=org_id,
@@ -1363,6 +1519,88 @@ def _rinse_finalize_deferred(detail: Mapping[str, Any] | None) -> bool:
     return isinstance(finalize, Mapping) and bool(finalize.get("deferred"))
 
 
+def _chain_boundary(log, name: str, **fields: Any) -> None:
+    """Emit an unambiguous ET/UTC boundary stamp for successor-gap debugging."""
+    now = datetime.utcnow()
+    extra = " ".join(f"{k}={v}" for k, v in fields.items() if v is not None)
+    line = (
+        f"CHAIN_BOUNDARY {name} utc={now.isoformat()}Z "
+        f"et={_fmt_system_utc_as_et(now)}"
+        + (f" {extra}" if extra else "")
+        + "\n"
+    )
+    try:
+        if log is not None:
+            log.write(line)
+    except Exception:
+        pass
+    print(line.rstrip(), flush=True)
+
+
+def _run_in_lock_rinse_finalize(
+    conn,
+    cursor,
+    *,
+    org_id: int,
+    batch_id: int,
+    run_id: int | None,
+    lease_generation: int | None,
+    log,
+) -> dict[str, Any]:
+    """Registry/folding finalize required before terminal success (in-lock)."""
+    from backend.rinse_upload_finalize import (
+        fetch_accepted_portal_rows_for_finalize,
+        finalize_rinse_after_batch_confirm,
+    )
+
+    _chain_boundary(log, "finalize_start", batch_id=batch_id, run_id=run_id)
+    if run_id:
+        touch_scrape_run_progress(
+            cursor,
+            int(run_id),
+            org_id,
+            stage="finalizing",
+            lease_generation=lease_generation,
+        )
+        conn.commit()
+        if lease_generation is not None:
+            assert_lease_writable(cursor, org_id, int(lease_generation))
+    rows = fetch_accepted_portal_rows_for_finalize(cursor, batch_id)
+    if run_id:
+        touch_scrape_run_progress(
+            cursor,
+            int(run_id),
+            org_id,
+            stage="finalizing",
+            lease_generation=lease_generation,
+        )
+        conn.commit()
+    payload = finalize_rinse_after_batch_confirm(
+        cursor,
+        org_id,
+        batch_id,
+        accepted_portal_rows=rows,
+        source_filename=f"batch_confirm_{batch_id}",
+    )
+    conn.commit()
+    if run_id:
+        touch_scrape_run_progress(
+            cursor,
+            int(run_id),
+            org_id,
+            stage="finalizing",
+            lease_generation=lease_generation,
+        )
+        conn.commit()
+    log.write(
+        "In-lock rinse finalize: "
+        f"events_inserted={(payload.get('persistent_merge') or {}).get('events_inserted')} "
+        f"bags_merged={(payload.get('persistent_merge') or {}).get('bags_merged')}\n"
+    )
+    _chain_boundary(log, "finalize_complete", batch_id=batch_id, run_id=run_id)
+    return payload
+
+
 def _run_post_lock_rinse_finalize(
     conn,
     cursor,
@@ -1392,6 +1630,66 @@ def _run_post_lock_rinse_finalize(
         f"bags_merged={(payload.get('persistent_merge') or {}).get('bags_merged')}\n"
     )
     return payload
+
+
+def _post_lock_targeted_enabled(run_type: str) -> bool:
+    """Scheduled continuous chain skips post-lock targeted by default.
+
+    Finalize/Stage-B already completed in-lock before terminal success. Optional
+    targeted pending refresh must not delay the next cycle.
+    """
+    if str(os.getenv("RINSE_POST_LOCK_TARGETED_ENABLED") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return True
+    return str(run_type or "scheduled").strip().lower() != "scheduled"
+
+
+def _run_post_lock_or_abandon(
+    conn,
+    cursor,
+    *,
+    org_id: int,
+    result: ScheduledScrapeResult,
+    run_type: str,
+    targeted_pending_refresh: bool | None,
+    log,
+    after_main_failure: bool,
+) -> None:
+    """Best-effort post-lock only. Never blocks healthy successor/next cycle.
+
+    Finalize is no longer deferred here — required work finished in-lock.
+    """
+    if not _post_lock_targeted_enabled(run_type):
+        try:
+            log.write(
+                "Post-lock targeted refresh skipped "
+                "(scheduled continuous chain; finalize already in-lock)\n"
+            )
+        except Exception:
+            pass
+        _chain_boundary(log, "post_lock_skipped")
+        return
+    _chain_boundary(log, "post_lock_targeted_start")
+    try:
+        _run_post_lock_targeted_refresh(
+            conn,
+            cursor,
+            org_id=org_id,
+            result=result,
+            run_type=run_type,
+            targeted_pending_refresh=targeted_pending_refresh,
+            log=log,
+            after_main_failure=after_main_failure,
+        )
+    except Exception as exc:
+        try:
+            log.write(f"Post-lock targeted refresh ERROR (non-fatal): {exc}\n")
+        except Exception:
+            pass
+    _chain_boundary(log, "post_lock_targeted_complete")
 
 
 def _run_post_lock_targeted_refresh(
@@ -1806,6 +2104,7 @@ def run_scheduled_scrape_for_org(
     if using_combined:
         result.run_id = run_id
         result.started_at = started_at
+        result.lease_generation = combined_cycle.lease_generation
     else:
         run_id = insert_scrape_run(
             cursor,
@@ -1815,11 +2114,22 @@ def run_scheduled_scrape_for_org(
             run_type=run_type,
             log_path=str(paths.log_path),
         )
+        gen = take_lease(cursor, org_id, run_id=run_id)
+        bind_run_lease(cursor, run_id, org_id, gen)
+        result.lease_generation = gen
         conn.commit()
         result.run_id = run_id
         started_at = datetime.utcnow()
         result.started_at = started_at
         log = _TeeLog(paths.log_path)
+
+    lease_gen = result.lease_generation
+    elapsed_already = 0
+    if isinstance(started_at, datetime):
+        elapsed_already = max(0, int((datetime.utcnow() - started_at).total_seconds()))
+    hard_deadline_mono = time.monotonic() + max(
+        60, hard_runtime_ceiling_seconds() - elapsed_already
+    )
 
     result.at_vendor_status = "failed"
     env: dict[str, str] = {}
@@ -1849,11 +2159,49 @@ def run_scheduled_scrape_for_org(
                     "(portal + presence + scans from one expand walk)\n"
                 )
                 scan_download_started = datetime.utcnow()
-                # One walk replaces three prior phases — use full scrape timeout
-                # (default 1800s), not the old 900s per-phase combined cap.
-                if _run_bash_script(
-                    scan_script, env, log, timeout_sec=scrape_timeout_sec()
-                ) != 0:
+                touch_scrape_run_progress(
+                    cursor, run_id, org_id, stage="portal_scrape",
+                    lease_generation=lease_gen,
+                )
+                conn.commit()
+
+                def _scan_heartbeat() -> None:
+                    if lease_gen is not None:
+                        assert_lease_writable(cursor, org_id, int(lease_gen))
+                    touch_scrape_run_progress(
+                        cursor, run_id, org_id, stage="portal_scrape",
+                        progress=False,
+                        lease_generation=lease_gen,
+                    )
+                    conn.commit()
+
+                last_prog_commit = [0.0]
+
+                def _scan_progress(_line: str) -> None:
+                    now_m = time.monotonic()
+                    if now_m - last_prog_commit[0] < 15:
+                        return
+                    last_prog_commit[0] = now_m
+                    touch_scrape_run_progress(
+                        cursor, run_id, org_id, stage="portal_scrape",
+                        lease_generation=lease_gen,
+                    )
+                    conn.commit()
+
+                rc = _run_bash_script(
+                    scan_script,
+                    env,
+                    log,
+                    timeout_sec=scrape_timeout_sec(),
+                    heartbeat_fn=_scan_heartbeat,
+                    progress_fn=_scan_progress,
+                    hard_deadline_mono=hard_deadline_mono,
+                )
+                if rc == -2:
+                    raise RuntimeError(
+                        f"FAILED_STALLED: no scrape progress for {stall_seconds()}s"
+                    )
+                if rc != 0:
                     raise RuntimeError("Scan-events scrape subprocess failed")
                 scan_download_completed = datetime.utcnow()
                 _materialize_portal_csv_from_scan_tickets(paths, log)
@@ -1863,6 +2211,11 @@ def run_scheduled_scrape_for_org(
                 )
 
                 presence_started = datetime.utcnow()
+                touch_scrape_run_progress(
+                    cursor, run_id, org_id, stage="scan_import",
+                    lease_generation=lease_gen,
+                )
+                conn.commit()
                 presence_result = apply_at_vendor_presence_from_portal_csv(
                     conn,
                     org_id,
@@ -2027,6 +2380,14 @@ def run_scheduled_scrape_for_org(
             portal_name = f"scheduled-rinse-portal-{_stamp_et()}.csv"
             events_name = f"scheduled-rinse-events-{_stamp_et()}.csv"
 
+            touch_scrape_run_progress(
+                cursor, run_id, org_id, stage="scan_import",
+                lease_generation=lease_gen,
+            )
+            conn.commit()
+            if lease_gen is not None:
+                assert_lease_writable(cursor, org_id, int(lease_gen))
+
             orders_df = portal_csv_to_orders_df(str(paths.portal_csv))
             events_df, warnings = parse_scan_events_csv(str(paths.scan_events_csv))
             newest_source_scan = _newest_source_scan_et(events_df)
@@ -2090,9 +2451,16 @@ def run_scheduled_scrape_for_org(
                 )
 
                 try:
-                    # Staging + CONFIRMED only. Finalize is post-lock so Stage-B
-                    # can persist Today and the main scrape can become terminal
-                    # before optional registry/folding/targeted work.
+                    touch_scrape_run_progress(
+                        cursor, run_id, org_id, stage="merge",
+                        lease_generation=lease_gen,
+                    )
+                    conn.commit()
+                    if lease_gen is not None:
+                        assert_lease_writable(cursor, org_id, int(lease_gen))
+                    # Staging + CONFIRMED only. Registry/folding finalize runs
+                    # in-lock after Stage-B so terminal success means Management
+                    # projection work for this cycle is finished.
                     confirm_payload = confirm_upload_batch_core(
                         cursor,
                         org_id,
@@ -2101,10 +2469,6 @@ def run_scheduled_scrape_for_org(
                         run_finalize=False,
                     )
                     log.write(f"Auto-confirmed batch_id={batch_id}\n")
-                    log.write(
-                        "Rinse finalize deferred to post-lock "
-                        "(Stage-B persist + main lock release first)\n"
-                    )
                 except UploadBatchConfirmError as e:
                     conn.rollback()
                     raise RuntimeError(str(e)) from e
@@ -2113,9 +2477,17 @@ def run_scheduled_scrape_for_org(
 
             off_portal_refresh_detail: dict[str, Any] | None = None
             step1_refresh_detail: dict[str, Any] | None = None
+            finalize_payload: dict[str, Any] | None = None
             if not dry_run and batch_id and final_status in ("success", "needs_attention"):
-                # Main locked path: Stage-B after confirm. Targeted pending
-                # refresh runs only after this scrape is terminal + unlocked.
+                touch_scrape_run_progress(
+                    cursor, run_id, org_id, stage="stage_b_rebuild",
+                    lease_generation=lease_gen,
+                )
+                conn.commit()
+                if lease_gen is not None:
+                    assert_lease_writable(cursor, org_id, int(lease_gen))
+                _chain_boundary(log, "stage_b_start", batch_id=batch_id, run_id=run_id)
+                # Main locked path: Stage-B after confirm, then required finalize.
                 step1_refresh_detail = _refresh_open_step1_day_after_scrape(
                     conn,
                     cursor,
@@ -2128,6 +2500,32 @@ def run_scheduled_scrape_for_org(
                         "draft": draft_payload,
                     },
                 )
+                _chain_boundary(
+                    log,
+                    "stage_b_complete",
+                    batch_id=batch_id,
+                    run_id=run_id,
+                    status=(step1_refresh_detail or {}).get("step1_refresh_status"),
+                )
+                # Required Management-visible finalize before terminal success.
+                finalize_payload = _run_in_lock_rinse_finalize(
+                    conn,
+                    cursor,
+                    org_id=org_id,
+                    batch_id=int(batch_id),
+                    run_id=run_id,
+                    lease_generation=lease_gen,
+                    log=log,
+                )
+                if isinstance(confirm_payload, dict):
+                    confirm_payload = {
+                        **confirm_payload,
+                        "rinse_finalize": {
+                            **dict(finalize_payload or {}),
+                            "deferred": False,
+                            "in_lock": True,
+                        },
+                    }
 
             result.status = final_status
             result.at_vendor_status = final_status
@@ -2187,12 +2585,16 @@ def run_scheduled_scrape_for_org(
                     "batch_confirmed_et": _fmt_system_utc_as_et(confirmed_at),
                     "evidence_gate": evidence,
                     "stage_b": stage_b_status,
+                    "finalize_in_lock": bool(finalize_payload),
                 },
             }
-            if isinstance(confirm_payload, dict) and (
-                (confirm_payload.get("rinse_finalize") or {}).get("deferred")
-            ):
-                result.detail["rinse_finalize_deferred"] = True
+            if finalize_payload is not None:
+                result.detail["rinse_finalize"] = {
+                    **dict(finalize_payload),
+                    "deferred": False,
+                    "in_lock": True,
+                }
+                result.detail.pop("rinse_finalize_deferred", None)
             if portal_gate.get("force_override"):
                 result.detail["sync_warning"] = portal_gate.get("warning")
             if off_portal_refresh_detail is not None:
@@ -2281,7 +2683,7 @@ def run_scheduled_scrape_for_org(
     if not dry_run and result.status not in ("skipped",):
         post_log = _TeeLog(paths.log_path)
         try:
-            _run_post_lock_targeted_refresh(
+            _run_post_lock_or_abandon(
                 conn,
                 cursor,
                 org_id=org_id,

@@ -11,10 +11,11 @@ from backend.ta_helpers import table_exists
 
 ET = ZoneInfo("America/New_York")
 
-# ACA polls frequently; app gate enforces finish → wait 30m → next (completion-driven).
-DEFAULT_CRON_UTC = "*/5 * * * *"
-DEFAULT_POLL_CRON_UTC = "*/5 * * * *"
-DEFAULT_INTERVAL_MINUTES = 30
+# Continuous sequential chain: Manual ACA job + in-process loop + successor start.
+# No fixed poll cron; no post-run cooldown gate.
+DEFAULT_CRON_UTC = None
+DEFAULT_POLL_CRON_UTC = None
+DEFAULT_INTERVAL_MINUTES = 0
 
 
 def _utcnow_naive() -> datetime:
@@ -263,15 +264,15 @@ def _next_run_estimate_utc(
     *,
     last_started: datetime | None = None,
 ) -> datetime | None:
-    """Next scheduled eligibility = last finished_at + cooldown (completion-driven)."""
+    """Next run is immediate after terminal finish (sequential chain)."""
     from backend.rinse_scrape_runs import compute_next_run_at, post_run_cooldown_minutes
 
-    mins = post_run_cooldown_minutes()
+    mins = post_run_cooldown_minutes()  # default 0
     if last_finished is not None:
         return compute_next_run_at(last_finished, cooldown_minutes=mins)
     if last_started is None:
-        return _utcnow_naive() + timedelta(minutes=mins)
-    return last_started + timedelta(minutes=mins)
+        return _utcnow_naive()
+    return last_started
 
 
 def _batch_row_counts(
@@ -404,15 +405,15 @@ def get_scheduled_scrape_status(cursor, organization_id: int) -> dict[str, Any]:
     org = int(organization_id)
     out: dict[str, Any] = {
         "organization_id": org,
-        "schedule_cron_utc": os.getenv("RINSE_SCHEDULE_CRON_UTC", DEFAULT_CRON_UTC),
-        "schedule_poll_cron_utc": os.getenv(
-            "RINSE_SCHEDULE_POLL_CRON_UTC", DEFAULT_POLL_CRON_UTC
-        ),
+        "schedule_cron_utc": os.getenv("RINSE_SCHEDULE_CRON_UTC") or DEFAULT_CRON_UTC,
+        "schedule_poll_cron_utc": os.getenv("RINSE_SCHEDULE_POLL_CRON_UTC")
+        or DEFAULT_POLL_CRON_UTC,
         "schedule_interval_minutes": DEFAULT_INTERVAL_MINUTES,
-        "schedule_mode": "completion_driven_post_run_cooldown",
+        "schedule_mode": "sequential_immediate",
         "schedule_timezone_note": (
-            "ACA polls on a short UTC cron; the next scrape is eligible only after "
-            "previous finished_at + schedule_interval_minutes. "
+            "ACA job trigger is Manual (cron=null). After each cycle terminals, "
+            "cleanup releases lock/lease and the next run starts immediately via "
+            "in-process loop and/or successor execution handoff. "
             "Display times use America/New_York."
         ),
         "latest_run": None,

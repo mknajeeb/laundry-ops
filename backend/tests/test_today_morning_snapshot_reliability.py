@@ -89,17 +89,19 @@ def test_morning_invariant_successful_import_creates_open_snapshot():
 
 
 def test_targeted_hang_after_import_still_creates_snapshot():
-    """Post-lock targeted hang cannot undo Stage-B persist from the import."""
+    """Opt-in post-lock targeted hang cannot undo Stage-B persist from the import."""
     result, _refresh, mock_finish, mock_release, mock_stage_b, order, *_rest = (
         _run_scheduled_with_mocks(
             refresh_side_effect=TimeoutError("targeted hung past bound"),
+            post_lock_targeted=True,
         )
     )
     assert result.status == "success"
     assert (result.detail or {}).get("step1_day_refresh", {}).get("ok") is True
     mock_finish.assert_called_once()
     mock_release.assert_called_once()
-    assert order.index("stage_b_main") < order.index("finish")
+    assert order.index("stage_b_main") < order.index("finalize")
+    assert order.index("finalize") < order.index("finish")
     assert order.index("stage_b_main") < order.index("targeted")
     assert mock_stage_b.call_count >= 1
 

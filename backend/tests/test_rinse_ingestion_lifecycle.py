@@ -146,27 +146,26 @@ def test_ensure_scrape_run_terminal_only_updates_running():
     assert "failed" in cursor.execute.call_args.args[1]
 
 
-def test_optional_finalize_failure_leaves_main_terminal_and_lock_released():
+def test_required_finalize_failure_fails_main_and_releases_lock():
     result, _refresh, mock_finish, mock_release, *_rest = _run_scheduled_with_mocks(
-        finalize_side_effect=RuntimeError("optional finalize exploded"),
+        finalize_side_effect=RuntimeError("required finalize exploded"),
     )
-    assert result.status == "success"
+    assert result.status == "failed"
     mock_finish.assert_called_once()
-    assert mock_finish.call_args.kwargs.get("status") == "success"
+    assert mock_finish.call_args.kwargs.get("status") == "failed"
     mock_release.assert_called_once()
-    post = (result.detail or {}).get("rinse_finalize_post_lock") or {}
-    assert post.get("post_lock") is True
-    assert "optional finalize exploded" in str(post.get("error") or "")
+    assert "required finalize exploded" in str(result.error_message or "")
 
 
-def test_confirm_run_finalize_false_then_stage_b_then_finish():
+def test_confirm_run_finalize_false_then_stage_b_finalize_then_finish():
     result, _refresh, mock_finish, mock_release, mock_stage_b, order, mock_confirm, *_ = (
         _run_scheduled_with_mocks()
     )
     assert result.status == "success"
     assert mock_confirm.call_args.kwargs.get("run_finalize") is False
     assert order.index("confirm") < order.index("stage_b_main")
-    assert order.index("stage_b_main") < order.index("finish")
+    assert order.index("stage_b_main") < order.index("finalize")
+    assert order.index("finalize") < order.index("finish")
     assert order.index("finish") < order.index("release")
     mock_release.assert_called_once()
     mock_finish.assert_called_once()

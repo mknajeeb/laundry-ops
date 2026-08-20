@@ -1,4 +1,4 @@
-"""Scheduled targeted refresh runs post-lock after main cycle is terminal."""
+"""Scheduled scrape: Stage-B + finalize in-lock before terminal; post-lock optional."""
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -14,7 +14,9 @@ def _run_scheduled_with_mocks(
     refresh_return=None,
     finish_side_effect=None,
     finalize_side_effect=None,
+    post_lock_targeted: bool = False,
 ):
+    import os
     import tempfile
 
     from backend.rinse_scheduled_scrape import ScrapePaths, run_scheduled_scrape_for_org
@@ -33,6 +35,7 @@ def _run_scheduled_with_mocks(
     conn = MagicMock()
     cursor = MagicMock()
     cursor.fetchone.return_value = {"c": 1}
+    cursor.nextset.return_value = None
     conn.cursor.return_value = cursor
 
     tenant = MagicMock()
@@ -51,6 +54,10 @@ def _run_scheduled_with_mocks(
         patch("backend.rinse_scheduled_scrape.tenant_script_dir", return_value=tenant),
         patch("backend.rinse_scheduled_scrape.acquire_scrape_lock", return_value=(True, "")),
         patch("backend.rinse_scheduled_scrape.insert_scrape_run", return_value=1),
+        patch("backend.rinse_scheduled_scrape.take_lease", return_value=1),
+        patch("backend.rinse_scheduled_scrape.bind_run_lease"),
+        patch("backend.rinse_scheduled_scrape.assert_lease_writable"),
+        patch("backend.rinse_scheduled_scrape.touch_scrape_run_progress"),
         patch("backend.rinse_scheduled_scrape.build_run_paths", return_value=paths),
         patch("backend.rinse_scheduled_scrape._run_bash_script", return_value=0),
         patch("backend.rinse_scheduled_scrape._subprocess_env_for_vendor", return_value={}),
@@ -100,16 +107,6 @@ def _run_scheduled_with_mocks(
         ),
     ]
 
-    refresh_kw = {}
-    if refresh_side_effect is not None:
-        refresh_kw["side_effect"] = refresh_side_effect
-    else:
-        refresh_kw["return_value"] = refresh_payload
-
-    finish_kw = {}
-    if finish_side_effect is not None:
-        finish_kw["side_effect"] = finish_side_effect
-
     call_order: list[str] = []
 
     def _finish(*_a, **kwargs):
@@ -137,20 +134,13 @@ def _run_scheduled_with_mocks(
         return {"ok": True, "shift_date_et": "2026-07-25"}
 
     def _post_reproject(*_a, **_k):
-        # Second Stage-B only via post-lock helper when events inserted.
         call_order.append("stage_b_post")
         return {"ok": True, "shift_date_et": "2026-07-25", "post_lock": True}
 
     def _confirm(*_a, **kwargs):
         call_order.append("confirm")
         assert kwargs.get("run_finalize") is False
-        return {
-            "status": "batch_confirmed",
-            "rinse_finalize": {
-                "deferred": True,
-                "reason": "post_lock_after_authoritative_cycle",
-            },
-        }
+        return {"status": "batch_confirmed"}
 
     def _finalize(*_a, **_k):
         call_order.append("finalize")
@@ -162,7 +152,13 @@ def _run_scheduled_with_mocks(
             raise finalize_side_effect
         return {"persistent_merge": {"events_inserted": 0, "bags_merged": 0}}
 
-    with patch(
+    env_patch = {
+        "RINSE_POST_LOCK_TARGETED_ENABLED": "1" if post_lock_targeted else "0",
+        # Dual-path portal+scan is what these lifecycle mocks exercise.
+        "RINSE_AV_SINGLE_PASS": "0",
+    }
+
+    with patch.dict(os.environ, env_patch, clear=False), patch(
         "backend.rinse_off_portal_scan_refresh.refresh_pending_workload_scans_via_direct_lookup",
         side_effect=_refresh,
     ) as mock_refresh, patch(
@@ -186,7 +182,6 @@ def _run_scheduled_with_mocks(
         for p in patches:
             p.start()
         try:
-            # Re-bind post-lock reproject: first Stage-B is main; subsequent are post.
             stage_b_calls = {"n": 0}
 
             def _stage_b_split(*_a, **_k):
@@ -214,8 +209,15 @@ def _run_scheduled_with_mocks(
     )
 
 
-def test_scheduled_run_invokes_targeted_refresh_when_enabled():
+def test_scheduled_run_skips_post_lock_targeted_by_default():
     result, mock_refresh, *_rest = _run_scheduled_with_mocks()
+    mock_refresh.assert_not_called()
+    assert result.status == "success"
+    assert (result.detail or {}).get("targeted_pending_scan_refresh") is None
+
+
+def test_scheduled_run_invokes_targeted_refresh_when_enabled():
+    result, mock_refresh, *_rest = _run_scheduled_with_mocks(post_lock_targeted=True)
     mock_refresh.assert_called_once()
     assert mock_refresh.call_args.kwargs.get("dry_run") is False
     detail = (result.detail or {}).get("targeted_pending_scan_refresh") or {}
@@ -228,6 +230,7 @@ def test_scheduled_run_invokes_targeted_refresh_when_enabled():
 def test_scheduled_refresh_failure_does_not_fail_main_sync():
     result, *_rest = _run_scheduled_with_mocks(
         refresh_side_effect=RuntimeError("portal timeout"),
+        post_lock_targeted=True,
     )
     assert result.status in ("success", "needs_attention")
     detail = (result.detail or {}).get("targeted_pending_scan_refresh") or {}
@@ -236,36 +239,40 @@ def test_scheduled_refresh_failure_does_not_fail_main_sync():
 
 
 def test_main_cycle_terminal_and_unlocked_before_targeted_hang():
-    """Targeted hang must not leave main scrape running or hold the lock."""
+    """Opt-in targeted hang must not leave main scrape running or hold the lock."""
 
     def _hang(*_a, **_k):
         raise TimeoutError("targeted hung past bound")
 
-    result, _refresh, mock_finish, mock_release, _stage_b, order, *_rest = _run_scheduled_with_mocks(
-        refresh_side_effect=_hang,
+    result, _refresh, mock_finish, mock_release, _stage_b, order, *_rest = (
+        _run_scheduled_with_mocks(
+            refresh_side_effect=_hang,
+            post_lock_targeted=True,
+        )
     )
     assert result.status == "success"
     mock_finish.assert_called_once()
     assert mock_finish.call_args.kwargs.get("status") == "success"
     mock_release.assert_called_once()
-    # finish + release happen before targeted attempt
-    assert order.index("finish") < order.index("targeted")
+    assert order.index("finalize") < order.index("finish")
+    assert order.index("finish") < order.index("release")
     assert order.index("release") < order.index("targeted")
-    assert order.index("stage_b_main") < order.index("finish")
-    assert order.index("release") < order.index("finalize")
-    assert order.index("finalize") < order.index("targeted")
+    assert order.index("stage_b_main") < order.index("finalize")
 
 
 def test_targeted_zero_events_skips_reproject():
-    result, _refresh, _finish, _release, mock_stage_b, order, *_rest = _run_scheduled_with_mocks(
-        refresh_return={
-            "dry_run": False,
-            "bag_ids_requested": ["BAG1"],
-            "bags_processed": 1,
-            "events_inserted": 0,
-            "lookup_failed": 0,
-            "bags": [],
-        },
+    result, _refresh, _finish, _release, mock_stage_b, order, *_rest = (
+        _run_scheduled_with_mocks(
+            refresh_return={
+                "dry_run": False,
+                "bag_ids_requested": ["BAG1"],
+                "bags_processed": 1,
+                "events_inserted": 0,
+                "lookup_failed": 0,
+                "bags": [],
+            },
+            post_lock_targeted=True,
+        )
     )
     assert result.status == "success"
     assert order.count("stage_b_main") == 1
@@ -273,20 +280,22 @@ def test_targeted_zero_events_skips_reproject():
     skipped = (result.detail or {}).get("targeted_post_lock_step1_refresh") or {}
     assert skipped.get("skipped") is True
     assert skipped.get("reason") == "no_targeted_events"
-    # Main Stage-B once; no second reproject call
     assert mock_stage_b.call_count == 1
 
 
 def test_targeted_with_events_runs_separate_post_lock_reproject():
-    result, _refresh, _finish, _release, mock_stage_b, order, *_rest = _run_scheduled_with_mocks(
-        refresh_return={
-            "dry_run": False,
-            "bag_ids_requested": ["BAG1"],
-            "bags_processed": 1,
-            "events_inserted": 3,
-            "lookup_failed": 0,
-            "bags": [],
-        },
+    result, _refresh, _finish, _release, mock_stage_b, order, *_rest = (
+        _run_scheduled_with_mocks(
+            refresh_return={
+                "dry_run": False,
+                "bag_ids_requested": ["BAG1"],
+                "bags_processed": 1,
+                "events_inserted": 3,
+                "lookup_failed": 0,
+                "bags": [],
+            },
+            post_lock_targeted=True,
+        )
     )
     assert result.status == "success"
     assert "stage_b_post" in order
@@ -297,6 +306,7 @@ def test_targeted_with_events_runs_separate_post_lock_reproject():
 
 
 def test_main_import_failure_stays_failed_even_if_targeted_ok():
+    import os
     import tempfile
 
     from backend.rinse_scheduled_scrape import ScrapePaths, run_scheduled_scrape_for_org
@@ -340,10 +350,22 @@ def test_main_import_failure_stays_failed_even_if_targeted_ok():
         order.append("targeted")
         return refresh_summary
 
-    with patch("backend.rinse_scheduled_scrape.tenant_script_dir", return_value=tenant), patch(
+    with patch.dict(
+        os.environ, {"RINSE_POST_LOCK_TARGETED_ENABLED": "1"}, clear=False
+    ), patch(
+        "backend.rinse_scheduled_scrape.tenant_script_dir", return_value=tenant
+    ), patch(
         "backend.rinse_scheduled_scrape.acquire_scrape_lock", return_value=(True, "")
     ), patch(
         "backend.rinse_scheduled_scrape.insert_scrape_run", return_value=1
+    ), patch(
+        "backend.rinse_scheduled_scrape.take_lease", return_value=1
+    ), patch(
+        "backend.rinse_scheduled_scrape.bind_run_lease"
+    ), patch(
+        "backend.rinse_scheduled_scrape.assert_lease_writable"
+    ), patch(
+        "backend.rinse_scheduled_scrape.touch_scrape_run_progress"
     ), patch(
         "backend.rinse_scheduled_scrape.build_run_paths", return_value=paths
     ), patch(
@@ -380,6 +402,7 @@ def test_targeted_failure_allows_next_lock_acquire():
     """After a successful main finish, a targeted failure must not leave status=running."""
     result, _refresh, mock_finish, mock_release, *_rest = _run_scheduled_with_mocks(
         refresh_side_effect=RuntimeError("lookup failed"),
+        post_lock_targeted=True,
     )
     assert result.status == "success"
     mock_finish.assert_called_once()
@@ -401,7 +424,7 @@ def test_helpers_gate_reproject_on_events():
     ) is True
 
 
-def test_authoritative_confirm_runs_stage_b_before_targeted():
+def test_authoritative_confirm_runs_stage_b_and_finalize_before_terminal():
     result, _refresh, _finish, _release, mock_stage_b, order, mock_confirm, *_rest = (
         _run_scheduled_with_mocks()
     )
@@ -409,29 +432,29 @@ def test_authoritative_confirm_runs_stage_b_before_targeted():
     mock_confirm.assert_called_once()
     assert mock_confirm.call_args.kwargs.get("run_finalize") is False
     assert order.index("confirm") < order.index("stage_b_main")
-    assert order.index("stage_b_main") < order.index("targeted")
     assert order.index("stage_b_main") < order.index("finalize")
-    assert (result.detail or {}).get("rinse_finalize_deferred") is True
+    assert order.index("finalize") < order.index("finish")
+    assert order.index("finish") < order.index("release")
+    assert "targeted" not in order
+    assert (result.detail or {}).get("rinse_finalize_deferred") is not True
+    assert (result.detail or {}).get("rinse_finalize", {}).get("in_lock") is True
     assert mock_stage_b.call_count >= 1
 
 
-def test_finalize_hang_leaves_today_current_and_main_terminal():
+def test_finalize_failure_fails_main_before_terminal():
     result, _refresh, mock_finish, mock_release, mock_stage_b, order, *_rest = (
         _run_scheduled_with_mocks(
             finalize_side_effect=TimeoutError("finalize hung past bound"),
         )
     )
-    assert result.status == "success"
+    assert result.status == "failed"
+    assert "finalize hung" in str(result.error_message or "")
     mock_finish.assert_called_once()
-    assert mock_finish.call_args.kwargs.get("status") == "success"
+    assert mock_finish.call_args.kwargs.get("status") == "failed"
     mock_release.assert_called_once()
-    assert order.index("stage_b_main") < order.index("finish")
-    assert order.index("release") < order.index("finalize")
-    assert (result.detail or {}).get("step1_day_refresh", {}).get("ok") is True
+    assert order.index("stage_b_main") < order.index("finalize")
+    assert "finalize" in order
     assert mock_stage_b.call_count >= 1
-    post = (result.detail or {}).get("rinse_finalize_post_lock") or {}
-    assert post.get("post_lock") is True
-    assert "finalize hung" in str(post.get("error") or "")
 
 
 def test_authoritative_import_creates_today_without_watchdog():
@@ -445,8 +468,8 @@ def test_authoritative_import_creates_today_without_watchdog():
     assert (result.detail or {}).get("step1_day_refresh", {}).get("ok") is True
 
 
-def test_combined_cycle_stage_b_unlock_before_targeted():
-    """Combined wrapper: Stage-B + terminal main + unlock, then post-lock finalize/targeted."""
+def test_combined_cycle_finalize_before_unlock():
+    """Combined wrapper: Stage-B + in-lock finalize before terminal + unlock."""
     from datetime import datetime
     import os
     import tempfile
@@ -487,10 +510,7 @@ def test_combined_cycle_stage_b_unlock_before_targeted():
     def _confirm(*_a, **kwargs):
         order.append("confirm")
         assert kwargs.get("run_finalize") is False
-        return {
-            "status": "batch_confirmed",
-            "rinse_finalize": {"deferred": True},
-        }
+        return {"status": "batch_confirmed"}
 
     def _stage_b(*_a, **_k):
         order.append("stage_b_main")
@@ -522,6 +542,10 @@ def test_combined_cycle_stage_b_unlock_before_targeted():
         patch("backend.rinse_scheduled_scrape.tenant_script_dir", return_value=tenant),
         patch("backend.rinse_scheduled_scrape.acquire_scrape_lock", return_value=(True, "")),
         patch("backend.rinse_scheduled_scrape.insert_scrape_run", return_value=7),
+        patch("backend.rinse_scheduled_scrape.take_lease", return_value=1),
+        patch("backend.rinse_scheduled_scrape.bind_run_lease"),
+        patch("backend.rinse_scheduled_scrape.assert_lease_writable"),
+        patch("backend.rinse_scheduled_scrape.touch_scrape_run_progress"),
         patch("backend.rinse_scheduled_scrape.build_run_paths", return_value=paths),
         patch("backend.rinse_scheduled_scrape._run_bash_script", return_value=0),
         patch("backend.rinse_scheduled_scrape._subprocess_env_for_vendor", return_value={}),
@@ -597,7 +621,11 @@ def test_combined_cycle_stage_b_unlock_before_targeted():
         ),
         patch("backend.rinse_scheduled_scrape.merge_scrape_run_result_json"),
     ]
-    with patch.dict(os.environ, {}, clear=False):
+    with patch.dict(
+        os.environ,
+        {"RINSE_POST_LOCK_TARGETED_ENABLED": "0", "RINSE_AV_SINGLE_PASS": "0"},
+        clear=False,
+    ):
         os.environ.pop("RFV_SCRAPE_ENABLED", None)
         for p in patches:
             p.start()
@@ -609,9 +637,10 @@ def test_combined_cycle_stage_b_unlock_before_targeted():
 
     assert result.status == "success"
     assert order.index("confirm") < order.index("stage_b_main")
-    assert order.index("stage_b_main") < order.index("finish")
+    assert order.index("stage_b_main") < order.index("finalize")
+    assert order.index("finalize") < order.index("finish")
     assert order.index("finish") < order.index("release")
-    assert order.index("release") < order.index("finalize")
-    assert order.index("finalize") < order.index("targeted")
+    assert "targeted" not in order
     assert "stage_b_post" not in order
-    assert (result.detail or {}).get("rinse_finalize_deferred") is True
+    assert (result.detail or {}).get("rinse_finalize", {}).get("in_lock") is True
+    assert (result.detail or {}).get("rinse_finalize_deferred") is not True
