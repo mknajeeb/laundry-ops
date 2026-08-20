@@ -74,3 +74,30 @@ def test_build_account_revenue_day_shape(mock_ensure, mock_list):
     assert block["non_rinse_revenue"]["self_service"]["total"] == 15.0
     assert len(block["dhs"]["accounts"]) == 1
     assert block["dhs"]["accounts"][0]["name"] == "Auburn"
+
+
+def test_account_row_includes_date_basis_flags():
+    from backend.management_revenue_accounts import _account_row_to_dict
+    row = {
+        "id": 1,
+        "parent_id": None,
+        "account_code": "dhs_x",
+        "name": "Clarkson",
+        "revenue_group": "dhs",
+        "service_type": None,
+        "revenue_mode": "calculated",
+        "active": 1,
+        "allow_override": 1,
+        "use_pickup_date": 0,
+        "use_processing_date": 1,
+        "use_delivery_date": 0,
+        "start_date": None,
+        "end_date": None,
+        "dr_commercial_account_id": 3,
+        "notes": None,
+        "sort_order": 0,
+    }
+    d = _account_row_to_dict(row)
+    assert d["use_processing_date"] is True
+    assert d["use_pickup_date"] is False
+    assert d["allow_override"] is True

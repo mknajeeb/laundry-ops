@@ -4,13 +4,10 @@ import {
   Box,
   Button,
   CircularProgress,
-  IconButton,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import {
   createManagementCashPayout,
   deleteManagementCashPayout,
@@ -22,8 +19,19 @@ import {
   saveManagementRevenueNonRinse,
   saveManagementRinseHdProduction,
 } from "../api";
+import CashPayoutForm, { CashPayoutList } from "../components/revenueShared/CashPayoutForm";
+import DhsAccountRow from "../components/revenueShared/DhsAccountRow";
+import DhsAccountSheet from "../components/revenueShared/DhsAccountSheet";
+import MoneyAmountField from "../components/revenueShared/MoneyAmountField";
+import NonRinseEntryPanel from "../components/revenueShared/NonRinseEntryPanel";
+import SectionStatusCard from "../components/revenueShared/SectionStatusCard";
+import {
+  fmtMoney,
+  moneyToInput,
+  parseMoneyInput,
+  todayEtIso,
+} from "../components/revenueShared/revenueFormat";
 import { formatFriendlyEtWall } from "../utils/rinseTimeFormat";
-import OpsChoiceCard from "./OpsChoiceCard";
 import OpsLocaleToggle from "./OpsLocaleToggle";
 import OpsLockButton from "./OpsLockButton";
 import OpsMobileShell from "./OpsMobileShell";
@@ -31,30 +39,14 @@ import OpsTopBar from "./OpsTopBar";
 import { OPS_MOBILE } from "./tokens";
 import { useI18n } from "../i18n/I18nContext";
 
-function todayEtIso() {
+function formatHomeDate(iso) {
   try {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/New_York",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
+    const [y, m, d] = String(iso).split("-").map(Number);
+    const dt = new Date(y, m - 1, d);
+    return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
   } catch {
-    return new Date().toISOString().slice(0, 10);
+    return iso;
   }
-}
-
-function parseMoneyInput(v) {
-  const n = Number(String(v ?? "").replace(/[^0-9.-]/g, ""));
-  return Number.isFinite(n) ? n : 0;
-}
-
-function fmtMoney(v) {
-  if (v == null || Number.isNaN(Number(v))) return "—";
-  return `$${Number(v).toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
 }
 
 function fmtInt(v) {
@@ -67,49 +59,20 @@ function fmtTime(v) {
   return formatFriendlyEtWall(v) || String(v);
 }
 
-function MoneyField({ label, value, onChange, disabled }) {
-  return (
-    <TextField
-      label={label}
-      value={value}
-      onChange={(e) => onChange?.(e.target.value)}
-      disabled={disabled}
-      fullWidth
-      inputMode="decimal"
-      sx={{
-        "& .MuiInputBase-root": {
-          minHeight: 56,
-          fontWeight: 700,
-          fontSize: "1.15rem",
-        },
-      }}
-    />
-  );
-}
-
-const HOME_CARD_IDS = ["self_service", "drop_off", "dhs", "cash", "hang_dry"];
-
 const SCREEN_TITLE_KEYS = {
   home: "mobileOps.revenue.title",
   self_service: "mobileOps.revenue.selfService",
   drop_off: "mobileOps.revenue.dropOff",
   dhs: "mobileOps.revenue.dhs",
+  dhs_account: "mobileOps.revenue.dhs",
   cash: "mobileOps.revenue.cashPaidOut",
   hang_dry: "mobileOps.revenue.hangDry",
   hang_dry_detail: "mobileOps.revenue.hangDry",
 };
 
-const HOME_TITLE_KEYS = {
-  self_service: "mobileOps.revenue.selfService",
-  drop_off: "mobileOps.revenue.dropOff",
-  dhs: "mobileOps.revenue.dhs",
-  cash: "mobileOps.revenue.cashPaidOut",
-  hang_dry: "mobileOps.revenue.hangDry",
-};
-
 /**
- * Employee PIN Revenue / Cash entry — Management APIs only.
- * Hang Dry lives inside this flow (not a separate hub tile).
+ * Employee PIN Revenue / Cash — shared Management APIs + shared entry components.
+ * Hang Dry writes only hd_day_bag_production via Management HD APIs.
  */
 export default function PinRevenueCashFlow({ onBack, onLock }) {
   const { t } = useI18n();
@@ -120,48 +83,40 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
   const [saveState, setSaveState] = useState("");
   const [data, setData] = useState(null);
 
-  const [ssCash, setSsCash] = useState("");
-  const [ssCard, setSsCard] = useState("");
-  const [doCash, setDoCash] = useState("");
-  const [doCard, setDoCard] = useState("");
+  const [ssCash, setSsCash] = useState(null);
+  const [ssCard, setSsCard] = useState(null);
+  const [doCash, setDoCash] = useState(null);
+  const [doCard, setDoCard] = useState(null);
+
+  const [dhsAccount, setDhsAccount] = useState(null);
   const [dhsDraft, setDhsDraft] = useState({});
 
+  const [addingPayout, setAddingPayout] = useState(false);
+  const [payoutDate, setPayoutDate] = useState(dateEt);
   const [payoutPurpose, setPayoutPurpose] = useState("");
-  const [payoutAmount, setPayoutAmount] = useState("");
+  const [payoutAmount, setPayoutAmount] = useState(null);
   const [payoutNote, setPayoutNote] = useState("");
   const [payoutBusy, setPayoutBusy] = useState(false);
-  const [addingPayout, setAddingPayout] = useState(false);
 
+  const [hdList, setHdList] = useState(null);
   const [hdLoading, setHdLoading] = useState(false);
-  const [hdOrders, setHdOrders] = useState([]);
   const [hdDetail, setHdDetail] = useState(null);
-  const [hdItems, setHdItems] = useState("");
-  const [hdRevenue, setHdRevenue] = useState("");
+  const [hdItems, setHdItems] = useState(null);
+  const [hdRevenue, setHdRevenue] = useState(null);
   const [hdSaving, setHdSaving] = useState(false);
 
-  const nonRinseRef = useRef({ ssCash: "", ssCard: "", doCash: "", doCard: "" });
+  const nonRinseRef = useRef({ ssCash: null, ssCard: null, doCash: null, doCard: null });
   const autosaveTimerRef = useRef(null);
   const saveGenRef = useRef(0);
-
   nonRinseRef.current = { ssCash, ssCard, doCash, doCard };
 
-  const applyRevenuePayload = useCallback((payload) => {
+  const applyDayPayload = useCallback((payload) => {
     setData(payload);
-    const nr = payload?.non_rinse_revenue || payload?.non_rinse || {};
-    setSsCash(String(nr.self_service?.cash ?? ""));
-    setSsCard(String(nr.self_service?.card ?? ""));
-    setDoCash(String(nr.drop_off?.cash ?? ""));
-    setDoCard(String(nr.drop_off?.card ?? ""));
-    const dhsDraftMap = {};
-    for (const row of payload?.dhs?.accounts || []) {
-      dhsDraftMap[row.account_id] = {
-        volume: row.volume ?? "",
-        revenue: row.revenue ?? "",
-        revenue_mode: row.revenue_mode,
-        dr_commercial_account_id: row.dr_commercial_account_id,
-      };
-    }
-    setDhsDraft(dhsDraftMap);
+    const nr = payload?.non_rinse || payload?.non_rinse_revenue || {};
+    setSsCash(moneyToInput(nr.self_service?.cash) === "" ? null : nr.self_service?.cash);
+    setSsCard(moneyToInput(nr.self_service?.card) === "" ? null : nr.self_service?.card);
+    setDoCash(moneyToInput(nr.drop_off?.cash) === "" ? null : nr.drop_off?.cash);
+    setDoCard(moneyToInput(nr.drop_off?.card) === "" ? null : nr.drop_off?.card);
   }, []);
 
   const loadRevenue = useCallback(async () => {
@@ -169,27 +124,13 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     setError("");
     try {
       const res = await getManagementRevenue(dateEt);
-      applyRevenuePayload(res.data || {});
+      applyDayPayload(res.data || null);
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadFailed"));
     } finally {
       setLoading(false);
     }
-  }, [applyRevenuePayload, dateEt, t]);
-
-  const loadHangDry = useCallback(async () => {
-    setHdLoading(true);
-    setError("");
-    try {
-      const res = await getManagementRinseHd(dateEt, { status: "all" });
-      setHdOrders(res.data?.orders || []);
-    } catch (e) {
-      setHdOrders([]);
-      setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadHdFailed"));
-    } finally {
-      setHdLoading(false);
-    }
-  }, [dateEt, t]);
+  }, [applyDayPayload, dateEt, t]);
 
   useEffect(() => {
     loadRevenue();
@@ -199,55 +140,96 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
   }, [loadRevenue]);
 
   const flushNonRinse = useCallback(async () => {
-    const vals = nonRinseRef.current;
     const gen = ++saveGenRef.current;
+    const vals = nonRinseRef.current;
     setSaveState("saving");
-    setError("");
     try {
-      const res = await saveManagementRevenueNonRinse({
-        date_et: dateEt,
-        self_service_cash: parseMoneyInput(vals.ssCash),
-        self_service_card: parseMoneyInput(vals.ssCard),
-        drop_off_cash: parseMoneyInput(vals.doCash),
-        drop_off_card: parseMoneyInput(vals.doCard),
-      });
+      const body = { date_et: dateEt };
+      if (screen === "self_service" || screen === "home") {
+        body.self_service_cash = parseMoneyInput(vals.ssCash);
+        body.self_service_card = parseMoneyInput(vals.ssCard);
+      }
+      if (screen === "drop_off" || screen === "home") {
+        body.drop_off_cash = parseMoneyInput(vals.doCash);
+        body.drop_off_card = parseMoneyInput(vals.doCard);
+      }
+      // Always send the section being edited; skip nulls so blank ≠ overwrite with 0
+      const payload = { date_et: dateEt };
+      if (screen === "self_service") {
+        if (vals.ssCash !== undefined) payload.self_service_cash = parseMoneyInput(vals.ssCash);
+        if (vals.ssCard !== undefined) payload.self_service_card = parseMoneyInput(vals.ssCard);
+      } else if (screen === "drop_off") {
+        if (vals.doCash !== undefined) payload.drop_off_cash = parseMoneyInput(vals.doCash);
+        if (vals.doCard !== undefined) payload.drop_off_card = parseMoneyInput(vals.doCard);
+      } else {
+        payload.self_service_cash = parseMoneyInput(vals.ssCash);
+        payload.self_service_card = parseMoneyInput(vals.ssCard);
+        payload.drop_off_cash = parseMoneyInput(vals.doCash);
+        payload.drop_off_card = parseMoneyInput(vals.doCard);
+      }
+      const res = await saveManagementRevenueNonRinse(payload);
       if (gen !== saveGenRef.current) return;
-      applyRevenuePayload(res.data || {});
+      applyDayPayload(res.data || null);
       setSaveState("saved");
     } catch (e) {
       if (gen !== saveGenRef.current) return;
       setSaveState("error");
       setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.saveFailed"));
     }
-  }, [applyRevenuePayload, dateEt]);
+  }, [applyDayPayload, dateEt, screen, t]);
 
   const scheduleNonRinseAutosave = useCallback(() => {
     if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
     autosaveTimerRef.current = setTimeout(() => {
       autosaveTimerRef.current = null;
       flushNonRinse();
-    }, 500);
+    }, 450);
   }, [flushNonRinse]);
 
-  const setNonRinseField = (setter) => (raw) => {
-    setter(raw);
+  const setSsCashField = (v) => {
+    setSsCash(v);
+    scheduleNonRinseAutosave();
+  };
+  const setSsCardField = (v) => {
+    setSsCard(v);
+    scheduleNonRinseAutosave();
+  };
+  const setDoCashField = (v) => {
+    setDoCash(v);
+    scheduleNonRinseAutosave();
+  };
+  const setDoCardField = (v) => {
+    setDoCard(v);
     scheduleNonRinseAutosave();
   };
 
-  const saveDhs = async () => {
+  const openDhsAccount = (row) => {
+    setDhsAccount(row);
+    setDhsDraft({
+      volume: moneyToInput(row.volume) === "" ? null : row.volume,
+      revenue: moneyToInput(row.revenue) === "" ? null : row.revenue,
+      pickup_date: row.pickup_date || "",
+      // Visible prefill with entry date when processing enabled and no saved value
+      processing_date: row.processing_date || (row.use_processing_date !== false ? dateEt : ""),
+      delivery_date: row.delivery_date || "",
+      use_revenue_override: Boolean(row.use_revenue_override),
+    });
+    setScreen("dhs_account");
+    setSaveState("");
+  };
+
+  const saveDhsAccount = async (body) => {
     setSaveState("saving");
     setError("");
     try {
-      const accounts = (data?.dhs?.accounts || []).map((row) => ({
-        account_id: row.account_id,
-        dr_commercial_account_id: row.dr_commercial_account_id,
-        revenue_mode: row.revenue_mode,
-        volume: parseMoneyInput(dhsDraft[row.account_id]?.volume),
-        revenue: parseMoneyInput(dhsDraft[row.account_id]?.revenue),
-      }));
-      const res = await saveManagementRevenueDhs({ date_et: dateEt, accounts });
-      applyRevenuePayload(res.data || {});
+      const res = await saveManagementRevenueDhs({
+        date_et: dateEt,
+        accounts: [body],
+      });
+      applyDayPayload(res.data || null);
       setSaveState("saved");
+      const updated = (res.data?.dhs?.accounts || []).find((a) => a.account_id === body.account_id);
+      if (updated) setDhsAccount(updated);
     } catch (e) {
       setSaveState("error");
       setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.saveFailed"));
@@ -255,20 +237,22 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
   };
 
   const submitPayout = async () => {
-    if (!payoutPurpose.trim()) return;
+    if (!payoutPurpose.trim() || !payoutDate) return;
     setPayoutBusy(true);
     setError("");
     try {
       await createManagementCashPayout({
-        date_et: dateEt,
+        payout_business_date: payoutDate,
+        date_et: payoutDate,
         purpose: payoutPurpose.trim(),
         amount: parseMoneyInput(payoutAmount),
         note: payoutNote.trim() || null,
       });
-      setPayoutPurpose("");
-      setPayoutAmount("");
-      setPayoutNote("");
       setAddingPayout(false);
+      setPayoutPurpose("");
+      setPayoutAmount(null);
+      setPayoutNote("");
+      setPayoutDate(dateEt);
       await loadRevenue();
       setSaveState("saved");
     } catch (e) {
@@ -288,6 +272,20 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     }
   };
 
+  const loadHangDry = async () => {
+    setHdLoading(true);
+    setError("");
+    try {
+      const res = await getManagementRinseHd({ date_et: dateEt, status: "all" });
+      setHdList(res.data || null);
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadHdFailed"));
+      setHdList(null);
+    } finally {
+      setHdLoading(false);
+    }
+  };
+
   const openHangDry = async () => {
     setScreen("hang_dry");
     await loadHangDry();
@@ -297,25 +295,15 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     setError("");
     setScreen("hang_dry_detail");
     setHdDetail({ loading: true, order });
-    setHdItems(order.items != null ? String(order.items) : "");
-    setHdRevenue(order.revenue != null ? String(order.revenue) : "");
+    setHdItems(order.items != null ? order.items : null);
+    setHdRevenue(order.revenue != null ? order.revenue : null);
     try {
       const res = await getManagementRinseHdDetail(order.bag_id, { date_et: dateEt });
       setHdDetail(res.data || { order });
       const prod = res.data?.production || res.data?.order || {};
-      setHdItems(
-        prod.items != null
-          ? String(prod.items)
-          : order.items != null
-            ? String(order.items)
-            : "",
-      );
+      setHdItems(prod.items != null ? prod.items : order.items != null ? order.items : null);
       setHdRevenue(
-        prod.revenue != null
-          ? String(prod.revenue)
-          : order.revenue != null
-            ? String(order.revenue)
-            : "",
+        prod.revenue != null ? prod.revenue : order.revenue != null ? order.revenue : null,
       );
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadOrderFailed"));
@@ -331,8 +319,8 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     try {
       await saveManagementRinseHdProduction(bagId, {
         date_et: dateEt,
-        total_items: hdItems === "" ? null : Number(hdItems),
-        revenue: hdRevenue === "" ? null : Number(hdRevenue),
+        total_items: hdItems === null || hdItems === "" ? null : Number(hdItems),
+        revenue: parseMoneyInput(hdRevenue),
         version: hdDetail?.production?.version ?? hdDetail?.order?.production_version ?? 0,
       });
       if (markComplete) {
@@ -346,12 +334,10 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       } else {
         const res = await getManagementRinseHdDetail(bagId, { date_et: dateEt });
         setHdDetail(res.data || { order: { bag_id: bagId } });
-        const prod = res.data?.production || res.data?.order || {};
-        if (prod.items != null) setHdItems(String(prod.items));
-        if (prod.revenue != null) setHdRevenue(String(prod.revenue));
         await loadHangDry();
       }
       setSaveState("saved");
+      await loadRevenue();
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.saveFailed"));
     } finally {
@@ -369,6 +355,11 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       setHdDetail(null);
       return;
     }
+    if (screen === "dhs_account") {
+      setScreen("dhs");
+      setDhsAccount(null);
+      return;
+    }
     if (screen === "self_service" || screen === "drop_off") {
       if (autosaveTimerRef.current) {
         clearTimeout(autosaveTimerRef.current);
@@ -378,28 +369,122 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     }
     setScreen("home");
     setAddingPayout(false);
+    loadRevenue();
   };
 
-  const saveLabel =
-    saveState === "saving"
-      ? t("mobileOps.revenue.saving")
-      : saveState === "saved"
-        ? t("mobileOps.revenue.saved")
-        : saveState === "error"
-          ? t("mobileOps.revenue.saveFailed")
-          : "";
+  const saveLabels = {
+    saving: t("mobileOps.revenue.saving"),
+    saved: t("mobileOps.revenue.savedCheck"),
+    error: t("mobileOps.revenue.saveFailed"),
+  };
 
+  const nr = data?.non_rinse || {};
+  const dhs = data?.dhs || {};
+  const dhsAccounts = dhs.accounts || [];
   const payouts = data?.cash_payouts || [];
-  const dhsAccounts = data?.dhs?.accounts || [];
+  const hd = data?.rinse?.hd || {};
+  const section = data?.section_status || {};
+  const totalRev = data?.total_revenue;
+  const cashOut = data?.cash_activity?.cash_paid_out;
+
   const title = t(SCREEN_TITLE_KEYS[screen] || "mobileOps.revenue.title");
   const backLabel = screen === "home" ? t("mobileOps.backPin") : t("mobileOps.back");
 
+  const homeCards = [
+    {
+      id: "self_service",
+      title: t("mobileOps.revenue.selfService"),
+      primary: nr.self_service?.total,
+      secondary:
+        nr.self_service?.total == null
+          ? null
+          : `${t("mobileOps.revenue.cash")} ${fmtMoney(nr.self_service?.cash)} · ${t("mobileOps.revenue.card")} ${fmtMoney(nr.self_service?.card)}`,
+      statusLabel:
+        nr.self_service?.total == null ? t("mobileOps.revenue.needsEntry") : t("mobileOps.revenue.savedCheck"),
+      statusTone: nr.self_service?.total == null ? "warn" : "ok",
+      onClick: () => {
+        setSaveState("");
+        setScreen("self_service");
+      },
+    },
+    {
+      id: "drop_off",
+      title: t("mobileOps.revenue.dropOff"),
+      primary: nr.drop_off?.total,
+      secondary:
+        nr.drop_off?.total == null
+          ? null
+          : `${t("mobileOps.revenue.cash")} ${fmtMoney(nr.drop_off?.cash)} · ${t("mobileOps.revenue.card")} ${fmtMoney(nr.drop_off?.card)}`,
+      statusLabel:
+        nr.drop_off?.total == null ? t("mobileOps.revenue.needsEntry") : t("mobileOps.revenue.savedCheck"),
+      statusTone: nr.drop_off?.total == null ? "warn" : "ok",
+      onClick: () => {
+        setSaveState("");
+        setScreen("drop_off");
+      },
+    },
+    {
+      id: "dhs",
+      title: t("mobileOps.revenue.dhs"),
+      primary: dhs.total,
+      secondary: dhs.accounts?.length
+        ? [
+            dhs.volume_lbs != null ? `${fmtInt(dhs.volume_lbs)} lb` : null,
+            `${dhs.entered_count || 0}/${dhs.active_count || 0} ${t("mobileOps.revenue.accountsEntered")}`,
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        : t("mobileOps.revenue.noDhsAccounts"),
+      statusLabel:
+        !dhs.accounts?.length
+          ? "—"
+          : dhs.entered_count === dhs.active_count
+            ? t("mobileOps.revenue.complete")
+            : t("mobileOps.revenue.needsEntry"),
+      statusTone: dhs.entered_count === dhs.active_count && dhs.active_count ? "ok" : "warn",
+      onClick: () => {
+        setSaveState("");
+        setScreen("dhs");
+      },
+    },
+    {
+      id: "cash",
+      title: t("mobileOps.revenue.cashPaidOut"),
+      primary: payouts.length ? cashOut : null,
+      secondary: payouts.length
+        ? t("mobileOps.revenue.payoutEntries", { count: payouts.length })
+        : null,
+      statusLabel: payouts.length ? t("mobileOps.revenue.savedCheck") : t("mobileOps.revenue.needsEntry"),
+      statusTone: payouts.length ? "ok" : "neutral",
+      onClick: () => {
+        setSaveState("");
+        setAddingPayout(false);
+        setScreen("cash");
+      },
+    },
+    {
+      id: "hang_dry",
+      title: t("mobileOps.revenue.hangDry"),
+      primary: hd.revenue,
+      secondary:
+        hd.orders != null
+          ? t("mobileOps.revenue.hdCompletedCount", { count: hd.orders })
+          : null,
+      statusLabel: hd.revenue != null || hd.orders ? t("mobileOps.revenue.complete") : t("mobileOps.revenue.needsEntry"),
+      statusTone: hd.revenue != null || hd.orders ? "ok" : "warn",
+      onClick: openHangDry,
+    },
+  ];
+
   return (
     <OpsMobileShell
-      maxWidth={720}
+      maxWidth={960}
       sx={{
         px: { xs: 1.5, sm: 2, md: 3 },
         py: { xs: 1.5, sm: 2 },
+      }}
+      contentSx={{
+        maxWidth: { xs: 560, sm: 720, md: 960 },
       }}
     >
       <OpsTopBar
@@ -411,9 +496,11 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         right={<OpsLocaleToggle />}
       />
 
-      <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.85rem", mb: 1 }}>
-        {[dateEt, saveLabel].filter(Boolean).join(" · ")}
-      </Typography>
+      {screen === "home" ? (
+        <Typography sx={{ fontSize: 13, fontWeight: 700, color: OPS_MOBILE.muted, mb: 1 }}>
+          {t("mobileOps.revenue.todayLabel")} · {formatHomeDate(dateEt)}
+        </Typography>
+      ) : null}
 
       {error ? (
         <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setError("")}>
@@ -431,23 +518,40 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         <Stack spacing={1.25} sx={{ pb: 2 }}>
           <Box
             sx={{
+              p: 1.5,
+              borderRadius: 2,
+              bgcolor: "#fff",
+              border: "1px solid rgba(0,151,178,0.28)",
+            }}
+          >
+            <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.5, color: "#64748b", textTransform: "uppercase" }}>
+              {t("mobileOps.revenue.todaysEntry")}
+            </Typography>
+            <Typography sx={{ mt: 0.35, fontSize: 14, fontWeight: 700, color: "#0f172a" }}>
+              {t("mobileOps.revenue.summaryLine", {
+                revenue: fmtMoney(totalRev),
+                cashOut: fmtMoney(cashOut ?? 0),
+                complete: section.label || "—",
+              })}
+            </Typography>
+          </Box>
+
+          <Box
+            sx={{
               display: "grid",
-              gridTemplateColumns: {
-                xs: "1fr",
-                sm: "1fr 1fr",
-                md: "1fr 1fr",
-              },
+              gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr", md: "1fr 1fr" },
               gap: 1.25,
             }}
           >
-            {HOME_CARD_IDS.map((id) => (
-              <OpsChoiceCard
-                key={id}
-                title={t(HOME_TITLE_KEYS[id])}
-                onClick={() => {
-                  if (id === "hang_dry") openHangDry();
-                  else setScreen(id);
-                }}
+            {homeCards.map((c) => (
+              <SectionStatusCard
+                key={c.id}
+                title={c.title}
+                primary={c.primary}
+                secondary={c.secondary}
+                statusLabel={c.statusLabel}
+                statusTone={c.statusTone}
+                onClick={c.onClick}
               />
             ))}
           </Box>
@@ -456,89 +560,76 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       ) : null}
 
       {screen === "self_service" ? (
-        <Stack spacing={1.5} sx={{ pb: 2 }}>
-          <MoneyField label={t("mobileOps.revenue.cash")} value={ssCash} onChange={setNonRinseField(setSsCash)} />
-          <MoneyField label={t("mobileOps.revenue.card")} value={ssCard} onChange={setNonRinseField(setSsCard)} />
-          <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-            Total: {fmtMoney(parseMoneyInput(ssCash) + parseMoneyInput(ssCard))}
-          </Typography>
-        </Stack>
+        <NonRinseEntryPanel
+          title={t("mobileOps.revenue.selfService")}
+          cash={ssCash}
+          card={ssCard}
+          onCashChange={setSsCashField}
+          onCardChange={setSsCardField}
+          saveState={saveState}
+          saveLabels={saveLabels}
+          cashLabel={t("mobileOps.revenue.cash")}
+          cardLabel={t("mobileOps.revenue.card")}
+          totalLabel={t("mobileOps.revenue.total")}
+        />
       ) : null}
 
       {screen === "drop_off" ? (
-        <Stack spacing={1.5} sx={{ pb: 2 }}>
-          <MoneyField label={t("mobileOps.revenue.cash")} value={doCash} onChange={setNonRinseField(setDoCash)} />
-          <MoneyField label={t("mobileOps.revenue.card")} value={doCard} onChange={setNonRinseField(setDoCard)} />
-          <Typography sx={{ fontWeight: 800, color: OPS_MOBILE.navy }}>
-            Total: {fmtMoney(parseMoneyInput(doCash) + parseMoneyInput(doCard))}
-          </Typography>
-        </Stack>
+        <NonRinseEntryPanel
+          title={t("mobileOps.revenue.dropOff")}
+          cash={doCash}
+          card={doCard}
+          onCashChange={setDoCashField}
+          onCardChange={setDoCardField}
+          saveState={saveState}
+          saveLabels={saveLabels}
+          cashLabel={t("mobileOps.revenue.cash")}
+          cardLabel={t("mobileOps.revenue.card")}
+          totalLabel={t("mobileOps.revenue.total")}
+        />
       ) : null}
 
       {screen === "dhs" ? (
-        <Stack spacing={1.5} sx={{ pb: 2 }}>
+        <Stack spacing={1.25} sx={{ pb: 2 }}>
           {!dhsAccounts.length ? (
             <Typography sx={{ fontSize: 13, color: OPS_MOBILE.muted }}>
               {t("mobileOps.revenue.noDhsAccounts")}
             </Typography>
           ) : (
-            dhsAccounts.map((row) => {
-              const draft = dhsDraft[row.account_id] || {};
-              const isAbsolute = row.revenue_mode === "absolute";
-              return (
-                <Box
-                  key={row.account_id}
-                  sx={{
-                    p: 1.25,
-                    borderRadius: `${OPS_MOBILE.radius.card}px`,
-                    border: "1px solid #e5e7eb",
-                    bgcolor: "#fff",
-                  }}
-                >
-                  <Typography sx={{ fontWeight: 800, mb: 1 }}>{row.name}</Typography>
-                  {!isAbsolute ? (
-                    <MoneyField
-                      label={t("mobileOps.revenue.volumeLb")}
-                      value={draft.volume ?? ""}
-                      onChange={(v) =>
-                        setDhsDraft((p) => ({
-                          ...p,
-                          [row.account_id]: { ...draft, volume: v },
-                        }))
-                      }
-                    />
-                  ) : null}
-                  <Box sx={{ mt: 1 }}>
-                    <MoneyField
-                      label={
-                        isAbsolute
-                          ? t("mobileOps.revenue.revenue")
-                          : t("mobileOps.revenue.revenueOverride")
-                      }
-                      value={draft.revenue ?? ""}
-                      onChange={(v) =>
-                        setDhsDraft((p) => ({
-                          ...p,
-                          [row.account_id]: { ...draft, revenue: v },
-                        }))
-                      }
-                    />
-                  </Box>
-                </Box>
-              );
-            })
+            dhsAccounts.map((row) => (
+              <DhsAccountRow
+                key={row.account_id}
+                account={row}
+                onClick={() => openDhsAccount(row)}
+                needsEntryLabel={t("mobileOps.revenue.needsEntry")}
+              />
+            ))
           )}
-          {dhsAccounts.length ? (
-            <Button
-              variant="contained"
-              onClick={saveDhs}
-              disabled={saveState === "saving"}
-              sx={{ textTransform: "none", fontWeight: 800, minHeight: 52 }}
-            >
-              {saveState === "saving" ? t("mobileOps.revenue.saving") : t("mobileOps.revenue.saveDhs")}
-            </Button>
-          ) : null}
         </Stack>
+      ) : null}
+
+      {screen === "dhs_account" && dhsAccount ? (
+        <DhsAccountSheet
+          account={dhsAccount}
+          entryDate={dateEt}
+          draft={dhsDraft}
+          onChange={setDhsDraft}
+          onSave={saveDhsAccount}
+          saving={saveState === "saving"}
+          saveState={saveState}
+          saveLabels={saveLabels}
+          labels={{
+            pickupDate: t("mobileOps.revenue.pickupDate"),
+            processingDate: t("mobileOps.revenue.processingDate"),
+            deliveryDate: t("mobileOps.revenue.deliveryDate"),
+            volumeLb: t("mobileOps.revenue.volumeLb"),
+            revenue: t("mobileOps.revenue.revenue"),
+            revenueOverride: t("mobileOps.revenue.revenueOverride"),
+            useOverride: t("mobileOps.revenue.useOverride"),
+            calculated: t("mobileOps.revenue.calculatedRevenue"),
+            save: t("mobileOps.revenue.save"),
+          }}
+        />
       ) : null}
 
       {screen === "cash" ? (
@@ -547,204 +638,139 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
             <Button
               variant="outlined"
               startIcon={<AddIcon />}
-              onClick={() => setAddingPayout(true)}
+              onClick={() => {
+                setPayoutDate(dateEt);
+                setAddingPayout(true);
+              }}
               sx={{ textTransform: "none", fontWeight: 800, minHeight: 52 }}
             >
               {t("mobileOps.revenue.addPayout")}
             </Button>
           ) : (
-            <Stack spacing={1.25}>
-              <TextField
-                label={t("mobileOps.revenue.purpose")}
-                value={payoutPurpose}
-                onChange={(e) => setPayoutPurpose(e.target.value)}
-                fullWidth
-                sx={{ "& .MuiInputBase-root": { minHeight: 56 } }}
-              />
-              <MoneyField
-                label={t("mobileOps.revenue.amount")}
-                value={payoutAmount}
-                onChange={setPayoutAmount}
-              />
-              <TextField
-                label={t("mobileOps.revenue.noteOptional")}
-                value={payoutNote}
-                onChange={(e) => setPayoutNote(e.target.value)}
-                fullWidth
-                multiline
-                minRows={2}
-              />
-              <Stack direction="row" spacing={1}>
-                <Button
-                  fullWidth
-                  variant="outlined"
-                  disabled={payoutBusy}
-                  onClick={() => setAddingPayout(false)}
-                  sx={{ textTransform: "none" }}
-                >
-                  {t("mobileOps.revenue.cancel")}
-                </Button>
-                <Button
-                  fullWidth
-                  variant="contained"
-                  disabled={payoutBusy || !payoutPurpose.trim()}
-                  onClick={submitPayout}
-                  sx={{ textTransform: "none", fontWeight: 800 }}
-                >
-                  {payoutBusy ? t("mobileOps.revenue.saving") : t("mobileOps.revenue.save")}
-                </Button>
-              </Stack>
-            </Stack>
+            <CashPayoutForm
+              payoutDate={payoutDate}
+              purpose={payoutPurpose}
+              amount={payoutAmount}
+              note={payoutNote}
+              busy={payoutBusy}
+              onChange={(patch) => {
+                if ("payoutDate" in patch) setPayoutDate(patch.payoutDate);
+                if ("purpose" in patch) setPayoutPurpose(patch.purpose);
+                if ("amount" in patch) setPayoutAmount(patch.amount);
+                if ("note" in patch) setPayoutNote(patch.note);
+              }}
+              onCancel={() => setAddingPayout(false)}
+              onSubmit={submitPayout}
+              labels={{
+                payoutDate: t("mobileOps.revenue.payoutDate"),
+                payoutDateHelp: t("mobileOps.revenue.payoutDateHelp"),
+                purpose: t("mobileOps.revenue.purpose"),
+                amount: t("mobileOps.revenue.amount"),
+                noteOptional: t("mobileOps.revenue.noteOptional"),
+                cancel: t("mobileOps.revenue.cancel"),
+                save: t("mobileOps.revenue.save"),
+                saving: t("mobileOps.revenue.saving"),
+              }}
+            />
           )}
-
-          {!payouts.length ? (
-            <Typography sx={{ fontSize: 13, color: OPS_MOBILE.muted }}>
-              {t("mobileOps.revenue.noPayouts")}
-            </Typography>
-          ) : (
-            payouts.map((p) => (
-              <Stack
-                key={p.id}
-                direction="row"
-                justifyContent="space-between"
-                alignItems="flex-start"
-                sx={{
-                  p: 1.25,
-                  borderRadius: `${OPS_MOBILE.radius.card}px`,
-                  border: "1px solid #e5e7eb",
-                  bgcolor: "#fff",
-                }}
-              >
-                <Box sx={{ minWidth: 0, pr: 1 }}>
-                  <Typography sx={{ fontWeight: 800, fontSize: 15 }}>{p.purpose}</Typography>
-                  <Typography sx={{ fontSize: 13, color: OPS_MOBILE.muted }}>
-                    {fmtMoney(p.amount)}
-                    {p.entered_by ? ` · ${p.entered_by}` : ""}
-                  </Typography>
-                  {p.note ? (
-                    <Typography sx={{ fontSize: 12, color: "#94a3b8", mt: 0.25 }}>{p.note}</Typography>
-                  ) : null}
-                </Box>
-                <IconButton
-                  size="small"
-                  onClick={() => removePayout(p.id)}
-                  aria-label={t("mobileOps.revenue.deletePayout")}
-                >
-                  <DeleteOutlineIcon fontSize="small" />
-                </IconButton>
-              </Stack>
-            ))
-          )}
+          <CashPayoutList
+            payouts={payouts}
+            onDelete={removePayout}
+            labels={{
+              noPayouts: t("mobileOps.revenue.noPayouts"),
+              delete: t("mobileOps.revenue.deletePayout"),
+            }}
+          />
         </Stack>
       ) : null}
 
       {screen === "hang_dry" ? (
-        <Stack spacing={1} sx={{ pb: 2 }}>
+        <Stack spacing={1.25} sx={{ pb: 2 }}>
           {hdLoading ? (
             <Box sx={{ py: 4, display: "grid", placeItems: "center" }}>
-              <CircularProgress size={24} />
+              <CircularProgress size={28} />
             </Box>
-          ) : !hdOrders.length ? (
-            <Typography sx={{ color: OPS_MOBILE.muted, fontWeight: 600, fontSize: 13 }}>
+          ) : null}
+          {!hdLoading && !(hdList?.orders || []).length ? (
+            <Typography sx={{ fontSize: 13, color: OPS_MOBILE.muted }}>
               {t("mobileOps.revenue.noHdOrders")}
             </Typography>
-          ) : (
-            hdOrders.map((order) => {
-              const open = order.status === "open";
-              return (
-                <Box
-                  key={`${order.bag_id}-${order.status}-${order.completion_at || "open"}`}
-                  component="button"
-                  type="button"
-                  onClick={() => openHangDryDetail(order)}
-                  sx={{
-                    display: "block",
-                    width: "100%",
-                    textAlign: "left",
-                    m: 0,
-                    p: 1.25,
-                    borderRadius: `${OPS_MOBILE.radius.card}px`,
-                    border: "1px solid #e5e7eb",
-                    bgcolor: "#fff",
-                    cursor: "pointer",
-                    appearance: "none",
-                    fontFamily: "inherit",
-                  }}
-                >
-                  <Stack direction="row" justifyContent="space-between" alignItems="center">
-                    <Typography sx={{ fontSize: 15, fontWeight: 800, fontFamily: "monospace" }}>
-                      {order.bag_id}
-                    </Typography>
-                    <Typography sx={{ fontSize: 12, fontWeight: 700, color: OPS_MOBILE.muted }}>
-                      {open ? t("mobileOps.revenue.inProcess") : t("mobileOps.revenue.completed")}
-                    </Typography>
-                  </Stack>
-                  <Typography sx={{ mt: 0.5, fontSize: 12, color: OPS_MOBILE.muted, fontWeight: 600 }}>
-                    {t("mobileOps.revenue.started", {
-                      time: fmtTime(order.started_at),
-                      operator: order.start_operator || "—",
-                    })}
-                  </Typography>
-                  <Stack direction="row" spacing={2} sx={{ mt: 0.75 }}>
-                    <Typography sx={{ fontSize: 13, fontWeight: 700 }}>
-                      {t("mobileOps.revenue.itemsCount", { count: fmtInt(order.items) })}
-                    </Typography>
-                    <Typography sx={{ fontSize: 13, fontWeight: 700 }}>{fmtMoney(order.revenue)}</Typography>
-                  </Stack>
-                </Box>
-              );
-            })
-          )}
+          ) : null}
+          {(hdList?.orders || []).map((order) => (
+            <Box
+              key={order.bag_id}
+              component="button"
+              type="button"
+              onClick={() => openHangDryDetail(order)}
+              sx={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                p: 1.5,
+                borderRadius: 2,
+                border: "1px solid #e5e7eb",
+                bgcolor: "#fff",
+                appearance: "none",
+                fontFamily: "inherit",
+                cursor: "pointer",
+              }}
+            >
+              <Typography sx={{ fontWeight: 900 }}>
+                {order.customer_name || t("mobileOps.revenue.hdOrder")}
+              </Typography>
+              <Typography sx={{ fontSize: 12, color: OPS_MOBILE.muted }}>{order.bag_id}</Typography>
+              <Typography sx={{ mt: 0.5, fontSize: 13, fontWeight: 700, color: "#007a91" }}>
+                {fmtMoney(order.revenue)}
+                {order.items != null ? ` · ${t("mobileOps.revenue.itemsCount", { count: order.items })}` : ""}
+              </Typography>
+            </Box>
+          ))}
         </Stack>
       ) : null}
 
       {screen === "hang_dry_detail" ? (
         <Stack spacing={1.5} sx={{ pb: 2 }}>
-          {hdDetail?.loading ? (
-            <Box sx={{ py: 4, display: "grid", placeItems: "center" }}>
-              <CircularProgress size={24} />
-            </Box>
-          ) : (
-            <>
-              <Typography sx={{ fontWeight: 800, fontFamily: "monospace", fontSize: 16 }}>
-                {hdDetail?.order?.bag_id || hdDetail?.bag_id || t("mobileOps.revenue.hdOrder")}
-              </Typography>
-              <MoneyField
-                label={t("mobileOps.revenue.items")}
-                value={hdItems}
-                onChange={setHdItems}
-                disabled={hdSaving}
-              />
-              <MoneyField
-                label={t("mobileOps.revenue.revenue")}
-                value={hdRevenue}
-                onChange={setHdRevenue}
-                disabled={hdSaving}
-              />
-              <Typography sx={{ fontSize: 12, color: OPS_MOBILE.muted }}>
-                {t("mobileOps.revenue.started", {
-                  time: fmtTime(hdDetail?.order?.started_at),
-                  operator: hdDetail?.order?.start_operator || "—",
-                })}
-              </Typography>
-              <Button
-                variant="contained"
-                disabled={hdSaving}
-                onClick={() => saveHdProduction({ markComplete: false })}
-                sx={{ textTransform: "none", fontWeight: 800, minHeight: 52 }}
-              >
-                {hdSaving ? t("mobileOps.revenue.saving") : t("mobileOps.revenue.save")}
-              </Button>
-              <Button
-                variant="outlined"
-                disabled={hdSaving}
-                onClick={() => saveHdProduction({ markComplete: true })}
-                sx={{ textTransform: "none", fontWeight: 800, minHeight: 52 }}
-              >
-                {t("mobileOps.revenue.saveComplete")}
-              </Button>
-            </>
-          )}
+          <Typography sx={{ fontWeight: 900 }}>
+            {hdDetail?.order?.customer_name || t("mobileOps.revenue.hdOrder")}
+          </Typography>
+          <Typography sx={{ fontSize: 12, color: OPS_MOBILE.muted }}>
+            {hdDetail?.order?.bag_id}
+            {hdDetail?.order?.started_at
+              ? ` · ${t("mobileOps.revenue.started", {
+                  time: fmtTime(hdDetail.order.started_at),
+                  operator: hdDetail.order.operator_name || "—",
+                })}`
+              : ""}
+          </Typography>
+          <MoneyAmountField
+            label={t("mobileOps.revenue.items")}
+            value={hdItems}
+            onChange={setHdItems}
+            prefix=""
+          />
+          <MoneyAmountField
+            label={t("mobileOps.revenue.revenue")}
+            value={hdRevenue}
+            onChange={setHdRevenue}
+          />
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+            <Button
+              variant="outlined"
+              disabled={hdSaving}
+              onClick={() => saveHdProduction({ markComplete: false })}
+              sx={{ textTransform: "none", fontWeight: 800, minHeight: 52 }}
+            >
+              {t("mobileOps.revenue.save")}
+            </Button>
+            <Button
+              variant="contained"
+              disabled={hdSaving}
+              onClick={() => saveHdProduction({ markComplete: true })}
+              sx={{ textTransform: "none", fontWeight: 800, minHeight: 52 }}
+            >
+              {t("mobileOps.revenue.saveComplete")}
+            </Button>
+          </Stack>
         </Stack>
       ) : null}
     </OpsMobileShell>

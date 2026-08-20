@@ -1,13 +1,17 @@
 """Management Hub — Revenue & Cash compartment.
 
-Reuses DRC line storage for non-rinse cash/card entry. HD revenue is read-only
-from hd_day_bag_production. Cash payouts are stored separately (not negative revenue).
+Reuses DRC line storage for non-rinse cash/card and DHS commercial entry.
+HD revenue is read-only from hd_day_bag_production (canonical writable HD source).
+Cash payouts are stored separately (not negative revenue).
+
+Legacy DRC lines revenue.rinse_hd.* may still exist historically / on DRC Daily Entry.
+Do not write HD revenue from Management into those lines — retire that path later by
+making DRC HD fields read-only from production (no destructive migration).
 """
 
 from __future__ import annotations
 
 import json
-from calendar import monthrange
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
@@ -82,16 +86,9 @@ def _period_bounds(
     start: date | None = None,
     end: date | None = None,
 ) -> tuple[date, date]:
-    p = (period or "today").strip().lower()
-    if p == "custom" and start and end:
-        return start, end
-    if p == "week":
-        week_start = ref_date - timedelta(days=ref_date.weekday())
-        return week_start, week_start + timedelta(days=6)
-    if p == "month":
-        last_day = monthrange(ref_date.year, ref_date.month)[1]
-        return ref_date.replace(day=1), ref_date.replace(day=last_day)
-    return ref_date, ref_date
+    from backend.management_revenue_accounts import _period_bounds_extended
+
+    return _period_bounds_extended(period, ref_date, start, end)
 
 
 def _cash_revenue_from_lines(lines: dict[str, dict]) -> dict[str, float]:
@@ -159,12 +156,32 @@ def build_revenue_day(cursor, org_id: int, entry_date: date) -> dict[str, Any]:
     paid_out = _money(sum(Decimal(str(p.get("amount") or 0)) for p in payouts))
 
     cash = _cash_revenue_from_lines(lines)
+    payout_rows = [_payout_row(p) for p in payouts]
+    nr = account_block.get("non_rinse") or {}
+    dhs = account_block.get("dhs") or {}
+    hd = (account_block.get("rinse") or {}).get("hd") or {}
+    ss_entered = (nr.get("self_service") or {}).get("total") is not None
+    do_entered = (nr.get("drop_off") or {}).get("total") is not None
+    dhs_accounts = dhs.get("accounts") or []
+    dhs_entered_n = sum(1 for a in dhs_accounts if a.get("entered"))
+    dhs_complete = bool(dhs_accounts) and dhs_entered_n == len(dhs_accounts)
+    hd_entered = hd.get("revenue") is not None or int(hd.get("orders") or 0) > 0
+    cash_entered = bool(payout_rows)  # optional section — complete if any payouts or explicitly visited later
+    sections = [
+        {"id": "self_service", "entered": ss_entered, "required": True},
+        {"id": "drop_off", "entered": do_entered, "required": True},
+        {"id": "dhs", "entered": dhs_complete if dhs_accounts else True, "required": bool(dhs_accounts)},
+        {"id": "cash", "entered": cash_entered, "required": False},
+        {"id": "hang_dry", "entered": hd_entered, "required": False},
+    ]
+    required = [s for s in sections if s["required"]]
+    complete_n = sum(1 for s in required if s["entered"])
     return {
         "date_et": entry_date.isoformat(),
         "entry_id": header.get("id") if header else None,
         "entry_status": (header or {}).get("status") or "open",
         **account_block,
-        "cash_payouts": payouts,
+        "cash_payouts": payout_rows,
         "cash_activity": {
             "self_service_cash": cash["self_service_cash"],
             "drop_off_cash": cash["drop_off_cash"],
@@ -173,6 +190,13 @@ def build_revenue_day(cursor, org_id: int, entry_date: date) -> dict[str, Any]:
             "net_cash_movement": _money(
                 Decimal(str(cash["total_cash_revenue"])) - Decimal(str(paid_out))
             ),
+            "payout_count": len(payout_rows),
+        },
+        "section_status": {
+            "sections": sections,
+            "complete": complete_n,
+            "required": len(required),
+            "label": f"{complete_n}/{len(required)}",
         },
     }
 
@@ -188,6 +212,10 @@ def save_non_rinse_revenue(
     """Write Self Service / Drop Off cash+card only.
 
     Does not run DRC save_daily_entry (payroll, at-vendor workload, costs, commercial).
+    Null/blank field values mean not entered — lines are skipped (left untouched) when
+    omitted; explicit null clears to no-write of that key only when provided as null
+    with intent to clear — we treat null as skip/keep existing to avoid accidental wipe.
+    Explicit 0 is stored as 0.
     """
     ensure_management_revenue_tables(cursor)
     ensure_daily_revenue_cost_tables(cursor)
@@ -220,23 +248,25 @@ def save_non_rinse_revenue(
         _log_audit(cursor, entry_id, "created", actor_user_id=user_id)
         was_existing = False
 
-    def _field(key: str, payload_key: str):
-        if payload_key in payload and payload.get(payload_key) is not None:
-            return _money(payload.get(payload_key))
-        return _money(_line_amount(existing_lines, key))
-
     for line_key, payload_key in (
         (LK_SELF_SERVICE_CASH, "self_service_cash"),
         (LK_SELF_SERVICE_CARD, "self_service_card"),
         (LK_DROP_OFF_CASH, "drop_off_cash"),
         (LK_DROP_OFF_CARD, "drop_off_card"),
     ):
+        if payload_key not in payload:
+            continue
+        raw = payload.get(payload_key)
+        if raw is None or (isinstance(raw, str) and not str(raw).strip()):
+            # Explicit clear: leave line absent / do not upsert zero
+            continue
+        amount = _money(raw)
         _upsert_line(
             cursor,
             entry_id,
             line_key,
             "revenue",
-            _field(line_key, payload_key),
+            amount,
             None,
             source_system=SOURCE_MANUAL,
             user_id=user_id,
@@ -252,13 +282,16 @@ def _payout_row(row: dict) -> dict[str, Any]:
     ed = row.get("payout_date_et")
     created = row.get("created_at")
     updated = row.get("updated_at")
+    date_et = ed.isoformat() if hasattr(ed, "isoformat") else str(ed)
     return {
         "id": int(row["id"]),
-        "date_et": ed.isoformat() if hasattr(ed, "isoformat") else str(ed),
+        "date_et": date_et,
+        "payout_business_date": date_et,
         "purpose": row.get("purpose") or "",
         "amount": _money(row.get("amount")),
         "note": row.get("note"),
         "entered_by": row.get("entered_by_name_snapshot"),
+        "entered_by_user_id": row.get("entered_by_user_id"),
         "created_at": created.isoformat() if hasattr(created, "isoformat") else created,
         "updated_at": updated.isoformat() if hasattr(updated, "isoformat") else updated,
     }
@@ -302,9 +335,13 @@ def create_cash_payout(
     actor_name: str | None = None,
 ) -> dict[str, Any]:
     ensure_management_revenue_tables(cursor)
-    payout_date = payload.get("date_et") or business_today()
-    if isinstance(payout_date, str):
-        payout_date = date.fromisoformat(payout_date[:10])
+    raw_date = payload.get("payout_business_date") or payload.get("date_et") or payload.get("payout_date_et")
+    if not raw_date:
+        raise ValueError("Payout Date is required")
+    if isinstance(raw_date, str):
+        payout_date = date.fromisoformat(raw_date[:10])
+    else:
+        payout_date = raw_date
     purpose = str(payload.get("purpose") or "").strip()
     if not purpose:
         raise ValueError("Purpose is required")
@@ -323,6 +360,7 @@ def create_cash_payout(
     payout_id = int(cursor.lastrowid)
     after = {
         "date_et": payout_date.isoformat(),
+        "payout_business_date": payout_date.isoformat(),
         "purpose": purpose,
         "amount": amount,
         "note": note,
@@ -361,9 +399,11 @@ def update_cash_payout(
     before_row = dict(row)
     before = _payout_row(before_row)
 
-    payout_date = payload.get("date_et") or before_row.get("payout_date_et")
+    payout_date = payload.get("payout_business_date") or payload.get("date_et") or before_row.get("payout_date_et")
     if isinstance(payout_date, str):
         payout_date = date.fromisoformat(payout_date[:10])
+    if not payout_date:
+        raise ValueError("Payout Date is required")
     purpose = str(payload.get("purpose") if "purpose" in payload else before_row.get("purpose") or "").strip()
     if not purpose:
         raise ValueError("Purpose is required")
@@ -513,6 +553,17 @@ def build_cash_activity(
         day += timedelta(days=1)
 
     net = totals["total_cash_revenue"] - totals["cash_paid_out"]
+    cursor.execute(
+        """
+        SELECT id, payout_date_et, purpose, amount, note,
+               entered_by_name_snapshot, entered_by_user_id, created_at, updated_at
+        FROM mgmt_cash_payouts
+        WHERE organization_id = %s AND payout_date_et BETWEEN %s AND %s
+        ORDER BY payout_date_et DESC, id DESC
+        """,
+        (org_id, start_date, end_date),
+    )
+    payouts = [_payout_row(dict(r)) for r in (cursor.fetchall() or [])]
     return {
         "period": period,
         "start_date": start_date.isoformat(),
@@ -520,7 +571,17 @@ def build_cash_activity(
         "self_service_cash": _money(totals["self_service_cash"]),
         "drop_off_cash": _money(totals["drop_off_cash"]),
         "total_cash_revenue": _money(totals["total_cash_revenue"]),
+        "cash_in": {
+            "self_service": _money(totals["self_service_cash"]),
+            "drop_off": _money(totals["drop_off_cash"]),
+            "total": _money(totals["total_cash_revenue"]),
+        },
+        "cash_out": {
+            "payouts": payouts,
+            "total": _money(totals["cash_paid_out"]),
+        },
         "cash_paid_out": _money(totals["cash_paid_out"]),
         "net_cash_movement": _money(net),
+        "payouts": payouts,
         "daily": daily,
     }

@@ -137,11 +137,9 @@ def register_management_revenue_routes(
             denied = _gate(cursor, me, oid)
             if denied:
                 return denied
-            employee = not is_hub_manager(me)
             body = request.get_json(silent=True) or {}
-            if employee:
-                body = dict(body)
-                body["date_et"] = business_today().isoformat()
+            # Payout business date is required and editable for managers and employees.
+            # UI may default to today; API must not force-overwrite.
             payout = create_cash_payout(
                 cursor,
                 oid,
