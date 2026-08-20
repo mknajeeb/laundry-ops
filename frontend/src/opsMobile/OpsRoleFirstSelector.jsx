@@ -24,22 +24,16 @@ const ROLE_ICONS = {
 
 const FAMILY_LOGOS = {
   Rinse: {
-    src: "/assets/role-family-rinse.png",
+    src: "/assets/role-family-rinse.png?v=nobg2",
     alt: "Rinse",
-    // Orange R mark on white — keep transparent framing.
     height: { xs: 44, sm: 52 },
     maxWidth: { xs: 72, sm: 84 },
-    wrapBg: "transparent",
-    wrapPx: 0,
   },
   "Non-Rinse": {
-    src: "/assets/role-family-veewash.png",
+    src: "/assets/role-family-veewash.png?v=nobg2",
     alt: "VeeWash",
-    // VW mark ships on black — frame it cleanly on the light shell.
     height: { xs: 40, sm: 46 },
     maxWidth: { xs: 120, sm: 140 },
-    wrapBg: "#000",
-    wrapPx: { xs: 1, sm: 1.25 },
   },
 };
 
@@ -139,29 +133,17 @@ export default function OpsRoleFirstSelector({
           >
             {logo ? (
               <Box
+                component="img"
+                src={logo.src}
+                alt={logo.alt}
                 sx={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  bgcolor: logo.wrapBg,
-                  borderRadius: logo.wrapBg === "transparent" ? 0 : 1.5,
-                  px: logo.wrapPx,
-                  py: logo.wrapBg === "transparent" ? 0 : 0.75,
+                  height: logo.height,
+                  maxWidth: logo.maxWidth,
+                  width: "auto",
+                  objectFit: "contain",
+                  display: "block",
                 }}
-              >
-                <Box
-                  component="img"
-                  src={logo.src}
-                  alt={logo.alt}
-                  sx={{
-                    height: logo.height,
-                    maxWidth: logo.maxWidth,
-                    width: "auto",
-                    objectFit: "contain",
-                    display: "block",
-                  }}
-                />
-              </Box>
+              />
             ) : (
               <Typography
                 component="h2"
