@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from backend.attendance_pin_role_switch import (
     FEATURE_DISABLED_MESSAGE,
     NOT_CLOCKED_IN_MESSAGE,
+    ON_BREAK_MESSAGE,
     perform_pin_role_switch,
 )
 from backend.shift_job_tracking import IdempotencyConflictError
@@ -47,6 +48,37 @@ def test_pin_role_switch_requires_clocked_in():
     assert body["error"] == NOT_CLOCKED_IN_MESSAGE
 
 
+def test_pin_role_switch_denied_while_on_break():
+    conn = MagicMock()
+    matched = {"id": 23, "first_name": "Vee"}
+    with patch(
+        "backend.attendance_pin_role_switch.payroll_profiles_active", return_value=True
+    ), patch(
+        "backend.attendance_pin_role_switch.fetch_organization_by_slug",
+        return_value={"id": 3, "slug": "veewash"},
+    ), patch(
+        "backend.attendance_pin_role_switch.shared_device_attendance_enabled",
+        return_value=True,
+    ), patch(
+        "backend.attendance_pin_role_switch.is_rate_limited", return_value=False
+    ), patch(
+        "backend.attendance_pin_role_switch.resolve_user_by_attendance_pin",
+        return_value=matched,
+    ), patch(
+        "backend.attendance_pin_role_switch._active_shift",
+        return_value={"id": 99},
+    ), patch(
+        "backend.attendance_pin_role_switch._session_on_break", return_value=True
+    ), patch(
+        "backend.attendance_pin_role_switch.record_pin_attempt"
+    ):
+        body, status = perform_pin_role_switch(
+            conn, "veewash", "1234", _mock_roles, "127.0.0.1"
+        )
+    assert status == 400
+    assert body["error"] == ON_BREAK_MESSAGE
+
+
 def test_pin_role_switch_requires_feature_enabled():
     conn = MagicMock()
     matched = {"id": 23, "first_name": "Vee"}
@@ -66,6 +98,8 @@ def test_pin_role_switch_requires_feature_enabled():
     ), patch(
         "backend.attendance_pin_role_switch._active_shift",
         return_value={"id": 99},
+    ), patch(
+        "backend.attendance_pin_role_switch._session_on_break", return_value=False
     ), patch(
         "backend.attendance_pin_role_switch.is_category_role_tracking_enabled",
         return_value=False,
@@ -99,6 +133,8 @@ def test_pin_role_switch_opens_selection_tree():
     ), patch(
         "backend.attendance_pin_role_switch._active_shift",
         return_value={"id": 99},
+    ), patch(
+        "backend.attendance_pin_role_switch._session_on_break", return_value=False
     ), patch(
         "backend.attendance_pin_role_switch.is_category_role_tracking_enabled",
         return_value=True,
@@ -160,6 +196,8 @@ def test_pin_role_switch_performs_switch():
         "backend.attendance_pin_role_switch._active_shift",
         return_value={"id": 99},
     ), patch(
+        "backend.attendance_pin_role_switch._session_on_break", return_value=False
+    ), patch(
         "backend.attendance_pin_role_switch.is_category_role_tracking_enabled",
         return_value=True,
     ), patch(
@@ -210,6 +248,8 @@ def test_pin_role_switch_conflict_returns_409():
         "backend.attendance_pin_role_switch._active_shift",
         return_value={"id": 99},
     ), patch(
+        "backend.attendance_pin_role_switch._session_on_break", return_value=False
+    ), patch(
         "backend.attendance_pin_role_switch.is_category_role_tracking_enabled",
         return_value=True,
     ), patch(
@@ -257,6 +297,8 @@ def test_pin_role_switch_hub_token_skips_pin_resolve():
     ) as pin_resolve, patch(
         "backend.attendance_pin_role_switch._active_shift",
         return_value={"id": 99},
+    ), patch(
+        "backend.attendance_pin_role_switch._session_on_break", return_value=False
     ), patch(
         "backend.attendance_pin_role_switch.is_category_role_tracking_enabled",
         return_value=True,

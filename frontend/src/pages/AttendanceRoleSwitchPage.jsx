@@ -289,7 +289,7 @@ export default function AttendanceRoleSwitchPage() {
     }
   }, [slug, pinDigits, openPickerFromPin, phase, loading]);
 
-  /** From /pin hub: reuse hub_token (no second bcrypt); PIN kept only as local session glue. */
+  /** From /pin hub: reuse hub selection_tree when present (instant UI); else hub_token open. */
   useEffect(() => {
     if (!fromHub || !slug || hubPinUsedRef.current) return;
     if (phase !== "opening" && phase !== "pin") return;
@@ -297,15 +297,32 @@ export default function AttendanceRoleSwitchPage() {
     const hubPin = takePinHubPinForSlug(slug);
     const hubToken = hub?.token && hub?.organization_slug === slug ? String(hub.token) : "";
     if (!hubToken && (!hubPin || hubPin.length !== PIN_LEN)) {
-      // Stale hub navigation without session — show unavailable rather than blank dialog.
       hubPinUsedRef.current = true;
       setPhase("unavailable");
       return;
     }
     hubPinUsedRef.current = true;
     if (hub?.employee_first_name) setFirstName(hub.employee_first_name);
+
+    const cachedTree = Array.isArray(hub?.selection_tree) ? hub.selection_tree : null;
+    const att = hub?.attendance && typeof hub.attendance === "object" ? hub.attendance : null;
+    if (cachedTree && cachedTree.length && att?.clocked_in === true && att?.on_break !== true) {
+      applySelectionBody(
+        {
+          selection_tree: cachedTree,
+          employee_first_name: hub.employee_first_name || "",
+          current_category_id: att.current_category_id,
+          current_role_id: att.current_role_id,
+        },
+        hubPin || "hub",
+      );
+      // Soft-refresh tree/current in background; switch mutate still validates server-side.
+      void openPickerFromPin(hubPin || "", { hubToken }).catch(() => {});
+      return;
+    }
+
     void openPickerFromPin(hubPin || "", { hubToken });
-  }, [fromHub, slug, phase, openPickerFromPin]);
+  }, [fromHub, slug, phase, openPickerFromPin, applySelectionBody]);
 
   // Bind controller whenever selection context is ready.
   useEffect(() => {

@@ -213,7 +213,7 @@ describe("switchRoleFlowHelpers", () => {
     expect(currentRoleCaption(wash.workTypes[2].combo)).toBe("Non-Rinse · Current");
   });
 
-  it("shows Sort as its own primary role when SORT is in the tree", () => {
+  it("shows Sort only under Rinse Wash & Fold when SORT is WF-only", () => {
     const tree = [
       {
         id: 10,
@@ -231,7 +231,15 @@ describe("switchRoleFlowHelpers", () => {
         code: "RINSE_HD",
         roles: [
           { role_id: 1, role_name: "Operator", role_code: "OPERATOR" },
-          { role_id: 3, role_name: "Sort", role_code: "SORT" },
+          { role_id: 2, role_name: "Folder", role_code: "FOLDER" },
+        ],
+      },
+      {
+        id: 30,
+        name: "DHS",
+        code: "DHS",
+        roles: [
+          { role_id: 1, role_name: "Operator", role_code: "OPERATOR" },
           { role_id: 2, role_name: "Folder", role_code: "FOLDER" },
         ],
       },
@@ -239,13 +247,13 @@ describe("switchRoleFlowHelpers", () => {
     const groups = groupCombosByPrimaryRole(flattenRoleCombos(tree));
     expect(groups.map((g) => g.roleLabel)).toEqual(["Wash-Dry", "Sort", "Fold"]);
     const sort = groups.find((g) => g.roleLabel === "Sort");
-    expect(sort.workTypes.map((w) => w.label)).toEqual([
+    expect(sort.workTypes.map((w) => w.label)).toEqual(["Rinse Wash & Fold"]);
+    const wash = groups.find((g) => g.roleLabel === "Wash-Dry");
+    expect(wash.workTypes.map((w) => w.label)).toEqual([
       "Rinse Wash & Fold",
       "Rinse Hang Dry",
+      "Non-Rinse",
     ]);
-    expect(formatEmployeeAssignmentLabel({ roleName: "Sort", categoryName: "Rinse WF" })).toBe(
-      "Sort | Rinse Wash & Fold",
-    );
   });
 
   it("prefers Drop Off when switching into Non-Rinse with no current Non-Rinse category", () => {

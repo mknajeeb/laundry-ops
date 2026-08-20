@@ -49,6 +49,9 @@ export const CLOCK_DISABLED_HELPER = "Use the shared attendance tablet.";
 export const ROLE_CLOCK_IN_FIRST_MESSAGE =
   "Clock in first using the shared attendance tablet, then return here to change your role.";
 
+export const ROLE_ON_BREAK_MESSAGE =
+  "Finish your break before changing role. Use Resume after Break to pick your role.";
+
 /** Clock label from reliable attendance state only. */
 export function clockTileLabel(attendance) {
   const att = attendance && typeof attendance === "object" ? attendance : {};
@@ -106,9 +109,14 @@ export function buildPinLauncherTiles({ features = {}, featureOrder = null, atte
     if (id === "switch_role" && (feat.requires_clock_in || att.clocked_in !== true)) {
       tile.requiresClockIn = true;
     }
+    if (id === "switch_role" && (feat.blocked_reason === "on_break" || att.on_break === true)) {
+      tile.disabled = true;
+      tile.disabledHelper = feat.disabled_helper || ROLE_ON_BREAK_MESSAGE;
+      tile.blockedReason = "on_break";
+    }
     if (feat.disabled) {
       tile.disabled = true;
-      tile.disabledHelper = feat.disabled_helper || feat.disabledHelper || "";
+      tile.disabledHelper = feat.disabled_helper || feat.disabledHelper || tile.disabledHelper || "";
     }
     tiles.push(tile);
   }

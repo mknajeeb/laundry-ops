@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time as time_mod
 from datetime import date, datetime, time, timedelta
 from typing import Any, Optional
 
@@ -29,6 +30,20 @@ STANDARD_ROLES = (
     ("FOLDER", "Folder"),
 )
 STANDARD_ROLE_CODES = tuple(code for code, _ in STANDARD_ROLES)
+
+# Roles attached to every active category unless narrowed below.
+BROAD_STANDARD_ROLE_CODES = ("OPERATOR", "FOLDER")
+
+# Extra / restricted roles: only these category codes receive the role.
+# SORT is intentionally Rinse Wash & Fold only (not HD / DHS / Drop Off).
+ROLE_CATEGORY_ALLOWLIST = {
+    "SORT": frozenset({"RINSE_WF"}),
+}
+
+# Org selection tree cache (process-local). Tiny payload; invalidate on admin CRUD.
+_SELECTION_TREE_CACHE: dict[int, tuple[float, list]] = {}
+_SELECTION_TREE_CACHE_TTL_SEC = 60.0
+_SELECTION_TREE_CACHE_LOCK = threading.Lock()
 
 # Legacy alias used by older tests / imports
 DEFAULT_TASKS = tuple(f"{name} — {role}" for _, name in DEFAULT_CATEGORIES for _, role in STANDARD_ROLES)
@@ -336,6 +351,7 @@ def seed_default_categories_and_roles(cursor, organization_id: int) -> None:
         # Still ensure standard roles exist and are assigned.
         _ensure_standard_roles(cursor, oid)
         _ensure_standard_assignments(cursor, oid)
+        invalidate_selection_tree_cache(oid)
         return
 
     for idx, (code, name) in enumerate(DEFAULT_CATEGORIES):
@@ -348,6 +364,7 @@ def seed_default_categories_and_roles(cursor, organization_id: int) -> None:
         )
     _ensure_standard_roles(cursor, oid)
     _ensure_standard_assignments(cursor, oid)
+    invalidate_selection_tree_cache(oid)
 
 
 # Alias for older call sites
@@ -390,17 +407,43 @@ def _ensure_standard_roles(cursor, organization_id: int) -> dict[str, int]:
     return role_ids
 
 
+def _standard_role_codes_for_category(category_code: Any) -> tuple[str, ...]:
+    """Which STANDARD_ROLE codes belong on a category (Sort = RINSE_WF only)."""
+    code = str(category_code or "").strip().upper()
+    out: list[str] = []
+    for role_code in STANDARD_ROLE_CODES:
+        allow = ROLE_CATEGORY_ALLOWLIST.get(role_code)
+        if allow is None:
+            if role_code in BROAD_STANDARD_ROLE_CODES:
+                out.append(role_code)
+            continue
+        if code in allow:
+            out.append(role_code)
+    return tuple(out)
+
+
 def _ensure_standard_assignments(cursor, organization_id: int) -> None:
     oid = int(organization_id)
     role_ids = _ensure_standard_roles(cursor, oid)
     cursor.execute(
-        "SELECT id FROM ta_task_categories WHERE organization_id=%s ORDER BY sort_order, id",
+        """
+        SELECT id, code FROM ta_task_categories
+        WHERE organization_id=%s
+        ORDER BY sort_order, id
+        """,
         (oid,),
     )
     cats = cursor.fetchall() or []
     for cat in cats:
         cat_id = int(cat["id"] if isinstance(cat, dict) else cat[0])
-        for sort_idx, code in enumerate(STANDARD_ROLE_CODES):
+        cat_code = (
+            cat.get("code")
+            if isinstance(cat, dict)
+            else (cat[1] if len(cat) > 1 else "")
+        )
+        wanted = _standard_role_codes_for_category(cat_code)
+        wanted_set = set(wanted)
+        for sort_idx, code in enumerate(wanted):
             role_id = role_ids.get(code)
             if not role_id:
                 continue
@@ -422,14 +465,28 @@ def _ensure_standard_assignments(cursor, organization_id: int) -> None:
                     """,
                     (sort_idx, asg_id, oid),
                 )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO ta_task_category_roles
+                      (organization_id, category_id, role_id, sort_order, active)
+                    VALUES (%s, %s, %s, %s, 1)
+                    """,
+                    (oid, cat_id, role_id, sort_idx),
+                )
+        # Deactivate restricted roles that do not belong on this category
+        # (e.g. SORT previously attached to Rinse HD / Non-Rinse).
+        for role_code, allow in ROLE_CATEGORY_ALLOWLIST.items():
+            role_id = role_ids.get(role_code)
+            if not role_id or role_code in wanted_set:
                 continue
             cursor.execute(
                 """
-                INSERT INTO ta_task_category_roles
-                  (organization_id, category_id, role_id, sort_order, active)
-                VALUES (%s, %s, %s, %s, 1)
+                UPDATE ta_task_category_roles
+                SET active=0
+                WHERE organization_id=%s AND category_id=%s AND role_id=%s AND active=1
                 """,
-                (oid, cat_id, role_id, sort_idx),
+                (oid, cat_id, role_id),
             )
 
 
@@ -506,9 +563,9 @@ def create_category(
         (oid, code, name, sort_order, 1 if active else 0),
     )
     cat_id = int(cursor.lastrowid)
-    # Auto-assign Operator + Sort + Folder (same set as STANDARD_ROLES)
+    # Auto-assign standard roles for this category (Sort only when code is RINSE_WF).
     role_ids = _ensure_standard_roles(cursor, oid)
-    for idx, role_code in enumerate(STANDARD_ROLE_CODES):
+    for idx, role_code in enumerate(_standard_role_codes_for_category(code)):
         rid = role_ids.get(role_code)
         if not rid:
             continue
@@ -520,7 +577,12 @@ def create_category(
             """,
             (oid, cat_id, rid, idx),
         )
+    invalidate_selection_tree_cache(oid)
     return get_category(cursor, oid, cat_id) or {"id": cat_id, "code": code, "name": name}
+
+
+def _after_category_role_admin_change(organization_id: int) -> None:
+    invalidate_selection_tree_cache(organization_id)
 
 
 def update_category(
@@ -552,6 +614,7 @@ def update_category(
         f"UPDATE ta_task_categories SET {', '.join(fields)} WHERE id=%s AND organization_id=%s",
         vals,
     )
+    invalidate_selection_tree_cache(int(organization_id))
     return get_category(cursor, organization_id, category_id) or existing
 
 
@@ -564,6 +627,7 @@ def reorder_categories(cursor, organization_id: int, ordered_ids: list[int]) -> 
             """,
             (idx, int(cid), int(organization_id)),
         )
+    invalidate_selection_tree_cache(int(organization_id))
     return list_categories(cursor, organization_id, include_inactive=True)
 
 
@@ -595,6 +659,7 @@ def delete_category(cursor, organization_id: int, category_id: int) -> None:
         "DELETE FROM ta_task_categories WHERE id=%s AND organization_id=%s",
         (int(category_id), int(organization_id)),
     )
+    invalidate_selection_tree_cache(int(organization_id))
 
 
 # ---------------------------------------------------------------------------
@@ -786,7 +851,31 @@ def list_active_selection_tree(cursor, organization_id: int) -> list[dict]:
     Employee-facing tree: active categories with their active assigned roles.
 
     Read-only hot path for Role open — one JOIN query, no seed, no DDL.
+    Process-cached briefly: the org tree is tiny and changes rarely.
     """
+    oid = int(organization_id)
+    now = time_mod.monotonic()
+    with _SELECTION_TREE_CACHE_LOCK:
+        cached = _SELECTION_TREE_CACHE.get(oid)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    tree = _list_active_selection_tree_uncached(cursor, oid)
+    with _SELECTION_TREE_CACHE_LOCK:
+        _SELECTION_TREE_CACHE[oid] = (now + _SELECTION_TREE_CACHE_TTL_SEC, tree)
+    return tree
+
+
+def invalidate_selection_tree_cache(organization_id: Optional[int] = None) -> None:
+    """Drop cached selection trees after category/role admin changes."""
+    with _SELECTION_TREE_CACHE_LOCK:
+        if organization_id is None:
+            _SELECTION_TREE_CACHE.clear()
+            return
+        _SELECTION_TREE_CACHE.pop(int(organization_id), None)
+
+
+def _list_active_selection_tree_uncached(cursor, organization_id: int) -> list[dict]:
     oid = int(organization_id)
     if not table_exists(cursor, "ta_task_categories") or not table_exists(
         cursor, "ta_task_category_roles"
@@ -916,6 +1005,7 @@ def assign_role_to_category(
             "UPDATE ta_task_category_roles SET active=%s WHERE id=%s",
             (1 if active else 0, aid),
         )
+        invalidate_selection_tree_cache(oid)
         return get_assignment(cursor, oid, aid) or {}
     cursor.execute(
         """
@@ -933,6 +1023,7 @@ def assign_role_to_category(
         """,
         (oid, int(category_id), int(role_id), sort_order, 1 if active else 0),
     )
+    invalidate_selection_tree_cache(oid)
     return get_assignment(cursor, oid, int(cursor.lastrowid)) or {}
 
 
@@ -954,6 +1045,7 @@ def update_category_role_assignment(
             """,
             (1 if active else 0, int(assignment_id), int(organization_id)),
         )
+        invalidate_selection_tree_cache(int(organization_id))
     return get_assignment(cursor, organization_id, assignment_id) or existing
 
 

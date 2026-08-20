@@ -41,6 +41,7 @@ import {
   OpsTopBar,
   OPS_MOBILE,
   ROLE_CLOCK_IN_FIRST_MESSAGE,
+  ROLE_ON_BREAK_MESSAGE,
   buildPinLauncherTiles,
 } from "../opsMobile";
 import { VEEWASH_LOGO_URL } from "../theme/veewashBrand";
@@ -246,6 +247,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         maintenance_token: body.maintenance_token || null,
         expires_in_seconds: body.expires_in_seconds,
         attendance: body.attendance || null,
+        selection_tree: Array.isArray(body.selection_tree) ? body.selection_tree : null,
       };
       savePinHubSession(sess);
       setHub(sess);
@@ -363,6 +365,10 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         return;
       }
       if (featureId === "switch_role") {
+        if (tile?.blockedReason === "on_break" || hub?.attendance?.on_break === true || tile?.disabled) {
+          setError(tile?.disabledHelper || ROLE_ON_BREAK_MESSAGE);
+          return;
+        }
         if (tile?.requiresClockIn || hub?.attendance?.clocked_in !== true) {
           setError(ROLE_CLOCK_IN_FIRST_MESSAGE);
           return;
@@ -512,7 +518,11 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
 
           {error ? (
             <Alert
-              severity={error === ROLE_CLOCK_IN_FIRST_MESSAGE ? "info" : "error"}
+              severity={
+                error === ROLE_CLOCK_IN_FIRST_MESSAGE || error === ROLE_ON_BREAK_MESSAGE
+                  ? "info"
+                  : "error"
+              }
               sx={{ width: "100%" }}
               onClose={() => setError("")}
             >

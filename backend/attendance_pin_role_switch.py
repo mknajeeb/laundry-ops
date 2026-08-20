@@ -33,11 +33,19 @@ from backend.shift_job_tracking import (
 logger = logging.getLogger(__name__)
 
 NOT_CLOCKED_IN_MESSAGE = "You must be clocked in to change your role."
+ON_BREAK_MESSAGE = "Finish your break before changing role."
 FEATURE_DISABLED_MESSAGE = "Category & Role Tracking is disabled for this organization."
 MISSING_ASSIGNMENT_MESSAGE = "Select a category and role to continue."
 MISSING_IDEMPOTENCY_MESSAGE = (
     "idempotency_key required (body.idempotency_key or Idempotency-Key header)"
 )
+
+
+def _session_on_break(conn, session_id: int) -> bool:
+    """True when the attendance shift has an open break."""
+    from backend.ta_routes import get_open_break
+
+    return bool(get_open_break(conn, int(session_id)))
 
 
 def _employee_first_name(matched: dict) -> str:
@@ -186,6 +194,14 @@ def perform_pin_role_switch(
         )
         conn.commit()
         return {"ok": False, "error": NOT_CLOCKED_IN_MESSAGE}, 400
+
+    # Standalone Change Role is not available while on break — Resume flow selects role.
+    if _session_on_break(conn, int(active["id"])):
+        record_pin_attempt(
+            conn, org_id, ip_address, success=False, user_id=user_id, action="pin_role_switch_on_break"
+        )
+        conn.commit()
+        return {"ok": False, "error": ON_BREAK_MESSAGE}, 400
 
     if not is_category_role_tracking_enabled(conn, org_id):
         record_pin_attempt(

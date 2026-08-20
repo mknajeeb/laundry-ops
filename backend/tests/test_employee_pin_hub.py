@@ -188,6 +188,9 @@ def test_perform_pin_hub_open_success_returns_menu():
     ), patch(
         "backend.maintenance_task_list_module.employee_assigned_for_date",
         return_value=True,
+    ), patch(
+        "backend.shift_job_tracking.list_active_selection_tree",
+        return_value=[{"id": 1, "code": "RINSE_WF", "roles": []}],
     ):
         body, status = perform_pin_hub_open(
             conn, "veewash", "1234", lambda *_: ["FRONT_DESK"], "127.0.0.1"
@@ -196,16 +199,14 @@ def test_perform_pin_hub_open_success_returns_menu():
     assert body["ok"] is True
     assert body["token"] == "hub-token"
     assert body["maintenance_token"] == "mtl-token"
-    assert body["feature_order"] == [
-        "switch_role",
-        "checklist",
-        "inventory",
-        "revenue_cost",
-    ]
+    from backend.employee_pin_hub import PIN_HUB_FEATURE_DEFS
+
+    assert body["feature_order"] == [d["id"] for d in PIN_HUB_FEATURE_DEFS]
     assert body["features"]["switch_role"]["allowed"] is True
     assert body["features"]["checklist"].get("disabled") is not True
     assert body["attendance"]["clocked_in"] is True
     assert body["attendance"]["shared_device_enabled"] is True
+    assert body["selection_tree"] == [{"id": 1, "code": "RINSE_WF", "roles": []}]
 
 
 def test_perform_pin_hub_open_disables_checklist_when_unassigned():

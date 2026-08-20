@@ -60,13 +60,13 @@ def test_switch_category_role_calls_start_segment():
     )
 
 
-def test_create_category_auto_assigns_operator_sort_and_folder():
+def test_create_category_auto_assigns_operator_and_folder_not_sort_for_non_wf():
     cursor = MagicMock()
     cursor.fetchone.side_effect = [
         None,  # duplicate code check
         (0,),  # max sort_order
         {"id": 11, "code": "OPERATOR"},  # OPERATOR exists
-        {"id": 13, "code": "SORT"},  # SORT exists
+        {"id": 13, "code": "SORT"},  # SORT exists (role row) but not assigned
         {"id": 12, "code": "FOLDER"},  # FOLDER exists
         {
             "id": 50,
@@ -91,13 +91,13 @@ def test_create_category_auto_assigns_operator_sort_and_folder():
         for c in cursor.execute.call_args_list
         if "INSERT INTO ta_task_category_roles" in str(c.args[0])
     ]
-    assert len(insert_sqls) == 3
+    assert len(insert_sqls) == 2
     role_ids_assigned = [
         c.args[1][2]
         for c in cursor.execute.call_args_list
         if "INSERT INTO ta_task_category_roles" in str(c.args[0])
     ]
-    assert role_ids_assigned == [11, 13, 12]
+    assert role_ids_assigned == [11, 12]
 
 
 def test_delete_category_rejects_when_used():

@@ -209,6 +209,7 @@ def attendance_snapshot_for_hub(
     active = _active_shift(conn, int(user_id))
     on_break = False
     current_display_label = None
+    open_seg: dict = {}
     if active:
         from backend.ta_routes import get_open_break
         from backend.shift_job_tracking import get_open_job_segment
@@ -228,6 +229,8 @@ def attendance_snapshot_for_hub(
         "clocked_in": bool(active),
         "on_break": on_break,
         "current_display_label": current_display_label,
+        "current_category_id": open_seg.get("category_id"),
+        "current_role_id": open_seg.get("role_id"),
     }
 
 
@@ -237,14 +240,22 @@ def apply_attendance_gates_to_features(
     """
     Keep Role allowed when clocked out so the tile stays visible; mark requires_clock_in
     for the client to show the shared-tablet clock-in message on tap.
+    On break: tile stays visible but blocked — Resume flow handles role selection.
     """
     out = {k: dict(v) if isinstance(v, dict) else v for k, v in (features or {}).items()}
     role = out.get("switch_role")
-    if isinstance(role, dict) and role.get("allowed") and not attendance.get("clocked_in"):
-        role = dict(role)
-        role["requires_clock_in"] = True
-        role["blocked_reason"] = "not_clocked_in"
-        out["switch_role"] = role
+    if isinstance(role, dict) and role.get("allowed"):
+        if not attendance.get("clocked_in"):
+            role = dict(role)
+            role["requires_clock_in"] = True
+            role["blocked_reason"] = "not_clocked_in"
+            out["switch_role"] = role
+        elif attendance.get("on_break"):
+            role = dict(role)
+            role["disabled"] = True
+            role["blocked_reason"] = "on_break"
+            role["disabled_helper"] = "Finish your break before changing role."
+            out["switch_role"] = role
     return out
 
 
@@ -490,6 +501,28 @@ def perform_pin_hub_open(
             checklist["disabled_helper"] = "No maintenance checklist assigned today."
         features["checklist"] = checklist
 
+    # Prefetch org selection tree when Role is usable from hub (clocked in, not on break).
+    # Change Role page can render immediately from this cache; switch API still validates.
+    selection_tree = None
+    switch = features.get("switch_role") if isinstance(features.get("switch_role"), dict) else {}
+    if (
+        switch.get("allowed")
+        and attendance.get("clocked_in")
+        and not attendance.get("on_break")
+        and not switch.get("requires_clock_in")
+        and not switch.get("disabled")
+    ):
+        from backend.shift_job_tracking import list_active_selection_tree
+
+        tree_c = conn.cursor(dictionary=True)
+        try:
+            selection_tree = list_active_selection_tree(tree_c, org_id)
+        finally:
+            try:
+                tree_c.close()
+            except Exception:
+                pass
+
     # Stable button order for the client.
     feature_order = [d["id"] for d in PIN_HUB_FEATURE_DEFS]
 
@@ -524,4 +557,5 @@ def perform_pin_hub_open(
         "feature_order": feature_order,
         "maintenance_token": maintenance_token,
         "attendance": attendance,
+        "selection_tree": selection_tree,
     }, 200
