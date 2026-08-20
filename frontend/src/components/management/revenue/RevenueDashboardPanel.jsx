@@ -228,6 +228,79 @@ export default function RevenueDashboardPanel({
               </ResponsiveContainer>
             </ChartCard>
           </Box>
+
+          <Box
+            sx={{
+              border: "1px solid #e5e7eb",
+              borderRadius: 2,
+              bgcolor: "#fff",
+              overflow: "auto",
+              boxShadow: VEEWASH_DASHBOARD.cardShadow,
+            }}
+          >
+            <Typography sx={{ fontWeight: 800, fontSize: 13, p: 1.5, pb: 0.5 }}>
+              By Processing Date
+            </Typography>
+            <Box component="table" sx={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 720 }}>
+              <Box component="thead">
+                <Box component="tr" sx={{ bgcolor: "#F8FAFC" }}>
+                  {["Date", "SS", "Drop Off", "WF", "HD", "DHS", "Total", "Cash", "Card", "Paid Out", "Net Cash", "Complete"].map(
+                    (h) => (
+                      <Box
+                        component="th"
+                        key={h}
+                        sx={{ textAlign: "left", p: 1, fontWeight: 800, color: "#64748b", whiteSpace: "nowrap" }}
+                      >
+                        {h}
+                      </Box>
+                    ),
+                  )}
+                </Box>
+              </Box>
+              <Box component="tbody">
+                {trend.map((row) => (
+                  <Box component="tr" key={row.date_et} sx={{ borderTop: "1px solid #e5e7eb" }}>
+                    <Box component="td" sx={{ p: 1, fontWeight: 700 }}>
+                      {row.date_et}
+                    </Box>
+                    <Box component="td" sx={{ p: 1 }}>
+                      {fmtMoney(row.self_service)}
+                    </Box>
+                    <Box component="td" sx={{ p: 1 }}>
+                      {fmtMoney(row.drop_off)}
+                    </Box>
+                    <Box component="td" sx={{ p: 1 }}>
+                      {fmtMoney(row.wf)}
+                    </Box>
+                    <Box component="td" sx={{ p: 1 }}>
+                      {fmtMoney(row.hd)}
+                    </Box>
+                    <Box component="td" sx={{ p: 1 }}>
+                      {fmtMoney(row.dhs)}
+                    </Box>
+                    <Box component="td" sx={{ p: 1, fontWeight: 800 }}>
+                      {fmtMoney(row.total)}
+                    </Box>
+                    <Box component="td" sx={{ p: 1 }}>
+                      {fmtMoney(row.cash)}
+                    </Box>
+                    <Box component="td" sx={{ p: 1 }}>
+                      {fmtMoney(row.card)}
+                    </Box>
+                    <Box component="td" sx={{ p: 1 }}>
+                      {fmtMoney(row.cash_paid_out)}
+                    </Box>
+                    <Box component="td" sx={{ p: 1, fontWeight: 700 }}>
+                      {fmtMoney(row.net_cash)}
+                    </Box>
+                    <Box component="td" sx={{ p: 1 }}>
+                      {row.completeness || "—"}
+                    </Box>
+                  </Box>
+                ))}
+              </Box>
+            </Box>
+          </Box>
         </>
       )}
 

@@ -2549,6 +2549,9 @@ export const getTeamStatusUpcoming = (dateEt) =>
 export const saveManagementRevenueNonRinse = (body) =>
   axios.put(`${API_BASE}/api/management/revenue/non-rinse`, body);
 
+export const saveManagementRevenueWf = (body) =>
+  axios.put(`${API_BASE}/api/management/revenue/wf`, body);
+
 export const createManagementCashPayout = (body) =>
   axios.post(`${API_BASE}/api/management/revenue/cash-payouts`, body);
 

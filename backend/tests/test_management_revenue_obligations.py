@@ -115,3 +115,35 @@ def test_dhs_overdue_status_concept():
     # Pure status logic helper via derive + schedule presence
     assert STATUS_OVERDUE == "overdue"
     assert STATUS_MISSING == "missing"
+
+
+def test_save_account_schedule_same_day_updates():
+    """Same-day re-save must UPDATE weekdays, not stack opaque rows."""
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+    from backend.management_revenue_obligations import save_account_schedule
+
+    cursor = MagicMock()
+    # First call: no existing same-day row; second call after insert for get
+    cursor.fetchone.side_effect = [
+        None,  # SELECT existing
+        {"id": 9, "account_id": 3, "effective_from": date(2026, 8, 20), "effective_to": None,
+         "pickup_weekdays": "[0,2,4]", "delivery_weekdays": "[1,3,5]"},
+        {"id": 9},  # SELECT existing on second save
+        {"id": 9, "account_id": 3, "effective_from": date(2026, 8, 20), "effective_to": None,
+         "pickup_weekdays": "[0,2,4]", "delivery_weekdays": "[1,3,5]"},
+    ]
+    with patch("backend.management_revenue_obligations.ensure_obligation_tables"):
+        out1 = save_account_schedule(
+            cursor, 3, effective_from=date(2026, 8, 20),
+            pickup_weekdays=[0, 2, 4], delivery_weekdays=[1, 3, 5],
+        )
+        assert out1["pickup_weekdays"] == [0, 2, 4]
+        assert out1["delivery_weekdays"] == [1, 3, 5]
+        out2 = save_account_schedule(
+            cursor, 3, effective_from=date(2026, 8, 20),
+            pickup_weekdays=[0, 2, 4], delivery_weekdays=[1, 3, 5],
+        )
+    # Second save should UPDATE not INSERT again for same day
+    assert any("UPDATE mgmt_revenue_account_schedules" in str(c) for c in cursor.execute.call_args_list)
+    assert out2["pickup_weekdays"] == [0, 2, 4]

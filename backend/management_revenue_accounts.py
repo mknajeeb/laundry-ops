@@ -19,6 +19,7 @@ from backend.daily_revenue_cost import (
 from backend.daily_revenue_cost_constants import (
     LK_DROP_OFF_CARD,
     LK_DROP_OFF_CASH,
+    LK_RINSE_WF_AMOUNT,
     LK_RINSE_WF_POUNDS,
     LK_SELF_SERVICE_CARD,
     LK_SELF_SERVICE_CASH,
@@ -168,7 +169,7 @@ def get_pricing_for_account(cursor, account_id: int, as_of: date | None = None) 
         WHERE account_id = %s
           AND effective_from <= %s
           AND (effective_to IS NULL OR effective_to >= %s)
-        ORDER BY effective_from DESC
+        ORDER BY effective_from DESC, id DESC
         LIMIT 1
         """,
         (account_id, as_of, as_of),
@@ -538,16 +539,40 @@ def build_account_revenue_day(
     wf_pricing = wf_acct.get("pricing")
     wf_tiers = _wf_tiers_from_pricing(wf_pricing)
     wf_pounds = _line_qty_or_none(lines, LK_RINSE_WF_POUNDS)
-    wf_enabled = bool(wf_tiers)
+    wf_amount_stored = _line_amount_or_none(lines, LK_RINSE_WF_AMOUNT)
+    # Enterable when rinse_wf account exists with pricing (flat_lb or tiered_lb).
+    wf_enabled = bool(wf_acct.get("id")) and bool(wf_pricing)
+    if not wf_enabled and bool(wf_acct.get("id")):
+        # Account active but pricing not configured yet — still show for entry once priced.
+        wf_enabled = False
     wf_revenue = None
     wf_meta: dict[str, Any] = {}
-    if wf_enabled and wf_pounds:
-        wf_revenue, wf_meta = wf_revenue_for_day(
-            cursor, org_id, entry_date, wf_pounds, wf_tiers,
-        )
-    elif wf_enabled and wf_pounds == 0:
-        wf_revenue = 0.0
-
+    if wf_pounds is not None or wf_amount_stored is not None:
+        if wf_tiers and wf_pounds is not None:
+            wf_revenue, wf_meta = wf_revenue_for_day(
+                cursor, org_id, entry_date, wf_pounds, wf_tiers,
+            )
+        elif wf_pricing and wf_pounds is not None:
+            snap = _parse_snapshot_dates(lines.get(LK_RINSE_WF_AMOUNT) or {})
+            if snap.get("use_revenue_override") and wf_amount_stored is not None:
+                wf_revenue = wf_amount_stored
+            else:
+                wf_revenue = _calc_account_revenue(
+                    revenue_mode=wf_acct.get("revenue_mode") or REVENUE_MODE_CALCULATED,
+                    volume=wf_pounds,
+                    pricing=wf_pricing,
+                    stored_amount=wf_amount_stored,
+                )
+            wf_meta = {
+                "pricing_method": (wf_pricing or {}).get("pricing_method"),
+                "volume_lbs": wf_pounds,
+            }
+        elif wf_amount_stored is not None:
+            wf_revenue = wf_amount_stored
+            wf_meta = {"volume_lbs": wf_pounds}
+    # Show WF card whenever the account exists (even if pricing incomplete).
+    if wf_acct.get("id"):
+        wf_enabled = True
     hd_totals = compute_hd_day_revenue_totals(cursor, org_id, entry_date)
     hd_revenue_raw = hd_totals.get("complete_hd_revenue")
     if hd_revenue_raw is None:
@@ -686,12 +711,16 @@ def build_account_revenue_day(
     return {
         "rinse": {
             "wf": {
+                "account_id": wf_acct.get("id"),
                 "enabled": wf_enabled,
                 "revenue": wf_revenue,
                 "volume_lbs": wf_pounds,
                 "pricing": wf_pricing,
                 "meta": wf_meta,
-                "placeholder": not wf_enabled,
+                "placeholder": not bool(wf_pricing),
+                "use_processing_date": wf_acct.get("use_processing_date", True),
+                "processing_date": entry_date.isoformat(),
+                "entered": wf_pounds is not None or wf_amount_stored is not None,
             },
             "hd": {
                 "source": "hd_day_bag_production",
@@ -776,12 +805,31 @@ def build_revenue_dashboard(
         for row in block["dhs"]["accounts"]:
             name = row.get("name") or "?"
             dhs_by_name[name] = dhs_by_name.get(name, Decimal("0")) + _d(row.get("revenue") or 0)
+        cash_day = build_cash_activity(cursor, org_id, "custom", day, day, day)
+        day_complete = None
+        try:
+            from backend.management_revenue_obligations import build_daily_completeness
+
+            day_complete = build_daily_completeness(cursor, org_id, day)
+        except Exception:
+            day_complete = None
         trend.append({
             "date_et": day.isoformat(),
             "total": _money(day_total),
+            "self_service": _money(ss_t),
+            "drop_off": _money(do_t),
+            "wf": _money(wf),
+            "hd": _money(hd),
             "rinse": _money(wf + hd),
             "non_rinse": _money(ss_t + do_t),
             "dhs": _money(dhs_t),
+            "cash": _money(_d(ss.get("cash") or 0) + _d(do.get("cash") or 0)),
+            "card": _money(_d(ss.get("card") or 0) + _d(do.get("card") or 0)),
+            "cash_paid_out": cash_day.get("cash_paid_out"),
+            "net_cash": cash_day.get("net_cash_movement"),
+            "completeness": (day_complete or {}).get("label"),
+            "completeness_complete": (day_complete or {}).get("complete"),
+            "completeness_required": (day_complete or {}).get("required"),
         })
         day += timedelta(days=1)
 
@@ -985,16 +1033,44 @@ def save_account(
             """,
             (eff - timedelta(days=1), acct_id, eff),
         )
-        _insert_pricing(
-            cursor,
-            int(acct_id),
-            effective_from=eff,
-            pricing_method=method,
-            pricing_unit=unit,
-            rate_per_unit=float(rate) if rate is not None else None,
-            tiers=tiers,
-            user_id=user_id,
+        # Same-day re-save: update existing open row for this effective_from instead of stacking.
+        cursor.execute(
+            """
+            SELECT id FROM mgmt_revenue_pricing_schedules
+            WHERE account_id = %s AND effective_from = %s
+            ORDER BY id DESC LIMIT 1
+            """,
+            (acct_id, eff),
         )
+        same_day = cursor.fetchone()
+        if same_day:
+            pid = int(same_day["id"] if isinstance(same_day, dict) else same_day[0])
+            cursor.execute(
+                """
+                UPDATE mgmt_revenue_pricing_schedules
+                SET pricing_method = %s, pricing_unit = %s, rate_per_unit = %s,
+                    tiers_json = %s, effective_to = NULL
+                WHERE id = %s
+                """,
+                (
+                    method,
+                    unit,
+                    float(rate) if rate is not None else None,
+                    json.dumps(tiers) if tiers is not None else None,
+                    pid,
+                ),
+            )
+        else:
+            _insert_pricing(
+                cursor,
+                int(acct_id),
+                effective_from=eff,
+                pricing_method=method,
+                pricing_unit=unit,
+                rate_per_unit=float(rate) if rate is not None else None,
+                tiers=tiers,
+                user_id=user_id,
+            )
 
     if "pickup_weekdays" in payload or "delivery_weekdays" in payload:
         sched_from = payload.get("schedule_effective_from") or business_today().isoformat()

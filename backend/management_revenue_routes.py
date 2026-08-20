@@ -25,6 +25,7 @@ from backend.management_revenue import (
     delete_cash_payout,
     list_cash_payout_audits,
     save_non_rinse_revenue,
+    save_wf_revenue,
     update_cash_payout,
 )
 from backend.management_revenue_accounts import build_revenue_dashboard, save_dhs_account_revenue
@@ -115,6 +116,44 @@ def register_management_revenue_routes(
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
             payload = save_non_rinse_revenue(
+                cursor,
+                oid,
+                selected,
+                body,
+                user_id=_user_id(me),
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except ValueError as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/revenue/wf", methods=["PUT"])
+    def management_revenue_wf_save():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
+            body = request.get_json(silent=True) or {}
+            raw_date = (body.get("date_et") or body.get("processing_date") or request.args.get("date_et") or "").strip()
+            try:
+                selected = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            payload = save_wf_revenue(
                 cursor,
                 oid,
                 selected,

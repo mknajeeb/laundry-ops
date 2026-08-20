@@ -284,6 +284,137 @@ def save_non_rinse_revenue(
     return build_revenue_day(cursor, org_id, entry_date)
 
 
+def save_wf_revenue(
+    cursor,
+    org_id: int,
+    entry_date: date,
+    payload: dict,
+    *,
+    user_id: int | None = None,
+) -> dict[str, Any]:
+    """Write Rinse WF volume (+ optional revenue override) for a Processing Date.
+
+    Blank/omitted volume leaves the line untouched. Explicit 0 is stored as entered zero.
+    """
+    from backend.daily_revenue_cost_constants import LK_RINSE_WF_AMOUNT, LK_RINSE_WF_POUNDS
+    from backend.management_revenue_accounts import (
+        REVENUE_MODE_CALCULATED,
+        _calc_account_revenue,
+        _wf_tiers_from_pricing,
+        list_accounts,
+    )
+    from backend.daily_revenue_cost import wf_revenue_for_day
+
+    ensure_management_revenue_tables(cursor)
+    ensure_daily_revenue_cost_tables(cursor)
+    cursor.execute(
+        "SELECT * FROM dr_daily_entries WHERE organization_id = %s AND entry_date = %s",
+        (org_id, entry_date),
+    )
+    header = cursor.fetchone()
+    assert_entry_editable(header, payload)
+
+    if header:
+        entry_id = int(header["id"])
+        existing_lines = _load_entry_lines(cursor, entry_id)
+        cursor.execute(
+            "UPDATE dr_daily_entries SET modified_by = %s WHERE id = %s",
+            (user_id, entry_id),
+        )
+        was_existing = True
+    else:
+        cursor.execute(
+            """
+            INSERT INTO dr_daily_entries
+              (organization_id, entry_date, status, created_by, modified_by)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (org_id, entry_date, ENTRY_STATUS_OPEN, user_id, user_id),
+        )
+        entry_id = int(cursor.lastrowid)
+        existing_lines = {}
+        _log_audit(cursor, entry_id, "created", actor_user_id=user_id)
+        was_existing = False
+
+    if "volume_lbs" not in payload and "revenue" not in payload:
+        return build_revenue_day(cursor, org_id, entry_date)
+
+    accounts = list_accounts(cursor, org_id, as_of=entry_date, active_only=True)
+    wf_acct = next((a for a in accounts if a.get("account_code") == "rinse_wf"), None) or {}
+    pricing = wf_acct.get("pricing")
+    tiers = _wf_tiers_from_pricing(pricing)
+
+    volume = None
+    if "volume_lbs" in payload:
+        raw = payload.get("volume_lbs")
+        if raw is not None and not (isinstance(raw, str) and not str(raw).strip()):
+            volume = _money(raw)
+
+    use_override = bool(payload.get("use_revenue_override"))
+    entered_revenue = None
+    if "revenue" in payload:
+        raw_r = payload.get("revenue")
+        if raw_r is not None and not (isinstance(raw_r, str) and not str(raw_r).strip()):
+            entered_revenue = _money(raw_r)
+
+    revenue = None
+    if volume is not None:
+        if use_override and entered_revenue is not None:
+            revenue = entered_revenue
+        elif tiers:
+            revenue, _meta = wf_revenue_for_day(cursor, org_id, entry_date, volume, tiers)
+        elif pricing:
+            revenue = _calc_account_revenue(
+                revenue_mode=wf_acct.get("revenue_mode") or REVENUE_MODE_CALCULATED,
+                volume=volume,
+                pricing=pricing,
+                stored_amount=entered_revenue,
+            )
+        else:
+            revenue = entered_revenue
+    elif entered_revenue is not None:
+        revenue = entered_revenue
+
+    snapshot = {
+        "processing_date": entry_date.isoformat(),
+        "pricing": pricing,
+        "use_revenue_override": use_override,
+        "volume_lbs": volume,
+    }
+
+    if volume is not None:
+        _upsert_line(
+            cursor,
+            entry_id,
+            LK_RINSE_WF_POUNDS,
+            "revenue",
+            0,
+            volume,
+            source_system=SOURCE_MANUAL,
+            user_id=user_id,
+            existing_lines=existing_lines,
+            rate_snapshot={**snapshot, "line": "pounds"},
+        )
+    if revenue is not None:
+        _upsert_line(
+            cursor,
+            entry_id,
+            LK_RINSE_WF_AMOUNT,
+            "revenue",
+            revenue,
+            volume,
+            source_system=SOURCE_MANUAL,
+            user_id=user_id,
+            existing_lines=existing_lines,
+            is_override=use_override,
+            rate_snapshot=snapshot,
+        )
+
+    if was_existing:
+        _log_audit(cursor, entry_id, "updated", actor_user_id=user_id)
+    return build_revenue_day(cursor, org_id, entry_date)
+
+
 def _payout_row(row: dict) -> dict[str, Any]:
     ed = row.get("payout_date_et")
     created = row.get("created_at")

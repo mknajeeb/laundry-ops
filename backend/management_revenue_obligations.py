@@ -235,7 +235,7 @@ def get_schedule_for_account(cursor, account_id: int, as_of: date) -> dict[str, 
         WHERE account_id = %s
           AND effective_from <= %s
           AND (effective_to IS NULL OR effective_to >= %s)
-        ORDER BY effective_from DESC
+        ORDER BY effective_from DESC, id DESC
         LIMIT 1
         """,
         (account_id, as_of, as_of),
@@ -263,32 +263,70 @@ def save_account_schedule(
     delivery_weekdays: list[int] | None,
     user_id: int | None = None,
 ) -> dict[str, Any]:
+    """Persist multi-select weekday schedule (effective-dated).
+
+    Same-day re-saves UPDATE the existing row for that effective_from so multi-select
+    weekdays always stick. Prior open rows with earlier effective_from are closed.
+    """
     ensure_obligation_tables(cursor)
-    # Close prior open schedule ending day before new effective_from
+    pickup_json = (
+        json.dumps(_parse_weekdays(pickup_weekdays)) if pickup_weekdays is not None else None
+    )
+    delivery_json = (
+        json.dumps(_parse_weekdays(delivery_weekdays)) if delivery_weekdays is not None else None
+    )
+
     cursor.execute(
         """
-        UPDATE mgmt_revenue_account_schedules
-        SET effective_to = %s
-        WHERE account_id = %s
-          AND effective_from < %s
-          AND (effective_to IS NULL OR effective_to >= %s)
+        SELECT id FROM mgmt_revenue_account_schedules
+        WHERE account_id = %s AND effective_from = %s
+        ORDER BY id DESC
+        LIMIT 1
         """,
-        (effective_from - timedelta(days=1), account_id, effective_from, effective_from),
+        (account_id, effective_from),
     )
-    cursor.execute(
-        """
-        INSERT INTO mgmt_revenue_account_schedules
-          (account_id, effective_from, pickup_weekdays, delivery_weekdays, created_by)
-        VALUES (%s, %s, %s, %s, %s)
-        """,
-        (
-            account_id,
-            effective_from,
-            json.dumps(_parse_weekdays(pickup_weekdays)) if pickup_weekdays is not None else None,
-            json.dumps(_parse_weekdays(delivery_weekdays)) if delivery_weekdays is not None else None,
-            user_id,
-        ),
-    )
+    existing = cursor.fetchone()
+    if existing:
+        row_id = int(existing["id"] if isinstance(existing, dict) else existing[0])
+        cursor.execute(
+            """
+            UPDATE mgmt_revenue_account_schedules
+            SET pickup_weekdays = %s, delivery_weekdays = %s, effective_to = NULL
+            WHERE id = %s
+            """,
+            (pickup_json, delivery_json, row_id),
+        )
+        # Close any other open rows that would compete on this date.
+        cursor.execute(
+            """
+            UPDATE mgmt_revenue_account_schedules
+            SET effective_to = %s
+            WHERE account_id = %s
+              AND id <> %s
+              AND effective_from <= %s
+              AND (effective_to IS NULL OR effective_to >= %s)
+            """,
+            (effective_from - timedelta(days=1), account_id, row_id, effective_from, effective_from),
+        )
+    else:
+        cursor.execute(
+            """
+            UPDATE mgmt_revenue_account_schedules
+            SET effective_to = %s
+            WHERE account_id = %s
+              AND effective_from < %s
+              AND (effective_to IS NULL OR effective_to >= %s)
+            """,
+            (effective_from - timedelta(days=1), account_id, effective_from, effective_from),
+        )
+        cursor.execute(
+            """
+            INSERT INTO mgmt_revenue_account_schedules
+              (account_id, effective_from, pickup_weekdays, delivery_weekdays, created_by)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (account_id, effective_from, pickup_json, delivery_json, user_id),
+        )
     return get_schedule_for_account(cursor, account_id, effective_from) or {}
 
 

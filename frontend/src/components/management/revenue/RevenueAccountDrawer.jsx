@@ -86,8 +86,10 @@ export default function RevenueAccountDrawer({
   saving,
   onClose,
   onSaveNonRinse,
+  onSaveWf,
   onSaveDhsAccount,
   focusAccountId = null,
+  focusWf = false,
 }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
@@ -105,6 +107,9 @@ export default function RevenueAccountDrawer({
   const [pickupDate, setPickupDate] = useState("");
   const [processingDate, setProcessingDate] = useState("");
   const [deliveryDate, setDeliveryDate] = useState("");
+  const [wfVolume, setWfVolume] = useState("");
+  const [wfOverrideOn, setWfOverrideOn] = useState(false);
+  const [wfOverrideAmt, setWfOverrideAmt] = useState("");
 
   useEffect(() => {
     if (!open) {
@@ -120,9 +125,13 @@ export default function RevenueAccountDrawer({
     if (!open || groupId !== "dhs" || !focusAccountId) return;
     const row = (data?.dhs?.accounts || []).find((a) => a.account_id === focusAccountId);
     if (row) openDhs(row);
-    // openDhs is stable enough for focus open; intentionally omit from deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, groupId, focusAccountId, data?.dhs?.accounts]);
+
+  useEffect(() => {
+    if (!open || groupId !== "rinse" || !focusWf) return;
+    setStep("wf_entry");
+  }, [open, groupId, focusWf]);
 
   useEffect(() => {
     const nr = data?.non_rinse_revenue || data?.non_rinse || {};
@@ -130,11 +139,16 @@ export default function RevenueAccountDrawer({
     setSsCard(moneyToInput(nr.self_service?.card));
     setDoCash(moneyToInput(nr.drop_off?.cash));
     setDoCard(moneyToInput(nr.drop_off?.card));
+    const wf = data?.rinse?.wf || {};
+    setWfVolume(moneyToInput(wf.volume_lbs));
+    setWfOverrideOn(false);
+    setWfOverrideAmt(moneyToInput(wf.revenue));
   }, [data, open]);
 
   const title = useMemo(() => {
     if (step === "dhs_account" && selected) return selected.name;
     if (step === "non_rinse") return "Non-Rinse Entry";
+    if (step === "wf_entry") return "Rinse WF";
     if (groupId === "rinse") return "Rinse";
     if (groupId === "non_rinse") return "Non-Rinse";
     if (groupId === "dhs") return "DHS Accounts";
@@ -268,13 +282,19 @@ export default function RevenueAccountDrawer({
             <AccountListRow
               name="Rinse WF"
               value={rinse.wf?.revenue}
-              sub={rinse.wf?.enabled ? `${rinse.wf?.volume_lbs ?? "—"} lb · tier pricing` : "Pricing not configured"}
-              onClick={() => setStep("rinse_detail")}
+              sub={
+                rinse.wf?.entered
+                  ? `${rinse.wf?.volume_lbs ?? "—"} lb · Processing ${dateEt}`
+                  : rinse.wf?.placeholder
+                    ? "Pricing not configured — set in Accounts"
+                    : "Missing — tap to enter"
+              }
+              onClick={() => setStep("wf_entry")}
             />
             <AccountListRow
               name="Rinse HD"
               value={rinse.hd?.revenue}
-              sub={`${rinse.hd?.orders ?? 0} complete orders · read-only`}
+              sub={`${rinse.hd?.orders ?? 0} complete orders · from HD production`}
               onClick={() => setStep("rinse_detail")}
             />
           </Stack>
@@ -313,19 +333,56 @@ export default function RevenueAccountDrawer({
           </Stack>
         ) : null}
 
+        {step === "wf_entry" ? (
+          <Stack spacing={1.5} sx={{ p: 2 }}>
+            <Typography sx={{ fontWeight: 800 }}>Rinse WF</Typography>
+            <Typography sx={{ fontSize: 12, color: "#64748b" }}>
+              Processing Date {dateEt} · blank is Missing (not $0)
+            </Typography>
+            <BlankMoneyField label="Volume (lb)" value={wfVolume} onChange={setWfVolume} />
+            {rinse.wf?.pricing?.rate_per_unit != null && !wfOverrideOn ? (
+              <Box sx={{ p: 1.25, borderRadius: 1.5, bgcolor: "#F0FAFB", border: "1px solid #e5e7eb" }}>
+                <Typography sx={{ fontSize: 11, fontWeight: 700, color: "#64748b" }}>Calculated</Typography>
+                <Typography sx={{ fontWeight: 900, fontSize: 18 }}>
+                  {fmtMoney(
+                    parseMoneyInput(wfVolume) != null
+                      ? Number(wfVolume) * Number(rinse.wf.pricing.rate_per_unit)
+                      : rinse.wf?.revenue,
+                  )}
+                </Typography>
+              </Box>
+            ) : null}
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={wfOverrideOn}
+                  onChange={(e) => setWfOverrideOn(e.target.checked)}
+                />
+              }
+              label="Use revenue override"
+            />
+            {wfOverrideOn ? (
+              <BlankMoneyField label="Revenue override" value={wfOverrideAmt} onChange={setWfOverrideAmt} />
+            ) : null}
+            <Button
+              variant="contained"
+              disabled={saving}
+              onClick={() =>
+                onSaveWf?.({
+                  volume_lbs: parseMoneyInput(wfVolume),
+                  revenue: wfOverrideOn ? parseMoneyInput(wfOverrideAmt) : undefined,
+                  use_revenue_override: wfOverrideOn,
+                })
+              }
+              sx={{ textTransform: "none", fontWeight: 800, minHeight: 48 }}
+            >
+              Save WF
+            </Button>
+          </Stack>
+        ) : null}
+
         {step === "rinse_detail" ? (
           <Stack spacing={1.5} sx={{ p: 2 }}>
-            <Box sx={{ p: 1.5, borderRadius: 1.5, bgcolor: "#fff", border: "1px solid #e5e7eb" }}>
-              <Typography sx={{ fontWeight: 800 }}>Rinse WF</Typography>
-              <Typography sx={{ fontSize: 22, fontWeight: 900, mt: 0.5, color: VEEWASH_DASHBOARD.wfCharcoal }}>
-                {fmtMoney(rinse.wf?.revenue)}
-              </Typography>
-              <Typography sx={{ fontSize: 12, color: "#64748b", mt: 0.5 }}>
-                {rinse.wf?.enabled
-                  ? `Volume ${rinse.wf?.volume_lbs ?? "—"} lb · from WF production`
-                  : "Enable tier pricing in Accounts & Pricing."}
-              </Typography>
-            </Box>
             <Box sx={{ p: 1.5, borderRadius: 1.5, bgcolor: "#fff", border: `1px solid ${VEEWASH_DASHBOARD.hdBorder}` }}>
               <Typography sx={{ fontWeight: 800 }}>Rinse HD</Typography>
               <Typography sx={{ fontSize: 22, fontWeight: 900, mt: 0.5, color: VEEWASH_DASHBOARD.hdTeal }}>

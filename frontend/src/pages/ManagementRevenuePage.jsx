@@ -23,6 +23,7 @@ import {
   getManagementRevenueMissingWork,
   saveManagementRevenueDhs,
   saveManagementRevenueNonRinse,
+  saveManagementRevenueWf,
 } from "../api";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import PlanningDatePicker from "../components/datetime/PlanningDatePicker";
@@ -74,6 +75,7 @@ export default function ManagementRevenuePage() {
   const [missingLoading, setMissingLoading] = useState(false);
   const [dispBusy, setDispBusy] = useState("");
   const [focusAccountId, setFocusAccountId] = useState(null);
+  const [focusWf, setFocusWf] = useState(false);
 
   const applyPayload = useCallback((payload) => {
     setData(payload);
@@ -161,15 +163,23 @@ export default function ManagementRevenuePage() {
     setView("entry");
     if (item.kind === "dhs") {
       setFocusAccountId(item.account_id || null);
+      setFocusWf(false);
       setDrawerGroup("dhs");
       return;
     }
     setFocusAccountId(null);
     if (item.source_key === "self_service" || item.source_key === "drop_off") {
+      setFocusWf(false);
       setDrawerGroup("non_rinse");
       return;
     }
-    if (item.source_key === "rinse_wf" || item.source_key === "rinse_hd") {
+    if (item.source_key === "rinse_wf") {
+      setFocusWf(true);
+      setDrawerGroup("rinse");
+      return;
+    }
+    if (item.source_key === "rinse_hd") {
+      setFocusWf(false);
       setDrawerGroup("rinse");
     }
   };
@@ -203,6 +213,28 @@ export default function ManagementRevenuePage() {
       loadCashActivity();
     } catch (e) {
       setError(e?.response?.data?.error || e.message || "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveWf = async (fields) => {
+    setSaving(true);
+    setError("");
+    try {
+      const res = await saveManagementRevenueWf({
+        date_et: dateEt,
+        processing_date: dateEt,
+        volume_lbs: fields.volume_lbs,
+        revenue: fields.revenue,
+        use_revenue_override: fields.use_revenue_override,
+      });
+      applyPayload(res.data || {});
+      setSuccess("Rinse WF saved");
+      loadCashActivity();
+      await loadMissing();
+    } catch (e) {
+      setError(e?.response?.data?.error || e.message || "WF save failed");
     } finally {
       setSaving(false);
     }
@@ -318,14 +350,16 @@ export default function ManagementRevenuePage() {
       <Tabs
         value={view}
         onChange={(_, v) => setView(v)}
+        variant="scrollable"
+        allowScrollButtonsMobile
         sx={{ mb: 2, minHeight: 40, "& .MuiTab-root": { minHeight: 40, fontWeight: 800, textTransform: "none" } }}
       >
-        <Tab value="entry" label="Daily Entry" />
-        <Tab value="dashboard" label="Stats" />
+        <Tab value="entry" label="Entry" />
         <Tab
           value="missing"
           label={`Missing Work${missing?.summary?.missing_total != null ? ` · ${missing.summary.missing_total}` : ""}`}
         />
+        <Tab value="dashboard" label="Stats" />
       </Tabs>
 
       {error ? (
@@ -496,11 +530,14 @@ export default function ManagementRevenuePage() {
         dateEt={dateEt}
         saving={saving}
         focusAccountId={focusAccountId}
+        focusWf={focusWf}
         onClose={() => {
           setDrawerGroup(null);
           setFocusAccountId(null);
+          setFocusWf(false);
         }}
         onSaveNonRinse={saveNonRinse}
+        onSaveWf={saveWf}
         onSaveDhsAccount={saveDhsAccount}
       />
 

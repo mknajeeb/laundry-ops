@@ -20,6 +20,7 @@ import {
   markManagementRinseHdComplete,
   saveManagementRevenueDhs,
   saveManagementRevenueNonRinse,
+  saveManagementRevenueWf,
   saveManagementRinseHdProduction,
 } from "../api";
 import CashPayoutForm, { CashPayoutList } from "../components/revenueShared/CashPayoutForm";
@@ -29,6 +30,7 @@ import DhsAccountSheet from "../components/revenueShared/DhsAccountSheet";
 import MissingWorkPanel from "../components/revenueShared/MissingWorkPanel";
 import MoneyAmountField from "../components/revenueShared/MoneyAmountField";
 import NonRinseEntryPanel from "../components/revenueShared/NonRinseEntryPanel";
+import SaveStatusChip from "../components/revenueShared/SaveStatusChip";
 import SectionStatusCard from "../components/revenueShared/SectionStatusCard";
 import {
   fmtMoney,
@@ -73,6 +75,7 @@ const SCREEN_TITLE_KEYS = {
   cash: "mobileOps.revenue.cashPaidOut",
   hang_dry: "mobileOps.revenue.hangDry",
   hang_dry_detail: "mobileOps.revenue.hangDry",
+  rinse_wf: "mobileOps.revenue.rinseWf",
   missing: "mobileOps.revenue.missingWork",
 };
 
@@ -116,6 +119,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
   const [missingLoading, setMissingLoading] = useState(false);
   const [dispBusy, setDispBusy] = useState("");
   const [returnScreen, setReturnScreen] = useState("home");
+  const [wfVolume, setWfVolume] = useState(null);
 
   const nonRinseRef = useRef({ ssCash: null, ssCard: null, doCash: null, doCard: null });
   const autosaveTimerRef = useRef(null);
@@ -480,6 +484,22 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       },
     },
     {
+      id: "rinse_wf",
+      title: t("mobileOps.revenue.rinseWf") !== "mobileOps.revenue.rinseWf" ? t("mobileOps.revenue.rinseWf") : "Rinse WF",
+      primary: data?.rinse?.wf?.revenue,
+      secondary:
+        data?.rinse?.wf?.volume_lbs != null ? `${fmtInt(data.rinse.wf.volume_lbs)} lb · ${dateEt}` : null,
+      statusLabel: data?.rinse?.wf?.entered
+        ? t("mobileOps.revenue.savedCheck")
+        : t("mobileOps.revenue.needsEntry"),
+      statusTone: data?.rinse?.wf?.entered ? "ok" : "warn",
+      onClick: () => {
+        setSaveState("");
+        setWfVolume(moneyToInput(data?.rinse?.wf?.volume_lbs));
+        setScreen("rinse_wf");
+      },
+    },
+    {
       id: "dhs",
       title: t("mobileOps.revenue.dhs"),
       primary: dhs.total,
@@ -598,6 +618,10 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
               if (s.key === "self_service") setScreen("self_service");
               else if (s.key === "drop_off") setScreen("drop_off");
               else if (s.key === "rinse_hd") openHangDry();
+              else if (s.key === "rinse_wf") {
+                setWfVolume(moneyToInput(data?.rinse?.wf?.volume_lbs));
+                setScreen("rinse_wf");
+              }
               else setScreen("home");
             }}
             onNoActivity={(s) =>
@@ -675,6 +699,10 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
             if (item.source_key === "self_service") setScreen("self_service");
             else if (item.source_key === "drop_off") setScreen("drop_off");
             else if (item.source_key === "rinse_hd") openHangDry();
+            else if (item.source_key === "rinse_wf") {
+              setWfVolume(moneyToInput(data?.rinse?.wf?.volume_lbs));
+              setScreen("rinse_wf");
+            }
           }}
           onNoActivity={(item, reason) =>
             postDisposition(
@@ -745,6 +773,47 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
           cardLabel={t("mobileOps.revenue.card")}
           totalLabel={t("mobileOps.revenue.total")}
         />
+      ) : null}
+
+      {screen === "rinse_wf" ? (
+        <Stack spacing={1.5} sx={{ pb: 2 }}>
+          <Typography sx={{ fontSize: 18, fontWeight: 900 }}>
+            {t("mobileOps.revenue.rinseWf") !== "mobileOps.revenue.rinseWf" ? t("mobileOps.revenue.rinseWf") : "Rinse WF"}
+          </Typography>
+          <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#64748b" }}>
+            Processing Date {dateEt}
+          </Typography>
+          <MoneyAmountField
+            label="Volume (lb)"
+            value={wfVolume}
+            onChange={setWfVolume}
+            prefix=""
+          />
+          <Button
+            variant="contained"
+            disabled={saveState === "saving"}
+            onClick={async () => {
+              setSaveState("saving");
+              setError("");
+              try {
+                const res = await saveManagementRevenueWf({
+                  date_et: dateEt,
+                  processing_date: dateEt,
+                  volume_lbs: parseMoneyInput(wfVolume),
+                });
+                applyDayPayload(res.data || null);
+                setSaveState("saved");
+              } catch (e) {
+                setSaveState("error");
+                setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.saveFailed"));
+              }
+            }}
+            sx={{ textTransform: "none", fontWeight: 800, minHeight: 48 }}
+          >
+            {t("mobileOps.revenue.save") !== "mobileOps.revenue.save" ? t("mobileOps.revenue.save") : "Save"}
+          </Button>
+          <SaveStatusChip state={saveState} labels={saveLabels} />
+        </Stack>
       ) : null}
 
       {screen === "dhs" ? (

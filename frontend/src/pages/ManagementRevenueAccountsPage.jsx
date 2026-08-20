@@ -206,8 +206,11 @@ export default function ManagementRevenueAccountsPage() {
               : null,
         },
       };
-      await saveManagementRevenueAccount(body);
-      setSuccess("Account saved");
+      const res = await saveManagementRevenueAccount(body);
+      const saved = res.data?.account || res.data || {};
+      const pickup = (saved.schedule?.pickup_weekdays || []).map(String).join("/") || "—";
+      const delivery = (saved.schedule?.delivery_weekdays || []).map(String).join("/") || "—";
+      setSuccess(`Saved · Pickup days ${pickup} · Delivery days ${delivery}`);
       setDialogOpen(false);
       await load();
     } catch (e) {
