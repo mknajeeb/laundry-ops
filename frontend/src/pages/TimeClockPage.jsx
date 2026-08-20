@@ -1,20 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
+  Box,
   Button,
   Card,
   CardContent,
   Chip,
   CircularProgress,
   Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-  Grid,
-  MenuItem,
-  Select,
   FormControl,
   InputLabel,
+  MenuItem,
+  Select,
   Typography,
   Stack,
 } from "@mui/material";
@@ -27,7 +24,9 @@ import {
   taClockOut,
 } from "../api";
 import { useAuth } from "../context/AuthContext";
-import { roleChoiceButtonSx } from "../utils/roleChoiceButtonSx";
+import OpsRoleFirstSelector from "../opsMobile/OpsRoleFirstSelector";
+import OpsTopBar from "../opsMobile/OpsTopBar";
+import { OPS_MOBILE } from "../opsMobile/tokens";
 
 function formatDuration(sec) {
   if (sec == null || sec < 0) return "—";
@@ -51,10 +50,6 @@ function TimeClockPage() {
   const [resumeCategoryId, setResumeCategoryId] = useState(null);
 
   const canClock = hasPerm("ta.clock");
-  const resumeRoles = useMemo(() => {
-    const cat = resumeTree.find((c) => Number(c.id) === Number(resumeCategoryId));
-    return cat?.roles || [];
-  }, [resumeTree, resumeCategoryId]);
 
   const refresh = useCallback(async () => {
     if (!canClock) return;
@@ -329,60 +324,37 @@ function TimeClockPage() {
         </CardContent>
       </Card>
 
-      <Dialog open={resumeOpen} onClose={() => !busy && setResumeOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle sx={{ fontWeight: 800 }}>Select role to resume</DialogTitle>
-        <DialogContent>
-          <Stack spacing={1.5} sx={{ pt: 1 }}>
-            <Typography variant="subtitle2" fontWeight={800}>
-              Category
-            </Typography>
-            <Grid container spacing={1}>
-              {resumeTree.map((cat) => (
-                <Grid item xs={6} key={cat.id}>
-                  <Button
-                    fullWidth
-                    variant={Number(resumeCategoryId) === Number(cat.id) ? "contained" : "outlined"}
-                    disabled={busy}
-                    onClick={() => setResumeCategoryId(cat.id)}
-                    sx={{ textTransform: "none", fontWeight: 700, py: 1.5 }}
-                  >
-                    {cat.name}
-                  </Button>
-                </Grid>
-              ))}
-            </Grid>
-            <Typography variant="subtitle2" fontWeight={800}>
-              Role
-            </Typography>
-            <Grid container spacing={1}>
-              {resumeRoles.map((role) => (
-                <Grid item xs={6} key={role.role_id || role.id}>
-                  <Button
-                    fullWidth
-                    variant="outlined"
-                    disabled={busy || !resumeCategoryId}
-                    onClick={() =>
-                      endBreak({ category_id: resumeCategoryId, role_id: role.role_id })
-                    }
-                    sx={{
-                      textTransform: "none",
-                      fontWeight: 700,
-                      py: 1.6,
-                      ...roleChoiceButtonSx(role.role_name),
-                    }}
-                  >
-                    {busy ? <CircularProgress size={20} color="inherit" /> : role.role_name}
-                  </Button>
-                </Grid>
-              ))}
-            </Grid>
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setResumeOpen(false)} disabled={busy}>
-            Cancel
-          </Button>
-        </DialogActions>
+      <Dialog
+        open={resumeOpen}
+        onClose={() => !busy && setResumeOpen(false)}
+        fullScreen
+        PaperProps={{
+          sx: {
+            bgcolor: OPS_MOBILE.mist,
+            background: `linear-gradient(165deg, ${OPS_MOBILE.mist} 0%, #e8eeff 45%, rgba(72,101,238,0.12) 100%)`,
+          },
+        }}
+      >
+        <Box sx={{ px: { xs: 1.5, sm: 2.5, md: 3 }, py: { xs: 1.5, sm: 2 }, maxWidth: 880, mx: "auto", width: "100%" }}>
+          <OpsTopBar
+            title="Select Role to Resume"
+            onBack={busy ? undefined : () => setResumeOpen(false)}
+            backLabel="Back"
+            sticky
+          />
+          <OpsRoleFirstSelector
+            selectionTree={resumeTree}
+            markCurrent={false}
+            pending={busy}
+            onSelectCombo={(combo) => {
+              if (!combo) return;
+              void endBreak({ category_id: combo.categoryId, role_id: combo.roleId });
+            }}
+            emptyMessage="Role selection isn’t available right now."
+            singleWorkTypeHint="Tap to resume"
+            multiWorkTypeHint="Tap to choose work type"
+          />
+        </Box>
       </Dialog>
     </div>
   );

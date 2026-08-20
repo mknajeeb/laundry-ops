@@ -10,6 +10,7 @@ export { default as OpsChoiceCard } from "./OpsChoiceCard";
 export { default as OpsStickyActionBar } from "./OpsStickyActionBar";
 export { default as OpsStatusChip } from "./OpsStatusChip";
 export { default as OpsSwitchRoleFlow } from "./OpsSwitchRoleFlow";
+export { default as OpsRoleFirstSelector } from "./OpsRoleFirstSelector";
 export { default as OpsTaskCard } from "./OpsTaskCard";
 export {
   buildPinLauncherTiles,

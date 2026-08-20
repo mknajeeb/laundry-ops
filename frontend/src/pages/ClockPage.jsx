@@ -5,10 +5,6 @@ import {
   Button,
   CircularProgress,
   Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-  Grid,
   Paper,
   Stack,
   Typography,
@@ -22,7 +18,9 @@ import {
 } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
-import { roleChoiceButtonSx } from "../utils/roleChoiceButtonSx";
+import OpsRoleFirstSelector from "../opsMobile/OpsRoleFirstSelector";
+import OpsTopBar from "../opsMobile/OpsTopBar";
+import { OPS_MOBILE } from "../opsMobile/tokens";
 
 const SWITCH_TIMEOUT_MESSAGE =
   "The role change is taking longer than expected and may already have completed. Refresh your current assignment before trying again.";
@@ -81,12 +79,6 @@ function ClockPage({ user: washproUser }) {
     () => t("clock.atWork").replace("{name}", foldedByName),
     [t, foldedByName]
   );
-
-  const selectedCategory = useMemo(
-    () => selectionTree.find((c) => Number(c.id) === Number(pendingCategoryId)) || null,
-    [selectionTree, pendingCategoryId]
-  );
-  const rolesForCategory = selectedCategory?.roles || [];
 
   const loadSelectionTree = useCallback(async () => {
     try {
@@ -373,66 +365,42 @@ function ClockPage({ user: washproUser }) {
       <Dialog
         open={pickOpen}
         onClose={() => !switchBusy && pickMode !== "break_resume" && setPickOpen(false)}
-        fullWidth
-        maxWidth="xs"
+        fullScreen
+        PaperProps={{
+          sx: {
+            bgcolor: OPS_MOBILE.mist,
+            background: `linear-gradient(165deg, ${OPS_MOBILE.mist} 0%, #e8eeff 45%, rgba(72,101,238,0.12) 100%)`,
+          },
+        }}
       >
-        <DialogTitle sx={{ fontWeight: 800 }}>
-          {pickMode === "break_resume" ? "Select role to resume" : "Change role"}
-        </DialogTitle>
-        <DialogContent>
-          <Stack spacing={1.5} sx={{ pt: 1 }}>
-            <Typography variant="subtitle2" fontWeight={800}>
-              Category
-            </Typography>
-            <Grid container spacing={1}>
-              {selectionTree.map((cat) => (
-                <Grid item xs={6} key={cat.id}>
-                  <Button
-                    fullWidth
-                    variant={Number(pendingCategoryId) === Number(cat.id) ? "contained" : "outlined"}
-                    disabled={switchBusy}
-                    onClick={() => {
-                      setPendingCategoryId(cat.id);
-                    }}
-                    sx={{ textTransform: "none", fontWeight: 700, py: 1.5 }}
-                  >
-                    {cat.name}
-                  </Button>
-                </Grid>
-              ))}
-            </Grid>
-            <Typography variant="subtitle2" fontWeight={800}>
-              Role
-            </Typography>
-            <Grid container spacing={1}>
-              {rolesForCategory.map((role) => (
-                <Grid item xs={6} key={role.role_id || role.id}>
-                  <Button
-                    fullWidth
-                    variant="outlined"
-                    disabled={switchBusy || !pendingCategoryId || needsRefreshBeforeSwitch}
-                    onClick={() => confirmRoleSelection(pendingCategoryId, role.role_id)}
-                    sx={{
-                      textTransform: "none",
-                      fontWeight: 700,
-                      py: 1.6,
-                      ...roleChoiceButtonSx(role.role_name),
-                    }}
-                  >
-                    {switchBusy ? <CircularProgress size={20} color="inherit" /> : role.role_name}
-                  </Button>
-                </Grid>
-              ))}
-            </Grid>
-          </Stack>
-        </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
-          {pickMode === "break_resume" ? null : (
-            <Button onClick={() => setPickOpen(false)} disabled={switchBusy}>
-              {t("clock.cancel")}
-            </Button>
-          )}
-        </DialogActions>
+        <Box sx={{ px: { xs: 1.5, sm: 2.5, md: 3 }, py: { xs: 1.5, sm: 2 }, maxWidth: 880, mx: "auto", width: "100%" }}>
+          <OpsTopBar
+            title={pickMode === "break_resume" ? "Select Role to Resume" : "Change Role"}
+            onBack={
+              pickMode === "break_resume" || switchBusy
+                ? undefined
+                : () => setPickOpen(false)
+            }
+            backLabel="Back"
+            sticky
+          />
+          <OpsRoleFirstSelector
+            selectionTree={selectionTree}
+            currentCategoryId={
+              pickMode === "switch" ? taskTracking?.current_category_id ?? null : null
+            }
+            currentRoleId={pickMode === "switch" ? taskTracking?.current_role_id ?? null : null}
+            markCurrent={pickMode === "switch"}
+            pending={switchBusy}
+            onSelectCombo={(combo) => {
+              if (!combo) return;
+              void confirmRoleSelection(combo.categoryId, combo.roleId);
+            }}
+            emptyMessage="Role selection isn’t available right now."
+            singleWorkTypeHint={pickMode === "break_resume" ? "Tap to resume" : "Tap to switch"}
+            multiWorkTypeHint="Tap to choose work type"
+          />
+        </Box>
       </Dialog>
     </Box>
   );

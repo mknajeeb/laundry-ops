@@ -6,12 +6,7 @@ import {
   Box,
   Button,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   FormControl,
-  Grid,
   IconButton,
   InputLabel,
   MenuItem,
@@ -30,10 +25,12 @@ import {
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
+import OpsMobileShell from "../opsMobile/OpsMobileShell";
+import OpsRoleFirstSelector from "../opsMobile/OpsRoleFirstSelector";
+import OpsTopBar from "../opsMobile/OpsTopBar";
 import { VEEWASH_LOGO_URL } from "../theme/veewashBrand";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
-import { roleChoiceButtonSx } from "../utils/roleChoiceButtonSx";
 
 const PIN_LEN = 4;
 const SUCCESS_RESET_MS = 4000;
@@ -263,7 +260,7 @@ export default function AttendancePinPage() {
   const [pin, setPin] = useState("");
   const [pendingPin, setPendingPin] = useState("");
   const [selectionTree, setSelectionTree] = useState([]);
-  const [pickStep, setPickStep] = useState(null); // null | category | role
+  const [pickStep, setPickStep] = useState(null); // null | "select"
   const [pendingCategoryId, setPendingCategoryId] = useState(null);
   const [pendingRoleId, setPendingRoleId] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -432,7 +429,7 @@ export default function AttendancePinPage() {
           setSelectionTree(body.selection_tree);
           setPendingCategoryId(null);
           setPendingRoleId(null);
-          setPickStep("category");
+          setPickStep("select");
           setPin("");
           prevPinLenRef.current = 0;
           return;
@@ -494,19 +491,30 @@ export default function AttendancePinPage() {
     return d.toLocaleTimeString(localeTag, { hour: "numeric", minute: "2-digit" });
   };
 
-  const selectedPickCategory =
-    selectionTree.find((c) => Number(c.id) === Number(pendingCategoryId)) || null;
-  const pickRoles = selectedPickCategory?.roles || [];
+  const clearRolePick = () => {
+    setPickStep(null);
+    setPendingPin("");
+    setSelectionTree([]);
+    setPendingCategoryId(null);
+    setPendingRoleId(null);
+  };
 
   const confirmCategoryRolePunch = (categoryId, roleId) => {
     const catId = categoryId ?? pendingCategoryId;
     const rId = roleId ?? pendingRoleId;
     if (!pendingPin || !catId || !rId) return;
+    setPendingCategoryId(catId);
+    setPendingRoleId(rId);
     setPickStep(null);
     void performPunch(pendingPin, {
       category_id: catId,
       role_id: rId,
     });
+  };
+
+  const onSelectPunchCombo = (combo) => {
+    if (!combo) return;
+    confirmCategoryRolePunch(combo.categoryId, combo.roleId);
   };
 
   const tenantTitle = branding?.display_name || slug || t("attendance.title");
@@ -775,124 +783,40 @@ export default function AttendancePinPage() {
         ) : null}
       </Stack>
 
-      <Dialog
-        open={pickStep === "category"}
-        onClose={() => {
-          if (loading) return;
-          setPickStep(null);
-          setPendingPin("");
-          setSelectionTree([]);
-          setPendingCategoryId(null);
-          setPendingRoleId(null);
-        }}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle sx={{ fontWeight: 800 }}>{t("attendance.selectCategoryTitle")}</DialogTitle>
-        <DialogContent>
-          <Grid container spacing={1} sx={{ pt: 1 }}>
-            {selectionTree.map((cat) => (
-              <Grid item xs={6} key={cat.id}>
-                <Button
-                  fullWidth
-                  variant="outlined"
-                  disabled={loading}
-                  onClick={() => {
-                    setPendingCategoryId(cat.id);
-                    setPendingRoleId(null);
-                    setPickStep("role");
-                  }}
-                  sx={{ textTransform: "none", fontWeight: 700, py: 1.6 }}
-                >
-                  {cat.display_name || cat.name}
-                </Button>
-              </Grid>
-            ))}
-          </Grid>
-        </DialogContent>
-        <DialogActions>
-          <Button
-            disabled={loading}
-            onClick={() => {
-              setPickStep(null);
-              setPendingPin("");
-              setSelectionTree([]);
-              setPendingCategoryId(null);
-              setPendingRoleId(null);
-            }}
+      {pickStep === "select" ? (
+        <Box
+          sx={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1400,
+            bgcolor: "background.default",
+          }}
+        >
+          <OpsMobileShell
+            maxWidth={880}
+            sx={{ px: { xs: 1.5, sm: 2.5, md: 3 }, py: { xs: 1.5, sm: 2 } }}
+            contentSx={{ gap: { xs: 1.5, sm: 2 } }}
           >
-            {t("attendance.switchRoleCancel") || "Cancel"}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={pickStep === "role"}
-        onClose={() => {
-          if (loading) return;
-          setPickStep("category");
-          setPendingRoleId(null);
-        }}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle sx={{ fontWeight: 800 }}>{t("attendance.selectRoleTitle")}</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5, pt: 0.5 }}>
-            {selectedPickCategory?.display_name || selectedPickCategory?.name || ""}
-          </Typography>
-          <Grid container spacing={1}>
-            {pickRoles.map((role) => {
-              const label = role.role_name || role.display_name || role.name;
-              return (
-              <Grid item xs={6} key={role.role_id || role.id}>
-                <Button
-                  fullWidth
-                  variant="outlined"
-                  disabled={loading || !pendingCategoryId}
-                  onClick={() => confirmCategoryRolePunch(pendingCategoryId, role.role_id)}
-                  sx={{
-                    textTransform: "none",
-                    fontWeight: 800,
-                    py: 1.8,
-                    ...roleChoiceButtonSx(label),
-                  }}
-                >
-                  {loading ? (
-                    <CircularProgress size={20} color="inherit" />
-                  ) : (
-                    label
-                  )}
-                </Button>
-              </Grid>
-              );
-            })}
-          </Grid>
-        </DialogContent>
-        <DialogActions>
-          <Button
-            disabled={loading}
-            onClick={() => {
-              setPickStep("category");
-              setPendingRoleId(null);
-            }}
-          >
-            Back
-          </Button>
-          <Button
-            disabled={loading}
-            onClick={() => {
-              setPickStep(null);
-              setPendingPin("");
-              setSelectionTree([]);
-              setPendingCategoryId(null);
-              setPendingRoleId(null);
-            }}
-          >
-            {t("attendance.switchRoleCancel") || "Cancel"}
-          </Button>
-        </DialogActions>
-      </Dialog>
+            <OpsTopBar
+              title="Select Role"
+              onBack={loading ? undefined : clearRolePick}
+              backLabel="PIN"
+              sticky
+            />
+            <OpsRoleFirstSelector
+              selectionTree={selectionTree}
+              markCurrent={false}
+              pending={loading}
+              pendingCategoryId={pendingCategoryId}
+              pendingRoleId={pendingRoleId}
+              onSelectCombo={onSelectPunchCombo}
+              emptyMessage="Role selection isn’t available right now."
+              singleWorkTypeHint="Tap to clock in"
+              multiWorkTypeHint="Tap to choose work type"
+            />
+          </OpsMobileShell>
+        </Box>
+      ) : null}
     </Box>
   );
 }
