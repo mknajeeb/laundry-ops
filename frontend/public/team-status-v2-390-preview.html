@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=390, initial-scale=1" />
+  <title>Team Status V2 — 390px Today preview</title>
+  <style>
+    :root {
+      --navy: #16192b;
+      --blue: #2d3d9c;
+      --gold: #c4a052;
+      --muted: #64748b;
+      --success: #0f766e;
+      --break: #b45309;
+      --mist: #eef2ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: linear-gradient(165deg, var(--mist) 0%, #e8eeff 45%, rgba(72,101,238,0.12) 100%);
+      color: var(--navy);
+    }
+    .phone {
+      width: 390px;
+      margin: 12px auto;
+      min-height: 780px;
+      padding: 12px 14px 24px;
+      background: transparent;
+    }
+    h1 { font-size: 1.2rem; font-weight: 900; margin: 0 0 10px; }
+    .tabs {
+      display: flex; gap: 4px; padding: 4px; background: #fff; border-radius: 10px;
+      border: 1px solid rgba(22,25,43,0.08); margin-bottom: 8px;
+    }
+    .tab {
+      flex: 1; text-align: center; padding: 10px 4px; font-weight: 850; font-size: 0.92rem;
+      border-radius: 8px; color: var(--muted);
+    }
+    .tab.on { background: rgba(196,160,82,0.18); border: 1px solid rgba(196,160,82,0.45); color: var(--navy); }
+    .nav {
+      display: flex; align-items: center; justify-content: space-between;
+      background: #fff; border-radius: 10px; border: 1px solid rgba(22,25,43,0.08);
+      padding: 4px; margin-bottom: 8px; font-weight: 900;
+    }
+    .nav button { width: 44px; height: 44px; border: 0; background: transparent; font-size: 1.2rem; }
+    .strip {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px;
+      background: #fff; border-radius: 10px; border: 1px solid rgba(22,25,43,0.1);
+      border-left: 3px solid var(--gold); padding: 10px 12px; margin-bottom: 12px;
+      font-size: 0.84rem; font-weight: 800;
+    }
+    .strip .v { font-weight: 950; }
+    .sec { font-weight: 950; font-size: 0.88rem; margin: 0 0 6px; }
+    .row {
+      background: #fff; border: 1px solid rgba(22,25,43,0.08); border-radius: 10px;
+      padding: 10px 12px; margin-bottom: 6px; min-height: 62px;
+    }
+    .row-top { display: flex; justify-content: space-between; gap: 8px; }
+    .name { font-weight: 900; font-size: 0.98rem; }
+    .hrs { font-weight: 900; font-variant-numeric: tabular-nums; }
+    .role { font-weight: 700; font-size: 0.78rem; color: var(--blue); margin-top: 2px; }
+    .meta { font-size: 0.74rem; font-weight: 700; color: var(--muted); margin-top: 3px; }
+    .meta .st { font-weight: 800; }
+    .st.w { color: var(--success); }
+    .st.b { color: var(--break); }
+    .st.c { color: var(--muted); }
+    .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .chip { font-size: 0.68rem; font-weight: 750; background: rgba(22,25,43,0.05); padding: 2px 7px; border-radius: 999px; }
+  </style>
+</head>
+<body>
+  <div class="phone" id="frame">
+    <h1>Team Status</h1>
+    <div class="tabs">
+      <div class="tab on">Today</div>
+      <div class="tab">Week</div>
+      <div class="tab">Upcoming</div>
+    </div>
+    <div class="nav">
+      <button type="button">‹</button>
+      <div>Today · Aug 20</div>
+      <button type="button">›</button>
+    </div>
+    <div class="strip">
+      <div><span class="v" style="color:var(--success)">4</span> Working</div>
+      <div><span class="v" style="color:var(--break)">1</span> Break</div>
+      <div><span class="v">7</span> Worked Today</div>
+      <div><span class="v">38h 25m</span> Hours</div>
+    </div>
+    <div class="sec">Working Now</div>
+    <div class="row">
+      <div class="row-top"><div class="name">Maria Lopez</div><div class="hrs">4h 18m</div></div>
+      <div class="role">Wash-Dry | Rinse Wash &amp; Fold</div>
+      <div class="meta">In 7:02 AM · <span class="st w">Working</span></div>
+    </div>
+    <div class="row">
+      <div class="row-top"><div class="name">Francis</div><div class="hrs">5h 06m</div></div>
+      <div class="role">Sort | Rinse Wash &amp; Fold</div>
+      <div class="meta">In 6:03 AM · <span class="st b">On Break 12m</span></div>
+    </div>
+    <div class="row">
+      <div class="row-top"><div class="name">Luis Ortega</div><div class="hrs">3h 42m</div></div>
+      <div class="role">Fold | Rinse Wash &amp; Fold</div>
+      <div class="meta">In 8:01 AM · <span class="st w">Working</span></div>
+    </div>
+    <div class="row">
+      <div class="row-top"><div class="name">Ana Ruiz</div><div class="hrs">2h 55m</div></div>
+      <div class="role">Wash-Dry | Rinse Hang Dry</div>
+      <div class="meta">In 9:10 AM · <span class="st w">Working</span></div>
+    </div>
+    <div class="sec" style="margin-top:14px">Worked Today</div>
+    <div class="row">
+      <div class="row-top"><div class="name">Jennifer</div><div class="hrs">7h 42m</div></div>
+      <div class="meta">7:01 AM – 3:13 PM · <span class="st c">Completed</span></div>
+      <div class="chips"><span class="chip">Fold</span><span class="chip">Wash-Dry</span></div>
+    </div>
+    <div class="row">
+      <div class="row-top"><div class="name">Carlos</div><div class="hrs">6h 10m</div></div>
+      <div class="meta">6:00 AM – 12:20 PM · <span class="st c">Completed</span></div>
+      <div class="chips"><span class="chip">Sort</span></div>
+    </div>
+  </div>
+</body>
+</html>

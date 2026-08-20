@@ -2496,6 +2496,15 @@ export const getManagementRevenue = (dateEt) =>
 export const getTeamStatus = (dateEt) =>
   axios.get(`${API_BASE}/api/team-status`, { params: { date_et: dateEt }, timeout: 30000 });
 
+export const getTeamStatusWeek = (dateEt) =>
+  axios.get(`${API_BASE}/api/team-status/week`, { params: { date_et: dateEt }, timeout: 30000 });
+
+export const getTeamStatusUpcoming = (dateEt) =>
+  axios.get(`${API_BASE}/api/team-status/upcoming`, {
+    params: dateEt ? { date_et: dateEt } : {},
+    timeout: 30000,
+  });
+
 export const saveManagementRevenueNonRinse = (body) =>
   axios.put(`${API_BASE}/api/management/revenue/non-rinse`, body);
 
