@@ -201,8 +201,13 @@ def test_perform_pin_hub_open_success_returns_menu():
     assert body["maintenance_token"] == "mtl-token"
     from backend.employee_pin_hub import PIN_HUB_FEATURE_DEFS
 
-    assert body["feature_order"] == [d["id"] for d in PIN_HUB_FEATURE_DEFS]
+    # Clocked-in + not on break injects Take a Break after Role.
+    base_order = [d["id"] for d in PIN_HUB_FEATURE_DEFS]
+    assert body["feature_order"] == ["switch_role", "take_break"] + [
+        x for x in base_order if x not in ("switch_role", "take_break")
+    ]
     assert body["features"]["switch_role"]["allowed"] is True
+    assert body["features"]["take_break"]["allowed"] is True
     assert body["features"]["checklist"].get("disabled") is not True
     assert body["attendance"]["clocked_in"] is True
     assert body["attendance"]["shared_device_enabled"] is True

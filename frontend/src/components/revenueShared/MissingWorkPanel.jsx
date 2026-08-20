@@ -9,7 +9,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { VEEWASH_DASHBOARD } from "../../../theme/veewashDashboard";
+import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
 const FILTERS = [
   { id: "all", label: "All" },

@@ -17,11 +17,11 @@ export const TEAM_ROLE_COLOR_KEYS = Object.freeze({
 export const TEAM_ROLE_COLORS = Object.freeze({
   wash_dry: Object.freeze({
     key: "wash_dry",
-    /** VeeWash navy/blue family */
-    accent: "#2d3d9c",
-    bg: "#e8ecf8",
-    text: "#1a275c",
-    border: "#b8c2e6",
+    /** VeeWash blue family — brighter than OPS navy text (#16192b) for scan */
+    accent: "#4865ee",
+    bg: "#e8ecff",
+    text: "#1e2f8a",
+    border: "#a8b6f0",
   }),
   sort: Object.freeze({
     key: "sort",
