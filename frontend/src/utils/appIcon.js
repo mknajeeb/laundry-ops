@@ -1,11 +1,13 @@
 import { resolveOrgLogoUrl } from "./resolveOrgLogoUrl";
 
-/** Unbranded slate tile when no tenant logo (matches `index.html` defaults). */
-const NEUTRAL = "/neutral-app-icon.svg";
+/** Default VeeWash home-screen / favicon set (versioned; replaces legacy LO mark). */
+const DEFAULT_FAVICON = "/icons/veewash-favicon-32-v1.png";
+const DEFAULT_PNG = "/icons/veewash-icon-192-v1.png";
+const DEFAULT_APPLE = "/icons/veewash-apple-touch-180-v1.png";
 
 /**
  * Set tab / home-screen icons to the tenant organization logo when available.
- * With no tenant logo, use a neutral icon — not a Laundry Ops mark.
+ * With no tenant logo, use the VeeWash icon set — never the legacy LO mark.
  */
 export function applyAppIconFromOrganizationLogo(logoUrl) {
   if (typeof document === "undefined") return;
@@ -22,15 +24,15 @@ export function applyAppIconFromOrganizationLogo(logoUrl) {
 
   if (!tenant) {
     if (svgEl) {
-      svgEl.href = NEUTRAL;
-      svgEl.type = "image/svg+xml";
+      svgEl.href = DEFAULT_FAVICON;
+      svgEl.type = "image/png";
     }
     if (pngEl) {
-      pngEl.href = NEUTRAL;
-      pngEl.type = "image/svg+xml";
+      pngEl.href = DEFAULT_PNG;
+      pngEl.type = "image/png";
     }
     if (appleEl) {
-      appleEl.href = NEUTRAL;
+      appleEl.href = DEFAULT_APPLE;
     }
     return;
   }

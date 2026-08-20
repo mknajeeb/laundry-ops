@@ -10,10 +10,28 @@
   "theme_color": "#0e7490",
   "icons": [
     {
-      "src": "/veewash-attendance-logo.png",
-      "sizes": "500x500",
+      "src": "/icons/veewash-icon-192-v1.png",
+      "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
+    },
+    {
+      "src": "/icons/veewash-icon-512-v1.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/veewash-icon-192-maskable-v1.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icons/veewash-icon-512-maskable-v1.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

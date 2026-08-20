@@ -3,14 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#111827" />
+    <meta name="theme-color" content="#16192b" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta id="apple-app-title" name="apple-mobile-web-app-title" content="Laundry Ops" />
-    <link id="app-icon-svg" rel="icon" href="/neutral-app-icon.svg" type="image/svg+xml" />
-    <link id="app-icon-png" rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
-    <link id="app-icon-apple" rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link id="app-icon-svg" rel="icon" href="/icons/veewash-favicon-32-v1.png" type="image/png" sizes="32x32" />
+    <link id="app-icon-png" rel="icon" type="image/png" sizes="192x192" href="/icons/veewash-icon-192-v1.png" />
+    <link id="app-icon-apple" rel="apple-touch-icon" href="/icons/veewash-apple-touch-180-v1.png" />
     <!--
       CRITICAL for iOS Add to Home Screen:
       Do NOT put <link rel="manifest" href="/manifest.webmanifest"> in static HTML.
@@ -35,49 +35,49 @@
 
           var href = "/manifest.webmanifest";
           var appleTitle = "Laundry Ops";
-          var icon = "";
+          var icon = "/icons/veewash-apple-touch-180-v1.png";
           var pinSurface = false;
 
           if (/^\/attendance\/maintenance\/veewash\/?$/i.test(path)) {
             href = "/attendance-maintenance.manifest.webmanifest";
             appleTitle = "Checklist";
-            icon = "/veewash-attendance-logo.png";
             pinSurface = true;
           } else if (/^\/attendance\/role\/veewash\/?$/i.test(path)) {
             href = "/attendance-role.manifest.webmanifest";
             appleTitle = "Switch Role";
-            icon = "/veewash-attendance-logo.png";
             pinSurface = true;
           } else if (/^\/pin\/veewash\/?$/i.test(path)) {
             href = "/pin.manifest.webmanifest";
             appleTitle = "PIN Menu";
-            icon = "/veewash-attendance-logo.png";
             pinSurface = true;
           } else if (/^\/attendance\/veewash\/?$/i.test(path)) {
             href = "/attendance.manifest.webmanifest";
             appleTitle = "Attendance";
-            icon = "/veewash-attendance-logo.png";
             pinSurface = true;
           } else if (/^\/attendance\/maintenance\/([^/]+)\/?$/i.test(path)) {
             href = "/attendance-manifests/" + RegExp.$1.toLowerCase() + "-maintenance.webmanifest";
             appleTitle = "Checklist";
             pinSurface = true;
+            if (RegExp.$1.toLowerCase() !== "veewash") icon = "";
           } else if (/^\/attendance\/role\/([^/]+)\/?$/i.test(path)) {
             href = "/attendance-manifests/" + RegExp.$1.toLowerCase() + "-role.webmanifest";
             appleTitle = "Switch Role";
             pinSurface = true;
+            if (RegExp.$1.toLowerCase() !== "veewash") icon = "";
           } else if (/^\/pin\/([^/]+)\/?$/i.test(path)) {
             href = "/pin-manifests/" + RegExp.$1.toLowerCase() + ".webmanifest";
             appleTitle = "PIN Menu";
             pinSurface = true;
-            if (RegExp.$1.toLowerCase() === "veewash") icon = "/veewash-attendance-logo.png";
+            if (RegExp.$1.toLowerCase() !== "veewash") icon = "";
           } else if (/^\/pin\/?$/i.test(path)) {
             href = "/pin-manifests/default.webmanifest";
             appleTitle = "PIN Menu";
             pinSurface = true;
+            icon = "";
           } else if (/^\/kiosk\/([^/]+)\/?$/i.test(path)) {
             href = "/kiosk-manifests/" + RegExp.$1.toLowerCase() + ".webmanifest";
             pinSurface = true;
+            if (RegExp.$1.toLowerCase() !== "veewash") icon = "";
           } else if (/^\/attendance\/([^/]+)\/?$/i.test(path)) {
             var slug = RegExp.$1.toLowerCase();
             if (slug !== "role" && slug !== "maintenance") {
@@ -85,8 +85,11 @@
                 ? "/attendance.manifest.webmanifest"
                 : "/attendance-manifests/" + slug + ".webmanifest";
               pinSurface = true;
-              if (slug === "veewash") icon = "/veewash-attendance-logo.png";
+              if (slug !== "veewash") icon = "";
             }
+          } else {
+            // Main Laundry Ops home-screen / browser tab defaults to VeeWash icons.
+            icon = "/icons/veewash-apple-touch-180-v1.png";
           }
 
           // Remember last PIN path (diagnostics / future recovery only — do not auto-redirect
@@ -108,9 +111,13 @@
           document.title = appleTitle;
 
           if (icon) {
-            ["app-icon-apple", "app-icon-png"].forEach(function (id) {
+            ["app-icon-apple", "app-icon-png", "app-icon-svg"].forEach(function (id) {
               var el = document.getElementById(id);
-              if (el) el.setAttribute("href", icon);
+              if (!el) return;
+              el.setAttribute("href", icon);
+              if (id === "app-icon-svg" || id === "app-icon-png") {
+                el.setAttribute("type", "image/png");
+              }
             });
           }
 

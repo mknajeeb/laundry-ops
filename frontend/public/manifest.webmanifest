@@ -6,14 +6,32 @@
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#f3f4f6",
-  "theme_color": "#111827",
+  "background_color": "#000000",
+  "theme_color": "#16192b",
   "icons": [
     {
-      "src": "/neutral-app-icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "/icons/veewash-icon-192-v1.png",
+      "sizes": "192x192",
+      "type": "image/png",
       "purpose": "any"
+    },
+    {
+      "src": "/icons/veewash-icon-512-v1.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/veewash-icon-192-maskable-v1.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icons/veewash-icon-512-maskable-v1.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

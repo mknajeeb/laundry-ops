@@ -1,12 +1,12 @@
 // Bump when fetch strategy changes so clients pick up new worker.
-const CACHE_NAME = "laundry-ops-shell-v10";
+const CACHE_NAME = "laundry-ops-shell-v11-veewash-icons";
 const APP_SHELL = [
   "/",
   "/index.html",
   "/manifest.webmanifest",
-  "/icon-192.png",
-  "/icon-512.png",
-  "/apple-touch-icon.png",
+  "/icons/veewash-icon-192-v1.png",
+  "/icons/veewash-icon-512-v1.png",
+  "/icons/veewash-apple-touch-180-v1.png",
   "/washpro-mark.png"
 ];
 
