@@ -33,11 +33,12 @@ MODULE_KEYS = (
     "checklist",
     "inventory",
     "revenue_cost",
+    "team_status",
 )
 
 # Hub / PIN enforcement AND-gates. Clock remains stored but not activated.
 ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES = frozenset(
-    {"switch_role", "checklist", "inventory", "revenue_cost"}
+    {"switch_role", "checklist", "inventory", "revenue_cost", "team_status"}
 )
 
 # DB column ↔ API/feature key
@@ -47,6 +48,7 @@ COLUMN_BY_KEY = {
     "checklist": "allow_checklist",
     "inventory": "allow_inventory",
     "revenue_cost": "allow_revenue_cost",
+    "team_status": "allow_team_status",
 }
 
 KEY_BY_COLUMN = {v: k for k, v in COLUMN_BY_KEY.items()}
@@ -82,7 +84,10 @@ def _all_false() -> dict[str, bool]:
 
 
 def _all_true() -> dict[str, bool]:
-    return {k: True for k in MODULE_KEYS}
+    """Temporary pre-marker allow-all — never includes manager-only team_status."""
+    out = {k: True for k in MODULE_KEYS}
+    out["team_status"] = False
+    return out
 
 
 def ensure_employee_mobile_pin_access_tables(cursor) -> None:
@@ -97,6 +102,7 @@ def ensure_employee_mobile_pin_access_tables(cursor) -> None:
           allow_checklist TINYINT(1) NOT NULL DEFAULT 0,
           allow_inventory TINYINT(1) NOT NULL DEFAULT 0,
           allow_revenue_cost TINYINT(1) NOT NULL DEFAULT 0,
+          allow_team_status TINYINT(1) NOT NULL DEFAULT 0,
           updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
           updated_by_user_id INT NULL,
           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -116,6 +122,17 @@ def ensure_employee_mobile_pin_access_tables(cursor) -> None:
         """
     )
     invalidate_schema_cache()
+    if table_exists(cursor, ACCESS_TABLE) and not table_has_column(
+        cursor, ACCESS_TABLE, "allow_team_status"
+    ):
+        cursor.execute(
+            f"""
+            ALTER TABLE {ACCESS_TABLE}
+              ADD COLUMN allow_team_status TINYINT(1) NOT NULL DEFAULT 0
+              AFTER allow_revenue_cost
+            """
+        )
+        invalidate_schema_cache()
     if table_exists(cursor, BACKFILL_MARKER_TABLE) and not table_has_column(
         cursor, BACKFILL_MARKER_TABLE, "init_mode"
     ):
@@ -169,6 +186,8 @@ def ensure_org_mobile_pin_access_backfill(cursor, organization_id: int) -> None:
     """
     _ = int(organization_id)
     if table_exists(cursor, ACCESS_TABLE) and table_exists(cursor, BACKFILL_MARKER_TABLE):
+        if not table_has_column(cursor, ACCESS_TABLE, "allow_team_status"):
+            ensure_employee_mobile_pin_access_tables(cursor)
         return
     ensure_employee_mobile_pin_access_tables(cursor)
 
@@ -480,7 +499,7 @@ def get_access_row(cursor, organization_id: int, user_id: int) -> Optional[dict]
         f"""
         SELECT organization_id, user_id,
                allow_clock, allow_switch_role, allow_checklist,
-               allow_inventory, allow_revenue_cost,
+               allow_inventory, allow_revenue_cost, allow_team_status,
                updated_at, updated_by_user_id, created_at
         FROM {ACCESS_TABLE}
         WHERE organization_id = %s AND user_id = %s
@@ -576,7 +595,8 @@ def ensure_new_employee_mobile_pin_access(
     """
     Explicit default row for a new / newly PIN'd employee *after* the org is marked.
 
-    Defaults: ``switch_role`` ON; clock / checklist / inventory / revenue_cost OFF.
+    Defaults: ``switch_role`` ON; clock / checklist / inventory / revenue_cost /
+    team_status OFF.
     Before the org marker exists, do nothing so controlled legacy all-true backfill
     can still apply to employees present at migration.
     INSERT IGNORE so existing manager grants are never overwritten.
@@ -590,9 +610,9 @@ def ensure_new_employee_mobile_pin_access(
         INSERT IGNORE INTO {ACCESS_TABLE}
           (organization_id, user_id,
            allow_clock, allow_switch_role, allow_checklist,
-           allow_inventory, allow_revenue_cost,
+           allow_inventory, allow_revenue_cost, allow_team_status,
            updated_by_user_id, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         """,
         (
             int(organization_id),
@@ -602,6 +622,7 @@ def ensure_new_employee_mobile_pin_access(
             1 if defaults["checklist"] else 0,
             1 if defaults["inventory"] else 0,
             1 if defaults["revenue_cost"] else 0,
+            1 if defaults["team_status"] else 0,
             int(actor_user_id) if actor_user_id is not None else None,
         ),
     )
@@ -705,9 +726,9 @@ def enable_switch_role_for_org_active_users(
                 INSERT INTO {ACCESS_TABLE}
                   (organization_id, user_id,
                    allow_clock, allow_switch_role, allow_checklist,
-                   allow_inventory, allow_revenue_cost,
+                   allow_inventory, allow_revenue_cost, allow_team_status,
                    updated_by_user_id, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 """,
                 (
                     oid,
@@ -717,6 +738,7 @@ def enable_switch_role_for_org_active_users(
                     1 if defaults["checklist"] else 0,
                     1 if defaults["inventory"] else 0,
                     1 if defaults["revenue_cost"] else 0,
+                    1 if defaults["team_status"] else 0,
                     actor,
                 ),
             )
@@ -750,7 +772,7 @@ def enable_switch_role_for_org_active_users(
 
 
 def serialize_mobile_pin_access(cursor, organization_id: int, user_id: int) -> dict[str, bool]:
-    """Manager API payload — always five booleans (resolved effective grants)."""
+    """Manager API payload — always module booleans (resolved effective grants)."""
     return resolve_employee_mobile_pin_access(cursor, organization_id, user_id)
 
 
@@ -797,7 +819,7 @@ def save_employee_mobile_pin_access(
     write_audit_fn: Optional[Callable] = None,
 ) -> dict[str, bool]:
     """
-    Upsert all five booleans. Audits only changed modules.
+    Upsert all module booleans. Audits only changed modules.
     """
     ensure_employee_mobile_pin_access_tables(cursor)
     oid = int(organization_id)
@@ -823,15 +845,16 @@ def save_employee_mobile_pin_access(
         INSERT INTO {ACCESS_TABLE}
           (organization_id, user_id,
            allow_clock, allow_switch_role, allow_checklist,
-           allow_inventory, allow_revenue_cost,
+           allow_inventory, allow_revenue_cost, allow_team_status,
            updated_by_user_id, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON DUPLICATE KEY UPDATE
           allow_clock = VALUES(allow_clock),
           allow_switch_role = VALUES(allow_switch_role),
           allow_checklist = VALUES(allow_checklist),
           allow_inventory = VALUES(allow_inventory),
           allow_revenue_cost = VALUES(allow_revenue_cost),
+          allow_team_status = VALUES(allow_team_status),
           updated_by_user_id = VALUES(updated_by_user_id),
           updated_at = NOW()
         """,
@@ -843,6 +866,7 @@ def save_employee_mobile_pin_access(
             1 if after["checklist"] else 0,
             1 if after["inventory"] else 0,
             1 if after["revenue_cost"] else 0,
+            1 if after["team_status"] else 0,
             int(actor_user_id) if actor_user_id is not None else None,
         ),
     )

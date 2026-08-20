@@ -19,6 +19,7 @@ export const DEFAULT_PIN_MENU = {
     revenue_cost: true,
     checklist: true,
     inventory: true,
+    team_status: true,
   },
 };
 
@@ -43,6 +44,11 @@ export const PIN_MENU_FEATURE_OPTIONS = [
     id: "inventory",
     label: "Inventory",
     help: "Open inventory after PIN unlock (inventory module must be on).",
+  },
+  {
+    id: "team_status",
+    label: "Team Status",
+    help: "Manager roster of who’s working and role timeline (requires Team Status Mobile PIN Access).",
   },
 ];
 

@@ -19,6 +19,7 @@ import {
   AccessTime,
   AssignmentTurnedIn,
   Backspace,
+  Groups,
   Inventory2,
   Login,
   Logout,
@@ -75,6 +76,7 @@ const TILE_ICONS = {
   tasks: AssignmentTurnedIn,
   stock: Inventory2,
   revenue: RequestQuote,
+  team: Groups,
 };
 
 function sanitizeSlug(raw) {
@@ -429,6 +431,24 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         setAuthSession(payload);
         onLoggedIn?.(payload.user);
         navigate("/revenue-cash", { replace: true });
+        return;
+      }
+      if (featureId === "team_status") {
+        if (tile?.disabled || hub?.features?.team_status?.disabled) {
+          return;
+        }
+        const res = await authAttendancePinUnlock(slug, hub.pin, {
+          hubToken: hub.token,
+          pinHubModule: "team_status",
+        });
+        const payload = res?.data || {};
+        if (!payload?.token || !payload?.user) {
+          throw new Error(payload?.error || t("mobileOps.team.unlockFailed"));
+        }
+        markPinHubAppSession(slug);
+        setAuthSession(payload);
+        onLoggedIn?.(payload.user);
+        navigate("/team-status", { replace: true });
         return;
       }
     } catch (e) {

@@ -71,6 +71,7 @@ from backend.management_wf_folder_performance_routes import (
 )
 from backend.management_revenue_routes import register_management_revenue_routes
 from backend.management_revenue_accounts_routes import register_management_revenue_accounts_routes
+from backend.team_status_routes import register_team_status_routes
 from backend.inventory_routes import register_inventory_routes
 from backend.maintenance_task_list_routes import register_maintenance_task_list_routes
 from backend.machine_configuration_routes import register_machine_configuration_routes
@@ -10816,6 +10817,12 @@ register_management_revenue_accounts_routes(
     app,
     require_user=require_user,
     user_org_id=user_org_id,
+)
+register_team_status_routes(
+    app,
+    require_user=require_user,
+    user_org_id=user_org_id,
+    parse_date_value=parse_date_value,
 )
 register_inventory_routes(
     app,

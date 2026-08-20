@@ -13,6 +13,7 @@ describe("MobilePinAccessPanel contracts", () => {
       "checklist",
       "inventory",
       "revenue_cost",
+      "team_status",
     ]);
     expect(MOBILE_PIN_ACCESS_MODULES.map((m) => m.label)).toEqual([
       "Clock",
@@ -20,6 +21,7 @@ describe("MobilePinAccessPanel contracts", () => {
       "End-of-Day Checklist",
       "Inventory",
       "Revenue / Cash",
+      "Team Status",
     ]);
   });
 
@@ -31,6 +33,7 @@ describe("MobilePinAccessPanel contracts", () => {
         checklist: true,
         inventory: false,
         revenue_cost: "1",
+        team_status: 1,
         hang_dry: 1,
         extra: true,
       }),
@@ -40,6 +43,7 @@ describe("MobilePinAccessPanel contracts", () => {
       checklist: true,
       inventory: false,
       revenue_cost: true,
+      team_status: true,
     });
   });
 
@@ -56,6 +60,7 @@ describe("MobilePinAccessPanel contracts", () => {
       checklist: false,
       inventory: true,
       revenue_cost: false,
+      team_status: false,
     });
   });
 });

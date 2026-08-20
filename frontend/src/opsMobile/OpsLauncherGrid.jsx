@@ -25,6 +25,7 @@ export default function OpsLauncherGrid({ tiles = [], busyId = "", disabled = fa
           <OpsLauncherTile
             key={tile.id}
             label={tile.label}
+            helper={tile.helper || ""}
             icon={tile.icon}
             color={tile.color}
             busy={busyId === tile.id}

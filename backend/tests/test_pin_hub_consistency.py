@@ -17,6 +17,7 @@ def _pin_menu(**feats):
         "revenue_cost": True,
         "checklist": True,
         "inventory": True,
+        "team_status": True,
     }
     base.update(feats)
     return {"enabled": True, "allow_clock_from_hub": True, "features": base}
@@ -29,11 +30,14 @@ def test_feature_defs_include_revenue_and_inventory_labels():
         "revenue_cost",
         "checklist",
         "inventory",
+        "team_status",
     ]
     by_id = {d["id"]: d for d in PIN_HUB_FEATURE_DEFS}
     assert by_id["revenue_cost"]["label"] == "Revenue / Cash"
     assert by_id["revenue_cost"]["path"] == "/revenue-cash"
     assert by_id["inventory"]["label"] == "Inventory"
+    assert by_id["team_status"]["label"] == "Team Status"
+    assert by_id["team_status"]["path"] == "/team-status"
     assert "hang_dry" not in ids
 
 

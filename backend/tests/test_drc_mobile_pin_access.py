@@ -22,6 +22,7 @@ def _access_row(*, revenue_cost: bool, switch_role: bool = True):
         "checklist": True,
         "inventory": True,
         "revenue_cost": revenue_cost,
+        "team_status": False,
     }
 
 

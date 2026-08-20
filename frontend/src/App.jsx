@@ -75,6 +75,7 @@ import NotificationsPage from "./pages/NotificationsPage";
 import OrganizationSettingsPage from "./pages/OrganizationSettingsPage";
 import DailyRevenueCostPage from "./pages/DailyRevenueCostPage";
 import PinRevenueCashPage from "./pages/PinRevenueCashPage";
+import TeamStatusPage from "./pages/TeamStatusPage";
 import DailyOperationsPage from "./pages/DailyOperationsPage";
 import ManagementHubPage from "./pages/ManagementHubPage";
 import ManagementRinseWfPage from "./pages/ManagementRinseWfPage";
@@ -208,6 +209,11 @@ function isPinRevenueCashRoute(path) {
   return p === "/revenue-cash" || p.startsWith("/revenue-cash/");
 }
 
+function isTeamStatusRoute(path) {
+  const p = normalizePathname(path);
+  return p === "/team-status" || p.startsWith("/team-status/");
+}
+
 function isLegacyRevenueCostFloorRoute(path) {
   const p = normalizePathname(path);
   return p === "/revenue-cost/floor" || p.startsWith("/revenue-cost/");
@@ -218,10 +224,11 @@ function isLegacyHangDryFloorRoute(path) {
   return p === "/hang-dry/floor" || p.startsWith("/hang-dry/");
 }
 
-/** PIN hub employee Revenue / Cash (Management APIs) + legacy redirects. */
+/** PIN hub employee Revenue / Cash + Team Status (Management APIs) + legacy redirects. */
 function isPinHubFinanceRoute(path) {
   return (
     isPinRevenueCashRoute(path) ||
+    isTeamStatusRoute(path) ||
     isLegacyRevenueCostFloorRoute(path) ||
     isLegacyHangDryFloorRoute(path)
   );
@@ -691,6 +698,17 @@ function AppShell() {
             path="/revenue-cash"
             element={
               <PinRevenueCashPage
+                onPinHubDone={() => {
+                  washproSessionSyncedRef.current = false;
+                  setUser(null);
+                }}
+              />
+            }
+          />
+          <Route
+            path="/team-status"
+            element={
+              <TeamStatusPage
                 onPinHubDone={() => {
                   washproSessionSyncedRef.current = false;
                   setUser(null);

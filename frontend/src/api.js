@@ -2493,6 +2493,9 @@ export const postManagementWfFolderAttributionReset = (body) =>
 export const getManagementRevenue = (dateEt) =>
   axios.get(`${API_BASE}/api/management/revenue`, { params: { date_et: dateEt } });
 
+export const getTeamStatus = (dateEt) =>
+  axios.get(`${API_BASE}/api/team-status`, { params: { date_et: dateEt }, timeout: 30000 });
+
 export const saveManagementRevenueNonRinse = (body) =>
   axios.put(`${API_BASE}/api/management/revenue/non-rinse`, body);
 

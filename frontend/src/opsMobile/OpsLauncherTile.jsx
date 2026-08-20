@@ -8,6 +8,7 @@ import { OPS_MOBILE } from "./tokens";
  */
 export default function OpsLauncherTile({
   label,
+  helper = "",
   icon: Icon,
   color = OPS_MOBILE.blue,
   busy = false,
@@ -27,7 +28,7 @@ export default function OpsLauncherTile({
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        gap: 1,
+        gap: 0.75,
         minHeight: { xs: OPS_MOBILE.tileMinHeight, sm: 132 },
         px: 1.25,
         py: 1.5,
@@ -79,6 +80,22 @@ export default function OpsLauncherTile({
       >
         {label}
       </Typography>
+      {helper && !disabled ? (
+        <Typography
+          component="span"
+          sx={{
+            fontWeight: 650,
+            fontSize: "0.72rem",
+            lineHeight: 1.25,
+            textAlign: "center",
+            color: OPS_MOBILE.muted,
+            maxWidth: "100%",
+            px: 0.25,
+          }}
+        >
+          {helper}
+        </Typography>
+      ) : null}
       {disabled && disabledHelper ? (
         <Typography
           component="span"

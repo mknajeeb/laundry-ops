@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS employee_mobile_pin_access (
   allow_checklist TINYINT(1) NOT NULL DEFAULT 0,
   allow_inventory TINYINT(1) NOT NULL DEFAULT 0,
   allow_revenue_cost TINYINT(1) NOT NULL DEFAULT 0,
+  allow_team_status TINYINT(1) NOT NULL DEFAULT 0,
   updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
   updated_by_user_id INT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -47,5 +48,19 @@ SET @sql := IF(
   'SELECT ''skip init_mode'' AS _note'
 );
 PREPARE _m FROM @sql; EXECUTE _m; DEALLOCATE PREPARE _m;
+
+-- Team Status (manager-only Mobile Ops): default OFF for all existing rows.
+SET @has_ts := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = @db
+    AND TABLE_NAME = 'employee_mobile_pin_access'
+    AND COLUMN_NAME = 'allow_team_status'
+);
+SET @sql_ts := IF(
+  @has_ts = 0,
+  'ALTER TABLE employee_mobile_pin_access ADD COLUMN allow_team_status TINYINT(1) NOT NULL DEFAULT 0 AFTER allow_revenue_cost',
+  'SELECT ''skip allow_team_status'' AS _note'
+);
+PREPARE _ts FROM @sql_ts; EXECUTE _ts; DEALLOCATE PREPARE _ts;
 
 SELECT 'employee_mobile_pin_access_v1 complete.' AS note;

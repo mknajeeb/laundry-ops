@@ -34,11 +34,17 @@ export const PIN_LAUNCHER_META = {
     color: "#0e7490",
     iconKey: "stock",
   },
+  team_status: {
+    label: "Team Status",
+    color: "#1d4ed8",
+    iconKey: "team",
+  },
 };
 
 /** Preferred PIN Home order; Clock is appended last by buildPinLauncherTiles. */
 export const PIN_HOME_FEATURE_ORDER = [
   "switch_role",
+  "team_status",
   "revenue_cost",
   "checklist",
   "inventory",
@@ -54,9 +60,14 @@ export const ROLE_ON_BREAK_MESSAGE =
 
 export const PIN_LAUNCHER_I18N = {
   switch_role: "mobileOps.tile.role",
+  team_status: "mobileOps.tile.teamStatus",
   revenue_cost: "mobileOps.tile.revenueCash",
   checklist: "mobileOps.tile.checklist",
   inventory: "mobileOps.tile.inventory",
+};
+
+export const PIN_LAUNCHER_HELPER_I18N = {
+  team_status: "mobileOps.tile.teamStatusHelper",
 };
 
 export function clockTileLabel(attendance, t = null) {
@@ -110,11 +121,16 @@ export function buildPinLauncherTiles({
       iconKey: "tasks",
     };
     const i18nKey = PIN_LAUNCHER_I18N[id];
+    const helperKey = PIN_LAUNCHER_HELPER_I18N[id];
     const tile = {
       id,
       label: (tr && i18nKey ? tr(i18nKey) : null) || meta.label || feat.label || id,
       color: meta.color,
       iconKey: meta.iconKey,
+      helper:
+        (tr && helperKey ? tr(helperKey) : null) ||
+        (id === "team_status" ? "Who's working today" : "") ||
+        "",
     };
     if (id === "switch_role" && (feat.requires_clock_in || att.clocked_in !== true)) {
       tile.requiresClockIn = true;

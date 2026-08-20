@@ -40,6 +40,7 @@ class FakeCursor:
         self._results = []
         self.rowcount = 0
         self._has_init_mode = True
+        self._has_team_status = True
         self.fail_insert_user_ids = set()
 
     def execute(self, sql, params=None):
@@ -51,10 +52,18 @@ class FakeCursor:
         if "ALTER TABLE employee_mobile_pin_access_backfill" in sql_n:
             self._has_init_mode = True
             return
+        if "ALTER TABLE employee_mobile_pin_access" in sql_n and "allow_team_status" in sql_n:
+            self._has_team_status = True
+            return
         if "INFORMATION_SCHEMA.COLUMNS" in sql_n:
             # table_has_column(cursor, table, col)
             col = params[1] if len(params) > 1 else ""
-            self._result = {"ok": 1} if col == "init_mode" and self._has_init_mode else None
+            if col == "init_mode" and self._has_init_mode:
+                self._result = {"ok": 1}
+            elif col == "allow_team_status" and getattr(self, "_has_team_status", True):
+                self._result = {"ok": 1}
+            else:
+                self._result = None
             return
         if "INFORMATION_SCHEMA.TABLES" in sql_n:
             name = params[0] if params else ""
@@ -132,16 +141,20 @@ class FakeCursor:
                 and int(params[3]) in (0, 1)
             ):
                 org, uid = int(params[0]), int(params[1])
+                # Single-row: org, uid, 5 or 6 module flags
+                org, uid = int(params[0]), int(params[1])
+                ts = bool(params[7]) if len(params) >= 8 else False
                 self.access[(org, uid)] = {
                     "clock": bool(params[2]),
                     "switch_role": bool(params[3]),
                     "checklist": bool(params[4]),
                     "inventory": bool(params[5]),
                     "revenue_cost": bool(params[6]),
+                    "team_status": ts,
                 }
                 self.rowcount = 1
                 return
-            # Multi-row all-true insert: (org, uid) pairs in params
+            # Multi-row all-true insert: (org, uid) pairs in params — never grants team_status
             for i in range(0, len(params), 2):
                 org, uid = int(params[i]), int(params[i + 1])
                 if uid in self.fail_insert_user_ids:
@@ -154,6 +167,7 @@ class FakeCursor:
                     "checklist": True,
                     "inventory": True,
                     "revenue_cost": True,
+                    "team_status": False,
                 }
             self.rowcount = len(params) // 2
             return
@@ -205,6 +219,7 @@ class FakeCursor:
                     "allow_checklist": 1 if a["checklist"] else 0,
                     "allow_inventory": 1 if a["inventory"] else 0,
                     "allow_revenue_cost": 1 if a["revenue_cost"] else 0,
+                    "allow_team_status": 1 if a.get("team_status") else 0,
                     "updated_at": None,
                     "updated_by_user_id": None,
                     "created_at": None,
@@ -229,12 +244,14 @@ class FakeCursor:
             org, uid = int(params[0]), int(params[1])
             if (org, uid) not in self.access:
                 if len(params) >= 7:
+                    ts = bool(params[7]) if len(params) >= 8 else False
                     self.access[(org, uid)] = {
                         "clock": bool(params[2]),
                         "switch_role": bool(params[3]),
                         "checklist": bool(params[4]),
                         "inventory": bool(params[5]),
                         "revenue_cost": bool(params[6]),
+                        "team_status": ts,
                     }
                 else:
                     self.access[(org, uid)] = {
@@ -243,6 +260,7 @@ class FakeCursor:
                         "checklist": False,
                         "inventory": False,
                         "revenue_cost": False,
+                        "team_status": False,
                     }
             return
         if (
@@ -280,12 +298,14 @@ class FakeCursor:
             return
         if "INSERT INTO employee_mobile_pin_access" in sql_n and "ON DUPLICATE KEY" in sql_n:
             org, uid = int(params[0]), int(params[1])
+            ts = bool(params[7]) if len(params) >= 8 else False
             self.access[(org, uid)] = {
                 "clock": bool(params[2]),
                 "switch_role": bool(params[3]),
                 "checklist": bool(params[4]),
                 "inventory": bool(params[5]),
                 "revenue_cost": bool(params[6]),
+                "team_status": ts,
             }
             return
         self._result = None
@@ -348,6 +368,7 @@ def test_migration_pin_employee_gets_all_true():
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,
+        "team_status": False,
     }
     # Idempotent
     report2 = _legacy_backfill(cur, 3)
@@ -405,6 +426,7 @@ def test_new_org_marker_then_new_employee_role_default_on():
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "team_status": False,
     }
 
 
@@ -419,6 +441,7 @@ def test_new_employee_after_backfill_gets_role_default_on():
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "team_status": False,
     }
 
 
@@ -435,6 +458,7 @@ def test_enable_switch_role_for_org_active_users_preserves_other_modules():
         "checklist": True,
         "inventory": False,
         "revenue_cost": True,
+        "team_status": False,
     }
     cur.access[(3, 11)] = {
         "clock": False,
@@ -442,6 +466,7 @@ def test_enable_switch_role_for_org_active_users_preserves_other_modules():
         "checklist": False,
         "inventory": True,
         "revenue_cost": False,
+        "team_status": False,
     }
     # user 12 has no row yet
     conn = FakeConn(cur)
@@ -458,6 +483,7 @@ def test_enable_switch_role_for_org_active_users_preserves_other_modules():
         "checklist": True,
         "inventory": False,
         "revenue_cost": True,
+        "team_status": False,
     }
     assert resolve_employee_mobile_pin_access(cur, 3, 11)["inventory"] is True
     assert resolve_employee_mobile_pin_access(cur, 3, 12) == {
@@ -466,6 +492,7 @@ def test_enable_switch_role_for_org_active_users_preserves_other_modules():
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "team_status": False,
     }
 
 
@@ -516,6 +543,7 @@ def test_save_and_audit_only_changed():
             "checklist": True,
             "inventory": True,
             "revenue_cost": False,
+            "team_status": False,
         },
         actor_user_id=5,
         write_audit_fn=audit,
@@ -538,6 +566,7 @@ def test_save_and_audit_only_changed():
             "checklist": True,
             "inventory": True,
             "revenue_cost": False,
+            "team_status": False,
         },
         actor_user_id=5,
         write_audit_fn=audit,
@@ -552,7 +581,7 @@ def test_assert_denies_module():
     )
 
     assert ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES == frozenset(
-        {"switch_role", "checklist", "inventory", "revenue_cost"}
+        {"switch_role", "checklist", "inventory", "revenue_cost", "team_status"}
     )
     cur = FakeCursor()
     cur.backfill_orgs[3] = 0
@@ -562,6 +591,7 @@ def test_assert_denies_module():
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "team_status": False,
     }
     with pytest.raises(MobilePinAccessDeniedError):
         assert_employee_allows_module(cur, 3, 10, "switch_role")
@@ -593,6 +623,7 @@ def test_resolve_hub_features_enforces_role_checklist_inventory_and_revenue_cost
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "team_status": False,
     }
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings",
@@ -639,6 +670,7 @@ def test_resolve_hub_features_role_allowed_when_employee_grants():
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "team_status": False,
     }
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings",
@@ -681,6 +713,7 @@ def test_resolve_hub_features_inventory_off_hides_tile():
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "team_status": False,
     }
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings",
@@ -717,7 +750,8 @@ def test_org_feature_off_overrides_employee_allow():
     from backend.employee_pin_hub import resolve_hub_features
 
     matched = {"id": 10, "_roles": []}
-    emp = {k: True for k in ("clock", "switch_role", "checklist", "inventory", "revenue_cost")}
+    emp = {k: True for k in ("clock", "switch_role", "checklist", "inventory", "revenue_cost", "team_status")}
+    emp["team_status"] = False
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings",
         return_value={
@@ -783,6 +817,7 @@ def test_role_switch_open_denied_without_employee_access():
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
+        "team_status": False,
     }
     conn.cursor.return_value = access_cur
 
@@ -827,6 +862,7 @@ def test_role_change_mutation_denied_without_employee_access():
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,
+        "team_status": False,
     }
     conn.cursor.return_value = access_cur
 
@@ -882,6 +918,7 @@ def test_role_mutation_revoked_mid_session_blocks_next_call():
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,
+        "team_status": False,
     }
     conn.cursor.return_value = access_cur
 
@@ -973,6 +1010,7 @@ def test_role_allowed_returns_unfiltered_selection_tree():
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,
+        "team_status": False,
     }
     conn.cursor.return_value = access_cur
     tree = {

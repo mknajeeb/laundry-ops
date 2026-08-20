@@ -69,6 +69,11 @@ PIN_HUB_FEATURE_DEFS = (
         "label": "Inventory",
         "path": "/inventory",
     },
+    {
+        "id": "team_status",
+        "label": "Team Status",
+        "path": "/team-status",
+    },
 )
 
 
@@ -331,6 +336,10 @@ def _user_may_use_feature(
         if mods is not None:
             return bool(mods.get("finance", True))
         return bool(_tenant_module_enabled(conn, org_id, "finance"))
+
+    if feature_id == "team_status":
+        # Manager/supervisor roster — gated only by Mobile PIN Access grant.
+        return True
 
     return False
 

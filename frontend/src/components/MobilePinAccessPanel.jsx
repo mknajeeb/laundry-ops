@@ -16,6 +16,7 @@ export const MOBILE_PIN_ACCESS_MODULES = [
   { key: "checklist", label: "End-of-Day Checklist" },
   { key: "inventory", label: "Inventory" },
   { key: "revenue_cost", label: "Revenue / Cash" },
+  { key: "team_status", label: "Team Status" },
 ];
 
 export function normalizeMobilePinAccess(data = {}) {
@@ -25,6 +26,7 @@ export function normalizeMobilePinAccess(data = {}) {
     checklist: !!data.checklist,
     inventory: !!data.inventory,
     revenue_cost: !!data.revenue_cost,
+    team_status: !!data.team_status,
   };
 }
 
