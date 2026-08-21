@@ -28,16 +28,17 @@ Role comes from event ordering relative to review.
 Numeric pounds authority (selected weight-entry event first)
 -----------------------------------------------------------
 Once PRE/POST **events** are selected, ``weight_lbs`` on that scan event is
-authoritative for that role.
+authoritative for that role **when** ``weight_source`` is an authoritative
+Rinse capture (``rinse_preclean_info`` / ``rinse_postclean_info`` /
+``rinse_workitem_wf_lbs``) or a manager correction.
 
-Portal / presence observations are used only to:
-  1. fall back when the selected event has no usable ``weight_lbs``;
-  2. correct the selected event when credible later portal evidence shows a
-     different settled value (not a stale PRE echo);
-  3. populate cases where the scan never carried a numeric weight.
+Portal / presence ``weight_num`` (cleaner-ticket list / wf_lbs) is a **mutable
+operational field**, not PRE. It must not silently become PRE.
 
-A portal observation that merely echoes PRE must **not** replace a selected
-POST event that already has a distinct numeric weight (CTQG55K5XD).
+By default portal observations are **not** used to fill PRE/POST. Set
+``allow_portal_weight_fallback=True`` (or env ``RINSE_ALLOW_PORTAL_WEIGHT_FALLBACK=1``)
+only for documented emergency recovery — and sources remain labeled
+``portal_weight_num``, never as scale PRE.
 
 Finalization (deterministic, no silent freeze)
 ----------------------------------------------
@@ -51,6 +52,8 @@ Finalization (deterministic, no silent freeze)
   observation yet
 * CONFLICTING_OBSERVATIONS — post-event observations disagree without two
   consecutive agreements
+* UNAVAILABLE — selected event has no authoritative lbs and portal fallback
+  is disabled
 
 "Two consecutive observations" means:
   * timestamps strictly after the POST weight-entry event
@@ -59,7 +62,8 @@ Finalization (deterministic, no silent freeze)
   * ordered by observed_at
 
 Portal may correct a selected event lbs only with confirmed/equal-settled
-evidence that differs from the event and is not a stale PRE echo.
+evidence that differs from the event and is not a stale PRE echo **when
+portal fallback is explicitly enabled**.
 Manual corrections are never auto-rewritten.
 
 Proposed reconciliation window (reported, not hard-required for correction):
@@ -74,6 +78,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
+import os
 
 from backend.rinse_cycle_boundary import (
     _event_ts,
@@ -95,6 +100,7 @@ STATUS_MANUAL_CORRECTION = "MANUAL_CORRECTION"
 STATUS_MISSING = "MISSING"
 STATUS_WAITING_FOR_PRE_VALUE = "WAITING_FOR_PRE_VALUE"
 STATUS_WAITING_FOR_EVENT = "WAITING_FOR_EVENT"
+STATUS_UNAVAILABLE = "UNAVAILABLE"
 
 # Reported reconciliation horizon (not a hard gate for applying a later value).
 POST_RECONCILIATION_WINDOW = timedelta(hours=3)
@@ -109,6 +115,49 @@ _MANAGER_WEIGHT_SOURCES = frozenset(
         "OPERATOR_MANUAL_CORRECTION",
     }
 )
+
+# Captured from Rinse bag-detail DOM (vendorinline preclean-info / workitem).
+_AUTHORITATIVE_RINSE_WEIGHT_SOURCES = frozenset(
+    {
+        "rinse_preclean_info",
+        "rinse_postclean_info",
+        "rinse_workitem_wf_lbs",
+    }
+)
+
+_PORTAL_PROXY_WEIGHT_SOURCES = frozenset(
+    {
+        "portal_weight_num",
+        "portal_weight_num_historical",
+        "presence_run_weight_num",
+    }
+)
+
+
+def _portal_fallback_enabled(explicit: bool | None = None) -> bool:
+    if explicit is not None:
+        return bool(explicit)
+    return str(os.environ.get("RINSE_ALLOW_PORTAL_WEIGHT_FALLBACK") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _event_weight_is_authoritative(event: Mapping[str, Any] | None) -> bool:
+    if event is None:
+        return False
+    if _parse_weight(event.get("weight_lbs")) is None:
+        return False
+    src = str(event.get("weight_source") or "").strip()
+    if src in _PORTAL_PROXY_WEIGHT_SOURCES:
+        # Mutable cleaner-ticket list / presence proxy — never authoritative PRE/POST.
+        return False
+    if src in _MANAGER_WEIGHT_SOURCES or src in _AUTHORITATIVE_RINSE_WEIGHT_SOURCES:
+        return True
+    # Unlabeled event lbs (tests / legacy non-portal seeds): accept as event-attached.
+    return True
 
 
 def _parse_weight(raw: Any) -> float | None:
@@ -335,7 +384,9 @@ def select_current_cycle_weight_events(
                 pre_event = pre_cands[-1]
         elif entry_at is None and anchor is not None:
             # Factual PRE display fallback only. Entry stays unresolved;
-            # POST is never selected on this path.
+            # POST may still be selected from authoritative weight_role=POST
+            # after the selected PRE (bags that left At Vendor without a
+            # facility entry rack still gain post-processing weigh-entry).
             pre_cands: list[Mapping[str, Any]] = []
             for ev in timeline:
                 if not _is_weight_entry(ev):
@@ -361,7 +412,30 @@ def select_current_cycle_weight_events(
                     if str(ev.get("weight_role") or "").strip().upper() == "PRE"
                 ]
                 pre_event = role_pre[-1] if role_pre else pre_cands[0]
-            # Explicit: do not assign post_event without entry_at.
+            pre_ts = _event_ts(pre_event) if pre_event else None
+            if pre_ts is not None:
+                post_cands = [
+                    ev
+                    for ev in cycle_weight_events
+                    if (_event_ts(ev) or datetime.min) > pre_ts
+                    and str(ev.get("weight_role") or "").strip().upper() == "POST"
+                ]
+                if not post_cands:
+                    # Prefer any WE after PRE that carries authoritative POST lbs.
+                    post_cands = [
+                        ev
+                        for ev in cycle_weight_events
+                        if (_event_ts(ev) or datetime.min) > pre_ts
+                        and str(ev.get("weight_source") or "").strip()
+                        in _AUTHORITATIVE_RINSE_WEIGHT_SOURCES
+                        and str(ev.get("weight_source") or "").strip()
+                        != "rinse_preclean_info"
+                    ]
+                if post_cands:
+                    post_cands.sort(
+                        key=lambda e: (_event_ts(e) or datetime.min, e.get("id") or 0)
+                    )
+                    post_event = post_cands[0]
 
     return {
         "cycle": cycle,
@@ -624,6 +698,8 @@ def _event_attached_lbs_result(
     seeded = _parse_weight(event.get("weight_lbs"))
     if seeded is None:
         return None
+    if not _event_weight_is_authoritative(event):
+        return None
     return {
         "lbs": seeded,
         "observation_at": _coerce_dt(event.get("weight_observed_at")),
@@ -740,15 +816,16 @@ def resolve_current_cycle_weights(
     manual_pre_lbs: float | None = None,
     manual_post_lbs: float | None = None,
     prefer_event_attached_lbs: bool = True,
+    allow_portal_weight_fallback: bool | None = None,
 ) -> CurrentCycleWeightResult:
     """
     Canonical current-cycle PRE/POST resolver for all surfaces.
 
     Precedence for pounds:
       audited manual correction
-        > selected weight-entry event weight_lbs
-        > portal observation fallback / credible correction
-        > missing
+        > selected weight-entry event weight_lbs with authoritative Rinse source
+        > (optional) portal observation fallback — off by default
+        > unavailable / missing
     """
     selected = select_current_cycle_weight_events(
         timeline,
@@ -762,17 +839,33 @@ def resolve_current_cycle_weights(
     pre_ts = _event_ts(pre_event) if pre_event else None
     post_ts = _event_ts(post_event) if post_event else None
     obs = list(observations or [])
+    portal_ok = _portal_fallback_enabled(allow_portal_weight_fallback)
 
     notes: list[str] = []
     # Interval ends: PRE ends at POST event (or +inf); POST open-ended within cycle.
-    pre_portal = _resolve_lbs_from_observations(
-        obs,
-        event_ts=pre_ts,
-        interval_end=post_ts,
-        peer_lbs=None,
-        role="PRE",
-        allow_pre_fallback_after_end=True,
-    )
+    if portal_ok:
+        pre_portal = _resolve_lbs_from_observations(
+            obs,
+            event_ts=pre_ts,
+            interval_end=post_ts,
+            peer_lbs=None,
+            role="PRE",
+            allow_pre_fallback_after_end=True,
+        )
+    else:
+        pre_portal = {
+            "lbs": None,
+            "observation_at": None,
+            "observation_run": None,
+            "status": STATUS_UNAVAILABLE
+            if pre_event
+            else STATUS_WAITING_FOR_EVENT,
+            "reason": "portal_weight_proxy_disabled_for_pre",
+            "source": None,
+            "attach_reason": "authoritative_pre_required",
+        }
+        notes.append("portal_weight_proxy_disabled_for_pre")
+
     pre_resolved = _combine_event_and_portal_lbs(
         event=pre_event,
         portal=pre_portal,
@@ -781,14 +874,41 @@ def resolve_current_cycle_weights(
         prefer_event_attached_lbs=prefer_event_attached_lbs,
         notes=notes,
     )
+    if (
+        not portal_ok
+        and pre_resolved.get("lbs") is None
+        and pre_event is not None
+    ):
+        pre_resolved = {
+            **pre_resolved,
+            "status": STATUS_UNAVAILABLE,
+            "reason": "pre_weight_unavailable_no_authoritative_rinse_capture",
+            "source": None,
+            "attach_reason": "awaiting_rinse_preclean_info",
+        }
 
-    post_portal = _resolve_lbs_from_observations(
-        obs,
-        event_ts=post_ts,
-        interval_end=None,
-        peer_lbs=pre_resolved.get("lbs"),
-        role="POST",
-    )
+    if portal_ok:
+        post_portal = _resolve_lbs_from_observations(
+            obs,
+            event_ts=post_ts,
+            interval_end=None,
+            peer_lbs=pre_resolved.get("lbs"),
+            role="POST",
+        )
+    else:
+        post_portal = {
+            "lbs": None,
+            "observation_at": None,
+            "observation_run": None,
+            "status": STATUS_UNAVAILABLE
+            if post_event
+            else STATUS_WAITING_FOR_EVENT,
+            "reason": "portal_weight_proxy_disabled_for_post",
+            "source": None,
+            "attach_reason": "authoritative_post_required",
+        }
+        notes.append("portal_weight_proxy_disabled_for_post")
+
     post_resolved = _combine_event_and_portal_lbs(
         event=post_event,
         portal=post_portal,
@@ -797,6 +917,18 @@ def resolve_current_cycle_weights(
         prefer_event_attached_lbs=prefer_event_attached_lbs,
         notes=notes,
     )
+    if (
+        not portal_ok
+        and post_resolved.get("lbs") is None
+        and post_event is not None
+    ):
+        post_resolved = {
+            **post_resolved,
+            "status": STATUS_UNAVAILABLE,
+            "reason": "post_weight_unavailable_no_authoritative_rinse_capture",
+            "source": None,
+            "attach_reason": "awaiting_rinse_post_weight_capture",
+        }
 
     # Manual correction precedence.
     pre_status = pre_resolved["status"]
@@ -964,10 +1096,11 @@ def classify_post_repair(
 
 def _load_manual_corrections(
     cursor, organization_id: int, bag_ids: Sequence[str]
-) -> dict[str, dict[str, float | None]]:
+) -> dict[str, list[dict[str, Any]]]:
+    """Chronological correct_weight rows per bag (caller applies cycle gating)."""
     from backend.ta_helpers import table_exists
 
-    out: dict[str, dict[str, float | None]] = {b: {} for b in bag_ids}
+    out: dict[str, list[dict[str, Any]]] = {b: [] for b in bag_ids}
     if not bag_ids or not table_exists(cursor, "rinse_step1_corrections"):
         return out
     placeholders = ",".join(["%s"] * len(bag_ids))
@@ -1000,11 +1133,58 @@ def _load_manual_corrections(
         post = _parse_weight(raw.get("corrected_post_weight_lbs"))
         if post is None and raw.get("corrected_pre_weight_lbs") is None:
             post = _parse_weight(raw.get("post_weight_lbs", raw.get("weight_lbs")))
-        if pre is not None:
-            out[bid]["pre"] = pre
-        if post is not None:
-            out[bid]["post"] = post
+        if pre is None and post is None:
+            continue
+        out[bid].append(
+            {
+                "pre": pre,
+                "post": post,
+                "created_at": row.get("created_at"),
+                "id": row.get("id"),
+            }
+        )
     return out
+
+
+def _manual_for_cycle(
+    corrections: Sequence[Mapping[str, Any]],
+    *,
+    cycle_anchor: datetime | None,
+    selected_date_et: date,
+    detected_pre: float | None,
+    detected_post: float | None,
+    detected_pre_source: str | None,
+    detected_post_source: str | None,
+) -> dict[str, float | None]:
+    """Cycle-scoped manuals; never mask authoritative Rinse capture with proxy locks."""
+    day_start = datetime(
+        selected_date_et.year, selected_date_et.month, selected_date_et.day
+    )
+    floor = cycle_anchor if cycle_anchor is not None else day_start
+    applied: dict[str, float | None] = {}
+    for row in corrections or []:
+        created = row.get("created_at")
+        if isinstance(created, datetime) and created < floor:
+            continue
+        pre = row.get("pre")
+        post = row.get("post")
+        if pre is not None:
+            src = str(detected_pre_source or "")
+            if not (
+                src in _AUTHORITATIVE_RINSE_WEIGHT_SOURCES
+                and detected_pre is not None
+                and not _weights_equal(pre, detected_pre)
+            ):
+                applied["pre"] = float(pre)
+        if post is not None:
+            src = str(detected_post_source or "")
+            if not (
+                src in _AUTHORITATIVE_RINSE_WEIGHT_SOURCES
+                and detected_post is not None
+                and not _weights_equal(post, detected_post)
+            ):
+                applied["post"] = float(post)
+    return applied
 
 
 def load_current_cycle_weight_map(
@@ -1023,7 +1203,6 @@ def load_current_cycle_weight_map(
     from backend.ta_helpers import table_exists
 
     ids = sorted({str(b or "").strip().upper() for b in bag_ids if str(b or "").strip()})
-    empty = {b: resolve_current_cycle_weights([], selected_date_et=selected_date_et).as_weight_info() for b in ids}
     if not ids:
         return {}
 
@@ -1076,7 +1255,22 @@ def load_current_cycle_weight_map(
     manuals = _load_manual_corrections(cursor, organization_id, ids)
     out: dict[str, dict[str, Any]] = {}
     for bid in ids:
-        manual = manuals.get(bid) or {}
+        base = resolve_current_cycle_weights(
+            timelines.get(bid) or [],
+            selected_date_et=selected_date_et,
+            observations=observations.get(bid) or [],
+            entry_racks=entry_racks,
+            allow_portal_weight_fallback=False,
+        )
+        manual = _manual_for_cycle(
+            manuals.get(bid) or [],
+            cycle_anchor=base.cycle_anchor,
+            selected_date_et=selected_date_et,
+            detected_pre=base.pre_weight_lbs,
+            detected_post=base.post_weight_lbs,
+            detected_pre_source=base.pre_weight_source,
+            detected_post_source=base.post_weight_source,
+        )
         result = resolve_current_cycle_weights(
             timelines.get(bid) or [],
             selected_date_et=selected_date_et,
@@ -1084,6 +1278,7 @@ def load_current_cycle_weight_map(
             entry_racks=entry_racks,
             manual_pre_lbs=manual.get("pre"),
             manual_post_lbs=manual.get("post"),
+            allow_portal_weight_fallback=False,
         )
         out[bid] = result.as_weight_info()
         out[bid]["_resolver"] = "current_cycle_weight"

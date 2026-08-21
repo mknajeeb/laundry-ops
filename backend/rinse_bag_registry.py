@@ -535,6 +535,9 @@ def upsert_scan_event_row(
     raw_json: str | None,
     credential_sourced: bool = False,
     weight_lbs: float | None = None,
+    weight_source: str | None = None,
+    weight_role: str | None = None,
+    overwrite_weight: bool = False,
 ) -> str:
     """
     Insert a new scan row, or touch metadata only when dedupe_key matches.
@@ -545,6 +548,7 @@ def upsert_scan_event_row(
     """
     from backend.rinse_bag_operational_owner import assert_operational_write_allowed
     from backend.rinse_workload_bag_weight import ensure_scan_events_weight_lbs_column
+    from backend.rinse_scan_weight_enrichment import ensure_scan_weight_enrichment_columns
     from backend.ta_helpers import table_has_column
 
     allowed, _, _ = assert_operational_write_allowed(
@@ -561,7 +565,10 @@ def upsert_scan_event_row(
     ensure_rinse_bag_scan_events_table(cursor)
     ensure_rinse_bag_scan_events_dedupe_schema(cursor)
     ensure_scan_events_weight_lbs_column(cursor)
+    ensure_scan_weight_enrichment_columns(cursor)
     has_weight_col = table_has_column(cursor, "rinse_bag_scan_events", "weight_lbs")
+    has_source_col = table_has_column(cursor, "rinse_bag_scan_events", "weight_source")
+    has_role_col = table_has_column(cursor, "rinse_bag_scan_events", "weight_role")
     cursor.execute(
         """
         SELECT id FROM rinse_bag_scan_events
@@ -574,8 +581,29 @@ def upsert_scan_event_row(
     if existing:
         row_id = existing["id"] if isinstance(existing, dict) else existing[0]
         if has_weight_col and weight_lbs is not None:
+            weight_sql = (
+                "weight_lbs = %s"
+                if overwrite_weight
+                else "weight_lbs = COALESCE(weight_lbs, %s)"
+            )
+            extra_sets = ""
+            extra_vals: list = []
+            if has_source_col and weight_source:
+                if overwrite_weight:
+                    extra_sets += ", weight_source = %s"
+                    extra_vals.append(weight_source)
+                else:
+                    extra_sets += ", weight_source = COALESCE(weight_source, %s)"
+                    extra_vals.append(weight_source)
+            if has_role_col and weight_role:
+                if overwrite_weight:
+                    extra_sets += ", weight_role = %s"
+                    extra_vals.append(weight_role)
+                else:
+                    extra_sets += ", weight_role = COALESCE(weight_role, %s)"
+                    extra_vals.append(weight_role)
             cursor.execute(
-                """
+                f"""
                 UPDATE rinse_bag_scan_events
                 SET
                     source_upload_batch_id = COALESCE(%s, source_upload_batch_id),
@@ -585,7 +613,7 @@ def upsert_scan_event_row(
                     last_location = COALESCE(NULLIF(%s, ''), last_location),
                     last_scan = COALESCE(NULLIF(%s, ''), last_scan),
                     raw_json = COALESCE(%s, raw_json),
-                    weight_lbs = COALESCE(weight_lbs, %s),
+                    {weight_sql}{extra_sets},
                     last_seen_at = NOW(),
                     updated_at = NOW()
                 WHERE id = %s
@@ -599,6 +627,7 @@ def upsert_scan_event_row(
                     last_scan,
                     raw_json,
                     weight_lbs,
+                    *extra_vals,
                     int(row_id),
                 ),
             )
@@ -631,7 +660,41 @@ def upsert_scan_event_row(
             )
         return "metadata_updated"
 
-    if has_weight_col:
+    if has_weight_col and has_source_col:
+        role_col = ", weight_role" if has_role_col else ""
+        role_ph = ", %s" if has_role_col else ""
+        cursor.execute(
+            f"""
+            INSERT INTO rinse_bag_scan_events (
+                organization_id, bag_id, dedupe_key, scan_index, rack,
+                time_scanned_raw, scanned_at_parsed, source_timezone,
+                user_name, purpose,
+                last_location, last_scan, source_upload_batch_id, source_filename,
+                last_seen_at, raw_json, weight_lbs, weight_source{role_col}
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s{role_ph})
+            """,
+            (
+                int(organization_id),
+                bag_id,
+                dedupe_key,
+                scan_index,
+                rack,
+                time_scanned_raw,
+                scanned_at_parsed,
+                RINSE_SCAN_SOURCE_TIMEZONE,
+                user_name,
+                purpose,
+                last_location,
+                last_scan,
+                int(source_upload_batch_id),
+                source_filename,
+                raw_json,
+                weight_lbs,
+                weight_source,
+                *((weight_role,) if has_role_col else ()),
+            ),
+        )
+    elif has_weight_col:
         cursor.execute(
             """
             INSERT INTO rinse_bag_scan_events (
@@ -1034,6 +1097,9 @@ def merge_scan_events_from_upload(
                 for k in row.index
             }
             from backend.rinse_wf_weight_events import normalize_scan_weight_lbs, parse_weight_lbs_from_scan_event
+            from backend.rinse_scan_weight_enrichment import ensure_scan_weight_enrichment_columns
+
+            ensure_scan_weight_enrichment_columns(cursor)
 
             weight_lbs = None
             for key in ("Weight", "weight", "# WF LBS", "WF LBS", "weight_lbs", "weight_num", "pounds", "lbs"):
@@ -1043,6 +1109,27 @@ def merge_scan_events_from_upload(
                         break
             if weight_lbs is None:
                 weight_lbs = parse_weight_lbs_from_scan_event({"raw_json": raw, "purpose": purpose})
+
+            weight_source = None
+            for key in ("Weight Source", "weight_source", "WeightSource"):
+                if key in row.index and str(row.get(key) or "").strip():
+                    weight_source = str(row.get(key)).strip()[:64]
+                    break
+            weight_role = None
+            for key in ("Weight Role", "weight_role", "WeightRole"):
+                if key in row.index and str(row.get(key) or "").strip():
+                    weight_role = str(row.get(key)).strip()[:32]
+                    break
+
+            # Authoritative Rinse DOM capture may overwrite prior portal proxy lbs.
+            _AUTHORITATIVE = frozenset(
+                {
+                    "rinse_preclean_info",
+                    "rinse_postclean_info",
+                    "rinse_workitem_wf_lbs",
+                }
+            )
+            overwrite_weight = bool(weight_source and weight_source in _AUTHORITATIVE)
             try:
                 dedupe_key = compute_scan_event_dedupe_key(
                     organization_id=org,
@@ -1075,6 +1162,9 @@ def merge_scan_events_from_upload(
                 raw_json=json.dumps(raw),
                 credential_sourced=credential_sourced,
                 weight_lbs=weight_lbs,
+                weight_source=weight_source,
+                weight_role=weight_role,
+                overwrite_weight=overwrite_weight,
             )
             if action == "rejected_operational_owner":
                 rejected_owner += 1

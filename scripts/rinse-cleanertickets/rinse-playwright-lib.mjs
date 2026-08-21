@@ -395,6 +395,176 @@ export async function extractScansFromExpandedTicket(rowLocator) {
   });
 }
 
+/**
+ * Authoritative Rinse bag weights from expanded vendorinline DOM (hidden OK).
+ *
+ * PRE:  `.preclean-info` → <dt>Pre-clean weight:</dt><dd>12.20 lbs</dd>
+ * POST: labeled Post-clean weight when present; else workitem
+ *       `td.number_of_wash_and_fold_lbs` (mutable list/WF lbs — POST only after
+ *       a post-processing weigh-entry; never treat as PRE).
+ */
+export async function extractPrePostCleanWeightsFromExpandedTicket(rowLocator) {
+  return rowLocator.evaluate((row) => {
+    const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
+    const parseLbs = (raw) => {
+      const m = String(raw || "").match(/(\d+(?:\.\d+)?)/);
+      return m ? parseFloat(m[1]) : null;
+    };
+    const roots = [row];
+    let n = row.nextElementSibling;
+    for (let i = 0; i < 12 && n; i++) {
+      roots.push(n);
+      n = n.nextElementSibling;
+    }
+
+    let pre_clean_weight_lbs = null;
+    let post_clean_weight_lbs = null;
+    let workitem_wf_lbs = null;
+    let pre_source_field = null;
+    let post_source_field = null;
+
+    for (const root of roots) {
+      const panel = root.querySelector(".preclean-info, .inline-ct__preclean-details");
+      if (panel) {
+        const dts = panel.querySelectorAll("dt");
+        for (const dt of dts) {
+          const label = norm(dt.innerText);
+          const dd = dt.nextElementSibling;
+          const val = dd && dd.tagName === "DD" ? norm(dd.innerText) : "";
+          if (/^pre-clean\s+weight/i.test(label)) {
+            pre_clean_weight_lbs = parseLbs(val);
+            pre_source_field = "preclean-info dt/dd Pre-clean weight";
+          }
+          if (/^post-clean\s+weight/i.test(label)) {
+            post_clean_weight_lbs = parseLbs(val);
+            post_source_field = "preclean-info dt/dd Post-clean weight";
+          }
+        }
+      }
+      const wfTd = root.querySelector("td.number_of_wash_and_fold_lbs");
+      if (wfTd && workitem_wf_lbs == null) {
+        workitem_wf_lbs = parseLbs(wfTd.innerText);
+      }
+    }
+
+    if (post_clean_weight_lbs == null && workitem_wf_lbs != null) {
+      // Not yet claimed as POST — caller assigns only when a post weigh-entry exists.
+      post_source_field = post_source_field || "td.number_of_wash_and_fold_lbs (candidate)";
+    }
+
+    return {
+      pre_clean_weight_lbs,
+      post_clean_weight_lbs,
+      workitem_wf_lbs,
+      pre_source_field,
+      post_source_field,
+      source_endpoint: "cleanertickets vendorinline HTML",
+    };
+  });
+}
+
+/** Parse Rinse "Thursday, August 20, 2026 3:09 PM" → epoch ms (local interpret). */
+export function parseRinseScanTimeMs(timeScanned) {
+  const t = String(timeScanned || "").trim();
+  if (!t) return null;
+  const d = Date.parse(t);
+  return Number.isFinite(d) ? d : null;
+}
+
+/**
+ * Stamp authoritative Weight onto current-cycle weigh-entry scan rows.
+ * Scans from Rinse are newest-first; we chronologically order for PRE/POST pick.
+ */
+export function assignAuthoritativeWeightsToScans(scans, cleanWeights) {
+  const preLbs = cleanWeights?.pre_clean_weight_lbs ?? null;
+  const labeledPost = cleanWeights?.post_clean_weight_lbs ?? null;
+  const workitemLbs = cleanWeights?.workitem_wf_lbs ?? null;
+  const list = Array.isArray(scans) ? scans.map((s) => ({ ...s })) : [];
+  if (!list.length) {
+    return {
+      scans: list,
+      pre_event_index: null,
+      post_event_index: null,
+      pre_lbs: preLbs,
+      post_lbs: null,
+    };
+  }
+
+  const chrono = [...list].reverse();
+  const isWe = (s) => /weight-entry/i.test(String(s.purpose || ""));
+  const isReview = (s) =>
+    /garments-reviewed/i.test(String(s.purpose || "")) ||
+    /^complete-cleaning$/i.test(String(s.purpose || "").trim());
+
+  let reviewMs = null;
+  for (const s of chrono) {
+    if (isReview(s)) {
+      const ms = parseRinseScanTimeMs(s.time_scanned);
+      if (ms != null) reviewMs = ms;
+    }
+  }
+
+  const weIdxChrono = [];
+  for (let i = 0; i < chrono.length; i += 1) {
+    if (isWe(chrono[i])) weIdxChrono.push(i);
+  }
+
+  let preChrono = null;
+  let postChrono = null;
+  if (reviewMs != null) {
+    for (const i of weIdxChrono) {
+      const ms = parseRinseScanTimeMs(chrono[i].time_scanned);
+      if (ms == null) continue;
+      if (ms <= reviewMs) preChrono = i;
+      if (ms > reviewMs && postChrono == null) postChrono = i;
+    }
+  }
+  if (preChrono == null && weIdxChrono.length) {
+    // No review yet — latest weigh-entry is the current PRE candidate.
+    preChrono = weIdxChrono[weIdxChrono.length - 1];
+  }
+  if (postChrono == null && weIdxChrono.length >= 2 && reviewMs == null) {
+    // Two+ WEs without review marker: earliest = PRE, latest = POST candidate.
+    preChrono = weIdxChrono[0];
+    postChrono = weIdxChrono[weIdxChrono.length - 1];
+  }
+
+  const postLbs =
+    labeledPost != null
+      ? labeledPost
+      : postChrono != null && workitemLbs != null
+        ? workitemLbs
+        : null;
+
+  const toOriginalIndex = (chronoIdx) =>
+    chronoIdx == null ? null : list.length - 1 - chronoIdx;
+
+  const preOrig = toOriginalIndex(preChrono);
+  const postOrig = toOriginalIndex(postChrono);
+
+  if (preOrig != null && preLbs != null) {
+    list[preOrig].weight = preLbs;
+    list[preOrig].weight_source = "rinse_preclean_info";
+    list[preOrig].weight_role = "PRE";
+  }
+  if (postOrig != null && postLbs != null) {
+    list[postOrig].weight = postLbs;
+    list[postOrig].weight_source =
+      labeledPost != null ? "rinse_postclean_info" : "rinse_workitem_wf_lbs";
+    list[postOrig].weight_role = "POST";
+  }
+
+  return {
+    scans: list,
+    pre_event_index: preOrig,
+    post_event_index: postOrig,
+    pre_lbs: preLbs,
+    post_lbs: postLbs,
+    workitem_wf_lbs: workitemLbs,
+    clean_meta: cleanWeights || null,
+  };
+}
+
 export function ticketContextFromCollapsedText(collapsedText) {
   const t = String(collapsedText || "").trim();
   const lines = t.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);

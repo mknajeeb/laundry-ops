@@ -392,7 +392,7 @@ export default function ManagementRinseWfSection({
     <Box>
       {snapshotUnavailable ? (
         <Alert severity="warning" sx={{ mb: 1.25 }}>
-          {rinse?.message || "Shift snapshot is not available yet."}
+          {rinse?.message || "Today's Rinse data is not available yet"}
         </Alert>
       ) : null}
 
@@ -476,7 +476,7 @@ export default function ManagementRinseWfSection({
           sub={
             snapshotUnavailable
               ? undefined
-              : `${fmtInt(weights.postBagCount)} bag${weights.postBagCount === 1 ? "" : "s"}`
+              : `${fmtInt(weights.postBagCount)}/${fmtInt(weights.preBagCount)} available`
           }
           tone="completed"
         />
