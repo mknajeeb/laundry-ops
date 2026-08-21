@@ -58,14 +58,18 @@ export function wfHeadline(seg, { dayClosed = false } = {}) {
   const review = asInt(seg?.exceptions?.review_required ?? seg?.exceptions?.total);
   const completed = asInt(seg?.completed);
   const carriedForward = asInt(
-    seg?.carried_forward ?? seg?.carried_forward_count ?? 0,
+    seg?.carried_forward ??
+      seg?.carried_forward_count ??
+      seg?.moved_forward_count ??
+      seg?.exceptions?.moved_forward_to_next_day ??
+      0,
   );
-  const pendingRaw = asInt(seg?.pending);
-  const pending = dayClosed ? carriedForward : pendingRaw;
+  const pending = asInt(seg?.pending);
+  // Closed-day final workload never includes carried_forward (next-day lineage).
   const workload = asInt(
     seg?.total_workload ??
       seg?.active_workload ??
-      completed + (dayClosed ? carriedForward : pendingRaw) + review,
+      completed + pending + review,
   );
   return {
     workload,
@@ -73,6 +77,7 @@ export function wfHeadline(seg, { dayClosed = false } = {}) {
     pending,
     review,
     carriedForward: dayClosed ? carriedForward : 0,
+    movedForward: dayClosed ? carriedForward : 0,
     dayClosed: Boolean(dayClosed),
   };
 }
@@ -125,13 +130,18 @@ export function wfIdentityLine({
   pending,
   review,
   carriedForward = 0,
+  movedForward = 0,
   dayClosed = false,
 }) {
+  // Final closed-day identity excludes carried_forward from workload.
+  const line = `${workload} = ${completed} Completed + ${pending} Pending + ${review} Review`;
   if (dayClosed) {
-    const carried = asInt(carriedForward || pending);
-    return `${workload} = ${completed} Completed + ${carried} Carried Forward + ${review} Review`;
+    const moved = asInt(movedForward || carriedForward);
+    if (moved > 0) {
+      return `${line} · ${moved} moved forward`;
+    }
   }
-  return `${workload} = ${completed} Completed + ${pending} Pending + ${review} Review`;
+  return line;
 }
 
 export function hdIdentityLine({ orders, completed, review }) {
