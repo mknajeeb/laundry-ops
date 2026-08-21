@@ -973,3 +973,246 @@ def test_portal_fallback_still_available_when_explicitly_enabled():
     )
     assert resolved.pre_weight_lbs == 15.5
     assert resolved.pre_weight_source == "portal_weight_num"
+
+
+def test_authoritative_pre_not_displaced_by_later_empty_weigh_entry():
+    """2TU3P42MWH-style: rinse_preclean_info then empty WE before garments-reviewed."""
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 20, 5, 0), eid=1, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 20, 5, 52),
+            eid=2,
+            lbs=19.5,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+        _ev("weight-entry", datetime(2026, 8, 20, 9, 30), eid=3),  # empty — must not win
+        _ev("garments-reviewed", datetime(2026, 8, 20, 9, 40), eid=4),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 20, 9, 59),
+            eid=5,
+            lbs=18.1,
+            weight_source="rinse_workitem_wf_lbs",
+            weight_role="POST",
+        ),
+    ]
+    selected = select_current_cycle_weight_events(
+        events, selected_date_et=date(2026, 8, 20)
+    )
+    assert selected["pre_event"]["id"] == 2
+    assert selected["post_event"]["id"] == 5
+    resolved = resolve_current_cycle_weights(
+        events,
+        selected_date_et=date(2026, 8, 20),
+        observations=[],
+        allow_portal_weight_fallback=False,
+    )
+    assert resolved.pre_weight_lbs == 19.5
+    assert resolved.pre_weight_source == "rinse_preclean_info"
+    assert resolved.post_weight_lbs == 18.1
+
+
+def test_multiple_wes_in_same_cycle_prefer_authoritative_pre():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 20, 5, 0), eid=1, rack="VeeWash Dirty"),
+        _ev("weight-entry", datetime(2026, 8, 20, 5, 30), eid=2),  # empty early
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 20, 6, 0),
+            eid=3,
+            lbs=18.8,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+        _ev("weight-entry", datetime(2026, 8, 20, 7, 0), eid=4),  # empty later
+        _ev("garments-reviewed", datetime(2026, 8, 20, 10, 0), eid=5),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 20, 10, 30),
+            eid=6,
+            lbs=17.0,
+            weight_source="rinse_workitem_wf_lbs",
+            weight_role="POST",
+        ),
+    ]
+    selected = select_current_cycle_weight_events(
+        events, selected_date_et=date(2026, 8, 20)
+    )
+    assert selected["pre_event"]["id"] == 3
+    resolved = resolve_current_cycle_weights(
+        events,
+        selected_date_et=date(2026, 8, 20),
+        allow_portal_weight_fallback=False,
+    )
+    assert resolved.pre_weight_lbs == 18.8
+
+
+def test_prior_cycle_authoritative_pre_cannot_win():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 6, 20, 5, 0), eid=1, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 6, 20, 6, 0),
+            eid=2,
+            lbs=99.0,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+        _ev("garments-reviewed", datetime(2026, 6, 20, 10, 0), eid=3),
+        _ev(
+            "weight-entry",
+            datetime(2026, 6, 20, 10, 5),
+            eid=4,
+            lbs=88.0,
+            weight_source="rinse_workitem_wf_lbs",
+            weight_role="POST",
+        ),
+        _ev("sent-to-vendor", datetime(2026, 8, 20, 5, 0), eid=10, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 20, 5, 52),
+            eid=11,
+            lbs=25.5,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+        _ev("weight-entry", datetime(2026, 8, 20, 9, 0), eid=12),
+        _ev("garments-reviewed", datetime(2026, 8, 20, 9, 30), eid=13),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 20, 10, 0),
+            eid=14,
+            lbs=24.0,
+            weight_source="rinse_workitem_wf_lbs",
+            weight_role="POST",
+        ),
+    ]
+    resolved = resolve_current_cycle_weights(
+        events,
+        selected_date_et=date(2026, 8, 20),
+        allow_portal_weight_fallback=False,
+    )
+    assert resolved.pre_weight_lbs == 25.5
+    assert resolved.pre_weight_event_id == 11
+    assert resolved.pre_weight_lbs != 99.0
+
+
+def test_authoritative_post_not_displaced_by_later_empty_weigh_entry():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 20, 5, 0), eid=1, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 20, 6, 0),
+            eid=2,
+            lbs=20.0,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+        _ev("garments-reviewed", datetime(2026, 8, 20, 10, 0), eid=3),
+        _ev("weight-entry", datetime(2026, 8, 20, 10, 5), eid=4),  # empty first after review
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 20, 10, 15),
+            eid=5,
+            lbs=19.2,
+            weight_source="rinse_workitem_wf_lbs",
+            weight_role="POST",
+        ),
+        _ev("weight-entry", datetime(2026, 8, 20, 11, 0), eid=6),  # empty later
+    ]
+    selected = select_current_cycle_weight_events(
+        events, selected_date_et=date(2026, 8, 20)
+    )
+    assert selected["post_event"]["id"] == 5
+    resolved = resolve_current_cycle_weights(
+        events,
+        selected_date_et=date(2026, 8, 20),
+        allow_portal_weight_fallback=False,
+    )
+    assert resolved.post_weight_lbs == 19.2
+    assert resolved.post_weight_source == "rinse_workitem_wf_lbs"
+
+
+def test_empty_we_after_auth_pre_does_not_enable_portal_proxy():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 20, 5, 0), eid=1, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 20, 6, 0),
+            eid=2,
+            lbs=19.5,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+        _ev("weight-entry", datetime(2026, 8, 20, 9, 0), eid=3),
+        _ev("garments-reviewed", datetime(2026, 8, 20, 10, 0), eid=4),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 20, 11, 0),
+            eid=5,
+            lbs=18.0,
+            weight_source="rinse_workitem_wf_lbs",
+            weight_role="POST",
+        ),
+    ]
+    obs = [_obs(datetime(2026, 8, 20, 12, 0), 99.9, run=1)]
+    resolved = resolve_current_cycle_weights(
+        events,
+        selected_date_et=date(2026, 8, 20),
+        observations=obs,
+        allow_portal_weight_fallback=False,
+    )
+    assert resolved.pre_weight_lbs == 19.5
+    assert resolved.pre_weight_source == "rinse_preclean_info"
+    assert resolved.pre_weight_lbs != 99.9
+
+
+def test_day_bag_pre_weight_propagates_to_employee_performance_credit():
+    """EP credited lbs mirror day_bag.pre_weight_lbs — no separate EP weight path."""
+    from backend.rinse_step1_productivity_fast import _weight_lbs, _wf_credited_weight_fields
+
+    resolved = resolve_current_cycle_weights(
+        [
+            _ev("sent-to-vendor", datetime(2026, 8, 20, 5, 0), eid=1, rack="VeeWash Dirty"),
+            _ev(
+                "weight-entry",
+                datetime(2026, 8, 20, 5, 52),
+                eid=2,
+                lbs=19.5,
+                weight_source="rinse_preclean_info",
+                weight_role="PRE",
+            ),
+            _ev("weight-entry", datetime(2026, 8, 20, 9, 30), eid=3),
+            _ev("garments-reviewed", datetime(2026, 8, 20, 9, 40), eid=4),
+            _ev(
+                "weight-entry",
+                datetime(2026, 8, 20, 9, 59),
+                eid=5,
+                lbs=18.1,
+                weight_source="rinse_workitem_wf_lbs",
+                weight_role="POST",
+            ),
+        ],
+        selected_date_et=date(2026, 8, 20),
+        allow_portal_weight_fallback=False,
+    )
+    day_bag = {
+        "bag_id": "2TU3P42MWH",
+        "service_type": "WF",
+        "pre_weight_lbs": resolved.pre_weight_lbs,
+        "pre_weight_source": resolved.pre_weight_source,
+        "post_weight_lbs": resolved.post_weight_lbs,
+    }
+    assert _weight_lbs(day_bag) == 19.5
+    credit = _wf_credited_weight_fields(day_bag)
+    assert credit["credited_weight_lbs"] == 19.5
+    assert credit["missing_production_credit_weight"] is False
+
+    # Null PRE still mirrors as missing credit (UI shows 0) — no invented lbs.
+    null_bag = {**day_bag, "pre_weight_lbs": None, "pre_weight_source": None}
+    assert _weight_lbs(null_bag) is None
+    null_credit = _wf_credited_weight_fields(null_bag)
+    assert null_credit["credited_weight_lbs"] is None
+    assert null_credit["missing_production_credit_weight"] is True

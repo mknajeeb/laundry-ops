@@ -160,6 +160,65 @@ def _event_weight_is_authoritative(event: Mapping[str, Any] | None) -> bool:
     return True
 
 
+def _is_authoritative_pre_bearing(event: Mapping[str, Any] | None) -> bool:
+    """True when this WE carries usable authoritative PRE lbs (not empty / not portal)."""
+    if event is None or _parse_weight(event.get("weight_lbs")) is None:
+        return False
+    src = str(event.get("weight_source") or "").strip()
+    if src in _PORTAL_PROXY_WEIGHT_SOURCES:
+        return False
+    if src == "rinse_preclean_info":
+        return True
+    if src in ("rinse_workitem_wf_lbs", "rinse_postclean_info"):
+        return False
+    if src in _MANAGER_WEIGHT_SOURCES:
+        return True
+    role = str(event.get("weight_role") or "").strip().upper()
+    # Unlabeled / PRE-role event lbs in the PRE window (tests + legacy seeds).
+    return role in ("", "PRE")
+
+
+def _is_authoritative_post_bearing(event: Mapping[str, Any] | None) -> bool:
+    """True when this WE carries usable authoritative POST lbs."""
+    if event is None or _parse_weight(event.get("weight_lbs")) is None:
+        return False
+    src = str(event.get("weight_source") or "").strip()
+    if src in _PORTAL_PROXY_WEIGHT_SOURCES:
+        return False
+    if src in ("rinse_workitem_wf_lbs", "rinse_postclean_info"):
+        return True
+    if src == "rinse_preclean_info":
+        return False
+    if src in _MANAGER_WEIGHT_SOURCES:
+        return True
+    role = str(event.get("weight_role") or "").strip().upper()
+    if role == "POST":
+        return True
+    # Unlabeled lbs after review (tests / legacy) — not an explicit PRE.
+    return role != "PRE"
+
+
+def _pick_pre_event(candidates: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """Prefer authoritative PRE-bearing WE; empty later WEs must not displace it."""
+    if not candidates:
+        return None
+    bearing = [ev for ev in candidates if _is_authoritative_pre_bearing(ev)]
+    if bearing:
+        return bearing[-1]
+    # Empty-only window: keep latest WE for portal/provisional event identity.
+    return candidates[-1]
+
+
+def _pick_post_event(candidates: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """Prefer earliest authoritative POST-bearing WE; empty events must not wipe it."""
+    if not candidates:
+        return None
+    bearing = [ev for ev in candidates if _is_authoritative_post_bearing(ev)]
+    if bearing:
+        return bearing[0]
+    return candidates[0]
+
+
 def _parse_weight(raw: Any) -> float | None:
     return normalize_scan_weight_lbs(raw)
 
@@ -361,16 +420,16 @@ def select_current_cycle_weight_events(
                     continue
                 if entry_at <= ts < review_at:
                     pre_cands.append(ev)
-            if pre_cands:
-                pre_event = pre_cands[-1]  # latest pre-review
+            pre_event = _pick_pre_event(pre_cands)
 
+            post_cands = []
             for ev in cycle_weight_events:
                 ts = _event_ts(ev)
                 if ts is None:
                     continue
                 if ts > review_at:
-                    post_event = ev  # earliest post-review
-                    break
+                    post_cands.append(ev)
+            post_event = _pick_post_event(post_cands)
         elif entry_at is not None and review_at is None:
             # No review yet — all entry-or-later cycle weights are pre-side candidates.
             pre_cands = []
@@ -380,8 +439,7 @@ def select_current_cycle_weight_events(
                     continue
                 if ts >= entry_at:
                     pre_cands.append(ev)
-            if pre_cands:
-                pre_event = pre_cands[-1]
+            pre_event = _pick_pre_event(pre_cands)
         elif entry_at is None and anchor is not None:
             # Factual PRE display fallback only. Entry stays unresolved;
             # POST may still be selected from authoritative weight_role=POST
@@ -405,15 +463,22 @@ def select_current_cycle_weight_events(
             pre_cands.sort(
                 key=lambda e: (_event_ts(e) or datetime.min, e.get("id") or 0)
             )
-            if pre_cands:
-                role_pre = [
-                    ev
-                    for ev in pre_cands
-                    if str(ev.get("weight_role") or "").strip().upper() == "PRE"
-                ]
-                pre_event = role_pre[-1] if role_pre else pre_cands[0]
+            # Prefer explicit PRE role among bearing candidates, else source-aware pick.
+            role_pre = [
+                ev
+                for ev in pre_cands
+                if str(ev.get("weight_role") or "").strip().upper() == "PRE"
+                and _is_authoritative_pre_bearing(ev)
+            ]
+            if role_pre:
+                pre_event = role_pre[-1]
+            else:
+                pre_event = _pick_pre_event(pre_cands)
             pre_ts = _event_ts(pre_event) if pre_event else None
             if pre_ts is not None:
+                # Entry-unresolved fallback: only explicit POST role or
+                # authoritative POST sources — never invent POST from a later
+                # unlabeled same-lbs weigh-entry.
                 post_cands = [
                     ev
                     for ev in cycle_weight_events
@@ -421,21 +486,18 @@ def select_current_cycle_weight_events(
                     and str(ev.get("weight_role") or "").strip().upper() == "POST"
                 ]
                 if not post_cands:
-                    # Prefer any WE after PRE that carries authoritative POST lbs.
                     post_cands = [
                         ev
                         for ev in cycle_weight_events
                         if (_event_ts(ev) or datetime.min) > pre_ts
                         and str(ev.get("weight_source") or "").strip()
-                        in _AUTHORITATIVE_RINSE_WEIGHT_SOURCES
-                        and str(ev.get("weight_source") or "").strip()
-                        != "rinse_preclean_info"
+                        in ("rinse_workitem_wf_lbs", "rinse_postclean_info")
+                        and _parse_weight(ev.get("weight_lbs")) is not None
                     ]
-                if post_cands:
-                    post_cands.sort(
-                        key=lambda e: (_event_ts(e) or datetime.min, e.get("id") or 0)
-                    )
-                    post_event = post_cands[0]
+                post_cands.sort(
+                    key=lambda e: (_event_ts(e) or datetime.min, e.get("id") or 0)
+                )
+                post_event = _pick_post_event(post_cands)
 
     return {
         "cycle": cycle,
