@@ -24,6 +24,7 @@ import {
   getManagementRinseHd,
   getManagementRinseHdDetail,
   markManagementRinseHdComplete,
+  postManagementRevenueDhsManualPickup,
   saveManagementRevenueDhs,
   saveManagementRevenueNonRinse,
   saveManagementRevenueWf,
@@ -36,6 +37,7 @@ import DailyCompletenessStrip from "../components/revenueShared/DailyCompletenes
 import DailyEntryCards from "../components/revenueShared/DailyEntryCards";
 import DhsAccountRow from "../components/revenueShared/DhsAccountRow";
 import DhsAccountSheet from "../components/revenueShared/DhsAccountSheet";
+import DhsScheduleBoard from "../components/revenueShared/DhsScheduleBoard";
 import MissingWorkPanel from "../components/revenueShared/MissingWorkPanel";
 import MoneyAmountField from "../components/revenueShared/MoneyAmountField";
 import NonRinseEntryPanel from "../components/revenueShared/NonRinseEntryPanel";
@@ -795,68 +797,45 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       ) : null}
 
       {mainTab === "dhs" && screen === "home" ? (
-        <Stack spacing={1.25} sx={{ pb: 2 }}>
-          <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.5, color: "#64748b", textTransform: "uppercase" }}>
-            DHS · {formatHomeDate(dateEt)}
-          </Typography>
-          {dhsLoading ? (
-            <Box sx={{ py: 4, display: "grid", placeItems: "center" }}><CircularProgress size={28} /></Box>
-          ) : (
-            <>
-              <Box sx={{ p: 1.5, borderRadius: 2, bgcolor: "#fff", border: "1px solid rgba(0,122,145,0.22)" }}>
-                <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
-                  Pickups today: {dhsBoard?.counts?.pickups_today ?? 0}
-                </Typography>
-                <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
-                  Deliveries today: {dhsBoard?.counts?.deliveries_today ?? 0}
-                </Typography>
-                <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
-                  Pending processing: {dhsBoard?.counts?.pending_processing ?? 0}
-                </Typography>
-                <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#b91c1c" }}>
-                  Overdue: {dhsBoard?.counts?.overdue ?? 0}
-                </Typography>
-              </Box>
-              {(dhsBoard?.needs_schedule_confirm || []).length ? (
-                <Alert severity="warning">
-                  Schedule confirmation needed: {(dhsBoard.needs_schedule_confirm || []).map((a) => a.name).join(", ")}
-                </Alert>
-              ) : null}
-              {["today", "overdue", "upcoming"].map((g) => (
-                <Box key={g}>
-                  <Typography sx={{ fontSize: 11, fontWeight: 800, color: "#64748b", mb: 0.5, textTransform: "uppercase" }}>
-                    {g} · {(dhsBoard?.groups?.[g] || []).length}
-                  </Typography>
-                  <Stack spacing={0.75}>
-                    {(dhsBoard?.groups?.[g] || []).map((row) => (
-                      <Box
-                        key={`${row.account_id}-${row.scheduled_pickup_date}`}
-                        component="button"
-                        type="button"
-                        onClick={() => openDhsAccount(null, { obligation: row, fromScreen: "dhs" })}
-                        sx={{
-                          textAlign: "left",
-                          p: 1.25,
-                          borderRadius: 2,
-                          border: "1px solid #e5e7eb",
-                          bgcolor: "#fff",
-                          appearance: "none",
-                          fontFamily: "inherit",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <Typography sx={{ fontWeight: 900 }}>{row.name}</Typography>
-                        <Typography sx={{ fontSize: 12, color: "#64748b" }}>
-                          Pickup {row.scheduled_pickup_date || "—"} · Delivery {row.scheduled_delivery_date || "—"} · {row.status}
-                        </Typography>
-                      </Box>
-                    ))}
-                  </Stack>
-                </Box>
-              ))}
-            </>
-          )}
-        </Stack>
+        dhsLoading ? (
+          <Box sx={{ py: 4, display: "grid", placeItems: "center" }}><CircularProgress size={28} /></Box>
+        ) : (
+          <DhsScheduleBoard
+            board={dhsBoard}
+            dateEt={dateEt}
+            busy={Boolean(dispBusy)}
+            onOpenOccurrence={(row) => openDhsAccount(null, { obligation: row, fromScreen: "dhs" })}
+            onSkipOccurrence={async (row, reason) => {
+              setDispBusy(row.occurrence_id || String(row.account_id));
+              setError("");
+              try {
+                await createManagementRevenueDisposition({
+                  source_key: row.source_key || `dhs:${row.account_id}`,
+                  disposition: "skipped",
+                  scheduled_pickup_date: row.scheduled_pickup_date,
+                  reason: reason || null,
+                });
+                await loadDhsTab();
+              } catch (e) {
+                setError(e?.response?.data?.error || e.message || "Skip failed");
+              } finally {
+                setDispBusy("");
+              }
+            }}
+            onAddManualPickup={async (payload) => {
+              setDispBusy("manual");
+              setError("");
+              try {
+                await postManagementRevenueDhsManualPickup(payload);
+                await loadDhsTab();
+              } catch (e) {
+                setError(e?.response?.data?.error || e.message || "Add pickup failed");
+              } finally {
+                setDispBusy("");
+              }
+            }}
+          />
+        )
       ) : null}
 
       {mainTab === "cash" && screen === "home" ? (

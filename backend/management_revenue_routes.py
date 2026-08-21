@@ -32,6 +32,7 @@ from backend.management_revenue_accounts import build_revenue_dashboard, save_dh
 from backend.management_revenue_obligations import (
     build_missing_work,
     create_disposition,
+    create_manual_occurrence,
     derive_dates_from_schedule,
     get_schedule_for_account,
     reverse_disposition,
@@ -184,6 +185,38 @@ def register_management_revenue_routes(
             payload = build_dhs_tab(cursor, oid, selected)
             conn.commit()
             return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/revenue/dhs-manual-pickup", methods=["POST"])
+    def management_revenue_dhs_manual_pickup():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            body = request.get_json(silent=True) or {}
+            row = create_manual_occurrence(
+                cursor,
+                oid,
+                body,
+                user_id=_user_id(me),
+                actor_name=actor_name(me),
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse({"occurrence": row})), 201
+        except ValueError as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 400
         except Exception as exc:
             conn.rollback()
             return jsonify({"error": str(exc)}), 500

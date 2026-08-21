@@ -159,7 +159,19 @@ export default function ManagementRevenueAccountsPage() {
       entry_cadence: acct.entry_cadence || "scheduled",
       pickup_weekdays: acct.schedule?.pickup_weekdays || [],
       delivery_weekdays: acct.schedule?.delivery_weekdays || [],
-      pickup_pairs: acct.schedule?.pickup_pairs || [],
+      pickup_pairs: (acct.schedule?.pickup_pairs || []).map((p) => {
+        const pw = Number(p.pickup_weekday ?? 0);
+        let off = p.delivery_offset_days;
+        if (off == null && p.delivery_weekday != null) {
+          const dw = Number(p.delivery_weekday);
+          off = pw === dw ? 0 : ((dw - pw) % 7 + 7) % 7;
+        }
+        return {
+          pickup_weekday: pw,
+          delivery_offset_days: off == null ? 1 : Number(off),
+          delivery_weekday: (pw + Number(off == null ? 1 : off)) % 7,
+        };
+      }),
       pickups_per_week: acct.schedule?.pickups_per_week || (acct.schedule?.pickup_pairs || []).length || 0,
       needs_schedule_confirm: Boolean(acct.schedule?.needs_schedule_confirm),
       schedule_effective_from: acct.schedule?.effective_from || todayEtIso(),
@@ -196,9 +208,21 @@ export default function ManagementRevenueAccountsPage() {
         use_delivery_date: form.use_delivery_date,
         entry_cadence: form.entry_cadence,
         schedule_effective_from: form.schedule_effective_from || todayEtIso(),
-        pickup_pairs: form.pickup_pairs,
+        pickup_pairs: (form.pickup_pairs || []).map((p) => {
+          const pw = Number(p.pickup_weekday ?? 0);
+          const off = Math.max(0, Math.min(30, Number(p.delivery_offset_days ?? 1)));
+          return {
+            pickup_weekday: pw,
+            delivery_offset_days: off,
+            delivery_weekday: (pw + off) % 7,
+          };
+        }),
         pickup_weekdays: (form.pickup_pairs || []).map((p) => p.pickup_weekday),
-        delivery_weekdays: (form.pickup_pairs || []).map((p) => p.delivery_weekday),
+        delivery_weekdays: (form.pickup_pairs || []).map((p) => {
+          const pw = Number(p.pickup_weekday ?? 0);
+          const off = Math.max(0, Math.min(30, Number(p.delivery_offset_days ?? 1)));
+          return (pw + off) % 7;
+        }),
         notes: form.notes || null,
         parent_id: parentId,
         pricing: {
@@ -465,6 +489,7 @@ export default function ManagementRevenueAccountsPage() {
                 <Typography sx={{ fontSize: 11, color: "#64748b", mb: 1 }}>
                   Controls when this pickup/delivery schedule begins. Independent of pricing.
                 </Typography>
+                <Typography sx={{ fontSize: 12, fontWeight: 800, mb: 0.75 }}>Schedule</Typography>
                 <Typography sx={{ fontSize: 12, fontWeight: 700, mb: 0.75 }}>Pickups per week</Typography>
                 <Stack direction="row" spacing={0.5} sx={{ mb: 1 }}>
                   {[1, 2, 3, 4, 5].map((n) => (
@@ -475,7 +500,7 @@ export default function ManagementRevenueAccountsPage() {
                       onClick={() => {
                         const cur = [...(form.pickup_pairs || [])];
                         while (cur.length < n) {
-                          cur.push({ pickup_weekday: cur.length % 7, delivery_weekday: (cur.length + 1) % 7 });
+                          cur.push({ pickup_weekday: cur.length % 7, delivery_offset_days: 1 });
                         }
                         setForm({
                           ...form,
@@ -489,45 +514,57 @@ export default function ManagementRevenueAccountsPage() {
                     </Button>
                   ))}
                 </Stack>
-                {(form.pickup_pairs || []).map((pair, i) => (
-                  <Box key={i} sx={{ mb: 1.25, p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb" }}>
-                    <Typography sx={{ fontSize: 12, fontWeight: 800, mb: 0.75 }}>Pickup {i + 1}</Typography>
-                    <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-                      <FormControl size="small" fullWidth>
-                        <InputLabel>Pickup day</InputLabel>
-                        <Select
-                          label="Pickup day"
-                          value={pair.pickup_weekday ?? 0}
-                          onChange={(e) => {
-                            const next = [...(form.pickup_pairs || [])];
-                            next[i] = { ...next[i], pickup_weekday: Number(e.target.value) };
-                            setForm({ ...form, pickup_pairs: next });
-                          }}
-                        >
-                          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((lab, idx) => (
-                            <MenuItem key={idx} value={idx}>{lab}</MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-                      <FormControl size="small" fullWidth>
-                        <InputLabel>Delivery day</InputLabel>
-                        <Select
-                          label="Delivery day"
-                          value={pair.delivery_weekday ?? 1}
-                          onChange={(e) => {
-                            const next = [...(form.pickup_pairs || [])];
-                            next[i] = { ...next[i], delivery_weekday: Number(e.target.value) };
-                            setForm({ ...form, pickup_pairs: next });
-                          }}
-                        >
-                          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((lab, idx) => (
-                            <MenuItem key={idx} value={idx}>{lab}</MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-                    </Stack>
-                  </Box>
-                ))}
+                {(form.pickup_pairs || []).map((pair, i) => {
+                  const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+                  const pw = Number(pair.pickup_weekday ?? 0);
+                  const off = Number(pair.delivery_offset_days ?? 1);
+                  const deliveryLabel = days[(pw + off) % 7];
+                  return (
+                    <Box key={i} sx={{ mb: 1.25, py: 1 }}>
+                      <Typography sx={{ fontSize: 12, fontWeight: 800, mb: 0.75 }}>
+                        Pickup {i + 1}
+                      </Typography>
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                        <FormControl size="small" fullWidth>
+                          <InputLabel>Pickup day</InputLabel>
+                          <Select
+                            label="Pickup day"
+                            value={pw}
+                            onChange={(e) => {
+                              const next = [...(form.pickup_pairs || [])];
+                              next[i] = { ...next[i], pickup_weekday: Number(e.target.value) };
+                              setForm({ ...form, pickup_pairs: next });
+                            }}
+                          >
+                            {days.map((lab, idx) => (
+                              <MenuItem key={idx} value={idx}>{lab}</MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                        <FormControl size="small" fullWidth>
+                          <InputLabel>Delivery</InputLabel>
+                          <Select
+                            label="Delivery"
+                            value={off}
+                            onChange={(e) => {
+                              const next = [...(form.pickup_pairs || [])];
+                              next[i] = { ...next[i], delivery_offset_days: Number(e.target.value) };
+                              setForm({ ...form, pickup_pairs: next });
+                            }}
+                          >
+                            <MenuItem value={0}>Same day (+0)</MenuItem>
+                            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14].map((n) => (
+                              <MenuItem key={n} value={n}>+{n} day{n === 1 ? "" : "s"}</MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                      </Stack>
+                      <Typography sx={{ fontSize: 12, color: "#475569", mt: 0.75 }}>
+                        Pickup: {days[pw]} · Delivery: {off === 0 ? "same day" : `+${off} days`} → {deliveryLabel}
+                      </Typography>
+                    </Box>
+                  );
+                })}
               </Box>
             ) : null}
             <FormControlLabel

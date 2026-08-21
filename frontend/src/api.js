@@ -2543,6 +2543,9 @@ export const getManagementRevenueDaily = (dateEt) =>
 export const getManagementRevenueDhsBoard = (dateEt) =>
   axios.get(`${API_BASE}/api/management/revenue/dhs-board`, { params: { date_et: dateEt } });
 
+export const postManagementRevenueDhsManualPickup = (body) =>
+  axios.post(`${API_BASE}/api/management/revenue/dhs-manual-pickup`, body);
+
 export const getManagementRevenueCashTab = (dateEt) =>
   axios.get(`${API_BASE}/api/management/revenue/cash-tab`, { params: { date_et: dateEt } });
 

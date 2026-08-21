@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=390, initial-scale=1" />
+  <title>DHS Schedule Review — 390px</title>
+  <style>
+    :root { --ink:#0f172a; --muted:#64748b; --teal:#0f766e; --sky:#0284c7; --danger:#b91c1c; --brand:#007a91; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; background:#e2e8f0; color:var(--ink); }
+    .phone { width:390px; margin:24px auto; background:#f1f5f9; min-height:780px; border-radius:28px; overflow:hidden; box-shadow:0 20px 50px rgba(15,23,42,.25); }
+    .bar { padding:14px 16px 8px; background:#fff; border-bottom:1px solid #e2e8f0; }
+    .bar h1 { margin:0; font-size:15px; font-weight:800; }
+    .bar p { margin:2px 0 0; font-size:11px; color:var(--muted); font-weight:700; letter-spacing:.04em; text-transform:uppercase; }
+    .pad { padding:12px 12px 24px; }
+    .top { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+    .add { background:var(--brand); color:#fff; border:0; border-radius:10px; font-weight:800; padding:10px 12px; font-size:13px; }
+    .summary { display:grid; grid-template-columns:1fr 1fr; gap:8px; background:rgba(0,122,145,.06); border-radius:14px; padding:12px; margin-bottom:14px; }
+    .summary .lab { font-size:11px; font-weight:700; color:var(--muted); }
+    .summary .lab.od { color:var(--danger); }
+    .summary .val { font-size:22px; font-weight:900; line-height:1.1; }
+    .summary .val.od { color:var(--danger); }
+    .day { margin-bottom:16px; }
+    .day-h { display:flex; justify-content:space-between; font-size:12px; font-weight:900; letter-spacing:.4px; margin-bottom:8px; }
+    .day-h span { color:var(--muted); font-weight:700; font-size:11px; }
+    .sec { font-size:11px; font-weight:800; letter-spacing:.3px; margin:8px 0 6px; }
+    .sec.p { color:var(--teal); }
+    .sec.d { color:var(--sky); }
+    .card { display:flex; gap:8px; background:#fff; border-radius:12px; padding:10px; margin-bottom:6px; box-shadow:0 1px 0 rgba(15,23,42,.06); }
+    .rail { width:4px; border-radius:99px; background:var(--teal); }
+    .rail.d { background:var(--sky); }
+    .name { font-weight:800; font-size:15px; }
+    .manual { font-size:11px; font-weight:700; color:#b45309; margin-left:6px; }
+    .act { font-size:13px; color:#475569; margin-top:2px; }
+    .st { font-size:11px; font-weight:700; color:#334155; margin-top:2px; text-transform:capitalize; }
+    .btns { display:flex; flex-direction:column; gap:4px; }
+    .btns button { border:0; border-radius:8px; min-height:36px; padding:0 12px; font-weight:700; font-size:13px; }
+    .open { background:var(--brand); color:#fff; }
+    .skip { background:transparent; color:var(--muted); }
+    .note { margin:16px 12px; font-size:12px; color:#334155; background:#fff; border-radius:12px; padding:12px; }
+    .note strong { display:block; margin-bottom:6px; }
+    .proof { color:var(--teal); font-weight:700; }
+    .proof.bad { color:var(--danger); }
+  </style>
+</head>
+<body>
+  <div class="phone" id="frame">
+    <div class="bar">
+      <h1>Revenue / Cash · DHS</h1>
+      <p>Review fixture · as_of Fri, Aug 21, 2026</p>
+    </div>
+    <div class="pad">
+      <div class="top">
+        <div style="font-size:11px;font-weight:800;letter-spacing:.5px;color:var(--muted);text-transform:uppercase">Today — Fri, Aug 21</div>
+        <button class="add">+ Add Pickup</button>
+      </div>
+      <div class="summary">
+        <div><div class="lab">Pickups</div><div class="val">2</div></div>
+        <div><div class="lab">Deliveries</div><div class="val">1</div></div>
+        <div><div class="lab">Needs Processing</div><div class="val">0</div></div>
+        <div><div class="lab od">Overdue</div><div class="val od">1</div></div>
+      </div>
+
+      <div class="day">
+        <div class="day-h">TODAY · FRI, AUG 21 <span>2P · 1D ▾</span></div>
+        <div class="sec p">PICKUPS</div>
+        <div class="card">
+          <div class="rail"></div>
+          <div style="flex:1">
+            <div><span class="name">Fri Same-Day</span></div>
+            <div class="act">Pickup · Fri, Aug 21</div>
+            <div class="st">pending</div>
+          </div>
+          <div class="btns"><button class="open">Open</button><button class="skip">Skip</button></div>
+        </div>
+        <div class="card">
+          <div class="rail"></div>
+          <div style="flex:1">
+            <div><span class="name">Bellevue</span><span class="manual">Manual</span></div>
+            <div class="act">Pickup · Fri, Aug 21</div>
+            <div class="st">pending</div>
+          </div>
+          <div class="btns"><button class="open">Open</button><button class="skip">Skip</button></div>
+        </div>
+        <div class="sec d">DELIVERIES</div>
+        <div class="card">
+          <div class="rail d"></div>
+          <div style="flex:1">
+            <div class="name">Tue→Thu (+2)</div>
+            <div class="act">Delivery · Fri, Aug 21</div>
+            <div class="st">pending</div>
+          </div>
+          <div class="btns"><button class="open">Open</button></div>
+        </div>
+      </div>
+
+      <div class="day">
+        <div class="day-h">TUE, AUG 25 <span>1P · 1D ▸</span></div>
+        <div class="sec p">PICKUPS</div>
+        <div class="card">
+          <div class="rail"></div>
+          <div style="flex:1">
+            <div class="name">Tue→Next Tue (+7)</div>
+            <div class="act">Pickup · Tue, Aug 25</div>
+            <div class="st">pending</div>
+          </div>
+          <div class="btns"><button class="open">Open</button><button class="skip">Skip</button></div>
+        </div>
+        <div class="sec d">DELIVERIES</div>
+        <div class="card">
+          <div class="rail d"></div>
+          <div style="flex:1">
+            <div class="name">Tue→Next Tue (+7)</div>
+            <div class="act">Delivery · Tue, Aug 25</div>
+            <div class="st">pending</div>
+          </div>
+          <div class="btns"><button class="open">Open</button></div>
+        </div>
+      </div>
+
+      <div class="day">
+        <div class="day-h">WED, AUG 26 <span>1P ▸</span></div>
+        <div class="sec p">PICKUPS</div>
+        <div class="card">
+          <div class="rail"></div>
+          <div style="flex:1">
+            <div class="name">Future Wed</div>
+            <div class="act">Pickup · Wed, Aug 26</div>
+            <div class="st">pending</div>
+          </div>
+          <div class="btns"><button class="open">Open</button><button class="skip">Skip</button></div>
+        </div>
+      </div>
+
+      <div class="day">
+        <div class="day-h">THU, AUG 27 <span>1P ▸</span></div>
+        <div class="sec p">PICKUPS</div>
+        <div class="card">
+          <div class="rail"></div>
+          <div style="flex:1">
+            <div class="name">Future Thu</div>
+            <div class="act">Pickup · Thu, Aug 27</div>
+            <div class="st">pending</div>
+          </div>
+          <div class="btns"><button class="open">Open</button><button class="skip">Skip</button></div>
+        </div>
+      </div>
+
+      <div class="day">
+        <div class="day-h" style="color:var(--danger)">OVERDUE · 1 <span>▾</span></div>
+        <div class="card">
+          <div class="rail" style="background:var(--danger)"></div>
+          <div style="flex:1">
+            <div class="name">Genuinely Past</div>
+            <div class="act">Pickup · Tue, Aug 18</div>
+            <div class="st" style="color:var(--danger)">overdue</div>
+          </div>
+          <div class="btns"><button class="open">Open</button><button class="skip">Skip</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note" style="width:390px;margin:0 auto 32px">
+    <strong>Acceptance proof (as_of = Fri, Aug 21)</strong>
+    <div class="proof">✓ Aug 25 / 26 / 27 appear under date sections as pending — NOT under Overdue</div>
+    <div class="proof">✓ Overdue contains only Aug 18 (past incomplete pickup)</div>
+    <div class="proof">✓ Manual Bellevue occurrence labeled Manual</div>
+    <div class="proof bad">✗ Old bug: as_of+7 classification would have marked Aug 25–27 overdue</div>
+  </div>
+</body>
+</html>
