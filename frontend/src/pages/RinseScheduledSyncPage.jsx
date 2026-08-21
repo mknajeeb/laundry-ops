@@ -74,8 +74,14 @@ function SyncStatusPanel({ title, sync, showNextHint = false }) {
       <Row label="Pages visited" value={run?.pages_visited} />
       {showNextHint ? (
         <Row
-          label="Next scheduled"
-          value={sync.next_scheduled_at_et || sync.next_run_hint || "Every 30 min (ACA cron UTC */30)"}
+          label="Next cycle"
+          value={
+            sync.next_run_hint
+            || (sync.next_scheduled_at_et && !String(sync.next_scheduled_at_et).includes("30")
+              ? sync.next_scheduled_at_et
+              : null)
+            || "Continuous (immediate after publish)"
+          }
         />
       ) : null}
       {(sync.error || sync.error_message || run?.error_message) ? (
@@ -208,9 +214,9 @@ export default function RinseScheduledSyncPage() {
     <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 1200, mx: "auto" }}>
       <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2} flexWrap="wrap" useFlexGap>
         <Box>
-          <Typography variant="h5" fontWeight={800}>Scheduled Rinse Sync</Typography>
+          <Typography variant="h5" fontWeight={800}>Continuous Rinse Freshness</Typography>
           <Typography variant="body2" color="text.secondary">
-            Run list uses America/New_York calendar dates. Batch headers are kept after raw row purge.
+            Supervisor-owned continuous cycles. Historical scrape/batch diagnostics below.
           </Typography>
         </Box>
         <Button size="small" variant="outlined" onClick={load} disabled={loading}>Refresh</Button>
@@ -221,6 +227,61 @@ export default function RinseScheduledSyncPage() {
 
       {data ? (
         <Stack spacing={2}>
+          {data.freshness ? (
+            <Paper variant="outlined" sx={{ p: 2 }}>
+              <Stack direction="row" alignItems="center" spacing={1} mb={1} flexWrap="wrap">
+                <Typography variant="subtitle1" fontWeight={700}>Management Freshness</Typography>
+                <Chip
+                  size="small"
+                  label={data.freshness.management_freshness || data.freshness.mode || "Continuous"}
+                  color={
+                    data.freshness.management_freshness === "LIVE"
+                      ? "success"
+                      : data.freshness.management_freshness === "DELAYED"
+                        ? "warning"
+                        : "error"
+                  }
+                />
+                {data.freshness.supervisor_running ? (
+                  <Chip size="small" label="Supervisor running" color="success" />
+                ) : (
+                  <Chip size="small" label="Supervisor idle/fenced" variant="outlined" />
+                )}
+                {data.freshness.cycle_status ? (
+                  <Chip size="small" label={`Cycle ${data.freshness.cycle_status}`} />
+                ) : null}
+              </Stack>
+              <Row
+                label="Current lag"
+                value={
+                  data.freshness.management_lag_seconds != null
+                    ? `${Math.round(Number(data.freshness.management_lag_seconds) / 60)} min (${data.freshness.management_freshness || "—"})`
+                    : "—"
+                }
+              />
+              <Row
+                label="Last published"
+                value={formatSystemDateTime(data.freshness.latest_management_publish_at)}
+              />
+              <Row
+                label="Source captured through"
+                value={formatSystemDateTime(data.freshness.source_captured_through)}
+              />
+              <Row label="Current cycle" value={data.freshness.current_cycle_id} />
+              <Row label="Stage" value={data.freshness.stage} />
+              <Row label="Fast lane" value={data.freshness.fast_lane_status} />
+              <Row label="Reconciliation" value={data.freshness.reconciliation_status} />
+              <Row
+                label="Last full reconcile"
+                value={formatSystemDateTime(data.freshness.last_full_reconcile_at)}
+              />
+              <Row
+                label="Published snapshot version"
+                value={data.freshness.published_snapshot_version}
+              />
+            </Paper>
+          ) : null}
+
           <Paper variant="outlined" sx={{ p: 2 }}>
             <Stack direction="row" alignItems="center" spacing={1} mb={1}>
               <Typography variant="subtitle1" fontWeight={700}>Data last updated (org)</Typography>
@@ -248,7 +309,7 @@ export default function RinseScheduledSyncPage() {
               </Typography>
               <Typography variant="body2" color="text.secondary">
                 Inactive — RFV is retired from scheduled At Vendor sync. Only At Vendor presence +
-                scan ingestion run on the cron.
+                scan ingestion run on the continuous freshness supervisor.
               </Typography>
             </Paper>
           )}
@@ -348,9 +409,39 @@ export default function RinseScheduledSyncPage() {
 
           <Paper variant="outlined" sx={{ p: 2 }}>
             <Typography variant="subtitle1" fontWeight={700} gutterBottom>Schedule</Typography>
-            <Row label="Cron (UTC)" value={data.schedule_cron_utc} />
-            <Row label="Interval" value={`${data.schedule_interval_minutes || 30} minutes`} />
-            <Row label="Next run (estimate)" value={formatSystemDateTime(data.next_run_estimate_et || data.next_run_estimate_utc)} />
+            <Row
+              label="Mode"
+              value={
+                data.schedule_mode === "continuous_supervisor" || data.freshness?.mode === "Continuous"
+                  ? "Continuous freshness supervisor"
+                  : (data.schedule_mode || "—")
+              }
+            />
+            <Row
+              label="ACA trigger"
+              value={
+                data.schedule_cron_utc
+                  ? `Cron (UTC): ${data.schedule_cron_utc}`
+                  : "Manual (cron=null)"
+              }
+            />
+            <Row
+              label="Interval"
+              value={
+                data.schedule_interval_minutes != null
+                  ? `${data.schedule_interval_minutes} minutes`
+                  : "Immediate successor after publish (no fixed interval)"
+              }
+            />
+            <Row
+              label="Next cycle"
+              value={
+                data.next_run_hint
+                || (data.schedule_mode === "continuous_supervisor" ? "Continuous" : null)
+                || formatSystemDateTime(data.next_run_estimate_et || data.next_run_estimate_utc)
+                || "—"
+              }
+            />
             <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
               {data.timing_note || data.schedule_timezone_note}
             </Typography>
