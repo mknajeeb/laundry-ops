@@ -313,6 +313,10 @@ export const TRANSLATIONS = {
     "mobileOps.revenue.payoutDateHelp": "Payout Date is the business day this cash-out belongs to — not when you enter it.",
 
     "mobileOps.revenue.missingWork": "Missing Work",
+    "mobileOps.revenue.noActivity": "No Activity",
+    "mobileOps.revenue.optional": "Optional",
+    "mobileOps.revenue.tabStats": "Stats",
+    "mobileOps.revenue.tabEntry": "Entry",
     "mobileOps.revenue.rinseWf": "Rinse WF",
     "mobileOps.revenue.dailyShort": "Daily",
     "mobileOps.revenue.open": "Open",
@@ -1762,6 +1766,10 @@ export const TRANSLATIONS = {
     "mobileOps.revenue.payoutDateHelp": "La fecha de pago es el día de negocio al que pertenece este egreso — no cuándo lo capturas.",
 
     "mobileOps.revenue.missingWork": "Trabajo pendiente",
+    "mobileOps.revenue.noActivity": "Sin actividad",
+    "mobileOps.revenue.optional": "Opcional",
+    "mobileOps.revenue.tabStats": "Estadísticas",
+    "mobileOps.revenue.tabEntry": "Entrada",
     "mobileOps.revenue.rinseWf": "Rinse WF",
     "mobileOps.revenue.dailyShort": "Diario",
     "mobileOps.revenue.open": "Abrir",

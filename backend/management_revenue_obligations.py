@@ -719,6 +719,7 @@ def build_missing_work(
             "missing_total": len(unresolved) if fk != "resolved" else len(items),
             "daily_missing": len([i for i in unresolved if i["kind"] == "daily"]),
             "dhs_pending": len([i for i in unresolved if i["kind"] == "dhs"]),
+            "overdue": len([i for i in unresolved if i.get("overdue") or i.get("status") == STATUS_OVERDUE]),
         },
         "daily_completeness": daily,
         "items": items,

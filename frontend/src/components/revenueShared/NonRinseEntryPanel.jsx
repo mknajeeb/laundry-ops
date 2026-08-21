@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { Box, Stack, Typography } from "@mui/material";
+import PlanningDatePicker from "../datetime/PlanningDatePicker";
 import MoneyAmountField from "./MoneyAmountField";
 import SaveStatusChip from "./SaveStatusChip";
 import { fmtMoney, parseMoneyInput } from "./revenueFormat";
@@ -19,6 +20,9 @@ export default function NonRinseEntryPanel({
   cashLabel = "Cash",
   cardLabel = "Card",
   totalLabel = "Total",
+  processingDate,
+  onProcessingDateChange,
+  processingDateLabel = "Processing Date",
 }) {
   const cardRef = useRef(null);
   const cashN = parseMoneyInput(cash);
@@ -30,6 +34,13 @@ export default function NonRinseEntryPanel({
     <Stack spacing={1.5} sx={{ pb: 10 }}>
       {title ? (
         <Typography sx={{ fontSize: 18, fontWeight: 900, color: "#0f172a" }}>{title}</Typography>
+      ) : null}
+      {onProcessingDateChange ? (
+        <PlanningDatePicker
+          label={processingDateLabel}
+          value={processingDate || ""}
+          onChange={onProcessingDateChange}
+        />
       ) : null}
       <MoneyAmountField
         label={cashLabel}

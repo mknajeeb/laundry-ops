@@ -5,6 +5,8 @@ import {
   Button,
   CircularProgress,
   Stack,
+  Tab,
+  Tabs,
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
@@ -13,6 +15,7 @@ import {
   createManagementRevenueDisposition,
   deleteManagementCashPayout,
   getManagementRevenue,
+  getManagementRevenueDashboard,
   getManagementRevenueMissingWork,
   getManagementRevenueSchedulePreview,
   getManagementRinseHd,
@@ -23,6 +26,8 @@ import {
   saveManagementRevenueWf,
   saveManagementRinseHdProduction,
 } from "../api";
+import PlanningDatePicker from "../components/datetime/PlanningDatePicker";
+import RevenueDashboardPanel from "../components/management/revenue/RevenueDashboardPanel";
 import CashPayoutForm, { CashPayoutList } from "../components/revenueShared/CashPayoutForm";
 import DailyCompletenessStrip from "../components/revenueShared/DailyCompletenessStrip";
 import DhsAccountRow from "../components/revenueShared/DhsAccountRow";
@@ -85,8 +90,14 @@ const SCREEN_TITLE_KEYS = {
  */
 export default function PinRevenueCashFlow({ onBack, onLock }) {
   const { t } = useI18n();
-  const dateEt = todayEtIso();
+  const [dateEt, setDateEt] = useState(todayEtIso);
+  const [mainTab, setMainTab] = useState("entry"); // entry | missing | stats
   const [screen, setScreen] = useState("home");
+  const [dashPeriod, setDashPeriod] = useState("week");
+  const [dashboard, setDashboard] = useState(null);
+  const [dashLoading, setDashLoading] = useState(false);
+  const [customStart, setCustomStart] = useState(todayEtIso);
+  const [customEnd, setCustomEnd] = useState(todayEtIso);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [saveState, setSaveState] = useState("");
@@ -161,6 +172,27 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     };
   }, [loadRevenue]);
 
+  const loadDashboard = useCallback(async () => {
+    setDashLoading(true);
+    try {
+      const params = { period: dashPeriod, date: dateEt };
+      if (dashPeriod === "custom") {
+        params.start = customStart;
+        params.end = customEnd;
+      }
+      const res = await getManagementRevenueDashboard(params);
+      setDashboard(res.data || null);
+    } catch {
+      setDashboard(null);
+    } finally {
+      setDashLoading(false);
+    }
+  }, [customEnd, customStart, dashPeriod, dateEt]);
+
+  useEffect(() => {
+    if (mainTab === "stats") loadDashboard();
+  }, [mainTab, loadDashboard]);
+
   const flushNonRinse = useCallback(async () => {
     const gen = ++saveGenRef.current;
     const vals = nonRinseRef.current;
@@ -227,7 +259,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
 
   const openDhsAccount = async (row, { fromScreen } = {}) => {
     if (fromScreen) setReturnScreen(fromScreen);
-    else if (screen === "missing") setReturnScreen("missing");
+    else if (mainTab === "missing") setReturnScreen("missing");
     else setReturnScreen("dhs");
     setDhsAccount(row);
     let pickup = row.pickup_date || "";
@@ -412,12 +444,13 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       return;
     }
     if (screen === "dhs_account") {
-      setScreen(returnScreen === "missing" ? "missing" : "dhs");
+      if (returnScreen === "missing") {
+        setMainTab("missing");
+        setScreen("home");
+      } else {
+        setScreen("dhs");
+      }
       setDhsAccount(null);
-      return;
-    }
-    if (screen === "missing") {
-      setScreen("home");
       return;
     }
     if (screen === "self_service" || screen === "drop_off") {
@@ -427,6 +460,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         flushNonRinse();
       }
     }
+    setMainTab("entry");
     setScreen("home");
     setAddingPayout(false);
     loadRevenue();
@@ -450,6 +484,23 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
   const title = t(SCREEN_TITLE_KEYS[screen] || "mobileOps.revenue.title");
   const backLabel = screen === "home" ? t("mobileOps.backPin") : t("mobileOps.back");
 
+  const dailyByKey = Object.fromEntries(
+    (data?.daily_completeness?.sections || []).map((s) => [s.key, s]),
+  );
+  const dailyStatus = (key, entered) => {
+    const st = dailyByKey[key]?.status;
+    if (st === "entered" || entered) {
+      return { statusLabel: t("mobileOps.revenue.savedCheck"), statusTone: "ok" };
+    }
+    if (st === "no_activity") {
+      return {
+        statusLabel: t("mobileOps.revenue.noActivity") !== "mobileOps.revenue.noActivity" ? t("mobileOps.revenue.noActivity") : "No Activity",
+        statusTone: "neutral",
+      };
+    }
+    return { statusLabel: t("mobileOps.revenue.needsEntry"), statusTone: "warn" };
+  };
+
   const homeCards = [
     {
       id: "self_service",
@@ -459,9 +510,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         nr.self_service?.total == null
           ? null
           : `${t("mobileOps.revenue.cash")} ${fmtMoney(nr.self_service?.cash)} · ${t("mobileOps.revenue.card")} ${fmtMoney(nr.self_service?.card)}`,
-      statusLabel:
-        nr.self_service?.total == null ? t("mobileOps.revenue.needsEntry") : t("mobileOps.revenue.savedCheck"),
-      statusTone: nr.self_service?.total == null ? "warn" : "ok",
+      ...dailyStatus("self_service", nr.self_service?.total != null),
       onClick: () => {
         setSaveState("");
         setScreen("self_service");
@@ -475,9 +524,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         nr.drop_off?.total == null
           ? null
           : `${t("mobileOps.revenue.cash")} ${fmtMoney(nr.drop_off?.cash)} · ${t("mobileOps.revenue.card")} ${fmtMoney(nr.drop_off?.card)}`,
-      statusLabel:
-        nr.drop_off?.total == null ? t("mobileOps.revenue.needsEntry") : t("mobileOps.revenue.savedCheck"),
-      statusTone: nr.drop_off?.total == null ? "warn" : "ok",
+      ...dailyStatus("drop_off", nr.drop_off?.total != null),
       onClick: () => {
         setSaveState("");
         setScreen("drop_off");
@@ -489,10 +536,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       primary: data?.rinse?.wf?.revenue,
       secondary:
         data?.rinse?.wf?.volume_lbs != null ? `${fmtInt(data.rinse.wf.volume_lbs)} lb · ${dateEt}` : null,
-      statusLabel: data?.rinse?.wf?.entered
-        ? t("mobileOps.revenue.savedCheck")
-        : t("mobileOps.revenue.needsEntry"),
-      statusTone: data?.rinse?.wf?.entered ? "ok" : "warn",
+      ...dailyStatus("rinse_wf", Boolean(data?.rinse?.wf?.entered)),
       onClick: () => {
         setSaveState("");
         setWfVolume(moneyToInput(data?.rinse?.wf?.volume_lbs));
@@ -514,10 +558,8 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       statusLabel:
         !dhs.accounts?.length
           ? "—"
-          : dhs.entered_count === dhs.active_count
-            ? t("mobileOps.revenue.complete")
-            : t("mobileOps.revenue.needsEntry"),
-      statusTone: dhs.entered_count === dhs.active_count && dhs.active_count ? "ok" : "warn",
+          : `${dhs.entered_count || 0}/${dhs.active_count || 0}`,
+      statusTone: dhs.entered_count === dhs.active_count && dhs.active_count ? "ok" : "neutral",
       onClick: () => {
         setSaveState("");
         setScreen("dhs");
@@ -530,8 +572,10 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       secondary: payouts.length
         ? t("mobileOps.revenue.payoutEntries", { count: payouts.length })
         : null,
-      statusLabel: payouts.length ? t("mobileOps.revenue.savedCheck") : t("mobileOps.revenue.needsEntry"),
-      statusTone: payouts.length ? "ok" : "neutral",
+      statusLabel: payouts.length
+        ? t("mobileOps.revenue.savedCheck")
+        : (t("mobileOps.revenue.optional") !== "mobileOps.revenue.optional" ? t("mobileOps.revenue.optional") : "Optional"),
+      statusTone: "neutral",
       onClick: () => {
         setSaveState("");
         setAddingPayout(false);
@@ -546,8 +590,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         hd.orders != null
           ? t("mobileOps.revenue.hdCompletedCount", { count: hd.orders })
           : null,
-      statusLabel: hd.revenue != null || hd.orders ? t("mobileOps.revenue.complete") : t("mobileOps.revenue.needsEntry"),
-      statusTone: hd.revenue != null || hd.orders ? "ok" : "warn",
+      ...dailyStatus("rinse_hd", hd.revenue != null || Boolean(hd.orders)),
       onClick: openHangDry,
     },
   ];
@@ -572,25 +615,71 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         right={<OpsLocaleToggle />}
       />
 
-      {screen === "home" ? (
-        <Typography sx={{ fontSize: 13, fontWeight: 700, color: OPS_MOBILE.muted, mb: 1 }}>
-          {t("mobileOps.revenue.todayLabel")} · {formatHomeDate(dateEt)}
-        </Typography>
-      ) : null}
-
       {error ? (
         <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setError("")}>
           {error}
         </Alert>
       ) : null}
 
-      {loading && screen === "home" ? (
+      {(screen === "home" || mainTab === "missing" || mainTab === "stats") &&
+      screen !== "self_service" &&
+      screen !== "drop_off" &&
+      screen !== "rinse_wf" &&
+      screen !== "dhs" &&
+      screen !== "dhs_account" &&
+      screen !== "cash" &&
+      screen !== "hang_dry" &&
+      screen !== "hang_dry_detail" ? (
+        <Tabs
+          value={mainTab}
+          onChange={(_, v) => {
+            setMainTab(v);
+            setScreen("home");
+            setSaveState("");
+          }}
+          variant="fullWidth"
+          sx={{
+            mb: 1.25,
+            minHeight: 40,
+            position: "sticky",
+            top: 0,
+            zIndex: 3,
+            bgcolor: "#F3F7F8",
+            "& .MuiTab-root": { minHeight: 40, fontWeight: 800, textTransform: "none", fontSize: 13 },
+          }}
+        >
+          <Tab value="entry" label={t("mobileOps.revenue.tabEntry") !== "mobileOps.revenue.tabEntry" ? t("mobileOps.revenue.tabEntry") : "Entry"} />
+          <Tab
+            value="missing"
+            label={`${t("mobileOps.revenue.missingWork")}${
+              missing?.summary?.missing_total != null ? ` · ${missing.summary.missing_total}` : ""
+            }`}
+          />
+          <Tab value="stats" label={t("mobileOps.revenue.tabStats") !== "mobileOps.revenue.tabStats" ? t("mobileOps.revenue.tabStats") : "Stats"} />
+        </Tabs>
+      ) : null}
+
+      {mainTab === "entry" && screen === "home" ? (
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+          <Box sx={{ flex: 1 }}>
+            <PlanningDatePicker
+              label={t("mobileOps.revenue.processingDate") !== "mobileOps.revenue.processingDate" ? t("mobileOps.revenue.processingDate") : "Processing Date"}
+              value={dateEt}
+              onChange={(v) => {
+                if (v) setDateEt(v);
+              }}
+            />
+          </Box>
+        </Stack>
+      ) : null}
+
+      {loading && mainTab === "entry" && screen === "home" ? (
         <Box sx={{ py: 6, display: "grid", placeItems: "center" }}>
           <CircularProgress size={28} />
         </Box>
       ) : null}
 
-      {screen === "home" && !loading ? (
+      {mainTab === "entry" && screen === "home" && !loading ? (
         <Stack spacing={1.25} sx={{ pb: 2 }}>
           <Box
             sx={{
@@ -610,6 +699,11 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
                 complete: data?.daily_completeness?.label || section.label || "—",
               })}
             </Typography>
+            {data?.dhs_completeness ? (
+              <Typography sx={{ mt: 0.35, fontSize: 12, fontWeight: 600, color: "#64748b" }}>
+                DHS due {data.dhs_completeness.due ?? 0} · Pending {data.dhs_completeness.pending ?? 0}
+              </Typography>
+            ) : null}
           </Box>
 
           <DailyCompletenessStrip
@@ -622,7 +716,6 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
                 setWfVolume(moneyToInput(data?.rinse?.wf?.volume_lbs));
                 setScreen("rinse_wf");
               }
-              else setScreen("home");
             }}
             onNoActivity={(s) =>
               postDisposition(
@@ -637,23 +730,10 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
             }
           />
 
-          <SectionStatusCard
-            title={t("mobileOps.revenue.missingWork")}
-            primary={missing?.summary?.missing_total ?? data?.missing_work_summary?.missing_total}
-            secondary={
-              missing?.summary
-                ? `${missing.summary.daily_missing || 0} ${t("mobileOps.revenue.dailyShort")} · ${missing.summary.dhs_pending || 0} DHS`
-                : null
-            }
-            statusLabel={t("mobileOps.revenue.open")}
-            statusTone={(missing?.summary?.missing_total || 0) > 0 ? "warn" : "ok"}
-            onClick={() => setScreen("missing")}
-          />
-
           <Box
             sx={{
               display: "grid",
-              gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr", md: "1fr 1fr" },
+              gridTemplateColumns: { xs: "1fr 1fr", sm: "1fr 1fr", md: "1fr 1fr 1fr" },
               gap: 1.25,
             }}
           >
@@ -673,7 +753,8 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         </Stack>
       ) : null}
 
-      {screen === "missing" ? (
+
+      {mainTab === "missing" && screen === "home" ? (
         <MissingWorkPanel
           loading={missingLoading}
           data={missing}
@@ -690,6 +771,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
           }}
           busyId={dispBusy}
           onOpenItem={(item) => {
+            setMainTab("entry");
             if (item.kind === "dhs") {
               const row = (data?.dhs?.accounts || []).find((a) => a.account_id === item.account_id);
               if (row) openDhsAccount(row, { fromScreen: "missing" });
@@ -745,6 +827,19 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         />
       ) : null}
 
+      {mainTab === "stats" && screen === "home" ? (
+        <RevenueDashboardPanel
+          period={dashPeriod}
+          onPeriodChange={setDashPeriod}
+          customStart={customStart}
+          customEnd={customEnd}
+          onCustomStart={setCustomStart}
+          onCustomEnd={setCustomEnd}
+          loading={dashLoading}
+          dashboard={dashboard}
+        />
+      ) : null}
+
       {screen === "self_service" ? (
         <NonRinseEntryPanel
           title={t("mobileOps.revenue.selfService")}
@@ -757,6 +852,15 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
           cashLabel={t("mobileOps.revenue.cash")}
           cardLabel={t("mobileOps.revenue.card")}
           totalLabel={t("mobileOps.revenue.total")}
+          processingDate={dateEt}
+          onProcessingDateChange={(v) => {
+            if (v) setDateEt(v);
+          }}
+          processingDateLabel={
+            t("mobileOps.revenue.processingDate") !== "mobileOps.revenue.processingDate"
+              ? t("mobileOps.revenue.processingDate")
+              : "Processing Date"
+          }
         />
       ) : null}
 
@@ -772,6 +876,15 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
           cashLabel={t("mobileOps.revenue.cash")}
           cardLabel={t("mobileOps.revenue.card")}
           totalLabel={t("mobileOps.revenue.total")}
+          processingDate={dateEt}
+          onProcessingDateChange={(v) => {
+            if (v) setDateEt(v);
+          }}
+          processingDateLabel={
+            t("mobileOps.revenue.processingDate") !== "mobileOps.revenue.processingDate"
+              ? t("mobileOps.revenue.processingDate")
+              : "Processing Date"
+          }
         />
       ) : null}
 
@@ -780,9 +893,17 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
           <Typography sx={{ fontSize: 18, fontWeight: 900 }}>
             {t("mobileOps.revenue.rinseWf") !== "mobileOps.revenue.rinseWf" ? t("mobileOps.revenue.rinseWf") : "Rinse WF"}
           </Typography>
-          <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#64748b" }}>
-            Processing Date {dateEt}
-          </Typography>
+          <PlanningDatePicker
+            label={
+              t("mobileOps.revenue.processingDate") !== "mobileOps.revenue.processingDate"
+                ? t("mobileOps.revenue.processingDate")
+                : "Processing Date"
+            }
+            value={dateEt}
+            onChange={(v) => {
+              if (v) setDateEt(v);
+            }}
+          />
           <MoneyAmountField
             label="Volume (lb)"
             value={wfVolume}
@@ -811,6 +932,24 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
             sx={{ textTransform: "none", fontWeight: 800, minHeight: 48 }}
           >
             {t("mobileOps.revenue.save") !== "mobileOps.revenue.save" ? t("mobileOps.revenue.save") : "Save"}
+          </Button>
+          <Button
+            variant="outlined"
+            disabled={dispBusy === `rinse_wf:${dateEt}`}
+            onClick={() =>
+              postDisposition(
+                {
+                  source_key: "rinse_wf",
+                  processing_date_et: dateEt,
+                  disposition: "no_activity",
+                  reason: "No activity",
+                },
+                `rinse_wf:${dateEt}`,
+              )
+            }
+            sx={{ textTransform: "none", fontWeight: 700, minHeight: 44 }}
+          >
+            No Activity
           </Button>
           <SaveStatusChip state={saveState} labels={saveLabels} />
         </Stack>

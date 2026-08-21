@@ -65,7 +65,8 @@ export default function MissingWorkPanel({
           {summary.missing_total ?? 0} Missing
         </Typography>
         <Typography sx={{ fontSize: 13, fontWeight: 600, color: "#64748b" }}>
-          {summary.daily_missing || 0} Daily · {summary.dhs_pending || 0} DHS
+          {summary.daily_missing || 0} Daily Missing · {summary.dhs_pending || 0} DHS Pending
+          {summary.overdue != null ? ` · ${summary.overdue} Overdue` : ""}
         </Typography>
       </Box>
 
@@ -97,8 +98,8 @@ export default function MissingWorkPanel({
           const busy = busyId === key;
           const sub =
             item.kind === "dhs"
-              ? `Pickup ${item.scheduled_pickup_date}${item.overdue || item.status === "overdue" ? " · Overdue" : ""}`
-              : `${item.processing_date_et} · ${statusLabel(item.status)}`;
+              ? `Pickup ${item.scheduled_pickup_date}${item.overdue || item.status === "overdue" ? " · Overdue" : " · Pending Entry"}`
+              : `Daily Entry · ${item.processing_date_et} · ${statusLabel(item.status)}`;
           return (
             <Box
               key={key}

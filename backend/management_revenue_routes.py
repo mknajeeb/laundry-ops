@@ -54,8 +54,11 @@ def register_management_revenue_routes(
         return jsonify(body), code
 
     def _selected_date(raw: str, *, employee: bool):
-        if employee:
-            return business_today()
+        """Business/processing date for revenue entry.
+
+        Employees may enter for an earlier Processing Date than the calendar day they
+        are working (backfill). Do not force business_today() for PIN callers.
+        """
         selected = parse_date_value(raw) if raw else business_today()
         if not isinstance(selected, date):
             raise ValueError("Invalid date_et; use YYYY-MM-DD")
@@ -318,10 +321,10 @@ def register_management_revenue_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not is_hub_manager(me):
-                body, code = access_denied_payload()
-                return jsonify(body), code
             oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
             period = (request.args.get("period") or "today").strip().lower()
             raw_date = (request.args.get("date") or request.args.get("date_et") or "").strip()
             ref = parse_date_value(raw_date) if raw_date else business_today()
@@ -347,10 +350,10 @@ def register_management_revenue_routes(
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            if not is_hub_manager(me):
-                body, code = access_denied_payload()
-                return jsonify(body), code
             oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
             period = (request.args.get("period") or "today").strip().lower()
             raw_date = (request.args.get("date") or request.args.get("date_et") or "").strip()
             ref = parse_date_value(raw_date) if raw_date else business_today()
