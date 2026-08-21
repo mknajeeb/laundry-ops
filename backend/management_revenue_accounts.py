@@ -1027,13 +1027,22 @@ def save_account(
 
         cursor.execute(
             """
-            UPDATE mgmt_revenue_pricing_schedules
-            SET effective_to = %s
-            WHERE account_id = %s AND effective_to IS NULL AND effective_from < %s
+            SELECT id, effective_from FROM mgmt_revenue_pricing_schedules
+            WHERE account_id = %s AND effective_to IS NULL
+            ORDER BY effective_from DESC, id DESC
+            LIMIT 1
             """,
-            (eff - timedelta(days=1), acct_id, eff),
+            (acct_id,),
         )
-        # Same-day re-save: update existing open row for this effective_from instead of stacking.
+        open_row = cursor.fetchone()
+        open_d = dict(open_row) if open_row else None
+        open_from = None
+        open_id = None
+        if open_d:
+            open_id = int(open_d["id"])
+            raw_of = open_d.get("effective_from")
+            open_from = raw_of if isinstance(raw_of, date) else date.fromisoformat(str(raw_of)[:10])
+
         cursor.execute(
             """
             SELECT id FROM mgmt_revenue_pricing_schedules
@@ -1060,7 +1069,63 @@ def save_account(
                     pid,
                 ),
             )
+            cursor.execute(
+                """
+                UPDATE mgmt_revenue_pricing_schedules
+                SET effective_to = %s
+                WHERE account_id = %s AND id <> %s
+                  AND effective_from < %s
+                  AND (effective_to IS NULL OR effective_to >= %s)
+                """,
+                (eff - timedelta(days=1), acct_id, pid, eff, eff),
+            )
+        elif open_id and open_from and eff < open_from:
+            # Backdate correction of current open pricing version
+            cursor.execute(
+                """
+                UPDATE mgmt_revenue_pricing_schedules
+                SET effective_from = %s, pricing_method = %s, pricing_unit = %s,
+                    rate_per_unit = %s, tiers_json = %s, effective_to = NULL
+                WHERE id = %s
+                """,
+                (
+                    eff,
+                    method,
+                    unit,
+                    float(rate) if rate is not None else None,
+                    json.dumps(tiers) if tiers is not None else None,
+                    open_id,
+                ),
+            )
+        elif open_id and open_from and eff > open_from:
+            cursor.execute(
+                """
+                UPDATE mgmt_revenue_pricing_schedules
+                SET effective_to = %s
+                WHERE id = %s
+                """,
+                (eff - timedelta(days=1), open_id),
+            )
+            _insert_pricing(
+                cursor,
+                int(acct_id),
+                effective_from=eff,
+                pricing_method=method,
+                pricing_unit=unit,
+                rate_per_unit=float(rate) if rate is not None else None,
+                tiers=tiers,
+                user_id=user_id,
+            )
         else:
+            if open_id and open_from and open_from < eff:
+                cursor.execute(
+                    """
+                    UPDATE mgmt_revenue_pricing_schedules
+                    SET effective_to = %s
+                    WHERE account_id = %s AND effective_to IS NULL AND effective_from < %s
+                    """,
+                    (eff - timedelta(days=1), acct_id, eff),
+                )
             _insert_pricing(
                 cursor,
                 int(acct_id),
@@ -1072,23 +1137,26 @@ def save_account(
                 user_id=user_id,
             )
 
+    sched_as_of = business_today()
     if "pickup_pairs" in payload:
         from backend.management_revenue_obligations import save_pickup_pairs
 
         sched_from = payload.get("schedule_effective_from") or business_today().isoformat()
+        sched_as_of = date.fromisoformat(str(sched_from)[:10])
         save_pickup_pairs(
             cursor,
             int(acct_id),
-            effective_from=date.fromisoformat(str(sched_from)[:10]),
+            effective_from=sched_as_of,
             pairs=payload.get("pickup_pairs") or [],
             user_id=user_id,
         )
     elif "pickup_weekdays" in payload or "delivery_weekdays" in payload:
         sched_from = payload.get("schedule_effective_from") or business_today().isoformat()
+        sched_as_of = date.fromisoformat(str(sched_from)[:10])
         save_account_schedule(
             cursor,
             int(acct_id),
-            effective_from=date.fromisoformat(str(sched_from)[:10]),
+            effective_from=sched_as_of,
             pickup_weekdays=payload.get("pickup_weekdays"),
             delivery_weekdays=payload.get("delivery_weekdays"),
             user_id=user_id,
@@ -1101,11 +1169,20 @@ def save_account(
     row = cursor.fetchone()
     if not row:
         raise LookupError("Account not found")
-    pricing = get_pricing_for_account(cursor, int(acct_id))
+    price_as_of = business_today()
+    if pricing_payload and pricing_payload.get("effective_from"):
+        try:
+            price_as_of = date.fromisoformat(str(pricing_payload.get("effective_from"))[:10])
+        except ValueError:
+            price_as_of = business_today()
+    # Read-back must reflect the version just saved; for open current use today if later.
+    read_price_as_of = max(price_as_of, business_today()) if price_as_of <= business_today() else business_today()
+    read_sched_as_of = max(sched_as_of, business_today()) if sched_as_of <= business_today() else business_today()
+    pricing = get_pricing_for_account(cursor, int(acct_id), as_of=read_price_as_of)
     out = _account_row_to_dict(dict(row), pricing)
     from backend.management_revenue_obligations import get_schedule_for_account
 
-    out["schedule"] = get_schedule_for_account(cursor, int(acct_id), business_today())
+    out["schedule"] = get_schedule_for_account(cursor, int(acct_id), read_sched_as_of)
     return out
 
 

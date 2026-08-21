@@ -139,15 +139,24 @@ def test_save_account_schedule_same_day_updates():
     from backend.management_revenue_obligations import save_account_schedule
 
     cursor = MagicMock()
-    # First call: no existing same-day row; second call after insert for get
+    row = {
+        "id": 9,
+        "account_id": 3,
+        "effective_from": date(2026, 8, 20),
+        "effective_to": None,
+        "pickup_weekdays": "[0,2,4]",
+        "delivery_weekdays": "[1,3,5]",
+    }
+    # Per save: open-row SELECT, exact-from SELECT, then get_schedule SELECT (+ pairs empty)
     cursor.fetchone.side_effect = [
-        None,  # SELECT existing
-        {"id": 9, "account_id": 3, "effective_from": date(2026, 8, 20), "effective_to": None,
-         "pickup_weekdays": "[0,2,4]", "delivery_weekdays": "[1,3,5]"},
-        {"id": 9},  # SELECT existing on second save
-        {"id": 9, "account_id": 3, "effective_from": date(2026, 8, 20), "effective_to": None,
-         "pickup_weekdays": "[0,2,4]", "delivery_weekdays": "[1,3,5]"},
+        None,  # open
+        None,  # exact → INSERT path
+        row,   # get_schedule
+        None,  # open (2nd save)
+        {"id": 9},  # exact → UPDATE path
+        row,   # get_schedule
     ]
+    cursor.fetchall.return_value = []
     with patch("backend.management_revenue_obligations.ensure_obligation_tables"):
         out1 = save_account_schedule(
             cursor, 3, effective_from=date(2026, 8, 20),
@@ -159,6 +168,65 @@ def test_save_account_schedule_same_day_updates():
             cursor, 3, effective_from=date(2026, 8, 20),
             pickup_weekdays=[0, 2, 4], delivery_weekdays=[1, 3, 5],
         )
-    # Second save should UPDATE not INSERT again for same day
     assert any("UPDATE mgmt_revenue_account_schedules" in str(c) for c in cursor.execute.call_args_list)
     assert out2["pickup_weekdays"] == [0, 2, 4]
+
+
+def test_save_account_schedule_backdates_open_row():
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+    from backend.management_revenue_obligations import save_account_schedule
+
+    cursor = MagicMock()
+    cursor.fetchone.side_effect = [
+        {"id": 5, "effective_from": date(2026, 8, 20), "effective_to": None},
+        None,
+        {
+            "id": 5,
+            "account_id": 3,
+            "effective_from": date(2026, 8, 1),
+            "effective_to": None,
+            "pickup_weekdays": "[1]",
+            "delivery_weekdays": "[1]",
+        },
+    ]
+    cursor.fetchall.return_value = []
+    with patch("backend.management_revenue_obligations.ensure_obligation_tables"):
+        out = save_account_schedule(
+            cursor, 3, effective_from=date(2026, 8, 1),
+            pickup_weekdays=[1], delivery_weekdays=[1],
+        )
+    assert out["effective_from"] == "2026-08-01"
+    assert any("SET effective_from = %s" in str(c.args[0]) for c in cursor.execute.call_args_list)
+
+
+def test_obligation_window_uses_account_schedule_start():
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+    from backend.management_revenue_obligations import (
+        MISSING_WORK_START,
+        obligation_window_start_for_account,
+    )
+
+    cursor = MagicMock()
+    with patch(
+        "backend.management_revenue_obligations.account_schedule_obligation_start",
+        return_value=date(2026, 7, 15),
+    ):
+        # as_of-28 = Jul 23; floor Jul 15 → start Jul 23
+        start = obligation_window_start_for_account(cursor, 1, date(2026, 8, 20), lookback_days=28)
+    assert start == date(2026, 7, 23)
+
+    with patch(
+        "backend.management_revenue_obligations.account_schedule_obligation_start",
+        return_value=date(2026, 8, 1),
+    ):
+        start2 = obligation_window_start_for_account(cursor, 1, date(2026, 8, 20), lookback_days=28)
+    assert start2 == date(2026, 8, 1)
+
+    with patch(
+        "backend.management_revenue_obligations.account_schedule_obligation_start",
+        return_value=None,
+    ):
+        start3 = obligation_window_start_for_account(cursor, 1, date(2026, 8, 20), lookback_days=28)
+    assert start3 == MISSING_WORK_START

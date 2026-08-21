@@ -69,10 +69,11 @@ function emptyForm() {
     pickup_pairs: [],
     pickups_per_week: 0,
     needs_schedule_confirm: false,
+    schedule_effective_from: todayEtIso(),
     notes: "",
     pricing_method: "flat_lb",
     rate_per_unit: "",
-    effective_from: todayEtIso(),
+    pricing_effective_from: todayEtIso(),
     tiers: [
       { tier_number: 1, max_lbs: 5000, rate_per_lb: 1.0 },
       { tier_number: 2, max_lbs: "", rate_per_lb: 0.95 },
@@ -161,10 +162,11 @@ export default function ManagementRevenueAccountsPage() {
       pickup_pairs: acct.schedule?.pickup_pairs || [],
       pickups_per_week: acct.schedule?.pickups_per_week || (acct.schedule?.pickup_pairs || []).length || 0,
       needs_schedule_confirm: Boolean(acct.schedule?.needs_schedule_confirm),
+      schedule_effective_from: acct.schedule?.effective_from || todayEtIso(),
       notes: acct.notes || "",
       pricing_method: pr.pricing_method || "flat_lb",
       rate_per_unit: pr.rate_per_unit ?? "",
-      effective_from: pr.effective_from || todayEtIso(),
+      pricing_effective_from: pr.effective_from || todayEtIso(),
       tiers: pr.tiers?.length ? pr.tiers : emptyForm().tiers,
     });
     setDialogOpen(true);
@@ -193,13 +195,14 @@ export default function ManagementRevenueAccountsPage() {
         use_processing_date: form.use_processing_date,
         use_delivery_date: form.use_delivery_date,
         entry_cadence: form.entry_cadence,
+        schedule_effective_from: form.schedule_effective_from || todayEtIso(),
         pickup_pairs: form.pickup_pairs,
         pickup_weekdays: (form.pickup_pairs || []).map((p) => p.pickup_weekday),
         delivery_weekdays: (form.pickup_pairs || []).map((p) => p.delivery_weekday),
         notes: form.notes || null,
         parent_id: parentId,
         pricing: {
-          effective_from: form.effective_from || todayEtIso(),
+          effective_from: form.pricing_effective_from || todayEtIso(),
           pricing_method: form.pricing_method,
           pricing_unit: form.pricing_method.includes("order") ? "orders" : "lbs",
           rate_per_unit: form.rate_per_unit !== "" ? Number(form.rate_per_unit) : null,
@@ -215,9 +218,11 @@ export default function ManagementRevenueAccountsPage() {
       };
       const res = await saveManagementRevenueAccount(body);
       const saved = res.data?.account || res.data || {};
-      const pickup = (saved.schedule?.pickup_weekdays || []).map(String).join("/") || "—";
-      const delivery = (saved.schedule?.delivery_weekdays || []).map(String).join("/") || "—";
-      setSuccess(`Saved · Pickup days ${pickup} · Delivery days ${delivery}`);
+      const schedFrom = saved.schedule?.effective_from || "—";
+      const priceFrom = saved.pricing?.effective_from || "—";
+      setSuccess(
+        `Saved · Schedule from ${schedFrom} · Pricing from ${priceFrom}`,
+      );
       setDialogOpen(false);
       await load();
     } catch (e) {
@@ -452,6 +457,14 @@ export default function ManagementRevenueAccountsPage() {
                     Prior weekday lists were ambiguous — set pickup→delivery pairs below.
                   </Typography>
                 ) : null}
+                <PlanningDatePicker
+                  value={form.schedule_effective_from}
+                  onChange={(v) => setForm({ ...form, schedule_effective_from: v })}
+                  label="Schedule effective from"
+                />
+                <Typography sx={{ fontSize: 11, color: "#64748b", mb: 1 }}>
+                  Controls when this pickup/delivery schedule begins. Independent of pricing.
+                </Typography>
                 <Typography sx={{ fontSize: 12, fontWeight: 700, mb: 0.75 }}>Pickups per week</Typography>
                 <Stack direction="row" spacing={0.5} sx={{ mb: 1 }}>
                   {[1, 2, 3, 4, 5].map((n) => (
@@ -548,10 +561,13 @@ export default function ManagementRevenueAccountsPage() {
               </Select>
             </FormControl>
             <PlanningDatePicker
-              value={form.effective_from}
-              onChange={(v) => setForm({ ...form, effective_from: v })}
+              value={form.pricing_effective_from}
+              onChange={(v) => setForm({ ...form, pricing_effective_from: v })}
               label="Pricing effective from"
             />
+            <Typography sx={{ fontSize: 11, color: "#64748b", mt: -0.5 }}>
+              Controls rates only — does not change pickup/delivery obligations.
+            </Typography>
             {form.pricing_method === "flat_lb" || form.pricing_method === "flat_amount" || form.pricing_method === "per_order" ? (
               <TextField
                 label={form.pricing_method === "flat_lb" ? "Rate per lb" : "Rate"}

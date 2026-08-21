@@ -64,9 +64,58 @@ MISSING_WORK_START = date(2026, 8, 1)
 
 
 def missing_work_window_start(as_of: date, lookback_days: int = LOOKBACK_DAYS) -> date:
-    """Bound obligation generation: never before Aug 1, 2026."""
+    """Bound obligation generation: default floor Aug 1, 2026 (org rollout)."""
     raw = as_of - timedelta(days=lookback_days)
     return raw if raw >= MISSING_WORK_START else MISSING_WORK_START
+
+
+def account_schedule_obligation_start(cursor, account_id: int) -> date | None:
+    """Earliest schedule effective_from for this account (pairs or legacy schedule).
+
+    Account-specific starts may be before the org Aug 1 baseline when intentionally set.
+    """
+    ensure_obligation_tables(cursor)
+    dates: list[date] = []
+    cursor.execute(
+        """
+        SELECT MIN(effective_from) AS d FROM mgmt_revenue_account_schedules
+        WHERE account_id = %s
+        """,
+        (account_id,),
+    )
+    row = cursor.fetchone()
+    if row:
+        d = row.get("d") if isinstance(row, dict) else row[0]
+        if d:
+            dates.append(d if isinstance(d, date) else date.fromisoformat(str(d)[:10]))
+    if table_exists(cursor, "mgmt_revenue_pickup_pairs"):
+        cursor.execute(
+            """
+            SELECT MIN(effective_from) AS d FROM mgmt_revenue_pickup_pairs
+            WHERE account_id = %s AND active = 1
+            """,
+            (account_id,),
+        )
+        row = cursor.fetchone()
+        if row:
+            d = row.get("d") if isinstance(row, dict) else row[0]
+            if d:
+                dates.append(d if isinstance(d, date) else date.fromisoformat(str(d)[:10]))
+    return min(dates) if dates else None
+
+
+def obligation_window_start_for_account(
+    cursor,
+    account_id: int,
+    as_of: date,
+    *,
+    lookback_days: int = LOOKBACK_DAYS,
+) -> date:
+    """Per-account Missing Work floor: schedule start if set, else org Aug 1 baseline."""
+    raw = as_of - timedelta(days=lookback_days)
+    acct_start = account_schedule_obligation_start(cursor, account_id)
+    floor = acct_start if acct_start is not None else MISSING_WORK_START
+    return raw if raw >= floor else floor
 
 
 def ensure_obligation_tables(cursor) -> None:
@@ -324,26 +373,8 @@ def save_pickup_pairs(
     pairs: list[dict],
     user_id: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Replace active pickup→delivery pairs for a new effective date (preserve history)."""
+    """Persist pickup→delivery pairs for an effective date; preserve prior versions."""
     ensure_obligation_tables(cursor)
-    # Close prior open versions
-    cursor.execute(
-        """
-        UPDATE mgmt_revenue_pickup_pairs
-        SET effective_to = %s
-        WHERE account_id = %s AND effective_to IS NULL AND effective_from < %s AND active = 1
-        """,
-        (effective_from - timedelta(days=1), account_id, effective_from),
-    )
-    # Same-day: deactivate then insert
-    cursor.execute(
-        """
-        UPDATE mgmt_revenue_pickup_pairs
-        SET active = 0, effective_to = %s
-        WHERE account_id = %s AND effective_from = %s AND active = 1
-        """,
-        (effective_from, account_id, effective_from),
-    )
     cleaned = []
     for i, raw in enumerate(pairs or []):
         try:
@@ -354,6 +385,81 @@ def save_pickup_pairs(
         if not (0 <= pw <= 6 and 0 <= dw <= 6):
             continue
         cleaned.append((i + 1, pw, dw))
+
+    cursor.execute(
+        """
+        SELECT DISTINCT effective_from FROM mgmt_revenue_pickup_pairs
+        WHERE account_id = %s AND active = 1 AND effective_to IS NULL
+        ORDER BY effective_from DESC LIMIT 1
+        """,
+        (account_id,),
+    )
+    open_from_row = cursor.fetchone()
+    open_from = _as_date(
+        (open_from_row or {}).get("effective_from")
+        if isinstance(open_from_row, dict)
+        else (open_from_row[0] if open_from_row else None)
+    )
+
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS n FROM mgmt_revenue_pickup_pairs
+        WHERE account_id = %s AND effective_from = %s AND active = 1
+        """,
+        (account_id, effective_from),
+    )
+    exact_n = cursor.fetchone()
+    exact_count = int(
+        (exact_n or {}).get("n") if isinstance(exact_n, dict) else (exact_n[0] if exact_n else 0)
+    )
+
+    if exact_count:
+        # Same effective_from: replace pairs in place
+        cursor.execute(
+            """
+            UPDATE mgmt_revenue_pickup_pairs
+            SET active = 0, effective_to = %s
+            WHERE account_id = %s AND effective_from = %s AND active = 1
+            """,
+            (effective_from, account_id, effective_from),
+        )
+    elif open_from and effective_from < open_from:
+        # Backdate current open version
+        cursor.execute(
+            """
+            UPDATE mgmt_revenue_pickup_pairs
+            SET effective_from = %s
+            WHERE account_id = %s AND effective_from = %s AND active = 1 AND effective_to IS NULL
+            """,
+            (effective_from, account_id, open_from),
+        )
+        cursor.execute(
+            """
+            UPDATE mgmt_revenue_pickup_pairs
+            SET active = 0, effective_to = %s
+            WHERE account_id = %s AND effective_from = %s AND active = 1
+            """,
+            (effective_from, account_id, effective_from),
+        )
+    elif open_from and effective_from > open_from:
+        cursor.execute(
+            """
+            UPDATE mgmt_revenue_pickup_pairs
+            SET effective_to = %s
+            WHERE account_id = %s AND effective_to IS NULL AND effective_from < %s AND active = 1
+            """,
+            (effective_from - timedelta(days=1), account_id, effective_from),
+        )
+    else:
+        cursor.execute(
+            """
+            UPDATE mgmt_revenue_pickup_pairs
+            SET effective_to = %s
+            WHERE account_id = %s AND effective_to IS NULL AND effective_from < %s AND active = 1
+            """,
+            (effective_from - timedelta(days=1), account_id, effective_from),
+        )
+
     for seq, pw, dw in cleaned:
         cursor.execute(
             """
@@ -364,7 +470,7 @@ def save_pickup_pairs(
             """,
             (account_id, seq, pw, dw, effective_from, user_id),
         )
-    # Keep legacy weekday JSON in sync for older readers
+
     pickup_days = [p[1] for p in cleaned]
     delivery_days = [p[2] for p in cleaned]
     save_account_schedule(
@@ -417,6 +523,14 @@ def get_schedule_for_account(cursor, account_id: int, as_of: date) -> dict[str, 
     }
 
 
+def _as_date(val) -> date | None:
+    if val is None:
+        return None
+    if isinstance(val, date):
+        return val
+    return date.fromisoformat(str(val)[:10])
+
+
 def save_account_schedule(
     cursor,
     account_id: int,
@@ -426,10 +540,12 @@ def save_account_schedule(
     delivery_weekdays: list[int] | None,
     user_id: int | None = None,
 ) -> dict[str, Any]:
-    """Persist multi-select weekday schedule (effective-dated).
+    """Persist weekday schedule with true effective dating (no silent today overwrite).
 
-    Same-day re-saves UPDATE the existing row for that effective_from so multi-select
-    weekdays always stick. Prior open rows with earlier effective_from are closed.
+    - Same effective_from: update in place (no stack)
+    - Newer effective_from: close prior open version, insert new
+    - Earlier effective_from than current open: backdate/correct the open version
+      (does not invent fake history; corrects mistaken "today" stamps)
     """
     ensure_obligation_tables(cursor)
     pickup_json = (
@@ -441,16 +557,30 @@ def save_account_schedule(
 
     cursor.execute(
         """
+        SELECT id, effective_from, effective_to FROM mgmt_revenue_account_schedules
+        WHERE account_id = %s AND effective_to IS NULL
+        ORDER BY effective_from DESC, id DESC
+        LIMIT 1
+        """,
+        (account_id,),
+    )
+    open_row = cursor.fetchone()
+    open_d = dict(open_row) if open_row else None
+    open_from = _as_date(open_d.get("effective_from")) if open_d else None
+    open_id = int(open_d["id"]) if open_d else None
+
+    cursor.execute(
+        """
         SELECT id FROM mgmt_revenue_account_schedules
         WHERE account_id = %s AND effective_from = %s
-        ORDER BY id DESC
-        LIMIT 1
+        ORDER BY id DESC LIMIT 1
         """,
         (account_id, effective_from),
     )
-    existing = cursor.fetchone()
-    if existing:
-        row_id = int(existing["id"] if isinstance(existing, dict) else existing[0])
+    exact = cursor.fetchone()
+
+    if exact:
+        row_id = int(exact["id"] if isinstance(exact, dict) else exact[0])
         cursor.execute(
             """
             UPDATE mgmt_revenue_account_schedules
@@ -459,29 +589,56 @@ def save_account_schedule(
             """,
             (pickup_json, delivery_json, row_id),
         )
-        # Close any other open rows that would compete on this date.
+        # Close other open/overlapping rows that are not this version.
         cursor.execute(
             """
             UPDATE mgmt_revenue_account_schedules
             SET effective_to = %s
-            WHERE account_id = %s
-              AND id <> %s
-              AND effective_from <= %s
+            WHERE account_id = %s AND id <> %s
+              AND effective_from < %s
               AND (effective_to IS NULL OR effective_to >= %s)
             """,
             (effective_from - timedelta(days=1), account_id, row_id, effective_from, effective_from),
         )
-    else:
+        # If a newer open row exists after this historical version, close this one
+        # at day before that newer version (preserve forward history).
+        if open_id and open_from and open_from > effective_from and open_id != row_id:
+            cursor.execute(
+                """
+                UPDATE mgmt_revenue_account_schedules
+                SET effective_to = %s
+                WHERE id = %s AND (effective_to IS NULL OR effective_to >= %s)
+                """,
+                (open_from - timedelta(days=1), row_id, open_from),
+            )
+    elif open_id and open_from and effective_from < open_from:
+        # Backdate correction of the current open version (e.g. today → Aug 1).
+        cursor.execute(
+            """
+            UPDATE mgmt_revenue_account_schedules
+            SET effective_from = %s, pickup_weekdays = %s, delivery_weekdays = %s, effective_to = NULL
+            WHERE id = %s
+            """,
+            (effective_from, pickup_json, delivery_json, open_id),
+        )
+    elif open_id and open_from and effective_from > open_from:
         cursor.execute(
             """
             UPDATE mgmt_revenue_account_schedules
             SET effective_to = %s
-            WHERE account_id = %s
-              AND effective_from < %s
-              AND (effective_to IS NULL OR effective_to >= %s)
+            WHERE id = %s
             """,
-            (effective_from - timedelta(days=1), account_id, effective_from, effective_from),
+            (effective_from - timedelta(days=1), open_id),
         )
+        cursor.execute(
+            """
+            INSERT INTO mgmt_revenue_account_schedules
+              (account_id, effective_from, pickup_weekdays, delivery_weekdays, created_by)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (account_id, effective_from, pickup_json, delivery_json, user_id),
+        )
+    else:
         cursor.execute(
             """
             INSERT INTO mgmt_revenue_account_schedules
@@ -836,7 +993,6 @@ def build_dhs_obligations(
     ensure_account_obligation_columns(cursor)
     seed_default_cadences_and_schedules(cursor, org_id)
     as_of = as_of or business_today()
-    start = missing_work_window_start(as_of, lookback_days)
     accounts = list_accounts(cursor, org_id, as_of=as_of, active_only=True)
     out = []
     for acct in accounts:
@@ -844,11 +1000,19 @@ def build_dhs_obligations(
             continue
         if default_cadence_for_account(acct) != CADENCE_SCHEDULED:
             continue
+        start = obligation_window_start_for_account(
+            cursor, int(acct["id"]), as_of, lookback_days=lookback_days,
+        )
         sched = get_schedule_for_account(cursor, acct["id"], as_of)
         pickups = scheduled_pickup_dates(sched, start, as_of)
         for pickup in pickups:
-            # schedule effective on pickup day
+            # Only emit obligations on/after this pickup's effective schedule version start
             sched_p = get_schedule_for_account(cursor, acct["id"], pickup) or sched
+            if not sched_p:
+                continue
+            sched_start = _as_date(sched_p.get("effective_from"))
+            if sched_start and pickup < sched_start:
+                continue
             pickup_days = ((sched_p or {}).get("pickup_weekdays") or [])
             if pickup.weekday() not in pickup_days:
                 continue
@@ -926,7 +1090,7 @@ def build_missing_work(
             "sections": [],
         }
 
-    dhs_all = build_dhs_obligations(cursor, org_id, as_of=as_of) if as_of >= MISSING_WORK_START else []
+    dhs_all = build_dhs_obligations(cursor, org_id, as_of=as_of)
     dhs_pending = [r for r in dhs_all if not r.get("resolved")]
 
     items: list[dict[str, Any]] = []
@@ -1093,22 +1257,12 @@ def build_missing_work_summary_only(
 ) -> dict[str, Any]:
     """Badge counts without full grouped payload — for slim bootstrap."""
     as_of = as_of or business_today()
-    if as_of < MISSING_WORK_START:
-        return {
-            "missing_total": 0,
-            "daily_missing": 0,
-            "dhs_pending": 0,
-            "overdue": 0,
-            "today": 0,
-            "yesterday": 0,
-            "older": 0,
-            "missing_work_start": MISSING_WORK_START.isoformat(),
-        }
-    daily = build_daily_completeness(cursor, org_id, as_of)
-    daily_missing = sum(
-        1 for s in daily["sections"] if s["status"] in (STATUS_MISSING, STATUS_DRAFT)
-    )
-    # Bound lookback for badges (full Missing Work tab still uses LOOKBACK_DAYS).
+    daily_missing = 0
+    if as_of >= MISSING_WORK_START:
+        daily = build_daily_completeness(cursor, org_id, as_of)
+        daily_missing = sum(
+            1 for s in daily["sections"] if s["status"] in (STATUS_MISSING, STATUS_DRAFT)
+        )
     dhs = build_dhs_obligations(cursor, org_id, as_of=as_of, lookback_days=7)
     pending = [r for r in dhs if not r.get("resolved")]
     overdue = sum(1 for r in pending if r.get("status") == STATUS_OVERDUE)
