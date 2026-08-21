@@ -36,6 +36,13 @@ from backend.management_revenue_obligations import (
     get_schedule_for_account,
     reverse_disposition,
     save_account_schedule,
+    save_pickup_pairs,
+)
+from backend.management_revenue_pin import (
+    build_cash_tab,
+    build_daily_tab,
+    build_dhs_tab,
+    build_pin_bootstrap,
 )
 from backend.rinse_scan_time import json_safe_rinse
 
@@ -101,7 +108,35 @@ def register_management_revenue_routes(
 
     @app.route("/api/management/revenue/bootstrap", methods=["GET"])
     def management_revenue_bootstrap():
-        """PIN/home bootstrap: Entry day + Missing Work summary in one round-trip."""
+        """PIN V3 slim bootstrap: Daily shell + badge counts only."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
+            raw_date = (request.args.get("date_et") or request.args.get("processing_date") or "").strip()
+            try:
+                selected = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            payload = build_pin_bootstrap(cursor, oid, selected)
+            conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/revenue/daily", methods=["GET"])
+    def management_revenue_daily_tab():
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
@@ -118,19 +153,65 @@ def register_management_revenue_routes(
                 selected = _selected_date(raw_date, employee=employee)
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
-            day = build_revenue_day(cursor, oid, selected)
+            payload = build_daily_tab(cursor, oid, selected)
             conn.commit()
-            return jsonify(json_safe_rinse({
-                "date_et": selected.isoformat(),
-                "day": day,
-                "missing_work": day.get("missing_work") or {
-                    "summary": day.get("missing_work_summary") or {},
-                    "items": [],
-                    "groups": [],
-                },
-            }))
+            return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/revenue/dhs-board", methods=["GET"])
+    def management_revenue_dhs_board():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
+            raw_date = (request.args.get("date_et") or request.args.get("as_of") or "").strip()
+            try:
+                selected = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            payload = build_dhs_tab(cursor, oid, selected)
+            conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/revenue/cash-tab", methods=["GET"])
+    def management_revenue_cash_tab():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
+            raw_date = (request.args.get("date_et") or "").strip()
+            try:
+                selected = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            payload = build_cash_tab(cursor, oid, as_of=selected)
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()
@@ -549,14 +630,25 @@ def register_management_revenue_routes(
             effective_from = parse_date_value(raw_from) if raw_from else business_today()
             if not isinstance(effective_from, date):
                 return jsonify({"error": "Invalid effective_from"}), 400
-            sched = save_account_schedule(
-                cursor,
-                account_id,
-                effective_from=effective_from,
-                pickup_weekdays=body.get("pickup_weekdays"),
-                delivery_weekdays=body.get("delivery_weekdays"),
-                user_id=_user_id(me),
-            )
+            if body.get("pickup_pairs") is not None:
+                pairs = save_pickup_pairs(
+                    cursor,
+                    account_id,
+                    effective_from=effective_from,
+                    pairs=body.get("pickup_pairs") or [],
+                    user_id=_user_id(me),
+                )
+                sched = get_schedule_for_account(cursor, account_id, effective_from) or {}
+                sched["pickup_pairs"] = pairs
+            else:
+                sched = save_account_schedule(
+                    cursor,
+                    account_id,
+                    effective_from=effective_from,
+                    pickup_weekdays=body.get("pickup_weekdays"),
+                    delivery_weekdays=body.get("delivery_weekdays"),
+                    user_id=_user_id(me),
+                )
             conn.commit()
             return jsonify(json_safe_rinse({"schedule": sched}))
         except Exception as exc:

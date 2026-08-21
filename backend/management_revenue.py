@@ -132,10 +132,18 @@ def _load_entry_header(cursor, org_id: int, entry_date: date) -> dict | None:
     return dict(row) if row else None
 
 
-def build_revenue_day(cursor, org_id: int, entry_date: date) -> dict[str, Any]:
+def build_revenue_day(
+    cursor,
+    org_id: int,
+    entry_date: date,
+    *,
+    include_missing: bool = False,
+    include_dhs_day: bool = False,
+) -> dict[str, Any]:
     """Single-day revenue view for Management Revenue entry.
 
     Does not call DRC get_daily_entry (payroll + at-vendor workload rebuild).
+    By default skips full Missing Work / DHS day obligation scans (PIN V3).
     """
     ensure_management_revenue_tables(cursor)
     header = _load_entry_header(cursor, org_id, entry_date)
@@ -164,8 +172,24 @@ def build_revenue_day(cursor, org_id: int, entry_date: date) -> dict[str, Any]:
     )
 
     daily_completeness = build_daily_completeness(cursor, org_id, entry_date)
-    dhs_day = build_dhs_day_summary(cursor, org_id, entry_date)
-    missing = build_missing_work(cursor, org_id, as_of=entry_date, filter_kind="all")
+    dhs_day = (
+        build_dhs_day_summary(cursor, org_id, entry_date)
+        if include_dhs_day
+        else {
+            "processing_date_et": entry_date.isoformat(),
+            "due": 0,
+            "complete": 0,
+            "pending": 0,
+            "nothing_due": True,
+            "label": "—",
+            "accounts": [],
+        }
+    )
+    missing = (
+        build_missing_work(cursor, org_id, as_of=entry_date, filter_kind="all")
+        if include_missing
+        else {"summary": {}, "items": [], "groups": []}
+    )
     return {
         "date_et": entry_date.isoformat(),
         "entry_id": header.get("id") if header else None,
@@ -184,8 +208,8 @@ def build_revenue_day(cursor, org_id: int, entry_date: date) -> dict[str, Any]:
         },
         "daily_completeness": daily_completeness,
         "dhs_day": dhs_day,
-        "missing_work_summary": missing["summary"],
-        "missing_work": missing,
+        "missing_work_summary": missing.get("summary") or {},
+        "missing_work": missing if include_missing else None,
         "section_status": {
             "sections": [
                 {

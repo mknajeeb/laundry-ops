@@ -59,6 +59,14 @@ WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 LOOKBACK_DAYS = 28
 LOOKAHEAD_DAYS = 7
+# Missing Work enforcement floor (America/New_York business dates).
+MISSING_WORK_START = date(2026, 8, 1)
+
+
+def missing_work_window_start(as_of: date, lookback_days: int = LOOKBACK_DAYS) -> date:
+    """Bound obligation generation: never before Aug 1, 2026."""
+    raw = as_of - timedelta(days=lookback_days)
+    return raw if raw >= MISSING_WORK_START else MISSING_WORK_START
 
 
 def ensure_obligation_tables(cursor) -> None:
@@ -103,6 +111,25 @@ def ensure_obligation_tables(cursor) -> None:
               INDEX idx_mgmt_rev_disp_org_src (organization_id, source_key, processing_date_et),
               INDEX idx_mgmt_rev_disp_pickup (organization_id, account_id, scheduled_pickup_date),
               INDEX idx_mgmt_rev_disp_active (organization_id, reversed_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+    if not table_exists(cursor, "mgmt_revenue_pickup_pairs"):
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mgmt_revenue_pickup_pairs (
+              id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+              account_id BIGINT NOT NULL,
+              sequence_no INT NOT NULL DEFAULT 1,
+              pickup_weekday TINYINT NOT NULL,
+              delivery_weekday TINYINT NOT NULL,
+              effective_from DATE NOT NULL,
+              effective_to DATE NULL,
+              active TINYINT NOT NULL DEFAULT 1,
+              created_by INT NULL,
+              created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              INDEX idx_mgmt_rev_pairs_acct (account_id, effective_from, active),
+              INDEX idx_mgmt_rev_pairs_active (account_id, active, effective_from, effective_to)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
@@ -232,6 +259,125 @@ def seed_default_cadences_and_schedules(cursor, org_id: int, *, user_id: int | N
         )
 
 
+def _legacy_pairs_from_weekdays(
+    pickup_days: list[int], delivery_days: list[int]
+) -> tuple[list[dict[str, Any]], bool]:
+    """Zip equal-length weekday lists into pairs. Ambiguous → empty + needs_confirm."""
+    pickup_days = list(pickup_days or [])
+    delivery_days = list(delivery_days or [])
+    if not pickup_days:
+        return [], False
+    if len(pickup_days) == len(delivery_days):
+        return [
+            {
+                "sequence_no": i + 1,
+                "pickup_weekday": int(p),
+                "delivery_weekday": int(d),
+            }
+            for i, (p, d) in enumerate(zip(pickup_days, delivery_days))
+        ], False
+    if len(pickup_days) == 1 and delivery_days:
+        # Single pickup → first delivery weekday (stable guess)
+        return [
+            {
+                "sequence_no": 1,
+                "pickup_weekday": int(pickup_days[0]),
+                "delivery_weekday": int(delivery_days[0]),
+            }
+        ], False
+    return [], True
+
+
+def get_pickup_pairs_for_account(cursor, account_id: int, as_of: date) -> list[dict[str, Any]]:
+    ensure_obligation_tables(cursor)
+    cursor.execute(
+        """
+        SELECT * FROM mgmt_revenue_pickup_pairs
+        WHERE account_id = %s AND active = 1
+          AND effective_from <= %s
+          AND (effective_to IS NULL OR effective_to >= %s)
+        ORDER BY sequence_no ASC, id ASC
+        """,
+        (account_id, as_of, as_of),
+    )
+    out = []
+    for row in cursor.fetchall() or []:
+        r = dict(row)
+        out.append({
+            "id": int(r["id"]),
+            "account_id": int(r["account_id"]),
+            "sequence_no": int(r.get("sequence_no") or 1),
+            "pickup_weekday": int(r["pickup_weekday"]),
+            "delivery_weekday": int(r["delivery_weekday"]),
+            "effective_from": _iso(r.get("effective_from")),
+            "effective_to": _iso(r.get("effective_to")),
+            "active": bool(r.get("active", 1)),
+        })
+    return out
+
+
+def save_pickup_pairs(
+    cursor,
+    account_id: int,
+    *,
+    effective_from: date,
+    pairs: list[dict],
+    user_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Replace active pickup→delivery pairs for a new effective date (preserve history)."""
+    ensure_obligation_tables(cursor)
+    # Close prior open versions
+    cursor.execute(
+        """
+        UPDATE mgmt_revenue_pickup_pairs
+        SET effective_to = %s
+        WHERE account_id = %s AND effective_to IS NULL AND effective_from < %s AND active = 1
+        """,
+        (effective_from - timedelta(days=1), account_id, effective_from),
+    )
+    # Same-day: deactivate then insert
+    cursor.execute(
+        """
+        UPDATE mgmt_revenue_pickup_pairs
+        SET active = 0, effective_to = %s
+        WHERE account_id = %s AND effective_from = %s AND active = 1
+        """,
+        (effective_from, account_id, effective_from),
+    )
+    cleaned = []
+    for i, raw in enumerate(pairs or []):
+        try:
+            pw = int(raw.get("pickup_weekday"))
+            dw = int(raw.get("delivery_weekday"))
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= pw <= 6 and 0 <= dw <= 6):
+            continue
+        cleaned.append((i + 1, pw, dw))
+    for seq, pw, dw in cleaned:
+        cursor.execute(
+            """
+            INSERT INTO mgmt_revenue_pickup_pairs
+              (account_id, sequence_no, pickup_weekday, delivery_weekday,
+               effective_from, active, created_by)
+            VALUES (%s, %s, %s, %s, %s, 1, %s)
+            """,
+            (account_id, seq, pw, dw, effective_from, user_id),
+        )
+    # Keep legacy weekday JSON in sync for older readers
+    pickup_days = [p[1] for p in cleaned]
+    delivery_days = [p[2] for p in cleaned]
+    save_account_schedule(
+        cursor,
+        account_id,
+        effective_from=effective_from,
+        pickup_weekdays=pickup_days,
+        delivery_weekdays=delivery_days,
+        user_id=user_id,
+    )
+    return get_pickup_pairs_for_account(cursor, account_id, effective_from)
+
+
 def get_schedule_for_account(cursor, account_id: int, as_of: date) -> dict[str, Any] | None:
     ensure_obligation_tables(cursor)
     cursor.execute(
@@ -249,13 +395,25 @@ def get_schedule_for_account(cursor, account_id: int, as_of: date) -> dict[str, 
     if not row:
         return None
     r = dict(row)
+    pickup_days = _parse_weekdays(r.get("pickup_weekdays"))
+    delivery_days = _parse_weekdays(r.get("delivery_weekdays"))
+    pairs = get_pickup_pairs_for_account(cursor, account_id, as_of)
+    needs_confirm = False
+    if not pairs and (pickup_days or delivery_days):
+        pairs, needs_confirm = _legacy_pairs_from_weekdays(pickup_days, delivery_days)
+    if pairs and not needs_confirm:
+        pickup_days = [int(p["pickup_weekday"]) for p in pairs]
+        delivery_days = [int(p["delivery_weekday"]) for p in pairs]
     return {
         "id": int(r["id"]),
         "account_id": int(r["account_id"]),
         "effective_from": _iso(r.get("effective_from")),
         "effective_to": _iso(r.get("effective_to")),
-        "pickup_weekdays": _parse_weekdays(r.get("pickup_weekdays")),
-        "delivery_weekdays": _parse_weekdays(r.get("delivery_weekdays")),
+        "pickup_weekdays": pickup_days,
+        "delivery_weekdays": delivery_days,
+        "pickup_pairs": pairs,
+        "pickups_per_week": len(pairs) if pairs else len(pickup_days),
+        "needs_schedule_confirm": needs_confirm,
     }
 
 
@@ -339,35 +497,86 @@ def derive_dates_from_schedule(
     processing_date: date,
     schedule: dict | None,
 ) -> dict[str, str | None]:
-    """Prefill pickup/delivery relative to processing date using weekly schedule.
-
-    Pickup = most recent scheduled weekday on or before processing date.
-    Delivery = next scheduled weekday on or after processing date.
-    """
+    """Prefill pickup/delivery relative to processing date using paired schedule."""
     if not schedule:
-        return {"pickup_date": None, "delivery_date": None, "scheduled_pickup_date": None, "scheduled_delivery_date": None}
-    pick_days = schedule.get("pickup_weekdays") or []
-    del_days = schedule.get("delivery_weekdays") or []
+        return {
+            "pickup_date": None,
+            "delivery_date": None,
+            "scheduled_pickup_date": None,
+            "scheduled_delivery_date": None,
+        }
+    pairs = schedule.get("pickup_pairs") or []
     pickup = None
     delivery = None
-    if pick_days:
-        for i in range(0, 8):
+    if pairs:
+        # Most recent paired pickup on/before processing date
+        best = None
+        for i in range(0, 14):
             d = processing_date - timedelta(days=i)
-            if d.weekday() in pick_days:
-                pickup = d
+            for p in pairs:
+                if d.weekday() == int(p["pickup_weekday"]):
+                    best = (d, int(p["delivery_weekday"]))
+                    break
+            if best:
                 break
-    if del_days:
-        for i in range(0, 8):
-            d = processing_date + timedelta(days=i)
-            if d.weekday() in del_days:
-                delivery = d
-                break
+        if best:
+            pickup = best[0]
+            # Delivery weekday relative to that pickup (may be next week)
+            for i in range(0, 14):
+                d = pickup + timedelta(days=i)
+                if i == 0 and d.weekday() == best[1] and best[1] == pickup.weekday():
+                    # same-day delivery allowed
+                    delivery = d
+                    break
+                if i > 0 and d.weekday() == best[1]:
+                    delivery = d
+                    break
+    else:
+        pick_days = schedule.get("pickup_weekdays") or []
+        del_days = schedule.get("delivery_weekdays") or []
+        if pick_days:
+            for i in range(0, 8):
+                d = processing_date - timedelta(days=i)
+                if d.weekday() in pick_days:
+                    pickup = d
+                    break
+        if del_days and pickup:
+            for i in range(0, 8):
+                d = pickup + timedelta(days=i)
+                if d.weekday() in del_days:
+                    delivery = d
+                    break
+        elif del_days:
+            for i in range(0, 8):
+                d = processing_date + timedelta(days=i)
+                if d.weekday() in del_days:
+                    delivery = d
+                    break
     return {
         "pickup_date": _iso(pickup),
         "delivery_date": _iso(delivery),
         "scheduled_pickup_date": _iso(pickup),
         "scheduled_delivery_date": _iso(delivery),
     }
+
+
+def _delivery_for_pickup(pickup: date, schedule: dict | None) -> date | None:
+    if not schedule:
+        return None
+    pairs = schedule.get("pickup_pairs") or []
+    for p in pairs:
+        if pickup.weekday() == int(p["pickup_weekday"]):
+            dw = int(p["delivery_weekday"])
+            for i in range(0, 14):
+                d = pickup + timedelta(days=i)
+                if d.weekday() == dw:
+                    return d
+    del_days = (schedule or {}).get("delivery_weekdays") or []
+    for i in range(0, 8):
+        d = pickup + timedelta(days=i)
+        if d.weekday() in del_days:
+            return d
+    return None
 
 
 def _iter_dates(start: date, end: date):
@@ -627,7 +836,7 @@ def build_dhs_obligations(
     ensure_account_obligation_columns(cursor)
     seed_default_cadences_and_schedules(cursor, org_id)
     as_of = as_of or business_today()
-    start = as_of - timedelta(days=lookback_days)
+    start = missing_work_window_start(as_of, lookback_days)
     accounts = list_accounts(cursor, org_id, as_of=as_of, active_only=True)
     out = []
     for acct in accounts:
@@ -640,21 +849,15 @@ def build_dhs_obligations(
         for pickup in pickups:
             # schedule effective on pickup day
             sched_p = get_schedule_for_account(cursor, acct["id"], pickup) or sched
-            if pickup.weekday() not in ((sched_p or {}).get("pickup_weekdays") or []):
+            pickup_days = ((sched_p or {}).get("pickup_weekdays") or [])
+            if pickup.weekday() not in pickup_days:
                 continue
             source_key = dhs_source_key(acct["id"])
             disp = _active_disposition(
                 cursor, org_id, source_key=source_key, scheduled_pickup_date=pickup,
             )
             entry = dhs_entry_for_pickup(cursor, org_id, acct, pickup)
-            derived_delivery = None
-            del_days = (sched_p or {}).get("delivery_weekdays") or []
-            if del_days:
-                for i in range(0, 8):
-                    d = pickup + timedelta(days=i)
-                    if d.weekday() in del_days:
-                        derived_delivery = d
-                        break
+            derived_delivery = _delivery_for_pickup(pickup, sched_p)
             if disp and disp.get("disposition") == DISP_RESCHEDULED:
                 status = STATUS_RESCHEDULED
                 resolved = True
@@ -698,22 +901,32 @@ def build_missing_work(
     filter_kind: str = "all",
 ) -> dict[str, Any]:
     as_of = as_of or business_today()
-    daily = build_daily_completeness(cursor, org_id, as_of)
-    daily_missing = [
-        {
-            "kind": "daily",
-            "source_key": s["key"],
-            "name": s["label"],
-            "status": s["status"],
+    daily_missing: list[dict[str, Any]] = []
+    if as_of >= MISSING_WORK_START:
+        daily = build_daily_completeness(cursor, org_id, as_of)
+        daily_missing = [
+            {
+                "kind": "daily",
+                "source_key": s["key"],
+                "name": s["label"],
+                "status": s["status"],
+                "processing_date_et": as_of.isoformat(),
+                "entry_target": s["entry_target"],
+                "overdue": False,
+            }
+            for s in daily["sections"]
+            if s["status"] in (STATUS_MISSING, STATUS_DRAFT)
+        ]
+    else:
+        daily = {
             "processing_date_et": as_of.isoformat(),
-            "entry_target": s["entry_target"],
-            "overdue": False,
+            "complete": 0,
+            "required": 4,
+            "label": "—",
+            "sections": [],
         }
-        for s in daily["sections"]
-        if s["status"] in (STATUS_MISSING, STATUS_DRAFT)
-    ]
 
-    dhs_all = build_dhs_obligations(cursor, org_id, as_of=as_of)
+    dhs_all = build_dhs_obligations(cursor, org_id, as_of=as_of) if as_of >= MISSING_WORK_START else []
     dhs_pending = [r for r in dhs_all if not r.get("resolved")]
 
     items: list[dict[str, Any]] = []
@@ -848,11 +1061,140 @@ def _group_missing_items(items: list[dict], as_of: date) -> list[dict[str, Any]]
     # Sort: overdue/older dates first, then yesterday, today, upcoming
     order = {"older": 0, "yesterday": 1, "today": 2, "upcoming": 3}
     out = []
+    older_bucket = {
+        "date_et": "older",
+        "bucket": "older",
+        "label": "Older",
+        "count": 0,
+        "daily": [],
+        "dhs": [],
+        "collapsed_default": True,
+    }
     for date_iso in sorted(buckets.keys(), key=lambda d: (order.get(buckets[d]["bucket"], 9), d)):
         b = buckets[date_iso]
         b["dhs"] = list(b.pop("dhs_by_account").values())
+        if b["bucket"] == "older":
+            older_bucket["count"] += b["count"]
+            older_bucket["daily"].extend(b["daily"])
+            older_bucket["dhs"].extend(b["dhs"])
+            continue
+        b["collapsed_default"] = b["bucket"] not in ("today", "yesterday")
         out.append(b)
+    if older_bucket["count"]:
+        out.insert(0, older_bucket)
     return out
+
+
+def build_missing_work_summary_only(
+    cursor,
+    org_id: int,
+    *,
+    as_of: date | None = None,
+) -> dict[str, Any]:
+    """Badge counts without full grouped payload — for slim bootstrap."""
+    as_of = as_of or business_today()
+    if as_of < MISSING_WORK_START:
+        return {
+            "missing_total": 0,
+            "daily_missing": 0,
+            "dhs_pending": 0,
+            "overdue": 0,
+            "today": 0,
+            "yesterday": 0,
+            "older": 0,
+            "missing_work_start": MISSING_WORK_START.isoformat(),
+        }
+    daily = build_daily_completeness(cursor, org_id, as_of)
+    daily_missing = sum(
+        1 for s in daily["sections"] if s["status"] in (STATUS_MISSING, STATUS_DRAFT)
+    )
+    # Bound lookback for badges (full Missing Work tab still uses LOOKBACK_DAYS).
+    dhs = build_dhs_obligations(cursor, org_id, as_of=as_of, lookback_days=7)
+    pending = [r for r in dhs if not r.get("resolved")]
+    overdue = sum(1 for r in pending if r.get("status") == STATUS_OVERDUE)
+    return {
+        "missing_total": daily_missing + len(pending),
+        "daily_missing": daily_missing,
+        "dhs_pending": len(pending),
+        "overdue": overdue,
+        "today": daily_missing + sum(
+            1 for r in pending if r.get("scheduled_pickup_date") == as_of.isoformat()
+        ),
+        "yesterday": 0,
+        "older": overdue,
+        "missing_work_start": MISSING_WORK_START.isoformat(),
+    }
+
+
+def build_dhs_board(cursor, org_id: int, *, as_of: date | None = None) -> dict[str, Any]:
+    """DHS tab workspace: today counts + Today/Upcoming/Overdue account cards."""
+    as_of = as_of or business_today()
+    # Window: recent lookback (bounded by Aug 1) + short lookahead for upcoming
+    obs = build_dhs_obligations(cursor, org_id, as_of=as_of + timedelta(days=LOOKAHEAD_DAYS), lookback_days=LOOKBACK_DAYS)
+    # Filter out future beyond lookahead already in as_of+7; drop resolved for operational board optional
+    today_pickups = [r for r in obs if r.get("scheduled_pickup_date") == as_of.isoformat()]
+    today_deliveries = [
+        r for r in obs if r.get("scheduled_delivery_date") == as_of.isoformat()
+    ]
+    pending_processing = [
+        r for r in obs
+        if not r.get("resolved")
+        and r.get("suggested_processing_date") == as_of.isoformat()
+    ]
+    overdue = [r for r in obs if r.get("status") == STATUS_OVERDUE]
+    upcoming = [
+        r for r in obs
+        if not r.get("resolved")
+        and r.get("scheduled_pickup_date")
+        and r["scheduled_pickup_date"] > as_of.isoformat()
+    ]
+    today_work = [
+        r for r in obs
+        if not r.get("resolved")
+        and (
+            r.get("scheduled_pickup_date") == as_of.isoformat()
+            or r.get("suggested_processing_date") == as_of.isoformat()
+            or r.get("scheduled_delivery_date") == as_of.isoformat()
+        )
+    ]
+    confirm = []
+    from backend.management_revenue_accounts import list_accounts
+    for acct in list_accounts(cursor, org_id, as_of=as_of, active_only=True):
+        if (acct.get("revenue_group") or "") != "dhs":
+            continue
+        sched = get_schedule_for_account(cursor, acct["id"], as_of)
+        if sched and sched.get("needs_schedule_confirm"):
+            confirm.append({"account_id": acct["id"], "name": acct.get("name")})
+
+    def _card(r: dict) -> dict:
+        return {
+            "account_id": r["account_id"],
+            "name": r["name"],
+            "status": r["status"],
+            "source_key": r["source_key"],
+            "scheduled_pickup_date": r.get("scheduled_pickup_date"),
+            "scheduled_delivery_date": r.get("scheduled_delivery_date"),
+            "suggested_processing_date": r.get("suggested_processing_date"),
+            "resolved": r.get("resolved"),
+            "entry": r.get("entry"),
+        }
+
+    return {
+        "as_of": as_of.isoformat(),
+        "missing_work_start": MISSING_WORK_START.isoformat(),
+        "counts": {
+            "pickups_today": len(today_pickups),
+            "deliveries_today": len(today_deliveries),
+            "pending_processing": len(pending_processing),
+            "overdue": len(overdue),
+        },
+        "groups": {
+            "today": [_card(r) for r in today_work],
+            "overdue": [_card(r) for r in overdue],
+            "upcoming": [_card(r) for r in upcoming[:40]],
+        },
+        "needs_schedule_confirm": confirm,
+    }
 
 
 def create_disposition(

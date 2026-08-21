@@ -72,10 +72,14 @@ export default function MissingWorkPanel({
     });
   };
 
-  // Default: expand first group
+  // Default: expand today/yesterday only
   const effectiveOpen = openDates.size
     ? openDates
-    : new Set(groups[0]?.date_et ? [groups[0].date_et] : []);
+    : new Set(
+        groups
+          .filter((g) => g.bucket === "today" || g.bucket === "yesterday")
+          .map((g) => g.date_et),
+      );
 
   return (
     <Stack spacing={1.25}>

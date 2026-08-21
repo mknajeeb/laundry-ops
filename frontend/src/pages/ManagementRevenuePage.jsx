@@ -148,8 +148,8 @@ export default function ManagementRevenuePage() {
   }, [loadDay]);
 
   useEffect(() => {
-    loadCashActivity();
-  }, [loadCashActivity]);
+    if (view === "cash" || view === "dashboard") loadCashActivity();
+  }, [loadCashActivity, view]);
 
   useEffect(() => {
     if (view === "dashboard") loadDashboard();
@@ -354,11 +354,12 @@ export default function ManagementRevenuePage() {
         allowScrollButtonsMobile
         sx={{ mb: 2, minHeight: 40, "& .MuiTab-root": { minHeight: 40, fontWeight: 800, textTransform: "none" } }}
       >
-        <Tab value="entry" label="Entry" />
+        <Tab value="entry" label="Daily" />
         <Tab
           value="missing"
           label={`Missing Work${missing?.summary?.missing_total != null ? ` · ${missing.summary.missing_total}` : ""}`}
         />
+        <Tab value="cash" label="Cash" />
         <Tab value="dashboard" label="Stats" />
       </Tabs>
 
@@ -480,49 +481,44 @@ export default function ManagementRevenuePage() {
 
           <Box
             sx={{
-              display: "grid",
-              gap: 1.5,
-              gridTemplateColumns: { xs: "1fr", lg: "1fr 1fr" },
+              border: "1px solid #e5e7eb",
+              borderRadius: 2,
+              bgcolor: "#fff",
+              p: 2,
+              boxShadow: VEEWASH_DASHBOARD.cardShadow,
             }}
           >
-            <CashActivityPanel
-              period={cashPeriod}
-              onPeriodChange={setCashPeriod}
-              customStart={customStart}
-              customEnd={customEnd}
-              onCustomStart={setCustomStart}
-              onCustomEnd={setCustomEnd}
-              loading={cashLoading}
-              activity={cashActivity}
-              onAddPayout={() => {
-                setPayoutDate(dateEt);
-                setPayoutOpen(true);
-              }}
-              onDeletePayout={removePayout}
-            />
-            <Box
-              sx={{
-                border: "1px solid #e5e7eb",
-                borderRadius: 2,
-                bgcolor: "#fff",
-                p: 2,
-                boxShadow: VEEWASH_DASHBOARD.cardShadow,
-              }}
-            >
-              <Typography sx={{ fontWeight: 800, fontSize: 15, mb: 1 }}>How to enter</Typography>
-              <Typography sx={{ fontSize: 13, color: "#64748b", lineHeight: 1.5 }}>
-                Daily sources must be Entered or No Activity. DHS obligations appear from account
-                pickup schedules. Blank is never treated as $0.
+            <Typography sx={{ fontWeight: 800, fontSize: 15, mb: 1 }}>Daily closeout</Typography>
+            <Typography sx={{ fontSize: 13, color: "#64748b", lineHeight: 1.5 }}>
+              Self Service, Drop Off, Rinse WF, and Rinse HD only. DHS and Cash Paid Out are separate tabs.
+              Blank is never treated as $0.
+            </Typography>
+            {data?.missing_work_summary ? (
+              <Typography sx={{ mt: 1, fontSize: 13, fontWeight: 700, color: "#d97706" }}>
+                Missing: {data.missing_work_summary.missing_total} ({data.missing_work_summary.daily_missing}{" "}
+                daily · {data.missing_work_summary.dhs_pending} DHS)
               </Typography>
-              {data?.missing_work_summary ? (
-                <Typography sx={{ mt: 1, fontSize: 13, fontWeight: 700, color: "#d97706" }}>
-                  Missing: {data.missing_work_summary.missing_total} ({data.missing_work_summary.daily_missing}{" "}
-                  daily · {data.missing_work_summary.dhs_pending} DHS)
-                </Typography>
-              ) : null}
-            </Box>
+            ) : null}
           </Box>
         </Stack>
+      ) : null}
+
+      {view === "cash" ? (
+        <CashActivityPanel
+          period={cashPeriod}
+          onPeriodChange={setCashPeriod}
+          customStart={customStart}
+          customEnd={customEnd}
+          onCustomStart={setCustomStart}
+          onCustomEnd={setCustomEnd}
+          loading={cashLoading}
+          activity={cashActivity}
+          onAddPayout={() => {
+            setPayoutDate(dateEt);
+            setPayoutOpen(true);
+          }}
+          onDeletePayout={removePayout}
+        />
       ) : null}
 
       <RevenueAccountDrawer

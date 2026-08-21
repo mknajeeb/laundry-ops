@@ -1072,7 +1072,18 @@ def save_account(
                 user_id=user_id,
             )
 
-    if "pickup_weekdays" in payload or "delivery_weekdays" in payload:
+    if "pickup_pairs" in payload:
+        from backend.management_revenue_obligations import save_pickup_pairs
+
+        sched_from = payload.get("schedule_effective_from") or business_today().isoformat()
+        save_pickup_pairs(
+            cursor,
+            int(acct_id),
+            effective_from=date.fromisoformat(str(sched_from)[:10]),
+            pairs=payload.get("pickup_pairs") or [],
+            user_id=user_id,
+        )
+    elif "pickup_weekdays" in payload or "delivery_weekdays" in payload:
         sched_from = payload.get("schedule_effective_from") or business_today().isoformat()
         save_account_schedule(
             cursor,

@@ -66,6 +66,9 @@ function emptyForm() {
     entry_cadence: "scheduled",
     pickup_weekdays: [],
     delivery_weekdays: [],
+    pickup_pairs: [],
+    pickups_per_week: 0,
+    needs_schedule_confirm: false,
     notes: "",
     pricing_method: "flat_lb",
     rate_per_unit: "",
@@ -155,6 +158,9 @@ export default function ManagementRevenueAccountsPage() {
       entry_cadence: acct.entry_cadence || "scheduled",
       pickup_weekdays: acct.schedule?.pickup_weekdays || [],
       delivery_weekdays: acct.schedule?.delivery_weekdays || [],
+      pickup_pairs: acct.schedule?.pickup_pairs || [],
+      pickups_per_week: acct.schedule?.pickups_per_week || (acct.schedule?.pickup_pairs || []).length || 0,
+      needs_schedule_confirm: Boolean(acct.schedule?.needs_schedule_confirm),
       notes: acct.notes || "",
       pricing_method: pr.pricing_method || "flat_lb",
       rate_per_unit: pr.rate_per_unit ?? "",
@@ -187,8 +193,9 @@ export default function ManagementRevenueAccountsPage() {
         use_processing_date: form.use_processing_date,
         use_delivery_date: form.use_delivery_date,
         entry_cadence: form.entry_cadence,
-        pickup_weekdays: form.pickup_weekdays,
-        delivery_weekdays: form.delivery_weekdays,
+        pickup_pairs: form.pickup_pairs,
+        pickup_weekdays: (form.pickup_pairs || []).map((p) => p.pickup_weekday),
+        delivery_weekdays: (form.pickup_pairs || []).map((p) => p.delivery_weekday),
         notes: form.notes || null,
         parent_id: parentId,
         pricing: {
@@ -440,50 +447,74 @@ export default function ManagementRevenueAccountsPage() {
             </FormControl>
             {form.entry_cadence === "scheduled" ? (
               <Box>
-                <Typography sx={{ fontSize: 12, fontWeight: 700, mb: 0.75 }}>Pickup weekdays</Typography>
-                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                  {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((lab, idx) => {
-                    const on = (form.pickup_weekdays || []).includes(idx);
-                    return (
-                      <Button
-                        key={`p-${idx}`}
-                        size="small"
-                        variant={on ? "contained" : "outlined"}
-                        onClick={() => {
-                          const set = new Set(form.pickup_weekdays || []);
-                          if (on) set.delete(idx);
-                          else set.add(idx);
-                          setForm({ ...form, pickup_weekdays: [...set].sort() });
-                        }}
-                        sx={{ textTransform: "none", minWidth: 44 }}
-                      >
-                        {lab}
-                      </Button>
-                    );
-                  })}
+                {form.needs_schedule_confirm ? (
+                  <Typography sx={{ fontSize: 12, fontWeight: 700, color: "#b45309", mb: 1 }}>
+                    Prior weekday lists were ambiguous — set pickup→delivery pairs below.
+                  </Typography>
+                ) : null}
+                <Typography sx={{ fontSize: 12, fontWeight: 700, mb: 0.75 }}>Pickups per week</Typography>
+                <Stack direction="row" spacing={0.5} sx={{ mb: 1 }}>
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <Button
+                      key={n}
+                      size="small"
+                      variant={(form.pickup_pairs || []).length === n ? "contained" : "outlined"}
+                      onClick={() => {
+                        const cur = [...(form.pickup_pairs || [])];
+                        while (cur.length < n) {
+                          cur.push({ pickup_weekday: cur.length % 7, delivery_weekday: (cur.length + 1) % 7 });
+                        }
+                        setForm({
+                          ...form,
+                          pickup_pairs: cur.slice(0, n),
+                          pickups_per_week: n,
+                        });
+                      }}
+                      sx={{ textTransform: "none", minWidth: 40 }}
+                    >
+                      {n}
+                    </Button>
+                  ))}
                 </Stack>
-                <Typography sx={{ fontSize: 12, fontWeight: 700, mt: 1, mb: 0.75 }}>Delivery weekdays</Typography>
-                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                  {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((lab, idx) => {
-                    const on = (form.delivery_weekdays || []).includes(idx);
-                    return (
-                      <Button
-                        key={`d-${idx}`}
-                        size="small"
-                        variant={on ? "contained" : "outlined"}
-                        onClick={() => {
-                          const set = new Set(form.delivery_weekdays || []);
-                          if (on) set.delete(idx);
-                          else set.add(idx);
-                          setForm({ ...form, delivery_weekdays: [...set].sort() });
-                        }}
-                        sx={{ textTransform: "none", minWidth: 44 }}
-                      >
-                        {lab}
-                      </Button>
-                    );
-                  })}
-                </Stack>
+                {(form.pickup_pairs || []).map((pair, i) => (
+                  <Box key={i} sx={{ mb: 1.25, p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb" }}>
+                    <Typography sx={{ fontSize: 12, fontWeight: 800, mb: 0.75 }}>Pickup {i + 1}</Typography>
+                    <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                      <FormControl size="small" fullWidth>
+                        <InputLabel>Pickup day</InputLabel>
+                        <Select
+                          label="Pickup day"
+                          value={pair.pickup_weekday ?? 0}
+                          onChange={(e) => {
+                            const next = [...(form.pickup_pairs || [])];
+                            next[i] = { ...next[i], pickup_weekday: Number(e.target.value) };
+                            setForm({ ...form, pickup_pairs: next });
+                          }}
+                        >
+                          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((lab, idx) => (
+                            <MenuItem key={idx} value={idx}>{lab}</MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                      <FormControl size="small" fullWidth>
+                        <InputLabel>Delivery day</InputLabel>
+                        <Select
+                          label="Delivery day"
+                          value={pair.delivery_weekday ?? 1}
+                          onChange={(e) => {
+                            const next = [...(form.pickup_pairs || [])];
+                            next[i] = { ...next[i], delivery_weekday: Number(e.target.value) };
+                            setForm({ ...form, pickup_pairs: next });
+                          }}
+                        >
+                          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((lab, idx) => (
+                            <MenuItem key={idx} value={idx}>{lab}</MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    </Stack>
+                  </Box>
+                ))}
               </Box>
             ) : null}
             <FormControlLabel

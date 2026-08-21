@@ -15,7 +15,10 @@ import {
   createManagementRevenueDisposition,
   deleteManagementCashPayout,
   getManagementRevenueBootstrap,
+  getManagementRevenueCashTab,
+  getManagementRevenueDaily,
   getManagementRevenueDashboard,
+  getManagementRevenueDhsBoard,
   getManagementRevenueMissingWork,
   getManagementRevenueSchedulePreview,
   getManagementRinseHd,
@@ -30,6 +33,7 @@ import PlanningDatePicker from "../components/datetime/PlanningDatePicker";
 import RevenueDashboardPanel from "../components/management/revenue/RevenueDashboardPanel";
 import CashPayoutForm, { CashPayoutList } from "../components/revenueShared/CashPayoutForm";
 import DailyCompletenessStrip from "../components/revenueShared/DailyCompletenessStrip";
+import DailyEntryCards from "../components/revenueShared/DailyEntryCards";
 import DhsAccountRow from "../components/revenueShared/DhsAccountRow";
 import DhsAccountSheet from "../components/revenueShared/DhsAccountSheet";
 import MissingWorkPanel from "../components/revenueShared/MissingWorkPanel";
@@ -90,7 +94,7 @@ const SCREEN_TITLE_KEYS = {
 export default function PinRevenueCashFlow({ onBack, onLock }) {
   const { t } = useI18n();
   const [dateEt, setDateEt] = useState(todayEtIso);
-  const [mainTab, setMainTab] = useState("entry"); // entry | missing | stats
+  const [mainTab, setMainTab] = useState("daily"); // daily | dhs | missing | cash | stats
   const [screen, setScreen] = useState("home");
   const [dashPeriod, setDashPeriod] = useState("week");
   const [dashboard, setDashboard] = useState(null);
@@ -130,6 +134,10 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
   const [dispBusy, setDispBusy] = useState("");
   const [returnScreen, setReturnScreen] = useState("home");
   const [wfVolume, setWfVolume] = useState(null);
+  const [dhsBoard, setDhsBoard] = useState(null);
+  const [dhsLoading, setDhsLoading] = useState(false);
+  const [cashTab, setCashTab] = useState(null);
+  const [cashLoading, setCashLoading] = useState(false);
 
   const nonRinseRef = useRef({ ssCash: null, ssCard: null, doCash: null, doCard: null });
   const autosaveTimerRef = useRef(null);
@@ -137,39 +145,95 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
   const saveGenRef = useRef(0);
   const scheduleCacheRef = useRef({});
   const dhsPendingBodyRef = useRef(null);
+  const loadedTabsRef = useRef({ missing: false, dhs: false, cash: false, stats: false });
   nonRinseRef.current = { ssCash, ssCard, doCash, doCard };
 
   const applyDayPayload = useCallback((payload) => {
-    setData(payload);
-    if (payload?.missing_work) setMissing(payload.missing_work);
-    else if (payload?.missing_work_summary) {
-      setMissing((prev) => ({
-        ...(prev || {}),
-        summary: payload.missing_work_summary,
-        daily_completeness: payload.daily_completeness,
-      }));
-    }
+    setData((prev) => ({ ...(prev || {}), ...(payload || {}) }));
     const nr = payload?.non_rinse || payload?.non_rinse_revenue || {};
-    setSsCash(moneyToInput(nr.self_service?.cash) === "" ? null : nr.self_service?.cash);
-    setSsCard(moneyToInput(nr.self_service?.card) === "" ? null : nr.self_service?.card);
-    setDoCash(moneyToInput(nr.drop_off?.cash) === "" ? null : nr.drop_off?.cash);
-    setDoCard(moneyToInput(nr.drop_off?.card) === "" ? null : nr.drop_off?.card);
+    if (nr.self_service || nr.drop_off) {
+      setSsCash(moneyToInput(nr.self_service?.cash) === "" ? null : nr.self_service?.cash);
+      setSsCard(moneyToInput(nr.self_service?.card) === "" ? null : nr.self_service?.card);
+      setDoCash(moneyToInput(nr.drop_off?.cash) === "" ? null : nr.drop_off?.cash);
+      setDoCard(moneyToInput(nr.drop_off?.card) === "" ? null : nr.drop_off?.card);
+    }
   }, []);
 
   const loadRevenue = useCallback(async () => {
     setLoading(true);
     setError("");
+    loadedTabsRef.current = { missing: false, dhs: false, cash: false, stats: false };
     try {
       const res = await getManagementRevenueBootstrap(dateEt);
-      const day = res.data?.day || res.data || null;
-      applyDayPayload(day);
-      if (res.data?.missing_work) setMissing(res.data.missing_work);
+      const boot = res.data || {};
+      applyDayPayload({
+        date_et: boot.date_et,
+        daily_completeness: boot.daily_completeness,
+        non_rinse: boot.non_rinse,
+        rinse: boot.rinse,
+        cash_activity: boot.cash_today
+          ? {
+              total_cash_revenue: boot.cash_today.cash_received,
+              cash_paid_out: boot.cash_today.cash_paid_out,
+              net_cash_movement: boot.cash_today.net_cash,
+            }
+          : null,
+      });
+      setMissing({ summary: boot.badges || {}, items: [], groups: [] });
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadFailed"));
     } finally {
       setLoading(false);
     }
   }, [applyDayPayload, dateEt, t]);
+
+  const loadDailyTab = useCallback(async () => {
+    try {
+      const res = await getManagementRevenueDaily(dateEt);
+      applyDayPayload(res.data || {});
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadFailed"));
+    }
+  }, [applyDayPayload, dateEt, t]);
+
+  const loadMissingTab = useCallback(async (filter = "all") => {
+    setMissingLoading(true);
+    try {
+      const res = await getManagementRevenueMissingWork({ date_et: dateEt, filter });
+      setMissing(res.data || null);
+      loadedTabsRef.current.missing = true;
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadFailed"));
+    } finally {
+      setMissingLoading(false);
+    }
+  }, [dateEt, t]);
+
+  const loadDhsTab = useCallback(async () => {
+    setDhsLoading(true);
+    try {
+      const res = await getManagementRevenueDhsBoard(dateEt);
+      setDhsBoard(res.data || null);
+      loadedTabsRef.current.dhs = true;
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadFailed"));
+    } finally {
+      setDhsLoading(false);
+    }
+  }, [dateEt, t]);
+
+  const loadCashTab = useCallback(async () => {
+    setCashLoading(true);
+    try {
+      const res = await getManagementRevenueCashTab(dateEt);
+      setCashTab(res.data || null);
+      loadedTabsRef.current.cash = true;
+    } catch (e) {
+      setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadFailed"));
+    } finally {
+      setCashLoading(false);
+    }
+  }, [dateEt, t]);
 
   useEffect(() => {
     loadRevenue();
@@ -198,6 +262,18 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
   useEffect(() => {
     if (mainTab === "stats") loadDashboard();
   }, [mainTab, loadDashboard]);
+
+  useEffect(() => {
+    if (mainTab === "missing") loadMissingTab(missingFilter);
+  }, [mainTab, missingFilter, loadMissingTab]);
+
+  useEffect(() => {
+    if (mainTab === "dhs") loadDhsTab();
+  }, [mainTab, loadDhsTab]);
+
+  useEffect(() => {
+    if (mainTab === "cash") loadCashTab();
+  }, [mainTab, loadCashTab]);
 
   const flushNonRinse = useCallback(async () => {
     const gen = ++saveGenRef.current;
@@ -293,7 +369,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         await loadRevenue();
         setSaveState("saved");
         setScreen("home");
-        setMainTab("entry");
+        setMainTab("daily");
       } catch (e) {
         setSaveState("error");
         setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.saveFailed"));
@@ -395,7 +471,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         });
         await loadRevenue();
         setScreen("home");
-        setMainTab("entry");
+        setMainTab("daily");
       }
       setSaveState("saved");
     } catch (e) {
@@ -558,7 +634,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         flushNonRinse();
       }
     }
-    setMainTab("entry");
+    setMainTab("daily");
     setScreen("home");
     setAddingPayout(false);
     loadRevenue();
@@ -618,7 +694,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         </Alert>
       ) : null}
 
-      {(screen === "home" || mainTab === "missing" || mainTab === "stats") &&
+      {(screen === "home") &&
       screen !== "self_service" &&
       screen !== "drop_off" &&
       screen !== "rinse_wf" &&
@@ -634,9 +710,9 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
             zIndex: 3,
             bgcolor: "#F3F7F8",
             pt: 0.5,
-            pb: 0.75,
+            pb: 0.5,
             mb: 1,
-            borderBottom: "1px solid rgba(0,122,145,0.12)",
+            borderBottom: "1px solid rgba(0,122,145,0.14)",
           }}
         >
           <Tabs
@@ -646,31 +722,36 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
               setScreen("home");
               setSaveState("");
             }}
-            variant="fullWidth"
+            variant="scrollable"
+            scrollButtons="auto"
+            allowScrollButtonsMobile
             sx={{
-              minHeight: 42,
-              "& .MuiTabs-indicator": { height: 3, borderRadius: 2 },
+              minHeight: 44,
+              "& .MuiTabs-indicator": { height: 3, bgcolor: "#007a91" },
               "& .MuiTab-root": {
-                minHeight: 42,
+                minHeight: 44,
                 fontWeight: 800,
                 textTransform: "none",
                 fontSize: 13,
-                px: 0.5,
+                px: 1.25,
+                color: "#64748b",
               },
-              "& .Mui-selected": { color: "#007a91" },
+              "& .Mui-selected": { color: "#007a91 !important" },
             }}
           >
-            <Tab value="entry" label={t("mobileOps.revenue.tabEntry") !== "mobileOps.revenue.tabEntry" ? t("mobileOps.revenue.tabEntry") : "Entry"} />
+            <Tab value="daily" label="Daily" />
+            <Tab value="dhs" label="DHS" />
             <Tab
               value="missing"
-              label={`${t("mobileOps.revenue.missingWork")}${missingBadge}`}
+              label={`Missing${missingBadge ? ` ${String(missingBadge).trim()}` : ""}`}
             />
-            <Tab value="stats" label={t("mobileOps.revenue.tabStats") !== "mobileOps.revenue.tabStats" ? t("mobileOps.revenue.tabStats") : "Stats"} />
+            <Tab value="cash" label="Cash" />
+            <Tab value="stats" label="Stats" />
           </Tabs>
         </Box>
       ) : null}
 
-      {mainTab === "entry" && screen === "home" ? (
+      {mainTab === "daily" && screen === "home" ? (
         <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
           <Box sx={{ flex: 1 }}>
             <PlanningDatePicker
@@ -684,39 +765,141 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         </Stack>
       ) : null}
 
-      {loading && mainTab === "entry" && screen === "home" ? (
+      {loading && mainTab === "daily" && screen === "home" ? (
         <Box sx={{ py: 6, display: "grid", placeItems: "center" }}>
           <CircularProgress size={28} />
         </Box>
       ) : null}
 
-      {mainTab === "entry" && screen === "home" && !loading ? (
+      {mainTab === "daily" && screen === "home" && !loading ? (
         <Stack spacing={1.25} sx={{ pb: 2 }}>
-          <DailyCompletenessStrip
+          <DailyEntryCards
+            dateLabel={formatHomeDate(dateEt)}
             completeness={data?.daily_completeness}
-            dhsDay={data?.dhs_day || data?.dhs_completeness}
-            amounts={entryAmounts}
-            cashAmount={cashOut}
-            onOpenCash={() => {
-              setAddingPayout(false);
-              setScreen("cash");
-            }}
-            onOpenSection={(s) => {
+            nonRinse={data?.non_rinse}
+            rinse={data?.rinse}
+            t={t}
+            onOpenSection={(key) => {
               setSaveState("");
-              if (s.key === "self_service") setScreen("self_service");
-              else if (s.key === "drop_off") setScreen("drop_off");
-              else if (s.key === "rinse_hd") openHangDry();
-              else if (s.key === "rinse_wf") {
+              if (key === "self_service") setScreen("self_service");
+              else if (key === "drop_off") setScreen("drop_off");
+              else if (key === "rinse_hd") openHangDry();
+              else if (key === "rinse_wf") {
                 setWfVolume(moneyToInput(data?.rinse?.wf?.volume_lbs));
                 setScreen("rinse_wf");
               }
             }}
-            onOpenDhsAccount={(a) => {
-              const row = dhsAccounts.find((x) => a.account_id === x.account_id);
-              openDhsAccount(row, { obligation: a, fromScreen: "home" });
-            }}
           />
           <OpsLockButton onClick={onLock} fullWidth label={t("mobileOps.lock")} />
+        </Stack>
+      ) : null}
+
+      {mainTab === "dhs" && screen === "home" ? (
+        <Stack spacing={1.25} sx={{ pb: 2 }}>
+          <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.5, color: "#64748b", textTransform: "uppercase" }}>
+            DHS · {formatHomeDate(dateEt)}
+          </Typography>
+          {dhsLoading ? (
+            <Box sx={{ py: 4, display: "grid", placeItems: "center" }}><CircularProgress size={28} /></Box>
+          ) : (
+            <>
+              <Box sx={{ p: 1.5, borderRadius: 2, bgcolor: "#fff", border: "1px solid rgba(0,122,145,0.22)" }}>
+                <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+                  Pickups today: {dhsBoard?.counts?.pickups_today ?? 0}
+                </Typography>
+                <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+                  Deliveries today: {dhsBoard?.counts?.deliveries_today ?? 0}
+                </Typography>
+                <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+                  Pending processing: {dhsBoard?.counts?.pending_processing ?? 0}
+                </Typography>
+                <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#b91c1c" }}>
+                  Overdue: {dhsBoard?.counts?.overdue ?? 0}
+                </Typography>
+              </Box>
+              {(dhsBoard?.needs_schedule_confirm || []).length ? (
+                <Alert severity="warning">
+                  Schedule confirmation needed: {(dhsBoard.needs_schedule_confirm || []).map((a) => a.name).join(", ")}
+                </Alert>
+              ) : null}
+              {["today", "overdue", "upcoming"].map((g) => (
+                <Box key={g}>
+                  <Typography sx={{ fontSize: 11, fontWeight: 800, color: "#64748b", mb: 0.5, textTransform: "uppercase" }}>
+                    {g} · {(dhsBoard?.groups?.[g] || []).length}
+                  </Typography>
+                  <Stack spacing={0.75}>
+                    {(dhsBoard?.groups?.[g] || []).map((row) => (
+                      <Box
+                        key={`${row.account_id}-${row.scheduled_pickup_date}`}
+                        component="button"
+                        type="button"
+                        onClick={() => openDhsAccount(null, { obligation: row, fromScreen: "dhs" })}
+                        sx={{
+                          textAlign: "left",
+                          p: 1.25,
+                          borderRadius: 2,
+                          border: "1px solid #e5e7eb",
+                          bgcolor: "#fff",
+                          appearance: "none",
+                          fontFamily: "inherit",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <Typography sx={{ fontWeight: 900 }}>{row.name}</Typography>
+                        <Typography sx={{ fontSize: 12, color: "#64748b" }}>
+                          Pickup {row.scheduled_pickup_date || "—"} · Delivery {row.scheduled_delivery_date || "—"} · {row.status}
+                        </Typography>
+                      </Box>
+                    ))}
+                  </Stack>
+                </Box>
+              ))}
+            </>
+          )}
+        </Stack>
+      ) : null}
+
+      {mainTab === "cash" && screen === "home" ? (
+        <Stack spacing={1.25} sx={{ pb: 2 }}>
+          <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.5, color: "#64748b", textTransform: "uppercase" }}>
+            Cash
+          </Typography>
+          {cashLoading ? (
+            <Box sx={{ py: 4, display: "grid", placeItems: "center" }}><CircularProgress size={28} /></Box>
+          ) : (
+            <>
+              <Box sx={{ p: 1.5, borderRadius: 2, bgcolor: "#fff", border: "1px solid rgba(0,122,145,0.22)" }}>
+                <Typography sx={{ fontSize: 13, fontWeight: 700 }}>Cash received · {fmtMoney(cashTab?.today?.cash_received)}</Typography>
+                <Typography sx={{ fontSize: 13, fontWeight: 700 }}>Cash paid out · {fmtMoney(cashTab?.today?.cash_paid_out)}</Typography>
+                <Typography sx={{ fontSize: 15, fontWeight: 900, color: "#007a91" }}>
+                  Net · {fmtMoney(cashTab?.today?.net_cash)}
+                </Typography>
+              </Box>
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                onClick={() => {
+                  setPayoutDate(dateEt);
+                  setAddingPayout(true);
+                  setScreen("cash");
+                }}
+                sx={{ textTransform: "none", fontWeight: 900, minHeight: 48 }}
+              >
+                Add Cash Paid Out
+              </Button>
+              <Stack spacing={0.75}>
+                {(cashTab?.payouts || []).map((p) => (
+                  <Box key={p.id} sx={{ p: 1.25, borderRadius: 2, bgcolor: "#fff", border: "1px solid #e5e7eb" }}>
+                    <Typography sx={{ fontWeight: 800 }}>{p.payout_date_et}</Typography>
+                    <Typography sx={{ fontSize: 14, fontWeight: 700, color: "#007a91" }}>
+                      {fmtMoney(p.amount)} · {p.purpose}
+                    </Typography>
+                    {p.note ? <Typography sx={{ fontSize: 12, color: "#64748b" }}>{p.note}</Typography> : null}
+                  </Box>
+                ))}
+              </Stack>
+            </>
+          )}
         </Stack>
       ) : null}
 
@@ -737,7 +920,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
           }}
           busyId={dispBusy}
           onOpenItem={(item) => {
-            setMainTab("entry");
+            setMainTab("daily");
             if (item.kind === "dhs") {
               const row = (data?.dhs?.accounts || []).find((a) => a.account_id === item.account_id);
               openDhsAccount(row, { fromScreen: "missing", obligation: item });
