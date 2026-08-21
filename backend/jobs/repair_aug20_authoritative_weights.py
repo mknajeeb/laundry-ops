@@ -276,11 +276,33 @@ def main() -> int:
 
     print("=== PUBLISH SNAPSHOT ===")
     totals = load_wf_day_weight_totals(cur, org, day)
-    headline = {
-        "shift_date_et": day.isoformat(),
-        "weights": totals,
-        "repair": "authoritative_pre_post_weights",
-    }
+    # NEVER replace the Management headline with weights-only. Merge into the
+    # day-table / last-good published workload headline for this business date.
+    from backend.rinse_management_headline_guard import merge_weights_into_headline
+    from backend.rinse_veewash_shift_day import get_day_record, summary_from_day_record
+    from backend.rinse_freshness_publish import latest_published_snapshot
+    import json as _json
+
+    base_hl: dict = {}
+    day_rec = get_day_record(cur, org, day) or {}
+    day_hl = summary_from_day_record(day_rec) or {}
+    if day_hl:
+        base_hl = dict(day_hl)
+    else:
+        prev = latest_published_snapshot(cur, org, day)
+        raw = (prev or {}).get("headline_json")
+        if isinstance(raw, str):
+            try:
+                raw = _json.loads(raw)
+            except Exception:
+                raw = {}
+        if isinstance(raw, dict):
+            base_hl = dict(raw)
+    headline = merge_weights_into_headline(
+        base_hl,
+        totals,
+        repair_tag="authoritative_pre_post_weights",
+    )
     try:
         from backend.rinse_freshness_store import (
             ensure_freshness_tables,
@@ -315,6 +337,7 @@ def main() -> int:
             workload_meta={
                 "source": "authoritative_weight_repair",
                 "bag_count": len(bag_ids),
+                "merged_into_existing_headline": True,
             },
         )
         finish_cycle(cur, int(cycle_id), cycle_status="SUCCESS")

@@ -856,6 +856,28 @@ def extract_rinse_step1(
         or rec.get("snapshot_missing")
         or not hl
     )
+    if snapshot_missing:
+        # Never coerce unavailable/null into business zeros for Management.
+        return {
+            "selected_date_et": hl.get("selected_date_et") or rec.get("selected_date_et"),
+            "snapshot_available": False,
+            "data_unavailable": True,
+            "snapshot_missing": True,
+            "step1_history_unavailable": bool(hl.get("step1_history_unavailable")),
+            "message": hl.get("message")
+            or rec.get("message")
+            or "Today's Rinse data is not available yet",
+            "shift_day": {
+                "status": rec.get("status") or status,
+                "read_only": True,
+                "review_required_count": None,
+            },
+            "segments": {},
+            "specialty_metrics": {},
+            "hd_dashboard_totals": {},
+            "review_reason_counts": {},
+            "data_freshness": _compact_freshness(hl.get("data_freshness") or rec.get("data_freshness")),
+        }
     return {
         "selected_date_et": hl.get("selected_date_et"),
         "snapshot_available": not snapshot_missing,
@@ -911,34 +933,129 @@ def _specialty_packs_current(headline: Mapping[str, Any] | None) -> bool:
 
 
 def _load_headline(cursor, organization_id: int, selected_date_et: date) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Persisted Step-1 headline for Management Rinse WF (read-only).
+    """Management Rinse WF headline — published snapshot is the display truth.
 
-    Fast path: day row + headline JSON only — skips the interactive Step-1
-    shell (rollover archive, HD presentation heal, bag-row loads) when a
-    usable snapshot already exists. Does not rebuild from raw scans.
+    Prefer latest successfully published freshness snapshot for the selected
+    business date. Never serve a seeded NOT_STARTED zero shell as real data.
+    Day tables remain internal storage; Management reads the atomic publish
+    contract when available.
     """
+    import json as _json
+
     from backend.rinse_veewash_shift_day import (
+        STATUS_NOT_STARTED,
+        _snapshot_missing_step1_payload,
         build_or_load_step1_for_date,
         get_day_record,
         summary_from_day_record,
     )
 
-    day = get_day_record(cursor, organization_id, selected_date_et)
-    if day and day.get("headline"):
-        # Omit cursor so summary_from_day_record skips HD presentation heal.
-        headline = summary_from_day_record(day) or {}
-        if headline and not headline.get("data_unavailable"):
-            if not _specialty_packs_current(headline):
-                from backend.rinse_hd_day_metrics import build_day_specialty_metrics
+    published = None
+    try:
+        from backend.rinse_freshness_publish import latest_published_snapshot
 
-                # WF-only specialty rebuild — do not compute HD packs for this page.
-                packs = dict(headline.get("specialty_metrics") or {})
-                packs["wf"] = build_day_specialty_metrics(
-                    cursor, organization_id, selected_date_et, headline, service="wf"
-                )
-                headline = dict(headline)
-                headline["specialty_metrics"] = packs
-            return dict(day), dict(headline)
+        published = latest_published_snapshot(
+            cursor, organization_id, selected_date_et
+        )
+    except Exception:
+        published = None
+
+    if published:
+        raw_hl = published.get("headline_json")
+        if isinstance(raw_hl, str):
+            try:
+                raw_hl = _json.loads(raw_hl)
+            except Exception:
+                raw_hl = {}
+        headline = dict(raw_hl or {}) if isinstance(raw_hl, dict) else {}
+        from backend.rinse_management_headline_guard import (
+            headline_has_wf_workload_segments,
+        )
+
+        # Weights-only / corrupt publishes must not blank historical Management.
+        # Fall through to the day-table headline (immutable closed-day source).
+        if not headline_has_wf_workload_segments(headline):
+            published = None
+            headline = {}
+        else:
+            # Published rows must never carry the unavailable shell.
+            headline.pop("data_unavailable", None)
+            headline.pop("snapshot_missing", None)
+            headline["snapshot_available"] = True
+            headline["selected_date_et"] = selected_date_et.isoformat()
+            headline["published_snapshot_version"] = published.get("version")
+            headline["published_at"] = (
+                published.get("published_at").isoformat()
+                if hasattr(published.get("published_at"), "isoformat")
+                else published.get("published_at")
+            )
+            # STALE when a newer fast cycle failed to publish over this snapshot.
+            try:
+                from backend.rinse_freshness_store import get_watermarks
+
+                wm = get_watermarks(cursor, organization_id)
+                if str(wm.get("last_fast_result") or "").upper() == "DEGRADED":
+                    headline["freshness_status"] = "STALE"
+                    headline["stale"] = True
+                else:
+                    headline["freshness_status"] = "FRESH"
+            except Exception:
+                pass
+            if not _specialty_packs_current(headline):
+                try:
+                    from backend.rinse_hd_day_metrics import build_day_specialty_metrics
+
+                    packs = dict(headline.get("specialty_metrics") or {})
+                    packs["wf"] = build_day_specialty_metrics(
+                        cursor, organization_id, selected_date_et, headline, service="wf"
+                    )
+                    headline["specialty_metrics"] = packs
+                except Exception:
+                    pass
+            day_rec = {
+                "status": (headline.get("shift_day") or {}).get("status")
+                or headline.get("shift_day_status")
+                or "OPEN",
+                "headline": headline,
+                "from_published_snapshot": True,
+                "published_snapshot_version": published.get("version"),
+                "review_required_count": (
+                    (headline.get("shift_day") or {}).get("review_required_count")
+                    or headline.get("review_required_count")
+                ),
+            }
+            return day_rec, headline
+
+    day = get_day_record(cursor, organization_id, selected_date_et)
+    status = str((day or {}).get("status") or "").upper()
+    # Block false zeros: NOT_STARTED / empty shells without a publish are unavailable.
+    if not day or status == STATUS_NOT_STARTED or not day.get("headline"):
+        _wl, summary, day_meta = _snapshot_missing_step1_payload(selected_date_et)
+        return dict(day_meta or {}), dict(summary or {})
+
+    # Legacy closed/open days with real persisted headlines (pre-publish era).
+    headline = summary_from_day_record(day) or {}
+    if headline and not headline.get("data_unavailable"):
+        # Detect seeded zero shell even if status drifted.
+        try:
+            wl = int(headline.get("active_workload") or headline.get("total_workload") or 0)
+            completed = int(headline.get("completed") or 0)
+            pending = int(headline.get("pending") or 0)
+        except (TypeError, ValueError):
+            wl = completed = pending = 0
+        if wl == 0 and completed == 0 and pending == 0 and not day.get("last_sync_at"):
+            _wl, summary, day_meta = _snapshot_missing_step1_payload(selected_date_et)
+            return dict(day_meta or {}), dict(summary or {})
+        if not _specialty_packs_current(headline):
+            from backend.rinse_hd_day_metrics import build_day_specialty_metrics
+
+            packs = dict(headline.get("specialty_metrics") or {})
+            packs["wf"] = build_day_specialty_metrics(
+                cursor, organization_id, selected_date_et, headline, service="wf"
+            )
+            headline = dict(headline)
+            headline["specialty_metrics"] = packs
+        return dict(day), dict(headline)
 
     _wl, summary, day_rec = build_or_load_step1_for_date(
         cursor,
@@ -1280,7 +1397,7 @@ def build_management_rinse_wf_payload(
             "query_count": int(getattr(counting, "query_count", 0)),
             "compartment": "rinse_wf",
             "sources": {
-                "rinse": "persisted_day_headline_compact_read",
+                "rinse": "published_freshness_snapshot_or_legacy_day_headline",
                 "wf_weights": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs_evidence",
                 "supplies": "deferred_to_/api/management/today/supplies",
                 "review": "canonical_specialty_review_membership_shared_with_drawer",

@@ -72,9 +72,28 @@ def publish_snapshot(
     headline: dict[str, Any] | None,
     workload_meta: dict[str, Any] | None,
 ) -> None:
-    """Promote building→published only if lease generation is still live."""
+    """Promote building→published only if lease generation is still live.
+
+    Refuses to publish a weights-only / segment-less headline when this would
+    become the Management display snapshot for the day. Weight enrichment must
+    merge into the existing workload headline (see
+    ``merge_weights_into_headline``). Pass
+    ``workload_meta["allow_partial_headline"]=True`` only for non-display
+    diagnostics (never for Management read path).
+    """
+    from backend.rinse_management_headline_guard import headline_has_wf_workload_segments
+
     assert_lane_writable(cursor, organization_id, lane, lease_generation)
     now = _utcnow()
+    meta = dict(workload_meta or {})
+    hl = dict(headline or {})
+    allow_partial = bool(meta.get("allow_partial_headline"))
+    if not allow_partial and not headline_has_wf_workload_segments(hl):
+        raise ValueError(
+            "refuse publish: headline missing WF workload segments "
+            f"(shift_date_et={shift_date_et} version={version}); "
+            "merge weights into the existing day/published headline instead"
+        )
     # Reject stale generation on the version row itself.
     cursor.execute(
         """
@@ -114,8 +133,8 @@ def publish_snapshot(
         """,
         (
             now,
-            json.dumps(headline or {}, default=str),
-            json.dumps(workload_meta or {}, default=str),
+            json.dumps(hl, default=str),
+            json.dumps(meta, default=str),
             int(organization_id),
             shift_date_et,
             int(version),
