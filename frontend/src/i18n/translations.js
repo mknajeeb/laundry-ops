@@ -247,6 +247,12 @@ export const TRANSLATIONS = {
     "mobileOps.break.startFailed": "Could not start break",
     "mobileOps.break.alreadyOnBreak": "You are already on break.",
     "mobileOps.break.notOnBreak": "You are not on break.",
+    "mobileOps.clockOutIntent.title": "Leaving for the day?",
+    "mobileOps.clockOutIntent.body":
+      "For a short pause, use Take a Break — your shift stays open and break time is tracked. Clock Out ends your shift.",
+    "mobileOps.clockOutIntent.endShift": "Clock Out (end shift)",
+    "mobileOps.team.noBreakNote":
+      "No Take Break recorded. Mid-day Clock Out / Clock In does not count as break time.",
     "mobileOps.clockInFirst":
       "Clock in first using the shared attendance tablet, then return here to change your role.",
     "mobileOps.roleOnBreak":
@@ -1700,6 +1706,12 @@ export const TRANSLATIONS = {
     "mobileOps.break.startFailed": "No se pudo iniciar el descanso",
     "mobileOps.break.alreadyOnBreak": "Ya está en descanso.",
     "mobileOps.break.notOnBreak": "No está en descanso.",
+    "mobileOps.clockOutIntent.title": "¿Sale por el día?",
+    "mobileOps.clockOutIntent.body":
+      "Para una pausa corta, use Tomar un descanso — el turno sigue abierto y el descanso se registra. Salida termina el turno.",
+    "mobileOps.clockOutIntent.endShift": "Salida (terminar turno)",
+    "mobileOps.team.noBreakNote":
+      "No hay descanso registrado. Una Salida / Entrada a mitad del día no cuenta como descanso.",
     "mobileOps.clockInFirst":
       "Fiche entrada primero en la tableta de asistencia compartida y luego regrese aquí para cambiar su función.",
     "mobileOps.roleOnBreak":

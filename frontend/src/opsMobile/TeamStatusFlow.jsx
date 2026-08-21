@@ -558,6 +558,19 @@ function EmployeeDetailDrawer({
                 label={t("mobileOps.team.breaks")}
                 value={formatDuration(emp.break_seconds || 0)}
               />
+              {(emp.sessions || []).length > 1 && !(emp.break_seconds > 0) ? (
+                <Typography
+                  sx={{
+                    mt: 0.75,
+                    fontWeight: 700,
+                    fontSize: "0.72rem",
+                    color: OPS_MOBILE.muted,
+                    lineHeight: 1.35,
+                  }}
+                >
+                  {t("mobileOps.team.noBreakNote")}
+                </Typography>
+              ) : null}
               {localizeAssignment(emp, t) ? (
                 <DetailRow
                   label={
@@ -1105,7 +1118,7 @@ export default function TeamStatusFlow({ onBack, onLock }) {
                       key: "b",
                       value: summary.break_count ?? 0,
                       label: t("mobileOps.team.breakShort"),
-                      color: "#b45309",
+                      color: TEAM_ROLE_COLORS.break.text,
                     },
                     {
                       key: "d",

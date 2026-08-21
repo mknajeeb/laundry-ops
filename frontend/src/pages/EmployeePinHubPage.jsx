@@ -154,6 +154,8 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
   const [error, setError] = useState("");
   const [branding, setBranding] = useState(null);
   const [breakConfirmOpen, setBreakConfirmOpen] = useState(false);
+  /** When clocked in, Clock tile asks Take Break vs End Shift (avoids mid-day clock-out loops). */
+  const [clockOutIntentOpen, setClockOutIntentOpen] = useState(false);
 
   const punchInFlightRef = useRef(false);
   const prevPinLenRef = useRef(0);
@@ -372,6 +374,13 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         if (tile?.disabled || hub?.attendance?.allow_clock_from_hub === false) {
           return;
         }
+        // Mid-shift Clock Out is the common mistake vs Take a Break (see Team Status
+        // clock-out/in pairs with ~10s gaps and Breaks: 0m). Steer first.
+        if (hub?.attendance?.clocked_in === true && hub?.attendance?.on_break !== true) {
+          setFeatureLoading("");
+          setClockOutIntentOpen(true);
+          return;
+        }
         navigate(`/attendance/${encodeURIComponent(slug)}?from=hub`);
         return;
       }
@@ -576,7 +585,11 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
                 label="Organization"
                 value={selectedSlug}
                 disabled={orgsLoading}
-                onChange={(e) => goToSlugRoute(e.target.value)}
+                onChange={(e) => {
+                  const next = sanitizeSlug(e.target.value);
+                  setSelectedSlug(next);
+                  goToSlugRoute(next);
+                }}
               >
                 {(orgs || []).map((o) => (
                   <MenuItem key={o.slug} value={o.slug}>
@@ -714,6 +727,63 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
             }}
           >
             {t("mobileOps.break.start")}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={clockOutIntentOpen}
+        onClose={() => setClockOutIntentOpen(false)}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle sx={{ fontWeight: 900, color: OPS_MOBILE.navy }}>
+          {t("mobileOps.clockOutIntent.title")}
+        </DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontWeight: 650, color: OPS_MOBILE.muted }}>
+            {t("mobileOps.clockOutIntent.body")}
+          </Typography>
+        </DialogContent>
+        <DialogActions
+          sx={{
+            px: 2.5,
+            pb: 2,
+            flexDirection: "column",
+            alignItems: "stretch",
+            gap: 1,
+          }}
+        >
+          <Button
+            variant="contained"
+            onClick={() => {
+              setClockOutIntentOpen(false);
+              setBreakConfirmOpen(true);
+            }}
+            sx={{
+              textTransform: "none",
+              fontWeight: 900,
+              bgcolor: OPS_MOBILE.success,
+              "&:hover": { bgcolor: "#0d9488" },
+            }}
+          >
+            {t("mobileOps.tile.takeBreak")}
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={() => {
+              setClockOutIntentOpen(false);
+              navigate(`/attendance/${encodeURIComponent(slug)}?from=hub`);
+            }}
+            sx={{ textTransform: "none", fontWeight: 850, borderColor: alpha(OPS_MOBILE.navy, 0.25) }}
+          >
+            {t("mobileOps.clockOutIntent.endShift")}
+          </Button>
+          <Button
+            onClick={() => setClockOutIntentOpen(false)}
+            sx={{ textTransform: "none", fontWeight: 800 }}
+          >
+            {t("mobileOps.cancel")}
           </Button>
         </DialogActions>
       </Dialog>
