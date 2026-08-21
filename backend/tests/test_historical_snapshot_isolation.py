@@ -32,6 +32,58 @@ def test_weights_only_headline_is_not_valid_management_snapshot():
     )
 
 
+def test_closed_day_final_workload_excludes_carried_forward():
+    from backend.rinse_management_headline_guard import (
+        finalize_closed_day_management_workload,
+    )
+
+    raw = {
+        "segments": {
+            "wf": {
+                "bag_ids": {
+                    "completed": ["A1", "A2"],
+                    "pending": [],
+                    "review_required": [],
+                    "carried_forward": ["B1", "B2", "B3"],
+                },
+                "completed": 2,
+                "pending": 0,
+                "carried_forward": 3,
+                "total_workload": 5,
+                "exceptions": {"review_required": 0},
+            },
+            "all": {
+                "bag_ids": {
+                    "completed": ["A1", "A2"],
+                    "pending": [],
+                    "review_required": [],
+                    "carried_forward": ["B1", "B2", "B3"],
+                },
+                "completed": 2,
+                "pending": 0,
+                "carried_forward": 3,
+                "total_workload": 5,
+                "exceptions": {"review_required": 0},
+            },
+        }
+    }
+    out = finalize_closed_day_management_workload(raw)
+    wf = out["segments"]["wf"]
+    assert wf["total_workload"] == 2
+    assert wf["completed"] == 2
+    assert wf["pending"] == 0
+    assert wf["carried_forward"] == 3
+    assert wf["moved_forward_count"] == 3
+    assert wf["exceptions"]["moved_forward_to_next_day"] == 3
+    assert wf["closed_day_final_excludes_carried_forward"] is True
+    # Audit lineage preserved — CF bag IDs still present.
+    assert wf["bag_ids"]["carried_forward"] == ["B1", "B2", "B3"]
+    # Identity: final workload excludes CF.
+    assert wf["total_workload"] == wf["completed"] + wf["pending"] + wf["exceptions"][
+        "review_required"
+    ]
+
+
 def test_merge_weights_preserves_segments():
     base = {
         "segments": {"wf": {"total_workload": 143, "completed": 115, "pending": 0}},

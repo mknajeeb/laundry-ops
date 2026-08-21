@@ -28,6 +28,7 @@ def restore_closed_day_published_snapshot_from_day_bags(
     from backend.rinse_freshness_publish import begin_snapshot_build, publish_snapshot
     from backend.rinse_freshness_store import get_watermarks
     from backend.rinse_management_headline_guard import (
+        finalize_closed_day_management_workload,
         headline_has_wf_workload_segments,
         merge_weights_into_headline,
     )
@@ -108,12 +109,15 @@ def restore_closed_day_published_snapshot_from_day_bags(
         now=_utcnow(),
     )
     headline = dict(synced.get("headline") or {})
+    # Sync already applied closed-day final semantics; re-assert after weight merge.
+    headline = finalize_closed_day_management_workload(headline)
     weights = load_wf_day_weight_totals(cursor, org, day)
     headline = merge_weights_into_headline(
         headline,
         weights,
         repair_tag="restore_closed_day_from_day_bags",
     )
+    headline = finalize_closed_day_management_workload(headline)
     headline["snapshot_available"] = True
     headline["selected_date_et"] = day.isoformat()
     headline["shift_day_status"] = STATUS_CLOSED

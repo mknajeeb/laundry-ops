@@ -943,6 +943,14 @@ def _sync_day_header_from_persisted_bags(
         cursor, organization_id, shift_date_et
     )
     headline = _apply_day_bag_statuses_to_headline(dict(summary or {}), status_by_bag)
+    # CLOSED historical days: final Management workload excludes carried_forward
+    # (those bags are next-day carryover). Keep CF IDs/counts for audit only.
+    if str(next_status or "").upper() == STATUS_CLOSED:
+        from backend.rinse_management_headline_guard import (
+            finalize_closed_day_management_workload,
+        )
+
+        headline = finalize_closed_day_management_workload(headline)
     persisted_reasons = _load_persisted_review_reasons_by_bag(
         cursor, organization_id, shift_date_et
     )
