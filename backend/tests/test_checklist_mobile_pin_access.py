@@ -324,7 +324,7 @@ def test_missing_row_after_backfill_denies_session():
     create.assert_not_called()
 
 
-def test_pre_marker_missing_row_allows_session():
+def test_pre_marker_missing_row_denies_checklist_session():
     cur = FakeCursor()
     client, conn = _build_public_client(cur)
     headers = {"Authorization": "Bearer mtl-token"}
@@ -350,8 +350,8 @@ def test_pre_marker_missing_row_allows_session():
         return_value={"id": 1, "task_date": "2026-07-17", "employee_id": 42, "items": []},
     ) as create:
         res = client.get("/api/public/maintenance-task-list/today", headers=headers)
-    assert res.status_code == 200
-    create.assert_called_once()
+    assert res.status_code == 403
+    create.assert_not_called()
 
 
 def test_inactive_employee_session_rejected():

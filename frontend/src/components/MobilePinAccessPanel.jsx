@@ -10,8 +10,8 @@ import {
 } from "@mui/material";
 import { getTaUserMobilePinAccess, putTaUserMobilePinAccess } from "../api";
 
+/** Configurable Mobile PIN apps — Clock In/Out is org hub policy, not listed here. */
 export const MOBILE_PIN_ACCESS_MODULES = [
-  { key: "clock", label: "Clock" },
   { key: "switch_role", label: "Role" },
   { key: "take_break", label: "Take a Break" },
   { key: "checklist", label: "End-of-Day Checklist" },
@@ -22,7 +22,6 @@ export const MOBILE_PIN_ACCESS_MODULES = [
 
 export function normalizeMobilePinAccess(data = {}) {
   return {
-    clock: !!data.clock,
     switch_role: !!data.switch_role,
     take_break: !!data.take_break,
     checklist: !!data.checklist,
@@ -41,6 +40,7 @@ const EMPTY = normalizeMobilePinAccess({});
 /**
  * People → Employee → Mobile PIN Access
  * Module checkboxes only. Separate from Allowed Work Assignments.
+ * Defaults: Role + Take a Break ON; other apps OFF.
  */
 export default function MobilePinAccessPanel({ userId, canEdit = false }) {
   const [loading, setLoading] = useState(false);
@@ -114,7 +114,7 @@ export default function MobilePinAccessPanel({ userId, canEdit = false }) {
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
         Controls which apps appear on the mobile PIN launcher. Separate from Allowed Work
-        Assignments.
+        Assignments. Clock In/Out follows shared attendance settings, not this list.
       </Typography>
 
       {error ? (

@@ -232,9 +232,9 @@ def test_missing_row_after_backfill_denies_revenue_cost_on_mobile():
     list_today.assert_not_called()
 
 
-def test_pre_marker_missing_row_allows_revenue_cost_on_mobile():
+def test_pre_marker_missing_row_denies_revenue_cost_on_mobile():
     cur = FakeCursor()
-    # Unmarked org → temporary allow-all for missing row (bounded deploy window).
+    # Unmarked org + missing row → Role + Take a Break only (not all apps).
     client, conn = _build_client(cur)
 
     with patch("backend.drc_mobile_entry_routes.get_db", return_value=conn), patch(
@@ -251,8 +251,8 @@ def test_pre_marker_missing_row_allows_revenue_cost_on_mobile():
         return_value={"assigned_sections": []},
     ) as list_today:
         res = client.get("/finance/daily-revenue-cost/mobile/today")
-    assert res.status_code == 200
-    list_today.assert_called_once()
+    assert res.status_code == 403
+    list_today.assert_not_called()
 
 
 def test_cross_org_access_row_does_not_grant_request_org():

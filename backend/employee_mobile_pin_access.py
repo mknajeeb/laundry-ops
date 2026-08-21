@@ -18,7 +18,12 @@ Per-organization marker in ``employee_mobile_pin_access_backfill`` (no global cu
 3. **New org:** platform create/bootstrap writes marker ``init_mode=new_org`` with
    zero grants. New / first-PIN employees get explicit rows with ``switch_role`` and
    ``take_break`` ON and other modules OFF (Role + Take a Break are floor defaults).
+   Clock In/Out is org hub policy — not a People Mobile PIN Access checkbox.
 4. **Marked org:** missing row → all-deny (never "missing = allow all").
+5. **Defaults migration** ``role_take_break_defaults_v1``: normal employees → Role +
+   Take a Break; wipe legacy blanket checklist/inventory/revenue; preserve deliberate
+   optional grants (manager ``updated_by_user_id`` and/or ``team_status``). Skip
+   SUPER_ADMIN / PLATFORM_ADMIN system users.
 """
 
 from __future__ import annotations
@@ -30,6 +35,10 @@ from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_
 # Keep in sync with COLUMN_BY_KEY, save/load SQL, People MobilePinAccessPanel,
 # and PIN hub / break-start enforcement. Dropping a key from MODULE_KEYS
 # silently ignores People UI saves for that module (team_status bug class).
+#
+# ``clock`` remains a stored column for compatibility but is NOT part of the
+# configurable People Mobile PIN app-access list. Clock In/Out is gated by org
+# hub settings (allow_clock_from_hub), not per-employee allow_clock.
 MODULE_KEYS = (
     "clock",
     "switch_role",
@@ -40,7 +49,17 @@ MODULE_KEYS = (
     "team_status",
 )
 
-# Hub / PIN enforcement AND-gates. Clock remains stored but not activated.
+# People → Mobile PIN Access checkboxes (and required PUT body fields).
+PEOPLE_MOBILE_PIN_ACCESS_KEYS = (
+    "switch_role",
+    "take_break",
+    "checklist",
+    "inventory",
+    "revenue_cost",
+    "team_status",
+)
+
+# Hub / PIN enforcement AND-gates. Clock is never employee-enforced.
 # take_break is enforced on pin-break/start + hub Take a Break tile (not Resume).
 ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES = frozenset(
     {
@@ -68,6 +87,8 @@ KEY_BY_COLUMN = {v: k for k, v in COLUMN_BY_KEY.items()}
 
 BACKFILL_MARKER_TABLE = "employee_mobile_pin_access_backfill"
 ACCESS_TABLE = "employee_mobile_pin_access"
+MIGRATIONS_TABLE = "employee_mobile_pin_access_migrations"
+ROLE_TAKE_BREAK_DEFAULTS_MIGRATION = "role_take_break_defaults_v1"
 
 INIT_MODE_LEGACY_GRANT = "legacy_grant"
 INIT_MODE_NEW_ORG = "new_org"
@@ -78,6 +99,12 @@ _LOCK_TIMEOUT_SEC = 10
 DENIED_MODULE_MESSAGE = "That application is not available for this employee."
 AUDIT_ENTITY = "employee_mobile_pin_access"
 AUDIT_ACTION = "employee_mobile_pin_access.updated"
+
+# Washpro platform/system roles — do not rewrite their Mobile PIN Access rows
+# when applying the Role + Take a Break defaults migration.
+SYSTEM_ROLE_CODES = frozenset({"SUPER_ADMIN", "PLATFORM_ADMIN"})
+
+OPTIONAL_APP_KEYS = ("checklist", "inventory", "revenue_cost", "team_status")
 
 
 class MobilePinAccessDeniedError(PermissionError):
@@ -97,10 +124,17 @@ def _all_false() -> dict[str, bool]:
 
 
 def _all_true() -> dict[str, bool]:
-    """Temporary pre-marker allow-all — never includes manager-only team_status."""
-    out = {k: True for k in MODULE_KEYS}
-    out["team_status"] = False
-    return out
+    """Pre-marker compatibility defaults — same as new-employee floor defaults."""
+    return _new_employee_default_grants()
+
+
+def _new_employee_default_grants() -> dict[str, bool]:
+    """Canonical defaults for newly created / newly PIN'd normal employees."""
+    grants = _all_false()
+    grants["switch_role"] = True
+    grants["take_break"] = True
+    # clock stays False — Clock In/Out is not a Mobile PIN app-access grant.
+    return grants
 
 
 def ensure_employee_mobile_pin_access_tables(cursor) -> None:
@@ -132,6 +166,16 @@ def ensure_employee_mobile_pin_access_tables(cursor) -> None:
           backfilled_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
           employees_granted INT NOT NULL DEFAULT 0,
           init_mode VARCHAR(32) NOT NULL DEFAULT '{INIT_MODE_LEGACY_GRANT}'
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {MIGRATIONS_TABLE} (
+          organization_id INT NOT NULL,
+          migration_key VARCHAR(64) NOT NULL,
+          applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (organization_id, migration_key)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
@@ -210,14 +254,20 @@ def ensure_org_mobile_pin_access_backfill(cursor, organization_id: int) -> None:
     (table_exists is process-cached). CREATE IF NOT EXISTS is ~300ms on Azure MySQL
     even when the table is present.
     """
-    _ = int(organization_id)
-    if table_exists(cursor, ACCESS_TABLE) and table_exists(cursor, BACKFILL_MARKER_TABLE):
+    oid = int(organization_id)
+    if (
+        table_exists(cursor, ACCESS_TABLE)
+        and table_exists(cursor, BACKFILL_MARKER_TABLE)
+        and table_exists(cursor, MIGRATIONS_TABLE)
+    ):
         if not table_has_column(cursor, ACCESS_TABLE, "allow_team_status") or not table_has_column(
             cursor, ACCESS_TABLE, "allow_take_break"
         ):
             ensure_employee_mobile_pin_access_tables(cursor)
+        ensure_role_take_break_defaults_migration(cursor, oid)
         return
     ensure_employee_mobile_pin_access_tables(cursor)
+    ensure_role_take_break_defaults_migration(cursor, oid)
 
 
 def initialize_new_org_mobile_pin_access_marker(cursor, organization_id: int) -> bool:
@@ -295,18 +345,34 @@ def _list_access_user_ids(
 def _insert_all_true_rows(
     cursor, organization_id: int, user_ids: list[int]
 ) -> int:
+    """Insert Role + Take a Break defaults (legacy backfill path for unmarked orgs)."""
     if not user_ids:
         return 0
-    values_sql = ", ".join(["(%s, %s, 1, 1, 1, 1, 1, NOW())"] * len(user_ids))
+    defaults = _new_employee_default_grants()
+    values_sql = ", ".join(
+        ["(%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"] * len(user_ids)
+    )
     params: list[Any] = []
     for uid in user_ids:
-        params.extend([int(organization_id), int(uid)])
+        params.extend(
+            [
+                int(organization_id),
+                int(uid),
+                1 if defaults["clock"] else 0,
+                1 if defaults["switch_role"] else 0,
+                1 if defaults["take_break"] else 0,
+                1 if defaults["checklist"] else 0,
+                1 if defaults["inventory"] else 0,
+                1 if defaults["revenue_cost"] else 0,
+                1 if defaults["team_status"] else 0,
+            ]
+        )
     cursor.execute(
         f"""
         INSERT INTO {ACCESS_TABLE}
           (organization_id, user_id,
-           allow_clock, allow_switch_role, allow_checklist,
-           allow_inventory, allow_revenue_cost, created_at)
+           allow_clock, allow_switch_role, allow_take_break, allow_checklist,
+           allow_inventory, allow_revenue_cost, allow_team_status, created_at)
         VALUES {values_sql}
         """,
         tuple(params),
@@ -606,15 +672,6 @@ def assert_optional_pin_hub_module(
     assert_employee_allows_module(cursor, organization_id, user_id, key)
 
 
-def _new_employee_default_grants() -> dict[str, bool]:
-    """Canonical defaults for newly created / newly PIN'd employees."""
-    grants = _all_false()
-    grants["switch_role"] = True
-    # Independent of Role/Clock, but ON by default so floor staff can pause shifts.
-    grants["take_break"] = True
-    return grants
-
-
 def ensure_new_employee_mobile_pin_access(
     cursor,
     organization_id: int,
@@ -814,6 +871,7 @@ def manager_mobile_pin_access_payload(
     """Load for People UI; 404 if employee not in org."""
     ensure_employee_mobile_pin_access_tables(cursor)
     oid = int(organization_id)
+    ensure_role_take_break_defaults_migration(cursor, oid)
     uid = int(user_id)
     if table_exists(cursor, "users"):
         cursor.execute(
@@ -824,8 +882,12 @@ def manager_mobile_pin_access_payload(
             raise LookupError("Employee not found")
     access = serialize_mobile_pin_access(cursor, oid, uid)
     row = get_access_row(cursor, oid, uid)
+    # People UI does not edit clock; always report false so it is not mistaken
+    # for a configurable Mobile PIN app.
+    people = {k: bool(access.get(k)) for k in PEOPLE_MOBILE_PIN_ACCESS_KEYS}
     return {
-        **access,
+        **people,
+        "clock": False,
         "has_explicit_row": row is not None,
         "org_backfilled": _org_is_backfilled(cursor, oid),
     }
@@ -851,10 +913,14 @@ def save_employee_mobile_pin_access(
     write_audit_fn: Optional[Callable] = None,
 ) -> dict[str, bool]:
     """
-    Upsert all module booleans. Audits only changed modules.
+    Upsert People Mobile PIN Access app grants.
+
+    Requires ``PEOPLE_MOBILE_PIN_ACCESS_KEYS``. ``clock`` is always stored False —
+    Clock In/Out is not a configurable Mobile PIN app permission.
     """
     ensure_employee_mobile_pin_access_tables(cursor)
     oid = int(organization_id)
+    ensure_role_take_break_defaults_migration(cursor, oid)
     uid = int(user_id)
 
     if table_exists(cursor, "users"):
@@ -867,10 +933,11 @@ def save_employee_mobile_pin_access(
 
     before = serialize_mobile_pin_access(cursor, oid, uid)
     after: dict[str, bool] = {}
-    for key in MODULE_KEYS:
+    for key in PEOPLE_MOBILE_PIN_ACCESS_KEYS:
         if key not in grants:
             raise ValueError(f"Missing required field: {key}")
         after[key] = _coerce_bool(grants[key], key)
+    after["clock"] = False
 
     cursor.execute(
         f"""
@@ -894,7 +961,7 @@ def save_employee_mobile_pin_access(
         (
             oid,
             uid,
-            1 if after["clock"] else 0,
+            0,
             1 if after["switch_role"] else 0,
             1 if after["take_break"] else 0,
             1 if after["checklist"] else 0,
@@ -922,3 +989,186 @@ def save_employee_mobile_pin_access(
         )
 
     return after
+
+
+def _migration_applied(cursor, organization_id: int, migration_key: str) -> bool:
+    if not table_exists(cursor, MIGRATIONS_TABLE):
+        return False
+    cursor.execute(
+        f"""
+        SELECT 1 FROM {MIGRATIONS_TABLE}
+        WHERE organization_id = %s AND migration_key = %s
+        LIMIT 1
+        """,
+        (int(organization_id), str(migration_key)),
+    )
+    return bool(cursor.fetchone())
+
+
+def _mark_migration_applied(cursor, organization_id: int, migration_key: str) -> None:
+    cursor.execute(
+        f"""
+        INSERT IGNORE INTO {MIGRATIONS_TABLE}
+          (organization_id, migration_key, applied_at)
+        VALUES (%s, %s, NOW())
+        """,
+        (int(organization_id), str(migration_key)),
+    )
+
+
+def _system_user_ids(cursor, organization_id: int) -> set[int]:
+    """Users with platform/system roles — excluded from defaults migration."""
+    if not table_exists(cursor, "users") or not table_exists(cursor, "roles"):
+        return set()
+    if not table_exists(cursor, "user_roles"):
+        return set()
+    codes = sorted(SYSTEM_ROLE_CODES)
+    placeholders = ", ".join(["%s"] * len(codes))
+    cursor.execute(
+        f"""
+        SELECT DISTINCT u.id AS user_id
+        FROM users u
+        INNER JOIN user_roles ur ON ur.user_id = u.id
+        INNER JOIN roles r ON r.id = ur.role_id
+        WHERE u.organization_id = %s
+          AND r.code IN ({placeholders})
+        """,
+        (int(organization_id), *codes),
+    )
+    return set(_fetch_int_ids(cursor.fetchall()))
+
+
+def _row_is_legacy_blanket_optional_apps(row: dict) -> bool:
+    """
+    Untouched legacy all-apps grant: checklist+inventory+revenue all ON and no
+    manager actor. team_status may still be preserved separately.
+    """
+    if row.get("updated_by_user_id") is not None:
+        return False
+    return bool(
+        row.get("allow_checklist")
+        and row.get("allow_inventory")
+        and row.get("allow_revenue_cost")
+    )
+
+
+def ensure_role_take_break_defaults_migration(cursor, organization_id: int) -> dict[str, Any]:
+    """
+    One-time per org: normal employees → Role + Take a Break ON; clock OFF;
+    optional apps OFF unless deliberately granted (manager save and/or team_status).
+
+    System/platform users are skipped. Resume Work is unaffected (not stored here).
+    """
+    ensure_employee_mobile_pin_access_tables(cursor)
+    oid = int(organization_id)
+    report: dict[str, Any] = {
+        "organization_id": oid,
+        "migration_key": ROLE_TAKE_BREAK_DEFAULTS_MIGRATION,
+        "applied": False,
+        "skipped_already": False,
+        "rows_updated": 0,
+        "rows_skipped_system": 0,
+        "user_ids_updated": [],
+    }
+    if _migration_applied(cursor, oid, ROLE_TAKE_BREAK_DEFAULTS_MIGRATION):
+        report["skipped_already"] = True
+        return report
+    if not table_exists(cursor, ACCESS_TABLE):
+        _mark_migration_applied(cursor, oid, ROLE_TAKE_BREAK_DEFAULTS_MIGRATION)
+        report["applied"] = True
+        return report
+
+    system_ids = _system_user_ids(cursor, oid)
+    cursor.execute(
+        f"""
+        SELECT organization_id, user_id,
+               allow_clock, allow_switch_role, allow_take_break, allow_checklist,
+               allow_inventory, allow_revenue_cost, allow_team_status,
+               updated_by_user_id
+        FROM {ACCESS_TABLE}
+        WHERE organization_id = %s
+        """,
+        (oid,),
+    )
+    rows = cursor.fetchall() or []
+    updated: list[int] = []
+    skipped_system = 0
+    for raw in rows:
+        row = raw if isinstance(raw, dict) else None
+        if not row:
+            continue
+        try:
+            uid = int(row["user_id"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if uid in system_ids:
+            skipped_system += 1
+            continue
+
+        switch_role = True
+        take_break = True
+        clock = False
+        if _row_is_legacy_blanket_optional_apps(row):
+            checklist = False
+            inventory = False
+            revenue_cost = False
+            # team_status was never part of legacy all-true; keep if already ON.
+            team_status = bool(row.get("allow_team_status"))
+        else:
+            checklist = bool(row.get("allow_checklist"))
+            inventory = bool(row.get("allow_inventory"))
+            revenue_cost = bool(row.get("allow_revenue_cost"))
+            team_status = bool(row.get("allow_team_status"))
+
+        before = (
+            bool(row.get("allow_clock")),
+            bool(row.get("allow_switch_role")),
+            bool(row.get("allow_take_break")),
+            bool(row.get("allow_checklist")),
+            bool(row.get("allow_inventory")),
+            bool(row.get("allow_revenue_cost")),
+            bool(row.get("allow_team_status")),
+        )
+        after = (
+            clock,
+            switch_role,
+            take_break,
+            checklist,
+            inventory,
+            revenue_cost,
+            team_status,
+        )
+        if before == after:
+            continue
+        cursor.execute(
+            f"""
+            UPDATE {ACCESS_TABLE}
+            SET allow_clock = %s,
+                allow_switch_role = %s,
+                allow_take_break = %s,
+                allow_checklist = %s,
+                allow_inventory = %s,
+                allow_revenue_cost = %s,
+                allow_team_status = %s
+            WHERE organization_id = %s AND user_id = %s
+            """,
+            (
+                1 if clock else 0,
+                1 if switch_role else 0,
+                1 if take_break else 0,
+                1 if checklist else 0,
+                1 if inventory else 0,
+                1 if revenue_cost else 0,
+                1 if team_status else 0,
+                oid,
+                uid,
+            ),
+        )
+        updated.append(uid)
+
+    _mark_migration_applied(cursor, oid, ROLE_TAKE_BREAK_DEFAULTS_MIGRATION)
+    report["applied"] = True
+    report["rows_updated"] = len(updated)
+    report["rows_skipped_system"] = skipped_system
+    report["user_ids_updated"] = updated
+    return report

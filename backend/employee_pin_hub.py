@@ -198,19 +198,9 @@ def attendance_snapshot_for_hub(
     else:
         shared = bool(shared_device_attendance_enabled(conn, int(org_id)))
     allow_clock = bool(pm.get("allow_clock_from_hub", True))
-    emp_access = employee_module_access
-    if emp_access is None:
-        from backend.employee_mobile_pin_access import resolve_employee_mobile_pin_access
-
-        cursor = conn.cursor(dictionary=True)
-        try:
-            emp_access = resolve_employee_mobile_pin_access(cursor, int(org_id), int(user_id))
-        finally:
-            try:
-                cursor.close()
-            except Exception:
-                pass
-    employee_allow_clock = bool(emp_access.get("clock")) if isinstance(emp_access, dict) else True
+    # Clock In/Out is org hub policy only — not employee Mobile PIN Access.
+    del employee_module_access
+    employee_allow_clock = True
     active = _active_shift(conn, int(user_id))
     on_break = False
     break_started_at = None

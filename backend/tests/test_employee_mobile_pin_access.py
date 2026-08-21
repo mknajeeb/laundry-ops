@@ -46,12 +46,88 @@ class FakeCursor:
         self._has_team_status = True
         self._has_take_break = True
         self.fail_insert_user_ids = set()
+        self.migrations = {}
+        self.user_roles = {}  # user_id -> set of role codes
+        # Unit tests seed access rows directly; skip one-time defaults migration
+        # unless a test opts in via skip_defaults_migration=False.
+        self.skip_defaults_migration = True
 
     def execute(self, sql, params=None):
         sql_n = " ".join(str(sql).split())
         params = params or ()
 
         if "CREATE TABLE IF NOT EXISTS employee_mobile_pin_access" in sql_n:
+            return
+        if "CREATE TABLE IF NOT EXISTS employee_mobile_pin_access_migrations" in sql_n:
+            return
+        if "FROM employee_mobile_pin_access_migrations" in sql_n:
+            if getattr(self, "skip_defaults_migration", True):
+                self._result = {"ok": 1}
+                return
+            oid = int(params[0])
+            key = str(params[1])
+            self._result = {"ok": 1} if (oid, key) in getattr(self, "migrations", {}) else None
+            return
+        if "INSERT IGNORE INTO employee_mobile_pin_access_migrations" in sql_n or (
+            "INSERT INTO employee_mobile_pin_access_migrations" in sql_n
+        ):
+            oid = int(params[0])
+            key = str(params[1])
+            if not hasattr(self, "migrations"):
+                self.migrations = {}
+            if (oid, key) in self.migrations:
+                self.rowcount = 0
+            else:
+                self.migrations[(oid, key)] = True
+                self.rowcount = 1
+            return
+        if "UPDATE employee_mobile_pin_access" in sql_n and "allow_take_break" in sql_n and "allow_clock" in sql_n:
+            # defaults migration UPDATE
+            oid, uid = int(params[7]), int(params[8])
+            prior = self.access.get((oid, uid), {})
+            self.access[(oid, uid)] = {
+                "clock": bool(params[0]),
+                "switch_role": bool(params[1]),
+                "take_break": bool(params[2]),
+                "checklist": bool(params[3]),
+                "inventory": bool(params[4]),
+                "revenue_cost": bool(params[5]),
+                "team_status": bool(params[6]),
+                "updated_by_user_id": prior.get("updated_by_user_id"),
+            }
+            self.rowcount = 1
+            return
+        if "FROM users u" in sql_n and "user_roles" in sql_n and "roles r" in sql_n:
+            # system user ids
+            oid = int(params[0])
+            codes = set(str(p) for p in params[1:])
+            out = []
+            for uid, uroles in getattr(self, "user_roles", {}).items():
+                if any(c in codes for c in uroles):
+                    # users list may be (org, uid)
+                    for porg, u in self.users:
+                        if porg == oid and u == uid:
+                            out.append({"user_id": uid})
+            self._results = out
+            return
+        if "SELECT organization_id, user_id" in sql_n and "FROM employee_mobile_pin_access" in sql_n and "WHERE organization_id" in sql_n and "LIMIT 1" not in sql_n and "user_id IN" not in sql_n:
+            oid = int(params[0])
+            self._results = []
+            for (porg, uid), a in self.access.items():
+                if porg != oid:
+                    continue
+                self._results.append({
+                    "organization_id": porg,
+                    "user_id": uid,
+                    "allow_clock": 1 if a.get("clock") else 0,
+                    "allow_switch_role": 1 if a.get("switch_role") else 0,
+                    "allow_take_break": 1 if a.get("take_break", True) else 0,
+                    "allow_checklist": 1 if a.get("checklist") else 0,
+                    "allow_inventory": 1 if a.get("inventory") else 0,
+                    "allow_revenue_cost": 1 if a.get("revenue_cost") else 0,
+                    "allow_team_status": 1 if a.get("team_status") else 0,
+                    "updated_by_user_id": a.get("updated_by_user_id"),
+                })
             return
         if "ALTER TABLE employee_mobile_pin_access_backfill" in sql_n:
             self._has_init_mode = True
@@ -143,6 +219,25 @@ class FakeCursor:
             and "INSERT IGNORE" not in sql_n
             and "allow_clock, allow_switch_role" in sql_n
         ):
+            # Multi-row Role+Take Break defaults first (9 params/user)
+            if len(params) >= 18 and len(params) % 9 == 0:
+                for i in range(0, len(params), 9):
+                    org, uid = int(params[i]), int(params[i + 1])
+                    if uid in self.fail_insert_user_ids:
+                        raise MobilePinAccessBackfillError("simulated insert failure")
+                    if (org, uid) in self.access:
+                        raise Exception("duplicate key")
+                    self.access[(org, uid)] = {
+                        "clock": bool(params[i + 2]),
+                        "switch_role": bool(params[i + 3]),
+                        "take_break": bool(params[i + 4]),
+                        "checklist": bool(params[i + 5]),
+                        "inventory": bool(params[i + 6]),
+                        "revenue_cost": bool(params[i + 7]),
+                        "team_status": bool(params[i + 8]),
+                    }
+                self.rowcount = len(params) // 9
+                return
             # Single-row insert with explicit module flags
             if (
                 len(params) >= 8
@@ -162,7 +257,7 @@ class FakeCursor:
                 }
                 self.rowcount = 1
                 return
-            # Multi-row all-true insert: (org, uid) pairs — never grants team_status
+            # Fallback (org, uid) pairs
             for i in range(0, len(params), 2):
                 org, uid = int(params[i]), int(params[i + 1])
                 if uid in self.fail_insert_user_ids:
@@ -170,12 +265,12 @@ class FakeCursor:
                 if (org, uid) in self.access:
                     raise Exception("duplicate key")
                 self.access[(org, uid)] = {
-                    "clock": True,
+                    "clock": False,
                     "switch_role": True,
                     "take_break": True,
-                    "checklist": True,
-                    "inventory": True,
-                    "revenue_cost": True,
+                    "checklist": False,
+                    "inventory": False,
+                    "revenue_cost": False,
                     "team_status": False,
                 }
             self.rowcount = len(params) // 2
@@ -374,19 +469,21 @@ def test_migration_pin_employee_gets_all_true():
     assert report["marker"] == "written"
     assert report["rows_inserted"] == 2
     assert resolve_employee_mobile_pin_access(cur, 3, 10) == {
-        "clock": True,
+        "clock": False,
         "switch_role": True,
         "take_break": True,
-        "checklist": True,
-        "inventory": True,
-        "revenue_cost": True,
+        "checklist": False,
+        "inventory": False,
+        "revenue_cost": False,
         "team_status": False,
     }
     # Idempotent
     report2 = _legacy_backfill(cur, 3)
     assert report2["already_complete"] is True
     assert report2["rows_inserted"] == 0
-    assert cur.access[(3, 10)]["clock"] is True
+    assert cur.access[(3, 10)]["clock"] is False
+    assert cur.access[(3, 10)]["switch_role"] is True
+    assert cur.access[(3, 10)]["take_break"] is True
     assert cur.backfill_modes[3] == INIT_MODE_LEGACY_GRANT
 
 
@@ -527,7 +624,7 @@ def test_missing_row_after_backfill_denies_access():
 
 
 def test_temporary_unmarked_org_missing_row_allows_all():
-    """Bounded deploy-window fallback: unmarked org + missing row → allow all."""
+    """Bounded deploy-window fallback: unmarked org + missing row → Role + Take a Break."""
     cur = FakeCursor()
     with patch(
         "backend.employee_mobile_pin_access.ensure_org_mobile_pin_access_backfill",
@@ -539,7 +636,12 @@ def test_temporary_unmarked_org_missing_row_allows_all():
     ), patch(
         "backend.employee_mobile_pin_access.ensure_employee_mobile_pin_access_tables"
     ):
-        assert resolve_employee_mobile_pin_access(cur, 3, 99)["clock"] is True
+        access = resolve_employee_mobile_pin_access(cur, 3, 99)
+        assert access["switch_role"] is True
+        assert access["take_break"] is True
+        assert access["clock"] is False
+        assert access["checklist"] is False
+        assert access["team_status"] is False
 
 
 def test_save_and_audit_only_changed():
@@ -570,7 +672,7 @@ def test_save_and_audit_only_changed():
     assert len(events) == 1
     assert events[0][0][3] == AUDIT_ACTION
     modules = events[0][1]["new"]["modules"]
-    assert set(modules.keys()) == {"switch_role", "revenue_cost"}
+    assert set(modules.keys()) == {"switch_role", "checklist", "inventory"}
     assert modules["switch_role"] is False
 
     # No-op save → no audit
@@ -714,6 +816,76 @@ def test_take_break_save_reload_roundtrip():
     )
     assert after_on["take_break"] is True
     assert resolve_employee_mobile_pin_access(cur, 3, 35)["take_break"] is True
+
+
+def test_role_take_break_defaults_migration_preserves_deliberate_grants():
+    from backend.employee_mobile_pin_access import (
+        ROLE_TAKE_BREAK_DEFAULTS_MIGRATION,
+        ensure_role_take_break_defaults_migration,
+    )
+
+    cur = FakeCursor()
+    cur.skip_defaults_migration = False
+    cur.users = [(3, 10), (3, 11), (3, 12), (3, 15)]
+    cur.user_roles = {15: {"PLATFORM_ADMIN", "SUPER_ADMIN"}}
+    cur.access[(3, 10)] = {
+        "clock": True,
+        "switch_role": True,
+        "take_break": True,
+        "checklist": True,
+        "inventory": True,
+        "revenue_cost": True,
+        "team_status": False,
+        "updated_by_user_id": None,
+    }
+    cur.access[(3, 11)] = {
+        "clock": False,
+        "switch_role": True,
+        "take_break": True,
+        "checklist": False,
+        "inventory": False,
+        "revenue_cost": True,
+        "team_status": True,
+        "updated_by_user_id": 15,
+    }
+    cur.access[(3, 15)] = {
+        "clock": True,
+        "switch_role": True,
+        "take_break": True,
+        "checklist": True,
+        "inventory": True,
+        "revenue_cost": True,
+        "team_status": False,
+        "updated_by_user_id": None,
+    }
+
+    report = ensure_role_take_break_defaults_migration(cur, 3)
+    assert report["applied"] is True
+    assert report["migration_key"] == ROLE_TAKE_BREAK_DEFAULTS_MIGRATION
+    assert 10 in report["user_ids_updated"]
+    assert 15 not in report["user_ids_updated"]  # system user skipped
+    assert cur.access[(3, 10)] == {
+        "clock": False,
+        "switch_role": True,
+        "take_break": True,
+        "checklist": False,
+        "inventory": False,
+        "revenue_cost": False,
+        "team_status": False,
+        "updated_by_user_id": None,
+    }
+    # Deliberate Revenue + Team Status preserved; Role + Take a Break forced on.
+    assert cur.access[(3, 11)]["revenue_cost"] is True
+    assert cur.access[(3, 11)]["team_status"] is True
+    assert cur.access[(3, 11)]["switch_role"] is True
+    assert cur.access[(3, 11)]["take_break"] is True
+    assert cur.access[(3, 11)]["clock"] is False
+    # System user untouched
+    assert cur.access[(3, 15)]["checklist"] is True
+    assert cur.access[(3, 15)]["clock"] is True
+
+    report2 = ensure_role_take_break_defaults_migration(cur, 3)
+    assert report2["skipped_already"] is True
 
 
 def test_assert_denies_module():
@@ -960,7 +1132,8 @@ def test_attendance_snapshot_employee_allow_clock():
                 },
         )
     assert snap["allow_clock_from_hub"] is False
-    assert snap["employee_allow_clock"] is False
+    # Clock In/Out is org hub policy only — employee allow_clock is unused.
+    assert snap["employee_allow_clock"] is True
 
 
 def test_role_switch_open_denied_without_employee_access():

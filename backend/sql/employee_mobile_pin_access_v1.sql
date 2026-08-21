@@ -78,4 +78,11 @@ SET @sql_tb := IF(
 );
 PREPARE _tb FROM @sql_tb; EXECUTE _tb; DEALLOCATE PREPARE _tb;
 
+CREATE TABLE IF NOT EXISTS employee_mobile_pin_access_migrations (
+  organization_id INT NOT NULL,
+  migration_key VARCHAR(64) NOT NULL,
+  applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (organization_id, migration_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 SELECT 'employee_mobile_pin_access_v1 complete.' AS note;

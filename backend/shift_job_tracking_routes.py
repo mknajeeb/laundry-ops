@@ -733,7 +733,7 @@ def employee_mobile_pin_access_get(user_id: int):
 @require_any_perm("users.edit", "ta.settings")
 def employee_mobile_pin_access_put(user_id: int):
     from backend.employee_mobile_pin_access import (
-        MODULE_KEYS,
+        PEOPLE_MOBILE_PIN_ACCESS_KEYS,
         manager_mobile_pin_access_payload,
         save_employee_mobile_pin_access,
     )
@@ -756,7 +756,7 @@ def employee_mobile_pin_access_put(user_id: int):
                 organization_id=organization_id if organization_id is not None else oid,
             )
 
-        grants = {k: data.get(k) for k in MODULE_KEYS}
+        grants = {k: data.get(k) for k in PEOPLE_MOBILE_PIN_ACCESS_KEYS}
         c = conn.cursor(dictionary=True)
         save_employee_mobile_pin_access(
             c,

@@ -6,9 +6,8 @@ import {
 } from "./MobilePinAccessPanel";
 
 describe("MobilePinAccessPanel contracts", () => {
-  it("exposes module checkboxes without Hang Dry", () => {
+  it("exposes Role + Take a Break and optional apps without Clock", () => {
     expect(MOBILE_PIN_ACCESS_MODULES.map((m) => m.key)).toEqual([
-      "clock",
       "switch_role",
       "take_break",
       "checklist",
@@ -17,7 +16,6 @@ describe("MobilePinAccessPanel contracts", () => {
       "team_status",
     ]);
     expect(MOBILE_PIN_ACCESS_MODULES.map((m) => m.label)).toEqual([
-      "Clock",
       "Role",
       "Take a Break",
       "End-of-Day Checklist",
@@ -41,7 +39,6 @@ describe("MobilePinAccessPanel contracts", () => {
         extra: true,
       }),
     ).toEqual({
-      clock: true,
       switch_role: false,
       take_break: true,
       checklist: true,
@@ -51,7 +48,7 @@ describe("MobilePinAccessPanel contracts", () => {
     });
   });
 
-  it("save body always sends all module booleans", () => {
+  it("save body always sends People app booleans without Clock", () => {
     expect(
       mobilePinAccessSaveBody({
         clock: true,
@@ -59,7 +56,6 @@ describe("MobilePinAccessPanel contracts", () => {
         hang_dry: true,
       }),
     ).toEqual({
-      clock: true,
       switch_role: false,
       take_break: false,
       checklist: false,
