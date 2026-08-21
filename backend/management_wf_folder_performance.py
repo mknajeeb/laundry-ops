@@ -93,7 +93,7 @@ def _fmt_duration_seconds(seconds: float | None) -> str | None:
     if hours and mins:
         return f"{hours}h {mins}m"
     if hours:
-        return f"{hours}h"
+        return f"{hours}h 00m"
     if mins and secs:
         return f"{mins}m {secs}s"
     if mins:
