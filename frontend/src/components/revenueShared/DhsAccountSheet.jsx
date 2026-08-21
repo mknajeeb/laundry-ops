@@ -26,17 +26,54 @@ function calcPreview(account, volume) {
   return null;
 }
 
+function buildBody(account, draft, entryDate, showOverride, preview) {
+  const mode = account?.revenue_mode || "calculated";
+  const isAbsolute = mode === "absolute";
+  const allowOverride = account?.allow_override !== false;
+  const body = {
+    account_id: account.account_id,
+    dr_commercial_account_id: account.dr_commercial_account_id,
+    revenue_mode: mode,
+    use_revenue_override: Boolean(showOverride && allowOverride),
+    pickup_date: account?.use_pickup_date ? draft?.pickup_date || null : null,
+    processing_date:
+      account?.use_processing_date !== false
+        ? draft?.processing_date || entryDate || null
+        : null,
+    delivery_date: account?.use_delivery_date ? draft?.delivery_date || null : null,
+    scheduled_pickup_date: draft?.scheduled_pickup_date || null,
+    scheduled_delivery_date: draft?.scheduled_delivery_date || null,
+    date_override: Boolean(
+      (draft?.scheduled_pickup_date && draft?.pickup_date && draft.pickup_date !== draft.scheduled_pickup_date) ||
+        (draft?.scheduled_delivery_date &&
+          draft?.delivery_date &&
+          draft.delivery_date !== draft.scheduled_delivery_date),
+    ),
+  };
+  if (isAbsolute) {
+    body.revenue = parseMoneyInput(draft?.revenue);
+  } else if (showOverride && allowOverride) {
+    body.volume = parseMoneyInput(draft?.volume);
+    body.revenue = parseMoneyInput(draft?.revenue);
+  } else {
+    body.volume = parseMoneyInput(draft?.volume);
+    body.revenue = preview;
+  }
+  return body;
+}
+
 /**
- * Single DHS commercial account entry — fields driven by account config.
- * Processing Date: visibly prefilled with entryDate when enabled and empty.
+ * Single DHS commercial account entry — autosave draft; Complete finalizes obligation.
  */
 export default function DhsAccountSheet({
   account,
   entryDate,
   draft,
   onChange,
-  onSave,
+  onAutosave,
+  onComplete,
   saving,
+  completeBusy,
   saveState,
   saveLabels,
   labels = {},
@@ -52,10 +89,14 @@ export default function DhsAccountSheet({
     (account?.use_processing_date !== false ? entryDate : "") ||
     "";
 
-  const setField = (key, val) => onChange?.({ ...draft, [key]: val });
+  const setField = (key, val) => {
+    const next = { ...draft, [key]: val };
+    onChange?.(next);
+    onAutosave?.(buildBody(account, next, entryDate, showOverride, calcPreview(account, next?.volume)));
+  };
 
   return (
-    <Stack spacing={1.5} sx={{ pb: 2 }}>
+    <Stack spacing={1.5} sx={{ pb: 12 }}>
       <Typography sx={{ fontSize: 18, fontWeight: 900 }}>{account?.name}</Typography>
 
       {draft?.scheduled_pickup_date || draft?.scheduled_delivery_date ? (
@@ -124,7 +165,11 @@ export default function DhsAccountSheet({
               checked={showOverride}
               onChange={(e) => {
                 setShowOverride(e.target.checked);
-                setField("use_revenue_override", e.target.checked);
+                const next = { ...draft, use_revenue_override: e.target.checked };
+                onChange?.(next);
+                onAutosave?.(
+                  buildBody(account, next, entryDate, e.target.checked, calcPreview(account, next?.volume)),
+                );
               }}
             />
           }
@@ -140,46 +185,30 @@ export default function DhsAccountSheet({
         />
       ) : null}
 
-      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 1 }}>
+      <Box
+        sx={{
+          position: "sticky",
+          bottom: 0,
+          p: 1.25,
+          borderRadius: 2,
+          bgcolor: "#fff",
+          border: "1px solid #e5e7eb",
+          display: "flex",
+          flexDirection: "column",
+          gap: 1,
+          zIndex: 2,
+        }}
+      >
         <SaveStatusChip state={saveState} labels={saveLabels} />
         <Button
           variant="contained"
-          disabled={saving}
-          onClick={() => {
-            const body = {
-              account_id: account.account_id,
-              dr_commercial_account_id: account.dr_commercial_account_id,
-              revenue_mode: mode,
-              use_revenue_override: Boolean(showOverride && allowOverride),
-              pickup_date: account?.use_pickup_date ? draft?.pickup_date || null : null,
-              processing_date:
-                account?.use_processing_date !== false
-                  ? draft?.processing_date || entryDate || null
-                  : null,
-              delivery_date: account?.use_delivery_date ? draft?.delivery_date || null : null,
-              scheduled_pickup_date: draft?.scheduled_pickup_date || null,
-              scheduled_delivery_date: draft?.scheduled_delivery_date || null,
-              date_override: Boolean(
-                (draft?.scheduled_pickup_date && draft?.pickup_date && draft.pickup_date !== draft.scheduled_pickup_date) ||
-                  (draft?.scheduled_delivery_date &&
-                    draft?.delivery_date &&
-                    draft.delivery_date !== draft.scheduled_delivery_date),
-              ),
-            };
-            if (isAbsolute) {
-              body.revenue = parseMoneyInput(draft?.revenue);
-            } else if (showOverride && allowOverride) {
-              body.volume = parseMoneyInput(draft?.volume);
-              body.revenue = parseMoneyInput(draft?.revenue);
-            } else {
-              body.volume = parseMoneyInput(draft?.volume);
-              body.revenue = preview;
-            }
-            onSave?.(body);
-          }}
-          sx={{ textTransform: "none", fontWeight: 800, minHeight: 48 }}
+          disabled={saving || completeBusy || saveState === "saving"}
+          onClick={() =>
+            onComplete?.(buildBody(account, draft, entryDate, showOverride, preview))
+          }
+          sx={{ textTransform: "none", fontWeight: 900, minHeight: 48 }}
         >
-          {labels.save || "Save"}
+          {labels.complete || "Complete"}
         </Button>
       </Box>
     </Stack>

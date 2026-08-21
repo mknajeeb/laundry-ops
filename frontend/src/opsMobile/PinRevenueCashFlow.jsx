@@ -14,7 +14,7 @@ import {
   createManagementCashPayout,
   createManagementRevenueDisposition,
   deleteManagementCashPayout,
-  getManagementRevenue,
+  getManagementRevenueBootstrap,
   getManagementRevenueDashboard,
   getManagementRevenueMissingWork,
   getManagementRevenueSchedulePreview,
@@ -36,7 +36,6 @@ import MissingWorkPanel from "../components/revenueShared/MissingWorkPanel";
 import MoneyAmountField from "../components/revenueShared/MoneyAmountField";
 import NonRinseEntryPanel from "../components/revenueShared/NonRinseEntryPanel";
 import SaveStatusChip from "../components/revenueShared/SaveStatusChip";
-import SectionStatusCard from "../components/revenueShared/SectionStatusCard";
 import {
   fmtMoney,
   moneyToInput,
@@ -134,11 +133,22 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
 
   const nonRinseRef = useRef({ ssCash: null, ssCard: null, doCash: null, doCard: null });
   const autosaveTimerRef = useRef(null);
+  const dhsAutosaveTimerRef = useRef(null);
   const saveGenRef = useRef(0);
+  const scheduleCacheRef = useRef({});
+  const dhsPendingBodyRef = useRef(null);
   nonRinseRef.current = { ssCash, ssCard, doCash, doCard };
 
   const applyDayPayload = useCallback((payload) => {
     setData(payload);
+    if (payload?.missing_work) setMissing(payload.missing_work);
+    else if (payload?.missing_work_summary) {
+      setMissing((prev) => ({
+        ...(prev || {}),
+        summary: payload.missing_work_summary,
+        daily_completeness: payload.daily_completeness,
+      }));
+    }
     const nr = payload?.non_rinse || payload?.non_rinse_revenue || {};
     setSsCash(moneyToInput(nr.self_service?.cash) === "" ? null : nr.self_service?.cash);
     setSsCard(moneyToInput(nr.self_service?.card) === "" ? null : nr.self_service?.card);
@@ -150,20 +160,16 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     setLoading(true);
     setError("");
     try {
-      const res = await getManagementRevenue(dateEt);
-      applyDayPayload(res.data || null);
-      try {
-        const miss = await getManagementRevenueMissingWork({ date_et: dateEt, filter: missingFilter });
-        setMissing(miss.data || null);
-      } catch {
-        /* optional */
-      }
+      const res = await getManagementRevenueBootstrap(dateEt);
+      const day = res.data?.day || res.data || null;
+      applyDayPayload(day);
+      if (res.data?.missing_work) setMissing(res.data.missing_work);
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadFailed"));
     } finally {
       setLoading(false);
     }
-  }, [applyDayPayload, dateEt, missingFilter, t]);
+  }, [applyDayPayload, dateEt, t]);
 
   useEffect(() => {
     loadRevenue();
@@ -237,7 +243,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     autosaveTimerRef.current = setTimeout(() => {
       autosaveTimerRef.current = null;
       flushNonRinse();
-    }, 450);
+    }, 650);
   }, [flushNonRinse]);
 
   const setSsCashField = (v) => {
@@ -257,36 +263,95 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     scheduleNonRinseAutosave();
   };
 
-  const openDhsAccount = async (row, { fromScreen } = {}) => {
+  const flushPendingNonRinse = useCallback(async () => {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    await flushNonRinse();
+  }, [flushNonRinse]);
+
+  const completeDailySection = useCallback(
+    async (sourceKey) => {
+      setError("");
+      setDispBusy(`${sourceKey}:${dateEt}`);
+      try {
+        if (sourceKey === "self_service" || sourceKey === "drop_off") {
+          await flushPendingNonRinse();
+        }
+        if (sourceKey === "rinse_wf") {
+          const vol = parseMoneyInput(wfVolume);
+          if (vol == null) throw new Error("Enter WF volume before Complete");
+          const res = await saveManagementRevenueWf({ date_et: dateEt, volume_lbs: vol });
+          applyDayPayload(res.data || null);
+        }
+        await createManagementRevenueDisposition({
+          source_key: sourceKey,
+          processing_date_et: dateEt,
+          disposition: "completed",
+        });
+        await loadRevenue();
+        setSaveState("saved");
+        setScreen("home");
+        setMainTab("entry");
+      } catch (e) {
+        setSaveState("error");
+        setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.saveFailed"));
+      } finally {
+        setDispBusy("");
+      }
+    },
+    [applyDayPayload, dateEt, flushPendingNonRinse, loadRevenue, t, wfVolume],
+  );
+
+  const openDhsAccount = async (row, { fromScreen, obligation } = {}) => {
     if (fromScreen) setReturnScreen(fromScreen);
     else if (mainTab === "missing") setReturnScreen("missing");
     else setReturnScreen("dhs");
-    setDhsAccount(row);
-    let pickup = row.pickup_date || "";
-    let delivery = row.delivery_date || "";
-    let scheduledPickup = "";
-    let scheduledDelivery = "";
+    const accountRow =
+      row ||
+      (data?.dhs?.accounts || []).find((a) => a.account_id === obligation?.account_id) ||
+      {
+        account_id: obligation?.account_id,
+        name: obligation?.name,
+        use_pickup_date: true,
+        use_processing_date: true,
+        use_delivery_date: true,
+      };
+    setDhsAccount(accountRow);
+    let pickup = accountRow.pickup_date || obligation?.scheduled_pickup_date || "";
+    let delivery = accountRow.delivery_date || "";
+    let scheduledPickup = obligation?.scheduled_pickup_date || "";
+    let scheduledDelivery = obligation?.scheduled_delivery_date || "";
+    const cacheKey = `${accountRow.account_id}:${dateEt}`;
     try {
-      const res = await getManagementRevenueSchedulePreview(row.account_id, {
-        processing_date: dateEt,
-      });
-      const defaults = res.data?.defaults || {};
-      scheduledPickup = defaults.scheduled_pickup_date || "";
-      scheduledDelivery = defaults.scheduled_delivery_date || "";
-      if (!pickup && row.use_pickup_date) pickup = defaults.pickup_date || "";
-      if (!delivery && row.use_delivery_date) delivery = defaults.delivery_date || "";
+      let defaults = scheduleCacheRef.current[cacheKey];
+      if (!defaults) {
+        const res = await getManagementRevenueSchedulePreview(accountRow.account_id, {
+          processing_date: dateEt,
+        });
+        defaults = res.data?.defaults || {};
+        scheduleCacheRef.current[cacheKey] = defaults;
+      }
+      scheduledPickup = scheduledPickup || defaults.scheduled_pickup_date || "";
+      scheduledDelivery = scheduledDelivery || defaults.scheduled_delivery_date || "";
+      if (!pickup && accountRow.use_pickup_date) pickup = defaults.pickup_date || scheduledPickup || "";
+      if (!delivery && accountRow.use_delivery_date) delivery = defaults.delivery_date || "";
     } catch {
       /* ignore */
     }
     setDhsDraft({
-      volume: moneyToInput(row.volume) === "" ? null : row.volume,
-      revenue: moneyToInput(row.revenue) === "" ? null : row.revenue,
+      volume: moneyToInput(accountRow.volume) === "" ? null : accountRow.volume,
+      revenue: moneyToInput(accountRow.revenue) === "" ? null : accountRow.revenue,
       pickup_date: pickup,
-      processing_date: row.processing_date || (row.use_processing_date !== false ? dateEt : ""),
+      processing_date:
+        accountRow.processing_date ||
+        obligation?.suggested_processing_date ||
+        (accountRow.use_processing_date !== false ? dateEt : ""),
       delivery_date: delivery,
       scheduled_pickup_date: scheduledPickup,
       scheduled_delivery_date: scheduledDelivery,
-      use_revenue_override: Boolean(row.use_revenue_override),
+      use_revenue_override: Boolean(accountRow.use_revenue_override),
     });
     setScreen("dhs_account");
     setSaveState("");
@@ -306,7 +371,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     }
   };
 
-  const saveDhsAccount = async (body) => {
+  const saveDhsAccount = async (body, { finalize = false } = {}) => {
     setSaveState("saving");
     setError("");
     try {
@@ -315,13 +380,46 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         accounts: [body],
       });
       applyDayPayload(res.data || null);
-      setSaveState("saved");
       const updated = (res.data?.dhs?.accounts || []).find((a) => a.account_id === body.account_id);
       if (updated) setDhsAccount(updated);
+      if (finalize) {
+        const pickup = body.scheduled_pickup_date || body.pickup_date;
+        if (!pickup) throw new Error("Pickup date required to Complete");
+        await createManagementRevenueDisposition({
+          source_key: `dhs:${body.account_id}`,
+          account_id: body.account_id,
+          scheduled_pickup_date: pickup,
+          scheduled_delivery_date: body.scheduled_delivery_date || body.delivery_date || null,
+          processing_date_et: body.processing_date || dateEt,
+          disposition: "completed",
+        });
+        await loadRevenue();
+        setScreen("home");
+        setMainTab("entry");
+      }
+      setSaveState("saved");
     } catch (e) {
       setSaveState("error");
       setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.saveFailed"));
     }
+  };
+
+  const scheduleDhsAutosave = (body) => {
+    dhsPendingBodyRef.current = body;
+    if (dhsAutosaveTimerRef.current) clearTimeout(dhsAutosaveTimerRef.current);
+    dhsAutosaveTimerRef.current = setTimeout(() => {
+      dhsAutosaveTimerRef.current = null;
+      const pending = dhsPendingBodyRef.current;
+      if (pending) saveDhsAccount(pending, { finalize: false });
+    }, 650);
+  };
+
+  const completeDhsAccount = async (body) => {
+    if (dhsAutosaveTimerRef.current) {
+      clearTimeout(dhsAutosaveTimerRef.current);
+      dhsAutosaveTimerRef.current = null;
+    }
+    await saveDhsAccount(body, { finalize: true });
   };
 
   const submitPayout = async () => {
@@ -477,123 +575,22 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
   const dhsAccounts = dhs.accounts || [];
   const payouts = data?.cash_payouts || [];
   const hd = data?.rinse?.hd || {};
-  const section = data?.section_status || {};
-  const totalRev = data?.total_revenue;
   const cashOut = data?.cash_activity?.cash_paid_out;
 
   const title = t(SCREEN_TITLE_KEYS[screen] || "mobileOps.revenue.title");
   const backLabel = screen === "home" ? t("mobileOps.backPin") : t("mobileOps.back");
 
-  const dailyByKey = Object.fromEntries(
-    (data?.daily_completeness?.sections || []).map((s) => [s.key, s]),
-  );
-  const dailyStatus = (key, entered) => {
-    const st = dailyByKey[key]?.status;
-    if (st === "entered" || entered) {
-      return { statusLabel: t("mobileOps.revenue.savedCheck"), statusTone: "ok" };
-    }
-    if (st === "no_activity") {
-      return {
-        statusLabel: t("mobileOps.revenue.noActivity") !== "mobileOps.revenue.noActivity" ? t("mobileOps.revenue.noActivity") : "No Activity",
-        statusTone: "neutral",
-      };
-    }
-    return { statusLabel: t("mobileOps.revenue.needsEntry"), statusTone: "warn" };
+  const entryAmounts = {
+    self_service: nr.self_service?.total,
+    drop_off: nr.drop_off?.total,
+    rinse_wf: data?.rinse?.wf?.revenue,
+    rinse_hd: hd?.revenue,
   };
 
-  const homeCards = [
-    {
-      id: "self_service",
-      title: t("mobileOps.revenue.selfService"),
-      primary: nr.self_service?.total,
-      secondary:
-        nr.self_service?.total == null
-          ? null
-          : `${t("mobileOps.revenue.cash")} ${fmtMoney(nr.self_service?.cash)} · ${t("mobileOps.revenue.card")} ${fmtMoney(nr.self_service?.card)}`,
-      ...dailyStatus("self_service", nr.self_service?.total != null),
-      onClick: () => {
-        setSaveState("");
-        setScreen("self_service");
-      },
-    },
-    {
-      id: "drop_off",
-      title: t("mobileOps.revenue.dropOff"),
-      primary: nr.drop_off?.total,
-      secondary:
-        nr.drop_off?.total == null
-          ? null
-          : `${t("mobileOps.revenue.cash")} ${fmtMoney(nr.drop_off?.cash)} · ${t("mobileOps.revenue.card")} ${fmtMoney(nr.drop_off?.card)}`,
-      ...dailyStatus("drop_off", nr.drop_off?.total != null),
-      onClick: () => {
-        setSaveState("");
-        setScreen("drop_off");
-      },
-    },
-    {
-      id: "rinse_wf",
-      title: t("mobileOps.revenue.rinseWf") !== "mobileOps.revenue.rinseWf" ? t("mobileOps.revenue.rinseWf") : "Rinse WF",
-      primary: data?.rinse?.wf?.revenue,
-      secondary:
-        data?.rinse?.wf?.volume_lbs != null ? `${fmtInt(data.rinse.wf.volume_lbs)} lb · ${dateEt}` : null,
-      ...dailyStatus("rinse_wf", Boolean(data?.rinse?.wf?.entered)),
-      onClick: () => {
-        setSaveState("");
-        setWfVolume(moneyToInput(data?.rinse?.wf?.volume_lbs));
-        setScreen("rinse_wf");
-      },
-    },
-    {
-      id: "dhs",
-      title: t("mobileOps.revenue.dhs"),
-      primary: dhs.total,
-      secondary: dhs.accounts?.length
-        ? [
-            dhs.volume_lbs != null ? `${fmtInt(dhs.volume_lbs)} lb` : null,
-            `${dhs.entered_count || 0}/${dhs.active_count || 0} ${t("mobileOps.revenue.accountsEntered")}`,
-          ]
-            .filter(Boolean)
-            .join(" · ")
-        : t("mobileOps.revenue.noDhsAccounts"),
-      statusLabel:
-        !dhs.accounts?.length
-          ? "—"
-          : `${dhs.entered_count || 0}/${dhs.active_count || 0}`,
-      statusTone: dhs.entered_count === dhs.active_count && dhs.active_count ? "ok" : "neutral",
-      onClick: () => {
-        setSaveState("");
-        setScreen("dhs");
-      },
-    },
-    {
-      id: "cash",
-      title: t("mobileOps.revenue.cashPaidOut"),
-      primary: payouts.length ? cashOut : null,
-      secondary: payouts.length
-        ? t("mobileOps.revenue.payoutEntries", { count: payouts.length })
-        : null,
-      statusLabel: payouts.length
-        ? t("mobileOps.revenue.savedCheck")
-        : (t("mobileOps.revenue.optional") !== "mobileOps.revenue.optional" ? t("mobileOps.revenue.optional") : "Optional"),
-      statusTone: "neutral",
-      onClick: () => {
-        setSaveState("");
-        setAddingPayout(false);
-        setScreen("cash");
-      },
-    },
-    {
-      id: "hang_dry",
-      title: t("mobileOps.revenue.hangDry"),
-      primary: hd.revenue,
-      secondary:
-        hd.orders != null
-          ? t("mobileOps.revenue.hdCompletedCount", { count: hd.orders })
-          : null,
-      ...dailyStatus("rinse_hd", hd.revenue != null || Boolean(hd.orders)),
-      onClick: openHangDry,
-    },
-  ];
+  const missingBadge =
+    missing?.summary?.missing_total != null && Number(missing.summary.missing_total) > 0
+      ? ` ${missing.summary.missing_total}`
+      : "";
 
   return (
     <OpsMobileShell
@@ -630,33 +627,47 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       screen !== "cash" &&
       screen !== "hang_dry" &&
       screen !== "hang_dry_detail" ? (
-        <Tabs
-          value={mainTab}
-          onChange={(_, v) => {
-            setMainTab(v);
-            setScreen("home");
-            setSaveState("");
-          }}
-          variant="fullWidth"
+        <Box
           sx={{
-            mb: 1.25,
-            minHeight: 40,
             position: "sticky",
             top: 0,
             zIndex: 3,
             bgcolor: "#F3F7F8",
-            "& .MuiTab-root": { minHeight: 40, fontWeight: 800, textTransform: "none", fontSize: 13 },
+            pt: 0.5,
+            pb: 0.75,
+            mb: 1,
+            borderBottom: "1px solid rgba(0,122,145,0.12)",
           }}
         >
-          <Tab value="entry" label={t("mobileOps.revenue.tabEntry") !== "mobileOps.revenue.tabEntry" ? t("mobileOps.revenue.tabEntry") : "Entry"} />
-          <Tab
-            value="missing"
-            label={`${t("mobileOps.revenue.missingWork")}${
-              missing?.summary?.missing_total != null ? ` · ${missing.summary.missing_total}` : ""
-            }`}
-          />
-          <Tab value="stats" label={t("mobileOps.revenue.tabStats") !== "mobileOps.revenue.tabStats" ? t("mobileOps.revenue.tabStats") : "Stats"} />
-        </Tabs>
+          <Tabs
+            value={mainTab}
+            onChange={(_, v) => {
+              setMainTab(v);
+              setScreen("home");
+              setSaveState("");
+            }}
+            variant="fullWidth"
+            sx={{
+              minHeight: 42,
+              "& .MuiTabs-indicator": { height: 3, borderRadius: 2 },
+              "& .MuiTab-root": {
+                minHeight: 42,
+                fontWeight: 800,
+                textTransform: "none",
+                fontSize: 13,
+                px: 0.5,
+              },
+              "& .Mui-selected": { color: "#007a91" },
+            }}
+          >
+            <Tab value="entry" label={t("mobileOps.revenue.tabEntry") !== "mobileOps.revenue.tabEntry" ? t("mobileOps.revenue.tabEntry") : "Entry"} />
+            <Tab
+              value="missing"
+              label={`${t("mobileOps.revenue.missingWork")}${missingBadge}`}
+            />
+            <Tab value="stats" label={t("mobileOps.revenue.tabStats") !== "mobileOps.revenue.tabStats" ? t("mobileOps.revenue.tabStats") : "Stats"} />
+          </Tabs>
+        </Box>
       ) : null}
 
       {mainTab === "entry" && screen === "home" ? (
@@ -681,34 +692,17 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
 
       {mainTab === "entry" && screen === "home" && !loading ? (
         <Stack spacing={1.25} sx={{ pb: 2 }}>
-          <Box
-            sx={{
-              p: 1.5,
-              borderRadius: 2,
-              bgcolor: "#fff",
-              border: "1px solid rgba(0,151,178,0.28)",
-            }}
-          >
-            <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.5, color: "#64748b", textTransform: "uppercase" }}>
-              {t("mobileOps.revenue.todaysEntry")}
-            </Typography>
-            <Typography sx={{ mt: 0.35, fontSize: 14, fontWeight: 700, color: "#0f172a" }}>
-              {t("mobileOps.revenue.summaryLine", {
-                revenue: fmtMoney(totalRev),
-                cashOut: fmtMoney(cashOut ?? 0),
-                complete: data?.daily_completeness?.label || section.label || "—",
-              })}
-            </Typography>
-            {data?.dhs_completeness ? (
-              <Typography sx={{ mt: 0.35, fontSize: 12, fontWeight: 600, color: "#64748b" }}>
-                DHS due {data.dhs_completeness.due ?? 0} · Pending {data.dhs_completeness.pending ?? 0}
-              </Typography>
-            ) : null}
-          </Box>
-
           <DailyCompletenessStrip
             completeness={data?.daily_completeness}
+            dhsDay={data?.dhs_day || data?.dhs_completeness}
+            amounts={entryAmounts}
+            cashAmount={cashOut}
+            onOpenCash={() => {
+              setAddingPayout(false);
+              setScreen("cash");
+            }}
             onOpenSection={(s) => {
+              setSaveState("");
               if (s.key === "self_service") setScreen("self_service");
               else if (s.key === "drop_off") setScreen("drop_off");
               else if (s.key === "rinse_hd") openHangDry();
@@ -717,42 +711,14 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
                 setScreen("rinse_wf");
               }
             }}
-            onNoActivity={(s) =>
-              postDisposition(
-                {
-                  source_key: s.key,
-                  processing_date_et: dateEt,
-                  disposition: "no_activity",
-                  reason: "No activity",
-                },
-                `${s.key}:${dateEt}`,
-              )
-            }
-          />
-
-          <Box
-            sx={{
-              display: "grid",
-              gridTemplateColumns: { xs: "1fr 1fr", sm: "1fr 1fr", md: "1fr 1fr 1fr" },
-              gap: 1.25,
+            onOpenDhsAccount={(a) => {
+              const row = dhsAccounts.find((x) => a.account_id === x.account_id);
+              openDhsAccount(row, { obligation: a, fromScreen: "home" });
             }}
-          >
-            {homeCards.map((c) => (
-              <SectionStatusCard
-                key={c.id}
-                title={c.title}
-                primary={c.primary}
-                secondary={c.secondary}
-                statusLabel={c.statusLabel}
-                statusTone={c.statusTone}
-                onClick={c.onClick}
-              />
-            ))}
-          </Box>
+          />
           <OpsLockButton onClick={onLock} fullWidth label={t("mobileOps.lock")} />
         </Stack>
       ) : null}
-
 
       {mainTab === "missing" && screen === "home" ? (
         <MissingWorkPanel
@@ -774,8 +740,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
             setMainTab("entry");
             if (item.kind === "dhs") {
               const row = (data?.dhs?.accounts || []).find((a) => a.account_id === item.account_id);
-              if (row) openDhsAccount(row, { fromScreen: "missing" });
-              else setScreen("dhs");
+              openDhsAccount(row, { fromScreen: "missing", obligation: item });
               return;
             }
             if (item.source_key === "self_service") setScreen("self_service");
@@ -861,6 +826,21 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
               ? t("mobileOps.revenue.processingDate")
               : "Processing Date"
           }
+          completeLabel={t("mobileOps.revenue.complete")}
+          completeBusy={dispBusy === `self_service:${dateEt}`}
+          onComplete={() => completeDailySection("self_service")}
+          noActivityLabel={t("mobileOps.revenue.noActivity")}
+          onNoActivity={() =>
+            postDisposition(
+              {
+                source_key: "self_service",
+                processing_date_et: dateEt,
+                disposition: "no_activity",
+                reason: "No activity",
+              },
+              `self_service:${dateEt}`,
+            )
+          }
         />
       ) : null}
 
@@ -885,6 +865,21 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
               ? t("mobileOps.revenue.processingDate")
               : "Processing Date"
           }
+          completeLabel={t("mobileOps.revenue.complete")}
+          completeBusy={dispBusy === `drop_off:${dateEt}`}
+          onComplete={() => completeDailySection("drop_off")}
+          noActivityLabel={t("mobileOps.revenue.noActivity")}
+          onNoActivity={() =>
+            postDisposition(
+              {
+                source_key: "drop_off",
+                processing_date_et: dateEt,
+                disposition: "no_activity",
+                reason: "No activity",
+              },
+              `drop_off:${dateEt}`,
+            )
+          }
         />
       ) : null}
 
@@ -907,31 +902,20 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
           <MoneyAmountField
             label="Volume (lb)"
             value={wfVolume}
-            onChange={setWfVolume}
+            onChange={(v) => {
+              setWfVolume(v);
+              setSaveState("");
+            }}
             prefix=""
           />
+          <SaveStatusChip state={saveState} labels={saveLabels} />
           <Button
             variant="contained"
-            disabled={saveState === "saving"}
-            onClick={async () => {
-              setSaveState("saving");
-              setError("");
-              try {
-                const res = await saveManagementRevenueWf({
-                  date_et: dateEt,
-                  processing_date: dateEt,
-                  volume_lbs: parseMoneyInput(wfVolume),
-                });
-                applyDayPayload(res.data || null);
-                setSaveState("saved");
-              } catch (e) {
-                setSaveState("error");
-                setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.saveFailed"));
-              }
-            }}
-            sx={{ textTransform: "none", fontWeight: 800, minHeight: 48 }}
+            disabled={dispBusy === `rinse_wf:${dateEt}` || saveState === "saving"}
+            onClick={() => completeDailySection("rinse_wf")}
+            sx={{ textTransform: "none", fontWeight: 900, minHeight: 48 }}
           >
-            {t("mobileOps.revenue.save") !== "mobileOps.revenue.save" ? t("mobileOps.revenue.save") : "Save"}
+            {t("mobileOps.revenue.complete")}
           </Button>
           <Button
             variant="outlined"
@@ -949,9 +933,8 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
             }
             sx={{ textTransform: "none", fontWeight: 700, minHeight: 44 }}
           >
-            No Activity
+            {t("mobileOps.revenue.noActivity")}
           </Button>
-          <SaveStatusChip state={saveState} labels={saveLabels} />
         </Stack>
       ) : null}
 
@@ -980,8 +963,10 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
           entryDate={dateEt}
           draft={dhsDraft}
           onChange={setDhsDraft}
-          onSave={saveDhsAccount}
+          onAutosave={scheduleDhsAutosave}
+          onComplete={completeDhsAccount}
           saving={saveState === "saving"}
+          completeBusy={Boolean(dispBusy)}
           saveState={saveState}
           saveLabels={saveLabels}
           labels={{
@@ -993,7 +978,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
             revenueOverride: t("mobileOps.revenue.revenueOverride"),
             useOverride: t("mobileOps.revenue.useOverride"),
             calculated: t("mobileOps.revenue.calculatedRevenue"),
-            save: t("mobileOps.revenue.save"),
+            complete: t("mobileOps.revenue.complete"),
           }}
         />
       ) : null}
@@ -1091,6 +1076,32 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
               </Typography>
             </Box>
           ))}
+          <Button
+            variant="contained"
+            disabled={dispBusy === `rinse_hd:${dateEt}`}
+            onClick={() => completeDailySection("rinse_hd")}
+            sx={{ textTransform: "none", fontWeight: 900, minHeight: 48 }}
+          >
+            {t("mobileOps.revenue.complete")}
+          </Button>
+          <Button
+            variant="outlined"
+            disabled={dispBusy === `rinse_hd:${dateEt}`}
+            onClick={() =>
+              postDisposition(
+                {
+                  source_key: "rinse_hd",
+                  processing_date_et: dateEt,
+                  disposition: "no_activity",
+                  reason: "No activity",
+                },
+                `rinse_hd:${dateEt}`,
+              )
+            }
+            sx={{ textTransform: "none", fontWeight: 700, minHeight: 44 }}
+          >
+            {t("mobileOps.revenue.noActivity")}
+          </Button>
         </Stack>
       ) : null}
 

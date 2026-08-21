@@ -3,34 +3,40 @@ import {
   Box,
   Button,
   CircularProgress,
+  Collapse,
   Stack,
-  Tab,
-  Tabs,
-  TextField,
   Typography,
 } from "@mui/material";
-import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
 const FILTERS = [
   { id: "all", label: "All" },
   { id: "daily", label: "Daily" },
   { id: "dhs", label: "DHS" },
   { id: "overdue", label: "Overdue" },
-  { id: "resolved", label: "Resolved" },
 ];
 
 function statusLabel(status) {
   if (status === "missing") return "Missing";
   if (status === "overdue") return "Pickup overdue";
-  if (status === "pending") return "Pending";
+  if (status === "pending") return "Pending entry";
+  if (status === "draft") return "Draft";
   if (status === "no_activity") return "No Activity";
-  if (status === "entered") return "Entered";
-  if (status === "rescheduled") return "Rescheduled";
+  if (status === "complete" || status === "entered") return "Complete";
   return status || "—";
 }
 
+function formatShort(iso) {
+  if (!iso) return "—";
+  try {
+    const [y, m, d] = String(iso).split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  } catch {
+    return iso;
+  }
+}
+
 /**
- * Missing Work list — tap row opens entry via onOpenItem.
+ * Grouped Missing Work queue — Date → Daily/DHS → account.
  */
 export default function MissingWorkPanel({
   loading,
@@ -43,44 +49,65 @@ export default function MissingWorkPanel({
   onReschedule,
   busyId,
 }) {
-  const [reasonByKey, setReasonByKey] = useState({});
   const summary = data?.summary || {};
-  const items = data?.items || [];
+  const groups = data?.groups || [];
+  const [openDates, setOpenDates] = useState(() => new Set());
+  const [openAccounts, setOpenAccounts] = useState(() => new Set());
+
+  const toggleDate = (key) => {
+    setOpenDates((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleAccount = (key) => {
+    setOpenAccounts((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  // Default: expand first group
+  const effectiveOpen = openDates.size
+    ? openDates
+    : new Set(groups[0]?.date_et ? [groups[0].date_et] : []);
 
   return (
-    <Stack spacing={1.5}>
-      <Box
-        sx={{
-          p: 1.5,
-          borderRadius: 2,
-          border: "1px solid rgba(0,151,178,0.28)",
-          bgcolor: "#fff",
-          boxShadow: VEEWASH_DASHBOARD.cardShadow,
-        }}
-      >
-        <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.5, color: "#64748b", textTransform: "uppercase" }}>
-          Missing Work
-        </Typography>
-        <Typography sx={{ mt: 0.35, fontSize: 22, fontWeight: 900, color: "#007a91" }}>
-          {summary.missing_total ?? 0} Missing
-        </Typography>
-        <Typography sx={{ fontSize: 13, fontWeight: 600, color: "#64748b" }}>
-          {summary.daily_missing || 0} Daily Missing · {summary.dhs_pending || 0} DHS Pending
-          {summary.overdue != null ? ` · ${summary.overdue} Overdue` : ""}
-        </Typography>
+    <Stack spacing={1.25}>
+      <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
+        {FILTERS.map((f) => {
+          const active = (filter || "all") === f.id;
+          return (
+            <Button
+              key={f.id}
+              size="small"
+              onClick={() => onFilterChange?.(f.id)}
+              sx={{
+                textTransform: "none",
+                fontWeight: 800,
+                minHeight: 34,
+                px: 1.25,
+                borderRadius: 1.5,
+                bgcolor: active ? "#007a91" : "#fff",
+                color: active ? "#fff" : "#0f172a",
+                border: active ? "1px solid #007a91" : "1px solid #e5e7eb",
+              }}
+            >
+              {f.label}
+            </Button>
+          );
+        })}
       </Box>
 
-      <Tabs
-        value={filter || "all"}
-        onChange={(_, v) => onFilterChange?.(v)}
-        variant="scrollable"
-        allowScrollButtonsMobile
-        sx={{ minHeight: 36, "& .MuiTab-root": { minHeight: 36, textTransform: "none", fontWeight: 700 } }}
-      >
-        {FILTERS.map((f) => (
-          <Tab key={f.id} value={f.id} label={f.label} />
-        ))}
-      </Tabs>
+      <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#64748b" }}>
+        {summary.missing_total ?? 0} missing
+        {summary.overdue != null ? ` · ${summary.overdue} overdue` : ""}
+      </Typography>
 
       {loading ? (
         <Box sx={{ py: 4, display: "grid", placeItems: "center" }}>
@@ -88,97 +115,185 @@ export default function MissingWorkPanel({
         </Box>
       ) : null}
 
-      {!loading && !items.length ? (
+      {!loading && !groups.length ? (
         <Typography sx={{ fontSize: 13, color: "#64748b" }}>No missing work for this filter.</Typography>
       ) : null}
 
       <Stack spacing={1}>
-        {items.map((item) => {
-          const key = `${item.source_key}:${item.processing_date_et || item.scheduled_pickup_date}`;
-          const busy = busyId === key;
-          const sub =
-            item.kind === "dhs"
-              ? `Pickup ${item.scheduled_pickup_date}${item.overdue || item.status === "overdue" ? " · Overdue" : " · Pending Entry"}`
-              : `Daily Entry · ${item.processing_date_et} · ${statusLabel(item.status)}`;
+        {groups.map((g) => {
+          const dateOpen = effectiveOpen.has(g.date_et);
           return (
             <Box
-              key={key}
+              key={g.date_et}
               sx={{
-                p: 1.5,
                 borderRadius: 2,
-                border: "1px solid #e5e7eb",
+                border: "1px solid rgba(0,151,178,0.22)",
                 bgcolor: "#fff",
+                overflow: "hidden",
               }}
             >
               <Box
                 component="button"
                 type="button"
-                onClick={() => onOpenItem?.(item)}
+                onClick={() => toggleDate(g.date_et)}
                 sx={{
-                  display: "block",
                   width: "100%",
-                  textAlign: "left",
-                  m: 0,
-                  p: 0,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
                   border: "none",
-                  bgcolor: "transparent",
+                  bgcolor: "#F8FBFC",
+                  px: 1.25,
+                  py: 1,
+                  minHeight: 44,
                   cursor: "pointer",
-                  appearance: "none",
-                  fontFamily: "inherit",
                 }}
               >
-                <Typography sx={{ fontWeight: 900 }}>{item.name}</Typography>
-                <Typography sx={{ mt: 0.25, fontSize: 13, fontWeight: 600, color: item.overdue ? "#b91c1c" : "#d97706" }}>
-                  {sub}
+                <Typography sx={{ fontWeight: 900, fontSize: 13, color: "#0f172a", textTransform: "uppercase" }}>
+                  {g.label}
                 </Typography>
-                <Typography sx={{ mt: 0.5, fontSize: 12, fontWeight: 700, color: "#007a91" }}>Enter →</Typography>
+                <Typography sx={{ fontWeight: 800, fontSize: 13, color: "#007a91" }}>
+                  {g.count} missing
+                </Typography>
               </Box>
 
-              {!item.resolved ? (
-                <Stack spacing={1} sx={{ mt: 1.25 }}>
-                  <TextField
-                    size="small"
-                    label="Reason (optional)"
-                    value={reasonByKey[key] || ""}
-                    onChange={(e) => setReasonByKey((p) => ({ ...p, [key]: e.target.value }))}
-                    fullWidth
-                  />
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                    {item.kind === "daily" ? (
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        disabled={busy}
-                        onClick={() => onNoActivity?.(item, reasonByKey[key] || "")}
-                        sx={{ textTransform: "none", fontWeight: 700 }}
-                      >
-                        No Activity
-                      </Button>
-                    ) : (
-                      <>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          disabled={busy}
-                          onClick={() => onNoPickup?.(item, reasonByKey[key] || "")}
-                          sx={{ textTransform: "none", fontWeight: 700 }}
-                        >
-                          No Pickup
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          disabled={busy}
-                          onClick={() => onReschedule?.(item, reasonByKey[key] || "")}
-                          sx={{ textTransform: "none", fontWeight: 700 }}
-                        >
-                          Reschedule
-                        </Button>
-                      </>
-                    )}
-                  </Stack>
+              <Collapse in={dateOpen}>
+                <Stack spacing={0.75} sx={{ p: 1.25, pt: 0.75 }}>
+                  {(g.daily || []).length ? (
+                    <Box>
+                      <Typography sx={{ fontSize: 11, fontWeight: 800, color: "#64748b", mb: 0.35 }}>
+                        DAILY
+                      </Typography>
+                      {g.daily.map((item) => {
+                        const key = `${item.source_key}:${item.processing_date_et}`;
+                        return (
+                          <Box
+                            key={key}
+                            sx={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 1,
+                              py: 0.65,
+                              borderBottom: "1px solid #f1f5f9",
+                            }}
+                          >
+                            <Button
+                              onClick={() => onOpenItem?.(item)}
+                              sx={{
+                                flex: 1,
+                                justifyContent: "flex-start",
+                                textTransform: "none",
+                                fontWeight: 800,
+                                color: "#0f172a",
+                                minHeight: 40,
+                              }}
+                            >
+                              <Box sx={{ textAlign: "left" }}>
+                                <Typography sx={{ fontWeight: 800, fontSize: 14 }}>{item.name}</Typography>
+                                <Typography sx={{ fontSize: 11, color: "#64748b" }}>
+                                  {statusLabel(item.status)}
+                                </Typography>
+                              </Box>
+                            </Button>
+                            {item.status === "missing" && onNoActivity ? (
+                              <Button
+                                size="small"
+                                disabled={busyId === key}
+                                onClick={() => onNoActivity?.(item, "No activity")}
+                                sx={{ textTransform: "none", fontSize: 11 }}
+                              >
+                                No Activity
+                              </Button>
+                            ) : null}
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                  ) : null}
+
+                  {(g.dhs || []).length ? (
+                    <Box>
+                      <Typography sx={{ fontSize: 11, fontWeight: 800, color: "#64748b", mb: 0.35 }}>
+                        DHS
+                      </Typography>
+                      {g.dhs.map((acct) => {
+                        const acctKey = `${g.date_et}:${acct.account_id}`;
+                        const multi = (acct.items || []).length > 1;
+                        const acctOpen = !multi || openAccounts.has(acctKey);
+                        const first = acct.items?.[0];
+                        return (
+                          <Box key={acctKey} sx={{ mb: 0.5 }}>
+                            <Box
+                              component="button"
+                              type="button"
+                              onClick={() => {
+                                if (multi) toggleAccount(acctKey);
+                                else if (first) onOpenItem?.(first);
+                              }}
+                              sx={{
+                                width: "100%",
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                border: "none",
+                                bgcolor: "transparent",
+                                py: 0.75,
+                                px: 0,
+                                minHeight: 44,
+                                cursor: "pointer",
+                                textAlign: "left",
+                              }}
+                            >
+                              <Box>
+                                <Typography sx={{ fontWeight: 800, fontSize: 14, color: "#0f172a" }}>
+                                  {acct.name}
+                                </Typography>
+                                {first ? (
+                                  <Typography sx={{ fontSize: 11, color: "#64748b" }}>
+                                    Pickup {formatShort(first.scheduled_pickup_date)}
+                                    {first.suggested_processing_date
+                                      ? ` · Processing ${formatShort(first.suggested_processing_date)}`
+                                      : ""}
+                                    {" · "}
+                                    {statusLabel(first.status)}
+                                  </Typography>
+                                ) : null}
+                              </Box>
+                              {multi ? (
+                                <Typography sx={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>
+                                  {acct.items.length}
+                                </Typography>
+                              ) : null}
+                            </Box>
+                            <Collapse in={acctOpen && multi}>
+                              <Stack spacing={0.5} sx={{ pl: 1 }}>
+                                {(acct.items || []).map((item) => {
+                                  const key = `${item.source_key}:${item.scheduled_pickup_date}`;
+                                  return (
+                                    <Button
+                                      key={key}
+                                      onClick={() => onOpenItem?.(item)}
+                                      sx={{
+                                        justifyContent: "flex-start",
+                                        textTransform: "none",
+                                        fontWeight: 700,
+                                        color: "#0f172a",
+                                        minHeight: 40,
+                                      }}
+                                    >
+                                      Pickup {formatShort(item.scheduled_pickup_date)} · {statusLabel(item.status)}
+                                    </Button>
+                                  );
+                                })}
+                              </Stack>
+                            </Collapse>
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                  ) : null}
                 </Stack>
-              ) : null}
+              </Collapse>
             </Box>
           );
         })}

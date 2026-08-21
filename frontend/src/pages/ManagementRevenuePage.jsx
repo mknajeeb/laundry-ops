@@ -447,21 +447,23 @@ export default function ManagementRevenuePage() {
         <Stack spacing={1.75}>
           <DailyCompletenessStrip
             completeness={data?.daily_completeness}
+            dhsDay={data?.dhs_day || data?.dhs_completeness}
+            amounts={{
+              self_service: data?.non_rinse?.self_service?.total,
+              drop_off: data?.non_rinse?.drop_off?.total,
+              rinse_wf: data?.rinse?.wf?.revenue,
+              rinse_hd: data?.rinse?.hd?.revenue,
+            }}
+            cashAmount={data?.cash_activity?.cash_paid_out}
+            onOpenCash={() => {
+              setPayoutDate(dateEt);
+              setPayoutOpen(true);
+            }}
             onOpenSection={(s) => {
               if (s.key === "self_service" || s.key === "drop_off") setDrawerGroup("non_rinse");
               else setDrawerGroup("rinse");
             }}
-            onNoActivity={(s) =>
-              postDisposition(
-                {
-                  source_key: s.key,
-                  processing_date_et: dateEt,
-                  disposition: "no_activity",
-                  reason: "No activity",
-                },
-                `${s.key}:${dateEt}`,
-              )
-            }
+            onOpenDhsAccount={() => setDrawerGroup("dhs")}
           />
 
           <RevenueSummaryStrip

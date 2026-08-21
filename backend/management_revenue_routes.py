@@ -99,6 +99,43 @@ def register_management_revenue_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/api/management/revenue/bootstrap", methods=["GET"])
+    def management_revenue_bootstrap():
+        """PIN/home bootstrap: Entry day + Missing Work summary in one round-trip."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
+            raw_date = (request.args.get("date_et") or "").strip()
+            try:
+                selected = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            day = build_revenue_day(cursor, oid, selected)
+            conn.commit()
+            return jsonify(json_safe_rinse({
+                "date_et": selected.isoformat(),
+                "day": day,
+                "missing_work": day.get("missing_work") or {
+                    "summary": day.get("missing_work_summary") or {},
+                    "items": [],
+                    "groups": [],
+                },
+            }))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/api/management/revenue/non-rinse", methods=["PUT"])
     def management_revenue_non_rinse_save():
         conn = get_db()

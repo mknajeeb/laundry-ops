@@ -1762,7 +1762,7 @@ export const TRANSLATIONS = {
 
     "mobileOps.revenue.savedCheck": "Guardado ✓",
     "mobileOps.revenue.needsEntry": "Falta capturar",
-    "mobileOps.revenue.complete": "Completo",
+    "mobileOps.revenue.complete": "Completar",
     "mobileOps.revenue.todaysEntry": "Entrada de hoy",
     "mobileOps.revenue.todayLabel": "Hoy",
     "mobileOps.revenue.summaryLine": "Ingresos {revenue} · Efectivo saliente {cashOut} · {complete} completo",

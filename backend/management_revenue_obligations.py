@@ -35,13 +35,18 @@ DISP_NO_ACTIVITY = "no_activity"
 DISP_EXCLUDED = "excluded"
 DISP_NO_PICKUP = "no_pickup"
 DISP_RESCHEDULED = "rescheduled"
+DISP_COMPLETED = "completed"
 
 STATUS_ENTERED = "entered"
+STATUS_COMPLETE = "complete"
+STATUS_DRAFT = "draft"
 STATUS_NO_ACTIVITY = "no_activity"
 STATUS_MISSING = "missing"
 STATUS_PENDING = "pending"
 STATUS_OVERDUE = "overdue"
 STATUS_RESCHEDULED = "rescheduled"
+
+RESOLVED_DISPOSITIONS = (DISP_NO_ACTIVITY, DISP_EXCLUDED, DISP_COMPLETED)
 
 DAILY_SOURCES = (
     {"key": "self_service", "label": "Self Service", "account_code": "self_service"},
@@ -537,12 +542,16 @@ def build_daily_completeness(cursor, org_id: int, processing_date: date) -> dict
         key = src["key"]
         entered = daily_source_entered(cursor, org_id, processing_date, key, lines)
         disp = _active_disposition(cursor, org_id, source_key=key, processing_date=processing_date)
-        if entered:
-            status = STATUS_ENTERED
-            complete += 1
-        elif disp and disp.get("disposition") in (DISP_NO_ACTIVITY, DISP_EXCLUDED):
+        disp_kind = (disp or {}).get("disposition")
+        if disp_kind in (DISP_NO_ACTIVITY, DISP_EXCLUDED):
             status = STATUS_NO_ACTIVITY
             complete += 1
+        elif disp_kind == DISP_COMPLETED:
+            status = STATUS_COMPLETE
+            complete += 1
+        elif entered:
+            # Saved values without Complete = draft (still Incomplete for 4/4).
+            status = STATUS_DRAFT
         else:
             status = STATUS_MISSING
         sections.append({
@@ -550,6 +559,8 @@ def build_daily_completeness(cursor, org_id: int, processing_date: date) -> dict
             "label": src["label"],
             "status": status,
             "entered": entered,
+            "draft": status == STATUS_DRAFT,
+            "complete": status in (STATUS_COMPLETE, STATUS_NO_ACTIVITY),
             "disposition": _disposition_public(disp),
             "entry_target": key,
         })
@@ -558,7 +569,48 @@ def build_daily_completeness(cursor, org_id: int, processing_date: date) -> dict
         "complete": complete,
         "required": len(DAILY_SOURCES),
         "label": f"{complete}/{len(DAILY_SOURCES)}",
+        "help": f"Expected for {processing_date.isoformat()}",
         "sections": sections,
+    }
+
+
+def build_dhs_day_summary(cursor, org_id: int, processing_date: date) -> dict[str, Any]:
+    """DHS due/complete/pending for a Processing Date (pickup schedule), not in 4/4."""
+    # Look at nearby pickups so processing-day obligations surface for the selected day.
+    obs = build_dhs_obligations(cursor, org_id, as_of=processing_date, lookback_days=14)
+    due = []
+    for r in obs:
+        pickup = r.get("scheduled_pickup_date")
+        suggested = r.get("suggested_processing_date")
+        if pickup == processing_date.isoformat() or suggested == processing_date.isoformat():
+            due.append(r)
+    complete = [r for r in due if r.get("resolved")]
+    pending = [r for r in due if not r.get("resolved")]
+    return {
+        "processing_date_et": processing_date.isoformat(),
+        "due": len(due),
+        "complete": len(complete),
+        "pending": len(pending),
+        "nothing_due": len(due) == 0,
+        "label": (
+            "Nothing due"
+            if not due
+            else f"Due {len(due)} · Complete {len(complete)} · Pending {len(pending)}"
+        ),
+        "accounts": [
+            {
+                "account_id": r["account_id"],
+                "name": r["name"],
+                "status": r["status"],
+                "resolved": bool(r.get("resolved")),
+                "scheduled_pickup_date": r.get("scheduled_pickup_date"),
+                "scheduled_delivery_date": r.get("scheduled_delivery_date"),
+                "suggested_processing_date": r.get("suggested_processing_date"),
+                "source_key": r.get("source_key"),
+                "entry": r.get("entry"),
+            }
+            for r in due
+        ],
     }
 
 
@@ -602,15 +654,18 @@ def build_dhs_obligations(
                     if d.weekday() in del_days:
                         derived_delivery = d
                         break
-            if entry:
-                status = STATUS_ENTERED
-                resolved = True
-            elif disp and disp.get("disposition") == DISP_RESCHEDULED:
+            if disp and disp.get("disposition") == DISP_RESCHEDULED:
                 status = STATUS_RESCHEDULED
                 resolved = True
             elif disp and disp.get("disposition") in (DISP_NO_PICKUP, DISP_EXCLUDED, DISP_NO_ACTIVITY):
                 status = STATUS_NO_ACTIVITY
                 resolved = True
+            elif disp and disp.get("disposition") == DISP_COMPLETED:
+                status = STATUS_COMPLETE
+                resolved = True
+            elif entry:
+                status = STATUS_DRAFT
+                resolved = False
             elif pickup < as_of:
                 status = STATUS_OVERDUE
                 resolved = False
@@ -648,19 +703,20 @@ def build_missing_work(
             "kind": "daily",
             "source_key": s["key"],
             "name": s["label"],
-            "status": STATUS_MISSING,
+            "status": s["status"],
             "processing_date_et": as_of.isoformat(),
             "entry_target": s["entry_target"],
             "overdue": False,
         }
         for s in daily["sections"]
-        if s["status"] == STATUS_MISSING
+        if s["status"] in (STATUS_MISSING, STATUS_DRAFT)
     ]
 
     dhs_all = build_dhs_obligations(cursor, org_id, as_of=as_of)
     dhs_pending = [r for r in dhs_all if not r.get("resolved")]
 
     items: list[dict[str, Any]] = []
+    groups: list[dict[str, Any]] = []
     fk = (filter_kind or "all").lower()
 
     if fk == "resolved":
@@ -678,7 +734,7 @@ def build_missing_work(
                     "resolved": True,
                 })
         for s in daily["sections"]:
-            if s["status"] in (STATUS_ENTERED, STATUS_NO_ACTIVITY):
+            if s["status"] in (STATUS_COMPLETE, STATUS_NO_ACTIVITY, STATUS_ENTERED):
                 items.append({
                     "kind": "daily",
                     "source_key": s["key"],
@@ -701,6 +757,7 @@ def build_missing_work(
                 "scheduled_pickup_date": row["scheduled_pickup_date"],
                 "scheduled_delivery_date": row.get("scheduled_delivery_date"),
                 "suggested_processing_date": row.get("suggested_processing_date"),
+                "processing_date_et": row.get("suggested_processing_date"),
                 "entry_target": "dhs",
                 "overdue": row["status"] == STATUS_OVERDUE,
             })
@@ -710,6 +767,7 @@ def build_missing_work(
             items = [i for i in items if i["kind"] == "dhs"]
         elif fk == "overdue":
             items = [i for i in items if i.get("overdue") or i.get("status") == STATUS_OVERDUE]
+        groups = _group_missing_items(items, as_of)
 
     unresolved = [i for i in items if not i.get("resolved")]
     return {
@@ -723,7 +781,77 @@ def build_missing_work(
         },
         "daily_completeness": daily,
         "items": items,
+        "groups": groups,
     }
+
+
+def _group_missing_items(items: list[dict], as_of: date) -> list[dict[str, Any]]:
+    """Group Missing Work by due/processing date → Daily/DHS → accounts."""
+    buckets: dict[str, dict] = {}
+    today = as_of
+    yesterday = as_of - timedelta(days=1)
+
+    def _bucket_key(item: dict) -> tuple[str, str]:
+        if item.get("kind") == "dhs":
+            d = item.get("scheduled_pickup_date") or item.get("processing_date_et") or as_of.isoformat()
+        else:
+            d = item.get("processing_date_et") or as_of.isoformat()
+        try:
+            dd = date.fromisoformat(str(d)[:10])
+        except ValueError:
+            dd = as_of
+        if dd == today:
+            return ("today", dd.isoformat())
+        if dd == yesterday:
+            return ("yesterday", dd.isoformat())
+        if dd < yesterday:
+            return ("older", dd.isoformat())
+        return ("upcoming", dd.isoformat())
+
+    for item in items:
+        if item.get("resolved"):
+            continue
+        kind_key, date_iso = _bucket_key(item)
+        if date_iso not in buckets:
+            label = date_iso
+            try:
+                dd = date.fromisoformat(date_iso)
+                if dd == today:
+                    label = f"Today · {dd.strftime('%b')} {dd.day}"
+                elif dd == yesterday:
+                    label = f"Yesterday · {dd.strftime('%b')} {dd.day}"
+                else:
+                    label = f"{dd.strftime('%b')} {dd.day}"
+            except ValueError:
+                pass
+            buckets[date_iso] = {
+                "date_et": date_iso,
+                "bucket": kind_key,
+                "label": label,
+                "count": 0,
+                "daily": [],
+                "dhs_by_account": {},
+            }
+        b = buckets[date_iso]
+        b["count"] += 1
+        if item.get("kind") == "daily":
+            b["daily"].append(item)
+        else:
+            aid = str(item.get("account_id") or item.get("name"))
+            acct = b["dhs_by_account"].setdefault(
+                aid,
+                {"account_id": item.get("account_id"), "name": item.get("name"), "items": []},
+            )
+            acct["items"].append(item)
+
+    # Sort: overdue/older dates first, then yesterday, today, upcoming
+    order = {"older": 0, "yesterday": 1, "today": 2, "upcoming": 3}
+    out = []
+    for date_iso in sorted(buckets.keys(), key=lambda d: (order.get(buckets[d]["bucket"], 9), d)):
+        b = buckets[date_iso]
+        b["dhs"] = list(b.pop("dhs_by_account").values())
+        out.append(b)
+    return out
 
 
 def create_disposition(
@@ -737,7 +865,9 @@ def create_disposition(
     ensure_obligation_tables(cursor)
     source_key = str(payload.get("source_key") or "").strip()
     disposition = str(payload.get("disposition") or "").strip().lower()
-    if disposition not in (DISP_NO_ACTIVITY, DISP_EXCLUDED, DISP_NO_PICKUP, DISP_RESCHEDULED):
+    if disposition not in (
+        DISP_NO_ACTIVITY, DISP_EXCLUDED, DISP_NO_PICKUP, DISP_RESCHEDULED, DISP_COMPLETED,
+    ):
         raise ValueError("Invalid disposition")
     if not source_key:
         raise ValueError("source_key is required")
@@ -774,6 +904,24 @@ def create_disposition(
             account_id = int(source_key.split(":", 1)[1])
         except ValueError:
             account_id = None
+
+    if disposition == DISP_COMPLETED:
+        if source_key.startswith("dhs:"):
+            from backend.management_revenue_accounts import list_accounts
+
+            acct = next(
+                (a for a in list_accounts(cursor, org_id, as_of=pickup_date, active_only=False)
+                 if int(a["id"]) == int(account_id)),
+                None,
+            ) if account_id else None
+            if not acct:
+                raise ValueError("DHS account not found")
+            entry = dhs_entry_for_pickup(cursor, org_id, acct, pickup_date)
+            if not entry:
+                raise ValueError("Enter DHS volume/revenue before Complete")
+        else:
+            if not daily_source_entered(cursor, org_id, processing_date, source_key):
+                raise ValueError("Enter required values before Complete")
 
     meta = {
         "scheduled_pickup_date": _iso(pickup_date),

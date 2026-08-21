@@ -54,6 +54,21 @@ def test_daily_completeness_all_missing(_entered, _disp, _lines, _ensure, _seed)
     assert out["complete"] == 0
     assert out["required"] == 4
     assert all(s["status"] == STATUS_MISSING for s in out["sections"])
+    assert "Expected for 2026-08-20" in out["help"]
+
+
+@patch("backend.management_revenue_obligations.seed_default_cadences_and_schedules")
+@patch("backend.management_revenue_obligations.ensure_account_obligation_columns")
+@patch("backend.management_revenue_obligations._load_lines_for_day", return_value={})
+@patch("backend.management_revenue_obligations._active_disposition", return_value=None)
+@patch("backend.management_revenue_obligations.daily_source_entered", return_value=True)
+def test_daily_entered_without_complete_is_draft(_entered, _disp, _lines, _ensure, _seed):
+    from backend.management_revenue_obligations import STATUS_DRAFT
+
+    cursor = MagicMock()
+    out = build_daily_completeness(cursor, 1, date(2026, 8, 20))
+    assert out["complete"] == 0
+    assert all(s["status"] == STATUS_DRAFT for s in out["sections"])
 
 
 @patch("backend.management_revenue_obligations.seed_default_cadences_and_schedules")

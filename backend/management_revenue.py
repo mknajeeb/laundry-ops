@@ -157,15 +157,15 @@ def build_revenue_day(cursor, org_id: int, entry_date: date) -> dict[str, Any]:
 
     cash = _cash_revenue_from_lines(lines)
     payout_rows = [_payout_row(p) for p in payouts]
-    from backend.management_revenue_obligations import build_daily_completeness, build_missing_work
+    from backend.management_revenue_obligations import (
+        build_daily_completeness,
+        build_dhs_day_summary,
+        build_missing_work,
+    )
 
     daily_completeness = build_daily_completeness(cursor, org_id, entry_date)
+    dhs_day = build_dhs_day_summary(cursor, org_id, entry_date)
     missing = build_missing_work(cursor, org_id, as_of=entry_date, filter_kind="all")
-    dhs_due = missing["summary"]["dhs_pending"]
-    dhs_complete = max(
-        0,
-        len([a for a in (account_block.get("dhs") or {}).get("accounts") or [] if a.get("entered")]),
-    )
     return {
         "date_et": entry_date.isoformat(),
         "entry_id": header.get("id") if header else None,
@@ -183,12 +183,14 @@ def build_revenue_day(cursor, org_id: int, entry_date: date) -> dict[str, Any]:
             "payout_count": len(payout_rows),
         },
         "daily_completeness": daily_completeness,
+        "dhs_day": dhs_day,
         "missing_work_summary": missing["summary"],
+        "missing_work": missing,
         "section_status": {
             "sections": [
                 {
                     "id": s["key"],
-                    "entered": s["status"] == "entered",
+                    "entered": s["status"] in ("entered", "complete", "draft"),
                     "status": s["status"],
                     "required": True,
                     "label": s["label"],
@@ -200,9 +202,11 @@ def build_revenue_day(cursor, org_id: int, entry_date: date) -> dict[str, Any]:
             "label": daily_completeness["label"],
         },
         "dhs_completeness": {
-            "due": dhs_due,
-            "complete": dhs_complete,
-            "pending": dhs_due,
+            "due": dhs_day["due"],
+            "complete": dhs_day["complete"],
+            "pending": dhs_day["pending"],
+            "nothing_due": dhs_day["nothing_due"],
+            "label": dhs_day["label"],
         },
     }
 
