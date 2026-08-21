@@ -247,6 +247,12 @@ export const TRANSLATIONS = {
     "mobileOps.break.startFailed": "Could not start break",
     "mobileOps.break.alreadyOnBreak": "You are already on break.",
     "mobileOps.break.notOnBreak": "You are not on break.",
+    "mobileOps.break.modeTitle": "On Break",
+    "mobileOps.break.started": "Break started",
+    "mobileOps.break.elapsedPrefix": "Break",
+    "mobileOps.break.lockHint":
+      "Lock returns this tablet to the PIN pad so another employee can unlock. Your break stays open until you Resume Work.",
+    "mobileOps.break.modeOnlyResume": "You are on break. Use Resume Work to continue.",
     "mobileOps.clockOutIntent.title": "Leaving for the day?",
     "mobileOps.clockOutIntent.body":
       "For a short pause, use Take a Break — your shift stays open and break time is tracked. Clock Out ends your shift.",
@@ -1706,6 +1712,12 @@ export const TRANSLATIONS = {
     "mobileOps.break.startFailed": "No se pudo iniciar el descanso",
     "mobileOps.break.alreadyOnBreak": "Ya está en descanso.",
     "mobileOps.break.notOnBreak": "No está en descanso.",
+    "mobileOps.break.modeTitle": "En descanso",
+    "mobileOps.break.started": "Descanso iniciado",
+    "mobileOps.break.elapsedPrefix": "Descanso",
+    "mobileOps.break.lockHint":
+      "Bloquear vuelve esta tableta al PIN para que otra persona pueda entrar. Su descanso sigue abierto hasta que reanude el trabajo.",
+    "mobileOps.break.modeOnlyResume": "Está en descanso. Use Reanudar trabajo para continuar.",
     "mobileOps.clockOutIntent.title": "¿Sale por el día?",
     "mobileOps.clockOutIntent.body":
       "Para una pausa corta, use Tomar un descanso — el turno sigue abierto y el descanso se registra. Salida termina el turno.",

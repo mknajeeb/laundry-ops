@@ -146,9 +146,10 @@ describe("buildPinLauncherTiles", () => {
       },
       attendance: { clocked_in: true, on_break: true },
     });
-    expect(onBreak.map((t) => t.id)).toEqual(["resume_work", "clock"]);
+    expect(onBreak.map((t) => t.id)).toEqual(["resume_work"]);
     expect(onBreak.find((t) => t.id === "resume_work")?.resumeFromBreak).toBe(true);
     expect(onBreak.find((t) => t.id === "switch_role")).toBeUndefined();
     expect(onBreak.find((t) => t.id === "take_break")).toBeUndefined();
+    expect(onBreak.find((t) => t.id === "clock")).toBeUndefined();
   });
 });

@@ -130,6 +130,26 @@ def test_apply_attendance_gates_keeps_switch_role_when_clocked_in():
     assert gated["switch_role"].get("requires_clock_in") is None
 
 
+def test_apply_attendance_gates_break_mode_hides_working_tiles():
+    features = {
+        "switch_role": {"id": "switch_role", "allowed": True},
+        "revenue_cost": {"id": "revenue_cost", "allowed": True},
+        "checklist": {"id": "checklist", "allowed": True},
+        "inventory": {"id": "inventory", "allowed": True},
+        "team_status": {"id": "team_status", "allowed": True},
+    }
+    gated = apply_attendance_gates_to_features(
+        features, {"clocked_in": True, "on_break": True}
+    )
+    assert gated["switch_role"]["allowed"] is False
+    assert gated["switch_role"]["blocked_reason"] == "on_break"
+    assert gated["resume_work"]["allowed"] is True
+    assert gated.get("take_break") is None
+    for fid in ("revenue_cost", "checklist", "inventory", "team_status"):
+        assert gated[fid]["allowed"] is False
+        assert gated[fid]["blocked_reason"] == "on_break"
+
+
 def test_perform_pin_hub_open_success_returns_menu():
     conn = MagicMock()
     matched = _matched(["FRONT_DESK"])

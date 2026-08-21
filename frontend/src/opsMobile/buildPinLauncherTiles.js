@@ -166,19 +166,22 @@ export function buildPinLauncherTiles({
   }
 
   const clockAllowed = isClockAllowedFromHub(att);
-  tiles.push({
-    id: "clock",
-    label: clockTileLabel(att, tr),
-    color: PIN_LAUNCHER_META.clock.color,
-    iconKey: PIN_LAUNCHER_META.clock.iconKey,
-    href: "attendance",
-    disabled: !clockAllowed,
-    disabledHelper: clockAllowed
-      ? ""
-      : tr
-        ? tr("mobileOps.clockDisabledHelper")
-        : CLOCK_DISABLED_HELPER,
-  });
+  // Break Mode: do not offer Clock Out from the launcher (Resume Work only).
+  if (att.on_break !== true) {
+    tiles.push({
+      id: "clock",
+      label: clockTileLabel(att, tr),
+      color: PIN_LAUNCHER_META.clock.color,
+      iconKey: PIN_LAUNCHER_META.clock.iconKey,
+      href: "attendance",
+      disabled: !clockAllowed,
+      disabledHelper: clockAllowed
+        ? ""
+        : tr
+          ? tr("mobileOps.clockDisabledHelper")
+          : CLOCK_DISABLED_HELPER,
+    });
+  }
 
   return tiles;
 }

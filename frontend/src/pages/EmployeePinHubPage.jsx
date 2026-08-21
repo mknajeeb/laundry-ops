@@ -42,6 +42,7 @@ import {
 import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
 import {
+  OpsBreakModeScreen,
   OpsLauncherEmpty,
   OpsLauncherGrid,
   OpsMobileShell,
@@ -136,7 +137,7 @@ function iconForTile(tile) {
  * Route: /pin/:orgSlug
  */
 export default function EmployeePinHubPage({ onLoggedIn }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const navigate = useNavigate();
   const { orgSlug: orgSlugParam } = useParams();
   const routeSlug = useMemo(() => sanitizeSlug(orgSlugParam), [orgSlugParam]);
@@ -147,7 +148,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
   const slug = routeSlug || selectedSlug;
 
   const [pin, setPin] = useState("");
-  const [phase, setPhase] = useState("pin"); // pin | menu
+  const [phase, setPhase] = useState("pin"); // pin | menu | break
   const [hub, setHub] = useState(null);
   const [loading, setLoading] = useState(false);
   const [featureLoading, setFeatureLoading] = useState("");
@@ -246,6 +247,8 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
 
   const applyHubBody = useCallback(
     (body, cleanPin) => {
+      const attendance = body.attendance || null;
+      const onBreak = attendance?.on_break === true;
       const sess = {
         token: body.token,
         pin: cleanPin,
@@ -258,12 +261,13 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
         feature_order: Array.isArray(body.feature_order) ? body.feature_order : undefined,
         maintenance_token: body.maintenance_token || null,
         expires_in_seconds: body.expires_in_seconds,
-        attendance: body.attendance || null,
+        attendance,
         selection_tree: Array.isArray(body.selection_tree) ? body.selection_tree : null,
       };
       savePinHubSession(sess);
       setHub(sess);
-      setPhase("menu");
+      // Server-authoritative: open shift_breaks → Break Mode, not the normal launcher.
+      setPhase(onBreak ? "break" : "menu");
       setPin("");
       prevPinLenRef.current = 0;
     },
@@ -301,13 +305,13 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
   );
 
   // Restore hub session when present (e.g. Back from Role without switching).
-  // Successful Role switch clears the hub session and lands on the PIN pad instead.
+  // Successful Role / Resume switch clears the hub session and lands on the PIN pad.
   useEffect(() => {
     if (!slug) return undefined;
     const existing = loadPinHubSession();
     if (!existing || existing.organization_slug !== slug) return undefined;
     setHub(existing);
-    setPhase("menu");
+    setPhase(existing?.attendance?.on_break === true ? "break" : "menu");
     if (!existing.pin) return undefined;
     let cancelled = false;
     (async () => {
@@ -367,6 +371,11 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
   const openFeature = async (tile) => {
     const featureId = tile?.id || tile;
     if (!hub || !slug || featureLoading) return;
+    // Break Mode is exclusive — only Resume Work may leave this surface.
+    if (hub?.attendance?.on_break === true && featureId !== "resume_work") {
+      setError(t("mobileOps.break.modeOnlyResume"));
+      return;
+    }
     setError("");
     setFeatureLoading(featureId);
     try {
@@ -510,7 +519,46 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
       if (!body.ok) {
         throw new Error(body.error || t("mobileOps.break.startFailed"));
       }
-      lockSession();
+      const breakStartedAt =
+        body?.break?.break_start_at ||
+        body?.break_started_at ||
+        hub?.attendance?.break_started_at ||
+        null;
+      // Stay unlocked in Break Mode (do not return to PIN). Soft-refresh hub for gates/tree.
+      try {
+        const hubRes = await attendancePinHub(slug, hub.pin);
+        const hubBody = hubRes?.data && typeof hubRes.data === "object" ? hubRes.data : {};
+        if (hubRes?.status >= 200 && hubRes?.status < 300 && hubBody.ok) {
+          applyHubBody(hubBody, hub.pin);
+          return;
+        }
+      } catch {
+        /* fall through to local break state */
+      }
+      const nextAtt = {
+        ...(hub.attendance || {}),
+        clocked_in: true,
+        on_break: true,
+        break_started_at: breakStartedAt,
+        current_display_label: null,
+      };
+      const next = {
+        ...hub,
+        attendance: nextAtt,
+        feature_order: ["resume_work"],
+        features: {
+          ...(hub.features || {}),
+          resume_work: {
+            allowed: true,
+            label: "Resume Work",
+            path: "/attendance/role",
+            resume_from_break: true,
+          },
+        },
+      };
+      savePinHubSession(next);
+      setHub(next);
+      setPhase("break");
     } catch (e) {
       setError(
         e?.response?.data?.error || e?.message || t("mobileOps.break.startFailed"),
@@ -527,12 +575,41 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
   };
 
   const identity =
-    phase === "menu"
+    phase === "menu" || phase === "break"
       ? (hub?.employee_first_name || hub?.employee_name || "").trim()
       : "";
 
+  const localeTag = locale === "es" ? "es-US" : "en-US";
+
   return (
-    <OpsMobileShell showLocaleToggle={phase !== "menu"}>
+    <OpsMobileShell showLocaleToggle={phase === "pin"}>
+      {error && phase === "break" ? (
+        <Alert
+          severity="error"
+          sx={{ width: "100%", mb: 1.5 }}
+          onClose={() => setError("")}
+        >
+          {error}
+        </Alert>
+      ) : null}
+      {phase === "break" && hub ? (
+        <OpsBreakModeScreen
+          employeeName={
+            (hub.employee_name || hub.employee_first_name || "").trim() || identity
+          }
+          breakStartedAt={hub?.attendance?.break_started_at || null}
+          localeTag={localeTag}
+          onResume={() => void openFeature({ id: "resume_work" })}
+          onLock={lockSession}
+          resumeLabel={t("mobileOps.tile.resumeWork")}
+          lockLabel={t("mobileOps.lock")}
+          title={t("mobileOps.break.modeTitle")}
+          startedLabel={t("mobileOps.break.started")}
+          elapsedPrefix={t("mobileOps.break.elapsedPrefix")}
+          lockHint={t("mobileOps.break.lockHint")}
+          logoSrc={logoSrc}
+        />
+      ) : (
       <Paper
         elevation={0}
         sx={{
@@ -702,6 +779,7 @@ export default function EmployeePinHubPage({ onLoggedIn }) {
             ))}
         </Stack>
       </Paper>
+      )}
 
       <Dialog open={breakConfirmOpen} onClose={() => setBreakConfirmOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle sx={{ fontWeight: 900, color: OPS_MOBILE.navy }}>

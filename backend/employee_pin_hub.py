@@ -213,13 +213,19 @@ def attendance_snapshot_for_hub(
     employee_allow_clock = bool(emp_access.get("clock")) if isinstance(emp_access, dict) else True
     active = _active_shift(conn, int(user_id))
     on_break = False
+    break_started_at = None
     current_display_label = None
     open_seg: dict = {}
     if active:
         from backend.ta_routes import get_open_break
         from backend.shift_job_tracking import get_open_job_segment
+        from backend.ta_helpers import json_safe
 
-        on_break = bool(get_open_break(conn, active["id"]))
+        open_br = get_open_break(conn, active["id"])
+        on_break = bool(open_br)
+        if open_br:
+            # Authoritative break start for Mobile Ops Break Mode timer.
+            break_started_at = json_safe(open_br.get("break_start_at"))
         open_seg = get_open_job_segment(conn, int(active["id"])) or {}
         from backend.mobile_ops_labels import employee_assignment_label_from_segment
 
@@ -233,6 +239,7 @@ def attendance_snapshot_for_hub(
         "employee_allow_clock": employee_allow_clock,
         "clocked_in": bool(active),
         "on_break": on_break,
+        "break_started_at": break_started_at,
         "current_display_label": current_display_label,
         "current_category_id": open_seg.get("category_id"),
         "current_role_id": open_seg.get("role_id"),
@@ -245,7 +252,7 @@ def apply_attendance_gates_to_features(
     """
     Keep Role allowed when clocked out so the tile stays visible; mark requires_clock_in
     for the client to show the shared-tablet clock-in message on tap.
-    On break: hide Change Role; expose Resume Work instead.
+    On break: hide Change Role and other working tiles; expose Resume Work only.
     When clocked in and not on break: expose Take a Break.
     """
     out = {k: dict(v) if isinstance(v, dict) else v for k, v in (features or {}).items()}
@@ -283,6 +290,15 @@ def apply_attendance_gates_to_features(
             "path": "/attendance/role",
             "resume_from_break": True,
         }
+        # Persistent Break Mode: hide ordinary Mobile Ops working actions.
+        for fid in ("revenue_cost", "checklist", "inventory", "team_status", "clock"):
+            feat = out.get(fid)
+            if isinstance(feat, dict) and feat.get("allowed"):
+                blocked = dict(feat)
+                blocked["allowed"] = False
+                blocked["hidden"] = True
+                blocked["blocked_reason"] = "on_break"
+                out[fid] = blocked
     else:
         out.pop("resume_work", None)
 
@@ -564,7 +580,8 @@ def perform_pin_hub_open(
     # Stable button order for the client (dynamic attendance tiles injected after Role).
     feature_order = [d["id"] for d in PIN_HUB_FEATURE_DEFS]
     if features.get("resume_work", {}).get("allowed"):
-        feature_order = ["resume_work"] + [x for x in feature_order if x != "switch_role"]
+        # Break Mode: only Resume Work is meaningful; other tiles are gated hidden.
+        feature_order = ["resume_work"]
     elif features.get("take_break", {}).get("allowed"):
         feature_order = ["switch_role", "take_break"] + [
             x for x in feature_order if x not in ("switch_role", "take_break")
