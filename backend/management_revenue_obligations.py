@@ -546,11 +546,12 @@ def build_daily_completeness(cursor, org_id: int, processing_date: date) -> dict
         if disp_kind in (DISP_NO_ACTIVITY, DISP_EXCLUDED):
             status = STATUS_NO_ACTIVITY
             complete += 1
-        elif disp_kind == DISP_COMPLETED:
+        elif disp_kind == DISP_COMPLETED and entered:
             status = STATUS_COMPLETE
             complete += 1
         elif entered:
             # Saved values without Complete = draft (still Incomplete for 4/4).
+            # Complete disposition with cleared required fields returns to draft.
             status = STATUS_DRAFT
         else:
             status = STATUS_MISSING
@@ -660,7 +661,7 @@ def build_dhs_obligations(
             elif disp and disp.get("disposition") in (DISP_NO_PICKUP, DISP_EXCLUDED, DISP_NO_ACTIVITY):
                 status = STATUS_NO_ACTIVITY
                 resolved = True
-            elif disp and disp.get("disposition") == DISP_COMPLETED:
+            elif disp and disp.get("disposition") == DISP_COMPLETED and entry:
                 status = STATUS_COMPLETE
                 resolved = True
             elif entry:
