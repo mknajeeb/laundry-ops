@@ -16,8 +16,8 @@ Per-organization marker in ``employee_mobile_pin_access_backfill`` (no global cu
    active PIN employees, verifies completeness, then writes marker
    ``init_mode=legacy_grant``. Request paths never auto-grant.
 3. **New org:** platform create/bootstrap writes marker ``init_mode=new_org`` with
-   zero grants. New / first-PIN employees get explicit rows with ``switch_role`` ON
-   and other modules OFF (Role is the universal Mobile Ops default).
+   zero grants. New / first-PIN employees get explicit rows with ``switch_role`` and
+   ``take_break`` ON and other modules OFF (Role + Take a Break are floor defaults).
 4. **Marked org:** missing row → all-deny (never "missing = allow all").
 """
 
@@ -28,11 +28,12 @@ from typing import Any, Callable, Optional
 from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
 
 # Keep in sync with COLUMN_BY_KEY, save/load SQL, People MobilePinAccessPanel,
-# and PIN hub /api/team-status enforcement. Dropping a key from MODULE_KEYS
+# and PIN hub / break-start enforcement. Dropping a key from MODULE_KEYS
 # silently ignores People UI saves for that module (team_status bug class).
 MODULE_KEYS = (
     "clock",
     "switch_role",
+    "take_break",
     "checklist",
     "inventory",
     "revenue_cost",
@@ -40,14 +41,23 @@ MODULE_KEYS = (
 )
 
 # Hub / PIN enforcement AND-gates. Clock remains stored but not activated.
+# take_break is enforced on pin-break/start + hub Take a Break tile (not Resume).
 ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES = frozenset(
-    {"switch_role", "checklist", "inventory", "revenue_cost", "team_status"}
+    {
+        "switch_role",
+        "take_break",
+        "checklist",
+        "inventory",
+        "revenue_cost",
+        "team_status",
+    }
 )
 
 # DB column ↔ API/feature key
 COLUMN_BY_KEY = {
     "clock": "allow_clock",
     "switch_role": "allow_switch_role",
+    "take_break": "allow_take_break",
     "checklist": "allow_checklist",
     "inventory": "allow_inventory",
     "revenue_cost": "allow_revenue_cost",
@@ -102,6 +112,7 @@ def ensure_employee_mobile_pin_access_tables(cursor) -> None:
           user_id INT NOT NULL,
           allow_clock TINYINT(1) NOT NULL DEFAULT 0,
           allow_switch_role TINYINT(1) NOT NULL DEFAULT 0,
+          allow_take_break TINYINT(1) NOT NULL DEFAULT 1,
           allow_checklist TINYINT(1) NOT NULL DEFAULT 0,
           allow_inventory TINYINT(1) NOT NULL DEFAULT 0,
           allow_revenue_cost TINYINT(1) NOT NULL DEFAULT 0,
@@ -133,6 +144,18 @@ def ensure_employee_mobile_pin_access_tables(cursor) -> None:
             ALTER TABLE {ACCESS_TABLE}
               ADD COLUMN allow_team_status TINYINT(1) NOT NULL DEFAULT 0
               AFTER allow_revenue_cost
+            """
+        )
+        invalidate_schema_cache()
+    # Existing floor staff kept Take a Break; DEFAULT 1 avoids trapping workers.
+    if table_exists(cursor, ACCESS_TABLE) and not table_has_column(
+        cursor, ACCESS_TABLE, "allow_take_break"
+    ):
+        cursor.execute(
+            f"""
+            ALTER TABLE {ACCESS_TABLE}
+              ADD COLUMN allow_take_break TINYINT(1) NOT NULL DEFAULT 1
+              AFTER allow_switch_role
             """
         )
         invalidate_schema_cache()
@@ -189,7 +212,9 @@ def ensure_org_mobile_pin_access_backfill(cursor, organization_id: int) -> None:
     """
     _ = int(organization_id)
     if table_exists(cursor, ACCESS_TABLE) and table_exists(cursor, BACKFILL_MARKER_TABLE):
-        if not table_has_column(cursor, ACCESS_TABLE, "allow_team_status"):
+        if not table_has_column(cursor, ACCESS_TABLE, "allow_team_status") or not table_has_column(
+            cursor, ACCESS_TABLE, "allow_take_break"
+        ):
             ensure_employee_mobile_pin_access_tables(cursor)
         return
     ensure_employee_mobile_pin_access_tables(cursor)
@@ -501,7 +526,7 @@ def get_access_row(cursor, organization_id: int, user_id: int) -> Optional[dict]
     cursor.execute(
         f"""
         SELECT organization_id, user_id,
-               allow_clock, allow_switch_role, allow_checklist,
+               allow_clock, allow_switch_role, allow_take_break, allow_checklist,
                allow_inventory, allow_revenue_cost, allow_team_status,
                updated_at, updated_by_user_id, created_at
         FROM {ACCESS_TABLE}
@@ -585,6 +610,8 @@ def _new_employee_default_grants() -> dict[str, bool]:
     """Canonical defaults for newly created / newly PIN'd employees."""
     grants = _all_false()
     grants["switch_role"] = True
+    # Independent of Role/Clock, but ON by default so floor staff can pause shifts.
+    grants["take_break"] = True
     return grants
 
 
@@ -598,8 +625,8 @@ def ensure_new_employee_mobile_pin_access(
     """
     Explicit default row for a new / newly PIN'd employee *after* the org is marked.
 
-    Defaults: ``switch_role`` ON; clock / checklist / inventory / revenue_cost /
-    team_status OFF.
+    Defaults: ``switch_role`` + ``take_break`` ON; clock / checklist / inventory /
+    revenue_cost / team_status OFF.
     Before the org marker exists, do nothing so controlled legacy all-true backfill
     can still apply to employees present at migration.
     INSERT IGNORE so existing manager grants are never overwritten.
@@ -612,16 +639,17 @@ def ensure_new_employee_mobile_pin_access(
         f"""
         INSERT IGNORE INTO {ACCESS_TABLE}
           (organization_id, user_id,
-           allow_clock, allow_switch_role, allow_checklist,
+           allow_clock, allow_switch_role, allow_take_break, allow_checklist,
            allow_inventory, allow_revenue_cost, allow_team_status,
            updated_by_user_id, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         """,
         (
             int(organization_id),
             int(user_id),
             1 if defaults["clock"] else 0,
             1 if defaults["switch_role"] else 0,
+            1 if defaults["take_break"] else 0,
             1 if defaults["checklist"] else 0,
             1 if defaults["inventory"] else 0,
             1 if defaults["revenue_cost"] else 0,
@@ -728,16 +756,17 @@ def enable_switch_role_for_org_active_users(
                 f"""
                 INSERT INTO {ACCESS_TABLE}
                   (organization_id, user_id,
-                   allow_clock, allow_switch_role, allow_checklist,
+                   allow_clock, allow_switch_role, allow_take_break, allow_checklist,
                    allow_inventory, allow_revenue_cost, allow_team_status,
                    updated_by_user_id, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 """,
                 (
                     oid,
                     int(uid),
                     1 if defaults["clock"] else 0,
                     1 if defaults["switch_role"] else 0,
+                    1 if defaults["take_break"] else 0,
                     1 if defaults["checklist"] else 0,
                     1 if defaults["inventory"] else 0,
                     1 if defaults["revenue_cost"] else 0,
@@ -847,13 +876,14 @@ def save_employee_mobile_pin_access(
         f"""
         INSERT INTO {ACCESS_TABLE}
           (organization_id, user_id,
-           allow_clock, allow_switch_role, allow_checklist,
+           allow_clock, allow_switch_role, allow_take_break, allow_checklist,
            allow_inventory, allow_revenue_cost, allow_team_status,
            updated_by_user_id, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON DUPLICATE KEY UPDATE
           allow_clock = VALUES(allow_clock),
           allow_switch_role = VALUES(allow_switch_role),
+          allow_take_break = VALUES(allow_take_break),
           allow_checklist = VALUES(allow_checklist),
           allow_inventory = VALUES(allow_inventory),
           allow_revenue_cost = VALUES(allow_revenue_cost),
@@ -866,6 +896,7 @@ def save_employee_mobile_pin_access(
             uid,
             1 if after["clock"] else 0,
             1 if after["switch_role"] else 0,
+            1 if after["take_break"] else 0,
             1 if after["checklist"] else 0,
             1 if after["inventory"] else 0,
             1 if after["revenue_cost"] else 0,

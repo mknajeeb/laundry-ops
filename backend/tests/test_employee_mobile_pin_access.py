@@ -44,6 +44,7 @@ class FakeCursor:
         self.rowcount = 0
         self._has_init_mode = True
         self._has_team_status = True
+        self._has_take_break = True
         self.fail_insert_user_ids = set()
 
     def execute(self, sql, params=None):
@@ -58,12 +59,17 @@ class FakeCursor:
         if "ALTER TABLE employee_mobile_pin_access" in sql_n and "allow_team_status" in sql_n:
             self._has_team_status = True
             return
+        if "ALTER TABLE employee_mobile_pin_access" in sql_n and "allow_take_break" in sql_n:
+            self._has_take_break = True
+            return
         if "INFORMATION_SCHEMA.COLUMNS" in sql_n:
             # table_has_column(cursor, table, col)
             col = params[1] if len(params) > 1 else ""
             if col == "init_mode" and self._has_init_mode:
                 self._result = {"ok": 1}
             elif col == "allow_team_status" and getattr(self, "_has_team_status", True):
+                self._result = {"ok": 1}
+            elif col == "allow_take_break" and getattr(self, "_has_take_break", True):
                 self._result = {"ok": 1}
             else:
                 self._result = None
@@ -137,27 +143,26 @@ class FakeCursor:
             and "INSERT IGNORE" not in sql_n
             and "allow_clock, allow_switch_role" in sql_n
         ):
-            # Single-row insert with explicit module flags (org, uid, 5 flags, …)
+            # Single-row insert with explicit module flags
             if (
-                len(params) >= 7
+                len(params) >= 8
                 and int(params[2]) in (0, 1)
                 and int(params[3]) in (0, 1)
             ):
                 org, uid = int(params[0]), int(params[1])
-                # Single-row: org, uid, 5 or 6 module flags
-                org, uid = int(params[0]), int(params[1])
-                ts = bool(params[7]) if len(params) >= 8 else False
+                # org, uid, clock, switch_role, take_break, checklist, inventory, revenue, team
                 self.access[(org, uid)] = {
                     "clock": bool(params[2]),
                     "switch_role": bool(params[3]),
-                    "checklist": bool(params[4]),
-                    "inventory": bool(params[5]),
-                    "revenue_cost": bool(params[6]),
-                    "team_status": ts,
+                    "take_break": bool(params[4]),
+                    "checklist": bool(params[5]),
+                    "inventory": bool(params[6]),
+                    "revenue_cost": bool(params[7]),
+                    "team_status": bool(params[8]) if len(params) >= 9 else False,
                 }
                 self.rowcount = 1
                 return
-            # Multi-row all-true insert: (org, uid) pairs in params — never grants team_status
+            # Multi-row all-true insert: (org, uid) pairs — never grants team_status
             for i in range(0, len(params), 2):
                 org, uid = int(params[i]), int(params[i + 1])
                 if uid in self.fail_insert_user_ids:
@@ -167,6 +172,7 @@ class FakeCursor:
                 self.access[(org, uid)] = {
                     "clock": True,
                     "switch_role": True,
+                    "take_break": True,
                     "checklist": True,
                     "inventory": True,
                     "revenue_cost": True,
@@ -219,6 +225,7 @@ class FakeCursor:
                     "user_id": uid,
                     "allow_clock": 1 if a["clock"] else 0,
                     "allow_switch_role": 1 if a["switch_role"] else 0,
+                    "allow_take_break": 1 if a.get("take_break", True) else 0,
                     "allow_checklist": 1 if a["checklist"] else 0,
                     "allow_inventory": 1 if a["inventory"] else 0,
                     "allow_revenue_cost": 1 if a["revenue_cost"] else 0,
@@ -246,20 +253,21 @@ class FakeCursor:
         ):
             org, uid = int(params[0]), int(params[1])
             if (org, uid) not in self.access:
-                if len(params) >= 7:
-                    ts = bool(params[7]) if len(params) >= 8 else False
+                if len(params) >= 9:
                     self.access[(org, uid)] = {
                         "clock": bool(params[2]),
                         "switch_role": bool(params[3]),
-                        "checklist": bool(params[4]),
-                        "inventory": bool(params[5]),
-                        "revenue_cost": bool(params[6]),
-                        "team_status": ts,
+                        "take_break": bool(params[4]),
+                        "checklist": bool(params[5]),
+                        "inventory": bool(params[6]),
+                        "revenue_cost": bool(params[7]),
+                        "team_status": bool(params[8]),
                     }
                 else:
                     self.access[(org, uid)] = {
                         "clock": False,
                         "switch_role": True,
+                        "take_break": True,
                         "checklist": False,
                         "inventory": False,
                         "revenue_cost": False,
@@ -301,14 +309,14 @@ class FakeCursor:
             return
         if "INSERT INTO employee_mobile_pin_access" in sql_n and "ON DUPLICATE KEY" in sql_n:
             org, uid = int(params[0]), int(params[1])
-            ts = bool(params[7]) if len(params) >= 8 else False
             self.access[(org, uid)] = {
                 "clock": bool(params[2]),
                 "switch_role": bool(params[3]),
-                "checklist": bool(params[4]),
-                "inventory": bool(params[5]),
-                "revenue_cost": bool(params[6]),
-                "team_status": ts,
+                "take_break": bool(params[4]),
+                "checklist": bool(params[5]),
+                "inventory": bool(params[6]),
+                "revenue_cost": bool(params[7]),
+                "team_status": bool(params[8]) if len(params) >= 9 else False,
             }
             return
         self._result = None
@@ -368,6 +376,7 @@ def test_migration_pin_employee_gets_all_true():
     assert resolve_employee_mobile_pin_access(cur, 3, 10) == {
         "clock": True,
         "switch_role": True,
+        "take_break": True,
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,
@@ -426,6 +435,7 @@ def test_new_org_marker_then_new_employee_role_default_on():
     assert resolve_employee_mobile_pin_access(cur, 3, 12) == {
         "clock": False,
         "switch_role": True,
+        "take_break": True,
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
@@ -441,6 +451,7 @@ def test_new_employee_after_backfill_gets_role_default_on():
     assert resolve_employee_mobile_pin_access(cur, 3, 12) == {
         "clock": False,
         "switch_role": True,
+        "take_break": True,
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
@@ -458,6 +469,7 @@ def test_enable_switch_role_for_org_active_users_preserves_other_modules():
     cur.access[(3, 10)] = {
         "clock": False,
         "switch_role": False,
+        "take_break": True,
         "checklist": True,
         "inventory": False,
         "revenue_cost": True,
@@ -466,6 +478,7 @@ def test_enable_switch_role_for_org_active_users_preserves_other_modules():
     cur.access[(3, 11)] = {
         "clock": False,
         "switch_role": True,
+        "take_break": True,
         "checklist": False,
         "inventory": True,
         "revenue_cost": False,
@@ -483,6 +496,7 @@ def test_enable_switch_role_for_org_active_users_preserves_other_modules():
     assert resolve_employee_mobile_pin_access(cur, 3, 10) == {
         "clock": False,
         "switch_role": True,
+        "take_break": True,
         "checklist": True,
         "inventory": False,
         "revenue_cost": True,
@@ -492,6 +506,7 @@ def test_enable_switch_role_for_org_active_users_preserves_other_modules():
     assert resolve_employee_mobile_pin_access(cur, 3, 12) == {
         "clock": False,
         "switch_role": True,
+        "take_break": True,
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
@@ -543,6 +558,7 @@ def test_save_and_audit_only_changed():
         grants={
             "clock": True,
             "switch_role": False,
+            "take_break": True,
             "checklist": True,
             "inventory": True,
             "revenue_cost": False,
@@ -566,6 +582,7 @@ def test_save_and_audit_only_changed():
         grants={
             "clock": True,
             "switch_role": False,
+            "take_break": True,
             "checklist": True,
             "inventory": True,
             "revenue_cost": False,
@@ -586,6 +603,7 @@ def test_team_status_save_reload_roundtrip():
     cur.access[(3, 23)] = {
         "clock": False,
         "switch_role": True,
+        "take_break": True,
         "checklist": False,
         "inventory": False,
         "revenue_cost": True,
@@ -602,6 +620,7 @@ def test_team_status_save_reload_roundtrip():
         grants={
             "clock": False,
             "switch_role": True,
+            "take_break": True,
             "checklist": False,
             "inventory": False,
             "revenue_cost": True,
@@ -623,6 +642,7 @@ def test_team_status_save_reload_roundtrip():
         grants={
             "clock": False,
             "switch_role": True,
+            "take_break": True,
             "checklist": False,
             "inventory": False,
             "revenue_cost": True,
@@ -637,6 +657,65 @@ def test_team_status_save_reload_roundtrip():
     assert reloaded["revenue_cost"] is True
 
 
+def test_take_break_save_reload_roundtrip():
+    """People → Mobile PIN Access Take a Break must persist allow_take_break."""
+    cur = FakeCursor()
+    cur.users = [(3, 35)]
+    cur.pin_users = [(3, 35)]
+    cur.backfill_orgs[3] = 0
+    cur.access[(3, 35)] = {
+        "clock": True,
+        "switch_role": True,
+        "take_break": True,
+        "checklist": False,
+        "inventory": False,
+        "revenue_cost": False,
+        "team_status": False,
+    }
+
+    assert "take_break" in MODULE_KEYS
+    assert COLUMN_BY_KEY["take_break"] == "allow_take_break"
+
+    after = save_employee_mobile_pin_access(
+        cur,
+        3,
+        35,
+        grants={
+            "clock": True,
+            "switch_role": True,
+            "take_break": False,
+            "checklist": False,
+            "inventory": False,
+            "revenue_cost": False,
+            "team_status": False,
+        },
+        actor_user_id=1,
+    )
+    assert after["take_break"] is False
+    assert resolve_employee_mobile_pin_access(cur, 3, 35)["take_break"] is False
+    payload = manager_mobile_pin_access_payload(cur, 3, 35)
+    assert payload["take_break"] is False
+    assert payload["switch_role"] is True
+
+    after_on = save_employee_mobile_pin_access(
+        cur,
+        3,
+        35,
+        grants={
+            "clock": True,
+            "switch_role": True,
+            "take_break": True,
+            "checklist": False,
+            "inventory": False,
+            "revenue_cost": False,
+            "team_status": False,
+        },
+        actor_user_id=1,
+    )
+    assert after_on["take_break"] is True
+    assert resolve_employee_mobile_pin_access(cur, 3, 35)["take_break"] is True
+
+
 def test_assert_denies_module():
     from backend.employee_mobile_pin_access import (
         ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES,
@@ -644,13 +723,21 @@ def test_assert_denies_module():
     )
 
     assert ENFORCED_EMPLOYEE_MOBILE_PIN_MODULES == frozenset(
-        {"switch_role", "checklist", "inventory", "revenue_cost", "team_status"}
+        {
+            "switch_role",
+            "take_break",
+            "checklist",
+            "inventory",
+            "revenue_cost",
+            "team_status",
+        }
     )
     cur = FakeCursor()
     cur.backfill_orgs[3] = 0
     cur.access[(3, 10)] = {
         "clock": False,
         "switch_role": False,
+        "take_break": True,
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
@@ -683,6 +770,7 @@ def test_resolve_hub_features_enforces_role_checklist_inventory_and_revenue_cost
     emp = {
         "clock": True,
         "switch_role": False,
+        "take_break": True,
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
@@ -695,6 +783,7 @@ def test_resolve_hub_features_enforces_role_checklist_inventory_and_revenue_cost
             "allow_clock_from_hub": True,
             "features": {
                 "switch_role": True,
+                "take_break": True,
                 "checklist": True,
                 "inventory": True,
                 "revenue_cost": True,
@@ -730,6 +819,7 @@ def test_resolve_hub_features_role_allowed_when_employee_grants():
     emp = {
         "clock": False,
         "switch_role": True,
+        "take_break": True,
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
@@ -742,6 +832,7 @@ def test_resolve_hub_features_role_allowed_when_employee_grants():
             "allow_clock_from_hub": True,
             "features": {
                 "switch_role": True,
+                "take_break": True,
                 "checklist": True,
                 "inventory": True,
                 "revenue_cost": True,
@@ -773,6 +864,7 @@ def test_resolve_hub_features_inventory_off_hides_tile():
     emp = {
         "clock": False,
         "switch_role": False,
+        "take_break": True,
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
@@ -785,6 +877,7 @@ def test_resolve_hub_features_inventory_off_hides_tile():
             "allow_clock_from_hub": True,
             "features": {
                 "switch_role": True,
+                "take_break": True,
                 "checklist": True,
                 "inventory": True,
                 "revenue_cost": True,
@@ -813,7 +906,7 @@ def test_org_feature_off_overrides_employee_allow():
     from backend.employee_pin_hub import resolve_hub_features
 
     matched = {"id": 10, "_roles": []}
-    emp = {k: True for k in ("clock", "switch_role", "checklist", "inventory", "revenue_cost", "team_status")}
+    emp = {k: True for k in ("clock", "switch_role", "take_break", "checklist", "inventory", "revenue_cost", "team_status")}
     emp["team_status"] = False
     with patch(
         "backend.employee_pin_hub.load_pin_menu_settings",
@@ -822,6 +915,7 @@ def test_org_feature_off_overrides_employee_allow():
             "allow_clock_from_hub": True,
             "features": {
                 "switch_role": False,
+                "take_break": True,
                 "checklist": True,
                 "inventory": True,
                 "revenue_cost": True,
@@ -859,6 +953,7 @@ def test_attendance_snapshot_employee_allow_clock():
             employee_module_access={
                 "clock": False,
                 "switch_role": True,
+                "take_break": True,
                 "checklist": True,
                 "inventory": True,
                 "revenue_cost": True,
@@ -877,6 +972,7 @@ def test_role_switch_open_denied_without_employee_access():
     access_cur.access[(3, 10)] = {
         "clock": True,
         "switch_role": False,
+        "take_break": True,
         "checklist": False,
         "inventory": False,
         "revenue_cost": False,
@@ -922,6 +1018,7 @@ def test_role_change_mutation_denied_without_employee_access():
     access_cur.access[(3, 10)] = {
         "clock": True,
         "switch_role": False,
+        "take_break": True,
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,
@@ -978,6 +1075,7 @@ def test_role_mutation_revoked_mid_session_blocks_next_call():
     access_cur.access[(3, 10)] = {
         "clock": True,
         "switch_role": True,
+        "take_break": True,
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,
@@ -1070,6 +1168,7 @@ def test_role_allowed_returns_unfiltered_selection_tree():
     access_cur.access[(3, 10)] = {
         "clock": True,
         "switch_role": True,
+        "take_break": True,
         "checklist": True,
         "inventory": True,
         "revenue_cost": True,

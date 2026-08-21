@@ -247,13 +247,17 @@ def attendance_snapshot_for_hub(
 
 
 def apply_attendance_gates_to_features(
-    features: dict[str, Any], attendance: dict[str, Any]
+    features: dict[str, Any],
+    attendance: dict[str, Any],
+    *,
+    allow_take_break: bool = True,
 ) -> dict[str, Any]:
     """
     Keep Role allowed when clocked out so the tile stays visible; mark requires_clock_in
     for the client to show the shared-tablet clock-in message on tap.
     On break: hide Change Role and other working tiles; expose Resume Work only.
-    When clocked in and not on break: expose Take a Break.
+    When clocked in and not on break: expose Take a Break if employee Mobile PIN Access
+    grants take_break (independent of Clock / Role). Resume is never gated by take_break.
     """
     out = {k: dict(v) if isinstance(v, dict) else v for k, v in (features or {}).items()}
     role = out.get("switch_role")
@@ -274,7 +278,7 @@ def apply_attendance_gates_to_features(
             role["blocked_reason"] = "on_break"
             out["switch_role"] = role
 
-    if clocked_in and not on_break:
+    if clocked_in and not on_break and allow_take_break:
         out["take_break"] = {
             "allowed": True,
             "label": "Take a Break",
@@ -525,7 +529,11 @@ def perform_pin_hub_open(
         employee_module_access=emp_access,
         pin_menu=pin_menu,
     )
-    features = apply_attendance_gates_to_features(features, attendance)
+    features = apply_attendance_gates_to_features(
+        features,
+        attendance,
+        allow_take_break=bool(emp_access.get("take_break")),
+    )
 
     # Weekday checklist assignment: tile stays visible when org-enabled; disable if not assigned.
     checklist = features.get("checklist")

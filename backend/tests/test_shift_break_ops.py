@@ -68,3 +68,37 @@ def test_pin_break_start_requires_clocked_in(
         )
     assert status == 400
     assert "clocked in" in body["error"].lower()
+
+
+@patch("backend.attendance_pin_break.start_break_on_session")
+@patch("backend.attendance_pin_break.get_open_break", return_value=None)
+@patch("backend.attendance_pin_break._active_shift")
+@patch("backend.attendance_pin_break.shared_device_attendance_enabled", return_value=True)
+@patch("backend.attendance_pin_break.payroll_profiles_active", return_value=True)
+@patch("backend.attendance_pin_break.fetch_organization_by_slug")
+@patch("backend.attendance_pin_break.is_rate_limited", return_value=False)
+def test_pin_break_start_enforces_take_break_permission(
+    _rl, mock_org, _pp, _shared, mock_active, _ob, mock_start
+):
+    from backend.attendance_pin_break import perform_pin_break_start
+    from backend.employee_mobile_pin_access import (
+        DENIED_MODULE_MESSAGE,
+        MobilePinAccessDeniedError,
+    )
+
+    mock_org.return_value = {"id": 3, "slug": "veewash"}
+    mock_active.return_value = {"id": 55}
+    conn = MagicMock()
+    with patch(
+        "backend.attendance_pin_break.resolve_user_by_attendance_pin",
+        return_value={"id": 10, "first_name": "Maria", "display_name": "Maria"},
+    ), patch("backend.attendance_pin_break.record_pin_attempt"), patch(
+        "backend.employee_mobile_pin_access.assert_employee_allows_module",
+        side_effect=MobilePinAccessDeniedError(),
+    ):
+        body, status = perform_pin_break_start(
+            conn, "veewash", "1234", lambda *_: [], "1.1.1.1"
+        )
+    assert status == 403
+    assert body["error"] == DENIED_MODULE_MESSAGE
+    mock_start.assert_not_called()

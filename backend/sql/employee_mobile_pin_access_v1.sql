@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS employee_mobile_pin_access (
   user_id INT NOT NULL,
   allow_clock TINYINT(1) NOT NULL DEFAULT 0,
   allow_switch_role TINYINT(1) NOT NULL DEFAULT 0,
+  allow_take_break TINYINT(1) NOT NULL DEFAULT 1,
   allow_checklist TINYINT(1) NOT NULL DEFAULT 0,
   allow_inventory TINYINT(1) NOT NULL DEFAULT 0,
   allow_revenue_cost TINYINT(1) NOT NULL DEFAULT 0,
@@ -62,5 +63,19 @@ SET @sql_ts := IF(
   'SELECT ''skip allow_team_status'' AS _note'
 );
 PREPARE _ts FROM @sql_ts; EXECUTE _ts; DEALLOCATE PREPARE _ts;
+
+-- Take a Break: default ON so existing floor staff keep break access.
+SET @has_tb := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = @db
+    AND TABLE_NAME = 'employee_mobile_pin_access'
+    AND COLUMN_NAME = 'allow_take_break'
+);
+SET @sql_tb := IF(
+  @has_tb = 0,
+  'ALTER TABLE employee_mobile_pin_access ADD COLUMN allow_take_break TINYINT(1) NOT NULL DEFAULT 1 AFTER allow_switch_role',
+  'SELECT ''skip allow_take_break'' AS _note'
+);
+PREPARE _tb FROM @sql_tb; EXECUTE _tb; DEALLOCATE PREPARE _tb;
 
 SELECT 'employee_mobile_pin_access_v1 complete.' AS note;

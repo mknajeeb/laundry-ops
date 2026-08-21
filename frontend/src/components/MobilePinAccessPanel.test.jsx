@@ -10,6 +10,7 @@ describe("MobilePinAccessPanel contracts", () => {
     expect(MOBILE_PIN_ACCESS_MODULES.map((m) => m.key)).toEqual([
       "clock",
       "switch_role",
+      "take_break",
       "checklist",
       "inventory",
       "revenue_cost",
@@ -18,6 +19,7 @@ describe("MobilePinAccessPanel contracts", () => {
     expect(MOBILE_PIN_ACCESS_MODULES.map((m) => m.label)).toEqual([
       "Clock",
       "Role",
+      "Take a Break",
       "End-of-Day Checklist",
       "Inventory",
       "Revenue / Cash",
@@ -30,6 +32,7 @@ describe("MobilePinAccessPanel contracts", () => {
       normalizeMobilePinAccess({
         clock: 1,
         switch_role: 0,
+        take_break: 1,
         checklist: true,
         inventory: false,
         revenue_cost: "1",
@@ -40,6 +43,7 @@ describe("MobilePinAccessPanel contracts", () => {
     ).toEqual({
       clock: true,
       switch_role: false,
+      take_break: true,
       checklist: true,
       inventory: false,
       revenue_cost: true,
@@ -57,6 +61,7 @@ describe("MobilePinAccessPanel contracts", () => {
     ).toEqual({
       clock: true,
       switch_role: false,
+      take_break: false,
       checklist: false,
       inventory: true,
       revenue_cost: false,

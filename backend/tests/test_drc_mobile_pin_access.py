@@ -19,6 +19,7 @@ def _access_row(*, revenue_cost: bool, switch_role: bool = True):
     return {
         "clock": True,
         "switch_role": switch_role,
+        "take_break": True,
         "checklist": True,
         "inventory": True,
         "revenue_cost": revenue_cost,

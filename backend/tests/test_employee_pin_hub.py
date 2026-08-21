@@ -128,6 +128,31 @@ def test_apply_attendance_gates_keeps_switch_role_when_clocked_in():
     gated = apply_attendance_gates_to_features(features, {"clocked_in": True})
     assert gated["switch_role"]["allowed"] is True
     assert gated["switch_role"].get("requires_clock_in") is None
+    assert gated["take_break"]["allowed"] is True
+
+
+def test_apply_attendance_gates_hides_take_break_when_permission_off():
+    features = {"switch_role": {"id": "switch_role", "allowed": True}}
+    gated = apply_attendance_gates_to_features(
+        features, {"clocked_in": True, "on_break": False}, allow_take_break=False
+    )
+    assert gated.get("take_break") is None
+    assert gated["switch_role"]["allowed"] is True
+
+
+def test_apply_attendance_gates_resume_even_when_take_break_denied():
+    features = {
+        "switch_role": {"id": "switch_role", "allowed": True},
+        "revenue_cost": {"id": "revenue_cost", "allowed": True},
+    }
+    gated = apply_attendance_gates_to_features(
+        features,
+        {"clocked_in": True, "on_break": True},
+        allow_take_break=False,
+    )
+    assert gated.get("take_break") is None
+    assert gated["resume_work"]["allowed"] is True
+    assert gated["switch_role"]["blocked_reason"] == "on_break"
 
 
 def test_apply_attendance_gates_break_mode_hides_working_tiles():
@@ -167,6 +192,17 @@ def test_perform_pin_hub_open_success_returns_menu():
         "backend.employee_pin_hub.resolve_user_by_attendance_pin", return_value=matched
     ), patch(
         "backend.employee_pin_hub.record_pin_attempt"
+    ), patch(
+        "backend.employee_mobile_pin_access.resolve_employee_mobile_pin_access",
+        return_value={
+            "clock": True,
+            "switch_role": True,
+            "take_break": True,
+            "checklist": True,
+            "inventory": False,
+            "revenue_cost": False,
+            "team_status": False,
+        },
     ), patch(
         "backend.employee_pin_hub.resolve_hub_features",
         return_value={

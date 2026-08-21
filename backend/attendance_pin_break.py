@@ -169,6 +169,32 @@ def perform_pin_break_start(
     session = ctx["session"]
     matched = ctx["matched"]
 
+    from backend.employee_mobile_pin_access import (
+        DENIED_MODULE_MESSAGE,
+        MobilePinAccessDeniedError,
+        assert_employee_allows_module,
+    )
+
+    access_c = conn.cursor(dictionary=True)
+    try:
+        assert_employee_allows_module(access_c, org_id, user_id, "take_break")
+    except MobilePinAccessDeniedError:
+        record_pin_attempt(
+            conn,
+            org_id,
+            ip_address,
+            success=False,
+            user_id=user_id,
+            action="pin_break_start_denied",
+        )
+        conn.commit()
+        return {"ok": False, "error": DENIED_MODULE_MESSAGE}, 403
+    finally:
+        try:
+            access_c.close()
+        except Exception:
+            pass
+
     if get_open_break(conn, int(session["id"])):
         record_pin_attempt(
             conn,
