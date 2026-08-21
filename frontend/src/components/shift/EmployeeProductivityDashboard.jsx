@@ -97,55 +97,74 @@ function SummaryMetricGrid({ items }) {
   );
 }
 
-function FolderSegmentList({ segments }) {
+function fmtFoldHoursLabel(hours) {
+  if (hours == null || Number.isNaN(Number(hours))) return null;
+  const total = Math.max(0, Math.round(Number(hours) * 60));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (h && m) return `${h}h ${m}m`;
+  if (h) return `${h}h 00m`;
+  return `${m}m`;
+}
+
+function FolderSegmentList({ segments, totalFoldHours }) {
   if (!Array.isArray(segments) || !segments.length) return null;
+  const totalLabel = fmtFoldHoursLabel(totalFoldHours);
   return (
     <Box sx={{ mt: 1.25 }}>
       <Typography variant="caption" fontWeight={800} display="block" sx={{ mb: 0.75 }}>
-        Folder Role Segments
+        {totalLabel ? `Total Fold Time: ${totalLabel}` : "Folder Role Segments"}
       </Typography>
+      {segments.length > 1 ? (
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>
+          {segments.length} Fold sessions (summed for rate denominator — not last session only)
+        </Typography>
+      ) : null}
       <Stack spacing={0.75}>
-        {segments.map((seg, idx) => (
-          <Box
-            key={seg.segment_id || `${seg.segment_start}-${idx}`}
-            sx={{
-              p: 1,
-              borderRadius: 1,
-              border: "1px solid",
-              borderColor: "divider",
-              bgcolor: "#fff",
-            }}
-          >
-            <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.5 }}>
-              Segment {idx + 1}
-              {seg.role_status === "open" ? " · Open" : " · Closed"}
-            </Typography>
-            <SummaryMetricGrid
-              items={[
-                { label: "Segment Start", value: formatFriendlyEtWall(seg.segment_start) || "—" },
-                {
-                  label: "Segment End",
-                  value:
-                    seg.segment_end_or_open === "Open"
-                      ? "Open"
-                      : formatFriendlyEtWall(seg.segment_end || seg.effective_role_end) || "—",
-                },
-                { label: "Completed Bags", value: seg.completed_bags ?? 0 },
-                { label: "Credited Lbs", value: fmtSummaryNumber(seg.credited_lbs, 2) },
-                {
-                  label: "Active Completion End",
-                  value: formatFriendlyEtWall(seg.active_completion_end) || "—",
-                },
-                { label: "Role Hours", value: fmtSummaryNumber(seg.role_hours, 2) },
-                {
-                  label: "Active Completion Hours",
-                  value: fmtSummaryNumber(seg.active_completion_hours, 2),
-                },
-                { label: "Idle Time", value: fmtSummaryNumber(seg.idle_time_hours, 2) },
-              ]}
-            />
-          </Box>
-        ))}
+        {segments.map((seg, idx) => {
+          const startLabel = formatFriendlyEtWall(seg.segment_start) || "—";
+          const endLabel =
+            seg.segment_end_or_open === "Open"
+              ? "Open"
+              : formatFriendlyEtWall(seg.segment_end || seg.effective_role_end) || "—";
+          const sessionDur = fmtFoldHoursLabel(seg.role_hours);
+          return (
+            <Box
+              key={seg.segment_id || `${seg.segment_start}-${idx}`}
+              sx={{
+                p: 1,
+                borderRadius: 1,
+                border: "1px solid",
+                borderColor: "divider",
+                bgcolor: "#fff",
+              }}
+            >
+              <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.5 }}>
+                Session {idx + 1}
+                {seg.role_status === "open" ? " · Open" : " · Closed"}
+                {" · "}
+                {startLabel} → {endLabel}
+                {sessionDur ? ` · ${sessionDur}` : ""}
+              </Typography>
+              <SummaryMetricGrid
+                items={[
+                  { label: "Completed Bags", value: seg.completed_bags ?? 0 },
+                  { label: "Credited Lbs", value: fmtSummaryNumber(seg.credited_lbs, 2) },
+                  {
+                    label: "Active Completion End",
+                    value: formatFriendlyEtWall(seg.active_completion_end) || "—",
+                  },
+                  { label: "Role Hours", value: fmtSummaryNumber(seg.role_hours, 2) },
+                  {
+                    label: "Active Completion Hours",
+                    value: fmtSummaryNumber(seg.active_completion_hours, 2),
+                  },
+                  { label: "Idle Time", value: fmtSummaryNumber(seg.idle_time_hours, 2) },
+                ]}
+              />
+            </Box>
+          );
+        })}
       </Stack>
     </Box>
   );
@@ -190,8 +209,14 @@ function EmployeeSummaryPanel({ emp, onSendForReview, sendingReview = false, mis
     ) : null;
 
   if (dual) {
+    const totalFoldHours = emp.role_hours ?? productiveHrs;
+    const totalFoldLabel = fmtFoldHoursLabel(totalFoldHours);
     const roleItems = [
-      { label: "Role Hours", value: fmtSummaryNumber(emp.role_hours ?? productiveHrs, 2) },
+      {
+        label: "Total Fold Time",
+        value: totalFoldLabel || fmtSummaryNumber(totalFoldHours, 2),
+      },
+      { label: "Role Hours", value: fmtSummaryNumber(totalFoldHours, 2) },
       { label: "Role Bags / Hour", value: fmtProductivityRate(emp.role_bags_per_hour, false) },
       { label: "Role Lbs / Hour", value: fmtProductivityRate(emp.role_lbs_per_hour, false) },
       { label: "Role Productivity %", value: fmtProductivityPct(emp.role_productivity_pct) },
@@ -251,8 +276,11 @@ function EmployeeSummaryPanel({ emp, onSendForReview, sendingReview = false, mis
       },
       { label: "Sessions", value: emp.total_sessions ?? 0 },
       {
-        label: "Session Time",
-        value: emp.total_session_label || fmtDurationMinutes(emp.total_session_minutes),
+        label: "Session Time (all Fold)",
+        value:
+          totalFoldLabel
+          || emp.total_session_label
+          || fmtDurationMinutes(emp.total_session_minutes),
       },
       {
         label: "Idle Time",
@@ -300,7 +328,10 @@ function EmployeeSummaryPanel({ emp, onSendForReview, sendingReview = false, mis
           Role Window
         </Typography>
         <SummaryMetricGrid items={metaItems} />
-        <FolderSegmentList segments={emp.folder_role_segments} />
+        <FolderSegmentList
+          segments={emp.folder_role_segments}
+          totalFoldHours={totalFoldHours}
+        />
       </Box>
     );
   }
