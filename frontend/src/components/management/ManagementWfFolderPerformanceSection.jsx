@@ -50,11 +50,25 @@ function fmtDelta(pct) {
 function SessionTiming({ session, employee }) {
   const target = session || employee;
   if (!target) return null;
+  const sessions = employee?.sessions || [];
+  const showSessionList = Boolean(employee) && sessions.length > 1;
   return (
     <>
-      <Typography sx={{ mt: 1, fontSize: 12, color: "#475569", fontWeight: 600 }}>
+      {employee?.duration_label ? (
+        <Typography sx={{ mt: 1, fontSize: 12, color: "#0f172a", fontWeight: 800 }}>
+          Total Fold Time: {employee.duration_label}
+        </Typography>
+      ) : null}
+      <Typography
+        sx={{
+          mt: employee?.duration_label ? 0.25 : 1,
+          fontSize: 12,
+          color: "#475569",
+          fontWeight: 600,
+        }}
+      >
         {target.time_range_label || "—"}
-        {target.duration_label && !target.performance_through_label
+        {target.duration_label && !target.performance_through_label && !employee
           ? ` · ${target.duration_label}`
           : ""}
       </Typography>
@@ -63,6 +77,20 @@ function SessionTiming({ session, employee }) {
           {target.performance_through_label}
           {target.duration_label ? ` · ${target.duration_label}` : ""}
         </Typography>
+      ) : null}
+      {showSessionList ? (
+        <Box sx={{ mt: 0.75 }}>
+          {sessions.map((sess, idx) => (
+            <Typography
+              key={sess.session_id || idx}
+              sx={{ fontSize: 11, color: "#64748b", fontWeight: 600, lineHeight: 1.45 }}
+            >
+              Session {idx + 1}
+              {sess.session_code ? ` (${sess.session_code})` : ""}:{" "}
+              {sess.time_range_label || "—"}
+            </Typography>
+          ))}
+        </Box>
       ) : null}
     </>
   );
@@ -160,7 +188,6 @@ function SessionCard({ session, onOpen, selectedIds, onToggle }) {
 }
 
 function EmployeeCard({ employee, onOpenSession }) {
-  const primary = (employee.sessions || [])[0];
   return (
     <Box
       sx={{
