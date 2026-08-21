@@ -8,9 +8,11 @@ import pytest
 
 from backend.employee_mobile_pin_access import (
     AUDIT_ACTION,
+    COLUMN_BY_KEY,
     DENIED_MODULE_MESSAGE,
     INIT_MODE_LEGACY_GRANT,
     INIT_MODE_NEW_ORG,
+    MODULE_KEYS,
     MobilePinAccessBackfillError,
     MobilePinAccessDeniedError,
     assert_employee_allows_module,
@@ -19,6 +21,7 @@ from backend.employee_mobile_pin_access import (
     ensure_new_employee_mobile_pin_access,
     ensure_org_mobile_pin_access_backfill,
     initialize_new_org_mobile_pin_access_marker,
+    manager_mobile_pin_access_payload,
     resolve_employee_mobile_pin_access,
     run_org_mobile_pin_access_legacy_backfill,
     save_employee_mobile_pin_access,
@@ -572,6 +575,66 @@ def test_save_and_audit_only_changed():
         write_audit_fn=audit,
     )
     assert events == []
+
+
+def test_team_status_save_reload_roundtrip():
+    """People → Mobile PIN Access Team Status must persist allow_team_status."""
+    cur = FakeCursor()
+    cur.users = [(3, 23)]
+    cur.pin_users = [(3, 23)]
+    cur.backfill_orgs[3] = 0
+    cur.access[(3, 23)] = {
+        "clock": False,
+        "switch_role": True,
+        "checklist": False,
+        "inventory": False,
+        "revenue_cost": True,
+        "team_status": False,
+    }
+
+    assert "team_status" in MODULE_KEYS
+    assert COLUMN_BY_KEY["team_status"] == "allow_team_status"
+
+    after = save_employee_mobile_pin_access(
+        cur,
+        3,
+        23,
+        grants={
+            "clock": False,
+            "switch_role": True,
+            "checklist": False,
+            "inventory": False,
+            "revenue_cost": True,
+            "team_status": True,
+        },
+        actor_user_id=1,
+    )
+    assert after["team_status"] is True
+    assert resolve_employee_mobile_pin_access(cur, 3, 23)["team_status"] is True
+    assert serialize_mobile_pin_access(cur, 3, 23)["team_status"] is True
+    payload = manager_mobile_pin_access_payload(cur, 3, 23)
+    assert payload["team_status"] is True
+
+    # Uncheck removes the grant; other modules stay put.
+    after_off = save_employee_mobile_pin_access(
+        cur,
+        3,
+        23,
+        grants={
+            "clock": False,
+            "switch_role": True,
+            "checklist": False,
+            "inventory": False,
+            "revenue_cost": True,
+            "team_status": False,
+        },
+        actor_user_id=1,
+    )
+    assert after_off["team_status"] is False
+    reloaded = resolve_employee_mobile_pin_access(cur, 3, 23)
+    assert reloaded["team_status"] is False
+    assert reloaded["switch_role"] is True
+    assert reloaded["revenue_cost"] is True
 
 
 def test_assert_denies_module():

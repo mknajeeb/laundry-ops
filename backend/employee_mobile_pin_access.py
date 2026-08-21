@@ -27,6 +27,9 @@ from typing import Any, Callable, Optional
 
 from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
 
+# Keep in sync with COLUMN_BY_KEY, save/load SQL, People MobilePinAccessPanel,
+# and PIN hub /api/team-status enforcement. Dropping a key from MODULE_KEYS
+# silently ignores People UI saves for that module (team_status bug class).
 MODULE_KEYS = (
     "clock",
     "switch_role",
