@@ -177,47 +177,98 @@ def load_prior_day_disappearance_ids(
     selected_date_et: date,
     bag_ids: Sequence[str],
 ) -> set[str]:
-    """Prior-open exceptions already persisted on a day_bag before selected_date.
+    """Confirmed prior-day disappearances that must not enter operational membership.
 
-    Does not infer disappearance from live At Vendor active=0 (partial scrapes
-    leave many unfinished bags inactive). Same-day disappearance remains a
-    classifier concern for bags already in membership.
+    Sources:
+      1) day_bag rows already marked disappeared_prior_open_exception before today
+      2) inactive At Vendor presence with confirmed disappearance and last_seen < today
+
+    Callers must protect prior-day unfinished members so durable carryover is not
+    stripped by stale inactive presence.
     """
+    from backend.rinse_scrape_completeness import STATE_CONFIRMED
+    from backend.rinse_veewash_workload import (
+        PORTAL_AT_VENDOR,
+        _presence_et_date,
+        _scan_et_date,
+        build_disappearance_confirmation,
+    )
     from backend.ta_helpers import table_exists
 
     ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
-    if not ids or not table_exists(cursor, "rinse_shift_monitor_day_bags"):
+    if not ids:
         return set()
     org = int(organization_id)
     out: set[str] = set()
+
+    if table_exists(cursor, "rinse_shift_monitor_day_bags"):
+        chunk = 200
+        for i in range(0, len(ids), chunk):
+            part = ids[i : i + chunk]
+            ph = ",".join(["%s"] * len(part))
+            cursor.execute(
+                f"""
+                SELECT bag_id,
+                       JSON_UNQUOTE(JSON_EXTRACT(bag_snapshot_json, '$.disappeared_date')) AS dd
+                FROM rinse_shift_monitor_day_bags
+                WHERE organization_id = %s
+                  AND bag_id IN ({ph})
+                  AND shift_date_et <= %s
+                  AND LOWER(TRIM(COALESCE(effective_status, ''))) = 'disappeared_prior_open_exception'
+                """,
+                (org, *part, selected_date_et),
+            )
+            for row in cursor.fetchall() or []:
+                bid = normalize_bag_id(row.get("bag_id") if isinstance(row, dict) else None)
+                if not bid:
+                    continue
+                dd_raw = row.get("dd") if isinstance(row, dict) else None
+                if dd_raw:
+                    try:
+                        dd = date.fromisoformat(str(dd_raw)[:10])
+                    except ValueError:
+                        dd = None
+                    if dd is not None and dd >= selected_date_et:
+                        continue
+                out.add(bid)
+
+    remaining = [b for b in ids if b not in out]
+    if not remaining or not table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        return out
+    last_seen: dict[str, Any] = {}
     chunk = 200
-    for i in range(0, len(ids), chunk):
-        part = ids[i : i + chunk]
+    for i in range(0, len(remaining), chunk):
+        part = remaining[i : i + chunk]
         ph = ",".join(["%s"] * len(part))
         cursor.execute(
             f"""
-            SELECT bag_id,
-                   JSON_UNQUOTE(JSON_EXTRACT(bag_snapshot_json, '$.disappeared_date')) AS dd
-            FROM rinse_shift_monitor_day_bags
+            SELECT bag_id, active, last_seen_at
+            FROM rinse_cleaner_ticket_presence
             WHERE organization_id = %s
               AND bag_id IN ({ph})
-              AND shift_date_et < %s
-              AND LOWER(TRIM(COALESCE(effective_status, ''))) = 'disappeared_prior_open_exception'
+              AND LOWER(TRIM(COALESCE(portal_status, ''))) = %s
             """,
-            (org, *part, selected_date_et),
+            (org, *part, PORTAL_AT_VENDOR),
         )
         for row in cursor.fetchall() or []:
             bid = normalize_bag_id(row.get("bag_id") if isinstance(row, dict) else None)
-            if not bid:
+            if not bid or int(row.get("active") or 0) != 0:
                 continue
-            dd_raw = row.get("dd") if isinstance(row, dict) else None
-            if dd_raw:
-                try:
-                    dd = date.fromisoformat(str(dd_raw)[:10])
-                except ValueError:
-                    dd = None
-                if dd is not None and dd >= selected_date_et:
-                    continue
+            last_seen[bid] = row.get("last_seen_at")
+    if not last_seen:
+        return out
+    confirmation = build_disappearance_confirmation(
+        cursor,
+        org,
+        sorted(last_seen.keys()),
+        portal_status=PORTAL_AT_VENDOR,
+    )
+    for bid, ls in last_seen.items():
+        info = confirmation.get(bid) or {}
+        if (info.get("state") if isinstance(info, dict) else None) != STATE_CONFIRMED:
+            continue
+        d = _presence_et_date(ls) or _scan_et_date(ls)
+        if d is not None and d < selected_date_et:
             out.add(bid)
     return out
 
