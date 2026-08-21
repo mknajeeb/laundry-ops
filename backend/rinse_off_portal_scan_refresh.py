@@ -156,6 +156,11 @@ def portal_event_to_csv_row(bag_id: str, ev: dict[str, Any]) -> dict[str, str]:
     purpose = str(ev.get("purpose") or "").strip()
     if ev.get("last_scan") == "Y" and purpose and "Last Scan" not in purpose:
         purpose = f"{purpose} Last Scan"
+    weight = ev.get("weight")
+    if weight is None or weight == "":
+        weight = ev.get("Weight")
+    weight_source = ev.get("weight_source") or ev.get("Weight Source") or ""
+    weight_role = ev.get("weight_role") or ev.get("Weight Role") or ""
     return {
         "Bag ID": bag_id,
         "Scan Index": str(ev.get("scan_index") or ""),
@@ -165,17 +170,134 @@ def portal_event_to_csv_row(bag_id: str, ev: dict[str, Any]) -> dict[str, str]:
         "Purpose": purpose,
         "Last Location": str(ev.get("last_location") or ""),
         "Last Scan": str(ev.get("last_scan") or ""),
+        "Weight": "" if weight is None or weight == "" else str(weight),
+        "Weight Source": str(weight_source or ""),
+        "Weight Role": str(weight_role or ""),
     }
 
 
 def portal_scans_to_events_df(bag_id: str, scans: list[dict[str, Any]]) -> pd.DataFrame:
+    from backend.rinse_scan_events_logic import SCAN_EVENT_WEIGHT_COLUMNS
+
+    cols = list(SCAN_EVENTS_CSV_COLUMNS) + [
+        c for c in SCAN_EVENT_WEIGHT_COLUMNS if c not in SCAN_EVENTS_CSV_COLUMNS
+    ]
     rows = [portal_event_to_csv_row(bag_id, ev) for ev in scans]
     if not rows:
-        return pd.DataFrame(columns=SCAN_EVENTS_CSV_COLUMNS)
-    df = pd.DataFrame(rows, columns=SCAN_EVENTS_CSV_COLUMNS)
+        return pd.DataFrame(columns=cols)
+    df = pd.DataFrame(rows)
+    for c in cols:
+        if c not in df.columns:
+            df[c] = ""
+    df = df[cols]
     df["scanned_at_parsed"] = df["Time Scanned"].map(_parse_scanned_at)
     return df
 
+
+_AUTHORITATIVE_WEIGHT_SOURCES = frozenset(
+    {
+        "rinse_preclean_info",
+        "rinse_postclean_info",
+        "rinse_workitem_wf_lbs",
+    }
+)
+
+
+def enrich_authoritative_weights_on_existing_events(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    scans: list[dict[str, Any]],
+    *,
+    source_upload_batch_id: int | None = None,
+) -> dict[str, Any]:
+    """Update existing weigh-entry rows with authoritative DOM Weight when present.
+
+    Does not insert duplicate events — matches by content key / purpose+time+user.
+    """
+    from backend.rinse_bag_registry import upsert_scan_event_row
+    from backend.rinse_wf_weight_events import normalize_scan_weight_lbs
+
+    org = int(organization_id)
+    bid = str(bag_id or "").strip().upper()
+    updated = 0
+    skipped = 0
+    for ev in scans or []:
+        purpose = str(ev.get("purpose") or "")
+        if not is_weight_entry_purpose(purpose):
+            continue
+        lbs = normalize_scan_weight_lbs(ev.get("weight"), allow_unit_suffix=True)
+        src = str(ev.get("weight_source") or "").strip()
+        role = str(ev.get("weight_role") or "").strip() or None
+        if lbs is None or src not in _AUTHORITATIVE_WEIGHT_SOURCES:
+            skipped += 1
+            continue
+        time_raw = str(ev.get("time_scanned") or "").strip()
+        if not time_raw:
+            skipped += 1
+            continue
+        scanned = _parse_scanned_at(time_raw)
+        user_name = str(ev.get("user") or "")[:255] or None
+        rack = str(ev.get("rack") or "")[:128] or None
+        last_loc = str(ev.get("last_location") or "")[:8] or None
+        last_scan = str(ev.get("last_scan") or "")[:8] or None
+        try:
+            scan_index = int(float(str(ev.get("scan_index") or "").strip())) if str(ev.get("scan_index") or "").strip() else None
+        except (TypeError, ValueError):
+            scan_index = None
+        try:
+            dk = compute_scan_event_dedupe_key(
+                organization_id=org,
+                bag_id=bid,
+                rack=rack,
+                user_name=user_name,
+                purpose=purpose if "Last Scan" in purpose or not last_scan else (
+                    f"{purpose} Last Scan" if last_scan == "Y" and "Last Scan" not in purpose else purpose
+                ),
+                time_scanned_raw=time_raw[:255],
+                scanned_at_parsed=scanned,
+                last_location=last_loc,
+            )
+        except ValueError:
+            skipped += 1
+            continue
+        raw = {
+            "Bag ID": bid,
+            "Purpose": purpose,
+            "Time Scanned": time_raw,
+            "User": user_name or "",
+            "Rack": rack or "",
+            "Weight": lbs,
+            "Weight Source": src,
+            "Weight Role": role or "",
+        }
+        action = upsert_scan_event_row(
+            cursor,
+            organization_id=org,
+            bag_id=bid,
+            dedupe_key=dk,
+            scan_index=scan_index,
+            rack=rack,
+            time_scanned_raw=time_raw[:255],
+            scanned_at_parsed=scanned,
+            user_name=user_name,
+            purpose=purpose[:255] if purpose else None,
+            last_location=last_loc,
+            last_scan=last_scan,
+            source_upload_batch_id=int(source_upload_batch_id or 0) or 0,
+            source_filename="targeted-authoritative-weight-enrichment",
+            raw_json=json.dumps(raw),
+            credential_sourced=True,
+            weight_lbs=float(lbs),
+            weight_source=src,
+            weight_role=role,
+            overwrite_weight=True,
+        )
+        if action in ("metadata_updated", "inserted"):
+            updated += 1
+        else:
+            skipped += 1
+    return {"updated": updated, "skipped": skipped}
 
 def _scraper_env_for_org(organization_id: int) -> dict[str, str]:
     from backend.rinse_bag_export_runner import scraper_dir
@@ -718,6 +840,81 @@ def resolve_pending_not_in_latest_crawl_bag_ids(
     return sorted(set(rush_pending)) + sorted(set(other_pending) - set(rush_pending)), batch_id, on_portal_map
 
 
+def resolve_day_membership_chronology_refresh_bag_ids(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    max_bags: int | None = None,
+) -> list[str]:
+    """Day-bag membership that left At Vendor but may still gain chronology.
+
+    Narrow continuity: once on the business-day workload, keep refreshing via
+    ``?q=`` until we have garments-reviewed + post weigh-entry (or delivery-prep /
+    load-out), without crawling every historical bag.
+    """
+    from backend.rinse_at_vendor_module import _load_active_at_vendor_presence_by_bag
+    from backend.rinse_scan_purpose import is_complete_cleaning_purpose
+
+    org = int(organization_id)
+    if not table_exists(cursor, "rinse_shift_monitor_day_bags"):
+        return []
+    live = _load_active_at_vendor_presence_by_bag(cursor, org)
+    cursor.execute(
+        """
+        SELECT bag_id, effective_status, post_weight_lbs,
+               JSON_UNQUOTE(JSON_EXTRACT(bag_snapshot_json, '$.disappearance_state')) AS dis
+        FROM rinse_shift_monitor_day_bags
+        WHERE organization_id = %s
+          AND shift_date_et = %s
+          AND UPPER(COALESCE(service_type, '')) = 'WF'
+        ORDER BY bag_id
+        """,
+        (org, selected_date_et),
+    )
+    candidates: list[str] = []
+    for row in cursor.fetchall() or []:
+        bid = str(row.get("bag_id") or "").strip().upper()
+        if not bid or bid in live:
+            continue
+        # Still need chronology if missing POST or disappeared without completion.
+        needs = (
+            row.get("post_weight_lbs") is None
+            or "DISAPPEAR" in str(row.get("dis") or "").upper()
+            or str(row.get("effective_status") or "") in ("review_required", "pending", "")
+        )
+        if not needs:
+            continue
+        # Skip only when DB already has post-cycle weigh-entry after complete-cleaning.
+        cursor.execute(
+            """
+            SELECT purpose, scanned_at_parsed
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s AND UPPER(TRIM(bag_id)) = %s
+            ORDER BY scanned_at_parsed, id
+            """,
+            (org, bid),
+        )
+        events = cursor.fetchall() or []
+        has_complete = any(is_complete_cleaning_purpose(e.get("purpose")) for e in events)
+        we_after_complete = False
+        complete_ts = None
+        for e in events:
+            if is_complete_cleaning_purpose(e.get("purpose")) and e.get("scanned_at_parsed"):
+                complete_ts = e["scanned_at_parsed"]
+        if complete_ts is not None:
+            for e in events:
+                if is_weight_entry_purpose(e.get("purpose")) and e.get("scanned_at_parsed"):
+                    if e["scanned_at_parsed"] > complete_ts:
+                        we_after_complete = True
+                        break
+        if has_complete and we_after_complete and row.get("post_weight_lbs") is not None:
+            continue
+        candidates.append(bid)
+    limit = max_bags if max_bags is not None else off_portal_refresh_max_bags()
+    return candidates[: max(1, int(limit))]
+
+
 def resolve_off_portal_pending_bag_ids(
     cursor,
     organization_id: int,
@@ -789,6 +986,13 @@ def refresh_off_portal_pending_scans(
                 baseline_ctx=baseline_ctx,
                 rush_only=rush_filter,
                 crawl_batch_id=int(upload_batch_id) if upload_batch_id else None,
+            )
+        elif target_scope == "day_membership_chronology":
+            targets = resolve_day_membership_chronology_refresh_bag_ids(
+                cursor,
+                org,
+                selected_date_et=selected_date_et,
+                max_bags=limit,
             )
         else:
             targets = resolve_off_portal_pending_bag_ids(
@@ -906,8 +1110,18 @@ def refresh_off_portal_pending_scans(
         )
         merge_result: dict[str, Any] = {}
         imported_count = 0
+        weight_enrich: dict[str, Any] = {"updated": 0, "skipped": 0}
         if missing_rows and not dry and upload_batch_id is not None:
-            df = pd.DataFrame(missing_rows, columns=SCAN_EVENTS_CSV_COLUMNS)
+            from backend.rinse_scan_events_logic import SCAN_EVENT_WEIGHT_COLUMNS
+
+            cols = list(SCAN_EVENTS_CSV_COLUMNS) + [
+                c for c in SCAN_EVENT_WEIGHT_COLUMNS if c not in SCAN_EVENTS_CSV_COLUMNS
+            ]
+            df = pd.DataFrame(missing_rows)
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = ""
+            df = df[cols]
             df["scanned_at_parsed"] = df["Time Scanned"].map(_parse_scanned_at)
             source_name = f"targeted-direct-{bid.lower()}.csv"
             commit_scan_events_for_batch(
@@ -935,6 +1149,15 @@ def refresh_off_portal_pending_scans(
             total_present += classified["already_present_count"]
             total_skipped += classified["skipped_no_time"]
 
+        if not dry:
+            weight_enrich = enrich_authoritative_weights_on_existing_events(
+                cursor,
+                org,
+                bid,
+                payload.get("scans") or [],
+                source_upload_batch_id=upload_batch_id,
+            )
+
         bag_reports.append(
             {
                 "bag_id": bid,
@@ -944,11 +1167,16 @@ def refresh_off_portal_pending_scans(
                 "in_latest_portal_crawl_batch": in_latest_crawl,
                 "missing_row_count": classified["missing_row_count"],
                 "missing_scans_imported": imported_count,
+                "authoritative_weight_enriched": weight_enrich.get("updated") or 0,
                 "would_complete": compare.get("would_complete"),
                 "status_before": module_row.get("at_vendor_status") or compare.get("status_before"),
                 "pending_why_before": module_row.get("pending_why_label"),
                 "expected_status_after_import": compare.get("expected_status_after_import"),
                 "merge": merge_result,
+                "weight_enrich": weight_enrich,
+                "pre_clean_weight_lbs": payload.get("pre_clean_weight_lbs"),
+                "post_weight_lbs": payload.get("post_weight_lbs"),
+                "workitem_wf_lbs": payload.get("workitem_wf_lbs"),
                 **compare,
             }
         )
@@ -1017,18 +1245,55 @@ def refresh_pending_workload_scans_via_direct_lookup(
     log_fn: Callable[[str], None] | None = None,
     timeout_sec: int | None = None,
 ) -> dict[str, Any]:
-    """Targeted ?q=BAGID refresh for pending workload bags not in the latest portal crawl."""
+    """Targeted ?q=BAGID refresh for pending / day-membership bags needing chronology.
+
+    Includes bags that left At Vendor but remain on the business-day workload so
+    later weigh-entry / completion events are still captured (Emery gap).
+    """
+    limit = off_portal_refresh_max_bags() if max_bags is None else max(1, int(max_bags))
+    if bag_ids is not None:
+        targets = list(bag_ids)
+    else:
+        pending, _crawl, _on_portal = resolve_pending_not_in_latest_crawl_bag_ids(
+            cursor,
+            int(organization_id),
+            selected_date_et=selected_date_et,
+            baseline_ctx=baseline_ctx,
+            rush_only=rush_only,
+            crawl_batch_id=int(upload_batch_id) if upload_batch_id else None,
+        )
+        continuity = resolve_day_membership_chronology_refresh_bag_ids(
+            cursor,
+            int(organization_id),
+            selected_date_et=selected_date_et,
+            max_bags=limit,
+        )
+        seen: set[str] = set()
+        targets = []
+        for bid in list(pending) + list(continuity):
+            b = str(bid or "").strip().upper()
+            if not b or b in seen:
+                continue
+            seen.add(b)
+            targets.append(b)
+            if len(targets) >= limit:
+                break
+        if log_fn:
+            log_fn(
+                f"targeted refresh candidates: pending_not_in_crawl={len(pending)} "
+                f"day_membership_continuity={len(continuity)} selected={len(targets)}"
+            )
     return refresh_off_portal_pending_scans(
         cursor,
         organization_id,
         upload_batch_id=upload_batch_id,
         selected_date_et=selected_date_et,
         baseline_ctx=baseline_ctx,
-        bag_ids=bag_ids,
+        bag_ids=targets,
         dry_run=dry_run,
-        max_bags=max_bags,
+        max_bags=limit,
         rush_only=rush_only,
-        target_scope="not_in_latest_crawl",
+        target_scope="not_in_latest_crawl+day_membership_chronology",
         log_fn=log_fn,
         timeout_sec=timeout_sec,
     )

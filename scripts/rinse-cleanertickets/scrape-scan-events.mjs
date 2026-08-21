@@ -43,6 +43,8 @@ import {
   defaultScanTicketsOutputPath,
   ticketIdFromBag,
   extractScansFromExpandedTicket,
+  extractPrePostCleanWeightsFromExpandedTicket,
+  assignAuthoritativeWeightsToScans,
   isLikelyLoginPage,
   tryLogin,
   hasNextPageInUi,
@@ -59,6 +61,9 @@ const SCAN_EVENT_COLUMNS = [
   "Purpose",
   "Last Location",
   "Last Scan",
+  "Weight",
+  "Weight Source",
+  "Weight Role",
 ];
 
 const EVENTS_HEADER = ["Bag ID", ...SCAN_EVENT_COLUMNS];
@@ -87,6 +92,9 @@ function eventDataRow(bagIdCode, event) {
     ev.purpose ?? "",
     ev.is_last_location ?? "",
     ev.is_last_scan ?? "",
+    ev.weight != null && ev.weight !== "" ? String(ev.weight) : "",
+    ev.weight_source ?? "",
+    ev.weight_role ?? "",
   ];
 }
 
@@ -197,14 +205,26 @@ async function scrapeScanEventsOnPage(page) {
     const portal = parsePortalFields(collapsed || rt, fullText, tdTexts, bagDisplay || bagId, {
       visibleTableSi: visibleTableSiRaw,
     });
-    const scans = await extractScansFromExpandedTicket(cand);
+    const scansRaw = await extractScansFromExpandedTicket(cand);
+    const cleanWeights = await extractPrePostCleanWeightsFromExpandedTicket(cand);
+    const assigned = assignAuthoritativeWeightsToScans(scansRaw, cleanWeights);
+    const scans = assigned.scans;
     const bd = bagDisplay || bagId;
     const bagIdCode = ticketIdFromBag(bagId, bd);
 
     const pn = portal.customer_name || customer || "";
-    const bits = ` | ${String(portal.date_display || "").slice(0, 32)} | svc:${String(portal.service_type || "").slice(0, 22)} | sub:${String(portal.sub_service || "").slice(0, 14)} | lbs:${String(portal.weight_display || "").slice(0, 18)} | #HD:${String(portal.hd_count ?? "").slice(0, 8)}`;
+    const bits = ` | ${String(portal.date_display || "").slice(0, 32)} | svc:${String(portal.service_type || "").slice(0, 22)} | sub:${String(portal.sub_service || "").slice(0, 14)} | lbs:${String(portal.weight_display || "").slice(0, 18)} | #HD:${String(portal.hd_count ?? "").slice(0, 8)} | preclean:${assigned.pre_lbs ?? ""} | post:${assigned.post_lbs ?? ""}`;
 
-    const ticketRec = { portal, bag_id: bagId, bag_display: bd, bag_id_code: bagIdCode };
+    const ticketRec = {
+      portal,
+      bag_id: bagId,
+      bag_display: bd,
+      bag_id_code: bagIdCode,
+      pre_clean_weight_lbs: assigned.pre_lbs,
+      post_weight_lbs: assigned.post_lbs,
+      workitem_wf_lbs: assigned.workitem_wf_lbs,
+      weight_capture: cleanWeights,
+    };
 
     if (scans.length === 0) {
       progressLine(
@@ -222,6 +242,9 @@ async function scrapeScanEventsOnPage(page) {
               purpose: "",
               is_last_location: "",
               is_last_scan: "",
+              weight: "",
+              weight_source: "",
+              weight_role: "",
             },
           ],
         });
@@ -237,6 +260,9 @@ async function scrapeScanEventsOnPage(page) {
         purpose: ev.purpose,
         is_last_location: ev.is_last_location ? "Y" : "",
         is_last_scan: ev.is_last_scan ? "Y" : "",
+        weight: ev.weight != null ? ev.weight : "",
+        weight_source: ev.weight_source || "",
+        weight_role: ev.weight_role || "",
       }));
       out.push({ ...ticketRec, events });
       if (bagIdCode) {
@@ -316,6 +342,9 @@ async function main() {
 
   const pageStart = Math.max(1, parseInt(process.env.RINSE_PAGE_START || "1", 10) || 1);
   const maxPages = Math.min(500, Math.max(1, parseInt(process.env.RINSE_MAX_PAGES || "500", 10) || 500));
+  console.error(
+    `[rinse-scan-events] effective_child_env RINSE_MAX_PAGES=${maxPages} RINSE_PAGE_START=${pageStart} RINSE_PORTAL_EARLY_STOP=${process.env.RINSE_PORTAL_EARLY_STOP || ""}`,
+  );
   const pageSettleMs = Math.max(
     400,
     Math.min(30000, parseInt(process.env.RINSE_PAGE_SETTLE_MS || "1100", 10) || 1100),
@@ -449,6 +478,65 @@ async function main() {
 
       allTickets.push(...tickets);
 
+      // Freshness early-stop (same contract as scrape.mjs). Do not assume page 1 = delta.
+      if (String(process.env.RINSE_PORTAL_EARLY_STOP || "") === "1") {
+        if (!globalThis.__rinseEarlyStop) {
+          let seed = {};
+          try {
+            const seedPath = String(process.env.RINSE_FINGERPRINT_SEED || "").trim();
+            if (seedPath && fs.existsSync(seedPath)) {
+              const raw = JSON.parse(fs.readFileSync(seedPath, "utf8"));
+              seed = (raw && raw.fingerprints) || {};
+            }
+          } catch {
+            seed = {};
+          }
+          globalThis.__rinseEarlyStop = {
+            consecutiveUnchanged: 0,
+            sourceInspectedComplete: false,
+            seed,
+          };
+        }
+        const early = globalThis.__rinseEarlyStop;
+        const seed = early.seed || {};
+        const unchangedNeed = Math.max(
+          1,
+          parseInt(process.env.RINSE_EARLY_STOP_UNCHANGED_PAGES || "2", 10) || 2,
+        );
+        let pageNewOrChanged = 0;
+        for (const t of tickets) {
+          const bid = String(t.bag_id || t.bag_id_code || "").trim().toUpperCase();
+          if (!bid) {
+            pageNewOrChanged += 1;
+            continue;
+          }
+          const customer = String(t.customer || t.customer_name || "");
+          const edd = String(t.edd || t.estimated_delivery || "");
+          const lbs = String(t.lbs || t.weight || "");
+          const service = String(t.service || "");
+          const fp = `${bid}|${customer}|${edd}|${lbs}|${service}`.slice(0, 24);
+          const known = seed[bid];
+          if (!known || known !== fp) {
+            pageNewOrChanged += 1;
+            seed[bid] = fp;
+          }
+        }
+        early.seed = seed;
+        if (pageNewOrChanged === 0) {
+          early.consecutiveUnchanged += 1;
+        } else {
+          early.consecutiveUnchanged = 0;
+        }
+        if (early.consecutiveUnchanged >= unchangedNeed) {
+          progressLine(
+            `Stopping: safe unchanged boundary after ${unchangedNeed} consecutive page(s) with no new/changed bag fingerprints.`,
+          );
+          stoppedReason = "safe_unchanged_boundary";
+          early.sourceInspectedComplete = true;
+          break;
+        }
+      }
+
       if (!(await hasNextPageInUi(page, p))) {
         progressLine(`Stopping: pagination UI shows no next page after ${p}.`);
         stoppedReason = "no_next_page_ui";
@@ -484,10 +572,18 @@ async function main() {
         reached_max_pages: reachedMaxPages,
         pages_scraped: pagesScraped,
         max_pages_limit: maxPages,
+        effective_child_max_pages: maxPages,
         page_start: pageStart,
         row_count: nTickets,
         scraped_at: new Date().toISOString(),
         single_pass_source: "scan-events",
+        source_inspected_complete:
+          stoppedReason === "safe_unchanged_boundary" ||
+          stoppedReason === "no_next_page_ui" ||
+          stoppedReason === "duplicate_bag_set" ||
+          stoppedReason === "duplicate_page_fingerprint" ||
+          stoppedReason === "no_table_rows",
+        early_stop_enabled: String(process.env.RINSE_PORTAL_EARLY_STOP || "") === "1",
         ...buildPortalValidationMeta({
           baseUrl,
           pageUrl: lastPageUrl,
@@ -496,6 +592,9 @@ async function main() {
           emptyTableDetected: nTickets === 0,
         }),
       };
+      if (reachedMaxPages || stoppedReason === "max_pages_reached") {
+        portalScrapeMeta.source_inspected_complete = false;
+      }
       fs.writeFileSync(metaPath, `${JSON.stringify(portalScrapeMeta, null, 2)}\n`, "utf8");
       console.error("[rinse-scan-events] wrote portal scrape meta:", metaPath);
     }

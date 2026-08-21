@@ -31,6 +31,8 @@ import {
   navTimeoutMs,
   ticketIdFromBag,
   extractScansFromExpandedTicket,
+  extractPrePostCleanWeightsFromExpandedTicket,
+  assignAuthoritativeWeightsToScans,
   isLikelyLoginPage,
   tryLogin,
 } from "./rinse-playwright-lib.mjs";
@@ -66,7 +68,10 @@ async function findBagOnPage(page, targetCode) {
 
     const { bagId, bagDisplay } = await expandRowAndReadBag(page, cand, rt);
     const code = normalizeBagCode(ticketIdFromBag(bagId, bagDisplay || bagId));
-    const scans = await extractScansFromExpandedTicket(cand);
+    const scansRaw = await extractScansFromExpandedTicket(cand);
+    const cleanWeights = await extractPrePostCleanWeightsFromExpandedTicket(cand);
+    const assigned = assignAuthoritativeWeightsToScans(scansRaw, cleanWeights);
+    const scans = assigned.scans;
     await ensureRowCollapsedAfterTicket(page, cand).catch(() => {});
     if (code === targetCode || normalizeBagCode(bagDisplay).includes(targetCode)) {
       return {
@@ -74,6 +79,10 @@ async function findBagOnPage(page, targetCode) {
         bag_id: code,
         bag_display: bagDisplay || bagId,
         row_preview: trimmed.slice(0, 120),
+        pre_clean_weight_lbs: assigned.pre_lbs,
+        post_weight_lbs: assigned.post_lbs,
+        workitem_wf_lbs: assigned.workitem_wf_lbs,
+        weight_capture: cleanWeights,
         scans: scans.map((ev, idx) => ({
           scan_index: idx + 1,
           rack: ev.rack || "",
@@ -82,6 +91,9 @@ async function findBagOnPage(page, targetCode) {
           purpose: ev.purpose || "",
           last_location: ev.is_last_location ? "Y" : "",
           last_scan: ev.is_last_scan ? "Y" : "",
+          weight: ev.weight != null ? ev.weight : "",
+          weight_source: ev.weight_source || "",
+          weight_role: ev.weight_role || "",
         })),
       };
     }
@@ -128,6 +140,10 @@ async function scrapeBag(page, bagId) {
     bag_display: hit.bag_display,
     row_preview: hit.row_preview,
     portal_scan_count: hit.scans.length,
+    pre_clean_weight_lbs: hit.pre_clean_weight_lbs,
+    post_weight_lbs: hit.post_weight_lbs,
+    workitem_wf_lbs: hit.workitem_wf_lbs,
+    weight_capture: hit.weight_capture,
     scans: hit.scans,
     search_url: url,
   };

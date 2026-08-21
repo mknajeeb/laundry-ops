@@ -29,6 +29,14 @@ SCAN_EVENT_COLUMNS = [
     "Last Scan",
 ]
 
+# Optional authoritative weight columns from scrape-scan-events / targeted scrape.
+# Not required on legacy CSVs; import path reads them when present.
+SCAN_EVENT_WEIGHT_COLUMNS = [
+    "Weight",
+    "Weight Source",
+    "Weight Role",
+]
+
 EVENTS_REQUIRED = {"Bag ID"} | set(SCAN_EVENT_COLUMNS)
 
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+import pytest
+
 from backend.rinse_current_cycle_weight import (
     STATUS_CONFIRMED,
     STATUS_EQUAL_VALUES_CONFIRMED,
@@ -11,12 +13,19 @@ from backend.rinse_current_cycle_weight import (
     STATUS_PROVISIONAL,
     STATUS_WAITING_FOR_POST_VALUE,
     STATUS_CONFLICTING_OBSERVATIONS,
+    STATUS_UNAVAILABLE,
     classify_post_repair,
     resolve_current_cycle_weights,
     select_current_cycle_weight_events,
 )
 
 DAY = date(2026, 7, 29)
+
+
+@pytest.fixture(autouse=True)
+def _allow_portal_fallback_for_legacy_suite(monkeypatch):
+    """Legacy suite proves portal observation mechanics; keep enabled in tests."""
+    monkeypatch.setenv("RINSE_ALLOW_PORTAL_WEIGHT_FALLBACK", "1")
 
 
 def _ev(purpose, ts, *, lbs=None, user="Op", eid=1, rack=None, **extra):
@@ -892,3 +901,75 @@ def test_machine_rack_stv_between_pre_and_post_keeps_cycle_weights():
     assert resolved.post_weight_lbs == 32.9
     assert resolved.pre_weight_event_id == 3
     assert resolved.post_weight_event_id == 6
+
+
+def test_rinse_preclean_info_is_authoritative_pre():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 7, 29, 6, 0), eid=1, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 7, 29, 8, 0),
+            eid=2,
+            lbs=12.2,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+        _ev("garments-reviewed", datetime(2026, 7, 29, 12, 0), eid=3),
+        _ev(
+            "weight-entry",
+            datetime(2026, 7, 29, 15, 9),
+            eid=4,
+            lbs=11.3,
+            weight_source="rinse_workitem_wf_lbs",
+            weight_role="POST",
+        ),
+    ]
+    # Portal list disagrees — must not win when fallback disabled.
+    obs = [_obs(datetime(2026, 7, 29, 16, 0), 99.0, run=9)]
+    resolved = resolve_current_cycle_weights(
+        events,
+        selected_date_et=DAY,
+        observations=obs,
+        allow_portal_weight_fallback=False,
+    )
+    assert resolved.pre_weight_lbs == 12.2
+    assert resolved.post_weight_lbs == 11.3
+    assert resolved.pre_weight_source == "rinse_preclean_info"
+    assert resolved.post_weight_source == "rinse_workitem_wf_lbs"
+
+
+def test_portal_proxy_on_event_rejected_without_fallback():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 7, 29, 6, 0), eid=1, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 7, 29, 8, 0),
+            eid=2,
+            lbs=12.2,
+            weight_source="portal_weight_num",
+        ),
+    ]
+    resolved = resolve_current_cycle_weights(
+        events,
+        selected_date_et=DAY,
+        observations=[],
+        allow_portal_weight_fallback=False,
+    )
+    assert resolved.pre_weight_lbs is None
+    assert resolved.pre_resolution_status == STATUS_UNAVAILABLE
+
+
+def test_portal_fallback_still_available_when_explicitly_enabled():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 7, 29, 6, 0), eid=1, rack="VeeWash Dirty"),
+        _ev("weight-entry", datetime(2026, 7, 29, 8, 0), eid=2),
+    ]
+    obs = [_obs(datetime(2026, 7, 29, 9, 0), 15.5, run=1)]
+    resolved = resolve_current_cycle_weights(
+        events,
+        selected_date_et=DAY,
+        observations=obs,
+        allow_portal_weight_fallback=True,
+    )
+    assert resolved.pre_weight_lbs == 15.5
+    assert resolved.pre_weight_source == "portal_weight_num"
