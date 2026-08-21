@@ -55,8 +55,7 @@ def _step1_cutover_date(organization_id: int, activation: date | None) -> date |
 
 
 _SNAPSHOT_MISSING_MSG = (
-    "Shift Monitor snapshot is not available yet. "
-    "Counts will appear after a successful scan refresh."
+    "Today's Rinse data is not available yet"
 )
 
 
@@ -596,6 +595,9 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
     for row in wl.get("rows") or []:
         bid = normalize_bag_id(row.get("bag_id"))
         if not bid:
+            continue
+        # Prior-day open exceptions are not day's operational membership.
+        if str(row.get("final_bucket") or "") == "disappeared_prior_open_exception":
             continue
         # Never persist presence-only / not_in_workload rows onto the day table.
         if member_ids and bid not in member_ids:
@@ -1521,6 +1523,7 @@ def _apply_day_bag_statuses_to_headline(
         review: list[str] = []
         carried: list[str] = []
         unfinished: list[str] = []
+        unbucketed: list[str] = []
         for bid in sorted(members):
             meta = status_by_bag.get(bid)
             if meta:
@@ -1537,6 +1540,16 @@ def _apply_day_bag_statuses_to_headline(
                 carried.append(bid)
             elif bucket == "unfinished_at_close":
                 unfinished.append(bid)
+            else:
+                # e.g. disappeared_prior_open_exception — not a Management
+                # workload bucket; exclude from membership total.
+                unbucketed.append(bid)
+
+        if unbucketed:
+            drop = set(unbucketed)
+            new_today = [b for b in new_today if b not in drop]
+            carryover = [b for b in carryover if b not in drop]
+            members = members - drop
 
         bag_ids["new_today"] = new_today
         bag_ids["carryover"] = carryover
@@ -1549,8 +1562,11 @@ def _apply_day_bag_statuses_to_headline(
         seg_out["bag_ids"] = bag_ids
         seg_out = _recalc_status_counts_from_ids(seg_out)
         if new_today or carryover:
-            # Membership present: total_workload must not change on status transition.
-            if prev_total is not None:
+            # Membership present: preserve total on normal status transitions,
+            # but shrink when non-Management statuses (prior-open) are dropped.
+            if unbucketed:
+                total_i = len(members)
+            elif prev_total is not None:
                 try:
                     total_i = int(prev_total)
                 except (TypeError, ValueError):
@@ -2533,6 +2549,10 @@ def build_or_load_step1_for_date(
     # Snapshot-first read path (dashboard cards + drawers): serve persisted headline
     # for today and prior days when bags/headline exist. Live rebuild is reserved for
     # persist_live=True (scrape / backfill / explicit refresh).
+    #
+    # Freshness no-lie: NOT_STARTED with an empty/unpublished headline must NOT present
+    # business zeros. Only a published freshness snapshot (or an OPEN+ day with real sync)
+    # may display numeric workload.
     if (
         day
         and status
@@ -2545,6 +2565,18 @@ def build_or_load_step1_for_date(
         and day.get("headline")
         and not persist_live
     ):
+        if status == STATUS_NOT_STARTED:
+            published = None
+            try:
+                from backend.rinse_freshness_publish import latest_published_snapshot
+
+                published = latest_published_snapshot(
+                    cursor, organization_id, selected_date_et
+                )
+            except Exception:
+                published = None
+            if not published:
+                return _snapshot_missing_step1_payload(selected_date_et)
         has_bags = (not include_bag_rows) or day_bag_count(cursor, organization_id, selected_date_et) > 0
         if has_bags or not include_bag_rows:
             wl, summary, day_out = _summary_shell(day, status_value=str(status))

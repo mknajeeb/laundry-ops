@@ -18,6 +18,35 @@ DAY = date(2026, 8, 6)
 _BASELINE_MOD = "backend.rinse_shift_monitor_baseline"
 _TA = "backend.ta_helpers"
 _MEM = "backend.rinse_veewash_day_membership"
+_ELIG = "backend.rinse_workload_membership_eligibility"
+
+
+def _dirty_pass_through(*args, **kwargs):
+    """Unit tests supply scrape rows without Dirty scans — treat as eligible."""
+    candidates = args[3] if len(args) > 3 else kwargs.get("candidate_bag_ids") or []
+    ids = sorted({str(b).strip().upper() for b in candidates if str(b).strip()})
+    return {
+        "eligible": ids,
+        "excluded_no_dirty": [],
+        "excluded_completed_before": [],
+        "excluded_prior_disappearance": [],
+        "dirty_entry_by_bag": {},
+    }
+
+
+def _elig_patches(**extra):
+    """Dirty gate + durable unfinished seed patches for scrape membership tests."""
+    prior = extra.pop("prior_unfinished", None)
+    patches = [
+        patch(f"{_ELIG}.filter_operationally_eligible_ids", side_effect=_dirty_pass_through),
+    ]
+    if prior is not None:
+        patches.append(
+            patch(f"{_ELIG}.load_prior_day_unfinished_member_ids", return_value=set(prior))
+        )
+    for k, v in extra.items():
+        patches.append(patch(k, v))
+    return patches
 
 
 def _run(run_id: int, *, finished: datetime, rows_found: int = 10) -> dict:
@@ -244,6 +273,11 @@ def test_opening_carryover_keeps_portal_rush_non_rush():
         patch(f"{_TA}.table_exists", return_value=True),
         patch(f"{_MEM}._load_prior_day_membership_ids", return_value={"CARRYRUSH", "CARRYNON"}),
         patch(f"{_MEM}._bags_canonically_completed_before_opening", return_value=set()),
+        patch(f"{_ELIG}.filter_operationally_eligible_ids", side_effect=_dirty_pass_through),
+        patch(
+            f"{_ELIG}.load_prior_day_unfinished_member_ids",
+            return_value={"CARRYRUSH", "CARRYNON"},
+        ),
     ):
         mem = build_append_only_membership(cursor, 3, DAY)
 
@@ -281,6 +315,11 @@ def test_opening_carryover_not_labeled_new_today_and_buckets_separate():
         patch(
             f"{_MEM}._bags_canonically_completed_before_opening",
             return_value={"DONE1"},
+        ),
+        patch(f"{_ELIG}.filter_operationally_eligible_ids", side_effect=_dirty_pass_through),
+        patch(
+            f"{_ELIG}.load_prior_day_unfinished_member_ids",
+            return_value={"CARRY1"},
         ),
     ):
         mem = build_append_only_membership(cursor, 3, DAY)
@@ -331,6 +370,8 @@ def test_append_only_retained_is_subset_not_additive():
         patch(f"{_TA}.table_exists", return_value=True),
         patch(f"{_MEM}._load_prior_day_membership_ids", return_value=set()),
         patch(f"{_MEM}._bags_canonically_completed_before_opening", return_value=set()),
+        patch(f"{_ELIG}.filter_operationally_eligible_ids", side_effect=_dirty_pass_through),
+        patch(f"{_ELIG}.load_prior_day_unfinished_member_ids", return_value=set()),
     ):
         mem = build_append_only_membership(cursor, 3, DAY)
 

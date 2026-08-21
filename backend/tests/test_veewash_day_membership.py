@@ -21,6 +21,19 @@ assert STEP1_AUTHORITATIVE_START_ET == D
 
 _BASELINE_MOD = "backend.rinse_shift_monitor_baseline"
 _TA = "backend.ta_helpers"
+_ELIG = "backend.rinse_workload_membership_eligibility"
+
+
+def _dirty_pass_through(*args, **kwargs):
+    candidates = args[3] if len(args) > 3 else kwargs.get("candidate_bag_ids") or []
+    ids = sorted({str(b).strip().upper() for b in candidates if str(b).strip()})
+    return {
+        "eligible": ids,
+        "excluded_no_dirty": [],
+        "excluded_completed_before": [],
+        "excluded_prior_disappearance": [],
+        "dirty_entry_by_bag": {},
+    }
 
 
 def _run(
@@ -160,6 +173,8 @@ def test_later_bag_appended_disappearing_stays_idempotent_no_carryover():
             side_effect=lambda r: r.get("finished_at") if r else None,
         ),
         patch(f"{_TA}.table_exists", return_value=True),
+        patch(f"{_ELIG}.filter_operationally_eligible_ids", side_effect=_dirty_pass_through),
+        patch(f"{_ELIG}.load_prior_day_unfinished_member_ids", return_value=set()),
     ):
         m1 = build_append_only_membership(cursor, 3, D)
         m2 = build_append_only_membership(cursor, 3, D)
@@ -375,7 +390,7 @@ def test_prior_bulk_or_review_resolution_does_not_admit():
 
 
 def test_prior_day_membership_only_carried_forward():
-    """Opening Carryover ids = prior-day carried_forward only (no full prior scrape)."""
+    """Opening Carryover seeds = prior-day unfinished WF (pending/carried/review)."""
     from backend.rinse_veewash_day_membership import _load_prior_day_membership_ids
 
     cursor = MagicMock()
@@ -384,9 +399,12 @@ def test_prior_day_membership_only_carried_forward():
         prior = _load_prior_day_membership_ids(cursor, 3, date(2026, 7, 25))
     assert prior == {"CARRY1", "CARRY2"}
     sql = cursor.execute.call_args[0][0].lower()
-    assert "carried_forward" in sql
+    params = cursor.execute.call_args[0][1]
     assert "service_type" in sql
     assert "'wf'" in sql.replace(" ", "")
+    assert "pending" in params
+    assert "carried_forward" in params
+    assert "review_required" in params
     # Must not union live scrape / all prior bags.
     assert "rinse_at_vendor" not in sql
     assert cursor.execute.call_count == 1

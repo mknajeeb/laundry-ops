@@ -1449,6 +1449,7 @@ def build_veewash_daily_workload_from_membership(
     selected_date_et: date,
     entry_racks: Iterable[str] | None = None,
     frozen_member_ids: Iterable[str] | None = None,
+    membership: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Step-1 daily workload using append-only same-day scrape membership.
@@ -1461,6 +1462,9 @@ def build_veewash_daily_workload_from_membership(
 
     ``frozen_member_ids``: optional pin to an existing day-bag ID set (e.g. controlled
     validation / heal). Does not change fresh-start or carryover admission policy.
+
+    ``membership``: optional pre-built membership dict (Dirty-rule / durable
+    carryover). When omitted, builds append-only scrape membership.
     """
     from backend.rinse_cleaner_ticket_presence import load_presence_run_snapshot_by_bag
     from backend.rinse_veewash_day_membership import (
@@ -1468,9 +1472,12 @@ def build_veewash_daily_workload_from_membership(
         membership_bag_ids,
     )
 
-    membership = build_append_only_membership(
-        cursor, organization_id, selected_date_et
-    )
+    if membership is None:
+        membership = build_append_only_membership(
+            cursor, organization_id, selected_date_et
+        )
+    else:
+        membership = dict(membership)
     # HD membership follows append-only same-day scrape evidence (not EDD).
     # EDD gate intentionally bypassed — future-EDD HD that appears today stays.
     # Prior-completed HD exclusion runs in finalize_hd_step1_summary.
@@ -1502,6 +1509,19 @@ def build_veewash_daily_workload_from_membership(
     for bid in member_ids:
         if bid in live_presence:
             presence[bid] = dict(live_presence[bid])
+
+    # Durable opening-carryover members must not be reclassified as
+    # disappeared_prior_open solely because a partial scrape left them inactive.
+    carry_seed = {
+        _norm_bag(b)
+        for b in (membership.get("opening_carryover_bag_ids") or [])
+        if _norm_bag(b)
+    }
+    for bid in carry_seed:
+        if bid in presence:
+            presence[bid] = dict(presence[bid])
+            presence[bid]["active"] = 1
+            presence[bid]["durable_carryover_presence_override"] = True
 
     # Reconstruct minimal presence for membership bags missing from live table.
     run_ids: list[int] = []
@@ -1600,16 +1620,9 @@ def build_veewash_daily_workload_from_membership(
     entry = build_service_entry_map(
         presence, dirty_by_bag=dirty, wia_by_bag=wia
     )
-    # Membership bags are in-day regardless of recognized entry: synthesize a
-    # same-day entry so classify keeps them in the operational set.
-    for bid in member_ids:
-        if bid not in entry:
-            entry[bid] = {
-                "entry_date": selected_date_et,
-                "entry_source": ENTRY_SOURCE_MANUAL_REVIEW,
-                "entry_at": None,
-                "membership_synthetic_entry": True,
-            }
+    # Do NOT synthesize Dirty entry from portal/frozen membership alone.
+    # Portal presence may enrich an already Dirty-eligible bag; At Vendor
+    # presence cannot invent entry_date=today (manual_exception_review).
 
     completion_ids = sorted(member_set | set(presence.keys()))
     cycle_pending_reasons: dict[str, str] = {}
@@ -1748,32 +1761,54 @@ def build_veewash_daily_workload_from_membership(
             and str((row or {}).get("inclusion_source") or "") == INCLUSION_ADDED_LATER
         )
 
+    # Prior-day disappearances are diagnostic only — never today's operational set.
+    # Frozen/fast admits can still surface them; do not let membership overlay
+    # re-home them into new_today / pending / total_workload (see
+    # test_disappearance_scoped_to_its_day_not_flooding_later_days).
+    prior_open = {
+        _norm_bag(b)
+        for b in (result.get("disappeared_prior_open_exceptions") or [])
+        if _norm_bag(b)
+    }
+    operational_member_set = member_set - prior_open
+    operational_member_ids = [b for b in member_ids if b in operational_member_set]
+
     # Segment compat: carryover = Opening Carryover; new_today = Opening New ∪ Added.
-    carry_set = {_norm_bag(b) for b in opening_carryover}
-    new_set = ({_norm_bag(b) for b in opening_new} | {_norm_bag(b) for b in added_during}) - carry_set
-    # Any frozen/orphan member not classified still counts in new_today.
-    unclassified = member_set - carry_set - new_set
+    carry_set = {_norm_bag(b) for b in opening_carryover} & operational_member_set
+    new_set = (
+        ({_norm_bag(b) for b in opening_new} | {_norm_bag(b) for b in added_during})
+        - carry_set
+    ) & operational_member_set
+    # Any frozen/orphan operational member not classified still counts in new_today.
+    unclassified = operational_member_set - carry_set - new_set
     new_set |= unclassified
 
-    total = len(member_ids)
+    total = len(operational_member_ids)
     result["carryover"] = sorted(carry_set)
     result["new_today"] = sorted(new_set)
     result["opening_carryover"] = sorted(carry_set)
-    result["opening_new"] = sorted({_norm_bag(b) for b in opening_new} & member_set)
-    result["added_during_day"] = sorted({_norm_bag(b) for b in added_during} & member_set)
+    result["opening_new"] = sorted(
+        {_norm_bag(b) for b in opening_new} & operational_member_set
+    )
+    result["added_during_day"] = sorted(
+        {_norm_bag(b) for b in added_during} & operational_member_set
+    )
 
-    # Membership bags must never remain "not_in_workload" — they are in today's set.
+    # Operational membership bags must never remain "not_in_workload".
+    # Prior-open exceptions stay outside today's workload (not forced pending).
     not_in = set(result.get("not_in_workload") or [])
     if not_in:
-        result["not_in_workload"] = sorted(not_in - member_set)
-    pending = set(result.get("pending_end_of_date") or [])
-    completed = set(result.get("completed_on_date") or [])
-    review = set(result.get("review_required") or [])
-    for bid in member_ids:
+        result["not_in_workload"] = sorted(not_in - operational_member_set)
+    pending = set(result.get("pending_end_of_date") or []) - prior_open
+    completed = set(result.get("completed_on_date") or []) - prior_open
+    review = set(result.get("review_required") or []) - prior_open
+    for bid in operational_member_ids:
         if bid in completed or bid in review or bid in pending:
             continue
         pending.add(bid)
     result["pending_end_of_date"] = sorted(pending)
+    result["completed_on_date"] = sorted(completed)
+    result["review_required"] = sorted(review)
 
     def _entry_class_for(bid: str, incl_src: str | None) -> str:
         src = str(incl_src or "")
@@ -1790,6 +1825,13 @@ def build_veewash_daily_workload_from_membership(
     for row in result.get("rows") or []:
         bid = row.get("bag_id")
         if bid not in member_set:
+            continue
+        # Keep prior-open rows as exceptions; do not relabel as opening_new pending.
+        if bid in prior_open or row.get("final_bucket") == "disappeared_prior_open_exception":
+            row.pop("entry_class", None)
+            row.pop("new_or_carryover", None)
+            continue
+        if bid not in operational_member_set:
             continue
         incl = mem_by_bag.get(bid) or {}
         entry_class = _entry_class_for(bid, incl.get("inclusion_source"))
@@ -1821,6 +1863,7 @@ def build_veewash_daily_workload_from_membership(
     counts["added_during_day"] = len(result.get("added_during_day") or [])
     counts["not_in_workload"] = len(result.get("not_in_workload") or [])
     counts["pending"] = len(result.get("pending_end_of_date") or [])
+    counts["disappeared_prior_open"] = len(prior_open)
     counts["total_workload"] = total
     counts["total_active_workload"] = total
     counts["established_workload"] = total

@@ -69,4 +69,4 @@ RUN printf '%s\n' "{\"sha\":\"${GIT_SHA}\",\"built_at\":\"${BUILD_TIME}\",\"comp
 
 RUN mkdir -p /data/rinse-scrape
 
-CMD ["/opt/laundry_venv/bin/python", "-m", "backend.jobs.run_scheduled_rinse_scrape"]
+CMD ["/opt/laundry_venv/bin/python", "-m", "backend.jobs.run_rinse_freshness_supervisor"]

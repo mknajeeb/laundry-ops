@@ -264,37 +264,22 @@ def _load_prior_day_membership_ids(
     organization_id: int,
     selected_date_et: date,
 ) -> set[str]:
-    """Prior-day Opening Carryover ids = WF bags with effective_status carried_forward.
+    """Prior-day unfinished WF members → next-day Opening Carryover seeds.
 
-    Only operational unfinished **WF** bags closed as ``carried_forward`` feed
-    next-day Opening Carryover. HD / review / completed / excluded / legacy stale
-    rows do not. New Today admits still come from today's scrape separately.
+    Durable day-bag statuses only — independent of post-midnight portal scrapes.
+    Includes pending / carried_forward / review_required. Excludes completed,
+    prior-open disappearance, and HD (HD is handled separately).
     """
-    from backend.ta_helpers import table_exists
-
-    prior = selected_date_et - timedelta(days=1)
-    org = int(organization_id)
-    out: set[str] = set()
-    if prior < STEP1_AUTHORITATIVE_START_ET:
-        return set()
-    if not table_exists(cursor, "rinse_shift_monitor_day_bags"):
-        return set()
-    cursor.execute(
-        """
-        SELECT bag_id
-        FROM rinse_shift_monitor_day_bags
-        WHERE organization_id = %s
-          AND shift_date_et = %s
-          AND LOWER(TRIM(COALESCE(effective_status, ''))) = 'carried_forward'
-          AND UPPER(TRIM(COALESCE(service_type, 'WF'))) = 'WF'
-        """,
-        (org, prior),
+    from backend.rinse_workload_membership_eligibility import (
+        load_prior_day_unfinished_member_ids,
     )
-    for r in cursor.fetchall() or []:
-        bid = str((r.get("bag_id") if isinstance(r, dict) else r[0]) or "").strip().upper()
-        if bid:
-            out.add(bid)
-    return out
+
+    return load_prior_day_unfinished_member_ids(
+        cursor,
+        organization_id,
+        selected_date_et,
+        service_type="WF",
+    )
 
 
 def _bags_with_same_day_scan_evidence(
@@ -803,28 +788,62 @@ def build_append_only_membership(
         cursor, organization_id, selected_date_et
     )
     if not baseline:
+        # Durable day-rollover: carry prior unfinished members without a
+        # post-midnight portal scrape. Fast partial pages must not define opening.
+        from backend.rinse_workload_membership_eligibility import (
+            filter_operationally_eligible_ids,
+            load_prior_day_unfinished_member_ids,
+        )
+
+        prior_unfinished = load_prior_day_unfinished_member_ids(
+            cursor, organization_id, selected_date_et, service_type="WF"
+        )
+        filtered = filter_operationally_eligible_ids(
+            cursor, organization_id, selected_date_et, sorted(prior_unfinished)
+        )
+        carry_ids = list(filtered.get("eligible") or [])
+        membership: dict[str, dict[str, Any]] = {}
+        for bid in carry_ids:
+            membership[bid] = {
+                "bag_id": bid,
+                "organization_id": int(organization_id),
+                "selected_date_et": selected_date_et.isoformat(),
+                "inclusion_source": INCLUSION_OPENING_CARRYOVER,
+                "membership_note": "opening_carryover_durable_prior_day",
+                "source_scrape_id": None,
+                "first_included_at": None,
+                "first_seen_portal_at": None,
+                "last_seen_during_day": None,
+            }
         return {
-            "ok": False,
-            "error": skip or "no_baseline",
+            "ok": True,
+            "error": None,
             "selected_date_et": selected_date_et.isoformat(),
-            "membership": {},
+            "membership": membership,
             "baseline_count": 0,
-            "opening_carryover_count": 0,
+            "opening_carryover_count": len(carry_ids),
             "opening_new_count": 0,
             "added_later_count": 0,
-            "total_count": 0,
-            "opening_carryover_bag_ids": [],
+            "total_count": len(carry_ids),
+            "opening_carryover_bag_ids": sorted(carry_ids),
             "opening_new_bag_ids": [],
             "excluded_prior_day_carryin_count": 0,
             "excluded_prior_day_carryin_bag_ids": [],
-            "excluded_completed_before_opening_count": 0,
-            "excluded_completed_before_opening_bag_ids": [],
-            "fresh_start_no_prior_day_carryover": False,
-            "includes_opening_carryover": True,
-            "membership_policy": "opening_carryover_v1",
-            "membership_copy": (
-                "Today's active workload includes opening carryover and bags added during the day."
+            "excluded_completed_before_opening_count": len(
+                filtered.get("excluded_completed_before") or []
             ),
+            "excluded_completed_before_opening_bag_ids": list(
+                filtered.get("excluded_completed_before") or []
+            ),
+            "fresh_start_no_prior_day_carryover": len(carry_ids) == 0,
+            "includes_opening_carryover": True,
+            "membership_policy": "dirty_entry_durable_rollover_v1",
+            "membership_copy": (
+                "Today's active workload includes durable prior-day carryover; "
+                "new Dirty entrants are added as they arrive."
+            ),
+            "no_valid_scrape_after_midnight": True,
+            "scrape_skip_reason": skip or "no_baseline",
         }
 
     baseline_id = int(baseline["id"])
@@ -898,8 +917,90 @@ def build_append_only_membership(
             if m.get("inclusion_source") != INCLUSION_ADDED_LATER
         )
 
-    opening_carryover_ids = list(opening_meta.get("opening_carryover_bag_ids") or [])
-    opening_new_ids = list(opening_meta.get("opening_new_bag_ids") or [])
+    # Dirty-entry gate: portal scrape rows cannot admit without recognized Dirty.
+    # Durable prior-day unfinished members still seed carryover.
+    from backend.rinse_workload_membership_eligibility import (
+        filter_operationally_eligible_ids,
+        load_prior_day_unfinished_member_ids,
+    )
+
+    durable_carry = load_prior_day_unfinished_member_ids(
+        cursor, organization_id, selected_date_et, service_type="WF"
+    )
+    scrape_ids = sorted(membership.keys())
+    eligible_pack = filter_operationally_eligible_ids(
+        cursor,
+        organization_id,
+        selected_date_et,
+        sorted(set(scrape_ids) | durable_carry),
+    )
+    eligible = set(eligible_pack.get("eligible") or [])
+    # Drop portal-only admits; keep Dirty-eligible scrape rows + durable carry.
+    kept_membership: dict[str, dict[str, Any]] = {}
+    for bid in sorted(eligible):
+        if bid in membership:
+            kept_membership[bid] = dict(membership[bid])
+        else:
+            kept_membership[bid] = {
+                "bag_id": bid,
+                "organization_id": int(organization_id),
+                "selected_date_et": selected_date_et.isoformat(),
+                "inclusion_source": INCLUSION_OPENING_CARRYOVER,
+                "membership_note": "opening_carryover_durable_prior_day",
+                "source_scrape_id": None,
+            }
+        if bid in durable_carry:
+            kept_membership[bid]["inclusion_source"] = INCLUSION_OPENING_CARRYOVER
+            kept_membership[bid]["membership_note"] = (
+                kept_membership[bid].get("membership_note")
+                or "opening_carryover_prior_day_active"
+            )
+    membership = kept_membership
+    opening_carryover_ids = sorted(
+        bid
+        for bid, row in membership.items()
+        if str(row.get("inclusion_source") or "") == INCLUSION_OPENING_CARRYOVER
+    )
+    opening_new_ids = sorted(
+        bid
+        for bid, row in membership.items()
+        if str(row.get("inclusion_source") or "")
+        in (INCLUSION_OPENING_NEW, "FIRST_SCRAPE_BASELINE")
+        or (
+            str(row.get("inclusion_source") or "") != INCLUSION_ADDED_LATER
+            and bid not in set(opening_carryover_ids)
+            and str(row.get("inclusion_source") or "") != INCLUSION_OPENING_CARRYOVER
+        )
+    )
+    # Normalize: non-carryover non-added → opening_new
+    for bid in list(membership.keys()):
+        src = str(membership[bid].get("inclusion_source") or "")
+        if src == INCLUSION_ADDED_LATER:
+            continue
+        if bid in durable_carry or src == INCLUSION_OPENING_CARRYOVER:
+            membership[bid]["inclusion_source"] = INCLUSION_OPENING_CARRYOVER
+        elif src != INCLUSION_OPENING_CARRYOVER:
+            membership[bid]["inclusion_source"] = INCLUSION_OPENING_NEW
+    opening_carryover_ids = sorted(
+        bid
+        for bid, row in membership.items()
+        if str(row.get("inclusion_source") or "") == INCLUSION_OPENING_CARRYOVER
+    )
+    opening_new_ids = sorted(
+        bid
+        for bid, row in membership.items()
+        if str(row.get("inclusion_source") or "") == INCLUSION_OPENING_NEW
+    )
+    opening_meta = {
+        "opening_carryover_bag_ids": opening_carryover_ids,
+        "opening_new_bag_ids": opening_new_ids,
+        "excluded_completed_before_opening_bag_ids": sorted(
+            set(excluded_completed)
+            | set(eligible_pack.get("excluded_completed_before") or [])
+        ),
+    }
+    excluded_completed = list(opening_meta["excluded_completed_before_opening_bag_ids"])
+
     # Opening admits = carryover ∪ new (baseline_bag_ids keeps this union for compat).
     baseline_ids = sorted(set(opening_carryover_ids) | set(opening_new_ids))
     added_later_ids = sorted(
