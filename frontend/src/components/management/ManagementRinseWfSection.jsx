@@ -424,7 +424,11 @@ export default function ManagementRinseWfSection({
         />
         <TodayTapCard
           label={readOnly ? "Carried Forward" : "Pending"}
-          value={snapshotUnavailable ? "—" : fmtInt(wf.pending)}
+          value={
+            snapshotUnavailable
+              ? "—"
+              : fmtInt(readOnly ? wf.carriedForward || wf.movedForward || 0 : wf.pending)
+          }
           tone="pending"
           onClick={
             snapshotUnavailable

@@ -47,30 +47,33 @@ describe("Rinse WF presentation model", () => {
       pending: 1,
       review: 26,
       carriedForward: 0,
+      movedForward: 0,
       dayClosed: false,
     });
     expect(wfIdentityLine(wf)).toBe("97 = 70 Completed + 1 Pending + 26 Review");
   });
 
-  it("closed day uses carried forward instead of pending", () => {
+  it("closed day final workload excludes carried_forward (audit lineage only)", () => {
     const closedSeg = {
-      total_workload: 231,
-      completed: 121,
+      total_workload: 115,
+      completed: 115,
       pending: 0,
-      carried_forward: 108,
-      exceptions: { review_required: 2 },
+      carried_forward: 33,
+      moved_forward_count: 33,
+      exceptions: { review_required: 0, moved_forward_to_next_day: 33 },
     };
     const wf = wfHeadline(closedSeg, { dayClosed: true });
     expect(wf).toEqual({
-      workload: 231,
-      completed: 121,
-      pending: 108,
-      review: 2,
-      carriedForward: 108,
+      workload: 115,
+      completed: 115,
+      pending: 0,
+      review: 0,
+      carriedForward: 33,
+      movedForward: 33,
       dayClosed: true,
     });
     expect(wfIdentityLine(wf)).toBe(
-      "231 = 121 Completed + 108 Carried Forward + 2 Review",
+      "115 = 115 Completed + 0 Pending + 0 Review · 33 moved forward",
     );
   });
 
