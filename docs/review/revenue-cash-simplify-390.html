@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=390" />
+  <title>Revenue/Cash UI Review — 390px</title>
+  <style>
+    body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;background:#cbd5e1;color:#0f172a}
+    .wrap{width:390px;margin:16px auto 40px}
+    .phone{background:#F3F7F8;border-radius:28px;overflow:hidden;box-shadow:0 18px 40px rgba(15,23,42,.25);margin-bottom:28px}
+    .bar{background:#fff;padding:12px 14px;border-bottom:1px solid #e2e8f0}
+    .bar h1{margin:0;font-size:15px;font-weight:800}
+    .bar p{margin:2px 0 0;font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase}
+    .pad{padding:12px}
+    .nav{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}
+    .nav button{flex:0 0 auto;border:0;border-radius:999px;min-height:40px;padding:0 14px;font-weight:800;font-size:13px;background:rgba(0,122,145,.08);color:#0f172a}
+    .nav button.on{background:#007a91;color:#fff;box-shadow:0 4px 12px rgba(0,122,145,.28)}
+    .row{display:flex;justify-content:space-between;align-items:center;margin:10px 0}
+    .chip{background:rgba(0,122,145,.1);border:0;border-radius:12px;font-weight:900;padding:10px 12px;min-height:40px}
+    .sum{display:grid;grid-template-columns:1fr 1fr;gap:8px;background:rgba(0,122,145,.06);border-radius:14px;padding:12px;margin-bottom:12px}
+    .sum .l{font-size:11px;font-weight:700;color:#64748b}.sum .v{font-size:20px;font-weight:900}
+    .sum3{grid-template-columns:1fr 1fr 1fr}
+    label{display:block;font-size:12px;font-weight:700;color:#64748b;margin:8px 0 4px}
+    .field{background:#fff;border-radius:12px;padding:14px;font-size:22px;font-weight:800;box-shadow:0 1px 0 rgba(15,23,42,.06);margin-bottom:8px}
+    .btn{width:100%;border:0;border-radius:12px;min-height:48px;font-weight:800;background:#007a91;color:#fff;margin-top:8px}
+    .btn.ghost{background:#e2e8f0;color:#334155}
+    .card{background:#fff;border-radius:14px;padding:12px;margin-bottom:8px;display:flex;gap:8px;box-shadow:0 1px 0 rgba(15,23,42,.06)}
+    .rail{width:4px;border-radius:99px;background:#007a91}
+    .rail.od{background:#b91c1c}.rail.up{background:#94a3b8}
+    .name{font-weight:900;font-size:16px}.meta{font-size:13px;color:#475569}.st{font-size:12px;font-weight:800;margin-top:4px}
+    .actions{display:flex;flex-direction:column;gap:4px}.actions button{border:0;border-radius:8px;min-height:36px;padding:0 12px;font-weight:700}.open{background:#007a91;color:#fff}.skip{background:transparent;color:#64748b}
+    .sec{font-size:12px;font-weight:900;letter-spacing:.4px;margin:14px 0 8px}.sec.od{color:#b91c1c}.sec.due{color:#007a91}
+    .sub{font-size:11px;font-weight:800;color:#64748b;margin:8px 0 6px}
+    .period{display:flex;gap:6px;overflow-x:auto;margin-bottom:10px}
+    .period button{border:0;border-radius:999px;min-height:36px;padding:0 12px;font-weight:800;font-size:12px;background:#e2e8f0;color:#334155}
+    .period button.on{background:#0f172a;color:#fff}
+    .note{background:#fff;border-radius:12px;padding:12px;font-size:12px;margin-top:8px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- SELF SERVICE -->
+  <div class="phone" id="ss">
+    <div class="bar"><h1>Revenue / Cash</h1><p>Self Service · 390px review</p></div>
+    <div class="pad">
+      <div class="nav">
+        <button class="on">Self Service</button>
+        <button>Drop Off</button>
+        <button>Rinse WF</button>
+        <button>Rinse HD</button>
+        <button>DHS</button>
+        <button>Cash</button>
+      </div>
+      <div class="row"><strong style="font-size:18px">Self Service</strong><button class="chip">Aug 2026 ▾</button></div>
+      <div class="sum">
+        <div><div class="l">Revenue</div><div class="v">$12,480</div></div>
+        <div><div class="l">Cash</div><div class="v">$4,210</div></div>
+        <div><div class="l">Card</div><div class="v">$8,270</div></div>
+        <div><div class="l">Days complete</div><div class="v">18</div></div>
+      </div>
+      <div style="font-weight:900;font-size:13px;margin:8px 0">Today's entry</div>
+      <label>Processing Date</label>
+      <div class="field" style="font-size:16px">Fri, Aug 21</div>
+      <label>Cash</label>
+      <div class="field">240.00</div>
+      <label>Card</label>
+      <div class="field">510.00</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <strong style="color:#007a91;font-size:18px">Total $750.00</strong>
+        <span style="font-size:12px;font-weight:800;color:#0f766e">Saved</span>
+      </div>
+      <button class="btn">Complete</button>
+      <div style="font-weight:900;font-size:13px;margin:16px 0 8px">Recent</div>
+      <div class="card"><div><div class="name">Thu, Aug 20</div><div class="meta">$680.00 · Cash $200 · Card $480</div></div></div>
+      <div class="card"><div><div class="name">Wed, Aug 19</div><div class="meta">$720.00 · Cash $250 · Card $470</div></div></div>
+    </div>
+  </div>
+
+  <!-- DHS -->
+  <div class="phone" id="dhs">
+    <div class="bar"><h1>Revenue / Cash</h1><p>DHS one-card · Overdue / Due / Upcoming</p></div>
+    <div class="pad">
+      <div class="nav">
+        <button>Self Service</button><button>Drop Off</button><button>Rinse WF</button><button>Rinse HD</button><button class="on">DHS</button><button>Cash</button>
+      </div>
+      <div class="row"><span style="font-size:12px;font-weight:800;color:#64748b">Fri, Aug 21</span><button class="btn" style="width:auto;padding:0 12px;min-height:40px">+ Add Pickup</button></div>
+      <div class="sum sum3">
+        <div><div class="l" style="color:#b91c1c">Overdue</div><div class="v" style="color:#b91c1c">2</div></div>
+        <div><div class="l" style="color:#007a91">Due</div><div class="v" style="color:#007a91">2</div></div>
+        <div><div class="l">Upcoming</div><div class="v">2</div></div>
+      </div>
+
+      <div class="sec od">OVERDUE · 2</div>
+      <div class="sub">Pickup Tue, Aug 18</div>
+      <div class="card">
+        <div class="rail od"></div>
+        <div style="flex:1">
+          <div class="name">Auburn</div>
+          <div class="meta">Pickup Tue, Aug 18</div>
+          <div class="meta">Delivery Thu, Aug 20</div>
+          <div class="st" style="color:#b91c1c">Overdue</div>
+        </div>
+        <div class="actions"><button class="open">Open</button><button class="skip">Skip</button></div>
+      </div>
+      <div class="card">
+        <div class="rail od"></div>
+        <div style="flex:1">
+          <div class="name">Bedford</div>
+          <div class="meta">Pickup Tue, Aug 18</div>
+          <div class="meta">Delivery Wed, Aug 19</div>
+          <div class="st" style="color:#b91c1c">Overdue</div>
+        </div>
+        <div class="actions"><button class="open">Open</button><button class="skip">Skip</button></div>
+      </div>
+
+      <div class="sec due">DUE · 2</div>
+      <div class="sub">Pickup Fri, Aug 21</div>
+      <div class="card">
+        <div class="rail"></div>
+        <div style="flex:1">
+          <div class="name">Fri Same-Day</div>
+          <div class="meta">Pickup Fri, Aug 21</div>
+          <div class="meta">Delivery Fri, Aug 21</div>
+          <div class="st">Pickup Today · Delivery Today</div>
+        </div>
+        <div class="actions"><button class="open">Open</button><button class="skip">Skip</button></div>
+      </div>
+      <div class="card">
+        <div class="rail"></div>
+        <div style="flex:1">
+          <div class="name">Bellevue <span style="color:#b45309;font-size:11px;font-weight:800">Manual</span></div>
+          <div class="meta">Pickup Fri, Aug 21</div>
+          <div class="meta">Delivery Mon, Aug 24</div>
+          <div class="st">Pickup Today</div>
+        </div>
+        <div class="actions"><button class="open">Open</button><button class="skip">Skip</button></div>
+      </div>
+
+      <div class="sec">UPCOMING · 2</div>
+      <div class="sub">Pickup Tue, Aug 25</div>
+      <div class="card">
+        <div class="rail up"></div>
+        <div style="flex:1">
+          <div class="name">Tue→Thu (+2)</div>
+          <div class="meta">Pickup Tue, Aug 25</div>
+          <div class="meta">Delivery Thu, Aug 27</div>
+          <div class="meta" style="color:#0f766e;font-weight:700">128 lb · $102.40</div>
+          <div class="st">Upcoming</div>
+        </div>
+        <div class="actions"><button class="open">Open</button><button class="skip">Skip</button></div>
+      </div>
+      <div class="note">
+        <strong>Proof</strong><br/>
+        ✓ One occurrence = one card (Pickup + Delivery together)<br/>
+        ✓ No separate Delivery cards<br/>
+        ✓ Overdue grouped by Pickup Date<br/>
+        ✓ Pickup yesterday + delivery tomorrow = Due (not Overdue)
+      </div>
+    </div>
+  </div>
+
+  <!-- CASH -->
+  <div class="phone" id="cash">
+    <div class="bar"><h1>Revenue / Cash</h1><p>Cash ledger · summary first</p></div>
+    <div class="pad">
+      <div class="nav">
+        <button>Self Service</button><button>Drop Off</button><button>Rinse WF</button><button>Rinse HD</button><button>DHS</button><button class="on">Cash</button>
+      </div>
+      <div style="font-size:18px;font-weight:900;margin:8px 0">Cash Position</div>
+      <div class="period">
+        <button>Today</button><button>Yesterday</button><button>Week</button><button class="on">Month</button>
+      </div>
+      <div class="sum sum3">
+        <div><div class="l">Received</div><div class="v">$6,420</div></div>
+        <div><div class="l">Paid Out</div><div class="v">$890</div></div>
+        <div><div class="l">Net</div><div class="v">$5,530</div></div>
+      </div>
+      <div class="row"><strong>Cash Paid Out</strong><button class="btn" style="width:auto;min-height:40px;padding:0 12px">+ Add Payout</button></div>
+      <div class="card">
+        <div style="flex:1">
+          <div class="name">Supplies</div>
+          <div class="meta">2026-08-19 · Tide restock</div>
+          <div class="st" style="color:#007a91;font-size:16px">$120.00</div>
+        </div>
+        <div class="actions"><button class="skip">Edit</button><button class="skip" style="color:#b91c1c">Delete</button></div>
+      </div>
+      <div class="card">
+        <div style="flex:1">
+          <div class="name">Petty cash</div>
+          <div class="meta">2026-08-12</div>
+          <div class="st" style="color:#007a91;font-size:16px">$40.00</div>
+        </div>
+        <div class="actions"><button class="skip">Edit</button><button class="skip" style="color:#b91c1c">Delete</button></div>
+      </div>
+      <div class="note">
+        <strong>Proof</strong><br/>
+        ✓ Summary screen (not entry form) on open<br/>
+        ✓ Period selector Today | Yesterday | Week | Month<br/>
+        ✓ Add → returns to summary (implemented in CashLedgerPanel)<br/>
+        ✓ Edit / Delete with confirmation + audit retained
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

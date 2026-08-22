@@ -1431,122 +1431,125 @@ def _friendly_day_label(d: date, *, as_of: date) -> str:
     return f"{names[d.weekday()]}, {months[d.month - 1]} {d.day}"
 
 
+def _dhs_lifecycle(pickup: date | None, delivery: date | None, as_of: date) -> dict[str, Any]:
+    """Classify unresolved DHS occurrence: overdue | due | upcoming (+ today labels)."""
+    if not pickup:
+        return {
+            "lifecycle": "due",
+            "lifecycle_label": "Due",
+            "pickup_today": False,
+            "delivery_today": False,
+        }
+    delivery = delivery or pickup
+    pickup_today = pickup == as_of
+    delivery_today = delivery == as_of
+    if as_of > delivery:
+        lifecycle = "overdue"
+        label = "Overdue"
+    elif as_of < pickup:
+        lifecycle = "upcoming"
+        label = "Upcoming"
+    else:
+        # pickup <= today <= delivery (includes boundary days)
+        lifecycle = "due"
+        if pickup_today and delivery_today:
+            label = "Pickup Today · Delivery Today"
+        elif pickup_today:
+            label = "Pickup Today"
+        elif delivery_today:
+            label = "Delivery Today"
+        else:
+            label = "Due"
+    return {
+        "lifecycle": lifecycle,
+        "lifecycle_label": label,
+        "pickup_today": pickup_today,
+        "delivery_today": delivery_today,
+    }
+
+
 def build_dhs_board(cursor, org_id: int, *, as_of: date | None = None) -> dict[str, Any]:
-    """DHS tab: compact today summary + date-grouped pickups/deliveries + overdue."""
+    """DHS tab: one card per occurrence; groups Overdue / Due / Upcoming."""
     as_of = as_of or business_today()
     through = as_of + timedelta(days=LOOKAHEAD_DAYS)
-    # Classify overdue against true as_of; generate through lookahead separately.
     obs = build_dhs_obligations(
         cursor, org_id, as_of=as_of, lookback_days=LOOKBACK_DAYS, through_date=through,
     )
 
-    def _card(r: dict, *, action: str, action_date: str) -> dict:
+    def _card(r: dict) -> dict | None:
+        if r.get("resolved"):
+            return None
+        pu = _as_date(r.get("scheduled_pickup_date"))
+        de = _as_date(r.get("scheduled_delivery_date"))
+        life = _dhs_lifecycle(pu, de, as_of)
+        entry = r.get("entry") or {}
         return {
             "occurrence_id": r.get("occurrence_id") or f"{r['source_key']}:{r.get('scheduled_pickup_date')}",
             "account_id": r["account_id"],
             "name": r["name"],
-            "status": r["status"],
+            "status": life["lifecycle"],
+            "lifecycle": life["lifecycle"],
+            "lifecycle_label": life["lifecycle_label"],
+            "pickup_today": life["pickup_today"],
+            "delivery_today": life["delivery_today"],
             "source_key": r["source_key"],
-            "action": action,
-            "action_date": action_date,
             "scheduled_pickup_date": r.get("scheduled_pickup_date"),
             "scheduled_delivery_date": r.get("scheduled_delivery_date"),
             "suggested_processing_date": r.get("suggested_processing_date"),
-            "resolved": r.get("resolved"),
-            "entry": r.get("entry"),
+            "resolved": False,
+            "entry": entry,
+            "volume_lbs": entry.get("volume_lbs") or entry.get("lbs"),
+            "revenue": entry.get("revenue") or entry.get("total_revenue"),
             "is_manual": bool(r.get("is_manual")),
             "occurrence_source": r.get("occurrence_source") or "generated",
         }
 
-    # Counts for today summary (operational, unresolved preferred for attention)
-    pickups_today = [
-        r for r in obs
-        if r.get("scheduled_pickup_date") == as_of.isoformat() and not r.get("resolved")
-    ]
-    deliveries_today = [
-        r for r in obs
-        if r.get("scheduled_delivery_date") == as_of.isoformat() and not r.get("resolved")
-    ]
-    needs_processing = [
-        r for r in obs
-        if not r.get("resolved")
-        and r.get("suggested_processing_date") == as_of.isoformat()
-        and r.get("scheduled_pickup_date") != as_of.isoformat()
-    ]
-    overdue_pickups = [
-        r for r in obs
-        if r.get("status") == STATUS_OVERDUE
-        and not r.get("resolved")
-        and r.get("scheduled_pickup_date")
-        and r["scheduled_pickup_date"] < as_of.isoformat()
-    ]
-    # Delivery overdue: delivery date past, pickup done or still open without complete
-    overdue_deliveries = [
-        r for r in obs
-        if not r.get("resolved")
-        and r.get("scheduled_delivery_date")
-        and r["scheduled_delivery_date"] < as_of.isoformat()
-        and r.get("status") not in (STATUS_COMPLETE, STATUS_SKIPPED, STATUS_NO_ACTIVITY, STATUS_RESCHEDULED)
-        and r.get("scheduled_pickup_date")
-        and r["scheduled_pickup_date"] <= as_of.isoformat()
-        and r not in overdue_pickups
-    ]
-
-    # Date sections: group open work by calendar day for pickups + deliveries
-    day_map: dict[str, dict[str, list]] = {}
-
-    def _day(bucket: str):
-        if bucket not in day_map:
-            day_map[bucket] = {"pickups": [], "deliveries": [], "processing": []}
-        return day_map[bucket]
-
+    overdue: list[dict] = []
+    due: list[dict] = []
+    upcoming: list[dict] = []
     for r in obs:
-        if r.get("resolved"):
+        card = _card(r)
+        if not card:
             continue
-        pu = r.get("scheduled_pickup_date")
-        de = r.get("scheduled_delivery_date")
-        pr = r.get("suggested_processing_date")
-        if pu and pu >= as_of.isoformat() and pu <= through.isoformat():
-            _day(pu)["pickups"].append(_card(r, action="pickup", action_date=pu))
-        if de and de >= as_of.isoformat() and de <= through.isoformat():
-            _day(de)["deliveries"].append(_card(r, action="delivery", action_date=de))
-        if (
-            pr
-            and pr == as_of.isoformat()
-            and pu != as_of.isoformat()
-            and de != as_of.isoformat()
-        ):
-            _day(pr)["processing"].append(_card(r, action="processing", action_date=pr))
-
-    sections = []
-    for day_s in sorted(day_map.keys()):
-        d = date.fromisoformat(day_s)
-        bucket = day_map[day_s]
-        if not (bucket["pickups"] or bucket["deliveries"] or bucket["processing"]):
+        # Only keep upcoming within lookahead; overdue/due from lookback window
+        pu = card.get("scheduled_pickup_date") or ""
+        if card["lifecycle"] == "upcoming" and pu > through.isoformat():
             continue
-        is_today = d == as_of
-        label = _friendly_day_label(d, as_of=as_of)
-        sections.append({
-            "date": day_s,
-            "label": f"TODAY · {label.upper()}" if is_today else label.upper(),
-            "is_today": is_today,
-            "collapsed_default": not is_today,
-            "pickups": bucket["pickups"],
-            "deliveries": bucket["deliveries"],
-            "processing": bucket["processing"],
-        })
+        if card["lifecycle"] == "overdue":
+            overdue.append(card)
+        elif card["lifecycle"] == "due":
+            due.append(card)
+        else:
+            upcoming.append(card)
 
-    overdue_cards = []
-    for r in overdue_pickups:
-        overdue_cards.append(_card(r, action="pickup", action_date=r["scheduled_pickup_date"]))
-    for r in overdue_deliveries:
-        overdue_cards.append(_card(r, action="delivery", action_date=r["scheduled_delivery_date"]))
+    def _group_by_pickup(cards: list[dict]) -> list[dict]:
+        buckets: dict[str, list] = {}
+        for c in cards:
+            key = c.get("scheduled_pickup_date") or ""
+            buckets.setdefault(key, []).append(c)
+        out = []
+        for key in sorted(buckets.keys()):
+            if not key:
+                continue
+            d = date.fromisoformat(key)
+            out.append({
+                "pickup_date": key,
+                "label": f"Pickup {_friendly_day_label(d, as_of=as_of)}",
+                "items": sorted(buckets[key], key=lambda x: (x.get("name") or "").lower()),
+            })
+        return out
+
+    overdue_groups = _group_by_pickup(overdue)
+    due_groups = _group_by_pickup(due)
+    upcoming_groups = _group_by_pickup(upcoming)
 
     confirm = []
     from backend.management_revenue_accounts import list_accounts
+    dhs_accounts = []
     for acct in list_accounts(cursor, org_id, as_of=as_of, active_only=True):
         if (acct.get("revenue_group") or "") != "dhs":
             continue
+        dhs_accounts.append({"id": acct["id"], "name": acct.get("name") or "DHS"})
         sched = get_schedule_for_account(cursor, acct["id"], as_of)
         if sched and sched.get("needs_schedule_confirm"):
             confirm.append({"account_id": acct["id"], "name": acct.get("name")})
@@ -1555,40 +1558,40 @@ def build_dhs_board(cursor, org_id: int, *, as_of: date | None = None) -> dict[s
     months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
     summary_label = f"{weekday_names[as_of.weekday()]}, {months[as_of.month - 1]} {as_of.day}"
 
-    dhs_accounts = []
-    for acct in list_accounts(cursor, org_id, as_of=as_of, active_only=True):
-        if (acct.get("revenue_group") or "") != "dhs":
-            continue
-        dhs_accounts.append({"id": acct["id"], "name": acct.get("name") or "DHS"})
-
+    # Flatten legacy shapes for older clients (single card list, no duplicate delivery cards)
+    legacy_today = [c for c in due if c.get("pickup_today") or c.get("delivery_today")]
     return {
         "as_of": as_of.isoformat(),
         "summary_label": summary_label,
         "missing_work_start": MISSING_WORK_START.isoformat(),
         "counts": {
-            "pickups_today": len(pickups_today),
-            "deliveries_today": len(deliveries_today),
-            "needs_processing": len(needs_processing),
-            "pending_processing": len(needs_processing),
-            "overdue": len(overdue_cards),
+            "overdue": len(overdue),
+            "due": len(due),
+            "upcoming": len(upcoming),
+            "pickups_today": sum(1 for c in due if c.get("pickup_today")),
+            "deliveries_today": sum(1 for c in due if c.get("delivery_today")),
+            "needs_processing": 0,
+            "pending_processing": 0,
         },
-        "sections": sections,
-        "overdue": overdue_cards,
-        "accounts": dhs_accounts,
-        # Legacy shape for older clients during rollout
         "groups": {
-            "today": [
-                c for s in sections if s.get("is_today")
-                for c in (s.get("pickups") or []) + (s.get("deliveries") or [])
-            ],
-            "overdue": overdue_cards,
-            "upcoming": [
-                c for s in sections if not s.get("is_today")
-                for c in (s.get("pickups") or [])
-            ][:40],
+            "overdue": overdue_groups,
+            "due": due_groups,
+            "upcoming": upcoming_groups,
         },
+        "overdue": overdue,
+        "due": due,
+        "upcoming": upcoming,
+        "accounts": dhs_accounts,
+        # Legacy compatibility (no split pickup/delivery cards)
+        "sections": [],
         "needs_schedule_confirm": confirm,
+        "legacy_groups": {
+            "today": legacy_today,
+            "overdue": overdue,
+            "upcoming": upcoming[:40],
+        },
     }
+
 
 
 def create_manual_occurrence(

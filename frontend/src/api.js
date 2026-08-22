@@ -2546,8 +2546,15 @@ export const getManagementRevenueDhsBoard = (dateEt) =>
 export const postManagementRevenueDhsManualPickup = (body) =>
   axios.post(`${API_BASE}/api/management/revenue/dhs-manual-pickup`, body);
 
-export const getManagementRevenueCashTab = (dateEt) =>
-  axios.get(`${API_BASE}/api/management/revenue/cash-tab`, { params: { date_et: dateEt } });
+export const getManagementRevenueCashTab = (dateEt, params = {}) =>
+  axios.get(`${API_BASE}/api/management/revenue/cash-tab`, {
+    params: { date_et: dateEt, ...params },
+  });
+
+export const getManagementRevenueStreamTab = (stream, dateEt, params = {}) =>
+  axios.get(`${API_BASE}/api/management/revenue/stream-tab`, {
+    params: { stream, date_et: dateEt, ...params },
+  });
 
 export const getTeamStatus = (dateEt) =>
   axios.get(`${API_BASE}/api/team-status`, { params: { date_et: dateEt }, timeout: 30000 });

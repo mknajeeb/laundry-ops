@@ -44,6 +44,7 @@ from backend.management_revenue_pin import (
     build_daily_tab,
     build_dhs_tab,
     build_pin_bootstrap,
+    build_stream_tab,
 )
 from backend.rinse_scan_time import json_safe_rinse
 
@@ -242,9 +243,51 @@ def register_management_revenue_routes(
                 selected = _selected_date(raw_date, employee=employee)
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
-            payload = build_cash_tab(cursor, oid, as_of=selected)
+            period = (request.args.get("period") or "month").strip().lower()
+            start_raw = (request.args.get("start") or "").strip()
+            end_raw = (request.args.get("end") or "").strip()
+            start = parse_date_value(start_raw) if start_raw else None
+            end = parse_date_value(end_raw) if end_raw else None
+            payload = build_cash_tab(
+                cursor, oid, as_of=selected, period=period, start=start, end=end,
+            )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/revenue/stream-tab", methods=["GET"])
+    def management_revenue_stream_tab():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            employee = not is_hub_manager(me)
+            raw_date = (request.args.get("date_et") or request.args.get("as_of") or "").strip()
+            try:
+                selected = _selected_date(raw_date, employee=employee)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            stream = (request.args.get("stream") or "").strip().lower()
+            period = (request.args.get("period") or "month").strip().lower()
+            try:
+                payload = build_stream_tab(
+                    cursor, oid, stream=stream, as_of=selected, period=period,
+                )
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
             return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()
