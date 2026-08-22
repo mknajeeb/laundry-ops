@@ -128,15 +128,85 @@ def _hd_processed_records(
     selected_date_et: date,
     registry_meta_by_bag: Mapping[str, Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    if not table_exists(cursor, "rinse_bag_scan_events"):
-        return []
+    """HD employee credits prefer persisted washed_by/washed_at and folded_by/folded_at.
 
+    Wash and fold may fall on different business days; each credits on its own timestamp.
+    Do not attribute either operation to the revenue-entry / Complete date.
+    """
     org = int(organization_id)
     day_start = naive_et_day_start(selected_date_et)
     day_end = naive_et_day_end_inclusive(selected_date_et)
+    meta_lookup = dict(registry_meta_by_bag)
+    records: list[dict[str, Any]] = []
+    covered: set[str] = set()
+
+    # Prefer canonical production attribution via Management HD performance helper.
+    try:
+        from backend.management_hd_performance import build_hd_employee_performance
+
+        perf = build_hd_employee_performance(cursor, org, selected_date_et)
+        for emp in perf.get("employees") or []:
+            name = str(emp.get("display_name") or "").strip() or "Unknown"
+            for wash in emp.get("wash_bags") or []:
+                bid = str(wash.get("bag_id") or "").strip().upper()
+                ts = wash.get("washed_at")
+                if not bid or not isinstance(ts, datetime):
+                    continue
+                covered.add(bid)
+                records.append(
+                    {
+                        "bag_id": bid,
+                        "service_type": "HD",
+                        "service_bucket": "HD",
+                        "employee_credited": name,
+                        "processed_by_employee": name,
+                        "processed_signal": "hd_wash",
+                        "processed_time": ts.isoformat(),
+                        "processed_timestamp": ts.isoformat(),
+                        "processed_time_et": _format_processed_time_et(ts),
+                        "processed_lbs": None,
+                        "weight_missing": True,
+                        "customer_name": (meta_lookup.get(bid) or {}).get("name_clean")
+                        or (meta_lookup.get(bid) or {}).get("customer_name"),
+                        "attribution_reason": "washed_by/washed_at",
+                        "is_business_completed": False,
+                        "hd_credit_type": "wash",
+                    }
+                )
+            for fold in emp.get("fold_bags") or []:
+                bid = str(fold.get("bag_id") or "").strip().upper()
+                ts = fold.get("folded_at")
+                if not bid or not isinstance(ts, datetime):
+                    continue
+                covered.add(bid)
+                records.append(
+                    {
+                        "bag_id": bid,
+                        "service_type": "HD",
+                        "service_bucket": "HD",
+                        "employee_credited": name,
+                        "processed_by_employee": name,
+                        "processed_signal": "hd_fold",
+                        "processed_time": ts.isoformat(),
+                        "processed_timestamp": ts.isoformat(),
+                        "processed_time_et": _format_processed_time_et(ts),
+                        "processed_lbs": None,
+                        "weight_missing": True,
+                        "customer_name": (meta_lookup.get(bid) or {}).get("name_clean")
+                        or (meta_lookup.get(bid) or {}).get("customer_name"),
+                        "attribution_reason": "folded_by/folded_at",
+                        "is_business_completed": False,
+                        "hd_credit_type": "fold",
+                    }
+                )
+    except Exception:
+        pass
+
+    if not table_exists(cursor, "rinse_bag_scan_events"):
+        return records
+
     start_dt, _ = period_datetime_bounds_et(selected_date_et, selected_date_et)
     end_exclusive = naive_et_day_end_exclusive(selected_date_et)
-    meta_lookup = dict(registry_meta_by_bag)
 
     cursor.execute(
         """
@@ -163,6 +233,8 @@ def _hd_processed_records(
     candidate_ids = sorted(
         {str(r.get("bag_id") or "").strip().upper() for r in cursor.fetchall() or [] if r.get("bag_id")}
     )
+    # Skip bags already credited from production wash/fold facts
+    candidate_ids = [bid for bid in candidate_ids if bid not in covered]
     if candidate_ids:
         from backend.rinse_simple_shift_performance import _load_bag_metadata
 
@@ -177,7 +249,6 @@ def _hd_processed_records(
             events_lookup[bid].append(ev)
 
     as_of_end = day_end
-    records: list[dict[str, Any]] = []
     seen: set[str] = set()
     for bid in candidate_ids:
         if bid in seen:

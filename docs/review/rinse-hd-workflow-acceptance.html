@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Rinse HD workflow — acceptance fixtures</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 24px; max-width: 720px; color: #0f172a; }
+    h1 { font-size: 22px; }
+    h2 { font-size: 16px; margin-top: 28px; }
+    .card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; margin: 10px 0; background: #fff; }
+    .bag { font-family: ui-monospace, monospace; font-weight: 800; font-size: 16px; }
+    .muted { color: #64748b; font-size: 13px; font-weight: 600; }
+    .name { font-weight: 700; font-size: 14px; margin-top: 8px; }
+    .chip { display: inline-block; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: #f1f5f9; }
+    .chip.await { background: #fff7ed; }
+    .chip.done { background: #ecfeff; }
+    .mobile { border: 2px solid #0f172a; border-radius: 20px; padding: 18px; max-width: 360px; }
+    .field { border: 1px solid #cbd5e1; border-radius: 10px; padding: 14px; margin: 10px 0; font-size: 18px; }
+    .btn { display: block; width: 100%; margin-top: 12px; padding: 16px; font-weight: 900; font-size: 18px; border: 0; border-radius: 12px; background: #0f172a; color: #fff; }
+    .ok { color: #047857; font-weight: 700; }
+    code { background: #f8fafc; padding: 1px 4px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Rinse HD — acceptance fixtures (no deploy)</h1>
+  <p class="muted">Pure-function proofs from <code>backend/management_rinse_hd.py</code> + UI mockups for review.</p>
+
+  <h2>A–E · Status lifecycle (ABC123)</h2>
+  <div class="card">
+    <div class="bag">ABC123</div>
+    <span class="chip">Pending Wash</span>
+    <div class="muted">HD membership · no create-workitem-bulk yet</div>
+  </div>
+  <div class="card">
+    <div class="bag">ABC123</div>
+    <span class="chip">Washed</span>
+    <div class="name">Washed by Maria</div>
+    <div class="muted">Aug 20 · 11:42 AM</div>
+  </div>
+  <div class="card">
+    <div class="bag">ABC123</div>
+    <span class="chip await">Awaiting Entry</span>
+    <div class="name">Washed by Maria</div>
+    <div class="muted">Aug 20 · 11:42 AM</div>
+    <div class="name">Folded by Tarannum</div>
+    <div class="muted">Aug 21 · 9:17 AM</div>
+    <div class="name">12 items · $36.00</div>
+  </div>
+  <div class="card">
+    <div class="bag">ABC123</div>
+    <span class="chip done">Complete</span>
+    <div class="name">Washed by Maria · Folded by Tarannum</div>
+    <div class="muted">Revenue date (fold) = Aug 21 — not Aug 22 entry</div>
+    <div class="name">12 items · $36.00</div>
+  </div>
+
+  <h2>F–H · Mobile (Awaiting Entry only)</h2>
+  <div class="mobile">
+    <div class="bag">ABC123</div>
+    <div class="name">Folded by Tarannum</div>
+    <div class="muted">Today · 9:17 AM</div>
+    <div class="field">Items: 12</div>
+    <div class="field">Revenue: $36.00</div>
+    <div class="ok">Saved</div>
+    <button class="btn" type="button">COMPLETE</button>
+  </div>
+  <p class="muted">Autosave draft keeps status <code>awaiting_entry</code>. Explicit Complete moves to <code>complete</code>.</p>
+
+  <h2>I · Revenue date</h2>
+  <p>Wash Aug 20 · Fold Aug 21 · Entry Aug 22 → <strong>operations_date_et = 2026-08-21</strong> (server).</p>
+
+  <h2>J–K · Performance + audit</h2>
+  <ul>
+    <li>Wash credit → <code>washed_by</code> / <code>washed_at</code></li>
+    <li>Fold credit → <code>folded_by</code> / <code>folded_at</code></li>
+    <li>Manager Edit → <code>hd_day_bag_production_audits</code> ACTION_ATTRIBUTION_EDIT (old/new/changed by/at)</li>
+  </ul>
+
+  <h2>Proof script result</h2>
+  <pre>A pending_wash
+B Maria washed 2026-08-20
+C Tarannum fold 2026-08-21
+D different days True
+E awaiting_entry revenue_date 2026-08-21
+G draft still awaiting_entry
+H complete after explicit Complete
+I revenue_date 2026-08-21</pre>
+</body>
+</html>

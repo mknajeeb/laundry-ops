@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -9,21 +9,42 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  IconButton,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Select,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
+import IconButton from "@mui/material/IconButton";
 import {
   getManagementRinseHd,
   getManagementRinseHdDetail,
+  getManagementRinseHdSummary,
   markManagementRinseHdComplete,
   saveManagementRinseHdProduction,
+  updateManagementRinseHdAttribution,
 } from "../api";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import { formatFriendlyEtWall } from "../utils/rinseTimeFormat";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
+
+const STATUS_CHIPS = [
+  { id: "pending_wash", label: "Pending Wash" },
+  { id: "awaiting_entry", label: "Awaiting Entry" },
+  { id: "complete", label: "Complete" },
+  { id: "all", label: "All" },
+];
+
+const PERIODS = [
+  { id: "today", label: "Today" },
+  { id: "yesterday", label: "Yesterday" },
+  { id: "week", label: "Week" },
+  { id: "month", label: "Month" },
+  { id: "custom", label: "Custom" },
+];
 
 function todayEtIso() {
   try {
@@ -66,6 +87,14 @@ function fmtTime(v) {
   return formatFriendlyEtWall(v) || String(v);
 }
 
+function statusLabel(status) {
+  if (status === "pending_wash") return "Pending Wash";
+  if (status === "washed") return "Washed";
+  if (status === "awaiting_entry") return "Awaiting Entry";
+  if (status === "complete") return "Complete";
+  return status || "—";
+}
+
 function SummaryCard({ label, value }) {
   return (
     <Box
@@ -78,7 +107,7 @@ function SummaryCard({ label, value }) {
         minWidth: 0,
       }}
     >
-      <Typography sx={{ fontSize: 20, fontWeight: 800, lineHeight: 1.05 }}>{value}</Typography>
+      <Typography sx={{ fontSize: 18, fontWeight: 800, lineHeight: 1.05 }}>{value}</Typography>
       <Typography
         sx={{
           mt: 0.35,
@@ -96,7 +125,8 @@ function SummaryCard({ label, value }) {
 }
 
 function OrderCard({ order, onOpen }) {
-  const open = order.status === "open";
+  const awaiting = order.status === "awaiting_entry";
+  const pending = order.status === "pending_wash" || order.status === "washed";
   return (
     <Box
       component="button"
@@ -110,7 +140,11 @@ function OrderCard({ order, onOpen }) {
         p: 1.25,
         borderRadius: 2,
         border: "1px solid",
-        borderColor: open ? VEEWASH_DASHBOARD.pendingBorder : VEEWASH_DASHBOARD.hdBorder,
+        borderColor: awaiting
+          ? VEEWASH_DASHBOARD.pendingBorder
+          : pending
+            ? "#cbd5e1"
+            : VEEWASH_DASHBOARD.hdBorder,
         bgcolor: "#fff",
         cursor: "pointer",
         appearance: "none",
@@ -123,50 +157,93 @@ function OrderCard({ order, onOpen }) {
         </Typography>
         <Chip
           size="small"
-          label={open ? "In process" : "Completed"}
+          label={statusLabel(order.status)}
           sx={{
             height: 22,
             fontWeight: 700,
-            bgcolor: open ? VEEWASH_DASHBOARD.pendingLight : VEEWASH_DASHBOARD.hdBg,
+            bgcolor: awaiting
+              ? VEEWASH_DASHBOARD.pendingLight
+              : order.status === "complete"
+                ? VEEWASH_DASHBOARD.hdBg
+                : "#f1f5f9",
           }}
         />
       </Stack>
-      <Typography sx={{ mt: 0.5, fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-        Started {fmtTime(order.started_at)} · {order.start_operator || "—"}
+      <Typography sx={{ mt: 0.65, fontSize: 12, color: "#334155", fontWeight: 600 }}>
+        Washed by {order.washed_by_name || "—"}
       </Typography>
-      {open ? null : (
-        <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-          Completed {fmtTime(order.completion_at)} · {order.completion_operator || "—"}
-          {order.completion_source === "MANAGEMENT_OVERRIDE" ? " · manual" : ""}
-        </Typography>
-      )}
+      <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
+        {fmtTime(order.washed_at)}
+      </Typography>
+      <Typography sx={{ mt: 0.5, fontSize: 12, color: "#334155", fontWeight: 600 }}>
+        Folded by {order.folded_by_name || "—"}
+      </Typography>
+      <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
+        {fmtTime(order.folded_at)}
+      </Typography>
       <Stack direction="row" spacing={2} sx={{ mt: 0.75 }}>
         <Typography sx={{ fontSize: 13, fontWeight: 700 }}>Items {fmtInt(order.items)}</Typography>
         <Typography sx={{ fontSize: 13, fontWeight: 700 }}>{fmtMoney(order.revenue)}</Typography>
       </Stack>
+      {order.completion_at ? (
+        <Typography sx={{ mt: 0.35, fontSize: 11, color: "#64748b", fontWeight: 600 }}>
+          Complete {fmtTime(order.completion_at)}
+          {order.completion_operator ? ` · ${order.completion_operator}` : ""}
+        </Typography>
+      ) : null}
     </Box>
   );
 }
 
+function toDatetimeLocalValue(v) {
+  if (!v) return "";
+  const raw = String(v).replace("T", " ").slice(0, 19);
+  const d = new Date(raw.includes("Z") || raw.includes("+") ? v : `${raw.replace(" ", "T")}`);
+  if (Number.isNaN(d.getTime())) {
+    return raw.slice(0, 16).replace(" ", "T");
+  }
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function fromDatetimeLocalValue(v) {
+  if (!v) return null;
+  return String(v).replace("T", " ") + ":00";
+}
+
 export default function ManagementRinseHdPage() {
   const [dateEt, setDateEt] = useState(todayEtIso);
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("awaiting_entry");
+  const [period, setPeriod] = useState("today");
+  const [customStart, setCustomStart] = useState(todayEtIso);
+  const [customEnd, setCustomEnd] = useState(todayEtIso);
   const [data, setData] = useState(null);
+  const [rangeSummary, setRangeSummary] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [summaryLoading, setSummaryLoading] = useState(false);
   const [error, setError] = useState("");
   const [detail, setDetail] = useState(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [items, setItems] = useState("");
   const [revenue, setRevenue] = useState("");
   const [saving, setSaving] = useState(false);
+  const [saveState, setSaveState] = useState("");
   const [actionError, setActionError] = useState("");
+  const [attrEdit, setAttrEdit] = useState(false);
+  const [attrForm, setAttrForm] = useState({
+    washed_by_user_id: "",
+    washed_at: "",
+    folded_by_user_id: "",
+    folded_at: "",
+  });
+  const autosaveTimer = useRef(null);
 
-  const load = useCallback(async (day, refresh = false) => {
+  const load = useCallback(async (day, status, refresh = false) => {
     if (!refresh) setData(null);
     setLoading(true);
     setError("");
     try {
-      const res = await getManagementRinseHd(day, { status: "all" });
+      const res = await getManagementRinseHd(day, { status });
       setData(res.data || null);
     } catch (err) {
       setData(null);
@@ -176,20 +253,38 @@ export default function ManagementRinseHdPage() {
     }
   }, []);
 
-  useEffect(() => {
-    load(dateEt, false);
-  }, [dateEt, load]);
+  const loadSummary = useCallback(async () => {
+    setSummaryLoading(true);
+    try {
+      const params = { period };
+      if (period === "custom") {
+        params.start_et = customStart;
+        params.end_et = customEnd;
+      }
+      const res = await getManagementRinseHdSummary(params);
+      setRangeSummary(res.data || null);
+    } catch {
+      setRangeSummary(null);
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, [period, customStart, customEnd]);
 
-  const summary = data?.summary || {};
-  const orders = useMemo(() => {
-    const rows = data?.orders || [];
-    if (statusFilter === "open") return rows.filter((r) => r.status === "open");
-    if (statusFilter === "completed") return rows.filter((r) => r.status === "completed");
-    return rows;
-  }, [data?.orders, statusFilter]);
+  useEffect(() => {
+    load(dateEt, statusFilter, false);
+  }, [dateEt, statusFilter, load]);
+
+  useEffect(() => {
+    loadSummary();
+  }, [loadSummary]);
+
+  const summary = rangeSummary || data?.summary || {};
+  const orders = data?.orders || [];
 
   const openDetail = async (order) => {
     setActionError("");
+    setSaveState("");
+    setAttrEdit(false);
     setDetailOpen(true);
     setDetail({ loading: true, order });
     setItems(order.items != null ? String(order.items) : "");
@@ -206,36 +301,74 @@ export default function ManagementRinseHdPage() {
             ? String(order.revenue)
             : "",
       );
+      setAttrForm({
+        washed_by_user_id: prod.washed_by_user_id ?? "",
+        washed_at: toDatetimeLocalValue(prod.washed_at),
+        folded_by_user_id: prod.folded_by_user_id ?? "",
+        folded_at: toDatetimeLocalValue(prod.folded_at),
+      });
     } catch (err) {
       setActionError(err?.response?.data?.error || err?.message || "Unable to load order");
       setDetail({ order });
     }
   };
 
-  const saveProduction = async () => {
+  const flushSave = async () => {
     const bagId = detail?.order?.bag_id || detail?.bag_id;
     if (!bagId) return;
+    const status = detail?.order?.status;
+    if (status !== "awaiting_entry" && status !== "complete") return;
     setSaving(true);
+    setSaveState("saving");
     setActionError("");
     try {
-      await saveManagementRinseHdProduction(bagId, {
+      const res = await saveManagementRinseHdProduction(bagId, {
         date_et: dateEt,
         total_items: items === "" ? null : Number(items),
         revenue: revenue === "" ? null : Number(revenue),
         version: detail?.production?.version ?? detail?.order?.production_version ?? 0,
       });
-      await load(dateEt, true);
-      await openDetail({ bag_id: bagId, items, revenue, status: detail?.order?.status });
+      setSaveState("saved");
+      setDetail((d) => ({
+        ...d,
+        production: {
+          ...(d?.production || {}),
+          version: res.data?.version,
+          items: res.data?.total_items,
+          revenue: res.data?.revenue,
+          workflow_status: res.data?.workflow_status,
+        },
+        order: {
+          ...(d?.order || {}),
+          production_version: res.data?.version,
+          items: res.data?.total_items,
+          revenue: res.data?.revenue,
+          status: res.data?.workflow_status || d?.order?.status,
+        },
+      }));
+      await load(dateEt, statusFilter, true);
     } catch (err) {
-      setActionError(err?.response?.data?.error || err?.message || "Save failed");
+      setSaveState("error");
+      setActionError(err?.response?.data?.message || err?.response?.data?.error || err?.message || "Save failed");
     } finally {
       setSaving(false);
     }
   };
 
+  const scheduleAutosave = () => {
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = setTimeout(() => {
+      flushSave();
+    }, 650);
+  };
+
   const markComplete = async () => {
     const bagId = detail?.order?.bag_id || detail?.bag_id;
     if (!bagId) return;
+    if (autosaveTimer.current) {
+      clearTimeout(autosaveTimer.current);
+      await flushSave();
+    }
     setSaving(true);
     setActionError("");
     try {
@@ -243,14 +376,49 @@ export default function ManagementRinseHdPage() {
         date_et: dateEt,
         version: detail?.production?.version ?? detail?.order?.production_version ?? 0,
       });
-      await load(dateEt, true);
+      await load(dateEt, statusFilter, true);
       setDetailOpen(false);
     } catch (err) {
-      setActionError(err?.response?.data?.error || err?.message || "Mark complete failed");
+      setActionError(
+        err?.response?.data?.message || err?.response?.data?.error || err?.message || "Complete failed",
+      );
     } finally {
       setSaving(false);
     }
   };
+
+  const saveAttribution = async () => {
+    const bagId = detail?.order?.bag_id || detail?.bag_id;
+    if (!bagId) return;
+    setSaving(true);
+    setActionError("");
+    try {
+      await updateManagementRinseHdAttribution(bagId, {
+        date_et: dateEt,
+        version: detail?.production?.version ?? detail?.order?.production_version ?? 0,
+        washed_by_user_id: attrForm.washed_by_user_id === "" ? null : Number(attrForm.washed_by_user_id),
+        washed_at: fromDatetimeLocalValue(attrForm.washed_at),
+        folded_by_user_id: attrForm.folded_by_user_id === "" ? null : Number(attrForm.folded_by_user_id),
+        folded_at: fromDatetimeLocalValue(attrForm.folded_at),
+      });
+      setAttrEdit(false);
+      await openDetail({ bag_id: bagId });
+      await load(dateEt, statusFilter, true);
+    } catch (err) {
+      setActionError(err?.response?.data?.error || err?.message || "Attribution save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const canEnter =
+    detail?.order?.status === "awaiting_entry" || detail?.order?.status === "complete";
+  const employees = detail?.employees || [];
+
+  const periodLabel = useMemo(() => {
+    if (period === "custom") return `${formatDayLabel(customStart)} – ${formatDayLabel(customEnd)}`;
+    return PERIODS.find((p) => p.id === period)?.label || "Today";
+  }, [period, customStart, customEnd]);
 
   return (
     <Box
@@ -271,7 +439,7 @@ export default function ManagementRinseHdPage() {
         <Box>
           <Typography sx={{ fontSize: 22, fontWeight: 800, lineHeight: 1.1 }}>Rinse HD</Typography>
           <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-            {formatDayLabel(dateEt)}
+            {formatDayLabel(dateEt)} · wash → fold → entry → Complete
           </Typography>
         </Box>
         <Stack direction="row" alignItems="center" spacing={0.5}>
@@ -283,40 +451,101 @@ export default function ManagementRinseHdPage() {
             InputLabelProps={{ shrink: true }}
             sx={{ width: 150 }}
           />
-          <IconButton aria-label="Refresh" onClick={() => load(dateEt, true)} disabled={loading} size="small">
+          <IconButton
+            aria-label="Refresh"
+            onClick={() => {
+              load(dateEt, statusFilter, true);
+              loadSummary();
+            }}
+            disabled={loading}
+            size="small"
+          >
             {loading ? <CircularProgress size={18} /> : <RefreshIcon />}
           </IconButton>
         </Stack>
       </Stack>
 
-      {error ? <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert> : null}
+      {error ? (
+        <Alert severity="error" sx={{ mb: 1.5 }}>
+          {error}
+        </Alert>
+      ) : null}
 
+      <Stack direction="row" spacing={0.5} sx={{ mb: 1, flexWrap: "wrap", gap: 0.5 }}>
+        {PERIODS.map((p) => (
+          <Chip
+            key={p.id}
+            size="small"
+            label={p.label}
+            onClick={() => setPeriod(p.id)}
+            sx={{
+              fontWeight: 700,
+              bgcolor: period === p.id ? VEEWASH_DASHBOARD.hdTeal : "#fff",
+              color: period === p.id ? "#fff" : "#334155",
+              border: "1px solid",
+              borderColor: period === p.id ? VEEWASH_DASHBOARD.hdTeal : "#e5e7eb",
+            }}
+          />
+        ))}
+      </Stack>
+      {period === "custom" ? (
+        <Stack direction="row" spacing={1} sx={{ mb: 1 }}>
+          <TextField size="small" type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} />
+          <TextField size="small" type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} />
+        </Stack>
+      ) : null}
+
+      <Typography sx={{ fontSize: 11, fontWeight: 700, color: "#64748b", mb: 0.5 }}>
+        Summary · {periodLabel}
+        {summaryLoading ? " · …" : ""}
+      </Typography>
       <Box
         sx={{
           display: "grid",
-          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
           gap: 0.75,
           mb: 1.25,
         }}
       >
-        <SummaryCard label="Open" value={fmtInt(summary.open_orders)} />
-        <SummaryCard label="Completed" value={fmtInt(summary.completed_today)} />
-        <SummaryCard label="Items" value={fmtInt(summary.items_completed_today)} />
-        <SummaryCard label="Revenue" value={fmtMoney(summary.revenue_completed_today)} />
+        <SummaryCard label="Pending Wash" value={fmtInt(summary.pending_wash)} />
+        <SummaryCard label="Washed" value={fmtInt(summary.washed)} />
+        <SummaryCard label="Folded" value={fmtInt(summary.folded)} />
+        <SummaryCard label="Awaiting Entry" value={fmtInt(summary.awaiting_entry)} />
+        <SummaryCard label="Complete" value={fmtInt(summary.complete ?? summary.completed_today)} />
+        <SummaryCard label="Items" value={fmtInt(summary.items ?? summary.items_completed_today)} />
+        <SummaryCard label="Revenue" value={fmtMoney(summary.revenue ?? summary.revenue_completed_today)} />
       </Box>
 
-      <Stack direction="row" spacing={0.75} sx={{ mb: 1.25 }}>
-        {[
-          { id: "all", label: "All" },
-          { id: "open", label: "Open" },
-          { id: "completed", label: "Completed" },
-        ].map((chip) => {
+      <FormControl size="small" fullWidth sx={{ mb: 1.25, display: { xs: "flex", sm: "none" } }}>
+        <InputLabel id="hd-status-label">Queue</InputLabel>
+        <Select
+          labelId="hd-status-label"
+          label="Queue"
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+        >
+          {STATUS_CHIPS.map((c) => (
+            <MenuItem key={c.id} value={c.id}>
+              {c.label}
+              {data?.counts?.[c.id] != null ? ` (${data.counts[c.id]})` : ""}
+            </MenuItem>
+          ))}
+        </Select>
+      </FormControl>
+
+      <Stack
+        direction="row"
+        spacing={0.75}
+        sx={{ mb: 1.25, display: { xs: "none", sm: "flex" }, flexWrap: "wrap", gap: 0.5 }}
+      >
+        {STATUS_CHIPS.map((chip) => {
           const selected = statusFilter === chip.id;
+          const count = data?.counts?.[chip.id];
           return (
             <Chip
               key={chip.id}
               size="small"
-              label={chip.label}
+              label={count != null ? `${chip.label} ${count}` : chip.label}
               onClick={() => setStatusFilter(chip.id)}
               sx={{
                 fontWeight: 700,
@@ -342,7 +571,7 @@ export default function ManagementRinseHdPage() {
             </Typography>
           ) : (
             orders.map((order) => (
-              <OrderCard key={`${order.bag_id}-${order.status}-${order.completion_at || "open"}`} order={order} onOpen={openDetail} />
+              <OrderCard key={`${order.bag_id}-${order.status}`} order={order} onOpen={openDetail} />
             ))
           )}
         </Stack>
@@ -350,55 +579,155 @@ export default function ManagementRinseHdPage() {
 
       <Dialog open={detailOpen} onClose={() => setDetailOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle sx={{ fontWeight: 800 }}>
-          {detail?.order?.bag_id || detail?.bag_id || "HD order"}
+          {detail?.order?.bag_id || detail?.bag_id || "HD Order"}
         </DialogTitle>
         <DialogContent>
-          {actionError ? <Alert severity="error" sx={{ mb: 1 }}>{actionError}</Alert> : null}
-          <Typography sx={{ fontSize: 13, color: "#64748b", mb: 1.5 }}>
-            Enter items and total order revenue only.
-          </Typography>
-          <Stack spacing={1.25}>
-            <TextField
-              label="Number of items"
-              type="number"
-              size="small"
-              value={items}
-              onChange={(e) => setItems(e.target.value)}
-              inputProps={{ min: 0, step: 1 }}
-            />
-            <TextField
-              label="Total order revenue"
-              type="number"
-              size="small"
-              value={revenue}
-              onChange={(e) => setRevenue(e.target.value)}
-              inputProps={{ min: 0, step: 0.01 }}
-            />
-            <Typography sx={{ fontSize: 12, color: "#64748b" }}>
-              Started {fmtTime(detail?.order?.started_at || detail?.entry?.at)} ·{" "}
-              {detail?.order?.start_operator || detail?.entry?.user_name || "—"}
-            </Typography>
-            <Typography sx={{ fontSize: 12, color: "#64748b" }}>
-              Completion {fmtTime(detail?.order?.completion_at || detail?.completion?.at)} ·{" "}
-              {detail?.order?.completion_operator || detail?.completion?.user_name || "—"}
-              {detail?.order?.completion_source
-                ? ` · ${detail.order.completion_source}`
-                : ""}
-            </Typography>
-          </Stack>
+          {actionError ? (
+            <Alert severity="error" sx={{ mb: 1.5 }}>
+              {actionError}
+            </Alert>
+          ) : null}
+          {detail?.loading ? (
+            <Box sx={{ py: 3, textAlign: "center" }}>
+              <CircularProgress size={22} />
+            </Box>
+          ) : (
+            <Stack spacing={1.25} sx={{ pt: 0.5 }}>
+              <Chip size="small" label={statusLabel(detail?.order?.status)} sx={{ alignSelf: "flex-start", fontWeight: 700 }} />
+              <Typography sx={{ fontSize: 13, fontWeight: 700 }}>
+                Washed by {detail?.order?.washed_by_name || detail?.production?.washed_by_name || "—"}
+              </Typography>
+              <Typography sx={{ fontSize: 12, color: "#64748b" }}>
+                {fmtTime(detail?.order?.washed_at || detail?.production?.washed_at)}
+              </Typography>
+              <Typography sx={{ fontSize: 13, fontWeight: 700 }}>
+                Folded by {detail?.order?.folded_by_name || detail?.production?.folded_by_name || "—"}
+              </Typography>
+              <Typography sx={{ fontSize: 12, color: "#64748b" }}>
+                {fmtTime(detail?.order?.folded_at || detail?.production?.folded_at)}
+              </Typography>
+              {detail?.production?.revenue_date_et ? (
+                <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
+                  Revenue date (fold): {detail.production.revenue_date_et}
+                </Typography>
+              ) : null}
+
+              <Button
+                size="small"
+                onClick={() => setAttrEdit((v) => !v)}
+                sx={{ alignSelf: "flex-start", textTransform: "none", fontWeight: 700 }}
+              >
+                {attrEdit ? "Cancel attribution edit" : "Edit attribution"}
+              </Button>
+              {attrEdit ? (
+                <Stack spacing={1} sx={{ p: 1, border: "1px solid #e5e7eb", borderRadius: 1.5 }}>
+                  <FormControl size="small" fullWidth>
+                    <InputLabel>Washed by</InputLabel>
+                    <Select
+                      label="Washed by"
+                      value={attrForm.washed_by_user_id}
+                      onChange={(e) => setAttrForm((f) => ({ ...f, washed_by_user_id: e.target.value }))}
+                    >
+                      <MenuItem value="">—</MenuItem>
+                      {employees.map((emp) => (
+                        <MenuItem key={emp.id || emp.user_id} value={emp.user_id ?? ""}>
+                          {emp.display_name}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <TextField
+                    size="small"
+                    label="Washed at (ET)"
+                    type="datetime-local"
+                    value={attrForm.washed_at}
+                    onChange={(e) => setAttrForm((f) => ({ ...f, washed_at: e.target.value }))}
+                    InputLabelProps={{ shrink: true }}
+                  />
+                  <FormControl size="small" fullWidth>
+                    <InputLabel>Folded by</InputLabel>
+                    <Select
+                      label="Folded by"
+                      value={attrForm.folded_by_user_id}
+                      onChange={(e) => setAttrForm((f) => ({ ...f, folded_by_user_id: e.target.value }))}
+                    >
+                      <MenuItem value="">—</MenuItem>
+                      {employees.map((emp) => (
+                        <MenuItem key={`f-${emp.id || emp.user_id}`} value={emp.user_id ?? ""}>
+                          {emp.display_name}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <TextField
+                    size="small"
+                    label="Folded at (ET)"
+                    type="datetime-local"
+                    value={attrForm.folded_at}
+                    onChange={(e) => setAttrForm((f) => ({ ...f, folded_at: e.target.value }))}
+                    InputLabelProps={{ shrink: true }}
+                  />
+                  <Button variant="contained" disabled={saving} onClick={saveAttribution} sx={{ textTransform: "none", fontWeight: 800 }}>
+                    Save attribution
+                  </Button>
+                </Stack>
+              ) : null}
+
+              {canEnter ? (
+                <>
+                  <TextField
+                    label="Items"
+                    type="number"
+                    value={items}
+                    onChange={(e) => {
+                      setItems(e.target.value);
+                      scheduleAutosave();
+                    }}
+                    fullWidth
+                    size="small"
+                  />
+                  <TextField
+                    label="Revenue"
+                    type="number"
+                    value={revenue}
+                    onChange={(e) => {
+                      setRevenue(e.target.value);
+                      scheduleAutosave();
+                    }}
+                    fullWidth
+                    size="small"
+                    inputProps={{ step: "0.01" }}
+                  />
+                  <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
+                    {saveState === "saving"
+                      ? "Saving…"
+                      : saveState === "saved"
+                        ? "Saved ✓ (draft — not Complete)"
+                        : saveState === "error"
+                          ? "Save failed"
+                          : "Autosave draft · Complete required"}
+                  </Typography>
+                </>
+              ) : (
+                <Alert severity="info">Items / revenue entry unlocks after Folded / Awaiting Entry.</Alert>
+              )}
+            </Stack>
+          )}
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={() => setDetailOpen(false)} disabled={saving}>
+          <Button onClick={() => setDetailOpen(false)} sx={{ textTransform: "none" }}>
             Close
           </Button>
-          {detail?.order?.status === "open" && !detail?.completion?.at ? (
-            <Button onClick={markComplete} disabled={saving}>
-              Mark complete
+          {canEnter && detail?.order?.status !== "complete" ? (
+            <Button
+              variant="contained"
+              disabled={saving}
+              onClick={markComplete}
+              sx={{ textTransform: "none", fontWeight: 800 }}
+            >
+              Complete
             </Button>
           ) : null}
-          <Button variant="contained" onClick={saveProduction} disabled={saving}>
-            {saving ? "Saving…" : "Save"}
-          </Button>
         </DialogActions>
       </Dialog>
     </Box>

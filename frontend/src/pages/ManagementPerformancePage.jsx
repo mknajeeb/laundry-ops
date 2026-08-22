@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Box, Stack, TextField, Typography } from "@mui/material";
 import ManagementHubNav from "../components/management/ManagementHubNav";
+import ManagementHdPerformanceSection from "../components/management/ManagementHdPerformanceSection";
 import ManagementWfFolderPerformanceSection from "../components/management/ManagementWfFolderPerformanceSection";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 
@@ -19,7 +20,7 @@ function todayEtIso() {
 
 /**
  * Management → Performance compartment.
- * V1 surface: WF Folder Performance only (mobile-first).
+ * WF Folder + HD wash/fold attribution (mobile-first).
  */
 export default function ManagementPerformancePage() {
   const [dateEt, setDateEt] = useState(todayEtIso);
@@ -46,7 +47,7 @@ export default function ManagementPerformancePage() {
               Performance
             </Typography>
             <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-              Folder rates from actual WF Folder sessions
+              WF Folder sessions · HD wash/fold by operation time
             </Typography>
           </Box>
           <TextField
@@ -60,6 +61,7 @@ export default function ManagementPerformancePage() {
         </Stack>
 
         <ManagementWfFolderPerformanceSection dateEt={dateEt} />
+        <ManagementHdPerformanceSection dateEt={dateEt} />
       </Box>
     </Box>
   );

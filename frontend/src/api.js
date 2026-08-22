@@ -2482,6 +2482,14 @@ export const getManagementRinseHd = (dateEt, params = {}) =>
     params: { date_et: dateEt, ...params },
   });
 
+export const getManagementRinseHdSummary = (params = {}) =>
+  axios.get(`${API_BASE}/api/management/rinse-hd/summary`, { params });
+
+export const getManagementRinseHdPerformance = (dateEt, params = {}) =>
+  axios.get(`${API_BASE}/api/management/rinse-hd/performance`, {
+    params: { date_et: dateEt, ...params },
+  });
+
 export const getManagementRinseHdDetail = (bagId, params = {}) =>
   axios.get(`${API_BASE}/api/management/rinse-hd/${encodeURIComponent(bagId)}`, {
     params,
@@ -2493,6 +2501,12 @@ export const saveManagementRinseHdProduction = (bagId, body) =>
 export const markManagementRinseHdComplete = (bagId, body) =>
   axios.post(
     `${API_BASE}/api/management/rinse-hd/${encodeURIComponent(bagId)}/mark-complete`,
+    body,
+  );
+
+export const updateManagementRinseHdAttribution = (bagId, body) =>
+  axios.put(
+    `${API_BASE}/api/management/rinse-hd/${encodeURIComponent(bagId)}/attribution`,
     body,
   );
 

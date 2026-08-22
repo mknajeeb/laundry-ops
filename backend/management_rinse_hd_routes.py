@@ -1,17 +1,19 @@
-"""Management Hub — Rinse HD routes (new operating model).
+"""Management Hub — Rinse HD routes (wash → fold → entry → Complete).
 
 Managers and PIN employees with Mobile PIN Access ``revenue_cost`` share the
 same Hang Dry production APIs / ``hd_day_bag_production`` records.
+Mobile should request ``status=awaiting_entry``.
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from flask import jsonify, request
 
 from backend.business_time import business_today
 from backend.db import get_db
+from backend.management_hd_performance import build_hd_employee_performance
 from backend.management_pin_access import (
     access_denied_payload,
     actor_name,
@@ -20,9 +22,11 @@ from backend.management_pin_access import (
 )
 from backend.management_rinse_hd import (
     build_rinse_hd_day,
+    build_rinse_hd_summary,
     get_rinse_hd_order_detail,
     mark_rinse_hd_complete,
     save_rinse_hd_items_revenue,
+    update_rinse_hd_attribution,
 )
 from backend.rinse_scan_time import json_safe_rinse
 
@@ -42,6 +46,12 @@ def register_management_rinse_hd_routes(
 
     def _selected_date(raw: str, *, employee: bool):
         if employee:
+            # Employees may still pass date_et for backfill when authorized via PIN;
+            # default remains business today.
+            if raw:
+                selected = parse_date_value(raw)
+                if isinstance(selected, date):
+                    return selected
             return business_today()
         selected = parse_date_value(raw) if raw else business_today()
         if not isinstance(selected, date):
@@ -50,6 +60,24 @@ def register_management_rinse_hd_routes(
 
     def _actor_user_id(me: dict):
         return me.get("user_id") or me.get("id")
+
+    def _period_bounds(period: str, start_raw: str, end_raw: str, today: date):
+        key = str(period or "today").strip().lower()
+        if key == "yesterday":
+            return today - timedelta(days=1), today - timedelta(days=1)
+        if key == "week":
+            return today - timedelta(days=6), today
+        if key == "month":
+            return today.replace(day=1), today
+        if key == "custom":
+            start = parse_date_value(start_raw) if start_raw else today
+            end = parse_date_value(end_raw) if end_raw else today
+            if not isinstance(start, date) or not isinstance(end, date):
+                raise ValueError("Invalid custom range")
+            if end < start:
+                start, end = end, start
+            return start, end
+        return today, today
 
     @app.route("/api/management/rinse-hd", methods=["GET"])
     def management_rinse_hd_day():
@@ -70,7 +98,69 @@ def register_management_rinse_hd_routes(
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
             status = (request.args.get("status") or "all").strip().lower()
+            # Mobile default: only awaiting entry
+            if employee and status in ("", "all") and request.args.get("mobile") == "1":
+                status = "awaiting_entry"
             payload = build_rinse_hd_day(cursor, oid, selected, status=status)
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/rinse-hd/summary", methods=["GET"])
+    def management_rinse_hd_summary():
+        """Lazy/parallel summary — does not block the operational list."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            today = business_today()
+            try:
+                start, end = _period_bounds(
+                    request.args.get("period") or "today",
+                    (request.args.get("start_et") or "").strip(),
+                    (request.args.get("end_et") or "").strip(),
+                    today,
+                )
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            payload = build_rinse_hd_summary(cursor, oid, start_et=start, end_et=end)
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/rinse-hd/performance", methods=["GET"])
+    def management_rinse_hd_performance():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            if not is_hub_manager(me):
+                body, code = access_denied_payload()
+                return jsonify(body), code
+            raw_date = (request.args.get("date_et") or "").strip()
+            try:
+                selected = _selected_date(raw_date, employee=False)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            payload = build_hd_employee_performance(cursor, oid, selected)
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
@@ -171,6 +261,53 @@ def register_management_rinse_hd_routes(
                 bag_id,
                 selected_date_et=selected,
                 version=int(body.get("version") or 0),
+                actor_user_id=_actor_user_id(me),
+                actor_display_name=actor_name(me),
+            )
+            if not result.get("ok"):
+                conn.rollback()
+                return jsonify(json_safe_rinse(result)), int(result.get("status") or 400)
+            conn.commit()
+            return jsonify(json_safe_rinse(result))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/rinse-hd/<bag_id>/attribution", methods=["PUT"])
+    def management_rinse_hd_attribution(bag_id: str):
+        """Manager-only wash/fold attribution edit with audit."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            if not is_hub_manager(me):
+                body, code = access_denied_payload()
+                return jsonify(body), code
+            body = request.get_json(silent=True) or {}
+            raw_date = str(body.get("date_et") or request.args.get("date_et") or "").strip()
+            try:
+                selected = _selected_date(raw_date, employee=False)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            result = update_rinse_hd_attribution(
+                cursor,
+                oid,
+                bag_id,
+                selected_date_et=selected,
+                version=int(body.get("version") or 0),
+                washed_by_user_id=body.get("washed_by_user_id"),
+                washed_at=body.get("washed_at"),
+                folded_by_user_id=body.get("folded_by_user_id"),
+                folded_at=body.get("folded_at"),
                 actor_user_id=_actor_user_id(me),
                 actor_display_name=actor_name(me),
             )

@@ -535,7 +535,8 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     setHdLoading(true);
     setError("");
     try {
-      const res = await getManagementRinseHd({ date_et: dateEt, status: "all" });
+      // Mobile HD is data-entry only: Folded / Awaiting Entry orders.
+      const res = await getManagementRinseHd(dateEt, { status: "awaiting_entry", mobile: 1 });
       setHdList(res.data || null);
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadHdFailed"));
@@ -576,16 +577,17 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     setHdSaving(true);
     setError("");
     try {
-      await saveManagementRinseHdProduction(bagId, {
+      const saveRes = await saveManagementRinseHdProduction(bagId, {
         date_et: dateEt,
         total_items: hdItems === null || hdItems === "" ? null : Number(hdItems),
         revenue: parseMoneyInput(hdRevenue),
         version: hdDetail?.production?.version ?? hdDetail?.order?.production_version ?? 0,
       });
+      const nextVersion = saveRes.data?.version ?? hdDetail?.production?.version ?? 0;
       if (markComplete) {
         await markManagementRinseHdComplete(bagId, {
           date_et: dateEt,
-          version: hdDetail?.production?.version ?? hdDetail?.order?.production_version ?? 0,
+          version: nextVersion,
         });
         await loadHangDry();
         setScreen("hang_dry");
@@ -598,7 +600,9 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       setSaveState("saved");
       await loadRevenue();
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.saveFailed"));
+      setError(
+        e?.response?.data?.message || e?.response?.data?.error || e?.message || t("mobileOps.revenue.saveFailed"),
+      );
     } finally {
       setHdSaving(false);
     }
@@ -1103,6 +1107,9 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
 
       {screen === "hang_dry" ? (
         <Stack spacing={1.25} sx={{ pb: 2 }}>
+          <Typography sx={{ fontSize: 13, fontWeight: 700, color: OPS_MOBILE.muted }}>
+            Awaiting Entry only — fold complete, enter items & revenue, then Complete.
+          </Typography>
           {hdLoading ? (
             <Box sx={{ py: 4, display: "grid", placeItems: "center" }}>
               <CircularProgress size={28} />
@@ -1123,7 +1130,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
                 display: "block",
                 width: "100%",
                 textAlign: "left",
-                p: 1.5,
+                p: 1.75,
                 borderRadius: 2,
                 border: "1px solid #e5e7eb",
                 bgcolor: "#fff",
@@ -1132,14 +1139,21 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
                 cursor: "pointer",
               }}
             >
-              <Typography sx={{ fontWeight: 900 }}>
-                {order.customer_name || t("mobileOps.revenue.hdOrder")}
+              <Typography sx={{ fontWeight: 900, fontSize: 18, fontFamily: "monospace" }}>
+                {order.bag_id}
               </Typography>
-              <Typography sx={{ fontSize: 12, color: OPS_MOBILE.muted }}>{order.bag_id}</Typography>
-              <Typography sx={{ mt: 0.5, fontSize: 13, fontWeight: 700, color: "#007a91" }}>
-                {fmtMoney(order.revenue)}
-                {order.items != null ? ` · ${t("mobileOps.revenue.itemsCount", { count: order.items })}` : ""}
+              <Typography sx={{ mt: 0.75, fontSize: 15, fontWeight: 700 }}>
+                Folded by {order.folded_by_name || "—"}
               </Typography>
+              <Typography sx={{ fontSize: 13, color: OPS_MOBILE.muted, fontWeight: 600 }}>
+                {fmtTime(order.folded_at)}
+              </Typography>
+              {(order.items != null || order.revenue != null) && (
+                <Typography sx={{ mt: 0.75, fontSize: 14, fontWeight: 700, color: "#007a91" }}>
+                  {fmtMoney(order.revenue)}
+                  {order.items != null ? ` · ${t("mobileOps.revenue.itemsCount", { count: order.items })}` : ""}
+                </Typography>
+              )}
             </Box>
           ))}
           <Button
@@ -1172,48 +1186,50 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       ) : null}
 
       {screen === "hang_dry_detail" ? (
-        <Stack spacing={1.5} sx={{ pb: 2 }}>
-          <Typography sx={{ fontWeight: 900 }}>
-            {hdDetail?.order?.customer_name || t("mobileOps.revenue.hdOrder")}
+        <Stack spacing={1.75} sx={{ pb: 2 }}>
+          <Typography sx={{ fontWeight: 900, fontSize: 22, fontFamily: "monospace" }}>
+            {hdDetail?.order?.bag_id || "—"}
           </Typography>
-          <Typography sx={{ fontSize: 12, color: OPS_MOBILE.muted }}>
-            {hdDetail?.order?.bag_id}
-            {hdDetail?.order?.started_at
-              ? ` · ${t("mobileOps.revenue.started", {
-                  time: fmtTime(hdDetail.order.started_at),
-                  operator: hdDetail.order.operator_name || "—",
-                })}`
-              : ""}
+          <Typography sx={{ fontSize: 16, fontWeight: 700 }}>
+            Folded by {hdDetail?.order?.folded_by_name || "—"}
+          </Typography>
+          <Typography sx={{ fontSize: 14, color: OPS_MOBILE.muted, fontWeight: 600 }}>
+            {fmtTime(hdDetail?.order?.folded_at)}
           </Typography>
           <MoneyAmountField
             label={t("mobileOps.revenue.items")}
             value={hdItems}
-            onChange={setHdItems}
+            onChange={(v) => {
+              setHdItems(v);
+              setSaveState("saving");
+              if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+              autosaveTimerRef.current = setTimeout(() => {
+                saveHdProduction({ markComplete: false });
+              }, 700);
+            }}
             prefix=""
           />
           <MoneyAmountField
             label={t("mobileOps.revenue.revenue")}
             value={hdRevenue}
-            onChange={setHdRevenue}
+            onChange={(v) => {
+              setHdRevenue(v);
+              setSaveState("saving");
+              if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+              autosaveTimerRef.current = setTimeout(() => {
+                saveHdProduction({ markComplete: false });
+              }, 700);
+            }}
           />
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-            <Button
-              variant="outlined"
-              disabled={hdSaving}
-              onClick={() => saveHdProduction({ markComplete: false })}
-              sx={{ textTransform: "none", fontWeight: 800, minHeight: 52 }}
-            >
-              {t("mobileOps.revenue.save")}
-            </Button>
-            <Button
-              variant="contained"
-              disabled={hdSaving}
-              onClick={() => saveHdProduction({ markComplete: true })}
-              sx={{ textTransform: "none", fontWeight: 800, minHeight: 52 }}
-            >
-              {t("mobileOps.revenue.saveComplete")}
-            </Button>
-          </Stack>
+          <SaveStatusChip state={saveState} />
+          <Button
+            variant="contained"
+            disabled={hdSaving}
+            onClick={() => saveHdProduction({ markComplete: true })}
+            sx={{ textTransform: "none", fontWeight: 900, minHeight: 64, fontSize: 18 }}
+          >
+            {hdSaving ? t("mobileOps.revenue.saving") : t("mobileOps.revenue.complete")}
+          </Button>
         </Stack>
       ) : null}
     </OpsMobileShell>

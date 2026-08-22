@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rinse HD workflow — fixture proof</title>
+  <style>
+    :root { --teal: #007a91; --bg: #f3f7f8; --ink: #0f172a; --muted: #64748b; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+    .wrap { max-width: 390px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    .sub { color: var(--muted); font-size: 12px; font-weight: 600; margin-bottom: 12px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .chip { border: 1px solid #e5e7eb; background: #fff; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 700; }
+    .chip.on { background: var(--teal); color: #fff; border-color: var(--teal); }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; margin-bottom: 10px; }
+    .bag { font-family: ui-monospace, monospace; font-weight: 800; font-size: 16px; }
+    .status { display: inline-block; background: #fff7ed; border-radius: 8px; padding: 2px 8px; font-size: 11px; font-weight: 800; }
+    .line { margin-top: 8px; font-size: 13px; font-weight: 700; }
+    .meta { color: var(--muted); font-size: 12px; font-weight: 600; }
+    .money { margin-top: 8px; font-weight: 800; }
+    .btn { display: block; width: 100%; margin-top: 12px; background: var(--teal); color: #fff; border: 0; border-radius: 10px; min-height: 56px; font-weight: 900; font-size: 16px; }
+    .field { margin-top: 10px; }
+    .field label { display: block; font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 4px; }
+    .field input { width: 100%; box-sizing: border-box; font-size: 22px; font-weight: 800; padding: 12px; border-radius: 10px; border: 1px solid #cbd5e1; }
+    .saved { color: var(--teal); font-size: 12px; font-weight: 700; margin-top: 6px; }
+    h2 { font-size: 14px; margin: 18px 0 8px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Rinse HD</h1>
+    <div class="sub">Fixture proof · Aug 21 ET · no deploy</div>
+
+    <h2>Management queues</h2>
+    <div class="chips">
+      <span class="chip">Pending Wash</span>
+      <span class="chip on">Awaiting Entry</span>
+      <span class="chip">Complete</span>
+      <span class="chip">All</span>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div class="bag">ABC123</div>
+        <span class="status">Awaiting Entry</span>
+      </div>
+      <div class="line">Washed by Maria</div>
+      <div class="meta">Aug 20 · 11:42 AM</div>
+      <div class="line">Folded by Tarannum</div>
+      <div class="meta">Aug 21 · 9:17 AM</div>
+      <div class="money">12 items · $36.00</div>
+      <div class="meta">Revenue date = fold date Aug 21</div>
+    </div>
+
+    <h2>Mobile entry (Awaiting Entry only)</h2>
+    <div class="card">
+      <div class="bag">ABC123</div>
+      <div class="line">Folded by Tarannum</div>
+      <div class="meta">Today · 9:17 AM</div>
+      <div class="field"><label>Items</label><input value="12" /></div>
+      <div class="field"><label>Revenue</label><input value="36.00" /></div>
+      <div class="saved">Saved ✓ (draft — not Complete)</div>
+      <button class="btn" type="button">COMPLETE</button>
+    </div>
+
+    <h2>Acceptance map</h2>
+    <div class="card" style="font-size:12px;line-height:1.45;font-weight:600">
+      A Pending Wash before wash<br/>
+      B Wash → Maria + timestamp<br/>
+      C Fold → Tarannum + timestamp<br/>
+      D Wash Aug 20 / Fold Aug 21<br/>
+      E After fold → Awaiting Entry<br/>
+      F Mobile = Awaiting Entry only<br/>
+      G Autosave draft ≠ Complete<br/>
+      H Complete moves to Complete<br/>
+      I Revenue date = fold date<br/>
+      J Performance uses wash/fold times<br/>
+      K Manager attribution edit + audit<br/>
+      L Pending Wash = not started
+    </div>
+  </div>
+</body>
+</html>
