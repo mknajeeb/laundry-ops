@@ -600,7 +600,7 @@ def sync_wf_cycles_after_portal_presence(
     """Hook after full portal presence apply: admit/update canonical WF cycles."""
     from pathlib import Path
 
-    from backend.rinse_cleaner_ticket_presence import parse_presence_rows_from_portal_csv
+    from backend.rinse_presence_scrape import parse_presence_rows_from_portal_csv
     from backend.rinse_portal_scrape_meta import read_portal_scrape_meta
 
     org = int(organization_id)
