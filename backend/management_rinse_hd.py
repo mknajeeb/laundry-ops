@@ -30,6 +30,11 @@ from backend.ta_helpers import table_exists, table_has_column
 MONEY_Q = Decimal("0.01")
 LOOKBACK_DAYS = 21
 
+# Hard production cutoff — new HD Management/Mobile workflow starts this ET day.
+# Pre-activation membership / scans must not appear in operational queues.
+HD_WORKFLOW_ACTIVATION_DATE = date(2026, 8, 21)
+WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED = "PRE_ACTIVATION_EXCLUDED"
+
 # Workflow statuses (API / UI)
 STATUS_PENDING_WASH = "pending_wash"
 STATUS_WASHED = "washed"
@@ -250,6 +255,13 @@ def derive_workflow_status(
     return STATUS_PENDING_WASH
 
 
+def _on_or_after_activation(dt: Any, activation: date | None) -> bool:
+    if activation is None:
+        return True
+    day = business_date_of(dt)
+    return day is not None and day >= activation
+
+
 def resolve_order_state(
     events: Sequence[Mapping[str, Any]],
     *,
@@ -257,19 +269,28 @@ def resolve_order_state(
     production: Mapping[str, Any] | None = None,
     user_maps: Mapping[str, Mapping[str, Any]] | None = None,
     user_names: Mapping[int, str] | None = None,
+    activation_date: date | None = None,
 ) -> dict[str, Any] | None:
     """Derive compact HD order state. None when bag is not an HD candidate."""
     if not bag_looks_hd(events, service_hint):
         return None
 
     prod = dict(production or {})
+    if str(prod.get("workflow_status") or "").strip().upper() == WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED:
+        return None
     maps = user_maps or {}
     names = user_names or {}
 
     wash_ev = select_hd_wash_event(events)
     wash_at_scan = wash_ev.get("scanned_at_parsed") if wash_ev else None
+    if wash_ev and not _on_or_after_activation(wash_at_scan, activation_date):
+        wash_ev = None
+        wash_at_scan = None
     fold_ev = select_hd_fold_event(events, wash_at=wash_at_scan)
     fold_at_scan = fold_ev.get("scanned_at_parsed") if fold_ev else None
+    if fold_ev and not _on_or_after_activation(fold_at_scan, activation_date):
+        fold_ev = None
+        fold_at_scan = None
 
     wash_src = str(prod.get("washed_attribution_source") or "").strip().upper()
     fold_src = str(prod.get("folded_attribution_source") or "").strip().upper()
@@ -349,10 +370,36 @@ def resolve_order_state(
             )
             folded_attr_source = fold_src or (ATTR_SOURCE_MANAGER if folded_uid else None)
 
+    # Activation cutoff: ignore persisted wash/fold before the new workflow starts.
+    if activation_date is not None:
+        if washed_at and not _on_or_after_activation(washed_at, activation_date):
+            washed_at = None
+            washed_uid = None
+            washed_name = None
+            washed_attr_source = None
+        if folded_at and not _on_or_after_activation(folded_at, activation_date):
+            folded_at = None
+            folded_uid = None
+            folded_name = None
+            folded_attr_source = None
+        # Fold requires wash; drop orphan fold if wash was cut.
+        if folded_at and not washed_at:
+            folded_at = None
+            folded_uid = None
+            folded_name = None
+            folded_attr_source = None
+
     explicit = bool(prod.get("management_completed_at")) or (
         str(prod.get("workflow_status") or "").strip().lower() == STATUS_COMPLETE
         and str(prod.get("status") or "").strip().upper() == PROD_COMPLETE
     )
+    if activation_date is not None and explicit:
+        done_at = prod.get("management_completed_at") or folded_at
+        if not _on_or_after_activation(done_at, activation_date) and not (
+            folded_at and _on_or_after_activation(folded_at, activation_date)
+        ):
+            explicit = False
+
     # Legacy COMPLETE without management_completed_at still counts as complete when
     # both items+revenue exist AND fold exists (older saves); prefer explicit flag.
     if (
@@ -361,6 +408,10 @@ def resolve_order_state(
         and prod.get("management_completed_at")
     ):
         explicit = True
+        if activation_date is not None and not _on_or_after_activation(
+            prod.get("management_completed_at") or folded_at, activation_date
+        ):
+            explicit = False
 
     status = derive_workflow_status(
         washed_at=washed_at,
@@ -401,8 +452,16 @@ def resolve_order_state(
     }
 
 
-def order_visible_on_day(order: Mapping[str, Any], selected_date_et: date) -> str | None:
+def order_visible_on_day(
+    order: Mapping[str, Any],
+    selected_date_et: date,
+    *,
+    activation_date: date | None = HD_WORKFLOW_ACTIVATION_DATE,
+) -> str | None:
     """Return workflow status if order belongs on the selected business day list."""
+    if activation_date is not None and selected_date_et < activation_date:
+        return None
+
     status = str(order.get("status") or "")
     wash_day = business_date_of(order.get("washed_at"))
     fold_day = business_date_of(order.get("folded_at"))
@@ -414,6 +473,16 @@ def order_visible_on_day(order: Mapping[str, Any], selected_date_et: date) -> st
         try:
             ops_day = date.fromisoformat(str(ops_day)[:10])
         except ValueError:
+            ops_day = None
+
+    if activation_date is not None:
+        if wash_day is not None and wash_day < activation_date:
+            wash_day = None
+        if fold_day is not None and fold_day < activation_date:
+            fold_day = None
+        if done_day is not None and done_day < activation_date:
+            done_day = None
+        if ops_day is not None and ops_day < activation_date:
             ops_day = None
 
     if status == STATUS_COMPLETE:
@@ -525,6 +594,10 @@ def _load_hd_service_hints(cursor, organization_id: int, selected_date_et: date)
     if not table_exists(cursor, "rinse_shift_monitor_day_bags"):
         return {}
     start = selected_date_et - timedelta(days=LOOKBACK_DAYS)
+    if start < HD_WORKFLOW_ACTIVATION_DATE:
+        start = HD_WORKFLOW_ACTIVATION_DATE
+    if selected_date_et < HD_WORKFLOW_ACTIVATION_DATE:
+        return {}
     cursor.execute(
         """
         SELECT bag_id, service_type, shift_date_et
@@ -615,16 +688,59 @@ def build_rinse_hd_day(
     """Compact Rinse HD day list + summary. No per-order chronology arrays."""
     started = time.perf_counter()
     org = int(organization_id)
+    activation = HD_WORKFLOW_ACTIVATION_DATE
+    if selected_date_et < activation:
+        elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
+        return {
+            "date_et": selected_date_et.isoformat(),
+            "generated_at_et": business_now().isoformat(timespec="seconds"),
+            "summary": {
+                "pending_wash": 0,
+                "washed": 0,
+                "folded": 0,
+                "awaiting_entry": 0,
+                "complete": 0,
+                "items": 0,
+                "revenue": 0.0,
+                "open_orders": 0,
+                "completed_today": 0,
+                "items_completed_today": 0,
+                "revenue_completed_today": 0.0,
+            },
+            "counts": {
+                STATUS_PENDING_WASH: 0,
+                STATUS_WASHED: 0,
+                STATUS_AWAITING_ENTRY: 0,
+                STATUS_COMPLETE: 0,
+            },
+            "orders": [],
+            "model": {
+                "wash": "create-workitem-bulk",
+                "fold": "2nd_complete_cleaning_else_1st",
+                "revenue_date": "fold_date",
+                "items_revenue_table": "hd_day_bag_production",
+                "complete": "explicit after fold + items + revenue",
+                "activation_date_et": activation.isoformat(),
+            },
+            "_meta": {
+                "elapsed_ms": elapsed_ms,
+                "order_count": 0,
+                "activation_date_et": activation.isoformat(),
+            },
+        }
+
     hints = _load_hd_service_hints(cursor, org, selected_date_et)
     candidate_ids = set(hints.keys())
 
-    # Also include bags with production on/near selected day (fold-date revenue)
+    # Durable admitted production rows (activation+) remain after portal disappearance.
     if table_exists(cursor, "hd_day_bag_production"):
         ensure_management_hd_columns(cursor)
         cursor.execute(
             """
             SELECT bag_id FROM hd_day_bag_production
             WHERE organization_id = %s
+              AND COALESCE(workflow_status, '') <> %s
+              AND operations_date_et >= %s
               AND (
                 operations_date_et = %s
                 OR DATE(folded_at) = %s
@@ -632,7 +748,15 @@ def build_rinse_hd_day(
                 OR DATE(management_completed_at) = %s
               )
             """,
-            (org, selected_date_et, selected_date_et, selected_date_et, selected_date_et),
+            (
+                org,
+                WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
+                activation,
+                selected_date_et,
+                selected_date_et,
+                selected_date_et,
+                selected_date_et,
+            ),
         )
         for row in cursor.fetchall() or []:
             bid = _norm_bag(row.get("bag_id"))
@@ -653,6 +777,24 @@ def build_rinse_hd_day(
         by_bag.setdefault(bid, [])
 
     production = _load_production_by_bag(cursor, org, list(candidate_ids))
+    filtered_prod: dict[str, dict[str, Any]] = {}
+    for bid, row in production.items():
+        if str(row.get("workflow_status") or "").strip().upper() == WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED:
+            continue
+        ops = row.get("operations_date_et")
+        if isinstance(ops, date):
+            ops_day = ops
+        elif ops:
+            try:
+                ops_day = date.fromisoformat(str(ops)[:10])
+            except ValueError:
+                ops_day = None
+        else:
+            ops_day = None
+        if ops_day is not None and ops_day < activation:
+            continue
+        filtered_prod[bid] = row
+    production = filtered_prod
     user_maps = _load_user_maps(cursor, org)
 
     # First pass: collect user ids for batch name resolve
@@ -691,6 +833,7 @@ def build_rinse_hd_day(
             production=production.get(bid),
             user_maps=user_maps,
             user_names=user_names,
+            activation_date=activation,
         )
         if not state and (bid in hints or bid in production):
             # Membership / production HD with no wash yet → Pending Wash skeleton
@@ -701,13 +844,14 @@ def build_rinse_hd_day(
                 production=prod,
                 user_maps=user_maps,
                 user_names=user_names,
+                activation_date=activation,
             ) or {
                 "bag_id": bid,
                 "status": STATUS_PENDING_WASH,
-                "washed_at": prod.get("washed_at"),
-                "washed_by_name": prod.get("washed_by_name_snapshot"),
-                "folded_at": prod.get("folded_at"),
-                "folded_by_name": prod.get("folded_by_name_snapshot"),
+                "washed_at": None,
+                "washed_by_name": None,
+                "folded_at": None,
+                "folded_by_name": None,
                 "items": prod.get("total_items"),
                 "revenue": _money(prod.get("revenue")),
                 "production_version": int(prod.get("version") or 0),
@@ -716,8 +860,10 @@ def build_rinse_hd_day(
         if not state:
             continue
         state["bag_id"] = state.get("bag_id") or bid
+        if not state.get("operations_date_et"):
+            state["operations_date_et"] = selected_date_et
 
-        bucket = order_visible_on_day(state, selected_date_et)
+        bucket = order_visible_on_day(state, selected_date_et, activation_date=activation)
         if bucket is None:
             continue
         compact = _compact_order(state)
@@ -797,8 +943,13 @@ def build_rinse_hd_day(
             "revenue_date": "fold_date",
             "items_revenue_table": "hd_day_bag_production",
             "complete": "explicit after fold + items + revenue",
+            "activation_date_et": activation.isoformat(),
         },
-        "_meta": {"elapsed_ms": elapsed_ms, "order_count": len(orders)},
+        "_meta": {
+            "elapsed_ms": elapsed_ms,
+            "order_count": len(orders),
+            "activation_date_et": activation.isoformat(),
+        },
     }
 
 
@@ -849,6 +1000,8 @@ def build_rinse_hd_summary(
                             THEN revenue ELSE 0 END), 0) AS revenue_n
         FROM hd_day_bag_production
         WHERE organization_id = %s
+          AND COALESCE(workflow_status, '') <> %s
+          AND operations_date_et >= %s
           AND (
             operations_date_et BETWEEN %s AND %s
             OR DATE(folded_at) BETWEEN %s AND %s
@@ -862,6 +1015,8 @@ def build_rinse_hd_summary(
             start_et,
             end_et,
             org,
+            WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
+            HD_WORKFLOW_ACTIVATION_DATE,
             start_et,
             end_et,
             start_et,
@@ -926,12 +1081,21 @@ def get_rinse_hd_order_detail(
         production=production,
         user_maps=user_maps,
         user_names=user_names,
+        activation_date=HD_WORKFLOW_ACTIVATION_DATE if day >= HD_WORKFLOW_ACTIVATION_DATE else None,
     )
     wash = select_hd_wash_event(bag_events)
+    if wash and day >= HD_WORKFLOW_ACTIVATION_DATE and not _on_or_after_activation(
+        wash.get("scanned_at_parsed"), HD_WORKFLOW_ACTIVATION_DATE
+    ):
+        wash = None
     fold = select_hd_fold_event(
         bag_events,
         wash_at=(wash or {}).get("scanned_at_parsed"),
     )
+    if fold and day >= HD_WORKFLOW_ACTIVATION_DATE and not _on_or_after_activation(
+        fold.get("scanned_at_parsed"), HD_WORKFLOW_ACTIVATION_DATE
+    ):
+        fold = None
     employees = []
     try:
         from backend.daily_operations_hd import list_org_employee_options
@@ -1588,3 +1752,255 @@ COMPLETION_SOURCE_SCAN = "SOURCE_COMPLETE_CLEANING"
 COMPLETION_SOURCE_MANAGEMENT = "MANAGEMENT_OVERRIDE"
 STATUS_OPEN = "open"
 STATUS_COMPLETED = "completed"
+
+
+def soft_quarantine_pre_activation_hd_workflow(cursor, organization_id: int) -> dict[str, Any]:
+    """Mark pre-activation HD production rows excluded from the new workflow (no DELETE)."""
+    ensure_management_hd_columns(cursor)
+    org = int(organization_id)
+    if not table_exists(cursor, "hd_day_bag_production"):
+        return {"updated": 0}
+    cursor.execute(
+        """
+        UPDATE hd_day_bag_production
+        SET workflow_status = %s
+        WHERE organization_id = %s
+          AND operations_date_et < %s
+          AND COALESCE(workflow_status, '') <> %s
+        """,
+        (
+            WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
+            org,
+            HD_WORKFLOW_ACTIVATION_DATE,
+            WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
+        ),
+    )
+    return {"updated": int(cursor.rowcount or 0)}
+
+
+def seed_hd_workflow_opening_day(
+    cursor,
+    organization_id: int,
+    opening_date_et: date | None = None,
+    *,
+    scrape_run_id: int | None = None,
+    actor_user_id: int | None = None,
+) -> dict[str, Any]:
+    """Admit Aug-21 HD membership into durable production with activation+ state only.
+
+    Opening population = rinse_shift_monitor_day_bags HD for the opening day.
+    Wash/fold timestamps come only from scans on/after activation (not historical).
+    """
+    ensure_management_hd_columns(cursor)
+    org = int(organization_id)
+    day = opening_date_et or HD_WORKFLOW_ACTIVATION_DATE
+    activation = HD_WORKFLOW_ACTIVATION_DATE
+    if day < activation:
+        return {"ok": False, "error": "opening_date_before_activation", "seeded": 0}
+
+    if not table_exists(cursor, "rinse_shift_monitor_day_bags"):
+        return {"ok": False, "error": "missing_day_bags", "seeded": 0}
+
+    cursor.execute(
+        """
+        SELECT bag_id
+        FROM rinse_shift_monitor_day_bags
+        WHERE organization_id = %s
+          AND shift_date_et = %s
+          AND UPPER(COALESCE(service_type, '')) = 'HD'
+        ORDER BY bag_id
+        """,
+        (org, day),
+    )
+    bag_ids = [_norm_bag(r.get("bag_id")) for r in (cursor.fetchall() or []) if _norm_bag(r.get("bag_id"))]
+    user_maps = _load_user_maps(cursor, org)
+    seeded: list[dict[str, Any]] = []
+
+    for bid in bag_ids:
+        events = _load_candidate_events_for_bags(cursor, org, day, [bid])
+        state = resolve_order_state(
+            events,
+            service_hint="HD",
+            production=None,
+            user_maps=user_maps,
+            user_names={},
+            activation_date=activation,
+        ) or {
+            "bag_id": bid,
+            "status": STATUS_PENDING_WASH,
+            "washed_at": None,
+            "folded_at": None,
+            "washed_by_user_id": None,
+            "folded_by_user_id": None,
+            "washed_by_name": None,
+            "folded_by_name": None,
+            "washed_attribution_source": None,
+            "folded_attribution_source": None,
+        }
+
+        washed_at = state.get("washed_at")
+        folded_at = state.get("folded_at")
+        washed_uid = state.get("washed_by_user_id")
+        folded_uid = state.get("folded_by_user_id")
+        washed_name = state.get("washed_by_name")
+        folded_name = state.get("folded_by_name")
+        wf = derive_workflow_status(
+            washed_at=washed_at,
+            folded_at=folded_at,
+            explicitly_complete=False,
+        )
+        # Revenue ops date: fold date when folded, else opening/admission day.
+        ops_date = business_date_of(folded_at) or day
+
+        cursor.execute(
+            """
+            SELECT id, version FROM hd_day_bag_production
+            WHERE organization_id=%s AND bag_id=%s AND operations_date_et=%s
+            LIMIT 1
+            """,
+            (org, bid, ops_date),
+        )
+        existing = cursor.fetchone()
+        if existing:
+            cursor.execute(
+                """
+                UPDATE hd_day_bag_production SET
+                  washed_at=%s,
+                  washed_by_user_id=%s,
+                  washed_by_name_snapshot=%s,
+                  washed_date_et=%s,
+                  folded_at=%s,
+                  folded_by_user_id=%s,
+                  folded_by_name_snapshot=%s,
+                  folded_date_et=%s,
+                  washed_attribution_source=%s,
+                  folded_attribution_source=%s,
+                  workflow_status=%s,
+                  management_completed_at=NULL,
+                  management_completed_by_user_id=NULL,
+                  management_completed_by_name=NULL,
+                  updated_by_user_id=%s,
+                  version=version+1
+                WHERE id=%s
+                """,
+                (
+                    washed_at,
+                    washed_uid,
+                    washed_name,
+                    business_date_of(washed_at),
+                    folded_at,
+                    folded_uid,
+                    folded_name,
+                    business_date_of(folded_at),
+                    state.get("washed_attribution_source") or (ATTR_SOURCE_SCAN if washed_at else None),
+                    state.get("folded_attribution_source") or (ATTR_SOURCE_SCAN if folded_at else None),
+                    wf,
+                    actor_user_id,
+                    int(existing["id"]),
+                ),
+            )
+        else:
+            # Prefer single durable row per bag for opening: upsert by bag if another ops date exists.
+            other = _load_production_by_bag(cursor, org, [bid]).get(bid)
+            if other and str(other.get("workflow_status") or "").upper() != WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED:
+                cursor.execute(
+                    """
+                    UPDATE hd_day_bag_production SET
+                      operations_date_et=%s,
+                      washed_at=%s,
+                      washed_by_user_id=%s,
+                      washed_by_name_snapshot=%s,
+                      washed_date_et=%s,
+                      folded_at=%s,
+                      folded_by_user_id=%s,
+                      folded_by_name_snapshot=%s,
+                      folded_date_et=%s,
+                      washed_attribution_source=%s,
+                      folded_attribution_source=%s,
+                      workflow_status=%s,
+                      management_completed_at=NULL,
+                      management_completed_by_user_id=NULL,
+                      management_completed_by_name=NULL,
+                      updated_by_user_id=%s,
+                      version=version+1
+                    WHERE id=%s
+                    """,
+                    (
+                        ops_date,
+                        washed_at,
+                        washed_uid,
+                        washed_name,
+                        business_date_of(washed_at),
+                        folded_at,
+                        folded_uid,
+                        folded_name,
+                        business_date_of(folded_at),
+                        state.get("washed_attribution_source") or (ATTR_SOURCE_SCAN if washed_at else None),
+                        state.get("folded_attribution_source") or (ATTR_SOURCE_SCAN if folded_at else None),
+                        wf,
+                        actor_user_id,
+                        int(other["id"]),
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO hd_day_bag_production (
+                      organization_id, operations_date_et, bag_id, status, workflow_status,
+                      washed_at, washed_by_user_id, washed_by_name_snapshot, washed_date_et,
+                      folded_at, folded_by_user_id, folded_by_name_snapshot, folded_date_et,
+                      washed_attribution_source, folded_attribution_source,
+                      created_by_user_id, updated_by_user_id, version
+                    ) VALUES (
+                      %s,%s,%s,%s,%s,
+                      %s,%s,%s,%s,
+                      %s,%s,%s,%s,
+                      %s,%s,
+                      %s,%s,1
+                    )
+                    """,
+                    (
+                        org,
+                        ops_date,
+                        bid,
+                        PROD_NOT_RECORDED,
+                        wf,
+                        washed_at,
+                        washed_uid,
+                        washed_name,
+                        business_date_of(washed_at),
+                        folded_at,
+                        folded_uid,
+                        folded_name,
+                        business_date_of(folded_at),
+                        state.get("washed_attribution_source") or (ATTR_SOURCE_SCAN if washed_at else None),
+                        state.get("folded_attribution_source") or (ATTR_SOURCE_SCAN if folded_at else None),
+                        actor_user_id,
+                        actor_user_id,
+                    ),
+                )
+        seeded.append(
+            {
+                "bag_id": bid,
+                "workflow_status": wf,
+                "operations_date_et": ops_date.isoformat(),
+                "washed_at": str(washed_at) if washed_at else None,
+                "folded_at": str(folded_at) if folded_at else None,
+            }
+        )
+
+    counts = {
+        STATUS_PENDING_WASH: sum(1 for s in seeded if s["workflow_status"] == STATUS_PENDING_WASH),
+        STATUS_WASHED: sum(1 for s in seeded if s["workflow_status"] == STATUS_WASHED),
+        STATUS_AWAITING_ENTRY: sum(1 for s in seeded if s["workflow_status"] == STATUS_AWAITING_ENTRY),
+        STATUS_COMPLETE: sum(1 for s in seeded if s["workflow_status"] == STATUS_COMPLETE),
+    }
+    return {
+        "ok": True,
+        "opening_date_et": day.isoformat(),
+        "activation_date_et": activation.isoformat(),
+        "scrape_run_id": scrape_run_id,
+        "seeded": len(seeded),
+        "counts": counts,
+        "orders": seeded,
+    }

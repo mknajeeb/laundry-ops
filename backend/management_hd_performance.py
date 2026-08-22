@@ -12,6 +12,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 from backend.management_rinse_hd import (
+    HD_WORKFLOW_ACTIVATION_DATE,
+    WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
     ensure_management_hd_columns,
     _batch_user_names,
     _money,
@@ -29,6 +31,18 @@ def build_hd_employee_performance(
     """List-first HD performance for one ET day. Batch name resolve; no N+1."""
     ensure_management_hd_columns(cursor)
     org = int(organization_id)
+    if selected_date_et < HD_WORKFLOW_ACTIVATION_DATE:
+        return {
+            "date_et": selected_date_et.isoformat(),
+            "employees": [],
+            "unmapped": {"washes": [], "folds": []},
+            "model": {
+                "wash_credit": "washed_by_user_id + washed_at date",
+                "fold_credit": "folded_by_user_id + folded_at date",
+                "not_used": "revenue entry / explicit Complete date",
+                "activation_date_et": HD_WORKFLOW_ACTIVATION_DATE.isoformat(),
+            },
+        }
     if not table_exists(cursor, "hd_day_bag_production"):
         return {
             "date_et": selected_date_et.isoformat(),
@@ -43,13 +57,21 @@ def build_hd_employee_performance(
                total_items, revenue, operations_date_et, workflow_status, status
         FROM hd_day_bag_production
         WHERE organization_id = %s
+          AND COALESCE(workflow_status, '') <> %s
+          AND operations_date_et >= %s
           AND (
             (washed_at IS NOT NULL AND DATE(washed_at) = %s)
             OR (folded_at IS NOT NULL AND DATE(folded_at) = %s)
           )
         ORDER BY bag_id
         """,
-        (org, selected_date_et, selected_date_et),
+        (
+            org,
+            WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
+            HD_WORKFLOW_ACTIVATION_DATE,
+            selected_date_et,
+            selected_date_et,
+        ),
     )
     rows = [dict(r) for r in (cursor.fetchall() or [])]
 

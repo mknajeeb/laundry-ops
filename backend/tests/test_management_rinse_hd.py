@@ -98,23 +98,43 @@ def test_three_plus_complete_cleaning_still_second():
 
 def test_cross_day_wash_fold_revenue_on_fold_date():
     events = [
-        _ev("load-in", datetime(2026, 8, 14, 8, 0), eid=1),
-        _ev("create-workitem-bulk", datetime(2026, 8, 14, 15, 20), user="Maria", eid=2),
-        _ev("workitems-added", datetime(2026, 8, 14, 15, 20), eid=3),
-        _ev("complete-cleaning", datetime(2026, 8, 15, 10, 15), user="Tarannum", eid=4),
-        _ev("complete-cleaning Last Scan", datetime(2026, 8, 15, 10, 20), user="Tarannum", eid=5),
+        _ev("load-in", datetime(2026, 8, 21, 8, 0), eid=1),
+        _ev("create-workitem-bulk", datetime(2026, 8, 21, 15, 20), user="Maria", eid=2),
+        _ev("workitems-added", datetime(2026, 8, 21, 15, 20), eid=3),
+        _ev("complete-cleaning", datetime(2026, 8, 22, 10, 15), user="Tarannum", eid=4),
+        _ev("complete-cleaning Last Scan", datetime(2026, 8, 22, 10, 20), user="Tarannum", eid=5),
     ]
     state = resolve_order_state(
         events,
         service_hint="HD",
         production={"total_items": 8, "revenue": 42},
+        activation_date=date(2026, 8, 21),
     )
     assert state["status"] == STATUS_AWAITING_ENTRY
-    assert business_date_of(state["washed_at"]).isoformat() == "2026-08-14"
-    assert business_date_of(state["folded_at"]).isoformat() == "2026-08-15"
-    assert state["revenue_date_et"].isoformat() == "2026-08-15"
-    assert order_visible_on_day(state, date(2026, 8, 15)) == STATUS_AWAITING_ENTRY
+    assert business_date_of(state["washed_at"]).isoformat() == "2026-08-21"
+    assert business_date_of(state["folded_at"]).isoformat() == "2026-08-22"
+    assert state["revenue_date_et"].isoformat() == "2026-08-22"
+    assert order_visible_on_day(state, date(2026, 8, 22)) == STATUS_AWAITING_ENTRY
     assert state["status"] != STATUS_COMPLETE
+
+
+def test_activation_cutoff_ignores_pre_activation_wash_fold():
+    events = [
+        _ev("create-workitem-bulk", datetime(2026, 8, 15, 9, 0), user="Old", eid=1),
+        _ev("complete-cleaning", datetime(2026, 8, 15, 12, 0), user="OldFold", eid=2),
+        _ev("workitems-added", datetime(2026, 8, 15, 9, 0), eid=3),
+    ]
+    state = resolve_order_state(
+        events,
+        service_hint="HD",
+        activation_date=date(2026, 8, 21),
+    )
+    assert state is not None
+    assert state["status"] == STATUS_PENDING_WASH
+    assert state["washed_at"] is None
+    assert state["folded_at"] is None
+    assert order_visible_on_day(state, date(2026, 8, 20)) is None
+    assert order_visible_on_day(state, date(2026, 8, 21)) == STATUS_PENDING_WASH
 
 
 def test_explicit_complete_required():
@@ -202,8 +222,8 @@ def test_hd_performance_credits_wash_fold_not_complete_date():
 
     from backend.management_hd_performance import build_hd_employee_performance
 
-    washed_at = datetime(2026, 8, 14, 10, 0)
-    folded_at = datetime(2026, 8, 15, 11, 0)
+    washed_at = datetime(2026, 8, 21, 10, 0)
+    folded_at = datetime(2026, 8, 22, 11, 0)
     row = {
         "bag_id": "HD1",
         "washed_by_user_id": 10,
@@ -214,7 +234,7 @@ def test_hd_performance_credits_wash_fold_not_complete_date():
         "folded_at": folded_at,
         "total_items": 8,
         "revenue": 42.0,
-        "operations_date_et": date(2026, 8, 15),
+        "operations_date_et": date(2026, 8, 22),
         "workflow_status": "COMPLETE",
         "status": "COMPLETE",
     }
@@ -227,9 +247,10 @@ def test_hd_performance_credits_wash_fold_not_complete_date():
         "backend.management_hd_performance._batch_user_names",
         return_value={10: "Maria", 20: "Tarannum"},
     ):
-        wash_day = build_hd_employee_performance(cursor, 3, date(2026, 8, 14))
-        fold_day = build_hd_employee_performance(cursor, 3, date(2026, 8, 15))
-        complete_only = build_hd_employee_performance(cursor, 3, date(2026, 8, 16))
+        wash_day = build_hd_employee_performance(cursor, 3, date(2026, 8, 21))
+        fold_day = build_hd_employee_performance(cursor, 3, date(2026, 8, 22))
+        complete_only = build_hd_employee_performance(cursor, 3, date(2026, 8, 23))
+        pre_activation = build_hd_employee_performance(cursor, 3, date(2026, 8, 15))
 
     wash_by = {e["user_id"]: e for e in wash_day["employees"]}
     assert wash_by[10]["wash_count"] == 1
@@ -245,3 +266,4 @@ def test_hd_performance_credits_wash_fold_not_complete_date():
     assert 10 not in fold_by
 
     assert complete_only["employees"] == []
+    assert pre_activation["employees"] == []
