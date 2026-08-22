@@ -25,6 +25,7 @@ from backend.management_rinse_hd import (
     build_rinse_hd_summary,
     get_rinse_hd_order_detail,
     mark_rinse_hd_complete,
+    run_hd_activation_reset,
     save_rinse_hd_items_revenue,
     update_rinse_hd_attribution,
 )
@@ -102,8 +103,59 @@ def register_management_rinse_hd_routes(
             if employee and status in ("", "all") and request.args.get("mobile") == "1":
                 status = "awaiting_entry"
             payload = build_rinse_hd_day(cursor, oid, selected, status=status)
+            # Durable admit / scan persist may write during list read.
+            conn.commit()
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/rinse-hd/activation-reset", methods=["POST"])
+    def management_rinse_hd_activation_reset():
+        """Manager-only: soft-quarantine pre-activation HD rows + seed opening day."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            if not is_hub_manager(me):
+                body, code = access_denied_payload()
+                return jsonify(body), code
+            body = request.get_json(silent=True) or {}
+            raw_date = str(body.get("opening_date_et") or body.get("date_et") or "").strip()
+            opening = None
+            if raw_date:
+                try:
+                    opening = _selected_date(raw_date, employee=False)
+                except ValueError as exc:
+                    return jsonify({"error": str(exc)}), 400
+            scrape_run_id = body.get("scrape_run_id")
+            try:
+                scrape_run_id = int(scrape_run_id) if scrape_run_id not in (None, "") else None
+            except (TypeError, ValueError):
+                scrape_run_id = None
+            result = run_hd_activation_reset(
+                cursor,
+                oid,
+                opening_date_et=opening,
+                scrape_run_id=scrape_run_id,
+                actor_user_id=_actor_user_id(me),
+            )
+            if not result.get("ok"):
+                conn.rollback()
+                return jsonify(json_safe_rinse(result)), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(result))
+        except Exception as exc:
+            conn.rollback()
             return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()

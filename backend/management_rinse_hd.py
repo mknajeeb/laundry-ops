@@ -52,6 +52,7 @@ ATTR_SOURCE_MANAGER = "MANAGER"
 ACTION_ATTRIBUTION_EDIT = "ATTRIBUTION_EDIT"
 ACTION_EXPLICIT_COMPLETE = "EXPLICIT_COMPLETE"
 ACTION_ITEMS_REVENUE = "ITEMS_REVENUE_DRAFT"
+ACTION_ADMIT = "ADMIT"
 
 
 def _norm_bag(bag_id: Any) -> str:
@@ -172,6 +173,7 @@ def ensure_management_hd_columns(cursor) -> None:
         ("workflow_status", "VARCHAR(32) NULL"),
         ("washed_attribution_source", "VARCHAR(32) NULL"),
         ("folded_attribution_source", "VARCHAR(32) NULL"),
+        ("admitted_at", "DATETIME NULL"),
     )
     for col, ddl in specs:
         if table_has_column(cursor, "hd_day_bag_production", col):
@@ -641,6 +643,232 @@ def _load_production_by_bag(cursor, organization_id: int, bag_ids: Sequence[str]
     return out
 
 
+def _is_workflow_complete_row(row: Mapping[str, Any] | None) -> bool:
+    if not row:
+        return False
+    if row.get("management_completed_at"):
+        return True
+    return str(row.get("workflow_status") or "").strip().lower() == STATUS_COMPLETE
+
+
+def _load_active_admitted_bag_ids(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    activation: date = HD_WORKFLOW_ACTIVATION_DATE,
+) -> set[str]:
+    """Durable HD admissions that must appear even if absent from live day_bags.
+
+    Incomplete rows (not explicit Complete) stay active from admission ops date
+    forward. Complete rows only surface on their fold/ops/complete day.
+    """
+    if not table_exists(cursor, "hd_day_bag_production"):
+        return set()
+    ensure_management_hd_columns(cursor)
+    org = int(organization_id)
+    cursor.execute(
+        """
+        SELECT bag_id, workflow_status, management_completed_at,
+               operations_date_et, washed_at, folded_at
+        FROM hd_day_bag_production
+        WHERE organization_id = %s
+          AND COALESCE(workflow_status, '') <> %s
+          AND operations_date_et >= %s
+        """,
+        (org, WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED, activation),
+    )
+    out: set[str] = set()
+    for row in cursor.fetchall() or []:
+        bid = _norm_bag(row.get("bag_id"))
+        if not bid:
+            continue
+        ops = row.get("operations_date_et")
+        if isinstance(ops, datetime):
+            ops_day = ops.date()
+        elif isinstance(ops, date):
+            ops_day = ops
+        elif ops:
+            try:
+                ops_day = date.fromisoformat(str(ops)[:10])
+            except ValueError:
+                ops_day = None
+        else:
+            ops_day = None
+        if ops_day is not None and ops_day > selected_date_et:
+            continue
+        if not _is_workflow_complete_row(row):
+            # Admitted incomplete — stay until Complete, independent of portal.
+            out.add(bid)
+            continue
+        # Complete: only on matching business day
+        fold_day = business_date_of(row.get("folded_at"))
+        done_day = business_date_of(row.get("management_completed_at"))
+        if (
+            ops_day == selected_date_et
+            or fold_day == selected_date_et
+            or done_day == selected_date_et
+        ):
+            out.add(bid)
+    return out
+
+
+def _ensure_admitted_production_row(
+    cursor,
+    *,
+    org: int,
+    bid: str,
+    admission_date_et: date,
+    actor_user_id: int | None = None,
+) -> dict[str, Any]:
+    """Persist a durable pending_wash row on first HD discovery (idempotent)."""
+    ensure_management_hd_columns(cursor)
+    existing = _load_production_by_bag(cursor, org, [bid]).get(bid)
+    if existing:
+        wf = str(existing.get("workflow_status") or "").strip().upper()
+        if wf == WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED:
+            # Re-admit into new workflow on activation+ discovery.
+            now = business_now()
+            now_naive = now.replace(tzinfo=None) if getattr(now, "tzinfo", None) else now
+            cursor.execute(
+                """
+                UPDATE hd_day_bag_production SET
+                  operations_date_et=%s,
+                  workflow_status=%s,
+                  admitted_at=COALESCE(admitted_at, %s),
+                  washed_at=NULL,
+                  folded_at=NULL,
+                  washed_by_user_id=NULL,
+                  folded_by_user_id=NULL,
+                  washed_by_name_snapshot=NULL,
+                  folded_by_name_snapshot=NULL,
+                  washed_date_et=NULL,
+                  folded_date_et=NULL,
+                  washed_attribution_source=NULL,
+                  folded_attribution_source=NULL,
+                  management_completed_at=NULL,
+                  management_completed_by_user_id=NULL,
+                  management_completed_by_name=NULL,
+                  status=%s,
+                  updated_by_user_id=%s,
+                  version=version+1
+                WHERE id=%s
+                """,
+                (
+                    admission_date_et,
+                    STATUS_PENDING_WASH,
+                    now_naive,
+                    PROD_NOT_RECORDED,
+                    actor_user_id,
+                    int(existing["id"]),
+                ),
+            )
+            existing = _load_production_by_bag(cursor, org, [bid]).get(bid) or existing
+            return {"bag_id": bid, "created": False, "reactivated": True, "row": existing}
+        # Already admitted — never drop because portal left.
+        if not existing.get("admitted_at") and table_has_column(cursor, "hd_day_bag_production", "admitted_at"):
+            now = business_now()
+            now_naive = now.replace(tzinfo=None) if getattr(now, "tzinfo", None) else now
+            cursor.execute(
+                "UPDATE hd_day_bag_production SET admitted_at=%s WHERE id=%s AND admitted_at IS NULL",
+                (now_naive, int(existing["id"])),
+            )
+        return {"bag_id": bid, "created": False, "reactivated": False, "row": existing}
+
+    now = business_now()
+    now_naive = now.replace(tzinfo=None) if getattr(now, "tzinfo", None) else now
+    cursor.execute(
+        """
+        INSERT INTO hd_day_bag_production (
+          organization_id, operations_date_et, bag_id, status, workflow_status,
+          admitted_at, created_by_user_id, updated_by_user_id, version
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1)
+        """,
+        (
+            org,
+            admission_date_et,
+            bid,
+            PROD_NOT_RECORDED,
+            STATUS_PENDING_WASH,
+            now_naive,
+            actor_user_id,
+            actor_user_id,
+        ),
+    )
+    if table_exists(cursor, "hd_day_bag_production_audits"):
+        cursor.execute(
+            """
+            INSERT INTO hd_day_bag_production_audits (
+              organization_id, operations_date_et, bag_id, action,
+              version_before, version_after, after_json, reason,
+              actor_user_id, actor_display_name
+            ) VALUES (%s,%s,%s,%s,0,1,%s,%s,%s,%s)
+            """,
+            (
+                org,
+                admission_date_et,
+                bid,
+                ACTION_ADMIT,
+                json.dumps(
+                    {
+                        "workflow_status": STATUS_PENDING_WASH,
+                        "admitted_at": str(now_naive),
+                        "operations_date_et": admission_date_et.isoformat(),
+                    }
+                ),
+                "management_rinse_hd_durable_admit",
+                actor_user_id,
+                None,
+            ),
+        )
+    row = _load_production_by_bag(cursor, org, [bid]).get(bid) or {
+        "bag_id": bid,
+        "operations_date_et": admission_date_et,
+        "workflow_status": STATUS_PENDING_WASH,
+        "admitted_at": now_naive,
+    }
+    return {"bag_id": bid, "created": True, "reactivated": False, "row": row}
+
+
+def admit_discovered_hd_bags(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    discovered_bag_ids: Sequence[str],
+    *,
+    actor_user_id: int | None = None,
+) -> dict[str, Any]:
+    """Write durable production rows for newly discovered activation+ HD bags.
+
+    Live day_bags / portal only discovers NEW orders. Already-admitted bags are
+    left intact (portal absence must not remove them).
+    """
+    org = int(organization_id)
+    activation = HD_WORKFLOW_ACTIVATION_DATE
+    if selected_date_et < activation:
+        return {"admitted_new": 0, "already_admitted": 0, "bag_ids": []}
+    created = 0
+    already = 0
+    bag_ids: list[str] = []
+    for raw in discovered_bag_ids:
+        bid = _norm_bag(raw)
+        if not bid:
+            continue
+        result = _ensure_admitted_production_row(
+            cursor,
+            org=org,
+            bid=bid,
+            admission_date_et=selected_date_et,
+            actor_user_id=actor_user_id,
+        )
+        bag_ids.append(bid)
+        if result.get("created") or result.get("reactivated"):
+            created += 1
+        else:
+            already += 1
+    return {"admitted_new": created, "already_admitted": already, "bag_ids": bag_ids}
+
+
 def _batch_user_names(cursor, user_ids: Sequence[int]) -> dict[int, str]:
     ids = sorted({int(u) for u in user_ids if u is not None})
     if not ids or not table_exists(cursor, "users"):
@@ -731,38 +959,18 @@ def build_rinse_hd_day(
         }
 
     hints = _load_hd_service_hints(cursor, org, selected_date_et)
-    candidate_ids = set(hints.keys())
-
-    # Durable admitted production rows (activation+) remain after portal disappearance.
-    if table_exists(cursor, "hd_day_bag_production"):
-        ensure_management_hd_columns(cursor)
-        cursor.execute(
-            """
-            SELECT bag_id FROM hd_day_bag_production
-            WHERE organization_id = %s
-              AND COALESCE(workflow_status, '') <> %s
-              AND operations_date_et >= %s
-              AND (
-                operations_date_et = %s
-                OR DATE(folded_at) = %s
-                OR DATE(washed_at) = %s
-                OR DATE(management_completed_at) = %s
-              )
-            """,
-            (
-                org,
-                WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
-                activation,
-                selected_date_et,
-                selected_date_et,
-                selected_date_et,
-                selected_date_et,
-            ),
-        )
-        for row in cursor.fetchall() or []:
-            bid = _norm_bag(row.get("bag_id"))
-            if bid:
-                candidate_ids.add(bid)
+    # Live portal/day_bags discovers NEW HD only — persist on first sight.
+    admit_meta = admit_discovered_hd_bags(
+        cursor,
+        org,
+        selected_date_et,
+        list(hints.keys()),
+    )
+    candidate_ids: set[str] = set(hints.keys())
+    # Durable incomplete admissions remain after portal disappearance.
+    candidate_ids |= _load_active_admitted_bag_ids(
+        cursor, org, selected_date_et, activation=activation
+    )
 
     events = _load_candidate_events_for_bags(cursor, org, selected_date_et, list(candidate_ids))
     by_bag: dict[str, list[dict[str, Any]]] = {}
@@ -773,7 +981,7 @@ def build_rinse_hd_day(
         by_bag.setdefault(bid, []).append(ev)
         candidate_ids.add(bid)
 
-    # Bags with HD hint but no scans yet still appear as pending_wash
+    # Bags with HD hint / durable admit but no scans yet still appear as pending_wash
     for bid in list(candidate_ids):
         by_bag.setdefault(bid, [])
 
@@ -797,6 +1005,22 @@ def build_rinse_hd_day(
         filtered_prod[bid] = row
     production = filtered_prod
     user_maps = _load_user_maps(cursor, org)
+
+    # Persist activation+ wash/fold evidence onto durable admitted rows (portal-independent).
+    for bid, bag_events in by_bag.items():
+        if bid not in production:
+            continue
+        updated = _persist_scan_state_for_admitted(
+            cursor,
+            org=org,
+            bid=bid,
+            events=bag_events,
+            production=production.get(bid),
+            user_maps=user_maps,
+            activation=activation,
+        )
+        if updated:
+            production[bid] = updated
 
     # First pass: collect user ids for batch name resolve
     uid_seed: set[int] = set()
@@ -959,12 +1183,16 @@ def build_rinse_hd_day(
             "revenue_date": "fold_date",
             "items_revenue_table": "hd_day_bag_production",
             "complete": "explicit after fold + items + revenue",
+            "admission": "durable_hd_day_bag_production_on_discover",
             "activation_date_et": activation.isoformat(),
         },
         "_meta": {
             "elapsed_ms": elapsed_ms,
             "order_count": len(orders),
             "activation_date_et": activation.isoformat(),
+            "admitted_new": int(admit_meta.get("admitted_new") or 0),
+            "already_admitted": int(admit_meta.get("already_admitted") or 0),
+            "durable_admission": True,
         },
     }
 
@@ -1783,6 +2011,159 @@ STATUS_OPEN = "open"
 STATUS_COMPLETED = "completed"
 
 
+def _persist_scan_state_for_admitted(
+    cursor,
+    *,
+    org: int,
+    bid: str,
+    events: Sequence[Mapping[str, Any]],
+    production: Mapping[str, Any] | None,
+    user_maps: Mapping[str, Mapping[str, Any]],
+    activation: date,
+) -> dict[str, Any] | None:
+    """Persist activation+ wash/fold scan evidence onto an admitted production row."""
+    if not production or not production.get("id"):
+        return None
+    if _is_workflow_complete_row(production):
+        return dict(production)
+    if str(production.get("workflow_status") or "").strip().upper() == WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED:
+        return dict(production)
+
+    wash_ev = select_hd_wash_event(events)
+    wash_at = wash_ev.get("scanned_at_parsed") if wash_ev else None
+    if wash_at and not _on_or_after_activation(wash_at, activation):
+        wash_ev = None
+        wash_at = None
+    fold_ev = select_hd_fold_event(events, wash_at=wash_at)
+    fold_at = fold_ev.get("scanned_at_parsed") if fold_ev else None
+    if fold_at and not _on_or_after_activation(fold_at, activation):
+        fold_ev = None
+        fold_at = None
+
+    wash_src = str(production.get("washed_attribution_source") or "").strip().upper()
+    fold_src = str(production.get("folded_attribution_source") or "").strip().upper()
+
+    washed_at = production.get("washed_at")
+    washed_uid = production.get("washed_by_user_id")
+    washed_name = production.get("washed_by_name_snapshot")
+    if wash_src != ATTR_SOURCE_MANAGER and wash_ev:
+        washed_at = washed_at or wash_at
+        mapped_uid, mapped_name = _map_rinse_name_to_user(wash_ev.get("user_name"), user_maps)
+        washed_uid = washed_uid or mapped_uid
+        washed_name = washed_name or mapped_name or wash_ev.get("user_name")
+
+    folded_at = production.get("folded_at")
+    folded_uid = production.get("folded_by_user_id")
+    folded_name = production.get("folded_by_name_snapshot")
+    if fold_src != ATTR_SOURCE_MANAGER and fold_ev:
+        folded_at = folded_at or fold_at
+        mapped_uid, mapped_name = _map_rinse_name_to_user(fold_ev.get("user_name"), user_maps)
+        folded_uid = folded_uid or mapped_uid
+        folded_name = folded_name or mapped_name or fold_ev.get("user_name")
+
+    if folded_at and not washed_at:
+        folded_at = None
+        folded_uid = None
+        folded_name = None
+
+    wf = derive_workflow_status(
+        washed_at=washed_at,
+        folded_at=folded_at,
+        explicitly_complete=False,
+    )
+    # Keep admission ops date until fold; then fold date is revenue date.
+    ops_date = business_date_of(folded_at) or production.get("operations_date_et")
+    if hasattr(ops_date, "isoformat") and not isinstance(ops_date, date):
+        pass
+    elif not isinstance(ops_date, date) and ops_date:
+        try:
+            ops_date = date.fromisoformat(str(ops_date)[:10])
+        except ValueError:
+            ops_date = activation
+
+    cursor.execute(
+        """
+        UPDATE hd_day_bag_production SET
+          washed_at=%s,
+          washed_by_user_id=%s,
+          washed_by_name_snapshot=%s,
+          washed_date_et=%s,
+          washed_attribution_source=COALESCE(washed_attribution_source, %s),
+          folded_at=%s,
+          folded_by_user_id=%s,
+          folded_by_name_snapshot=%s,
+          folded_date_et=%s,
+          folded_attribution_source=COALESCE(folded_attribution_source, %s),
+          workflow_status=%s,
+          operations_date_et=COALESCE(%s, operations_date_et),
+          processing_started_at=COALESCE(processing_started_at, %s),
+          processing_operator_name=COALESCE(processing_operator_name, %s),
+          source_completion_at=COALESCE(%s, source_completion_at),
+          source_completion_user_name=COALESCE(%s, source_completion_user_name)
+        WHERE id=%s
+        """,
+        (
+            washed_at,
+            washed_uid,
+            washed_name,
+            business_date_of(washed_at),
+            ATTR_SOURCE_SCAN if washed_at and wash_src != ATTR_SOURCE_MANAGER else None,
+            folded_at,
+            folded_uid,
+            folded_name,
+            business_date_of(folded_at),
+            ATTR_SOURCE_SCAN if folded_at and fold_src != ATTR_SOURCE_MANAGER else None,
+            wf,
+            ops_date,
+            wash_at,
+            (wash_ev or {}).get("user_name"),
+            fold_at,
+            (fold_ev or {}).get("user_name"),
+            int(production["id"]),
+        ),
+    )
+    updated = dict(production)
+    updated.update(
+        {
+            "washed_at": washed_at,
+            "washed_by_user_id": washed_uid,
+            "washed_by_name_snapshot": washed_name,
+            "folded_at": folded_at,
+            "folded_by_user_id": folded_uid,
+            "folded_by_name_snapshot": folded_name,
+            "workflow_status": wf,
+            "operations_date_et": ops_date or production.get("operations_date_et"),
+        }
+    )
+    return updated
+
+
+def run_hd_activation_reset(
+    cursor,
+    organization_id: int,
+    *,
+    opening_date_et: date | None = None,
+    scrape_run_id: int | None = None,
+    actor_user_id: int | None = None,
+) -> dict[str, Any]:
+    """Soft-quarantine pre-activation rows, then seed opening-day durable admissions."""
+    day = opening_date_et or HD_WORKFLOW_ACTIVATION_DATE
+    quarantine = soft_quarantine_pre_activation_hd_workflow(cursor, organization_id)
+    seeded = seed_hd_workflow_opening_day(
+        cursor,
+        organization_id,
+        day,
+        scrape_run_id=scrape_run_id,
+        actor_user_id=actor_user_id,
+    )
+    return {
+        "ok": bool(seeded.get("ok")),
+        "activation_date_et": HD_WORKFLOW_ACTIVATION_DATE.isoformat(),
+        "quarantine": quarantine,
+        "seed": seeded,
+    }
+
+
 def soft_quarantine_pre_activation_hd_workflow(cursor, organization_id: int) -> dict[str, Any]:
     """Mark pre-activation HD production rows excluded from the new workflow (no DELETE)."""
     ensure_management_hd_columns(cursor)
@@ -1880,6 +2261,8 @@ def seed_hd_workflow_opening_day(
         )
         # Revenue ops date: fold date when folded, else opening/admission day.
         ops_date = business_date_of(folded_at) or day
+        admit_now = business_now()
+        admit_ts = admit_now.replace(tzinfo=None) if getattr(admit_now, "tzinfo", None) else admit_now
 
         cursor.execute(
             """
@@ -1905,6 +2288,7 @@ def seed_hd_workflow_opening_day(
                   washed_attribution_source=%s,
                   folded_attribution_source=%s,
                   workflow_status=%s,
+                  admitted_at=COALESCE(admitted_at, %s),
                   management_completed_at=NULL,
                   management_completed_by_user_id=NULL,
                   management_completed_by_name=NULL,
@@ -1924,6 +2308,7 @@ def seed_hd_workflow_opening_day(
                     state.get("washed_attribution_source") or (ATTR_SOURCE_SCAN if washed_at else None),
                     state.get("folded_attribution_source") or (ATTR_SOURCE_SCAN if folded_at else None),
                     wf,
+                    admit_ts,
                     actor_user_id,
                     int(existing["id"]),
                 ),
@@ -1947,6 +2332,7 @@ def seed_hd_workflow_opening_day(
                       washed_attribution_source=%s,
                       folded_attribution_source=%s,
                       workflow_status=%s,
+                      admitted_at=COALESCE(admitted_at, %s),
                       management_completed_at=NULL,
                       management_completed_by_user_id=NULL,
                       management_completed_by_name=NULL,
@@ -1967,6 +2353,7 @@ def seed_hd_workflow_opening_day(
                         state.get("washed_attribution_source") or (ATTR_SOURCE_SCAN if washed_at else None),
                         state.get("folded_attribution_source") or (ATTR_SOURCE_SCAN if folded_at else None),
                         wf,
+                        admit_ts,
                         actor_user_id,
                         int(other["id"]),
                     ),
@@ -1976,12 +2363,14 @@ def seed_hd_workflow_opening_day(
                     """
                     INSERT INTO hd_day_bag_production (
                       organization_id, operations_date_et, bag_id, status, workflow_status,
+                      admitted_at,
                       washed_at, washed_by_user_id, washed_by_name_snapshot, washed_date_et,
                       folded_at, folded_by_user_id, folded_by_name_snapshot, folded_date_et,
                       washed_attribution_source, folded_attribution_source,
                       created_by_user_id, updated_by_user_id, version
                     ) VALUES (
                       %s,%s,%s,%s,%s,
+                      %s,
                       %s,%s,%s,%s,
                       %s,%s,%s,%s,
                       %s,%s,
@@ -1994,6 +2383,7 @@ def seed_hd_workflow_opening_day(
                         bid,
                         PROD_NOT_RECORDED,
                         wf,
+                        admit_ts,
                         washed_at,
                         washed_uid,
                         washed_name,

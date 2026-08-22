@@ -233,6 +233,86 @@ def test_prior_cycle_bulk_ignored_after_new_load_in():
     assert select_hd_fold_event(events, wash_at=entry["scanned_at_parsed"]) is None
 
 
+def test_durable_pending_stays_visible_after_admission_day():
+    """Incomplete admitted pending_wash remains on later days until Complete."""
+    state = {
+        "bag_id": "DUR1",
+        "status": STATUS_PENDING_WASH,
+        "washed_at": None,
+        "folded_at": None,
+        "operations_date_et": date(2026, 8, 21),
+    }
+    assert order_visible_on_day(state, date(2026, 8, 21)) == STATUS_PENDING_WASH
+    assert order_visible_on_day(state, date(2026, 8, 22)) == STATUS_PENDING_WASH
+    assert order_visible_on_day(state, date(2026, 8, 20)) is None
+
+
+def test_admit_discovered_writes_pending_and_is_idempotent():
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_rinse_hd import admit_discovered_hd_bags
+
+    cursor = MagicMock()
+    # First call: no existing row → create. Second: existing row → already admitted.
+    existing_row = {
+        "id": 9,
+        "bag_id": "NEW1",
+        "workflow_status": STATUS_PENDING_WASH,
+        "operations_date_et": date(2026, 8, 21),
+        "admitted_at": datetime(2026, 8, 21, 8, 0),
+    }
+
+    with patch("backend.management_rinse_hd.ensure_management_hd_columns"), patch(
+        "backend.management_rinse_hd.table_exists", return_value=True
+    ), patch(
+        "backend.management_rinse_hd.table_has_column", return_value=True
+    ), patch(
+        "backend.management_rinse_hd._load_production_by_bag",
+        side_effect=[{}, {"NEW1": existing_row}, {"NEW1": existing_row}],
+    ):
+        first = admit_discovered_hd_bags(cursor, 3, date(2026, 8, 21), ["NEW1"])
+        second = admit_discovered_hd_bags(cursor, 3, date(2026, 8, 21), ["NEW1"])
+
+    assert first["admitted_new"] == 1
+    assert first["bag_ids"] == ["NEW1"]
+    assert second["admitted_new"] == 0
+    assert second["already_admitted"] == 1
+    assert cursor.execute.called
+
+
+def test_active_admitted_includes_incomplete_without_selected_day_match():
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_rinse_hd import _load_active_admitted_bag_ids
+
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [
+        {
+            "bag_id": "KEEP1",
+            "workflow_status": STATUS_PENDING_WASH,
+            "management_completed_at": None,
+            "operations_date_et": date(2026, 8, 21),
+            "washed_at": None,
+            "folded_at": None,
+        },
+        {
+            "bag_id": "DONE1",
+            "workflow_status": STATUS_COMPLETE,
+            "management_completed_at": datetime(2026, 8, 21, 18, 0),
+            "operations_date_et": date(2026, 8, 21),
+            "washed_at": datetime(2026, 8, 21, 10, 0),
+            "folded_at": datetime(2026, 8, 21, 12, 0),
+        },
+    ]
+    with patch("backend.management_rinse_hd.ensure_management_hd_columns"), patch(
+        "backend.management_rinse_hd.table_exists", return_value=True
+    ):
+        # Next day: incomplete KEEP1 still active; complete DONE1 not on Aug 22.
+        ids = _load_active_admitted_bag_ids(cursor, 3, date(2026, 8, 22))
+    assert "KEEP1" in ids
+    assert "DONE1" not in ids
+
+
 def test_hd_performance_credits_wash_fold_not_complete_date():
     """Wash/fold performance uses operation timestamps, never Complete/revenue-entry date."""
     from unittest.mock import MagicMock, patch
