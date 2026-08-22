@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from flask import jsonify, request
 
@@ -119,6 +119,24 @@ def register_team_status_routes(
                 selected = _parse_day(raw)
                 if selected is None:
                     return jsonify({"error": "Invalid date_et; use YYYY-MM-DD"}), 400
+            from backend.planned_weekly_schedule import (
+                ensure_week_schedule_carried_forward,
+                normalize_week_start,
+            )
+
+            today = business_today()
+            anchors: set[date] = set()
+            for offset in range(1, 8):
+                chip_day = today + timedelta(days=offset)
+                ws = normalize_week_start(chip_day)
+                if ws:
+                    anchors.add(ws)
+            for ws in sorted(anchors):
+                carry = ensure_week_schedule_carried_forward(
+                    conn, cursor, oid, week_start=ws
+                )
+                if carry:
+                    conn.commit()
             payload = build_team_status_upcoming(conn, oid, date_et=selected)
             return jsonify(payload)
         finally:

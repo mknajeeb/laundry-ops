@@ -1174,15 +1174,19 @@ def carry_forward_week_schedule(
 
     payloads: list[dict[str, Any]] = []
     skipped_entries = 0
+    source_has_sunday = False
     for entry in source_entries:
         uid = int(entry.get("user_id") or 0)
         if uid not in valid_user_ids:
             skipped_entries += 1
             continue
+        dow = int(entry.get("day_of_week") or 0)
+        if dow == 0:
+            source_has_sunday = True
         payloads.append(
             {
                 "user_id": uid,
-                "day_of_week": entry["day_of_week"],
+                "day_of_week": dow,
                 "role": entry.get("role"),
                 "start_time": entry["start_time"],
                 "end_time": entry["end_time"],
@@ -1190,6 +1194,28 @@ def carry_forward_week_schedule(
                 "employer_affiliation": entry.get("employer_affiliation"),
             }
         )
+
+    # When cascading near week-end, the source Sunday column is often still empty
+    # (that calendar Sunday is already in the past). Seed target Sunday from source
+    # Saturday so tomorrow shows up in Team Status after a cascade.
+    if not source_has_sunday:
+        for entry in source_entries:
+            if int(entry.get("day_of_week") or -1) != 6:
+                continue
+            uid = int(entry.get("user_id") or 0)
+            if uid not in valid_user_ids:
+                continue
+            payloads.append(
+                {
+                    "user_id": uid,
+                    "day_of_week": 0,
+                    "role": entry.get("role"),
+                    "start_time": entry["start_time"],
+                    "end_time": entry["end_time"],
+                    "break_minutes": entry.get("break_minutes", 0),
+                    "employer_affiliation": entry.get("employer_affiliation"),
+                }
+            )
 
     entries_copied = 0
     if payloads:

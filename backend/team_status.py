@@ -387,6 +387,24 @@ def _load_planned_day_entries(conn, organization_id: int, day: date) -> list[dic
     return [e for e in entries if int(e.get("day_of_week") or -1) == dow]
 
 
+def _saturday_template_entries_for_upcoming_sunday(
+    conn,
+    organization_id: int,
+    *,
+    today: date,
+    day: date,
+    primary_entries: list[dict],
+) -> list[dict]:
+    """When tomorrow is Sunday and still unplanned, preview today's Saturday shifts."""
+    if primary_entries:
+        return primary_entries
+    if day != today + timedelta(days=1):
+        return primary_entries
+    if day.weekday() != 6 or today.weekday() != 5:
+        return primary_entries
+    return _load_planned_day_entries(conn, organization_id, today)
+
+
 def _role_summary_from_segments(segments: list[dict], breaks: list[dict], *, now: datetime) -> list[dict]:
     role_totals: dict[str, int] = {}
     for seg in segments:
@@ -1067,6 +1085,13 @@ def build_team_status_upcoming(
     from backend.planned_weekly_schedule import _load_workers, _workers_index
 
     entries = _load_planned_day_entries(conn, oid, day)
+    entries = _saturday_template_entries_for_upcoming_sunday(
+        conn,
+        oid,
+        today=today,
+        day=day,
+        primary_entries=entries,
+    )
     workers = _load_workers(conn, oid)
     workers_by = _workers_index(workers)
 

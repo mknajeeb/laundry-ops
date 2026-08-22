@@ -358,3 +358,45 @@ def test_build_team_status_upcoming_groups_by_start(mock_today, mock_planned):
     assert payload["summary"]["staff_count"] == 3
     assert payload["groups"][0]["start_time"] == "06:00"
     assert payload["groups"][0]["entries"][0]["display_name"] == "Francis"
+
+
+@patch("backend.team_status._load_planned_day_entries")
+@patch("backend.team_status.business_today")
+def test_build_team_status_upcoming_uses_saturday_template_for_empty_sunday(
+    mock_today, mock_planned
+):
+    from datetime import date
+
+    from backend.team_status import build_team_status_upcoming
+
+    mock_today.return_value = date(2026, 8, 22)
+
+    def planned_side_effect(conn, org_id, day):
+        if day == date(2026, 8, 23):
+            return []
+        if day == date(2026, 8, 22):
+            return [
+                {
+                    "user_id": 10,
+                    "roles": ["fold"],
+                    "start_time": "08:00",
+                    "end_time": "16:00",
+                    "hours": 8.0,
+                }
+            ]
+        return []
+
+    mock_planned.side_effect = planned_side_effect
+    conn = MagicMock()
+    with patch(
+        "backend.planned_weekly_schedule._load_workers",
+        return_value=[{"user_id": 10, "display_name": "Maria"}],
+    ):
+        with patch(
+            "backend.planned_weekly_schedule._workers_index",
+            return_value={10: {"user_id": 10, "display_name": "Maria"}},
+        ):
+            payload = build_team_status_upcoming(conn, 3, date_et=date(2026, 8, 23))
+    assert payload["is_tomorrow"] is True
+    assert payload["summary"]["staff_count"] == 1
+    assert payload["entries"][0]["display_name"] == "Maria"

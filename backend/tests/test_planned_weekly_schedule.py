@@ -960,6 +960,53 @@ def test_cascade_week_schedule_requires_replace_when_target_has_content():
     assert copied[0]["day_of_week"] == 1
 
 
+def test_carry_forward_seeds_target_sunday_from_source_saturday_when_sunday_empty():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    source = date(2026, 8, 16)
+    target = date(2026, 8, 23)
+    cursor.rows = [
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": source,
+            "user_id": 10,
+            "day_of_week": 6,
+            "role": "fold",
+            "start_time": time(8, 0),
+            "end_time": time(16, 0),
+            "break_minutes": 0,
+        },
+        {
+            "id": 2,
+            "organization_id": 1,
+            "week_start": source,
+            "user_id": 20,
+            "day_of_week": 1,
+            "role": "wash",
+            "start_time": time(7, 0),
+            "end_time": time(15, 0),
+            "break_minutes": 0,
+        },
+    ]
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ):
+        result = carry_forward_week_schedule(
+            conn,
+            cursor,
+            1,
+            target_week_start=target,
+            source_week_start=source,
+        )
+    assert result["entries_copied"] == 3
+    copied = list_week_entries(cursor, 1, week_start=target)
+    sunday = [e for e in copied if int(e["day_of_week"]) == 0]
+    assert len(sunday) == 1
+    assert sunday[0]["user_id"] == 10
+    assert sunday[0]["role"] == "fold"
+
+
 def test_cascade_week_schedule_copies_into_empty_target():
     cursor = _FakeCursor()
     conn = MagicMock()

@@ -1035,6 +1035,9 @@ export default function TeamStatusFlow({ onBack, onLock }) {
         tab={tab}
         onChange={(next) => {
           setSelected(null);
+          if (next === "upcoming") {
+            setUpcomingDate(shiftYmd(etTodayYmd(), 1));
+          }
           setTab(next);
         }}
         t={t}
