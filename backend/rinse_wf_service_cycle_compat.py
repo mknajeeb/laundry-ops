@@ -12,7 +12,6 @@ from backend.rinse_veewash_shift_day import (
     OUTCOME_PENDING,
     OUTCOME_REVIEW_REQUIRED,
     STATUS_OPEN,
-    _workload_shell_from_bags,
     ensure_shift_monitor_day_tables,
     get_day_record,
     get_step1_activation_date,
@@ -212,11 +211,26 @@ def terminal_project_canonical_wf_day_snapshot(
 
     day = get_day_record(cursor, org, shift_date_et)
     status = str((day or {}).get("status") or STATUS_OPEN)
-    wl = _workload_shell_from_bags(
-        all_bags,
-        selected_date_et=shift_date_et,
-        status=status,
-    )
+    rows: list[dict[str, Any]] = []
+    for b in all_bags:
+        snap = dict(b.get("bag_snapshot") or {})
+        rows.append({**b, **snap, "bag_id": b["bag_id"]})
+    wl = {
+        "selected_date_et": shift_date_et.isoformat(),
+        "rows": rows,
+        "review_required": [
+            b["bag_id"]
+            for b in all_bags
+            if b.get("effective_status") == OUTCOME_REVIEW_REQUIRED
+        ],
+        "review_reasons_by_bag": {
+            b["bag_id"]: b.get("review_reason_codes") or []
+            for b in all_bags
+            if b.get("review_reason_codes")
+        },
+        "from_snapshot": True,
+        "shift_day_status": status,
+    }
     activation = get_step1_activation_date(cursor, org) or shift_date_et
     summary = build_step1_headline_summary(
         wl,
