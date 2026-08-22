@@ -384,6 +384,16 @@ def test_e_wf_missing_portal_list_workflow_still_works():
             "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
             return_value=[row],
         ),
+        patch(
+            "backend.management_rinse_wf_review._canonical_review_weights",
+            return_value={
+                "BAGMISS01": {
+                    "pre_weight_lbs": 12.5,
+                    "pre_weight_event_id": 99,
+                    "post_weight_lbs": None,
+                }
+            },
+        ),
         patch("backend.rinse_bulk_workitems.load_bag_bulk_lines") as bulk,
         patch("backend.rinse_veewash_step1_api.load_scans_for_bags") as scans,
     ):
@@ -499,6 +509,16 @@ def test_review_list_is_summary_only_no_scans():
         patch(
             "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
             return_value=[row],
+        ),
+        patch(
+            "backend.management_rinse_wf_review._canonical_review_weights",
+            return_value={
+                "BAGMISS01": {
+                    "pre_weight_lbs": 12.5,
+                    "pre_weight_event_id": 99,
+                    "post_weight_lbs": None,
+                }
+            },
         ),
         patch("backend.rinse_bulk_workitems.load_bag_bulk_lines") as bulk,
         patch("backend.rinse_veewash_step1_api.load_scans_for_bags") as scans,

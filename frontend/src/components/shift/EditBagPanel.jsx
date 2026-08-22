@@ -24,13 +24,16 @@ import {
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { postVeewashStep1Correction, getDailyOperationsHdProductionDetail } from "../../api";
 import FoldingUserSelect from "../folding/FoldingUserSelect";
-import { PayrollDateTimeField } from "../PayrollDateTimeField";
+import { CompactEtDateTimeField } from "../PayrollDateTimeField";
 import ManagementCopyableId from "../management/ManagementCopyableId";
 import {
   buildEditBagPayloadDraft,
   classifyEditReasonRequirements,
+  classifyEditSavePath,
+  defaultReviewReasonCode,
   describeWeightProvenance,
   diffEditBagDraftVsLatest,
+  authoritativeEvidencePre,
   hasCanonicalCompletion,
   isReviewFormDirty,
   reviewActionAvailability,
@@ -58,15 +61,13 @@ function weightFieldValue(v) {
 
 const NO_CHARGE_REASONS = ["Customer cancelled", "False alarm", "Duplicate scan", "Other"];
 
-const FINAL_ACTIONS = [
-  { id: null, label: "Save Review", variant: "contained", color: "primary" },
+const WF_FINAL_ACTIONS = [
   { id: "mark_completed", label: "Save & Mark Completed", variant: "contained", color: "success" },
-  { id: "return_pending", label: "Save & Return to Pending", variant: "outlined", color: "primary" },
-  { id: "exclude", label: "Save & Exclude", variant: "outlined", color: "error" },
+  { id: "return_pending", label: "Return to Pending", variant: "outlined", color: "primary" },
+  { id: "exclude", label: "Exclude", variant: "outlined", color: "error" },
 ];
 
 const HD_FINAL_ACTIONS = [
-  { id: null, label: "Save Review", variant: "contained", color: "primary" },
   { id: "mark_completed", label: "Save & Mark Completed", variant: "contained", color: "success" },
 ];
 
@@ -103,14 +104,14 @@ export default function EditBagPanel({
     rush_flag: bag?.rush_flag || bag?.rush_status || "NON-RUSH",
     entry_at: toPickerValue(bag?.entry_at),
     rack: bag?.entry_rack || bag?.rack || "VeeWash Dirty",
-    pre_weight_lbs: weightFieldValue(bag?.pre_weight_lbs),
+    pre_weight_lbs: weightFieldValue(authoritativeEvidencePre(bag)),
     post_weight_lbs: weightFieldValue(bag?.post_weight_value ?? bag?.post_weight_lbs),
     no_chargeable: String(bag?.bulk_resolution?.resolution_type || "") === "no_charge",
     no_charge_reason: bag?.bulk_resolution?.no_charge_reason || "",
     completion_at: toPickerValue(bag?.completion_at || bag?.canonical_completion_timestamp),
     completed_by: bag?.completed_by || bag?.canonical_completion_employee || "",
     reason: "",
-    reason_code: "",
+    reason_code: defaultReviewReasonCode(bag) || "",
     reason_note: "",
     item_count: bag?.hd_review?.item_count ?? bag?.item_count ?? "",
     total_revenue: bag?.hd_review?.total_revenue ?? bag?.total_revenue ?? "",
@@ -198,7 +199,8 @@ export default function EditBagPanel({
     : "Rush";
   const canonicalOk = hasCanonicalCompletion(baselineBag || bag);
 
-  const preWeightMissing = bag?.pre_weight_lbs === null || bag?.pre_weight_lbs === undefined;
+  const evidencePre = authoritativeEvidencePre(baselineBag || bag);
+  const preWeightMissing = evidencePre === null || evidencePre === undefined || evidencePre === "";
   const postWeightPresent =
     (bag?.post_weight_value ?? bag?.post_weight_lbs) !== null &&
     (bag?.post_weight_value ?? bag?.post_weight_lbs) !== undefined;
@@ -206,7 +208,7 @@ export default function EditBagPanel({
 
   const preProvenance = describeWeightProvenance({
     role: "pre",
-    weightLbs: bag?.pre_weight_lbs,
+    weightLbs: evidencePre,
     source: bag?.pre_weight_source,
     observedAt: bag?.pre_weight_observed_at,
     portalEventAt: bag?.pre_weight_at,
@@ -254,6 +256,11 @@ export default function EditBagPanel({
   }, [catalog, qty, existing, isHd]);
 
   const bulkTotal = lines.reduce((s, l) => s + (l.line_total || 0), 0);
+  const showWorkItems =
+    lines.some((l) => Number(l.quantity) > 0) ||
+    (bag?.reason_codes || []).some((c) => String(c).toUpperCase() === "WF_BULK_WORKITEM_REVIEW") ||
+    Number(bag?.comforter_quantity) > 0 ||
+    Number(bag?.bath_mat_quantity) > 0;
   // Detail-ready once Management/Step1 marked the bag loaded. Version 0 is valid.
   const lockReady =
     Boolean(bag?._detailsLoaded) &&
@@ -433,32 +440,37 @@ export default function EditBagPanel({
       return;
     }
 
-    const err = validateLocal(outcomeAction);
-    if (err) {
-      setLocalError(err);
-      setPendingOutcome(outcomeAction);
-      const p = classifyEditReasonRequirements({
-        draft,
-        baselineBag,
-        outcome: outcomeAction,
-        lines,
-      });
-      if (p.reasonRequired && !draft.reason_code && p.suggestedReasonCode) {
-        setDraft((d) => ({ ...d, reason_code: p.suggestedReasonCode }));
-      }
-      return;
-    }
     const p = classifyEditReasonRequirements({
       draft,
       baselineBag,
       outcome: outcomeAction,
       lines,
     });
+    const effectiveReasonCode =
+      draft.reason_code ||
+      p.suggestedReasonCode ||
+      defaultReviewReasonCode(baselineBag || bag) ||
+      "";
+    const err = validateEditBagDraft({
+      reason: draft.reason,
+      reasonCode: effectiveReasonCode || p.suggestedReasonCode,
+      reasonNote: draft.reason_note || draft.reason,
+      noChargeable: draft.no_chargeable,
+      noChargeReason: draft.no_charge_reason,
+      lines,
+      isHd,
+      reasonRequired: p.reasonRequired,
+    });
+    if (err) {
+      setLocalError(err);
+      setPendingOutcome(outcomeAction);
+      return;
+    }
     setSaving(true);
     setLocalError("");
     try {
       const reasonCode =
-        String(draft.reason_code || p.suggestedReasonCode || "").trim().toUpperCase() || null;
+        String(effectiveReasonCode || "").trim().toUpperCase() || null;
       const reasonNote = String(draft.reason_note || draft.reason || "").trim() || null;
       const body = {
         action: "edit_bag",
@@ -544,18 +556,18 @@ export default function EditBagPanel({
       outcome: outcomeAction,
       lines,
     });
+    const effectiveReasonCode =
+      String(draft.reason_code || p.suggestedReasonCode || defaultReviewReasonCode(baselineBag || bag) || "")
+        .trim()
+        .toUpperCase() || "";
     if (p.reasonRequired) {
-      // First click: surface context-specific reasons. Second click / Confirm saves.
-      if (!String(draft.reason_code || "").trim()) {
-        if (p.suggestedReasonCode) {
-          setDraft((d) => ({ ...d, reason_code: p.suggestedReasonCode }));
-        }
+      if (!effectiveReasonCode) {
         setLocalError(availability.reasonHint || "Select a reason to continue");
         return;
       }
       const err = validateEditBagDraft({
         reason: draft.reason,
-        reasonCode: draft.reason_code,
+        reasonCode: effectiveReasonCode,
         reasonNote: draft.reason_note || draft.reason,
         noChargeable: draft.no_chargeable,
         noChargeReason: draft.no_charge_reason,
@@ -566,6 +578,9 @@ export default function EditBagPanel({
       if (err) {
         setLocalError(err);
         return;
+      }
+      if (!draft.reason_code && effectiveReasonCode) {
+        setDraft((d) => ({ ...d, reason_code: effectiveReasonCode }));
       }
     }
     persist(outcomeAction);
@@ -642,7 +657,7 @@ export default function EditBagPanel({
   );
 
   const actionStates = Object.fromEntries(
-    FINAL_ACTIONS.map((a) => [
+    WF_FINAL_ACTIONS.map((a) => [
       String(a.id),
       reviewActionAvailability({
         actionId: a.id,
@@ -732,8 +747,8 @@ export default function EditBagPanel({
                   <Typography fontWeight={700}>
                     {correctPre && draft.pre_weight_lbs !== ""
                       ? `${draft.pre_weight_lbs} lb (corrected)`
-                      : draft.pre_weight_lbs !== "" && draft.pre_weight_lbs != null
-                        ? `${draft.pre_weight_lbs} lb`
+                      : evidencePre != null && evidencePre !== ""
+                        ? `${evidencePre} lb`
                         : "—"}
                   </Typography>
                   {(preProvenance.lines || []).map((line) => (
@@ -857,7 +872,7 @@ export default function EditBagPanel({
               />
             ) : null}
 
-            {!isHd ? (
+            {!isHd && showWorkItems ? (
               <Box>
                 <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
                   Work items
@@ -956,11 +971,7 @@ export default function EditBagPanel({
                   />
                 ) : null}
               </Box>
-            ) : (
-              <Typography variant="caption" color="text.secondary">
-                WF bulk workitems are hidden for Hang Dry.
-              </Typography>
-            )}
+            ) : null}
 
             {!isHd ? (
               <Box>
@@ -980,46 +991,41 @@ export default function EditBagPanel({
                   allowEmpty
                   sx={{ width: "100%", minWidth: 0, mb: 1 }}
                 />
-                <PayrollDateTimeField
+                <CompactEtDateTimeField
                   label="Completion date & time (ET)"
                   value={draft.completion_at || ""}
                   onChange={(v) => setDraft((d) => ({ ...d, completion_at: v }))}
+                  disabled={saving}
                 />
-              </Box>
-            ) : null}
-
-            {!isHd && (reasonNeededForPending || policy.reasonRequired) ? (
-              <Box
-                data-testid="review-reason-fields"
-                sx={{ p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: 1 }}
-              >
-                <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
-                  Reason required
-                </Typography>
-                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-                  {(policy.triggers || []).join(", ") || "manager override"}
-                </Typography>
-                <TextField
-                  select
-                  size="small"
-                  required
-                  fullWidth
-                  label="Reason"
-                  value={draft.reason_code || policy.suggestedReasonCode || ""}
-                  onChange={(e) => setDraft((d) => ({ ...d, reason_code: e.target.value }))}
-                  sx={{ mb: 1 }}
-                >
-                  {(reasonCodes.length ? reasonCodes : policy.reasonCodes || []).map((r) => (
-                    <MenuItem key={r.code} value={r.code}>
-                      {r.label}
-                    </MenuItem>
-                  ))}
-                </TextField>
+                <FormControl size="small" fullWidth sx={{ mt: 1 }}>
+                  <InputLabel>Reason</InputLabel>
+                  <Select
+                    label="Reason"
+                    value={draft.reason_code || policy.suggestedReasonCode || defaultReviewReasonCode(bag) || ""}
+                    onChange={(e) => setDraft((d) => ({ ...d, reason_code: e.target.value }))}
+                  >
+                    {(reasonCodes.length ? reasonCodes : policy.reasonCodes || []).map((r) => (
+                      <MenuItem key={r.code} value={r.code}>
+                        {r.label}
+                      </MenuItem>
+                    ))}
+                    {!reasonCodes.length && !policy.reasonCodes?.length ? (
+                      <>
+                        <MenuItem value="DISAPPEARED_WITHOUT_COMPLETION">Missing from portal</MenuItem>
+                        <MenuItem value="WF_BULK_WORKITEM_REVIEW">Bulk review</MenuItem>
+                        <MenuItem value="MARK_COMPLETED">Manually mark completed</MenuItem>
+                        <MenuItem value="CORRECT_COMPLETION_DETAILS">Correct completion details</MenuItem>
+                        <MenuItem value="OTHER">Other</MenuItem>
+                      </>
+                    ) : null}
+                  </Select>
+                </FormControl>
                 <TextField
                   size="small"
                   fullWidth
+                  sx={{ mt: 1 }}
                   label={
-                    String(draft.reason_code || policy.suggestedReasonCode) === "OTHER"
+                    String(draft.reason_code || "") === "OTHER"
                       ? "Note (required for Other)"
                       : "Note (optional)"
                   }
@@ -1029,25 +1035,11 @@ export default function EditBagPanel({
                     setDraft((d) => ({ ...d, reason_note: next, reason: next }));
                   }}
                   multiline
-                  minRows={2}
+                  minRows={1}
                 />
-                <Button
-                  sx={{ mt: 1 }}
-                  variant="contained"
-                  color={pendingOutcome === "exclude" ? "error" : "primary"}
-                  disabled={saving || !lockReady}
-                  onClick={() => persist(pendingOutcome)}
-                  data-testid="review-confirm-reasoned-save"
-                >
-                  Confirm{" "}
-                  {FINAL_ACTIONS.find((a) => a.id === pendingOutcome)?.label || "Save Review"}
-                </Button>
               </Box>
-            ) : (
-              <Typography variant="caption" color="text.secondary">
-                Ordinary work-item review and confirming existing completion do not require a reason.
-              </Typography>
-            )}
+            ) : null}
+
             {scansSection}
           </Stack>
         </DialogContent>
@@ -1063,7 +1055,7 @@ export default function EditBagPanel({
             bgcolor: "background.paper",
           }}
         >
-          {(isHd ? HD_FINAL_ACTIONS : FINAL_ACTIONS).map((a) => {
+          {(isHd ? HD_FINAL_ACTIONS : WF_FINAL_ACTIONS).map((a) => {
             const state =
               actionStates[String(a.id)] || {
                 enabled: !saving && (isHd || lockReady),

@@ -195,7 +195,7 @@ function SplitOrderReviewRow({
 
 /**
  * Dedicated REVIEW working queue — Specialty Items vs Missing From Portal vs Split Order Review.
- * Specialty / Missing: list is lightweight; Resolve in drawer; DETAILED REVIEW opens modal.
+ * Specialty / Missing: list is lightweight; Detailed Review opens the full modal.
  * Split Order Review: drawer-only MARK SPLIT / MARK NOT SPLIT (no generic WF Review modal).
  */
 export default function ManagementRinseWfReviewSection({
@@ -555,19 +555,9 @@ export default function ManagementRinseWfReviewSection({
                   <ManagementRinseWfReviewDrawerRow
                     key={bag.bag_id}
                     bag={bag}
-                    selectedDateEt={selectedDateEt}
-                    readOnly={readOnly}
                     onDetailedReview={(seed) =>
                       setModal({ open: true, bagId: seed.bag_id, seed })
                     }
-                    onSaved={() => {
-                      setListState((prev) => ({
-                        ...prev,
-                        bags: (prev.bags || []).filter((b) => b.bag_id !== bag.bag_id),
-                      }));
-                      onRefresh?.();
-                      if (drawer.category) loadList(drawer.category);
-                    }}
                   />
                 ),
               )}

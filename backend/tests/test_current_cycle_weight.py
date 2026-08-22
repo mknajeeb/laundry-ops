@@ -1216,3 +1216,30 @@ def test_day_bag_pre_weight_propagates_to_employee_performance_credit():
     null_credit = _wf_credited_weight_fields(null_bag)
     assert null_credit["credited_weight_lbs"] is None
     assert null_credit["missing_production_credit_weight"] is True
+
+
+def test_pre_absent_post_present_never_aliases_post_to_pre():
+    """POST-only after garments-reviewed — PRE stays null (never copied from POST)."""
+    day = date(2026, 8, 22)
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 22, 8, 0), eid=1, rack="VeeWash Dirty"),
+        _ev("move-bag", datetime(2026, 8, 22, 8, 5), eid=2, rack="VeeWash Dirty"),
+        _ev("garments-reviewed", datetime(2026, 8, 22, 9, 0), eid=3),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 22, 9, 5),
+            eid=4,
+            lbs=13.1,
+            user="Maria (Veewash)",
+        ),
+    ]
+    selected = select_current_cycle_weight_events(events, selected_date_et=day)
+    assert selected["pre_event"] is None
+    assert selected["post_event"] is not None
+    assert selected["post_event"]["id"] == 4
+
+    resolved = resolve_current_cycle_weights(events, selected_date_et=day)
+    assert resolved.pre_weight_lbs is None
+    assert resolved.pre_weight_event_id is None
+    assert resolved.post_weight_lbs == 13.1
+    assert resolved.post_weight_event_id == 4

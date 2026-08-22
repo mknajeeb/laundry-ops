@@ -34,6 +34,52 @@ from backend.rinse_veewash_workload import (
     REASON_WF_BULK_WORKITEM_REVIEW,
 )
 
+def _canonical_review_weights(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    bag_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Batch PRE/POST from the shared current-cycle resolver (never day_bag snap)."""
+    ids = [normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)]
+    if not ids:
+        return {}
+    from backend.rinse_veewash_review import load_bag_weight_map
+
+    return load_bag_weight_map(
+        cursor,
+        organization_id,
+        ids,
+        selected_date_et=selected_date_et,
+    )
+
+
+def _merge_review_weight_fields(
+    bag: dict[str, Any],
+    weights: dict[str, Any] | None,
+) -> None:
+    """Overlay authoritative PRE/POST; PRE stays null when no PRE evidence."""
+    if not weights:
+        return
+    has_pre = weights.get("pre_weight_event_id") is not None or weights.get(
+        "corrected_pre_weight_lbs"
+    ) is not None
+    evidence_pre = weights.get("pre_weight_lbs") if has_pre else None
+    bag["pre_weight_lbs"] = evidence_pre
+    bag["evidence_pre_weight_lbs"] = evidence_pre
+    bag["pre_weight_event_id"] = weights.get("pre_weight_event_id")
+    post = weights.get("post_weight_lbs")
+    if post is not None or weights.get("post_weight_event_exists"):
+        bag["post_weight_lbs"] = post
+        bag["post_weight_value"] = weights.get("post_weight_value", post)
+        bag["post_weight_event_exists"] = weights.get("post_weight_event_exists")
+    bag["pre_weight_at"] = weights.get("pre_weight_at")
+    bag["post_weight_at"] = weights.get("post_weight_at")
+    bag["completion_employee"] = bag.get("completion_employee") or weights.get(
+        "post_weight_employee"
+    )
+
+
 CATEGORY_SPECIALTY = "specialty_items"
 CATEGORY_MISSING_PORTAL = "missing_from_portal"
 CATEGORY_SPLIT_ORDER = "split_order_review"
@@ -727,6 +773,9 @@ def build_management_review_list(
     by_reason, by_bag = _headline_maps(headline)
 
     bulk_lines: dict = {}
+    weight_map = _canonical_review_weights(
+        cursor, organization_id, selected_date_et, page_ids
+    )
     if cat == CATEGORY_SPECIALTY and page_ids:
         # One batch query for specialty quantities — not scans, not N+1.
         bulk_lines = load_bag_bulk_lines(
@@ -783,8 +832,7 @@ def build_management_review_list(
         completion_at = (
             snap.get("completion_at") or row.get("canonical_completion_timestamp")
         )
-        bags_out.append(
-            {
+        bag_row = {
                 "bag_id": bid,
                 "customer_name": snap.get("customer_name")
                 or row.get("customer_name")
@@ -849,8 +897,9 @@ def build_management_review_list(
                 "canonical_split": sev.get("canonical_split")
                 if sev
                 else smeta.get("canonical_split"),
-            }
-        )
+        }
+        _merge_review_weight_fields(bag_row, weight_map.get(bid))
+        bags_out.append(bag_row)
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 1)
     return {
@@ -942,7 +991,7 @@ def build_management_review_detail(
     )
     # Explicit PRE/POST from canonical resolver fields already on bag — never alias.
     bag["weights"] = {
-        "pre_weight_lbs": bag.get("pre_weight_lbs"),
+        "pre_weight_lbs": bag.get("evidence_pre_weight_lbs"),
         "pre_weight_at": bag.get("pre_weight_at"),
         "pre_weight_employee": bag.get("pre_weight_employee"),
         "post_weight_lbs": bag.get("post_weight_lbs"),
@@ -996,6 +1045,14 @@ def build_management_review_detail(
         except Exception:
             pass
     bag["employee_performance_eligible"] = category == CATEGORY_SPECIALTY
+    bag["evidence_pre_weight_lbs"] = (
+        bag.get("pre_weight_lbs")
+        if bag.get("pre_weight_event_id") is not None
+        or bag.get("corrected_pre_weight_lbs") is not None
+        else None
+    )
+    if bag.get("evidence_pre_weight_lbs") is None:
+        bag["pre_weight_lbs"] = None
     bag["short_reason"] = _short_reason(
         list(bag.get("reason_codes") or codes), category
     )
@@ -1113,8 +1170,8 @@ def build_management_review_action(
     qty_info = _specialty_qty_from_lines(bulk_lines)
     completion_employee = snap.get("completed_by") or row.get("canonical_completion_employee")
     completion_at = snap.get("completion_at") or row.get("canonical_completion_timestamp")
-    pre_lbs = snap.get("pre_weight_lbs", row.get("pre_weight_lbs"))
-    post_lbs = snap.get("post_weight_lbs", row.get("post_weight_lbs"))
+    weight_map = _canonical_review_weights(cursor, organization_id, selected_date_et, [bid])
+    weights = weight_map.get(bid) or {}
 
     bag = {
         "bag_id": bid,
@@ -1124,9 +1181,9 @@ def build_management_review_action(
         "reason_codes": codes,
         "short_reason": _short_reason(codes, category),
         "dashboard_status": snap.get("outcome") or row.get("effective_status"),
-        "pre_weight_lbs": pre_lbs,
-        "post_weight_lbs": post_lbs,
-        "post_weight_value": post_lbs,
+        "pre_weight_lbs": None,
+        "post_weight_lbs": snap.get("post_weight_lbs", row.get("post_weight_lbs")),
+        "post_weight_value": snap.get("post_weight_lbs", row.get("post_weight_lbs")),
         "pre_weight_at": snap.get("pre_weight_at"),
         "post_weight_at": snap.get("post_weight_at"),
         "completion_employee": completion_employee,
@@ -1147,6 +1204,7 @@ def build_management_review_action(
         "_detailsLoaded": True,
         "_actionMetaOnly": True,
     }
+    _merge_review_weight_fields(bag, weights)
     elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 1)
     return {
         "ok": True,

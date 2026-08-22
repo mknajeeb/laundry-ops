@@ -443,10 +443,9 @@ def select_current_cycle_weight_events(
                     pre_cands.append(ev)
             pre_event = _pick_pre_event(pre_cands)
         elif entry_at is None and anchor is not None:
-            # Factual PRE display fallback only. Entry stays unresolved;
-            # POST may still be selected from authoritative weight_role=POST
-            # after the selected PRE (bags that left At Vendor without a
-            # facility entry rack still gain post-processing weigh-entry).
+            # Factual PRE display fallback only. Entry stays unresolved.
+            # Post-review weight-entries must not become PRE. POST may still be
+            # selected from authoritative weight_role=POST after the selected PRE.
             pre_cands: list[Mapping[str, Any]] = []
             for ev in timeline:
                 if not _is_weight_entry(ev):
@@ -460,6 +459,8 @@ def select_current_cycle_weight_events(
                 if ts < anchor:
                     continue
                 if next_send is not None and ts >= next_send:
+                    continue
+                if review_at is not None and ts >= review_at:
                     continue
                 pre_cands.append(ev)
             pre_cands.sort(
@@ -1045,8 +1046,14 @@ def resolve_current_cycle_weights(
             post_source = src or "operator_manual_correction"
             post_attach = "audited_manual_correction"
 
-    if pre_event is None:
+    if pre_event is None and manual_pre_lbs is None:
         pre_status = STATUS_WAITING_FOR_EVENT if cycle.entry_at else STATUS_MISSING
+        # No authoritative PRE event — never surface POST/portal as PRE.
+        pre_lbs = None
+        pre_source = None
+        pre_attach = None
+    elif pre_event is None:
+        pre_status = STATUS_MANUAL_CORRECTION
     if post_event is None:
         if cycle.garments_reviewed_at is None:
             post_status = STATUS_WAITING_FOR_EVENT
@@ -1058,6 +1065,15 @@ def resolve_current_cycle_weights(
         weight_entry_count += 1
     if post_event is not None:
         weight_entry_count += 1
+    if pre_event is not None and post_event is not None:
+        pre_id = (pre_event or {}).get("id")
+        post_id = (post_event or {}).get("id")
+        if pre_id is not None and post_id is not None and pre_id == post_id:
+            # One scan cannot be both PRE and POST evidence.
+            pre_event = None
+            pre_lbs = None
+            pre_status = STATUS_MISSING
+            weight_entry_count = max(0, weight_entry_count - 1)
 
     # Protect completion event identity: flag if ordinal-era completion event
     # differs from selected POST (caller must not auto-apply status changes).

@@ -267,6 +267,27 @@ export function reasonOptionsForTriggers(triggers = []) {
  * Classify whether the current draft is a routine review save, confirm-completed,
  * or a manager override that needs a structured reason.
  */
+export function defaultReviewReasonCode(bag) {
+  const codes = new Set(
+    (bag?.reason_codes || []).map((c) => String(c || "").trim().toUpperCase()).filter(Boolean),
+  );
+  if (codes.has("DISAPPEARED_WITHOUT_COMPLETION")) return "DISAPPEARED_WITHOUT_COMPLETION";
+  if (codes.has("WF_BULK_WORKITEM_REVIEW")) return "WF_BULK_WORKITEM_REVIEW";
+  return "";
+}
+
+/** Evidence PRE only — never fall back to POST or weight_lbs. */
+export function authoritativeEvidencePre(bag) {
+  if (bag?.evidence_pre_weight_lbs != null && bag?.evidence_pre_weight_lbs !== "") {
+    return bag.evidence_pre_weight_lbs;
+  }
+  if (bag?.pre_weight_event_id != null || bag?.corrected_pre_weight_lbs != null) {
+    const pre = bag?.pre_weight_lbs;
+    return pre === null || pre === undefined || pre === "" ? null : pre;
+  }
+  return null;
+}
+
 export function classifyEditSavePath({ draft, baselineBag, outcome = null }) {
   const triggers = [];
   const baselinePost = baselineBag?.post_weight_value ?? baselineBag?.post_weight_lbs;
@@ -329,7 +350,7 @@ export function classifyEditSavePath({ draft, baselineBag, outcome = null }) {
   ) {
     suggestedReasonCode = "CORRECT_COMPLETION_DETAILS";
   } else if (triggers.includes("mark_completed")) {
-    suggestedReasonCode = "MARK_COMPLETED";
+    suggestedReasonCode = defaultReviewReasonCode(baselineBag) || "MARK_COMPLETED";
   } else if (triggers.includes("status_override")) {
     suggestedReasonCode = "STATUS_OVERRIDE";
   }

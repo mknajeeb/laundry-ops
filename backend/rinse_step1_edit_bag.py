@@ -83,6 +83,8 @@ REASON_CODES_COMPLETION_CHANGE = (
 )
 REASON_CODES_MANUAL_MARK_COMPLETED = (
     {"code": "MARK_COMPLETED", "label": "Manually mark completed"},
+    {"code": "DISAPPEARED_WITHOUT_COMPLETION", "label": "Missing from portal"},
+    {"code": "WF_BULK_WORKITEM_REVIEW", "label": "Bulk review"},
     {"code": "STATUS_OVERRIDE", "label": "Manual status override"},
     {"code": "OTHER", "label": "Other"},
 )
@@ -108,6 +110,8 @@ REASON_CODE_OPTIONS = (
     {"code": "TEST_RECORD", "label": "Test record"},
     {"code": "WRONG_SERVICE_DAY", "label": "Wrong service/day"},
     {"code": "CORRECT_COMPLETION_DETAILS", "label": "Correct completion details"},
+    {"code": "DISAPPEARED_WITHOUT_COMPLETION", "label": "Missing from portal"},
+    {"code": "WF_BULK_WORKITEM_REVIEW", "label": "Bulk review"},
     {"code": "OTHER", "label": "Other"},
 )
 
@@ -258,6 +262,17 @@ def _reason_options_for_triggers(triggers: list[str]) -> list[dict[str, str]]:
     return list(REASON_CODE_OPTIONS)
 
 
+def _review_context_reason_code(before: Mapping[str, Any]) -> str | None:
+    """Default audit reason from why the bag is in Review."""
+    raw = before.get("review_reason_codes") or before.get("reason_codes") or []
+    codes = {str(c or "").strip().upper() for c in raw if c}
+    if "DISAPPEARED_WITHOUT_COMPLETION" in codes:
+        return "DISAPPEARED_WITHOUT_COMPLETION"
+    if "WF_BULK_WORKITEM_REVIEW" in codes:
+        return "WF_BULK_WORKITEM_REVIEW"
+    return None
+
+
 def classify_edit_reason_requirements(
     draft: Mapping[str, Any],
     before: Mapping[str, Any],
@@ -327,7 +342,7 @@ def classify_edit_reason_requirements(
     elif "completion_employee_changed" in triggers or "completion_timestamp_changed" in triggers:
         suggested = "CORRECT_COMPLETION_DETAILS"
     elif "mark_completed" in triggers:
-        suggested = "MARK_COMPLETED"
+        suggested = _review_context_reason_code(before) or "MARK_COMPLETED"
     elif "status_override" in triggers:
         suggested = "STATUS_OVERRIDE"
 
@@ -386,6 +401,8 @@ def resolve_edit_audit_reason(
     }
 
     if policy["reason_required"]:
+        if not code:
+            code = str(policy.get("suggested_reason_code") or "").strip().upper() or None
         if not code and legacy_reason:
             # Backward compatible: free-text reason alone is accepted as OTHER note.
             code = "OTHER"

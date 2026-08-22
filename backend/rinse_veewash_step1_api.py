@@ -849,8 +849,19 @@ def build_drilldown(
                 item["post_weight_employee"] = resolved.get("post_weight_event_employee")
             if has_pre_lock:
                 item["pre_weight_lbs"] = resolved.get("pre_weight_lbs")
-            elif resolved.get("pre_weight_lbs") is not None:
+            elif resolved.get("pre_weight_event_id") is not None or resolved.get(
+                "corrected_pre_weight_lbs"
+            ) is not None:
                 item["pre_weight_lbs"] = resolved.get("pre_weight_lbs")
+            else:
+                item["pre_weight_lbs"] = None
+            item["pre_weight_event_id"] = resolved.get("pre_weight_event_id")
+            item["evidence_pre_weight_lbs"] = (
+                resolved.get("pre_weight_lbs")
+                if resolved.get("pre_weight_event_id") is not None
+                or resolved.get("corrected_pre_weight_lbs") is not None
+                else None
+            )
             if has_post_lock:
                 item["post_weight_lbs"] = resolved.get("post_weight_lbs")
                 item["post_weight_value"] = resolved.get(
