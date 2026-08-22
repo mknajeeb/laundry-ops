@@ -397,6 +397,42 @@ def _stamp_et() -> str:
     return _now_et().strftime("%Y%m%d_%H%M%S")
 
 
+def _run_wf_canonical_terminal_projection(
+    conn,
+    cursor,
+    *,
+    org_id: int,
+    log: "_TeeLog | None",
+    portal_csv_path: Path | None,
+    portal_scrape_meta_path: Path | None = None,
+    shift_date_et: date | None = None,
+) -> dict[str, Any]:
+    """Terminal canonical lifecycle + day_bags projection after finalize/Stage-B."""
+    try:
+        from backend.rinse_wf_service_cycle import (
+            finalize_wf_canonical_lifecycle_terminal,
+            is_wf_canonical_lifecycle_enabled,
+        )
+
+        if not is_wf_canonical_lifecycle_enabled(cursor, org_id):
+            return {"skipped": True, "reason": "canonical_disabled"}
+        out = finalize_wf_canonical_lifecycle_terminal(
+            cursor,
+            org_id,
+            portal_csv_path=portal_csv_path,
+            portal_scrape_meta_path=portal_scrape_meta_path,
+            shift_date_et=shift_date_et or _today_et(),
+        )
+        conn.commit()
+        if log is not None and hasattr(log, "write"):
+            log.write(f"WF canonical terminal projection: {out}\n")
+        return out
+    except Exception as exc:
+        if log is not None and hasattr(log, "write"):
+            log.write(f"WARNING: WF canonical terminal projection failed: {exc}\n")
+        return {"ok": False, "error": str(exc)}
+
+
 def _today_label_et() -> str:
     return _today_et().isoformat()
 
@@ -1338,6 +1374,15 @@ def run_rinse_combined_sync_for_org(
                 },
             )
             result.detail["step1_day_refresh_via"] = "combined_cycle_guarantee"
+            if not dry_run and str(result.status or "") in ("success", "needs_attention"):
+                result.detail["wf_canonical_terminal"] = _run_wf_canonical_terminal_projection(
+                    conn,
+                    cursor,
+                    org_id=org_id,
+                    log=log,
+                    portal_csv_path=paths.portal_csv,
+                    portal_scrape_meta_path=Path(str(paths.portal_csv) + ".meta.json"),
+                )
         if not dry_run and str(result.status or "") in ("success", "needs_attention"):
             _mark_step1_refresh_failed_on_result(
                 result, result.detail.get("step1_day_refresh")
@@ -2529,6 +2574,7 @@ def run_scheduled_scrape_for_org(
             off_portal_refresh_detail: dict[str, Any] | None = None
             step1_refresh_detail: dict[str, Any] | None = None
             finalize_payload: dict[str, Any] | None = None
+            wf_canonical_terminal: dict[str, Any] | None = None
             if not dry_run and batch_id and final_status in ("success", "needs_attention"):
                 touch_scrape_run_progress(
                     cursor, run_id, org_id, stage="stage_b_rebuild",
@@ -2577,6 +2623,14 @@ def run_scheduled_scrape_for_org(
                             "in_lock": True,
                         },
                     }
+                wf_canonical_terminal = _run_wf_canonical_terminal_projection(
+                    conn,
+                    cursor,
+                    org_id=org_id,
+                    log=log,
+                    portal_csv_path=paths.portal_csv,
+                    portal_scrape_meta_path=Path(str(paths.portal_csv) + ".meta.json"),
+                )
 
             result.status = final_status
             result.at_vendor_status = final_status
@@ -2653,6 +2707,8 @@ def run_scheduled_scrape_for_org(
             if step1_refresh_detail is not None:
                 result.detail["step1_day_refresh"] = step1_refresh_detail
                 _mark_step1_refresh_failed_on_result(result, step1_refresh_detail)
+            if wf_canonical_terminal is not None:
+                result.detail["wf_canonical_terminal"] = wf_canonical_terminal
 
         except Exception as e:
             conn.rollback()

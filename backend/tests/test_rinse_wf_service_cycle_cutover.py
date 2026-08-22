@@ -108,13 +108,31 @@ def test_minimal_seed_skips_historical_completion(admit, resolution, anchor, tim
 @patch("backend.rinse_wf_service_cycle._load_timeline", return_value=[])
 @patch("backend.rinse_wf_service_cycle.admit_or_update_cycle_from_evidence")
 def test_portal_admit_once(admit, _lt, _va, _gk, _ga, _tbl, mock_cursor):
-    sync_portal_discovery(
+    out = sync_portal_discovery(
         mock_cursor,
         3,
         {"BAG001": {"service_type": "WF", "rush_flag": False}},
         now=datetime(2026, 8, 22, 12, 0),
     )
     assert admit.call_count == 1
+    assert out.get("admitted", 0) + out.get("updated", 0) >= 1
+
+
+@patch("backend.rinse_wf_service_cycle._portal_traversal_complete", return_value=True)
+@patch("backend.rinse_wf_service_cycle.is_wf_canonical_lifecycle_enabled", return_value=True)
+@patch("backend.rinse_wf_service_cycle.handle_disappeared_active_cycles", return_value={})
+@patch("backend.rinse_wf_service_cycle.sync_portal_discovery", return_value={"admitted": 1})
+@patch("backend.rinse_wf_service_cycle._parse_portal_bags_from_csv", return_value={"BAG001": {}})
+def test_portal_sync_defers_projection(_bags, _disc, _disp, _en, _trav, mock_cursor):
+    from backend.rinse_wf_service_cycle import sync_wf_cycles_after_portal_presence
+
+    out = sync_wf_cycles_after_portal_presence(
+        None,
+        mock_cursor,
+        3,
+        portal_csv_path="/tmp/portal.csv",
+    )
+    assert out["projection"]["deferred"] is True
 
 
 @patch("backend.rinse_wf_service_cycle.table_exists", return_value=True)
@@ -166,14 +184,17 @@ def test_carryover_is_query_only_not_persisted_mutation():
     assert OUTCOME_CARRYOVER_QUERY == "opening_backlog_query_only"
 
 
+@patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot")
+@patch("backend.rinse_wf_service_cycle_compat.build_step1_headline_summary")
+@patch("backend.rinse_wf_service_cycle_compat._preserved_hd_bag_dicts", return_value=[])
+@patch("backend.rinse_wf_service_cycle_compat._prior_wf_day_bags_by_id", return_value={})
 @patch("backend.rinse_wf_service_cycle.reporting_counts_for_date")
-@patch("backend.rinse_wf_service_cycle_compat.reporting_counts_for_date")
 @patch("backend.rinse_wf_service_cycle_compat.ensure_wf_service_cycles_table")
 @patch("backend.rinse_wf_service_cycle_compat.ensure_shift_monitor_day_tables")
 def test_compat_projection_never_reads_day_bags_as_authority(
-    _day_tbl, _cyc_tbl, counts, counts2, mock_cursor
+    _day_tbl, _cyc_tbl, counts, _prior, _hd, headline, persist, mock_cursor
 ):
-    from backend.rinse_wf_service_cycle_compat import project_canonical_cycles_to_day_snapshot
+    from backend.rinse_wf_service_cycle_compat import terminal_project_canonical_wf_day_snapshot
 
     counts.return_value = {
         "admitted_on_date": 1,
@@ -186,7 +207,7 @@ def test_compat_projection_never_reads_day_bags_as_authority(
         "post_bags": 1,
         "post_lbs": 9,
     }
-    counts2.return_value = counts.return_value
+    headline.return_value = {"completed": 1, "pending": 0, "segments": {"all": {"bag_ids": {}}}}
     mock_cursor.fetchall.return_value = [
         {
             "id": 1,
@@ -202,12 +223,11 @@ def test_compat_projection_never_reads_day_bags_as_authority(
             "completion_source": "post_garments_reviewed_weight_entry",
         }
     ]
-    with patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot") as persist:
-        persist.return_value = {"ok": True}
-        with patch("backend.rinse_wf_service_cycle_compat.get_day_record", return_value=None):
-            project_canonical_cycles_to_day_snapshot(
-                mock_cursor, 3, date(2026, 8, 22)
-            )
-        assert persist.called
-        summary = persist.call_args.kwargs.get("summary") or persist.call_args[1].get("summary")
-        assert summary["completed"] == 1
+    persist.return_value = {"ok": True}
+    with patch("backend.rinse_wf_service_cycle_compat.get_day_record", return_value=None):
+        terminal_project_canonical_wf_day_snapshot(
+            mock_cursor, 3, date(2026, 8, 22)
+        )
+    assert persist.called
+    summary = persist.call_args.kwargs.get("summary") or persist.call_args[1].get("summary")
+    assert summary["membership"]["canonical_source"] is True

@@ -5,15 +5,21 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_folding_et import naive_et_day_start
 from backend.rinse_veewash_shift_day import (
     OUTCOME_COMPLETED,
     OUTCOME_PENDING,
     OUTCOME_REVIEW_REQUIRED,
+    STATUS_OPEN,
+    _workload_shell_from_bags,
     ensure_shift_monitor_day_tables,
     get_day_record,
+    get_step1_activation_date,
+    load_day_bags,
     persist_day_snapshot,
 )
+from backend.rinse_veewash_workload import build_step1_headline_summary
 from backend.rinse_wf_service_cycle import (
     STATUS_ACTIVE,
     STATUS_COMPLETED,
@@ -25,26 +31,14 @@ from backend.rinse_wf_service_cycle import (
 OUTCOME_CARRYOVER_QUERY = "opening_backlog_query_only"
 
 
-def project_canonical_cycles_to_day_snapshot(
+def _canonical_wf_bags_for_date(
     cursor,
     organization_id: int,
     shift_date_et: date,
-    *,
-    force: bool = True,
-) -> dict[str, Any]:
-    """Write compatibility day_bags from canonical cycles for selected date D.
-
-    Includes cycles:
-      - admitted on D
-      - completed on D
-      - opening backlog (admitted before D, still ACTIVE/REVIEW at day start)
-    """
-    ensure_wf_service_cycles_table(cursor)
-    ensure_shift_monitor_day_tables(cursor)
+) -> list[dict[str, Any]]:
     org = int(organization_id)
     day_start = naive_et_day_start(shift_date_et)
     day_end = day_start + timedelta(days=1)
-
     cur = cursor
     cur.execute(
         """
@@ -73,10 +67,10 @@ def project_canonical_cycles_to_day_snapshot(
             day_start,
         ),
     )
-    cycles = [dict(r) for r in (cur.fetchall() or []) if isinstance(r, dict)]
-
     bags: list[dict[str, Any]] = []
-    for c in cycles:
+    for c in cur.fetchall() or []:
+        if not isinstance(c, dict):
+            continue
         bid = c.get("bag_id")
         if not bid:
             continue
@@ -93,11 +87,13 @@ def project_canonical_cycles_to_day_snapshot(
         if isinstance(admitted_at, datetime) and admitted_at < day_start:
             new_or_carry = OUTCOME_CARRYOVER_QUERY
 
+        rush = c.get("rush_status")
         bags.append(
             {
                 "bag_id": bid,
                 "service_type": "WF",
-                "rush_status": c.get("rush_status"),
+                "rush_status": rush,
+                "rush_flag": rush,
                 "new_or_carryover": new_or_carry,
                 "pre_weight_lbs": c.get("pre_weight_lbs"),
                 "post_weight_lbs": c.get("post_weight_lbs"),
@@ -118,14 +114,118 @@ def project_canonical_cycles_to_day_snapshot(
                 },
             }
         )
+    return bags
 
+
+def _prior_wf_day_bags_by_id(
+    cursor, organization_id: int, shift_date_et: date
+) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for row in load_day_bags(cursor, organization_id, shift_date_et) or []:
+        if str(row.get("service_type") or "").upper() != "WF":
+            continue
+        bid = normalize_bag_id(row.get("bag_id"))
+        if bid:
+            out[bid] = row
+    return out
+
+
+def _merge_wf_review_hints(
+    canonical_bag: dict[str, Any], prior_row: dict[str, Any] | None
+) -> dict[str, Any]:
+    if not prior_row:
+        return canonical_bag
+    merged = dict(canonical_bag)
+    codes = sorted(
+        {
+            str(c)
+            for c in (
+                list(merged.get("review_reason_codes") or [])
+                + list(prior_row.get("review_reason_codes") or [])
+            )
+            if str(c).strip()
+        }
+    )
+    merged["review_reason_codes"] = codes
+    if codes and merged.get("effective_status") == OUTCOME_PENDING:
+        merged["effective_status"] = OUTCOME_REVIEW_REQUIRED
+    if int(prior_row.get("manager_edit_version") or 0) > 0:
+        for key in (
+            "canonical_completion_status",
+            "canonical_completion_timestamp",
+            "canonical_completion_employee",
+            "pre_weight_lbs",
+            "post_weight_lbs",
+        ):
+            if prior_row.get(key) is not None:
+                merged[key] = prior_row.get(key)
+    return merged
+
+
+def _preserved_hd_bag_dicts(
+    cursor, organization_id: int, shift_date_et: date
+) -> list[dict[str, Any]]:
+    bags: list[dict[str, Any]] = []
+    for row in load_day_bags(cursor, organization_id, shift_date_et) or []:
+        if str(row.get("service_type") or "").upper() == "WF":
+            continue
+        bid = normalize_bag_id(row.get("bag_id"))
+        if not bid:
+            continue
+        bags.append(
+            {
+                "bag_id": bid,
+                "service_type": row.get("service_type"),
+                "rush_status": row.get("rush_status"),
+                "rush_flag": row.get("rush_status"),
+                "new_or_carryover": row.get("new_or_carryover"),
+                "pre_weight_lbs": row.get("pre_weight_lbs"),
+                "post_weight_lbs": row.get("post_weight_lbs"),
+                "effective_status": row.get("effective_status"),
+                "review_reason_codes": row.get("review_reason_codes") or [],
+                "canonical_completion_status": row.get("canonical_completion_status"),
+                "canonical_completion_timestamp": row.get("canonical_completion_timestamp"),
+                "bag_snapshot": row.get("bag_snapshot") or {},
+            }
+        )
+    return bags
+
+
+def terminal_project_canonical_wf_day_snapshot(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    *,
+    force: bool = True,
+) -> dict[str, Any]:
+    """Terminal write: canonical WF rows + preserved HD rows → day_bags / Management."""
+    ensure_wf_service_cycles_table(cursor)
+    ensure_shift_monitor_day_tables(cursor)
+    org = int(organization_id)
+    prior_wf = _prior_wf_day_bags_by_id(cursor, org, shift_date_et)
+    wf_bags = [
+        _merge_wf_review_hints(b, prior_wf.get(normalize_bag_id(b.get("bag_id"))))
+        for b in _canonical_wf_bags_for_date(cursor, org, shift_date_et)
+    ]
+    hd_bags = _preserved_hd_bag_dicts(cursor, org, shift_date_et)
+    all_bags = wf_bags + hd_bags
+
+    day = get_day_record(cursor, org, shift_date_et)
+    status = str((day or {}).get("status") or STATUS_OPEN)
+    wl = _workload_shell_from_bags(
+        all_bags,
+        selected_date_et=shift_date_et,
+        status=status,
+    )
+    activation = get_step1_activation_date(cursor, org) or shift_date_et
+    summary = build_step1_headline_summary(
+        wl,
+        selected_date_et=shift_date_et,
+        activation_date=activation,
+    )
     counts = reporting_counts_for_date(cursor, org, shift_date_et)
     summary = {
-        "total_workload": len(bags),
-        "active_workload": sum(1 for b in bags if b["effective_status"] == OUTCOME_PENDING),
-        "completed": sum(1 for b in bags if b["effective_status"] == OUTCOME_COMPLETED),
-        "pending": sum(1 for b in bags if b["effective_status"] == OUTCOME_PENDING),
-        "exceptions": {"review_required": sum(1 for b in bags if b["effective_status"] == OUTCOME_REVIEW_REQUIRED)},
+        **summary,
         "membership": {
             "admitted_on_date": counts.get("admitted_on_date"),
             "completed_on_date": counts.get("completed_on_date"),
@@ -133,21 +233,27 @@ def project_canonical_cycles_to_day_snapshot(
             "active_now": counts.get("active_now"),
             "canonical_source": True,
         },
+        "headline_status_synced_from_day_bags": True,
     }
-    workload = {
-        "bags": bags,
-        "new_today": [b["bag_id"] for b in bags if b.get("new_or_carryover") == "new_today"],
-        "carryover": [b["bag_id"] for b in bags if b.get("new_or_carryover") == OUTCOME_CARRYOVER_QUERY],
-        "membership": summary.get("membership"),
-    }
-
-    existing = get_day_record(cursor, org, shift_date_et)
     return persist_day_snapshot(
         cursor,
         org,
         shift_date_et,
-        workload=workload,
+        workload=wl,
         summary=summary,
         force=force,
         chronology_complete=True,
+    )
+
+
+def project_canonical_cycles_to_day_snapshot(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    *,
+    force: bool = True,
+) -> dict[str, Any]:
+    """Alias for terminal projection (one-way canonical → day_bags)."""
+    return terminal_project_canonical_wf_day_snapshot(
+        cursor, organization_id, shift_date_et, force=force
     )

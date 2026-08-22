@@ -1106,6 +1106,7 @@ def apply_unified_bag_edit(
                 )
             except Exception:
                 skip_heavy_completion = False
+        completion_ts = _parse_dt(draft.get("completion_at")) or datetime.utcnow()
         if skip_heavy_completion:
             # Confirm existing completion + leave Review — do not rewrite scans.
             outcome_result = {
@@ -1125,7 +1126,6 @@ def apply_unified_bag_edit(
             ).strip()
             if not emp:
                 return {"ok": False, "error": "completion_employee_required"}
-            ts = _parse_dt(draft.get("completion_at")) or datetime.utcnow()
             weight_for_completion = normalize_scan_weight_lbs(
                 draft.get("post_weight_lbs", before.get("post_weight_lbs"))
             )
@@ -1138,11 +1138,27 @@ def apply_unified_bag_edit(
                 credited_employee=emp,
                 weight_lbs=weight_for_completion,
                 selected_date_et=selected_date_et,
-                completion_timestamp=ts,
+                completion_timestamp=completion_ts,
                 upload_batch_id=int(draft.get("upload_batch_id") or 0),
                 remarks=reason_text,
                 actor_user_id=actor_user_id,
             )
+        try:
+            from backend.rinse_wf_service_cycle import (
+                apply_manager_review_resolution_to_canonical_cycle,
+            )
+
+            apply_manager_review_resolution_to_canonical_cycle(
+                cursor,
+                organization_id,
+                bid,
+                completed_at=completion_ts,
+                completion_source="manager_correct_completion",
+                resolved_by=actor_display_name,
+                resolution_note=reason_text,
+            )
+        except Exception:
+            pass
     elif outcome in (OUTCOME_RETURN_PENDING, OUTCOME_EXCLUDE):
         from backend.rinse_veewash_step1_api import _record_correction
 

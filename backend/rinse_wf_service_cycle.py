@@ -8,6 +8,7 @@ Midnight has zero effect. day_bags are a downstream compatibility projection onl
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
@@ -24,6 +25,18 @@ STATUS_COMPLETED = "COMPLETED"
 STATUS_RESOLVED_OTHER = "RESOLVED_OTHER"
 
 REVIEW_MISSING_FROM_PORTAL = "MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL"
+
+
+def is_wf_canonical_lifecycle_enabled(cursor, organization_id: int) -> bool:
+    """True when org uses durable WF service-cycle lifecycle (cutover forward)."""
+    if not table_exists(cursor, "rinse_wf_service_cycles"):
+        return False
+    raw = os.getenv("WF_CANONICAL_LIFECYCLE_ORG_IDS", "3")
+    try:
+        allowed = {int(x.strip()) for x in raw.split(",") if x.strip()}
+    except ValueError:
+        allowed = {3}
+    return int(organization_id) in allowed
 
 
 def ensure_wf_service_cycles_table(cursor) -> None:
@@ -723,23 +736,11 @@ def reporting_counts_for_date(
     }
 
 
-def sync_wf_cycles_after_portal_presence(
-    conn,
-    cursor,
-    organization_id: int,
-    *,
-    portal_csv_path,
-    portal_scrape_meta_path=None,
-) -> dict[str, Any]:
-    """Hook after full portal presence apply: admit/update canonical WF cycles."""
-    from pathlib import Path
-
+def _parse_portal_bags_from_csv(portal_csv_path) -> dict[str, dict[str, Any]]:
     from backend.rinse_presence_scrape import parse_presence_rows_from_portal_csv
-    from backend.rinse_portal_scrape_meta import read_portal_scrape_meta
 
-    org = int(organization_id)
-    rows = parse_presence_rows_from_portal_csv(str(portal_csv_path))
     portal_bags: dict[str, dict[str, Any]] = {}
+    rows = parse_presence_rows_from_portal_csv(str(portal_csv_path))
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -752,12 +753,141 @@ def sync_wf_cycles_after_portal_presence(
             "estimated_delivery_date": row.get("estimated_delivery_date"),
             "last_seen_at": datetime.utcnow(),
         }
-    meta = read_portal_scrape_meta(str(portal_scrape_meta_path or Path(str(portal_csv_path) + ".meta.json"))) or {}
-    traversal_complete = str(meta.get("stopped_reason") or "") in (
+    return portal_bags
+
+
+def _portal_traversal_complete(portal_scrape_meta_path) -> bool:
+    from backend.rinse_portal_scrape_meta import load_portal_scrape_meta_file
+
+    if not portal_scrape_meta_path:
+        return True
+    meta = load_portal_scrape_meta_file(portal_scrape_meta_path) or {}
+    return str(meta.get("stopped_reason") or "") in (
         "no_next_page_ui",
         "natural_end",
         "",
     ) or not meta.get("reached_max_pages")
+
+
+def refresh_canonical_cycles_from_evidence(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+) -> dict[str, Any]:
+    """Reconcile open/review and today's completed cycles from durable scan evidence."""
+    ensure_wf_service_cycles_table(cursor)
+    org = int(organization_id)
+    day_start = naive_et_day_start(selected_date_et)
+    day_end = day_start + timedelta(days=1)
+    cur = cursor
+    cur.execute(
+        """
+        SELECT bag_id, cycle_anchor_at FROM rinse_wf_service_cycles
+        WHERE organization_id = %s
+          AND (
+            status IN (%s, %s)
+            OR (status = %s AND completed_at >= %s AND completed_at < %s)
+          )
+        """,
+        (org, STATUS_ACTIVE, STATUS_REVIEW, STATUS_COMPLETED, day_start, day_end),
+    )
+    refreshed = 0
+    for row in cur.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        bid = _norm_bag(row.get("bag_id"))
+        anchor = row.get("cycle_anchor_at")
+        if not bid or not isinstance(anchor, datetime):
+            continue
+        admit_or_update_cycle_from_evidence(
+            cursor,
+            org,
+            bid,
+            anchor,
+            admitted_source="SCAN_EVIDENCE_REFRESH",
+        )
+        refreshed += 1
+    return {"refreshed": refreshed, "selected_date_et": selected_date_et.isoformat()}
+
+
+def apply_manager_review_resolution_to_canonical_cycle(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    completed_at: datetime,
+    completion_source: str = "manager_correct_completion",
+    resolved_by: str | None = None,
+    resolution_note: str | None = None,
+) -> dict[str, Any] | None:
+    """Write manager Review resolution back to the canonical service cycle."""
+    if not is_wf_canonical_lifecycle_enabled(cursor, organization_id):
+        return None
+    cycle = get_active_cycle_for_bag(cursor, organization_id, bag_id)
+    if not cycle:
+        return None
+    anchor = cycle.get("cycle_anchor_at")
+    if not isinstance(anchor, datetime):
+        return None
+    cycle_dict, weights = _cycle_resolution(cursor, int(organization_id), bag_id, anchor)
+    _ = cycle_dict
+    row = upsert_service_cycle(
+        cursor,
+        int(organization_id),
+        bag_id=bag_id,
+        cycle_anchor_at=anchor,
+        admitted_at=cycle.get("admitted_at") or anchor,
+        admitted_source=str(cycle.get("admitted_source") or "PORTAL_DISCOVERY"),
+        status=STATUS_COMPLETED,
+        completed_at=completed_at,
+        completion_source=completion_source,
+        rush_status=cycle.get("rush_status"),
+        estimated_delivery_date=cycle.get("estimated_delivery_date"),
+        pre_weight_lbs=weights.get("pre_weight_lbs") or cycle.get("pre_weight_lbs"),
+        post_weight_lbs=weights.get("post_weight_lbs") or cycle.get("post_weight_lbs"),
+        review_reason=None,
+    )
+    cur = cursor
+    cur.execute(
+        """
+        UPDATE rinse_wf_service_cycles
+        SET review_resolved_at = %s,
+            review_resolved_by = %s,
+            review_resolution_note = %s,
+            review_reason = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE organization_id = %s AND bag_id = %s AND cycle_anchor_at = %s
+        """,
+        (
+            datetime.utcnow(),
+            resolved_by,
+            resolution_note,
+            int(organization_id),
+            _norm_bag(bag_id),
+            anchor,
+        ),
+    )
+    return row
+
+
+def sync_wf_cycles_after_portal_presence(
+    conn,
+    cursor,
+    organization_id: int,
+    *,
+    portal_csv_path,
+    portal_scrape_meta_path=None,
+) -> dict[str, Any]:
+    """After portal presence apply: discovery/disappearance only (no day_bags projection)."""
+    from pathlib import Path
+
+    if not is_wf_canonical_lifecycle_enabled(cursor, organization_id):
+        return {"skipped": True, "reason": "canonical_disabled"}
+
+    org = int(organization_id)
+    portal_bags = _parse_portal_bags_from_csv(portal_csv_path)
+    meta_path = portal_scrape_meta_path or Path(str(portal_csv_path) + ".meta.json")
+    traversal_complete = _portal_traversal_complete(meta_path)
     discovery = sync_portal_discovery(cursor, org, portal_bags)
     disappearance = handle_disappeared_active_cycles(
         cursor,
@@ -765,16 +895,59 @@ def sync_wf_cycles_after_portal_presence(
         set(portal_bags.keys()),
         traversal_complete=bool(traversal_complete),
     )
-    from backend.business_time import business_today
-    from backend.rinse_wf_service_cycle_compat import project_canonical_cycles_to_day_snapshot
-
-    today = business_today()
-    projection = project_canonical_cycles_to_day_snapshot(cursor, org, today, force=True)
     return {
+        "discovery": discovery,
+        "disappearance": disappearance,
+        "projection": {"deferred": True},
+    }
+
+
+def finalize_wf_canonical_lifecycle_terminal(
+    cursor,
+    organization_id: int,
+    *,
+    portal_csv_path=None,
+    portal_scrape_meta_path=None,
+    shift_date_et: date | None = None,
+) -> dict[str, Any]:
+    """Terminal scrape/finalize hook: refresh evidence, portal sync, project day_bags."""
+    from backend.business_time import business_today
+    from backend.rinse_wf_service_cycle_compat import (
+        terminal_project_canonical_wf_day_snapshot,
+    )
+
+    if not is_wf_canonical_lifecycle_enabled(cursor, organization_id):
+        return {"skipped": True, "reason": "canonical_disabled"}
+
+    org = int(organization_id)
+    day = shift_date_et or business_today()
+    evidence = refresh_canonical_cycles_from_evidence(cursor, org, day)
+    discovery: dict[str, Any] = {}
+    disappearance: dict[str, Any] = {}
+    if portal_csv_path is not None:
+        portal_bags = _parse_portal_bags_from_csv(portal_csv_path)
+        from pathlib import Path
+
+        meta_path = portal_scrape_meta_path or Path(str(portal_csv_path) + ".meta.json")
+        discovery = sync_portal_discovery(cursor, org, portal_bags)
+        disappearance = handle_disappeared_active_cycles(
+            cursor,
+            org,
+            set(portal_bags.keys()),
+            traversal_complete=_portal_traversal_complete(meta_path),
+        )
+        refresh_canonical_cycles_from_evidence(cursor, org, day)
+    projection = terminal_project_canonical_wf_day_snapshot(
+        cursor, org, day, force=True
+    )
+    return {
+        "ok": True,
+        "evidence": evidence,
         "discovery": discovery,
         "disappearance": disappearance,
         "projection": {
             "ok": projection.get("ok", True),
-            "shift_date_et": str(today),
+            "shift_date_et": day.isoformat(),
+            "canonical_source": True,
         },
     }
