@@ -30,7 +30,7 @@ function fmtTime(v) {
 
 function statusLabel(status) {
   if (status === "awaiting_entry") return "Awaiting Entry";
-  if (status === "washed") return "Washed";
+  if (status === "washed" || status === "awaiting_fold") return "Awaiting Fold";
   if (status === "pending_wash") return "Pending Wash";
   if (status === "complete") return "Complete";
   return status || "—";

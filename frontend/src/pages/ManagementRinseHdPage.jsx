@@ -34,6 +34,7 @@ import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 
 const STATUS_CHIPS = [
   { id: "pending_wash", label: "Pending Wash" },
+  { id: "awaiting_fold", label: "Awaiting Fold" },
   { id: "awaiting_entry", label: "Awaiting Entry" },
   { id: "complete", label: "Complete" },
   { id: "all", label: "All" },
@@ -90,7 +91,7 @@ function fmtTime(v) {
 
 function statusLabel(status) {
   if (status === "pending_wash") return "Pending Wash";
-  if (status === "washed") return "Washed";
+  if (status === "washed" || status === "awaiting_fold") return "Awaiting Fold";
   if (status === "awaiting_entry") return "Awaiting Entry";
   if (status === "complete") return "Complete";
   return status || "—";
@@ -127,7 +128,10 @@ function SummaryCard({ label, value }) {
 
 function OrderCard({ order, onOpen }) {
   const awaiting = order.status === "awaiting_entry";
-  const pending = order.status === "pending_wash" || order.status === "washed";
+  const pending =
+    order.status === "pending_wash" ||
+    order.status === "washed" ||
+    order.status === "awaiting_fold";
   const customer =
     String(order.customer_name || order.name_clean || order.customer || "").trim() || "Unknown Customer";
   return (
@@ -529,8 +533,10 @@ export default function ManagementRinseHdPage() {
         }}
       >
         <SummaryCard label="Pending Wash" value={fmtInt(summary.pending_wash)} />
-        <SummaryCard label="Washed" value={fmtInt(summary.washed)} />
-        <SummaryCard label="Folded" value={fmtInt(summary.folded)} />
+        <SummaryCard
+          label="Awaiting Fold"
+          value={fmtInt(summary.awaiting_fold ?? summary.washed)}
+        />
         <SummaryCard label="Awaiting Entry" value={fmtInt(summary.awaiting_entry)} />
         <SummaryCard label="Complete" value={fmtInt(summary.complete ?? summary.completed_today)} />
         <SummaryCard label="Items" value={fmtInt(summary.items ?? summary.items_completed_today)} />

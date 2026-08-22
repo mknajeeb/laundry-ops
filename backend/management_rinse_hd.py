@@ -37,7 +37,8 @@ WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED = "PRE_ACTIVATION_EXCLUDED"
 
 # Workflow statuses (API / UI)
 STATUS_PENDING_WASH = "pending_wash"
-STATUS_WASHED = "washed"
+STATUS_WASHED = "washed"  # API value; UI label = Awaiting Fold
+STATUS_AWAITING_FOLD = "awaiting_fold"  # alias for washed (preferred label)
 STATUS_AWAITING_ENTRY = "awaiting_entry"
 STATUS_COMPLETE = "complete"
 
@@ -925,12 +926,16 @@ def build_rinse_hd_day(
             "generated_at_et": business_now().isoformat(timespec="seconds"),
             "summary": {
                 "pending_wash": 0,
+                "awaiting_fold": 0,
                 "washed": 0,
+                "washed_today": 0,
                 "folded": 0,
+                "folded_today": 0,
                 "awaiting_entry": 0,
                 "complete": 0,
                 "items": 0,
                 "revenue": 0.0,
+                "admitted_total": 0,
                 "open_orders": 0,
                 "completed_today": 0,
                 "items_completed_today": 0,
@@ -939,6 +944,7 @@ def build_rinse_hd_day(
             "counts": {
                 STATUS_PENDING_WASH: 0,
                 STATUS_WASHED: 0,
+                STATUS_AWAITING_FOLD: 0,
                 STATUS_AWAITING_ENTRY: 0,
                 STATUS_COMPLETE: 0,
             },
@@ -1134,6 +1140,7 @@ def build_rinse_hd_day(
         "pending": STATUS_PENDING_WASH,
         "pending_wash": STATUS_PENDING_WASH,
         "washed": STATUS_WASHED,
+        "awaiting_fold": STATUS_WASHED,
         "awaiting": STATUS_AWAITING_ENTRY,
         "awaiting_entry": STATUS_AWAITING_ENTRY,
         "folded": STATUS_AWAITING_ENTRY,
@@ -1152,18 +1159,34 @@ def build_rinse_hd_day(
             + buckets[STATUS_COMPLETE]
         )
 
+    # Prefer Awaiting Fold label on washed queue rows (API still accepts status=washed).
+    for row in orders:
+        if row.get("status") == STATUS_WASHED:
+            row["status"] = STATUS_AWAITING_FOLD
+            row["status_legacy"] = STATUS_WASHED
+
     elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
+    awaiting_fold_n = len(buckets[STATUS_WASHED])
     return {
         "date_et": selected_date_et.isoformat(),
         "generated_at_et": business_now().isoformat(timespec="seconds"),
         "summary": {
             "pending_wash": len(buckets[STATUS_PENDING_WASH]),
-            "washed": washed_count,
+            "awaiting_fold": awaiting_fold_n,
+            "washed": awaiting_fold_n,  # queue size (not same-day wash-event count)
+            "washed_today": washed_count,
             "folded": folded_count,
+            "folded_today": folded_count,
             "awaiting_entry": len(buckets[STATUS_AWAITING_ENTRY]),
             "complete": len(buckets[STATUS_COMPLETE]),
             "items": items_complete,
             "revenue": float(revenue_complete.quantize(MONEY_Q, rounding=ROUND_HALF_UP)),
+            "admitted_total": (
+                len(buckets[STATUS_PENDING_WASH])
+                + len(buckets[STATUS_WASHED])
+                + len(buckets[STATUS_AWAITING_ENTRY])
+                + len(buckets[STATUS_COMPLETE])
+            ),
             # legacy keys
             "open_orders": len(buckets[STATUS_PENDING_WASH]) + len(buckets[STATUS_WASHED]) + len(buckets[STATUS_AWAITING_ENTRY]),
             "completed_today": len(buckets[STATUS_COMPLETE]),
@@ -1172,7 +1195,8 @@ def build_rinse_hd_day(
         },
         "counts": {
             STATUS_PENDING_WASH: len(buckets[STATUS_PENDING_WASH]),
-            STATUS_WASHED: len(buckets[STATUS_WASHED]),
+            STATUS_WASHED: awaiting_fold_n,
+            STATUS_AWAITING_FOLD: awaiting_fold_n,
             STATUS_AWAITING_ENTRY: len(buckets[STATUS_AWAITING_ENTRY]),
             STATUS_COMPLETE: len(buckets[STATUS_COMPLETE]),
         },
