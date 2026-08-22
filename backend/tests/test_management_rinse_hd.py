@@ -194,3 +194,54 @@ def test_prior_cycle_bulk_ignored_after_new_load_in():
     entry = select_hd_wash_event(events)
     assert entry["user_name"] == "NewOp"
     assert select_hd_fold_event(events, wash_at=entry["scanned_at_parsed"]) is None
+
+
+def test_hd_performance_credits_wash_fold_not_complete_date():
+    """Wash/fold performance uses operation timestamps, never Complete/revenue-entry date."""
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_hd_performance import build_hd_employee_performance
+
+    washed_at = datetime(2026, 8, 14, 10, 0)
+    folded_at = datetime(2026, 8, 15, 11, 0)
+    row = {
+        "bag_id": "HD1",
+        "washed_by_user_id": 10,
+        "washed_by_name_snapshot": "Maria",
+        "washed_at": washed_at,
+        "folded_by_user_id": 20,
+        "folded_by_name_snapshot": "Tarannum",
+        "folded_at": folded_at,
+        "total_items": 8,
+        "revenue": 42.0,
+        "operations_date_et": date(2026, 8, 15),
+        "workflow_status": "COMPLETE",
+        "status": "COMPLETE",
+    }
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [row]
+
+    with patch("backend.management_hd_performance.table_exists", return_value=True), patch(
+        "backend.management_hd_performance.ensure_management_hd_columns"
+    ), patch(
+        "backend.management_hd_performance._batch_user_names",
+        return_value={10: "Maria", 20: "Tarannum"},
+    ):
+        wash_day = build_hd_employee_performance(cursor, 3, date(2026, 8, 14))
+        fold_day = build_hd_employee_performance(cursor, 3, date(2026, 8, 15))
+        complete_only = build_hd_employee_performance(cursor, 3, date(2026, 8, 16))
+
+    wash_by = {e["user_id"]: e for e in wash_day["employees"]}
+    assert wash_by[10]["wash_count"] == 1
+    assert wash_by[10]["fold_count"] == 0
+    assert wash_by[10]["wash_bags"][0]["bag_id"] == "HD1"
+    assert 20 not in wash_by
+
+    fold_by = {e["user_id"]: e for e in fold_day["employees"]}
+    assert fold_by[20]["fold_count"] == 1
+    assert fold_by[20]["wash_count"] == 0
+    assert fold_by[20]["items_on_fold"] == 8
+    assert fold_by[20]["revenue_on_fold"] == 42.0
+    assert 10 not in fold_by
+
+    assert complete_only["employees"] == []
