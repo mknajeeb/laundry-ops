@@ -27,6 +27,7 @@ import {
   saveManagementRinseHdProduction,
   updateManagementRinseHdAttribution,
 } from "../api";
+import ManagementCopyableId from "../components/management/ManagementCopyableId";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import { formatFriendlyEtWall } from "../utils/rinseTimeFormat";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
@@ -127,6 +128,8 @@ function SummaryCard({ label, value }) {
 function OrderCard({ order, onOpen }) {
   const awaiting = order.status === "awaiting_entry";
   const pending = order.status === "pending_wash" || order.status === "washed";
+  const customer =
+    String(order.customer_name || order.name_clean || order.customer || "").trim() || "Unknown Customer";
   return (
     <Box
       component="button"
@@ -151,16 +154,22 @@ function OrderCard({ order, onOpen }) {
         fontFamily: "inherit",
       }}
     >
-      <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-        <Typography sx={{ fontSize: 15, fontWeight: 800, fontFamily: "monospace" }}>
-          {order.bag_id}
-        </Typography>
+      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Typography sx={{ fontSize: 16, fontWeight: 800, lineHeight: 1.2, color: "#0f172a" }}>
+            {customer}
+          </Typography>
+          <Box sx={{ mt: 0.35 }} onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
+            <ManagementCopyableId value={order.bag_id} fontSize={13} fontWeight={800} />
+          </Box>
+        </Box>
         <Chip
           size="small"
           label={statusLabel(order.status)}
           sx={{
             height: 22,
             fontWeight: 700,
+            flexShrink: 0,
             bgcolor: awaiting
               ? VEEWASH_DASHBOARD.pendingLight
               : order.status === "complete"
@@ -169,7 +178,7 @@ function OrderCard({ order, onOpen }) {
           }}
         />
       </Stack>
-      <Typography sx={{ mt: 0.65, fontSize: 12, color: "#334155", fontWeight: 600 }}>
+      <Typography sx={{ mt: 0.75, fontSize: 12, color: "#334155", fontWeight: 600 }}>
         Washed by {order.washed_by_name || "—"}
       </Typography>
       <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
@@ -236,6 +245,7 @@ export default function ManagementRinseHdPage() {
     folded_by_user_id: "",
     folded_at: "",
   });
+  const [searchQuery, setSearchQuery] = useState("");
   const autosaveTimer = useRef(null);
 
   const load = useCallback(async (day, status, refresh = false) => {
@@ -280,6 +290,17 @@ export default function ManagementRinseHdPage() {
 
   const summary = rangeSummary || data?.summary || {};
   const orders = data?.orders || [];
+  const filteredOrders = useMemo(() => {
+    const q = String(searchQuery || "").trim().toLowerCase();
+    if (!q) return orders;
+    return orders.filter((order) => {
+      const bag = String(order.bag_id || "").toLowerCase();
+      const customer = String(
+        order.customer_name || order.name_clean || order.customer || "",
+      ).toLowerCase();
+      return bag.includes(q) || customer.includes(q);
+    });
+  }, [orders, searchQuery]);
 
   const openDetail = async (order) => {
     setActionError("");
@@ -559,18 +580,28 @@ export default function ManagementRinseHdPage() {
         })}
       </Stack>
 
+      <TextField
+        size="small"
+        fullWidth
+        value={searchQuery}
+        onChange={(e) => setSearchQuery(e.target.value)}
+        placeholder="Search customer or Order/Bag ID"
+        sx={{ mb: 1.25 }}
+        inputProps={{ "aria-label": "Search customer or Order/Bag ID" }}
+      />
+
       {loading && !data ? (
         <Box sx={{ py: 4, textAlign: "center" }}>
           <CircularProgress size={22} />
         </Box>
       ) : (
         <Stack spacing={1}>
-          {orders.length === 0 ? (
+          {filteredOrders.length === 0 ? (
             <Typography sx={{ color: "#94a3b8", fontWeight: 600, fontSize: 13 }}>
-              No HD orders in this view.
+              {orders.length === 0 ? "No HD orders in this view." : "No matches for this search."}
             </Typography>
           ) : (
-            orders.map((order) => (
+            filteredOrders.map((order) => (
               <OrderCard key={`${order.bag_id}-${order.status}`} order={order} onOpen={openDetail} />
             ))
           )}
@@ -578,8 +609,20 @@ export default function ManagementRinseHdPage() {
       )}
 
       <Dialog open={detailOpen} onClose={() => setDetailOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle sx={{ fontWeight: 800 }}>
-          {detail?.order?.bag_id || detail?.bag_id || "HD Order"}
+        <DialogTitle sx={{ fontWeight: 800, pb: 1 }}>
+          <Typography sx={{ fontSize: 18, fontWeight: 800, lineHeight: 1.2 }}>
+            {detail?.order?.customer_name ||
+              detail?.order?.name_clean ||
+              detail?.order?.customer ||
+              "HD Order"}
+          </Typography>
+          <Box sx={{ mt: 0.5 }}>
+            <ManagementCopyableId
+              value={detail?.order?.bag_id || detail?.bag_id}
+              fontSize={14}
+              fontWeight={800}
+            />
+          </Box>
         </DialogTitle>
         <DialogContent>
           {actionError ? (

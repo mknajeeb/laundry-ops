@@ -18,6 +18,7 @@ import {
 import MoneyAmountField from "../components/revenueShared/MoneyAmountField";
 import SaveStatusChip from "../components/revenueShared/SaveStatusChip";
 import { parseMoneyInput } from "../components/revenueShared/revenueFormat";
+import ManagementCopyableId from "../components/management/ManagementCopyableId";
 import { formatFriendlyEtWall } from "../utils/rinseTimeFormat";
 import HdMobileAwaitingCard from "./HdMobileAwaitingCard";
 import { OPS_MOBILE } from "./tokens";
@@ -340,11 +341,16 @@ export default function HdMobileAwaitingEntryPanel({
         ) : (
           <Stack spacing={1.25} sx={{ overflowY: "auto" }} data-hd-mobile-detail-sheet="1">
             <Typography sx={{ fontWeight: 900, fontSize: 20, color: "#0f172a" }}>
-              {sheetOrder?.customer_name || sheetOrder?.customer || "—"}
+              {sheetOrder?.customer_name ||
+                sheetOrder?.customer ||
+                sheetOrder?.name_clean ||
+                "Unknown Customer"}
             </Typography>
-            <Typography sx={{ fontWeight: 800, fontSize: 16, fontFamily: "monospace" }}>
-              {sheetOrder?.bag_id || sheetBagId || "—"}
-            </Typography>
+            <ManagementCopyableId
+              value={sheetOrder?.bag_id || sheetBagId}
+              fontSize={15}
+              fontWeight={800}
+            />
             <Chip
               size="small"
               label={statusLabel(sheetOrder?.status || "awaiting_entry")}
