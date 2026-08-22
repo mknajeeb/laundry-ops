@@ -152,71 +152,33 @@ def fetch_upload_batch_scan_rows_for_bag(
     return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
 
 
-def fetch_upload_batch_scan_rows_for_bags(
-    cursor,
-    organization_id: int,
-    bag_ids: Sequence[str],
-    *,
-    up_to_batch_id: int | None = None,
-) -> dict[str, list[dict[str, Any]]]:
-    """Batch draft upload scan rows for many bags (same columns/order as single-bag)."""
-    ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
-    out: dict[str, list[dict[str, Any]]] = {bid: [] for bid in ids}
-    if not ids or not table_exists(cursor, "upload_batch_scan_events"):
-        return out
-    org = int(organization_id)
-    chunk = 100
-    for i in range(0, len(ids), chunk):
-        part = ids[i : i + chunk]
-        ph = ",".join(["%s"] * len(part))
-        sql = f"""
-            SELECT upload_batch_id, bag_id, scan_index, rack, time_scanned_raw,
-                   scanned_at_parsed, user_name, purpose, last_location, last_scan,
-                   source_filename, raw_json
-            FROM upload_batch_scan_events
-            WHERE organization_id = %s AND UPPER(TRIM(bag_id)) IN ({ph})
-        """
-        args: list[Any] = [org, *part]
-        if up_to_batch_id is not None:
-            sql += " AND upload_batch_id <= %s"
-            args.append(int(up_to_batch_id))
-        sql += " ORDER BY bag_id ASC, upload_batch_id DESC, scanned_at_parsed ASC, scan_index ASC, id ASC"
-        cursor.execute(sql, tuple(args))
-        for row in cursor.fetchall() or []:
-            if not isinstance(row, dict):
-                continue
-            bid = normalize_bag_id(row.get("bag_id"))
-            if bid:
-                out.setdefault(bid, []).append(dict(row))
-    return out
-
-
-def recover_missing_scans_from_preloaded(
+def recover_missing_scans_from_upload_batch_history(
     cursor,
     organization_id: int,
     bag_id: str,
     *,
-    existing_events: Sequence[Mapping[str, Any]],
-    draft_rows: Sequence[Mapping[str, Any]],
+    up_to_batch_id: int | None = None,
     source_filename: str = "portal_departure_recovery",
 ) -> dict[str, Any]:
-    """Same recovery semantics as upload-history recovery, using preloaded rows."""
+    """
+    Insert scan rows from upload_batch_scan_events missing in rinse_bag_scan_events.
+
+    Does not delete existing persistent rows — incremental recovery only.
+    """
     from backend.rinse_bag_registry import (
         ensure_rinse_bag_registry_table,
-        ensure_rinse_bag_scan_events_dedupe_schema,
-        ensure_rinse_bag_scan_events_table,
+        fetch_persistent_scan_events_for_bag,
         upsert_scan_event_row,
     )
-    from backend.rinse_scan_weight_enrichment import ensure_scan_weight_enrichment_columns
-    from backend.rinse_workload_bag_weight import ensure_scan_events_weight_lbs_column
 
     bid = normalize_bag_id(bag_id)
     org = int(organization_id)
     if not bid:
         return {"bag_id": "", "inserted": 0, "already_present": 0, "skipped_no_time": 0}
 
+    existing = fetch_persistent_scan_events_for_bag(cursor, org, bid)
     existing_keys: set[str] = set()
-    for ev in existing_events or []:
+    for ev in existing:
         dk = compute_scan_event_dedupe_key(
             organization_id=org,
             bag_id=bid,
@@ -229,16 +191,15 @@ def recover_missing_scans_from_preloaded(
         if dk:
             existing_keys.add(dk)
 
+    draft_rows = fetch_upload_batch_scan_rows_for_bag(
+        cursor, org, bid, up_to_batch_id=up_to_batch_id
+    )
     inserted = 0
     already_present = 0
     skipped_no_time = 0
     ensure_rinse_bag_registry_table(cursor)
-    ensure_rinse_bag_scan_events_table(cursor)
-    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
-    ensure_scan_events_weight_lbs_column(cursor)
-    ensure_scan_weight_enrichment_columns(cursor)
 
-    for row in draft_rows or []:
+    for row in draft_rows:
         time_raw = str(row.get("time_scanned_raw") or "").strip()
         scanned_at = row.get("scanned_at_parsed")
         if not time_raw and not scanned_at:
@@ -281,8 +242,6 @@ def recover_missing_scans_from_preloaded(
             source_filename=row.get("source_filename") or source_filename,
             raw_json=raw_json,
             credential_sourced=True,
-            schema_ready=True,
-            owner_checked=True,
         )
         existing_keys.add(dedupe_key)
         if action == "inserted":
@@ -295,224 +254,7 @@ def recover_missing_scans_from_preloaded(
         "inserted": inserted,
         "already_present": already_present,
         "skipped_no_time": skipped_no_time,
-        "draft_rows_seen": len(list(draft_rows or [])),
-    }
-
-
-def _stable_portal_absence_needs_verification(reg: Mapping[str, Any] | None) -> bool:
-    """True when registry already encodes the portal-absence verify outcome."""
-    if not reg:
-        return False
-    status = str(reg.get("completion_status") or "").upper()
-    reason = str(reg.get("completion_reason") or "").strip()
-    trigger = str(reg.get("trigger_kind") or "").strip()
-    return (
-        status == COMPLETION_INCOMPLETE
-        and reason == REASON_PORTAL_ABSENCE_NEEDS_VERIFICATION
-        and trigger == TRIGGER_KIND_PORTAL_ABSENCE_NEEDS_VERIFICATION
-    )
-
-
-def _recovery_would_insert(
-    organization_id: int,
-    bag_id: str,
-    *,
-    existing_events: Sequence[Mapping[str, Any]],
-    draft_rows: Sequence[Mapping[str, Any]],
-) -> bool:
-    """True when at least one draft scan is missing from persistent keys."""
-    bid = normalize_bag_id(bag_id)
-    org = int(organization_id)
-    if not bid:
-        return False
-    existing_keys: set[str] = set()
-    for ev in existing_events or []:
-        dk = compute_scan_event_dedupe_key(
-            organization_id=org,
-            bag_id=bid,
-            rack=ev.get("rack"),
-            user_name=ev.get("user_name"),
-            purpose=ev.get("purpose"),
-            time_scanned_raw=str(ev.get("time_scanned_raw") or ev.get("scanned_at_parsed") or ""),
-            scanned_at_parsed=ev.get("scanned_at_parsed"),
-        )
-        if dk:
-            existing_keys.add(dk)
-    for row in draft_rows or []:
-        time_raw = str(row.get("time_scanned_raw") or "").strip()
-        scanned_at = row.get("scanned_at_parsed")
-        if not time_raw and not scanned_at:
-            continue
-        if not time_raw and scanned_at is not None:
-            time_raw = str(scanned_at)
-        dedupe_key = compute_scan_event_dedupe_key(
-            organization_id=org,
-            bag_id=bid,
-            rack=row.get("rack"),
-            user_name=row.get("user_name"),
-            purpose=row.get("purpose"),
-            time_scanned_raw=time_raw,
-            scanned_at_parsed=scanned_at,
-        )
-        if dedupe_key and dedupe_key not in existing_keys:
-            return True
-    return False
-
-
-def verify_and_resolve_portal_departure_bag(
-    cursor,
-    organization_id: int,
-    bag_id: str,
-    *,
-    upload_batch_id: int,
-    rejected_at: datetime | None = None,
-    recover_scans: bool = True,
-    preloaded_registry: Mapping[str, Any] | None = None,
-    preloaded_events: Sequence[Mapping[str, Any]] | None = None,
-    preloaded_draft_rows: Sequence[Mapping[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """
-    Recovery path for a bag missing from the latest portal scrape.
-
-    Returns dict with action: completed | needs_verification | rejected | unchanged
-
-    Optional preloaded_* reuse batch-loaded state within one finalize pass.
-    """
-    from backend.rinse_bag_registry import (
-        fetch_persistent_scan_events_for_bag,
-        get_registry_row,
-        is_bag_already_completed,
-    )
-
-    bid = normalize_bag_id(bag_id)
-    org = int(organization_id)
-    if not bid:
-        return {"bag_id": "", "action": "unchanged", "reason": "invalid_bag_id"}
-
-    reg = dict(preloaded_registry) if preloaded_registry is not None else None
-    if reg is None:
-        if is_bag_already_completed(cursor, org, bid):
-            return {"bag_id": bid, "action": "unchanged", "reason": "already_completed"}
-        reg = get_registry_row(cursor, org, bid) or {}
-    else:
-        if str(reg.get("completion_status") or "").upper() == COMPLETION_COMPLETED:
-            return {"bag_id": bid, "action": "unchanged", "reason": "already_completed"}
-
-    events = list(preloaded_events) if preloaded_events is not None else None
-    draft_rows = list(preloaded_draft_rows) if preloaded_draft_rows is not None else None
-
-    # Stable skip: already marked needs_verification and no new scan recovery possible
-    # and in-memory evidence still cannot complete/cancel → cheap batch-id touch only.
-    if (
-        recover_scans
-        and events is not None
-        and draft_rows is not None
-        and _stable_portal_absence_needs_verification(reg)
-        and not _recovery_would_insert(org, bid, existing_events=events, draft_rows=draft_rows)
-    ):
-        ordered = order_events_for_completion(events)
-        evidence = detect_portal_departure_completion_evidence(
-            ordered, service_type=str(reg.get("service_type") or "")
-        )
-        if not evidence and not detect_confirmed_cancellation(ordered):
-            from backend.rinse_bag_registry import ensure_rinse_bag_registry_table
-
-            ensure_rinse_bag_registry_table(cursor)
-            cursor.execute(
-                """
-                UPDATE rinse_bag_registry
-                SET last_upload_batch_id = %s, updated_at = NOW()
-                WHERE organization_id = %s AND bag_id = %s
-                """,
-                (int(upload_batch_id), org, bid),
-            )
-            return {
-                "bag_id": bid,
-                "action": "needs_verification",
-                "applied": True,
-                "recovery": {
-                    "bag_id": bid,
-                    "inserted": 0,
-                    "already_present": 0,
-                    "skipped_no_time": 0,
-                    "draft_rows_seen": len(draft_rows),
-                    "stable_skip": True,
-                },
-            }
-
-    recovery: dict[str, Any] = {"inserted": 0}
-    if recover_scans:
-        if events is not None and draft_rows is not None:
-            recovery = recover_missing_scans_from_preloaded(
-                cursor,
-                org,
-                bid,
-                existing_events=events,
-                draft_rows=draft_rows,
-            )
-            if int(recovery.get("inserted") or 0) > 0:
-                # Reload after inserts so evidence sees recovered scans.
-                events = fetch_persistent_scan_events_for_bag(cursor, org, bid)
-        else:
-            recovery = recover_missing_scans_from_upload_batch_history(
-                cursor, org, bid, up_to_batch_id=upload_batch_id
-            )
-            events = None
-
-    if events is None:
-        events = fetch_persistent_scan_events_for_bag(cursor, org, bid)
-    ordered = order_events_for_completion(events)
-    if preloaded_registry is None:
-        reg = get_registry_row(cursor, org, bid) or {}
-    service_type = reg.get("service_type")
-
-    evidence = detect_portal_departure_completion_evidence(
-        ordered, service_type=str(service_type or "")
-    )
-    if evidence:
-        applied = mark_registry_completed_portal_departure(
-            cursor,
-            org,
-            bid,
-            upload_batch_id=upload_batch_id,
-            evidence=evidence,
-            completed_at=evidence.get("completion_at"),
-        )
-        return {
-            "bag_id": bid,
-            "action": "completed",
-            "applied": applied,
-            "evidence": evidence,
-            "recovery": recovery,
-        }
-
-    if detect_confirmed_cancellation(ordered):
-        from backend.rinse_bag_registry import mark_registry_rejected_portal_absence
-
-        when = rejected_at or datetime.utcnow()
-        applied = mark_registry_rejected_portal_absence(
-            cursor, org, bid, upload_batch_id=upload_batch_id, rejected_at=when
-        )
-        return {
-            "bag_id": bid,
-            "action": "rejected",
-            "applied": applied,
-            "reason": "confirmed_cancellation",
-            "recovery": recovery,
-        }
-
-    applied = mark_registry_needs_verification_portal_absence(
-        cursor,
-        org,
-        bid,
-        upload_batch_id=upload_batch_id,
-        marked_at=rejected_at,
-    )
-    return {
-        "bag_id": bid,
-        "action": "needs_verification",
-        "applied": applied,
-        "recovery": recovery,
+        "draft_rows_seen": len(draft_rows),
     }
 
 
@@ -671,38 +413,93 @@ def restore_portal_scrape_rejected_bag(
     return True
 
 
-def recover_missing_scans_from_upload_batch_history(
+def verify_and_resolve_portal_departure_bag(
     cursor,
     organization_id: int,
     bag_id: str,
     *,
-    up_to_batch_id: int | None = None,
-    source_filename: str = "portal_departure_recovery",
+    upload_batch_id: int,
+    rejected_at: datetime | None = None,
+    recover_scans: bool = True,
 ) -> dict[str, Any]:
     """
-    Insert scan rows from upload_batch_scan_events missing in rinse_bag_scan_events.
+    Recovery path for a bag missing from the latest portal scrape.
 
-    Does not delete existing persistent rows — incremental recovery only.
+    Returns dict with action: completed | needs_verification | rejected | unchanged
     """
-    from backend.rinse_bag_registry import fetch_persistent_scan_events_for_bag
+    from backend.rinse_bag_registry import (
+        fetch_persistent_scan_events_for_bag,
+        get_registry_row,
+        is_bag_already_completed,
+    )
 
     bid = normalize_bag_id(bag_id)
     org = int(organization_id)
     if not bid:
-        return {"bag_id": "", "inserted": 0, "already_present": 0, "skipped_no_time": 0}
+        return {"bag_id": "", "action": "unchanged", "reason": "invalid_bag_id"}
 
-    existing = fetch_persistent_scan_events_for_bag(cursor, org, bid)
-    draft_rows = fetch_upload_batch_scan_rows_for_bag(
-        cursor, org, bid, up_to_batch_id=up_to_batch_id
+    if is_bag_already_completed(cursor, org, bid):
+        return {"bag_id": bid, "action": "unchanged", "reason": "already_completed"}
+
+    recovery: dict[str, Any] = {"inserted": 0}
+    if recover_scans:
+        recovery = recover_missing_scans_from_upload_batch_history(
+            cursor, org, bid, up_to_batch_id=upload_batch_id
+        )
+
+    events = fetch_persistent_scan_events_for_bag(cursor, org, bid)
+    ordered = order_events_for_completion(events)
+    reg = get_registry_row(cursor, org, bid) or {}
+    service_type = reg.get("service_type")
+
+    evidence = detect_portal_departure_completion_evidence(
+        ordered, service_type=str(service_type or "")
     )
-    return recover_missing_scans_from_preloaded(
+    if evidence:
+        applied = mark_registry_completed_portal_departure(
+            cursor,
+            org,
+            bid,
+            upload_batch_id=upload_batch_id,
+            evidence=evidence,
+            completed_at=evidence.get("completion_at"),
+        )
+        return {
+            "bag_id": bid,
+            "action": "completed",
+            "applied": applied,
+            "evidence": evidence,
+            "recovery": recovery,
+        }
+
+    if detect_confirmed_cancellation(ordered):
+        from backend.rinse_bag_registry import mark_registry_rejected_portal_absence
+
+        when = rejected_at or datetime.utcnow()
+        applied = mark_registry_rejected_portal_absence(
+            cursor, org, bid, upload_batch_id=upload_batch_id, rejected_at=when
+        )
+        return {
+            "bag_id": bid,
+            "action": "rejected",
+            "applied": applied,
+            "reason": "confirmed_cancellation",
+            "recovery": recovery,
+        }
+
+    applied = mark_registry_needs_verification_portal_absence(
         cursor,
         org,
         bid,
-        existing_events=existing,
-        draft_rows=draft_rows,
-        source_filename=source_filename,
+        upload_batch_id=upload_batch_id,
+        marked_at=rejected_at,
     )
+    return {
+        "bag_id": bid,
+        "action": "needs_verification",
+        "applied": applied,
+        "recovery": recovery,
+    }
 
 
 def list_portal_scrape_rejected_bag_ids(cursor, organization_id: int) -> list[str]:

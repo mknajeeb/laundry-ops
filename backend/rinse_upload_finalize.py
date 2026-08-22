@@ -8,6 +8,8 @@ update only when the batch is confirmed.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections import defaultdict
 from datetime import date, datetime
 from typing import Any
@@ -287,9 +289,12 @@ def finalize_rinse_after_batch_confirm(
     org = int(organization_id)
     batch_id = int(upload_batch_id)
     accepted = list(accepted_portal_rows or [])
+    t0 = time.perf_counter()
+    timings: dict[str, float] = {}
 
     events_df = load_upload_batch_scan_events_as_dataframe(cursor, org, batch_id)
     merge_payload: dict[str, Any] = {"bags_merged": 0, "events_inserted": 0, "bag_ids": []}
+    t_merge = time.perf_counter()
     if not events_df.empty:
         merge_payload = merge_scan_events_from_upload(
             cursor,
@@ -300,12 +305,15 @@ def finalize_rinse_after_batch_confirm(
             replace_existing=True,
             credential_sourced=True,
         )
+    timings["merge_scan_events_sec"] = round(time.perf_counter() - t_merge, 3)
 
     from backend.rinse_portal_absence_completion import process_bags_missing_from_latest_portal
 
+    t_abs = time.perf_counter()
     portal_absence = process_bags_missing_from_latest_portal(
         cursor, org, batch_id, accepted
     )
+    timings["portal_absence_sec"] = round(time.perf_counter() - t_abs, 3)
     absence_bag_ids = list(portal_absence.get("rejected_bag_ids") or portal_absence.get("bag_ids") or [])
     completed_absence_ids = list(portal_absence.get("completed_bag_ids") or [])
 
@@ -348,6 +356,13 @@ def finalize_rinse_after_batch_confirm(
     )
     folding_summary = folding_recompute_summary_for_response(folding_payload)
     newly_completed_clean_rack_count = count_clean_rack_completed_bags(completion_payload)
+    timings["finalize_total_sec"] = round(time.perf_counter() - t0, 3)
+    logging.getLogger(__name__).info(
+        "finalize_rinse_after_batch_confirm org=%s batch=%s timings=%s",
+        org,
+        batch_id,
+        timings,
+    )
 
     return {
         "persistent_merge": merge_payload,
@@ -369,5 +384,6 @@ def finalize_rinse_after_batch_confirm(
             portal_absence.get("needs_verification_bag_ids") or []
         ),
         "full_snapshot": bool(portal_absence.get("full_snapshot")),
+        "timings_sec": timings,
         **folding_summary,
     }

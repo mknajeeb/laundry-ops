@@ -15,9 +15,10 @@ from backend.rinse_bag_completion import COMPLETION_COMPLETED, COMPLETION_REJECT
 from backend.rinse_bag_registry import (
     deactivate_at_vendor_presence_for_bags,
     ensure_rinse_bag_registry_table,
-    is_bag_already_completed,  # noqa: F401 — patch surface for tests
+    get_registry_row,
+    is_bag_already_completed,
 )
-from backend.rinse_portal_departure_completion import (
+from backend.tests.finalize_perf_baseline.rinse_portal_departure_completion_old import (
     verify_and_resolve_portal_departure_bag,
 )
 from backend.rinse_portal_scrape_meta import (
@@ -111,7 +112,6 @@ def fetch_incomplete_bag_candidates_for_org(
         return candidates
 
     from backend.app import orders_status_capabilities, where_not_sent_or_forced_sql
-    from backend.rinse_bag_registry import get_registry_rows_for_bags
 
     cap = orders_status_capabilities(cursor)
     active_where = where_not_sent_or_forced_sql(cap)
@@ -133,15 +133,11 @@ def fetch_incomplete_bag_candidates_for_org(
         sql += " AND organization_id = %s"
         args.append(org)
     cursor.execute(sql, tuple(args))
-    staging_ids: list[str] = []
     for row in cursor.fetchall() or []:
         tid = normalize_bag_id(row.get("ticket_id") if isinstance(row, dict) else row[0])
-        if tid:
-            staging_ids.append(tid)
-
-    registry_by_bag = get_registry_rows_for_bags(cursor, org, staging_ids) if staging_ids else {}
-    for tid in staging_ids:
-        reg = registry_by_bag.get(tid)
+        if not tid:
+            continue
+        reg = get_registry_row(cursor, org, tid)
         if reg is None:
             candidates.add(tid)
             continue
@@ -228,33 +224,8 @@ def process_bags_missing_from_latest_portal(
     rejected: list[str] = []
     outcomes: list[dict[str, Any]] = []
 
-    # Batch-load registry + scan state once for the finalize pass.
-    from backend.rinse_bag_registry import (
-        ensure_rinse_bag_scan_events_dedupe_schema,
-        ensure_rinse_bag_scan_events_table,
-        fetch_persistent_scan_events_for_bags,
-        get_registry_rows_for_bags,
-    )
-    from backend.rinse_portal_departure_completion import fetch_upload_batch_scan_rows_for_bags
-    from backend.rinse_scan_weight_enrichment import ensure_scan_weight_enrichment_columns
-    from backend.rinse_workload_bag_weight import ensure_scan_events_weight_lbs_column
-
-    registry_by_bag = get_registry_rows_for_bags(cursor, org, missing) if missing else {}
-    events_by_bag = fetch_persistent_scan_events_for_bags(cursor, org, missing) if missing else {}
-    drafts_by_bag = (
-        fetch_upload_batch_scan_rows_for_bags(cursor, org, missing, up_to_batch_id=batch_id)
-        if missing
-        else {}
-    )
-    if missing:
-        ensure_rinse_bag_scan_events_table(cursor)
-        ensure_rinse_bag_scan_events_dedupe_schema(cursor)
-        ensure_scan_events_weight_lbs_column(cursor)
-        ensure_scan_weight_enrichment_columns(cursor)
-
     for bid in missing:
-        reg = registry_by_bag.get(bid) or {}
-        if str(reg.get("completion_status") or "").upper() == COMPLETION_COMPLETED:
+        if is_bag_already_completed(cursor, org, bid):
             continue
         outcome = verify_and_resolve_portal_departure_bag(
             cursor,
@@ -263,9 +234,6 @@ def process_bags_missing_from_latest_portal(
             upload_batch_id=batch_id,
             rejected_at=when,
             recover_scans=True,
-            preloaded_registry=reg,
-            preloaded_events=events_by_bag.get(bid, []),
-            preloaded_draft_rows=drafts_by_bag.get(bid, []),
         )
         outcomes.append(outcome)
         action = str(outcome.get("action") or "")

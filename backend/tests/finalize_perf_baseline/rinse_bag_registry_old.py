@@ -478,114 +478,6 @@ def get_registry_row(cursor, organization_id: int, bag_id: str) -> dict | None:
     return cursor.fetchone()
 
 
-def get_registry_rows_for_bags(
-    cursor,
-    organization_id: int,
-    bag_ids: Sequence[str],
-) -> dict[str, dict[str, Any]]:
-    """Batch SELECT * for many bags. Missing bags omitted from the map."""
-    ensure_rinse_bag_registry_table(cursor)
-    org = int(organization_id)
-    ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
-    out: dict[str, dict[str, Any]] = {}
-    if not ids:
-        return out
-    chunk = 200
-    for i in range(0, len(ids), chunk):
-        part = ids[i : i + chunk]
-        ph = ",".join(["%s"] * len(part))
-        cursor.execute(
-            f"""
-            SELECT * FROM rinse_bag_registry
-            WHERE organization_id = %s AND bag_id IN ({ph})
-            """,
-            (org, *part),
-        )
-        for row in cursor.fetchall() or []:
-            if not isinstance(row, dict):
-                continue
-            bid = normalize_bag_id(row.get("bag_id"))
-            if bid:
-                out[bid] = dict(row)
-    return out
-
-
-def fetch_persistent_scan_events_for_bags(
-    cursor,
-    organization_id: int,
-    bag_ids: Sequence[str],
-) -> dict[str, list[dict[str, Any]]]:
-    """Batch-load persistent timelines for many bags (same columns as single-bag fetch)."""
-    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
-    org = int(organization_id)
-    ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
-    out: dict[str, list[dict[str, Any]]] = {bid: [] for bid in ids}
-    if not ids:
-        return out
-    # full_row=False columns match fetch_persistent_scan_events_for_bag
-    chunk = 100
-    for i in range(0, len(ids), chunk):
-        part = ids[i : i + chunk]
-        ph = ",".join(["%s"] * len(part))
-        cursor.execute(
-            f"""
-            SELECT id, bag_id, rack, user_name, scanned_at_parsed, scan_index, purpose,
-                   source_filename, weight_lbs, raw_json
-            FROM rinse_bag_scan_events
-            WHERE organization_id = %s AND bag_id IN ({ph})
-            ORDER BY bag_id ASC, scanned_at_parsed ASC, scan_index ASC, id ASC
-            """,
-            (org, *part),
-        )
-        for row in cursor.fetchall() or []:
-            if not isinstance(row, dict):
-                continue
-            bid = normalize_bag_id(row.get("bag_id"))
-            if not bid:
-                continue
-            out.setdefault(bid, []).append(dict(row))
-    return out
-
-
-def fetch_existing_scan_dedupe_ids(
-    cursor,
-    organization_id: int,
-    bag_ids: Sequence[str],
-) -> dict[tuple[str, str], int]:
-    """Map (bag_id, dedupe_key) → row id for bags in a merge batch."""
-    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
-    org = int(organization_id)
-    ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
-    out: dict[tuple[str, str], int] = {}
-    if not ids:
-        return out
-    chunk = 200
-    for i in range(0, len(ids), chunk):
-        part = ids[i : i + chunk]
-        ph = ",".join(["%s"] * len(part))
-        cursor.execute(
-            f"""
-            SELECT id, bag_id, dedupe_key
-            FROM rinse_bag_scan_events
-            WHERE organization_id = %s AND bag_id IN ({ph})
-              AND dedupe_key IS NOT NULL AND dedupe_key != ''
-            """,
-            (org, *part),
-        )
-        for row in cursor.fetchall() or []:
-            if isinstance(row, dict):
-                bid = normalize_bag_id(row.get("bag_id"))
-                dk = str(row.get("dedupe_key") or "")
-                rid = row.get("id")
-            else:
-                bid = normalize_bag_id(row[1])
-                dk = str(row[2] or "")
-                rid = row[0]
-            if bid and dk and rid is not None:
-                out[(bid, dk)] = int(rid)
-    return out
-
-
 def _scan_index_int(val: Any) -> int | None:
     if val is None or str(val).strip() == "":
         return None
@@ -646,9 +538,6 @@ def upsert_scan_event_row(
     weight_source: str | None = None,
     weight_role: str | None = None,
     overwrite_weight: bool = False,
-    schema_ready: bool = False,
-    owner_checked: bool = False,
-    existing_row_id: int | None = None,
 ) -> str:
     """
     Insert a new scan row, or touch metadata only when dedupe_key matches.
@@ -656,50 +545,41 @@ def upsert_scan_event_row(
     Scan facts (time, rack, user, purpose, scan_index, bag_id) are immutable after
     insert. A different timestamp/rack/user/purpose yields a different dedupe_key
     and therefore a new row.
-
-    schema_ready / owner_checked / existing_row_id: hot-path opts used by merge
-    after a single ensure_* + owner filter + dedupe prefetch. Output rows identical.
     """
     from backend.rinse_bag_operational_owner import assert_operational_write_allowed
     from backend.rinse_workload_bag_weight import ensure_scan_events_weight_lbs_column
     from backend.rinse_scan_weight_enrichment import ensure_scan_weight_enrichment_columns
     from backend.ta_helpers import table_has_column
 
-    if not owner_checked:
-        allowed, _, _ = assert_operational_write_allowed(
-            cursor,
-            int(organization_id),
-            bag_id,
-            context="scan_event_upsert",
-            assign_on_first=True,
-            credential_sourced=credential_sourced,
-        )
-        if not allowed:
-            return "rejected_operational_owner"
+    allowed, _, _ = assert_operational_write_allowed(
+        cursor,
+        int(organization_id),
+        bag_id,
+        context="scan_event_upsert",
+        assign_on_first=True,
+        credential_sourced=credential_sourced,
+    )
+    if not allowed:
+        return "rejected_operational_owner"
 
-    if not schema_ready:
-        ensure_rinse_bag_scan_events_table(cursor)
-        ensure_rinse_bag_scan_events_dedupe_schema(cursor)
-        ensure_scan_events_weight_lbs_column(cursor)
-        ensure_scan_weight_enrichment_columns(cursor)
+    ensure_rinse_bag_scan_events_table(cursor)
+    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
+    ensure_scan_events_weight_lbs_column(cursor)
+    ensure_scan_weight_enrichment_columns(cursor)
     has_weight_col = table_has_column(cursor, "rinse_bag_scan_events", "weight_lbs")
     has_source_col = table_has_column(cursor, "rinse_bag_scan_events", "weight_source")
     has_role_col = table_has_column(cursor, "rinse_bag_scan_events", "weight_role")
-    row_id = existing_row_id
-    if row_id is None:
-        cursor.execute(
-            """
-            SELECT id FROM rinse_bag_scan_events
-            WHERE organization_id = %s AND bag_id = %s AND dedupe_key = %s
-            LIMIT 1
-            """,
-            (int(organization_id), bag_id, dedupe_key),
-        )
-        existing = cursor.fetchone()
-        if existing:
-            row_id = existing["id"] if isinstance(existing, dict) else existing[0]
-    if row_id is not None:
-        row_id = int(row_id)
+    cursor.execute(
+        """
+        SELECT id FROM rinse_bag_scan_events
+        WHERE organization_id = %s AND bag_id = %s AND dedupe_key = %s
+        LIMIT 1
+        """,
+        (int(organization_id), bag_id, dedupe_key),
+    )
+    existing = cursor.fetchone()
+    if existing:
+        row_id = existing["id"] if isinstance(existing, dict) else existing[0]
         if has_weight_col and weight_lbs is not None:
             weight_sql = (
                 "weight_lbs = %s"
@@ -1195,30 +1075,6 @@ def merge_scan_events_from_upload(
     skipped_no_time = 0
     rejected_owner = len(owner_rejected)
 
-    # Schema once for the whole merge — not per event.
-    from backend.rinse_workload_bag_weight import ensure_scan_events_weight_lbs_column
-    from backend.rinse_scan_weight_enrichment import ensure_scan_weight_enrichment_columns
-    from backend.rinse_wf_weight_events import normalize_scan_weight_lbs, parse_weight_lbs_from_scan_event
-
-    ensure_rinse_bag_scan_events_table(cursor)
-    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
-    ensure_scan_events_weight_lbs_column(cursor)
-    ensure_scan_weight_enrichment_columns(cursor)
-
-    # Prefetch existing dedupe → id so upsert skips per-row SELECT.
-    # After replace deletes, replaced bags have no rows; preserved bags still do.
-    existing_dedupe_ids = (
-        fetch_existing_scan_dedupe_ids(cursor, org, bag_ids) if bag_ids else {}
-    )
-
-    _AUTHORITATIVE = frozenset(
-        {
-            "rinse_preclean_info",
-            "rinse_postclean_info",
-            "rinse_workitem_wf_lbs",
-        }
-    )
-
     for bag_id in bag_ids:
         bag_rows = df.loc[df["Bag ID"] == bag_id]
         for _, row in bag_rows.iterrows():
@@ -1240,6 +1096,10 @@ def merge_scan_events_from_upload(
                 k: ("" if pd.isna(row.get(k)) else str(row.get(k)))
                 for k in row.index
             }
+            from backend.rinse_wf_weight_events import normalize_scan_weight_lbs, parse_weight_lbs_from_scan_event
+            from backend.rinse_scan_weight_enrichment import ensure_scan_weight_enrichment_columns
+
+            ensure_scan_weight_enrichment_columns(cursor)
 
             weight_lbs = None
             for key in ("Weight", "weight", "# WF LBS", "WF LBS", "weight_lbs", "weight_num", "pounds", "lbs"):
@@ -1262,6 +1122,13 @@ def merge_scan_events_from_upload(
                     break
 
             # Authoritative Rinse DOM capture may overwrite prior portal proxy lbs.
+            _AUTHORITATIVE = frozenset(
+                {
+                    "rinse_preclean_info",
+                    "rinse_postclean_info",
+                    "rinse_workitem_wf_lbs",
+                }
+            )
             overwrite_weight = bool(weight_source and weight_source in _AUTHORITATIVE)
             try:
                 dedupe_key = compute_scan_event_dedupe_key(
@@ -1298,9 +1165,6 @@ def merge_scan_events_from_upload(
                 weight_source=weight_source,
                 weight_role=weight_role,
                 overwrite_weight=overwrite_weight,
-                schema_ready=True,
-                owner_checked=True,
-                existing_row_id=existing_dedupe_ids.get((bag_id, dedupe_key)),
             )
             if action == "rejected_operational_owner":
                 rejected_owner += 1
@@ -1309,9 +1173,6 @@ def merge_scan_events_from_upload(
                 metadata_updated += 1
             else:
                 inserted += 1
-                last_id = getattr(cursor, "lastrowid", None)
-                if last_id:
-                    existing_dedupe_ids[(bag_id, dedupe_key)] = int(last_id)
 
         cursor.execute(
             """
