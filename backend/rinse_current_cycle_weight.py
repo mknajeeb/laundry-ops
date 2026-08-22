@@ -357,6 +357,7 @@ def select_current_cycle_weight_events(
     selected_date_et: date,
     entry_racks: Iterable[str] | None = None,
     as_of_end: datetime | None = None,
+    cycle_anchor_override: datetime | None = None,
 ) -> dict[str, Any]:
     """
     Select PRE/POST weight-entry *events* for the current cycle.
@@ -368,6 +369,7 @@ def select_current_cycle_weight_events(
         selected_date_et=selected_date_et,
         entry_racks=entry_racks,
         as_of_end=as_of_end,
+        cycle_anchor_override=cycle_anchor_override,
     )
     anchor = cycle.cycle_anchor_at
     entry_at = cycle.entry_at
@@ -875,6 +877,7 @@ def resolve_current_cycle_weights(
     observations: Sequence[Mapping[str, Any]] | None = None,
     entry_racks: Iterable[str] | None = None,
     as_of_end: datetime | None = None,
+    cycle_anchor_override: datetime | None = None,
     manual_pre_lbs: float | None = None,
     manual_post_lbs: float | None = None,
     prefer_event_attached_lbs: bool = True,
@@ -894,6 +897,7 @@ def resolve_current_cycle_weights(
         selected_date_et=selected_date_et,
         entry_racks=entry_racks,
         as_of_end=as_of_end,
+        cycle_anchor_override=cycle_anchor_override,
     )
     cycle = selected["cycle"]
     pre_event = selected["pre_event"]

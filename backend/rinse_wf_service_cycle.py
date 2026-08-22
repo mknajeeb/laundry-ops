@@ -34,7 +34,13 @@ def ensure_wf_service_cycles_table(cursor) -> None:
     sql = (
         Path(__file__).resolve().parent / "sql" / "rinse_wf_service_cycles_v1.sql"
     ).read_text()
-    for stmt in sql.split(";"):
+    lines = [
+        ln
+        for ln in sql.splitlines()
+        if not ln.strip().startswith("--")
+    ]
+    body = "\n".join(lines)
+    for stmt in body.split(";"):
         s = stmt.strip()
         if s:
             cursor.execute(s)

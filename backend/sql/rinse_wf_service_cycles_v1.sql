@@ -1,4 +1,4 @@
--- Canonical Rinse WF service-cycle lifecycle (durable; survives midnight).
+-- Canonical Rinse WF service-cycle lifecycle (durable, survives midnight).
 -- day_bags remain a compatibility projection only.
 
 CREATE TABLE IF NOT EXISTS rinse_wf_service_cycles (
