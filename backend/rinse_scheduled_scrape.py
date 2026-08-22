@@ -1575,14 +1575,49 @@ def _run_in_lock_rinse_finalize(
             lease_generation=lease_generation,
         )
         conn.commit()
-    payload = finalize_rinse_after_batch_confirm(
-        cursor,
-        org_id,
-        batch_id,
-        accepted_portal_rows=rows,
-        source_filename=f"batch_confirm_{batch_id}",
-    )
-    conn.commit()
+
+    hb_stop = threading.Event()
+
+    def _finalize_heartbeat_loop() -> None:
+        if not run_id:
+            return
+        interval = max(30, scrape_run_heartbeat_interval_sec())
+        while not hb_stop.wait(interval):
+            try:
+                hb_cur = conn.cursor(dictionary=True, buffered=True)
+                touch_scrape_run_progress(
+                    hb_cur,
+                    int(run_id),
+                    org_id,
+                    stage="finalizing",
+                    lease_generation=lease_generation,
+                )
+                conn.commit()
+            except Exception:
+                pass
+            finally:
+                try:
+                    hb_cur.close()
+                except Exception:
+                    pass
+
+    hb_thread = None
+    if run_id:
+        hb_thread = threading.Thread(target=_finalize_heartbeat_loop, daemon=True)
+        hb_thread.start()
+    try:
+        payload = finalize_rinse_after_batch_confirm(
+            cursor,
+            org_id,
+            batch_id,
+            accepted_portal_rows=rows,
+            source_filename=f"batch_confirm_{batch_id}",
+        )
+        conn.commit()
+    finally:
+        hb_stop.set()
+        if hb_thread is not None:
+            hb_thread.join(timeout=5)
     if run_id:
         touch_scrape_run_progress(
             cursor,
