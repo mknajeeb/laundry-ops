@@ -1015,20 +1015,17 @@ def _weight_bucket_empty() -> dict[str, Any]:
 
 
 def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: date) -> dict[str, Any]:
-    """Compact PRE/POST lbs from day-bag projections — one GROUP BY, no per-bag scan walk.
+    """Compact PRE/POST lbs for WF day-bag scope.
 
-    PRE WEIGHT = sum of pre_weight_lbs for WF bags in scope that have PRE evidence.
-    POST WEIGHT = sum of post_weight_lbs for WF bags in scope that have POST evidence.
-
-    Completion status is intentionally NOT used to gate POST — weight availability
-    and completion are separate concepts. Bag counts expose coverage vs workload.
+    PRE uses the authoritative current-cycle resolver (never stale day_bag snap).
+    POST sums day_bag post_weight_lbs projections (evidence availability, not completion).
     """
     empty = {
         **_weight_bucket_empty(),
         "rush_filtering_supported": True,
-        "source": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs",
+        "source": "canonical_pre_resolver+rinse_shift_monitor_day_bags.post_weight_lbs",
         "semantics": {
-            "pre": "sum_pre_weight_lbs_where_present_for_wf_filter_scope",
+            "pre": "sum_authoritative_evidence_pre_lbs_for_wf_filter_scope",
             "post": "sum_post_weight_lbs_where_present_for_wf_filter_scope",
             "not": "pre_ne_workload_post_ne_completed",
         },
@@ -1042,19 +1039,57 @@ def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: da
         empty["rush_filtering_supported"] = False
         empty["source"] = None
         return empty
-    if not table_has_column(cursor, "rinse_shift_monitor_day_bags", "pre_weight_lbs"):
+    if not table_has_column(cursor, "rinse_shift_monitor_day_bags", "post_weight_lbs"):
         empty["rush_filtering_supported"] = False
         return empty
 
     cursor.execute(
         """
+        SELECT bag_id, rush_status
+        FROM rinse_shift_monitor_day_bags
+        WHERE organization_id = %s
+          AND shift_date_et = %s
+          AND UPPER(COALESCE(service_type, '')) = 'WF'
+        """,
+        (int(organization_id), selected_date_et),
+    )
+    bag_rows = cursor.fetchall() or []
+    bag_ids = [str(r.get("bag_id") or "").strip().upper() for r in bag_rows if r.get("bag_id")]
+    weight_map: dict[str, dict[str, Any]] = {}
+    if bag_ids:
+        from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
+        from backend.rinse_veewash_review import load_bag_weight_map
+
+        weight_map = load_bag_weight_map(
+            cursor,
+            int(organization_id),
+            bag_ids,
+            selected_date_et=selected_date_et,
+        )
+    else:
+        from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
+
+    pre_all = 0.0
+    pre_count_all = 0
+    bucket_pre = {"rush": 0.0, "non_rush": 0.0}
+    bucket_pre_count = {"rush": 0, "non_rush": 0}
+    for row in bag_rows:
+        bid = str(row.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        pre = authoritative_evidence_pre_lbs(weight_map.get(bid) or {})
+        if pre is None:
+            continue
+        bucket = _rush_bucket(row.get("rush_status"))
+        pre_all += float(pre)
+        pre_count_all += 1
+        if bucket in bucket_pre:
+            bucket_pre[bucket] += float(pre)
+            bucket_pre_count[bucket] += 1
+
+    cursor.execute(
+        """
         SELECT rush_status,
-               SUM(
-                 CASE WHEN pre_weight_lbs IS NOT NULL THEN pre_weight_lbs ELSE 0 END
-               ) AS pre_lbs,
-               SUM(
-                 CASE WHEN pre_weight_lbs IS NOT NULL THEN 1 ELSE 0 END
-               ) AS pre_bag_count,
                SUM(
                  CASE WHEN post_weight_lbs IS NOT NULL THEN post_weight_lbs ELSE 0 END
                ) AS post_lbs,
@@ -1069,32 +1104,20 @@ def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: da
         """,
         (int(organization_id), selected_date_et),
     )
-    pre_all = 0.0
     post_all = 0.0
-    pre_count_all = 0
     post_count_all = 0
     by_rush = {
         "all": _weight_bucket_empty(),
         "rush": _weight_bucket_empty(),
         "non_rush": _weight_bucket_empty(),
     }
-    bucket_pre = {"rush": 0.0, "non_rush": 0.0}
     bucket_post = {"rush": 0.0, "non_rush": 0.0}
-    bucket_pre_count = {"rush": 0, "non_rush": 0}
     bucket_post_count = {"rush": 0, "non_rush": 0}
 
     for row in cursor.fetchall() or []:
         bucket = _rush_bucket(row.get("rush_status"))
-        pre_count = int(row.get("pre_bag_count") or 0)
         post_count = int(row.get("post_bag_count") or 0)
-        pre = _lbs_or_none(row.get("pre_lbs")) if pre_count else None
         post = _lbs_or_none(row.get("post_lbs")) if post_count else None
-        if pre is not None:
-            pre_all += pre
-            pre_count_all += pre_count
-            if bucket in bucket_pre:
-                bucket_pre[bucket] += pre
-                bucket_pre_count[bucket] += pre_count
         if post is not None:
             post_all += post
             post_count_all += post_count
@@ -1129,7 +1152,7 @@ def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: da
     return {
         **by_rush["all"],
         "rush_filtering_supported": True,
-        "source": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs",
+        "source": "canonical_pre_resolver+rinse_shift_monitor_day_bags.post_weight_lbs",
         "semantics": empty["semantics"],
         "by_rush": by_rush,
     }

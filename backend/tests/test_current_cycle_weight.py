@@ -1243,3 +1243,45 @@ def test_pre_absent_post_present_never_aliases_post_to_pre():
     assert resolved.pre_weight_event_id is None
     assert resolved.post_weight_lbs == 13.1
     assert resolved.post_weight_event_id == 4
+    info = resolved.as_weight_info()
+    assert info["evidence_pre_weight_lbs"] is None
+    assert info["pre_weight_lbs"] is None
+
+
+def test_authoritative_evidence_pre_lbs_never_aliases_post_only_scan():
+    from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
+
+    assert (
+        authoritative_evidence_pre_lbs(
+            {
+                "pre_weight_lbs": 13.1,
+                "pre_weight_event_id": None,
+                "post_weight_lbs": 13.1,
+                "post_weight_event_id": 4,
+            }
+        )
+        is None
+    )
+    assert (
+        authoritative_evidence_pre_lbs(
+            {
+                "pre_weight_lbs": 13.1,
+                "pre_weight_event_id": 4,
+                "post_weight_lbs": 13.1,
+                "post_weight_event_id": 4,
+            }
+        )
+        is None
+    )
+    assert (
+        authoritative_evidence_pre_lbs(
+            {
+                "pre_weight_lbs": 12.0,
+                "pre_weight_event_id": 1,
+                "post_weight_lbs": 13.1,
+                "post_weight_event_id": 4,
+                "pre_resolution_status": "resolved",
+            }
+        )
+        == 12.0
+    )

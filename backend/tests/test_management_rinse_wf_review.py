@@ -542,6 +542,78 @@ def test_review_list_is_summary_only_no_scans():
     assert "scans" not in bag
 
 
+def test_review_list_clears_stale_snap_pre_when_resolver_has_no_pre():
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_rinse_wf_review import _merge_review_weight_fields, build_management_review_list
+
+    bag = {"pre_weight_lbs": 13.1, "post_weight_lbs": 13.1}
+    _merge_review_weight_fields(
+        bag,
+        {
+            "pre_weight_lbs": None,
+            "pre_weight_event_id": None,
+            "post_weight_lbs": 13.1,
+            "post_weight_event_id": 99,
+            "post_weight_event_exists": True,
+        },
+    )
+    assert bag["pre_weight_lbs"] is None
+    assert bag["evidence_pre_weight_lbs"] is None
+    assert bag["post_weight_lbs"] == 13.1
+
+    headline = {
+        "segments": {"wf": {"bag_ids": {"review_required": ["0WMBKDYLS0"]}}},
+        "review_reasons_by_bag": {"0WMBKDYLS0": ["DISAPPEARED_WITHOUT_COMPLETION"]},
+        "review_by_reason": {"DISAPPEARED_WITHOUT_COMPLETION": ["0WMBKDYLS0"]},
+    }
+    row = {
+        "bag_id": "0WMBKDYLS0",
+        "service_type": "WF",
+        "effective_status": "review_required",
+        "review_reason_codes": ["DISAPPEARED_WITHOUT_COMPLETION"],
+        "pre_weight_lbs": 13.1,
+        "post_weight_lbs": 13.1,
+        "manager_edit_version": 0,
+        "updated_at": "2026-08-22T12:00:00",
+        "bag_snapshot": {
+            "customer_name": "Test",
+            "rush_flag": "NON-RUSH",
+            "pre_weight_lbs": 13.1,
+            "post_weight_lbs": 13.1,
+        },
+    }
+    with (
+        patch("backend.rinse_veewash_shift_day.get_day_record", return_value={"headline": headline}),
+        patch("backend.rinse_veewash_shift_day.summary_from_day_record", return_value=headline),
+        patch("backend.rinse_veewash_shift_day.load_day_bags_by_ids", return_value=[row]),
+        patch(
+            "backend.management_rinse_wf_review._canonical_review_weights",
+            return_value={
+                "0WMBKDYLS0": {
+                    "pre_weight_lbs": None,
+                    "pre_weight_event_id": None,
+                    "post_weight_lbs": 13.1,
+                    "post_weight_event_id": 99,
+                    "post_weight_event_exists": True,
+                }
+            },
+        ),
+        patch("backend.rinse_bulk_workitems.load_bag_bulk_lines"),
+    ):
+        out = build_management_review_list(
+            MagicMock(),
+            3,
+            date(2026, 8, 22),
+            category="missing_from_portal",
+        )
+    bag_out = out["bags"][0]
+    assert bag_out["pre_weight_lbs"] is None
+    assert bag_out["evidence_pre_weight_lbs"] is None
+    assert bag_out["post_weight_lbs"] == 13.1
+
+
 def test_review_action_metadata_loads_no_scans():
     from datetime import date
     from unittest.mock import MagicMock, patch

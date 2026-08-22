@@ -29,6 +29,7 @@ from datetime import date
 from typing import Any, Mapping
 
 from backend.rinse_bag_completion import normalize_bag_id
+from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
 from backend.rinse_veewash_workload import (
     REASON_DISAPPEARED_WITHOUT_COMPLETION,
     REASON_WF_BULK_WORKITEM_REVIEW,
@@ -59,14 +60,11 @@ def _merge_review_weight_fields(
     weights: dict[str, Any] | None,
 ) -> None:
     """Overlay authoritative PRE/POST; PRE stays null when no PRE evidence."""
+    evidence_pre = authoritative_evidence_pre_lbs(weights or {})
+    bag["evidence_pre_weight_lbs"] = evidence_pre
+    bag["pre_weight_lbs"] = evidence_pre
     if not weights:
         return
-    has_pre = weights.get("pre_weight_event_id") is not None or weights.get(
-        "corrected_pre_weight_lbs"
-    ) is not None
-    evidence_pre = weights.get("pre_weight_lbs") if has_pre else None
-    bag["pre_weight_lbs"] = evidence_pre
-    bag["evidence_pre_weight_lbs"] = evidence_pre
     bag["pre_weight_event_id"] = weights.get("pre_weight_event_id")
     post = weights.get("post_weight_lbs")
     if post is not None or weights.get("post_weight_event_exists"):
@@ -861,7 +859,8 @@ def build_management_review_list(
                 "completion_employee": completion_employee,
                 "completion_at": completion_at,
                 "completed_by": completion_employee,
-                "pre_weight_lbs": snap.get("pre_weight_lbs", row.get("pre_weight_lbs")),
+                "pre_weight_lbs": None,
+                "evidence_pre_weight_lbs": None,
                 "pre_weight_at": snap.get("pre_weight_at"),
                 "post_weight_lbs": snap.get("post_weight_lbs", row.get("post_weight_lbs")),
                 "post_weight_at": snap.get("post_weight_at"),
@@ -1045,14 +1044,8 @@ def build_management_review_detail(
         except Exception:
             pass
     bag["employee_performance_eligible"] = category == CATEGORY_SPECIALTY
-    bag["evidence_pre_weight_lbs"] = (
-        bag.get("pre_weight_lbs")
-        if bag.get("pre_weight_event_id") is not None
-        or bag.get("corrected_pre_weight_lbs") is not None
-        else None
-    )
-    if bag.get("evidence_pre_weight_lbs") is None:
-        bag["pre_weight_lbs"] = None
+    bag["evidence_pre_weight_lbs"] = authoritative_evidence_pre_lbs(bag)
+    bag["pre_weight_lbs"] = bag["evidence_pre_weight_lbs"]
     bag["short_reason"] = _short_reason(
         list(bag.get("reason_codes") or codes), category
     )

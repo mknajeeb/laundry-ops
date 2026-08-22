@@ -195,7 +195,7 @@ function SplitOrderReviewRow({
 
 /**
  * Dedicated REVIEW working queue — Specialty Items vs Missing From Portal vs Split Order Review.
- * Specialty / Missing: list is lightweight; Detailed Review opens the full modal.
+ * Specialty / Missing: inline card resolver + secondary Detailed Review modal.
  * Split Order Review: drawer-only MARK SPLIT / MARK NOT SPLIT (no generic WF Review modal).
  */
 export default function ManagementRinseWfReviewSection({
@@ -225,7 +225,7 @@ export default function ManagementRinseWfReviewSection({
   });
   const [busyBagId, setBusyBagId] = useState(null);
   const [decisionMsg, setDecisionMsg] = useState("");
-  const [searchInput, setSearchInput] = useState("");
+  const [expandedBagId, setExpandedBagId] = useState(null);
   const [perf, setPerf] = useState({
     drawerOpenMs: null,
     lastDecisionSaveMs: null,
@@ -269,6 +269,9 @@ export default function ManagementRinseWfReviewSection({
             server_elapsed_ms: serverMs,
           },
         });
+        if (category !== "split_order_review" && Array.isArray(data.bags) && data.bags.length) {
+          setExpandedBagId((prev) => prev || data.bags[0]?.bag_id || null);
+        }
       } catch (err) {
         setListState({
           loading: false,
@@ -292,6 +295,7 @@ export default function ManagementRinseWfReviewSection({
     drawerOpenStarted.current = performance.now();
     setDecisionMsg("");
     setSearchInput("");
+    setExpandedBagId(null);
     setDrawer({ open: true, category });
   };
 
@@ -301,6 +305,7 @@ export default function ManagementRinseWfReviewSection({
     setConfirm({ anchorEl: null, bag: null, decision: null });
     setDecisionMsg("");
     setSearchInput("");
+    setExpandedBagId(null);
   };
 
   const title =
@@ -555,9 +560,23 @@ export default function ManagementRinseWfReviewSection({
                   <ManagementRinseWfReviewDrawerRow
                     key={bag.bag_id}
                     bag={bag}
+                    selectedDateEt={selectedDateEt}
+                    readOnly={readOnly}
+                    expanded={expandedBagId === bag.bag_id}
+                    onToggle={(bagId) =>
+                      setExpandedBagId((prev) => (prev === bagId ? null : bagId))
+                    }
                     onDetailedReview={(seed) =>
                       setModal({ open: true, bagId: seed.bag_id, seed })
                     }
+                    onSaved={(_data, meta) => {
+                      const id = meta?.bagId || bag.bag_id;
+                      setListState((prev) => ({
+                        ...prev,
+                        bags: (prev.bags || []).filter((b) => b.bag_id !== id),
+                      }));
+                      onRefresh?.();
+                    }}
                   />
                 ),
               )}

@@ -847,21 +847,15 @@ def build_drilldown(
                 "post_weight_event_employee"
             ):
                 item["post_weight_employee"] = resolved.get("post_weight_event_employee")
+            from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
+
             if has_pre_lock:
                 item["pre_weight_lbs"] = resolved.get("pre_weight_lbs")
-            elif resolved.get("pre_weight_event_id") is not None or resolved.get(
-                "corrected_pre_weight_lbs"
-            ) is not None:
-                item["pre_weight_lbs"] = resolved.get("pre_weight_lbs")
             else:
-                item["pre_weight_lbs"] = None
+                evidence_pre = authoritative_evidence_pre_lbs(resolved)
+                item["pre_weight_lbs"] = evidence_pre
             item["pre_weight_event_id"] = resolved.get("pre_weight_event_id")
-            item["evidence_pre_weight_lbs"] = (
-                resolved.get("pre_weight_lbs")
-                if resolved.get("pre_weight_event_id") is not None
-                or resolved.get("corrected_pre_weight_lbs") is not None
-                else None
-            )
+            item["evidence_pre_weight_lbs"] = authoritative_evidence_pre_lbs(resolved)
             if has_post_lock:
                 item["post_weight_lbs"] = resolved.get("post_weight_lbs")
                 item["post_weight_value"] = resolved.get(

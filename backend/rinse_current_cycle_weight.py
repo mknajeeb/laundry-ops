@@ -209,6 +209,35 @@ def _pick_pre_event(candidates: Sequence[Mapping[str, Any]]) -> Mapping[str, Any
     return candidates[-1]
 
 
+def authoritative_evidence_pre_lbs(weight_info: Mapping[str, Any] | None) -> float | None:
+    """
+    Single PRE read contract for review UI, management totals, and detail evidence.
+
+    Hard invariant: POST must never surface as PRE. Manager-corrected PRE counts.
+    """
+    if not weight_info:
+        return None
+    corrected = _parse_weight(weight_info.get("corrected_pre_weight_lbs"))
+    if corrected is not None:
+        return corrected
+    pre_lbs = _parse_weight(weight_info.get("pre_weight_lbs"))
+    if pre_lbs is None:
+        return None
+    pre_id = weight_info.get("pre_weight_event_id")
+    post_id = weight_info.get("post_weight_event_id")
+    if pre_id is not None and post_id is not None and pre_id == post_id:
+        return None
+    # POST-only cycle: no PRE event id but POST event carries the only lbs.
+    if pre_id is None and post_id is not None:
+        post_lbs = _parse_weight(weight_info.get("post_weight_lbs"))
+        if post_lbs is not None and _weights_equal(pre_lbs, post_lbs):
+            return None
+    status = str(weight_info.get("pre_resolution_status") or "").strip().upper()
+    if status in (STATUS_MISSING, STATUS_WAITING_FOR_EVENT, STATUS_UNAVAILABLE):
+        return None
+    return pre_lbs
+
+
 def _pick_post_event(candidates: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     """Prefer earliest authoritative POST-bearing WE; empty events must not wipe it."""
     if not candidates:
@@ -315,7 +344,7 @@ class CurrentCycleWeightResult:
 
     def as_weight_info(self) -> dict[str, Any]:
         """Shape compatible with resolve_weight_entry_pair / load_bag_weight_map."""
-        return {
+        info = {
             "pre_weight_lbs": self.pre_weight_lbs,
             "post_weight_lbs": self.post_weight_lbs,
             "pre_weight_event_id": self.pre_weight_event_id,
@@ -349,6 +378,10 @@ class CurrentCycleWeightResult:
             "corrected_pre_weight_lbs": self.corrected_pre_weight_lbs,
             "corrected_post_weight_lbs": self.corrected_post_weight_lbs,
         }
+        evidence_pre = authoritative_evidence_pre_lbs(info)
+        info["evidence_pre_weight_lbs"] = evidence_pre
+        info["pre_weight_lbs"] = evidence_pre
+        return info
 
 
 def select_current_cycle_weight_events(
