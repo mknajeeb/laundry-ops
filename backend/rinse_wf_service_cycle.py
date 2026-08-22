@@ -324,41 +324,169 @@ def admit_or_update_cycle_from_evidence(
     )
 
 
-def reconstruct_cycles_from_durable_evidence(
+def _current_cycle_anchor(
+    timeline: Sequence[Mapping[str, Any]], cutover_date_et: date
+) -> datetime | None:
+    from backend.rinse_cycle_boundary import resolve_cycle_anchor
+
+    return resolve_cycle_anchor(timeline, selected_date_et=cutover_date_et)
+
+
+def _parse_cycle_completion_at(cycle_dict: Mapping[str, Any]) -> datetime | None:
+    comp_raw = cycle_dict.get("completion_at")
+    if not comp_raw:
+        return None
+    if isinstance(comp_raw, datetime):
+        return comp_raw
+    return datetime.fromisoformat(str(comp_raw).replace("Z", "")[:19])
+
+
+def _eligible_for_minimal_cutover_seed(
+    cycle_dict: Mapping[str, Any], cutover_date_et: date
+) -> bool:
+    """Current open cycles, or cycles completed on the cutover date only."""
+    status = str(cycle_dict.get("effective_status") or "").lower()
+    if status == "completed":
+        comp_at = _parse_cycle_completion_at(cycle_dict)
+        return comp_at is not None and comp_at.date() == cutover_date_et
+    return status in ("pending", "review", "active")
+
+
+def _collect_minimal_cutover_bag_ids(
     cursor,
     organization_id: int,
+    cutover_date_et: date,
     bag_ids: Sequence[str] | None = None,
-) -> dict[str, Any]:
-    """Build canonical cycles from rinse_bag_scan_events (migration/cutover)."""
-    ensure_wf_service_cycles_table(cursor)
+) -> list[str]:
+    """Operational hints only — lifecycle truth comes from current-cycle evidence."""
     org = int(organization_id)
-    ids = sorted({_norm_bag(b) for b in (bag_ids or []) if _norm_bag(b)})
-    if not ids:
-        cur = cursor
+    day_start = naive_et_day_start(cutover_date_et)
+    day_end = day_start + timedelta(days=1)
+    ids: set[str] = {_norm_bag(b) for b in (bag_ids or []) if _norm_bag(b)}
+    cur = cursor
+    if table_exists(cursor, "rinse_shift_monitor_day_bags"):
+        cur.execute(
+            """
+            SELECT bag_id FROM rinse_shift_monitor_day_bags
+            WHERE organization_id = %s AND shift_date_et = %s AND UPPER(service_type) = 'WF'
+            """,
+            (org, cutover_date_et.isoformat()),
+        )
+        ids.update(_norm_bag(r["bag_id"]) for r in (cur.fetchall() or []) if r.get("bag_id"))
+    if table_exists(cursor, "rinse_bag_scan_events"):
         cur.execute(
             """
             SELECT DISTINCT bag_id FROM rinse_bag_scan_events
             WHERE organization_id = %s
+              AND scanned_at_parsed >= %s AND scanned_at_parsed < %s
             """,
-            (org,),
+            (org, day_start, day_end),
         )
-        ids = sorted(_norm_bag(r["bag_id"]) for r in (cur.fetchall() or []) if r.get("bag_id"))
+        ids.update(_norm_bag(r["bag_id"]) for r in (cur.fetchall() or []) if r.get("bag_id"))
+    return sorted(b for b in ids if b)
 
-    admitted = 0
+
+def prune_historical_canonical_cycles(
+    cursor,
+    organization_id: int,
+    cutover_date_et: date,
+) -> dict[str, Any]:
+    """Remove canonical rows outside cutover-forward scope (no historical migration)."""
+    ensure_wf_service_cycles_table(cursor)
+    org = int(organization_id)
+    cur = cursor
+    cur.execute(
+        """
+        SELECT id, bag_id, cycle_anchor_at
+        FROM rinse_wf_service_cycles
+        WHERE organization_id = %s
+        """,
+        (org,),
+    )
+    to_delete: list[int] = []
+    for row in cur.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        row_id = int(row["id"])
+        bid = _norm_bag(row.get("bag_id"))
+        anchor = row.get("cycle_anchor_at")
+        if not bid or not isinstance(anchor, datetime):
+            to_delete.append(row_id)
+            continue
+        timeline = _load_timeline(cursor, org, bid)
+        current_anchor = _current_cycle_anchor(timeline, cutover_date_et)
+        if current_anchor is None or anchor != current_anchor:
+            to_delete.append(row_id)
+            continue
+        cycle_dict, _ = _cycle_resolution(
+            cursor, org, bid, anchor, selected_date_et=cutover_date_et
+        )
+        if not _eligible_for_minimal_cutover_seed(cycle_dict, cutover_date_et):
+            to_delete.append(row_id)
+    deleted = 0
+    for row_id in to_delete:
+        cur.execute(
+            "DELETE FROM rinse_wf_service_cycles WHERE id = %s AND organization_id = %s",
+            (row_id, org),
+        )
+        deleted += int(cur.rowcount or 0)
+    return {"deleted": deleted, "cutover_date_et": cutover_date_et.isoformat()}
+
+
+def seed_minimal_cutover_cycles(
+    cursor,
+    organization_id: int,
+    cutover_date_et: date,
+    bag_ids: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Seed only current open WF cycles and today's completed cycles (cutover forward)."""
+    ensure_wf_service_cycles_table(cursor)
+    org = int(organization_id)
+    ids = _collect_minimal_cutover_bag_ids(cursor, org, cutover_date_et, bag_ids)
+    admitted = skipped_historical = 0
     completed = 0
     for bid in ids:
         timeline = _load_timeline(cursor, org, bid)
-        anchors = _valid_cycle_anchors(timeline)
-        if not anchors:
+        anchor = _current_cycle_anchor(timeline, cutover_date_et)
+        if anchor is None:
             continue
-        for anchor in anchors:
-            row = admit_or_update_cycle_from_evidence(
-                cursor, org, bid, anchor, admitted_source="MIGRATION_RECONSTRUCT"
-            )
-            admitted += 1
-            if str(row.get("status")) == STATUS_COMPLETED:
-                completed += 1
-    return {"bags": len(ids), "cycles_upserted": admitted, "completed": completed}
+        cycle_dict, _ = _cycle_resolution(
+            cursor, org, bid, anchor, selected_date_et=cutover_date_et
+        )
+        if not _eligible_for_minimal_cutover_seed(cycle_dict, cutover_date_et):
+            skipped_historical += 1
+            continue
+        row = admit_or_update_cycle_from_evidence(
+            cursor,
+            org,
+            bid,
+            anchor,
+            admitted_source="CUTOVER_MINIMAL_SEED",
+        )
+        admitted += 1
+        if str(row.get("status")) == STATUS_COMPLETED:
+            completed += 1
+    return {
+        "bags_considered": len(ids),
+        "cycles_upserted": admitted,
+        "completed": completed,
+        "skipped_historical": skipped_historical,
+        "cutover_date_et": cutover_date_et.isoformat(),
+    }
+
+
+def reconstruct_cycles_from_durable_evidence(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str] | None = None,
+    *,
+    cutover_date_et: date | None = None,
+) -> dict[str, Any]:
+    """Minimal cutover seed only — does not migrate historical WF cycles."""
+    from backend.business_time import business_today
+
+    day = cutover_date_et or business_today()
+    return seed_minimal_cutover_cycles(cursor, organization_id, day, bag_ids)
 
 
 def sync_portal_discovery(

@@ -14,7 +14,7 @@ from backend.rinse_wf_service_cycle import (
     admit_or_update_cycle_from_evidence,
     get_cycle_by_key,
     handle_disappeared_active_cycles,
-    reconstruct_cycles_from_durable_evidence,
+    seed_minimal_cutover_cycles,
     sync_portal_discovery,
     upsert_service_cycle,
 )
@@ -64,17 +64,41 @@ def test_repeated_scrape_updates_same_cycle(_res, get_key, _tbl, mock_cursor):
 
 @patch("backend.rinse_wf_service_cycle.table_exists", return_value=True)
 @patch("backend.rinse_wf_service_cycle._load_timeline")
-@patch("backend.rinse_wf_service_cycle._valid_cycle_anchors")
+@patch("backend.rinse_wf_service_cycle._current_cycle_anchor")
+@patch("backend.rinse_wf_service_cycle._cycle_resolution")
 @patch("backend.rinse_wf_service_cycle.admit_or_update_cycle_from_evidence")
-def test_same_bag_new_cycle_only_with_new_anchor(admit, anchors, timeline, _tbl, mock_cursor):
-    a1 = datetime(2026, 8, 20, 10, 0)
+def test_minimal_seed_only_current_cycle(admit, resolution, anchor, timeline, _tbl, mock_cursor):
     a2 = datetime(2026, 8, 22, 1, 0)
-    anchors.return_value = [a1, a2]
+    anchor.return_value = a2
     timeline.return_value = []
-    admit.return_value = {"status": STATUS_COMPLETED}
-    out = reconstruct_cycles_from_durable_evidence(mock_cursor, 3, ["BAG001"])
-    assert out["cycles_upserted"] == 2
-    assert admit.call_count == 2
+    resolution.return_value = ({"effective_status": "pending"}, {})
+    admit.return_value = {"status": STATUS_ACTIVE}
+    out = seed_minimal_cutover_cycles(
+        mock_cursor, 3, date(2026, 8, 22), ["BAG001"]
+    )
+    assert out["cycles_upserted"] == 1
+    assert admit.call_count == 1
+
+
+@patch("backend.rinse_wf_service_cycle.table_exists", return_value=True)
+@patch("backend.rinse_wf_service_cycle._load_timeline")
+@patch("backend.rinse_wf_service_cycle._current_cycle_anchor")
+@patch("backend.rinse_wf_service_cycle._cycle_resolution")
+@patch("backend.rinse_wf_service_cycle.admit_or_update_cycle_from_evidence")
+def test_minimal_seed_skips_historical_completion(admit, resolution, anchor, timeline, _tbl, mock_cursor):
+    a2 = datetime(2026, 8, 22, 1, 0)
+    anchor.return_value = a2
+    timeline.return_value = []
+    resolution.return_value = (
+        {"effective_status": "completed", "completion_at": "2026-08-21 14:00:00"},
+        {},
+    )
+    out = seed_minimal_cutover_cycles(
+        mock_cursor, 3, date(2026, 8, 22), ["BAG001"]
+    )
+    assert out["cycles_upserted"] == 0
+    assert out["skipped_historical"] == 1
+    admit.assert_not_called()
 
 
 @patch("backend.rinse_wf_service_cycle.table_exists", return_value=True)
