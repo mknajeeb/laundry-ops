@@ -9,6 +9,7 @@ from backend.management_rinse_hd import (
     STATUS_COMPLETE,
     STATUS_PENDING_WASH,
     STATUS_WASHED,
+    _compact_order,
     business_date_of,
     derive_workflow_status,
     order_visible_on_day,
@@ -26,6 +27,22 @@ def _ev(purpose, at, user="Op", bag="ABC", eid=1):
         "scanned_at_parsed": at,
         "user_name": user,
     }
+
+
+def test_compact_order_includes_customer_name():
+    compact = _compact_order(
+        {
+            "bag_id": "9EH6X45CB0",
+            "customer_name": "Ada Lovelace",
+            "status": STATUS_AWAITING_ENTRY,
+            "washed_by_name": "Maria",
+            "folded_by_name": "Tarannum",
+        }
+    )
+    assert compact["bag_id"] == "9EH6X45CB0"
+    assert compact["customer_name"] == "Ada Lovelace"
+    assert compact["washed_by_name"] == "Maria"
+    assert compact["folded_by_name"] == "Tarannum"
 
 
 def test_no_bulk_with_hd_hint_is_pending_wash():

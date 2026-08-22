@@ -21,13 +21,10 @@ import {
   getManagementRevenueSchedulePreview,
   getManagementRevenueStreamTab,
   getManagementRinseHd,
-  getManagementRinseHdDetail,
-  markManagementRinseHdComplete,
   postManagementRevenueDhsManualPickup,
   saveManagementRevenueDhs,
   saveManagementRevenueNonRinse,
   saveManagementRevenueWf,
-  saveManagementRinseHdProduction,
   updateManagementCashPayout,
 } from "../api";
 import PlanningDatePicker from "../components/datetime/PlanningDatePicker";
@@ -45,7 +42,7 @@ import {
   parseMoneyInput,
   todayEtIso,
 } from "../components/revenueShared/revenueFormat";
-import { formatFriendlyEtWall } from "../utils/rinseTimeFormat";
+import HdMobileAwaitingEntryPanel from "./HdMobileAwaitingEntryPanel";
 import OpsLocaleToggle from "./OpsLocaleToggle";
 import OpsLockButton from "./OpsLockButton";
 import OpsMobileShell from "./OpsMobileShell";
@@ -63,16 +60,6 @@ function formatHomeDate(iso) {
   }
 }
 
-function fmtInt(v) {
-  if (v == null || Number.isNaN(Number(v))) return "—";
-  return Number(v).toLocaleString();
-}
-
-function fmtTime(v) {
-  if (!v) return "—";
-  return formatFriendlyEtWall(v) || String(v);
-}
-
 const SCREEN_TITLE_KEYS = {
   home: "mobileOps.revenue.title",
   self_service: "mobileOps.revenue.selfService",
@@ -81,7 +68,6 @@ const SCREEN_TITLE_KEYS = {
   dhs_account: "mobileOps.revenue.dhs",
   cash: "mobileOps.revenue.cashPaidOut",
   hang_dry: "mobileOps.revenue.hangDry",
-  hang_dry_detail: "mobileOps.revenue.hangDry",
   rinse_wf: "mobileOps.revenue.rinseWf",
   missing: "mobileOps.revenue.missingWork",
 };
@@ -126,10 +112,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
 
   const [hdList, setHdList] = useState(null);
   const [hdLoading, setHdLoading] = useState(false);
-  const [hdDetail, setHdDetail] = useState(null);
-  const [hdItems, setHdItems] = useState(null);
-  const [hdRevenue, setHdRevenue] = useState(null);
-  const [hdSaving, setHdSaving] = useState(false);
+  const [hdListError, setHdListError] = useState("");
 
   const [missingFilter, setMissingFilter] = useState("all");
   const [missing, setMissing] = useState(null);
@@ -531,18 +514,21 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     }
   };
 
-  const loadHangDry = async () => {
-    setHdLoading(true);
-    setError("");
+  const loadHangDry = async ({ quiet = false } = {}) => {
+    if (!quiet) setHdLoading(true);
+    setHdListError("");
+    if (!quiet) setError("");
     try {
       // Mobile HD is data-entry only: Folded / Awaiting Entry orders.
       const res = await getManagementRinseHd(dateEt, { status: "awaiting_entry", mobile: 1 });
       setHdList(res.data || null);
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadHdFailed"));
-      setHdList(null);
+      const msg = e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadHdFailed");
+      if (!quiet) setError(msg);
+      setHdListError(msg);
+      if (!quiet) setHdList(null);
     } finally {
-      setHdLoading(false);
+      if (!quiet) setHdLoading(false);
     }
   };
 
@@ -551,71 +537,9 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     await loadHangDry();
   };
 
-  const openHangDryDetail = async (order) => {
-    setError("");
-    setScreen("hang_dry_detail");
-    setHdDetail({ loading: true, order });
-    setHdItems(order.items != null ? order.items : null);
-    setHdRevenue(order.revenue != null ? order.revenue : null);
-    try {
-      const res = await getManagementRinseHdDetail(order.bag_id, { date_et: dateEt });
-      setHdDetail(res.data || { order });
-      const prod = res.data?.production || res.data?.order || {};
-      setHdItems(prod.items != null ? prod.items : order.items != null ? order.items : null);
-      setHdRevenue(
-        prod.revenue != null ? prod.revenue : order.revenue != null ? order.revenue : null,
-      );
-    } catch (e) {
-      setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.loadOrderFailed"));
-      setHdDetail({ order });
-    }
-  };
-
-  const saveHdProduction = async ({ markComplete = false } = {}) => {
-    const bagId = hdDetail?.order?.bag_id || hdDetail?.bag_id;
-    if (!bagId) return;
-    setHdSaving(true);
-    setError("");
-    try {
-      const saveRes = await saveManagementRinseHdProduction(bagId, {
-        date_et: dateEt,
-        total_items: hdItems === null || hdItems === "" ? null : Number(hdItems),
-        revenue: parseMoneyInput(hdRevenue),
-        version: hdDetail?.production?.version ?? hdDetail?.order?.production_version ?? 0,
-      });
-      const nextVersion = saveRes.data?.version ?? hdDetail?.production?.version ?? 0;
-      if (markComplete) {
-        await markManagementRinseHdComplete(bagId, {
-          date_et: dateEt,
-          version: nextVersion,
-        });
-        await loadHangDry();
-        setScreen("hang_dry");
-        setHdDetail(null);
-      } else {
-        const res = await getManagementRinseHdDetail(bagId, { date_et: dateEt });
-        setHdDetail(res.data || { order: { bag_id: bagId } });
-        await loadHangDry();
-      }
-      setSaveState("saved");
-      await loadRevenue();
-    } catch (e) {
-      setError(
-        e?.response?.data?.message || e?.response?.data?.error || e?.message || t("mobileOps.revenue.saveFailed"),
-      );
-    } finally {
-      setHdSaving(false);
-    }
-  };
-
   const handleTopBack = () => {
     if (screen === "home") {
       onBack?.();
-      return;
-    }
-    if (screen === "hang_dry_detail") {
-      setScreen("hang_dry");
-      setHdDetail(null);
       return;
     }
     if (screen === "dhs_account") {
@@ -695,7 +619,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         </Alert>
       ) : null}
 
-      {!["dhs_account", "hang_dry", "hang_dry_detail"].includes(screen) ? (
+      {!["dhs_account", "hang_dry"].includes(screen) ? (
         <Box
           sx={{
             position: "sticky",
@@ -1106,131 +1030,34 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       ) : null}
 
       {screen === "hang_dry" ? (
-        <Stack spacing={1.25} sx={{ pb: 2 }}>
-          <Typography sx={{ fontSize: 13, fontWeight: 700, color: OPS_MOBILE.muted }}>
-            Awaiting Entry only — fold complete, enter items & revenue, then Complete.
-          </Typography>
-          {hdLoading ? (
-            <Box sx={{ py: 4, display: "grid", placeItems: "center" }}>
-              <CircularProgress size={28} />
-            </Box>
-          ) : null}
-          {!hdLoading && !(hdList?.orders || []).length ? (
-            <Typography sx={{ fontSize: 13, color: OPS_MOBILE.muted }}>
-              {t("mobileOps.revenue.noHdOrders")}
-            </Typography>
-          ) : null}
-          {(hdList?.orders || []).map((order) => (
-            <Box
-              key={order.bag_id}
-              component="button"
-              type="button"
-              onClick={() => openHangDryDetail(order)}
-              sx={{
-                display: "block",
-                width: "100%",
-                textAlign: "left",
-                p: 1.75,
-                borderRadius: 2,
-                border: "1px solid #e5e7eb",
-                bgcolor: "#fff",
-                appearance: "none",
-                fontFamily: "inherit",
-                cursor: "pointer",
-              }}
-            >
-              <Typography sx={{ fontWeight: 900, fontSize: 18, fontFamily: "monospace" }}>
-                {order.bag_id}
-              </Typography>
-              <Typography sx={{ mt: 0.75, fontSize: 15, fontWeight: 700 }}>
-                Folded by {order.folded_by_name || "—"}
-              </Typography>
-              <Typography sx={{ fontSize: 13, color: OPS_MOBILE.muted, fontWeight: 600 }}>
-                {fmtTime(order.folded_at)}
-              </Typography>
-              {(order.items != null || order.revenue != null) && (
-                <Typography sx={{ mt: 0.75, fontSize: 14, fontWeight: 700, color: "#007a91" }}>
-                  {fmtMoney(order.revenue)}
-                  {order.items != null ? ` · ${t("mobileOps.revenue.itemsCount", { count: order.items })}` : ""}
-                </Typography>
-              )}
-            </Box>
-          ))}
-          <Button
-            variant="contained"
-            disabled={dispBusy === `rinse_hd:${dateEt}`}
-            onClick={() => completeDailySection("rinse_hd")}
-            sx={{ textTransform: "none", fontWeight: 900, minHeight: 48 }}
-          >
-            {t("mobileOps.revenue.complete")}
-          </Button>
-          <Button
-            variant="outlined"
-            disabled={dispBusy === `rinse_hd:${dateEt}`}
-            onClick={() =>
-              postDisposition(
-                {
-                  source_key: "rinse_hd",
-                  processing_date_et: dateEt,
-                  disposition: "no_activity",
-                  reason: "No activity",
-                },
-                `rinse_hd:${dateEt}`,
-              )
-            }
-            sx={{ textTransform: "none", fontWeight: 700, minHeight: 44 }}
-          >
-            {t("mobileOps.revenue.noActivity")}
-          </Button>
-        </Stack>
-      ) : null}
-
-      {screen === "hang_dry_detail" ? (
-        <Stack spacing={1.75} sx={{ pb: 2 }}>
-          <Typography sx={{ fontWeight: 900, fontSize: 22, fontFamily: "monospace" }}>
-            {hdDetail?.order?.bag_id || "—"}
-          </Typography>
-          <Typography sx={{ fontSize: 16, fontWeight: 700 }}>
-            Folded by {hdDetail?.order?.folded_by_name || "—"}
-          </Typography>
-          <Typography sx={{ fontSize: 14, color: OPS_MOBILE.muted, fontWeight: 600 }}>
-            {fmtTime(hdDetail?.order?.folded_at)}
-          </Typography>
-          <MoneyAmountField
-            label={t("mobileOps.revenue.items")}
-            value={hdItems}
-            onChange={(v) => {
-              setHdItems(v);
-              setSaveState("saving");
-              if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-              autosaveTimerRef.current = setTimeout(() => {
-                saveHdProduction({ markComplete: false });
-              }, 700);
-            }}
-            prefix=""
-          />
-          <MoneyAmountField
-            label={t("mobileOps.revenue.revenue")}
-            value={hdRevenue}
-            onChange={(v) => {
-              setHdRevenue(v);
-              setSaveState("saving");
-              if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-              autosaveTimerRef.current = setTimeout(() => {
-                saveHdProduction({ markComplete: false });
-              }, 700);
-            }}
-          />
-          <SaveStatusChip state={saveState} />
-          <Button
-            variant="contained"
-            disabled={hdSaving}
-            onClick={() => saveHdProduction({ markComplete: true })}
-            sx={{ textTransform: "none", fontWeight: 900, minHeight: 64, fontSize: 18 }}
-          >
-            {hdSaving ? t("mobileOps.revenue.saving") : t("mobileOps.revenue.complete")}
-          </Button>
-        </Stack>
+        <HdMobileAwaitingEntryPanel
+          dateEt={dateEt}
+          orders={hdList?.orders || []}
+          loading={hdLoading}
+          error={hdListError}
+          onOrdersChanged={async (opts) => {
+            await loadHangDry(opts);
+            if (!opts?.quiet) await loadRevenue();
+          }}
+          onError={(msg) => {
+            setHdListError(msg || "");
+            if (msg) setError(msg);
+          }}
+          t={t}
+          completeSectionBusy={dispBusy === `rinse_hd:${dateEt}`}
+          onCompleteSection={() => completeDailySection("rinse_hd")}
+          onNoActivity={() =>
+            postDisposition(
+              {
+                source_key: "rinse_hd",
+                processing_date_et: dateEt,
+                disposition: "no_activity",
+                reason: "No activity",
+              },
+              `rinse_hd:${dateEt}`,
+            )
+          }
+        />
       ) : null}
     </OpsMobileShell>
   );

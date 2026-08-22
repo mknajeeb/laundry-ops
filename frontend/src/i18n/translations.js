@@ -307,7 +307,9 @@ export const TRANSLATIONS = {
     "mobileOps.revenue.hdOrder": "HD order",
     "mobileOps.revenue.itemsCount": "Items {count}",
     "mobileOps.revenue.foldedBy": "Folded by {name}",
+    "mobileOps.revenue.washedBy": "Washed by {name}",
     "mobileOps.revenue.hdAwaitingHint": "Awaiting Entry — enter items & revenue, then Complete.",
+    "mobileOps.revenue.statusAwaitingEntry": "Awaiting Entry",
 
     "mobileOps.revenue.savedCheck": "Saved ✓",
     "mobileOps.revenue.needsEntry": "Needs entry",
@@ -1774,7 +1776,9 @@ export const TRANSLATIONS = {
     "mobileOps.revenue.hdOrder": "Pedido HD",
     "mobileOps.revenue.itemsCount": "Artículos {count}",
     "mobileOps.revenue.foldedBy": "Doblado por {name}",
+    "mobileOps.revenue.washedBy": "Lavado por {name}",
     "mobileOps.revenue.hdAwaitingHint": "Pendiente de entrada — artículos e ingreso, luego Completar.",
+    "mobileOps.revenue.statusAwaitingEntry": "Pendiente de entrada",
 
     "mobileOps.revenue.savedCheck": "Guardado ✓",
     "mobileOps.revenue.needsEntry": "Falta capturar",

@@ -519,6 +519,7 @@ def _compact_order(order: Mapping[str, Any]) -> dict[str, Any]:
     ops_date = order.get("operations_date_et")
     return {
         "bag_id": order.get("bag_id"),
+        "customer_name": order.get("customer_name"),
         "status": order.get("status"),
         "washed_at": order.get("washed_at"),
         "washed_by_user_id": order.get("washed_by_user_id"),
@@ -888,6 +889,21 @@ def build_rinse_hd_day(
             reverse=(key == STATUS_COMPLETE),
         )
 
+    # Read-only customer name plumbing for list cards (no workflow/admission change).
+    try:
+        from backend.rinse_employee_productivity_sessions import resolve_customer_names_for_bags
+
+        for key in buckets:
+            if buckets[key]:
+                buckets[key] = resolve_customer_names_for_bags(
+                    cursor,
+                    org,
+                    buckets[key],
+                    selected_date_et=selected_date_et,
+                )
+    except Exception:
+        pass
+
     status_key = str(status or "all").strip().lower().replace("-", "_").replace(" ", "_")
     aliases = {
         "open": STATUS_PENDING_WASH,
@@ -1103,10 +1119,23 @@ def get_rinse_hd_order_detail(
         employees = list_org_employee_options(cursor, int(organization_id))
     except Exception:
         employees = []
+    order_compact = _compact_order(state) if state else None
+    if order_compact:
+        try:
+            from backend.rinse_employee_productivity_sessions import resolve_customer_names_for_bags
+
+            order_compact = resolve_customer_names_for_bags(
+                cursor,
+                int(organization_id),
+                [order_compact],
+                selected_date_et=day,
+            )[0]
+        except Exception:
+            pass
     return {
         "bag_id": bid,
         "date_et": day.isoformat(),
-        "order": _compact_order(state) if state else None,
+        "order": order_compact,
         "wash": _event_public(wash),
         "fold": _event_public(fold),
         "entry": _event_public(wash),  # legacy alias

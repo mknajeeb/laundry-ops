@@ -73,20 +73,27 @@ export default function ManagementCopyableId({
           {label}
         </Typography>
       ) : null}
-      <Typography
-        component="span"
-        sx={{
-          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-          fontSize,
-          fontWeight,
-          userSelect: "text",
-          letterSpacing: 0.2,
-          color: "#0f172a",
-          wordBreak: "break-all",
-        }}
-      >
-        {text}
-      </Typography>
+      <Tooltip title={copied ? "Copied" : "Click to copy"} placement="top" enterDelay={300}>
+        <Typography
+          component="span"
+          {...pointer}
+          role="button"
+          tabIndex={0}
+          aria-label={`Copy ${text}`}
+          sx={{
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+            fontSize,
+            fontWeight,
+            userSelect: "text",
+            cursor: "copy",
+            letterSpacing: 0.2,
+            color: "#0f172a",
+            wordBreak: "break-all",
+          }}
+        >
+          {text}
+        </Typography>
+      </Tooltip>
       <Tooltip title={copied ? "Copied" : "Copy"} placement="top" enterDelay={300}>
         <IconButton
           size="small"
