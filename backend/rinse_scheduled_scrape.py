@@ -2270,6 +2270,22 @@ def run_scheduled_scrape_for_org(
                         presence_result.error_message
                         or "At Vendor presence apply from single-pass CSV failed"
                     )
+                try:
+                    from backend.rinse_wf_service_cycle import (
+                        sync_wf_cycles_after_portal_presence,
+                    )
+
+                    cycle_sync = sync_wf_cycles_after_portal_presence(
+                        conn,
+                        cursor,
+                        org_id,
+                        portal_csv_path=paths.portal_csv,
+                        portal_scrape_meta_path=Path(str(paths.portal_csv) + ".meta.json"),
+                    )
+                    result.detail["wf_service_cycle_sync"] = cycle_sync
+                    conn.commit()
+                except Exception as cycle_exc:
+                    log.write(f"WARNING: wf service cycle sync: {cycle_exc}\n")
             else:
                 if _run_bash_script(portal_script, env, log) != 0:
                     raise RuntimeError("Portal scrape subprocess failed")
