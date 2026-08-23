@@ -180,3 +180,180 @@ def read_lease_liveness(cursor, organization_id: int) -> dict[str, Any] | None:
     lease["supervisor_heartbeat_at"] = sup
     lease["worker_progress_at"] = worker
     return lease
+
+
+def orphan_stall_seconds() -> int:
+    try:
+        return max(300, int(os.getenv("RINSE_SCRAPE_ORPHAN_STALL_SEC", "1200")))
+    except (TypeError, ValueError):
+        return 1200
+
+
+def _seconds_stale(ts: datetime | None, now: datetime) -> float | None:
+    if not isinstance(ts, datetime):
+        return None
+    t = ts.replace(tzinfo=None) if ts.tzinfo else ts
+    return (now - t).total_seconds()
+
+
+def _aca_execution_running(execution_name: str | None) -> bool:
+    name = (execution_name or "").strip()
+    if not name:
+        return False
+    try:
+        from backend.rinse_aca_job_trigger import list_running_job_executions
+
+        running = list_running_job_executions()
+        return name in {str(x) for x in running}
+    except Exception as exc:
+        print(f"liveness: ACA list failed: {exc}", flush=True)
+        return False
+
+
+def orphan_reclaim_diagnostics(
+    cursor,
+    organization_id: int,
+    lease: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Shared liveness signals for orphan reclaim decisions."""
+    from backend.rinse_scrape_runs import mysql_lock_is_held
+
+    org = int(organization_id)
+    now_utc = now or _utcnow()
+    sup_stale = _seconds_stale(lease.get("supervisor_heartbeat_at"), now_utc)
+    worker_stale = _seconds_stale(lease.get("worker_progress_at"), now_utc)
+    if sup_stale is None:
+        sup_stale = _seconds_stale(lease.get("heartbeat_at"), now_utc)
+    if worker_stale is None:
+        worker_stale = _seconds_stale(lease.get("last_progress_at"), now_utc)
+    lock_held, _ = mysql_lock_is_held(cursor, org)
+    exec_running = _aca_execution_running(lease.get("owner_execution_name"))
+    return {
+        "supervisor_age_sec": sup_stale,
+        "worker_age_sec": worker_stale,
+        "exec_running": exec_running,
+        "lock_held": lock_held,
+        "execution": lease.get("owner_execution_name"),
+    }
+
+
+def orphan_reclaim_allowed(
+    cursor,
+    organization_id: int,
+    lease: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> tuple[bool, str | None, dict[str, Any]]:
+    """Canonical reclaim predicate — supervisor stale AND ACA dead AND lock free."""
+    stall = orphan_stall_seconds()
+    diag = orphan_reclaim_diagnostics(cursor, organization_id, lease, now=now)
+    sup_stale = diag.get("supervisor_age_sec")
+    if sup_stale is not None and sup_stale < stall:
+        return False, "skip_fresh_supervisor", diag
+    if diag.get("exec_running"):
+        return False, "skip_live_aca_execution", diag
+    if diag.get("lock_held"):
+        return False, "skip_live_mysql_lock", diag
+    return True, None, diag
+
+
+def is_owned_execution_live(
+    cursor,
+    organization_id: int,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """True when ownership evidence indicates a healthy live run."""
+    lease = read_lease_liveness(cursor, organization_id)
+    if not lease or not lease.get("owner_run_id"):
+        return False
+    allowed, skip_reason, _ = orphan_reclaim_allowed(cursor, organization_id, lease, now=now)
+    return not allowed and skip_reason in (
+        "skip_fresh_supervisor",
+        "skip_live_aca_execution",
+        "skip_live_mysql_lock",
+    )
+
+
+def reclaim_orphan_owner(cursor, organization_id: int, *, now: datetime | None = None) -> dict[str, Any]:
+    """Fence + terminalize lease owner when canonical orphan reclaim is allowed."""
+    from backend.rinse_scrape_lease import fence_lease
+    from backend.rinse_scrape_runs import (
+        _parse_result_json,
+        ensure_rinse_scrape_runs_table,
+        ensure_scrape_run_terminal,
+        release_scrape_lock,
+    )
+
+    org = int(organization_id)
+    now_utc = now or _utcnow()
+    stall = orphan_stall_seconds()
+    ensure_lease_liveness_columns(cursor)
+    ensure_rinse_scrape_runs_table(cursor)
+    lease = read_lease_liveness(cursor, org)
+    if not lease:
+        return {"action": "no_lease"}
+
+    owner_run = lease.get("owner_run_id")
+    if not owner_run:
+        return {"action": "no_owner"}
+
+    allowed, skip_reason, diag = orphan_reclaim_allowed(cursor, org, lease, now=now_utc)
+    if not allowed:
+        return {"action": skip_reason, **diag}
+
+    cursor.execute(
+        """
+        SELECT id, status, started_at, result_json, lease_generation
+        FROM rinse_scrape_runs
+        WHERE organization_id = %s AND id = %s
+        LIMIT 1
+        """,
+        (org, int(owner_run)),
+    )
+    run = cursor.fetchone() or {}
+    if str(run.get("status") or "") != "running":
+        return {"action": "skip_not_running", "run_id": owner_run, **diag}
+
+    gen = run.get("lease_generation")
+    reason = f"FAILED_ORPHAN_RECLAIM stall>{stall}s"
+    fence_lease(
+        cursor,
+        org,
+        reason="FAILED_ORPHAN_RECLAIM",
+        expected_generation=int(gen) if gen else None,
+    )
+    detail = _parse_result_json(run.get("result_json"))
+    sync_cycle = dict(detail.get("sync_cycle") or {})
+    sync_cycle.update(
+        {
+            "cycle_status": "FAILED_ORPHAN_RECLAIM",
+            "failure_message": reason,
+            "failed_step": "orphan_reclaim",
+            "lock_was_free": not diag.get("lock_held"),
+            "supervisor_age_sec": diag.get("supervisor_age_sec"),
+            "worker_age_sec": diag.get("worker_age_sec"),
+            "exec_running": diag.get("exec_running"),
+        }
+    )
+    detail["sync_cycle"] = sync_cycle
+    ensure_scrape_run_terminal(
+        cursor,
+        int(owner_run),
+        org,
+        status="failed",
+        error_message=reason,
+        result_json=detail,
+    )
+    try:
+        release_scrape_lock(cursor, org)
+    except Exception:
+        pass
+    return {
+        "action": "reclaimed",
+        "run_id": int(owner_run),
+        "reason": reason,
+        **diag,
+    }

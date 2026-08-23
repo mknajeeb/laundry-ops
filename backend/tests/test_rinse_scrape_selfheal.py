@@ -113,3 +113,123 @@ def test_scrape_stage_heartbeat_uses_supervisor_thread(monkeypatch):
         pass
 
     assert calls == [(3, 7, "finalizing")]
+
+
+def test_orphan_reclaim_blocked_when_supervisor_fresh(monkeypatch):
+    from backend.rinse_scrape_liveness import orphan_reclaim_allowed
+
+    now = datetime(2026, 8, 23, 18, 0, 0)
+    lease = {
+        "supervisor_heartbeat_at": now - timedelta(seconds=30),
+        "owner_execution_name": "exec-a",
+    }
+    cursor = MagicMock()
+    monkeypatch.setattr(
+        "backend.rinse_scrape_runs.mysql_lock_is_held",
+        lambda *_a, **_k: (False, None),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness._aca_execution_running",
+        lambda _n: False,
+    )
+    allowed, reason, _ = orphan_reclaim_allowed(cursor, 3, lease, now=now)
+    assert allowed is False
+    assert reason == "skip_fresh_supervisor"
+
+
+def test_orphan_reclaim_blocked_when_aca_running(monkeypatch):
+    from backend.rinse_scrape_liveness import orphan_reclaim_allowed
+
+    now = datetime(2026, 8, 23, 18, 0, 0)
+    lease = {
+        "supervisor_heartbeat_at": now - timedelta(seconds=3600),
+        "owner_execution_name": "exec-a",
+    }
+    cursor = MagicMock()
+    monkeypatch.setattr(
+        "backend.rinse_scrape_runs.mysql_lock_is_held",
+        lambda *_a, **_k: (False, None),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness._aca_execution_running",
+        lambda _n: True,
+    )
+    allowed, reason, _ = orphan_reclaim_allowed(cursor, 3, lease, now=now)
+    assert allowed is False
+    assert reason == "skip_live_aca_execution"
+
+
+def test_orphan_reclaim_blocked_when_lock_held(monkeypatch):
+    from backend.rinse_scrape_liveness import orphan_reclaim_allowed
+
+    now = datetime(2026, 8, 23, 18, 0, 0)
+    lease = {
+        "supervisor_heartbeat_at": now - timedelta(seconds=3600),
+        "owner_execution_name": "exec-a",
+    }
+    cursor = MagicMock()
+    monkeypatch.setattr(
+        "backend.rinse_scrape_runs.mysql_lock_is_held",
+        lambda *_a, **_k: (True, 1),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness._aca_execution_running",
+        lambda _n: False,
+    )
+    allowed, reason, _ = orphan_reclaim_allowed(cursor, 3, lease, now=now)
+    assert allowed is False
+    assert reason == "skip_live_mysql_lock"
+
+
+def test_orphan_reclaim_allowed_when_all_dead_signals(monkeypatch):
+    from backend.rinse_scrape_liveness import orphan_reclaim_allowed
+
+    now = datetime(2026, 8, 23, 18, 0, 0)
+    lease = {
+        "supervisor_heartbeat_at": now - timedelta(seconds=3600),
+        "owner_execution_name": "exec-a",
+    }
+    cursor = MagicMock()
+    monkeypatch.setattr(
+        "backend.rinse_scrape_runs.mysql_lock_is_held",
+        lambda *_a, **_k: (False, None),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness._aca_execution_running",
+        lambda _n: False,
+    )
+    allowed, reason, _ = orphan_reclaim_allowed(cursor, 3, lease, now=now)
+    assert allowed is True
+    assert reason is None
+
+
+def test_recover_stalled_uses_shared_orphan_policy(monkeypatch):
+    from backend import rinse_scrape_chain as chain
+
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.reclaim_orphan_owner",
+        lambda cursor, org: {"action": "skip_live_aca_execution"},
+    )
+    assert chain.recover_stalled_running_rows(MagicMock(), 3) == []
+
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.reclaim_orphan_owner",
+        lambda cursor, org: {
+            "action": "reclaimed",
+            "run_id": 99,
+            "reason": "FAILED_ORPHAN_RECLAIM stall>1200s",
+        },
+    )
+    monkeypatch.setattr(chain, "current_execution_name", lambda: "self-exec")
+    monkeypatch.setattr(
+        "backend.rinse_aca_job_trigger.stop_foreign_running_executions",
+        lambda **kwargs: [],
+    )
+    actions = chain.recover_stalled_running_rows(MagicMock(), 3)
+    assert actions == [
+        {
+            "run_id": 99,
+            "action": "FAILED_ORPHAN_RECLAIM",
+            "reason": "FAILED_ORPHAN_RECLAIM stall>1200s",
+        }
+    ]

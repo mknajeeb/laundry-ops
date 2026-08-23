@@ -9,15 +9,11 @@ from typing import Any
 
 from backend.rinse_scrape_lease import (
     current_execution_name,
-    fence_lease,
     read_lease,
 )
 from backend.rinse_scrape_runs import (
     _parse_result_json,
-    _stale_minutes,
-    ensure_scrape_run_terminal,
     mysql_lock_is_held,
-    release_scrape_lock,
 )
 
 
@@ -122,87 +118,28 @@ def classify_running_row(
 
 
 def recover_stalled_running_rows(cursor, organization_id: int) -> list[dict[str, Any]]:
-    """Fence + terminalize stalled/over-ceiling running rows. Returns actions taken."""
-    from backend.rinse_scrape_runs import ensure_rinse_scrape_runs_table
+    """Orphan reclaim via shared multi-signal policy (not worker-progress stall)."""
+    from backend.rinse_scrape_liveness import reclaim_orphan_owner
 
-    ensure_rinse_scrape_runs_table(cursor)
-    org = int(organization_id)
-    now = _utcnow()
-    cursor.execute(
-        """
-        SELECT id, status, started_at, result_json, lease_generation
-        FROM rinse_scrape_runs
-        WHERE organization_id = %s AND status = 'running'
-        ORDER BY started_at ASC
-        """,
-        (org,),
-    )
-    actions: list[dict[str, Any]] = []
-    lease = read_lease(cursor, org)
-    for row in cursor.fetchall() or []:
-        if not isinstance(row, dict):
-            continue
-        kind = classify_running_row(row, now=now, lease=lease)
-        if kind == "healthy":
-            continue
-        run_id = int(row.get("id") or 0)
-        gen = row.get("lease_generation")
-        reason = (
-            f"FAILED_STALLED: no progress for {stall_seconds()}s"
-            if kind == "stalled"
-            else f"FAILED_TIMEOUT: exceeded hard ceiling {hard_runtime_ceiling_seconds()}s"
-        )
-        cycle_status = "FAILED_STALLED" if kind == "stalled" else "FAILED_TIMEOUT"
-        if gen is not None:
-            try:
-                fence_lease(
-                    cursor,
-                    org,
-                    reason=cycle_status,
-                    expected_generation=int(gen),
-                )
-            except Exception:
-                fence_lease(cursor, org, reason=cycle_status)
-        else:
-            fence_lease(cursor, org, reason=cycle_status)
-        detail = _parse_result_json(row.get("result_json"))
-        sync_cycle = dict(detail.get("sync_cycle") or {})
-        sync_cycle.update(
-            {
-                "cycle_status": cycle_status,
-                "failure_message": reason,
-                "watchdog": True,
-            }
-        )
-        detail["sync_cycle"] = sync_cycle
-        ensure_scrape_run_terminal(
-            cursor,
-            run_id,
-            org,
-            status="failed",
-            error_message=reason,
-            result_json=detail,
-        )
-        actions.append(
-            {
-                "run_id": run_id,
-                "action": cycle_status,
-                "reason": reason,
-            }
-        )
-        try:
-            from backend.rinse_aca_job_trigger import stop_foreign_running_executions
+    result = reclaim_orphan_owner(cursor, int(organization_id))
+    if result.get("action") != "reclaimed":
+        return []
+    run_id = int(result.get("run_id") or 0)
+    try:
+        from backend.rinse_aca_job_trigger import stop_foreign_running_executions
 
-            stop_foreign_running_executions(
-                keep_execution_name=current_execution_name(),
-            )
-        except Exception:
-            pass
-        try:
-            release_scrape_lock(cursor, org)
-        except Exception:
-            pass
-    return actions
+        stop_foreign_running_executions(
+            keep_execution_name=current_execution_name(),
+        )
+    except Exception:
+        pass
+    return [
+        {
+            "run_id": run_id,
+            "action": "FAILED_ORPHAN_RECLAIM",
+            "reason": result.get("reason"),
+        }
+    ]
 
 
 def recover_zombie_aca_executions(cursor, organization_id: int) -> list[dict[str, Any]]:
@@ -268,20 +205,9 @@ def maybe_restart_dead_chain(cursor, organization_id: int) -> dict[str, Any]:
     lease = read_lease(cursor, org)
     now = _utcnow()
     if lock_held:
-        kind = "healthy"
-        if lease:
-            fake_row = {
-                "started_at": lease.get("heartbeat_at") or lease.get("updated_at"),
-                "result_json": {
-                    "progress": {
-                        "last_progress_at": (
-                            lease.get("last_progress_at") or lease.get("heartbeat_at")
-                        )
-                    }
-                },
-            }
-            kind = classify_running_row(fake_row, now=now, lease=lease)
-        if kind == "healthy":
+        from backend.rinse_scrape_liveness import is_owned_execution_live
+
+        if is_owned_execution_live(cursor, org, now=now):
             return {"restarted": False, "reason": "healthy_lock_held"}
     hb = lease.get("heartbeat_at") if lease else None
     if isinstance(hb, datetime):
