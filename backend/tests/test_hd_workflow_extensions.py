@@ -1,0 +1,159 @@
+"""Tests for HD fresh start, exclude/restore/delete, delivery dates."""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from unittest.mock import MagicMock, patch
+
+from backend.hd_workflow_extensions import (
+    STATUS_EXCLUDED,
+    attach_delivery_dates,
+    exclude_hd_order,
+    on_or_after_workflow_cutoff,
+    permanent_delete_hd_orders,
+    restore_hd_order,
+)
+from backend.management_rinse_hd import (
+    STATUS_AWAITING_ENTRY,
+    STATUS_PENDING_WASH,
+    STATUS_WASHED,
+    resolve_order_state,
+)
+
+
+def _ev(purpose, at, user="Op", bag="HD001", eid=1):
+    return {
+        "id": eid,
+        "bag_id": bag,
+        "purpose": purpose,
+        "scanned_at_parsed": at,
+        "user_name": user,
+    }
+
+
+def test_on_or_after_workflow_cutoff_respects_fresh_start_at():
+    fresh = datetime(2026, 8, 22, 18, 0, 0)
+    assert on_or_after_workflow_cutoff(
+        datetime(2026, 8, 22, 17, 59, 0),
+        date(2026, 8, 22),
+        fresh_start_at=fresh,
+    ) is False
+    assert on_or_after_workflow_cutoff(
+        datetime(2026, 8, 22, 18, 0, 0),
+        date(2026, 8, 22),
+        fresh_start_at=fresh,
+    ) is True
+
+
+def test_pre_cutover_wash_does_not_advance_after_fresh_start():
+    fresh = datetime(2026, 8, 22, 18, 0, 0)
+    events = [
+        _ev("create-workitem-bulk", datetime(2026, 8, 22, 9, 0), eid=2),
+        _ev("complete-cleaning", datetime(2026, 8, 22, 10, 0), eid=3),
+    ]
+    state = resolve_order_state(
+        events,
+        service_hint="HD",
+        activation_date=date(2026, 8, 22),
+        fresh_start_at=fresh,
+    )
+    assert state is not None
+    assert state["status"] == STATUS_PENDING_WASH
+    assert state["washed_at"] is None
+    assert state["folded_at"] is None
+
+
+def test_post_cutover_wash_advances_normally():
+    fresh = datetime(2026, 8, 22, 8, 0, 0)
+    events = [
+        _ev("create-workitem-bulk", datetime(2026, 8, 22, 9, 0), eid=2),
+    ]
+    state = resolve_order_state(
+        events,
+        service_hint="HD",
+        activation_date=date(2026, 8, 22),
+        fresh_start_at=fresh,
+    )
+    assert state["status"] == STATUS_WASHED
+
+
+def test_post_cutover_wash_and_fold_advances_to_awaiting_entry():
+    fresh = datetime(2026, 8, 22, 8, 0, 0)
+    events = [
+        _ev("create-workitem-bulk", datetime(2026, 8, 22, 9, 0), eid=2),
+        _ev("complete-cleaning", datetime(2026, 8, 22, 10, 0), eid=3),
+    ]
+    state = resolve_order_state(
+        events,
+        service_hint="HD",
+        activation_date=date(2026, 8, 22),
+        fresh_start_at=fresh,
+    )
+    assert state["status"] == STATUS_AWAITING_ENTRY
+
+
+def test_attach_delivery_dates_sets_field():
+    cursor = MagicMock()
+    with patch(
+        "backend.hd_workflow_extensions._load_delivery_dates_for_bags",
+        return_value={"HD001": date(2026, 8, 23)},
+    ):
+        out = attach_delivery_dates(cursor, 3, [{"bag_id": "HD001"}])
+    assert out[0]["delivery_date_et"] == "2026-08-23"
+
+
+def test_exclude_restore_idempotent_no_duplicate_row():
+    cursor = MagicMock(dictionary=True)
+    prod = {
+        "id": 10,
+        "bag_id": "HD001",
+        "workflow_status": STATUS_PENDING_WASH,
+        "version": 1,
+    }
+    with (
+        patch("backend.hd_workflow_extensions._load_production_by_bag", return_value={"HD001": prod}),
+        patch("backend.hd_workflow_extensions.hd_workflow_cutoff", return_value=(date(2026, 8, 22), datetime(2026, 8, 22, 18))),
+        patch("backend.hd_workflow_extensions._load_candidate_events_for_bags", return_value=[]),
+        patch("backend.hd_workflow_extensions.resolve_order_state", return_value={"status": STATUS_PENDING_WASH}),
+    ):
+        first = exclude_hd_order(cursor, 3, "HD001", actor_user_id=1, actor_name="Mgr")
+        assert first["ok"] is True
+        prod_excluded = {**prod, "workflow_status": STATUS_EXCLUDED}
+        second = exclude_hd_order(cursor, 3, "HD001", actor_user_id=1, actor_name="Mgr")
+        with patch("backend.hd_workflow_extensions._load_production_by_bag", return_value={"HD001": prod_excluded}):
+            second = exclude_hd_order(cursor, 3, "HD001", actor_user_id=1, actor_name="Mgr")
+        assert second.get("already_excluded") is True
+
+
+def test_restore_returns_pending_when_no_post_cutover_evidence():
+    cursor = MagicMock(dictionary=True)
+    prod = {"id": 11, "bag_id": "HD002", "workflow_status": STATUS_EXCLUDED, "version": 2}
+    with (
+        patch("backend.hd_workflow_extensions._load_production_by_bag", side_effect=[
+            {"HD002": prod},
+            {"HD002": {**prod, "workflow_status": STATUS_PENDING_WASH}},
+        ]),
+        patch("backend.hd_workflow_extensions.hd_workflow_cutoff", return_value=(date(2026, 8, 22), datetime(2026, 8, 22, 18))),
+        patch("backend.hd_workflow_extensions._load_candidate_events_for_bags", return_value=[]),
+        patch("backend.hd_workflow_extensions._load_user_maps", return_value={}),
+        patch("backend.hd_workflow_extensions._persist_scan_state_for_admitted", return_value=None),
+        patch(
+            "backend.hd_workflow_extensions.resolve_order_state",
+            return_value={"status": STATUS_PENDING_WASH, "bag_id": "HD002"},
+        ),
+    ):
+        out = restore_hd_order(cursor, 3, "HD002", actor_user_id=1)
+    assert out["ok"] is True
+    assert out["restored_status"] == STATUS_PENDING_WASH
+
+
+def test_permanent_delete_only_excluded_and_not_scans():
+    cursor = MagicMock(dictionary=True)
+    cursor.fetchall.return_value = [{"id": 99, "bag_id": "HD003"}]
+    cursor.rowcount = 1
+    with patch("backend.hd_workflow_extensions.table_exists", return_value=True):
+        out = permanent_delete_hd_orders(cursor, 3, ["HD003"])
+    assert out["ok"] is True
+    assert out["deleted"] == 1
+    assert out["shared_scans_deleted"] is False
+    assert "DELETE FROM hd_day_bag_production" in cursor.execute.call_args_list[-1][0][0]

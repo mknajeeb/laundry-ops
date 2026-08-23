@@ -374,3 +374,179 @@ def register_management_rinse_hd_routes(
         finally:
             cursor.close()
             conn.close()
+
+    @app.route("/api/management/rinse-hd/fresh-start", methods=["POST"])
+    def management_rinse_hd_fresh_start():
+        """Manager-only: HD workflow fresh start — retain Pending Wash only."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            if not is_hub_manager(me):
+                body, code = access_denied_payload()
+                return jsonify(body), code
+            from backend.hd_workflow_extensions import run_hd_fresh_start
+
+            body = request.get_json(silent=True) or {}
+            raw_date = str(body.get("date_et") or "").strip()
+            selected = None
+            if raw_date:
+                try:
+                    selected = _selected_date(raw_date, employee=False)
+                except ValueError as exc:
+                    return jsonify({"error": str(exc)}), 400
+            result = run_hd_fresh_start(
+                cursor,
+                oid,
+                actor_user_id=_actor_user_id(me),
+                selected_date_et=selected,
+            )
+            if not result.get("ok"):
+                conn.rollback()
+                return jsonify(json_safe_rinse(result)), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(result))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/rinse-hd/<bag_id>/exclude", methods=["POST"])
+    def management_rinse_hd_exclude(bag_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            if not is_hub_manager(me):
+                body, code = access_denied_payload()
+                return jsonify(body), code
+            from backend.hd_workflow_extensions import exclude_hd_order
+
+            body = request.get_json(silent=True) or {}
+            raw_date = str(body.get("date_et") or "").strip()
+            selected = business_today()
+            if raw_date:
+                try:
+                    selected = _selected_date(raw_date, employee=False)
+                except ValueError as exc:
+                    return jsonify({"error": str(exc)}), 400
+            result = exclude_hd_order(
+                cursor,
+                oid,
+                bag_id,
+                reason=body.get("reason"),
+                note=body.get("note"),
+                actor_user_id=_actor_user_id(me),
+                actor_name=actor_name(me),
+                selected_date_et=selected,
+            )
+            if not result.get("ok"):
+                conn.rollback()
+                return jsonify(json_safe_rinse(result)), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(result))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/rinse-hd/<bag_id>/restore", methods=["POST"])
+    def management_rinse_hd_restore(bag_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            if not is_hub_manager(me):
+                body, code = access_denied_payload()
+                return jsonify(body), code
+            from backend.hd_workflow_extensions import restore_hd_order
+
+            body = request.get_json(silent=True) or {}
+            raw_date = str(body.get("date_et") or "").strip()
+            selected = business_today()
+            if raw_date:
+                try:
+                    selected = _selected_date(raw_date, employee=False)
+                except ValueError as exc:
+                    return jsonify({"error": str(exc)}), 400
+            result = restore_hd_order(
+                cursor,
+                oid,
+                bag_id,
+                actor_user_id=_actor_user_id(me),
+                selected_date_et=selected,
+            )
+            if not result.get("ok"):
+                conn.rollback()
+                return jsonify(json_safe_rinse(result)), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(result))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/rinse-hd/permanent-delete", methods=["POST"])
+    def management_rinse_hd_permanent_delete():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            if not is_hub_manager(me):
+                body, code = access_denied_payload()
+                return jsonify(body), code
+            from backend.hd_workflow_extensions import permanent_delete_hd_orders
+
+            body = request.get_json(silent=True) or {}
+            bag_ids = body.get("bag_ids") or body.get("bag_id")
+            if isinstance(bag_ids, str):
+                bag_ids = [bag_ids]
+            if not isinstance(bag_ids, list):
+                return jsonify({"error": "bag_ids required"}), 400
+            result = permanent_delete_hd_orders(
+                cursor,
+                oid,
+                bag_ids,
+                actor_user_id=_actor_user_id(me),
+            )
+            if not result.get("ok"):
+                conn.rollback()
+                return jsonify(json_safe_rinse(result)), 400
+            conn.commit()
+            return jsonify(json_safe_rinse(result))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()

@@ -57,7 +57,7 @@ def build_hd_employee_performance(
                total_items, revenue, operations_date_et, workflow_status, status
         FROM hd_day_bag_production
         WHERE organization_id = %s
-          AND COALESCE(workflow_status, '') <> %s
+          AND COALESCE(workflow_status, '') NOT IN (%s, %s)
           AND operations_date_et >= %s
           AND (
             (washed_at IS NOT NULL AND DATE(washed_at) = %s)
@@ -68,6 +68,7 @@ def build_hd_employee_performance(
         (
             org,
             WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
+            "excluded",
             HD_WORKFLOW_ACTIVATION_DATE,
             selected_date_et,
             selected_date_et,

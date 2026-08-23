@@ -2510,6 +2510,18 @@ export const updateManagementRinseHdAttribution = (bagId, body) =>
     body,
   );
 
+export const excludeManagementRinseHdOrder = (bagId, body = {}) =>
+  axios.post(`${API_BASE}/api/management/rinse-hd/${encodeURIComponent(bagId)}/exclude`, body);
+
+export const restoreManagementRinseHdOrder = (bagId, body = {}) =>
+  axios.post(`${API_BASE}/api/management/rinse-hd/${encodeURIComponent(bagId)}/restore`, body);
+
+export const permanentDeleteManagementRinseHdOrders = (body = {}) =>
+  axios.post(`${API_BASE}/api/management/rinse-hd/permanent-delete`, body);
+
+export const runManagementRinseHdFreshStart = (body = {}) =>
+  axios.post(`${API_BASE}/api/management/rinse-hd/fresh-start`, body);
+
 /** Management → Performance → WF Folder Performance */
 export const getManagementWfFolderPerformance = (dateEt, params = {}) =>
   axios.get(`${API_BASE}/api/management/performance/wf-folder`, {

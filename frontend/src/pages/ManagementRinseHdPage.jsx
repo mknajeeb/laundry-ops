@@ -20,15 +20,19 @@ import {
 import RefreshIcon from "@mui/icons-material/Refresh";
 import IconButton from "@mui/material/IconButton";
 import {
+  excludeManagementRinseHdOrder,
   getManagementRinseHd,
   getManagementRinseHdDetail,
   getManagementRinseHdSummary,
   markManagementRinseHdComplete,
+  permanentDeleteManagementRinseHdOrders,
+  restoreManagementRinseHdOrder,
   saveManagementRinseHdProduction,
   updateManagementRinseHdAttribution,
 } from "../api";
 import ManagementCopyableId from "../components/management/ManagementCopyableId";
 import ManagementHubNav from "../components/management/ManagementHubNav";
+import { groupOrdersByDeliveryDate } from "../components/management/hdDeliveryDateGroups";
 import { formatFriendlyEtWall } from "../utils/rinseTimeFormat";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 
@@ -37,6 +41,7 @@ const STATUS_CHIPS = [
   { id: "awaiting_fold", label: "Awaiting Fold" },
   { id: "awaiting_entry", label: "Awaiting Entry" },
   { id: "complete", label: "Complete" },
+  { id: "excluded", label: "Excluded" },
   { id: "all", label: "All" },
 ];
 
@@ -94,6 +99,7 @@ function statusLabel(status) {
   if (status === "washed" || status === "awaiting_fold") return "Awaiting Fold";
   if (status === "awaiting_entry") return "Awaiting Entry";
   if (status === "complete") return "Complete";
+  if (status === "excluded") return "Excluded";
   return status || "—";
 }
 
@@ -126,7 +132,7 @@ function SummaryCard({ label, value }) {
   );
 }
 
-function OrderCard({ order, onOpen }) {
+function OrderCard({ order, onOpen, onExclude, showExclude = false }) {
   const awaiting = order.status === "awaiting_entry";
   const pending =
     order.status === "pending_wash" ||
@@ -204,7 +210,124 @@ function OrderCard({ order, onOpen }) {
           {order.completion_operator ? ` · ${order.completion_operator}` : ""}
         </Typography>
       ) : null}
+      {order.delivery_date_et ? (
+        <Typography sx={{ mt: 0.35, fontSize: 11, color: "#64748b", fontWeight: 600 }}>
+          Delivery {formatDayLabel(order.delivery_date_et)}
+        </Typography>
+      ) : null}
+      {showExclude ? (
+        <Button
+          size="small"
+          color="warning"
+          onClick={(e) => {
+            e.stopPropagation();
+            onExclude?.(order);
+          }}
+          sx={{ mt: 0.75, textTransform: "none", fontWeight: 700 }}
+        >
+          Exclude
+        </Button>
+      ) : null}
     </Box>
+  );
+}
+
+function ExcludedOrderCard({ order, selected, onToggle, onRestore }) {
+  const customer =
+    String(order.customer_name || order.name_clean || order.customer || "").trim() || "Unknown Customer";
+  return (
+    <Box
+      sx={{
+        p: 1.25,
+        borderRadius: 2,
+        border: "1px solid #fcd34d",
+        bgcolor: "#fffbeb",
+      }}
+    >
+      <Stack direction="row" spacing={1} alignItems="flex-start">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggle?.(order.bag_id)}
+          aria-label={`Select ${order.bag_id}`}
+        />
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography sx={{ fontSize: 16, fontWeight: 800 }}>{customer}</Typography>
+          <ManagementCopyableId value={order.bag_id} fontSize={13} fontWeight={800} />
+          <Typography sx={{ fontSize: 12, color: "#64748b", mt: 0.35 }}>
+            Delivery {order.delivery_date_et ? formatDayLabel(order.delivery_date_et) : "—"}
+          </Typography>
+          <Typography sx={{ fontSize: 12, color: "#64748b" }}>
+            Excluded {fmtTime(order.excluded_at)}
+            {order.excluded_reason ? ` · ${order.excluded_reason}` : ""}
+          </Typography>
+          {order.excluded_note ? (
+            <Typography sx={{ fontSize: 12, color: "#94a3b8" }}>{order.excluded_note}</Typography>
+          ) : null}
+          {order.excluded_from_status ? (
+            <Typography sx={{ fontSize: 11, color: "#94a3b8" }}>
+              Prior state: {statusLabel(order.excluded_from_status)}
+            </Typography>
+          ) : null}
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={() => onRestore?.(order)}
+            sx={{ mt: 0.75, textTransform: "none", fontWeight: 700 }}
+          >
+            Restore
+          </Button>
+        </Box>
+      </Stack>
+    </Box>
+  );
+}
+
+function DeliveryDateGroups({
+  groups,
+  statusFilter,
+  onOpen,
+  onExclude,
+  onRestore,
+  selectedExcluded,
+  onToggleExcluded,
+}) {
+  const isExcluded = statusFilter === "excluded";
+  const showExclude = !isExcluded && statusFilter !== "all" && statusFilter !== "complete";
+  return (
+    <Stack spacing={1.25}>
+      {groups.map((group) => (
+        <Box key={group.label}>
+          <Stack direction="row" justifyContent="space-between" alignItems="baseline" sx={{ mb: 0.5 }}>
+            <Typography sx={{ fontSize: 12, fontWeight: 800, letterSpacing: 0.6, color: "#0f172a" }}>
+              {group.label}
+            </Typography>
+            <Typography sx={{ fontSize: 12, fontWeight: 800, color: "#64748b" }}>{group.count}</Typography>
+          </Stack>
+          <Stack spacing={0.75}>
+            {group.orders.map((order) =>
+              isExcluded ? (
+                <ExcludedOrderCard
+                  key={order.bag_id}
+                  order={order}
+                  selected={selectedExcluded.has(order.bag_id)}
+                  onToggle={onToggleExcluded}
+                  onRestore={onRestore}
+                />
+              ) : (
+                <OrderCard
+                  key={`${order.bag_id}-${order.status}`}
+                  order={order}
+                  onOpen={onOpen}
+                  onExclude={onExclude}
+                  showExclude={showExclude}
+                />
+              ),
+            )}
+          </Stack>
+        </Box>
+      ))}
+    </Stack>
   );
 }
 
@@ -250,6 +373,8 @@ export default function ManagementRinseHdPage() {
     folded_at: "",
   });
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedExcluded, setSelectedExcluded] = useState(() => new Set());
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const autosaveTimer = useRef(null);
 
   const load = useCallback(async (day, status, refresh = false) => {
@@ -305,6 +430,11 @@ export default function ManagementRinseHdPage() {
       return bag.includes(q) || customer.includes(q);
     });
   }, [orders, searchQuery]);
+
+  const deliveryGroups = useMemo(
+    () => groupOrdersByDeliveryDate(filteredOrders, dateEt),
+    [filteredOrders, dateEt],
+  );
 
   const openDetail = async (order) => {
     setActionError("");
@@ -436,6 +566,53 @@ export default function ManagementRinseHdPage() {
     }
   };
 
+  const excludeOrder = async (order) => {
+    if (!order?.bag_id) return;
+    const note = window.prompt("Exclude reason (optional)", "") ?? "";
+    try {
+      await excludeManagementRinseHdOrder(order.bag_id, { date_et: dateEt, note });
+      await load(dateEt, statusFilter, true);
+      await loadSummary();
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || "Exclude failed");
+    }
+  };
+
+  const restoreOrder = async (order) => {
+    if (!order?.bag_id) return;
+    try {
+      await restoreManagementRinseHdOrder(order.bag_id, { date_et: dateEt });
+      setSelectedExcluded(new Set());
+      await load(dateEt, statusFilter, true);
+      await loadSummary();
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || "Restore failed");
+    }
+  };
+
+  const toggleExcluded = (bagId) => {
+    setSelectedExcluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(bagId)) next.delete(bagId);
+      else next.add(bagId);
+      return next;
+    });
+  };
+
+  const deleteSelectedExcluded = async () => {
+    const bagIds = [...selectedExcluded];
+    if (!bagIds.length) return;
+    try {
+      await permanentDeleteManagementRinseHdOrders({ bag_ids: bagIds });
+      setSelectedExcluded(new Set());
+      setConfirmDeleteOpen(false);
+      await load(dateEt, statusFilter, true);
+      await loadSummary();
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || "Delete failed");
+    }
+  };
+
   const canEnter =
     detail?.order?.status === "awaiting_entry" || detail?.order?.status === "complete";
   const employees = detail?.employees || [];
@@ -539,6 +716,7 @@ export default function ManagementRinseHdPage() {
         />
         <SummaryCard label="Awaiting Entry" value={fmtInt(summary.awaiting_entry)} />
         <SummaryCard label="Complete" value={fmtInt(summary.complete ?? summary.completed_today)} />
+        <SummaryCard label="Excluded" value={fmtInt(summary.excluded)} />
         <SummaryCard label="Items" value={fmtInt(summary.items ?? summary.items_completed_today)} />
         <SummaryCard label="Revenue" value={fmtMoney(summary.revenue ?? summary.revenue_completed_today)} />
       </Box>
@@ -596,6 +774,20 @@ export default function ManagementRinseHdPage() {
         inputProps={{ "aria-label": "Search customer or Order/Bag ID" }}
       />
 
+      {statusFilter === "excluded" && selectedExcluded.size > 0 ? (
+        <Stack direction="row" spacing={1} sx={{ mb: 1 }}>
+          <Button
+            size="small"
+            color="error"
+            variant="contained"
+            onClick={() => setConfirmDeleteOpen(true)}
+            sx={{ textTransform: "none", fontWeight: 800 }}
+          >
+            Delete Permanently ({selectedExcluded.size})
+          </Button>
+        </Stack>
+      ) : null}
+
       {loading && !data ? (
         <Box sx={{ py: 4, textAlign: "center" }}>
           <CircularProgress size={22} />
@@ -607,12 +799,34 @@ export default function ManagementRinseHdPage() {
               {orders.length === 0 ? "No HD orders in this view." : "No matches for this search."}
             </Typography>
           ) : (
-            filteredOrders.map((order) => (
-              <OrderCard key={`${order.bag_id}-${order.status}`} order={order} onOpen={openDetail} />
-            ))
+            <DeliveryDateGroups
+              groups={deliveryGroups}
+              statusFilter={statusFilter}
+              onOpen={openDetail}
+              onExclude={excludeOrder}
+              onRestore={restoreOrder}
+              selectedExcluded={selectedExcluded}
+              onToggleExcluded={toggleExcluded}
+            />
           )}
         </Stack>
       )}
+
+      <Dialog open={confirmDeleteOpen} onClose={() => setConfirmDeleteOpen(false)}>
+        <DialogTitle sx={{ fontWeight: 800 }}>Permanently delete excluded HD orders?</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: 14 }}>
+            Permanently delete {selectedExcluded.size} excluded HD order
+            {selectedExcluded.size === 1 ? "" : "s"}? This cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmDeleteOpen(false)}>Cancel</Button>
+          <Button color="error" variant="contained" onClick={deleteSelectedExcluded}>
+            Delete Permanently
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={detailOpen} onClose={() => setDetailOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle sx={{ fontWeight: 800, pb: 1 }}>
