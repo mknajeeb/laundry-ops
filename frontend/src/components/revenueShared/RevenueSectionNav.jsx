@@ -1,6 +1,7 @@
 import { Box, Typography } from "@mui/material";
 
 const SECTIONS = [
+  { id: "overview", label: "Today", short: "•" },
   { id: "self_service", label: "Self Service", short: "SS" },
   { id: "drop_off", label: "Drop Off", short: "Drop" },
   { id: "rinse_wf", label: "Rinse WF", short: "WF" },

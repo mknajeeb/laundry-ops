@@ -12,6 +12,20 @@ import MoneyAmountField from "./MoneyAmountField";
 import SaveStatusChip from "./SaveStatusChip";
 import { fmtMoney, parseMoneyInput } from "./revenueFormat";
 
+function friendlyDate(iso) {
+  if (!iso) return "—";
+  try {
+    const [y, m, d] = String(iso).split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return iso;
+  }
+}
+
 function calcPreview(account, volume) {
   const pricing = account?.pricing || {};
   const mode = account?.revenue_mode || "calculated";
@@ -30,26 +44,31 @@ function buildBody(account, draft, entryDate, showOverride, preview) {
   const mode = account?.revenue_mode || "calculated";
   const isAbsolute = mode === "absolute";
   const allowOverride = account?.allow_override !== false;
+  const occurrenceMode = Boolean(draft?.scheduled_pickup_date);
+
   const body = {
     account_id: account.account_id,
     dr_commercial_account_id: account.dr_commercial_account_id,
     revenue_mode: mode,
     use_revenue_override: Boolean(showOverride && allowOverride),
-    pickup_date: account?.use_pickup_date ? draft?.pickup_date || null : null,
-    processing_date:
-      account?.use_processing_date !== false
-        ? draft?.processing_date || entryDate || null
-        : null,
-    delivery_date: account?.use_delivery_date ? draft?.delivery_date || null : null,
     scheduled_pickup_date: draft?.scheduled_pickup_date || null,
     scheduled_delivery_date: draft?.scheduled_delivery_date || null,
-    date_override: Boolean(
-      (draft?.scheduled_pickup_date && draft?.pickup_date && draft.pickup_date !== draft.scheduled_pickup_date) ||
-        (draft?.scheduled_delivery_date &&
-          draft?.delivery_date &&
-          draft.delivery_date !== draft.scheduled_delivery_date),
-    ),
+    date_override: Boolean(draft?.date_override),
   };
+
+  if (occurrenceMode) {
+    body.pickup_date = draft?.pickup_date || draft?.scheduled_pickup_date || null;
+    body.delivery_date = draft?.delivery_date || draft?.scheduled_delivery_date || null;
+    if (account?.use_processing_date !== false && draft?.processing_date) {
+      body.processing_date = draft.processing_date;
+    }
+  } else {
+    body.pickup_date = account?.use_pickup_date ? draft?.pickup_date || null : null;
+    body.processing_date =
+      account?.use_processing_date !== false ? draft?.processing_date || entryDate || null : null;
+    body.delivery_date = account?.use_delivery_date ? draft?.delivery_date || null : null;
+  }
+
   if (isAbsolute) {
     body.revenue = parseMoneyInput(draft?.revenue);
   } else if (showOverride && allowOverride) {
@@ -63,12 +82,14 @@ function buildBody(account, draft, entryDate, showOverride, preview) {
 }
 
 /**
- * Single DHS commercial account entry — autosave draft; Complete finalizes obligation.
+ * DHS commercial account entry — occurrence-first when opened from schedule board.
+ * Legacy account-flag date pickers only when not occurrence-driven.
  */
 export default function DhsAccountSheet({
   account,
   entryDate,
   draft,
+  occurrence,
   onChange,
   onAutosave,
   onComplete,
@@ -83,11 +104,7 @@ export default function DhsAccountSheet({
   const isAbsolute = mode === "absolute";
   const allowOverride = account?.allow_override !== false;
   const preview = useMemo(() => calcPreview(account, draft?.volume), [account, draft?.volume]);
-
-  const processingValue =
-    draft?.processing_date ||
-    (account?.use_processing_date !== false ? entryDate : "") ||
-    "";
+  const occurrenceMode = Boolean(draft?.scheduled_pickup_date || occurrence?.scheduled_pickup_date);
 
   const setField = (key, val) => {
     const next = { ...draft, [key]: val };
@@ -99,36 +116,47 @@ export default function DhsAccountSheet({
     <Stack spacing={1.5} sx={{ pb: 12 }}>
       <Typography sx={{ fontSize: 18, fontWeight: 900 }}>{account?.name}</Typography>
 
-      {draft?.scheduled_pickup_date || draft?.scheduled_delivery_date ? (
-        <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#64748b" }}>
-          Schedule defaults
-          {draft?.scheduled_pickup_date ? ` · Pickup ${draft.scheduled_pickup_date}` : ""}
-          {draft?.scheduled_delivery_date ? ` · Delivery ${draft.scheduled_delivery_date}` : ""}
-          {" "}(editable)
-        </Typography>
-      ) : null}
+      {occurrenceMode ? (
+        <Box sx={{ p: 1.25, borderRadius: 2, bgcolor: "#F0FAFB", border: "1px solid #e5e7eb" }}>
+          <Typography sx={{ fontSize: 11, fontWeight: 800, color: "#64748b", textTransform: "uppercase", mb: 0.5 }}>
+            {labels.occurrence || "Pickup occurrence"}
+          </Typography>
+          <Typography sx={{ fontSize: 14, fontWeight: 700, color: "#0f172a" }}>
+            Pickup {friendlyDate(draft?.scheduled_pickup_date || occurrence?.scheduled_pickup_date)}
+          </Typography>
+          <Typography sx={{ fontSize: 14, fontWeight: 600, color: "#475569" }}>
+            Delivery {friendlyDate(draft?.scheduled_delivery_date || occurrence?.scheduled_delivery_date)}
+          </Typography>
+          {occurrence?.lifecycle_label ? (
+            <Typography sx={{ fontSize: 12, fontWeight: 800, color: "#007a91", mt: 0.5 }}>
+              {occurrence.lifecycle_label}
+            </Typography>
+          ) : null}
+        </Box>
+      ) : (
+        <>
+          {account?.use_pickup_date ? (
+            <PlanningDatePicker
+              label={labels.pickupDate || "Pickup Date"}
+              value={draft?.pickup_date || ""}
+              onChange={(v) => setField("pickup_date", v)}
+            />
+          ) : null}
+          {account?.use_delivery_date ? (
+            <PlanningDatePicker
+              label={labels.deliveryDate || "Delivery Date"}
+              value={draft?.delivery_date || ""}
+              onChange={(v) => setField("delivery_date", v)}
+            />
+          ) : null}
+        </>
+      )}
 
-      {account?.use_pickup_date ? (
-        <PlanningDatePicker
-          label={labels.pickupDate || "Pickup Date"}
-          value={draft?.pickup_date || ""}
-          onChange={(v) => setField("pickup_date", v)}
-        />
-      ) : null}
-
-      {account?.use_processing_date !== false ? (
+      {account?.use_processing_date !== false && !occurrenceMode ? (
         <PlanningDatePicker
           label={labels.processingDate || "Processing Date"}
-          value={processingValue}
+          value={draft?.processing_date || entryDate || ""}
           onChange={(v) => setField("processing_date", v)}
-        />
-      ) : null}
-
-      {account?.use_delivery_date ? (
-        <PlanningDatePicker
-          label={labels.deliveryDate || "Delivery Date"}
-          value={draft?.delivery_date || ""}
-          onChange={(v) => setField("delivery_date", v)}
         />
       ) : null}
 

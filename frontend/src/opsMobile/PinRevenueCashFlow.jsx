@@ -2,14 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Box,
-  Button,
   CircularProgress,
   MenuItem,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
-import AddIcon from "@mui/icons-material/Add";
 import {
   createManagementCashPayout,
   createManagementRevenueDisposition,
@@ -31,10 +29,8 @@ import PlanningDatePicker from "../components/datetime/PlanningDatePicker";
 import CashLedgerPanel from "../components/revenueShared/CashLedgerPanel";
 import DhsAccountSheet from "../components/revenueShared/DhsAccountSheet";
 import DhsScheduleBoard from "../components/revenueShared/DhsScheduleBoard";
-import MoneyAmountField from "../components/revenueShared/MoneyAmountField";
-import NonRinseEntryPanel from "../components/revenueShared/NonRinseEntryPanel";
+import RevenueOverviewHome from "../components/revenueShared/RevenueOverviewHome";
 import RevenueSectionNav from "../components/revenueShared/RevenueSectionNav";
-import SaveStatusChip from "../components/revenueShared/SaveStatusChip";
 import StreamEntryHome from "../components/revenueShared/StreamEntryHome";
 import {
   fmtMoney,
@@ -47,7 +43,6 @@ import OpsLocaleToggle from "./OpsLocaleToggle";
 import OpsLockButton from "./OpsLockButton";
 import OpsMobileShell from "./OpsMobileShell";
 import OpsTopBar from "./OpsTopBar";
-import { OPS_MOBILE } from "./tokens";
 import { useI18n } from "../i18n/I18nContext";
 
 function formatHomeDate(iso) {
@@ -74,12 +69,12 @@ const SCREEN_TITLE_KEYS = {
 
 /**
  * Employee PIN Revenue / Cash — shared Management APIs + shared entry components.
- * Hang Dry writes only hd_day_bag_production via Management HD APIs.
+ * Hang Dry uses the canonical HD workflow APIs (Awaiting Entry → Complete).
  */
 export default function PinRevenueCashFlow({ onBack, onLock }) {
   const { t } = useI18n();
   const [dateEt, setDateEt] = useState(todayEtIso);
-  const [mainTab, setMainTab] = useState("self_service"); // self_service | drop_off | rinse_wf | rinse_hd | dhs | cash
+  const [mainTab, setMainTab] = useState("overview");
   const [period, setPeriod] = useState("month");
   const [streamTab, setStreamTab] = useState(null);
   const [streamLoading, setStreamLoading] = useState(false);
@@ -101,14 +96,8 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
   const [doCard, setDoCard] = useState(null);
 
   const [dhsAccount, setDhsAccount] = useState(null);
+  const [dhsOccurrence, setDhsOccurrence] = useState(null);
   const [dhsDraft, setDhsDraft] = useState({});
-
-  const [addingPayout, setAddingPayout] = useState(false);
-  const [payoutDate, setPayoutDate] = useState(dateEt);
-  const [payoutPurpose, setPayoutPurpose] = useState("");
-  const [payoutAmount, setPayoutAmount] = useState(null);
-  const [payoutNote, setPayoutNote] = useState("");
-  const [payoutBusy, setPayoutBusy] = useState(false);
 
   const [hdList, setHdList] = useState(null);
   const [hdLoading, setHdLoading] = useState(false);
@@ -242,11 +231,11 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
   }, [loadRevenue]);
 
   useEffect(() => {
-    if (mainTab === "dhs") loadDhsTab();
+    if (mainTab === "dhs" || mainTab === "overview") loadDhsTab();
   }, [mainTab, loadDhsTab]);
 
   useEffect(() => {
-    if (mainTab === "cash") loadCashTab();
+    if (mainTab === "cash" || mainTab === "overview") loadCashTab();
   }, [mainTab, loadCashTab]);
 
   useEffect(() => {
@@ -349,7 +338,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         await loadRevenue();
         setSaveState("saved");
         setScreen("home");
-        setMainTab("daily");
+        setMainTab("overview");
       } catch (e) {
         setSaveState("error");
         setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.saveFailed"));
@@ -370,10 +359,14 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       {
         account_id: obligation?.account_id,
         name: obligation?.name,
-        use_pickup_date: true,
-        use_processing_date: true,
-        use_delivery_date: true,
+        dr_commercial_account_id: obligation?.dr_commercial_account_id,
+        revenue_mode: obligation?.revenue_mode,
+        allow_override: obligation?.allow_override,
+        use_pickup_date: obligation?.use_pickup_date,
+        use_processing_date: obligation?.use_processing_date,
+        use_delivery_date: obligation?.use_delivery_date,
       };
+    setDhsOccurrence(obligation || null);
     setDhsAccount(accountRow);
     let pickup = accountRow.pickup_date || obligation?.scheduled_pickup_date || "";
     let delivery = accountRow.delivery_date || "";
@@ -451,7 +444,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         });
         await loadRevenue();
         setScreen("home");
-        setMainTab("daily");
+        setMainTab("overview");
       }
       setSaveState("saved");
     } catch (e) {
@@ -476,42 +469,6 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
       dhsAutosaveTimerRef.current = null;
     }
     await saveDhsAccount(body, { finalize: true });
-  };
-
-  const submitPayout = async () => {
-    if (!payoutPurpose.trim() || !payoutDate) return;
-    setPayoutBusy(true);
-    setError("");
-    try {
-      await createManagementCashPayout({
-        payout_business_date: payoutDate,
-        date_et: payoutDate,
-        purpose: payoutPurpose.trim(),
-        amount: parseMoneyInput(payoutAmount),
-        note: payoutNote.trim() || null,
-      });
-      setAddingPayout(false);
-      setPayoutPurpose("");
-      setPayoutAmount(null);
-      setPayoutNote("");
-      setPayoutDate(dateEt);
-      await loadRevenue();
-      setSaveState("saved");
-    } catch (e) {
-      setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.payoutFailed"));
-    } finally {
-      setPayoutBusy(false);
-    }
-  };
-
-  const removePayout = async (id) => {
-    setError("");
-    try {
-      await deleteManagementCashPayout(id);
-      await loadRevenue();
-    } catch (e) {
-      setError(e?.response?.data?.error || e?.message || t("mobileOps.revenue.deletePayoutFailed"));
-    }
   };
 
   const loadHangDry = async ({ quiet = false } = {}) => {
@@ -545,11 +502,12 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
     if (screen === "dhs_account") {
       if (returnScreen === "missing") {
         setMainTab("missing");
-        setScreen("home");
       } else {
-        setScreen("dhs");
+        setMainTab("dhs");
       }
+      setScreen("home");
       setDhsAccount(null);
+      setDhsOccurrence(null);
       return;
     }
     if (screen === "self_service" || screen === "drop_off") {
@@ -559,7 +517,7 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         flushNonRinse();
       }
     }
-    setMainTab("daily");
+    setMainTab("overview");
     setScreen("home");
     setAddingPayout(false);
     loadRevenue();
@@ -572,26 +530,10 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
   };
 
   const nr = data?.non_rinse || {};
-  const dhs = data?.dhs || {};
-  const dhsAccounts = dhs.accounts || [];
-  const payouts = data?.cash_payouts || [];
   const hd = data?.rinse?.hd || {};
-  const cashOut = data?.cash_activity?.cash_paid_out;
 
   const title = t(SCREEN_TITLE_KEYS[screen] || "mobileOps.revenue.title");
   const backLabel = screen === "home" ? t("mobileOps.backPin") : t("mobileOps.back");
-
-  const entryAmounts = {
-    self_service: nr.self_service?.total,
-    drop_off: nr.drop_off?.total,
-    rinse_wf: data?.rinse?.wf?.revenue,
-    rinse_hd: hd?.revenue,
-  };
-
-  const missingBadge =
-    missing?.summary?.missing_total != null && Number(missing.summary.missing_total) > 0
-      ? ` ${missing.summary.missing_total}`
-      : "";
 
   return (
     <OpsMobileShell
@@ -636,13 +578,8 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
             onChange={(id) => {
               setMainTab(id);
               setSaveState("");
-              if (["self_service", "drop_off", "rinse_wf"].includes(id)) setScreen(id);
-              else if (id === "rinse_hd") {
-                setScreen("home");
-                openHangDry();
-              } else {
-                setScreen("home");
-              }
+              setScreen("home");
+              if (id === "rinse_hd") openHangDry();
             }}
           />
           {periodMenu ? (
@@ -665,6 +602,29 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
             </TextField>
           ) : null}
         </Box>
+      ) : null}
+
+      {mainTab === "overview" && screen === "home" ? (
+        <RevenueOverviewHome
+          dateEt={dateEt}
+          dateLabel={formatHomeDate(dateEt)}
+          loading={loading}
+          nonRinse={nr}
+          rinse={data?.rinse}
+          cashToday={data?.cash_activity}
+          dailyCompleteness={data?.daily_completeness}
+          dhsBoard={dhsBoard}
+          cashTab={cashTab}
+          t={t}
+          onDateChange={(v) => {
+            if (v) setDateEt(v);
+          }}
+          onOpenSection={(id) => {
+            setMainTab(id);
+            setScreen("home");
+            if (id === "rinse_hd") openHangDry();
+          }}
+        />
       ) : null}
 
       {["self_service", "drop_off", "rinse_wf"].includes(mainTab) &&
@@ -799,162 +759,11 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
         />
       ) : null}
 
-      {false && screen === "self_service" ? (
-        <NonRinseEntryPanel
-          title={t("mobileOps.revenue.selfService")}
-          cash={ssCash}
-          card={ssCard}
-          onCashChange={setSsCashField}
-          onCardChange={setSsCardField}
-          saveState={saveState}
-          saveLabels={saveLabels}
-          cashLabel={t("mobileOps.revenue.cash")}
-          cardLabel={t("mobileOps.revenue.card")}
-          totalLabel={t("mobileOps.revenue.total")}
-          processingDate={dateEt}
-          onProcessingDateChange={(v) => {
-            if (v) setDateEt(v);
-          }}
-          processingDateLabel={
-            t("mobileOps.revenue.processingDate") !== "mobileOps.revenue.processingDate"
-              ? t("mobileOps.revenue.processingDate")
-              : "Processing Date"
-          }
-          completeLabel={t("mobileOps.revenue.complete")}
-          completeBusy={dispBusy === `self_service:${dateEt}`}
-          onComplete={() => completeDailySection("self_service")}
-          noActivityLabel={t("mobileOps.revenue.noActivity")}
-          onNoActivity={() =>
-            postDisposition(
-              {
-                source_key: "self_service",
-                processing_date_et: dateEt,
-                disposition: "no_activity",
-                reason: "No activity",
-              },
-              `self_service:${dateEt}`,
-            )
-          }
-        />
-      ) : null}
-
-      {false && screen === "drop_off" ? (
-        <NonRinseEntryPanel
-          title={t("mobileOps.revenue.dropOff")}
-          cash={doCash}
-          card={doCard}
-          onCashChange={setDoCashField}
-          onCardChange={setDoCardField}
-          saveState={saveState}
-          saveLabels={saveLabels}
-          cashLabel={t("mobileOps.revenue.cash")}
-          cardLabel={t("mobileOps.revenue.card")}
-          totalLabel={t("mobileOps.revenue.total")}
-          processingDate={dateEt}
-          onProcessingDateChange={(v) => {
-            if (v) setDateEt(v);
-          }}
-          processingDateLabel={
-            t("mobileOps.revenue.processingDate") !== "mobileOps.revenue.processingDate"
-              ? t("mobileOps.revenue.processingDate")
-              : "Processing Date"
-          }
-          completeLabel={t("mobileOps.revenue.complete")}
-          completeBusy={dispBusy === `drop_off:${dateEt}`}
-          onComplete={() => completeDailySection("drop_off")}
-          noActivityLabel={t("mobileOps.revenue.noActivity")}
-          onNoActivity={() =>
-            postDisposition(
-              {
-                source_key: "drop_off",
-                processing_date_et: dateEt,
-                disposition: "no_activity",
-                reason: "No activity",
-              },
-              `drop_off:${dateEt}`,
-            )
-          }
-        />
-      ) : null}
-
-      {false && screen === "rinse_wf" ? (
-        <Stack spacing={1.5} sx={{ pb: 2 }}>
-          <Typography sx={{ fontSize: 18, fontWeight: 900 }}>
-            {t("mobileOps.revenue.rinseWf") !== "mobileOps.revenue.rinseWf" ? t("mobileOps.revenue.rinseWf") : "Rinse WF"}
-          </Typography>
-          <PlanningDatePicker
-            label={
-              t("mobileOps.revenue.processingDate") !== "mobileOps.revenue.processingDate"
-                ? t("mobileOps.revenue.processingDate")
-                : "Processing Date"
-            }
-            value={dateEt}
-            onChange={(v) => {
-              if (v) setDateEt(v);
-            }}
-          />
-          <MoneyAmountField
-            label="Volume (lb)"
-            value={wfVolume}
-            onChange={(v) => {
-              setWfVolume(v);
-              setSaveState("");
-            }}
-            prefix=""
-          />
-          <SaveStatusChip state={saveState} labels={saveLabels} />
-          <Button
-            variant="contained"
-            disabled={dispBusy === `rinse_wf:${dateEt}` || saveState === "saving"}
-            onClick={() => completeDailySection("rinse_wf")}
-            sx={{ textTransform: "none", fontWeight: 900, minHeight: 48 }}
-          >
-            {t("mobileOps.revenue.complete")}
-          </Button>
-          <Button
-            variant="outlined"
-            disabled={dispBusy === `rinse_wf:${dateEt}`}
-            onClick={() =>
-              postDisposition(
-                {
-                  source_key: "rinse_wf",
-                  processing_date_et: dateEt,
-                  disposition: "no_activity",
-                  reason: "No activity",
-                },
-                `rinse_wf:${dateEt}`,
-              )
-            }
-            sx={{ textTransform: "none", fontWeight: 700, minHeight: 44 }}
-          >
-            {t("mobileOps.revenue.noActivity")}
-          </Button>
-        </Stack>
-      ) : null}
-
-      {screen === "dhs" ? (
-        <Stack spacing={1.25} sx={{ pb: 2 }}>
-          {!dhsAccounts.length ? (
-            <Typography sx={{ fontSize: 13, color: OPS_MOBILE.muted }}>
-              {t("mobileOps.revenue.noDhsAccounts")}
-            </Typography>
-          ) : (
-            dhsAccounts.map((row) => (
-              <DhsAccountRow
-                key={row.account_id}
-                account={row}
-                onClick={() => openDhsAccount(row)}
-                needsEntryLabel={t("mobileOps.revenue.needsEntry")}
-              />
-            ))
-          )}
-        </Stack>
-      ) : null}
-
       {screen === "dhs_account" && dhsAccount ? (
         <DhsAccountSheet
           account={dhsAccount}
           entryDate={dateEt}
+          occurrence={dhsOccurrence}
           draft={dhsDraft}
           onChange={setDhsDraft}
           onAutosave={scheduleDhsAutosave}
@@ -975,58 +784,6 @@ export default function PinRevenueCashFlow({ onBack, onLock }) {
             complete: t("mobileOps.revenue.complete"),
           }}
         />
-      ) : null}
-
-      {false && screen === "cash" ? (
-        <Stack spacing={1.5} sx={{ pb: 2 }}>
-          {!addingPayout ? (
-            <Button
-              variant="outlined"
-              startIcon={<AddIcon />}
-              onClick={() => {
-                setPayoutDate(dateEt);
-                setAddingPayout(true);
-              }}
-              sx={{ textTransform: "none", fontWeight: 800, minHeight: 52 }}
-            >
-              {t("mobileOps.revenue.addPayout")}
-            </Button>
-          ) : (
-            <CashPayoutForm
-              payoutDate={payoutDate}
-              purpose={payoutPurpose}
-              amount={payoutAmount}
-              note={payoutNote}
-              busy={payoutBusy}
-              onChange={(patch) => {
-                if ("payoutDate" in patch) setPayoutDate(patch.payoutDate);
-                if ("purpose" in patch) setPayoutPurpose(patch.purpose);
-                if ("amount" in patch) setPayoutAmount(patch.amount);
-                if ("note" in patch) setPayoutNote(patch.note);
-              }}
-              onCancel={() => setAddingPayout(false)}
-              onSubmit={submitPayout}
-              labels={{
-                payoutDate: t("mobileOps.revenue.payoutDate"),
-                payoutDateHelp: t("mobileOps.revenue.payoutDateHelp"),
-                purpose: t("mobileOps.revenue.purpose"),
-                amount: t("mobileOps.revenue.amount"),
-                noteOptional: t("mobileOps.revenue.noteOptional"),
-                cancel: t("mobileOps.revenue.cancel"),
-                save: t("mobileOps.revenue.save"),
-                saving: t("mobileOps.revenue.saving"),
-              }}
-            />
-          )}
-          <CashPayoutList
-            payouts={payouts}
-            onDelete={removePayout}
-            labels={{
-              noPayouts: t("mobileOps.revenue.noPayouts"),
-              delete: t("mobileOps.revenue.deletePayout"),
-            }}
-          />
-        </Stack>
       ) : null}
 
       {screen === "hang_dry" ? (
