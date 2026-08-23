@@ -1003,6 +1003,12 @@ def build_rinse_hd_day(
         by_bag.setdefault(bid, [])
 
     production = _load_production_by_bag(cursor, org, list(candidate_ids))
+    quarantined_ids = {
+        bid
+        for bid, row in production.items()
+        if str(row.get("workflow_status") or "").strip().upper()
+        == WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED
+    }
     filtered_prod: dict[str, dict[str, Any]] = {}
     for bid, row in production.items():
         if str(row.get("workflow_status") or "").strip().upper() == WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED:
@@ -1071,6 +1077,8 @@ def build_rinse_hd_day(
     folded_count = 0
 
     for bid, bag_events in by_bag.items():
+        if bid in quarantined_ids:
+            continue
         hint = hints.get(bid) or ("HD" if bid in production else None)
         state = resolve_order_state(
             bag_events,

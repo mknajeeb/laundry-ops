@@ -147,7 +147,49 @@ def test_restore_returns_pending_when_no_post_cutover_evidence():
     assert out["restored_status"] == STATUS_PENDING_WASH
 
 
-def test_admit_discovered_skips_pre_activation_excluded_quarantine():
+def test_build_rinse_hd_day_skips_quarantined_portal_hints():
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_rinse_hd import (
+        WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
+        build_rinse_hd_day,
+    )
+
+    cursor = MagicMock()
+    quarantined = {
+        "id": 1,
+        "bag_id": "OLD1",
+        "workflow_status": WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
+        "operations_date_et": date(2026, 8, 22),
+        "version": 1,
+    }
+    retained = {
+        "id": 2,
+        "bag_id": "KEEP1",
+        "workflow_status": STATUS_PENDING_WASH,
+        "operations_date_et": date(2026, 8, 22),
+        "version": 1,
+    }
+    with (
+        patch("backend.hd_workflow_extensions.hd_workflow_cutoff", return_value=(date(2026, 8, 22), datetime(2026, 8, 22, 18))),
+        patch("backend.management_rinse_hd._load_hd_service_hints", return_value={"OLD1": "HD", "KEEP1": "HD"}),
+        patch("backend.management_rinse_hd.admit_discovered_hd_bags", return_value={"admitted_new": 0, "already_admitted": 0, "skipped_quarantined": 1, "bag_ids": ["KEEP1"]}),
+        patch("backend.management_rinse_hd._load_active_admitted_bag_ids", return_value=set()),
+        patch("backend.management_rinse_hd._load_candidate_events_for_bags", return_value=[]),
+        patch("backend.management_rinse_hd._load_production_by_bag", return_value={"OLD1": quarantined, "KEEP1": retained}),
+        patch("backend.management_rinse_hd._load_user_maps", return_value={}),
+        patch("backend.management_rinse_hd._batch_user_names", return_value={}),
+        patch("backend.hd_workflow_extensions.build_excluded_hd_orders", return_value=[]),
+        patch("backend.hd_workflow_extensions.attach_delivery_dates", side_effect=lambda _c, _o, orders: orders),
+        patch("backend.management_rinse_hd.resolve_order_state", side_effect=lambda *a, **k: {"bag_id": k.get("production", {}).get("bag_id") or "KEEP1", "status": STATUS_PENDING_WASH}),
+    ):
+        out = build_rinse_hd_day(cursor, 3, date(2026, 8, 22), status="all")
+    assert out["summary"]["pending_wash"] == 1
+    bag_ids = {o.get("bag_id") for o in out.get("orders") or []}
+    assert "OLD1" not in bag_ids
+    assert "KEEP1" in bag_ids
+
+
     from unittest.mock import MagicMock, patch
 
     from backend.management_rinse_hd import (
