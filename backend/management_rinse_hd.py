@@ -54,6 +54,14 @@ ACTION_ATTRIBUTION_EDIT = "ATTRIBUTION_EDIT"
 ACTION_EXPLICIT_COMPLETE = "EXPLICIT_COMPLETE"
 ACTION_ITEMS_REVENUE = "ITEMS_REVENUE_DRAFT"
 ACTION_ADMIT = "ADMIT"
+ACTION_PROCESSING_CORRECTION = "PROCESSING_CORRECTION"
+
+PROCESSING_ACTION_MARK_WASHED = "mark_washed"
+PROCESSING_ACTION_MARK_FOLDED = "mark_folded"
+PROCESSING_ACTION_MARK_COMPLETE = "mark_complete"
+PROCESSING_ACTION_BACK_TO_AWAITING_FOLD = "back_to_awaiting_fold"
+PROCESSING_ACTION_BACK_TO_PENDING_WASH = "back_to_pending_wash"
+PROCESSING_ACTION_REOPEN = "reopen"
 
 
 def _norm_bag(bag_id: Any) -> str:
@@ -2065,6 +2073,473 @@ def update_rinse_hd_attribution(
         "workflow_status": wf,
         "operations_date_et": ops_date.isoformat() if ops_date else None,
         "canonical_table": "hd_day_bag_production",
+    }
+
+
+def _hd_chronology_error(
+    *,
+    washed_at: Any,
+    folded_at: Any,
+    completed_at: Any = None,
+) -> str | None:
+    """Return error code when Wash ≤ Fold ≤ Complete is violated."""
+    wash_ts = _as_naive(washed_at)
+    fold_ts = _as_naive(folded_at)
+    done_ts = _as_naive(completed_at)
+    if fold_ts is not None and wash_ts is None:
+        return "chronology_fold_without_wash"
+    if wash_ts and fold_ts and fold_ts < wash_ts:
+        return "chronology_fold_before_wash"
+    if done_ts and fold_ts and done_ts < fold_ts:
+        return "chronology_complete_before_fold"
+    if done_ts and wash_ts and fold_ts is None and done_ts < wash_ts:
+        return "chronology_complete_before_wash"
+    return None
+
+
+def _processing_audit_snapshot(row: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not row:
+        return {}
+    return {
+        "workflow_status": row.get("workflow_status"),
+        "washed_at": row.get("washed_at"),
+        "washed_by_user_id": row.get("washed_by_user_id"),
+        "washed_by_name": row.get("washed_by_name_snapshot"),
+        "washed_attribution_source": row.get("washed_attribution_source"),
+        "folded_at": row.get("folded_at"),
+        "folded_by_user_id": row.get("folded_by_user_id"),
+        "folded_by_name": row.get("folded_by_name_snapshot"),
+        "folded_attribution_source": row.get("folded_attribution_source"),
+        "management_completed_at": row.get("management_completed_at"),
+        "total_items": row.get("total_items"),
+        "revenue": _money(row.get("revenue")),
+        "status": row.get("status"),
+    }
+
+
+def _normalize_processing_action(action: str) -> str:
+    return str(action or "").strip().lower()
+
+
+def _resolved_workflow_status(detail: Mapping[str, Any]) -> str:
+    order = detail.get("order") or {}
+    return str(order.get("status") or detail.get("production", {}).get("workflow_status") or "").strip().lower()
+
+
+def apply_rinse_hd_processing_correction(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    action: str,
+    selected_date_et: date,
+    version: int,
+    employee_user_id: Any = None,
+    operational_at: Any = None,
+    confirm_remove: bool = False,
+    actor_user_id: int | None = None,
+    actor_display_name: str | None = None,
+) -> dict[str, Any]:
+    """Manager processing correction on canonical hd_day_bag_production evidence."""
+    ensure_management_hd_columns(cursor)
+    org = int(organization_id)
+    bid = _norm_bag(bag_id)
+    act = _normalize_processing_action(action)
+    allowed = {
+        PROCESSING_ACTION_MARK_WASHED,
+        PROCESSING_ACTION_MARK_FOLDED,
+        PROCESSING_ACTION_MARK_COMPLETE,
+        PROCESSING_ACTION_BACK_TO_AWAITING_FOLD,
+        PROCESSING_ACTION_BACK_TO_PENDING_WASH,
+        PROCESSING_ACTION_REOPEN,
+    }
+    if act not in allowed:
+        return {"ok": False, "error": "invalid_action", "status": 400}
+
+    detail = get_rinse_hd_order_detail(cursor, org, bid, selected_date_et=selected_date_et)
+    order = detail.get("order") or {}
+    if not order and act != PROCESSING_ACTION_MARK_WASHED:
+        return {"ok": False, "error": "not_in_hd_queue", "status": 400}
+
+    fact = _load_production_by_bag(cursor, org, [bid]).get(bid)
+    if not fact:
+        admitted = _ensure_admitted_production_row(
+            cursor,
+            org=org,
+            bid=bid,
+            admission_date_et=selected_date_et,
+            actor_user_id=actor_user_id,
+        )
+        if admitted.get("quarantined"):
+            return {"ok": False, "error": "pre_activation_quarantined", "status": 400}
+        fact = admitted.get("row") or _load_production_by_bag(cursor, org, [bid]).get(bid)
+    if not fact:
+        return {"ok": False, "error": "not_in_hd_queue", "status": 400}
+
+    current_version = int(fact.get("version") or 0)
+    if int(version) != current_version:
+        return {"ok": False, "error": "conflict", "status": 409, "current_version": current_version}
+
+    status = _resolved_workflow_status(detail) or str(fact.get("workflow_status") or "").strip().lower()
+    before = _processing_audit_snapshot(fact)
+    changed_at = business_now()
+    changed_naive = changed_at.replace(tzinfo=None) if getattr(changed_at, "tzinfo", None) else changed_at
+
+    if act == PROCESSING_ACTION_MARK_COMPLETE:
+        return mark_rinse_hd_complete(
+            cursor,
+            org,
+            bid,
+            selected_date_et=selected_date_et,
+            version=current_version,
+            actor_user_id=actor_user_id,
+            actor_display_name=actor_display_name,
+        )
+
+    destructive = act in (
+        PROCESSING_ACTION_BACK_TO_AWAITING_FOLD,
+        PROCESSING_ACTION_BACK_TO_PENDING_WASH,
+        PROCESSING_ACTION_REOPEN,
+    )
+    if destructive and not confirm_remove:
+        return {
+            "ok": False,
+            "error": "confirmation_required",
+            "status": 400,
+            "message": "Confirm to remove processing events.",
+        }
+
+    if act == PROCESSING_ACTION_MARK_WASHED:
+        if status not in (STATUS_PENDING_WASH, ""):
+            return {"ok": False, "error": "invalid_state", "status": 400, "current_status": status}
+        if employee_user_id in (None, ""):
+            return {"ok": False, "error": "employee_required", "status": 400}
+        op_at = _as_naive(operational_at) or changed_naive
+        try:
+            emp_uid = int(employee_user_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid_employee", "status": 400}
+        names = _batch_user_names(cursor, [emp_uid])
+        emp_name = names.get(emp_uid)
+        chrono_err = _hd_chronology_error(washed_at=op_at, folded_at=None)
+        if chrono_err:
+            return {"ok": False, "error": chrono_err, "status": 400}
+        new_version = current_version + 1
+        cursor.execute(
+            """
+            UPDATE hd_day_bag_production SET
+              washed_at=%s,
+              washed_by_user_id=%s,
+              washed_by_name_snapshot=%s,
+              washed_date_et=%s,
+              washed_attribution_source=%s,
+              workflow_status=%s,
+              processing_started_at=COALESCE(processing_started_at, %s),
+              processing_operator_name=COALESCE(processing_operator_name, %s),
+              updated_by_user_id=%s,
+              version=%s
+            WHERE id=%s
+            """,
+            (
+                op_at,
+                emp_uid,
+                emp_name,
+                business_date_of(op_at),
+                ATTR_SOURCE_MANAGER,
+                STATUS_WASHED,
+                op_at,
+                emp_name,
+                actor_user_id,
+                new_version,
+                int(fact["id"]),
+            ),
+        )
+        after = {
+            **before,
+            "workflow_status": STATUS_WASHED,
+            "washed_at": op_at,
+            "washed_by_user_id": emp_uid,
+            "washed_by_name": emp_name,
+            "washed_attribution_source": ATTR_SOURCE_MANAGER,
+            "action": act,
+            "operational_at": str(op_at),
+            "operational_employee_user_id": emp_uid,
+        }
+
+    elif act == PROCESSING_ACTION_MARK_FOLDED:
+        if status not in (STATUS_WASHED, STATUS_AWAITING_FOLD):
+            return {"ok": False, "error": "invalid_state", "status": 400, "current_status": status}
+        washed_at = _as_naive(order.get("washed_at") or fact.get("washed_at"))
+        if not washed_at:
+            return {"ok": False, "error": "wash_required", "status": 400}
+        if employee_user_id in (None, ""):
+            return {"ok": False, "error": "employee_required", "status": 400}
+        op_at = _as_naive(operational_at) or changed_naive
+        try:
+            emp_uid = int(employee_user_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid_employee", "status": 400}
+        chrono_err = _hd_chronology_error(washed_at=washed_at, folded_at=op_at)
+        if chrono_err:
+            return {"ok": False, "error": chrono_err, "status": 400}
+        names = _batch_user_names(cursor, [emp_uid])
+        emp_name = names.get(emp_uid)
+        ops_date = business_date_of(op_at) or selected_date_et
+        new_version = current_version + 1
+        cursor.execute(
+            """
+            UPDATE hd_day_bag_production SET
+              folded_at=%s,
+              folded_by_user_id=%s,
+              folded_by_name_snapshot=%s,
+              folded_date_et=%s,
+              folded_attribution_source=%s,
+              operations_date_et=%s,
+              workflow_status=%s,
+              source_completion_at=%s,
+              source_completion_user_name=%s,
+              updated_by_user_id=%s,
+              version=%s
+            WHERE id=%s
+            """,
+            (
+                op_at,
+                emp_uid,
+                emp_name,
+                business_date_of(op_at),
+                ATTR_SOURCE_MANAGER,
+                ops_date,
+                STATUS_AWAITING_ENTRY,
+                op_at,
+                emp_name,
+                actor_user_id,
+                new_version,
+                int(fact["id"]),
+            ),
+        )
+        after = {
+            **before,
+            "workflow_status": STATUS_AWAITING_ENTRY,
+            "folded_at": op_at,
+            "folded_by_user_id": emp_uid,
+            "folded_by_name": emp_name,
+            "folded_attribution_source": ATTR_SOURCE_MANAGER,
+            "operations_date_et": ops_date.isoformat() if hasattr(ops_date, "isoformat") else ops_date,
+            "action": act,
+            "operational_at": str(op_at),
+            "operational_employee_user_id": emp_uid,
+        }
+
+    elif act == PROCESSING_ACTION_REOPEN:
+        if status != STATUS_COMPLETE:
+            return {"ok": False, "error": "invalid_state", "status": 400, "current_status": status}
+        folded_at = _as_naive(order.get("folded_at") or fact.get("folded_at"))
+        if not folded_at:
+            return {"ok": False, "error": "not_folded", "status": 400}
+        new_version = current_version + 1
+        prod_status = (
+            PROD_PARTIAL
+            if fact.get("total_items") is not None or fact.get("revenue") is not None
+            else PROD_NOT_RECORDED
+        )
+        cursor.execute(
+            """
+            UPDATE hd_day_bag_production SET
+              status=%s,
+              workflow_status=%s,
+              management_completed_at=NULL,
+              management_completed_by_user_id=NULL,
+              management_completed_by_name=NULL,
+              completion_source=NULL,
+              updated_by_user_id=%s,
+              version=%s
+            WHERE id=%s
+            """,
+            (
+                prod_status,
+                STATUS_AWAITING_ENTRY,
+                actor_user_id,
+                new_version,
+                int(fact["id"]),
+            ),
+        )
+        after = {
+            **before,
+            "workflow_status": STATUS_AWAITING_ENTRY,
+            "management_completed_at": None,
+            "status": prod_status,
+            "action": act,
+        }
+
+    elif act == PROCESSING_ACTION_BACK_TO_AWAITING_FOLD:
+        if status not in (STATUS_AWAITING_ENTRY, STATUS_COMPLETE):
+            return {"ok": False, "error": "invalid_state", "status": 400, "current_status": status}
+        washed_at = _as_naive(order.get("washed_at") or fact.get("washed_at"))
+        if not washed_at:
+            return {"ok": False, "error": "wash_required", "status": 400}
+        ops_date = business_date_of(washed_at) or fact.get("operations_date_et")
+        new_version = current_version + 1
+        cursor.execute(
+            """
+            UPDATE hd_day_bag_production SET
+              folded_at=NULL,
+              folded_by_user_id=NULL,
+              folded_by_name_snapshot=NULL,
+              folded_by_override_name=NULL,
+              folded_date_et=NULL,
+              folded_attribution_source=NULL,
+              management_completed_at=NULL,
+              management_completed_by_user_id=NULL,
+              management_completed_by_name=NULL,
+              completion_source=NULL,
+              total_items=NULL,
+              revenue=NULL,
+              status=%s,
+              workflow_status=%s,
+              operations_date_et=%s,
+              source_completion_at=NULL,
+              source_completion_user_name=NULL,
+              updated_by_user_id=%s,
+              version=%s
+            WHERE id=%s
+            """,
+            (
+                PROD_NOT_RECORDED,
+                STATUS_WASHED,
+                ops_date,
+                actor_user_id,
+                new_version,
+                int(fact["id"]),
+            ),
+        )
+        after = {
+            **before,
+            "workflow_status": STATUS_WASHED,
+            "folded_at": None,
+            "folded_by_user_id": None,
+            "folded_attribution_source": None,
+            "management_completed_at": None,
+            "total_items": None,
+            "revenue": None,
+            "action": act,
+        }
+
+    elif act == PROCESSING_ACTION_BACK_TO_PENDING_WASH:
+        if status not in (STATUS_WASHED, STATUS_AWAITING_FOLD, STATUS_AWAITING_ENTRY, STATUS_COMPLETE):
+            return {
+                "ok": False,
+                "error": "invalid_state",
+                "status": 400,
+                "current_status": status,
+            }
+        new_version = current_version + 1
+        ops_date = fact.get("operations_date_et") or selected_date_et
+        cursor.execute(
+            """
+            UPDATE hd_day_bag_production SET
+              washed_at=NULL,
+              washed_by_user_id=NULL,
+              washed_by_name_snapshot=NULL,
+              washed_by_override_name=NULL,
+              washed_date_et=NULL,
+              washed_attribution_source=NULL,
+              folded_at=NULL,
+              folded_by_user_id=NULL,
+              folded_by_name_snapshot=NULL,
+              folded_by_override_name=NULL,
+              folded_date_et=NULL,
+              folded_attribution_source=NULL,
+              management_completed_at=NULL,
+              management_completed_by_user_id=NULL,
+              management_completed_by_name=NULL,
+              completion_source=NULL,
+              total_items=NULL,
+              revenue=NULL,
+              status=%s,
+              workflow_status=%s,
+              operations_date_et=%s,
+              processing_started_at=NULL,
+              processing_operator_name=NULL,
+              source_completion_at=NULL,
+              source_completion_user_name=NULL,
+              updated_by_user_id=%s,
+              version=%s
+            WHERE id=%s
+            """,
+            (
+                PROD_NOT_RECORDED,
+                STATUS_PENDING_WASH,
+                ops_date,
+                actor_user_id,
+                new_version,
+                int(fact["id"]),
+            ),
+        )
+        after = {
+            **before,
+            "workflow_status": STATUS_PENDING_WASH,
+            "washed_at": None,
+            "washed_by_user_id": None,
+            "washed_attribution_source": None,
+            "folded_at": None,
+            "folded_by_user_id": None,
+            "folded_attribution_source": None,
+            "management_completed_at": None,
+            "total_items": None,
+            "revenue": None,
+            "action": act,
+        }
+    else:
+        return {"ok": False, "error": "invalid_action", "status": 400}
+
+    if table_exists(cursor, "hd_day_bag_production_audits"):
+        ops_audit = fact.get("operations_date_et") or selected_date_et
+        cursor.execute(
+            """
+            INSERT INTO hd_day_bag_production_audits (
+              organization_id, operations_date_et, bag_id, production_fact_id,
+              action, version_before, version_after, before_json, after_json,
+              reason, actor_user_id, actor_display_name
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                org,
+                ops_audit,
+                bid,
+                int(fact["id"]),
+                ACTION_PROCESSING_CORRECTION,
+                current_version,
+                new_version,
+                json.dumps(before, default=str),
+                json.dumps(
+                    {
+                        **after,
+                        "correction_action": act,
+                        "changed_by_user_id": actor_user_id,
+                        "changed_by_name": actor_display_name,
+                        "changed_at": str(changed_naive),
+                    },
+                    default=str,
+                ),
+                f"management_rinse_hd_processing_{act}",
+                actor_user_id,
+                actor_display_name,
+            ),
+        )
+
+    return {
+        "ok": True,
+        "bag_id": bid,
+        "action": act,
+        "version": new_version,
+        "before": before,
+        "after": after,
+        "workflow_status": after.get("workflow_status"),
+        "changed_by_user_id": actor_user_id,
+        "changed_by_name": actor_display_name,
+        "changed_at": changed_at,
+        "canonical_table": "hd_day_bag_production",
+        "fabricated_scan": False,
     }
 
 

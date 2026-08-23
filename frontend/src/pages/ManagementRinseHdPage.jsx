@@ -30,6 +30,7 @@ import {
   saveManagementRinseHdProduction,
   updateManagementRinseHdAttribution,
 } from "../api";
+import ManagementHdProcessingSheet from "../components/management/ManagementHdProcessingSheet";
 import ManagementCopyableId from "../components/management/ManagementCopyableId";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import { groupOrdersByDeliveryDate } from "../components/management/hdDeliveryDateGroups";
@@ -132,7 +133,7 @@ function SummaryCard({ label, value }) {
   );
 }
 
-function OrderCard({ order, onOpen, onExclude, showExclude = false }) {
+function OrderCard({ order, onOpen, onManage, onExclude, showExclude = false }) {
   const awaiting = order.status === "awaiting_entry";
   const pending =
     order.status === "pending_wash" ||
@@ -215,19 +216,32 @@ function OrderCard({ order, onOpen, onExclude, showExclude = false }) {
           Delivery {formatDayLabel(order.delivery_date_et)}
         </Typography>
       ) : null}
-      {showExclude ? (
+      <Stack direction="row" spacing={1} sx={{ mt: 0.75 }} onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
         <Button
           size="small"
-          color="warning"
+          variant="outlined"
           onClick={(e) => {
             e.stopPropagation();
-            onExclude?.(order);
+            onManage?.(order);
           }}
-          sx={{ mt: 0.75, textTransform: "none", fontWeight: 700 }}
+          sx={{ textTransform: "none", fontWeight: 700, minWidth: 0, px: 1.25 }}
         >
-          Exclude
+          Manage
         </Button>
-      ) : null}
+        {showExclude ? (
+          <Button
+            size="small"
+            color="warning"
+            onClick={(e) => {
+              e.stopPropagation();
+              onExclude?.(order);
+            }}
+            sx={{ textTransform: "none", fontWeight: 700 }}
+          >
+            Exclude
+          </Button>
+        ) : null}
+      </Stack>
     </Box>
   );
 }
@@ -287,6 +301,7 @@ function DeliveryDateGroups({
   groups,
   statusFilter,
   onOpen,
+  onManage,
   onExclude,
   onRestore,
   selectedExcluded,
@@ -319,6 +334,7 @@ function DeliveryDateGroups({
                   key={`${order.bag_id}-${order.status}`}
                   order={order}
                   onOpen={onOpen}
+                  onManage={onManage}
                   onExclude={onExclude}
                   showExclude={showExclude}
                 />
@@ -375,6 +391,7 @@ export default function ManagementRinseHdPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedExcluded, setSelectedExcluded] = useState(() => new Set());
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [manageOrder, setManageOrder] = useState(null);
   const autosaveTimer = useRef(null);
 
   const load = useCallback(async (day, status, refresh = false) => {
@@ -803,6 +820,7 @@ export default function ManagementRinseHdPage() {
               groups={deliveryGroups}
               statusFilter={statusFilter}
               onOpen={openDetail}
+              onManage={setManageOrder}
               onExclude={excludeOrder}
               onRestore={restoreOrder}
               selectedExcluded={selectedExcluded}
@@ -993,6 +1011,14 @@ export default function ManagementRinseHdPage() {
           ) : null}
         </DialogActions>
       </Dialog>
+
+      <ManagementHdProcessingSheet
+        open={Boolean(manageOrder)}
+        order={manageOrder}
+        dateEt={dateEt}
+        onClose={() => setManageOrder(null)}
+        onSuccess={() => load(dateEt, statusFilter, true)}
+      />
     </Box>
   );
 }

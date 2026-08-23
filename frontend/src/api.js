@@ -2510,6 +2510,12 @@ export const updateManagementRinseHdAttribution = (bagId, body) =>
     body,
   );
 
+export const applyManagementRinseHdProcessing = (bagId, body) =>
+  axios.post(
+    `${API_BASE}/api/management/rinse-hd/${encodeURIComponent(bagId)}/processing`,
+    body,
+  );
+
 export const excludeManagementRinseHdOrder = (bagId, body = {}) =>
   axios.post(`${API_BASE}/api/management/rinse-hd/${encodeURIComponent(bagId)}/exclude`, body);
 
