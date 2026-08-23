@@ -90,3 +90,26 @@ def test_classify_over_ceiling():
         "result_json": {"progress": {"last_progress_at": now.isoformat() + "Z"}},
     }
     assert classify_running_row(row, now=now) == "over_ceiling"
+
+
+def test_scrape_stage_heartbeat_uses_supervisor_thread(monkeypatch):
+    from backend.rinse_scrape_runs import scrape_stage_heartbeat
+
+    calls: list[tuple[int, int, str]] = []
+
+    def fake_supervisor(org, gen, **kwargs):
+        calls.append((int(org), int(gen), str(kwargs.get("stage") or "")))
+
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.touch_supervisor_heartbeat",
+        fake_supervisor,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.scrape_supervisor_heartbeat_interval_sec",
+        lambda: 3600,
+    )
+
+    with scrape_stage_heartbeat(99, 3, stage="finalizing", lease_generation=7):
+        pass
+
+    assert calls == [(3, 7, "finalizing")]

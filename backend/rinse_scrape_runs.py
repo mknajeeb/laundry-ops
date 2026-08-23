@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Iterator
 
 
 def _utcnow() -> datetime:
@@ -602,6 +604,28 @@ def scrape_run_heartbeat_interval_sec() -> int:
         return 60
 
 
+@contextmanager
+def scrape_stage_heartbeat(
+    run_id: int | None,
+    organization_id: int,
+    *,
+    stage: str,
+    lease_generation: int | None = None,
+    progress: bool = False,
+) -> Iterator[None]:
+    """Supervisor liveness during blocking stage work (direct MySQL, not pool)."""
+    from backend.rinse_scrape_liveness import scrape_supervisor_heartbeat
+
+    with scrape_supervisor_heartbeat(
+        organization_id,
+        lease_generation,
+        stage=stage,
+        run_id=run_id,
+        progress=progress,
+    ):
+        yield
+
+
 def touch_scrape_run_progress(
     cursor,
     run_id: int,
@@ -631,6 +655,21 @@ def touch_scrape_run_progress(
         return
     gen = lease_generation if lease_generation is not None else row.get("lease_generation")
     if gen is not None:
+        from backend.rinse_scrape_liveness import ensure_lease_liveness_columns
+
+        ensure_lease_liveness_columns(cursor)
+        if progress:
+            cursor.execute(
+                """
+                UPDATE rinse_scrape_org_lease
+                SET worker_progress_at = %s,
+                    last_progress_at = %s,
+                    current_stage = %s,
+                    updated_at = %s
+                WHERE organization_id = %s AND generation = %s
+                """,
+                (now, now, str(stage or "unknown")[:64], now, int(organization_id), int(gen)),
+            )
         if not touch_lease_heartbeat(
             cursor,
             int(organization_id),
@@ -638,7 +677,8 @@ def touch_scrape_run_progress(
             stage=stage,
             progress=progress,
         ):
-            return
+            # Worker row update may still proceed; supervisor thread owns lease heartbeat.
+            pass
     detail = _parse_result_json(row.get("result_json"))
     progress_block = dict(detail.get("progress") or {})
     progress_block.update(

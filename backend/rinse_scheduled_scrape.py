@@ -34,6 +34,7 @@ from backend.rinse_scrape_runs import (
     release_scrape_lock,
     scheduled_post_run_cooldown,
     scrape_run_heartbeat_interval_sec,
+    scrape_stage_heartbeat,
     touch_scrape_run_progress,
 )
 from backend.rinse_scrape_lease import (
@@ -1621,36 +1622,12 @@ def _run_in_lock_rinse_finalize(
         )
         conn.commit()
 
-    hb_stop = threading.Event()
-
-    def _finalize_heartbeat_loop() -> None:
-        if not run_id:
-            return
-        interval = max(30, scrape_run_heartbeat_interval_sec())
-        while not hb_stop.wait(interval):
-            try:
-                hb_cur = conn.cursor(dictionary=True, buffered=True)
-                touch_scrape_run_progress(
-                    hb_cur,
-                    int(run_id),
-                    org_id,
-                    stage="finalizing",
-                    lease_generation=lease_generation,
-                )
-                conn.commit()
-            except Exception:
-                pass
-            finally:
-                try:
-                    hb_cur.close()
-                except Exception:
-                    pass
-
-    hb_thread = None
-    if run_id:
-        hb_thread = threading.Thread(target=_finalize_heartbeat_loop, daemon=True)
-        hb_thread.start()
-    try:
+    with scrape_stage_heartbeat(
+        run_id,
+        org_id,
+        stage="finalizing",
+        lease_generation=lease_generation,
+    ):
         payload = finalize_rinse_after_batch_confirm(
             cursor,
             org_id,
@@ -1659,10 +1636,6 @@ def _run_in_lock_rinse_finalize(
             source_filename=f"batch_confirm_{batch_id}",
         )
         conn.commit()
-    finally:
-        hb_stop.set()
-        if hb_thread is not None:
-            hb_thread.join(timeout=5)
     if run_id:
         touch_scrape_run_progress(
             cursor,
@@ -2268,15 +2241,18 @@ def run_scheduled_scrape_for_org(
                     )
                     conn.commit()
 
-                rc = _run_bash_script(
-                    scan_script,
-                    env,
-                    log,
-                    timeout_sec=scrape_timeout_sec(),
-                    heartbeat_fn=_scan_heartbeat,
-                    progress_fn=_scan_progress,
-                    hard_deadline_mono=hard_deadline_mono,
-                )
+                with scrape_stage_heartbeat(
+                    run_id, org_id, stage="portal_scrape", lease_generation=lease_gen,
+                ):
+                    rc = _run_bash_script(
+                        scan_script,
+                        env,
+                        log,
+                        timeout_sec=scrape_timeout_sec(),
+                        heartbeat_fn=_scan_heartbeat,
+                        progress_fn=_scan_progress,
+                        hard_deadline_mono=hard_deadline_mono,
+                    )
                 if rc == -2:
                     raise RuntimeError(
                         f"FAILED_STALLED: no scrape progress for {stall_seconds()}s"
@@ -2296,17 +2272,20 @@ def run_scheduled_scrape_for_org(
                     lease_generation=lease_gen,
                 )
                 conn.commit()
-                presence_result = apply_at_vendor_presence_from_portal_csv(
-                    conn,
-                    org_id,
-                    portal_csv_path=paths.portal_csv,
-                    portal_scrape_meta_path=Path(str(paths.portal_csv) + ".meta.json"),
-                    run_type=run_type,
-                    dry_run=False,
-                    mark_missing=True,
-                    log_write=log.write,
-                    started_at=presence_started,
-                )
+                with scrape_stage_heartbeat(
+                    run_id, org_id, stage="scan_import", lease_generation=lease_gen,
+                ):
+                    presence_result = apply_at_vendor_presence_from_portal_csv(
+                        conn,
+                        org_id,
+                        portal_csv_path=paths.portal_csv,
+                        portal_scrape_meta_path=Path(str(paths.portal_csv) + ".meta.json"),
+                        run_type=run_type,
+                        dry_run=False,
+                        mark_missing=True,
+                        log_write=log.write,
+                        started_at=presence_started,
+                    )
                 presence_detail = build_presence_sync_detail(presence_result)
                 result.detail["at_vendor_presence_sync"] = presence_detail
                 result.detail["av_single_pass"] = True
@@ -2332,8 +2311,11 @@ def run_scheduled_scrape_for_org(
                 except Exception as cycle_exc:
                     log.write(f"WARNING: wf service cycle sync: {cycle_exc}\n")
             else:
-                if _run_bash_script(portal_script, env, log) != 0:
-                    raise RuntimeError("Portal scrape subprocess failed")
+                with scrape_stage_heartbeat(
+                    run_id, org_id, stage="portal_scrape", lease_generation=lease_gen,
+                ):
+                    if _run_bash_script(portal_script, env, log) != 0:
+                        raise RuntimeError("Portal scrape subprocess failed")
 
             if not paths.portal_csv.is_file() or count_csv_data_rows(paths.portal_csv) < 1:
                 raise RuntimeError("Portal CSV missing or empty after scrape")
@@ -2495,18 +2477,21 @@ def run_scheduled_scrape_for_org(
             from backend.rinse_portal_scrape_meta import meta_path_for_portal_csv
 
             portal_meta_path = meta_path_for_portal_csv(paths.portal_csv)
-            draft_payload = commit_rinse_combined_upload(
-                conn,
-                cursor,
-                org_id,
-                batch_date,
-                portal_name,
-                orders_df,
-                events_name,
-                events_df,
-                portal_scrape_meta_path=str(portal_meta_path),
-                scrape_run_id=run_id,
-            )
+            with scrape_stage_heartbeat(
+                run_id, org_id, stage="scan_import", lease_generation=lease_gen,
+            ):
+                draft_payload = commit_rinse_combined_upload(
+                    conn,
+                    cursor,
+                    org_id,
+                    batch_date,
+                    portal_name,
+                    orders_df,
+                    events_name,
+                    events_df,
+                    portal_scrape_meta_path=str(portal_meta_path),
+                    scrape_run_id=run_id,
+                )
             newest_db_after = _newest_db_scan_et(cursor, org_id)
             merge_available_at = datetime.utcnow()
             if not draft_payload.get("portal_absence_allowed"):
@@ -2557,13 +2542,16 @@ def run_scheduled_scrape_for_org(
                     # Staging + CONFIRMED only. Registry/folding finalize runs
                     # in-lock after Stage-B so terminal success means Management
                     # projection work for this cycle is finished.
-                    confirm_payload = confirm_upload_batch_core(
-                        cursor,
-                        org_id,
-                        batch_id,
-                        force_confirm=False,
-                        run_finalize=False,
-                    )
+                    with scrape_stage_heartbeat(
+                        run_id, org_id, stage="merge", lease_generation=lease_gen,
+                    ):
+                        confirm_payload = confirm_upload_batch_core(
+                            cursor,
+                            org_id,
+                            batch_id,
+                            force_confirm=False,
+                            run_finalize=False,
+                        )
                     log.write(f"Auto-confirmed batch_id={batch_id}\n")
                 except UploadBatchConfirmError as e:
                     conn.rollback()
@@ -2585,18 +2573,21 @@ def run_scheduled_scrape_for_org(
                     assert_lease_writable(cursor, org_id, int(lease_gen))
                 _chain_boundary(log, "stage_b_start", batch_id=batch_id, run_id=run_id)
                 # Main locked path: Stage-B after confirm, then required finalize.
-                step1_refresh_detail = _refresh_open_step1_day_after_scrape(
-                    conn,
-                    cursor,
-                    org_id=org_id,
-                    log=log,
-                    scrape_batch_id=int(batch_id) if batch_id else None,
-                    scrape_run_id=run_id,
-                    detail={
-                        "confirm": confirm_payload,
-                        "draft": draft_payload,
-                    },
-                )
+                with scrape_stage_heartbeat(
+                    run_id, org_id, stage="stage_b_rebuild", lease_generation=lease_gen,
+                ):
+                    step1_refresh_detail = _refresh_open_step1_day_after_scrape(
+                        conn,
+                        cursor,
+                        org_id=org_id,
+                        log=log,
+                        scrape_batch_id=int(batch_id) if batch_id else None,
+                        scrape_run_id=run_id,
+                        detail={
+                            "confirm": confirm_payload,
+                            "draft": draft_payload,
+                        },
+                    )
                 _chain_boundary(
                     log,
                     "stage_b_complete",
@@ -2623,14 +2614,17 @@ def run_scheduled_scrape_for_org(
                             "in_lock": True,
                         },
                     }
-                wf_canonical_terminal = _run_wf_canonical_terminal_projection(
-                    conn,
-                    cursor,
-                    org_id=org_id,
-                    log=log,
-                    portal_csv_path=paths.portal_csv,
-                    portal_scrape_meta_path=Path(str(paths.portal_csv) + ".meta.json"),
-                )
+                with scrape_stage_heartbeat(
+                    run_id, org_id, stage="publish", lease_generation=lease_gen,
+                ):
+                    wf_canonical_terminal = _run_wf_canonical_terminal_projection(
+                        conn,
+                        cursor,
+                        org_id=org_id,
+                        log=log,
+                        portal_csv_path=paths.portal_csv,
+                        portal_scrape_meta_path=Path(str(paths.portal_csv) + ".meta.json"),
+                    )
 
             result.status = final_status
             result.at_vendor_status = final_status
