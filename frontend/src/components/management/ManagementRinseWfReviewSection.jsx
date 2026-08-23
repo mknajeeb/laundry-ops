@@ -225,6 +225,7 @@ export default function ManagementRinseWfReviewSection({
   });
   const [busyBagId, setBusyBagId] = useState(null);
   const [decisionMsg, setDecisionMsg] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [expandedBagId, setExpandedBagId] = useState(null);
   const [perf, setPerf] = useState({
     drawerOpenMs: null,
