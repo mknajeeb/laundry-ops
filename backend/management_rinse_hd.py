@@ -753,44 +753,14 @@ def _ensure_admitted_production_row(
     if existing:
         wf = str(existing.get("workflow_status") or "").strip().upper()
         if wf == WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED:
-            # Re-admit into new workflow on activation+ discovery.
-            now = business_now()
-            now_naive = now.replace(tzinfo=None) if getattr(now, "tzinfo", None) else now
-            cursor.execute(
-                """
-                UPDATE hd_day_bag_production SET
-                  operations_date_et=%s,
-                  workflow_status=%s,
-                  admitted_at=COALESCE(admitted_at, %s),
-                  washed_at=NULL,
-                  folded_at=NULL,
-                  washed_by_user_id=NULL,
-                  folded_by_user_id=NULL,
-                  washed_by_name_snapshot=NULL,
-                  folded_by_name_snapshot=NULL,
-                  washed_date_et=NULL,
-                  folded_date_et=NULL,
-                  washed_attribution_source=NULL,
-                  folded_attribution_source=NULL,
-                  management_completed_at=NULL,
-                  management_completed_by_user_id=NULL,
-                  management_completed_by_name=NULL,
-                  status=%s,
-                  updated_by_user_id=%s,
-                  version=version+1
-                WHERE id=%s
-                """,
-                (
-                    admission_date_et,
-                    STATUS_PENDING_WASH,
-                    now_naive,
-                    PROD_NOT_RECORDED,
-                    actor_user_id,
-                    int(existing["id"]),
-                ),
-            )
-            existing = _load_production_by_bag(cursor, org, [bid]).get(bid) or existing
-            return {"bag_id": bid, "created": False, "reactivated": True, "row": existing}
+            # Fresh-start quarantine: portal rediscovery must not re-admit pre-cutover rows.
+            return {
+                "bag_id": bid,
+                "created": False,
+                "reactivated": False,
+                "quarantined": True,
+                "row": existing,
+            }
         # Already admitted — never drop because portal left.
         if not existing.get("admitted_at") and table_has_column(cursor, "hd_day_bag_production", "admitted_at"):
             now = business_now()
@@ -875,6 +845,7 @@ def admit_discovered_hd_bags(
         return {"admitted_new": 0, "already_admitted": 0, "bag_ids": []}
     created = 0
     already = 0
+    quarantined = 0
     bag_ids: list[str] = []
     for raw in discovered_bag_ids:
         bid = _norm_bag(raw)
@@ -887,12 +858,20 @@ def admit_discovered_hd_bags(
             admission_date_et=selected_date_et,
             actor_user_id=actor_user_id,
         )
+        if result.get("quarantined"):
+            quarantined += 1
+            continue
         bag_ids.append(bid)
         if result.get("created") or result.get("reactivated"):
             created += 1
         else:
             already += 1
-    return {"admitted_new": created, "already_admitted": already, "bag_ids": bag_ids}
+    return {
+        "admitted_new": created,
+        "already_admitted": already,
+        "skipped_quarantined": quarantined,
+        "bag_ids": bag_ids,
+    }
 
 
 def _batch_user_names(cursor, user_ids: Sequence[int]) -> dict[int, str]:

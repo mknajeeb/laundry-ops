@@ -664,11 +664,16 @@ def permanent_delete_hd_orders(
     prod_ids = [int(r["id"]) for r in rows]
     deleted_bags = [_norm_bag(r.get("bag_id")) for r in rows]
     if table_exists(cursor, "hd_day_bag_production_audits") and prod_ids:
+        audit_fk_col = (
+            "production_fact_id"
+            if table_has_column(cursor, "hd_day_bag_production_audits", "production_fact_id")
+            else "production_id"
+        )
         ph2 = ",".join(["%s"] * len(prod_ids))
         cursor.execute(
             f"""
             DELETE FROM hd_day_bag_production_audits
-            WHERE production_id IN ({ph2})
+            WHERE {audit_fk_col} IN ({ph2})
             """,
             tuple(prod_ids),
         )

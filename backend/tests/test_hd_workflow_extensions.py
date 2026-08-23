@@ -147,6 +147,48 @@ def test_restore_returns_pending_when_no_post_cutover_evidence():
     assert out["restored_status"] == STATUS_PENDING_WASH
 
 
+def test_admit_discovered_skips_pre_activation_excluded_quarantine():
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_rinse_hd import (
+        WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
+        admit_discovered_hd_bags,
+    )
+
+    cursor = MagicMock()
+    quarantined = {
+        "id": 42,
+        "bag_id": "OLD1",
+        "workflow_status": WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
+    }
+    with patch("backend.management_rinse_hd.ensure_management_hd_columns"), patch(
+        "backend.management_rinse_hd._load_production_by_bag",
+        return_value={"OLD1": quarantined},
+    ):
+        out = admit_discovered_hd_bags(cursor, 3, date(2026, 8, 22), ["OLD1"])
+
+    assert out["admitted_new"] == 0
+    assert out["already_admitted"] == 0
+    assert out["skipped_quarantined"] == 1
+    assert out["bag_ids"] == []
+    cursor.execute.assert_not_called()
+
+
+def test_permanent_delete_uses_production_fact_id_column():
+    cursor = MagicMock(dictionary=True)
+    cursor.fetchall.return_value = [{"id": 99, "bag_id": "HD003"}]
+    cursor.rowcount = 1
+    with (
+        patch("backend.hd_workflow_extensions.table_exists", return_value=True),
+        patch("backend.hd_workflow_extensions.table_has_column", return_value=True),
+    ):
+        out = permanent_delete_hd_orders(cursor, 3, ["HD003"])
+    assert out["ok"] is True
+    audit_delete = cursor.execute.call_args_list[-2][0][0]
+    assert "production_fact_id" in audit_delete
+    assert "production_id" not in audit_delete.replace("production_fact_id", "")
+
+
 def test_permanent_delete_only_excluded_and_not_scans():
     cursor = MagicMock(dictionary=True)
     cursor.fetchall.return_value = [{"id": 99, "bag_id": "HD003"}]
