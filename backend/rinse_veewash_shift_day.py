@@ -531,6 +531,13 @@ def _effective_status_for_row(row: Mapping[str, Any], review_ids: set[str]) -> s
     bid = normalize_bag_id(row.get("bag_id"))
     if bid in review_ids or row.get("outcome") == OUTCOME_REVIEW_REQUIRED:
         return OUTCOME_REVIEW_REQUIRED
+    eff_raw = str(row.get("effective_status") or "").strip().lower()
+    if eff_raw in (OUTCOME_COMPLETED, "completed") or eff_raw.endswith("_completed"):
+        return OUTCOME_COMPLETED
+    if eff_raw in (OUTCOME_REVIEW_REQUIRED, "review_required"):
+        return OUTCOME_REVIEW_REQUIRED
+    if eff_raw in (OUTCOME_PENDING, "pending") or "pending" in eff_raw:
+        return OUTCOME_PENDING
     outcome = str(row.get("outcome") or row.get("final_bucket") or "")
     if OUTCOME_COMPLETED in outcome or outcome.endswith("_completed"):
         return OUTCOME_COMPLETED

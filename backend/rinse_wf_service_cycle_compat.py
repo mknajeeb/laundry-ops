@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Mapping
 
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_folding_et import naive_et_day_start
@@ -28,6 +28,39 @@ from backend.rinse_wf_service_cycle import (
 )
 
 OUTCOME_CARRYOVER_QUERY = "opening_backlog_query_only"
+
+
+def _cycle_row_rank(row: Mapping[str, Any]) -> tuple[int, float, float]:
+    """Lower rank wins. COMPLETED beats REVIEW beats ACTIVE; then latest completion/anchor."""
+    status = str(row.get("status") or STATUS_ACTIVE)
+    if status == STATUS_COMPLETED:
+        tier = 0
+    elif status == STATUS_REVIEW:
+        tier = 1
+    else:
+        tier = 2
+    completed_at = row.get("completed_at")
+    completed_ts = (
+        completed_at.timestamp()
+        if isinstance(completed_at, datetime)
+        else 0.0
+    )
+    anchor = row.get("cycle_anchor_at")
+    anchor_ts = anchor.timestamp() if isinstance(anchor, datetime) else 0.0
+    return (tier, -completed_ts, -anchor_ts)
+
+
+def _dedupe_canonical_cycle_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One projection row per bag — duplicate cycle rows must not shadow COMPLETED."""
+    by_bag: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        bid = normalize_bag_id(row.get("bag_id"))
+        if not bid:
+            continue
+        prev = by_bag.get(bid)
+        if prev is None or _cycle_row_rank(row) < _cycle_row_rank(prev):
+            by_bag[bid] = row
+    return list(by_bag.values())
 
 
 def _canonical_wf_bags_for_date(
@@ -67,9 +100,9 @@ def _canonical_wf_bags_for_date(
         ),
     )
     bags: list[dict[str, Any]] = []
-    for c in cur.fetchall() or []:
-        if not isinstance(c, dict):
-            continue
+    for c in _dedupe_canonical_cycle_rows(
+        [c for c in (cur.fetchall() or []) if isinstance(c, dict)]
+    ):
         bid = c.get("bag_id")
         if not bid:
             continue
@@ -212,17 +245,35 @@ def terminal_project_canonical_wf_day_snapshot(
     day = get_day_record(cursor, org, shift_date_et)
     status = str((day or {}).get("status") or STATUS_OPEN)
     rows: list[dict[str, Any]] = []
+    new_today_ids: list[str] = []
+    carryover_ids: list[str] = []
+    completed_ids: list[str] = []
+    pending_ids: list[str] = []
+    review_ids: list[str] = []
     for b in all_bags:
         snap = dict(b.get("bag_snapshot") or {})
         rows.append({**b, **snap, "bag_id": b["bag_id"]})
+        bid = b["bag_id"]
+        noc = str(b.get("new_or_carryover") or "")
+        if noc == OUTCOME_CARRYOVER_QUERY or "carryover" in noc.lower():
+            carryover_ids.append(bid)
+        else:
+            new_today_ids.append(bid)
+        eff = b.get("effective_status")
+        if eff == OUTCOME_COMPLETED:
+            completed_ids.append(bid)
+        elif eff == OUTCOME_REVIEW_REQUIRED:
+            review_ids.append(bid)
+        else:
+            pending_ids.append(bid)
     wl = {
         "selected_date_et": shift_date_et.isoformat(),
         "rows": rows,
-        "review_required": [
-            b["bag_id"]
-            for b in all_bags
-            if b.get("effective_status") == OUTCOME_REVIEW_REQUIRED
-        ],
+        "new_today": new_today_ids,
+        "carryover": carryover_ids,
+        "completed_on_date": completed_ids,
+        "pending_end_of_date": pending_ids,
+        "review_required": review_ids,
         "review_reasons_by_bag": {
             b["bag_id"]: b.get("review_reason_codes") or []
             for b in all_bags
