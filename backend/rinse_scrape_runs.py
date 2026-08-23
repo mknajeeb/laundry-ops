@@ -679,6 +679,14 @@ def touch_scrape_run_progress(
         ):
             # Worker row update may still proceed; supervisor thread owns lease heartbeat.
             pass
+        # Release the lease row before the heavier result_json write so the
+        # supervisor thread's independent UPDATE is not blocked for long periods.
+        conn = getattr(cursor, "connection", None)
+        if conn is not None:
+            try:
+                conn.commit()
+            except Exception:
+                pass
     detail = _parse_result_json(row.get("result_json"))
     progress_block = dict(detail.get("progress") or {})
     progress_block.update(

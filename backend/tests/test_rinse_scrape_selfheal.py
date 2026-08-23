@@ -115,6 +115,90 @@ def test_scrape_stage_heartbeat_uses_supervisor_thread(monkeypatch):
     assert calls == [(3, 7, "finalizing")]
 
 
+def test_supervisor_thread_ticks_multiple_times(monkeypatch):
+    from backend.rinse_scrape_liveness import scrape_supervisor_heartbeat
+
+    calls: list[int] = []
+
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.touch_supervisor_heartbeat",
+        lambda *_a, **_k: calls.append(1) or True,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.scrape_supervisor_heartbeat_interval_sec",
+        lambda: 0.05,
+    )
+
+    with scrape_supervisor_heartbeat(3, 7, stage="portal_scrape", run_id=99):
+        import time
+
+        time.sleep(0.2)
+
+    assert len(calls) >= 3
+
+
+def test_touch_scrape_run_progress_commits_lease_before_result_json(monkeypatch):
+    from backend.rinse_scrape_runs import touch_scrape_run_progress
+
+    commits: list[str] = []
+    conn = MagicMock()
+    conn.commit.side_effect = lambda: commits.append("commit")
+
+    cursor = MagicMock()
+    cursor.connection = conn
+    cursor.fetchone.return_value = {
+        "status": "running",
+        "result_json": "{}",
+        "lease_generation": 5,
+    }
+
+    monkeypatch.setattr(
+        "backend.rinse_scrape_runs.ensure_rinse_scrape_runs_table", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.ensure_lease_liveness_columns", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_lease.touch_lease_heartbeat", lambda *_a, **_k: True
+    )
+
+    touch_scrape_run_progress(
+        cursor, 99, 3, stage="portal_scrape", lease_generation=5
+    )
+
+    assert commits == ["commit"]
+    assert cursor.execute.call_count >= 3
+
+
+def test_run_bash_script_supervisor_tick_in_poll_loop(monkeypatch, tmp_path):
+    from backend.rinse_scheduled_scrape import _TeeLog, _run_bash_script
+
+    script = tmp_path / "slow.sh"
+    script.write_text("#!/bin/bash\nsleep 5\n")
+    script.chmod(0o755)
+
+    ticks: list[int] = []
+
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.scrape_supervisor_heartbeat_interval_sec",
+        lambda: 0.05,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_runs.scrape_run_heartbeat_interval_sec",
+        lambda: 3600,
+    )
+
+    log = _TeeLog(tmp_path / "log.txt")
+    rc = _run_bash_script(
+        script,
+        {},
+        log,
+        supervisor_tick_fn=lambda: ticks.append(1),
+    )
+    assert rc == 0
+    assert len(ticks) >= 2
+
+
 def test_orphan_reclaim_blocked_when_supervisor_fresh(monkeypatch):
     from backend.rinse_scrape_liveness import orphan_reclaim_allowed
 

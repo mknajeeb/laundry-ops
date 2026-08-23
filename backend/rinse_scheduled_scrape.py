@@ -588,14 +588,21 @@ def _run_bash_script(
     timeout_sec: int | None = None,
     heartbeat_fn: Callable[[], None] | None = None,
     progress_fn: Callable[[str], None] | None = None,
+    supervisor_tick_fn: Callable[[], None] | None = None,
     hard_deadline_mono: float | None = None,
 ) -> int:
     env = {**os.environ, **extra_env}
     log.write(f"\n--- bash {script} ---\n")
     timeout = int(timeout_sec) if timeout_sec is not None else combined_phase_timeout_sec()
     hb_interval = scrape_run_heartbeat_interval_sec()
+    sup_interval = None
+    if supervisor_tick_fn is not None:
+        from backend.rinse_scrape_liveness import scrape_supervisor_heartbeat_interval_sec
+
+        sup_interval = scrape_supervisor_heartbeat_interval_sec()
     started = time.monotonic()
     last_hb = started
+    last_sup = started
     last_progress = started
     stall_after = stall_seconds()
     proc = subprocess.Popen(
@@ -656,6 +663,16 @@ def _run_bash_script(
                 except Exception:
                     pass
                 last_hb = time.monotonic()
+            if (
+                supervisor_tick_fn is not None
+                and sup_interval is not None
+                and (now_m - last_sup) >= sup_interval
+            ):
+                try:
+                    supervisor_tick_fn()
+                except Exception:
+                    pass
+                last_sup = time.monotonic()
             time.sleep(2)
     except FencedWriterError:
         raise
@@ -2241,6 +2258,14 @@ def run_scheduled_scrape_for_org(
                     )
                     conn.commit()
 
+                def _portal_supervisor_tick() -> None:
+                    if lease_gen is not None:
+                        from backend.rinse_scrape_liveness import touch_supervisor_heartbeat
+
+                        touch_supervisor_heartbeat(
+                            org_id, int(lease_gen), stage="portal_scrape"
+                        )
+
                 with scrape_stage_heartbeat(
                     run_id, org_id, stage="portal_scrape", lease_generation=lease_gen,
                 ):
@@ -2251,6 +2276,7 @@ def run_scheduled_scrape_for_org(
                         timeout_sec=scrape_timeout_sec(),
                         heartbeat_fn=_scan_heartbeat,
                         progress_fn=_scan_progress,
+                        supervisor_tick_fn=_portal_supervisor_tick,
                         hard_deadline_mono=hard_deadline_mono,
                     )
                 if rc == -2:
@@ -2311,10 +2337,23 @@ def run_scheduled_scrape_for_org(
                 except Exception as cycle_exc:
                     log.write(f"WARNING: wf service cycle sync: {cycle_exc}\n")
             else:
+                def _portal_supervisor_tick() -> None:
+                    if lease_gen is not None:
+                        from backend.rinse_scrape_liveness import touch_supervisor_heartbeat
+
+                        touch_supervisor_heartbeat(
+                            org_id, int(lease_gen), stage="portal_scrape"
+                        )
+
                 with scrape_stage_heartbeat(
                     run_id, org_id, stage="portal_scrape", lease_generation=lease_gen,
                 ):
-                    if _run_bash_script(portal_script, env, log) != 0:
+                    if _run_bash_script(
+                        portal_script,
+                        env,
+                        log,
+                        supervisor_tick_fn=_portal_supervisor_tick,
+                    ) != 0:
                         raise RuntimeError("Portal scrape subprocess failed")
 
             if not paths.portal_csv.is_file() or count_csv_data_rows(paths.portal_csv) < 1:

@@ -11,6 +11,9 @@ from typing import Any, Iterator
 
 from backend.db import _connection_kwargs
 
+_liveness_columns_verified = False
+_liveness_columns_lock = threading.Lock()
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -19,7 +22,34 @@ def _utcnow() -> datetime:
 def _direct_mysql_connection():
     import mysql.connector
 
-    return mysql.connector.connect(**_connection_kwargs())
+    conn = mysql.connector.connect(**_connection_kwargs())
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET SESSION innodb_lock_wait_timeout = 2")
+        cur.close()
+    except Exception:
+        pass
+    return conn
+
+
+def _ensure_liveness_columns_on_connection(cur) -> None:
+    """One-time column ensure per process — avoids per-tick schema checks."""
+    global _liveness_columns_verified
+    with _liveness_columns_lock:
+        if _liveness_columns_verified:
+            return
+        from backend.ta_helpers import table_has_column
+
+        if not table_has_column(cur, "rinse_scrape_org_lease", "supervisor_heartbeat_at"):
+            cur.execute(
+                """
+                ALTER TABLE rinse_scrape_org_lease
+                ADD COLUMN supervisor_heartbeat_at DATETIME(6) NULL AFTER heartbeat_at,
+                ADD COLUMN worker_progress_at DATETIME(6) NULL AFTER last_progress_at
+                """
+            )
+        _liveness_columns_verified = True
 
 
 def ensure_lease_liveness_columns(cursor) -> None:
@@ -54,16 +84,7 @@ def touch_supervisor_heartbeat(
         conn = _direct_mysql_connection()
         cur = conn.cursor()
         try:
-            from backend.ta_helpers import table_has_column
-
-            if not table_has_column(cur, "rinse_scrape_org_lease", "supervisor_heartbeat_at"):
-                cur.execute(
-                    """
-                    ALTER TABLE rinse_scrape_org_lease
-                    ADD COLUMN supervisor_heartbeat_at DATETIME(6) NULL AFTER heartbeat_at,
-                    ADD COLUMN worker_progress_at DATETIME(6) NULL AFTER last_progress_at
-                    """
-                )
+            _ensure_liveness_columns_on_connection(cur)
         except Exception:
             pass
         if worker_progress and stage_s:
@@ -103,7 +124,6 @@ def touch_supervisor_heartbeat(
                 """,
                 (now, now, now, org, gen),
             )
-        conn.commit()
         ok = int(cur.rowcount or 0) > 0
         cur.close()
         return ok
@@ -169,11 +189,24 @@ def scrape_supervisor_heartbeat(
 
 
 def read_lease_liveness(cursor, organization_id: int) -> dict[str, Any] | None:
-    from backend.rinse_scrape_lease import read_lease
+    from backend.rinse_scrape_lease import ensure_rinse_scrape_org_lease_table
 
     ensure_lease_liveness_columns(cursor)
-    lease = read_lease(cursor, organization_id) or {}
-    if not lease:
+    ensure_rinse_scrape_org_lease_table(cursor)
+    cursor.execute(
+        """
+        SELECT organization_id, generation, owner_run_id, owner_execution_name,
+               owner_pid, heartbeat_at, supervisor_heartbeat_at,
+               last_progress_at, worker_progress_at, current_stage,
+               fenced_at, fence_reason, updated_at
+        FROM rinse_scrape_org_lease
+        WHERE organization_id = %s
+        LIMIT 1
+        """,
+        (int(organization_id),),
+    )
+    lease = cursor.fetchone()
+    if not isinstance(lease, dict):
         return None
     sup = lease.get("supervisor_heartbeat_at") or lease.get("heartbeat_at")
     worker = lease.get("worker_progress_at") or lease.get("last_progress_at")
