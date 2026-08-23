@@ -65,13 +65,62 @@ def test_parse_split_count_pct_and_bounds():
         assert "two_washer_split_pct" in str(exc) or "must be <= 100" in str(exc) or "p" in str(exc)
 
 
-def test_deterministic_flags_first_n():
-    flags = deterministic_two_machine_flags(50, 40)
-    assert flags.count(True) == 40
-    assert flags.count(False) == 10
-    assert flags[:40] == [True] * 40
-    assert flags[40:] == [False] * 10
-    assert deterministic_two_machine_flags(50, 40) == flags
+def _max_run_length(flags: list[bool]) -> int:
+    if not flags:
+        return 0
+    best = cur = 1
+    for i in range(1, len(flags)):
+        if flags[i] == flags[i - 1]:
+            cur += 1
+            best = max(best, cur)
+        else:
+            cur = 1
+    return best
+
+
+def _max_gap_between_splits(flags: list[bool]) -> int:
+    """Longest stretch of False between True flags (0 if no splits)."""
+    if not any(flags):
+        return 0
+    best = cur = 0
+    for flag in flags:
+        if flag:
+            best = max(best, cur)
+            cur = 0
+        else:
+            cur += 1
+    return max(best, cur)
+
+
+def test_deterministic_flags_even_distribution():
+    flags_50 = deterministic_two_machine_flags(180, 90)
+    assert flags_50.count(True) == 90
+    assert flags_50.count(False) == 90
+    assert flags_50[:8] == [True, False, True, False, True, False, True, False]
+    assert _max_run_length(flags_50) <= 2
+    assert _max_gap_between_splits(flags_50) <= 2
+    assert deterministic_two_machine_flags(180, 90) == flags_50
+
+    flags_25 = deterministic_two_machine_flags(180, 45)
+    assert flags_25.count(True) == 45
+    assert flags_25[:8] == [True, False, False, False, True, False, False, False]
+    assert _max_gap_between_splits(flags_25) <= 4
+
+    flags_75 = deterministic_two_machine_flags(180, 135)
+    assert flags_75.count(True) == 135
+    assert flags_75[:4] == [True, True, True, False]
+    assert _max_run_length(flags_75) <= 4
+
+    assert deterministic_two_machine_flags(50, 0) == [False] * 50
+    assert deterministic_two_machine_flags(50, 50) == [True] * 50
+
+
+def test_deterministic_flags_washer_and_dryer_independent():
+    wash = deterministic_two_machine_flags(180, 90)
+    dry = deterministic_two_machine_flags(180, 45)
+    assert wash.count(True) == 90
+    assert dry.count(True) == 45
+    assert wash != dry
 
 
 def test_default_management_split_is_validated_80_pct():
@@ -127,11 +176,9 @@ def test_intermediate_percent_assigns_exact_deterministic_count():
     assert result["inputs"]["bags_using_2_dryers"] == 0
     flagged = [row["requires_two_washers"] for row in result["bag_rows"]]
     assert flagged.count(True) == 40
-    # Deterministic order: first 40 bag ids in expansion order are flagged.
     bags = expand_bags(parse_inputs(_mgmt(bag_count=50, two_washer_split_pct=80, two_dryer_split_pct=0)))
     assert [b.requires_two_washers for b in bags].count(True) == 40
-    assert all(b.requires_two_washers for b in bags[:40])
-    assert not any(b.requires_two_washers for b in bags[40:])
+    assert _max_run_length([b.requires_two_washers for b in bags]) <= 5
 
 
 def test_washer_and_dryer_percentages_are_independent():

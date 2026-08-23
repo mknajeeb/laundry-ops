@@ -1,7 +1,8 @@
 """Deterministic 2-washer / 2-dryer split assignment for management planning.
 
-Matches the legacy planner convention: N of bag_count bags require two machine
-positions. Assignment is ordered (first N), never random.
+N of bag_count parent bags require two machine positions. Flags are spread
+evenly across the bag stream (not front-loaded) so time-based capacity matches
+the configured split percentage throughout the shift.
 """
 
 from __future__ import annotations
@@ -60,10 +61,20 @@ def parse_split_count(
 
 
 def deterministic_two_machine_flags(bag_count: int, orders_using_2: int) -> list[bool]:
-    """First N bags True, remainder False — stable across repeated simulations."""
+    """Evenly distribute split flags across the bag stream (reproducible, no randomness)."""
     n_bags = max(0, int(bag_count))
     n_two = max(0, min(n_bags, int(orders_using_2)))
-    return [True] * n_two + [False] * (n_bags - n_two)
+    if n_two == 0:
+        return [False] * n_bags
+    if n_two == n_bags:
+        return [True] * n_bags
+    flags: list[bool] = []
+    prev = 0
+    for i in range(1, n_bags + 1):
+        cur = (i * n_two + n_bags - 1) // n_bags
+        flags.append(cur > prev)
+        prev = cur
+    return flags
 
 
 def resolve_management_split_counts(raw: dict[str, Any], bag_count: int) -> tuple[int, int]:
