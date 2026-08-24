@@ -1997,6 +1997,7 @@ async function main() {
   const browser = await chromium.launch({
     headless: !headed,
     slowMo: headed ? 80 : 0,
+    timeout: Math.max(30000, Math.min(180000, navTimeoutMs())),
     args: ["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
   });
   const context = await browser.newContext(storageState ? { storageState } : {});

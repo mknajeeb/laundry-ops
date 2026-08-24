@@ -226,7 +226,13 @@ def scrape_supervisor_heartbeat(
     run_id: int | None = None,
     progress: bool = False,
 ) -> Iterator[None]:
-    """Supervisor liveness subprocess — direct MySQL, not the shared pool or GIL."""
+    """Supervisor liveness subprocess — direct MySQL, not the shared pool or GIL.
+
+    Supervisor liveness (is the owner process alive?) is deliberately separate
+    from worker progress (is scrape work advancing?). This context only drives
+    ``supervisor_heartbeat_at``; worker progress is updated by the parent via
+    ``touch_scrape_run_progress`` / the optional initial ``progress=True`` tick.
+    """
     if lease_generation is None:
         yield
         return
@@ -251,6 +257,13 @@ def scrape_supervisor_heartbeat(
         name=f"scrape-supervisor-hb-{rid or org}-{stage_s}",
     )
     proc.start()
+    print(
+        f"LIVENESS_SNAPSHOT event=supervisor_start run_id={rid} org={org} gen={gen} "
+        f"stage={stage_s} parent_pid={parent_pid} heartbeat_pid={proc.pid} "
+        f"image_sha={os.getenv('SCHEDULER_IMAGE_SHA') or os.getenv('GIT_SHA') or ''} "
+        f"execution={os.getenv('CONTAINER_APP_JOB_EXECUTION_NAME') or ''}",
+        flush=True,
+    )
     try:
         yield
     finally:
@@ -262,6 +275,11 @@ def scrape_supervisor_heartbeat(
             if proc.is_alive():
                 proc.kill()
                 proc.join(timeout=1)
+        print(
+            f"LIVENESS_SNAPSHOT event=supervisor_stop run_id={rid} org={org} gen={gen} "
+            f"stage={stage_s} heartbeat_pid={proc.pid}",
+            flush=True,
+        )
 
 
 def read_lease_liveness(cursor, organization_id: int) -> dict[str, Any] | None:
@@ -355,7 +373,11 @@ def orphan_reclaim_allowed(
     *,
     now: datetime | None = None,
 ) -> tuple[bool, str | None, dict[str, Any]]:
-    """Canonical reclaim predicate — supervisor stale AND ACA dead AND lock free."""
+    """Canonical reclaim predicate — supervisor stale AND ACA dead AND lock free.
+
+    Worker progress age is recorded for diagnostics but NEVER alone triggers reclaim.
+    A long portal scrape may leave worker progress unchanged while supervisor advances.
+    """
     stall = orphan_stall_seconds()
     diag = orphan_reclaim_diagnostics(cursor, organization_id, lease, now=now)
     sup_stale = diag.get("supervisor_age_sec")
@@ -423,11 +445,55 @@ def reclaim_orphan_owner(cursor, organization_id: int, *, now: datetime | None =
         (org, int(owner_run)),
     )
     run = cursor.fetchone() or {}
-    if str(run.get("status") or "") != "running":
-        return {"action": "skip_not_running", "run_id": owner_run, **diag}
+    gen = run.get("lease_generation") or lease.get("generation")
+    status = str(run.get("status") or "")
+    sup_age = diag.get("supervisor_age_sec")
+    worker_age = diag.get("worker_age_sec")
+    lock_free = not bool(diag.get("lock_held"))
+    exec_running = bool(diag.get("exec_running"))
+    reclaim_inputs = {
+        "supervisor_age_sec": sup_age,
+        "worker_age_sec": worker_age,
+        "aca_running": exec_running,
+        "mysql_lock_free": lock_free,
+        "lease_generation": int(gen) if gen is not None else None,
+        "lease_owner_run_id": int(owner_run),
+        "lease_owner_execution": lease.get("owner_execution_name"),
+        "reclaim_decision": True,
+        "orphan_stall_seconds": stall,
+    }
+    # Measured ages in the durable error label — not just the fixed stall>1200s tag.
+    reason = (
+        f"FAILED_ORPHAN_RECLAIM stall>{stall}s "
+        f"supervisor_age={int(sup_age) if isinstance(sup_age, (int, float)) else 'na'}s "
+        f"worker_age={int(worker_age) if isinstance(worker_age, (int, float)) else 'na'}s "
+        f"aca_running={str(exec_running).lower()} "
+        f"mysql_lock_free={str(lock_free).lower()} "
+        f"gen={gen}"
+    )
 
-    gen = run.get("lease_generation")
-    reason = f"FAILED_ORPHAN_RECLAIM stall>{stall}s"
+    if status and status != "running":
+        # Stale lease owner pointing at an already-terminal run — fence so the
+        # idle-chain successor path can start without waiting forever.
+        fence_lease(
+            cursor,
+            org,
+            reason="STALE_OWNER_CLEAR",
+            expected_generation=int(gen) if gen else None,
+        )
+        try:
+            release_scrape_lock(cursor, org)
+        except Exception:
+            pass
+        return {
+            "action": "cleared_stale_owner",
+            "run_id": int(owner_run),
+            "prior_status": status,
+            "reason": reason,
+            **diag,
+            **reclaim_inputs,
+        }
+
     fence_lease(
         cursor,
         org,
@@ -441,19 +507,27 @@ def reclaim_orphan_owner(cursor, organization_id: int, *, now: datetime | None =
             "cycle_status": "FAILED_ORPHAN_RECLAIM",
             "failure_message": reason,
             "failed_step": "orphan_reclaim",
-            "lock_was_free": not diag.get("lock_held"),
-            "supervisor_age_sec": diag.get("supervisor_age_sec"),
-            "worker_age_sec": diag.get("worker_age_sec"),
-            "exec_running": diag.get("exec_running"),
+            "lock_was_free": lock_free,
+            "supervisor_age_sec": sup_age,
+            "worker_age_sec": worker_age,
+            "exec_running": exec_running,
+            "aca_running": exec_running,
+            "mysql_lock_free": lock_free,
+            "lease_generation": int(gen) if gen is not None else None,
+            "lease_owner_run_id": int(owner_run),
+            "lease_owner_execution": lease.get("owner_execution_name"),
+            "reclaim_decision": True,
+            "orphan_stall_seconds": stall,
         }
     )
     detail["sync_cycle"] = sync_cycle
+    detail["orphan_reclaim"] = reclaim_inputs
     ensure_scrape_run_terminal(
         cursor,
         int(owner_run),
         org,
         status="failed",
-        error_message=reason,
+        error_message=reason[:512],
         result_json=detail,
     )
     try:
@@ -465,4 +539,5 @@ def reclaim_orphan_owner(cursor, organization_id: int, *, now: datetime | None =
         "run_id": int(owner_run),
         "reason": reason,
         **diag,
+        **reclaim_inputs,
     }

@@ -133,6 +133,7 @@ async function main() {
   let summary;
   const browser = await chromium.launch({
     headless: true,
+    timeout: Math.max(30000, Math.min(180000, navTimeoutMs())),
     args: ["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
   });
   try {

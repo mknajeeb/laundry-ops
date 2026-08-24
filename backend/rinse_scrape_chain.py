@@ -198,24 +198,101 @@ def start_successor_execution(*, run_type: str = "scheduled") -> dict[str, Any]:
     return out
 
 
-def maybe_restart_dead_chain(cursor, organization_id: int) -> dict[str, Any]:
-    """API-side dead-man: start the chain only if nothing healthy is running."""
-    org = int(organization_id)
-    lock_held, _ = mysql_lock_is_held(cursor, org)
-    lease = read_lease(cursor, org)
-    now = _utcnow()
-    if lock_held:
-        from backend.rinse_scrape_liveness import is_owned_execution_live
+def _running_aca_executions() -> list[str]:
+    try:
+        from backend.rinse_aca_job_trigger import list_running_job_executions
 
-        if is_owned_execution_live(cursor, org, now=now):
-            return {"restarted": False, "reason": "healthy_lock_held"}
-    hb = lease.get("heartbeat_at") if lease else None
-    if isinstance(hb, datetime):
-        hb = hb.replace(tzinfo=None) if hb.tzinfo else hb
-        if (now - hb).total_seconds() < 90:
-            return {"restarted": False, "reason": "recent_heartbeat"}
-    started = start_successor_execution(run_type="scheduled")
-    return {"restarted": bool(started.get("ok")), **started}
+        return [str(x) for x in list_running_job_executions()]
+    except Exception as exc:
+        print(f"CHAIN_BOUNDARY list_running_failed: {exc}", flush=True)
+        return []
+
+
+def ensure_chain_successor(
+    cursor,
+    organization_id: int,
+    *,
+    run_type: str = "scheduled",
+    trigger: str = "dead_chain",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Start exactly one recovery successor when the chain is genuinely idle.
+
+    Dedup guards (all must pass before start):
+    - no ACA execution currently Running
+    - MySQL scrape lock not held by a live owner
+    - no lease owner_run_id with a fresh supervisor heartbeat
+    """
+    from backend.rinse_scrape_liveness import (
+        is_owned_execution_live,
+        orphan_stall_seconds,
+        read_lease_liveness,
+    )
+
+    org = int(organization_id)
+    now_utc = now or _utcnow()
+    running = _running_aca_executions()
+    if running:
+        return {
+            "restarted": False,
+            "reason": "aca_already_running",
+            "trigger": trigger,
+            "running_executions": running,
+        }
+
+    lock_held, _ = mysql_lock_is_held(cursor, org)
+    if lock_held and is_owned_execution_live(cursor, org, now=now_utc):
+        return {
+            "restarted": False,
+            "reason": "healthy_lock_held",
+            "trigger": trigger,
+        }
+
+    lease = read_lease_liveness(cursor, org) or read_lease(cursor, org) or {}
+    owner_run = lease.get("owner_run_id")
+    if owner_run:
+        # An owned lease with fresh supervisor must not be restarted.
+        if is_owned_execution_live(cursor, org, now=now_utc):
+            return {
+                "restarted": False,
+                "reason": "live_lease_owner",
+                "trigger": trigger,
+                "owner_run_id": int(owner_run),
+                "generation": lease.get("generation"),
+            }
+        # Owned but not live: reclaim path should fence first. Do not race a start.
+        return {
+            "restarted": False,
+            "reason": "owner_present_await_reclaim",
+            "trigger": trigger,
+            "owner_run_id": int(owner_run),
+            "generation": lease.get("generation"),
+            "orphan_stall_sec": orphan_stall_seconds(),
+        }
+
+    # No owner, no Running ACA, lock free (or not live) → start exactly one.
+    started = start_successor_execution(run_type=run_type)
+    out = {
+        "restarted": bool(started.get("ok")),
+        "reason": "started" if started.get("ok") else "start_failed",
+        "trigger": trigger,
+        "generation": lease.get("generation"),
+        **started,
+    }
+    print(
+        f"CHAIN_BOUNDARY ensure_successor org={org} trigger={trigger} "
+        f"restarted={out['restarted']} exec={out.get('execution_name')} "
+        f"gen={out.get('generation')}",
+        flush=True,
+    )
+    return out
+
+
+def maybe_restart_dead_chain(cursor, organization_id: int) -> dict[str, Any]:
+    """Compatibility wrapper — prefer ensure_chain_successor."""
+    return ensure_chain_successor(
+        cursor, organization_id, trigger="maybe_restart_dead_chain"
+    )
 
 
 def run_continuous_scheduled_loop(

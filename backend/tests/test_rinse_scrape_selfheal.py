@@ -112,6 +112,7 @@ def test_scrape_stage_heartbeat_uses_supervisor_subprocess(monkeypatch):
     class FakeProc:
         def __init__(self, *args, **kwargs):
             spawned.append("spawn")
+            self.pid = 4242
 
         def start(self):
             spawned.append("start")
@@ -503,3 +504,429 @@ def test_recover_stalled_uses_shared_orphan_policy(monkeypatch):
             "reason": "FAILED_ORPHAN_RECLAIM stall>1200s",
         }
     ]
+
+
+def test_ensure_chain_successor_skips_when_aca_running(monkeypatch):
+    from backend import rinse_scrape_chain as chain
+
+    monkeypatch.setattr(chain, "_running_aca_executions", lambda: ["exec-live"])
+    out = chain.ensure_chain_successor(MagicMock(), 3, trigger="test")
+    assert out["restarted"] is False
+    assert out["reason"] == "aca_already_running"
+
+
+def test_ensure_chain_successor_skips_when_owner_await_reclaim(monkeypatch):
+    from backend import rinse_scrape_chain as chain
+
+    monkeypatch.setattr(chain, "_running_aca_executions", lambda: [])
+    monkeypatch.setattr(chain, "mysql_lock_is_held", lambda *_a, **_k: (False, None))
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.is_owned_execution_live",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.read_lease_liveness",
+        lambda *_a, **_k: {"owner_run_id": 4878, "generation": 612},
+    )
+    starts: list[int] = []
+    monkeypatch.setattr(
+        chain,
+        "start_successor_execution",
+        lambda **_k: starts.append(1) or {"ok": True, "execution_name": "x"},
+    )
+    out = chain.ensure_chain_successor(MagicMock(), 3, trigger="test")
+    assert out["restarted"] is False
+    assert out["reason"] == "owner_present_await_reclaim"
+    assert starts == []
+
+
+def test_ensure_chain_successor_starts_when_idle(monkeypatch):
+    from backend import rinse_scrape_chain as chain
+
+    monkeypatch.setattr(chain, "_running_aca_executions", lambda: [])
+    monkeypatch.setattr(chain, "mysql_lock_is_held", lambda *_a, **_k: (False, None))
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.read_lease_liveness",
+        lambda *_a, **_k: {"owner_run_id": None, "generation": 613},
+    )
+    monkeypatch.setattr(
+        chain,
+        "start_successor_execution",
+        lambda **_k: {"ok": True, "execution_name": "rinse-scrape-scheduled-new"},
+    )
+    out = chain.ensure_chain_successor(MagicMock(), 3, trigger="orphan_reclaim")
+    assert out["restarted"] is True
+    assert out["execution_name"] == "rinse-scrape-scheduled-new"
+    assert out["trigger"] == "orphan_reclaim"
+
+
+def test_ensure_chain_successor_dedupes_duplicate_attempts(monkeypatch):
+    from backend import rinse_scrape_chain as chain
+
+    starts: list[int] = []
+
+    def fake_start(**_k):
+        starts.append(1)
+        return {"ok": True, "execution_name": f"exec-{len(starts)}"}
+
+    monkeypatch.setattr(chain, "mysql_lock_is_held", lambda *_a, **_k: (False, None))
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.read_lease_liveness",
+        lambda *_a, **_k: {"owner_run_id": None, "generation": 700},
+    )
+    monkeypatch.setattr(chain, "start_successor_execution", fake_start)
+
+    # First call: idle → start
+    monkeypatch.setattr(chain, "_running_aca_executions", lambda: [])
+    first = chain.ensure_chain_successor(MagicMock(), 3, trigger="t1")
+    assert first["restarted"] is True
+    assert len(starts) == 1
+
+    # Second call: ACA already Running → dedupe
+    monkeypatch.setattr(chain, "_running_aca_executions", lambda: ["exec-1"])
+    second = chain.ensure_chain_successor(MagicMock(), 3, trigger="t2")
+    assert second["restarted"] is False
+    assert second["reason"] == "aca_already_running"
+    assert len(starts) == 1
+
+
+def test_watchdog_starts_successor_after_reclaim(monkeypatch):
+    from backend.jobs import run_rinse_freshness_watchdog as wd
+
+    reclaim_calls: list[int] = []
+    successor_calls: list[str] = []
+
+    class FakeCursor:
+        def close(self):
+            return None
+
+    class FakeConn:
+        def cursor(self, **_k):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("backend.db.get_db", lambda: FakeConn())
+    monkeypatch.setattr(
+        "backend.rinse_scheduled_scrape.parse_scheduled_org_ids", lambda: [3]
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.reclaim_orphan_owner",
+        lambda cursor, org: reclaim_calls.append(org)
+        or {"action": "reclaimed", "run_id": 4878, "reason": "FAILED_ORPHAN_RECLAIM"},
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.ensure_chain_successor",
+        lambda cursor, org, **kw: successor_calls.append(kw.get("trigger") or "")
+        or {"restarted": True, "execution_name": "new-exec"},
+    )
+    assert wd.main(["--organization-id", "3"]) == 0
+    assert reclaim_calls == [3]
+    assert successor_calls == ["watchdog_reclaimed"]
+
+
+def test_watchdog_starts_successor_when_already_idle(monkeypatch):
+    from backend.jobs import run_rinse_freshness_watchdog as wd
+
+    successor_calls: list[str] = []
+
+    class FakeCursor:
+        def close(self):
+            return None
+
+    class FakeConn:
+        def cursor(self, **_k):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("backend.db.get_db", lambda: FakeConn())
+    monkeypatch.setattr(
+        "backend.rinse_scheduled_scrape.parse_scheduled_org_ids", lambda: [3]
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.reclaim_orphan_owner",
+        lambda cursor, org: {"action": "no_owner"},
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.ensure_chain_successor",
+        lambda cursor, org, **kw: successor_calls.append(kw.get("trigger") or "")
+        or {"restarted": True},
+    )
+    assert wd.main(["--organization-id", "3"]) == 0
+    assert successor_calls == ["watchdog_no_owner"]
+
+
+def test_reclaim_persists_measured_ages(monkeypatch):
+    from backend.rinse_scrape_liveness import reclaim_orphan_owner
+
+    now = datetime(2026, 8, 24, 5, 6, 24)
+    lease = {
+        "owner_run_id": 4878,
+        "owner_execution_name": "exec-dead",
+        "generation": 612,
+        "supervisor_heartbeat_at": now - timedelta(seconds=1359),
+        "worker_progress_at": now - timedelta(seconds=1375),
+    }
+    stored: dict[str, Any] = {}
+
+    class FakeCursor:
+        def execute(self, *_a, **_k):
+            return None
+
+        def fetchone(self):
+            return {
+                "id": 4878,
+                "status": "running",
+                "started_at": now - timedelta(minutes=29),
+                "result_json": "{}",
+                "lease_generation": 612,
+            }
+
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.read_lease_liveness", lambda *_a, **_k: lease
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.ensure_lease_liveness_columns", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_runs.ensure_rinse_scrape_runs_table", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.orphan_reclaim_allowed",
+        lambda *_a, **_k: (
+            True,
+            None,
+            {
+                "supervisor_age_sec": 1359.6,
+                "worker_age_sec": 1375.2,
+                "exec_running": False,
+                "lock_held": False,
+                "execution": "exec-dead",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_lease.fence_lease", lambda *_a, **_k: 613
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_runs.release_scrape_lock", lambda *_a, **_k: None
+    )
+
+    def fake_terminal(cursor, run_id, org, **kwargs):
+        stored["error_message"] = kwargs.get("error_message")
+        stored["result_json"] = kwargs.get("result_json")
+
+    monkeypatch.setattr(
+        "backend.rinse_scrape_runs.ensure_scrape_run_terminal", fake_terminal
+    )
+
+    out = reclaim_orphan_owner(FakeCursor(), 3, now=now)
+    assert out["action"] == "reclaimed"
+    assert out["reclaim_decision"] is True
+    assert "supervisor_age=1359s" in stored["error_message"]
+    assert "aca_running=false" in stored["error_message"]
+    assert "mysql_lock_free=true" in stored["error_message"]
+    assert stored["result_json"]["orphan_reclaim"]["supervisor_age_sec"] == 1359.6
+    assert stored["result_json"]["sync_cycle"]["reclaim_decision"] is True
+
+
+def test_stale_worker_progress_alone_does_not_reclaim(monkeypatch):
+    """Long portal scrape: worker stale, supervisor fresh → no reclaim."""
+    from backend.rinse_scrape_liveness import orphan_reclaim_allowed
+
+    now = datetime(2026, 8, 24, 18, 0, 0)
+    lease = {
+        "supervisor_heartbeat_at": now - timedelta(seconds=20),
+        "worker_progress_at": now - timedelta(seconds=900),
+        "owner_execution_name": "exec-a",
+    }
+    cursor = MagicMock()
+    monkeypatch.setattr(
+        "backend.rinse_scrape_runs.mysql_lock_is_held",
+        lambda *_a, **_k: (True, 1),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness._aca_execution_running",
+        lambda _n: True,
+    )
+    allowed, reason, diag = orphan_reclaim_allowed(cursor, 3, lease, now=now)
+    assert allowed is False
+    assert reason == "skip_fresh_supervisor"
+    assert diag["worker_age_sec"] >= 900
+
+
+def test_supervisor_heartbeat_uses_independent_connection(monkeypatch):
+    """DB contention proof: supervisor path never reuses the progress cursor/conn."""
+    from backend.rinse_scrape_liveness import touch_supervisor_heartbeat
+
+    progress_conn_ids: list[int] = []
+    supervisor_conn_ids: list[int] = []
+
+    class HoldingCursor:
+        """Simulates a long progress/result transaction holding the lease row."""
+
+        rowcount = 0
+
+        def execute(self, *_a, **_k):
+            progress_conn_ids.append(1)
+
+        def close(self):
+            return None
+
+    class HoldingConn:
+        def cursor(self):
+            return HoldingCursor()
+
+        def close(self):
+            return None
+
+    class SupervisorCursor:
+        rowcount = 1
+
+        def execute(self, sql, params=None):
+            supervisor_conn_ids.append(id(self))
+            assert "supervisor_heartbeat_at" in sql
+            assert "generation = %s" in sql
+
+        def close(self):
+            return None
+
+    class SupervisorConn:
+        def __init__(self):
+            self.autocommit = False
+
+        def cursor(self):
+            return SupervisorCursor()
+
+        def close(self):
+            return None
+
+    # Holding connection exists (progress path) but supervisor opens its own.
+    _held = HoldingConn()
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness._direct_mysql_connection",
+        lambda: SupervisorConn(),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness._ensure_liveness_columns_on_connection",
+        lambda *_a, **_k: None,
+    )
+    assert touch_supervisor_heartbeat(3, 7, stage="portal_scrape") is True
+    assert len(supervisor_conn_ids) == 1
+    assert progress_conn_ids == []
+
+
+def test_supervisor_ticks_while_progress_lock_held(monkeypatch):
+    """While a progress-side lock is held, supervisor subprocess keeps ticking."""
+    import threading
+
+    from backend.rinse_scrape_liveness import _supervisor_heartbeat_subprocess_main
+
+    ticks: list[int] = []
+    progress_lock = threading.Lock()
+    progress_lock.acquire()
+
+    def fake_touch(*_a, **_k):
+        # Supervisor must not need the progress lock.
+        if progress_lock.locked():
+            ticks.append(1)
+            return True
+        ticks.append(1)
+        return True
+
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.touch_supervisor_heartbeat", fake_touch
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness._parent_process_alive", lambda _pid: True
+    )
+
+    stop = threading.Event()
+    worker = threading.Thread(
+        target=_supervisor_heartbeat_subprocess_main,
+        args=(3, 7, "portal_scrape", os.getpid(), stop, 0.05),
+        daemon=True,
+    )
+    worker.start()
+    time.sleep(0.25)
+    stop.set()
+    worker.join(timeout=3)
+    progress_lock.release()
+    assert len(ticks) >= 3
+
+
+def test_run_bash_script_timeout_kills_hung_portal(monkeypatch, tmp_path):
+    from backend.rinse_scheduled_scrape import _TeeLog, _run_bash_script
+
+    script = tmp_path / "hang.sh"
+    script.write_text("#!/bin/bash\nwhile true; do sleep 1; done\n")
+    script.chmod(0o755)
+
+    monkeypatch.setattr(
+        "backend.rinse_scheduled_scrape.scrape_run_heartbeat_interval_sec",
+        lambda: 3600,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scheduled_scrape.stall_seconds",
+        lambda: 3600,
+    )
+
+    log = _TeeLog(tmp_path / "log.txt")
+    rc = _run_bash_script(script, {}, log, timeout_sec=2)
+    assert rc == -1
+    assert "timeout after 2s" in (tmp_path / "log.txt").read_text()
+
+
+def test_success_handoff_starts_exactly_one_successor(monkeypatch):
+    """Normal success path: start_successor_execution invoked once."""
+    from backend.jobs import run_scheduled_rinse_scrape as job
+
+    class Result:
+        organization_id = 3
+        run_id = 100
+        status = "success"
+        rinse_vendor = "veewash"
+        tenant_slug = "veewash"
+        batch_id = 1
+        portal_rows_count = 10
+        scan_events_count = 20
+        error_message = None
+        ready_for_vendor_status = None
+        ready_for_vendor_error = None
+        at_vendor_status = None
+        paths = None
+        detail = {}
+        finished_at = datetime(2026, 8, 24, 18, 0, 0)
+
+    starts: list[int] = []
+
+    class FakeConn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr("backend.db.get_db", lambda: FakeConn())
+    monkeypatch.setattr(
+        "backend.release_revision.load_release_revision_stamps",
+        lambda: {"runtime_revision": "abc"},
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.run_continuous_scheduled_loop",
+        lambda *_a, **_k: [Result()],
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.start_successor_execution",
+        lambda **_k: starts.append(1)
+        or {"ok": True, "execution_name": "succ-1"},
+    )
+    assert job.main([]) == 0
+    assert starts == [1]
+

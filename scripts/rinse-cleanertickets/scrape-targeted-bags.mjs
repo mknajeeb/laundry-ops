@@ -170,6 +170,10 @@ async function main() {
 
   const browser = await chromium.launch({
     headless: process.env.HEADED !== "1" && process.env.HEADED !== "true",
+    timeout: Math.max(
+      30000,
+      Math.min(180000, parseInt(process.env.RINSE_NAV_TIMEOUT_MS || "120000", 10) || 120000),
+    ),
   });
   const context = await browser.newContext(
     storageState ? { storageState } : {},
