@@ -86,6 +86,10 @@ import {
   validatePersistedPlannerParams,
   validateStaffingIntervals,
 } from "../../shiftPlanner/managementHelpers";
+import {
+  PlannerSimulationAbortCoordinator,
+  isPlannerSimulationAbortError,
+} from "../../shiftPlanner/plannerSimulationAbort";
 
 const fieldSx = {
   "& .MuiOutlinedInput-root": { bgcolor: "#fff" },
@@ -1619,7 +1623,10 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
   const [savedSimList, setSavedSimList] = useState([]);
   const [simError, setSimError] = useState("");
   const debounceRef = useRef(null);
-  const seqRef = useRef(0);
+  const simAbortRef = useRef(null);
+  if (!simAbortRef.current) {
+    simAbortRef.current = new PlannerSimulationAbortCoordinator();
+  }
   const paramsLocked = !paramsEditing;
   const simDirty = simulationInputsFingerprint(inputs) !== savedFingerprint;
 
@@ -1713,13 +1720,14 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
   const runSim = useCallback(async (nextInputs) => {
     const payloadInputs = nextInputs || inputs;
     const horizonEnd = payloadInputs.target_time;
-    const seq = ++seqRef.current;
+    const coordinator = simAbortRef.current;
+    const { signal, seq } = coordinator.begin();
     setLoading(true);
     setError("");
     const planCheck = validateManagementPlanInputs(payloadInputs);
     if (!planCheck.ok) {
       setError(planCheck.errors[0]?.message || "Fix plan parameters");
-      if (seq === seqRef.current) setLoading(false);
+      if (coordinator.isCurrent(seq)) setLoading(false);
       return null;
     }
     const client = validateStaffingIntervals(payloadInputs.staffing_intervals, {
@@ -1728,13 +1736,13 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
     });
     if (!client.ok) {
       setError(client.errors[0]?.message || "Fix staffing before running");
-      if (seq === seqRef.current) setLoading(false);
+      if (coordinator.isCurrent(seq)) setLoading(false);
       return null;
     }
 
     try {
-      const res = await simulateShiftCapacity(buildManagementPayload(payloadInputs));
-      if (seq !== seqRef.current) return null;
+      const res = await simulateShiftCapacity(buildManagementPayload(payloadInputs), { signal });
+      if (!coordinator.isCurrent(seq)) return null;
       const raw = res.data || {};
       const des = raw.des && typeof raw.des === "object" ? raw.des : {};
       const merged = {
@@ -1768,12 +1776,12 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
       }
       return res.data;
     } catch (err) {
-      if (seq !== seqRef.current) return null;
+      if (!coordinator.isCurrent(seq) || isPlannerSimulationAbortError(err)) return null;
       setError(err.response?.data?.error || err.message || "Simulation failed");
       setResult(null);
       return null;
     } finally {
-      if (seq === seqRef.current) setLoading(false);
+      if (coordinator.isCurrent(seq)) setLoading(false);
     }
   }, [inputs]);
 
@@ -1789,6 +1797,8 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [inputs, settingsReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => () => simAbortRef.current?.abort(), []);
 
   const recalculateNow = useCallback(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);

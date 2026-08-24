@@ -942,8 +942,11 @@ export const calculateProcessFlowIntervals = (body = {}, config = {}) =>
 export const getOperationsTimeline = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/operations-timeline`, { params, timeout: 60000 });
 
-export const simulateShiftCapacity = (body = {}) =>
-  axios.post(`${API_BASE}/rinse/shift-analysis/shift-capacity-planner/simulate`, body, { timeout: 30000 });
+export const simulateShiftCapacity = (body = {}, config = {}) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/shift-capacity-planner/simulate`, body, {
+    timeout: 30000,
+    ...config,
+  });
 
 /** Org-scoped Shift Capacity Planner saved Plan/Process parameters. */
 export const getShiftCapacityPlannerSettings = () =>
