@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  bagBulkReviewUnresolved,
   bagHasMissingPortal,
   bagHasSpecialtyBulk,
   catalogSpecialtyLines,
@@ -24,6 +25,23 @@ describe("review drawer section flags", () => {
     expect(bagHasMissingPortal(both)).toBe(true);
     expect(bagHasSpecialtyBulk({ comforter_quantity: 2 })).toBe(true);
     expect(bagHasSpecialtyBulk({ reason_codes: ["WF_ZERO_OR_MISSING_POST_WEIGHT"] })).toBe(false);
+  });
+
+  it("respects backend bulk_review_unresolved flags", () => {
+    expect(bagBulkReviewUnresolved({ bulk_review_unresolved: false })).toBe(false);
+    expect(bagBulkReviewUnresolved({ bulk_review_unresolved: true })).toBe(true);
+    expect(
+      bagBulkReviewUnresolved({
+        reason_codes: ["DISAPPEARED_WITHOUT_COMPLETION"],
+        bulk_review_unresolved: true,
+      }),
+    ).toBe(true);
+    expect(
+      bagBulkReviewUnresolved({
+        reason_codes: ["WF_BULK_WORKITEM_REVIEW"],
+        bulk_workitems: [{ quantity: 2 }],
+      }),
+    ).toBe(false);
   });
 });
 

@@ -15,7 +15,11 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { getManagementRinseWfReviewAction, postVeewashStep1Correction } from "../../api";
+import {
+  getManagementRinseWfReviewAction,
+  getManagementRinseWfReviewScans,
+  postVeewashStep1Correction,
+} from "../../api";
 import { fetchReviewDrawerAction } from "./reviewDrawerDetailLoad";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import FoldingUserSelect from "../folding/FoldingUserSelect";
@@ -23,8 +27,10 @@ import { CompactEtDateTimeField } from "../PayrollDateTimeField";
 import { authoritativeEvidencePre, parseWeightInput } from "../shift/editBagHelpers";
 import ManagementCopyableId from "./ManagementCopyableId";
 import {
+  bagBulkReviewUnresolved,
   bagHasMissingPortal,
   bagHasSpecialtyBulk,
+  bulkItemsDraft,
   catalogSpecialtyLines,
   fmtLbs,
   suggestedCompleteAudit,
@@ -63,215 +69,11 @@ function evidencePreLabel(bag) {
   return pre == null ? "—" : fmtLbs(pre) || "—";
 }
 
-function MissingPortalInline({
-  bag,
-  selectedDateEt,
-  readOnly,
-  requiresDetailedReview,
-  onDetailedReview,
-  onSaved,
-}) {
-  const [postLbs, setPostLbs] = useState(() =>
-    bag?.post_weight_lbs == null || bag?.post_weight_lbs === ""
-      ? ""
-      : String(bag.post_weight_lbs),
-  );
-  const [completedBy, setCompletedBy] = useState(
-    () => bag?.completion_employee || bag?.completed_by || "",
-  );
-  const [completionAt, setCompletionAt] = useState(() => toPickerValue(bag?.completion_at));
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    setPostLbs(
-      bag?.post_weight_lbs == null || bag?.post_weight_lbs === ""
-        ? ""
-        : String(bag.post_weight_lbs),
-    );
-    setCompletedBy(bag?.completion_employee || bag?.completed_by || "");
-    setCompletionAt(toPickerValue(bag?.completion_at));
-  }, [bag?.bag_id, bag?._detailsLoaded, bag?.manager_edit_version]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const lockReady = Boolean(bag?._detailsLoaded);
-  const availability = validateMissingComplete({
-    completedBy,
-    completionAt,
-    postWeightLbs: postLbs,
-    lockReady,
-    saving,
-    readOnly,
-  });
-
-  const save = async () => {
-    if (requiresDetailedReview) {
-      onDetailedReview?.(bag);
-      return;
-    }
-    if (!availability.enabled) {
-      setError(availability.reason || "Cannot save");
-      return;
-    }
-    const draft = {
-      service_type: String(bag?.service_type || "WF").toUpperCase(),
-      rush_flag: bag?.rush_flag || "NON-RUSH",
-      pre_weight_lbs: authoritativeEvidencePre(bag),
-      post_weight_lbs: parseWeightInput(postLbs),
-      completed_by: completedBy,
-      completion_at: completionAt,
-    };
-    const audit = suggestedCompleteAudit({ draft, baselineBag: bag });
-    setSaving(true);
-    setError("");
-    try {
-      const res = await postVeewashStep1Correction({
-        action: "edit_bag",
-        bag_id: bag.bag_id,
-        selected_date_et: selectedDateEt,
-        reason: audit.reasonNote,
-        reason_code: audit.reasonCode || "DISAPPEARED_WITHOUT_COMPLETION",
-        reason_note: audit.reasonNote,
-        expected_updated_at: bag.updated_at || bag.day_bag_updated_at || null,
-        expected_manager_edit_version:
-          bag.manager_edit_version != null ? Number(bag.manager_edit_version) : null,
-        outcome_action: "mark_completed",
-        draft,
-      });
-      if (!res?.data?.ok) {
-        if (res?.data?.error === "conflict") {
-          setError("This bag was updated while you were reviewing it. Close and reopen to retry.");
-          return;
-        }
-        setError(res?.data?.message || res?.data?.error || "Save failed");
-        return;
-      }
-      onSaved?.(res.data, { kind: "missing", bagId: bag.bag_id });
-    } catch (err) {
-      setError(err?.response?.data?.error || err?.message || "Save failed");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const completionEmp = bag?.completion_employee || bag?.completed_by;
-  const completionTime = fmtTime(bag?.completion_at);
-
-  return (
-    <Box sx={{ mt: 0.75 }} data-testid="review-missing-inline">
-      <Stack direction="row" spacing={1.25} flexWrap="wrap" sx={{ mb: 0.5 }}>
-        <Typography data-testid="review-drawer-pre" sx={{ fontSize: 12, color: "#475569", fontWeight: 700 }}>
-          PRE {evidencePreLabel(bag)}
-        </Typography>
-        <Typography data-testid="review-drawer-post" sx={{ fontSize: 12, color: "#475569", fontWeight: 700 }}>
-          POST {fmtLbs(bag?.post_weight_lbs ?? bag?.post_weight_value) || "—"}
-        </Typography>
-      </Stack>
-      {completionEmp || completionTime ? (
-        <Typography sx={{ fontSize: 12, color: "#94a3b8", mb: 0.5 }}>
-          Detected: {[completionEmp, completionTime].filter(Boolean).join(" · ")}
-        </Typography>
-      ) : null}
-      {requiresDetailedReview ? (
-        <Alert severity="warning" sx={{ py: 0.35, mb: 0.75 }}>
-          Bulk items — Detailed Review required
-        </Alert>
-      ) : null}
-      {error ? (
-        <Alert severity="error" sx={{ mb: 0.75, py: 0.25 }} onClose={() => setError("")}>
-          {error}
-        </Alert>
-      ) : null}
-      {!requiresDetailedReview ? (
-        <>
-          <TextField
-            size="small"
-            type="number"
-            label="POST lbs"
-            value={postLbs}
-            onChange={(e) => setPostLbs(e.target.value)}
-            inputProps={{ step: 0.1, min: 0 }}
-            fullWidth
-            disabled={readOnly || saving}
-          />
-          <FoldingUserSelect
-            label="Completion employee"
-            value={completedBy}
-            onChange={setCompletedBy}
-            allowEmpty
-            sx={{ width: "100%", minWidth: 0, mt: 1 }}
-          />
-          <Box sx={{ mt: 1 }}>
-            <CompactEtDateTimeField
-              label="Completion date & time (ET)"
-              value={completionAt}
-              onChange={setCompletionAt}
-              disabled={readOnly || saving}
-            />
-          </Box>
-          {!lockReady ? (
-            <Typography sx={{ mt: 0.5, fontSize: 11, color: "#64748b" }}>
-              Loading bag details…
-            </Typography>
-          ) : null}
-          {!availability.enabled && availability.reason ? (
-            <Typography sx={{ mt: 0.5, fontSize: 11, color: "#b45309" }}>
-              {availability.reason}
-            </Typography>
-          ) : null}
-        </>
-      ) : null}
-      <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
-        <Button
-          data-testid="review-save-complete"
-          size="small"
-          variant="contained"
-          disabled={requiresDetailedReview ? false : !availability.enabled}
-          onClick={save}
-          sx={{ textTransform: "none", fontWeight: 800 }}
-        >
-          {saving
-            ? "Saving…"
-            : requiresDetailedReview
-              ? "Detailed Review"
-              : "Save & Complete"}
-        </Button>
-        <Button
-          data-testid="review-detailed-review"
-          size="small"
-          variant="outlined"
-          onClick={() => onDetailedReview?.(bag)}
-          sx={{ textTransform: "none", fontWeight: 700 }}
-        >
-          Detailed Review
-        </Button>
-      </Stack>
-    </Box>
-  );
-}
-
-function SpecialtyInline({ bag, catalog, selectedDateEt, readOnly, onSaved }) {
+function BulkWorkitemFields({ catalog, bag, readOnly, saving, qty, setQty, noCharge, setNoCharge, noChargeReason, setNoChargeReason }) {
   const initialLines = useMemo(
     () => catalogSpecialtyLines(catalog, bag?.bulk_workitems),
-    [catalog, bag?.bag_id, bag?.bulk_workitems],
+    [catalog, bag?.bulk_workitems],
   );
-  const [qty, setQty] = useState(() =>
-    Object.fromEntries(initialLines.map((l) => [l.workitem_id, l.quantity])),
-  );
-  const [noCharge, setNoCharge] = useState(
-    String(bag?.bulk_resolution?.resolution_type || "") === "no_charge",
-  );
-  const [noChargeReason, setNoChargeReason] = useState(
-    bag?.bulk_resolution?.no_charge_reason || "",
-  );
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    setQty(Object.fromEntries(initialLines.map((l) => [l.workitem_id, l.quantity])));
-    setNoCharge(String(bag?.bulk_resolution?.resolution_type || "") === "no_charge");
-    setNoChargeReason(bag?.bulk_resolution?.no_charge_reason || "");
-  }, [bag?.bag_id, initialLines, bag?.bulk_resolution]);
-
   const lines = initialLines.map((l) => {
     const q = Number(qty[l.workitem_id] || 0);
     return {
@@ -280,66 +82,16 @@ function SpecialtyInline({ bag, catalog, selectedDateEt, readOnly, onSaved }) {
       line_total: Math.round((Number(l.unit_price) || 0) * q * 100) / 100,
     };
   });
-  const bulkTotal = lines.reduce((s, l) => s + (l.line_total || 0), 0);
-  const availability = validateSpecialtySave({
-    lines,
-    noChargeable: noCharge,
-    noChargeReason,
-    saving,
-    readOnly,
-    catalogReady: Array.isArray(catalog),
-  });
 
   const bump = (id, delta) => {
     setQty((prev) => ({ ...prev, [id]: Math.max(0, Number(prev[id] || 0) + delta) }));
   };
 
-  const save = async () => {
-    if (!availability.enabled) {
-      setError(availability.reason || "Cannot save");
-      return;
-    }
-    const reason = noCharge
-      ? String(noChargeReason || "").trim()
-      : "Specialty review";
-    setSaving(true);
-    setError("");
-    try {
-      const res = await postVeewashStep1Correction({
-        action: "save_bulk_workitems",
-        bag_id: bag.bag_id,
-        selected_date_et: selectedDateEt,
-        reason,
-        no_chargeable: noCharge,
-        no_charge_reason: noCharge ? reason : undefined,
-        items: noCharge
-          ? []
-          : lines
-              .filter((l) => Number(l.quantity) > 0)
-              .map((l) => ({ workitem_id: l.workitem_id, quantity: l.quantity })),
-      });
-      if (!res?.data?.ok) {
-        setError(res?.data?.error || "Failed to save specialty");
-        return;
-      }
-      onSaved?.(res.data, { kind: "specialty", bagId: bag.bag_id });
-    } catch (err) {
-      setError(err?.response?.data?.error || err?.message || "Failed to save specialty");
-    } finally {
-      setSaving(false);
-    }
-  };
-
   return (
-    <Box sx={{ mt: 0.75, p: 1, bgcolor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 1 }}>
-      <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.6, color: "#64748b" }}>
-        Specialty items
+    <Box sx={{ mt: 1, p: 1, bgcolor: "#fffbeb", border: "1px solid #fde68a", borderRadius: 1 }}>
+      <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.6, color: "#92400e" }}>
+        Bulk items require review
       </Typography>
-      {error ? (
-        <Alert severity="error" sx={{ mt: 1, py: 0.25 }} onClose={() => setError("")}>
-          {error}
-        </Alert>
-      ) : null}
       {!noCharge
         ? lines.map((line) => (
             <Box key={line.workitem_id} sx={{ mt: 1 }}>
@@ -389,7 +141,13 @@ function SpecialtyInline({ bag, catalog, selectedDateEt, readOnly, onSaved }) {
           <InputLabel>No-charge reason</InputLabel>
           <Select
             label="No-charge reason"
-            value={NO_CHARGE_REASONS.includes(noChargeReason) ? noChargeReason : noChargeReason ? "Other" : ""}
+            value={
+              NO_CHARGE_REASONS.includes(noChargeReason)
+                ? noChargeReason
+                : noChargeReason
+                  ? "Other"
+                  : ""
+            }
             onChange={(e) => setNoChargeReason(e.target.value)}
             disabled={readOnly || saving}
           >
@@ -401,16 +159,478 @@ function SpecialtyInline({ bag, catalog, selectedDateEt, readOnly, onSaved }) {
           </Select>
         </FormControl>
       ) : null}
-      <Button
-        data-testid="review-save-specialty"
+    </Box>
+  );
+}
+
+function ScanChronology({ selectedDateEt, bagId, open }) {
+  const [scans, setScans] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open || !selectedDateEt || !bagId) return undefined;
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    setScans([]);
+    (async () => {
+      try {
+        const res = await getManagementRinseWfReviewScans(selectedDateEt, bagId);
+        if (cancelled) return;
+        if (!res?.data?.ok) {
+          setError(res?.data?.error || "Failed to load scans");
+          return;
+        }
+        setScans(Array.isArray(res.data.scans) ? res.data.scans : []);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err?.response?.data?.error || err?.message || "Failed to load scans");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, selectedDateEt, bagId]);
+
+  if (!open) return null;
+  if (loading) {
+    return (
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }}>
+        <CircularProgress size={14} />
+        <Typography sx={{ fontSize: 12, color: "#64748b" }}>Loading scans…</Typography>
+      </Stack>
+    );
+  }
+  if (error) {
+    return (
+      <Alert severity="error" sx={{ mt: 1, py: 0.25 }}>
+        {error}
+      </Alert>
+    );
+  }
+  if (!scans.length) {
+    return (
+      <Typography sx={{ mt: 1, fontSize: 12, color: "#64748b" }}>No scan events found.</Typography>
+    );
+  }
+  return (
+    <Box sx={{ mt: 1, maxHeight: 220, overflow: "auto", border: "1px solid #e2e8f0", borderRadius: 1, p: 0.75 }}>
+      {scans.map((s, idx) => (
+        <Typography key={`${s.id || idx}-${s.scanned_at_parsed || idx}`} sx={{ fontSize: 11, color: "#475569", py: 0.25 }}>
+          {[fmtTime(s.scanned_at_parsed || s.scanned_at), s.user_name || s.employee, s.purpose, s.rack]
+            .filter(Boolean)
+            .join(" · ")}
+        </Typography>
+      ))}
+    </Box>
+  );
+}
+
+function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved }) {
+  const bulkRequired = bagBulkReviewUnresolved(bag);
+  const initialLines = useMemo(
+    () => catalogSpecialtyLines(catalog, bag?.bulk_workitems),
+    [catalog, bag?.bulk_workitems],
+  );
+  const [postLbs, setPostLbs] = useState(() =>
+    bag?.post_weight_lbs == null || bag?.post_weight_lbs === "" ? "" : String(bag.post_weight_lbs),
+  );
+  const [preLbs, setPreLbs] = useState(() => {
+    const pre = authoritativeEvidencePre(bag);
+    return pre == null ? "" : String(pre);
+  });
+  const [preEditing, setPreEditing] = useState(false);
+  const [completedBy, setCompletedBy] = useState(
+    () => bag?.completion_employee || bag?.completed_by || "",
+  );
+  const [completionAt, setCompletionAt] = useState(() => toPickerValue(bag?.completion_at));
+  const [qty, setQty] = useState(() =>
+    Object.fromEntries(initialLines.map((l) => [l.workitem_id, l.quantity])),
+  );
+  const [noCharge, setNoCharge] = useState(
+    String(bag?.bulk_resolution?.resolution_type || "") === "no_charge",
+  );
+  const [noChargeReason, setNoChargeReason] = useState(
+    bag?.bulk_resolution?.no_charge_reason || "",
+  );
+  const [scansOpen, setScansOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setPostLbs(
+      bag?.post_weight_lbs == null || bag?.post_weight_lbs === ""
+        ? ""
+        : String(bag.post_weight_lbs),
+    );
+    const pre = authoritativeEvidencePre(bag);
+    setPreLbs(pre == null ? "" : String(pre));
+    setPreEditing(false);
+    setCompletedBy(bag?.completion_employee || bag?.completed_by || "");
+    setCompletionAt(toPickerValue(bag?.completion_at));
+    setQty(Object.fromEntries(initialLines.map((l) => [l.workitem_id, l.quantity])));
+    setNoCharge(String(bag?.bulk_resolution?.resolution_type || "") === "no_charge");
+    setNoChargeReason(bag?.bulk_resolution?.no_charge_reason || "");
+  }, [bag?.bag_id, bag?._detailsLoaded, bag?.manager_edit_version]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const lockReady = Boolean(bag?._detailsLoaded);
+  const lines = initialLines.map((l) => ({
+    ...l,
+    quantity: Number(qty[l.workitem_id] || 0),
+    line_total: Math.round((Number(l.unit_price) || 0) * Number(qty[l.workitem_id] || 0) * 100) / 100,
+  }));
+  const bulkAvailability = bulkRequired
+    ? validateSpecialtySave({
+        lines,
+        noChargeable: noCharge,
+        noChargeReason,
+        saving,
+        readOnly,
+        catalogReady: Array.isArray(catalog),
+      })
+    : { enabled: true, reason: null };
+  const completionAvailability = validateMissingComplete({
+    completedBy,
+    completionAt,
+    postWeightLbs: postLbs,
+    lockReady,
+    saving,
+    readOnly,
+  });
+  const canSave =
+    completionAvailability.enabled &&
+    bulkAvailability.enabled &&
+    !saving &&
+    !readOnly;
+
+  const saveBlockReason =
+    (!bulkAvailability.enabled && bulkAvailability.reason) ||
+    (!completionAvailability.enabled && completionAvailability.reason) ||
+    null;
+
+  const save = async () => {
+    if (!canSave) {
+      setError(saveBlockReason || "Cannot save");
+      return;
+    }
+    const baselinePre = authoritativeEvidencePre(bag);
+    const parsedPre = parseWeightInput(preLbs);
+    const draft = {
+      service_type: String(bag?.service_type || "WF").toUpperCase(),
+      rush_flag: bag?.rush_flag || "NON-RUSH",
+      post_weight_lbs: parseWeightInput(postLbs),
+      completed_by: completedBy,
+      completion_at: completionAt,
+      ...(bulkRequired
+        ? bulkItemsDraft(lines, { noChargeable: noCharge, noChargeReason })
+        : {}),
+    };
+    if (preEditing || (parsedPre != null && parsedPre !== baselinePre)) {
+      draft.pre_weight_lbs = parsedPre;
+    }
+    const audit = suggestedCompleteAudit({ draft, baselineBag: bag });
+    setSaving(true);
+    setError("");
+    try {
+      const res = await postVeewashStep1Correction({
+        action: "edit_bag",
+        bag_id: bag.bag_id,
+        selected_date_et: selectedDateEt,
+        reason: audit.reasonNote,
+        reason_code: audit.reasonCode || "DISAPPEARED_WITHOUT_COMPLETION",
+        reason_note: audit.reasonNote,
+        expected_updated_at: bag.updated_at || bag.day_bag_updated_at || null,
+        expected_manager_edit_version:
+          bag.manager_edit_version != null ? Number(bag.manager_edit_version) : null,
+        outcome_action: "mark_completed",
+        draft,
+      });
+      if (!res?.data?.ok) {
+        if (res?.data?.error === "conflict") {
+          setError("This bag was updated while you were reviewing it. Close and reopen to retry.");
+          return;
+        }
+        if (res?.data?.error === "bulk_workitem_review_required") {
+          setError(
+            res?.data?.message ||
+              "Resolve bulk bath mat/comforter quantities or mark no-charge before completing.",
+          );
+          return;
+        }
+        setError(res?.data?.message || res?.data?.error || "Save failed");
+        return;
+      }
+      onSaved?.(res.data, { kind: "missing", bagId: bag.bag_id });
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const revertPre = () => {
+    const pre = authoritativeEvidencePre(bag);
+    setPreLbs(pre == null ? "" : String(pre));
+    setPreEditing(false);
+  };
+
+  const completionEmp = bag?.completion_employee || bag?.completed_by;
+  const completionTime = fmtTime(bag?.completion_at);
+  const managerPre = bag?.corrected_pre_weight_lbs;
+
+  return (
+    <Box sx={{ mt: 0.75 }} data-testid="review-missing-inline">
+      <Stack direction="row" spacing={1.25} flexWrap="wrap" sx={{ mb: 0.5 }} alignItems="center">
+        <Typography data-testid="review-drawer-pre" sx={{ fontSize: 12, color: "#475569", fontWeight: 700 }}>
+          PRE {preEditing ? "" : evidencePreLabel(bag)}
+        </Typography>
+        {!preEditing ? (
+          <Button
+            size="small"
+            variant="text"
+            onClick={() => setPreEditing(true)}
+            disabled={readOnly || saving}
+            sx={{ textTransform: "none", fontWeight: 700, minWidth: 0, px: 0.5 }}
+          >
+            Edit PRE
+          </Button>
+        ) : null}
+        <Typography data-testid="review-drawer-post" sx={{ fontSize: 12, color: "#475569", fontWeight: 700 }}>
+          POST {fmtLbs(bag?.post_weight_lbs ?? bag?.post_weight_value) || "—"}
+        </Typography>
+      </Stack>
+      {preEditing ? (
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.75 }}>
+          <TextField
+            size="small"
+            type="number"
+            label="PRE lbs (manager correction)"
+            value={preLbs}
+            onChange={(e) => setPreLbs(e.target.value)}
+            inputProps={{ step: 0.1, min: 0 }}
+            sx={{ flex: 1 }}
+            disabled={readOnly || saving}
+          />
+          <Button size="small" onClick={revertPre} disabled={saving} sx={{ textTransform: "none" }}>
+            Revert
+          </Button>
+        </Stack>
+      ) : null}
+      {managerPre != null ? (
+        <Typography sx={{ fontSize: 11, color: "#64748b", mb: 0.5 }}>
+          Manager PRE override active ({fmtLbs(managerPre)})
+        </Typography>
+      ) : null}
+      {completionEmp || completionTime ? (
+        <Typography sx={{ fontSize: 12, color: "#94a3b8", mb: 0.5 }}>
+          Detected: {[completionEmp, completionTime].filter(Boolean).join(" · ")}
+        </Typography>
+      ) : null}
+      {bulkRequired ? (
+        <BulkWorkitemFields
+          catalog={catalog}
+          bag={bag}
+          readOnly={readOnly}
+          saving={saving}
+          qty={qty}
+          setQty={setQty}
+          noCharge={noCharge}
+          setNoCharge={setNoCharge}
+          noChargeReason={noChargeReason}
+          setNoChargeReason={setNoChargeReason}
+        />
+      ) : null}
+      {error ? (
+        <Alert severity="error" sx={{ mb: 0.75, py: 0.25, mt: 0.75 }} onClose={() => setError("")}>
+          {error}
+        </Alert>
+      ) : null}
+      <TextField
         size="small"
-        variant="contained"
-        disabled={!availability.enabled}
-        onClick={save}
-        sx={{ mt: 1, textTransform: "none", fontWeight: 800 }}
-      >
-        {saving ? "Saving…" : "Save Specialty"}
-      </Button>
+        type="number"
+        label="POST lbs"
+        value={postLbs}
+        onChange={(e) => setPostLbs(e.target.value)}
+        inputProps={{ step: 0.1, min: 0 }}
+        fullWidth
+        disabled={readOnly || saving}
+        sx={{ mt: 0.75 }}
+      />
+      <FoldingUserSelect
+        label="Completion employee"
+        value={completedBy}
+        onChange={setCompletedBy}
+        allowEmpty
+        sx={{ width: "100%", minWidth: 0, mt: 1 }}
+      />
+      <Box sx={{ mt: 1 }}>
+        <CompactEtDateTimeField
+          label="Completion date & time (ET)"
+          value={completionAt}
+          onChange={setCompletionAt}
+          disabled={readOnly || saving}
+        />
+      </Box>
+      {!lockReady ? (
+        <Typography sx={{ mt: 0.5, fontSize: 11, color: "#64748b" }}>
+          Loading bag details…
+        </Typography>
+      ) : null}
+      {!canSave && saveBlockReason ? (
+        <Typography sx={{ mt: 0.5, fontSize: 11, color: "#b45309" }}>
+          {saveBlockReason}
+        </Typography>
+      ) : null}
+      <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+        <Button
+          data-testid="review-save-complete"
+          size="small"
+          variant="contained"
+          disabled={!canSave}
+          onClick={save}
+          sx={{ textTransform: "none", fontWeight: 800 }}
+        >
+          {saving ? "Saving…" : "Save & Complete"}
+        </Button>
+        <Button
+          data-testid="review-view-scans"
+          size="small"
+          variant="outlined"
+          onClick={() => setScansOpen((v) => !v)}
+          sx={{ textTransform: "none", fontWeight: 700 }}
+        >
+          {scansOpen ? "Hide Scans" : "View Scans"}
+        </Button>
+      </Stack>
+      <ScanChronology selectedDateEt={selectedDateEt} bagId={bag.bag_id} open={scansOpen} />
+    </Box>
+  );
+}
+
+function SpecialtyInline({ bag, catalog, selectedDateEt, readOnly, onSaved }) {
+  const initialLines = useMemo(
+    () => catalogSpecialtyLines(catalog, bag?.bulk_workitems),
+    [catalog, bag?.bulk_workitems],
+  );
+  const [qty, setQty] = useState(() =>
+    Object.fromEntries(initialLines.map((l) => [l.workitem_id, l.quantity])),
+  );
+  const [noCharge, setNoCharge] = useState(
+    String(bag?.bulk_resolution?.resolution_type || "") === "no_charge",
+  );
+  const [noChargeReason, setNoChargeReason] = useState(
+    bag?.bulk_resolution?.no_charge_reason || "",
+  );
+  const [scansOpen, setScansOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setQty(Object.fromEntries(initialLines.map((l) => [l.workitem_id, l.quantity])));
+    setNoCharge(String(bag?.bulk_resolution?.resolution_type || "") === "no_charge");
+    setNoChargeReason(bag?.bulk_resolution?.no_charge_reason || "");
+  }, [bag?.bag_id, initialLines, bag?.bulk_resolution]);
+
+  const lines = initialLines.map((l) => {
+    const q = Number(qty[l.workitem_id] || 0);
+    return {
+      ...l,
+      quantity: q,
+      line_total: Math.round((Number(l.unit_price) || 0) * q * 100) / 100,
+    };
+  });
+  const availability = validateSpecialtySave({
+    lines,
+    noChargeable: noCharge,
+    noChargeReason,
+    saving,
+    readOnly,
+    catalogReady: Array.isArray(catalog),
+  });
+
+  const save = async () => {
+    if (!availability.enabled) {
+      setError(availability.reason || "Cannot save");
+      return;
+    }
+    const reason = noCharge ? String(noChargeReason || "").trim() : "Specialty review";
+    setSaving(true);
+    setError("");
+    try {
+      const res = await postVeewashStep1Correction({
+        action: "save_bulk_workitems",
+        bag_id: bag.bag_id,
+        selected_date_et: selectedDateEt,
+        reason,
+        no_chargeable: noCharge,
+        no_charge_reason: noCharge ? reason : undefined,
+        items: noCharge
+          ? []
+          : lines.filter((l) => Number(l.quantity) > 0).map((l) => ({
+              workitem_id: l.workitem_id,
+              quantity: l.quantity,
+            })),
+      });
+      if (!res?.data?.ok) {
+        setError(res?.data?.error || "Failed to save specialty");
+        return;
+      }
+      onSaved?.(res.data, { kind: "specialty", bagId: bag.bag_id });
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || "Failed to save specialty");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Box sx={{ mt: 0.75, p: 1, bgcolor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 1 }}>
+      <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.6, color: "#64748b" }}>
+        Specialty items
+      </Typography>
+      {error ? (
+        <Alert severity="error" sx={{ mt: 1, py: 0.25 }} onClose={() => setError("")}>
+          {error}
+        </Alert>
+      ) : null}
+      <BulkWorkitemFields
+        catalog={catalog}
+        bag={bag}
+        readOnly={readOnly}
+        saving={saving}
+        qty={qty}
+        setQty={setQty}
+        noCharge={noCharge}
+        setNoCharge={setNoCharge}
+        noChargeReason={noChargeReason}
+        setNoChargeReason={setNoChargeReason}
+      />
+      <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+        <Button
+          data-testid="review-save-specialty"
+          size="small"
+          variant="contained"
+          disabled={!availability.enabled}
+          onClick={save}
+          sx={{ textTransform: "none", fontWeight: 800 }}
+        >
+          {saving ? "Saving…" : "Save Specialty"}
+        </Button>
+        <Button
+          data-testid="review-view-scans"
+          size="small"
+          variant="outlined"
+          onClick={() => setScansOpen((v) => !v)}
+          sx={{ textTransform: "none", fontWeight: 700 }}
+        >
+          {scansOpen ? "Hide Scans" : "View Scans"}
+        </Button>
+      </Stack>
+      <ScanChronology selectedDateEt={selectedDateEt} bagId={bag.bag_id} open={scansOpen} />
     </Box>
   );
 }
@@ -424,7 +644,6 @@ export default function ManagementRinseWfReviewDrawerRow({
   readOnly,
   expanded,
   onToggle,
-  onDetailedReview,
   onSaved,
 }) {
   const [actionBag, setActionBag] = useState(null);
@@ -436,8 +655,7 @@ export default function ManagementRinseWfReviewDrawerRow({
     ? { ...bag, ...actionBag, bag_id: bag.bag_id, _detailsLoaded: true }
     : { ...bag, _detailsLoaded: false };
   const showMissing = bagHasMissingPortal(merged);
-  const showSpecialty = bagHasSpecialtyBulk(merged);
-  const requiresDetailedReview = showMissing && showSpecialty;
+  const showSpecialty = bagHasSpecialtyBulk(merged) && !showMissing;
 
   useEffect(() => {
     if (!expanded) {
@@ -473,9 +691,7 @@ export default function ManagementRinseWfReviewDrawerRow({
         setCatalog(result.catalog);
       } catch (err) {
         if (!cancelled) {
-          setError(
-            err?.response?.data?.error || err?.message || "Failed to load bag details",
-          );
+          setError(err?.response?.data?.error || err?.message || "Failed to load bag details");
           setActionBag(null);
           setCatalog([]);
         }
@@ -526,10 +742,9 @@ export default function ManagementRinseWfReviewDrawerRow({
         ) : showMissing ? (
           <MissingPortalInline
             bag={merged}
+            catalog={catalog || []}
             selectedDateEt={selectedDateEt}
             readOnly={readOnly}
-            requiresDetailedReview={requiresDetailedReview}
-            onDetailedReview={onDetailedReview}
             onSaved={onSaved}
           />
         ) : showSpecialty ? (
@@ -541,18 +756,9 @@ export default function ManagementRinseWfReviewDrawerRow({
             onSaved={onSaved}
           />
         ) : (
-          <Stack direction="row" spacing={1} sx={{ mt: 0.75 }}>
-            <Typography sx={{ fontSize: 12, color: "#64748b" }}>Use Detailed Review for this bag.</Typography>
-            <Button
-              data-testid="review-detailed-review"
-              size="small"
-              variant="outlined"
-              onClick={() => onDetailedReview?.(merged)}
-              sx={{ textTransform: "none", fontWeight: 700 }}
-            >
-              Detailed Review
-            </Button>
-          </Stack>
+          <Typography sx={{ mt: 0.75, fontSize: 12, color: "#64748b" }}>
+            No inline actions for this review category.
+          </Typography>
         )}
       </Collapse>
     </Box>

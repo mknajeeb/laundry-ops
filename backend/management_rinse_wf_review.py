@@ -551,52 +551,71 @@ def compute_canonical_wf_review_membership(
         if normalize_bag_id(r.get("bag_id"))
     }
 
-    wl = build_veewash_daily_workload_from_membership(
-        cursor, organization_id, selected_date_et=selected_date_et
-    )
-    activation = get_step1_activation_date(cursor, organization_id) or selected_date_et
-    summary = build_step1_headline_summary(
-        wl, selected_date_et=selected_date_et, activation_date=activation
-    )
-    summary = attach_specialty_metrics_to_summary(
-        cursor, organization_id, selected_date_et, summary
-    )
-    fresh_reasons = summary.get("review_reasons_by_bag") or {}
+    _, headline_by_bag = _headline_maps(headline)
+    fresh_reasons = dict(headline_by_bag) if headline_by_bag else {}
+    if not fresh_reasons:
+        wl = build_veewash_daily_workload_from_membership(
+            cursor, organization_id, selected_date_et=selected_date_et
+        )
+        activation = get_step1_activation_date(cursor, organization_id) or selected_date_et
+        summary = build_step1_headline_summary(
+            wl, selected_date_et=selected_date_et, activation_date=activation
+        )
+        summary = attach_specialty_metrics_to_summary(
+            cursor, organization_id, selected_date_et, summary
+        )
+        fresh_reasons = summary.get("review_reasons_by_bag") or {}
 
+    headline_split = _split_review_ids_from_headline(headline)
+    split_candidates: set[str] = set(headline_split)
+    membership_candidates: set[str] = set()
+    for bid in bag_ids:
+        row = by_id.get(bid) or {}
+        codes = _resolve_bag_review_codes(bid, row, fresh_reasons, headline)
+        if codes:
+            membership_candidates.add(bid)
+        if any(str(c) in SPLIT_ORDER_REASONS for c in codes):
+            split_candidates.add(bid)
+    split_candidates_list = sorted(split_candidates)
     split_eval = (
-        _split_eval_as_of_day(cursor, organization_id, selected_date_et, bag_ids)
-        if bag_ids
+        _split_eval_as_of_day(
+            cursor, organization_id, selected_date_et, split_candidates_list
+        )
+        if split_candidates_list
         else {}
     )
-    headline_split = _split_review_ids_from_headline(headline)
-    split_candidates = sorted(set(headline_split) | set(bag_ids))
-    if split_candidates and not split_eval:
-        split_eval = _split_eval_as_of_day(
-            cursor, organization_id, selected_date_et, split_candidates
-        )
-    elif headline_split:
-        missing_eval = [b for b in headline_split if b not in split_eval]
-        if missing_eval:
-            split_eval = {
-                **split_eval,
-                **_split_eval_as_of_day(
-                    cursor, organization_id, selected_date_et, missing_eval
-                ),
-            }
     split_ids = sorted(
         {
             bid
-            for bid in split_candidates
+            for bid in split_candidates_list
             if (split_eval.get(bid) or {}).get("state") == STATE_REVIEW_REQUIRED
         }
     )
+    membership_candidates |= set(split_ids)
+    candidate_ids = sorted(membership_candidates)
 
-    bulk_lines = load_bag_bulk_lines(cursor, organization_id, selected_date_et, bag_ids)
-    bulk_res = load_bulk_resolutions(cursor, organization_id, selected_date_et, bag_ids)
-    bulk_scans = load_bulk_workitem_scan_map(
-        cursor, organization_id, bag_ids, selected_date_et=selected_date_et
+    bulk_lines = (
+        load_bag_bulk_lines(cursor, organization_id, selected_date_et, candidate_ids)
+        if candidate_ids
+        else {}
     )
-    weights = _canonical_review_weights(cursor, organization_id, selected_date_et, bag_ids)
+    bulk_res = (
+        load_bulk_resolutions(cursor, organization_id, selected_date_et, candidate_ids)
+        if candidate_ids
+        else {}
+    )
+    bulk_scans = (
+        load_bulk_workitem_scan_map(
+            cursor, organization_id, candidate_ids, selected_date_et=selected_date_et
+        )
+        if candidate_ids
+        else {}
+    )
+    weights = (
+        _canonical_review_weights(cursor, organization_id, selected_date_et, candidate_ids)
+        if candidate_ids
+        else {}
+    )
     completed_bucket = _wf_completed_bucket(headline)
 
     specialty: list[str] = []
@@ -607,7 +626,7 @@ def compute_canonical_wf_review_membership(
     codes_by_bag: dict[str, list[str]] = {}
     split_set = set(split_ids)
 
-    for bid in bag_ids:
+    for bid in candidate_ids:
         if bid in split_set:
             disposition[bid] = CATEGORY_SPLIT_ORDER
             continue
@@ -1057,13 +1076,48 @@ def _short_reason(codes: list[str], category: str) -> str:
     return "Specialty review"
 
 
-def review_drawer_section_flags(codes: list[str] | tuple[str, ...] | None) -> dict[str, bool]:
+def review_drawer_section_flags(
+    codes: list[str] | tuple[str, ...] | None,
+    *,
+    bulk_cleared: bool | None = None,
+    bulk_unresolved: bool | None = None,
+) -> dict[str, bool]:
     """Which compact drawer action sections apply (multi-reason bags can have both)."""
     code_set = {str(c) for c in (codes or []) if c}
+    has_bulk_code = REASON_WF_BULK_WORKITEM_REVIEW in code_set
+    if bulk_unresolved is None:
+        bulk_unresolved = has_bulk_code and bulk_cleared is not True
+    else:
+        bulk_unresolved = bool(bulk_unresolved)
     return {
-        "has_specialty_bulk": REASON_WF_BULK_WORKITEM_REVIEW in code_set,
+        "has_specialty_bulk": bulk_unresolved,
         "has_missing_portal": bool(code_set & MISSING_FROM_PORTAL_REASONS),
+        "bulk_review_unresolved": bulk_unresolved,
+        "bulk_review_cleared": bulk_cleared if has_bulk_code or bulk_cleared is not None else None,
     }
+
+
+def _bulk_review_state_for_bag(
+    codes: list[str] | tuple[str, ...] | None,
+    *,
+    bulk_lines: list | None,
+    bulk_resolution: Mapping[str, Any] | None,
+    bulk_scan: Mapping[str, Any] | None = None,
+) -> tuple[bool | None, bool]:
+    """Return (bulk_cleared, bulk_unresolved) for drawer UX."""
+    from backend.rinse_bulk_workitems import bag_bulk_review_cleared
+
+    code_set = {str(c) for c in (codes or []) if c}
+    has_bulk_code = REASON_WF_BULK_WORKITEM_REVIEW in code_set
+    lines = list(bulk_lines or [])
+    scan = bulk_scan or {}
+    has_bulk = bool(
+        has_bulk_code or lines or bulk_resolution or int(scan.get("count") or 0) > 0
+    )
+    if not has_bulk:
+        return None, False
+    cleared = bag_bulk_review_cleared(bulk_resolution, lines)
+    return cleared, not cleared
 
 
 def _short_specialty_summary(qty_info: Mapping[str, Any]) -> str | None:
@@ -1094,7 +1148,7 @@ def build_management_review_list(
     """Lightweight Review list for one category — no scans / chronology."""
     import time
 
-    from backend.rinse_bulk_workitems import load_bag_bulk_lines
+    from backend.rinse_bulk_workitems import load_bag_bulk_lines, load_bulk_resolutions
     from backend.rinse_veewash_shift_day import (
         get_day_record,
         load_day_bags_by_ids,
@@ -1180,23 +1234,39 @@ def build_management_review_list(
     else:
         scoped_counts["review_required"] = total
 
-    rows = (
-        load_day_bags_by_ids(cursor, organization_id, selected_date_et, page_ids)
-        if page_ids
-        else []
-    )
+    rows = []
+    if page_ids:
+        missing_rows = [bid for bid in page_ids if bid not in rows_by_id]
+        if missing_rows:
+            for r in load_day_bags_by_ids(
+                cursor, organization_id, selected_date_et, missing_rows
+            ):
+                nb = normalize_bag_id(r.get("bag_id"))
+                if nb:
+                    rows_by_id[nb] = r
+        rows = [rows_by_id[bid] for bid in page_ids if bid in rows_by_id]
     by_id = {normalize_bag_id(r.get("bag_id")): r for r in rows}
     by_reason, by_bag = _headline_maps(headline)
 
     bulk_lines: dict = {}
+    bulk_res_page: dict = {}
+    bulk_scans_page: dict = {}
+    if page_ids:
+        bulk_res_page = load_bulk_resolutions(
+            cursor, organization_id, selected_date_et, page_ids
+        )
+        if cat in (CATEGORY_SPECIALTY, CATEGORY_MISSING_PORTAL):
+            from backend.rinse_bulk_workitems import load_bulk_workitem_scan_map
+
+            bulk_lines = load_bag_bulk_lines(
+                cursor, organization_id, selected_date_et, page_ids
+            )
+            bulk_scans_page = load_bulk_workitem_scan_map(
+                cursor, organization_id, page_ids, selected_date_et=selected_date_et
+            )
     weight_map = _canonical_review_weights(
         cursor, organization_id, selected_date_et, page_ids
     )
-    if cat == CATEGORY_SPECIALTY and page_ids:
-        # One batch query for specialty quantities — not scans, not N+1.
-        bulk_lines = load_bag_bulk_lines(
-            cursor, organization_id, selected_date_et, page_ids
-        )
 
     split_evals: dict[str, dict[str, Any]] = {}
     if cat == CATEGORY_SPLIT_ORDER and page_ids:
@@ -1251,7 +1321,17 @@ def build_management_review_list(
             reason = sev.get("review_reason") or smeta.get("review_reason")
             if reason and reason not in codes:
                 codes = [str(reason)] + codes
-        flags = review_drawer_section_flags(codes)
+        bulk_cleared, bulk_unresolved = _bulk_review_state_for_bag(
+            codes,
+            bulk_lines=bulk_lines.get(bid) or [],
+            bulk_resolution=bulk_res_page.get(bid),
+            bulk_scan=bulk_scans_page.get(bid),
+        )
+        flags = review_drawer_section_flags(
+            codes,
+            bulk_cleared=bulk_cleared,
+            bulk_unresolved=bulk_unresolved,
+        )
         completion_employee = (
             snap.get("completed_by") or row.get("canonical_completion_employee")
         )
@@ -1280,6 +1360,8 @@ def build_management_review_list(
                 "specialty_item_class": qty_info.get("specialty_item_class"),
                 "has_specialty_bulk": flags["has_specialty_bulk"],
                 "has_missing_portal": flags["has_missing_portal"],
+                "bulk_review_cleared": bulk_cleared,
+                "bulk_review_unresolved": bulk_unresolved,
                 "employee": (
                     sev.get("split_marker_employee")
                     or snap.get("completed_by")
@@ -1562,6 +1644,7 @@ def build_management_review_action(
         list_workitems,
         load_bag_bulk_lines,
         load_bulk_resolutions,
+        load_bulk_workitem_scan_map,
     )
     from backend.rinse_veewash_shift_day import load_day_bags_by_ids
 
@@ -1577,8 +1660,6 @@ def build_management_review_action(
     row = rows[0]
     snap = dict(row.get("bag_snapshot") or {})
     codes = [str(c) for c in (row.get("review_reason_codes") or snap.get("reason_codes") or []) if c]
-    flags = review_drawer_section_flags(codes)
-    category = category_for_reason_codes(codes)
 
     bulk_lines = load_bag_bulk_lines(
         cursor, organization_id, selected_date_et, [bid]
@@ -1586,6 +1667,25 @@ def build_management_review_action(
     bulk_res = load_bulk_resolutions(
         cursor, organization_id, selected_date_et, [bid]
     ).get(bid)
+    bulk_scan = (
+        load_bulk_workitem_scan_map(
+            cursor, organization_id, [bid], selected_date_et=selected_date_et
+        )
+        or {}
+    ).get(bid)
+    bulk_cleared, bulk_unresolved = _bulk_review_state_for_bag(
+        codes,
+        bulk_lines=bulk_lines,
+        bulk_resolution=bulk_res,
+        bulk_scan=bulk_scan,
+    )
+    flags = review_drawer_section_flags(
+        codes,
+        bulk_cleared=bulk_cleared,
+        bulk_unresolved=bulk_unresolved,
+    )
+    category = category_for_reason_codes(codes)
+
     need_catalog = bool(flags["has_specialty_bulk"] or bulk_lines or bulk_res)
     catalog: list[dict[str, Any]] = []
     if need_catalog:
@@ -1597,9 +1697,21 @@ def build_management_review_action(
     weight_map = _canonical_review_weights(cursor, organization_id, selected_date_et, [bid])
     weights = weight_map.get(bid) or {}
 
+    name_rows = resolve_customer_names_for_bags(
+        cursor,
+        organization_id,
+        [{"bag_id": bid, "customer_name": snap.get("customer_name") or row.get("customer_name")}],
+        selected_date_et=selected_date_et,
+    )
+    customer_name = review_customer_display_name(
+        (name_rows[0] if name_rows else {}).get("customer_name"),
+        snap.get("customer_name"),
+        row.get("customer_name"),
+    )
+
     bag = {
         "bag_id": bid,
-        "customer_name": snap.get("customer_name") or row.get("customer_name"),
+        "customer_name": customer_name,
         "service_type": snap.get("service_type") or row.get("service_type") or "WF",
         "rush_flag": snap.get("rush_flag") or row.get("rush_status"),
         "reason_codes": codes,
@@ -1624,6 +1736,10 @@ def build_management_review_action(
         "bulk_resolution": bulk_res,
         "has_specialty_bulk": flags["has_specialty_bulk"],
         "has_missing_portal": flags["has_missing_portal"],
+        "bulk_review_cleared": bulk_cleared,
+        "bulk_review_unresolved": bulk_unresolved,
+        "corrected_pre_weight_lbs": weights.get("corrected_pre_weight_lbs"),
+        "pre_weight_source": weights.get("pre_weight_source"),
         "review_category": category,
         "_detailsLoaded": True,
         "_actionMetaOnly": True,

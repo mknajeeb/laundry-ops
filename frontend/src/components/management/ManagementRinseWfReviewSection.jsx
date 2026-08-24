@@ -195,7 +195,7 @@ function SplitOrderReviewRow({
 
 /**
  * Dedicated REVIEW working queue — Specialty Items vs Missing From Portal vs Split Order Review.
- * Specialty / Missing: inline card resolver + secondary Detailed Review modal.
+ * Specialty / Missing: inline drawer resolver (Save, bulk, PRE edit, View Scans).
  * Split Order Review: drawer-only MARK SPLIT / MARK NOT SPLIT (no generic WF Review modal).
  */
 export default function ManagementRinseWfReviewSection({
@@ -566,9 +566,6 @@ export default function ManagementRinseWfReviewSection({
                     expanded={expandedBagId === bag.bag_id}
                     onToggle={(bagId) =>
                       setExpandedBagId((prev) => (prev === bagId ? null : bagId))
-                    }
-                    onDetailedReview={(seed) =>
-                      setModal({ open: true, bagId: seed.bag_id, seed })
                     }
                     onSaved={(_data, meta) => {
                       const id = meta?.bagId || bag.bag_id;

@@ -428,7 +428,8 @@ def test_e_wf_missing_portal_list_workflow_still_works():
                 }
             },
         ),
-        patch("backend.rinse_bulk_workitems.load_bag_bulk_lines") as bulk,
+        patch("backend.rinse_bulk_workitems.load_bag_bulk_lines", return_value={}) as bulk,
+        patch("backend.rinse_bulk_workitems.load_bulk_resolutions", return_value={}),
         patch("backend.rinse_veewash_step1_api.load_scans_for_bags") as scans,
     ):
         out = build_management_review_list(
@@ -438,7 +439,7 @@ def test_e_wf_missing_portal_list_workflow_still_works():
             category="missing_from_portal",
         )
     scans.assert_not_called()
-    bulk.assert_not_called()
+    bulk.assert_called_once()
     assert out["ok"] is True
     assert out["bags"][0]["bag_id"] == "BAGMISS01"
     assert out["bags"][0]["has_missing_portal"] is True
@@ -554,7 +555,8 @@ def test_review_list_is_summary_only_no_scans():
                 }
             },
         ),
-        patch("backend.rinse_bulk_workitems.load_bag_bulk_lines") as bulk,
+        patch("backend.rinse_bulk_workitems.load_bag_bulk_lines", return_value={}) as bulk,
+        patch("backend.rinse_bulk_workitems.load_bulk_resolutions", return_value={}),
         patch("backend.rinse_veewash_step1_api.load_scans_for_bags") as scans,
     ):
         out = build_management_review_list(
@@ -564,7 +566,7 @@ def test_review_list_is_summary_only_no_scans():
             category="missing_from_portal",
         )
     scans.assert_not_called()
-    bulk.assert_not_called()
+    bulk.assert_called_once()
     assert out["ok"] is True
     assert out["_meta"]["scans_loaded"] is False
     assert out["_meta"]["action_metadata"] is False
@@ -715,7 +717,9 @@ def test_review_action_metadata_loads_no_scans():
     assert out["_meta"]["scans_loaded"] is False
     assert out["_meta"]["action_metadata"] is True
     assert out["bag"]["_detailsLoaded"] is True
-    assert out["bag"]["has_specialty_bulk"] is True
+    assert out["bag"]["has_specialty_bulk"] is False
+    assert out["bag"]["bulk_review_cleared"] is True
+    assert out["bag"]["bulk_review_unresolved"] is False
     assert out["bag"]["manager_edit_version"] == 2
     assert out["active_bulk_workitems"] == catalog
     assert out["bag"]["bulk_workitems"] == lines

@@ -21,11 +21,43 @@ export function bagHasMissingPortal(bag) {
 }
 
 export function bagHasSpecialtyBulk(bag) {
+  if (bag?.bulk_review_unresolved === true) return true;
+  if (bag?.bulk_review_unresolved === false) return false;
   if (bag?.has_specialty_bulk === true) return true;
   if (reasonCodeSet(bag).has(SPECIALTY_BULK_CODE)) return true;
   if (Number(bag?.comforter_quantity) > 0 || Number(bag?.bath_mat_quantity) > 0) return true;
   if (Array.isArray(bag?.bulk_workitems) && bag.bulk_workitems.length) return true;
   return false;
+}
+
+/** True when bulk workitem review still blocks Save & Complete. */
+export function bagBulkReviewUnresolved(bag) {
+  if (bag?.bulk_review_unresolved === false) return false;
+  if (bag?.bulk_review_cleared === true) return false;
+  if (bag?.bulk_review_unresolved === true) return true;
+  if (!bagHasSpecialtyBulk(bag)) return false;
+  const res = bag?.bulk_resolution;
+  if (res?.resolution_type === "no_charge") return false;
+  if (Array.isArray(bag?.bulk_workitems) && bag.bulk_workitems.some((l) => Number(l.quantity) > 0)) {
+    return false;
+  }
+  return bagHasSpecialtyBulk(bag);
+}
+
+export function bulkItemsDraft(lines = [], { noChargeable = false, noChargeReason = "" } = {}) {
+  if (noChargeable) {
+    return {
+      bulk_items: [],
+      no_chargeable: true,
+      no_charge_reason: String(noChargeReason || "").trim(),
+    };
+  }
+  return {
+    bulk_items: (lines || [])
+      .filter((l) => Number(l.quantity) > 0)
+      .map((l) => ({ workitem_id: l.workitem_id, quantity: l.quantity })),
+    no_chargeable: false,
+  };
 }
 
 export function fmtLbs(v) {
