@@ -1285,3 +1285,125 @@ def test_authoritative_evidence_pre_lbs_never_aliases_post_only_scan():
         )
         == 12.0
     )
+
+
+def _obs_wf(ts, wf_lbs, run=1, row_id=1, *, weight_num=None):
+    row = {
+        "observed_at": ts,
+        "wf_lbs_num": wf_lbs,
+        "presence_run_id": run,
+        "presence_run_row_id": row_id,
+    }
+    if weight_num is not None:
+        row["weight_num"] = weight_num
+    return row
+
+
+def test_portal_wf_lbs_wins_over_stale_preclean_event():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 24, 0, 52), eid=1, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 24, 8, 44),
+            eid=2,
+            lbs=17.6,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+    ]
+    obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)]
+    resolved = resolve_current_cycle_weights(
+        events, selected_date_et=date(2026, 8, 24), observations=obs
+    )
+    assert resolved.pre_weight_lbs == 15.7
+    assert resolved.pre_weight_source == "portal_wf_lbs_num"
+    assert resolved.post_weight_lbs is None
+
+
+def test_later_processing_weight_entry_does_not_overwrite_pre_pounds():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 24, 0, 52), eid=1, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 24, 8, 44),
+            eid=2,
+            lbs=17.6,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+        _ev("garments-reviewed", datetime(2026, 8, 24, 11, 0), eid=3),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 24, 15, 4),
+            eid=4,
+            lbs=16.2,
+            weight_source="rinse_workitem_wf_lbs",
+            weight_role="POST",
+        ),
+    ]
+    obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)]
+    resolved = resolve_current_cycle_weights(
+        events, selected_date_et=date(2026, 8, 24), observations=obs
+    )
+    assert resolved.pre_weight_lbs == 15.7
+    assert resolved.post_weight_lbs == 16.2
+    assert resolved.pre_weight_source == "portal_wf_lbs_num"
+    assert resolved.post_weight_source == "rinse_workitem_wf_lbs"
+
+
+def test_portal_wf_lbs_without_preclean_event_is_pre_fallback():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 24, 0, 52), eid=1, rack="VeeWash Dirty"),
+    ]
+    obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)]
+    resolved = resolve_current_cycle_weights(
+        events, selected_date_et=date(2026, 8, 24), observations=obs
+    )
+    assert resolved.pre_weight_lbs == 15.7
+    assert resolved.pre_weight_source == "portal_wf_lbs_num"
+
+
+def test_portal_weight_num_without_wf_lbs_does_not_override_preclean():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 7, 29, 6, 0), eid=1, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 7, 29, 8, 0),
+            eid=2,
+            lbs=12.2,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+    ]
+    obs = [_obs(datetime(2026, 7, 29, 16, 0), 99.0, run=9)]
+    resolved = resolve_current_cycle_weights(
+        events,
+        selected_date_et=DAY,
+        observations=obs,
+        allow_portal_weight_fallback=False,
+    )
+    assert resolved.pre_weight_lbs == 12.2
+    assert resolved.pre_weight_source == "rinse_preclean_info"
+
+
+def test_portal_wf_lbs_resolution_is_idempotent():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 24, 0, 52), eid=1, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 24, 8, 44),
+            eid=2,
+            lbs=17.6,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+    ]
+    obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)]
+    first = resolve_current_cycle_weights(
+        events, selected_date_et=date(2026, 8, 24), observations=obs
+    )
+    second = resolve_current_cycle_weights(
+        events, selected_date_et=date(2026, 8, 24), observations=obs
+    )
+    assert first.pre_weight_lbs == second.pre_weight_lbs == 15.7
+    assert first.pre_weight_source == second.pre_weight_source == "portal_wf_lbs_num"

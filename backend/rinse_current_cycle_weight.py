@@ -32,8 +32,10 @@ authoritative for that role **when** ``weight_source`` is an authoritative
 Rinse capture (``rinse_preclean_info`` / ``rinse_postclean_info`` /
 ``rinse_workitem_wf_lbs``) or a manager correction.
 
-Portal / presence ``weight_num`` (cleaner-ticket list / wf_lbs) is a **mutable
-operational field**, not PRE. It must not silently become PRE.
+Portal / presence ``weight_num`` (cleaner-ticket list) is a **mutable
+operational field** for generic fallback. **``wf_lbs_num``** on presence rows
+(the portal # WF LBS field) is authoritative for Management PRE when present —
+it wins over ``rinse_preclean_info`` on a weight-entry event when they differ.
 
 By default portal observations are **not** used to fill PRE/POST. Set
 ``allow_portal_weight_fallback=True`` (or env ``RINSE_ALLOW_PORTAL_WEIGHT_FALLBACK=1``)
@@ -283,6 +285,38 @@ def _obs_lbs(obs: Mapping[str, Any]) -> float | None:
     return _parse_weight(
         obs.get("weight_num", obs.get("weight_lbs", obs.get("wf_lbs_num")))
     )
+
+
+def _latest_portal_wf_lbs_observation(
+    observations: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Latest portal # WF LBS (``wf_lbs_num`` only) — authoritative Management PRE."""
+    best: tuple[datetime, float, Any, int | None] | None = None
+    for obs in observations or []:
+        if not isinstance(obs, Mapping):
+            continue
+        wf = _parse_weight(obs.get("wf_lbs_num"))
+        if wf is None:
+            continue
+        ts = _obs_ts(obs)
+        if ts is None:
+            continue
+        row_id = obs.get("presence_run_row_id")
+        if best is None or ts > best[0] or (
+            ts == best[0] and (row_id or 0) > (best[3] or 0)
+        ):
+            best = (ts, wf, _obs_run_id(obs), row_id if isinstance(row_id, int) else None)
+    if best is None:
+        return None
+    return {
+        "lbs": best[1],
+        "observation_at": best[0],
+        "observation_run": best[2],
+        "status": STATUS_CONFIRMED,
+        "reason": "latest_portal_wf_lbs_num",
+        "source": "portal_wf_lbs_num",
+        "attach_reason": "portal_wf_lbs_authoritative_pre",
+    }
 
 
 def _obs_run_id(obs: Mapping[str, Any]) -> Any:
@@ -1043,6 +1077,25 @@ def resolve_current_cycle_weights(
     corrected_post = None
     reason_parts = [pre_resolved.get("reason"), post_resolved.get("reason")]
 
+    portal_wf_pre = _latest_portal_wf_lbs_observation(obs)
+    if (
+        manual_pre_lbs is None
+        and portal_wf_pre is not None
+        and portal_wf_pre.get("lbs") is not None
+        and pre_source not in _MANAGER_WEIGHT_SOURCES
+    ):
+        pre_lbs = portal_wf_pre["lbs"]
+        pre_status = portal_wf_pre["status"]
+        pre_source = portal_wf_pre["source"]
+        pre_attach = portal_wf_pre["attach_reason"]
+        pre_resolved = {
+            **pre_resolved,
+            "observation_at": portal_wf_pre.get("observation_at"),
+            "observation_run": portal_wf_pre.get("observation_run"),
+        }
+        reason_parts.append(portal_wf_pre.get("reason") or "portal_wf_lbs_authoritative_pre")
+        notes.append("portal_wf_lbs_authoritative_over_event_pre")
+
     if manual_pre_lbs is not None:
         corrected_pre = float(manual_pre_lbs)
         pre_lbs = corrected_pre
@@ -1079,10 +1132,9 @@ def resolve_current_cycle_weights(
             post_source = src or "operator_manual_correction"
             post_attach = "audited_manual_correction"
 
-    if pre_event is None and manual_pre_lbs is None:
+    if pre_event is None and manual_pre_lbs is None and pre_lbs is None:
         pre_status = STATUS_WAITING_FOR_EVENT if cycle.entry_at else STATUS_MISSING
-        # No authoritative PRE event — never surface POST/portal as PRE.
-        pre_lbs = None
+        # No authoritative PRE event — never surface POST/portal weight_num as PRE.
         pre_source = None
         pre_attach = None
     elif pre_event is None:

@@ -75,6 +75,29 @@ def test_wf_weight_totals_sum_evidence_not_completion(monkeypatch):
     assert "canonical_pre_resolver" in out["source"]
 
 
+def test_drawer_and_headline_share_authoritative_pre(monkeypatch):
+    from backend.management_rinse_wf_review import _canonical_review_weights, _merge_review_weight_fields
+    from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
+
+    weights = {
+        "BAG1": {
+            "pre_weight_lbs": 15.7,
+            "pre_weight_source": "portal_wf_lbs_num",
+            "pre_weight_event_id": 2,
+            "post_weight_lbs": 16.2,
+            "post_weight_event_id": 4,
+        }
+    }
+    monkeypatch.setattr(
+        "backend.management_rinse_wf_review._canonical_review_weights",
+        lambda *a, **k: weights,
+    )
+    bag = {"pre_weight_lbs": None, "evidence_pre_weight_lbs": None}
+    _merge_review_weight_fields(bag, weights["BAG1"])
+    assert bag["pre_weight_lbs"] == 15.7
+    assert authoritative_evidence_pre_lbs(weights["BAG1"]) == 15.7
+
+
 def test_wf_weight_totals_post_only_bag_contributes_zero_pre(monkeypatch):
     monkeypatch.setattr("backend.management_today.table_exists", lambda *a, **k: True)
     monkeypatch.setattr("backend.management_today.table_has_column", lambda *a, **k: True)
