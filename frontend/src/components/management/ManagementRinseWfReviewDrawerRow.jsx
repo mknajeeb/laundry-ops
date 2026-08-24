@@ -16,6 +16,7 @@ import {
   Typography,
 } from "@mui/material";
 import { getManagementRinseWfReviewAction, postVeewashStep1Correction } from "../../api";
+import { fetchReviewDrawerAction } from "./reviewDrawerDetailLoad";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { CompactEtDateTimeField } from "../PayrollDateTimeField";
@@ -439,33 +440,54 @@ export default function ManagementRinseWfReviewDrawerRow({
   const requiresDetailedReview = showMissing && showSpecialty;
 
   useEffect(() => {
-    if (!expanded || actionBag || loading || !selectedDateEt || !bag?.bag_id) return;
+    if (!expanded) {
+      setActionBag(null);
+      setCatalog(null);
+      setError("");
+      setLoading(false);
+      return undefined;
+    }
+    if (!selectedDateEt || !bag?.bag_id) return undefined;
+
     let cancelled = false;
     setLoading(true);
     setError("");
-    getManagementRinseWfReviewAction(selectedDateEt, bag.bag_id)
-      .then((res) => {
+    setActionBag(null);
+    setCatalog(null);
+
+    (async () => {
+      try {
+        const result = await fetchReviewDrawerAction(
+          getManagementRinseWfReviewAction,
+          selectedDateEt,
+          bag.bag_id,
+        );
         if (cancelled) return;
-        const data = res?.data || {};
-        if (data.ok === false) {
-          setError(data.error || "Failed to load bag details");
+        if (!result.ok) {
+          setError(result.error);
+          setActionBag(null);
+          setCatalog([]);
           return;
         }
-        setActionBag(data.bag || null);
-        setCatalog(Array.isArray(data.active_bulk_workitems) ? data.active_bulk_workitems : []);
-      })
-      .catch((err) => {
+        setActionBag(result.bag);
+        setCatalog(result.catalog);
+      } catch (err) {
         if (!cancelled) {
-          setError(err?.response?.data?.error || err?.message || "Failed to load bag details");
+          setError(
+            err?.response?.data?.error || err?.message || "Failed to load bag details",
+          );
+          setActionBag(null);
+          setCatalog([]);
         }
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    })();
+
     return () => {
       cancelled = true;
     };
-  }, [expanded, actionBag, loading, selectedDateEt, bag?.bag_id]);
+  }, [expanded, selectedDateEt, bag?.bag_id]);
 
   return (
     <Box

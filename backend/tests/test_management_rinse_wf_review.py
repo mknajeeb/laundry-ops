@@ -686,6 +686,115 @@ def test_review_action_metadata_loads_no_scans():
     assert out["bag"]["bulk_workitems"] == lines
 
 
+def test_review_action_metadata_zero_scans_empty_optional_records():
+    """Fresh-start purge: no scan rows must not block action metadata."""
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_rinse_wf_review import build_management_review_action
+
+    row = {
+        "bag_id": "EZRTRBZGGJ",
+        "effective_status": "review_required",
+        "review_reason_codes": ["WF_BULK_WORKITEM_REVIEW"],
+        "post_weight_lbs": None,
+        "manager_edit_version": 0,
+        "updated_at": "2026-08-24T12:00:00",
+        "bag_snapshot": {
+            "customer_name": "Halle Briede",
+            "rush_flag": "NON-RUSH",
+        },
+    }
+    with (
+        patch(
+            "backend.rinse_veewash_shift_day.load_day_bags_by_ids",
+            return_value=[row],
+        ),
+        patch(
+            "backend.rinse_bulk_workitems.load_bag_bulk_lines",
+            return_value={"EZRTRBZGGJ": []},
+        ),
+        patch(
+            "backend.rinse_bulk_workitems.load_bulk_resolutions",
+            return_value={},
+        ),
+        patch(
+            "backend.rinse_bulk_workitems.list_workitems",
+            return_value=[{"id": 1, "name": "Bath Mat", "current_unit_price": 4.0}],
+        ),
+        patch(
+            "backend.management_rinse_wf_review._canonical_review_weights",
+            return_value={"EZRTRBZGGJ": {}},
+        ),
+    ):
+        out = build_management_review_action(
+            MagicMock(),
+            3,
+            date(2026, 8, 24),
+            "EZRTRBZGGJ",
+        )
+    assert out["ok"] is True
+    assert out["bag"]["bag_id"] == "EZRTRBZGGJ"
+    assert out["bag"]["_detailsLoaded"] is True
+    assert out["_meta"]["scans_loaded"] is False
+    assert out["bag"]["bulk_workitems"] == []
+
+
+def test_review_detail_zero_scans_returns_core_bag():
+    """Modal/detail path must return bag core when scan history is empty."""
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_rinse_wf_review import build_management_review_detail
+
+    bag = {
+        "bag_id": "EZRTRBZGGJ",
+        "customer_name": "Halle Briede",
+        "reason_codes": ["WF_BULK_WORKITEM_REVIEW"],
+        "bulk_workitems": [],
+        "scans": [],
+    }
+    with patch(
+        "backend.rinse_veewash_step1_api.build_drilldown",
+        return_value={
+            "bags": [bag],
+            "active_bulk_workitems": [],
+            "timing_ms": 1.2,
+        },
+    ):
+        out = build_management_review_detail(
+            MagicMock(),
+            3,
+            date(2026, 8, 24),
+            "EZRTRBZGGJ",
+            include_scans=False,
+        )
+    assert out["ok"] is True
+    assert out["bag"]["bag_id"] == "EZRTRBZGGJ"
+    assert out["bag"]["_detailsLoaded"] is True
+    assert out["_meta"]["scans_loaded"] is False
+
+
+def test_review_detail_error_shape():
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_rinse_wf_review import build_management_review_detail
+
+    with patch(
+        "backend.rinse_veewash_step1_api.build_drilldown",
+        return_value={"bags": []},
+    ):
+        out = build_management_review_detail(
+            MagicMock(),
+            3,
+            date(2026, 8, 24),
+            "MISSING01",
+        )
+    assert out["ok"] is False
+    assert out["error"] == "bag_not_found"
+
+
 def test_split_order_list_filters_persisted_ids_with_as_of_day_cutoff():
     """Persisted split_review polluted by D+1 must not list bags as-of D."""
     from datetime import date

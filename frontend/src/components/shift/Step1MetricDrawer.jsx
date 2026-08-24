@@ -1148,7 +1148,7 @@ export default function Step1MetricDrawer({
                         ))}
                         {(bag.scans || []).length === 0 ? (
                           <TableRow>
-                            <TableCell colSpan={6}>No scans</TableCell>
+                            <TableCell colSpan={6}>No processing scans yet</TableCell>
                           </TableRow>
                         ) : null}
                       </TableBody>

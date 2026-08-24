@@ -65,7 +65,7 @@ function ScansBlock({ loading, error, scans, meta }) {
           {error}
         </Alert>
       ) : scans.length === 0 ? (
-        <Typography sx={{ fontSize: 13, color: "#64748b" }}>No scans loaded.</Typography>
+        <Typography sx={{ fontSize: 13, color: "#64748b" }}>No processing scans yet</Typography>
       ) : (
         <Table size="small">
           <TableHead>
