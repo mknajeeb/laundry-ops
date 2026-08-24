@@ -1222,21 +1222,12 @@ def build_management_review_list(
 
     bags_out: list[dict[str, Any]] = []
     if page_ids:
-        name_rows = [
-            {
-                "bag_id": bid,
-                "customer_name": review_customer_display_name(
-                    (by_id.get(bid) or {}).get("customer_name"),
-                    ((by_id.get(bid) or {}).get("bag_snapshot") or {}).get("customer_name"),
-                ),
-            }
-            for bid in page_ids
-        ]
+        name_rows = [{"bag_id": bid, "customer_name": None} for bid in page_ids]
         resolve_customer_names_for_bags(cursor, organization_id, name_rows)
-        for nr in name_rows:
-            if nr.get("customer_name") in (None, "", "—", "Unknown Customer"):
-                nr["customer_name"] = REVIEW_CUSTOMER_UNAVAILABLE
-        name_by_id = {r["bag_id"]: r["customer_name"] for r in name_rows}
+        name_by_id = {
+            r["bag_id"]: review_customer_display_name(r.get("customer_name"))
+            for r in name_rows
+        }
     else:
         name_by_id = {}
     for bid in page_ids:

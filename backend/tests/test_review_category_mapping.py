@@ -148,6 +148,10 @@ def test_review_list_uses_canonical_membership(mock_compute):
         "bag_snapshot": {"customer_name": "Ada Lovelace", "rush_flag": "NON-RUSH"},
         "manager_edit_version": 0,
     }
+    def _fill_names(_c, _o, rows):
+        for r in rows:
+            r["customer_name"] = "Ada Lovelace"
+
     with (
         patch(
             "backend.rinse_veewash_shift_day.get_day_record",
@@ -170,8 +174,8 @@ def test_review_list_uses_canonical_membership(mock_compute):
             return_value={"BULK1": [{"quantity": 1, "name": "Comforter"}]},
         ),
         patch(
-            "backend.rinse_employee_productivity_sessions.resolve_customer_names_for_bags",
-            side_effect=lambda _c, _o, rows: rows,
+            "backend.management_rinse_wf_review.resolve_customer_names_for_bags",
+            side_effect=_fill_names,
         ),
     ):
         out = build_management_review_list(
