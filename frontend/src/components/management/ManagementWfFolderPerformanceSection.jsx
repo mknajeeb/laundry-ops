@@ -10,7 +10,6 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
-  IconButton,
   InputLabel,
   MenuItem,
   Select,
@@ -19,6 +18,7 @@ import {
   Typography,
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import {
   getManagementWfFolderPerformance,
   getManagementWfFolderSessionOrders,
@@ -29,69 +29,35 @@ import {
 } from "../../api";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+import PerformanceDetailDrawer from "./performance/PerformanceDetailDrawer";
+import {
+  PerformanceFilterChip,
+  PerformanceSortSelect,
+} from "./performance/PerformanceDetailDrawer";
+import { fmtCount, fmtDelta, fmtLbs, fmtRate } from "./performance/performanceFormat";
 
-function fmtRate(v, digits = 1) {
-  if (v == null || Number.isNaN(Number(v))) return "—";
-  return Number(v).toFixed(digits);
-}
+const WF_SORT_OPTIONS = [
+  { value: "output", label: "Most orders" },
+  { value: "pounds", label: "Most lb" },
+  { value: "lbs_hr", label: "Highest lb/hr" },
+  { value: "bags_hr", label: "Highest bags/hr" },
+];
 
-function fmtLbs(v) {
-  if (v == null || Number.isNaN(Number(v))) return "—";
-  return `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })} lb`;
-}
-
-function fmtDelta(pct) {
-  if (pct == null || Number.isNaN(Number(pct))) return null;
-  const n = Number(pct);
-  const sign = n > 0 ? "+" : "";
-  return `${sign}${n.toFixed(0)}%`;
-}
-
-function SessionTiming({ session, employee }) {
+function SessionTiming({ session, employee, compact = false }) {
   const target = session || employee;
   if (!target) return null;
-  const sessions = employee?.sessions || [];
-  const showSessionList = Boolean(employee) && sessions.length > 1;
+  const fontSize = compact ? 11 : 12;
   return (
     <>
       {employee?.duration_label ? (
-        <Typography sx={{ mt: 1, fontSize: 12, color: "#0f172a", fontWeight: 800 }}>
-          Total Fold Time: {employee.duration_label}
+        <Typography sx={{ mt: 0.5, fontSize, color: "#64748b", fontWeight: 600 }}>
+          Fold time {employee.duration_label}
         </Typography>
       ) : null}
-      <Typography
-        sx={{
-          mt: employee?.duration_label ? 0.25 : 1,
-          fontSize: 12,
-          color: "#475569",
-          fontWeight: 600,
-        }}
-      >
+      <Typography sx={{ mt: 0.35, fontSize, color: "#94a3b8", fontWeight: 600 }}>
         {target.time_range_label || "—"}
-        {target.duration_label && !target.performance_through_label && !employee
-          ? ` · ${target.duration_label}`
-          : ""}
+        {target.performance_through_label ? ` · ${target.performance_through_label}` : ""}
       </Typography>
-      {target.performance_through_label ? (
-        <Typography sx={{ mt: 0.25, fontSize: 11, color: "#64748b", fontWeight: 600 }}>
-          {target.performance_through_label}
-          {target.duration_label ? ` · ${target.duration_label}` : ""}
-        </Typography>
-      ) : null}
-      {showSessionList ? (
-        <Box sx={{ mt: 0.75 }}>
-          {sessions.map((sess, idx) => (
-            <Typography
-              key={sess.session_id || idx}
-              sx={{ fontSize: 11, color: "#64748b", fontWeight: 600, lineHeight: 1.45 }}
-            >
-              Session {idx + 1}
-              {sess.session_code ? ` (${sess.session_code})` : ""}:{" "}
-              {sess.time_range_label || "—"}
-            </Typography>
-          ))}
-        </Box>
-      ) : null}
     </>
   );
 }
@@ -101,149 +67,121 @@ function DeltaChip({ label, pct }) {
   if (!text) return null;
   const up = Number(pct) >= 0;
   return (
-    <Box
+    <Typography
+      component="span"
       sx={{
-        px: 0.85,
-        py: 0.35,
-        borderRadius: 1,
-        bgcolor: up ? "#ecfdf5" : "#fef2f2",
-        color: up ? "#047857" : "#b91c1c",
         fontSize: 11,
         fontWeight: 700,
-        whiteSpace: "nowrap",
+        color: up ? "#047857" : "#b91c1c",
       }}
     >
       {label} {text}
-    </Box>
+    </Typography>
   );
 }
 
-function SessionCard({ session, onOpen, selectedIds, onToggle }) {
-  const checked = selectedIds?.has?.(session._selectKey);
+function WfEmployeeRankCard({ rank, employee, onOpenSession }) {
+  const sessions = employee.sessions || [];
   return (
     <Box
       sx={{
-        p: 1.25,
-        borderRadius: 2,
-        border: "1px solid #e5e7eb",
+        px: { xs: 1.25, sm: 1.5 },
+        py: { xs: 1.15, sm: 1.35 },
+        borderRadius: 2.5,
         bgcolor: "#fff",
+        boxShadow: VEEWASH_DASHBOARD.cardShadow,
       }}
     >
-      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
-        <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography sx={{ fontSize: 16, fontWeight: 800, lineHeight: 1.15 }}>
-            {session.employee}
-          </Typography>
-          <Typography sx={{ mt: 0.35, fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-            {session.orders_completed} Orders · {fmtLbs(session.total_pre_lbs)}
-          </Typography>
-        </Box>
-        {onToggle ? (
-          <Checkbox
-            size="small"
-            checked={!!checked}
-            onChange={() => onToggle(session._selectKey)}
-            sx={{ p: 0.25 }}
-          />
-        ) : null}
-      </Stack>
-
-      <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
-        <Box>
-          <Typography sx={{ fontSize: 18, fontWeight: 800, lineHeight: 1 }}>
-            {fmtRate(session.bags_per_hour)}
-          </Typography>
-          <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
-            bags/hr
-          </Typography>
-        </Box>
-        <Box>
-          <Typography sx={{ fontSize: 18, fontWeight: 800, lineHeight: 1 }}>
-            {fmtRate(session.lbs_per_hour, 0)}
-          </Typography>
-          <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
-            lb/hr
-          </Typography>
-        </Box>
-      </Stack>
-
-      <SessionTiming session={session} />
-
-      <Button
-        size="small"
-        onClick={() => onOpen(session)}
-        sx={{
-          mt: 0.75,
-          px: 0,
-          minWidth: 0,
-          fontWeight: 800,
-          textTransform: "none",
-          color: VEEWASH_DASHBOARD.primaryBlueDark,
-        }}
-      >
-        View {session.orders_completed} Orders →
-      </Button>
-    </Box>
-  );
-}
-
-function EmployeeCard({ employee, onOpenSession }) {
-  return (
-    <Box
-      sx={{
-        p: 1.35,
-        borderRadius: 2,
-        border: "1px solid #e5e7eb",
-        bgcolor: "#fff",
-      }}
-    >
-      <Typography sx={{ fontSize: 18, fontWeight: 800, lineHeight: 1.1 }}>
-        {employee.employee}
-      </Typography>
-      <Typography sx={{ mt: 0.4, fontSize: 13, color: "#64748b", fontWeight: 600 }}>
-        {employee.orders_completed} Orders · {fmtLbs(employee.total_pre_lbs)}
-      </Typography>
-
-      <Stack direction="row" spacing={2.5} sx={{ mt: 1.1 }}>
-        <Box>
-          <Typography sx={{ fontSize: 22, fontWeight: 800, lineHeight: 1 }}>
-            {fmtRate(employee.bags_per_hour)}
-          </Typography>
-          <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
-            bags/hr
-          </Typography>
-        </Box>
-        <Box>
-          <Typography sx={{ fontSize: 22, fontWeight: 800, lineHeight: 1 }}>
-            {fmtRate(employee.lbs_per_hour, 0)}
-          </Typography>
-          <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
-            lb/hr
-          </Typography>
-        </Box>
-      </Stack>
-
-      <SessionTiming employee={employee} />
-
-      {(employee.sessions || []).map((sess) => (
-        <Button
-          key={sess.session_id}
-          size="small"
-          onClick={() => onOpenSession(sess)}
+      <Stack direction="row" spacing={1.25} alignItems="flex-start">
+        <Typography
           sx={{
-            mt: 0.5,
-            px: 0,
-            display: "block",
-            minWidth: 0,
+            fontSize: 13,
             fontWeight: 800,
-            textTransform: "none",
-            color: VEEWASH_DASHBOARD.primaryBlueDark,
+            color: VEEWASH_DASHBOARD.primaryBlue,
+            minWidth: 28,
+            pt: 0.15,
           }}
         >
-          View {sess.orders_completed} Orders
-          {sess.session_code ? ` · ${sess.session_code}` : ""} →
-        </Button>
-      ))}
+          #{rank}
+        </Typography>
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Stack
+            direction="row"
+            justifyContent="space-between"
+            alignItems="flex-start"
+            spacing={1}
+          >
+            <Box sx={{ minWidth: 0 }}>
+              <Typography
+                sx={{
+                  fontSize: { xs: 16, sm: 17 },
+                  fontWeight: 800,
+                  lineHeight: 1.2,
+                  color: "#0f172a",
+                }}
+                noWrap
+              >
+                {employee.employee}
+              </Typography>
+              <Typography sx={{ mt: 0.35, fontSize: 13, color: "#64748b", fontWeight: 600 }}>
+                {fmtCount(employee.orders_completed)} orders · {fmtLbs(employee.total_pre_lbs, { compact: true })}
+              </Typography>
+            </Box>
+            <Box sx={{ textAlign: "right", flexShrink: 0 }}>
+              <Typography
+                sx={{
+                  fontSize: { xs: 22, sm: 24 },
+                  fontWeight: 800,
+                  lineHeight: 1,
+                  color: VEEWASH_DASHBOARD.primaryBlueDark,
+                }}
+              >
+                {fmtRate(employee.lbs_per_hour, 0)}
+              </Typography>
+              <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", letterSpacing: 0.4 }}>
+                lb/hr
+              </Typography>
+            </Box>
+          </Stack>
+
+          <Typography sx={{ mt: 0.65, fontSize: 13, fontWeight: 700, color: "#475569" }}>
+            {fmtRate(employee.bags_per_hour)} bags/hr
+          </Typography>
+
+          <SessionTiming employee={employee} compact />
+
+          <Stack spacing={0.15} sx={{ mt: 0.85 }}>
+            {sessions.map((sess) => (
+              <Box
+                key={sess.session_id}
+                component="button"
+                type="button"
+                onClick={() => onOpenSession(sess)}
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 0.25,
+                  m: 0,
+                  p: 0,
+                  border: "none",
+                  bgcolor: "transparent",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  color: VEEWASH_DASHBOARD.primaryBlueDark,
+                  fontWeight: 800,
+                  fontSize: 13,
+                  WebkitTapHighlightColor: "transparent",
+                  "&:hover": { textDecoration: "underline" },
+                }}
+              >
+                View {sess.orders_completed} order{sess.orders_completed === 1 ? "" : "s"}
+                {sess.session_code ? ` · ${sess.session_code}` : ""}
+                <ChevronRightIcon sx={{ fontSize: 16 }} />
+              </Box>
+            ))}
+          </Stack>
+        </Box>
+      </Stack>
     </Box>
   );
 }
@@ -261,14 +199,12 @@ function OrderRow({
   const [sentOk, setSentOk] = useState(false);
 
   const status = String(
-    order.dashboard_status || order.effective_status || order.status || ""
+    order.dashboard_status || order.effective_status || order.status || "",
   )
     .toLowerCase()
     .replace(/-/g, "_");
   const alreadyReview =
-    status.includes("review")
-    || order.review_required === true
-    || Boolean(order.in_review);
+    status.includes("review") || order.review_required === true || Boolean(order.in_review);
   const showSendBack = !alreadyReview;
 
   const handleSendBack = async (e) => {
@@ -304,10 +240,12 @@ function OrderRow({
     }
   };
 
+  const timeLabel = formatFriendlyEtWall(order.completion_time_et) || order.completion_time_et || "—";
+
   return (
     <Box
       sx={{
-        py: 1,
+        py: 1.15,
         borderBottom: "1px solid #f1f5f9",
         cursor: "pointer",
       }}
@@ -327,27 +265,27 @@ function OrderRow({
           />
         ) : null}
         <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Stack direction="row" justifyContent="space-between" spacing={1}>
-            <Typography sx={{ fontSize: 13, fontWeight: 800 }}>{order.bag_id}</Typography>
-            <Typography sx={{ fontSize: 12, fontWeight: 700, color: "#334155" }}>
-              {fmtLbs(order.pre_lbs)}
-            </Typography>
-          </Stack>
-          <Typography sx={{ fontSize: 12, color: "#64748b" }}>{order.customer_name}</Typography>
-          <Typography sx={{ mt: 0.25, fontSize: 11, color: "#475569" }}>
-            {formatFriendlyEtWall(order.completion_time_et) || order.completion_time_et || "—"}
+          <Typography sx={{ fontSize: 14, fontWeight: 700, color: "#0f172a" }}>
+            {order.customer_name || "Customer unavailable"}
+          </Typography>
+          <Typography sx={{ mt: 0.2, fontSize: 13, color: "#475569", fontWeight: 600 }}>
+            {order.bag_id}
+            {order.pre_lbs != null ? ` · ${fmtLbs(order.pre_lbs, { compact: true })}` : ""}
+          </Typography>
+          <Typography sx={{ mt: 0.15, fontSize: 12, color: "#94a3b8", fontWeight: 600 }}>
+            Fold complete · {timeLabel}
             {order.time_taken_label ? ` · ${order.time_taken_label}` : ""}
           </Typography>
-          <Typography sx={{ mt: 0.2, fontSize: 11, color: "#64748b" }}>
-            Credited: {order.credited_employee || "—"}
-            {order.original_scanner && order.original_scanner !== order.credited_employee
-              ? ` · Scanner: ${order.original_scanner}`
-              : ""}
-            {order.reassignment_indicator ? " · Reassigned" : ""}
-          </Typography>
-          {order.unmapped_reason ? (
-            <Typography sx={{ mt: 0.2, fontSize: 11, color: "#b45309", fontWeight: 700 }}>
-              {order.unmapped_reason.replaceAll("_", " ")}
+          {(order.original_scanner && order.original_scanner !== order.credited_employee)
+            || order.reassignment_indicator
+            || order.unmapped_reason ? (
+            <Typography sx={{ mt: 0.25, fontSize: 11, color: "#64748b" }}>
+              {order.credited_employee ? `Credited ${order.credited_employee}` : ""}
+              {order.original_scanner && order.original_scanner !== order.credited_employee
+                ? ` · Scanner ${order.original_scanner}`
+                : ""}
+              {order.reassignment_indicator ? " · Reassigned" : ""}
+              {order.unmapped_reason ? ` · ${order.unmapped_reason.replaceAll("_", " ")}` : ""}
             </Typography>
           ) : null}
           {expanded ? (
@@ -419,11 +357,7 @@ function MoveDialog({
         <Stack spacing={1.5} sx={{ mt: 0.5 }}>
           <FormControl fullWidth size="small">
             <InputLabel>Employee</InputLabel>
-            <Select
-              label="Employee"
-              value={employee}
-              onChange={(e) => setEmployee(e.target.value)}
-            >
+            <Select label="Employee" value={employee} onChange={(e) => setEmployee(e.target.value)}>
               {(destinations || []).map((d) => (
                 <MenuItem key={d.employee} value={d.employee}>
                   {d.employee_label || d.employee}
@@ -470,9 +404,6 @@ function MoveDialog({
   );
 }
 
-/**
- * Management → Performance → WF Folder Performance (mobile-first).
- */
 export default function ManagementWfFolderPerformanceSection({ dateEt }) {
   const [compare, setCompare] = useState("today");
   const [lastN, setLastN] = useState(10);
@@ -543,11 +474,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
     setSelectedBagIds(new Set((orders || []).map((o) => o.bag_id).filter(Boolean)));
   };
 
-  const openMove = async (ordersSource) => {
-    const ids = [...selectedBagIds];
-    if (!ids.length && ordersSource?.length) {
-      // no-op guard
-    }
+  const openMove = async () => {
     try {
       const res = await getManagementWfFolderDestinations(dateEt);
       setDestinations(res.data?.destinations || []);
@@ -621,9 +548,9 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
 
   const presets = data?.ui_presets || [
     { key: "today", label: "Today" },
-    { key: "same_weekday_last_week", label: "Same Day Last Week" },
-    { key: "7d", label: "7 Days" },
-    { key: "30d", label: "30 Days" },
+    { key: "same_weekday_last_week", label: "Same day last week" },
+    { key: "7d", label: "7D" },
+    { key: "30d", label: "30D" },
     { key: "last_n", label: "Last N" },
   ];
 
@@ -646,79 +573,98 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
     return rows;
   }, [data?.employees, sortBy]);
 
-  return (
-    <Box sx={{ width: "100%", minWidth: 0 }}>
-      <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-        <Box>
-          <Typography sx={{ fontSize: 18, fontWeight: 800 }}>WF Folder Performance</Typography>
-          <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-            PRE lb · RINSE_WF / FOLDER sessions
-          </Typography>
-        </Box>
-        <Stack direction="row" spacing={0.5} alignItems="center">
-          <IconButton size="small" onClick={() => load()} aria-label="Refresh">
-            <RefreshIcon fontSize="small" />
-          </IconButton>
-          <FormControl size="small" sx={{ minWidth: 130 }}>
-            <InputLabel id="wf-sort-label">Sort</InputLabel>
-            <Select
-              labelId="wf-sort-label"
-              label="Sort"
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-            >
-              <MenuItem value="output">Most orders</MenuItem>
-              <MenuItem value="pounds">Most pounds</MenuItem>
-              <MenuItem value="bags_hr">Highest bags/hr</MenuItem>
-              <MenuItem value="lbs_hr">Highest lb/hr</MenuItem>
-            </Select>
-          </FormControl>
-        </Stack>
-      </Stack>
-
-      <Box
-        sx={{
-          display: "flex",
-          gap: 0.5,
-          overflowX: "auto",
-          pb: 0.5,
-          mb: 1,
-          WebkitOverflowScrolling: "touch",
-          "&::-webkit-scrollbar": { display: "none" },
-        }}
+  const kpiLine = (
+    <>
+      <Typography component="span" sx={{ fontWeight: 700, color: "#334155" }}>
+        {fmtCount(summary.orders_completed)} Orders
+      </Typography>
+      <Typography component="span" sx={{ mx: 0.75, color: "#cbd5e1" }}>
+        ·
+      </Typography>
+      <Typography component="span" sx={{ fontWeight: 700, color: "#334155" }}>
+        {fmtLbs(summary.total_pre_lbs, { compact: true })}
+      </Typography>
+      <Typography component="span" sx={{ mx: 0.75, color: "#cbd5e1" }}>
+        ·
+      </Typography>
+      <Typography component="span" sx={{ fontWeight: 700, color: "#334155" }}>
+        {fmtCount(summary.employee_count)} Employees
+      </Typography>
+      <Typography component="span" sx={{ mx: 0.75, color: "#cbd5e1" }}>
+        ·
+      </Typography>
+      <Typography
+        component="span"
+        sx={{ fontWeight: 800, color: VEEWASH_DASHBOARD.primaryBlueDark, fontSize: { xs: 15, sm: 16 } }}
       >
-        {presets.map((p) => {
-          const active = compare === p.key;
-          return (
-            <Box
+        {fmtRate(summary.lbs_per_hour, 0)} lb/hr
+      </Typography>
+    </>
+  );
+
+  return (
+    <Box sx={{ width: "100%", minWidth: 0, maxWidth: { md: 720 }, mx: { md: "auto" } }}>
+      <Stack
+        direction="row"
+        justifyContent="space-between"
+        alignItems="center"
+        spacing={1}
+        sx={{ mb: 1.25 }}
+      >
+        <Box
+          sx={{
+            display: "flex",
+            gap: 0.5,
+            overflowX: "auto",
+            flex: 1,
+            minWidth: 0,
+            WebkitOverflowScrolling: "touch",
+            "&::-webkit-scrollbar": { display: "none" },
+          }}
+        >
+          {presets.map((p) => (
+            <PerformanceFilterChip
               key={p.key}
-              component="button"
-              type="button"
+              active={compare === p.key}
               onClick={() => {
                 setCompare(p.key);
                 load({ compare: p.key });
               }}
-              sx={{
-                flex: "0 0 auto",
-                appearance: "none",
-                border: "1px solid",
-                borderColor: active ? VEEWASH_DASHBOARD.primaryBlue : "#e5e7eb",
-                bgcolor: active ? VEEWASH_DASHBOARD.primaryBlueLight : "#fff",
-                color: active ? VEEWASH_DASHBOARD.primaryBlueDark : "#334155",
-                borderRadius: 999,
-                px: 1.1,
-                py: 0.55,
-                fontSize: 12,
-                fontWeight: 700,
-                cursor: "pointer",
-                fontFamily: "inherit",
-              }}
             >
               {p.label}
-            </Box>
-          );
-        })}
-      </Box>
+            </PerformanceFilterChip>
+          ))}
+        </Box>
+        <Stack direction="row" spacing={0.75} alignItems="center" sx={{ flexShrink: 0 }}>
+          <PerformanceSortSelect
+            value={sortBy}
+            options={WF_SORT_OPTIONS}
+            onChange={setSortBy}
+            aria-label="Sort employees"
+          />
+          <Box
+            component="button"
+            type="button"
+            onClick={() => load()}
+            aria-label="Refresh"
+            sx={{
+              appearance: "none",
+              border: "1px solid #e2e8f0",
+              borderRadius: "50%",
+              width: 32,
+              height: 32,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              bgcolor: "#fff",
+              cursor: "pointer",
+              color: "#64748b",
+            }}
+          >
+            <RefreshIcon sx={{ fontSize: 18 }} />
+          </Box>
+        </Stack>
+      </Stack>
 
       {compare === "last_n" ? (
         <TextField
@@ -728,289 +674,194 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           value={lastN}
           onChange={(e) => setLastN(Math.max(1, Number(e.target.value) || 1))}
           onBlur={() => load({ compare: "last_n", last_n: lastN })}
-          sx={{ mb: 1, width: 160 }}
+          sx={{ mb: 1.25, width: { xs: "100%", sm: 160 } }}
           inputProps={{ min: 1, max: 100 }}
         />
       ) : null}
 
       {error ? (
-        <Alert severity="error" sx={{ mb: 1, py: 0.5 }}>
+        <Alert severity="error" sx={{ mb: 1.25, py: 0.5 }}>
           {error}
         </Alert>
       ) : null}
 
       {loading && !data ? (
-        <Box sx={{ py: 4, textAlign: "center" }}>
-          <CircularProgress size={28} />
+        <Box sx={{ py: 5, textAlign: "center" }}>
+          <CircularProgress size={28} sx={{ color: VEEWASH_DASHBOARD.primaryBlue }} />
         </Box>
       ) : (
         <>
           <Box
             sx={{
-              display: "grid",
-              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-              gap: 0.75,
-              mb: 1,
+              mb: 1.5,
+              px: { xs: 1.25, sm: 1.5 },
+              py: { xs: 1, sm: 1.15 },
+              borderRadius: 2.5,
+              bgcolor: "#fff",
+              boxShadow: VEEWASH_DASHBOARD.cardShadow,
+              fontSize: { xs: 13, sm: 14 },
+              lineHeight: 1.5,
+              flexWrap: "wrap",
             }}
           >
-            <Box sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb", bgcolor: "#fff" }}>
-              <Typography sx={{ fontSize: 20, fontWeight: 800 }}>{summary.orders_completed ?? 0}</Typography>
-              <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
-                Orders Folded
-              </Typography>
-            </Box>
-            <Box sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb", bgcolor: "#fff" }}>
-              <Typography sx={{ fontSize: 20, fontWeight: 800 }}>{fmtLbs(summary.total_pre_lbs)}</Typography>
-              <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
-                Pounds Folded
-              </Typography>
-            </Box>
-            <Box sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb", bgcolor: "#fff" }}>
-              <Typography sx={{ fontSize: 20, fontWeight: 800 }}>{summary.employee_count ?? 0}</Typography>
-              <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
-                Employees Active
-              </Typography>
-            </Box>
-            <Box sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb", bgcolor: "#fff" }}>
-              <Typography sx={{ fontSize: 20, fontWeight: 800 }}>{fmtRate(summary.bags_per_hour)}</Typography>
-              <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
-                Avg Bags/hr
-              </Typography>
-            </Box>
-            <Box sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb", bgcolor: "#fff" }}>
-              <Typography sx={{ fontSize: 20, fontWeight: 800 }}>{fmtRate(summary.lbs_per_hour, 0)}</Typography>
-              <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
-                Avg lb/hr
-              </Typography>
-            </Box>
+            {kpiLine}
+            {deltas ? (
+              <Stack direction="row" spacing={1.25} sx={{ mt: 0.65, flexWrap: "wrap" }}>
+                <DeltaChip label="Bags/hr" pct={deltas.bags_per_hour_delta_pct} />
+                <DeltaChip label="Lb/hr" pct={deltas.lbs_per_hour_delta_pct} />
+              </Stack>
+            ) : null}
           </Box>
 
-          {deltas ? (
-            <Stack direction="row" spacing={0.75} sx={{ mb: 1.25, flexWrap: "wrap" }}>
-              <DeltaChip label="Bags/hr" pct={deltas.bags_per_hour_delta_pct} />
-              <DeltaChip label="Lb/hr" pct={deltas.lbs_per_hour_delta_pct} />
-            </Stack>
-          ) : null}
-
-          <Button
-            fullWidth
-            variant="outlined"
-            onClick={() => setShowUnmapped((v) => !v)}
-            sx={{
-              mb: 1.25,
-              justifyContent: "space-between",
-              textTransform: "none",
-              fontWeight: 800,
-              borderColor: unmappedCount ? "#f59e0b" : "#e5e7eb",
-              color: unmappedCount ? "#b45309" : "#334155",
-              bgcolor: unmappedCount ? "#fffbeb" : "#fff",
-            }}
-          >
-            Unmapped Orders
-            <Box component="span">{unmappedCount}</Box>
-          </Button>
-
-          {showUnmapped ? (
-            <Box
-              sx={{
-                mb: 1.5,
-                p: 1.1,
-                borderRadius: 2,
-                border: "1px solid #fde68a",
-                bgcolor: "#fffbeb",
-              }}
-            >
-              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>
-                <Typography sx={{ fontSize: 13, fontWeight: 800 }}>Investigate / reassign</Typography>
-                <Stack direction="row" spacing={0.5}>
-                  <Button size="small" onClick={() => selectAllVisible(unmapped)} sx={{ textTransform: "none" }}>
-                    Select All
-                  </Button>
-                  <Button
-                    size="small"
-                    disabled={!selectedBagIds.size}
-                    onClick={() => openMove(unmapped)}
-                    sx={{ textTransform: "none", fontWeight: 800 }}
-                  >
-                    Move
-                  </Button>
-                </Stack>
-              </Stack>
-              {unmapped.length === 0 ? (
-                <Typography sx={{ fontSize: 12, color: "#78716c" }}>None</Typography>
-              ) : (
-                unmapped.map((o) => (
-                  <OrderRow
-                    key={o.bag_id}
-                    order={o}
-                    selectable
-                    selected={selectedBagIds.has(o.bag_id)}
-                    onToggle={toggleBag}
-                    selectedDateEt={o.selected_date_et || dateEt}
-                    onSentBack={handleOrderSentBack}
-                  />
-                ))
-              )}
-            </Box>
-          ) : null}
-
-          <Stack spacing={1.1}>
-            <Box
-              sx={{
-                border: "1px solid #e5e7eb",
-                borderRadius: 2,
-                overflow: "hidden",
-                bgcolor: "#fff",
-              }}
-            >
-              <Box
+          {unmappedCount > 0 ? (
+            <Box sx={{ mb: 1.25 }}>
+              <Button
+                fullWidth
+                onClick={() => setShowUnmapped((v) => !v)}
                 sx={{
-                  display: { xs: "none", md: "grid" },
-                  gridTemplateColumns: "1.2fr 0.7fr 0.7fr 0.7fr 0.7fr 0.8fr",
-                  gap: 1,
+                  justifyContent: "space-between",
+                  textTransform: "none",
+                  fontWeight: 800,
+                  fontSize: 13,
+                  py: 1,
                   px: 1.25,
-                  py: 0.75,
-                  bgcolor: "#f8fafc",
-                  borderBottom: "1px solid #e5e7eb",
+                  borderRadius: 2,
+                  color: "#b45309",
+                  bgcolor: showUnmapped ? "#fffbeb" : "#fff",
+                  boxShadow: VEEWASH_DASHBOARD.cardShadow,
+                  "&:hover": { bgcolor: "#fffbeb" },
                 }}
               >
-                {["Employee", "Orders", "Pounds", "Bags/hr", "lb/hr", "Details"].map((h) => (
-                  <Typography
-                    key={h}
-                    sx={{ fontSize: 11, fontWeight: 800, color: "#64748b", textTransform: "uppercase" }}
-                  >
-                    {h}
-                  </Typography>
-                ))}
-              </Box>
-              {(employees || []).map((emp) => (
+                Unmapped orders
+                <Box component="span">{unmappedCount}</Box>
+              </Button>
+              {showUnmapped ? (
                 <Box
-                  key={emp.employee}
                   sx={{
-                    display: "grid",
-                    gridTemplateColumns: { xs: "1fr", md: "1.2fr 0.7fr 0.7fr 0.7fr 0.7fr 0.8fr" },
-                    gap: 1,
+                    mt: 0.75,
                     px: 1.25,
                     py: 1,
-                    borderBottom: "1px solid #f1f5f9",
-                    alignItems: "center",
+                    borderRadius: 2,
+                    bgcolor: "#fffbeb",
                   }}
                 >
-                  <Typography sx={{ fontWeight: 800, fontSize: 15 }}>{emp.employee}</Typography>
-                  <Typography sx={{ fontWeight: 700, fontSize: 14 }}>{emp.orders_completed ?? 0}</Typography>
-                  <Typography sx={{ fontWeight: 700, fontSize: 14 }}>{fmtLbs(emp.total_pre_lbs)}</Typography>
-                  <Typography sx={{ fontWeight: 800, fontSize: 15, color: VEEWASH_DASHBOARD.primaryBlueDark }}>
-                    {fmtRate(emp.bags_per_hour)}
-                  </Typography>
-                  <Typography sx={{ fontWeight: 800, fontSize: 15, color: VEEWASH_DASHBOARD.primaryBlueDark }}>
-                    {fmtRate(emp.lbs_per_hour, 0)}
-                  </Typography>
-                  <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap" }}>
-                    {(emp.sessions || []).slice(0, 2).map((sess) => (
-                      <Button
-                        key={sess.session_id}
-                        size="small"
-                        variant="outlined"
-                        onClick={() => openSession(sess)}
-                        sx={{ textTransform: "none", fontWeight: 700, minWidth: 0 }}
-                      >
-                        View {sess.orders_completed}
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>
+                    <Typography sx={{ fontSize: 12, fontWeight: 800, color: "#92400e" }}>
+                      Reassign unattributed orders
+                    </Typography>
+                    <Stack direction="row" spacing={0.5}>
+                      <Button size="small" onClick={() => selectAllVisible(unmapped)} sx={{ textTransform: "none" }}>
+                        All
                       </Button>
-                    ))}
+                      <Button
+                        size="small"
+                        disabled={!selectedBagIds.size}
+                        onClick={openMove}
+                        sx={{ textTransform: "none", fontWeight: 800 }}
+                      >
+                        Move
+                      </Button>
+                    </Stack>
                   </Stack>
+                  {unmapped.map((o) => (
+                    <OrderRow
+                      key={o.bag_id}
+                      order={o}
+                      selectable
+                      selected={selectedBagIds.has(o.bag_id)}
+                      onToggle={toggleBag}
+                      selectedDateEt={o.selected_date_et || dateEt}
+                      onSentBack={handleOrderSentBack}
+                    />
+                  ))}
                 </Box>
-              ))}
-              {!loading && !employees.length ? (
-                <Typography sx={{ p: 1.5, fontSize: 13, color: "#94a3b8", fontWeight: 600 }}>
-                  No WF Folder sessions for this window.
-                </Typography>
               ) : null}
             </Box>
+          ) : null}
+
+          <Stack spacing={1}>
+            {employees.map((emp, idx) => (
+              <WfEmployeeRankCard
+                key={emp.employee}
+                rank={idx + 1}
+                employee={emp}
+                onOpenSession={openSession}
+              />
+            ))}
+            {!loading && !employees.length ? (
+              <Typography sx={{ py: 2, fontSize: 14, color: "#94a3b8", fontWeight: 600, textAlign: "center" }}>
+                No Wash & Fold folder sessions for this window.
+              </Typography>
+            ) : null}
           </Stack>
         </>
       )}
 
-      <Dialog
+      <PerformanceDetailDrawer
         open={!!sessionModal}
         onClose={() => {
           setSessionModal(null);
           setSelectedBagIds(new Set());
         }}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle sx={{ fontWeight: 800, fontSize: 16, pb: 0.5 }}>
-          {sessionModal?.employee}
-        </DialogTitle>
-        <DialogContent>
-          <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600, mb: 1 }}>
-            {sessionModal?.time_range_label || "—"}
-          </Typography>
-          {sessionModal?.performance_through_label ? (
-            <Typography sx={{ fontSize: 11, color: "#64748b", fontWeight: 600, mb: 1 }}>
-              {sessionModal.performance_through_label}
-              {sessionModal.duration_label ? ` · ${sessionModal.duration_label}` : ""}
-            </Typography>
-          ) : sessionModal?.duration_label ? (
-            <Typography sx={{ fontSize: 11, color: "#64748b", fontWeight: 600, mb: 1 }}>
-              {sessionModal.duration_label}
-            </Typography>
-          ) : null}
-          <Stack direction="row" spacing={0.75} sx={{ mb: 1, flexWrap: "wrap" }}>
-            <Button size="small" onClick={() => selectAllVisible(sessionOrders)} sx={{ textTransform: "none" }}>
-              Select All
-            </Button>
-            <Button
-              size="small"
-              disabled={!selectedBagIds.size}
-              onClick={() => openMove(sessionOrders)}
-              sx={{ textTransform: "none", fontWeight: 800 }}
-            >
-              Move
-            </Button>
-            <Button
-              size="small"
-              disabled={!selectedBagIds.size || actionBusy}
-              onClick={resetSelected}
-              sx={{ textTransform: "none" }}
-            >
-              Reset
-            </Button>
-          </Stack>
-          {sessionLoading ? (
-            <Box sx={{ py: 3, textAlign: "center" }}>
-              <CircularProgress size={24} />
-            </Box>
-          ) : (
-            sessionOrders.map((o) => (
-              <OrderRow
-                key={o.bag_id}
-                order={o}
-                selectable
-                selected={selectedBagIds.has(o.bag_id)}
-                onToggle={toggleBag}
-                selectedDateEt={
-                  o.selected_date_et || sessionModal?.selected_date_et || dateEt
-                }
-                onSentBack={handleOrderSentBack}
-              />
-            ))
-          )}
-          {!sessionLoading && !sessionOrders.length ? (
-            <Typography sx={{ fontSize: 12, color: "#64748b" }}>No orders in this session.</Typography>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
+        title={sessionModal?.employee || "Orders"}
+        subtitle={sessionModal?.time_range_label || undefined}
+        footer={
           <Button
+            fullWidth
+            variant="outlined"
             onClick={() => {
               setSessionModal(null);
               setSelectedBagIds(new Set());
             }}
+            sx={{ textTransform: "none", fontWeight: 700 }}
           >
             Close
           </Button>
-        </DialogActions>
-      </Dialog>
+        }
+      >
+        <Stack direction="row" spacing={0.75} sx={{ mb: 1, flexWrap: "wrap" }}>
+          <Button size="small" onClick={() => selectAllVisible(sessionOrders)} sx={{ textTransform: "none" }}>
+            Select all
+          </Button>
+          <Button
+            size="small"
+            disabled={!selectedBagIds.size}
+            onClick={openMove}
+            sx={{ textTransform: "none", fontWeight: 800 }}
+          >
+            Move
+          </Button>
+          <Button
+            size="small"
+            disabled={!selectedBagIds.size || actionBusy}
+            onClick={resetSelected}
+            sx={{ textTransform: "none" }}
+          >
+            Reset
+          </Button>
+        </Stack>
+        {sessionLoading ? (
+          <Box sx={{ py: 4, textAlign: "center" }}>
+            <CircularProgress size={24} />
+          </Box>
+        ) : sessionOrders.length ? (
+          sessionOrders.map((o) => (
+            <OrderRow
+              key={o.bag_id}
+              order={o}
+              selectable
+              selected={selectedBagIds.has(o.bag_id)}
+              onToggle={toggleBag}
+              selectedDateEt={o.selected_date_et || sessionModal?.selected_date_et || dateEt}
+              onSentBack={handleOrderSentBack}
+            />
+          ))
+        ) : (
+          <Typography sx={{ fontSize: 13, color: "#94a3b8", fontWeight: 600 }}>
+            No orders in this session.
+          </Typography>
+        )}
+      </PerformanceDetailDrawer>
 
       <MoveDialog
         open={moveOpen}

@@ -18,58 +18,111 @@ function todayEtIso() {
   }
 }
 
+const MODES = [
+  { id: "wf", label: "Wash & Fold" },
+  { id: "hd", label: "Hang Dry" },
+];
+
 /**
- * Management → Performance compartment.
- * WF Folder + HD wash/fold attribution dashboard.
+ * Management → Performance — mobile-first operational productivity.
  */
 export default function ManagementPerformancePage() {
   const [dateEt, setDateEt] = useState(todayEtIso);
+  const [mode, setMode] = useState("wf");
 
   return (
     <Box
       sx={{
         minHeight: "100dvh",
-        bgcolor: VEEWASH_DASHBOARD.pageBg || "#f8fafc",
-        pb: 4,
+        bgcolor: VEEWASH_DASHBOARD.pageBackground,
+        pb: 5,
       }}
     >
       <ManagementHubNav activeId="performance" />
-      <Box sx={{ px: { xs: 1.5, sm: 2, lg: 3 }, pt: 1.25, maxWidth: 1280, mx: "auto", width: "100%" }}>
+
+      <Box
+        sx={{
+          px: { xs: 1.5, sm: 2, md: 3 },
+          pt: 1.25,
+          maxWidth: 960,
+          mx: "auto",
+          width: "100%",
+        }}
+      >
         <Stack
           direction={{ xs: "column", sm: "row" }}
           justifyContent="space-between"
           alignItems={{ xs: "stretch", sm: "center" }}
-          spacing={1}
-          sx={{ mb: 1.5 }}
+          spacing={1.25}
+          sx={{ mb: 1.75 }}
         >
-          <Box>
-            <Typography sx={{ fontSize: 22, fontWeight: 800, lineHeight: 1.1 }}>
-              Performance
-            </Typography>
-            <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-              WF folder productivity · HD wash/fold operation credit
-            </Typography>
-          </Box>
+          <Typography sx={{ fontSize: { xs: 22, sm: 24 }, fontWeight: 800, lineHeight: 1.1 }}>
+            Performance
+          </Typography>
           <TextField
             size="small"
             type="date"
             value={dateEt}
             onChange={(e) => setDateEt(e.target.value)}
             inputProps={{ "aria-label": "Business date ET" }}
-            sx={{ width: { xs: "100%", sm: 160 }, bgcolor: "#fff" }}
+            sx={{
+              width: { xs: "100%", sm: 168 },
+              bgcolor: "#fff",
+              "& .MuiOutlinedInput-root": { borderRadius: 2 },
+            }}
           />
         </Stack>
 
         <Box
+          role="tablist"
+          aria-label="Performance operation"
           sx={{
-            display: "grid",
-            gridTemplateColumns: { xs: "1fr", lg: "1fr 1fr" },
-            gap: 2,
-            alignItems: "start",
+            display: "flex",
+            p: 0.4,
+            mb: 2,
+            borderRadius: 2.5,
+            bgcolor: "#e8f3f6",
+            boxShadow: "inset 0 1px 2px rgba(0, 60, 80, 0.06)",
           }}
         >
-          <ManagementWfFolderPerformanceSection dateEt={dateEt} />
-          <ManagementHdPerformanceSection dateEt={dateEt} />
+          {MODES.map((m) => {
+            const active = mode === m.id;
+            return (
+              <Box
+                key={m.id}
+                role="tab"
+                aria-selected={active}
+                component="button"
+                type="button"
+                onClick={() => setMode(m.id)}
+                sx={{
+                  flex: 1,
+                  appearance: "none",
+                  border: "none",
+                  borderRadius: 2,
+                  py: 1,
+                  px: 1,
+                  fontSize: { xs: 13, sm: 14 },
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  color: active ? "#fff" : VEEWASH_DASHBOARD.primaryBlueDark,
+                  bgcolor: active ? VEEWASH_DASHBOARD.primaryBlue : "transparent",
+                  boxShadow: active ? VEEWASH_DASHBOARD.cardShadow : "none",
+                  transition: "background-color 0.15s ease, color 0.15s ease",
+                }}
+              >
+                {m.label}
+              </Box>
+            );
+          })}
+        </Box>
+
+        <Box role="tabpanel" hidden={mode !== "wf"} sx={{ display: mode === "wf" ? "block" : "none" }}>
+          {mode === "wf" ? <ManagementWfFolderPerformanceSection dateEt={dateEt} /> : null}
+        </Box>
+        <Box role="tabpanel" hidden={mode !== "hd"} sx={{ display: mode === "hd" ? "block" : "none" }}>
+          {mode === "hd" ? <ManagementHdPerformanceSection dateEt={dateEt} /> : null}
         </Box>
       </Box>
     </Box>
