@@ -2493,6 +2493,11 @@ export const getManagementRinseHdPerformance = (dateEt, params = {}) =>
     params: { date_et: dateEt, ...params },
   });
 
+export const getManagementRinseHdPerformanceEmployee = (userId, dateEt, params = {}) =>
+  axios.get(`${API_BASE}/api/management/rinse-hd/performance/employees/${encodeURIComponent(userId)}`, {
+    params: { date_et: dateEt, ...params },
+  });
+
 export const getManagementRinseHdDetail = (bagId, params = {}) =>
   axios.get(`${API_BASE}/api/management/rinse-hd/${encodeURIComponent(bagId)}`, {
     params,

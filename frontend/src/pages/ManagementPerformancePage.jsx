@@ -20,7 +20,7 @@ function todayEtIso() {
 
 /**
  * Management → Performance compartment.
- * WF Folder + HD wash/fold attribution (mobile-first).
+ * WF Folder + HD wash/fold attribution dashboard.
  */
 export default function ManagementPerformancePage() {
   const [dateEt, setDateEt] = useState(todayEtIso);
@@ -34,20 +34,20 @@ export default function ManagementPerformancePage() {
       }}
     >
       <ManagementHubNav activeId="performance" />
-      <Box sx={{ px: { xs: 1.5, sm: 2 }, pt: 1.25, maxWidth: 480, mx: "auto" }}>
+      <Box sx={{ px: { xs: 1.5, sm: 2, lg: 3 }, pt: 1.25, maxWidth: 1280, mx: "auto", width: "100%" }}>
         <Stack
-          direction="row"
+          direction={{ xs: "column", sm: "row" }}
           justifyContent="space-between"
-          alignItems="center"
+          alignItems={{ xs: "stretch", sm: "center" }}
           spacing={1}
-          sx={{ mb: 1.25 }}
+          sx={{ mb: 1.5 }}
         >
           <Box>
-            <Typography sx={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1 }}>
+            <Typography sx={{ fontSize: 22, fontWeight: 800, lineHeight: 1.1 }}>
               Performance
             </Typography>
             <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-              WF Folder sessions · HD wash/fold by operation time
+              WF folder productivity · HD wash/fold operation credit
             </Typography>
           </Box>
           <TextField
@@ -56,12 +56,21 @@ export default function ManagementPerformancePage() {
             value={dateEt}
             onChange={(e) => setDateEt(e.target.value)}
             inputProps={{ "aria-label": "Business date ET" }}
-            sx={{ width: 150, bgcolor: "#fff" }}
+            sx={{ width: { xs: "100%", sm: 160 }, bgcolor: "#fff" }}
           />
         </Stack>
 
-        <ManagementWfFolderPerformanceSection dateEt={dateEt} />
-        <ManagementHdPerformanceSection dateEt={dateEt} />
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: { xs: "1fr", lg: "1fr 1fr" },
+            gap: 2,
+            alignItems: "start",
+          }}
+        >
+          <ManagementWfFolderPerformanceSection dateEt={dateEt} />
+          <ManagementHdPerformanceSection dateEt={dateEt} />
+        </Box>
       </Box>
     </Box>
   );

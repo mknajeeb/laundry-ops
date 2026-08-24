@@ -13,7 +13,10 @@ from flask import jsonify, request
 
 from backend.business_time import business_today
 from backend.db import get_db
-from backend.management_hd_performance import build_hd_employee_performance
+from backend.management_hd_performance import (
+    build_hd_employee_performance,
+    build_hd_employee_performance_detail,
+)
 from backend.management_pin_access import (
     access_denied_payload,
     actor_name,
@@ -224,7 +227,46 @@ def register_management_rinse_hd_routes(
                 selected = _selected_date(raw_date, employee=False)
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
-            payload = build_hd_employee_performance(cursor, oid, selected)
+            summary_only = str(request.args.get("summary") or "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            payload = build_hd_employee_performance(
+                cursor, oid, selected, summary_only=summary_only
+            )
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/rinse-hd/performance/employees/<int:user_id>", methods=["GET"])
+    def management_rinse_hd_performance_employee(user_id: int):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            denied = _gate(cursor, me, oid)
+            if denied:
+                return denied
+            if not is_hub_manager(me):
+                body, code = access_denied_payload()
+                return jsonify(body), code
+            raw_date = (request.args.get("date_et") or "").strip()
+            try:
+                selected = _selected_date(raw_date, employee=False)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            payload = build_hd_employee_performance_detail(
+                cursor, oid, selected, int(user_id)
+            )
+            if not payload.get("ok"):
+                return jsonify(json_safe_rinse(payload)), int(payload.get("status") or 404)
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500

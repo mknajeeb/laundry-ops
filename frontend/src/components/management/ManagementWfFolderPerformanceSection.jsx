@@ -487,6 +487,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
   const [destinations, setDestinations] = useState([]);
   const [actionBusy, setActionBusy] = useState(false);
   const [showUnmapped, setShowUnmapped] = useState(false);
+  const [sortBy, setSortBy] = useState("output");
 
   const load = useCallback(
     async (opts = {}) => {
@@ -631,18 +632,48 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
   const unmapped = data?.unmapped_orders || [];
   const unmappedCount = data?.unmapped_count || 0;
 
+  const employees = useMemo(() => {
+    const rows = [...(data?.employees || [])];
+    if (sortBy === "lbs_hr") {
+      rows.sort((a, b) => (b.lbs_per_hour || 0) - (a.lbs_per_hour || 0));
+    } else if (sortBy === "bags_hr") {
+      rows.sort((a, b) => (b.bags_per_hour || 0) - (a.bags_per_hour || 0));
+    } else if (sortBy === "pounds") {
+      rows.sort((a, b) => (b.total_pre_lbs || 0) - (a.total_pre_lbs || 0));
+    } else {
+      rows.sort((a, b) => (b.orders_completed || 0) - (a.orders_completed || 0));
+    }
+    return rows;
+  }, [data?.employees, sortBy]);
+
   return (
-    <Box sx={{ maxWidth: 430, mx: "auto", width: "100%" }}>
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+    <Box sx={{ width: "100%", minWidth: 0 }}>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} sx={{ mb: 1 }}>
         <Box>
           <Typography sx={{ fontSize: 18, fontWeight: 800 }}>WF Folder Performance</Typography>
           <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
             PRE lb · RINSE_WF / FOLDER sessions
           </Typography>
         </Box>
-        <IconButton size="small" onClick={() => load()} aria-label="Refresh">
-          <RefreshIcon fontSize="small" />
-        </IconButton>
+        <Stack direction="row" spacing={0.5} alignItems="center">
+          <IconButton size="small" onClick={() => load()} aria-label="Refresh">
+            <RefreshIcon fontSize="small" />
+          </IconButton>
+          <FormControl size="small" sx={{ minWidth: 130 }}>
+            <InputLabel id="wf-sort-label">Sort</InputLabel>
+            <Select
+              labelId="wf-sort-label"
+              label="Sort"
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+            >
+              <MenuItem value="output">Most orders</MenuItem>
+              <MenuItem value="pounds">Most pounds</MenuItem>
+              <MenuItem value="bags_hr">Highest bags/hr</MenuItem>
+              <MenuItem value="lbs_hr">Highest lb/hr</MenuItem>
+            </Select>
+          </FormControl>
+        </Stack>
       </Stack>
 
       <Box
@@ -717,37 +748,39 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           <Box
             sx={{
               display: "grid",
-              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
               gap: 0.75,
               mb: 1,
             }}
           >
             <Box sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb", bgcolor: "#fff" }}>
+              <Typography sx={{ fontSize: 20, fontWeight: 800 }}>{summary.orders_completed ?? 0}</Typography>
+              <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
+                Orders Folded
+              </Typography>
+            </Box>
+            <Box sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb", bgcolor: "#fff" }}>
+              <Typography sx={{ fontSize: 20, fontWeight: 800 }}>{fmtLbs(summary.total_pre_lbs)}</Typography>
+              <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
+                Pounds Folded
+              </Typography>
+            </Box>
+            <Box sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb", bgcolor: "#fff" }}>
+              <Typography sx={{ fontSize: 20, fontWeight: 800 }}>{summary.employee_count ?? 0}</Typography>
+              <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
+                Employees Active
+              </Typography>
+            </Box>
+            <Box sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb", bgcolor: "#fff" }}>
               <Typography sx={{ fontSize: 20, fontWeight: 800 }}>{fmtRate(summary.bags_per_hour)}</Typography>
               <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
-                Bags/hr
+                Avg Bags/hr
               </Typography>
             </Box>
             <Box sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb", bgcolor: "#fff" }}>
               <Typography sx={{ fontSize: 20, fontWeight: 800 }}>{fmtRate(summary.lbs_per_hour, 0)}</Typography>
               <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
-                Lb/hr
-              </Typography>
-            </Box>
-            <Box sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb", bgcolor: "#fff" }}>
-              <Typography sx={{ fontSize: 20, fontWeight: 800 }}>
-                {summary.orders_completed ?? 0}
-              </Typography>
-              <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
-                Orders
-              </Typography>
-            </Box>
-            <Box sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb", bgcolor: "#fff" }}>
-              <Typography sx={{ fontSize: 20, fontWeight: 800 }}>
-                {summary.employee_count ?? 0}
-              </Typography>
-              <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase" }}>
-                Employees
+                Avg lb/hr
               </Typography>
             </Box>
           </Box>
@@ -822,14 +855,77 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           ) : null}
 
           <Stack spacing={1.1}>
-            {(data?.employees || []).map((emp) => (
-              <EmployeeCard key={emp.employee} employee={emp} onOpenSession={openSession} />
-            ))}
-            {!loading && !(data?.employees || []).length ? (
-              <Typography sx={{ py: 2, textAlign: "center", color: "#64748b", fontSize: 13 }}>
-                No WF Folder sessions for this window.
-              </Typography>
-            ) : null}
+            <Box
+              sx={{
+                border: "1px solid #e5e7eb",
+                borderRadius: 2,
+                overflow: "hidden",
+                bgcolor: "#fff",
+              }}
+            >
+              <Box
+                sx={{
+                  display: { xs: "none", md: "grid" },
+                  gridTemplateColumns: "1.2fr 0.7fr 0.7fr 0.7fr 0.7fr 0.8fr",
+                  gap: 1,
+                  px: 1.25,
+                  py: 0.75,
+                  bgcolor: "#f8fafc",
+                  borderBottom: "1px solid #e5e7eb",
+                }}
+              >
+                {["Employee", "Orders", "Pounds", "Bags/hr", "lb/hr", "Details"].map((h) => (
+                  <Typography
+                    key={h}
+                    sx={{ fontSize: 11, fontWeight: 800, color: "#64748b", textTransform: "uppercase" }}
+                  >
+                    {h}
+                  </Typography>
+                ))}
+              </Box>
+              {(employees || []).map((emp) => (
+                <Box
+                  key={emp.employee}
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: { xs: "1fr", md: "1.2fr 0.7fr 0.7fr 0.7fr 0.7fr 0.8fr" },
+                    gap: 1,
+                    px: 1.25,
+                    py: 1,
+                    borderBottom: "1px solid #f1f5f9",
+                    alignItems: "center",
+                  }}
+                >
+                  <Typography sx={{ fontWeight: 800, fontSize: 15 }}>{emp.employee}</Typography>
+                  <Typography sx={{ fontWeight: 700, fontSize: 14 }}>{emp.orders_completed ?? 0}</Typography>
+                  <Typography sx={{ fontWeight: 700, fontSize: 14 }}>{fmtLbs(emp.total_pre_lbs)}</Typography>
+                  <Typography sx={{ fontWeight: 800, fontSize: 15, color: VEEWASH_DASHBOARD.primaryBlueDark }}>
+                    {fmtRate(emp.bags_per_hour)}
+                  </Typography>
+                  <Typography sx={{ fontWeight: 800, fontSize: 15, color: VEEWASH_DASHBOARD.primaryBlueDark }}>
+                    {fmtRate(emp.lbs_per_hour, 0)}
+                  </Typography>
+                  <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap" }}>
+                    {(emp.sessions || []).slice(0, 2).map((sess) => (
+                      <Button
+                        key={sess.session_id}
+                        size="small"
+                        variant="outlined"
+                        onClick={() => openSession(sess)}
+                        sx={{ textTransform: "none", fontWeight: 700, minWidth: 0 }}
+                      >
+                        View {sess.orders_completed}
+                      </Button>
+                    ))}
+                  </Stack>
+                </Box>
+              ))}
+              {!loading && !employees.length ? (
+                <Typography sx={{ p: 1.5, fontSize: 13, color: "#94a3b8", fontWeight: 600 }}>
+                  No WF Folder sessions for this window.
+                </Typography>
+              ) : null}
+            </Box>
           </Stack>
         </>
       )}
