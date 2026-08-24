@@ -91,7 +91,10 @@ def take_lease(
     pid: int | None = None,
 ) -> int:
     """Increment generation and assign ownership to this run. Returns new generation."""
+    from backend.rinse_scrape_liveness import ensure_lease_liveness_columns
+
     ensure_rinse_scrape_org_lease_table(cursor)
+    ensure_lease_liveness_columns(cursor)
     org = int(organization_id)
     now = _utcnow()
     exec_name = (execution_name or current_execution_name() or "")[:256] or None
@@ -100,23 +103,26 @@ def take_lease(
         """
         INSERT INTO rinse_scrape_org_lease (
             organization_id, generation, owner_run_id, owner_execution_name,
-            owner_pid, heartbeat_at, last_progress_at, current_stage,
+            owner_pid, heartbeat_at, supervisor_heartbeat_at,
+            last_progress_at, worker_progress_at, current_stage,
             fenced_at, fence_reason, updated_at
         )
-        VALUES (%s, 1, %s, %s, %s, %s, %s, 'starting', NULL, NULL, %s)
+        VALUES (%s, 1, %s, %s, %s, %s, %s, %s, %s, 'starting', NULL, NULL, %s)
         ON DUPLICATE KEY UPDATE
             generation = generation + 1,
             owner_run_id = VALUES(owner_run_id),
             owner_execution_name = VALUES(owner_execution_name),
             owner_pid = VALUES(owner_pid),
             heartbeat_at = VALUES(heartbeat_at),
+            supervisor_heartbeat_at = VALUES(supervisor_heartbeat_at),
             last_progress_at = VALUES(last_progress_at),
+            worker_progress_at = VALUES(worker_progress_at),
             current_stage = VALUES(current_stage),
             fenced_at = NULL,
             fence_reason = NULL,
             updated_at = VALUES(updated_at)
         """,
-        (org, int(run_id), exec_name, owner_pid, now, now, now),
+        (org, int(run_id), exec_name, owner_pid, now, now, now, now, now),
     )
     lease = read_lease(cursor, org) or {}
     return int(lease.get("generation") or 1)

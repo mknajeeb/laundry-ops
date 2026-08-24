@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import time
 from datetime import datetime, timedelta
+from typing import Any
 from unittest.mock import MagicMock
 
 from backend.rinse_scrape_chain import classify_running_row
@@ -92,7 +95,7 @@ def test_classify_over_ceiling():
     assert classify_running_row(row, now=now) == "over_ceiling"
 
 
-def test_scrape_stage_heartbeat_uses_supervisor_thread(monkeypatch):
+def test_scrape_stage_heartbeat_uses_supervisor_subprocess(monkeypatch):
     from backend.rinse_scrape_runs import scrape_stage_heartbeat
 
     calls: list[tuple[int, int, str]] = []
@@ -104,37 +107,220 @@ def test_scrape_stage_heartbeat_uses_supervisor_thread(monkeypatch):
         "backend.rinse_scrape_liveness.touch_supervisor_heartbeat",
         fake_supervisor,
     )
+    spawned: list[str] = []
+
+    class FakeProc:
+        def __init__(self, *args, **kwargs):
+            spawned.append("spawn")
+
+        def start(self):
+            spawned.append("start")
+
+        def join(self, timeout=None):
+            return None
+
+        def is_alive(self):
+            return False
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+    class FakeCtx:
+        def Event(self):
+            import threading
+
+            return threading.Event()
+
+        def Process(self, *args, **kwargs):
+            return FakeProc()
+
     monkeypatch.setattr(
-        "backend.rinse_scrape_liveness.scrape_supervisor_heartbeat_interval_sec",
-        lambda: 3600,
+        "backend.rinse_scrape_liveness.multiprocessing.get_context",
+        lambda _name: FakeCtx(),
     )
 
     with scrape_stage_heartbeat(99, 3, stage="finalizing", lease_generation=7):
         pass
 
     assert calls == [(3, 7, "finalizing")]
+    assert spawned == ["spawn", "start"]
 
 
-def test_supervisor_thread_ticks_multiple_times(monkeypatch):
-    from backend.rinse_scrape_liveness import scrape_supervisor_heartbeat
+def test_supervisor_subprocess_ticks_multiple_times(monkeypatch):
+    import threading
+
+    from backend.rinse_scrape_liveness import _supervisor_heartbeat_subprocess_main
 
     calls: list[int] = []
-
     monkeypatch.setattr(
         "backend.rinse_scrape_liveness.touch_supervisor_heartbeat",
         lambda *_a, **_k: calls.append(1) or True,
     )
     monkeypatch.setattr(
-        "backend.rinse_scrape_liveness.scrape_supervisor_heartbeat_interval_sec",
-        lambda: 0.05,
+        "backend.rinse_scrape_liveness._parent_process_alive",
+        lambda _pid: True,
     )
 
-    with scrape_supervisor_heartbeat(3, 7, stage="portal_scrape", run_id=99):
-        import time
-
-        time.sleep(0.2)
-
+    stop = threading.Event()
+    worker = threading.Thread(
+        target=_supervisor_heartbeat_subprocess_main,
+        args=(3, 7, "portal_scrape", os.getpid(), stop, 0.05),
+        daemon=True,
+    )
+    worker.start()
+    time.sleep(0.2)
+    stop.set()
+    worker.join(timeout=3)
     assert len(calls) >= 3
+
+
+def test_supervisor_subprocess_continues_when_worker_frozen(monkeypatch):
+    """Worker stuck (no worker_progress_at bumps) but supervisor subprocess keeps ticking."""
+    import threading
+
+    from backend.rinse_scrape_liveness import _supervisor_heartbeat_subprocess_main
+
+    supervisor_calls: list[int] = []
+    worker_calls: list[int] = []
+
+    def fake_touch(org, gen, **kwargs):
+        if kwargs.get("worker_progress"):
+            worker_calls.append(1)
+        else:
+            supervisor_calls.append(1)
+        return True
+
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.touch_supervisor_heartbeat",
+        fake_touch,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness._parent_process_alive",
+        lambda _pid: True,
+    )
+
+    stop = threading.Event()
+    # Simulate initial worker progress tick from parent context.
+    fake_touch(3, 7, stage="portal_scrape", worker_progress=True)
+    worker = threading.Thread(
+        target=_supervisor_heartbeat_subprocess_main,
+        args=(3, 7, "portal_scrape", os.getpid(), stop, 0.05),
+        daemon=True,
+    )
+    worker.start()
+    time.sleep(0.25)
+    stop.set()
+    worker.join(timeout=3)
+
+    assert len(worker_calls) == 1
+    assert len(supervisor_calls) >= 3
+
+
+def test_supervisor_subprocess_stops_on_parent_death(monkeypatch):
+    from backend.rinse_scrape_liveness import _supervisor_heartbeat_subprocess_main
+    import multiprocessing
+
+    ticks: list[int] = []
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.touch_supervisor_heartbeat",
+        lambda *_a, **_k: ticks.append(1) or True,
+    )
+
+    ctx = multiprocessing.get_context("spawn")
+    stop = ctx.Event()
+    proc = ctx.Process(
+        target=_supervisor_heartbeat_subprocess_main,
+        args=(3, 7, "portal_scrape", 999_999_999, stop, 0.05),
+        daemon=True,
+    )
+    proc.start()
+    proc.join(timeout=3)
+    assert not proc.is_alive()
+    assert ticks == []
+
+
+def test_parent_process_alive_detects_dead_pid():
+    from backend.rinse_scrape_liveness import _parent_process_alive
+
+    assert _parent_process_alive(999_999_999) is False
+    assert _parent_process_alive(os.getpid()) is True
+
+
+def test_touch_supervisor_heartbeat_rejects_stale_generation(monkeypatch):
+    from backend.rinse_scrape_liveness import touch_supervisor_heartbeat
+
+    class FakeCursor:
+        rowcount = 0
+
+        def execute(self, *_a, **_k):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness._direct_mysql_connection",
+        lambda: FakeConn(),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness._ensure_liveness_columns_on_connection",
+        lambda *_a, **_k: None,
+    )
+    assert touch_supervisor_heartbeat(3, 99, stage="portal_scrape") is False
+
+
+def test_take_lease_resets_liveness_fields():
+    from backend.rinse_scrape_lease import take_lease
+
+    cursor = MagicMock()
+    cursor.fetchone.return_value = {"generation": 42}
+    gen = take_lease(cursor, 3, run_id=100)
+    assert gen == 42
+    insert_call = next(
+        c
+        for c in cursor.execute.call_args_list
+        if "ON DUPLICATE KEY UPDATE" in c[0][0]
+    )
+    sql = insert_call[0][0]
+    assert "supervisor_heartbeat_at" in sql
+    assert "worker_progress_at" in sql
+    params = insert_call[0][1]
+    heartbeats = params[4:8]
+    assert len(set(heartbeats)) == 1
+
+
+def test_new_owner_cannot_inherit_previous_owner_fresh_heartbeat(monkeypatch):
+    from backend.rinse_scrape_lease import take_lease
+
+    stored: dict[str, Any] = {
+        "generation": 5,
+        "supervisor_heartbeat_at": datetime(2026, 8, 23, 12, 0, 0),
+    }
+
+    def fake_execute(sql, params=None):
+        if "ON DUPLICATE KEY UPDATE" in sql and params:
+            stored["generation"] = int(stored.get("generation") or 0) + 1
+            stored["supervisor_heartbeat_at"] = params[5]
+            stored["worker_progress_at"] = params[7]
+
+    cursor = MagicMock()
+    cursor.execute.side_effect = fake_execute
+    cursor.fetchone.side_effect = lambda: {"generation": stored["generation"]}
+
+    old_sup = stored["supervisor_heartbeat_at"]
+    take_lease(cursor, 3, run_id=200)
+    assert stored["supervisor_heartbeat_at"] != old_sup
+    assert stored["worker_progress_at"] == stored["supervisor_heartbeat_at"]
 
 
 def test_touch_scrape_run_progress_commits_lease_before_result_json(monkeypatch):

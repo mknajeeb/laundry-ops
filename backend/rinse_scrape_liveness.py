@@ -1,9 +1,22 @@
-"""Scraper liveness: supervisor heartbeat independent of worker blocking."""
+"""Scraper liveness: supervisor heartbeat independent of worker blocking.
+
+Parent-death safety (subprocess heartbeat child):
+  The heartbeat runs in a dedicated child process (not a thread). At spawn the
+  parent records ``parent_pid = os.getpid()`` and passes it to the child. Each
+  tick the child calls ``os.kill(parent_pid, 0)``; ``ProcessLookupError`` /
+  ESRCH means the parent is gone and the child exits immediately. On Linux the
+  child also stops when ``os.getppid() != parent_pid`` (reparented to init after
+  abrupt parent death). The child never acquires or reclaims leases; it only
+  UPDATEs ``supervisor_heartbeat_at`` when ``generation`` still matches and
+  ``fenced_at IS NULL``. Stale children stop after failed generation-guard ticks.
+"""
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import threading
+import time
 import traceback
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -13,6 +26,9 @@ from backend.db import _connection_kwargs
 
 _liveness_columns_verified = False
 _liveness_columns_lock = threading.Lock()
+
+# Subprocess heartbeat stops after this many consecutive generation-guard misses.
+_MAX_STALE_HEARTBEAT_TICKS = 2
 
 
 def _utcnow() -> datetime:
@@ -74,7 +90,11 @@ def touch_supervisor_heartbeat(
     stage: str | None = None,
     worker_progress: bool = False,
 ) -> bool:
-    """Independent-connection supervisor tick. Never uses the app connection pool."""
+    """Independent-connection supervisor tick. Never uses the app connection pool.
+
+    Generation guard: UPDATE only applies when ``generation`` matches and the
+    lease is not fenced. Returns False when ownership changed (stale child).
+    """
     org = int(organization_id)
     gen = int(generation)
     now = _utcnow()
@@ -142,6 +162,54 @@ def touch_supervisor_heartbeat(
                 pass
 
 
+def _parent_process_alive(parent_pid: int) -> bool:
+    """True while the spawning parent process is still running."""
+    if parent_pid <= 0:
+        return False
+    try:
+        os.kill(parent_pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Parent exists but we cannot signal it — treat as alive.
+        return True
+    except OSError:
+        return False
+    # Reparenting to init (or another supervisor) means our parent died.
+    if os.getpid() != parent_pid and os.getppid() != parent_pid:
+        return False
+    return True
+
+
+def _supervisor_heartbeat_subprocess_main(
+    organization_id: int,
+    generation: int,
+    stage: str,
+    parent_pid: int,
+    stop_event: multiprocessing.synchronize.Event,
+    interval_sec: float,
+) -> None:
+    """Child entry: supervisor ticks only; never touches worker progress or leases."""
+    org = int(organization_id)
+    gen = int(generation)
+    stage_s = str(stage or "unknown")[:64]
+    interval = max(0.05, float(interval_sec))
+    stale_ticks = 0
+
+    while not stop_event.is_set():
+        if not _parent_process_alive(parent_pid):
+            break
+        ok = touch_supervisor_heartbeat(org, gen, stage=stage_s, worker_progress=False)
+        if ok:
+            stale_ticks = 0
+        else:
+            stale_ticks += 1
+            if stale_ticks >= _MAX_STALE_HEARTBEAT_TICKS:
+                break
+        if stop_event.wait(interval):
+            break
+
+
 def scrape_supervisor_heartbeat_interval_sec() -> int:
     try:
         return max(15, int(os.getenv("RINSE_SCRAPE_SUPERVISOR_HEARTBEAT_SEC", "30")))
@@ -158,34 +226,42 @@ def scrape_supervisor_heartbeat(
     run_id: int | None = None,
     progress: bool = False,
 ) -> Iterator[None]:
-    """Supervisor liveness thread — direct MySQL, not the shared pool."""
+    """Supervisor liveness subprocess — direct MySQL, not the shared pool or GIL."""
     if lease_generation is None:
         yield
         return
 
-    stop = threading.Event()
-    interval = scrape_supervisor_heartbeat_interval_sec()
     org = int(organization_id)
     gen = int(lease_generation)
     stage_s = str(stage or "unknown")[:64]
     rid = int(run_id) if run_id is not None else None
+    interval = scrape_supervisor_heartbeat_interval_sec()
+    parent_pid = os.getpid()
 
-    def _loop() -> None:
-        touch_supervisor_heartbeat(org, gen, stage=stage_s, worker_progress=progress)
-        while not stop.wait(interval):
-            touch_supervisor_heartbeat(org, gen, stage=stage_s, worker_progress=False)
+    touch_supervisor_heartbeat(
+        org, gen, stage=stage_s, worker_progress=bool(progress)
+    )
 
-    thread = threading.Thread(
-        target=_loop,
+    ctx = multiprocessing.get_context("spawn")
+    stop_event = ctx.Event()
+    proc = ctx.Process(
+        target=_supervisor_heartbeat_subprocess_main,
+        args=(org, gen, stage_s, parent_pid, stop_event, float(interval)),
         daemon=True,
         name=f"scrape-supervisor-hb-{rid or org}-{stage_s}",
     )
-    thread.start()
+    proc.start()
     try:
         yield
     finally:
-        stop.set()
-        thread.join(timeout=5)
+        stop_event.set()
+        proc.join(timeout=5)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=2)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=1)
 
 
 def read_lease_liveness(cursor, organization_id: int) -> dict[str, Any] | None:
