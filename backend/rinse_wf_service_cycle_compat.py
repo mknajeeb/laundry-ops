@@ -152,11 +152,32 @@ def _canonical_wf_bags_for_date(
             apply_normalized_completion_fields,
             enrich_bags_completion_from_scans,
         )
+        from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
+        from backend.rinse_veewash_review import load_bag_weight_map
 
         enrich_bags_completion_from_scans(
             cursor, organization_id, shift_date_et, bags
         )
         bags = [apply_normalized_completion_fields(b) for b in bags]
+        bag_ids = [normalize_bag_id(b.get("bag_id")) for b in bags if b.get("bag_id")]
+        weight_map = load_bag_weight_map(
+            cursor,
+            organization_id,
+            bag_ids,
+            selected_date_et=shift_date_et,
+        )
+        for bag in bags:
+            bid = normalize_bag_id(bag.get("bag_id"))
+            if not bid:
+                continue
+            resolved = weight_map.get(bid) or {}
+            evidence_pre = authoritative_evidence_pre_lbs(resolved)
+            if evidence_pre is not None:
+                bag["pre_weight_lbs"] = evidence_pre
+            if resolved.get("post_weight_lbs") is not None:
+                bag["post_weight_lbs"] = resolved.get("post_weight_lbs")
+            if resolved.get("pre_weight_source"):
+                bag["pre_weight_source"] = resolved.get("pre_weight_source")
     return bags
 
 

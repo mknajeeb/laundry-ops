@@ -14,7 +14,6 @@ from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_cycle_boundary import resolve_current_cycle
-from backend.rinse_current_cycle_weight import resolve_current_cycle_weights
 from backend.rinse_folding_et import naive_et_day_start
 from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
 from backend.ta_helpers import table_exists
@@ -70,7 +69,8 @@ def _load_timeline(cursor, organization_id: int, bag_id: str) -> list[dict[str, 
     cur.execute(
         """
         SELECT bag_id, rack, purpose, scanned_at_parsed, user_name, weight_lbs,
-               weight_role, source_filename, raw_json, scan_index, id
+               weight_role, weight_source, weight_observed_at, weight_attach_reason,
+               weight_presence_run_id, source_filename, raw_json, scan_index, id
         FROM rinse_bag_scan_events
         WHERE organization_id = %s AND bag_id = %s
           AND scanned_at_parsed IS NOT NULL
@@ -115,16 +115,21 @@ def _cycle_resolution(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     timeline = _load_timeline(cursor, organization_id, bag_id)
     day = selected_date_et or cycle_anchor_at.date()
+    bid = _norm_bag(bag_id)
     cycle = resolve_current_cycle(
         timeline,
         selected_date_et=day,
         cycle_anchor_override=cycle_anchor_at,
     )
-    weights = resolve_current_cycle_weights(
-        timeline,
+    from backend.rinse_current_cycle_weight import resolve_bag_weight_info_canonical
+
+    weights = resolve_bag_weight_info_canonical(
+        cursor,
+        organization_id,
+        bid,
         selected_date_et=day,
         cycle_anchor_override=cycle_anchor_at,
-    ).as_weight_info()
+    )
     return cycle.as_dict(), weights
 
 
@@ -283,8 +288,12 @@ def admit_or_update_cycle_from_evidence(
     admitted = admitted_at or cycle_anchor_at
     existing = get_cycle_by_key(cursor, org, bid, cycle_anchor_at)
     if existing and str(existing.get("status")) == STATUS_COMPLETED:
-        # Completed cycles are immutable except manager review resolution path.
+        # Completed cycles are immutable for lifecycle — refresh weights from canonical resolver.
         cycle_dict, weights = _cycle_resolution(cursor, org, bid, cycle_anchor_at)
+        from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
+
+        refreshed_pre = authoritative_evidence_pre_lbs(weights)
+        refreshed_post = weights.get("post_weight_lbs")
         return upsert_service_cycle(
             cursor,
             org,
@@ -298,8 +307,12 @@ def admit_or_update_cycle_from_evidence(
             rush_status=(portal_meta or {}).get("rush_flag") or existing.get("rush_status"),
             estimated_delivery_date=(portal_meta or {}).get("estimated_delivery_date")
             or existing.get("estimated_delivery_date"),
-            pre_weight_lbs=existing.get("pre_weight_lbs"),
-            post_weight_lbs=existing.get("post_weight_lbs"),
+            pre_weight_lbs=refreshed_pre
+            if refreshed_pre is not None
+            else existing.get("pre_weight_lbs"),
+            post_weight_lbs=refreshed_post
+            if refreshed_post is not None
+            else existing.get("post_weight_lbs"),
             portal_last_seen_at=(portal_meta or {}).get("last_seen_at")
             or existing.get("portal_last_seen_at"),
         )

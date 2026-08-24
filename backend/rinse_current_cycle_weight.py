@@ -954,11 +954,14 @@ def resolve_current_cycle_weights(
     """
     Canonical current-cycle PRE/POST resolver for all surfaces.
 
-    Precedence for pounds:
-      audited manual correction
-        > selected weight-entry event weight_lbs with authoritative Rinse source
-        > (optional) portal observation fallback — off by default
-        > unavailable / missing
+    PRE pounds precedence (single authority rule):
+      1. audited manager ``corrected_pre_weight_lbs`` / manager weight_source
+      2. latest portal ``wf_lbs_num`` on presence observations (when present)
+      3. selected PRE weight-entry ``weight_lbs`` with authoritative Rinse source
+         (e.g. ``rinse_preclean_info``) — never above (2) when portal wf_lbs exists
+      4. deterministic fallback only when portal wf_lbs is genuinely unavailable
+
+    POST remains separate; POST processing scans must not overwrite PRE.
     """
     selected = select_current_cycle_weight_events(
         timeline,
@@ -1354,6 +1357,44 @@ def _manual_for_cycle(
     return applied
 
 
+def load_presence_weight_observations_for_bags(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+    *,
+    selected_date_et: date,
+) -> dict[str, list[dict[str, Any]]]:
+    """Presence scrape observations for canonical PRE/POST resolution."""
+    from backend.ta_helpers import table_exists
+
+    ids = sorted({str(b or "").strip().upper() for b in bag_ids if str(b or "").strip()})
+    observations: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
+    if not ids or not table_exists(cursor, "rinse_cleaner_ticket_presence_run_rows"):
+        return observations
+
+    placeholders = ",".join(["%s"] * len(ids))
+    day_start = datetime(selected_date_et.year, selected_date_et.month, selected_date_et.day)
+    window_start = day_start - timedelta(hours=12)
+    window_end = day_start + timedelta(days=1)
+    cursor.execute(
+        f"""
+        SELECT id AS presence_run_row_id, presence_run_id, bag_id,
+               weight_num, wf_lbs_num, observed_at
+        FROM rinse_cleaner_ticket_presence_run_rows
+        WHERE organization_id = %s
+          AND bag_id IN ({placeholders})
+          AND observed_at >= %s AND observed_at < %s
+        ORDER BY observed_at ASC, id ASC
+        """,
+        (int(organization_id), *ids, window_start, window_end),
+    )
+    for row in cursor.fetchall() or []:
+        bid = str(row.get("bag_id") or "").strip().upper()
+        if bid in observations:
+            observations[bid].append(dict(row))
+    return observations
+
+
 def load_current_cycle_weight_map(
     cursor,
     organization_id: int,
@@ -1361,11 +1402,13 @@ def load_current_cycle_weight_map(
     *,
     selected_date_et: date,
     entry_racks: Iterable[str] | None = None,
+    cycle_anchor_overrides: Mapping[str, datetime] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """
-    DB-backed current-cycle PRE/POST map for Shift Monitor / workload / EP.
+    DB-backed current-cycle PRE/POST map — single canonical resolver entry.
 
-    Loads full scan timelines + presence observations, then resolves each bag.
+    All Management WF PRE consumers, workload projection, and service-cycle
+    sync must route through this function (via ``load_bag_weight_map``).
     """
     from backend.ta_helpers import table_exists
 
@@ -1395,38 +1438,20 @@ def load_current_cycle_weight_map(
             if bid in timelines:
                 timelines[bid].append(dict(row))
 
-    observations: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
-    if table_exists(cursor, "rinse_cleaner_ticket_presence_run_rows"):
-        placeholders = ",".join(["%s"] * len(ids))
-        # Include prior evening observations for overnight send cycles.
-        day_start = datetime(selected_date_et.year, selected_date_et.month, selected_date_et.day)
-        window_start = day_start - timedelta(hours=12)
-        window_end = day_start + timedelta(days=1)
-        cursor.execute(
-            f"""
-            SELECT id AS presence_run_row_id, presence_run_id, bag_id,
-                   weight_num, wf_lbs_num, observed_at
-            FROM rinse_cleaner_ticket_presence_run_rows
-            WHERE organization_id = %s
-              AND bag_id IN ({placeholders})
-              AND observed_at >= %s AND observed_at < %s
-            ORDER BY observed_at ASC, id ASC
-            """,
-            (int(organization_id), *ids, window_start, window_end),
-        )
-        for row in cursor.fetchall() or []:
-            bid = str(row.get("bag_id") or "").strip().upper()
-            if bid in observations:
-                observations[bid].append(dict(row))
+    observations = load_presence_weight_observations_for_bags(
+        cursor, organization_id, ids, selected_date_et=selected_date_et
+    )
 
     manuals = _load_manual_corrections(cursor, organization_id, ids)
     out: dict[str, dict[str, Any]] = {}
     for bid in ids:
+        anchor_override = (cycle_anchor_overrides or {}).get(bid)
         base = resolve_current_cycle_weights(
             timelines.get(bid) or [],
             selected_date_et=selected_date_et,
             observations=observations.get(bid) or [],
             entry_racks=entry_racks,
+            cycle_anchor_override=anchor_override,
             allow_portal_weight_fallback=False,
         )
         manual = _manual_for_cycle(
@@ -1443,6 +1468,7 @@ def load_current_cycle_weight_map(
             selected_date_et=selected_date_et,
             observations=observations.get(bid) or [],
             entry_racks=entry_racks,
+            cycle_anchor_override=anchor_override,
             manual_pre_lbs=manual.get("pre"),
             manual_post_lbs=manual.get("post"),
             allow_portal_weight_fallback=False,
@@ -1451,3 +1477,28 @@ def load_current_cycle_weight_map(
         out[bid]["_resolver"] = "current_cycle_weight"
         out[bid]["_raw_result"] = result.as_dict()
     return out
+
+
+def resolve_bag_weight_info_canonical(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    selected_date_et: date,
+    cycle_anchor_override: datetime | None = None,
+) -> dict[str, Any]:
+    """Resolve one bag through the shared DB-backed canonical weight map."""
+    bid = str(bag_id or "").strip().upper()
+    if not bid:
+        return resolve_current_cycle_weights([], selected_date_et=selected_date_et).as_weight_info()
+    overrides = {bid: cycle_anchor_override} if cycle_anchor_override is not None else None
+    return (
+        load_current_cycle_weight_map(
+            cursor,
+            organization_id,
+            [bid],
+            selected_date_et=selected_date_et,
+            cycle_anchor_overrides=overrides,
+        ).get(bid)
+        or resolve_current_cycle_weights([], selected_date_et=selected_date_et).as_weight_info()
+    )
