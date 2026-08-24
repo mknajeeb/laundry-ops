@@ -16,8 +16,11 @@ from backend.management_rinse_wf_review import (
 
 
 @pytest.fixture(autouse=True)
-def _mock_canonical_membership_for_list(monkeypatch):
+def _mock_canonical_membership_for_list(monkeypatch, request):
     """List tests use headline-shaped membership unless integration tests opt out."""
+    if request.node.get_closest_marker("integration_membership"):
+        yield
+        return
 
     def _fake(cursor, organization_id, selected_date_et, *, headline=None):
         split = split_review_categories(headline)
@@ -41,6 +44,7 @@ def _mock_canonical_membership_for_list(monkeypatch):
         "backend.management_rinse_wf_review.compute_canonical_wf_review_membership",
         _fake,
     )
+    yield
 
 
 def test_category_specialty_bulk():
@@ -826,6 +830,7 @@ def test_review_detail_error_shape():
     assert out["error"] == "bag_not_found"
 
 
+@pytest.mark.integration_membership
 def test_split_order_list_filters_persisted_ids_with_as_of_day_cutoff():
     """Persisted split_review polluted by D+1 must not list bags as-of D."""
     from datetime import date
