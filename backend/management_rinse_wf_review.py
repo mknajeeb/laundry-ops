@@ -8,8 +8,8 @@ a separate canonical-split queue):
       (and not also specialty-bulk when both present — specialty wins)
 
   specialty_items
-      WF_BULK_WORKITEM_REVIEW and all other WF review reasons
-      (operational specialty / quality / weight / manager-sent, etc.)
+      Explicit specialty reasons (e.g. WF_BULK_WORKITEM_REVIEW) while bulk
+      specialty remains unresolved (bulk_cleared=false).
 
   split_order_review
       Canonical split REVIEW_REQUIRED (marker/load contradiction). Independent
@@ -30,10 +30,15 @@ from typing import Any, Mapping
 
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
+from backend.rinse_employee_productivity_sessions import (
+    resolve_customer_name,
+    resolve_customer_names_for_bags,
+)
 from backend.rinse_veewash_workload import (
     REASON_DISAPPEARED_WITHOUT_COMPLETION,
     REASON_WF_BULK_WORKITEM_REVIEW,
 )
+from backend.rinse_wf_service_cycle import REVIEW_MISSING_FROM_PORTAL
 
 def _canonical_review_weights(
     cursor,
@@ -81,11 +86,15 @@ def _merge_review_weight_fields(
 CATEGORY_SPECIALTY = "specialty_items"
 CATEGORY_MISSING_PORTAL = "missing_from_portal"
 CATEGORY_SPLIT_ORDER = "split_order_review"
+CATEGORY_UNKNOWN = "unknown_review"
 
-# Explicit reason → category. Anything else in Review Required → specialty_items.
+REVIEW_CUSTOMER_UNAVAILABLE = "Customer unavailable"
+
+# Explicit missing-from-portal codes only — never fall back to Specialty.
 MISSING_FROM_PORTAL_REASONS = frozenset(
     {
         REASON_DISAPPEARED_WITHOUT_COMPLETION,
+        REVIEW_MISSING_FROM_PORTAL,
     }
 )
 
@@ -103,13 +112,23 @@ SPECIALTY_ITEMS_REASONS = frozenset(
     }
 )
 
+SPLIT_ORDER_REASONS = frozenset(
+    {
+        "SPLIT_MARKED_BUT_SECOND_WASHER_NOT_FOUND",
+        "MULTIPLE_WASHERS_WITHOUT_SPLIT_MARKER",
+        "SPLIT_EVIDENCE_INCOMPLETE_AT_DISAPPEARANCE",
+    }
+)
+
 REASON_CATEGORY_MAP: dict[str, str] = {
     **{code: CATEGORY_MISSING_PORTAL for code in MISSING_FROM_PORTAL_REASONS},
     **{code: CATEGORY_SPECIALTY for code in SPECIALTY_ITEMS_REASONS},
-    "SPLIT_MARKED_BUT_SECOND_WASHER_NOT_FOUND": CATEGORY_SPLIT_ORDER,
-    "MULTIPLE_WASHERS_WITHOUT_SPLIT_MARKER": CATEGORY_SPLIT_ORDER,
-    "SPLIT_EVIDENCE_INCOMPLETE_AT_DISAPPEARANCE": CATEGORY_SPLIT_ORDER,
+    **{code: CATEGORY_SPLIT_ORDER for code in SPLIT_ORDER_REASONS},
 }
+
+
+def review_customer_display_name(*candidates: Any) -> str:
+    return resolve_customer_name(*candidates) or REVIEW_CUSTOMER_UNAVAILABLE
 
 
 def _split_eval_as_of_day(
@@ -138,29 +157,80 @@ def _split_eval_as_of_day(
     )
 
 
-def category_for_reason_codes(codes: list[str] | tuple[str, ...] | None) -> str:
-    """Deterministic single category for a bag's reason codes (no double-count)."""
+def category_for_reason_codes(
+    codes: list[str] | tuple[str, ...] | None,
+) -> str | None:
+    """Deterministic single category for a bag's reason codes (no double-count).
+
+    Returns ``None`` for unrecognized codes — never silently map to Specialty.
+    """
     normalized = [str(c) for c in (codes or []) if c]
+    if not normalized:
+        return None
     code_set = set(normalized)
     has_specialty_bulk = REASON_WF_BULK_WORKITEM_REVIEW in code_set
     has_missing = bool(code_set & MISSING_FROM_PORTAL_REASONS)
-    # Specialty bulk wins over disappeared when both apply.
     if has_specialty_bulk:
         return CATEGORY_SPECIALTY
     if has_missing and not (code_set & SPECIALTY_ITEMS_REASONS):
         return CATEGORY_MISSING_PORTAL
     if has_missing and not has_specialty_bulk:
-        # Disappeared plus other non-bulk operational reasons → missing portal
-        # only when no specialty-items reason besides disappeared.
         other = code_set - MISSING_FROM_PORTAL_REASONS
         if not other:
             return CATEGORY_MISSING_PORTAL
     if code_set & SPECIALTY_ITEMS_REASONS:
         return CATEGORY_SPECIALTY
+    if code_set & SPLIT_ORDER_REASONS:
+        return CATEGORY_SPLIT_ORDER
     if has_missing:
         return CATEGORY_MISSING_PORTAL
-    # Unknown review code → specialty working queue (not employee portal blame).
-    return CATEGORY_SPECIALTY
+    return None
+
+
+def _has_valid_wf_completion(
+    row: Mapping[str, Any] | None,
+    *,
+    weights: Mapping[str, Any] | None = None,
+    in_completed_bucket: bool = False,
+) -> bool:
+    """True when canonical completion evidence exists (POST + completion time)."""
+    snap = (row or {}).get("bag_snapshot") or {}
+    if not isinstance(snap, dict):
+        snap = {}
+    comp = (row or {}).get("canonical_completion_timestamp") or snap.get("completion_at")
+    post = None
+    if weights:
+        post = weights.get("post_weight_lbs")
+        if post is None and weights.get("post_weight_event_exists"):
+            post = weights.get("post_weight_value")
+    if post is None:
+        post = (row or {}).get("post_weight_lbs") or snap.get("post_weight_lbs")
+    status = str((row or {}).get("effective_status") or "").strip().lower()
+    if post is None:
+        return False
+    if comp is not None:
+        return True
+    return status == "completed" or in_completed_bucket
+
+
+def missing_portal_review_is_eligible(
+    codes: list[str] | tuple[str, ...] | None,
+    *,
+    row: Mapping[str, Any] | None = None,
+    weights: Mapping[str, Any] | None = None,
+    in_completed_bucket: bool = False,
+) -> bool:
+    """Missing From Portal only for unexpected disappearance — not post-completion departure."""
+    normalized = [str(c) for c in (codes or []) if c]
+    if not normalized:
+        return False
+    if category_for_reason_codes(normalized) != CATEGORY_MISSING_PORTAL:
+        return False
+    if _has_valid_wf_completion(
+        row, weights=weights, in_completed_bucket=in_completed_bucket
+    ):
+        return False
+    return True
 
 
 def specialty_review_is_unresolved(
@@ -181,7 +251,14 @@ def specialty_review_is_unresolved(
         ]
     if not normalized:
         return False
-    return category_for_reason_codes(normalized) == CATEGORY_SPECIALTY
+    explicit = [
+        c
+        for c in normalized
+        if c in SPECIALTY_ITEMS_REASONS or c == REASON_WF_BULK_WORKITEM_REVIEW
+    ]
+    if not explicit:
+        return False
+    return category_for_reason_codes(explicit) == CATEGORY_SPECIALTY
 
 
 def specialty_review_is_resolved(
@@ -328,69 +405,63 @@ def _specialty_candidate_ids(
     return out
 
 
-def split_review_categories(
-    headline: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    """Partition into Specialty Items vs Missing From Portal (+ split review ids).
+def _wf_completed_bucket(headline: Mapping[str, Any] | None) -> set[str]:
+    wf = ((headline or {}).get("segments") or {}).get("wf") or {}
+    bags_map = wf.get("bag_ids") or {}
+    return {
+        normalize_bag_id(b)
+        for b in (bags_map.get("completed") or [])
+        if normalize_bag_id(b)
+    }
 
-    Specialty Items = unresolved specialty-review orders (not \"completed\").
-    A completed bag with unresolved specialty review remains in Specialty Items.
-    A completed bag with resolved specialty review does not.
 
-    Split Order Review comes from specialty_metrics.split_review (canonical
-    evaluator) and is independent of Specialty / Missing queues.
-    """
-    by_reason, by_bag = _headline_maps(headline)
-    review_ids = _wf_review_ids(headline)
-    review_set = set(review_ids)
-    candidates = _specialty_candidate_ids(headline, by_reason, by_bag)
-    specialty: list[str] = []
-    missing: list[str] = []
-    for bid in candidates:
-        codes = _bag_codes(by_bag, by_reason, bid)
-        if specialty_review_is_unresolved(codes):
-            specialty.append(bid)
-            continue
-        # Missing-from-portal only while still in the Review Required population.
-        if bid in review_set and category_for_reason_codes(codes) == CATEGORY_MISSING_PORTAL:
-            missing.append(bid)
-
+def _split_review_ids_from_headline(headline: Mapping[str, Any] | None) -> list[str]:
     split_ids: list[str] = []
     root = (headline or {}).get("specialty_metrics") or {}
     wf_pack = root.get("wf") or root.get("all") or {}
-    for key in ("split_review",):
-        pack = wf_pack.get(key) if isinstance(wf_pack, dict) else None
-        if isinstance(pack, dict):
-            for bid in pack.get("order_ids") or []:
-                nb = normalize_bag_id(bid)
+    pack = wf_pack.get("split_review") if isinstance(wf_pack, dict) else None
+    if isinstance(pack, dict):
+        for bid in pack.get("order_ids") or []:
+            nb = normalize_bag_id(bid)
+            if nb and nb not in split_ids:
+                split_ids.append(nb)
+        for order in pack.get("orders") or []:
+            if isinstance(order, Mapping):
+                nb = normalize_bag_id(order.get("bag_id"))
                 if nb and nb not in split_ids:
                     split_ids.append(nb)
-            for order in pack.get("orders") or []:
-                if isinstance(order, Mapping):
-                    nb = normalize_bag_id(order.get("bag_id"))
-                    if nb and nb not in split_ids:
-                        split_ids.append(nb)
+    return split_ids
 
+
+def _membership_result_payload(
+    specialty: list[str],
+    missing: list[str],
+    split_ids: list[str],
+    *,
+    unknown: list[str] | None = None,
+) -> dict[str, Any]:
+    unknown = list(unknown or [])
+    all_review = set(specialty) | set(missing) | set(split_ids)
     return {
-        CATEGORY_SPECIALTY: specialty,
-        CATEGORY_MISSING_PORTAL: missing,
-        CATEGORY_SPLIT_ORDER: split_ids,
+        CATEGORY_SPECIALTY: list(specialty),
+        CATEGORY_MISSING_PORTAL: list(missing),
+        CATEGORY_SPLIT_ORDER: list(split_ids),
+        CATEGORY_UNKNOWN: list(unknown),
         "counts": {
             CATEGORY_SPECIALTY: len(specialty),
             CATEGORY_MISSING_PORTAL: len(missing),
             CATEGORY_SPLIT_ORDER: len(split_ids),
-            "review_required": len(review_ids),
+            CATEGORY_UNKNOWN: len(unknown),
+            "review_required": len(all_review),
         },
         "reason_category_map": dict(REASON_CATEGORY_MAP),
         "precedence": (
-            "Specialty Items = unresolved specialty review (independent of completed); "
-            "WF_BULK_WORKITEM_REVIEW → specialty_items; "
-            "DISAPPEARED_WITHOUT_COMPLETION alone → missing_from_portal; "
-            "canonical split REVIEW_REQUIRED → split_order_review (separate); "
-            "resolved specialty leaves specialty_items; no double-count between "
-            "specialty and missing; "
-            "WF review queues intersect segments.wf membership only — HD review "
-            "reasons never enter WF Missing/Specialty via review_by_reason fallback"
+            "Split Order Review = canonical split REVIEW_REQUIRED only; "
+            "Specialty Items = explicit unresolved specialty/bulk (bulk_cleared=false); "
+            "Missing From Portal = DISAPPEARED_WITHOUT_COMPLETION or "
+            "MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL before valid completion; "
+            "post-completion portal departure is not Review; "
+            "unknown codes are logged — never silently Specialty"
         ),
         "employee_performance_hint": {
             CATEGORY_SPECIALTY: "may_associate_with_employee_or_resource",
@@ -400,22 +471,339 @@ def split_review_categories(
     }
 
 
+def compute_canonical_wf_review_membership(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    headline: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Authoritative WF Review membership from fresh evidence + day-bag rows."""
+    from backend.rinse_bulk_workitems import (
+        bag_bulk_review_cleared,
+        load_bag_bulk_lines,
+        load_bulk_resolutions,
+        load_bulk_workitem_scan_map,
+    )
+    from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
+    from backend.rinse_veewash_shift_day import get_day_record, load_day_bags, summary_from_day_record
+    from backend.rinse_veewash_workload import (
+        build_step1_headline_summary,
+        build_veewash_daily_workload_from_membership,
+        get_step1_activation_date,
+    )
+    from backend.rinse_wf_canonical_split import STATE_REVIEW_REQUIRED
+
+    if headline is None:
+        day = get_day_record(cursor, organization_id, selected_date_et) or {}
+        headline = summary_from_day_record(day) or {}
+
+    wf_rows = [
+        r for r in (load_day_bags(cursor, organization_id, selected_date_et) or []) if _service_is_wf(r)
+    ]
+    bag_ids = sorted(
+        {
+            normalize_bag_id(r.get("bag_id"))
+            for r in wf_rows
+            if normalize_bag_id(r.get("bag_id"))
+        }
+    )
+    by_id = {
+        normalize_bag_id(r.get("bag_id")): r
+        for r in wf_rows
+        if normalize_bag_id(r.get("bag_id"))
+    }
+
+    wl = build_veewash_daily_workload_from_membership(
+        cursor, organization_id, selected_date_et=selected_date_et
+    )
+    activation = get_step1_activation_date(cursor, organization_id) or selected_date_et
+    summary = build_step1_headline_summary(
+        wl, selected_date_et=selected_date_et, activation_date=activation
+    )
+    summary = attach_specialty_metrics_to_summary(
+        cursor, organization_id, selected_date_et, summary
+    )
+    fresh_reasons = summary.get("review_reasons_by_bag") or {}
+
+    split_eval = (
+        _split_eval_as_of_day(cursor, organization_id, selected_date_et, bag_ids)
+        if bag_ids
+        else {}
+    )
+    split_ids = sorted(
+        set(_split_review_ids_from_headline(headline))
+        | {
+            bid
+            for bid in bag_ids
+            if (split_eval.get(bid) or {}).get("state") == STATE_REVIEW_REQUIRED
+        }
+    )
+
+    bulk_lines = load_bag_bulk_lines(cursor, organization_id, selected_date_et, bag_ids)
+    bulk_res = load_bulk_resolutions(cursor, organization_id, selected_date_et, bag_ids)
+    bulk_scans = load_bulk_workitem_scan_map(
+        cursor, organization_id, bag_ids, selected_date_et=selected_date_et
+    )
+    weights = _canonical_review_weights(cursor, organization_id, selected_date_et, bag_ids)
+    completed_bucket = _wf_completed_bucket(headline)
+
+    specialty: list[str] = []
+    missing: list[str] = []
+    unknown: list[str] = []
+    excluded: list[str] = []
+    disposition: dict[str, str | None] = {}
+    codes_by_bag: dict[str, list[str]] = {}
+    split_set = set(split_ids)
+
+    for bid in bag_ids:
+        if bid in split_set:
+            disposition[bid] = CATEGORY_SPLIT_ORDER
+            continue
+        row = by_id.get(bid) or {}
+        day_codes = list(row.get("review_reason_codes") or [])
+        fresh = list(fresh_reasons.get(bid) or [])
+        codes = list(dict.fromkeys([*fresh, *day_codes]))
+        codes_by_bag[bid] = codes
+        lines = list(bulk_lines.get(bid) or [])
+        scan = bulk_scans.get(bid)
+        has_bulk = bool(
+            lines or bulk_res.get(bid) or (scan and int(scan.get("count") or 0) > 0)
+        )
+        cleared = bag_bulk_review_cleared(bulk_res.get(bid), lines) if has_bulk else None
+        w = weights.get(bid) or {}
+        in_completed = bid in completed_bucket
+
+        if specialty_review_is_unresolved(codes, bulk_cleared=cleared):
+            specialty.append(bid)
+            disposition[bid] = CATEGORY_SPECIALTY
+            continue
+        if missing_portal_review_is_eligible(
+            codes,
+            row=row,
+            weights=w,
+            in_completed_bucket=in_completed,
+        ):
+            missing.append(bid)
+            disposition[bid] = CATEGORY_MISSING_PORTAL
+            continue
+        if codes:
+            cat = category_for_reason_codes(codes)
+            if cat is None:
+                unknown.append(bid)
+                disposition[bid] = CATEGORY_UNKNOWN
+            else:
+                excluded.append(bid)
+                disposition[bid] = None
+        else:
+            disposition[bid] = None
+
+    out = _membership_result_payload(specialty, missing, split_ids, unknown=unknown)
+    out["disposition"] = disposition
+    out["excluded"] = sorted(excluded)
+    out["codes_by_bag"] = codes_by_bag
+    return out
+
+
+def apply_canonical_wf_review_day_bag_fixes(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    membership: Mapping[str, Any],
+) -> dict[str, int]:
+    """Clear stale review rows and align eligible bags with canonical membership."""
+    import json as _json
+
+    from backend.rinse_bag_completion import normalize_bag_id
+
+    disposition = dict(membership.get("disposition") or {})
+    codes_by_bag = dict(membership.get("codes_by_bag") or {})
+    stats = {"cleared": 0, "set_specialty": 0, "set_missing": 0, "unchanged": 0}
+
+    for bid, target in disposition.items():
+        nb = normalize_bag_id(bid)
+        if not nb:
+            continue
+        if target == CATEGORY_SPECIALTY:
+            codes = [
+                c
+                for c in (codes_by_bag.get(nb) or [])
+                if c in SPECIALTY_ITEMS_REASONS or c == REASON_WF_BULK_WORKITEM_REVIEW
+            ]
+            if not codes:
+                codes = [REASON_WF_BULK_WORKITEM_REVIEW]
+            cursor.execute(
+                """
+                UPDATE rinse_shift_monitor_day_bags
+                SET review_reason_codes_json = %s, effective_status = 'review_required'
+                WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+                """,
+                (_json.dumps(codes), int(organization_id), selected_date_et, nb),
+            )
+            stats["set_specialty"] += int(getattr(cursor, "rowcount", 0) or 0)
+            continue
+        if target == CATEGORY_MISSING_PORTAL:
+            codes = [
+                c
+                for c in (codes_by_bag.get(nb) or [])
+                if c in MISSING_FROM_PORTAL_REASONS
+            ] or [REASON_DISAPPEARED_WITHOUT_COMPLETION]
+            cursor.execute(
+                """
+                UPDATE rinse_shift_monitor_day_bags
+                SET review_reason_codes_json = %s, effective_status = 'review_required'
+                WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+                """,
+                (_json.dumps(codes), int(organization_id), selected_date_et, nb),
+            )
+            stats["set_missing"] += int(getattr(cursor, "rowcount", 0) or 0)
+            continue
+        if target in (CATEGORY_SPLIT_ORDER, CATEGORY_UNKNOWN, None):
+            cursor.execute(
+                """
+                UPDATE rinse_shift_monitor_day_bags
+                SET review_reason_codes_json = '[]',
+                    effective_status = CASE
+                        WHEN post_weight_lbs IS NOT NULL
+                          OR canonical_completion_timestamp IS NOT NULL
+                        THEN 'completed'
+                        WHEN effective_status = 'review_required' THEN 'pending'
+                        ELSE effective_status
+                    END
+                WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+                  AND (review_reason_codes_json IS NOT NULL
+                       AND review_reason_codes_json != '[]'
+                       OR effective_status = 'review_required')
+                """,
+                (int(organization_id), selected_date_et, nb),
+            )
+            n = int(getattr(cursor, "rowcount", 0) or 0)
+            if n:
+                stats["cleared"] += n
+            else:
+                stats["unchanged"] += 1
+    return stats
+
+
+def persist_canonical_wf_review_on_headline(
+    headline: dict[str, Any],
+    membership: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Overlay canonical Review membership onto a headline dict (in-memory)."""
+    hl = dict(headline or {})
+    specialty = list(membership.get(CATEGORY_SPECIALTY) or [])
+    missing = list(membership.get(CATEGORY_MISSING_PORTAL) or [])
+    split_ids = list(membership.get(CATEGORY_SPLIT_ORDER) or [])
+    codes_by_bag = dict(membership.get("codes_by_bag") or {})
+    reasons: dict[str, list[str]] = {}
+    for bid in specialty:
+        codes = [
+            c
+            for c in (codes_by_bag.get(bid) or [])
+            if c in SPECIALTY_ITEMS_REASONS or c == REASON_WF_BULK_WORKITEM_REVIEW
+        ]
+        if codes:
+            reasons[bid] = codes
+    for bid in missing:
+        codes = [c for c in (codes_by_bag.get(bid) or []) if c in MISSING_FROM_PORTAL_REASONS]
+        if codes:
+            reasons[bid] = codes
+    hl["review_reasons_by_bag"] = reasons
+    by_reason: dict[str, list[str]] = {}
+    for bid, codes in reasons.items():
+        for code in codes or []:
+            by_reason.setdefault(str(code), []).append(bid)
+    for key in list(by_reason):
+        by_reason[key] = sorted(set(by_reason[key]))
+    hl["review_by_reason"] = by_reason
+    segs = dict(hl.get("segments") or {})
+    wf = dict(segs.get("wf") or {})
+    bag_ids = dict(wf.get("bag_ids") or {})
+    review_union = sorted(set(specialty) | set(missing))
+    bag_ids["review_required"] = review_union
+    wf["bag_ids"] = bag_ids
+    exc = dict(wf.get("exceptions") or {})
+    exc["review_required"] = len(review_union)
+    wf["exceptions"] = exc
+    segs["wf"] = wf
+    hl["segments"] = segs
+    root = dict(hl.get("specialty_metrics") or {})
+    wf_pack = dict(root.get("wf") or root.get("all") or {})
+    wf_pack["split_review"] = {
+        "count": len(split_ids),
+        "order_ids": split_ids,
+        "orders": [{"bag_id": b} for b in split_ids],
+    }
+    root["wf"] = wf_pack
+    hl["specialty_metrics"] = root
+    return hl
+
+
+def split_review_categories(
+    headline: Mapping[str, Any] | None,
+    *,
+    membership: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Partition Review queues from explicit categories (headline-only fallback)."""
+    if membership:
+        return _membership_result_payload(
+            list(membership.get(CATEGORY_SPECIALTY) or []),
+            list(membership.get(CATEGORY_MISSING_PORTAL) or []),
+            list(membership.get(CATEGORY_SPLIT_ORDER) or []),
+            unknown=list(membership.get(CATEGORY_UNKNOWN) or []),
+        )
+
+    by_reason, by_bag = _headline_maps(headline)
+    completed_bucket = _wf_completed_bucket(headline)
+    candidates = _specialty_candidate_ids(headline, by_reason, by_bag)
+    specialty: list[str] = []
+    missing: list[str] = []
+    unknown: list[str] = []
+    for bid in candidates:
+        codes = _bag_codes(by_bag, by_reason, bid)
+        if specialty_review_is_unresolved(codes):
+            specialty.append(bid)
+            continue
+        if missing_portal_review_is_eligible(
+            codes, in_completed_bucket=bid in completed_bucket
+        ):
+            missing.append(bid)
+            continue
+        if codes and category_for_reason_codes(codes) is None:
+            unknown.append(bid)
+
+    split_ids = _split_review_ids_from_headline(headline)
+    return _membership_result_payload(specialty, missing, split_ids, unknown=unknown)
+
+
 def specialty_review_membership_ids(
     headline: Mapping[str, Any] | None,
+    *,
+    membership: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Canonical unresolved Specialty Review bag IDs (summary + drawer share this)."""
+    if membership:
+        return list(membership.get(CATEGORY_SPECIALTY) or [])
     return list(split_review_categories(headline).get(CATEGORY_SPECIALTY) or [])
 
 
 def review_category_count_payload(
     headline: Mapping[str, Any] | None,
+    *,
+    cursor=None,
+    organization_id: int | None = None,
+    selected_date_et: date | None = None,
 ) -> dict[str, Any]:
-    """Scalar Review counts from the same membership as the Specialty drawer list.
-
-    Never invent specialty_items from day-level review_required_count (that total
-    includes HD and bags without specialty reason codes).
-    """
-    split = split_review_categories(headline)
+    """Scalar Review counts from the same membership as the Review drawers."""
+    if cursor is not None and organization_id is not None and selected_date_et is not None:
+        split = compute_canonical_wf_review_membership(
+            cursor,
+            int(organization_id),
+            selected_date_et,
+            headline=headline,
+        )
+    else:
+        split = split_review_categories(headline)
     counts = split["counts"]
     return {
         "split_available": True,
@@ -423,6 +811,7 @@ def review_category_count_payload(
         "specialty_items": int(counts.get(CATEGORY_SPECIALTY) or 0),
         "missing_from_portal": int(counts.get(CATEGORY_MISSING_PORTAL) or 0),
         "split_order_review": int(counts.get(CATEGORY_SPLIT_ORDER) or 0),
+        "unknown_review": int(counts.get(CATEGORY_UNKNOWN) or 0),
         "reason_category_map": split["reason_category_map"],
         "precedence": split["precedence"],
         "employee_performance_hint": split["employee_performance_hint"],
@@ -430,6 +819,7 @@ def review_category_count_payload(
             CATEGORY_SPECIALTY: list(split.get(CATEGORY_SPECIALTY) or []),
             CATEGORY_MISSING_PORTAL: list(split.get(CATEGORY_MISSING_PORTAL) or []),
             CATEGORY_SPLIT_ORDER: list(split.get(CATEGORY_SPLIT_ORDER) or []),
+            CATEGORY_UNKNOWN: list(split.get(CATEGORY_UNKNOWN) or []),
         },
     }
 
@@ -456,7 +846,15 @@ def enrich_review_counts_by_rush(
     membership = dict(out.pop("_membership", None) or {})
     if not membership:
         membership = dict(
-            (review_category_count_payload(headline).get("_membership") or {})
+            (
+                review_category_count_payload(
+                    headline,
+                    cursor=cursor,
+                    organization_id=organization_id,
+                    selected_date_et=selected_date_et,
+                ).get("_membership")
+                or {}
+            )
         )
     specialty = list(membership.get(CATEGORY_SPECIALTY) or [])
     missing = list(membership.get(CATEGORY_MISSING_PORTAL) or [])
@@ -483,7 +881,7 @@ def enrich_review_counts_by_rush(
                 "specialty_items": len(specialty),
                 "missing_from_portal": len(missing),
                 "split_order_review": len(split_ids),
-                "review_required": int(out.get("review_required") or 0),
+                "review_required": len(specialty) + len(missing) + len(split_ids),
             }
         spec_n = sum(1 for b in specialty if b in want)
         miss_n = sum(1 for b in missing if b in want)
@@ -492,7 +890,7 @@ def enrich_review_counts_by_rush(
             "specialty_items": spec_n,
             "missing_from_portal": miss_n,
             "split_order_review": split_n,
-            "review_required": spec_n + miss_n,
+            "review_required": spec_n + miss_n + split_n,
         }
 
     out["by_rush"] = {
@@ -513,7 +911,12 @@ def build_management_review_summary(
 
     day = get_day_record(cursor, organization_id, selected_date_et)
     headline = summary_from_day_record(day) or {}
-    base = review_category_count_payload(headline)
+    base = review_category_count_payload(
+        headline,
+        cursor=cursor,
+        organization_id=organization_id,
+        selected_date_et=selected_date_et,
+    )
     membership = base.pop("_membership", {})
     enriched = enrich_review_counts_by_rush(
         cursor, organization_id, selected_date_et, headline, {**base, "_membership": membership}
@@ -663,57 +1066,52 @@ def build_management_review_list(
 
     day = get_day_record(cursor, organization_id, selected_date_et)
     headline = summary_from_day_record(day) or {}
-    split = split_review_categories(headline)
+    membership = compute_canonical_wf_review_membership(
+        cursor, organization_id, selected_date_et, headline=headline
+    )
+    split = split_review_categories(headline, membership=membership)
     if cat == CATEGORY_SPECIALTY:
-        bag_ids = specialty_review_membership_ids(headline)
+        bag_ids = list(membership.get(CATEGORY_SPECIALTY) or [])
     else:
         bag_ids = list(split.get(cat) or [])
     by_reason, by_bag = _headline_maps(headline)
-
-    # Post-reset / stale-headline defense: discover unresolved specialty from day bags
-    # when headline review_reasons_by_bag was not yet synced from persisted codes.
-    if cat == CATEGORY_SPECIALTY and not bag_ids:
-        from backend.rinse_veewash_shift_day import load_day_bags
-
-        discovered: list[str] = []
-        for row in load_day_bags(cursor, organization_id, selected_date_et) or []:
-            if not _service_is_wf(row):
-                continue
-            bid = normalize_bag_id(row.get("bag_id"))
-            if not bid:
-                continue
-            codes = list(row.get("review_reason_codes") or [])
-            if specialty_review_is_unresolved(codes):
-                discovered.append(bid)
-        bag_ids = discovered
 
     # Heal membership from day_bag rows — NEVER drop Specialty Items solely
     # because status=completed. Specialty exits only when specialty is resolved.
     # Always drop non-WF day-bag rows (service isolation defense in depth).
     if bag_ids and cat != CATEGORY_SPLIT_ORDER:
-        # Need review_reason_codes for specialty resolution (not status_only).
         status_rows = load_day_bags_by_ids(
             cursor, organization_id, selected_date_et, bag_ids, status_only=False
         )
         by_status = {
             normalize_bag_id(r.get("bag_id")): r for r in status_rows
         }
+        weight_map_all = _canonical_review_weights(
+            cursor, organization_id, selected_date_et, bag_ids
+        )
+        completed_bucket = _wf_completed_bucket(headline)
         still: set[str] = set()
         for bid in bag_ids:
             row = by_status.get(bid) or {}
             if row and not _service_is_wf(row):
-                # Explicit HD (or other non-WF) day-bag must not appear on WF queues.
                 continue
-            status = str(row.get("effective_status") or "").strip().lower()
             codes = list(row.get("review_reason_codes") or []) or _bag_codes(
                 by_bag, by_reason, bid
             )
             if cat == CATEGORY_SPECIALTY:
-                if specialty_review_is_unresolved(codes):
+                if bid in (membership.get(CATEGORY_SPECIALTY) or []):
                     still.add(bid)
                 continue
-            # Missing From Portal: still requires review_required day-bag status.
-            if status == "review_required":
+            if cat == CATEGORY_MISSING_PORTAL:
+                if missing_portal_review_is_eligible(
+                    codes,
+                    row=row,
+                    weights=weight_map_all.get(bid) or {},
+                    in_completed_bucket=bid in completed_bucket,
+                ):
+                    still.add(bid)
+                continue
+            if str(row.get("effective_status") or "").strip().lower() == "review_required":
                 still.add(bid)
         bag_ids = [b for b in bag_ids if b in still]
     elif cat == CATEGORY_SPLIT_ORDER:
@@ -823,6 +1221,24 @@ def build_management_review_list(
                     split_order_meta[nb] = dict(order)
 
     bags_out: list[dict[str, Any]] = []
+    if page_ids:
+        name_rows = [
+            {
+                "bag_id": bid,
+                "customer_name": review_customer_display_name(
+                    (by_id.get(bid) or {}).get("customer_name"),
+                    ((by_id.get(bid) or {}).get("bag_snapshot") or {}).get("customer_name"),
+                ),
+            }
+            for bid in page_ids
+        ]
+        resolve_customer_names_for_bags(cursor, organization_id, name_rows)
+        for nr in name_rows:
+            if nr.get("customer_name") in (None, "", "—", "Unknown Customer"):
+                nr["customer_name"] = REVIEW_CUSTOMER_UNAVAILABLE
+        name_by_id = {r["bag_id"]: r["customer_name"] for r in name_rows}
+    else:
+        name_by_id = {}
     for bid in page_ids:
         row = by_id.get(bid) or {}
         snap = dict(row.get("bag_snapshot") or {})
@@ -849,9 +1265,12 @@ def build_management_review_list(
         )
         bag_row = {
                 "bag_id": bid,
-                "customer_name": snap.get("customer_name")
-                or row.get("customer_name")
-                or smeta.get("customer_name"),
+                "customer_name": name_by_id.get(bid)
+                or review_customer_display_name(
+                    snap.get("customer_name"),
+                    row.get("customer_name"),
+                    smeta.get("customer_name"),
+                ),
                 "service_type": snap.get("service_type") or row.get("service_type"),
                 "rush_flag": snap.get("rush_flag")
                 or row.get("rush_status")

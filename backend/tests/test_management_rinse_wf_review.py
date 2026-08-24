@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from backend.management_rinse_wf_review import (
     CATEGORY_MISSING_PORTAL,
     CATEGORY_SPECIALTY,
@@ -11,6 +13,34 @@ from backend.management_rinse_wf_review import (
     split_review_categories,
     _specialty_qty_from_lines,
 )
+
+
+@pytest.fixture(autouse=True)
+def _mock_canonical_membership_for_list(monkeypatch):
+    """List tests use headline-shaped membership unless integration tests opt out."""
+
+    def _fake(cursor, organization_id, selected_date_et, *, headline=None):
+        split = split_review_categories(headline)
+        by_bag = (headline or {}).get("review_reasons_by_bag") or {}
+        disposition = {}
+        for bid, codes in by_bag.items():
+            if specialty_review_is_unresolved(codes):
+                disposition[bid] = CATEGORY_SPECIALTY
+            elif category_for_reason_codes(codes) == CATEGORY_MISSING_PORTAL:
+                disposition[bid] = CATEGORY_MISSING_PORTAL
+            elif category_for_reason_codes(codes) is None:
+                disposition[bid] = CATEGORY_UNKNOWN
+        return {
+            **split,
+            "disposition": disposition,
+            "excluded": [],
+            "codes_by_bag": dict(by_bag),
+        }
+
+    monkeypatch.setattr(
+        "backend.management_rinse_wf_review.compute_canonical_wf_review_membership",
+        _fake,
+    )
 
 
 def test_category_specialty_bulk():
@@ -574,14 +604,15 @@ def test_review_list_clears_stale_snap_pre_when_resolver_has_no_pre():
         "effective_status": "review_required",
         "review_reason_codes": ["DISAPPEARED_WITHOUT_COMPLETION"],
         "pre_weight_lbs": 13.1,
-        "post_weight_lbs": 13.1,
+        "post_weight_lbs": None,
+        "canonical_completion_timestamp": None,
         "manager_edit_version": 0,
         "updated_at": "2026-08-22T12:00:00",
         "bag_snapshot": {
             "customer_name": "Test",
             "rush_flag": "NON-RUSH",
             "pre_weight_lbs": 13.1,
-            "post_weight_lbs": 13.1,
+            "post_weight_lbs": None,
         },
     }
     with (

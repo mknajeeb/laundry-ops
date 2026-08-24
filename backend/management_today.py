@@ -876,19 +876,28 @@ def extract_rinse_step1(
     }
 
 
-def extract_review(day_rec: Mapping[str, Any] | None, headline: Mapping[str, Any] | None) -> dict[str, Any]:
+def extract_review(
+    day_rec: Mapping[str, Any] | None,
+    headline: Mapping[str, Any] | None,
+    *,
+    cursor=None,
+    organization_id: int | None = None,
+    selected_date_et: date | None = None,
+) -> dict[str, Any]:
     """Review Required total + Specialty Items / Missing From Portal counts.
 
-    Counts only (no bag ID arrays). Same canonical membership as the Specialty
-    Items drawer (``specialty_review_membership_ids`` /
-    ``review_category_count_payload``). Never invent specialty_items from
-    day-level ``review_required_count`` (that includes HD + empty-reason rows).
+    Counts only (no bag ID arrays). Same canonical membership as the Review
+    drawers (``review_category_count_payload`` with cursor when available).
     """
     from backend.management_rinse_wf_review import review_category_count_payload
 
-    # day_rec retained for call-site compatibility; membership is headline-only.
     _ = day_rec
-    payload = review_category_count_payload(headline)
+    payload = review_category_count_payload(
+        headline,
+        cursor=cursor,
+        organization_id=organization_id,
+        selected_date_et=selected_date_et,
+    )
     # Strip internal membership IDs — compact TODAY payload forbids bag arrays.
     payload.pop("_membership", None)
     return payload
@@ -1285,7 +1294,12 @@ def build_management_rinse_wf_payload(
         review_category_count_payload,
     )
 
-    review_base = review_category_count_payload(headline)
+    review_base = review_category_count_payload(
+        headline,
+        cursor=counting,
+        organization_id=org,
+        selected_date_et=day,
+    )
     review = enrich_review_counts_by_rush(
         counting, org, day, headline, review_base
     )
@@ -1384,7 +1398,12 @@ def build_management_today_payload(
         org,
         day,
         headline,
-        review_category_count_payload(headline),
+        review_category_count_payload(
+            headline,
+            cursor=counting,
+            organization_id=org,
+            selected_date_et=day,
+        ),
     )
     review.pop("_membership", None)
 
