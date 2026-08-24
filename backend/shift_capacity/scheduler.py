@@ -67,6 +67,19 @@ _DRY_SNAP_FIELDS = (
     "dryer_loaded_by_employee_id",
 )
 
+# Large fleets: skip full feasibility planning on machines that cannot start
+# before the best load_start already found among earlier candidates.
+_MACHINE_CANDIDATE_FIRST_PASS = 8
+
+
+def _ordered_machines(machines: list[str], prefer_unused: set[str] | None = None) -> list[str]:
+    ordered = sorted(machines)
+    if not prefer_unused:
+        return ordered
+    unused = [mid for mid in ordered if mid not in prefer_unused]
+    used = [mid for mid in ordered if mid in prefer_unused]
+    return unused + used
+
 
 def _snap_bag_fields(bag: Bag, fields: tuple[str, ...]) -> dict[str, Any]:
     return {f: getattr(bag, f) for f in fields}
@@ -805,10 +818,20 @@ def _schedule_wash_group(
     if override and override.washer_id:
         candidate_washers = [override.washer_id]
     else:
-        candidate_washers = sorted(washers)
+        prefer_unused = set(washer_ids_used) if washer_ids_used else None
+        candidate_washers = _ordered_machines(washers, prefer_unused)
 
     best: tuple[int, str, list[tuple[Bag, Any, int, int, int]], int, int] | None = None
-    for washer_id in candidate_washers:
+    first_end = min(_MACHINE_CANDIDATE_FIRST_PASS, len(candidate_washers))
+    for idx, washer_id in enumerate(candidate_washers):
+        if best is not None and idx >= first_end:
+            nf = machine_cal.next_free(
+                washer_id,
+                resource_type="washer_machine",
+                not_before=ready_sort,
+            )
+            if nf > best[0]:
+                continue
         planned = _plan_wash_group_on_washer(
             group,
             batch=batch,
@@ -1110,10 +1133,20 @@ def _schedule_dry_group(
     if override and override.dryer_id:
         candidate_dryers = [override.dryer_id]
     else:
-        candidate_dryers = sorted(dryers)
+        prefer_unused = set(dryer_ids_used) if dryer_ids_used else None
+        candidate_dryers = _ordered_machines(dryers, prefer_unused)
 
     best: tuple[int, str, list[tuple[Bag, Any, int, int, int]], int, int, int] | None = None
-    for dryer_id in candidate_dryers:
+    first_end = min(_MACHINE_CANDIDATE_FIRST_PASS, len(candidate_dryers))
+    for idx, dryer_id in enumerate(candidate_dryers):
+        if best is not None and idx >= first_end:
+            nf = machine_cal.next_free(
+                dryer_id,
+                resource_type="dryer_machine",
+                not_before=dryer_ready,
+            )
+            if nf > best[0]:
+                continue
         planned = _plan_dry_group_on_dryer(
             group,
             batch=batch,

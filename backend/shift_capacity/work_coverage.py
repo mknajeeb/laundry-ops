@@ -7,6 +7,8 @@ capacity engine.
 
 from __future__ import annotations
 
+from bisect import bisect_right
+from collections import defaultdict
 from typing import Any
 
 from backend.shift_capacity.staffing_plan import (
@@ -30,6 +32,41 @@ ROLE_LABOR_TASK = {
 }
 
 
+class _LaborTaskIndex:
+    """Precomputed bag×task labor reservations for coverage scans."""
+
+    def __init__(self, calendars: dict[str, list[Any]]) -> None:
+        ends: dict[tuple[str, str], list[int]] = defaultdict(list)
+        spans: dict[tuple[str, str], list[tuple[int, int]]] = defaultdict(list)
+        for rows in calendars.values():
+            for r in rows or []:
+                task = getattr(r, "task_type", None) or getattr(r, "task", None)
+                if not task:
+                    continue
+                start = int(r.start)
+                end = int(r.end)
+                for bag_id in getattr(r, "bag_ids", None) or []:
+                    key = (str(bag_id), str(task))
+                    ends[key].append(end)
+                    spans[key].append((start, end))
+        self._ends = {k: sorted(v) for k, v in ends.items()}
+        self._spans = spans
+
+    def loads_completed_before(self, bag_id: str, task: str, before_sec: int) -> int:
+        ends = self._ends.get((bag_id, task))
+        if not ends:
+            return 0
+        return bisect_right(ends, before_sec)
+
+    def has_open_reservation_at(self, bag_id: str, task: str, t: int) -> bool:
+        for start, end in self._spans.get((bag_id, task), []):
+            if end <= t:
+                continue
+            if start >= t or start <= t < end:
+                return True
+        return False
+
+
 def build_work_coverage(state: Any) -> list[dict[str, Any]]:
     """Return one coverage row per authored staffing interval (people > 0)."""
     if not getattr(state.inputs, "management_mode", False):
@@ -46,6 +83,7 @@ def build_work_coverage(state: Any) -> list[dict[str, Any]]:
 
     employees = list(state.inputs.employees or [])
     calendars = state.employee_calendars or {}
+    labor_index = _LaborTaskIndex(calendars)
     bags = list(state.bags or [])
     pt = state.inputs.processing_times
     load_sec = _load_sec_by_role(pt)
@@ -69,6 +107,7 @@ def build_work_coverage(state: Any) -> list[dict[str, Any]]:
                 authored_all=authored,
                 employees=employees,
                 calendars=calendars,
+                labor_index=labor_index,
                 bags=bags,
                 load_sec=load_sec,
                 machine_calendars=machine_calendars,
@@ -204,7 +243,11 @@ def _loads_completed_before(
     task: str,
     before_sec: int,
     calendars: dict[str, list[Any]],
+    *,
+    labor_index: _LaborTaskIndex | None = None,
 ) -> int:
+    if labor_index is not None:
+        return labor_index.loads_completed_before(bag_id, task, before_sec)
     n = 0
     for rows in calendars.values():
         for r in rows or []:
@@ -225,6 +268,7 @@ def _eligible_demand(
     w1: int,
     load_sec: int,
     calendars: dict[str, list[Any]],
+    labor_index: _LaborTaskIndex | None = None,
 ) -> tuple[int, int, int, int, int]:
     """Return available_sec, eligible_bags, physical_loads, at_start_bags, became_bags."""
     task = ROLE_LABOR_TASK[role]
@@ -238,7 +282,9 @@ def _eligible_demand(
         if ready is None or ready >= w1:
             continue
         n = _n_loads(bag, role)
-        done_before = _loads_completed_before(bag.bag_id, task, w0, calendars)
+        done_before = _loads_completed_before(
+            bag.bag_id, task, w0, calendars, labor_index=labor_index
+        )
         rem = n - done_before
         if rem <= 0:
             continue
@@ -300,6 +346,8 @@ def _bag_eligible_for_role_at(
     role: str,
     t: int,
     calendars: dict[str, list[Any]],
+    *,
+    labor_index: _LaborTaskIndex | None = None,
 ) -> bool:
     """True if bag has unfinished, unassigned labor for role ready at instant t."""
     ready = _ready_sec_for_role(bag, role)
@@ -308,21 +356,24 @@ def _bag_eligible_for_role_at(
     task = ROLE_LABOR_TASK[role]
     if role in ("washer", "dryer"):
         n = _n_loads(bag, role)
-        done = _loads_completed_before(bag.bag_id, task, t, calendars)
+        done = _loads_completed_before(bag.bag_id, task, t, calendars, labor_index=labor_index)
         if done >= n:
             return False
-        # In-progress or already-booked future load on any calendar → claimed.
-        for rows in calendars.values():
-            for r in rows or []:
-                if (getattr(r, "task_type", None) or getattr(r, "task", None)) != task:
-                    continue
-                if bag.bag_id not in (getattr(r, "bag_ids", None) or []):
-                    continue
-                if int(r.end) <= t:
-                    continue
-                # Reservation still open at or after t (in progress or future).
-                if int(r.start) >= t or int(r.start) <= t < int(r.end):
-                    return False
+        if labor_index is not None:
+            if labor_index.has_open_reservation_at(bag.bag_id, task, t):
+                return False
+        else:
+            # In-progress or already-booked future load on any calendar → claimed.
+            for rows in calendars.values():
+                for r in rows or []:
+                    if (getattr(r, "task_type", None) or getattr(r, "task", None)) != task:
+                        continue
+                    if bag.bag_id not in (getattr(r, "bag_ids", None) or []):
+                        continue
+                    if int(r.end) <= t:
+                        continue
+                    if int(r.start) >= t or int(r.start) <= t < int(r.end):
+                        return False
         return True
 
     # Single-shot stages: only unassigned ready bags count as eligible demand.
@@ -348,10 +399,12 @@ def _has_eligible_work_at(
     roles: list[str],
     t: int,
     calendars: dict[str, list[Any]],
+    *,
+    labor_index: _LaborTaskIndex | None = None,
 ) -> bool:
     for bag in bags:
         for role in roles:
-            if _bag_eligible_for_role_at(bag, role, t, calendars):
+            if _bag_eligible_for_role_at(bag, role, t, calendars, labor_index=labor_index):
                 return True
     return False
 
@@ -406,6 +459,7 @@ def _classify_idle_gap(
     machine_calendars: dict[str, list[Any]] | None = None,
     washer_ids: list[str] | None = None,
     dryer_ids: list[str] | None = None,
+    labor_index: _LaborTaskIndex | None = None,
 ) -> tuple[int, int, int]:
     """Split idle gap into (idle_no_eligible, unused_fit, machine_blocked) seconds."""
     if gap_hi <= gap_lo:
@@ -427,7 +481,9 @@ def _classify_idle_gap(
         if t1 <= t0:
             continue
         dur = t1 - t0
-        if not _has_eligible_work_at(bags, roles, t0, calendars):
+        if not _has_eligible_work_at(
+            bags, roles, t0, calendars, labor_index=labor_index
+        ):
             idle_no += dur
             continue
         if (
@@ -456,6 +512,7 @@ def _classify_idle_from_calendars(
     machine_calendars: dict[str, list[Any]] | None = None,
     washer_ids: list[str] | None = None,
     dryer_ids: list[str] | None = None,
+    labor_index: _LaborTaskIndex | None = None,
 ) -> tuple[int, int, int, int]:
     """Per-worker idle classification, then sum.
 
@@ -476,6 +533,7 @@ def _classify_idle_from_calendars(
                 machine_calendars=machine_calendars,
                 washer_ids=washer_ids,
                 dryer_ids=dryer_ids,
+                labor_index=labor_index,
             )
             idle_no_total += no_sec
             unused_fit_total += fit_sec
@@ -553,6 +611,7 @@ def _coverage_for_interval(
     authored_all: list[AuthoredInterval],
     employees: list[Any],
     calendars: dict[str, list[Any]],
+    labor_index: _LaborTaskIndex | None,
     bags: list[Any],
     load_sec: dict[str, int],
     machine_calendars: dict[str, list[Any]] | None = None,
@@ -578,6 +637,7 @@ def _coverage_for_interval(
             w1=w1,
             load_sec=load_sec,
             calendars=calendars,
+            labor_index=labor_index,
         )
         idle_sec, idle_no_work, unused_fit, machine_blocked = _classify_idle_from_calendars(
             employee_ids,
@@ -592,6 +652,7 @@ def _coverage_for_interval(
             machine_calendars=machine_calendars,
             washer_ids=washer_ids,
             dryer_ids=dryer_ids,
+            labor_index=labor_index,
         )
         role_alloc = {
             r: round(by_task.get(ROLE_LABOR_TASK[r], 0) / 60.0, 2) for r in roles
@@ -612,6 +673,7 @@ def _coverage_for_interval(
             w1=w1,
             load_sec=load_sec[role],
             calendars=calendars,
+            labor_index=labor_index,
         )
         idle_sec, idle_no_work, unused_fit, machine_blocked = _classify_idle_from_calendars(
             employee_ids,
@@ -626,6 +688,7 @@ def _coverage_for_interval(
             machine_calendars=machine_calendars,
             washer_ids=washer_ids,
             dryer_ids=dryer_ids,
+            labor_index=labor_index,
         )
         role_alloc = None
         primary_role = role
@@ -697,6 +760,7 @@ def _hybrid_eligible_demand(
     w1: int,
     load_sec: dict[str, int],
     calendars: dict[str, list[Any]],
+    labor_index: _LaborTaskIndex | None = None,
 ) -> tuple[int, int, int, int, int]:
     """Union of unfinished work across hybrid roles without double-counting a bag's minutes.
 
@@ -717,7 +781,9 @@ def _hybrid_eligible_demand(
                 continue
             task = ROLE_LABOR_TASK[role]
             n = _n_loads(bag, role)
-            done_before = _loads_completed_before(bag.bag_id, task, w0, calendars)
+            done_before = _loads_completed_before(
+            bag.bag_id, task, w0, calendars, labor_index=labor_index
+        )
             rem = n - done_before
             if rem <= 0:
                 continue
