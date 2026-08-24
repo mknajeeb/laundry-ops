@@ -185,7 +185,18 @@ def register_management_rinse_hd_routes(
                 )
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
-            payload = build_rinse_hd_summary(cursor, oid, start_et=start, end_et=end)
+            raw_snapshot = (request.args.get("date_et") or "").strip()
+            snapshot = parse_date_value(raw_snapshot) if raw_snapshot else end
+            if not isinstance(snapshot, date):
+                snapshot = end
+            payload = build_rinse_hd_summary(
+                cursor,
+                oid,
+                start_et=start,
+                end_et=end,
+                snapshot_date_et=snapshot,
+            )
+            conn.commit()
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500

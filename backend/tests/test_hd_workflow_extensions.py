@@ -179,6 +179,8 @@ def test_build_rinse_hd_day_skips_quarantined_portal_hints():
         patch("backend.management_rinse_hd._load_production_by_bag", return_value={"OLD1": quarantined, "KEEP1": retained}),
         patch("backend.management_rinse_hd._load_user_maps", return_value={}),
         patch("backend.management_rinse_hd._batch_user_names", return_value={}),
+        patch("backend.management_rinse_hd._load_hd_portal_bags_for_day", return_value={"KEEP1"}),
+        patch("backend.management_rinse_hd._load_hd_presence_meta", return_value={}),
         patch("backend.hd_workflow_extensions.build_excluded_hd_orders", return_value=[]),
         patch("backend.hd_workflow_extensions.attach_delivery_dates", side_effect=lambda _c, _o, orders: orders),
         patch("backend.management_rinse_hd.resolve_order_state", side_effect=lambda *a, **k: {"bag_id": k.get("production", {}).get("bag_id") or "KEEP1", "status": STATUS_PENDING_WASH}),

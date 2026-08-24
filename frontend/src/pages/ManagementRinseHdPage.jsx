@@ -42,6 +42,7 @@ const STATUS_CHIPS = [
   { id: "awaiting_fold", label: "Awaiting Fold" },
   { id: "awaiting_entry", label: "Awaiting Entry" },
   { id: "complete", label: "Complete" },
+  { id: "missing_from_portal", label: "Missing From Portal" },
   { id: "excluded", label: "Excluded" },
   { id: "all", label: "All" },
 ];
@@ -100,6 +101,7 @@ function statusLabel(status) {
   if (status === "washed" || status === "awaiting_fold") return "Awaiting Fold";
   if (status === "awaiting_entry") return "Awaiting Entry";
   if (status === "complete") return "Complete";
+  if (status === "missing_from_portal") return "Missing From Portal";
   if (status === "excluded") return "Excluded";
   return status || "—";
 }
@@ -412,7 +414,7 @@ export default function ManagementRinseHdPage() {
   const loadSummary = useCallback(async () => {
     setSummaryLoading(true);
     try {
-      const params = { period };
+      const params = { period, date_et: dateEt };
       if (period === "custom") {
         params.start_et = customStart;
         params.end_et = customEnd;
@@ -424,7 +426,7 @@ export default function ManagementRinseHdPage() {
     } finally {
       setSummaryLoading(false);
     }
-  }, [period, customStart, customEnd]);
+  }, [period, customStart, customEnd, dateEt]);
 
   useEffect(() => {
     load(dateEt, statusFilter, false);
@@ -434,7 +436,8 @@ export default function ManagementRinseHdPage() {
     loadSummary();
   }, [loadSummary]);
 
-  const summary = rangeSummary || data?.summary || {};
+  const stageSummary = data?.summary || rangeSummary || {};
+  const periodSummary = rangeSummary || {};
   const orders = data?.orders || [];
   const filteredOrders = useMemo(() => {
     const q = String(searchQuery || "").trim().toLowerCase();
@@ -726,16 +729,17 @@ export default function ManagementRinseHdPage() {
           mb: 1.25,
         }}
       >
-        <SummaryCard label="Pending Wash" value={fmtInt(summary.pending_wash)} />
+        <SummaryCard label="Pending Wash" value={fmtInt(stageSummary.pending_wash)} />
+        <SummaryCard label="Awaiting Fold" value={fmtInt(stageSummary.awaiting_fold)} />
+        <SummaryCard label="Awaiting Entry" value={fmtInt(stageSummary.awaiting_entry)} />
+        <SummaryCard label="Complete" value={fmtInt(stageSummary.complete)} />
+        <SummaryCard label="Missing From Portal" value={fmtInt(stageSummary.missing_from_portal)} />
+        <SummaryCard label="Excluded" value={fmtInt(stageSummary.excluded)} />
+        <SummaryCard label="Items" value={fmtInt(periodSummary.items ?? stageSummary.items)} />
         <SummaryCard
-          label="Awaiting Fold"
-          value={fmtInt(summary.awaiting_fold ?? summary.washed)}
+          label="Revenue"
+          value={fmtMoney(periodSummary.revenue ?? stageSummary.revenue)}
         />
-        <SummaryCard label="Awaiting Entry" value={fmtInt(summary.awaiting_entry)} />
-        <SummaryCard label="Complete" value={fmtInt(summary.complete ?? summary.completed_today)} />
-        <SummaryCard label="Excluded" value={fmtInt(summary.excluded)} />
-        <SummaryCard label="Items" value={fmtInt(summary.items ?? summary.items_completed_today)} />
-        <SummaryCard label="Revenue" value={fmtMoney(summary.revenue ?? summary.revenue_completed_today)} />
       </Box>
 
       <FormControl size="small" fullWidth sx={{ mb: 1.25, display: { xs: "flex", sm: "none" } }}>

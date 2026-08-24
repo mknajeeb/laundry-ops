@@ -41,6 +41,7 @@ STATUS_WASHED = "washed"  # API value; UI label = Awaiting Fold
 STATUS_AWAITING_FOLD = "awaiting_fold"  # alias for washed (preferred label)
 STATUS_AWAITING_ENTRY = "awaiting_entry"
 STATUS_COMPLETE = "complete"
+STATUS_MISSING_FROM_PORTAL = "missing_from_portal"
 
 # Production row status (legacy COMPLETE / PARTIAL vocabulary on hd_day_bag_production.status)
 PROD_NOT_RECORDED = "NOT_RECORDED"
@@ -549,6 +550,116 @@ def order_visible_on_day(
     return None
 
 
+def _is_hd_presence_service(service_type: Any) -> bool:
+    st = str(service_type or "").strip().upper()
+    if not st:
+        return False
+    if st == "HD":
+        return True
+    return "HOME DELIVERY" in st or "HANG DRY" in st or st in ("HOME_DELIVERY", "HANG_DRY")
+
+
+def _load_hd_portal_bags_for_day(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+) -> set[str]:
+    """HD bag IDs present on the portal snapshot for the selected ET business day."""
+    org = int(organization_id)
+    out: set[str] = set()
+    if table_exists(cursor, "rinse_shift_monitor_day_bags"):
+        cursor.execute(
+            """
+            SELECT bag_id
+            FROM rinse_shift_monitor_day_bags
+            WHERE organization_id = %s
+              AND shift_date_et = %s
+              AND UPPER(COALESCE(service_type, '')) = 'HD'
+            """,
+            (org, selected_date_et),
+        )
+        for row in cursor.fetchall() or []:
+            bid = _norm_bag(row.get("bag_id"))
+            if bid:
+                out.add(bid)
+    if table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        cursor.execute(
+            """
+            SELECT bag_id, service_type, active, last_seen_at
+            FROM rinse_cleaner_ticket_presence
+            WHERE organization_id = %s
+              AND active = 1
+            """,
+            (org,),
+        )
+        for row in cursor.fetchall() or []:
+            if not _is_hd_presence_service(row.get("service_type")):
+                continue
+            last_seen = _as_naive(row.get("last_seen_at"))
+            if last_seen is None:
+                continue
+            if business_date_of(last_seen) == selected_date_et:
+                bid = _norm_bag(row.get("bag_id"))
+                if bid:
+                    out.add(bid)
+    return out
+
+
+def _load_hd_presence_meta(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """Latest durable portal presence metadata keyed by bag_id."""
+    ids = [_norm_bag(b) for b in bag_ids if _norm_bag(b)]
+    if not ids or not table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        return {}
+    org = int(organization_id)
+    placeholders = ",".join(["%s"] * len(ids))
+    cursor.execute(
+        f"""
+        SELECT bag_id, portal_status, active, last_seen_at, service_type
+        FROM rinse_cleaner_ticket_presence
+        WHERE organization_id = %s AND bag_id IN ({placeholders})
+        """,
+        (org, *ids),
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for row in cursor.fetchall() or []:
+        bid = _norm_bag(row.get("bag_id"))
+        if bid:
+            out[bid] = dict(row)
+    return out
+
+
+def classify_hd_portal_bucket(
+    *,
+    workflow_status: str,
+    explicitly_complete: bool,
+    on_latest_portal: bool,
+    washed_attribution_source: str | None = None,
+    folded_attribution_source: str | None = None,
+) -> str:
+    """Map canonical workflow stage to the HD display bucket for a day snapshot.
+
+    Unexpected portal disappearance before terminal evidence → missing_from_portal.
+    Post-completion departure and manager corrections stay in their workflow bucket.
+    """
+    status = str(workflow_status or "").strip().lower()
+    if explicitly_complete or status == STATUS_COMPLETE:
+        return STATUS_COMPLETE
+    if on_latest_portal:
+        return status
+    if str(washed_attribution_source or "").strip().upper() == ATTR_SOURCE_MANAGER:
+        return status
+    if str(folded_attribution_source or "").strip().upper() == ATTR_SOURCE_MANAGER:
+        return status
+  # Pre-fold disappearance: do not leave scan-only bags in active wash queues.
+    if status in (STATUS_PENDING_WASH, STATUS_WASHED, STATUS_AWAITING_FOLD):
+        return STATUS_MISSING_FROM_PORTAL
+    return status
+
+
 def _compact_order(order: Mapping[str, Any]) -> dict[str, Any]:
     """List payload — no chronology arrays."""
     rev_date = order.get("revenue_date_et")
@@ -570,6 +681,10 @@ def _compact_order(order: Mapping[str, Any]) -> dict[str, Any]:
         "completion_operator": order.get("completion_operator"),
         "production_version": order.get("production_version"),
         "operations_date_et": ops_date.isoformat() if hasattr(ops_date, "isoformat") else ops_date,
+        "workflow_status": order.get("workflow_status"),
+        "on_latest_portal": order.get("on_latest_portal"),
+        "last_portal_seen_at": order.get("last_portal_seen_at"),
+        "disappeared_from_portal": order.get("disappeared_from_portal"),
         # legacy aliases
         "started_at": order.get("washed_at"),
         "start_operator": order.get("washed_by_name"),
@@ -952,6 +1067,7 @@ def build_rinse_hd_day(
                 "folded_today": 0,
                 "awaiting_entry": 0,
                 "complete": 0,
+                "missing_from_portal": 0,
                 "items": 0,
                 "revenue": 0.0,
                 "admitted_total": 0,
@@ -966,6 +1082,7 @@ def build_rinse_hd_day(
                 STATUS_AWAITING_FOLD: 0,
                 STATUS_AWAITING_ENTRY: 0,
                 STATUS_COMPLETE: 0,
+                STATUS_MISSING_FROM_PORTAL: 0,
             },
             "orders": [],
             "model": {
@@ -1073,11 +1190,15 @@ def build_rinse_hd_day(
             pass
     user_names = _batch_user_names(cursor, list(uid_seed))
 
+    portal_bags_today = _load_hd_portal_bags_for_day(cursor, org, selected_date_et)
+    presence_meta = _load_hd_presence_meta(cursor, org, list(candidate_ids))
+
     buckets: dict[str, list[dict[str, Any]]] = {
         STATUS_PENDING_WASH: [],
         STATUS_WASHED: [],
         STATUS_AWAITING_ENTRY: [],
         STATUS_COMPLETE: [],
+        STATUS_MISSING_FROM_PORTAL: [],
     }
     items_complete = 0
     revenue_complete = Decimal("0")
@@ -1129,14 +1250,32 @@ def build_rinse_hd_day(
         bucket = order_visible_on_day(state, selected_date_et, activation_date=activation)
         if bucket is None:
             continue
+        bid_norm = _norm_bag(state.get("bag_id") or bid)
+        on_portal = bid_norm in portal_bags_today
+        presence = presence_meta.get(bid_norm) or {}
+        last_seen = presence.get("last_seen_at")
+        explicit = bucket == STATUS_COMPLETE
+        display_bucket = classify_hd_portal_bucket(
+            workflow_status=bucket,
+            explicitly_complete=explicit,
+            on_latest_portal=on_portal,
+            washed_attribution_source=state.get("washed_attribution_source"),
+            folded_attribution_source=state.get("folded_attribution_source"),
+        )
+        state["workflow_status"] = bucket
+        state["on_latest_portal"] = on_portal
+        state["last_portal_seen_at"] = last_seen
+        state["disappeared_from_portal"] = (
+            display_bucket == STATUS_MISSING_FROM_PORTAL
+        )
         compact = _compact_order(state)
-        compact["status"] = bucket
-        buckets.setdefault(bucket, []).append(compact)
+        compact["status"] = display_bucket
+        buckets.setdefault(display_bucket, []).append(compact)
         if state.get("washed_at") and business_date_of(state.get("washed_at")) == selected_date_et:
             washed_count += 1
         if state.get("folded_at") and business_date_of(state.get("folded_at")) == selected_date_et:
             folded_count += 1
-        if bucket == STATUS_COMPLETE:
+        if display_bucket == STATUS_COMPLETE:
             if state.get("items") is not None:
                 items_complete += int(state["items"])
             if state.get("revenue") is not None:
@@ -1178,6 +1317,8 @@ def build_rinse_hd_day(
         "folded": STATUS_AWAITING_ENTRY,
         "completed": STATUS_COMPLETE,
         "complete": STATUS_COMPLETE,
+        "missing": STATUS_MISSING_FROM_PORTAL,
+        "missing_from_portal": STATUS_MISSING_FROM_PORTAL,
         "excluded": STATUS_EXCLUDED,
     }
     status_key = aliases.get(status_key, status_key)
@@ -1197,6 +1338,7 @@ def build_rinse_hd_day(
             + buckets[STATUS_WASHED]
             + buckets[STATUS_AWAITING_ENTRY]
             + buckets[STATUS_COMPLETE]
+            + buckets[STATUS_MISSING_FROM_PORTAL]
         )
 
     orders = attach_delivery_dates(cursor, org, orders)
@@ -1211,39 +1353,42 @@ def build_rinse_hd_day(
 
     elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
     awaiting_fold_n = len(buckets[STATUS_WASHED])
+    missing_n = len(buckets[STATUS_MISSING_FROM_PORTAL])
+    pending_n = len(buckets[STATUS_PENDING_WASH])
+    awaiting_entry_n = len(buckets[STATUS_AWAITING_ENTRY])
+    complete_n = len(buckets[STATUS_COMPLETE])
     return {
         "date_et": selected_date_et.isoformat(),
         "generated_at_et": business_now().isoformat(timespec="seconds"),
         "summary": {
-            "pending_wash": len(buckets[STATUS_PENDING_WASH]),
+            "pending_wash": pending_n,
             "awaiting_fold": awaiting_fold_n,
             "washed": awaiting_fold_n,  # queue size (not same-day wash-event count)
             "washed_today": washed_count,
             "folded": folded_count,
             "folded_today": folded_count,
-            "awaiting_entry": len(buckets[STATUS_AWAITING_ENTRY]),
-            "complete": len(buckets[STATUS_COMPLETE]),
+            "awaiting_entry": awaiting_entry_n,
+            "complete": complete_n,
+            "missing_from_portal": missing_n,
             "excluded": excluded_n,
             "items": items_complete,
             "revenue": float(revenue_complete.quantize(MONEY_Q, rounding=ROUND_HALF_UP)),
             "admitted_total": (
-                len(buckets[STATUS_PENDING_WASH])
-                + len(buckets[STATUS_WASHED])
-                + len(buckets[STATUS_AWAITING_ENTRY])
-                + len(buckets[STATUS_COMPLETE])
+                pending_n + awaiting_fold_n + awaiting_entry_n + complete_n + missing_n
             ),
             # legacy keys
-            "open_orders": len(buckets[STATUS_PENDING_WASH]) + len(buckets[STATUS_WASHED]) + len(buckets[STATUS_AWAITING_ENTRY]),
-            "completed_today": len(buckets[STATUS_COMPLETE]),
+            "open_orders": pending_n + awaiting_fold_n + awaiting_entry_n + missing_n,
+            "completed_today": complete_n,
             "items_completed_today": items_complete,
             "revenue_completed_today": float(revenue_complete.quantize(MONEY_Q, rounding=ROUND_HALF_UP)),
         },
         "counts": {
-            STATUS_PENDING_WASH: len(buckets[STATUS_PENDING_WASH]),
+            STATUS_PENDING_WASH: pending_n,
             STATUS_WASHED: awaiting_fold_n,
             STATUS_AWAITING_FOLD: awaiting_fold_n,
-            STATUS_AWAITING_ENTRY: len(buckets[STATUS_AWAITING_ENTRY]),
-            STATUS_COMPLETE: len(buckets[STATUS_COMPLETE]),
+            STATUS_AWAITING_ENTRY: awaiting_entry_n,
+            STATUS_COMPLETE: complete_n,
+            STATUS_MISSING_FROM_PORTAL: missing_n,
             STATUS_EXCLUDED: excluded_n,
         },
         "orders": orders,
@@ -1275,85 +1420,94 @@ def build_rinse_hd_summary(
     *,
     start_et: date,
     end_et: date,
+    snapshot_date_et: date | None = None,
 ) -> dict[str, Any]:
-    """Non-blocking summary for a date range — production aggregates only (fast)."""
+    """Summary for a date range.
+
+    Stage queue counts always come from the canonical day snapshot builder so
+    summary cards match queue-chip membership for the same ET day. Period SQL
+    aggregates supply washed/folded event totals plus completed items/revenue only.
+    """
     ensure_management_hd_columns(cursor)
     org = int(organization_id)
-    if not table_exists(cursor, "hd_day_bag_production"):
-        return {
-            "start_et": start_et.isoformat(),
-            "end_et": end_et.isoformat(),
-            "pending_wash": 0,
-            "washed": 0,
-            "folded": 0,
-            "awaiting_entry": 0,
-            "complete": 0,
-            "items": 0,
-            "revenue": 0.0,
-        }
-    cursor.execute(
-        """
-        SELECT
-          SUM(CASE WHEN COALESCE(workflow_status,'') = 'complete'
-                     OR management_completed_at IS NOT NULL THEN 1 ELSE 0 END) AS complete_n,
-          SUM(CASE WHEN folded_at IS NOT NULL
-                     AND management_completed_at IS NULL
-                     AND COALESCE(workflow_status,'') <> 'complete' THEN 1 ELSE 0 END) AS awaiting_n,
-          SUM(CASE WHEN washed_at IS NOT NULL
-                     AND folded_at IS NULL
-                     AND management_completed_at IS NULL THEN 1 ELSE 0 END) AS washed_n,
-          SUM(CASE WHEN washed_at IS NULL AND folded_at IS NULL
-                     AND management_completed_at IS NULL THEN 1 ELSE 0 END) AS pending_n,
-          SUM(CASE WHEN washed_at IS NOT NULL
-                     AND DATE(washed_at) BETWEEN %s AND %s THEN 1 ELSE 0 END) AS washed_in_range,
-          SUM(CASE WHEN folded_at IS NOT NULL
-                     AND DATE(folded_at) BETWEEN %s AND %s THEN 1 ELSE 0 END) AS folded_in_range,
-          COALESCE(SUM(CASE WHEN management_completed_at IS NOT NULL
-                              OR COALESCE(workflow_status,'') = 'complete'
-                            THEN total_items ELSE 0 END), 0) AS items_n,
-          COALESCE(SUM(CASE WHEN management_completed_at IS NOT NULL
-                              OR COALESCE(workflow_status,'') = 'complete'
-                            THEN revenue ELSE 0 END), 0) AS revenue_n
-        FROM hd_day_bag_production
-        WHERE organization_id = %s
-          AND COALESCE(workflow_status, '') <> %s
-          AND operations_date_et >= %s
-          AND (
-            operations_date_et BETWEEN %s AND %s
-            OR DATE(folded_at) BETWEEN %s AND %s
-            OR DATE(washed_at) BETWEEN %s AND %s
-            OR DATE(management_completed_at) BETWEEN %s AND %s
-          )
-        """,
-        (
-            start_et,
-            end_et,
-            start_et,
-            end_et,
-            org,
-            WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
-            HD_WORKFLOW_ACTIVATION_DATE,
-            start_et,
-            end_et,
-            start_et,
-            end_et,
-            start_et,
-            end_et,
-            start_et,
-            end_et,
-        ),
-    )
-    row = dict(cursor.fetchone() or {})
+    snapshot_day = snapshot_date_et or end_et
+    stage_day = build_rinse_hd_day(cursor, org, snapshot_day, status="all")
+    stage_summary = stage_day.get("summary") or {}
+    stage_counts = stage_day.get("counts") or {}
+
+    washed_in_range = 0
+    folded_in_range = 0
+    items_n = 0
+    revenue_n = Decimal("0")
+
+    if table_exists(cursor, "hd_day_bag_production"):
+        cursor.execute(
+            """
+            SELECT
+              SUM(CASE WHEN washed_at IS NOT NULL
+                         AND DATE(washed_at) BETWEEN %s AND %s THEN 1 ELSE 0 END) AS washed_in_range,
+              SUM(CASE WHEN folded_at IS NOT NULL
+                         AND DATE(folded_at) BETWEEN %s AND %s THEN 1 ELSE 0 END) AS folded_in_range,
+              COALESCE(SUM(CASE WHEN management_completed_at IS NOT NULL
+                                  OR COALESCE(workflow_status,'') = 'complete'
+                                THEN total_items ELSE 0 END), 0) AS items_n,
+              COALESCE(SUM(CASE WHEN management_completed_at IS NOT NULL
+                                  OR COALESCE(workflow_status,'') = 'complete'
+                                THEN revenue ELSE 0 END), 0) AS revenue_n
+            FROM hd_day_bag_production
+            WHERE organization_id = %s
+              AND COALESCE(workflow_status, '') NOT IN (%s, %s)
+              AND operations_date_et >= %s
+              AND (
+                operations_date_et BETWEEN %s AND %s
+                OR DATE(folded_at) BETWEEN %s AND %s
+                OR DATE(washed_at) BETWEEN %s AND %s
+                OR DATE(management_completed_at) BETWEEN %s AND %s
+              )
+            """,
+            (
+                start_et,
+                end_et,
+                start_et,
+                end_et,
+                org,
+                WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
+                "excluded",
+                HD_WORKFLOW_ACTIVATION_DATE,
+                start_et,
+                end_et,
+                start_et,
+                end_et,
+                start_et,
+                end_et,
+                start_et,
+                end_et,
+            ),
+        )
+        row = dict(cursor.fetchone() or {})
+        washed_in_range = int(row.get("washed_in_range") or 0)
+        folded_in_range = int(row.get("folded_in_range") or 0)
+        items_n = int(row.get("items_n") or 0)
+        revenue_n = Decimal(str(row.get("revenue_n") or 0))
+
     return {
         "start_et": start_et.isoformat(),
         "end_et": end_et.isoformat(),
-        "pending_wash": int(row.get("pending_n") or 0),
-        "washed": int(row.get("washed_in_range") or 0),
-        "folded": int(row.get("folded_in_range") or 0),
-        "awaiting_entry": int(row.get("awaiting_n") or 0),
-        "complete": int(row.get("complete_n") or 0),
-        "items": int(row.get("items_n") or 0),
-        "revenue": float(Decimal(str(row.get("revenue_n") or 0)).quantize(MONEY_Q, rounding=ROUND_HALF_UP)),
+        "snapshot_date_et": snapshot_day.isoformat(),
+        "pending_wash": int(stage_summary.get("pending_wash") or 0),
+        "awaiting_fold": int(stage_summary.get("awaiting_fold") or 0),
+        "awaiting_entry": int(stage_summary.get("awaiting_entry") or 0),
+        "complete": int(stage_summary.get("complete") or 0),
+        "missing_from_portal": int(stage_summary.get("missing_from_portal") or 0),
+        "excluded": int(stage_summary.get("excluded") or 0),
+        "washed": washed_in_range,
+        "washed_today": int(stage_summary.get("washed_today") or 0),
+        "folded": folded_in_range,
+        "folded_today": int(stage_summary.get("folded_today") or 0),
+        "items": items_n,
+        "revenue": float(revenue_n.quantize(MONEY_Q, rounding=ROUND_HALF_UP)),
+        "counts": stage_counts,
+        "stage_source": "build_rinse_hd_day",
     }
 
 
