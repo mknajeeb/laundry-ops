@@ -208,6 +208,91 @@ def _running_aca_executions() -> list[str]:
         return []
 
 
+def _successor_start_lock_name(organization_id: int) -> str:
+    return f"rinse_scrape_successor_start_org_{int(organization_id)}"
+
+
+def _ensure_successor_attempt_columns(cursor) -> None:
+    from backend.rinse_scrape_lease import ensure_rinse_scrape_org_lease_table
+    from backend.ta_helpers import table_has_column
+
+    ensure_rinse_scrape_org_lease_table(cursor)
+    if not table_has_column(cursor, "rinse_scrape_org_lease", "last_successor_attempt_at"):
+        cursor.execute(
+            """
+            ALTER TABLE rinse_scrape_org_lease
+            ADD COLUMN last_successor_attempt_at DATETIME(6) NULL AFTER fence_reason,
+            ADD COLUMN last_successor_attempt_result VARCHAR(512) NULL AFTER last_successor_attempt_at
+            """
+        )
+
+
+def record_successor_attempt(
+    cursor,
+    organization_id: int,
+    result: dict[str, Any],
+) -> None:
+    """Persist the latest successor-start decision for ops/debug (lease row only)."""
+    _ensure_successor_attempt_columns(cursor)
+    org = int(organization_id)
+    now = _utcnow()
+    summary = (
+        f"trigger={result.get('trigger')} "
+        f"restarted={result.get('restarted')} "
+        f"reason={result.get('reason')} "
+        f"exec={result.get('execution_name') or ''} "
+        f"err={result.get('error_message') or ''}"
+    )[:512]
+    cursor.execute(
+        """
+        UPDATE rinse_scrape_org_lease
+        SET last_successor_attempt_at = %s,
+            last_successor_attempt_result = %s,
+            updated_at = %s
+        WHERE organization_id = %s
+        """,
+        (now, summary, now, org),
+    )
+
+
+def chain_is_idle_for_recovery(
+    cursor,
+    organization_id: int,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """True when no live owner exists and the chain should accept one successor."""
+    from backend.rinse_scrape_liveness import is_owned_execution_live, read_lease_liveness
+
+    org = int(organization_id)
+    now_utc = now or _utcnow()
+    if _running_aca_executions():
+        return False
+    lock_held, _ = mysql_lock_is_held(cursor, org)
+    if lock_held and is_owned_execution_live(cursor, org, now=now_utc):
+        return False
+    lease = read_lease_liveness(cursor, org) or read_lease(cursor, org) or {}
+    owner_run = lease.get("owner_run_id")
+    if not owner_run:
+        return True
+    if is_owned_execution_live(cursor, org, now=now_utc):
+        return False
+    # Stale owner_run_id on a terminal run — not idle until reclaim clears it.
+    from backend.rinse_scrape_runs import ensure_rinse_scrape_runs_table
+
+    ensure_rinse_scrape_runs_table(cursor)
+    cursor.execute(
+        """
+        SELECT status FROM rinse_scrape_runs
+        WHERE organization_id = %s AND id = %s LIMIT 1
+        """,
+        (org, int(owner_run)),
+    )
+    row = cursor.fetchone() or {}
+    status = str((row or {}).get("status") or "")
+    return status not in ("", "running")
+
+
 def ensure_chain_successor(
     cursor,
     organization_id: int,
@@ -231,61 +316,82 @@ def ensure_chain_successor(
 
     org = int(organization_id)
     now_utc = now or _utcnow()
+    lease = read_lease_liveness(cursor, org) or read_lease(cursor, org) or {}
+
+    def _blocked(reason: str, **extra: Any) -> dict[str, Any]:
+        out = {
+            "restarted": False,
+            "reason": reason,
+            "trigger": trigger,
+            "generation": lease.get("generation"),
+            **extra,
+        }
+        record_successor_attempt(cursor, org, out)
+        print(
+            f"CHAIN_BOUNDARY ensure_successor_blocked org={org} trigger={trigger} "
+            f"reason={reason} detail={extra}",
+            flush=True,
+        )
+        return out
+
     running = _running_aca_executions()
     if running:
-        return {
-            "restarted": False,
-            "reason": "aca_already_running",
-            "trigger": trigger,
-            "running_executions": running,
-        }
+        return _blocked("aca_already_running", running_executions=running)
 
     lock_held, _ = mysql_lock_is_held(cursor, org)
     if lock_held and is_owned_execution_live(cursor, org, now=now_utc):
-        return {
-            "restarted": False,
-            "reason": "healthy_lock_held",
-            "trigger": trigger,
-        }
+        return _blocked("healthy_lock_held")
 
-    lease = read_lease_liveness(cursor, org) or read_lease(cursor, org) or {}
     owner_run = lease.get("owner_run_id")
     if owner_run:
-        # An owned lease with fresh supervisor must not be restarted.
         if is_owned_execution_live(cursor, org, now=now_utc):
-            return {
-                "restarted": False,
-                "reason": "live_lease_owner",
-                "trigger": trigger,
-                "owner_run_id": int(owner_run),
-                "generation": lease.get("generation"),
-            }
-        # Owned but not live: reclaim path should fence first. Do not race a start.
-        return {
-            "restarted": False,
-            "reason": "owner_present_await_reclaim",
-            "trigger": trigger,
-            "owner_run_id": int(owner_run),
-            "generation": lease.get("generation"),
-            "orphan_stall_sec": orphan_stall_seconds(),
-        }
+            return _blocked(
+                "live_lease_owner",
+                owner_run_id=int(owner_run),
+            )
+        return _blocked(
+            "owner_present_await_reclaim",
+            owner_run_id=int(owner_run),
+            orphan_stall_sec=orphan_stall_seconds(),
+        )
 
-    # No owner, no Running ACA, lock free (or not live) → start exactly one.
-    started = start_successor_execution(run_type=run_type)
-    out = {
-        "restarted": bool(started.get("ok")),
-        "reason": "started" if started.get("ok") else "start_failed",
-        "trigger": trigger,
-        "generation": lease.get("generation"),
-        **started,
-    }
-    print(
-        f"CHAIN_BOUNDARY ensure_successor org={org} trigger={trigger} "
-        f"restarted={out['restarted']} exec={out.get('execution_name')} "
-        f"gen={out.get('generation')}",
-        flush=True,
-    )
-    return out
+    if not chain_is_idle_for_recovery(cursor, org, now=now_utc):
+        return _blocked("not_idle_for_recovery")
+
+    # Exactly-once start guard across concurrent watchdog replicas.
+    lock_name = _successor_start_lock_name(org)
+    cursor.execute("SELECT GET_LOCK(%s, 0) AS got", (lock_name,))
+    got_row = cursor.fetchone() or {}
+    got = got_row.get("got") if isinstance(got_row, dict) else (got_row[0] if got_row else 0)
+    if not int(got or 0):
+        return _blocked("successor_start_in_progress")
+
+    try:
+        running = _running_aca_executions()
+        if running:
+            return _blocked("aca_already_running", running_executions=running)
+
+        started = start_successor_execution(run_type=run_type)
+        out = {
+            "restarted": bool(started.get("ok")),
+            "reason": "started" if started.get("ok") else "start_failed",
+            "trigger": trigger,
+            "generation": lease.get("generation"),
+            **started,
+        }
+        record_successor_attempt(cursor, org, out)
+        print(
+            f"CHAIN_BOUNDARY ensure_successor org={org} trigger={trigger} "
+            f"restarted={out['restarted']} exec={out.get('execution_name')} "
+            f"gen={out.get('generation')} err={out.get('error_message') or ''}",
+            flush=True,
+        )
+        return out
+    finally:
+        try:
+            cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+        except Exception:
+            pass
 
 
 def maybe_restart_dead_chain(cursor, organization_id: int) -> dict[str, Any]:

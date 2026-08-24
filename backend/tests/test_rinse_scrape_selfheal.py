@@ -510,9 +510,21 @@ def test_ensure_chain_successor_skips_when_aca_running(monkeypatch):
     from backend import rinse_scrape_chain as chain
 
     monkeypatch.setattr(chain, "_running_aca_executions", lambda: ["exec-live"])
+    monkeypatch.setattr(chain, "record_successor_attempt", lambda *_a, **_k: None)
     out = chain.ensure_chain_successor(MagicMock(), 3, trigger="test")
     assert out["restarted"] is False
     assert out["reason"] == "aca_already_running"
+
+
+def _mock_successor_cursor(got_lock: int = 1):
+    cur = MagicMock()
+
+    def execute(sql, params=None):
+        if "GET_LOCK" in sql:
+            cur.fetchone.return_value = {"got": got_lock}
+
+    cur.execute.side_effect = execute
+    return cur
 
 
 def test_ensure_chain_successor_skips_when_owner_await_reclaim(monkeypatch):
@@ -520,6 +532,7 @@ def test_ensure_chain_successor_skips_when_owner_await_reclaim(monkeypatch):
 
     monkeypatch.setattr(chain, "_running_aca_executions", lambda: [])
     monkeypatch.setattr(chain, "mysql_lock_is_held", lambda *_a, **_k: (False, None))
+    monkeypatch.setattr(chain, "record_successor_attempt", lambda *_a, **_k: None)
     monkeypatch.setattr(
         "backend.rinse_scrape_liveness.is_owned_execution_live",
         lambda *_a, **_k: False,
@@ -545,6 +558,8 @@ def test_ensure_chain_successor_starts_when_idle(monkeypatch):
 
     monkeypatch.setattr(chain, "_running_aca_executions", lambda: [])
     monkeypatch.setattr(chain, "mysql_lock_is_held", lambda *_a, **_k: (False, None))
+    monkeypatch.setattr(chain, "chain_is_idle_for_recovery", lambda *_a, **_k: True)
+    monkeypatch.setattr(chain, "record_successor_attempt", lambda *_a, **_k: None)
     monkeypatch.setattr(
         "backend.rinse_scrape_liveness.read_lease_liveness",
         lambda *_a, **_k: {"owner_run_id": None, "generation": 613},
@@ -554,7 +569,7 @@ def test_ensure_chain_successor_starts_when_idle(monkeypatch):
         "start_successor_execution",
         lambda **_k: {"ok": True, "execution_name": "rinse-scrape-scheduled-new"},
     )
-    out = chain.ensure_chain_successor(MagicMock(), 3, trigger="orphan_reclaim")
+    out = chain.ensure_chain_successor(_mock_successor_cursor(), 3, trigger="orphan_reclaim")
     assert out["restarted"] is True
     assert out["execution_name"] == "rinse-scrape-scheduled-new"
     assert out["trigger"] == "orphan_reclaim"
@@ -570,24 +585,110 @@ def test_ensure_chain_successor_dedupes_duplicate_attempts(monkeypatch):
         return {"ok": True, "execution_name": f"exec-{len(starts)}"}
 
     monkeypatch.setattr(chain, "mysql_lock_is_held", lambda *_a, **_k: (False, None))
+    monkeypatch.setattr(chain, "chain_is_idle_for_recovery", lambda *_a, **_k: True)
+    monkeypatch.setattr(chain, "record_successor_attempt", lambda *_a, **_k: None)
     monkeypatch.setattr(
         "backend.rinse_scrape_liveness.read_lease_liveness",
         lambda *_a, **_k: {"owner_run_id": None, "generation": 700},
     )
     monkeypatch.setattr(chain, "start_successor_execution", fake_start)
 
-    # First call: idle → start
     monkeypatch.setattr(chain, "_running_aca_executions", lambda: [])
-    first = chain.ensure_chain_successor(MagicMock(), 3, trigger="t1")
+    first = chain.ensure_chain_successor(_mock_successor_cursor(), 3, trigger="t1")
     assert first["restarted"] is True
     assert len(starts) == 1
 
-    # Second call: ACA already Running → dedupe
     monkeypatch.setattr(chain, "_running_aca_executions", lambda: ["exec-1"])
-    second = chain.ensure_chain_successor(MagicMock(), 3, trigger="t2")
+    second = chain.ensure_chain_successor(_mock_successor_cursor(), 3, trigger="t2")
     assert second["restarted"] is False
     assert second["reason"] == "aca_already_running"
     assert len(starts) == 1
+
+
+def test_ensure_chain_successor_persists_start_failure(monkeypatch):
+    from backend import rinse_scrape_chain as chain
+
+    recorded: list[dict] = []
+    monkeypatch.setattr(chain, "_running_aca_executions", lambda: [])
+    monkeypatch.setattr(chain, "mysql_lock_is_held", lambda *_a, **_k: (False, None))
+    monkeypatch.setattr(chain, "chain_is_idle_for_recovery", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        chain,
+        "record_successor_attempt",
+        lambda _c, _o, result: recorded.append(dict(result)),
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.read_lease_liveness",
+        lambda *_a, **_k: {"owner_run_id": None, "generation": 618},
+    )
+    monkeypatch.setattr(
+        chain,
+        "start_successor_execution",
+        lambda **_k: {
+            "ok": False,
+            "error_message": "No Azure credentials for ACA job trigger",
+        },
+    )
+    out = chain.ensure_chain_successor(_mock_successor_cursor(), 3, trigger="watchdog_no_owner")
+    assert out["restarted"] is False
+    assert out["reason"] == "start_failed"
+    assert recorded and "No Azure credentials" in (recorded[0].get("error_message") or "")
+
+
+def test_chain_is_idle_after_terminal_owner(monkeypatch):
+    from backend import rinse_scrape_chain as chain
+
+    monkeypatch.setattr(chain, "_running_aca_executions", lambda: [])
+    monkeypatch.setattr(chain, "mysql_lock_is_held", lambda *_a, **_k: (False, None))
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.is_owned_execution_live",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.read_lease_liveness",
+        lambda *_a, **_k: {"owner_run_id": None, "generation": 618, "fenced_at": datetime.utcnow()},
+    )
+    assert chain.chain_is_idle_for_recovery(MagicMock(), 3) is True
+
+
+def test_watchdog_retries_idle_chain_after_start_failure(monkeypatch):
+    from backend.jobs import run_rinse_freshness_watchdog as wd
+
+    calls: list[str] = []
+
+    class FakeCursor:
+        def close(self):
+            return None
+
+    class FakeConn:
+        def cursor(self, **_k):
+            return FakeCursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("backend.db.get_db", lambda: FakeConn())
+    monkeypatch.setattr(
+        "backend.rinse_scheduled_scrape.parse_scheduled_org_ids", lambda: [3]
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_liveness.reclaim_orphan_owner",
+        lambda cursor, org: {"action": "skip_fresh_supervisor"},
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.chain_is_idle_for_recovery",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.ensure_chain_successor",
+        lambda cursor, org, **kw: calls.append(kw.get("trigger") or "")
+        or {"restarted": False, "reason": "start_failed"},
+    )
+    assert wd.main(["--organization-id", "3"]) == 0
+    assert calls == ["watchdog_skip_fresh_supervisor"]
 
 
 def test_watchdog_starts_successor_after_reclaim(monkeypatch):

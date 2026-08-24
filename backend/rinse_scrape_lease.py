@@ -216,6 +216,8 @@ def fence_lease(
             UPDATE rinse_scrape_org_lease
             SET generation = generation + 1,
                 owner_run_id = NULL,
+                owner_execution_name = NULL,
+                owner_pid = NULL,
                 fenced_at = %s,
                 fence_reason = %s,
                 updated_at = %s
@@ -233,6 +235,8 @@ def fence_lease(
             ON DUPLICATE KEY UPDATE
                 generation = generation + 1,
                 owner_run_id = NULL,
+                owner_execution_name = NULL,
+                owner_pid = NULL,
                 fenced_at = VALUES(fenced_at),
                 fence_reason = VALUES(fence_reason),
                 updated_at = VALUES(updated_at)

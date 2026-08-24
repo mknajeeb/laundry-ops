@@ -37,7 +37,10 @@ def main(argv: list[str] | None = None) -> int:
 
     from backend.db import get_db
     from backend.rinse_scheduled_scrape import parse_scheduled_org_ids
-    from backend.rinse_scrape_chain import ensure_chain_successor
+    from backend.rinse_scrape_chain import (
+        chain_is_idle_for_recovery,
+        ensure_chain_successor,
+    )
     from backend.rinse_scrape_liveness import reclaim_orphan_owner
 
     orgs = args.organization_ids or parse_scheduled_org_ids()
@@ -50,17 +53,18 @@ def main(argv: list[str] | None = None) -> int:
             conn.commit()
 
             action = str(out.get("action") or "")
-            # After reclaim / stale-owner clear, or when already idle, ensure one successor.
-            if action in (
+            restart_trigger = f"watchdog_{action}"
+            should_try = action in (
                 "reclaimed",
                 "cleared_stale_owner",
                 "no_owner",
                 "no_lease",
-            ):
+            ) or chain_is_idle_for_recovery(cursor, int(oid))
+            if should_try:
                 restart = ensure_chain_successor(
                     cursor,
                     int(oid),
-                    trigger=f"watchdog_{action}",
+                    trigger=restart_trigger,
                 )
                 print(f"watchdog org={oid} successor={restart}", flush=True)
                 conn.commit()
