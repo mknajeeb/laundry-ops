@@ -698,6 +698,9 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
         ):
             if row.get(_wk) is not None:
                 snap[_wk] = row.get(_wk)
+        from backend.rinse_day_bag_completion_projection import normalize_completion_fields
+
+        comp_ts, comp_emp = normalize_completion_fields({**row, "bag_snapshot": snap})
         rows_out.append(
             {
                 "bag_id": bid,
@@ -714,8 +717,8 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
                 "canonical_completion_status": row.get("canonical_status")
                 or snap.get("outcome")
                 or row.get("outcome"),
-                "canonical_completion_timestamp": row.get("completion_at"),
-                "canonical_completion_employee": row.get("completed_by"),
+                "canonical_completion_timestamp": comp_ts,
+                "canonical_completion_employee": comp_emp,
                 "effective_status": eff,
                 "review_reason_codes": list(reasons.get(bid) or row.get("reason_codes") or []),
                 "portal_status_at_sync": row.get("portal_status"),
@@ -1103,8 +1106,17 @@ def persist_day_snapshot(
     )
 
     bags = _bag_rows_from_workload(workload, summary)
+    from backend.rinse_day_bag_completion_projection import (
+        apply_normalized_completion_fields,
+        enrich_bags_completion_from_scans,
+    )
     from backend.rinse_step1_productivity_fast import project_productivity_fields_for_day_bag
     from backend.rinse_scan_chronology_gate import should_preserve_persisted_completion
+
+    enrich_bags_completion_from_scans(
+        cursor, organization_id, shift_date_et, bags
+    )
+    bags = [apply_normalized_completion_fields(b) for b in bags]
 
     deferred_ids = {
         normalize_bag_id(b)

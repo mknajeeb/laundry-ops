@@ -144,8 +144,19 @@ def _canonical_wf_bags_for_date(
                     "completion_source": c.get("completion_source"),
                     "canonical_projection": True,
                 },
+                "completion_at": c.get("completed_at"),
             }
         )
+    if bags:
+        from backend.rinse_day_bag_completion_projection import (
+            apply_normalized_completion_fields,
+            enrich_bags_completion_from_scans,
+        )
+
+        enrich_bags_completion_from_scans(
+            cursor, organization_id, shift_date_et, bags
+        )
+        bags = [apply_normalized_completion_fields(b) for b in bags]
     return bags
 
 
