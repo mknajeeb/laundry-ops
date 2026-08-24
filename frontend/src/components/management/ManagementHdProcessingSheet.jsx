@@ -65,7 +65,12 @@ function statusLabel(status) {
   if (status === "washed" || status === "awaiting_fold") return "Awaiting Fold";
   if (status === "awaiting_entry") return "Awaiting Entry";
   if (status === "complete") return "Complete";
+  if (status === "missing_from_portal") return "Missing From Portal";
   return status || "—";
+}
+
+function workflowStatusLabel(status) {
+  return statusLabel(status);
 }
 
 function ChronologyRow({ label, name, at }) {
@@ -96,23 +101,30 @@ export default function ManagementHdProcessingSheet({
   const [confirmAction, setConfirmAction] = useState(null);
 
   const bagId = order?.bag_id;
-  const status = detail?.order?.status || order?.status || "";
+  const displayStatus = detail?.order?.status || order?.status || "";
+  const workflowStatus =
+    detail?.order?.prior_hd_status ||
+    detail?.order?.workflow_status ||
+    order?.prior_hd_status ||
+    order?.workflow_status ||
+    displayStatus;
+  const isMissingReview = displayStatus === "missing_from_portal";
   const employees = detail?.employees || [];
   const version = detail?.production?.version ?? order?.production_version ?? 0;
 
-  const canMarkWashed = status === "pending_wash";
-  const canMarkFolded = status === "washed" || status === "awaiting_fold";
+  const canMarkWashed = workflowStatus === "pending_wash";
+  const canMarkFolded = workflowStatus === "washed" || workflowStatus === "awaiting_fold";
   const canMarkComplete =
-    status === "awaiting_entry" &&
+    workflowStatus === "awaiting_entry" &&
     detail?.production?.items != null &&
     detail?.production?.revenue != null;
-  const canBackToFold = status === "awaiting_entry" || status === "complete";
+  const canBackToFold = workflowStatus === "awaiting_entry" || workflowStatus === "complete";
   const canBackToWash =
-    status === "washed" ||
-    status === "awaiting_fold" ||
-    status === "awaiting_entry" ||
-    status === "complete";
-  const canReopen = status === "complete";
+    workflowStatus === "washed" ||
+    workflowStatus === "awaiting_fold" ||
+    workflowStatus === "awaiting_entry" ||
+    workflowStatus === "complete";
+  const canReopen = workflowStatus === "complete";
 
   useEffect(() => {
     if (!open || !bagId) return;
@@ -191,10 +203,35 @@ export default function ManagementHdProcessingSheet({
             <Typography sx={{ py: 2, color: "#64748b", fontWeight: 600 }}>Loading…</Typography>
           ) : (
             <Stack spacing={1.5}>
+              {isMissingReview ? (
+                <Alert severity="warning" sx={{ fontWeight: 700 }}>
+                  Review: Missing From Portal
+                  {orderView.prior_hd_status || workflowStatus
+                    ? ` · prior ${workflowStatusLabel(orderView.prior_hd_status || workflowStatus)}`
+                    : ""}
+                </Alert>
+              ) : null}
               <Box sx={{ p: 1.25, borderRadius: 1.5, border: "1px solid #e5e7eb", bgcolor: "#f8fafc" }}>
                 <Typography sx={{ fontSize: 12, fontWeight: 800, color: "#64748b", mb: 0.5 }}>
-                  Current status: {statusLabel(status)}
+                  {isMissingReview
+                    ? `Review status: ${statusLabel(displayStatus)}`
+                    : `Current status: ${statusLabel(displayStatus)}`}
                 </Typography>
+                {isMissingReview ? (
+                  <Typography sx={{ fontSize: 12, fontWeight: 700, color: "#334155", mb: 0.75 }}>
+                    Prior operational state: {workflowStatusLabel(orderView.prior_hd_status || workflowStatus)}
+                  </Typography>
+                ) : null}
+                {orderView.review_reason ? (
+                  <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#64748b", mb: 0.75 }}>
+                    Reason: Missing From Portal
+                  </Typography>
+                ) : null}
+                {orderView.last_portal_seen_at ? (
+                  <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#64748b", mb: 0.75 }}>
+                    Last seen: {fmtTime(orderView.last_portal_seen_at)}
+                  </Typography>
+                ) : null}
                 <ChronologyRow
                   label="Wash"
                   name={orderView.washed_by_name}

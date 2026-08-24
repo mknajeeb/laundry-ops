@@ -72,7 +72,14 @@ def _day_builder_setup(
             patch("backend.management_rinse_hd._load_production_by_bag", return_value=production),
             patch("backend.management_rinse_hd._load_user_maps", return_value={}),
             patch("backend.management_rinse_hd._batch_user_names", return_value={}),
-            patch("backend.management_rinse_hd._load_hd_portal_bags_for_day", return_value=portal_bags),
+            patch("backend.management_rinse_hd_review.load_hd_latest_source_portal_context", return_value={
+                "traversal_complete": True,
+                "portal_bag_ids": portal_bags,
+                "presence_run_id": 1,
+                "finished_at": None,
+                "reason": None,
+                "snapshot_by_bag": {},
+            }),
             patch("backend.management_rinse_hd._load_hd_presence_meta", return_value={}),
             patch("backend.hd_workflow_extensions.build_excluded_hd_orders", return_value=[]),
             patch("backend.hd_workflow_extensions.attach_delivery_dates", side_effect=lambda _c, _o, orders: orders),
@@ -193,9 +200,33 @@ def test_wash_stage_disappearance_missing_from_portal():
             workflow_status=STATUS_WASHED,
             explicitly_complete=False,
             on_latest_portal=False,
-            washed_attribution_source=ATTR_SOURCE_SCAN,
+            traversal_complete=True,
         )
         == STATUS_MISSING_FROM_PORTAL
+    )
+
+
+def test_awaiting_entry_disappearance_missing_from_portal():
+    assert (
+        classify_hd_portal_bucket(
+            workflow_status=STATUS_AWAITING_ENTRY,
+            explicitly_complete=False,
+            on_latest_portal=False,
+            traversal_complete=True,
+        )
+        == STATUS_MISSING_FROM_PORTAL
+    )
+
+
+def test_partial_traversal_does_not_flag_missing():
+    assert (
+        classify_hd_portal_bucket(
+            workflow_status=STATUS_WASHED,
+            explicitly_complete=False,
+            on_latest_portal=False,
+            traversal_complete=False,
+        )
+        == STATUS_WASHED
     )
 
 
@@ -209,42 +240,6 @@ def test_post_completion_disappearance_not_missing():
         == STATUS_COMPLETE
     )
 
-
-def test_manual_wash_preserves_awaiting_fold_when_off_portal():
-    assert (
-        classify_hd_portal_bucket(
-            workflow_status=STATUS_WASHED,
-            explicitly_complete=False,
-            on_latest_portal=False,
-            washed_attribution_source=ATTR_SOURCE_MANAGER,
-        )
-        == STATUS_WASHED
-    )
-
-
-def test_manual_fold_preserves_awaiting_entry_when_off_portal():
-    assert (
-        classify_hd_portal_bucket(
-            workflow_status=STATUS_AWAITING_ENTRY,
-            explicitly_complete=False,
-            on_latest_portal=False,
-            folded_attribution_source=ATTR_SOURCE_MANAGER,
-        )
-        == STATUS_AWAITING_ENTRY
-    )
-
-
-def test_folded_awaiting_entry_stays_when_off_portal_without_manager_flag():
-    assert (
-        classify_hd_portal_bucket(
-            workflow_status=STATUS_AWAITING_ENTRY,
-            explicitly_complete=False,
-            on_latest_portal=False,
-            washed_attribution_source=ATTR_SOURCE_SCAN,
-            folded_attribution_source=ATTR_SOURCE_SCAN,
-        )
-        == STATUS_AWAITING_ENTRY
-    )
 
 
 def test_no_bag_in_two_primary_stages():

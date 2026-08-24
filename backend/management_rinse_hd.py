@@ -639,25 +639,22 @@ def classify_hd_portal_bucket(
     on_latest_portal: bool,
     washed_attribution_source: str | None = None,
     folded_attribution_source: str | None = None,
+    traversal_complete: bool = True,
 ) -> str:
-    """Map canonical workflow stage to the HD display bucket for a day snapshot.
+    """Backward-compatible wrapper around canonical HD review disposition."""
+    from backend.management_rinse_hd_review import hd_review_disposition_for_order
 
-    Unexpected portal disappearance before terminal evidence → missing_from_portal.
-    Post-completion departure and manager corrections stay in their workflow bucket.
-    """
-    status = str(workflow_status or "").strip().lower()
-    if explicitly_complete or status == STATUS_COMPLETE:
-        return STATUS_COMPLETE
-    if on_latest_portal:
-        return status
-    if str(washed_attribution_source or "").strip().upper() == ATTR_SOURCE_MANAGER:
-        return status
-    if str(folded_attribution_source or "").strip().upper() == ATTR_SOURCE_MANAGER:
-        return status
-  # Pre-fold disappearance: do not leave scan-only bags in active wash queues.
-    if status in (STATUS_PENDING_WASH, STATUS_WASHED, STATUS_AWAITING_FOLD):
-        return STATUS_MISSING_FROM_PORTAL
-    return status
+    portal_context = {
+        "traversal_complete": bool(traversal_complete),
+        "portal_bag_ids": {"BAG1"} if on_latest_portal else set(),
+    }
+    display, _ctx = hd_review_disposition_for_order(
+        workflow_status=workflow_status,
+        explicitly_complete=explicitly_complete,
+        bag_id="BAG1",
+        portal_context=portal_context,
+    )
+    return display
 
 
 def _compact_order(order: Mapping[str, Any]) -> dict[str, Any]:
@@ -682,8 +679,14 @@ def _compact_order(order: Mapping[str, Any]) -> dict[str, Any]:
         "production_version": order.get("production_version"),
         "operations_date_et": ops_date.isoformat() if hasattr(ops_date, "isoformat") else ops_date,
         "workflow_status": order.get("workflow_status"),
+        "prior_hd_status": order.get("prior_hd_status"),
+        "review_reason": order.get("review_reason"),
         "on_latest_portal": order.get("on_latest_portal"),
+        "on_latest_source": order.get("on_latest_source"),
+        "latest_source_presence": order.get("latest_source_presence"),
         "last_portal_seen_at": order.get("last_portal_seen_at"),
+        "latest_presence_run_id": order.get("latest_presence_run_id"),
+        "latest_presence_finished_at": order.get("latest_presence_finished_at"),
         "disappeared_from_portal": order.get("disappeared_from_portal"),
         # legacy aliases
         "started_at": order.get("washed_at"),
@@ -1190,7 +1193,13 @@ def build_rinse_hd_day(
             pass
     user_names = _batch_user_names(cursor, list(uid_seed))
 
-    portal_bags_today = _load_hd_portal_bags_for_day(cursor, org, selected_date_et)
+    from backend.management_rinse_hd_review import (
+        compute_canonical_hd_missing_membership,
+        enrich_hd_order_with_review,
+        load_hd_latest_source_portal_context,
+    )
+
+    portal_context = load_hd_latest_source_portal_context(cursor, org)
     presence_meta = _load_hd_presence_meta(cursor, org, list(candidate_ids))
 
     buckets: dict[str, list[dict[str, Any]]] = {
@@ -1204,6 +1213,7 @@ def build_rinse_hd_day(
     revenue_complete = Decimal("0")
     washed_count = 0
     folded_count = 0
+    visible_orders: list[dict[str, Any]] = []
 
     for bid, bag_events in by_bag.items():
         if bid in quarantined_ids:
@@ -1251,25 +1261,27 @@ def build_rinse_hd_day(
         if bucket is None:
             continue
         bid_norm = _norm_bag(state.get("bag_id") or bid)
-        on_portal = bid_norm in portal_bags_today
-        presence = presence_meta.get(bid_norm) or {}
-        last_seen = presence.get("last_seen_at")
-        explicit = bucket == STATUS_COMPLETE
-        display_bucket = classify_hd_portal_bucket(
-            workflow_status=bucket,
-            explicitly_complete=explicit,
-            on_latest_portal=on_portal,
-            washed_attribution_source=state.get("washed_attribution_source"),
-            folded_attribution_source=state.get("folded_attribution_source"),
+        explicit = bucket == STATUS_COMPLETE or bool(state.get("completion_at"))
+        visible_orders.append(
+            {
+                **state,
+                "bag_id": bid_norm,
+                "workflow_status": bucket,
+                "explicitly_complete": explicit,
+            }
         )
-        state["workflow_status"] = bucket
-        state["on_latest_portal"] = on_portal
-        state["last_portal_seen_at"] = last_seen
-        state["disappeared_from_portal"] = (
-            display_bucket == STATUS_MISSING_FROM_PORTAL
-        )
+
+    review_membership = compute_canonical_hd_missing_membership(
+        visible_orders,
+        portal_context,
+        presence_meta_by_bag=presence_meta,
+    )
+
+    for state in visible_orders:
+        bid_norm = _norm_bag(state.get("bag_id"))
         compact = _compact_order(state)
-        compact["status"] = display_bucket
+        compact = enrich_hd_order_with_review(compact, review_membership)
+        display_bucket = str(compact.get("status") or state.get("workflow_status") or "")
         buckets.setdefault(display_bucket, []).append(compact)
         if state.get("washed_at") and business_date_of(state.get("washed_at")) == selected_date_et:
             washed_count += 1
@@ -1410,6 +1422,16 @@ def build_rinse_hd_day(
             "admitted_new": int(admit_meta.get("admitted_new") or 0),
             "already_admitted": int(admit_meta.get("already_admitted") or 0),
             "durable_admission": True,
+            "missing_membership_source": "compute_canonical_hd_missing_membership",
+            "missing_from_portal_ids": list(review_membership.get("missing_from_portal") or []),
+            "portal_traversal_complete": bool(
+                (review_membership.get("portal_context") or {}).get("traversal_complete")
+            ),
+        },
+        "review_membership": {
+            "missing_from_portal": list(review_membership.get("missing_from_portal") or []),
+            "counts": review_membership.get("counts") or {},
+            "portal_context": review_membership.get("portal_context") or {},
         },
     }
 
@@ -1574,6 +1596,31 @@ def get_rinse_hd_order_detail(
     except Exception:
         employees = []
     order_compact = _compact_order(state) if state else None
+    if order_compact and state:
+        from backend.management_rinse_hd_review import (
+            compute_canonical_hd_missing_membership,
+            enrich_hd_order_with_review,
+            load_hd_latest_source_portal_context,
+        )
+
+        portal_context = load_hd_latest_source_portal_context(cursor, int(organization_id))
+        presence_meta = _load_hd_presence_meta(cursor, int(organization_id), [bid])
+        bucket = order_visible_on_day(state, day, activation_date=HD_WORKFLOW_ACTIVATION_DATE)
+        if bucket:
+            membership = compute_canonical_hd_missing_membership(
+                [
+                    {
+                        **state,
+                        "bag_id": bid,
+                        "workflow_status": bucket,
+                        "explicitly_complete": bucket == STATUS_COMPLETE
+                        or bool(state.get("completion_at")),
+                    }
+                ],
+                portal_context,
+                presence_meta_by_bag=presence_meta,
+            )
+            order_compact = enrich_hd_order_with_review(order_compact, membership)
     if order_compact:
         try:
             from backend.rinse_employee_productivity_sessions import resolve_customer_names_for_bags
@@ -2277,6 +2324,9 @@ def _normalize_processing_action(action: str) -> str:
 
 def _resolved_workflow_status(detail: Mapping[str, Any]) -> str:
     order = detail.get("order") or {}
+    prior = order.get("prior_hd_status") or order.get("workflow_status")
+    if prior:
+        return str(prior).strip().lower()
     return str(order.get("status") or detail.get("production", {}).get("workflow_status") or "").strip().lower()
 
 

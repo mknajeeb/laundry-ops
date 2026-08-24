@@ -136,13 +136,17 @@ function SummaryCard({ label, value }) {
 }
 
 function OrderCard({ order, onOpen, onManage, onExclude, showExclude = false }) {
-  const awaiting = order.status === "awaiting_entry";
+  const isMissingReview = order.status === "missing_from_portal";
+  const workflowStatus = order.prior_hd_status || order.workflow_status || order.status;
+  const awaiting = workflowStatus === "awaiting_entry" && !isMissingReview;
   const pending =
-    order.status === "pending_wash" ||
-    order.status === "washed" ||
-    order.status === "awaiting_fold";
+    !isMissingReview &&
+    (workflowStatus === "pending_wash" ||
+      workflowStatus === "washed" ||
+      workflowStatus === "awaiting_fold");
   const customer =
-    String(order.customer_name || order.name_clean || order.customer || "").trim() || "Unknown Customer";
+    String(order.customer_name || order.name_clean || order.customer || "").trim() ||
+    "Customer unavailable";
   return (
     <Box
       component="button"
@@ -156,12 +160,14 @@ function OrderCard({ order, onOpen, onManage, onExclude, showExclude = false }) 
         p: 1.25,
         borderRadius: 2,
         border: "1px solid",
-        borderColor: awaiting
+        borderColor: isMissingReview
+          ? "#fdba74"
+          : awaiting
           ? VEEWASH_DASHBOARD.pendingBorder
           : pending
             ? "#cbd5e1"
             : VEEWASH_DASHBOARD.hdBorder,
-        bgcolor: "#fff",
+        bgcolor: isMissingReview ? "#fff7ed" : "#fff",
         cursor: "pointer",
         appearance: "none",
         fontFamily: "inherit",
@@ -183,7 +189,9 @@ function OrderCard({ order, onOpen, onManage, onExclude, showExclude = false }) 
             height: 22,
             fontWeight: 700,
             flexShrink: 0,
-            bgcolor: awaiting
+            bgcolor: isMissingReview
+              ? "#ffedd5"
+              : awaiting
               ? VEEWASH_DASHBOARD.pendingLight
               : order.status === "complete"
                 ? VEEWASH_DASHBOARD.hdBg
@@ -191,6 +199,11 @@ function OrderCard({ order, onOpen, onManage, onExclude, showExclude = false }) 
           }}
         />
       </Stack>
+      {isMissingReview ? (
+        <Typography sx={{ mt: 0.5, fontSize: 12, color: "#9a3412", fontWeight: 700 }}>
+          Prior {statusLabel(workflowStatus)} · Missing From Portal
+        </Typography>
+      ) : null}
       <Typography sx={{ mt: 0.75, fontSize: 12, color: "#334155", fontWeight: 600 }}>
         Washed by {order.washed_by_name || "—"}
       </Typography>
@@ -211,6 +224,11 @@ function OrderCard({ order, onOpen, onManage, onExclude, showExclude = false }) 
         <Typography sx={{ mt: 0.35, fontSize: 11, color: "#64748b", fontWeight: 600 }}>
           Complete {fmtTime(order.completion_at)}
           {order.completion_operator ? ` · ${order.completion_operator}` : ""}
+        </Typography>
+      ) : null}
+      {order.last_portal_seen_at ? (
+        <Typography sx={{ mt: 0.35, fontSize: 11, color: "#64748b", fontWeight: 600 }}>
+          Last seen {fmtTime(order.last_portal_seen_at)}
         </Typography>
       ) : null}
       {order.delivery_date_et ? (
