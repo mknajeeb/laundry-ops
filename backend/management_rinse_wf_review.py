@@ -670,6 +670,23 @@ def build_management_review_list(
         bag_ids = list(split.get(cat) or [])
     by_reason, by_bag = _headline_maps(headline)
 
+    # Post-reset / stale-headline defense: discover unresolved specialty from day bags
+    # when headline review_reasons_by_bag was not yet synced from persisted codes.
+    if cat == CATEGORY_SPECIALTY and not bag_ids:
+        from backend.rinse_veewash_shift_day import load_day_bags
+
+        discovered: list[str] = []
+        for row in load_day_bags(cursor, organization_id, selected_date_et) or []:
+            if not _service_is_wf(row):
+                continue
+            bid = normalize_bag_id(row.get("bag_id"))
+            if not bid:
+                continue
+            codes = list(row.get("review_reason_codes") or [])
+            if specialty_review_is_unresolved(codes):
+                discovered.append(bid)
+        bag_ids = discovered
+
     # Heal membership from day_bag rows — NEVER drop Specialty Items solely
     # because status=completed. Specialty exits only when specialty is resolved.
     # Always drop non-WF day-bag rows (service isolation defense in depth).

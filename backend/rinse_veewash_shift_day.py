@@ -885,11 +885,20 @@ def _day_bag_manager_lock_upsert_sql() -> str:
 def _load_persisted_review_reasons_by_bag(
     cursor, organization_id: int, shift_date_et: date
 ) -> dict[str, list[str]]:
-    """Authoritative review reasons from protected day-bag rows."""
+    """Authoritative review reasons from protected day-bag rows.
+
+    ``review_required`` day-bag status contributes all persisted reason codes.
+    Completed/pending bags with **unresolved specialty** reasons also contribute
+    their codes so Management Specialty Items can rebuild from day-bag evidence
+    without requiring ``effective_status=review_required`` (post-completion
+    specialty review stays on the completed bucket in segment counts).
+    """
+    from backend.management_rinse_wf_review import specialty_review_is_unresolved
+
     ensure_shift_monitor_day_tables(cursor)
     cursor.execute(
         """
-        SELECT bag_id, review_reason_codes_json, effective_status
+        SELECT bag_id, review_reason_codes_json, effective_status, service_type
         FROM rinse_shift_monitor_day_bags
         WHERE organization_id = %s AND shift_date_et = %s
         """,
@@ -905,11 +914,21 @@ def _load_persisted_review_reasons_by_bag(
         bid = normalize_bag_id(row.get("bag_id"))
         if not bid:
             continue
-        if _headline_bucket_for_status(row.get("effective_status")) != "review_required":
-            continue
         codes = _json_load(row.get("review_reason_codes_json")) or []
-        if isinstance(codes, list) and codes:
-            out[bid] = [str(c) for c in codes if str(c).strip()]
+        if not isinstance(codes, list) or not codes:
+            continue
+        codes_list = [str(c) for c in codes if str(c).strip()]
+        if not codes_list:
+            continue
+        status_bucket = _headline_bucket_for_status(row.get("effective_status"))
+        if status_bucket == "review_required":
+            out[bid] = codes_list
+            continue
+        svc = str(row.get("service_type") or "").strip().upper()
+        if svc and svc != "WF":
+            continue
+        if specialty_review_is_unresolved(codes_list):
+            out[bid] = codes_list
     return out
 
 
