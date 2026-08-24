@@ -148,9 +148,10 @@ def test_review_list_uses_canonical_membership(mock_compute):
         "bag_snapshot": {"customer_name": "Ada Lovelace", "rush_flag": "NON-RUSH"},
         "manager_edit_version": 0,
     }
-    def _fill_names(_c, _o, rows):
+    def _fill_names(_c, _o, rows, **kwargs):
         for r in rows:
             r["customer_name"] = "Ada Lovelace"
+        return rows
 
     with (
         patch(

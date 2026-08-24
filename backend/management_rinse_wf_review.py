@@ -1223,7 +1223,9 @@ def build_management_review_list(
     bags_out: list[dict[str, Any]] = []
     if page_ids:
         name_rows = [{"bag_id": bid, "customer_name": None} for bid in page_ids]
-        resolve_customer_names_for_bags(cursor, organization_id, name_rows)
+        name_rows = resolve_customer_names_for_bags(
+            cursor, organization_id, name_rows, selected_date_et=selected_date_et
+        )
         name_by_id = {
             r["bag_id"]: review_customer_display_name(r.get("customer_name"))
             for r in name_rows
