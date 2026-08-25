@@ -31,6 +31,20 @@ export const PERF_TYPE = {
   kpi: { fontSize: 12.5, fontWeight: 400, color: PERF_UI.secondary, lineHeight: 1.4 },
   kpiAccent: { fontWeight: 500, color: PERF_UI.tealDark },
   kpiValue: { fontWeight: 400, color: PERF_UI.navy },
+  kpiCellValue: {
+    fontSize: 13,
+    fontWeight: 500,
+    color: PERF_UI.navy,
+    lineHeight: 1.2,
+    letterSpacing: "-0.01em",
+  },
+  kpiCellLabel: {
+    fontSize: 10,
+    fontWeight: 400,
+    color: PERF_UI.muted,
+    lineHeight: 1.2,
+    mt: 0.1,
+  },
   name: { fontSize: 13, fontWeight: 500, color: PERF_UI.navy, lineHeight: 1.25 },
   rank: { fontSize: 11.5, fontWeight: 400, color: PERF_UI.teal, lineHeight: 1.25 },
   metricPrimary: { fontSize: 13.5, fontWeight: 500, color: PERF_UI.tealDark, lineHeight: 1.2 },
@@ -77,6 +91,34 @@ export function perfKpiStripSx(extra = {}) {
     borderRadius: 1,
     bgcolor: PERF_UI.kpiBg,
     border: `1px solid ${PERF_UI.kpiBorder}`,
+    ...extra,
+  };
+}
+
+/** Mobile: 3×2 KPI grid (no horizontal scroll). Desktop: inline strip. */
+export function perfKpiGridSx(extra = {}) {
+  return {
+    display: { xs: "grid", sm: "none" },
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    columnGap: 0.5,
+    rowGap: 0.55,
+    ...extra,
+  };
+}
+
+export function perfKpiInlineSx(extra = {}) {
+  return {
+    display: { xs: "none", sm: "block" },
+    ...extra,
+  };
+}
+
+export function perfKpiCellSx(extra = {}) {
+  return {
+    textAlign: "center",
+    minWidth: 0,
+    px: 0.25,
+    py: 0.15,
     ...extra,
   };
 }

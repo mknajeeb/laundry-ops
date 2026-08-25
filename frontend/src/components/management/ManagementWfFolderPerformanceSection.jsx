@@ -33,8 +33,8 @@ import PerformanceDetailDrawer, {
   PerformanceFilterChip,
   PerformanceSortSelect,
 } from "./performance/PerformanceDetailDrawer";
-import { PERF_TYPE, PERF_UI, PerfSeparator, perfKpiStripSx, perfRowSx } from "./performance/performanceTokens";
-import { fmtCount, fmtDelta, fmtLbs, fmtRate } from "./performance/performanceFormat";
+import { PERF_TYPE, PERF_UI, PerfSeparator, perfKpiCellSx, perfKpiGridSx, perfKpiInlineSx, perfKpiStripSx, perfRowSx } from "./performance/performanceTokens";
+import { fmtCount, fmtDelta, fmtHours, fmtLbs, fmtRate } from "./performance/performanceFormat";
 
 const WF_SORT_OPTIONS = [
   { value: "output", label: "Most orders" },
@@ -568,24 +568,49 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
     return rows;
   }, [data?.employees, sortBy]);
 
-  const kpiLine = (
-    <Typography sx={PERF_TYPE.kpi}>
-      <Box component="span" sx={PERF_TYPE.kpiValue}>
-        {fmtCount(summary.orders_completed)} Orders
-      </Box>
-      <PerfSeparator />
-      <Box component="span" sx={PERF_TYPE.kpiValue}>
-        {fmtLbs(summary.total_pre_lbs, { compact: true })}
-      </Box>
-      <PerfSeparator />
-      <Box component="span" sx={PERF_TYPE.kpiValue}>
-        {fmtCount(summary.employee_count)} Employees
-      </Box>
-      <PerfSeparator />
-      <Box component="span" sx={PERF_TYPE.kpiAccent}>
-        {fmtRate(summary.lbs_per_hour, 0)} lb/hr
-      </Box>
+  const totalHours = summary.total_hours ?? summary.session_hours;
+  const kpiItems = [
+    { value: fmtCount(summary.orders_completed), label: "Orders", accent: false },
+    {
+      value: fmtLbs(summary.total_pre_lbs, { compact: true }).replace(/ lb$/, ""),
+      label: "Pounds",
+      accent: false,
+    },
+    { value: fmtCount(summary.employee_count), label: "Employees", accent: false },
+    { value: fmtHours(totalHours), label: "Total Hours", accent: false },
+    { value: fmtRate(summary.bags_per_hour), label: "Avg Bags/hr", accent: false },
+    { value: fmtRate(summary.lbs_per_hour, 0), label: "Avg lb/hr", accent: true },
+  ];
+
+  const kpiInline = (
+    <Typography sx={{ ...PERF_TYPE.kpi, ...perfKpiInlineSx() }}>
+      {kpiItems.map((item, idx) => (
+        <Box component="span" key={item.label}>
+          {idx > 0 ? <PerfSeparator /> : null}
+          <Box component="span" sx={item.accent ? PERF_TYPE.kpiAccent : PERF_TYPE.kpiValue}>
+            {item.value} {item.label}
+          </Box>
+        </Box>
+      ))}
     </Typography>
+  );
+
+  const kpiGrid = (
+    <Box sx={perfKpiGridSx()}>
+      {kpiItems.map((item) => (
+        <Box key={item.label} sx={perfKpiCellSx()}>
+          <Typography
+            sx={{
+              ...PERF_TYPE.kpiCellValue,
+              ...(item.accent ? { color: PERF_UI.tealDark } : null),
+            }}
+          >
+            {item.value}
+          </Typography>
+          <Typography sx={PERF_TYPE.kpiCellLabel}>{item.label}</Typography>
+        </Box>
+      ))}
+    </Box>
   );
 
   return (
@@ -678,7 +703,8 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
       ) : (
         <>
           <Box sx={perfKpiStripSx()}>
-            {kpiLine}
+            {kpiInline}
+            {kpiGrid}
             {deltas ? (
               <Stack direction="row" spacing={1} sx={{ mt: 0.35, flexWrap: "wrap" }}>
                 <DeltaChip label="Bags/hr" pct={deltas.bags_per_hour_delta_pct} />

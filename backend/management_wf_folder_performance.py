@@ -285,10 +285,14 @@ def weighted_aggregate_rates(
     hours = float(total_session_hours) if total_session_hours is not None else None
     bags_hr = _rate(total_orders, hours) if hours and hours > 0 else None
     lbs_hr = _rate(total_pre_lbs, hours) if hours and hours > 0 else None
+    hours_out = round(hours, 4) if hours is not None else None
     return {
         "orders_completed": int(total_orders),
         "total_pre_lbs": round(float(total_pre_lbs), 2),
-        "session_hours": round(hours, 4) if hours is not None else None,
+        # session_hours / total_hours: Σ credited Folder performance hours
+        # (not wall-clock earliest-start → latest-end).
+        "session_hours": hours_out,
+        "total_hours": hours_out,
         "bags_per_hour": bags_hr,
         "lbs_per_hour": lbs_hr,
         "credited_weight_basis": "EVIDENCE_PRE",
@@ -1276,7 +1280,8 @@ def build_folder_performance_dashboard(
         "deltas": deltas,
         "credited_weight_basis": "EVIDENCE_PRE",
         "formulas": {
-            "bags_per_hour": "Σ orders / Σ performance hours",
+            "total_hours": "Σ credited Folder performance hours (session durations)",
+            "bags_per_hour": "Σ mapped orders / Σ performance hours",
             "lbs_per_hour": "Σ PRE lb / Σ performance hours",
             "open_performance_end": "latest credited completion (never now)",
             "closed_performance_end": "actual Folder role/session end",

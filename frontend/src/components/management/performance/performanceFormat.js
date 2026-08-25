@@ -14,6 +14,11 @@ export function fmtLbs(v, { compact = false } = {}) {
   return `${n.toLocaleString(undefined, { maximumFractionDigits: 0 })} lb`;
 }
 
+export function fmtHours(v, digits = 1) {
+  if (v == null || Number.isNaN(Number(v))) return "—";
+  return Number(v).toFixed(digits);
+}
+
 export function fmtDelta(pct) {
   if (pct == null || Number.isNaN(Number(pct))) return null;
   const n = Number(pct);

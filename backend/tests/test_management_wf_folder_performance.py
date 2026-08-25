@@ -11,8 +11,10 @@ from backend.management_wf_folder_performance import (
     COMPARE_TODAY,
     _assign_bag_into_folder_sessions,
     _employee_picker_label,
+    _limit_last_n_sessions,
     _public_session_card,
     compute_order_completion_timing,
+    merge_day_payloads,
     resolve_comparison_window,
     resolve_folder_performance_window,
     weighted_aggregate_rates,
@@ -33,6 +35,8 @@ class TestWeightedAggregateRates:
         )
         assert rates["bags_per_hour"] == 6.6667
         assert rates["lbs_per_hour"] == 133.3333
+        assert rates["session_hours"] == 3.0
+        assert rates["total_hours"] == 3.0
         assert rates["credited_weight_basis"] == "EVIDENCE_PRE"
         assert rates["aggregate_method"] == "weighted_totals"
 
@@ -42,9 +46,291 @@ class TestWeightedAggregateRates:
         )
         assert rates["bags_per_hour"] is None
         assert rates["lbs_per_hour"] is None
+        assert rates["total_hours"] == 0.0
 
 
-class TestOrderCompletionTiming:
+class TestSummaryKpiStripRegression:
+    """Top KPI strip: Total Hours, Avg Bags/hr, Avg lb/hr from credited sessions."""
+
+    @staticmethod
+    def _emp(
+        name,
+        *,
+        orders,
+        lbs,
+        hours,
+        sessions=None,
+        selected_date_et="2026-08-18",
+    ):
+        sess = sessions or [
+            {
+                "session_id": f"{name}-1",
+                "selected_date_et": selected_date_et,
+                "orders_completed": orders,
+                "total_pre_lbs": lbs,
+                "performance_hours": hours,
+                "session_hours": hours,
+            }
+        ]
+        return {
+            "employee": name,
+            "orders_completed": orders,
+            "total_pre_lbs": lbs,
+            "performance_hours": hours,
+            "session_hours": hours,
+            "session_count": len(sess),
+            "sessions": sess,
+        }
+
+    def test_total_hours_sums_included_session_durations(self):
+        day = {
+            "employees": [
+                self._emp("A", orders=10, lbs=200.0, hours=2.0),
+                self._emp("B", orders=15, lbs=300.0, hours=3.5),
+            ],
+            "unmapped_orders": [],
+        }
+        summary = merge_day_payloads([day])["summary"]
+        assert summary["total_hours"] == 5.5
+        assert summary["session_hours"] == 5.5
+        # Not earliest→latest wall clock (would be irrelevant here); Σ session hours.
+        assert summary["total_hours"] == 2.0 + 3.5
+
+    def test_avg_bags_hr_is_orders_over_total_hours(self):
+        day = {
+            "employees": [
+                self._emp("A", orders=10, lbs=200.0, hours=2.0),
+                self._emp("B", orders=20, lbs=400.0, hours=3.0),
+            ],
+            "unmapped_orders": [],
+        }
+        summary = merge_day_payloads([day])["summary"]
+        assert summary["orders_completed"] == 30
+        assert summary["total_hours"] == 5.0
+        assert summary["bags_per_hour"] == 6.0  # 30 / 5
+
+    def test_avg_lb_hr_is_pounds_over_total_hours(self):
+        day = {
+            "employees": [
+                self._emp("A", orders=10, lbs=200.0, hours=2.0),
+                self._emp("B", orders=20, lbs=400.0, hours=3.0),
+            ],
+            "unmapped_orders": [],
+        }
+        summary = merge_day_payloads([day])["summary"]
+        assert summary["total_pre_lbs"] == 600.0
+        assert summary["total_hours"] == 5.0
+        assert summary["lbs_per_hour"] == 120.0  # 600 / 5
+
+    def test_multiple_sessions_one_employee_summed_once(self):
+        # Two Folder sessions for Maya: hours/orders must sum once into her card
+        # and once into the strip — never double-count the employee.
+        day = {
+            "employees": [
+                self._emp(
+                    "Maya",
+                    orders=18,
+                    lbs=360.0,
+                    hours=4.5,
+                    sessions=[
+                        {
+                            "session_id": "M-AM",
+                            "selected_date_et": "2026-08-18",
+                            "orders_completed": 8,
+                            "total_pre_lbs": 160.0,
+                            "performance_hours": 2.0,
+                            "session_hours": 2.0,
+                        },
+                        {
+                            "session_id": "M-PM",
+                            "selected_date_et": "2026-08-18",
+                            "orders_completed": 10,
+                            "total_pre_lbs": 200.0,
+                            "performance_hours": 2.5,
+                            "session_hours": 2.5,
+                        },
+                    ],
+                )
+            ],
+            "unmapped_orders": [],
+        }
+        merged = merge_day_payloads([day])
+        assert len(merged["employees"]) == 1
+        emp = merged["employees"][0]
+        assert emp["orders_completed"] == 18
+        assert emp["session_hours"] == 4.5
+        assert emp["performance_hours"] == 4.5
+        summary = merged["summary"]
+        assert summary["employee_count"] == 1
+        assert summary["total_hours"] == 4.5
+        assert summary["bags_per_hour"] == 4.0  # 18 / 4.5
+        assert summary["lbs_per_hour"] == 80.0  # 360 / 4.5
+
+    def test_open_session_uses_last_completion_as_of_convention(self):
+        session_start = datetime(2026, 8, 19, 8, 31, 0)
+        latest = datetime(2026, 8, 19, 12, 34, 0)
+        now = datetime(2026, 8, 19, 14, 0, 0)
+        sess = {
+            "session_id": "WF-OPEN",
+            "role_status": "open",
+            "start_time": session_start.isoformat(),
+            "end_time": now.isoformat(),
+            "_start_dt": session_start,
+            "_end_dt": now,
+            "end_display": "Open",
+            "selected_date_et": "2026-08-19",
+        }
+        orders = [
+            {
+                "bag_id": "B1",
+                "completion_time": latest.isoformat(),
+                "credited_weight_lbs": 40.0,
+                "credited_weight_source": "EVIDENCE_PRE",
+            },
+            {
+                "bag_id": "B2",
+                "completion_time": latest.isoformat(),
+                "credited_weight_lbs": 40.0,
+                "credited_weight_source": "EVIDENCE_PRE",
+            },
+        ]
+        card = _public_session_card(sess, orders)
+        # Same as employee card: open → last completion, never wall-clock now.
+        assert card["performance_basis"] == "last_completion"
+        assert card["performance_hours"] == 4.05
+        assert card["role_session_hours"] == 5.4833
+
+        day = {
+            "employees": [
+                {
+                    "employee": "OpenFolder",
+                    "orders_completed": card["orders_completed"],
+                    "total_pre_lbs": card["total_pre_lbs"],
+                    "performance_hours": card["performance_hours"],
+                    "session_hours": card["session_hours"],
+                    "session_count": 1,
+                    "sessions": [card],
+                }
+            ],
+            "unmapped_orders": [],
+        }
+        summary = merge_day_payloads([day])["summary"]
+        assert summary["total_hours"] == 4.05
+        assert summary["bags_per_hour"] == round(2 / 4.05, 4)
+        assert summary["lbs_per_hour"] == round(80.0 / 4.05, 4)
+        # Must not use role window-to-now as the strip denominator.
+        assert summary["total_hours"] != card["role_session_hours"]
+
+    def test_unmapped_orders_excluded_from_productivity_numerator(self):
+        # Mapped only in employee attribution → strip numerator matches mapped.
+        day = {
+            "employees": [self._emp("Mapped", orders=2, lbs=50.0, hours=2.0)],
+            "unmapped_orders": [
+                {"bag_id": "U1", "pre_lbs": 25.0},
+                {"bag_id": "U2", "pre_lbs": 25.0},
+                {"bag_id": "U3", "pre_lbs": 25.0},
+            ],
+        }
+        summary = merge_day_payloads([day])["summary"]
+        assert summary["orders_completed"] == 2
+        assert summary["total_pre_lbs"] == 50.0
+        assert summary["unmapped_count"] == 3
+        assert summary["bags_per_hour"] == 1.0
+        assert summary["lbs_per_hour"] == 25.0
+        # Including unmapped would wrongly inflate rates.
+        wrong = weighted_aggregate_rates(
+            total_orders=5, total_pre_lbs=125.0, total_session_hours=2.0
+        )
+        assert wrong["bags_per_hour"] != summary["bags_per_hour"]
+        assert wrong["lbs_per_hour"] != summary["lbs_per_hour"]
+
+    def test_range_filters_recompute_hours_and_rates_consistently(self):
+        day1 = {
+            "employees": [
+                self._emp(
+                    "A",
+                    orders=10,
+                    lbs=200.0,
+                    hours=2.0,
+                    selected_date_et="2026-08-17",
+                    sessions=[
+                        {
+                            "session_id": "A-17",
+                            "selected_date_et": "2026-08-17",
+                            "orders_completed": 10,
+                            "total_pre_lbs": 200.0,
+                            "performance_hours": 2.0,
+                            "session_hours": 2.0,
+                        }
+                    ],
+                )
+            ],
+            "unmapped_orders": [],
+        }
+        day2 = {
+            "employees": [
+                self._emp(
+                    "A",
+                    orders=20,
+                    lbs=400.0,
+                    hours=4.0,
+                    selected_date_et="2026-08-18",
+                    sessions=[
+                        {
+                            "session_id": "A-18",
+                            "selected_date_et": "2026-08-18",
+                            "orders_completed": 20,
+                            "total_pre_lbs": 400.0,
+                            "performance_hours": 4.0,
+                            "session_hours": 4.0,
+                        }
+                    ],
+                ),
+                self._emp(
+                    "B",
+                    orders=6,
+                    lbs=120.0,
+                    hours=1.5,
+                    selected_date_et="2026-08-18",
+                    sessions=[
+                        {
+                            "session_id": "B-18",
+                            "selected_date_et": "2026-08-18",
+                            "orders_completed": 6,
+                            "total_pre_lbs": 120.0,
+                            "performance_hours": 1.5,
+                            "session_hours": 1.5,
+                        }
+                    ],
+                ),
+            ],
+            "unmapped_orders": [],
+        }
+
+        one_day = merge_day_payloads([day2])["summary"]
+        assert one_day["total_hours"] == 5.5
+        assert one_day["orders_completed"] == 26
+        assert one_day["bags_per_hour"] == round(26 / 5.5, 4)
+        assert one_day["lbs_per_hour"] == round(520.0 / 5.5, 4)
+
+        two_day = merge_day_payloads([day1, day2])["summary"]
+        assert two_day["employee_count"] == 2
+        assert two_day["total_hours"] == 7.5  # 2 + 4 + 1.5
+        assert two_day["orders_completed"] == 36
+        assert two_day["total_pre_lbs"] == 720.0
+        assert two_day["bags_per_hour"] == round(36 / 7.5, 4)
+        assert two_day["lbs_per_hour"] == round(720.0 / 7.5, 4)
+
+        # Last-N sessions keeps only newest N and recomputes all three KPIs.
+        merged = merge_day_payloads([day1, day2])
+        limited = _limit_last_n_sessions(merged, 2)
+        lim = limited["summary"]
+        assert lim["session_count"] == 2
+        # Newest two by date/start: A-18 and B-18 (both 2026-08-18)
+        assert lim["orders_completed"] == 26
+        assert lim["total_hours"] == 5.5
+        assert lim["bags_per_hour"] == round(26 / 5.5, 4)
+        assert lim["lbs_per_hour"] == round(520.0 / 5.5, 4)
     def test_first_uses_session_start_subsequent_use_prior_completion(self):
         session_start = datetime(2026, 8, 18, 6, 5, 0)
         orders = [
