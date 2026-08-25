@@ -30,6 +30,88 @@ from backend.rinse_wf_service_cycle import (
 OUTCOME_CARRYOVER_QUERY = "opening_backlog_query_only"
 
 
+def _parse_cycle_dt(raw: Any) -> datetime | None:
+    if isinstance(raw, datetime):
+        return raw
+    if raw is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "")[:19])
+    except (TypeError, ValueError):
+        return None
+
+
+def _cycle_anchor_or_admit_on_date(
+    *,
+    admitted_at: datetime | None,
+    cycle_anchor_at: datetime | None,
+    shift_date_et: date,
+) -> bool:
+    day_start = naive_et_day_start(shift_date_et)
+    day_end = day_start + timedelta(days=1)
+    for dt in (admitted_at, cycle_anchor_at):
+        if isinstance(dt, datetime) and day_start <= dt < day_end:
+            return True
+    return False
+
+
+def _prior_day_terminal_completed_wf_bag_ids(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+) -> set[str]:
+    """WF bags terminally completed on the ET day immediately before shift_date_et."""
+    from backend.business_time import system_datetime_to_et
+
+    prior = shift_date_et - timedelta(days=1)
+    out: set[str] = set()
+    for row in load_day_bags(cursor, organization_id, prior) or []:
+        if str(row.get("service_type") or "WF").upper() != "WF":
+            continue
+        if str(row.get("effective_status") or "").lower() != OUTCOME_COMPLETED:
+            continue
+        comp = row.get("canonical_completion_timestamp") or row.get("completion_at")
+        comp_et = None
+        if isinstance(comp, datetime):
+            et = system_datetime_to_et(comp)
+            comp_et = et.date() if et else None
+        if comp_et == prior:
+            bid = normalize_bag_id(row.get("bag_id"))
+            if bid:
+                out.add(bid)
+    return out
+
+
+def _exclude_stale_prior_day_terminal_cycles(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    bags: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop prior-day terminal completions re-admitted via stale ACTIVE cycle rows."""
+    prior_done = _prior_day_terminal_completed_wf_bag_ids(
+        cursor, organization_id, shift_date_et
+    )
+    if not prior_done:
+        return bags
+    kept: list[dict[str, Any]] = []
+    for bag in bags:
+        bid = normalize_bag_id(bag.get("bag_id"))
+        if not bid or bid not in prior_done:
+            kept.append(bag)
+            continue
+        snap = bag.get("bag_snapshot") or {}
+        admitted = _parse_cycle_dt(snap.get("admitted_at"))
+        anchor = _parse_cycle_dt(snap.get("cycle_anchor_at"))
+        if _cycle_anchor_or_admit_on_date(
+            admitted_at=admitted,
+            cycle_anchor_at=anchor,
+            shift_date_et=shift_date_et,
+        ):
+            kept.append(bag)
+    return kept
+
+
 def _cycle_row_rank(row: Mapping[str, Any]) -> tuple[int, float, float]:
     """Lower rank wins. COMPLETED beats REVIEW beats ACTIVE; then latest completion/anchor."""
     status = str(row.get("status") or STATUS_ACTIVE)
@@ -107,6 +189,7 @@ def _canonical_wf_bags_for_date(
         if not bid:
             continue
         admitted_at = c.get("admitted_at")
+        anchor_at = c.get("cycle_anchor_at")
         status = str(c.get("status") or STATUS_ACTIVE)
         if status == STATUS_COMPLETED:
             eff = OUTCOME_COMPLETED
@@ -115,9 +198,16 @@ def _canonical_wf_bags_for_date(
         else:
             eff = OUTCOME_PENDING
 
-        new_or_carry = "new_today"
-        if isinstance(admitted_at, datetime) and admitted_at < day_start:
+        if _cycle_anchor_or_admit_on_date(
+            admitted_at=admitted_at if isinstance(admitted_at, datetime) else None,
+            cycle_anchor_at=anchor_at if isinstance(anchor_at, datetime) else None,
+            shift_date_et=shift_date_et,
+        ):
+            new_or_carry = "new_today"
+        elif isinstance(admitted_at, datetime) and admitted_at < day_start:
             new_or_carry = OUTCOME_CARRYOVER_QUERY
+        else:
+            new_or_carry = "new_today"
 
         rush = c.get("rush_status")
         bags.append(
@@ -147,6 +237,9 @@ def _canonical_wf_bags_for_date(
                 "completion_at": c.get("completed_at"),
             }
         )
+    bags = _exclude_stale_prior_day_terminal_cycles(
+        cursor, organization_id, shift_date_et, bags
+    )
     if bags:
         from backend.rinse_day_bag_completion_projection import (
             apply_normalized_completion_fields,

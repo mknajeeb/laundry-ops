@@ -1,0 +1,387 @@
+"""Regression: WF canonical projection must not resurrect prior-day terminal completions."""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from unittest.mock import MagicMock, patch
+
+from backend.rinse_wf_service_cycle import STATUS_ACTIVE, STATUS_COMPLETED
+from backend.rinse_wf_service_cycle_compat import (
+    OUTCOME_CARRYOVER_QUERY,
+    _canonical_wf_bags_for_date,
+    _cycle_anchor_or_admit_on_date,
+    _exclude_stale_prior_day_terminal_cycles,
+    _prior_day_terminal_completed_wf_bag_ids,
+    terminal_project_canonical_wf_day_snapshot,
+)
+from backend.rinse_veewash_workload import OUTCOME_COMPLETED, OUTCOME_PENDING
+
+ORG = 3
+AUG24 = date(2026, 8, 24)
+AUG25 = date(2026, 8, 25)
+_ENRICH = "backend.rinse_day_bag_completion_projection.enrich_bags_completion_from_scans"
+_APPLY = "backend.rinse_day_bag_completion_projection.apply_normalized_completion_fields"
+_WEIGHTS = "backend.rinse_veewash_review.load_bag_weight_map"
+
+
+def _enrich_patches():
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _ctx():
+        with (
+            patch(_ENRICH),
+            patch(_APPLY, side_effect=lambda b: b),
+            patch(_WEIGHTS, return_value={}),
+        ):
+            yield
+
+    return _ctx()
+
+
+def _stale_active_cycle(
+    bag_id: str,
+    *,
+    admitted: datetime | None = None,
+    anchor: datetime | None = None,
+) -> dict:
+    admitted = admitted or datetime(2026, 8, 24, 10, 0)
+    anchor = anchor or admitted
+    return {
+        "id": 1,
+        "bag_id": bag_id,
+        "cycle_anchor_at": anchor,
+        "admitted_at": admitted,
+        "status": STATUS_ACTIVE,
+        "completed_at": None,
+        "pre_weight_lbs": 10.0,
+        "post_weight_lbs": None,
+        "rush_status": None,
+        "review_reason": None,
+        "completion_source": None,
+    }
+
+
+def _prior_completed_day_bag(bag_id: str, *, completed_at: datetime) -> dict:
+    return {
+        "bag_id": bag_id,
+        "service_type": "WF",
+        "effective_status": OUTCOME_COMPLETED,
+        "canonical_completion_timestamp": completed_at,
+        "completion_at": completed_at,
+    }
+
+
+def _mock_cursor_with_cycles(cycles: list[dict]) -> MagicMock:
+    cur = MagicMock()
+    cur.fetchall.return_value = cycles
+    return cur
+
+
+@patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
+def test_completed_aug24_bag_does_not_appear_aug25_workload(load_day_bags):
+    load_day_bags.return_value = [
+        _prior_completed_day_bag(
+            "STALE01",
+            completed_at=datetime(2026, 8, 24, 15, 0),
+        )
+    ]
+    cur = _mock_cursor_with_cycles([_stale_active_cycle("STALE01")])
+    with _enrich_patches():
+        bags = _canonical_wf_bags_for_date(cur, ORG, AUG25)
+    assert [b["bag_id"] for b in bags] == []
+
+
+@patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
+def test_unfinished_aug24_bag_carries_into_aug25(load_day_bags):
+    load_day_bags.return_value = [
+        {
+            "bag_id": "CARRY01",
+            "service_type": "WF",
+            "effective_status": OUTCOME_PENDING,
+        }
+    ]
+    cur = _mock_cursor_with_cycles(
+        [
+            _stale_active_cycle(
+                "CARRY01",
+                admitted=datetime(2026, 8, 24, 22, 0),
+                anchor=datetime(2026, 8, 24, 22, 0),
+            )
+        ]
+    )
+    with _enrich_patches():
+        bags = _canonical_wf_bags_for_date(cur, ORG, AUG25)
+    assert len(bags) == 1
+    assert bags[0]["bag_id"] == "CARRY01"
+    assert bags[0]["new_or_carryover"] == OUTCOME_CARRYOVER_QUERY
+
+
+@patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
+def test_genuine_aug25_new_cycle_after_aug24_completion(load_day_bags):
+    load_day_bags.return_value = [
+        _prior_completed_day_bag(
+            "REOPN01",
+            completed_at=datetime(2026, 8, 24, 14, 0),
+        )
+    ]
+    cur = _mock_cursor_with_cycles(
+        [
+            _stale_active_cycle(
+                "REOPN01",
+                admitted=datetime(2026, 8, 24, 9, 0),
+                anchor=datetime(2026, 8, 24, 9, 0),
+            ),
+            {
+                "id": 2,
+                "bag_id": "REOPN01",
+                "cycle_anchor_at": datetime(2026, 8, 25, 8, 30),
+                "admitted_at": datetime(2026, 8, 25, 8, 30),
+                "status": STATUS_ACTIVE,
+                "completed_at": None,
+                "pre_weight_lbs": 12.0,
+                "post_weight_lbs": None,
+                "rush_status": None,
+                "review_reason": None,
+            },
+        ]
+    )
+    with _enrich_patches():
+        bags = _canonical_wf_bags_for_date(cur, ORG, AUG25)
+    assert len(bags) == 1
+    assert bags[0]["bag_id"] == "REOPN01"
+    assert bags[0]["new_or_carryover"] == "new_today"
+
+
+@patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
+def test_prior_day_terminal_set_uses_completion_et_date(load_day_bags):
+    load_day_bags.return_value = [
+        _prior_completed_day_bag(
+            "DONE001",
+            completed_at=datetime(2026, 8, 24, 23, 59),
+        ),
+        {
+            "bag_id": "DONE002",
+            "service_type": "WF",
+            "effective_status": OUTCOME_COMPLETED,
+            "canonical_completion_timestamp": datetime(2026, 8, 23, 12, 0),
+        },
+    ]
+    done = _prior_day_terminal_completed_wf_bag_ids(MagicMock(), ORG, AUG25)
+    assert done == {"DONE001"}
+
+
+def test_cycle_anchor_or_admit_on_date_midnight_crossing():
+    assert _cycle_anchor_or_admit_on_date(
+        admitted_at=datetime(2026, 8, 24, 23, 50),
+        cycle_anchor_at=datetime(2026, 8, 25, 0, 10),
+        shift_date_et=AUG25,
+    )
+    assert not _cycle_anchor_or_admit_on_date(
+        admitted_at=datetime(2026, 8, 24, 10, 0),
+        cycle_anchor_at=datetime(2026, 8, 24, 10, 0),
+        shift_date_et=AUG25,
+    )
+
+
+@patch(
+    "backend.rinse_wf_service_cycle_compat._prior_day_terminal_completed_wf_bag_ids",
+    return_value={"BAG001"},
+)
+def test_exclude_filter_keeps_only_new_cycle_on_d(_prior_done):
+    bags = [
+        {
+            "bag_id": "BAG001",
+            "bag_snapshot": {
+                "admitted_at": str(datetime(2026, 8, 24, 9, 0)),
+                "cycle_anchor_at": str(datetime(2026, 8, 24, 9, 0)),
+            },
+        },
+        {
+            "bag_id": "BAG001",
+            "bag_snapshot": {
+                "admitted_at": str(datetime(2026, 8, 25, 7, 0)),
+                "cycle_anchor_at": str(datetime(2026, 8, 25, 7, 0)),
+            },
+        },
+        {"bag_id": "CARY002", "bag_snapshot": {}},
+    ]
+    kept = _exclude_stale_prior_day_terminal_cycles(MagicMock(), ORG, AUG25, bags)
+    assert [b["bag_id"] for b in kept] == ["BAG001", "CARY002"]
+    assert "2026-08-25" in kept[0]["bag_snapshot"]["admitted_at"]
+
+
+@patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot")
+@patch("backend.rinse_wf_service_cycle_compat.build_step1_headline_summary")
+@patch("backend.rinse_wf_service_cycle_compat._preserved_hd_bag_dicts", return_value=[])
+@patch("backend.rinse_wf_service_cycle_compat._prior_wf_day_bags_by_id")
+@patch("backend.rinse_wf_service_cycle.reporting_counts_for_date")
+@patch("backend.rinse_wf_service_cycle_compat.ensure_wf_service_cycles_table")
+@patch("backend.rinse_wf_service_cycle_compat.ensure_shift_monitor_day_tables")
+@patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
+def test_terminal_projection_idempotent_drops_stale_completed(
+    load_day_bags,
+    _day_tbl,
+    _cyc_tbl,
+    counts,
+    prior_by_id,
+    _hd,
+    headline,
+    persist,
+):
+    load_day_bags.side_effect = lambda _c, _o, d: (
+        [_prior_completed_day_bag("STALE01", completed_at=datetime(2026, 8, 24, 13, 0))]
+        if d == AUG24
+        else []
+    )
+    prior_by_id.return_value = {}
+    counts.return_value = {
+        "admitted_on_date": 1,
+        "completed_on_date": 0,
+        "opening_backlog": 1,
+        "active_now": 1,
+    }
+    headline.return_value = {
+        "completed": 0,
+        "pending": 1,
+        "review_required": 0,
+        "segments": {"wf": {"completed": 0, "pending": 1, "review_required": 0}},
+    }
+    persist.return_value = {"ok": True}
+    cur = _mock_cursor_with_cycles(
+        [
+            _stale_active_cycle("STALE01"),
+            {
+                "id": 9,
+                "bag_id": "FRSH001",
+                "cycle_anchor_at": datetime(2026, 8, 25, 9, 0),
+                "admitted_at": datetime(2026, 8, 25, 9, 0),
+                "status": STATUS_ACTIVE,
+                "completed_at": None,
+                "pre_weight_lbs": 5.0,
+                "post_weight_lbs": None,
+                "rush_status": None,
+                "review_reason": None,
+            },
+        ]
+    )
+    with (
+        patch("backend.rinse_wf_service_cycle_compat.get_day_record", return_value=None),
+        patch(
+            "backend.rinse_wf_service_cycle_compat.get_step1_activation_date",
+            return_value=date(2026, 7, 1),
+        ),
+        _enrich_patches(),
+    ):
+        terminal_project_canonical_wf_day_snapshot(cur, ORG, AUG25)
+    workload = persist.call_args.kwargs.get("workload") or persist.call_args[1]["workload"]
+    assert "STALE01" not in (workload.get("pending_end_of_date") or [])
+    assert "STALE01" not in (workload.get("new_today") or [])
+    assert "STALE01" not in (workload.get("carryover") or [])
+    assert "FRSH001" in (workload.get("new_today") or [])
+
+
+@patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot")
+@patch("backend.rinse_wf_service_cycle_compat.build_step1_headline_summary")
+@patch("backend.rinse_wf_service_cycle_compat._preserved_hd_bag_dicts", return_value=[])
+@patch("backend.rinse_wf_service_cycle_compat._prior_wf_day_bags_by_id", return_value={})
+@patch("backend.rinse_wf_service_cycle.reporting_counts_for_date")
+@patch("backend.rinse_wf_service_cycle_compat.ensure_wf_service_cycles_table")
+@patch("backend.rinse_wf_service_cycle_compat.ensure_shift_monitor_day_tables")
+@patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
+def test_workload_headline_equals_completed_plus_pending_plus_review(
+    load_day_bags,
+    _day_tbl,
+    _cyc_tbl,
+    counts,
+    _prior,
+    _hd,
+    headline,
+    persist,
+):
+    load_day_bags.return_value = []
+    counts.return_value = {"admitted_on_date": 3, "completed_on_date": 1, "opening_backlog": 0}
+    headline.return_value = {
+        "completed": 1,
+        "pending": 1,
+        "review_required": 1,
+        "segments": {
+            "wf": {
+                "completed": 1,
+                "pending": 1,
+                "review_required": 1,
+                "bag_ids": {
+                    "completed": ["COMP001"],
+                    "pending": ["PEND001"],
+                    "review_required": ["REVW001"],
+                },
+            }
+        },
+    }
+    persist.return_value = {"ok": True}
+    cur = _mock_cursor_with_cycles(
+        [
+            {
+                "id": 1,
+                "bag_id": "COMP001",
+                "cycle_anchor_at": datetime(2026, 8, 25, 8, 0),
+                "admitted_at": datetime(2026, 8, 25, 8, 0),
+                "status": STATUS_COMPLETED,
+                "completed_at": datetime(2026, 8, 25, 12, 0),
+                "pre_weight_lbs": 10,
+                "post_weight_lbs": 9.5,
+                "rush_status": None,
+                "review_reason": None,
+            },
+            {
+                "id": 2,
+                "bag_id": "PEND001",
+                "cycle_anchor_at": datetime(2026, 8, 25, 9, 0),
+                "admitted_at": datetime(2026, 8, 25, 9, 0),
+                "status": STATUS_ACTIVE,
+                "completed_at": None,
+                "pre_weight_lbs": 8,
+                "post_weight_lbs": None,
+                "rush_status": None,
+                "review_reason": None,
+            },
+            {
+                "id": 3,
+                "bag_id": "REVW001",
+                "cycle_anchor_at": datetime(2026, 8, 25, 10, 0),
+                "admitted_at": datetime(2026, 8, 25, 10, 0),
+                "status": "REVIEW",
+                "completed_at": None,
+                "pre_weight_lbs": 7,
+                "post_weight_lbs": None,
+                "rush_status": None,
+                "review_reason": "MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL",
+            },
+        ]
+    )
+    with (
+        patch("backend.rinse_wf_service_cycle_compat.get_day_record", return_value=None),
+        patch(
+            "backend.rinse_wf_service_cycle_compat.get_step1_activation_date",
+            return_value=date(2026, 7, 1),
+        ),
+        _enrich_patches(),
+    ):
+        terminal_project_canonical_wf_day_snapshot(cur, ORG, AUG25)
+    summary = persist.call_args.kwargs.get("summary") or persist.call_args[1]["summary"]
+    wf = summary["segments"]["wf"]
+    assert wf["completed"] + wf["pending"] + wf["review_required"] == 3
+
+
+@patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
+def test_pre_resolver_does_not_create_day_membership_by_itself(load_day_bags):
+    """PRE weight enrichment must not admit bags filtered out by day boundary guard."""
+    load_day_bags.return_value = [
+        _prior_completed_day_bag("STALE01", completed_at=datetime(2026, 8, 24, 11, 0))
+    ]
+    cur = _mock_cursor_with_cycles([_stale_active_cycle("STALE01")])
+    weight_map = {"STALE01": {"pre_weight_lbs": 99.0, "pre_weight_source": "PRE"}}
+    with _enrich_patches():
+        with patch(_WEIGHTS, return_value=weight_map):
+            bags = _canonical_wf_bags_for_date(cur, ORG, AUG25)
+    assert bags == []
