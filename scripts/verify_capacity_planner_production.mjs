@@ -20,7 +20,7 @@ const payload = {
   bag_count: 180,
   avg_lbs_per_bag: 20,
   two_washer_split_pct: 50,
-  two_dryer_split_pct: 25,
+  two_dryer_split_pct: 20,
   washer_count: 28,
   dryer_count: 28,
   batch_size: 8,
@@ -28,9 +28,9 @@ const payload = {
   sort_min_per_bag: 5,
   load_washer_min: 2,
   wash_cycle_min: 23,
-  load_dryer_min: 3,
+  load_dryer_min: 0,
   dry_cycle_min: 40,
-  fold_min_per_bag: 6,
+  fold_min_per_bag: 30,
   fold_rate_mode: "minutes_per_bag",
   staffing_plan: {
     intervals: [
@@ -108,6 +108,9 @@ async function main() {
   console.log("SIMULATION_VALID:", data.simulation_valid);
   console.log("BAG_ROWS:", (data.bag_rows || data.bags || []).length);
   console.log("ENGINE:", data.engine);
+  if (data._server_timing) {
+    console.log("SERVER_TIMING:", JSON.stringify(data._server_timing));
+  }
 }
 
 main().catch((err) => {

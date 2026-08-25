@@ -2546,6 +2546,15 @@ def register_rinse_shift_analysis_routes(
 
     @app.route("/rinse/shift-analysis/shift-capacity-planner/simulate", methods=["GET", "POST"])
     def rinse_shift_capacity_planner_simulate():
+        import json
+
+        from backend.shift_capacity.planner_instrumentation import (
+            PlannerRequestTiming,
+            new_planner_request_id,
+        )
+
+        timing = PlannerRequestTiming(new_planner_request_id())
+        timing.mark("request_received")
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
@@ -2568,8 +2577,29 @@ def register_rinse_shift_analysis_routes(
                     and bool(body.get("management_mode"))
                 ):
                     return err_resp, err_code
-            payload = simulate_shift_capacity(body)
-            return jsonify(json_safe_rinse(payload))
+            timing.mark("auth_complete")
+            staffing_plan = body.get("staffing_plan") if isinstance(body.get("staffing_plan"), dict) else {}
+            timing.set_meta(
+                bag_count=body.get("bag_count"),
+                washer_count=body.get("washer_count"),
+                dryer_count=body.get("dryer_count"),
+                staffing_interval_count=len(staffing_plan.get("intervals") or []),
+                management_mode=bool(body.get("management_mode")),
+                compact=bool(body.get("management_mode")),
+            )
+            payload = simulate_shift_capacity(body, timing=timing)
+            timing.mark("serialization_start")
+            safe = json_safe_rinse(payload)
+            timing.mark("serialization_end")
+            response_bytes = len(json.dumps(safe, default=str))
+            inputs = payload.get("inputs") if isinstance(payload, dict) else {}
+            timing.set_meta(
+                response_bytes=response_bytes,
+                generated_parent_bags=inputs.get("bag_count"),
+            )
+            if isinstance(safe, dict):
+                safe["_server_timing"] = timing.finish()
+            return jsonify(safe)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except Exception as exc:

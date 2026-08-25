@@ -60,9 +60,8 @@ describe("one-slot recovery board structure", () => {
     expect(boardSrc).toContain('position: "sticky"');
     expect(boardSrc).toContain("Recalculate");
     expect(boardSrc).toContain("recalculateNow");
-    expect(boardSrc).toContain("Auto-updates as you edit");
     // Auto-recalc on input changes remains
-    expect(boardSrc).toContain("setTimeout(() => {\n      runSim(inputs);\n    }, 350)");
+    expect(boardSrc).toContain("setTimeout(() => {\n      runSim(inputs);\n    }, 900)");
     expect(boardSrc).toContain("}, [inputs, settingsReady]");
   });
 

@@ -101,22 +101,8 @@ def serialize_bag(bag: Bag, emp_names: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def serialize_state(
-    state: SimulationState,
-    *,
-    recommendations: list[dict[str, Any]] | None = None,
-    bags_moved: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    emp_names = {e.employee_id: e.display_name for e in state.inputs.employees}
-    emp_names["Unassigned"] = "Unassigned"
-    kpis = compute_kpis(state)
-    interval = state.inputs.shift.summary_interval_min
-    bags = [serialize_bag(b, emp_names) for b in state.bags]
-    batches = ready_by_batch(state)
-    time_rows = time_summary(state, interval)
-    staff_rows = staffing_summary(state)
-
-    employee_timeline = []
+def _serialize_employee_timeline(state: SimulationState, emp_names: dict[str, str]) -> list[dict[str, Any]]:
+    employee_timeline: list[dict[str, Any]] = []
     for rid, rows in state.employee_calendars.items():
         employee_timeline.append(
             {
@@ -141,8 +127,11 @@ def serialize_state(
                 ],
             }
         )
+    return employee_timeline
 
-    machine_timeline = []
+
+def _serialize_machine_timeline(state: SimulationState) -> list[dict[str, Any]]:
+    machine_timeline: list[dict[str, Any]] = []
     for rid, rows in state.machine_calendars.items():
         machine_timeline.append(
             {
@@ -166,6 +155,87 @@ def serialize_state(
                 ],
             }
         )
+    return machine_timeline
+
+
+def _serialize_timelines(state: SimulationState) -> dict[str, Any]:
+    return {
+        "employees": {
+            rid: [
+                {
+                    "start": label_minutes(r.start),
+                    "end": label_minutes(r.end),
+                    "label": r.task_type,
+                    "provenance": r.provenance,
+                    "bag_ids": list(r.bag_ids),
+                    "batch_id": r.batch_id,
+                }
+                for r in rows
+            ]
+            for rid, rows in state.employee_calendars.items()
+        },
+        "washers": {
+            rid: [
+                {
+                    "start": label_minutes(r.start),
+                    "end": label_minutes(r.end),
+                    "label": r.task_type,
+                    "provenance": r.provenance,
+                    "bag_ids": list(r.bag_ids),
+                    "batch_id": r.batch_id,
+                }
+                for r in rows
+            ]
+            for rid, rows in state.machine_calendars.items()
+            if rid.startswith("W")
+        },
+        "dryers": {
+            rid: [
+                {
+                    "start": label_minutes(r.start),
+                    "end": label_minutes(r.end),
+                    "label": r.task_type,
+                    "provenance": r.provenance,
+                    "bag_ids": list(r.bag_ids),
+                    "batch_id": r.batch_id,
+                }
+                for r in rows
+            ]
+            for rid, rows in state.machine_calendars.items()
+            if rid.startswith("D")
+        },
+    }
+
+
+def serialize_state(
+    state: SimulationState,
+    *,
+    recommendations: list[dict[str, Any]] | None = None,
+    bags_moved: list[dict[str, Any]] | None = None,
+    timing: Any | None = None,
+    compact: bool = False,
+) -> dict[str, Any]:
+    emp_names = {e.employee_id: e.display_name for e in state.inputs.employees}
+    emp_names["Unassigned"] = "Unassigned"
+    kpis = compute_kpis(state)
+    interval = state.inputs.shift.summary_interval_min
+
+    if compact:
+        bags: list[dict[str, Any]] = []
+        batches: list[dict[str, Any]] = []
+        time_rows: list[dict[str, Any]] = []
+        staff_rows: list[dict[str, Any]] = []
+        employee_timeline: list[dict[str, Any]] = []
+        machine_timeline: list[dict[str, Any]] = []
+        timelines: dict[str, Any] = {}
+    else:
+        bags = [serialize_bag(b, emp_names) for b in state.bags]
+        batches = ready_by_batch(state)
+        time_rows = time_summary(state, interval)
+        staff_rows = staffing_summary(state)
+        employee_timeline = _serialize_employee_timeline(state, emp_names)
+        machine_timeline = _serialize_machine_timeline(state)
+        timelines = _serialize_timelines(state)
 
     overlap_errors = []
     if not state.validation.accepted:
@@ -177,8 +247,16 @@ def serialize_state(
 
     validation_errors = [e.message for e in state.validation.errors]
 
+    if timing is not None:
+        timing.mark("work_coverage_start")
     work_coverage = build_work_coverage(state) if state.inputs.management_mode else []
+    if timing is not None:
+        timing.mark("work_coverage_end")
+    if timing is not None:
+        timing.mark("block_positions_start")
     block_positions = _block_positions_with_staffing(state)
+    if timing is not None:
+        timing.mark("block_positions_end")
     if work_coverage:
         attach_work_coverage_to_blocks(block_positions, work_coverage)
 
@@ -189,21 +267,10 @@ def serialize_state(
         kpis=kpis,
     )
 
-    return {
-        "engine": "bag_des_v2",
-        "scenario_id": state.scenario_id,
-        "parent_scenario_id": state.parent_scenario_id,
-        "mode": state.mode,
-        "validation": state.validation.as_dict(),
-        "continuation": state.continuation.as_dict(),
-        "partial_resim": state.continuation.as_dict(),
-        "kpis": kpis,
-        "summary": kpis,
-        "bags": bags,
-        "bag_rows": bags,
-        "work_coverage": work_coverage,
-        "management_executive_summary": executive,
-        "batches": [
+    batch_rows = (
+        []
+        if compact
+        else [
             {
                 "batch_number": b.sequence,
                 "batch_id": b.batch_id,
@@ -229,10 +296,50 @@ def serialize_state(
                 "provenance": b.provenance,
             }
             for b in state.batches
-        ],
+        ]
+    )
+
+    availability_30min = (
+        []
+        if compact
+        else (time_rows if interval == 30 else time_summary(state, 30))
+    )
+
+    resource_utilization = (
+        {}
+        if compact
+        else {
+            "washers": [
+                {"id": rid, "utilization_pct": _util(rows, state.inputs.shift.start_min, state.inputs.shift.target_min)}
+                for rid, rows in state.machine_calendars.items()
+                if rid.startswith("W")
+            ],
+            "dryers": [
+                {"id": rid, "utilization_pct": _util(rows, state.inputs.shift.start_min, state.inputs.shift.target_min)}
+                for rid, rows in state.machine_calendars.items()
+                if rid.startswith("D")
+            ],
+        }
+    )
+
+    return {
+        "engine": "bag_des_v2",
+        "scenario_id": state.scenario_id,
+        "parent_scenario_id": state.parent_scenario_id,
+        "mode": state.mode,
+        "validation": state.validation.as_dict(),
+        "continuation": state.continuation.as_dict(),
+        "partial_resim": state.continuation.as_dict(),
+        "kpis": kpis,
+        "summary": kpis,
+        "bags": bags,
+        "bag_rows": bags,
+        "work_coverage": work_coverage,
+        "management_executive_summary": executive,
+        "batches": batch_rows,
         "ready_to_fold_by_batch": batches,
         "time_summary": time_rows,
-        "availability_30min": time_rows if interval == 30 else time_summary(state, 30),
+        "availability_30min": availability_30min,
         "block_positions": block_positions,
         "staffing_plan": _staffing_plan_payload(state),
         "management_outcome": kpis.get("management_outcome"),
@@ -241,52 +348,7 @@ def serialize_state(
         "staffing_chart": staff_rows,
         "employee_timeline": employee_timeline,
         "machine_timeline": machine_timeline,
-        "timelines": {
-            "employees": {
-                rid: [
-                    {
-                        "start": label_minutes(r.start),
-                        "end": label_minutes(r.end),
-                        "label": r.task_type,
-                        "provenance": r.provenance,
-                        "bag_ids": list(r.bag_ids),
-                        "batch_id": r.batch_id,
-                    }
-                    for r in rows
-                ]
-                for rid, rows in state.employee_calendars.items()
-            },
-            "washers": {
-                rid: [
-                    {
-                        "start": label_minutes(r.start),
-                        "end": label_minutes(r.end),
-                        "label": r.task_type,
-                        "provenance": r.provenance,
-                        "bag_ids": list(r.bag_ids),
-                        "batch_id": r.batch_id,
-                    }
-                    for r in rows
-                ]
-                for rid, rows in state.machine_calendars.items()
-                if rid.startswith("W")
-            },
-            "dryers": {
-                rid: [
-                    {
-                        "start": label_minutes(r.start),
-                        "end": label_minutes(r.end),
-                        "label": r.task_type,
-                        "provenance": r.provenance,
-                        "bag_ids": list(r.bag_ids),
-                        "batch_id": r.batch_id,
-                    }
-                    for r in rows
-                ]
-                for rid, rows in state.machine_calendars.items()
-                if rid.startswith("D")
-            },
-        },
+        "timelines": timelines,
         "recommendations": recommendations or [],
         "overlap_errors": overlap_errors if not state.validation.accepted else [],
         "simulation_valid": state.validation.accepted and not overlap_errors,
@@ -316,18 +378,7 @@ def serialize_state(
             }
             for e in state.inputs.employees
         ],
-        "resource_utilization": {
-            "washers": [
-                {"id": rid, "utilization_pct": _util(rows, state.inputs.shift.start_min, state.inputs.shift.target_min)}
-                for rid, rows in state.machine_calendars.items()
-                if rid.startswith("W")
-            ],
-            "dryers": [
-                {"id": rid, "utilization_pct": _util(rows, state.inputs.shift.start_min, state.inputs.shift.target_min)}
-                for rid, rows in state.machine_calendars.items()
-                if rid.startswith("D")
-            ],
-        },
+        "resource_utilization": resource_utilization,
         "inputs": {
             "start_time": label_minutes(state.inputs.shift.start_min),
             "target_time": label_minutes(state.inputs.shift.target_min),

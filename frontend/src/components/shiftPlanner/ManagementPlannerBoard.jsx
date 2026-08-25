@@ -41,6 +41,7 @@ import {
   renameShiftCapacitySimulation,
   saveShiftCapacityPlannerSettings,
   simulateShiftCapacity,
+  formatPlannerSimulateError,
   updateShiftCapacitySimulation,
 } from "../../api";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
@@ -1777,7 +1778,7 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
       return res.data;
     } catch (err) {
       if (!coordinator.isCurrent(seq) || isPlannerSimulationAbortError(err)) return null;
-      setError(err.response?.data?.error || err.message || "Simulation failed");
+      setError(formatPlannerSimulateError(err));
       setResult(null);
       return null;
     } finally {
@@ -1792,7 +1793,7 @@ export default function ManagementPlannerBoard({ initialInputs = null, skipSetti
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       runSim(inputs);
-    }, 350);
+    }, 900);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };

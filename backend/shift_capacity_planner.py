@@ -4245,70 +4245,119 @@ def _delta_time_label(baseline: str | None, scenario: str | None) -> str | None:
         return None
 
 
-def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
+def _management_compact_api_response(
+    des: dict[str, Any],
+    *,
+    timing: Any | None = None,
+) -> dict[str, Any]:
+    """Management planner API surface — omits per-bag/timeline payloads not rendered in UI."""
+    summary = des.get("summary") or des.get("kpis") or {}
+    out: dict[str, Any] = {
+        "engine": "bag_des_v2",
+        "scenario_id": des.get("scenario_id"),
+        "parent_scenario_id": des.get("parent_scenario_id"),
+        "mode": des.get("mode"),
+        "validation": des.get("validation") or {},
+        "continuation": des.get("continuation") or {},
+        "inputs": des.get("inputs") or {},
+        "summary": summary,
+        "kpis": des.get("kpis") or summary,
+        "block_positions": des.get("block_positions") or [],
+        "staffing_plan": des.get("staffing_plan") or {},
+        "work_coverage": des.get("work_coverage") or [],
+        "management_executive_summary": des.get("management_executive_summary"),
+        "management_outcome": des.get("management_outcome") or summary.get("management_outcome"),
+        "staffing_deficits": des.get("staffing_deficits") or summary.get("staffing_deficits") or [],
+        "simulation_valid": des.get("simulation_valid", True),
+        "overlap_errors": des.get("overlap_errors") or [],
+        "validation_errors": des.get("validation_errors") or [],
+        "partial_resim": des.get("partial_resim") or des.get("continuation"),
+    }
+    return out
+
+
+def _full_bag_des_v2_api_response(
+    des: dict[str, Any],
+    summary: dict[str, Any],
+    *,
+    timing: Any | None = None,
+) -> dict[str, Any]:
+    out = {
+        "engine": "bag_des_v2",
+        "scenario_id": des.get("scenario_id"),
+        "parent_scenario_id": des.get("parent_scenario_id"),
+        "mode": des.get("mode"),
+        "validation": des.get("validation") or {},
+        "continuation": des.get("continuation") or {},
+        "inputs": des.get("inputs") or {},
+        "summary": summary,
+        "kpis": des.get("kpis") or des.get("summary") or {},
+        "ready_to_fold_by_batch": des.get("ready_to_fold_by_batch") or [],
+        "availability_30min": des.get("availability_30min") or des.get("time_summary") or [],
+        "time_summary": des.get("time_summary") or [],
+        "staffing_summary": des.get("staffing_summary") or des.get("staffing_chart") or [],
+        "bag_rows": des.get("bag_rows") or des.get("bags") or [],
+        "bags": des.get("bags") or des.get("bag_rows") or [],
+        "batches": des.get("batches") or [],
+        "staffing_chart": des.get("staffing_chart") or des.get("staffing_summary") or [],
+        "employees": des.get("employees") or [],
+        "resource_utilization": des.get("resource_utilization") or {},
+        "timelines": des.get("timelines") or {},
+        "employee_timeline": des.get("employee_timeline") or [],
+        "machine_timeline": des.get("machine_timeline") or [],
+        "recommendations": des.get("recommendations") or [],
+        "simulation_valid": des.get("simulation_valid", True),
+        "overlap_errors": des.get("overlap_errors") or [],
+        "block_positions": des.get("block_positions") or [],
+        "staffing_plan": des.get("staffing_plan") or {},
+        "work_coverage": des.get("work_coverage") or [],
+        "management_outcome": des.get("management_outcome") or summary.get("management_outcome"),
+        "management_executive_summary": des.get("management_executive_summary"),
+        "staffing_deficits": des.get("staffing_deficits") or summary.get("staffing_deficits") or [],
+        "des": des,
+        "validation_errors": des.get("validation_errors") or [],
+        "bags_moved": des.get("bags_moved") or [],
+        "override_impact": des.get("override_impact"),
+        "partial_resim": des.get("partial_resim") or des.get("continuation"),
+        "batch_edit_payload": des.get("batch_edit_payload") or {},
+        "strategies": {},
+        "recommendation": {},
+        "operational": {
+            "command_board": {
+                "summary": summary,
+                "batch_timeline": des.get("ready_to_fold_by_batch") or [],
+                "resource_timeline": des.get("staffing_chart") or [],
+                "next_batch": (des.get("ready_to_fold_by_batch") or [None])[0],
+                "simulation_valid": des.get("simulation_valid", True),
+            },
+            "active_strategy": {"name": "bag_des_v2"},
+        },
+    }
+    return out
+
+
+def simulate_shift_capacity(
+    data: dict[str, Any] | None,
+    *,
+    timing: Any | None = None,
+) -> dict[str, Any]:
     # Default to bag_des_v2. Explicit engine=bag_des keeps the prior DES; engine=legacy
     # keeps the operational planner. Overlay-style continuation lives only in bag_des.
     engine = str((data or {}).get("engine") or "bag_des_v2").strip().lower()
     if engine in ("bag_des_v2", "des_v2", "v2", ""):
         from backend.shift_capacity.service import run_shift_capacity
 
-        des = run_shift_capacity(dict(data or {}))
+        raw = dict(data or {})
+        management_mode = bool(raw.get("management_mode"))
+        if management_mode:
+            raw["_compact_response"] = True
+        if timing is not None:
+            timing.mark("payload_normalized")
+        des = run_shift_capacity(raw, timing=timing)
+        if management_mode:
+            return _management_compact_api_response(des, timing=timing)
         summary = des.get("summary") or des.get("kpis") or {}
-        return {
-            "engine": "bag_des_v2",
-            "scenario_id": des.get("scenario_id"),
-            "parent_scenario_id": des.get("parent_scenario_id"),
-            "mode": des.get("mode"),
-            "validation": des.get("validation") or {},
-            "continuation": des.get("continuation") or {},
-            "inputs": des.get("inputs") or {},
-            "summary": summary,
-            "kpis": des.get("kpis") or des.get("summary") or {},
-            "ready_to_fold_by_batch": des.get("ready_to_fold_by_batch") or [],
-            "availability_30min": des.get("availability_30min") or des.get("time_summary") or [],
-            "time_summary": des.get("time_summary") or [],
-            "staffing_summary": des.get("staffing_summary") or des.get("staffing_chart") or [],
-            "bag_rows": des.get("bag_rows") or des.get("bags") or [],
-            "bags": des.get("bags") or des.get("bag_rows") or [],
-            "batches": des.get("batches") or [],
-            "staffing_chart": des.get("staffing_chart") or des.get("staffing_summary") or [],
-            "employees": des.get("employees") or [],
-            "resource_utilization": des.get("resource_utilization") or {},
-            "timelines": des.get("timelines") or {},
-            "employee_timeline": des.get("employee_timeline") or [],
-            "machine_timeline": des.get("machine_timeline") or [],
-            "recommendations": des.get("recommendations") or [],
-            "simulation_valid": des.get("simulation_valid", True),
-            "overlap_errors": des.get("overlap_errors") or [],
-            # Management planner surface (also available under des.*)
-            "block_positions": des.get("block_positions") or [],
-            "staffing_plan": des.get("staffing_plan") or {},
-            "work_coverage": des.get("work_coverage") or [],
-            "management_outcome": des.get("management_outcome")
-            or summary.get("management_outcome"),
-            "management_executive_summary": des.get("management_executive_summary"),
-            "staffing_deficits": des.get("staffing_deficits")
-            or summary.get("staffing_deficits")
-            or [],
-            "des": des,
-            "validation_errors": des.get("validation_errors") or [],
-            "bags_moved": des.get("bags_moved") or [],
-            "override_impact": des.get("override_impact"),
-            "partial_resim": des.get("partial_resim") or des.get("continuation"),
-            "batch_edit_payload": des.get("batch_edit_payload") or {},
-            "strategies": {},
-            "recommendation": {},
-            "operational": {
-                "command_board": {
-                    "summary": summary,
-                    "batch_timeline": des.get("ready_to_fold_by_batch") or [],
-                    "resource_timeline": des.get("staffing_chart") or [],
-                    "next_batch": (des.get("ready_to_fold_by_batch") or [None])[0],
-                    "simulation_valid": des.get("simulation_valid", True),
-                },
-                "active_strategy": {"name": "bag_des_v2"},
-            },
-        }
+        return _full_bag_des_v2_api_response(des, summary, timing=timing)
 
     if engine in ("bag_des", "des"):
         from backend.shift_capacity_des import apply_des_action, run_bag_des_simulation

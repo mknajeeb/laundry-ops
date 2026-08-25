@@ -11,6 +11,7 @@ from backend.shift_capacity.continuation import (
     prepare_continuation_inputs,
 )
 from backend.shift_capacity.models import SimulationState, ValidationError, ValidationResult, new_id
+from backend.shift_capacity.planner_instrumentation import PlannerRequestTiming
 from backend.shift_capacity.recommendations import build_recommendations
 from backend.shift_capacity.scheduler import run_scheduler
 from backend.shift_capacity.serialization import serialize_state
@@ -21,8 +22,13 @@ from backend.shift_capacity.validation import parse_inputs
 _SCENARIOS: dict[str, dict[str, Any]] = {}
 
 
-def run_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
+def run_shift_capacity(
+    data: dict[str, Any] | None,
+    *,
+    timing: PlannerRequestTiming | None = None,
+) -> dict[str, Any]:
     raw = dict(data or {})
+    compact_response = bool(raw.get("_compact_response"))
     mode = str(raw.get("mode") or raw.get("sim_mode") or "full_run").strip().lower()
 
     if mode == "undo":
@@ -36,25 +42,31 @@ def run_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
     if mode in ("continue", "continue_from_time") or (
         raw.get("continue_from_time") is not None and mode not in ("reoptimize_entire_shift", "reoptimize_full")
     ):
-        return _run_continue(raw)
+        return _run_continue(raw, timing=timing, compact_response=compact_response)
 
     if mode in ("reoptimize_entire_shift", "reoptimize_full"):
         raw = dict(raw)
         raw["mode"] = "reoptimize_entire_shift"
         raw.pop("continue_from_time", None)
         raw.pop("continue_from_min", None)
-        return _run_full(raw, mode="reoptimize_entire_shift")
+        return _run_full(raw, mode="reoptimize_entire_shift", timing=timing, compact_response=compact_response)
 
     if mode == "apply_batch_override":
-        return _run_full(raw, mode="apply_batch_override")
+        return _run_full(raw, mode="apply_batch_override", timing=timing, compact_response=compact_response)
 
     if mode == "apply_recommendation":
-        return _run_full(raw, mode="apply_recommendation")
+        return _run_full(raw, mode="apply_recommendation", timing=timing, compact_response=compact_response)
 
-    return _run_full(raw, mode="full_run")
+    return _run_full(raw, mode="full_run", timing=timing, compact_response=compact_response)
 
 
-def _run_full(raw: dict[str, Any], *, mode: str) -> dict[str, Any]:
+def _run_full(
+    raw: dict[str, Any],
+    *,
+    mode: str,
+    timing: PlannerRequestTiming | None = None,
+    compact_response: bool = False,
+) -> dict[str, Any]:
     try:
         inp = parse_inputs(raw)
     except ValueError as exc:
@@ -65,12 +77,16 @@ def _run_full(raw: dict[str, Any], *, mode: str) -> dict[str, Any]:
     inp.parent_scenario_id = parent_id
     inp.scenario_id = new_id("scn")
 
+    if timing is not None:
+        timing.mark("scheduler_start")
     state = run_scheduler(inp)
+    if timing is not None:
+        timing.mark("scheduler_end")
     state.mode = mode  # type: ignore[assignment]
     state.parent_scenario_id = parent_id
 
     if not state.validation.accepted:
-        payload = serialize_state(state)
+        payload = serialize_state(state, compact=compact_response, timing=timing)
         payload["overlap_errors"] = payload.get("overlap_errors") or [
             e.code for e in state.validation.errors
         ]
@@ -101,14 +117,25 @@ def _run_full(raw: dict[str, Any], *, mode: str) -> dict[str, Any]:
     if not raw.get("_skip_recommendations"):
         recommendations = build_recommendations(state, raw, _inner_run)
 
-    payload = serialize_state(state, recommendations=recommendations, bags_moved=bags_moved)
+    payload = serialize_state(
+        state,
+        recommendations=recommendations,
+        bags_moved=bags_moved,
+        compact=compact_response,
+        timing=timing,
+    )
     return _wrap(payload, raw_inputs=raw, state=state)
 
 
-def _run_continue(raw: dict[str, Any]) -> dict[str, Any]:
+def _run_continue(
+    raw: dict[str, Any],
+    *,
+    timing: PlannerRequestTiming | None = None,
+    compact_response: bool = False,
+) -> dict[str, Any]:
     state = _run_continue_state(raw)
     if not state.validation.accepted:
-        payload = serialize_state(state)
+        payload = serialize_state(state, compact=compact_response, timing=timing)
         return _wrap(payload, raw_inputs=raw, state=state)
 
     def _inner_run(candidate: dict[str, Any]) -> SimulationState:
@@ -121,7 +148,12 @@ def _run_continue(raw: dict[str, Any]) -> dict[str, Any]:
     recommendations = []
     if not raw.get("_skip_recommendations"):
         recommendations = build_recommendations(state, raw, _inner_run)
-    payload = serialize_state(state, recommendations=recommendations)
+    payload = serialize_state(
+        state,
+        recommendations=recommendations,
+        compact=compact_response,
+        timing=timing,
+    )
     return _wrap(payload, raw_inputs=raw, state=state)
 
 
