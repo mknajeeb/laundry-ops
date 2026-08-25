@@ -1118,6 +1118,30 @@ def persist_day_snapshot(
     )
     bags = [apply_normalized_completion_fields(b) for b in bags]
 
+    try:
+        from backend.rinse_wf_service_cycle import is_wf_canonical_lifecycle_enabled
+        from backend.rinse_wf_service_cycle_compat import apply_wf_selected_day_boundary_guard
+
+        if is_wf_canonical_lifecycle_enabled(cursor, int(organization_id)):
+            wf_rows: list[dict[str, Any]] = []
+            other_rows: list[dict[str, Any]] = []
+            for b in bags:
+                svc = str(b.get("service_type") or (b.get("bag_snapshot") or {}).get("service_type") or "WF").upper()
+                if svc == "WF":
+                    wf_rows.append(b)
+                else:
+                    other_rows.append(b)
+            wf_rows = apply_wf_selected_day_boundary_guard(
+                cursor, int(organization_id), shift_date_et, wf_rows
+            )
+            bags = wf_rows + other_rows
+    except Exception:
+        logger.exception(
+            "WF day-boundary guard failed during persist org=%s date=%s",
+            organization_id,
+            shift_date_et,
+        )
+
     deferred_ids = {
         normalize_bag_id(b)
         for b in (projection_deferred_bag_ids or [])

@@ -112,6 +112,18 @@ def _exclude_stale_prior_day_terminal_cycles(
     return kept
 
 
+def apply_wf_selected_day_boundary_guard(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    bags: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Shared WF day-membership guard — every projection writer must pass through this."""
+    return _exclude_stale_prior_day_terminal_cycles(
+        cursor, organization_id, shift_date_et, list(bags or [])
+    )
+
+
 def _cycle_row_rank(row: Mapping[str, Any]) -> tuple[int, float, float]:
     """Lower rank wins. COMPLETED beats REVIEW beats ACTIVE; then latest completion/anchor."""
     status = str(row.get("status") or STATUS_ACTIVE)

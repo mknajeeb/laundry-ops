@@ -281,6 +281,161 @@ def test_terminal_projection_idempotent_drops_stale_completed(
     assert "FRSH001" in (workload.get("new_today") or [])
 
 
+@patch("backend.rinse_veewash_shift_day._sync_day_header_from_persisted_bags")
+@patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=[])
+@patch("backend.rinse_veewash_shift_day.get_day_record", return_value={"status": "OPEN"})
+@patch("backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables")
+@patch("backend.rinse_day_bag_completion_projection.enrich_bags_completion_from_scans")
+@patch("backend.rinse_day_bag_completion_projection.apply_normalized_completion_fields", side_effect=lambda b: b)
+@patch("backend.rinse_step1_productivity_fast.project_productivity_fields_for_day_bag", return_value={})
+@patch("backend.rinse_wf_service_cycle.is_wf_canonical_lifecycle_enabled", return_value=True)
+@patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
+def test_persist_day_snapshot_applies_boundary_guard_for_stage_b_rebuild(
+    load_day_bags_compat,
+    _enabled,
+    _proj,
+    _apply,
+    _enrich,
+    _ensure,
+    _day,
+    _load,
+    _sync,
+):
+    """Stage-B / backfill must not persist prior-day terminal completions even if upstream omitted the guard."""
+    from backend.rinse_veewash_shift_day import persist_day_snapshot
+
+    load_day_bags_compat.side_effect = lambda _c, _o, d: (
+        [_prior_completed_day_bag("STALE01", completed_at=datetime(2026, 8, 24, 13, 0))]
+        if d == AUG24
+        else []
+    )
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    cursor.rowcount = 0
+    wl = {
+        "rows": [
+            {
+                "bag_id": "STALE01",
+                "service_type": "WF",
+                "effective_status": OUTCOME_PENDING,
+                "new_or_carryover": "opening_new",
+                "bag_snapshot": {
+                    "admitted_at": str(datetime(2026, 8, 24, 23, 9)),
+                    "cycle_anchor_at": str(datetime(2026, 8, 24, 23, 9)),
+                    "canonical_projection": True,
+                },
+            },
+            {
+                "bag_id": "FRSH001",
+                "service_type": "WF",
+                "effective_status": OUTCOME_PENDING,
+                "new_or_carryover": "opening_new",
+                "bag_snapshot": {
+                    "admitted_at": str(datetime(2026, 8, 25, 9, 0)),
+                    "cycle_anchor_at": str(datetime(2026, 8, 25, 9, 0)),
+                },
+            },
+        ],
+        "new_today": ["STALE01", "FRSH001"],
+        "carryover": [],
+        "completed_on_date": [],
+        "pending_end_of_date": ["STALE01", "FRSH001"],
+        "review_required": [],
+    }
+    summary = {"completed": 0, "pending": 2, "review_required": 0}
+    persist_day_snapshot(cursor, ORG, AUG25, workload=wl, summary=summary, force=True)
+    upsert_calls = [
+        c
+        for c in cursor.execute.call_args_list
+        if c[0] and "INSERT INTO rinse_shift_monitor_day_bags" in str(c[0][0])
+    ]
+    assert upsert_calls
+    persisted_ids = [c[0][1][2] for c in upsert_calls]
+    assert "STALE01" not in persisted_ids
+    assert "FRSH001" in persisted_ids
+    delete_sql = next(
+        (str(c[0][0]) for c in cursor.execute.call_args_list if "DELETE FROM rinse_shift_monitor_day_bags" in str(c[0][0])),
+        "",
+    )
+    assert "DELETE FROM rinse_shift_monitor_day_bags" in delete_sql
+
+
+@patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot")
+@patch("backend.rinse_wf_service_cycle_compat.build_step1_headline_summary")
+@patch("backend.rinse_wf_service_cycle_compat._preserved_hd_bag_dicts", return_value=[])
+@patch("backend.rinse_wf_service_cycle_compat._prior_wf_day_bags_by_id", return_value={})
+@patch("backend.rinse_wf_service_cycle.reporting_counts_for_date")
+@patch("backend.rinse_wf_service_cycle_compat.ensure_wf_service_cycles_table")
+@patch("backend.rinse_wf_service_cycle_compat.ensure_shift_monitor_day_tables")
+@patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
+def test_automatic_terminal_rebuild_idempotent_three_passes(
+    load_day_bags,
+    _day_tbl,
+    _cyc_tbl,
+    counts,
+    _prior,
+    _hd,
+    headline,
+    persist,
+):
+    """Simulate repeated scrape finalize projections — membership must stay at guarded size."""
+    load_day_bags.side_effect = lambda _c, _o, d: (
+        [_prior_completed_day_bag("STALE01", completed_at=datetime(2026, 8, 24, 13, 0))]
+        if d == AUG24
+        else []
+    )
+    counts.return_value = {
+        "admitted_on_date": 1,
+        "completed_on_date": 0,
+        "opening_backlog": 0,
+        "active_now": 1,
+    }
+    headline.return_value = {
+        "completed": 0,
+        "pending": 1,
+        "review_required": 0,
+        "segments": {"wf": {"completed": 0, "pending": 1, "review_required": 0}},
+    }
+    persist.return_value = {"ok": True}
+    cur = _mock_cursor_with_cycles(
+        [
+            _stale_active_cycle("STALE01"),
+            {
+                "id": 9,
+                "bag_id": "FRSH001",
+                "cycle_anchor_at": datetime(2026, 8, 25, 9, 0),
+                "admitted_at": datetime(2026, 8, 25, 9, 0),
+                "status": STATUS_ACTIVE,
+                "completed_at": None,
+                "pre_weight_lbs": 5.0,
+                "post_weight_lbs": None,
+                "rush_status": None,
+                "review_reason": None,
+            },
+        ]
+    )
+    with (
+        patch("backend.rinse_wf_service_cycle_compat.get_day_record", return_value=None),
+        patch(
+            "backend.rinse_wf_service_cycle_compat.get_step1_activation_date",
+            return_value=date(2026, 7, 1),
+        ),
+        _enrich_patches(),
+    ):
+        for _ in range(3):
+            terminal_project_canonical_wf_day_snapshot(cur, ORG, AUG25)
+    workloads = [
+        (c.kwargs.get("workload") or c[1]["workload"])
+        for c in persist.call_args_list
+    ]
+    assert len(workloads) == 3
+    for wl in workloads:
+        ids = {r.get("bag_id") for r in (wl.get("rows") or [])}
+        assert "STALE01" not in ids
+        assert "FRSH001" in ids
+        assert len(ids) == 1
+
+
 @patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot")
 @patch("backend.rinse_wf_service_cycle_compat.build_step1_headline_summary")
 @patch("backend.rinse_wf_service_cycle_compat._preserved_hd_bag_dicts", return_value=[])
