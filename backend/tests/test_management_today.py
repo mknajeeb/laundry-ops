@@ -287,10 +287,8 @@ def test_rinse_wf_payload_skips_hd_labor_and_supplies_compute(monkeypatch):
     assert payload["rinse"]["segments"]["wf"]["total_workload"] == 10
     assert "hd" not in payload["rinse"]["segments"]
     assert "hd_dashboard_totals" not in payload["rinse"]
-    assert payload["supplies"]["deferred"] is True
-    assert "labor" not in payload
-    assert "hd" not in payload
-    assert "other_revenue" not in payload
+    assert payload["review"]["deferred"] is True
+    assert payload["_meta"]["tier"] == "primary"
     hd.assert_not_called()
     drc.assert_not_called()
     labor.assert_not_called()
@@ -447,6 +445,51 @@ def test_compact_payload_uses_upstream_builders_and_strips_collections():
         "backend.management_today.business_today", return_value=day
     ), patch(
         "backend.management_today.business_now", return_value=datetime(2026, 8, 15, 16, 12, 0)
+    ), patch(
+        "backend.management_rinse_wf_review.review_category_count_payload",
+        return_value={
+            "split_available": True,
+            "review_required": 0,
+            "specialty_items": 0,
+            "missing_from_portal": 0,
+            "split_order_review": 0,
+            "manual_review": 0,
+            "unknown_review": 0,
+        },
+    ), patch(
+        "backend.management_rinse_wf_review.enrich_review_counts_by_rush",
+        side_effect=lambda *_a, **_k: {
+            "split_available": True,
+            "review_required": 0,
+            "specialty_items": 0,
+            "missing_from_portal": 0,
+            "split_order_review": 0,
+            "manual_review": 0,
+            "unknown_review": 0,
+            "by_rush": {
+                "all": {
+                    "specialty_items": 0,
+                    "missing_from_portal": 0,
+                    "split_order_review": 0,
+                    "manual_review": 0,
+                    "review_required": 0,
+                },
+                "rush": {
+                    "specialty_items": 0,
+                    "missing_from_portal": 0,
+                    "split_order_review": 0,
+                    "manual_review": 0,
+                    "review_required": 0,
+                },
+                "non_rush": {
+                    "specialty_items": 0,
+                    "missing_from_portal": 0,
+                    "split_order_review": 0,
+                    "manual_review": 0,
+                    "review_required": 0,
+                },
+            },
+        },
     ):
         payload = build_management_today_payload(object(), 3, day, bypass_cache=True)
 
@@ -576,6 +619,51 @@ def test_today_cache_returns_same_scalars_without_rebuild():
         "backend.management_today.business_today", return_value=date(2026, 8, 15)
     ), patch(
         "backend.management_today.business_now", return_value=datetime(2026, 8, 15, 9, 0, 0)
+    ), patch(
+        "backend.management_rinse_wf_review.review_category_count_payload",
+        return_value={
+            "split_available": True,
+            "review_required": 0,
+            "specialty_items": 0,
+            "missing_from_portal": 0,
+            "split_order_review": 0,
+            "manual_review": 0,
+            "unknown_review": 0,
+        },
+    ), patch(
+        "backend.management_rinse_wf_review.enrich_review_counts_by_rush",
+        side_effect=lambda *_a, **_k: {
+            "split_available": True,
+            "review_required": 0,
+            "specialty_items": 0,
+            "missing_from_portal": 0,
+            "split_order_review": 0,
+            "manual_review": 0,
+            "unknown_review": 0,
+            "by_rush": {
+                "all": {
+                    "specialty_items": 0,
+                    "missing_from_portal": 0,
+                    "split_order_review": 0,
+                    "manual_review": 0,
+                    "review_required": 0,
+                },
+                "rush": {
+                    "specialty_items": 0,
+                    "missing_from_portal": 0,
+                    "split_order_review": 0,
+                    "manual_review": 0,
+                    "review_required": 0,
+                },
+                "non_rush": {
+                    "specialty_items": 0,
+                    "missing_from_portal": 0,
+                    "split_order_review": 0,
+                    "manual_review": 0,
+                    "review_required": 0,
+                },
+            },
+        },
     ):
         first = build_management_today_payload(object(), 3, day, bypass_cache=True)
         second = build_management_today_payload(object(), 3, day, bypass_cache=False)

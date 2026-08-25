@@ -2,18 +2,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
-  CircularProgress,
   IconButton,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
-import { getManagementRinseWf, getManagementTodaySupplies } from "../api";
+import {
+  getManagementRinseWf,
+  getManagementRinseWfSecondary,
+  getManagementTodaySupplies,
+} from "../api";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import ManagementRinseWfSection from "../components/management/ManagementRinseWfSection";
 import { formatFriendlyEtWall } from "../utils/rinseTimeFormat";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
+import { mergeRinseWfDashboardPayload } from "./managementRinseWfLoadModel";
 
 function todayEtIso() {
   try {
@@ -46,21 +50,28 @@ function isAbortError(err) {
 
 /**
  * Management → Rinse WF.
- * Core WF loads immediately; Supplies load on a separate async request.
+ * Primary dashboard loads first; specialty/review and supplies resolve independently.
  */
 export default function ManagementRinseWfPage() {
   const [dateEt, setDateEt] = useState(todayEtIso);
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [primaryData, setPrimaryData] = useState(null);
+  const [secondaryData, setSecondaryData] = useState(null);
+  const [primaryLoading, setPrimaryLoading] = useState(true);
+  const [secondaryLoading, setSecondaryLoading] = useState(true);
+  const [primaryError, setPrimaryError] = useState("");
+  const [secondaryError, setSecondaryError] = useState("");
   const [rushFilter, setRushFilter] = useState("all");
   const [supplies, setSupplies] = useState(null);
   const [suppliesLoading, setSuppliesLoading] = useState(false);
   const [suppliesError, setSuppliesError] = useState("");
-  const coreSeq = useRef(0);
+  const primarySeq = useRef(0);
+  const secondarySeq = useRef(0);
   const supplySeq = useRef(0);
-  const coreAbortRef = useRef(null);
+  const primaryAbortRef = useRef(null);
+  const secondaryAbortRef = useRef(null);
   const supplyAbortRef = useRef(null);
+  const loadStartedRef = useRef(null);
+  const primaryRenderedRef = useRef(false);
 
   const loadSupplies = useCallback(async (day, { refresh = false, rush = "all" } = {}) => {
     if (supplyAbortRef.current) supplyAbortRef.current.abort();
@@ -81,53 +92,86 @@ export default function ManagementRinseWfPage() {
       if (controller.signal.aborted || isAbortError(err)) return;
       if (seq !== supplySeq.current) return;
       setSuppliesError(err?.response?.data?.error || err?.message || "Supplies unavailable");
-      // Keep prior supplies on refresh failure; clear only on hard miss.
       setSupplies((prev) => (refresh && prev?.available ? prev : null));
     } finally {
       if (seq === supplySeq.current) setSuppliesLoading(false);
     }
   }, []);
 
-  const loadCore = useCallback(async (day, refresh = false) => {
-    if (coreAbortRef.current) coreAbortRef.current.abort();
+  const loadPrimary = useCallback(async (day, refresh = false) => {
+    if (primaryAbortRef.current) primaryAbortRef.current.abort();
     const controller = new AbortController();
-    coreAbortRef.current = controller;
-    const seq = ++coreSeq.current;
+    primaryAbortRef.current = controller;
+    const seq = ++primarySeq.current;
 
-    if (!refresh) setData(null);
-    setLoading(true);
-    setError("");
+    if (!refresh) setPrimaryData(null);
+    setPrimaryLoading(true);
+    setPrimaryError("");
     try {
       const res = await getManagementRinseWf(day, {
         refresh: refresh ? 1 : undefined,
         signal: controller.signal,
       });
-      if (seq !== coreSeq.current || controller.signal.aborted) return;
-      setData(res.data || null);
+      if (seq !== primarySeq.current || controller.signal.aborted) return;
+      setPrimaryData(res.data || null);
+      if (!primaryRenderedRef.current) {
+        primaryRenderedRef.current = true;
+        if (loadStartedRef.current != null && typeof window !== "undefined") {
+          window.__wfPrimaryRenderMs = Math.round(performance.now() - loadStartedRef.current);
+        }
+      }
     } catch (err) {
       if (controller.signal.aborted || isAbortError(err)) return;
-      if (seq !== coreSeq.current) return;
-      setData(null);
-      setError(err?.response?.data?.error || err?.message || "Unable to load Rinse WF");
+      if (seq !== primarySeq.current) return;
+      setPrimaryData(null);
+      setPrimaryError(err?.response?.data?.error || err?.message || "Unable to load Rinse WF");
     } finally {
-      if (seq === coreSeq.current) setLoading(false);
+      if (seq === primarySeq.current) setPrimaryLoading(false);
+    }
+  }, []);
+
+  const loadSecondary = useCallback(async (day, refresh = false) => {
+    if (secondaryAbortRef.current) secondaryAbortRef.current.abort();
+    const controller = new AbortController();
+    secondaryAbortRef.current = controller;
+    const seq = ++secondarySeq.current;
+
+    if (!refresh) setSecondaryData(null);
+    setSecondaryLoading(true);
+    setSecondaryError("");
+    try {
+      const res = await getManagementRinseWfSecondary(day, {
+        refresh: refresh ? 1 : undefined,
+        signal: controller.signal,
+      });
+      if (seq !== secondarySeq.current || controller.signal.aborted) return;
+      setSecondaryData(res.data || null);
+    } catch (err) {
+      if (controller.signal.aborted || isAbortError(err)) return;
+      if (seq !== secondarySeq.current) return;
+      setSecondaryError(err?.response?.data?.error || err?.message || "Secondary metrics unavailable");
+      setSecondaryData(null);
+    } finally {
+      if (seq === secondarySeq.current) setSecondaryLoading(false);
     }
   }, []);
 
   const load = useCallback(async (day, refresh = false, rush = rushFilter) => {
-    // Core and supplies refresh independently; do not block core on supply.
-    const corePromise = loadCore(day, refresh);
+    loadStartedRef.current = performance.now();
+    primaryRenderedRef.current = false;
+    const primaryPromise = loadPrimary(day, refresh);
+    const secondaryPromise = loadSecondary(day, refresh);
     const supplyPromise = loadSupplies(day, { refresh, rush });
-    await Promise.allSettled([corePromise, supplyPromise]);
-  }, [loadCore, loadSupplies, rushFilter]);
+    await Promise.allSettled([primaryPromise, secondaryPromise, supplyPromise]);
+  }, [loadPrimary, loadSecondary, loadSupplies, rushFilter]);
 
   useEffect(() => {
     load(dateEt, false, rushFilter);
     return () => {
-      if (coreAbortRef.current) coreAbortRef.current.abort();
+      if (primaryAbortRef.current) primaryAbortRef.current.abort();
+      if (secondaryAbortRef.current) secondaryAbortRef.current.abort();
       if (supplyAbortRef.current) supplyAbortRef.current.abort();
     };
-    // Initial + date change only — rush handled separately to avoid double core fetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateEt]);
 
@@ -136,10 +180,17 @@ export default function ManagementRinseWfPage() {
     loadSupplies(dateEt, { rush: next });
   }, [dateEt, loadSupplies]);
 
+  const mergedData = useMemo(
+    () => mergeRinseWfDashboardPayload(primaryData, secondaryData),
+    [primaryData, secondaryData],
+  );
+
   const refreshedLabel = useMemo(() => {
-    if (!data?.generated_at_et) return "";
-    return formatFriendlyEtWall(data.generated_at_et);
-  }, [data?.generated_at_et]);
+    if (!primaryData?.generated_at_et) return "";
+    return formatFriendlyEtWall(primaryData.generated_at_et);
+  }, [primaryData?.generated_at_et]);
+
+  const refreshing = primaryLoading || secondaryLoading || suppliesLoading;
 
   return (
     <Box
@@ -179,34 +230,50 @@ export default function ManagementRinseWfPage() {
           <IconButton
             aria-label="Refresh"
             onClick={() => load(dateEt, true, rushFilter)}
-            disabled={loading && suppliesLoading}
+            disabled={refreshing}
             size="small"
+            sx={{
+              opacity: refreshing ? 0.6 : 1,
+            }}
           >
-            {loading ? <CircularProgress size={18} /> : <RefreshIcon />}
+            <RefreshIcon
+              sx={
+                refreshing
+                  ? {
+                    animation: "spin 0.9s linear infinite",
+                    "@keyframes spin": {
+                      "0%": { transform: "rotate(0deg)" },
+                      "100%": { transform: "rotate(360deg)" },
+                    },
+                  }
+                  : undefined
+              }
+            />
           </IconButton>
         </Stack>
       </Stack>
 
-      {error ? <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert> : null}
-
-      {data ? (
-        <ManagementRinseWfSection
-          rinse={data.rinse || null}
-          review={data.review || null}
-          supplies={supplies}
-          suppliesLoading={suppliesLoading}
-          suppliesError={suppliesError}
-          onRetrySupplies={() => loadSupplies(dateEt, { refresh: true, rush: rushFilter })}
-          rushFilter={rushFilter}
-          onRushFilterChange={onRushFilterChange}
-          selectedDateEt={dateEt}
-          onRefresh={() => load(dateEt, true, rushFilter)}
-        />
-      ) : loading ? (
-        <Box sx={{ py: 4, textAlign: "center" }}>
-          <CircularProgress size={22} />
-        </Box>
+      {primaryError ? <Alert severity="error" sx={{ mb: 1.5 }}>{primaryError}</Alert> : null}
+      {secondaryError ? (
+        <Alert severity="warning" sx={{ mb: 1.5 }}>
+          {secondaryError}
+        </Alert>
       ) : null}
+
+      <ManagementRinseWfSection
+        rinse={mergedData?.rinse || primaryData?.rinse || null}
+        review={mergedData?.review || null}
+        supplies={supplies}
+        suppliesLoading={suppliesLoading}
+        suppliesError={suppliesError}
+        onRetrySupplies={() => loadSupplies(dateEt, { refresh: true, rush: rushFilter })}
+        rushFilter={rushFilter}
+        onRushFilterChange={onRushFilterChange}
+        selectedDateEt={dateEt}
+        onRefresh={() => load(dateEt, true, rushFilter)}
+        primaryLoading={primaryLoading}
+        secondaryLoading={secondaryLoading}
+      />
     </Box>
   );
 }

@@ -20,6 +20,9 @@ _TODAY_CACHE: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
 _TODAY_CACHE_TTL_LIVE_SEC = 45.0
 _TODAY_CACHE_TTL_CLOSED_SEC = 600.0
 _RINSE_WF_CACHE: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
+_RINSE_WF_PRIMARY_CACHE: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
+_RINSE_WF_SECONDARY_CACHE: dict[tuple[int, str], tuple[float, dict[str, Any]]] = {}
+_RINSE_WF_HEADLINE_CACHE: dict[tuple[int, str], tuple[float, dict[str, Any], dict[str, Any]]] = {}
 _RINSE_WF_CACHE_TTL_LIVE_SEC = 45.0
 _RINSE_WF_CACHE_TTL_CLOSED_SEC = 600.0
 # Supply summary is expensive (~authoritative first-weight walk). Cache separately
@@ -101,12 +104,21 @@ def clear_management_today_cache(
     if organization_id is None and date_et is None:
         _TODAY_CACHE.clear()
         _RINSE_WF_CACHE.clear()
+        _RINSE_WF_PRIMARY_CACHE.clear()
+        _RINSE_WF_SECONDARY_CACHE.clear()
+        _RINSE_WF_HEADLINE_CACHE.clear()
         if include_supplies:
             _SUPPLY_SUMMARY_CACHE.clear()
         return
     org = int(organization_id) if organization_id is not None else None
     day_key = date_et.isoformat() if isinstance(date_et, date) else (str(date_et) if date_et else None)
-    for store in (_TODAY_CACHE, _RINSE_WF_CACHE):
+    for store in (
+        _TODAY_CACHE,
+        _RINSE_WF_CACHE,
+        _RINSE_WF_PRIMARY_CACHE,
+        _RINSE_WF_SECONDARY_CACHE,
+        _RINSE_WF_HEADLINE_CACHE,
+    ):
         for key in list(store):
             if org is not None and key[0] != org:
                 continue
@@ -521,6 +533,56 @@ def _deferred_supplies_stub() -> dict[str, Any]:
     return out
 
 
+def _deferred_review_stub() -> dict[str, Any]:
+    """Placeholder until GET /api/management/rinse-wf/secondary resolves."""
+    return {
+        "deferred": True,
+        "split_available": False,
+        "review_required": None,
+        "specialty_items": None,
+        "missing_from_portal": None,
+        "split_order_review": None,
+        "unknown_review": None,
+        "manual_review": None,
+    }
+
+
+def _wf_cache_ttl(day: date) -> float:
+    return _RINSE_WF_CACHE_TTL_LIVE_SEC if day == business_today() else _RINSE_WF_CACHE_TTL_CLOSED_SEC
+
+
+def _cache_headline(org: int, day: date, day_rec: Mapping[str, Any], headline: Mapping[str, Any]) -> None:
+    _RINSE_WF_HEADLINE_CACHE[(org, day.isoformat())] = (
+        time.monotonic(),
+        dict(day_rec),
+        dict(headline),
+    )
+
+
+def _get_cached_headline(org: int, day: date) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    cached = _RINSE_WF_HEADLINE_CACHE.get((org, day.isoformat()))
+    if not cached:
+        return None
+    if (time.monotonic() - cached[0]) >= _wf_cache_ttl(day):
+        _RINSE_WF_HEADLINE_CACHE.pop((org, day.isoformat()), None)
+        return None
+    return dict(cached[1]), dict(cached[2])
+
+
+def _phase_timing(
+    phases: dict[str, Any],
+    name: str,
+    started: float,
+    query_count: int,
+    *,
+    query_start: int,
+) -> None:
+    phases[name] = {
+        "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+        "query_count": int(query_count - query_start),
+    }
+
+
 def _load_supplies(
     cursor,
     organization_id: int,
@@ -919,12 +981,21 @@ def _specialty_packs_current(headline: Mapping[str, Any] | None) -> bool:
         return False
 
 
-def _load_headline(cursor, organization_id: int, selected_date_et: date) -> tuple[dict[str, Any], dict[str, Any]]:
+def _load_headline(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    rebuild_specialty: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Persisted Step-1 headline for Management Rinse WF (read-only).
 
     Fast path: day row + headline JSON only — skips the interactive Step-1
     shell (rollover archive, HD presentation heal, bag-row loads) when a
     usable snapshot already exists. Does not rebuild from raw scans.
+
+    When ``rebuild_specialty`` is False (primary dashboard path), stale specialty
+    packs are left untouched — secondary load rebuilds them without blocking KPIs.
     """
     from backend.rinse_veewash_shift_day import (
         build_or_load_step1_for_date,
@@ -932,21 +1003,25 @@ def _load_headline(cursor, organization_id: int, selected_date_et: date) -> tupl
         summary_from_day_record,
     )
 
+    def _maybe_rebuild_specialty(headline_in: dict[str, Any]) -> dict[str, Any]:
+        if not rebuild_specialty or _specialty_packs_current(headline_in):
+            return headline_in
+        from backend.rinse_hd_day_metrics import build_day_specialty_metrics
+
+        packs = dict(headline_in.get("specialty_metrics") or {})
+        packs["wf"] = build_day_specialty_metrics(
+            cursor, organization_id, selected_date_et, headline_in, service="wf"
+        )
+        out = dict(headline_in)
+        out["specialty_metrics"] = packs
+        return out
+
     day = get_day_record(cursor, organization_id, selected_date_et)
     if day and day.get("headline"):
         # Omit cursor so summary_from_day_record skips HD presentation heal.
         headline = summary_from_day_record(day) or {}
         if headline and not headline.get("data_unavailable"):
-            if not _specialty_packs_current(headline):
-                from backend.rinse_hd_day_metrics import build_day_specialty_metrics
-
-                # WF-only specialty rebuild — do not compute HD packs for this page.
-                packs = dict(headline.get("specialty_metrics") or {})
-                packs["wf"] = build_day_specialty_metrics(
-                    cursor, organization_id, selected_date_et, headline, service="wf"
-                )
-                headline = dict(headline)
-                headline["specialty_metrics"] = packs
+            headline = _maybe_rebuild_specialty(headline)
             return dict(day), dict(headline)
 
     _wl, summary, day_rec = build_or_load_step1_for_date(
@@ -958,14 +1033,8 @@ def _load_headline(cursor, organization_id: int, selected_date_et: date) -> tupl
     )
     headline = dict(summary or {})
     rec = dict(day_rec or {})
-    if headline and not _specialty_packs_current(headline) and not headline.get("data_unavailable"):
-        from backend.rinse_hd_day_metrics import build_day_specialty_metrics
-
-        packs = dict(headline.get("specialty_metrics") or {})
-        packs["wf"] = build_day_specialty_metrics(
-            cursor, organization_id, selected_date_et, headline, service="wf"
-        )
-        headline["specialty_metrics"] = packs
+    if headline and not headline.get("data_unavailable"):
+        headline = _maybe_rebuild_specialty(headline)
     return rec, headline
 
 
@@ -1247,28 +1316,28 @@ def _extract_rinse_wf_only(
     return full
 
 
-def build_management_rinse_wf_payload(
+def build_management_rinse_wf_primary_payload(
     cursor,
     organization_id: int,
     selected_date_et: date,
     *,
     bypass_cache: bool = False,
 ) -> dict[str, Any]:
-    """Rinse WF compartment core — headline + weight aggregates only.
+    """Rinse WF primary dashboard — workload segments + PRE/POST weights only.
 
-    Does not load HD production, labor, DRC, or Supply Usage.
+    Does not compute canonical review membership or specialty rebuilds.
+    Secondary sections load via ``build_management_rinse_wf_secondary_payload``.
     """
     org = int(organization_id)
     day = selected_date_et
     cache_key = (org, day.isoformat())
-    now_mono = time.monotonic()
-    is_live = day == business_today()
-    ttl = _RINSE_WF_CACHE_TTL_LIVE_SEC if is_live else _RINSE_WF_CACHE_TTL_CLOSED_SEC
+    ttl = _wf_cache_ttl(day)
     if bypass_cache:
-        _RINSE_WF_CACHE.pop(cache_key, None)
+        _RINSE_WF_PRIMARY_CACHE.pop(cache_key, None)
+        _RINSE_WF_HEADLINE_CACHE.pop(cache_key, None)
     else:
-        cached = _RINSE_WF_CACHE.get(cache_key)
-        if cached and (now_mono - cached[0]) < ttl:
+        cached = _RINSE_WF_PRIMARY_CACHE.get(cache_key)
+        if cached and (time.monotonic() - cached[0]) < ttl:
             out = dict(cached[1])
             meta = dict(out.get("_meta") or {})
             meta["cached"] = True
@@ -1277,11 +1346,25 @@ def build_management_rinse_wf_payload(
 
     counting = cursor if isinstance(cursor, CountingCursor) else CountingCursor(cursor)
     started = time.perf_counter()
-    day_rec, headline = _load_headline(counting, org, day)
+    phases: dict[str, Any] = {}
+    q0 = int(getattr(counting, "query_count", 0))
+
+    t0 = time.perf_counter()
+    day_rec, headline = _load_headline(
+        counting, org, day, rebuild_specialty=False
+    )
+    _cache_headline(org, day, day_rec, headline)
+    _phase_timing(phases, "headline", t0, counting.query_count, query_start=q0)
+
+    t1 = time.perf_counter()
+    q1 = int(counting.query_count)
     weight_totals = load_wf_day_weight_totals(counting, org, day)
+    _phase_timing(phases, "weights", t1, counting.query_count, query_start=q1)
+
     rinse = _extract_rinse_wf_only(headline, day_rec)
     rinse["weight_totals"] = weight_totals
-    rinse["supplies"] = _deferred_supplies_stub()
+    # Specialty metrics arrive on the secondary request; omit stale packs from primary.
+    rinse.pop("specialty_metrics", None)
 
     now_et = business_now()
     if getattr(now_et, "tzinfo", None) is None:
@@ -1289,11 +1372,86 @@ def build_management_rinse_wf_payload(
     else:
         generated_iso = now_et.isoformat(timespec="seconds")
 
+    payload = {
+        "date_et": day.isoformat(),
+        "generated_at_et": generated_iso,
+        "rinse": rinse,
+        "review": _deferred_review_stub(),
+        "_meta": {
+            "cached": False,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            "query_count": int(getattr(counting, "query_count", 0)),
+            "compartment": "rinse_wf",
+            "tier": "primary",
+            "phases": phases,
+            "sources": {
+                "rinse": "persisted_day_headline_compact_read",
+                "wf_weights": "canonical_pre_resolver+rinse_shift_monitor_day_bags.post_weight_lbs",
+                "review": "deferred_to_/api/management/rinse-wf/secondary",
+                "specialty": "deferred_to_/api/management/rinse-wf/secondary",
+            },
+        },
+    }
+    assert_compact_today_payload(payload)
+    _RINSE_WF_PRIMARY_CACHE[cache_key] = (time.monotonic(), dict(payload))
+    # Keep legacy cache alias for callers/tests expecting monolithic key.
+    _RINSE_WF_CACHE[cache_key] = (time.monotonic(), dict(payload))
+    return payload
+
+
+def build_management_rinse_wf_secondary_payload(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    bypass_cache: bool = False,
+) -> dict[str, Any]:
+    """Rinse WF secondary sections — specialty metrics + canonical review counts."""
+    org = int(organization_id)
+    day = selected_date_et
+    cache_key = (org, day.isoformat())
+    ttl = _wf_cache_ttl(day)
+    if bypass_cache:
+        _RINSE_WF_SECONDARY_CACHE.pop(cache_key, None)
+        _RINSE_WF_HEADLINE_CACHE.pop(cache_key, None)
+    else:
+        cached = _RINSE_WF_SECONDARY_CACHE.get(cache_key)
+        if cached and (time.monotonic() - cached[0]) < ttl:
+            out = dict(cached[1])
+            meta = dict(out.get("_meta") or {})
+            meta["cached"] = True
+            out["_meta"] = meta
+            return out
+
+    counting = cursor if isinstance(cursor, CountingCursor) else CountingCursor(cursor)
+    started = time.perf_counter()
+    phases: dict[str, Any] = {}
+    q0 = int(getattr(counting, "query_count", 0))
+
+    cached_headline = _get_cached_headline(org, day)
+    t0 = time.perf_counter()
+    if cached_headline:
+        day_rec, headline = cached_headline
+    else:
+        day_rec, headline = _load_headline(
+            counting, org, day, rebuild_specialty=True
+        )
+        _cache_headline(org, day, day_rec, headline)
+    _phase_timing(phases, "headline", t0, counting.query_count, query_start=q0)
+
     from backend.management_rinse_wf_review import (
         enrich_review_counts_by_rush,
         review_category_count_payload,
     )
 
+    t1 = time.perf_counter()
+    q1 = int(counting.query_count)
+    rinse_secondary = _extract_rinse_wf_only(headline, day_rec)
+    specialty_metrics = rinse_secondary.get("specialty_metrics") or {}
+    _phase_timing(phases, "specialty", t1, counting.query_count, query_start=q1)
+
+    t2 = time.perf_counter()
+    q2 = int(counting.query_count)
     review_base = review_category_count_payload(
         headline,
         cursor=counting,
@@ -1303,30 +1461,52 @@ def build_management_rinse_wf_payload(
     review = enrich_review_counts_by_rush(
         counting, org, day, headline, review_base
     )
-    # Compact payload: never leak membership bag ID arrays.
     review.pop("_membership", None)
+    _phase_timing(phases, "review", t2, counting.query_count, query_start=q2)
+
+    now_et = business_now()
+    if getattr(now_et, "tzinfo", None) is None:
+        generated_iso = now_et.isoformat(timespec="seconds")
+    else:
+        generated_iso = now_et.isoformat(timespec="seconds")
+
     payload = {
         "date_et": day.isoformat(),
         "generated_at_et": generated_iso,
-        "rinse": rinse,
-        "supplies": rinse["supplies"],
+        "rinse": {"specialty_metrics": specialty_metrics},
         "review": review,
         "_meta": {
             "cached": False,
             "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
             "query_count": int(getattr(counting, "query_count", 0)),
             "compartment": "rinse_wf",
+            "tier": "secondary",
+            "phases": phases,
             "sources": {
-                "rinse": "persisted_day_headline_compact_read",
-                "wf_weights": "rinse_shift_monitor_day_bags.pre_weight_lbs/post_weight_lbs_evidence",
-                "supplies": "deferred_to_/api/management/today/supplies",
+                "specialty": "persisted_or_rebuilt_wf_specialty_pack",
                 "review": "canonical_specialty_review_membership_shared_with_drawer",
             },
         },
     }
     assert_compact_today_payload(payload)
-    _RINSE_WF_CACHE[cache_key] = (time.monotonic(), dict(payload))
+    _RINSE_WF_SECONDARY_CACHE[cache_key] = (time.monotonic(), dict(payload))
     return payload
+
+
+def build_management_rinse_wf_payload(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    bypass_cache: bool = False,
+) -> dict[str, Any]:
+    """Rinse WF compartment core — primary dashboard path (backward-compatible name)."""
+    return build_management_rinse_wf_primary_payload(
+        cursor,
+        organization_id,
+        selected_date_et,
+        bypass_cache=bypass_cache,
+    )
 
 
 def build_management_today_payload(

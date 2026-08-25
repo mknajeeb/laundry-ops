@@ -422,16 +422,13 @@ export default forwardRef(function ManagementRinseWfReviewSection(
       <Box
         sx={{
           display: "grid",
-          gridTemplateColumns: {
-            xs: "1fr",
-            sm: manualReviewCount > 0 ? "1fr 1fr" : "1fr 1fr 1fr",
-          },
+          gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
           gap: 0.75,
         }}
       >
         {reviewLoading ? (
           <>
-            {[0, 1, 2].map((i) => (
+            {[0, 1, 2, 3].map((i) => (
               <Box
                 key={i}
                 sx={{
@@ -510,27 +507,26 @@ export default forwardRef(function ManagementRinseWfReviewSection(
                 {snapshotUnavailable || splitOrderCount == null ? "—" : splitOrderCount}
               </Typography>
             </Button>
-            {!snapshotUnavailable && manualReviewCount > 0 ? (
-              <Button
-                variant="outlined"
-                onClick={() => openCategory("manual_review")}
-                sx={{
-                  justifyContent: "space-between",
-                  textTransform: "none",
-                  px: 1.25,
-                  py: 1.1,
-                  borderColor: "#cbd5e1",
-                  bgcolor: "#fff",
-                }}
-              >
-                <Typography sx={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
-                  Manual Review
-                </Typography>
-                <Typography sx={{ fontWeight: 800, fontSize: 18, color: "#0f172a" }}>
-                  {manualReviewCount}
-                </Typography>
-              </Button>
-            ) : null}
+            <Button
+              variant="outlined"
+              disabled={snapshotUnavailable}
+              onClick={() => openCategory("manual_review")}
+              sx={{
+                justifyContent: "space-between",
+                textTransform: "none",
+                px: 1.25,
+                py: 1.1,
+                borderColor: "#cbd5e1",
+                bgcolor: "#fff",
+              }}
+            >
+              <Typography sx={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
+                Manual Review
+              </Typography>
+              <Typography sx={{ fontWeight: 800, fontSize: 18, color: "#0f172a" }}>
+                {snapshotUnavailable || manualReviewCount == null ? "—" : manualReviewCount}
+              </Typography>
+            </Button>
           </>
         )}
       </Box>
