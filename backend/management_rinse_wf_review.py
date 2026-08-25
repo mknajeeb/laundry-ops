@@ -931,6 +931,67 @@ def apply_canonical_wf_review_day_bag_fixes(
     return stats
 
 
+def _active_wf_review_bag_ids(membership: Mapping[str, Any]) -> set[str]:
+    from backend.rinse_bag_completion import normalize_bag_id
+
+    active: set[str] = set()
+    for key in (
+        CATEGORY_SPECIALTY,
+        CATEGORY_MISSING_PORTAL,
+        CATEGORY_SPLIT_ORDER,
+        CATEGORY_MANUAL_REVIEW,
+        CATEGORY_UNKNOWN,
+    ):
+        for bid in membership.get(key) or []:
+            nb = normalize_bag_id(bid)
+            if nb:
+                active.add(nb)
+    return active
+
+
+def clear_stale_completed_wf_review_day_bag_codes(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    membership: Mapping[str, Any],
+) -> int:
+    """Drop review_reason_codes from completed WF day bags no longer in Review membership."""
+    from backend.rinse_bag_completion import normalize_bag_id
+
+    active = _active_wf_review_bag_ids(membership)
+    cursor.execute(
+        """
+        SELECT bag_id, review_reason_codes_json, effective_status, canonical_completion_status
+        FROM rinse_shift_monitor_day_bags
+        WHERE organization_id = %s AND shift_date_et = %s AND service_type = 'WF'
+          AND review_reason_codes_json IS NOT NULL
+          AND review_reason_codes_json != '[]'
+        """,
+        (int(organization_id), selected_date_et),
+    )
+    cleared = 0
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        bid = normalize_bag_id(row.get("bag_id"))
+        if not bid or bid in active:
+            continue
+        status = str(row.get("effective_status") or "").strip().lower()
+        canon = str(row.get("canonical_completion_status") or "").strip().lower()
+        if status != "completed" and "completed" not in canon:
+            continue
+        cursor.execute(
+            """
+            UPDATE rinse_shift_monitor_day_bags
+            SET review_reason_codes_json = '[]'
+            WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+            """,
+            (int(organization_id), selected_date_et, bid),
+        )
+        cleared += int(getattr(cursor, "rowcount", 0) or 0)
+    return cleared
+
+
 def persist_canonical_wf_review_on_headline(
     headline: dict[str, Any],
     membership: Mapping[str, Any],
@@ -1387,6 +1448,12 @@ def build_management_review_list(
     membership = compute_canonical_wf_review_membership(
         cursor, organization_id, selected_date_et, headline=headline
     )
+    try:
+        clear_stale_completed_wf_review_day_bag_codes(
+            cursor, organization_id, selected_date_et, membership
+        )
+    except Exception:
+        pass
     split = split_review_categories(headline, membership=membership)
     specialty_ids = list(membership.get(CATEGORY_SPECIALTY) or [])
     missing_ids = list(membership.get(CATEGORY_MISSING_PORTAL) or [])
@@ -1604,6 +1671,7 @@ def build_management_review_list(
                 "specialty_quantity": qty_info.get("specialty_quantity"),
                 "specialty_item_class": qty_info.get("specialty_item_class"),
                 "has_specialty_bulk": flags["has_specialty_bulk"],
+                "has_specialty_review": flags["has_specialty_review"],
                 "has_missing_portal": flags["has_missing_portal"],
                 "bulk_review_cleared": bulk_cleared,
                 "bulk_review_unresolved": bulk_unresolved,
@@ -1995,6 +2063,7 @@ def build_management_review_action(
         "corrected_pre_weight_lbs": weights.get("corrected_pre_weight_lbs"),
         "pre_weight_source": weights.get("pre_weight_source"),
         "review_category": category,
+        "category": category,
         "_detailsLoaded": True,
         "_actionMetaOnly": True,
     }

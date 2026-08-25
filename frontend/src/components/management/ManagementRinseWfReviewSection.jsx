@@ -622,6 +622,7 @@ export default function ManagementRinseWfReviewSection({
                   <ManagementRinseWfReviewDrawerRow
                     key={bag.bag_id}
                     bag={bag}
+                    drawerCategory={drawer.category}
                     selectedDateEt={selectedDateEt}
                     readOnly={readOnly}
                     expanded={expandedBagId === bag.bag_id}

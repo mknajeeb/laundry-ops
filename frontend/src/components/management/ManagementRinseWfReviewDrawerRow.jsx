@@ -30,7 +30,7 @@ import {
   bagBulkReviewUnresolved,
   bagHasMissingPortal,
   bagHasSpecialtyBulk,
-  bagHasSpecialtyReview,
+  resolveReviewDrawerInlineVariant,
   bulkItemsDraft,
   catalogSpecialtyLines,
   fmtLbs,
@@ -663,6 +663,7 @@ function SpecialtyInline({ bag, catalog, selectedDateEt, readOnly, onSaved }) {
  */
 export default function ManagementRinseWfReviewDrawerRow({
   bag,
+  drawerCategory = null,
   selectedDateEt,
   readOnly,
   expanded,
@@ -675,11 +676,22 @@ export default function ManagementRinseWfReviewDrawerRow({
   const [error, setError] = useState("");
 
   const merged = actionBag
-    ? { ...bag, ...actionBag, bag_id: bag.bag_id, _detailsLoaded: true }
-    : { ...bag, _detailsLoaded: false };
-  const showMissing = bagHasMissingPortal(merged);
-  const showSpecialtyBulk = bagHasSpecialtyBulk(merged) && !showMissing;
-  const showSpecialtyReview = bagHasSpecialtyReview(merged) && !showMissing && !showSpecialtyBulk;
+    ? {
+        ...bag,
+        ...actionBag,
+        bag_id: bag.bag_id,
+        category: bag?.category || actionBag?.category || actionBag?.review_category || drawerCategory,
+        review_category:
+          actionBag?.review_category || bag?.review_category || bag?.category || drawerCategory,
+        _detailsLoaded: true,
+      }
+    : {
+        ...bag,
+        category: bag?.category || bag?.review_category || drawerCategory,
+        review_category: bag?.review_category || bag?.category || drawerCategory,
+        _detailsLoaded: false,
+      };
+  const inlineVariant = resolveReviewDrawerInlineVariant(merged, drawerCategory);
 
   useEffect(() => {
     if (!expanded) {
@@ -763,7 +775,7 @@ export default function ManagementRinseWfReviewDrawerRow({
           <Alert severity="error" sx={{ mt: 1, py: 0.25 }}>
             {error}
           </Alert>
-        ) : showMissing ? (
+        ) : inlineVariant === "missing" ? (
           <MissingPortalInline
             bag={merged}
             catalog={catalog || []}
@@ -771,7 +783,7 @@ export default function ManagementRinseWfReviewDrawerRow({
             readOnly={readOnly}
             onSaved={onSaved}
           />
-        ) : showSpecialtyBulk ? (
+        ) : inlineVariant === "specialty_bulk" ? (
           <SpecialtyInline
             bag={merged}
             catalog={catalog || []}
@@ -779,7 +791,7 @@ export default function ManagementRinseWfReviewDrawerRow({
             readOnly={readOnly}
             onSaved={onSaved}
           />
-        ) : showSpecialtyReview ? (
+        ) : inlineVariant === "specialty_review" ? (
           <MissingPortalInline
             bag={merged}
             catalog={catalog || []}

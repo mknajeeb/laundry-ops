@@ -7,6 +7,17 @@ import { classifyEditSavePath, parseWeightInput } from "../shift/editBagHelpers"
 
 const MISSING_CODES = new Set(["DISAPPEARED_WITHOUT_COMPLETION"]);
 const SPECIALTY_BULK_CODE = "WF_BULK_WORKITEM_REVIEW";
+const SPECIALTY_REVIEW_CODES = new Set([
+  SPECIALTY_BULK_CODE,
+  "WF_ZERO_OR_MISSING_POST_WEIGHT",
+  "WF_ZERO_OR_MISSING_WEIGHT",
+  "COMPLETED_WITHOUT_RECOGNIZED_ENTRY",
+  "SERVICE_CLASSIFICATION_MISMATCH",
+  "MANAGER_SENT_FOR_REVIEW",
+  "COMPLETION_DETAILS_MISSING",
+  "MISSING_PRE_EVIDENCE",
+  "SCAN_CHRONOLOGY_STALE",
+]);
 
 export function reasonCodeSet(bag) {
   return new Set(
@@ -35,7 +46,31 @@ export function bagHasSpecialtyReview(bag) {
   if (bag?.has_specialty_review === true) return true;
   const cat = String(bag?.review_category || bag?.category || "").toLowerCase();
   if (cat === "specialty_items") return true;
+  if ([...reasonCodeSet(bag)].some((c) => SPECIALTY_REVIEW_CODES.has(c))) return true;
   return bagHasSpecialtyBulk(bag);
+}
+
+/**
+ * Which inline Review drawer surface to mount for one bag.
+ * drawerCategory is the open drawer id (e.g. specialty_items) — used when list
+ * rows omit category but the drawer context is authoritative.
+ */
+export function resolveReviewDrawerInlineVariant(bag, drawerCategory = null) {
+  const enriched = {
+    ...(bag || {}),
+    category:
+      bag?.category || bag?.review_category || drawerCategory || null,
+    review_category:
+      bag?.review_category || bag?.category || drawerCategory || null,
+  };
+  const showMissing = bagHasMissingPortal(enriched);
+  const showSpecialtyBulk = bagHasSpecialtyBulk(enriched) && !showMissing;
+  const showSpecialtyReview =
+    bagHasSpecialtyReview(enriched) && !showMissing && !showSpecialtyBulk;
+  if (showMissing) return "missing";
+  if (showSpecialtyBulk) return "specialty_bulk";
+  if (showSpecialtyReview) return "specialty_review";
+  return "none";
 }
 
 /** True when bulk workitem review still blocks Save & Complete. */

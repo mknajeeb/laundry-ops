@@ -3,6 +3,8 @@ import {
   bagBulkReviewUnresolved,
   bagHasMissingPortal,
   bagHasSpecialtyBulk,
+  bagHasSpecialtyReview,
+  resolveReviewDrawerInlineVariant,
   catalogSpecialtyLines,
   fmtLbs,
   suggestedCompleteAudit,
@@ -42,6 +44,36 @@ describe("review drawer section flags", () => {
         bulk_workitems: [{ quantity: 2 }],
       }),
     ).toBe(false);
+  });
+
+  it("always mounts specialty review inline surface without bulk evidence", () => {
+    const bag = {
+      reason_codes: ["MANAGER_SENT_FOR_REVIEW"],
+      has_specialty_bulk: false,
+      bulk_review_unresolved: false,
+    };
+    expect(bagHasSpecialtyReview(bag)).toBe(true);
+    expect(resolveReviewDrawerInlineVariant(bag, "specialty_items")).toBe("specialty_review");
+    expect(resolveReviewDrawerInlineVariant(bag)).toBe("specialty_review");
+  });
+
+  it("keeps bulk controls separate from specialty review completion surface", () => {
+    const unresolved = {
+      reason_codes: ["WF_BULK_WORKITEM_REVIEW"],
+      bulk_review_unresolved: true,
+    };
+    expect(resolveReviewDrawerInlineVariant(unresolved, "specialty_items")).toBe(
+      "specialty_bulk",
+    );
+    const cleared = {
+      reason_codes: ["SERVICE_CLASSIFICATION_MISMATCH"],
+      category: "specialty_items",
+      bulk_review_unresolved: false,
+      has_specialty_bulk: false,
+    };
+    expect(resolveReviewDrawerInlineVariant(cleared, "specialty_items")).toBe(
+      "specialty_review",
+    );
   });
 });
 
