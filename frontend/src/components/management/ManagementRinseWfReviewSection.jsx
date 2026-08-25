@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -10,6 +10,7 @@ import {
   IconButton,
   InputAdornment,
   Popover,
+  Skeleton,
   Stack,
   TextField,
   Typography,
@@ -198,18 +199,23 @@ function SplitOrderReviewRow({
  * Specialty / Missing: inline drawer resolver (Save, bulk, PRE edit, View Scans).
  * Split Order Review: drawer-only MARK SPLIT / MARK NOT SPLIT (no generic WF Review modal).
  */
-export default function ManagementRinseWfReviewSection({
+export default forwardRef(function ManagementRinseWfReviewSection(
+  {
   selectedDateEt,
   rushFilter = "all",
   reviewSummary,
+  reviewLoading = false,
   snapshotUnavailable = false,
   readOnly = false,
   onRefresh,
-}) {
+},
+  ref,
+) {
   const scopedReview = pickReviewSummary(reviewSummary, rushFilter);
   const specialtyCount = scopedReview?.specialty_items ?? null;
   const missingCount = scopedReview?.missing_from_portal ?? null;
   const splitOrderCount = scopedReview?.split_order_review ?? null;
+  const manualReviewCount = scopedReview?.manual_review ?? null;
   const [drawer, setDrawer] = useState({ open: false, category: null });
   const [listState, setListState] = useState({
     loading: false,
@@ -300,6 +306,10 @@ export default function ManagementRinseWfReviewSection({
     setDrawer({ open: true, category });
   };
 
+  useImperativeHandle(ref, () => ({
+    openReviewRequired: () => openCategory("review_required"),
+  }));
+
   const closeDrawer = () => {
     setDrawer({ open: false, category: null });
     setListState({ loading: false, error: "", bags: [], meta: null });
@@ -310,11 +320,15 @@ export default function ManagementRinseWfReviewSection({
   };
 
   const title =
-    drawer.category === "missing_from_portal"
-      ? "Missing From Portal"
-      : drawer.category === "split_order_review"
-        ? "Split Order Review"
-        : "Specialty Items";
+    drawer.category === "review_required"
+      ? "Review Required"
+      : drawer.category === "manual_review"
+        ? "Manual Review"
+        : drawer.category === "missing_from_portal"
+          ? "Missing From Portal"
+          : drawer.category === "split_order_review"
+            ? "Split Order Review"
+            : "Specialty Items";
 
   const isSplitDrawer = drawer.category === "split_order_review";
 
@@ -408,70 +422,117 @@ export default function ManagementRinseWfReviewSection({
       <Box
         sx={{
           display: "grid",
-          gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr 1fr" },
+          gridTemplateColumns: {
+            xs: "1fr",
+            sm: manualReviewCount > 0 ? "1fr 1fr" : "1fr 1fr 1fr",
+          },
           gap: 0.75,
         }}
       >
-        <Button
-          variant="outlined"
-          disabled={snapshotUnavailable}
-          onClick={() => openCategory("specialty_items")}
-          sx={{
-            justifyContent: "space-between",
-            textTransform: "none",
-            px: 1.25,
-            py: 1.1,
-            borderColor: "#cbd5e1",
-            bgcolor: "#fff",
-          }}
-        >
-          <Typography sx={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
-            Specialty Items
-          </Typography>
-          <Typography sx={{ fontWeight: 800, fontSize: 18, color: "#0f172a" }}>
-            {snapshotUnavailable || specialtyCount == null ? "—" : specialtyCount}
-          </Typography>
-        </Button>
-        <Button
-          variant="outlined"
-          disabled={snapshotUnavailable}
-          onClick={() => openCategory("missing_from_portal")}
-          sx={{
-            justifyContent: "space-between",
-            textTransform: "none",
-            px: 1.25,
-            py: 1.1,
-            borderColor: "#cbd5e1",
-            bgcolor: "#fff",
-          }}
-        >
-          <Typography sx={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
-            Missing From Portal
-          </Typography>
-          <Typography sx={{ fontWeight: 800, fontSize: 18, color: "#0f172a" }}>
-            {snapshotUnavailable || missingCount == null ? "—" : missingCount}
-          </Typography>
-        </Button>
-        <Button
-          variant="outlined"
-          disabled={snapshotUnavailable}
-          onClick={() => openCategory("split_order_review")}
-          sx={{
-            justifyContent: "space-between",
-            textTransform: "none",
-            px: 1.25,
-            py: 1.1,
-            borderColor: "#cbd5e1",
-            bgcolor: "#fff",
-          }}
-        >
-          <Typography sx={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
-            Split Order Review
-          </Typography>
-          <Typography sx={{ fontWeight: 800, fontSize: 18, color: "#0f172a" }}>
-            {snapshotUnavailable || splitOrderCount == null ? "—" : splitOrderCount}
-          </Typography>
-        </Button>
+        {reviewLoading ? (
+          <>
+            {[0, 1, 2].map((i) => (
+              <Box
+                key={i}
+                sx={{
+                  px: 1.25,
+                  py: 1.1,
+                  borderRadius: 1,
+                  border: "1px solid #cbd5e1",
+                  bgcolor: "#fff",
+                }}
+                data-testid="review-card-skeleton"
+              >
+                <Skeleton variant="text" width="70%" height={18} />
+                <Skeleton variant="text" width="25%" height={26} sx={{ mt: 0.5 }} />
+              </Box>
+            ))}
+          </>
+        ) : (
+          <>
+            <Button
+              variant="outlined"
+              disabled={snapshotUnavailable}
+              onClick={() => openCategory("specialty_items")}
+              sx={{
+                justifyContent: "space-between",
+                textTransform: "none",
+                px: 1.25,
+                py: 1.1,
+                borderColor: "#cbd5e1",
+                bgcolor: "#fff",
+              }}
+            >
+              <Typography sx={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
+                Specialty Items
+              </Typography>
+              <Typography sx={{ fontWeight: 800, fontSize: 18, color: "#0f172a" }}>
+                {snapshotUnavailable || specialtyCount == null ? "—" : specialtyCount}
+              </Typography>
+            </Button>
+            <Button
+              variant="outlined"
+              disabled={snapshotUnavailable}
+              onClick={() => openCategory("missing_from_portal")}
+              sx={{
+                justifyContent: "space-between",
+                textTransform: "none",
+                px: 1.25,
+                py: 1.1,
+                borderColor: "#cbd5e1",
+                bgcolor: "#fff",
+              }}
+            >
+              <Typography sx={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
+                Missing From Portal
+              </Typography>
+              <Typography sx={{ fontWeight: 800, fontSize: 18, color: "#0f172a" }}>
+                {snapshotUnavailable || missingCount == null ? "—" : missingCount}
+              </Typography>
+            </Button>
+            <Button
+              variant="outlined"
+              disabled={snapshotUnavailable}
+              onClick={() => openCategory("split_order_review")}
+              sx={{
+                justifyContent: "space-between",
+                textTransform: "none",
+                px: 1.25,
+                py: 1.1,
+                borderColor: "#cbd5e1",
+                bgcolor: "#fff",
+              }}
+            >
+              <Typography sx={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
+                Split Order Review
+              </Typography>
+              <Typography sx={{ fontWeight: 800, fontSize: 18, color: "#0f172a" }}>
+                {snapshotUnavailable || splitOrderCount == null ? "—" : splitOrderCount}
+              </Typography>
+            </Button>
+            {!snapshotUnavailable && manualReviewCount > 0 ? (
+              <Button
+                variant="outlined"
+                onClick={() => openCategory("manual_review")}
+                sx={{
+                  justifyContent: "space-between",
+                  textTransform: "none",
+                  px: 1.25,
+                  py: 1.1,
+                  borderColor: "#cbd5e1",
+                  bgcolor: "#fff",
+                }}
+              >
+                <Typography sx={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
+                  Manual Review
+                </Typography>
+                <Typography sx={{ fontWeight: 800, fontSize: 18, color: "#0f172a" }}>
+                  {manualReviewCount}
+                </Typography>
+              </Button>
+            ) : null}
+          </>
+        )}
       </Box>
 
       <Drawer
@@ -655,4 +716,4 @@ export default function ManagementRinseWfReviewSection({
       />
     </Box>
   );
-}
+});

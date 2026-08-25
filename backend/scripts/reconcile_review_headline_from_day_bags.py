@@ -154,6 +154,8 @@ def main() -> int:
             union = set(after_payload.get("_membership", {}).get("specialty_items") or [])
             union |= set(after_payload.get("_membership", {}).get("missing_from_portal") or [])
             union |= set(after_payload.get("_membership", {}).get("split_order_review") or [])
+            union |= set(after_payload.get("_membership", {}).get("manual_review") or [])
+            union |= set(after_payload.get("_membership", {}).get("unknown_review") or [])
             report["headline_union_count"] = len(union)
             report["headline_equals_drawer"] = {
                 cat: int(after_payload.get(cat) or 0) == int(after_drawers.get(cat) or 0)

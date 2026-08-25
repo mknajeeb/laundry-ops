@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import {
   Alert,
@@ -17,6 +17,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import RushFilterChips from "../shift/RushFilterChips";
 import Step1MetricDrawer from "../shift/Step1MetricDrawer";
 import TodayTapCard from "./TodayTapCard";
+import TodayTapCardSkeleton from "./TodayTapCardSkeleton";
 import ManagementRinseWfReviewSection from "./ManagementRinseWfReviewSection";
 import ManagementCopyableId from "./ManagementCopyableId";
 import {
@@ -156,6 +157,8 @@ export default function ManagementRinseWfSection({
   onRushFilterChange,
   selectedDateEt,
   onRefresh,
+  primaryLoading = false,
+  secondaryLoading = false,
 }) {
   const [rushFilterLocal, setRushFilterLocal] = useState("all");
   const rushFilter = rushFilterProp ?? rushFilterLocal;
@@ -175,11 +178,15 @@ export default function ManagementRinseWfSection({
     product: null,
     rows: [],
   });
+  const reviewSectionRef = useRef(null);
 
   const snapshotUnavailable = Boolean(
-    rinse?.data_unavailable
-      || rinse?.snapshot_available === false
-      || rinse?.snapshot_missing,
+    !primaryLoading
+      && (
+        rinse?.data_unavailable
+        || rinse?.snapshot_available === false
+        || rinse?.snapshot_missing
+      ),
   );
   const readOnly = Boolean(
     rinse?.shift_day?.read_only
@@ -402,61 +409,73 @@ export default function ManagementRinseWfSection({
 
       <BlockLabel>Workload</BlockLabel>
       <CardGrid>
-        <TodayTapCard
-          label="Workload"
-          value={snapshotUnavailable ? "—" : fmtInt(wf.workload)}
-          tone="workload"
-          onClick={
-            snapshotUnavailable
-              ? undefined
-              : () => openMetric("active_workload", "Rinse WF · Workload", { queue: "active_workload" })
-          }
-        />
-        <TodayTapCard
-          label="Completed"
-          value={snapshotUnavailable ? "—" : fmtInt(wf.completed)}
-          tone="completed"
-          onClick={
-            snapshotUnavailable
-              ? undefined
-              : () => openMetric("completed", "Rinse WF · Completed", { queue: "completed" })
-          }
-        />
-        <TodayTapCard
-          label={readOnly ? "Carried Forward" : "Pending"}
-          value={
-            snapshotUnavailable
-              ? "—"
-              : fmtInt(readOnly ? wf.carriedForward || wf.movedForward || 0 : wf.pending)
-          }
-          tone="pending"
-          onClick={
-            snapshotUnavailable
-              ? undefined
-              : () =>
-                  openMetric(
-                    readOnly ? "carried_forward" : "pending",
-                    readOnly ? "Rinse WF · Carried Forward" : "Rinse WF · Pending",
-                    { queue: readOnly ? "carried_forward" : "pending" },
-                  )
-          }
-        />
-        <TodayTapCard
-          label="Review Required"
-          value={snapshotUnavailable ? "—" : fmtInt(wf.review)}
-          tone="review"
-          warn={!snapshotUnavailable && wf.review > 0}
-          onClick={
-            snapshotUnavailable
-              ? undefined
-              : () => {
-                  const el = document.getElementById("management-rinse-wf-review");
-                  el?.scrollIntoView({ behavior: "smooth", block: "start" });
-                }
-          }
-        />
+        {primaryLoading ? (
+          <>
+            <TodayTapCardSkeleton tone="workload" />
+            <TodayTapCardSkeleton tone="completed" />
+            <TodayTapCardSkeleton tone="pending" />
+            <TodayTapCardSkeleton tone="review" />
+          </>
+        ) : (
+          <>
+            <TodayTapCard
+              label="Workload"
+              value={snapshotUnavailable ? "—" : fmtInt(wf.workload)}
+              tone="workload"
+              onClick={
+                snapshotUnavailable
+                  ? undefined
+                  : () => openMetric("active_workload", "Rinse WF · Workload", { queue: "active_workload" })
+              }
+            />
+            <TodayTapCard
+              label="Completed"
+              value={snapshotUnavailable ? "—" : fmtInt(wf.completed)}
+              tone="completed"
+              onClick={
+                snapshotUnavailable
+                  ? undefined
+                  : () => openMetric("completed", "Rinse WF · Completed", { queue: "completed" })
+              }
+            />
+            <TodayTapCard
+              label={readOnly ? "Carried Forward" : "Pending"}
+              value={
+                snapshotUnavailable
+                  ? "—"
+                  : fmtInt(readOnly ? wf.carriedForward || wf.movedForward || 0 : wf.pending)
+              }
+              tone="pending"
+              onClick={
+                snapshotUnavailable
+                  ? undefined
+                  : () =>
+                      openMetric(
+                        readOnly ? "carried_forward" : "pending",
+                        readOnly ? "Rinse WF · Carried Forward" : "Rinse WF · Pending",
+                        { queue: readOnly ? "carried_forward" : "pending" },
+                      )
+              }
+            />
+            <TodayTapCard
+              label="Review Required"
+              value={snapshotUnavailable ? "—" : fmtInt(wf.review)}
+              tone="review"
+              warn={!snapshotUnavailable && wf.review > 0}
+              onClick={
+                snapshotUnavailable
+                  ? undefined
+                  : () => {
+                      const el = document.getElementById("management-rinse-wf-review");
+                      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+                      reviewSectionRef.current?.openReviewRequired?.();
+                    }
+              }
+            />
+          </>
+        )}
       </CardGrid>
-      {snapshotUnavailable ? null : (
+      {primaryLoading ? null : snapshotUnavailable ? null : (
         <Typography sx={{ mt: -1, mb: 1.5, fontSize: 12, color: "#64748b", fontWeight: 600 }}>
           {wfIdentityLine(wf)}
         </Typography>
@@ -464,103 +483,125 @@ export default function ManagementRinseWfSection({
 
       <BlockLabel>Processed pounds</BlockLabel>
       <CardGrid columns={{ xs: 2, sm: 2 }}>
-        <TodayTapCard
-          label="PRE Weight"
-          value={snapshotUnavailable ? "—" : (fmtLbs(weights.preLbs) || "—")}
-          sub={
-            snapshotUnavailable
-              ? undefined
-              : `${fmtInt(weights.preBagCount)} bag${weights.preBagCount === 1 ? "" : "s"}`
-          }
-          tone="workload"
-        />
-        <TodayTapCard
-          label="POST Weight"
-          value={snapshotUnavailable ? "—" : (fmtLbs(weights.postLbs) || "—")}
-          sub={
-            snapshotUnavailable
-              ? undefined
-              : `${fmtInt(weights.postBagCount)}/${fmtInt(weights.preBagCount)} available`
-          }
-          tone="completed"
-        />
+        {primaryLoading ? (
+          <>
+            <TodayTapCardSkeleton tone="workload" />
+            <TodayTapCardSkeleton tone="completed" />
+          </>
+        ) : (
+          <>
+            <TodayTapCard
+              label="PRE Weight"
+              value={snapshotUnavailable ? "—" : (fmtLbs(weights.preLbs) || "—")}
+              sub={
+                snapshotUnavailable
+                  ? undefined
+                  : `${fmtInt(weights.preBagCount)} bag${weights.preBagCount === 1 ? "" : "s"}`
+              }
+              tone="workload"
+            />
+            <TodayTapCard
+              label="POST Weight"
+              value={snapshotUnavailable ? "—" : (fmtLbs(weights.postLbs) || "—")}
+              sub={
+                snapshotUnavailable
+                  ? undefined
+                  : `${fmtInt(weights.postBagCount)}/${fmtInt(weights.preBagCount)} available`
+              }
+              tone="completed"
+            />
+          </>
+        )}
       </CardGrid>
 
       <BlockLabel>Specialty / Quality</BlockLabel>
       <CardGrid>
-        <TodayTapCard
-          label="COMFORTERS"
-          value={snapshotUnavailable ? "—" : fmtInt(comforterQty)}
-          sub={
-            snapshotUnavailable || comforterOrders == null
-              ? undefined
-              : `${fmtInt(comforterOrders)} order${Number(comforterOrders) === 1 ? "" : "s"}`
-          }
-          onClick={
-            snapshotUnavailable
-              ? undefined
-              : () =>
-                  openMetric("comforter_orders", "Comforters", {
-                    queue: "comforter_orders",
-                  })
-          }
-        />
-        <TodayTapCard
-          label="BATH MATS"
-          value={snapshotUnavailable ? "—" : fmtInt(bathMatQty)}
-          sub={
-            snapshotUnavailable || bathMatOrders == null
-              ? undefined
-              : `${fmtInt(bathMatOrders)} order${Number(bathMatOrders) === 1 ? "" : "s"}`
-          }
-          onClick={
-            snapshotUnavailable
-              ? undefined
-              : () =>
-                  openMetric("bath_mat_orders", "Bath Mats", {
-                    queue: "bath_mat_orders",
-                  })
-          }
-        />
-        <TodayTapCard
-          label="Rejects"
-          value={snapshotUnavailable ? "—" : fmtInt(rejected)}
-          warn={!snapshotUnavailable && rejected > 0}
-          onClick={
-            snapshotUnavailable
-              ? undefined
-              : () =>
-                  openMetric("rejected_orders", "Rejected Orders", {
-                    queue: "rejected_orders",
-                  })
-          }
-        />
-        <TodayTapCard
-          label="Splits"
-          value={snapshotUnavailable ? "—" : fmtInt(split)}
-          sub={
-            !snapshotUnavailable && splitReview > 0
-              ? `SPLIT ORDER REVIEW ${splitReview}`
-              : !snapshotUnavailable
-                ? "Operational (not supply)"
-                : undefined
-          }
-          onClick={
-            snapshotUnavailable
-              ? undefined
-              : () =>
-                  openMetric("split_orders", "Split Orders", {
-                    queue: "split_orders",
-                  })
-          }
-        />
+        {secondaryLoading ? (
+          <>
+            <TodayTapCardSkeleton tone="specialty" />
+            <TodayTapCardSkeleton tone="specialty" />
+            <TodayTapCardSkeleton tone="specialty" />
+            <TodayTapCardSkeleton tone="specialty" />
+          </>
+        ) : (
+          <>
+            <TodayTapCard
+              label="COMFORTERS"
+              value={snapshotUnavailable ? "—" : fmtInt(comforterQty)}
+              sub={
+                snapshotUnavailable || comforterOrders == null
+                  ? undefined
+                  : `${fmtInt(comforterOrders)} order${Number(comforterOrders) === 1 ? "" : "s"}`
+              }
+              onClick={
+                snapshotUnavailable
+                  ? undefined
+                  : () =>
+                      openMetric("comforter_orders", "Comforters", {
+                        queue: "comforter_orders",
+                      })
+              }
+            />
+            <TodayTapCard
+              label="BATH MATS"
+              value={snapshotUnavailable ? "—" : fmtInt(bathMatQty)}
+              sub={
+                snapshotUnavailable || bathMatOrders == null
+                  ? undefined
+                  : `${fmtInt(bathMatOrders)} order${Number(bathMatOrders) === 1 ? "" : "s"}`
+              }
+              onClick={
+                snapshotUnavailable
+                  ? undefined
+                  : () =>
+                      openMetric("bath_mat_orders", "Bath Mats", {
+                        queue: "bath_mat_orders",
+                      })
+              }
+            />
+            <TodayTapCard
+              label="Rejects"
+              value={snapshotUnavailable ? "—" : fmtInt(rejected)}
+              warn={!snapshotUnavailable && rejected > 0}
+              onClick={
+                snapshotUnavailable
+                  ? undefined
+                  : () =>
+                      openMetric("rejected_orders", "Rejected Orders", {
+                        queue: "rejected_orders",
+                      })
+              }
+            />
+            <TodayTapCard
+              label="Splits"
+              value={snapshotUnavailable ? "—" : fmtInt(split)}
+              sub={
+                !snapshotUnavailable && splitReview > 0
+                  ? `SPLIT ORDER REVIEW ${splitReview}`
+                  : !snapshotUnavailable
+                    ? "Operational (not supply)"
+                    : undefined
+              }
+              onClick={
+                snapshotUnavailable
+                  ? undefined
+                  : () =>
+                      openMetric("split_orders", "Split Orders", {
+                        queue: "split_orders",
+                      })
+              }
+            />
+          </>
+        )}
       </CardGrid>
 
       <Box id="management-rinse-wf-review">
         <ManagementRinseWfReviewSection
+          ref={reviewSectionRef}
           selectedDateEt={selectedDateEt || rinse?.selected_date_et}
           rushFilter={rushFilter}
           reviewSummary={reviewSummary}
+          reviewLoading={secondaryLoading}
           snapshotUnavailable={snapshotUnavailable}
           readOnly={readOnly}
           onRefresh={onRefresh}

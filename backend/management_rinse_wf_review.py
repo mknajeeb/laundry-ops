@@ -15,6 +15,14 @@ a separate canonical-split queue):
       Canonical split REVIEW_REQUIRED (marker/load contradiction). Independent
       of DISAPPEARED_WITHOUT_COMPLETION and specialty queues.
 
+  manual_review
+      WF bag with ``effective_status=review_required`` that does not belong in
+      Specialty / Missing / Split — e.g. manager send-back of an operationally
+      completed bag (post-completion portal reasons are not Missing From Portal).
+
+  review_required (list category)
+      Union of all actionable Review drawer IDs — full queue for the headline tap.
+
 Precedence when a bag has both DISAPPEARED and specialty-bulk:
   → specialty_items (manager must resolve specialty workitems)
 
@@ -86,7 +94,20 @@ def _merge_review_weight_fields(
 CATEGORY_SPECIALTY = "specialty_items"
 CATEGORY_MISSING_PORTAL = "missing_from_portal"
 CATEGORY_SPLIT_ORDER = "split_order_review"
+CATEGORY_MANUAL_REVIEW = "manual_review"
 CATEGORY_UNKNOWN = "unknown_review"
+CATEGORY_REVIEW_ALL = "review_required"
+
+REVIEW_DRAWER_CATEGORIES = frozenset(
+    {
+        CATEGORY_SPECIALTY,
+        CATEGORY_MISSING_PORTAL,
+        CATEGORY_SPLIT_ORDER,
+        CATEGORY_MANUAL_REVIEW,
+        CATEGORY_UNKNOWN,
+        CATEGORY_REVIEW_ALL,
+    }
+)
 
 REVIEW_CUSTOMER_UNAVAILABLE = "Customer unavailable"
 
@@ -383,6 +404,22 @@ def _service_is_wf(row: Mapping[str, Any] | None) -> bool:
     return svc == "WF"
 
 
+def _bag_is_wf_review_required(
+    row: Mapping[str, Any] | None,
+    headline: Mapping[str, Any] | None,
+    bag_id: str,
+) -> bool:
+    """True when bag is in active WF Review Required membership."""
+    bid = normalize_bag_id(bag_id)
+    if not bid:
+        return False
+    if bid in set(_wf_review_ids(headline)):
+        return True
+    if row is not None and not _service_is_wf(row):
+        return False
+    return str((row or {}).get("effective_status") or "").strip().lower() == "review_required"
+
+
 def _wf_review_ids(headline: Mapping[str, Any] | None) -> list[str]:
     """WF Review Required IDs only — never admit HD via org-wide reason maps.
 
@@ -475,19 +512,29 @@ def _membership_result_payload(
     missing: list[str],
     split_ids: list[str],
     *,
+    manual: list[str] | None = None,
     unknown: list[str] | None = None,
 ) -> dict[str, Any]:
+    manual = list(manual or [])
     unknown = list(unknown or [])
-    all_review = set(specialty) | set(missing) | set(split_ids)
+    all_review = (
+        set(specialty)
+        | set(missing)
+        | set(split_ids)
+        | set(manual)
+        | set(unknown)
+    )
     return {
         CATEGORY_SPECIALTY: list(specialty),
         CATEGORY_MISSING_PORTAL: list(missing),
         CATEGORY_SPLIT_ORDER: list(split_ids),
+        CATEGORY_MANUAL_REVIEW: list(manual),
         CATEGORY_UNKNOWN: list(unknown),
         "counts": {
             CATEGORY_SPECIALTY: len(specialty),
             CATEGORY_MISSING_PORTAL: len(missing),
             CATEGORY_SPLIT_ORDER: len(split_ids),
+            CATEGORY_MANUAL_REVIEW: len(manual),
             CATEGORY_UNKNOWN: len(unknown),
             "review_required": len(all_review),
         },
@@ -497,7 +544,8 @@ def _membership_result_payload(
             "Specialty Items = explicit unresolved specialty/bulk (bulk_cleared=false); "
             "Missing From Portal = DISAPPEARED_WITHOUT_COMPLETION or "
             "MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL before valid completion; "
-            "post-completion portal departure is not Review; "
+            "post-completion portal departure is not Missing From Portal — use manual_review; "
+            "manual_review = WF review_required not in Specialty/Missing/Split; "
             "unknown codes are logged — never silently Specialty"
         ),
         "employee_performance_hint": {
@@ -568,11 +616,13 @@ def compute_canonical_wf_review_membership(
 
     headline_split = _split_review_ids_from_headline(headline)
     split_candidates: set[str] = set(headline_split)
-    membership_candidates: set[str] = set()
+    membership_candidates: set[str] = set(_wf_review_ids(headline))
     for bid in bag_ids:
         row = by_id.get(bid) or {}
         codes = _resolve_bag_review_codes(bid, row, fresh_reasons, headline)
         if codes:
+            membership_candidates.add(bid)
+        if str(row.get("effective_status") or "").strip().lower() == "review_required":
             membership_candidates.add(bid)
         if any(str(c) in SPLIT_ORDER_REASONS for c in codes):
             split_candidates.add(bid)
@@ -620,6 +670,7 @@ def compute_canonical_wf_review_membership(
 
     specialty: list[str] = []
     missing: list[str] = []
+    manual: list[str] = []
     unknown: list[str] = []
     excluded: list[str] = []
     disposition: dict[str, str | None] = {}
@@ -655,6 +706,14 @@ def compute_canonical_wf_review_membership(
             missing.append(bid)
             disposition[bid] = CATEGORY_MISSING_PORTAL
             continue
+        if _bag_is_wf_review_required(row, headline, bid):
+            if codes and category_for_reason_codes(codes) is None:
+                unknown.append(bid)
+                disposition[bid] = CATEGORY_UNKNOWN
+            else:
+                manual.append(bid)
+                disposition[bid] = CATEGORY_MANUAL_REVIEW
+            continue
         if codes:
             cat = category_for_reason_codes(codes)
             if cat is None:
@@ -666,7 +725,9 @@ def compute_canonical_wf_review_membership(
         else:
             disposition[bid] = None
 
-    out = _membership_result_payload(specialty, missing, split_ids, unknown=unknown)
+    out = _membership_result_payload(
+        specialty, missing, split_ids, manual=manual, unknown=unknown
+    )
     out["disposition"] = disposition
     out["excluded"] = sorted(excluded)
     out["codes_by_bag"] = codes_by_bag
@@ -726,6 +787,9 @@ def apply_canonical_wf_review_day_bag_fixes(
             )
             stats["set_missing"] += int(getattr(cursor, "rowcount", 0) or 0)
             continue
+        if target == CATEGORY_MANUAL_REVIEW:
+            stats["unchanged"] += 1
+            continue
         if target in (CATEGORY_SPLIT_ORDER, CATEGORY_UNKNOWN, None):
             cursor.execute(
                 """
@@ -762,6 +826,8 @@ def persist_canonical_wf_review_on_headline(
     specialty = list(membership.get(CATEGORY_SPECIALTY) or [])
     missing = list(membership.get(CATEGORY_MISSING_PORTAL) or [])
     split_ids = list(membership.get(CATEGORY_SPLIT_ORDER) or [])
+    manual = list(membership.get(CATEGORY_MANUAL_REVIEW) or [])
+    unknown = list(membership.get(CATEGORY_UNKNOWN) or [])
     codes_by_bag = dict(membership.get("codes_by_bag") or {})
     reasons: dict[str, list[str]] = {}
     for bid in specialty:
@@ -776,6 +842,10 @@ def persist_canonical_wf_review_on_headline(
         codes = [c for c in (codes_by_bag.get(bid) or []) if c in MISSING_FROM_PORTAL_REASONS]
         if codes:
             reasons[bid] = codes
+    for bid in manual + unknown:
+        codes = [str(c) for c in (codes_by_bag.get(bid) or []) if c]
+        if codes:
+            reasons[bid] = codes
     hl["review_reasons_by_bag"] = reasons
     by_reason: dict[str, list[str]] = {}
     for bid, codes in reasons.items():
@@ -787,7 +857,9 @@ def persist_canonical_wf_review_on_headline(
     segs = dict(hl.get("segments") or {})
     wf = dict(segs.get("wf") or {})
     bag_ids = dict(wf.get("bag_ids") or {})
-    review_union = sorted(set(specialty) | set(missing) | set(split_ids))
+    review_union = sorted(
+        set(specialty) | set(missing) | set(split_ids) | set(manual) | set(unknown)
+    )
     bag_ids["review_required"] = review_union
     wf["bag_ids"] = bag_ids
     exc = dict(wf.get("exceptions") or {})
@@ -818,6 +890,7 @@ def split_review_categories(
             list(membership.get(CATEGORY_SPECIALTY) or []),
             list(membership.get(CATEGORY_MISSING_PORTAL) or []),
             list(membership.get(CATEGORY_SPLIT_ORDER) or []),
+            manual=list(membership.get(CATEGORY_MANUAL_REVIEW) or []),
             unknown=list(membership.get(CATEGORY_UNKNOWN) or []),
         )
 
@@ -826,6 +899,7 @@ def split_review_categories(
     candidates = _specialty_candidate_ids(headline, by_reason, by_bag)
     specialty: list[str] = []
     missing: list[str] = []
+    manual: list[str] = []
     unknown: list[str] = []
     for bid in candidates:
         codes = _bag_codes(by_bag, by_reason, bid)
@@ -839,9 +913,18 @@ def split_review_categories(
             continue
         if codes and category_for_reason_codes(codes) is None:
             unknown.append(bid)
+            continue
+        if bid in set(_wf_review_ids(headline)):
+            manual.append(bid)
 
     split_ids = _split_review_ids_from_headline(headline)
-    return _membership_result_payload(specialty, missing, split_ids, unknown=unknown)
+    placed = set(specialty) | set(missing) | set(split_ids) | set(unknown) | set(manual)
+    for bid in _wf_review_ids(headline):
+        if bid not in placed:
+            manual.append(bid)
+    return _membership_result_payload(
+        specialty, missing, split_ids, manual=manual, unknown=unknown
+    )
 
 
 def specialty_review_membership_ids(
@@ -879,6 +962,7 @@ def review_category_count_payload(
         "specialty_items": int(counts.get(CATEGORY_SPECIALTY) or 0),
         "missing_from_portal": int(counts.get(CATEGORY_MISSING_PORTAL) or 0),
         "split_order_review": int(counts.get(CATEGORY_SPLIT_ORDER) or 0),
+        "manual_review": int(counts.get(CATEGORY_MANUAL_REVIEW) or 0),
         "unknown_review": int(counts.get(CATEGORY_UNKNOWN) or 0),
         "reason_category_map": split["reason_category_map"],
         "precedence": split["precedence"],
@@ -887,6 +971,7 @@ def review_category_count_payload(
             CATEGORY_SPECIALTY: list(split.get(CATEGORY_SPECIALTY) or []),
             CATEGORY_MISSING_PORTAL: list(split.get(CATEGORY_MISSING_PORTAL) or []),
             CATEGORY_SPLIT_ORDER: list(split.get(CATEGORY_SPLIT_ORDER) or []),
+            CATEGORY_MANUAL_REVIEW: list(split.get(CATEGORY_MANUAL_REVIEW) or []),
             CATEGORY_UNKNOWN: list(split.get(CATEGORY_UNKNOWN) or []),
         },
     }
@@ -927,7 +1012,11 @@ def enrich_review_counts_by_rush(
     specialty = list(membership.get(CATEGORY_SPECIALTY) or [])
     missing = list(membership.get(CATEGORY_MISSING_PORTAL) or [])
     split_ids = list(membership.get(CATEGORY_SPLIT_ORDER) or [])
-    all_ids = list(dict.fromkeys([*specialty, *missing, *split_ids]))
+    manual = list(membership.get(CATEGORY_MANUAL_REVIEW) or [])
+    unknown = list(membership.get(CATEGORY_UNKNOWN) or [])
+    all_ids = list(
+        dict.fromkeys([*specialty, *missing, *split_ids, *manual, *unknown])
+    )
     rush_ids: set[str] = set()
     non_rush_ids: set[str] = set()
     if all_ids:
@@ -945,20 +1034,27 @@ def enrich_review_counts_by_rush(
 
     def _pack(want: set[str] | None) -> dict[str, int]:
         if want is None:
+            total = len(specialty) + len(missing) + len(split_ids) + len(manual) + len(unknown)
             return {
                 "specialty_items": len(specialty),
                 "missing_from_portal": len(missing),
                 "split_order_review": len(split_ids),
-                "review_required": len(specialty) + len(missing) + len(split_ids),
+                "manual_review": len(manual),
+                "unknown_review": len(unknown),
+                "review_required": total,
             }
         spec_n = sum(1 for b in specialty if b in want)
         miss_n = sum(1 for b in missing if b in want)
         split_n = sum(1 for b in split_ids if b in want)
+        manual_n = sum(1 for b in manual if b in want)
+        unknown_n = sum(1 for b in unknown if b in want)
         return {
             "specialty_items": spec_n,
             "missing_from_portal": miss_n,
             "split_order_review": split_n,
-            "review_required": spec_n + miss_n + split_n,
+            "manual_review": manual_n,
+            "unknown_review": unknown_n,
+            "review_required": spec_n + miss_n + split_n + manual_n + unknown_n,
         }
 
     out["by_rush"] = {
@@ -1059,6 +1155,10 @@ def _specialty_qty_from_lines(lines: list | None) -> dict[str, Any]:
 
 
 def _short_reason(codes: list[str], category: str) -> str:
+    if category == CATEGORY_MANUAL_REVIEW:
+        if "MANAGER_SENT_FOR_REVIEW" in codes:
+            return "Manager sent for review"
+        return "Manual review"
     if category == CATEGORY_MISSING_PORTAL:
         return "Missing from portal"
     if category == CATEGORY_SPLIT_ORDER:
@@ -1157,13 +1257,13 @@ def build_management_review_list(
 
     t0 = time.perf_counter()
     cat = str(category or "").strip().lower()
-    if cat not in (CATEGORY_SPECIALTY, CATEGORY_MISSING_PORTAL, CATEGORY_SPLIT_ORDER):
+    if cat not in REVIEW_DRAWER_CATEGORIES:
         return {
             "ok": False,
             "error": "invalid_category",
             "message": (
                 "category must be specialty_items, missing_from_portal, "
-                "or split_order_review"
+                "split_order_review, manual_review, unknown_review, or review_required"
             ),
         }
 
@@ -1176,9 +1276,14 @@ def build_management_review_list(
     specialty_ids = list(membership.get(CATEGORY_SPECIALTY) or [])
     missing_ids = list(membership.get(CATEGORY_MISSING_PORTAL) or [])
     split_ids = list(membership.get(CATEGORY_SPLIT_ORDER) or [])
-    all_member_ids = list(
-        dict.fromkeys([*specialty_ids, *missing_ids, *split_ids])
+    manual_ids = list(membership.get(CATEGORY_MANUAL_REVIEW) or [])
+    unknown_ids = list(membership.get(CATEGORY_UNKNOWN) or [])
+    union_ids = list(
+        dict.fromkeys(
+            [*specialty_ids, *missing_ids, *split_ids, *manual_ids, *unknown_ids]
+        )
     )
+    all_member_ids = list(union_ids)
     rows_by_id: dict[str, dict[str, Any]] = {}
     if all_member_ids:
         status_rows = load_day_bags_by_ids(
@@ -1192,14 +1297,31 @@ def build_management_review_list(
     specialty_ids = _filter_wf_service_bag_ids(specialty_ids, rows_by_id)
     missing_ids = _filter_wf_service_bag_ids(missing_ids, rows_by_id)
     split_ids = _filter_wf_service_bag_ids(split_ids, rows_by_id)
+    manual_ids = _filter_wf_service_bag_ids(manual_ids, rows_by_id)
+    unknown_ids = _filter_wf_service_bag_ids(unknown_ids, rows_by_id)
+    union_ids = list(
+        dict.fromkeys(
+            [*specialty_ids, *missing_ids, *split_ids, *manual_ids, *unknown_ids]
+        )
+    )
     drawer_counts = _membership_result_payload(
-        specialty_ids, missing_ids, split_ids
+        specialty_ids,
+        missing_ids,
+        split_ids,
+        manual=manual_ids,
+        unknown=unknown_ids,
     )["counts"]
 
-    if cat == CATEGORY_SPECIALTY:
+    if cat == CATEGORY_REVIEW_ALL:
+        bag_ids = union_ids
+    elif cat == CATEGORY_SPECIALTY:
         bag_ids = specialty_ids
     elif cat == CATEGORY_MISSING_PORTAL:
         bag_ids = missing_ids
+    elif cat == CATEGORY_MANUAL_REVIEW:
+        bag_ids = manual_ids
+    elif cat == CATEGORY_UNKNOWN:
+        bag_ids = unknown_ids
     else:
         bag_ids = split_ids
     by_reason, by_bag = _headline_maps(headline)
@@ -1255,7 +1377,12 @@ def build_management_review_list(
         bulk_res_page = load_bulk_resolutions(
             cursor, organization_id, selected_date_et, page_ids
         )
-        if cat in (CATEGORY_SPECIALTY, CATEGORY_MISSING_PORTAL):
+        if cat in (
+            CATEGORY_SPECIALTY,
+            CATEGORY_MISSING_PORTAL,
+            CATEGORY_MANUAL_REVIEW,
+            CATEGORY_REVIEW_ALL,
+        ):
             from backend.rinse_bulk_workitems import load_bulk_workitem_scan_map
 
             bulk_lines = load_bag_bulk_lines(
@@ -1332,6 +1459,9 @@ def build_management_review_list(
             bulk_cleared=bulk_cleared,
             bulk_unresolved=bulk_unresolved,
         )
+        bag_category = cat
+        if cat == CATEGORY_REVIEW_ALL:
+            bag_category = (membership.get("disposition") or {}).get(bid) or cat
         completion_employee = (
             snap.get("completed_by") or row.get("canonical_completion_employee")
         )
@@ -1350,9 +1480,9 @@ def build_management_review_list(
                 "rush_flag": snap.get("rush_flag")
                 or row.get("rush_status")
                 or smeta.get("rush"),
-                "category": cat,
+                "category": bag_category,
                 "reason_codes": codes,
-                "short_reason": _short_reason(codes, cat),
+                "short_reason": _short_reason(codes, bag_category),
                 "specialty_summary": _short_specialty_summary(qty_info),
                 "comforter_quantity": qty_info.get("comforter_quantity") or 0,
                 "bath_mat_quantity": qty_info.get("bath_mat_quantity") or 0,
@@ -1520,7 +1650,15 @@ def build_management_review_detail(
         else (
             "Split Order Review"
             if category == CATEGORY_SPLIT_ORDER
-            else "Specialty Items"
+            else (
+                "Manual Review"
+                if category == CATEGORY_MANUAL_REVIEW
+                else (
+                    "Other Review"
+                    if category == CATEGORY_UNKNOWN
+                    else "Specialty Items"
+                )
+            )
         )
     )
     # Canonical split evaluation only when this bag is (or may be) split review.
