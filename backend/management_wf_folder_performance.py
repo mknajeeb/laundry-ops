@@ -7,6 +7,10 @@ Reuses Employee Productivity / Folder dual-rate primitives:
 
 Does NOT use Folding→Clean gaming board rates.
 Does NOT manufacture Folder sessions for unmapped bags.
+
+WF PRE pounds: same canonical current-cycle authority as Management Rinse WF
+(``load_bag_weight_map`` + ``authoritative_evidence_pre_lbs``). Stale day-bag
+``pre_weight_lbs`` / ``productivity_weight_lbs`` must not drive rates.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from backend.management_wf_folder_attribution import (
     apply_override_to_bag,
     load_active_attribution_overrides,
 )
+from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_employee_productivity_sessions import (
     ASSIGNMENT_NEEDS_REVIEW,
     ASSIGNMENT_UNASSIGNED,
@@ -56,6 +61,71 @@ COMPARE_PREV_DAY = "prev_day"
 COMPARE_CUSTOM = "custom"
 
 DEFAULT_LAST_N_SESSIONS = 10
+
+CREDITED_WEIGHT_BASIS_CANONICAL_PRE = "CANONICAL_CURRENT_CYCLE_PRE"
+
+
+def apply_canonical_pre_to_folder_performance_bags(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    bags: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Overlay shared canonical PRE onto Folder Performance bag rows.
+
+    Source of truth matches Management Rinse WF PRE:
+    manager correction > latest portal wf_lbs_num > approved fallback
+    via ``load_bag_weight_map`` / ``authoritative_evidence_pre_lbs``.
+
+    Settled bulk-only credit stays 0 (no standard WF-lb credit).
+    Does not rewrite persisted day-bag columns — read-path only.
+    """
+    from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
+    from backend.rinse_settled_bulk_only_weight import (
+        PROD_EXCLUSION_SETTLED_BULK_ONLY,
+        row_is_settled_bulk_only_for_productivity,
+    )
+    from backend.rinse_veewash_review import load_bag_weight_map
+
+    out = [dict(b) for b in bags]
+    ids = [normalize_bag_id(b.get("bag_id")) for b in out if normalize_bag_id(b.get("bag_id"))]
+    if not ids:
+        return out
+    weight_map = load_bag_weight_map(
+        cursor,
+        int(organization_id),
+        ids,
+        selected_date_et=selected_date_et,
+    )
+    for bag in out:
+        bid = normalize_bag_id(bag.get("bag_id"))
+        if not bid:
+            continue
+        if row_is_settled_bulk_only_for_productivity(bag):
+            bag["credited_weight_lbs"] = 0.0
+            bag["credited_lbs"] = 0.0
+            bag["credited_weight_source"] = PROD_EXCLUSION_SETTLED_BULK_ONLY
+            bag["credited_weight_basis"] = CREDITED_WEIGHT_BASIS_CANONICAL_PRE
+            continue
+        pre = authoritative_evidence_pre_lbs(weight_map.get(bid) or {})
+        if pre is None:
+            bag["credited_weight_lbs"] = None
+            bag["credited_lbs"] = None
+            bag["missing_production_credit_weight"] = True
+            bag["credited_weight_basis"] = CREDITED_WEIGHT_BASIS_CANONICAL_PRE
+            continue
+        pre_f = float(pre)
+        bag["credited_weight_lbs"] = pre_f
+        bag["credited_lbs"] = pre_f
+        bag["pre_weight_lbs"] = pre_f
+        bag["evidence_pre_weight_lbs"] = pre_f
+        bag["credited_weight_source"] = "EVIDENCE_PRE"
+        bag["pre_weight_source"] = "canonical_current_cycle_resolver"
+        bag["missing_production_credit_weight"] = False
+        bag["credited_weight_basis"] = CREDITED_WEIGHT_BASIS_CANONICAL_PRE
+        # Drop stale projected POST-era productivity_weight so PRE keys win.
+        bag.pop("productivity_weight_lbs", None)
+    return out
 
 
 def _parse_dt(raw: Any) -> datetime | None:
@@ -706,6 +776,9 @@ def build_day_folder_performance(
         for b in bags
         if str(b.get("service_type") or b.get("service_bucket") or "").upper() == "WF"
     ]
+    bags = apply_canonical_pre_to_folder_performance_bags(
+        cursor, org, selected_date_et, bags
+    )
     for b in bags:
         b["selected_date_et"] = selected_date_et.isoformat()
         b["original_scanner"] = b.get("credited_employee") or b.get("employee")
