@@ -45,7 +45,18 @@ function isAbortError(err) {
     err?.code === "ERR_CANCELED"
     || err?.name === "CanceledError"
     || err?.name === "AbortError"
+    || Boolean(err?.config?.signal?.aborted)
   );
+}
+
+function errorMessage(err, fallback) {
+  const fromBody = err?.response?.data?.error || err?.response?.data?.message;
+  if (fromBody) return String(fromBody);
+  const msg = String(err?.message || "").trim();
+  if (!msg || msg === "Network Error") {
+    return fallback;
+  }
+  return msg;
 }
 
 /**
@@ -123,22 +134,22 @@ export default function ManagementRinseWfPage() {
     } catch (err) {
       if (controller.signal.aborted || isAbortError(err)) return;
       if (seq !== primarySeq.current) return;
-      setPrimaryData(null);
-      setPrimaryError(err?.response?.data?.error || err?.message || "Unable to load Rinse WF");
+      if (!refresh) setPrimaryData(null);
+      setPrimaryError(errorMessage(err, "Unable to load Rinse WF — tap refresh to retry"));
     } finally {
       if (seq === primarySeq.current) setPrimaryLoading(false);
     }
   }, []);
 
-  const loadSecondary = useCallback(async (day, refresh = false) => {
+  const loadSecondary = useCallback(async (day, refresh = false, attempt = 0) => {
     if (secondaryAbortRef.current) secondaryAbortRef.current.abort();
     const controller = new AbortController();
     secondaryAbortRef.current = controller;
     const seq = ++secondarySeq.current;
 
-    if (!refresh) setSecondaryData(null);
+    if (!refresh && attempt === 0) setSecondaryData(null);
     setSecondaryLoading(true);
-    setSecondaryError("");
+    if (attempt === 0) setSecondaryError("");
     try {
       const res = await getManagementRinseWfSecondary(day, {
         refresh: refresh ? 1 : undefined,
@@ -146,11 +157,21 @@ export default function ManagementRinseWfPage() {
       });
       if (seq !== secondarySeq.current || controller.signal.aborted) return;
       setSecondaryData(res.data || null);
+      setSecondaryError("");
     } catch (err) {
       if (controller.signal.aborted || isAbortError(err)) return;
       if (seq !== secondarySeq.current) return;
-      setSecondaryError(err?.response?.data?.error || err?.message || "Secondary metrics unavailable");
-      setSecondaryData(null);
+      const noResponse = !err?.response;
+      if (noResponse && attempt < 1) {
+        // API restart / brief blip — retry once without wiping a good prior payload.
+        await new Promise((r) => setTimeout(r, 600));
+        if (seq !== secondarySeq.current) return;
+        return loadSecondary(day, refresh, attempt + 1);
+      }
+      setSecondaryError(
+        errorMessage(err, "Review metrics temporarily unavailable — tap refresh"),
+      );
+      if (!refresh) setSecondaryData(null);
     } finally {
       if (seq === secondarySeq.current) setSecondaryLoading(false);
     }
