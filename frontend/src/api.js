@@ -944,9 +944,19 @@ export const getOperationsTimeline = (params = {}) =>
 
 export const simulateShiftCapacity = (body = {}, config = {}) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/shift-capacity-planner/simulate`, body, {
-    timeout: 30000,
+    timeout: 60000,
     ...config,
   });
+
+/** User-facing planner simulate error (never raw Axios timeout strings). */
+export function formatPlannerSimulateError(err) {
+  const code = err?.code;
+  const msg = String(err?.message || "");
+  if (code === "ECONNABORTED" || /timeout/i.test(msg)) {
+    return "Calculation is taking longer than expected. Please wait or recalculate.";
+  }
+  return err?.response?.data?.error || msg || "Simulation failed";
+}
 
 /** Org-scoped Shift Capacity Planner saved Plan/Process parameters. */
 export const getShiftCapacityPlannerSettings = () =>
@@ -2376,6 +2386,14 @@ export const getManagementToday = (dateEt, params = {}) => {
 export const getManagementRinseWf = (dateEt, params = {}) => {
   const { signal, ...rest } = params || {};
   return axios.get(`${API_BASE}/api/management/rinse-wf`, {
+    params: { date_et: dateEt, ...rest },
+    signal,
+  });
+};
+
+export const getManagementRinseWfSecondary = (dateEt, params = {}) => {
+  const { signal, ...rest } = params || {};
+  return axios.get(`${API_BASE}/api/management/rinse-wf/secondary`, {
     params: { date_et: dateEt, ...rest },
     signal,
   });

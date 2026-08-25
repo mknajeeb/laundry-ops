@@ -3,7 +3,7 @@ import { Box, Stack, TextField, Typography } from "@mui/material";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import ManagementHdPerformanceSection from "../components/management/ManagementHdPerformanceSection";
 import ManagementWfFolderPerformanceSection from "../components/management/ManagementWfFolderPerformanceSection";
-import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
+import { PERF_TYPE, PERF_UI } from "../components/management/performance/performanceTokens";
 
 function todayEtIso() {
   try {
@@ -23,27 +23,18 @@ const MODES = [
   { id: "hd", label: "Hang Dry" },
 ];
 
-/**
- * Management → Performance — mobile-first operational productivity.
- */
 export default function ManagementPerformancePage() {
   const [dateEt, setDateEt] = useState(todayEtIso);
   const [mode, setMode] = useState("wf");
 
   return (
-    <Box
-      sx={{
-        minHeight: "100dvh",
-        bgcolor: VEEWASH_DASHBOARD.pageBackground,
-        pb: 5,
-      }}
-    >
+    <Box sx={{ minHeight: "100dvh", bgcolor: PERF_UI.pageBg, pb: 4 }}>
       <ManagementHubNav activeId="performance" />
 
       <Box
         sx={{
-          px: { xs: 1.5, sm: 2, md: 3 },
-          pt: 1.25,
+          px: { xs: 1.25, sm: 2, md: 3 },
+          pt: 1,
           maxWidth: 960,
           mx: "auto",
           width: "100%",
@@ -53,12 +44,10 @@ export default function ManagementPerformancePage() {
           direction={{ xs: "column", sm: "row" }}
           justifyContent="space-between"
           alignItems={{ xs: "stretch", sm: "center" }}
-          spacing={1.25}
-          sx={{ mb: 1.75 }}
+          spacing={1}
+          sx={{ mb: 1.25 }}
         >
-          <Typography sx={{ fontSize: { xs: 22, sm: 24 }, fontWeight: 800, lineHeight: 1.1 }}>
-            Performance
-          </Typography>
+          <Typography sx={PERF_TYPE.pageTitle}>Performance</Typography>
           <TextField
             size="small"
             type="date"
@@ -66,9 +55,14 @@ export default function ManagementPerformancePage() {
             onChange={(e) => setDateEt(e.target.value)}
             inputProps={{ "aria-label": "Business date ET" }}
             sx={{
-              width: { xs: "100%", sm: 168 },
-              bgcolor: "#fff",
-              "& .MuiOutlinedInput-root": { borderRadius: 2 },
+              width: { xs: "100%", sm: 156 },
+              bgcolor: PERF_UI.rowBg,
+              "& .MuiOutlinedInput-root": {
+                borderRadius: 1.25,
+                fontSize: 13,
+                fontWeight: 500,
+                "& fieldset": { borderColor: PERF_UI.rowBorder },
+              },
             }}
           />
         </Stack>
@@ -78,11 +72,10 @@ export default function ManagementPerformancePage() {
           aria-label="Performance operation"
           sx={{
             display: "flex",
-            p: 0.4,
-            mb: 2,
-            borderRadius: 2.5,
-            bgcolor: "#e8f3f6",
-            boxShadow: "inset 0 1px 2px rgba(0, 60, 80, 0.06)",
+            p: 0.3,
+            mb: 1.25,
+            borderRadius: 1.5,
+            bgcolor: PERF_UI.segmentTrack,
           }}
         >
           {MODES.map((m) => {
@@ -99,16 +92,15 @@ export default function ManagementPerformancePage() {
                   flex: 1,
                   appearance: "none",
                   border: "none",
-                  borderRadius: 2,
-                  py: 1,
-                  px: 1,
-                  fontSize: { xs: 13, sm: 14 },
-                  fontWeight: 800,
+                  borderRadius: 1.15,
+                  py: { xs: 0.55, sm: 0.6 },
+                  px: 0.75,
+                  fontSize: { xs: 12, sm: 13 },
+                  fontWeight: active ? 600 : 500,
                   cursor: "pointer",
                   fontFamily: "inherit",
-                  color: active ? "#fff" : VEEWASH_DASHBOARD.primaryBlueDark,
-                  bgcolor: active ? VEEWASH_DASHBOARD.primaryBlue : "transparent",
-                  boxShadow: active ? VEEWASH_DASHBOARD.cardShadow : "none",
+                  color: active ? "#fff" : PERF_UI.segmentInactive,
+                  bgcolor: active ? PERF_UI.teal : "transparent",
                   transition: "background-color 0.15s ease, color 0.15s ease",
                 }}
               >
@@ -118,11 +110,20 @@ export default function ManagementPerformancePage() {
           })}
         </Box>
 
-        <Box role="tabpanel" hidden={mode !== "wf"} sx={{ display: mode === "wf" ? "block" : "none" }}>
-          {mode === "wf" ? <ManagementWfFolderPerformanceSection dateEt={dateEt} /> : null}
-        </Box>
-        <Box role="tabpanel" hidden={mode !== "hd"} sx={{ display: mode === "hd" ? "block" : "none" }}>
-          {mode === "hd" ? <ManagementHdPerformanceSection dateEt={dateEt} /> : null}
+        <Box
+          sx={{
+            borderRadius: 1.5,
+            bgcolor: PERF_UI.contentTint,
+            px: { xs: 0.75, sm: 1 },
+            py: { xs: 0.75, sm: 1 },
+          }}
+        >
+          <Box role="tabpanel" hidden={mode !== "wf"} sx={{ display: mode === "wf" ? "block" : "none" }}>
+            {mode === "wf" ? <ManagementWfFolderPerformanceSection dateEt={dateEt} /> : null}
+          </Box>
+          <Box role="tabpanel" hidden={mode !== "hd"} sx={{ display: mode === "hd" ? "block" : "none" }}>
+            {mode === "hd" ? <ManagementHdPerformanceSection dateEt={dateEt} /> : null}
+          </Box>
         </Box>
       </Box>
     </Box>

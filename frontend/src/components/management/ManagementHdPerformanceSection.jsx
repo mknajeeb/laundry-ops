@@ -12,11 +12,11 @@ import {
   getManagementRinseHdPerformanceEmployee,
 } from "../../api";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
-import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import PerformanceDetailDrawer, {
   PerformanceSortSelect,
 } from "./performance/PerformanceDetailDrawer";
 import { fmtCount } from "./performance/performanceFormat";
+import { PERF_TYPE, PERF_UI, PerfSeparator, perfKpiStripSx, perfRowSx } from "./performance/performanceTokens";
 
 const HD_SORT_OPTIONS = [
   { value: "output", label: "Most output" },
@@ -33,38 +33,36 @@ function fmtTimeShort(v) {
 }
 
 function hdActivityRange(emp) {
-  const parts = [];
   if (emp.first_wash_at) {
     const start = fmtTimeShort(emp.first_wash_at);
     const end = fmtTimeShort(emp.last_wash_at || emp.first_wash_at);
-    if (start && end && start !== end) parts.push(`${start} – ${end}`);
-    else if (start) parts.push(start);
+    if (start && end && start !== end) return `${start} – ${end}`;
+    if (start) return start;
   }
   if (emp.first_fold_at && (emp.fold_count || 0) > 0) {
     const start = fmtTimeShort(emp.first_fold_at);
     const end = fmtTimeShort(emp.last_fold_at || emp.first_fold_at);
-    if (start && end && start !== end && !parts.length) parts.push(`${start} – ${end}`);
-    else if (start && !parts.length) parts.push(start);
+    if (start && end && start !== end) return `${start} – ${end}`;
+    if (start) return start;
   }
-  return parts[0] || null;
+  return null;
 }
 
 function OpBadge({ kind, count }) {
   const isWash = kind === "wash";
   return (
     <Box
+      component="span"
       sx={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 0.35,
-        px: 0.75,
-        py: 0.25,
+        px: 0.55,
+        py: 0.1,
         borderRadius: 999,
         fontSize: 11,
-        fontWeight: 800,
-        letterSpacing: 0.2,
-        bgcolor: isWash ? "#dff5f1" : "#e8f3f6",
-        color: isWash ? VEEWASH_DASHBOARD.hdTeal : VEEWASH_DASHBOARD.primaryBlueDark,
+        fontWeight: 500,
+        bgcolor: isWash ? "rgba(0, 168, 150, 0.12)" : "rgba(0, 151, 178, 0.1)",
+        color: isWash ? PERF_UI.hdTeal : PERF_UI.tealDark,
       }}
     >
       {isWash ? "Wash" : "Fold"} {count ?? 0}
@@ -77,65 +75,54 @@ function HdEmployeeCard({ employee, onViewOrders }) {
   const hasOrders = (employee.wash_count || 0) + (employee.fold_count || 0) > 0;
 
   return (
-    <Box
-      sx={{
-        px: { xs: 1.25, sm: 1.5 },
-        py: { xs: 1.15, sm: 1.35 },
-        borderRadius: 2.5,
-        bgcolor: "#fff",
-        boxShadow: VEEWASH_DASHBOARD.cardShadow,
-      }}
-    >
-      <Typography
-        sx={{
-          fontSize: { xs: 16, sm: 17 },
-          fontWeight: 800,
-          lineHeight: 1.2,
-          color: "#0f172a",
-        }}
-        noWrap
+    <Box sx={perfRowSx()}>
+      <Stack
+        direction={{ xs: "column", md: "row" }}
+        alignItems={{ xs: "flex-start", md: "center" }}
+        spacing={{ xs: 0.35, md: 0.75 }}
+        useFlexGap
+        flexWrap="wrap"
       >
-        {employee.display_name}
-      </Typography>
-
-      <Stack direction="row" spacing={0.75} sx={{ mt: 0.65, flexWrap: "wrap" }}>
-        <OpBadge kind="wash" count={employee.wash_count ?? 0} />
-        <OpBadge kind="fold" count={employee.fold_count ?? 0} />
-      </Stack>
-
-      {timeRange ? (
-        <Typography sx={{ mt: 0.65, fontSize: 12, color: "#94a3b8", fontWeight: 600 }}>
-          {timeRange}
+        <Typography sx={{ ...PERF_TYPE.name, minWidth: 0 }} noWrap>
+          {employee.display_name}
         </Typography>
-      ) : null}
-
-      {hasOrders ? (
-        <Box
-          component="button"
-          type="button"
-          onClick={() => onViewOrders(employee)}
-          sx={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 0.15,
-            mt: 0.85,
-            m: 0,
-            p: 0,
-            border: "none",
-            bgcolor: "transparent",
-            cursor: "pointer",
-            fontFamily: "inherit",
-            color: VEEWASH_DASHBOARD.hdTeal,
-            fontWeight: 800,
-            fontSize: 13,
-            WebkitTapHighlightColor: "transparent",
-            "&:hover": { textDecoration: "underline" },
-          }}
-        >
-          View orders
-          <ChevronRightIcon sx={{ fontSize: 16 }} />
-        </Box>
-      ) : null}
+        <Stack direction="row" spacing={0.5} sx={{ flexShrink: 0 }}>
+          <OpBadge kind="wash" count={employee.wash_count ?? 0} />
+          <OpBadge kind="fold" count={employee.fold_count ?? 0} />
+        </Stack>
+        {timeRange ? (
+          <Typography component="span" sx={{ ...PERF_TYPE.meta, display: { xs: "block", md: "inline" } }}>
+            {timeRange}
+          </Typography>
+        ) : null}
+        {hasOrders ? (
+          <Box
+            component="button"
+            type="button"
+            onClick={() => onViewOrders(employee)}
+            sx={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 0.1,
+              m: 0,
+              p: 0,
+              border: "none",
+              bgcolor: "transparent",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              ...PERF_TYPE.link,
+              color: PERF_UI.hdTeal,
+              minHeight: 28,
+              ml: { md: "auto" },
+              WebkitTapHighlightColor: "transparent",
+              "&:hover": { textDecoration: "underline" },
+            }}
+          >
+            View orders
+            <ChevronRightIcon sx={{ fontSize: 14 }} />
+          </Box>
+        ) : null}
+      </Stack>
     </Box>
   );
 }
@@ -179,28 +166,28 @@ function HdEmployeeDetailDrawer({ open, onClose, employee, dateEt }) {
     >
       {loading ? (
         <Box sx={{ py: 4, textAlign: "center" }}>
-          <CircularProgress size={22} sx={{ color: VEEWASH_DASHBOARD.hdTeal }} />
+          <CircularProgress size={22} sx={{ color: PERF_UI.hdTeal }} />
         </Box>
       ) : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
       {!loading && !error ? (
-        <Stack spacing={1.75}>
+        <Stack spacing={1.25}>
           <Box>
-            <Typography sx={{ fontSize: 11, fontWeight: 800, color: "#94a3b8", letterSpacing: 0.6, mb: 0.75 }}>
-              WASH
+            <Typography sx={{ ...PERF_TYPE.meta, letterSpacing: 0.5, mb: 0.5, textTransform: "uppercase" }}>
+              Wash
             </Typography>
             {(emp?.wash_bags || []).length === 0 ? (
-              <Typography sx={{ fontSize: 13, color: "#94a3b8", fontWeight: 600 }}>No wash credit</Typography>
+              <Typography sx={PERF_TYPE.body}>No wash credit</Typography>
             ) : (
               (emp?.wash_bags || []).map((row) => (
-                <Box key={`w-${row.bag_id}`} sx={{ py: 1, borderBottom: "1px solid #f1f5f9" }}>
-                  <Typography sx={{ fontSize: 14, fontWeight: 700, color: "#0f172a" }}>
+                <Box key={`w-${row.bag_id}`} sx={{ py: 0.85, borderBottom: `1px solid ${PERF_UI.rowBorder}` }}>
+                  <Typography sx={{ fontSize: 14, fontWeight: 600, color: PERF_UI.navy }}>
                     {row.customer_name || "Customer unavailable"}
                   </Typography>
-                  <Typography sx={{ mt: 0.15, fontSize: 13, color: "#475569", fontWeight: 600 }}>
+                  <Typography sx={{ mt: 0.1, fontSize: 13, color: PERF_UI.secondary, fontWeight: 400 }}>
                     {row.bag_id}
                   </Typography>
-                  <Typography sx={{ mt: 0.1, fontSize: 12, color: "#94a3b8", fontWeight: 600 }}>
+                  <Typography sx={{ mt: 0.08, fontSize: 12, color: PERF_UI.muted, fontWeight: 400 }}>
                     Wash · {fmtTimeShort(row.washed_at) || "—"}
                   </Typography>
                 </Box>
@@ -208,21 +195,21 @@ function HdEmployeeDetailDrawer({ open, onClose, employee, dateEt }) {
             )}
           </Box>
           <Box>
-            <Typography sx={{ fontSize: 11, fontWeight: 800, color: "#94a3b8", letterSpacing: 0.6, mb: 0.75 }}>
-              FOLD
+            <Typography sx={{ ...PERF_TYPE.meta, letterSpacing: 0.5, mb: 0.5, textTransform: "uppercase" }}>
+              Fold
             </Typography>
             {(emp?.fold_bags || []).length === 0 ? (
-              <Typography sx={{ fontSize: 13, color: "#94a3b8", fontWeight: 600 }}>No fold credit</Typography>
+              <Typography sx={PERF_TYPE.body}>No fold credit</Typography>
             ) : (
               (emp?.fold_bags || []).map((row) => (
-                <Box key={`f-${row.bag_id}`} sx={{ py: 1, borderBottom: "1px solid #f1f5f9" }}>
-                  <Typography sx={{ fontSize: 14, fontWeight: 700, color: "#0f172a" }}>
+                <Box key={`f-${row.bag_id}`} sx={{ py: 0.85, borderBottom: `1px solid ${PERF_UI.rowBorder}` }}>
+                  <Typography sx={{ fontSize: 14, fontWeight: 600, color: PERF_UI.navy }}>
                     {row.customer_name || "Customer unavailable"}
                   </Typography>
-                  <Typography sx={{ mt: 0.15, fontSize: 13, color: "#475569", fontWeight: 600 }}>
+                  <Typography sx={{ mt: 0.1, fontSize: 13, color: PERF_UI.secondary, fontWeight: 400 }}>
                     {row.bag_id}
                   </Typography>
-                  <Typography sx={{ mt: 0.1, fontSize: 12, color: "#94a3b8", fontWeight: 600 }}>
+                  <Typography sx={{ mt: 0.08, fontSize: 12, color: PERF_UI.muted, fontWeight: 400 }}>
                     Fold · {fmtTimeShort(row.folded_at) || "—"}
                   </Typography>
                 </Box>
@@ -288,35 +275,9 @@ export default function ManagementHdPerformanceSection({ dateEt }) {
 
   const summary = data?.summary || {};
 
-  const kpiLine = (
-    <>
-      <Typography component="span" sx={{ fontWeight: 700, color: "#334155" }}>
-        {fmtCount(summary.bags_washed)} Washed
-      </Typography>
-      <Typography component="span" sx={{ mx: 0.75, color: "#cbd5e1" }}>
-        ·
-      </Typography>
-      <Typography component="span" sx={{ fontWeight: 700, color: "#334155" }}>
-        {fmtCount(summary.bags_folded)} Folded
-      </Typography>
-      <Typography component="span" sx={{ mx: 0.75, color: "#cbd5e1" }}>
-        ·
-      </Typography>
-      <Typography component="span" sx={{ fontWeight: 700, color: "#334155" }}>
-        {fmtCount(summary.wash_employees)} Washers
-      </Typography>
-      <Typography component="span" sx={{ mx: 0.75, color: "#cbd5e1" }}>
-        ·
-      </Typography>
-      <Typography component="span" sx={{ fontWeight: 700, color: "#334155" }}>
-        {fmtCount(summary.fold_employees)} Folders
-      </Typography>
-    </>
-  );
-
   return (
-    <Box sx={{ minWidth: 0, maxWidth: { md: 720 }, mx: { md: "auto" } }}>
-      <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1.25 }}>
+    <Box sx={{ minWidth: 0, width: "100%" }}>
+      <Stack direction="row" justifyContent="flex-end" sx={{ mb: 0.85 }}>
         <PerformanceSortSelect
           value={sortBy}
           options={HD_SORT_OPTIONS}
@@ -326,44 +287,45 @@ export default function ManagementHdPerformanceSection({ dateEt }) {
       </Stack>
 
       {error ? (
-        <Alert severity="error" sx={{ mb: 1.25 }}>
+        <Alert severity="error" sx={{ mb: 1 }}>
           {error}
         </Alert>
       ) : null}
 
       {loading && !data ? (
         <Box sx={{ py: 5, textAlign: "center" }}>
-          <CircularProgress size={28} sx={{ color: VEEWASH_DASHBOARD.hdTeal }} />
+          <CircularProgress size={28} sx={{ color: PERF_UI.hdTeal }} />
         </Box>
       ) : (
         <>
-          <Box
-            sx={{
-              mb: 1.5,
-              px: { xs: 1.25, sm: 1.5 },
-              py: { xs: 1, sm: 1.15 },
-              borderRadius: 2.5,
-              bgcolor: "#fff",
-              boxShadow: VEEWASH_DASHBOARD.cardShadow,
-              fontSize: { xs: 13, sm: 14 },
-              lineHeight: 1.5,
-            }}
-          >
-            {kpiLine}
+          <Box sx={perfKpiStripSx()}>
+            <Typography sx={PERF_TYPE.kpi}>
+              <Box component="span" sx={PERF_TYPE.kpiValue}>
+                {fmtCount(summary.bags_washed)} Washed
+              </Box>
+              <PerfSeparator />
+              <Box component="span" sx={PERF_TYPE.kpiValue}>
+                {fmtCount(summary.bags_folded)} Folded
+              </Box>
+              <PerfSeparator />
+              <Box component="span" sx={PERF_TYPE.kpiValue}>
+                {fmtCount(summary.wash_employees)} Washers
+              </Box>
+              <PerfSeparator />
+              <Box component="span" sx={PERF_TYPE.kpiValue}>
+                {fmtCount(summary.fold_employees)} Folders
+              </Box>
+            </Typography>
           </Box>
 
           {employees.length === 0 ? (
-            <Typography sx={{ py: 2, fontSize: 14, color: "#94a3b8", fontWeight: 600, textAlign: "center" }}>
+            <Typography sx={{ py: 2, ...PERF_TYPE.body, textAlign: "center" }}>
               No Hang Dry wash/fold credit for this day.
             </Typography>
           ) : (
-            <Stack spacing={1}>
+            <Stack spacing={0.45}>
               {employees.map((emp) => (
-                <HdEmployeeCard
-                  key={emp.user_id}
-                  employee={emp}
-                  onViewOrders={setDetailEmployee}
-                />
+                <HdEmployeeCard key={emp.user_id} employee={emp} onViewOrders={setDetailEmployee} />
               ))}
             </Stack>
           )}

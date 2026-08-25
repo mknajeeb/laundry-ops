@@ -29,11 +29,11 @@ import {
 } from "../../api";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
-import PerformanceDetailDrawer from "./performance/PerformanceDetailDrawer";
-import {
+import PerformanceDetailDrawer, {
   PerformanceFilterChip,
   PerformanceSortSelect,
 } from "./performance/PerformanceDetailDrawer";
+import { PERF_TYPE, PERF_UI, PerfSeparator, perfKpiStripSx, perfRowSx } from "./performance/performanceTokens";
 import { fmtCount, fmtDelta, fmtLbs, fmtRate } from "./performance/performanceFormat";
 
 const WF_SORT_OPTIONS = [
@@ -43,22 +43,123 @@ const WF_SORT_OPTIONS = [
   { value: "bags_hr", label: "Highest bags/hr" },
 ];
 
-function SessionTiming({ session, employee, compact = false }) {
-  const target = session || employee;
-  if (!target) return null;
-  const fontSize = compact ? 11 : 12;
+function SessionLink({ session, onOpenSession }) {
+  const label = session.session_code
+    ? `View ${session.session_code}`
+    : `View ${session.orders_completed} order${session.orders_completed === 1 ? "" : "s"}`;
   return (
-    <>
-      {employee?.duration_label ? (
-        <Typography sx={{ mt: 0.5, fontSize, color: "#64748b", fontWeight: 600 }}>
-          Fold time {employee.duration_label}
-        </Typography>
-      ) : null}
-      <Typography sx={{ mt: 0.35, fontSize, color: "#94a3b8", fontWeight: 600 }}>
-        {target.time_range_label || "—"}
-        {target.performance_through_label ? ` · ${target.performance_through_label}` : ""}
-      </Typography>
-    </>
+    <Box
+      component="button"
+      type="button"
+      onClick={() => onOpenSession(session)}
+      sx={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 0.1,
+        m: 0,
+        p: 0,
+        border: "none",
+        bgcolor: "transparent",
+        cursor: "pointer",
+        fontFamily: "inherit",
+        ...PERF_TYPE.link,
+        minHeight: 28,
+        WebkitTapHighlightColor: "transparent",
+        "&:hover": { color: PERF_UI.teal, textDecoration: "underline" },
+      }}
+    >
+      {label}
+      <ChevronRightIcon sx={{ fontSize: 14 }} />
+    </Box>
+  );
+}
+
+function WfEmployeeRankCard({ rank, employee, onOpenSession }) {
+  const sessions = employee.sessions || [];
+  const timeRange = employee.time_range_label || sessions[0]?.time_range_label;
+  const duration = employee.duration_label;
+  const statsLine = `${fmtCount(employee.orders_completed)} orders · ${fmtLbs(employee.total_pre_lbs, { compact: true })} · ${fmtRate(employee.bags_per_hour)} bags/hr`;
+  const metaParts = [timeRange, duration].filter(Boolean);
+
+  return (
+    <Box sx={perfRowSx()}>
+      {/* Phone */}
+      <Box sx={{ display: { xs: "block", md: "none" } }}>
+        <Stack direction="row" justifyContent="space-between" alignItems="baseline" spacing={1}>
+          <Typography sx={{ ...PERF_TYPE.name, minWidth: 0 }} noWrap>
+            <Box component="span" sx={PERF_TYPE.rank}>
+              #{rank}{" "}
+            </Box>
+            {employee.employee}
+          </Typography>
+          <Typography sx={PERF_TYPE.metricPrimary} whiteSpace="nowrap">
+            {fmtRate(employee.lbs_per_hour, 0)}{" "}
+            <Box component="span" sx={PERF_TYPE.metricLabel}>
+              lb/hr
+            </Box>
+          </Typography>
+        </Stack>
+        <Typography sx={{ ...PERF_TYPE.body, mt: 0.2 }}>{statsLine}</Typography>
+        {metaParts.length ? (
+          <Typography sx={{ ...PERF_TYPE.meta, mt: 0.15 }}>{metaParts.join(" · ")}</Typography>
+        ) : null}
+        {sessions.length ? (
+          <Stack direction="row" spacing={0.75} flexWrap="wrap" sx={{ mt: 0.35 }}>
+            {sessions.map((sess) => (
+              <SessionLink key={sess.session_id} session={sess} onOpenSession={onOpenSession} />
+            ))}
+          </Stack>
+        ) : null}
+      </Box>
+
+      {/* Desktop / tablet */}
+      <Box sx={{ display: { xs: "none", md: "block" } }}>
+        <Stack direction="row" alignItems="baseline" spacing={0.75} useFlexGap flexWrap="wrap">
+          <Typography component="span" sx={PERF_TYPE.rank}>
+            #{rank}
+          </Typography>
+          <Typography component="span" sx={PERF_TYPE.name}>
+            {employee.employee}
+          </Typography>
+          <Typography component="span" sx={PERF_TYPE.body}>
+            {statsLine}
+          </Typography>
+          <Box sx={{ flex: 1, minWidth: 8 }} />
+          <Typography component="span" sx={PERF_TYPE.metricPrimary}>
+            {fmtRate(employee.lbs_per_hour, 0)} lb/hr
+          </Typography>
+        </Stack>
+        <Stack
+          direction="row"
+          alignItems="center"
+          spacing={0.5}
+          useFlexGap
+          flexWrap="wrap"
+          sx={{ mt: 0.2 }}
+        >
+          {metaParts.length ? (
+            <Typography component="span" sx={PERF_TYPE.meta}>
+              {metaParts.join(" · ")}
+            </Typography>
+          ) : null}
+          {metaParts.length && sessions.length ? (
+            <Typography component="span" sx={PERF_TYPE.meta}>
+              ·
+            </Typography>
+          ) : null}
+          {sessions.map((sess, idx) => (
+            <Stack key={sess.session_id} direction="row" alignItems="center" spacing={0.35}>
+              {idx > 0 ? (
+                <Typography component="span" sx={PERF_TYPE.meta}>
+                  ·
+                </Typography>
+              ) : null}
+              <SessionLink session={sess} onOpenSession={onOpenSession} />
+            </Stack>
+          ))}
+        </Stack>
+      </Box>
+    </Box>
   );
 }
 
@@ -71,118 +172,12 @@ function DeltaChip({ label, pct }) {
       component="span"
       sx={{
         fontSize: 11,
-        fontWeight: 700,
+        fontWeight: 500,
         color: up ? "#047857" : "#b91c1c",
       }}
     >
       {label} {text}
     </Typography>
-  );
-}
-
-function WfEmployeeRankCard({ rank, employee, onOpenSession }) {
-  const sessions = employee.sessions || [];
-  return (
-    <Box
-      sx={{
-        px: { xs: 1.25, sm: 1.5 },
-        py: { xs: 1.15, sm: 1.35 },
-        borderRadius: 2.5,
-        bgcolor: "#fff",
-        boxShadow: VEEWASH_DASHBOARD.cardShadow,
-      }}
-    >
-      <Stack direction="row" spacing={1.25} alignItems="flex-start">
-        <Typography
-          sx={{
-            fontSize: 13,
-            fontWeight: 800,
-            color: VEEWASH_DASHBOARD.primaryBlue,
-            minWidth: 28,
-            pt: 0.15,
-          }}
-        >
-          #{rank}
-        </Typography>
-        <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Stack
-            direction="row"
-            justifyContent="space-between"
-            alignItems="flex-start"
-            spacing={1}
-          >
-            <Box sx={{ minWidth: 0 }}>
-              <Typography
-                sx={{
-                  fontSize: { xs: 16, sm: 17 },
-                  fontWeight: 800,
-                  lineHeight: 1.2,
-                  color: "#0f172a",
-                }}
-                noWrap
-              >
-                {employee.employee}
-              </Typography>
-              <Typography sx={{ mt: 0.35, fontSize: 13, color: "#64748b", fontWeight: 600 }}>
-                {fmtCount(employee.orders_completed)} orders · {fmtLbs(employee.total_pre_lbs, { compact: true })}
-              </Typography>
-            </Box>
-            <Box sx={{ textAlign: "right", flexShrink: 0 }}>
-              <Typography
-                sx={{
-                  fontSize: { xs: 22, sm: 24 },
-                  fontWeight: 800,
-                  lineHeight: 1,
-                  color: VEEWASH_DASHBOARD.primaryBlueDark,
-                }}
-              >
-                {fmtRate(employee.lbs_per_hour, 0)}
-              </Typography>
-              <Typography sx={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", letterSpacing: 0.4 }}>
-                lb/hr
-              </Typography>
-            </Box>
-          </Stack>
-
-          <Typography sx={{ mt: 0.65, fontSize: 13, fontWeight: 700, color: "#475569" }}>
-            {fmtRate(employee.bags_per_hour)} bags/hr
-          </Typography>
-
-          <SessionTiming employee={employee} compact />
-
-          <Stack spacing={0.15} sx={{ mt: 0.85 }}>
-            {sessions.map((sess) => (
-              <Box
-                key={sess.session_id}
-                component="button"
-                type="button"
-                onClick={() => onOpenSession(sess)}
-                sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 0.25,
-                  m: 0,
-                  p: 0,
-                  border: "none",
-                  bgcolor: "transparent",
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  color: VEEWASH_DASHBOARD.primaryBlueDark,
-                  fontWeight: 800,
-                  fontSize: 13,
-                  WebkitTapHighlightColor: "transparent",
-                  "&:hover": { textDecoration: "underline" },
-                }}
-              >
-                View {sess.orders_completed} order{sess.orders_completed === 1 ? "" : "s"}
-                {sess.session_code ? ` · ${sess.session_code}` : ""}
-                <ChevronRightIcon sx={{ fontSize: 16 }} />
-              </Box>
-            ))}
-          </Stack>
-        </Box>
-      </Stack>
-    </Box>
   );
 }
 
@@ -265,21 +260,21 @@ function OrderRow({
           />
         ) : null}
         <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography sx={{ fontSize: 14, fontWeight: 700, color: "#0f172a" }}>
+          <Typography sx={{ fontSize: 14, fontWeight: 600, color: PERF_UI.navy }}>
             {order.customer_name || "Customer unavailable"}
           </Typography>
-          <Typography sx={{ mt: 0.2, fontSize: 13, color: "#475569", fontWeight: 600 }}>
+          <Typography sx={{ mt: 0.15, fontSize: 13, color: PERF_UI.secondary, fontWeight: 400 }}>
             {order.bag_id}
             {order.pre_lbs != null ? ` · ${fmtLbs(order.pre_lbs, { compact: true })}` : ""}
           </Typography>
-          <Typography sx={{ mt: 0.15, fontSize: 12, color: "#94a3b8", fontWeight: 600 }}>
+          <Typography sx={{ mt: 0.1, fontSize: 12, color: PERF_UI.muted, fontWeight: 400 }}>
             Fold complete · {timeLabel}
             {order.time_taken_label ? ` · ${order.time_taken_label}` : ""}
           </Typography>
           {(order.original_scanner && order.original_scanner !== order.credited_employee)
             || order.reassignment_indicator
             || order.unmapped_reason ? (
-            <Typography sx={{ mt: 0.25, fontSize: 11, color: "#64748b" }}>
+            <Typography sx={{ mt: 0.2, fontSize: 11, color: PERF_UI.muted, fontWeight: 400 }}>
               {order.credited_employee ? `Credited ${order.credited_employee}` : ""}
               {order.original_scanner && order.original_scanner !== order.credited_employee
                 ? ` · Scanner ${order.original_scanner}`
@@ -574,42 +569,33 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
   }, [data?.employees, sortBy]);
 
   const kpiLine = (
-    <>
-      <Typography component="span" sx={{ fontWeight: 700, color: "#334155" }}>
+    <Typography sx={PERF_TYPE.kpi}>
+      <Box component="span" sx={PERF_TYPE.kpiValue}>
         {fmtCount(summary.orders_completed)} Orders
-      </Typography>
-      <Typography component="span" sx={{ mx: 0.75, color: "#cbd5e1" }}>
-        ·
-      </Typography>
-      <Typography component="span" sx={{ fontWeight: 700, color: "#334155" }}>
+      </Box>
+      <PerfSeparator />
+      <Box component="span" sx={PERF_TYPE.kpiValue}>
         {fmtLbs(summary.total_pre_lbs, { compact: true })}
-      </Typography>
-      <Typography component="span" sx={{ mx: 0.75, color: "#cbd5e1" }}>
-        ·
-      </Typography>
-      <Typography component="span" sx={{ fontWeight: 700, color: "#334155" }}>
+      </Box>
+      <PerfSeparator />
+      <Box component="span" sx={PERF_TYPE.kpiValue}>
         {fmtCount(summary.employee_count)} Employees
-      </Typography>
-      <Typography component="span" sx={{ mx: 0.75, color: "#cbd5e1" }}>
-        ·
-      </Typography>
-      <Typography
-        component="span"
-        sx={{ fontWeight: 800, color: VEEWASH_DASHBOARD.primaryBlueDark, fontSize: { xs: 15, sm: 16 } }}
-      >
+      </Box>
+      <PerfSeparator />
+      <Box component="span" sx={PERF_TYPE.kpiAccent}>
         {fmtRate(summary.lbs_per_hour, 0)} lb/hr
-      </Typography>
-    </>
+      </Box>
+    </Typography>
   );
 
   return (
-    <Box sx={{ width: "100%", minWidth: 0, maxWidth: { md: 720 }, mx: { md: "auto" } }}>
+    <Box sx={{ width: "100%", minWidth: 0 }}>
       <Stack
         direction="row"
         justifyContent="space-between"
         alignItems="center"
-        spacing={1}
-        sx={{ mb: 1.25 }}
+        spacing={0.75}
+        sx={{ mb: 0.85 }}
       >
         <Box
           sx={{
@@ -649,19 +635,19 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
             aria-label="Refresh"
             sx={{
               appearance: "none",
-              border: "1px solid #e2e8f0",
+              border: `1px solid ${PERF_UI.rowBorder}`,
               borderRadius: "50%",
-              width: 32,
-              height: 32,
+              width: 28,
+              height: 28,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              bgcolor: "#fff",
+              bgcolor: PERF_UI.rowBg,
               cursor: "pointer",
-              color: "#64748b",
+              color: PERF_UI.muted,
             }}
           >
-            <RefreshIcon sx={{ fontSize: 18 }} />
+            <RefreshIcon sx={{ fontSize: 16 }} />
           </Box>
         </Stack>
       </Stack>
@@ -691,22 +677,10 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
         </Box>
       ) : (
         <>
-          <Box
-            sx={{
-              mb: 1.5,
-              px: { xs: 1.25, sm: 1.5 },
-              py: { xs: 1, sm: 1.15 },
-              borderRadius: 2.5,
-              bgcolor: "#fff",
-              boxShadow: VEEWASH_DASHBOARD.cardShadow,
-              fontSize: { xs: 13, sm: 14 },
-              lineHeight: 1.5,
-              flexWrap: "wrap",
-            }}
-          >
+          <Box sx={perfKpiStripSx()}>
             {kpiLine}
             {deltas ? (
-              <Stack direction="row" spacing={1.25} sx={{ mt: 0.65, flexWrap: "wrap" }}>
+              <Stack direction="row" spacing={1} sx={{ mt: 0.35, flexWrap: "wrap" }}>
                 <DeltaChip label="Bags/hr" pct={deltas.bags_per_hour_delta_pct} />
                 <DeltaChip label="Lb/hr" pct={deltas.lbs_per_hour_delta_pct} />
               </Stack>
@@ -714,39 +688,43 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           </Box>
 
           {unmappedCount > 0 ? (
-            <Box sx={{ mb: 1.25 }}>
+            <Box sx={{ mb: 0.85 }}>
               <Button
                 fullWidth
                 onClick={() => setShowUnmapped((v) => !v)}
                 sx={{
                   justifyContent: "space-between",
                   textTransform: "none",
-                  fontWeight: 800,
-                  fontSize: 13,
-                  py: 1,
-                  px: 1.25,
-                  borderRadius: 2,
-                  color: "#b45309",
-                  bgcolor: showUnmapped ? "#fffbeb" : "#fff",
-                  boxShadow: VEEWASH_DASHBOARD.cardShadow,
-                  "&:hover": { bgcolor: "#fffbeb" },
+                  fontWeight: 500,
+                  fontSize: 12,
+                  py: 0.65,
+                  px: 1,
+                  borderRadius: 1.25,
+                  color: "#9a6700",
+                  bgcolor: showUnmapped ? "rgba(180, 83, 9, 0.08)" : PERF_UI.rowBg,
+                  border: `1px solid ${PERF_UI.rowBorder}`,
+                  boxShadow: "none",
+                  "&:hover": { bgcolor: "rgba(180, 83, 9, 0.08)" },
                 }}
               >
                 Unmapped orders
-                <Box component="span">{unmappedCount}</Box>
+                <Box component="span" sx={{ fontWeight: 600 }}>
+                  {unmappedCount}
+                </Box>
               </Button>
               {showUnmapped ? (
                 <Box
                   sx={{
-                    mt: 0.75,
-                    px: 1.25,
-                    py: 1,
-                    borderRadius: 2,
-                    bgcolor: "#fffbeb",
+                    mt: 0.45,
+                    px: 1,
+                    py: 0.75,
+                    borderRadius: 1.25,
+                    bgcolor: "rgba(180, 83, 9, 0.06)",
+                    border: `1px solid rgba(180, 83, 9, 0.12)`,
                   }}
                 >
-                  <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>
-                    <Typography sx={{ fontSize: 12, fontWeight: 800, color: "#92400e" }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.35 }}>
+                    <Typography sx={{ fontSize: 12, fontWeight: 500, color: "#92400e" }}>
                       Reassign unattributed orders
                     </Typography>
                     <Stack direction="row" spacing={0.5}>
@@ -757,7 +735,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
                         size="small"
                         disabled={!selectedBagIds.size}
                         onClick={openMove}
-                        sx={{ textTransform: "none", fontWeight: 800 }}
+                        sx={{ textTransform: "none", fontWeight: 600 }}
                       >
                         Move
                       </Button>
@@ -779,7 +757,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
             </Box>
           ) : null}
 
-          <Stack spacing={1}>
+          <Stack spacing={0.45}>
             {employees.map((emp, idx) => (
               <WfEmployeeRankCard
                 key={emp.employee}

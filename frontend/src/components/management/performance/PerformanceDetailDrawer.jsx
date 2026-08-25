@@ -8,6 +8,7 @@ import {
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import { VEEWASH_DASHBOARD } from "../../../theme/veewashDashboard";
+import { PERF_TYPE, PERF_UI } from "./performanceTokens";
 
 /**
  * Performance detail surface: bottom sheet on phone, right drawer on tablet/desktop.
@@ -32,7 +33,7 @@ export default function PerformanceDetailDrawer({
         sx: {
           width: isPhone ? "100%" : maxWidth,
           maxWidth: "100%",
-          bgcolor: VEEWASH_DASHBOARD.pageBackground,
+          bgcolor: PERF_UI.pageBg,
           ...(isPhone
             ? {
                 maxHeight: "92vh",
@@ -51,26 +52,17 @@ export default function PerformanceDetailDrawer({
         sx={{
           px: { xs: 1.5, sm: 2 },
           py: 1.25,
-          borderBottom: "1px solid #e8eef2",
-          bgcolor: "#fff",
+          borderBottom: `1px solid ${PERF_UI.rowBorder}`,
+          bgcolor: PERF_UI.rowBg,
           flexShrink: 0,
         }}
       >
         <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography
-            sx={{
-              fontWeight: 800,
-              fontSize: { xs: 17, sm: 18 },
-              lineHeight: 1.2,
-              color: "#0f172a",
-            }}
-          >
+          <Typography sx={{ ...PERF_TYPE.name, fontSize: { xs: 16, sm: 17 } }}>
             {title}
           </Typography>
           {subtitle ? (
-            <Typography sx={{ mt: 0.35, fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-              {subtitle}
-            </Typography>
+            <Typography sx={{ ...PERF_TYPE.meta, mt: 0.25 }}>{subtitle}</Typography>
           ) : null}
         </Box>
         <IconButton
@@ -100,8 +92,8 @@ export default function PerformanceDetailDrawer({
           sx={{
             px: { xs: 1.5, sm: 2 },
             py: 1.25,
-            borderTop: "1px solid #e8eef2",
-            bgcolor: "#fff",
+            borderTop: `1px solid ${PERF_UI.rowBorder}`,
+            bgcolor: PERF_UI.rowBg,
             flexShrink: 0,
           }}
         >
@@ -115,16 +107,16 @@ export default function PerformanceDetailDrawer({
 export function PerformanceDetailRow({ primary, secondary, meta, onClick }) {
   const inner = (
     <>
-      <Typography sx={{ fontWeight: 700, fontSize: 14, color: "#0f172a", lineHeight: 1.3 }}>
+      <Typography sx={{ fontWeight: 600, fontSize: 14, color: PERF_UI.navy, lineHeight: 1.3 }}>
         {primary}
       </Typography>
       {secondary ? (
-        <Typography sx={{ mt: 0.2, fontSize: 13, color: "#475569", fontWeight: 600 }}>
+        <Typography sx={{ mt: 0.15, fontSize: 13, color: PERF_UI.secondary, fontWeight: 400 }}>
           {secondary}
         </Typography>
       ) : null}
       {meta ? (
-        <Typography sx={{ mt: 0.15, fontSize: 12, color: "#94a3b8", fontWeight: 600 }}>
+        <Typography sx={{ mt: 0.1, fontSize: 12, color: PERF_UI.muted, fontWeight: 400 }}>
           {meta}
         </Typography>
       ) : null}
@@ -157,7 +149,7 @@ export function PerformanceDetailRow({ primary, secondary, meta, onClick }) {
         cursor: "pointer",
         fontFamily: "inherit",
         WebkitTapHighlightColor: "transparent",
-        "&:hover": { bgcolor: VEEWASH_DASHBOARD.primaryBlueLight },
+        "&:hover": { bgcolor: PERF_UI.kpiBg },
       }}
     >
       {inner}
@@ -176,16 +168,15 @@ export function PerformanceFilterChip({ active, onClick, children }) {
         appearance: "none",
         border: "none",
         borderRadius: 999,
-        px: 1.15,
-        py: 0.55,
-        fontSize: 12,
-        fontWeight: 700,
+        px: 0.85,
+        py: 0.35,
+        fontSize: 11,
+        fontWeight: active ? 600 : 500,
         cursor: "pointer",
         fontFamily: "inherit",
-        bgcolor: active ? VEEWASH_DASHBOARD.primaryBlue : "#eef4f6",
-        color: active ? "#fff" : "#334155",
-        boxShadow: active ? "0 1px 2px rgba(0, 60, 80, 0.12)" : "none",
-        transition: "background-color 0.15s ease",
+        bgcolor: active ? PERF_UI.teal : "transparent",
+        color: active ? "#fff" : PERF_UI.secondary,
+        transition: "background-color 0.15s ease, color 0.15s ease",
       }}
     >
       {children}
@@ -202,18 +193,18 @@ export function PerformanceSortSelect({ value, options, onChange, "aria-label": 
       aria-label={ariaLabel || "Sort"}
       sx={{
         appearance: "none",
-        border: "1px solid #e2e8f0",
+        border: `1px solid ${PERF_UI.rowBorder}`,
         borderRadius: 999,
-        px: 1.1,
-        py: 0.45,
-        fontSize: 12,
-        fontWeight: 700,
-        color: "#475569",
-        bgcolor: "#fff",
+        px: 0.85,
+        py: 0.3,
+        fontSize: 11,
+        fontWeight: 500,
+        color: PERF_UI.secondary,
+        bgcolor: PERF_UI.rowBg,
         cursor: "pointer",
         fontFamily: "inherit",
         minWidth: 0,
-        maxWidth: 140,
+        maxWidth: 128,
       }}
     >
       {options.map((opt) => (
