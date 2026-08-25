@@ -58,7 +58,7 @@ export default function PerformanceDetailDrawer({
         }}
       >
         <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography sx={{ ...PERF_TYPE.name, fontSize: { xs: 16, sm: 17 } }}>
+          <Typography sx={{ ...PERF_TYPE.name, fontSize: { xs: 15, sm: 16 } }}>
             {title}
           </Typography>
           {subtitle ? (
@@ -107,16 +107,16 @@ export default function PerformanceDetailDrawer({
 export function PerformanceDetailRow({ primary, secondary, meta, onClick }) {
   const inner = (
     <>
-      <Typography sx={{ fontWeight: 600, fontSize: 14, color: PERF_UI.navy, lineHeight: 1.3 }}>
+      <Typography sx={{ ...PERF_TYPE.name, fontSize: 13, lineHeight: 1.3 }}>
         {primary}
       </Typography>
       {secondary ? (
-        <Typography sx={{ mt: 0.15, fontSize: 13, color: PERF_UI.secondary, fontWeight: 400 }}>
+        <Typography sx={{ mt: 0.1, ...PERF_TYPE.body, fontSize: 12.5 }}>
           {secondary}
         </Typography>
       ) : null}
       {meta ? (
-        <Typography sx={{ mt: 0.1, fontSize: 12, color: PERF_UI.muted, fontWeight: 400 }}>
+        <Typography sx={{ mt: 0.08, ...PERF_TYPE.meta }}>
           {meta}
         </Typography>
       ) : null}
@@ -125,7 +125,7 @@ export function PerformanceDetailRow({ primary, secondary, meta, onClick }) {
 
   if (!onClick) {
     return (
-      <Box sx={{ py: 1.1, borderBottom: "1px solid #f1f5f9" }}>
+      <Box sx={{ py: 0.75, borderBottom: `1px solid ${PERF_UI.rowBorder}` }}>
         {inner}
       </Box>
     );
@@ -140,11 +140,11 @@ export function PerformanceDetailRow({ primary, secondary, meta, onClick }) {
         display: "block",
         width: "100%",
         m: 0,
-        py: 1.1,
+        py: 0.75,
         px: 0,
         textAlign: "left",
         border: "none",
-        borderBottom: "1px solid #f1f5f9",
+        borderBottom: `1px solid ${PERF_UI.rowBorder}`,
         bgcolor: "transparent",
         cursor: "pointer",
         fontFamily: "inherit",
@@ -171,7 +171,7 @@ export function PerformanceFilterChip({ active, onClick, children }) {
         px: 0.85,
         py: 0.35,
         fontSize: 11,
-        fontWeight: active ? 600 : 500,
+        fontWeight: active ? 500 : 400,
         cursor: "pointer",
         fontFamily: "inherit",
         bgcolor: active ? PERF_UI.teal : "transparent",
@@ -195,10 +195,10 @@ export function PerformanceSortSelect({ value, options, onChange, "aria-label": 
         appearance: "none",
         border: `1px solid ${PERF_UI.rowBorder}`,
         borderRadius: 999,
-        px: 0.85,
-        py: 0.3,
+        px: 0.75,
+        py: 0.28,
         fontSize: 11,
-        fontWeight: 500,
+        fontWeight: 400,
         color: PERF_UI.secondary,
         bgcolor: PERF_UI.rowBg,
         cursor: "pointer",

@@ -33,9 +33,9 @@ export default function ManagementPerformancePage() {
 
       <Box
         sx={{
-          px: { xs: 1.25, sm: 2, md: 3 },
-          pt: 1,
-          maxWidth: 960,
+          px: { xs: 1.25, sm: 2, md: 2.5, lg: 3 },
+          pt: 0.85,
+          maxWidth: 1440,
           mx: "auto",
           width: "100%",
         }}
@@ -44,8 +44,8 @@ export default function ManagementPerformancePage() {
           direction={{ xs: "column", sm: "row" }}
           justifyContent="space-between"
           alignItems={{ xs: "stretch", sm: "center" }}
-          spacing={1}
-          sx={{ mb: 1.25 }}
+          spacing={0.75}
+          sx={{ mb: 1 }}
         >
           <Typography sx={PERF_TYPE.pageTitle}>Performance</Typography>
           <TextField
@@ -72,10 +72,11 @@ export default function ManagementPerformancePage() {
           aria-label="Performance operation"
           sx={{
             display: "flex",
-            p: 0.3,
-            mb: 1.25,
-            borderRadius: 1.5,
+            p: 0.25,
+            mb: 1,
+            borderRadius: 1.25,
             bgcolor: PERF_UI.segmentTrack,
+            border: `1px solid ${PERF_UI.kpiBorder}`,
           }}
         >
           {MODES.map((m) => {
@@ -92,11 +93,11 @@ export default function ManagementPerformancePage() {
                   flex: 1,
                   appearance: "none",
                   border: "none",
-                  borderRadius: 1.15,
-                  py: { xs: 0.55, sm: 0.6 },
+                  borderRadius: 1,
+                  py: { xs: 0.5, sm: 0.55, md: 0.5 },
                   px: 0.75,
                   fontSize: { xs: 12, sm: 13 },
-                  fontWeight: active ? 600 : 500,
+                  fontWeight: active ? 500 : 400,
                   cursor: "pointer",
                   fontFamily: "inherit",
                   color: active ? "#fff" : PERF_UI.segmentInactive,
@@ -112,10 +113,11 @@ export default function ManagementPerformancePage() {
 
         <Box
           sx={{
-            borderRadius: 1.5,
+            borderRadius: 1.25,
             bgcolor: PERF_UI.contentTint,
-            px: { xs: 0.75, sm: 1 },
-            py: { xs: 0.75, sm: 1 },
+            border: `1px solid ${PERF_UI.kpiBorder}`,
+            px: { xs: 0.65, sm: 0.85, md: 1 },
+            py: { xs: 0.65, sm: 0.75, md: 0.85 },
           }}
         >
           <Box role="tabpanel" hidden={mode !== "wf"} sx={{ display: mode === "wf" ? "block" : "none" }}>

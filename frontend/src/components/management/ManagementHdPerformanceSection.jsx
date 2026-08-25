@@ -59,8 +59,8 @@ function OpBadge({ kind, count }) {
         px: 0.55,
         py: 0.1,
         borderRadius: 999,
-        fontSize: 11,
-        fontWeight: 500,
+        fontSize: 10.5,
+        fontWeight: 400,
         bgcolor: isWash ? "rgba(0, 168, 150, 0.12)" : "rgba(0, 151, 178, 0.1)",
         color: isWash ? PERF_UI.hdTeal : PERF_UI.tealDark,
       }}
@@ -79,7 +79,7 @@ function HdEmployeeCard({ employee, onViewOrders }) {
       <Stack
         direction={{ xs: "column", md: "row" }}
         alignItems={{ xs: "flex-start", md: "center" }}
-        spacing={{ xs: 0.35, md: 0.75 }}
+        spacing={{ xs: 0.25, md: 0.5 }}
         useFlexGap
         flexWrap="wrap"
       >
@@ -112,7 +112,7 @@ function HdEmployeeCard({ employee, onViewOrders }) {
               fontFamily: "inherit",
               ...PERF_TYPE.link,
               color: PERF_UI.hdTeal,
-              minHeight: 28,
+              minHeight: { xs: 36, md: 28 },
               ml: { md: "auto" },
               WebkitTapHighlightColor: "transparent",
               "&:hover": { textDecoration: "underline" },
@@ -180,8 +180,8 @@ function HdEmployeeDetailDrawer({ open, onClose, employee, dateEt }) {
               <Typography sx={PERF_TYPE.body}>No wash credit</Typography>
             ) : (
               (emp?.wash_bags || []).map((row) => (
-                <Box key={`w-${row.bag_id}`} sx={{ py: 0.85, borderBottom: `1px solid ${PERF_UI.rowBorder}` }}>
-                  <Typography sx={{ fontSize: 14, fontWeight: 600, color: PERF_UI.navy }}>
+                <Box key={`w-${row.bag_id}`} sx={{ py: 0.65, borderBottom: `1px solid ${PERF_UI.rowBorder}` }}>
+                  <Typography sx={{ ...PERF_TYPE.name, fontSize: 13 }}>
                     {row.customer_name || "Customer unavailable"}
                   </Typography>
                   <Typography sx={{ mt: 0.1, fontSize: 13, color: PERF_UI.secondary, fontWeight: 400 }}>
@@ -202,8 +202,8 @@ function HdEmployeeDetailDrawer({ open, onClose, employee, dateEt }) {
               <Typography sx={PERF_TYPE.body}>No fold credit</Typography>
             ) : (
               (emp?.fold_bags || []).map((row) => (
-                <Box key={`f-${row.bag_id}`} sx={{ py: 0.85, borderBottom: `1px solid ${PERF_UI.rowBorder}` }}>
-                  <Typography sx={{ fontSize: 14, fontWeight: 600, color: PERF_UI.navy }}>
+                <Box key={`f-${row.bag_id}`} sx={{ py: 0.65, borderBottom: `1px solid ${PERF_UI.rowBorder}` }}>
+                  <Typography sx={{ ...PERF_TYPE.name, fontSize: 13 }}>
                     {row.customer_name || "Customer unavailable"}
                   </Typography>
                   <Typography sx={{ mt: 0.1, fontSize: 13, color: PERF_UI.secondary, fontWeight: 400 }}>
@@ -277,7 +277,7 @@ export default function ManagementHdPerformanceSection({ dateEt }) {
 
   return (
     <Box sx={{ minWidth: 0, width: "100%" }}>
-      <Stack direction="row" justifyContent="flex-end" sx={{ mb: 0.85 }}>
+      <Stack direction="row" justifyContent="flex-end" sx={{ mb: 0.65 }}>
         <PerformanceSortSelect
           value={sortBy}
           options={HD_SORT_OPTIONS}
@@ -323,7 +323,7 @@ export default function ManagementHdPerformanceSection({ dateEt }) {
               No Hang Dry wash/fold credit for this day.
             </Typography>
           ) : (
-            <Stack spacing={0.45}>
+            <Stack spacing={0.3}>
               {employees.map((emp) => (
                 <HdEmployeeCard key={emp.user_id} employee={emp} onViewOrders={setDetailEmployee} />
               ))}

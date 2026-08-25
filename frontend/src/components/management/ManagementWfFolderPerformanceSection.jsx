@@ -63,7 +63,7 @@ function SessionLink({ session, onOpenSession }) {
         cursor: "pointer",
         fontFamily: "inherit",
         ...PERF_TYPE.link,
-        minHeight: 28,
+        minHeight: { xs: 36, md: 28 },
         WebkitTapHighlightColor: "transparent",
         "&:hover": { color: PERF_UI.teal, textDecoration: "underline" },
       }}
@@ -595,7 +595,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
         justifyContent="space-between"
         alignItems="center"
         spacing={0.75}
-        sx={{ mb: 0.85 }}
+        sx={{ mb: 0.65 }}
       >
         <Box
           sx={{
@@ -757,7 +757,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
             </Box>
           ) : null}
 
-          <Stack spacing={0.45}>
+          <Stack spacing={0.3}>
             {employees.map((emp, idx) => (
               <WfEmployeeRankCard
                 key={emp.employee}
@@ -767,7 +767,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
               />
             ))}
             {!loading && !employees.length ? (
-              <Typography sx={{ py: 2, fontSize: 14, color: "#94a3b8", fontWeight: 600, textAlign: "center" }}>
+              <Typography sx={{ py: 2, ...PERF_TYPE.body, textAlign: "center" }}>
                 No Wash & Fold folder sessions for this window.
               </Typography>
             ) : null}
@@ -791,7 +791,7 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
               setSessionModal(null);
               setSelectedBagIds(new Set());
             }}
-            sx={{ textTransform: "none", fontWeight: 700 }}
+            sx={{ textTransform: "none", fontWeight: 500 }}
           >
             Close
           </Button>
