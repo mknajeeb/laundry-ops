@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import {
   Alert,
@@ -178,7 +178,7 @@ export default function ManagementRinseWfSection({
     product: null,
     rows: [],
   });
-  const reviewSectionRef = useRef(null);
+  const [reviewOpenRequest, setReviewOpenRequest] = useState(null);
 
   const snapshotUnavailable = Boolean(
     !primaryLoading
@@ -468,7 +468,10 @@ export default function ManagementRinseWfSection({
                   : () => {
                       const el = document.getElementById("management-rinse-wf-review");
                       el?.scrollIntoView({ behavior: "smooth", block: "start" });
-                      reviewSectionRef.current?.openReviewRequired?.();
+                      setReviewOpenRequest({
+                        category: "review_required",
+                        nonce: Date.now(),
+                      });
                     }
               }
             />
@@ -597,7 +600,6 @@ export default function ManagementRinseWfSection({
 
       <Box id="management-rinse-wf-review">
         <ManagementRinseWfReviewSection
-          ref={reviewSectionRef}
           selectedDateEt={selectedDateEt || rinse?.selected_date_et}
           rushFilter={rushFilter}
           reviewSummary={reviewSummary}
@@ -605,6 +607,8 @@ export default function ManagementRinseWfSection({
           snapshotUnavailable={snapshotUnavailable}
           readOnly={readOnly}
           onRefresh={onRefresh}
+          openCategoryRequest={reviewOpenRequest}
+          onOpenCategoryRequestHandled={() => setReviewOpenRequest(null)}
         />
       </Box>
 

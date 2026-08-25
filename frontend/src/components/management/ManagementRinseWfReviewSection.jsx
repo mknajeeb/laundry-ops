@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -199,8 +199,7 @@ function SplitOrderReviewRow({
  * Specialty / Missing: inline drawer resolver (Save, bulk, PRE edit, View Scans).
  * Split Order Review: drawer-only MARK SPLIT / MARK NOT SPLIT (no generic WF Review modal).
  */
-export default forwardRef(function ManagementRinseWfReviewSection(
-  {
+export default function ManagementRinseWfReviewSection({
   selectedDateEt,
   rushFilter = "all",
   reviewSummary,
@@ -208,9 +207,9 @@ export default forwardRef(function ManagementRinseWfReviewSection(
   snapshotUnavailable = false,
   readOnly = false,
   onRefresh,
-},
-  ref,
-) {
+  openCategoryRequest = null,
+  onOpenCategoryRequestHandled = null,
+}) {
   const scopedReview = pickReviewSummary(reviewSummary, rushFilter);
   const specialtyCount = scopedReview?.specialty_items ?? null;
   const missingCount = scopedReview?.missing_from_portal ?? null;
@@ -298,7 +297,7 @@ export default forwardRef(function ManagementRinseWfReviewSection(
   }, [drawer.open, drawer.category, loadList]);
 
   const openCategory = (category) => {
-    if (snapshotUnavailable) return;
+    if (snapshotUnavailable || !category) return;
     drawerOpenStarted.current = performance.now();
     setDecisionMsg("");
     setSearchInput("");
@@ -306,9 +305,13 @@ export default forwardRef(function ManagementRinseWfReviewSection(
     setDrawer({ open: true, category });
   };
 
-  useImperativeHandle(ref, () => ({
-    openReviewRequired: () => openCategory("review_required"),
-  }));
+  useEffect(() => {
+    const category = openCategoryRequest?.category;
+    if (!category) return;
+    openCategory(category);
+    onOpenCategoryRequestHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open only on parent request token
+  }, [openCategoryRequest]);
 
   const closeDrawer = () => {
     setDrawer({ open: false, category: null });
@@ -511,6 +514,7 @@ export default forwardRef(function ManagementRinseWfReviewSection(
               variant="outlined"
               disabled={snapshotUnavailable}
               onClick={() => openCategory("manual_review")}
+              data-testid="manual-review-queue-card"
               sx={{
                 justifyContent: "space-between",
                 textTransform: "none",
@@ -712,4 +716,4 @@ export default forwardRef(function ManagementRinseWfReviewSection(
       />
     </Box>
   );
-});
+}
