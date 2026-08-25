@@ -44,7 +44,9 @@ from backend.rinse_employee_productivity_sessions import (
 )
 from backend.rinse_veewash_workload import (
     REASON_DISAPPEARED_WITHOUT_COMPLETION,
+    REASON_SERVICE_CLASSIFICATION_MISMATCH,
     REASON_WF_BULK_WORKITEM_REVIEW,
+    REASON_WF_ZERO_OR_MISSING_POST_WEIGHT,
 )
 from backend.rinse_wf_service_cycle import REVIEW_MISSING_FROM_PORTAL
 
@@ -122,16 +124,91 @@ MISSING_FROM_PORTAL_REASONS = frozenset(
 SPECIALTY_ITEMS_REASONS = frozenset(
     {
         REASON_WF_BULK_WORKITEM_REVIEW,
-        "WF_ZERO_OR_MISSING_POST_WEIGHT",
+        REASON_WF_ZERO_OR_MISSING_POST_WEIGHT,
         "WF_ZERO_OR_MISSING_WEIGHT",
         "COMPLETED_WITHOUT_RECOGNIZED_ENTRY",
-        "SERVICE_CLASSIFICATION_MISMATCH",
+        REASON_SERVICE_CLASSIFICATION_MISMATCH,
         "MANAGER_SENT_FOR_REVIEW",
         "COMPLETION_DETAILS_MISSING",
         "MISSING_PRE_EVIDENCE",
         "SCAN_CHRONOLOGY_STALE",
     }
 )
+
+SPECIALTY_ONLY_ZERO_POST_CLEARABLE_REASONS = frozenset(
+    {
+        REASON_SERVICE_CLASSIFICATION_MISMATCH,
+        REASON_WF_ZERO_OR_MISSING_POST_WEIGHT,
+        "WF_ZERO_OR_MISSING_WEIGHT",
+    }
+)
+
+_PORTAL_ZERO_EPS = 0.051
+
+
+def post_weight_is_recorded(
+    post_weight_lbs: Any,
+    *,
+    weight_info: Mapping[str, Any] | None = None,
+) -> bool:
+    """True when POST is present as a numeric value (0.0 is valid, None is not)."""
+    if weight_info and weight_info.get("post_weight_event_exists"):
+        if weight_info.get("post_weight_value") is not None:
+            return True
+        if weight_info.get("post_weight_lbs") is not None:
+            return True
+    return post_weight_lbs is not None
+
+
+def wf_specialty_only_zero_post_valid(
+    *,
+    bulk_lines: list | None = None,
+    bulk_resolution: Mapping[str, Any] | None = None,
+    post_weight_lbs: Any = None,
+    weight_info: Mapping[str, Any] | None = None,
+) -> bool:
+    """POST=0 is valid when chargeable specialty qty is resolved and explains zero WF pounds."""
+    from backend.rinse_bulk_workitems import bag_bulk_review_cleared
+    from backend.rinse_settled_bulk_only_weight import chargeable_bulk_qty
+
+    lines = list(bulk_lines or [])
+    post = post_weight_lbs
+    info = dict(weight_info or {})
+    if info.get("post_weight_event_exists"):
+        if info.get("post_weight_value") is not None:
+            post = info.get("post_weight_value")
+        elif info.get("post_weight_lbs") is not None:
+            post = info.get("post_weight_lbs")
+    if not post_weight_is_recorded(post, weight_info=info):
+        return False
+    if float(post) > _PORTAL_ZERO_EPS:
+        return False
+    if chargeable_bulk_qty(lines) <= 0:
+        return False
+    return bool(bag_bulk_review_cleared(bulk_resolution, lines))
+
+
+def strip_specialty_only_resolved_reasons(
+    codes: list[str] | tuple[str, ...] | None,
+    *,
+    bulk_lines: list | None = None,
+    bulk_resolution: Mapping[str, Any] | None = None,
+    post_weight_lbs: Any = None,
+    weight_info: Mapping[str, Any] | None = None,
+    bulk_cleared: bool | None = None,
+) -> list[str]:
+    """Remove bulk/specialty-only reasons satisfied by resolved specialty + valid zero POST."""
+    out = [str(c) for c in (codes or []) if c]
+    if bulk_cleared is True:
+        out = [c for c in out if c != REASON_WF_BULK_WORKITEM_REVIEW]
+    if wf_specialty_only_zero_post_valid(
+        bulk_lines=bulk_lines,
+        bulk_resolution=bulk_resolution,
+        post_weight_lbs=post_weight_lbs,
+        weight_info=weight_info,
+    ):
+        out = [c for c in out if c not in SPECIALTY_ONLY_ZERO_POST_CLEARABLE_REASONS]
+    return out
 
 SPLIT_ORDER_REASONS = frozenset(
     {
@@ -213,6 +290,8 @@ def _has_valid_wf_completion(
     *,
     weights: Mapping[str, Any] | None = None,
     in_completed_bucket: bool = False,
+    bulk_lines: list | None = None,
+    bulk_resolution: Mapping[str, Any] | None = None,
 ) -> bool:
     """True when canonical completion evidence exists (POST + completion time)."""
     snap = (row or {}).get("bag_snapshot") or {}
@@ -227,9 +306,16 @@ def _has_valid_wf_completion(
     if post is None:
         post = (row or {}).get("post_weight_lbs") or snap.get("post_weight_lbs")
     status = str((row or {}).get("effective_status") or "").strip().lower()
-    if post is None:
+    if not post_weight_is_recorded(post, weight_info=weights):
         return False
     if comp is not None:
+        return True
+    if wf_specialty_only_zero_post_valid(
+        bulk_lines=bulk_lines,
+        bulk_resolution=bulk_resolution,
+        post_weight_lbs=post,
+        weight_info=weights,
+    ):
         return True
     return status == "completed" or in_completed_bucket
 
@@ -258,6 +344,10 @@ def specialty_review_is_unresolved(
     codes: list[str] | tuple[str, ...] | None,
     *,
     bulk_cleared: bool | None = None,
+    bulk_lines: list | None = None,
+    bulk_resolution: Mapping[str, Any] | None = None,
+    post_weight_lbs: Any = None,
+    weight_info: Mapping[str, Any] | None = None,
 ) -> bool:
     """True when Specialty Items review is still open.
 
@@ -265,11 +355,14 @@ def specialty_review_is_unresolved(
     A bag leaves active Specialty Review only when specialty itself is resolved
     (reason codes cleared / bulk cleared) — never merely because status=completed.
     """
-    normalized = [str(c) for c in (codes or []) if c]
-    if bulk_cleared is True:
-        normalized = [
-            c for c in normalized if c != REASON_WF_BULK_WORKITEM_REVIEW
-        ]
+    normalized = strip_specialty_only_resolved_reasons(
+        codes,
+        bulk_lines=bulk_lines,
+        bulk_resolution=bulk_resolution,
+        post_weight_lbs=post_weight_lbs,
+        weight_info=weight_info,
+        bulk_cleared=bulk_cleared,
+    )
     if not normalized:
         return False
     explicit = [
@@ -286,9 +379,20 @@ def specialty_review_is_resolved(
     codes: list[str] | tuple[str, ...] | None,
     *,
     bulk_cleared: bool | None = None,
+    bulk_lines: list | None = None,
+    bulk_resolution: Mapping[str, Any] | None = None,
+    post_weight_lbs: Any = None,
+    weight_info: Mapping[str, Any] | None = None,
 ) -> bool:
     """Inverse of ``specialty_review_is_unresolved`` (canonical specialty exit)."""
-    return not specialty_review_is_unresolved(codes, bulk_cleared=bulk_cleared)
+    return not specialty_review_is_unresolved(
+        codes,
+        bulk_cleared=bulk_cleared,
+        bulk_lines=bulk_lines,
+        bulk_resolution=bulk_resolution,
+        post_weight_lbs=post_weight_lbs,
+        weight_info=weight_info,
+    )
 
 
 def _headline_maps(headline: Mapping[str, Any] | None) -> tuple[dict, dict]:
@@ -692,8 +796,18 @@ def compute_canonical_wf_review_membership(
         cleared = bag_bulk_review_cleared(bulk_res.get(bid), lines) if has_bulk else None
         w = weights.get(bid) or {}
         in_completed = bid in completed_bucket
+        post = w.get("post_weight_lbs")
+        if post is None:
+            post = row.get("post_weight_lbs")
 
-        if specialty_review_is_unresolved(codes, bulk_cleared=cleared):
+        if specialty_review_is_unresolved(
+            codes,
+            bulk_cleared=cleared,
+            bulk_lines=lines,
+            bulk_resolution=bulk_res.get(bid),
+            post_weight_lbs=post,
+            weight_info=w,
+        ):
             specialty.append(bid)
             disposition[bid] = CATEGORY_SPECIALTY
             continue
@@ -1191,6 +1305,7 @@ def review_drawer_section_flags(
         bulk_unresolved = bool(bulk_unresolved)
     return {
         "has_specialty_bulk": bulk_unresolved,
+        "has_specialty_review": bool(code_set & SPECIALTY_ITEMS_REASONS) or bulk_unresolved,
         "has_missing_portal": bool(code_set & MISSING_FROM_PORTAL_REASONS),
         "bulk_review_unresolved": bulk_unresolved,
         "bulk_review_cleared": bulk_cleared if has_bulk_code or bulk_cleared is not None else None,
@@ -1873,6 +1988,7 @@ def build_management_review_action(
         "bulk_workitems": bulk_lines,
         "bulk_resolution": bulk_res,
         "has_specialty_bulk": flags["has_specialty_bulk"],
+        "has_specialty_review": flags["has_specialty_review"],
         "has_missing_portal": flags["has_missing_portal"],
         "bulk_review_cleared": bulk_cleared,
         "bulk_review_unresolved": bulk_unresolved,

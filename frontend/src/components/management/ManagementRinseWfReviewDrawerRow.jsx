@@ -30,12 +30,14 @@ import {
   bagBulkReviewUnresolved,
   bagHasMissingPortal,
   bagHasSpecialtyBulk,
+  bagHasSpecialtyReview,
   bulkItemsDraft,
   catalogSpecialtyLines,
   fmtLbs,
   suggestedCompleteAudit,
   toPickerValue,
   validateMissingComplete,
+  validateSpecialtyComplete,
   validateSpecialtySave,
 } from "./reviewDrawerModel";
 
@@ -230,8 +232,9 @@ function ScanChronology({ selectedDateEt, bagId, open }) {
   );
 }
 
-function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved }) {
-  const bulkRequired = bagBulkReviewUnresolved(bag);
+function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, variant = "missing" }) {
+  const isSpecialty = variant === "specialty";
+  const bulkRequired = !isSpecialty && bagBulkReviewUnresolved(bag);
   const initialLines = useMemo(
     () => catalogSpecialtyLines(catalog, bag?.bulk_workitems),
     [catalog, bag?.bulk_workitems],
@@ -293,14 +296,28 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved }
         catalogReady: Array.isArray(catalog),
       })
     : { enabled: true, reason: null };
-  const completionAvailability = validateMissingComplete({
-    completedBy,
-    completionAt,
-    postWeightLbs: postLbs,
-    lockReady,
-    saving,
-    readOnly,
-  });
+  const completionAvailability = isSpecialty
+    ? validateSpecialtyComplete({
+        completedBy,
+        completionAt,
+        postWeightLbs: postLbs,
+        lockReady,
+        saving,
+        readOnly,
+        bulkRequired,
+        lines,
+        noChargeable: noCharge,
+        noChargeReason,
+        catalogReady: Array.isArray(catalog),
+      })
+    : validateMissingComplete({
+        completedBy,
+        completionAt,
+        postWeightLbs: postLbs,
+        lockReady,
+        saving,
+        readOnly,
+      });
   const canSave =
     completionAvailability.enabled &&
     bulkAvailability.enabled &&
@@ -325,7 +342,7 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved }
       post_weight_lbs: parseWeightInput(postLbs),
       completed_by: completedBy,
       completion_at: completionAt,
-      ...(bulkRequired
+      ...(bulkRequired || (isSpecialty && bagBulkReviewUnresolved(bag))
         ? bulkItemsDraft(lines, { noChargeable: noCharge, noChargeReason })
         : {}),
     };
@@ -333,6 +350,12 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved }
       draft.pre_weight_lbs = parsedPre;
     }
     const audit = suggestedCompleteAudit({ draft, baselineBag: bag });
+    const reasonCode = isSpecialty
+      ? "SERVICE_CLASSIFICATION_MISMATCH"
+      : audit.reasonCode || "DISAPPEARED_WITHOUT_COMPLETION";
+    const reasonNote = isSpecialty
+      ? "Specialty review — Save & Complete"
+      : audit.reasonNote;
     setSaving(true);
     setError("");
     try {
@@ -340,9 +363,9 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved }
         action: "edit_bag",
         bag_id: bag.bag_id,
         selected_date_et: selectedDateEt,
-        reason: audit.reasonNote,
-        reason_code: audit.reasonCode || "DISAPPEARED_WITHOUT_COMPLETION",
-        reason_note: audit.reasonNote,
+        reason: reasonNote,
+        reason_code: reasonCode,
+        reason_note: reasonNote,
         expected_updated_at: bag.updated_at || bag.day_bag_updated_at || null,
         expected_manager_edit_version:
           bag.manager_edit_version != null ? Number(bag.manager_edit_version) : null,
@@ -383,7 +406,7 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved }
   const managerPre = bag?.corrected_pre_weight_lbs;
 
   return (
-    <Box sx={{ mt: 0.75 }} data-testid="review-missing-inline">
+    <Box sx={{ mt: 0.75 }} data-testid={isSpecialty ? "review-specialty-inline" : "review-missing-inline"}>
       <Stack direction="row" spacing={1.25} flexWrap="wrap" sx={{ mb: 0.5 }} alignItems="center">
         <Typography data-testid="review-drawer-pre" sx={{ fontSize: 12, color: "#475569", fontWeight: 700 }}>
           PRE {preEditing ? "" : evidencePreLabel(bag)}
@@ -430,7 +453,7 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved }
           Detected: {[completionEmp, completionTime].filter(Boolean).join(" · ")}
         </Typography>
       ) : null}
-      {bulkRequired ? (
+      {bulkRequired || (isSpecialty && lines.some((l) => Number(l.quantity) > 0)) ? (
         <BulkWorkitemFields
           catalog={catalog}
           bag={bag}
@@ -655,7 +678,8 @@ export default function ManagementRinseWfReviewDrawerRow({
     ? { ...bag, ...actionBag, bag_id: bag.bag_id, _detailsLoaded: true }
     : { ...bag, _detailsLoaded: false };
   const showMissing = bagHasMissingPortal(merged);
-  const showSpecialty = bagHasSpecialtyBulk(merged) && !showMissing;
+  const showSpecialtyBulk = bagHasSpecialtyBulk(merged) && !showMissing;
+  const showSpecialtyReview = bagHasSpecialtyReview(merged) && !showMissing && !showSpecialtyBulk;
 
   useEffect(() => {
     if (!expanded) {
@@ -747,13 +771,22 @@ export default function ManagementRinseWfReviewDrawerRow({
             readOnly={readOnly}
             onSaved={onSaved}
           />
-        ) : showSpecialty ? (
+        ) : showSpecialtyBulk ? (
           <SpecialtyInline
             bag={merged}
             catalog={catalog || []}
             selectedDateEt={selectedDateEt}
             readOnly={readOnly}
             onSaved={onSaved}
+          />
+        ) : showSpecialtyReview ? (
+          <MissingPortalInline
+            bag={merged}
+            catalog={catalog || []}
+            selectedDateEt={selectedDateEt}
+            readOnly={readOnly}
+            onSaved={onSaved}
+            variant="specialty"
           />
         ) : (
           <Typography sx={{ mt: 0.75, fontSize: 12, color: "#64748b" }}>

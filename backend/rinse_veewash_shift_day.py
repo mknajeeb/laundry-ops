@@ -1838,7 +1838,23 @@ def apply_manager_edit_day_bag_patch(
     ).strip().lower() or None
     reasons = list(previous_reason_codes if previous_reason_codes is not None else (day_row.get("review_reason_codes") or []))
     if bulk_cleared:
-        reasons = [r for r in reasons if str(r) != REASON_WF_BULK_WORKITEM_REVIEW]
+        from backend.management_rinse_wf_review import strip_specialty_only_resolved_reasons
+        from backend.rinse_bulk_workitems import load_bag_bulk_lines, load_bulk_resolutions
+
+        bulk_lines = load_bag_bulk_lines(cursor, organization_id, shift_date_et, [bid]).get(bid) or []
+        bulk_res = load_bulk_resolutions(cursor, organization_id, shift_date_et, [bid]).get(bid)
+        effective_post = (
+            post_weight_lbs
+            if post_weight_lbs is not None
+            else day_row.get("post_weight_lbs")
+        )
+        reasons = strip_specialty_only_resolved_reasons(
+            reasons,
+            bulk_lines=bulk_lines,
+            bulk_resolution=bulk_res,
+            post_weight_lbs=effective_post,
+            bulk_cleared=True,
+        )
 
     snap = dict(day_row.get("bag_snapshot") or {})
     prior_canon = str(day_row.get("canonical_completion_status") or "").strip() or None

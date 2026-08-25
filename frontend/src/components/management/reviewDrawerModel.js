@@ -30,6 +30,14 @@ export function bagHasSpecialtyBulk(bag) {
   return false;
 }
 
+/** True when the bag belongs in the Specialty Review drawer queue. */
+export function bagHasSpecialtyReview(bag) {
+  if (bag?.has_specialty_review === true) return true;
+  const cat = String(bag?.review_category || bag?.category || "").toLowerCase();
+  if (cat === "specialty_items") return true;
+  return bagHasSpecialtyBulk(bag);
+}
+
 /** True when bulk workitem review still blocks Save & Complete. */
 export function bagBulkReviewUnresolved(bag) {
   if (bag?.bulk_review_unresolved === false) return false;
@@ -97,6 +105,53 @@ export function validateMissingComplete({
     if (n == null || n < 0) {
       return { enabled: false, reason: "POST must be a valid non-negative weight" };
     }
+  }
+  return { enabled: true, reason: null };
+}
+
+export function validateSpecialtyComplete({
+  completedBy,
+  completionAt,
+  postWeightLbs,
+  lockReady = true,
+  saving = false,
+  readOnly = false,
+  bulkRequired = false,
+  lines = [],
+  noChargeable = false,
+  noChargeReason = "",
+  catalogReady = true,
+}) {
+  if (bulkRequired) {
+    const bulk = validateSpecialtySave({
+      lines,
+      noChargeable,
+      noChargeReason,
+      saving,
+      readOnly,
+      catalogReady,
+    });
+    if (!bulk.enabled) return bulk;
+  }
+  if (readOnly) return { enabled: false, reason: "Day closed — read only" };
+  if (saving) return { enabled: false, reason: "Save in progress" };
+  if (!lockReady) return { enabled: false, reason: "Bag details still loading" };
+  if (!String(completedBy || "").trim()) {
+    return { enabled: false, reason: "Select completion employee" };
+  }
+  if (!String(completionAt || "").trim()) {
+    return { enabled: false, reason: "Enter completion date & time (ET)" };
+  }
+  const raw = String(postWeightLbs ?? "").trim();
+  if (raw === "") {
+    return {
+      enabled: false,
+      reason: "Enter POST weight (0 is valid for specialty-only orders)",
+    };
+  }
+  const n = parseWeightInput(raw);
+  if (n == null || n < 0) {
+    return { enabled: false, reason: "POST must be a valid non-negative weight" };
   }
   return { enabled: true, reason: null };
 }

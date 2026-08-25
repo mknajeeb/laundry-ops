@@ -735,6 +735,60 @@ def expand_review_required(
             "reason_codes": list(reasons.get(bid) or []),
         }
 
+    # Specialty-only zero POST: resolved bulk + POST=0 clears classification/weight review.
+    from backend.management_rinse_wf_review import strip_specialty_only_resolved_reasons
+
+    for bid in list(review):
+        bid = _norm_bag(bid)
+        if not bid:
+            continue
+        row = rows_by_id.get(bid) or {}
+        lines = list(bulk_lines.get(bid) or row.get("bulk_workitems") or [])
+        res = bulk_resolutions.get(bid) or row.get("bulk_resolution")
+        cleared = bag_bulk_review_cleared(res, lines) if (lines or res) else None
+        info = _coerce_weight_info(
+            weight_map.get(bid)
+            if bid in weight_map
+            else {
+                "pre_weight_lbs": row.get("pre_weight_lbs"),
+                "post_weight_lbs": row.get("post_weight_lbs"),
+                "post_weight_event_exists": row.get("post_weight_event_exists"),
+                "post_weight_value": row.get("post_weight_value"),
+            }
+        )
+        new_codes = strip_specialty_only_resolved_reasons(
+            reasons.get(bid) or [],
+            bulk_lines=lines,
+            bulk_resolution=res,
+            post_weight_lbs=row.get("post_weight_lbs"),
+            weight_info=info,
+            bulk_cleared=cleared,
+        )
+        if new_codes == list(reasons.get(bid) or []):
+            continue
+        if new_codes:
+            reasons[bid] = new_codes
+            continue
+        reasons.pop(bid, None)
+        review.discard(bid)
+        if is_canonically_completed(bid, row):
+            completed.add(bid)
+            rows_by_id[bid] = {
+                **row,
+                "outcome": OUTCOME_COMPLETED,
+                "final_bucket": row.get("final_bucket") or "completed",
+                "reason_codes": [],
+            }
+        else:
+            pending.add(bid)
+            entry_class = row.get("entry_class") or ENTRY_CLASS_NEW
+            rows_by_id[bid] = {
+                **row,
+                "outcome": OUTCOME_PENDING,
+                "final_bucket": f"{entry_class}_{OUTCOME_PENDING}",
+                "reason_codes": [],
+            }
+
     # Sync reason_codes onto all review rows
     for bid in review:
         row = rows_by_id.get(bid)
