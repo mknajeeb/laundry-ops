@@ -124,6 +124,25 @@ def apply_wf_selected_day_boundary_guard(
     )
 
 
+def resolve_canonical_wf_day_bag_rows_for_persist(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+) -> list[dict[str, Any]]:
+    """Deterministic WF day-bag rows for selected-day persist (single membership source).
+
+    All automatic/manual writers must use this when canonical lifecycle is enabled so
+    repeated projection passes replace the same bag-id set instead of accumulating
+    append-only Stage-B membership additions.
+    """
+    org = int(organization_id)
+    prior_wf = _prior_wf_day_bags_by_id(cursor, org, shift_date_et)
+    return [
+        _merge_wf_review_hints(b, prior_wf.get(normalize_bag_id(b.get("bag_id"))))
+        for b in _canonical_wf_bags_for_date(cursor, org, shift_date_et)
+    ]
+
+
 def _cycle_row_rank(row: Mapping[str, Any]) -> tuple[int, float, float]:
     """Lower rank wins. COMPLETED beats REVIEW beats ACTIVE; then latest completion/anchor."""
     status = str(row.get("status") or STATUS_ACTIVE)
@@ -371,11 +390,7 @@ def terminal_project_canonical_wf_day_snapshot(
     ensure_wf_service_cycles_table(cursor)
     ensure_shift_monitor_day_tables(cursor)
     org = int(organization_id)
-    prior_wf = _prior_wf_day_bags_by_id(cursor, org, shift_date_et)
-    wf_bags = [
-        _merge_wf_review_hints(b, prior_wf.get(normalize_bag_id(b.get("bag_id"))))
-        for b in _canonical_wf_bags_for_date(cursor, org, shift_date_et)
-    ]
+    wf_bags = resolve_canonical_wf_day_bag_rows_for_persist(cursor, org, shift_date_et)
     hd_bags = _preserved_hd_bag_dicts(cursor, org, shift_date_et)
     all_bags = wf_bags + hd_bags
 

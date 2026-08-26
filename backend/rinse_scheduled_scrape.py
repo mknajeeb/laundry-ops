@@ -1885,6 +1885,18 @@ def _run_post_lock_targeted_refresh(
                 "Post-lock Stage-B reproject after targeted scan events "
                 f"inserted={_targeted_refresh_inserted_events(summary)}\n"
             )
+            if reproject_detail and reproject_detail.get("ok") and not reproject_detail.get(
+                "deferred"
+            ):
+                patch["wf_canonical_terminal_post_lock"] = (
+                    _run_wf_canonical_terminal_projection(
+                        conn,
+                        cursor,
+                        org_id=org_id,
+                        log=log,
+                        portal_csv_path=None,
+                    )
+                )
         except Exception as reproject_exc:
             reproject_detail = {
                 "ok": False,

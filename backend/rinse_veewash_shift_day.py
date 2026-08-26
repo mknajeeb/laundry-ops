@@ -1120,24 +1120,27 @@ def persist_day_snapshot(
 
     try:
         from backend.rinse_wf_service_cycle import is_wf_canonical_lifecycle_enabled
-        from backend.rinse_wf_service_cycle_compat import apply_wf_selected_day_boundary_guard
+        from backend.rinse_wf_service_cycle_compat import (
+            resolve_canonical_wf_day_bag_rows_for_persist,
+        )
 
         if is_wf_canonical_lifecycle_enabled(cursor, int(organization_id)):
-            wf_rows: list[dict[str, Any]] = []
             other_rows: list[dict[str, Any]] = []
             for b in bags:
-                svc = str(b.get("service_type") or (b.get("bag_snapshot") or {}).get("service_type") or "WF").upper()
-                if svc == "WF":
-                    wf_rows.append(b)
-                else:
+                svc = str(
+                    b.get("service_type")
+                    or (b.get("bag_snapshot") or {}).get("service_type")
+                    or "WF"
+                ).upper()
+                if svc != "WF":
                     other_rows.append(b)
-            wf_rows = apply_wf_selected_day_boundary_guard(
-                cursor, int(organization_id), shift_date_et, wf_rows
+            wf_rows = resolve_canonical_wf_day_bag_rows_for_persist(
+                cursor, int(organization_id), shift_date_et
             )
             bags = wf_rows + other_rows
     except Exception:
         logger.exception(
-            "WF day-boundary guard failed during persist org=%s date=%s",
+            "WF canonical day-bag replace failed during persist org=%s date=%s",
             organization_id,
             shift_date_et,
         )
