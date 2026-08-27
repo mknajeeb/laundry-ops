@@ -1475,8 +1475,16 @@ def build_veewash_daily_workload_from_membership(
     # EDD gate intentionally bypassed — future-EDD HD that appears today stays.
     # Prior-completed HD exclusion runs in finalize_hd_step1_summary.
     member_ids = membership_bag_ids(membership)
+    from backend.rinse_wf_service_cycle_compat import final_wf_day_membership_bag_ids
+
+    member_ids = final_wf_day_membership_bag_ids(
+        cursor, organization_id, selected_date_et, member_ids
+    )
     if frozen_member_ids is not None:
         freeze = sorted({_norm_bag(b) for b in frozen_member_ids if _norm_bag(b)})
+        freeze = final_wf_day_membership_bag_ids(
+            cursor, organization_id, selected_date_et, freeze
+        )
         member_ids = freeze
         mem_rows = dict(membership.get("membership") or {})
         membership = dict(membership)

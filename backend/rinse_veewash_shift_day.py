@@ -1145,6 +1145,32 @@ def persist_day_snapshot(
             shift_date_et,
         )
 
+    try:
+        from backend.rinse_wf_service_cycle_compat import apply_wf_selected_day_boundary_guard
+
+        wf_guarded: list[dict[str, Any]] = []
+        other_guarded: list[dict[str, Any]] = []
+        for b in bags:
+            svc = str(
+                b.get("service_type")
+                or (b.get("bag_snapshot") or {}).get("service_type")
+                or "WF"
+            ).upper()
+            if svc == "WF":
+                wf_guarded.append(b)
+            else:
+                other_guarded.append(b)
+        wf_guarded = apply_wf_selected_day_boundary_guard(
+            cursor, int(organization_id), shift_date_et, wf_guarded
+        )
+        bags = wf_guarded + other_guarded
+    except Exception:
+        logger.exception(
+            "WF terminal membership guard failed during persist org=%s date=%s",
+            organization_id,
+            shift_date_et,
+        )
+
     deferred_ids = {
         normalize_bag_id(b)
         for b in (projection_deferred_bag_ids or [])
@@ -1238,6 +1264,40 @@ def persist_day_snapshot(
               AND manager_edit_version = 0
             """,
             (int(organization_id), shift_date_et, *keep_ids),
+        )
+    try:
+        from backend.rinse_wf_service_cycle_compat import wf_terminal_ineligible_bag_ids
+
+        persisted_wf_ids = sorted(
+            {
+                normalize_bag_id(r.get("bag_id"))
+                for r in (load_day_bags(cursor, organization_id, shift_date_et) or [])
+                if normalize_bag_id(r.get("bag_id"))
+                and str(r.get("service_type") or "WF").upper() == "WF"
+            }
+        )
+        terminal_drop = sorted(
+            wf_terminal_ineligible_bag_ids(
+                cursor, int(organization_id), shift_date_et, persisted_wf_ids
+            )
+        )
+        if terminal_drop:
+            drop_ph = ",".join(["%s"] * len(terminal_drop))
+            cursor.execute(
+                f"""
+                DELETE FROM rinse_shift_monitor_day_bags
+                WHERE organization_id = %s
+                  AND shift_date_et = %s
+                  AND UPPER(COALESCE(service_type, 'WF')) = 'WF'
+                  AND bag_id IN ({drop_ph})
+                """,
+                (int(organization_id), shift_date_et, *terminal_drop),
+            )
+    except Exception:
+        logger.exception(
+            "WF terminal membership purge failed during persist org=%s date=%s",
+            organization_id,
+            shift_date_et,
         )
 
     _sync_day_header_from_persisted_bags(
@@ -3543,60 +3603,59 @@ def backfill_day_from_live(
     if day and day.get("status") == STATUS_CLOSED and not force:
         return {"ok": False, "error": "day_closed", "day": day}
 
-    # Prior ET days must never rewrite through append-only Stage-B membership.
-    # Scrape Stage-B / watchdog retries can target yesterday while today is live;
-    # only terminal canonical projection (with historical completion exclusion) may
-    # replace persisted day_bags for shift_date_et < today_et().
     today = today_et()
-    if shift_date_et < today:
-        try:
-            from backend.rinse_wf_service_cycle import is_wf_canonical_lifecycle_enabled
-            from backend.rinse_wf_service_cycle_compat import (
-                terminal_project_canonical_wf_day_snapshot,
-            )
 
-            if is_wf_canonical_lifecycle_enabled(cursor, int(organization_id)):
-                proj = terminal_project_canonical_wf_day_snapshot(
-                    cursor,
-                    int(organization_id),
-                    shift_date_et,
-                    force=force,
-                )
-                day_after = get_day_record(cursor, organization_id, shift_date_et) or {}
-                headline = (
-                    summary_from_day_record(
-                        day_after, cursor=cursor, organization_id=int(organization_id)
-                    )
-                    or {}
-                )
-                wf = (headline.get("segments") or {}).get("wf") or {}
-                return {
-                    "ok": bool(proj.get("ok")),
-                    "persisted": bool(proj.get("ok")),
-                    "historical_canonical_reproject": True,
-                    "day": day_after,
-                    "summary_totals": {
-                        "active": headline.get("active_workload"),
-                        "total_workload": wf.get("total_workload")
-                        or wf.get("active_workload"),
-                        "completed": wf.get("completed"),
-                        "pending": wf.get("pending"),
-                        "review_required": (wf.get("exceptions") or {}).get(
-                            "review_required"
-                        ),
-                    },
-                    "bag_count": len(
-                        load_day_bags(cursor, organization_id, shift_date_et) or []
-                    ),
-                    "chronology_complete": bool(chronology_complete),
-                    "projection": proj,
-                }
-        except Exception:
-            logger.exception(
-                "historical canonical reproject failed org=%s date=%s",
-                organization_id,
+    # Canonical lifecycle orgs must always persist through terminal projection +
+    # final_wf_day_membership_bag_ids — never append-only Stage-B membership alone.
+    try:
+        from backend.rinse_wf_service_cycle import is_wf_canonical_lifecycle_enabled
+        from backend.rinse_wf_service_cycle_compat import (
+            terminal_project_canonical_wf_day_snapshot,
+        )
+
+        if is_wf_canonical_lifecycle_enabled(cursor, int(organization_id)):
+            proj = terminal_project_canonical_wf_day_snapshot(
+                cursor,
+                int(organization_id),
                 shift_date_et,
+                force=force,
             )
+            day_after = get_day_record(cursor, organization_id, shift_date_et) or {}
+            headline = (
+                summary_from_day_record(
+                    day_after, cursor=cursor, organization_id=int(organization_id)
+                )
+                or {}
+            )
+            wf = (headline.get("segments") or {}).get("wf") or {}
+            return {
+                "ok": bool(proj.get("ok")),
+                "persisted": bool(proj.get("ok")),
+                "historical_canonical_reproject": shift_date_et < today,
+                "canonical_terminal_reproject": True,
+                "day": day_after,
+                "summary_totals": {
+                    "active": headline.get("active_workload"),
+                    "total_workload": wf.get("total_workload")
+                    or wf.get("active_workload"),
+                    "completed": wf.get("completed"),
+                    "pending": wf.get("pending"),
+                    "review_required": (wf.get("exceptions") or {}).get(
+                        "review_required"
+                    ),
+                },
+                "bag_count": len(
+                    load_day_bags(cursor, organization_id, shift_date_et) or []
+                ),
+                "chronology_complete": bool(chronology_complete),
+                "projection": proj,
+            }
+    except Exception:
+        logger.exception(
+            "canonical terminal reproject failed org=%s date=%s",
+            organization_id,
+            shift_date_et,
+        )
 
     # Durable incomplete-batch gate: refuse day-bag / headline writes while the
     # evidence batch Stage B would use is marked incomplete.

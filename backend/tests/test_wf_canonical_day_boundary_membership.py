@@ -12,7 +12,9 @@ from backend.rinse_wf_service_cycle_compat import (
     _cycle_anchor_or_admit_on_date,
     _exclude_stale_prior_day_terminal_cycles,
     _prior_day_terminal_completed_wf_bag_ids,
+    final_wf_day_membership_bag_ids,
     terminal_project_canonical_wf_day_snapshot,
+    wf_terminal_ineligible_bag_ids,
 )
 from backend.rinse_veewash_workload import OUTCOME_COMPLETED, OUTCOME_PENDING
 
@@ -222,11 +224,11 @@ def test_cycle_anchor_or_admit_on_date_midnight_crossing():
     )
 
 
-@patch(_COMPLETED_BEFORE, return_value={"BAG001"})
+@patch(_COMPLETED_BEFORE, return_value={"STALE01"})
 def test_exclude_filter_drops_historically_completed_bag(_completed_before):
     bags = [
         {
-            "bag_id": "BAG001",
+            "bag_id": "STALE01",
             "bag_snapshot": {
                 "admitted_at": str(datetime(2026, 8, 25, 7, 0)),
                 "cycle_anchor_at": str(datetime(2026, 8, 25, 7, 0)),
@@ -236,6 +238,50 @@ def test_exclude_filter_drops_historically_completed_bag(_completed_before):
     ]
     kept = _exclude_stale_prior_day_terminal_cycles(MagicMock(), ORG, AUG25, bags)
     assert [b["bag_id"] for b in kept] == ["CARY002"]
+
+
+@patch(_COMPLETED_BEFORE, return_value={"STALE01"})
+def test_final_wf_day_membership_bag_ids_is_single_admission_gate(_completed_before):
+    kept = final_wf_day_membership_bag_ids(
+        MagicMock(), ORG, AUG25, ["STALE01", "CARY002", "STALE01"]
+    )
+    assert kept == ["CARY002"]
+    ineligible = wf_terminal_ineligible_bag_ids(
+        MagicMock(), ORG, AUG25, ["STALE01", "CARY002"]
+    )
+    assert ineligible == {"STALE01"}
+
+
+@patch(_COMPLETED_BEFORE, return_value={"PORT01"})
+def test_completed_bag_seen_again_on_portal_still_excluded(_completed_before):
+    cur = _mock_cursor_with_cycles(
+        [
+            _stale_active_cycle("PORT01"),
+            {
+                "id": 2,
+                "bag_id": "PORT01",
+                "cycle_anchor_at": datetime(2026, 8, 25, 8, 0),
+                "admitted_at": datetime(2026, 8, 25, 8, 0),
+                "status": STATUS_ACTIVE,
+                "completed_at": None,
+                "pre_weight_lbs": 5.0,
+                "post_weight_lbs": None,
+                "rush_status": None,
+                "review_reason": None,
+            },
+        ]
+    )
+    with _enrich_patches():
+        bags = _canonical_wf_bags_for_date(cur, ORG, AUG25)
+    assert bags == []
+
+
+@patch(_COMPLETED_BEFORE, return_value={"ACTV01"})
+def test_active_null_completed_at_still_excluded(_completed_before):
+    cur = _mock_cursor_with_cycles([_stale_active_cycle("ACTV01")])
+    with _enrich_patches():
+        bags = _canonical_wf_bags_for_date(cur, ORG, AUG25)
+    assert bags == []
 
 
 @patch(_COMPLETED_BEFORE, return_value={"STALE01"})

@@ -823,6 +823,108 @@ def refresh_canonical_cycles_from_evidence(
     return {"refreshed": refreshed, "selected_date_et": selected_date_et.isoformat()}
 
 
+def reconcile_stale_active_wf_cycles_from_canonical_completion(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+) -> dict[str, Any]:
+    """Close ACTIVE/REVIEW cycles when canonical completion already exists.
+
+    Prevents canonically completed bag IDs from lingering as ACTIVE with
+    completed_at=NULL. Workload exclusion still applies even if a stale row
+    remains, but lifecycle rows should match completion evidence.
+    """
+    ensure_wf_service_cycles_table(cursor)
+    org = int(organization_id)
+    day_start = naive_et_day_start(shift_date_et)
+    cur = cursor
+    cur.execute(
+        """
+        SELECT id, bag_id, cycle_anchor_at, status, admitted_at,
+               pre_weight_lbs, post_weight_lbs, rush_status, estimated_delivery_date,
+               admitted_source, portal_last_seen_at
+        FROM rinse_wf_service_cycles
+        WHERE organization_id = %s
+          AND status IN (%s, %s)
+          AND completed_at IS NULL
+        """,
+        (org, STATUS_ACTIVE, STATUS_REVIEW),
+    )
+    rows = [r for r in (cur.fetchall() or []) if isinstance(r, dict)]
+    bag_ids = sorted(
+        {
+            normalize_bag_id(r.get("bag_id"))
+            for r in rows
+            if normalize_bag_id(r.get("bag_id"))
+        }
+    )
+    if not bag_ids:
+        return {"closed": 0, "bag_ids": []}
+
+    from backend.rinse_veewash_workload import load_canonical_completions_v2
+
+    comps = load_canonical_completions_v2(
+        cursor,
+        org,
+        bag_ids,
+        selected_date_et=shift_date_et,
+    ) or {}
+    closed_bags: set[str] = set()
+    closed_cycles = 0
+    for row in rows:
+        bid = normalize_bag_id(row.get("bag_id"))
+        if not bid:
+            continue
+        comp = comps.get(bid) or {}
+        comp_at = comp.get("completion_at")
+        comp_date = comp.get("completion_date")
+        if isinstance(comp_at, str):
+            try:
+                comp_at = datetime.fromisoformat(comp_at.replace("Z", "")[:19])
+            except ValueError:
+                comp_at = None
+        terminal = False
+        if comp_date is not None and comp_date < shift_date_et:
+            terminal = True
+        elif isinstance(comp_at, datetime) and comp_at < day_start:
+            terminal = True
+        elif (
+            str(comp.get("effective_status") or "").lower() == "completed"
+            and isinstance(comp_at, datetime)
+            and comp_at < day_start
+        ):
+            terminal = True
+        if not terminal:
+            continue
+        anchor = row.get("cycle_anchor_at")
+        if not isinstance(anchor, datetime):
+            continue
+        upsert_service_cycle(
+            cursor,
+            org,
+            bag_id=bid,
+            cycle_anchor_at=anchor,
+            admitted_at=row.get("admitted_at") or anchor,
+            admitted_source=str(row.get("admitted_source") or "SCAN_EVIDENCE_REFRESH"),
+            status=STATUS_COMPLETED,
+            completed_at=comp_at if isinstance(comp_at, datetime) else None,
+            completion_source=str(comp.get("completion_source") or "CANONICAL_RECONCILE"),
+            rush_status=row.get("rush_status"),
+            estimated_delivery_date=row.get("estimated_delivery_date"),
+            pre_weight_lbs=row.get("pre_weight_lbs"),
+            post_weight_lbs=row.get("post_weight_lbs"),
+            portal_last_seen_at=row.get("portal_last_seen_at"),
+            review_reason=None,
+        )
+        closed_cycles += 1
+        closed_bags.add(bid)
+    return {
+        "closed": closed_cycles,
+        "bag_ids": sorted(closed_bags),
+        "selected_date_et": shift_date_et.isoformat(),
+    }
+
+
 def apply_manager_review_resolution_to_canonical_cycle(
     cursor,
     organization_id: int,

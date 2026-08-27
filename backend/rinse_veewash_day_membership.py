@@ -593,16 +593,8 @@ def _bags_canonically_completed_before_opening(
                 ):
                     completed.add(bid)
 
-    _drop_completed_bags_with_selected_day_cycle(
-        cursor,
-        org,
-        selected_date_et,
-        completed,
-        svc_map=svc_map,
-        racks=racks,
-        day_start=day_start,
-        by_bag=by_bag,
-    )
+    # Terminal completion is permanent for a bag ID — no selected-day cycle
+    # exception (portal reappearance, ACTIVE cycle row, midnight STV, etc.).
     return completed
 
 
@@ -943,6 +935,41 @@ def build_append_only_membership(
     for k in carryover_rush:
         carryover_rush[k] = sorted(carryover_rush[k])
 
+    excluded_terminal_completed: list[str] = []
+    try:
+        from backend.rinse_wf_service_cycle_compat import final_wf_day_membership_bag_ids
+
+        wf_membership_ids = [
+            bid
+            for bid, row in membership.items()
+            if str((row or {}).get("service_type_portal") or "WF").upper() == "WF"
+        ]
+        kept_wf = set(
+            final_wf_day_membership_bag_ids(
+                cursor, organization_id, selected_date_et, wf_membership_ids
+            )
+        )
+        excluded_terminal_completed = sorted(
+            b for b in wf_membership_ids if b not in kept_wf
+        )
+        if excluded_terminal_completed:
+            for bid in excluded_terminal_completed:
+                membership.pop(bid, None)
+            opening_carryover_ids = [
+                b for b in opening_carryover_ids if b in membership
+            ]
+            opening_new_ids = [b for b in opening_new_ids if b in membership]
+            added_later_ids = [b for b in added_later_ids if b in membership]
+            baseline_ids = sorted(set(opening_carryover_ids) | set(opening_new_ids))
+            added_later = [
+                a for a in added_later if str(a.get("bag_id") or "") in membership
+            ]
+            excluded_completed = sorted(
+                set(excluded_completed) | set(excluded_terminal_completed)
+            )
+    except Exception:
+        excluded_terminal_completed = []
+
     return {
         "ok": True,
         "selected_date_et": selected_date_et.isoformat(),
@@ -969,6 +996,7 @@ def build_append_only_membership(
         "excluded_prior_day_carryin_bag_ids": [],
         "excluded_completed_before_opening_count": len(excluded_completed),
         "excluded_completed_before_opening_bag_ids": sorted(excluded_completed),
+        "excluded_terminal_completed_bag_ids": sorted(excluded_terminal_completed),
         "fresh_start_no_prior_day_carryover": False,
         "includes_opening_carryover": True,
         "membership_policy": "opening_carryover_v1",

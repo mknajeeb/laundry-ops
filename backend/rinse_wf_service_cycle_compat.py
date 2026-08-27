@@ -82,24 +82,86 @@ def _prior_day_terminal_completed_wf_bag_ids(
     return out
 
 
+def wf_terminal_ineligible_bag_ids(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    candidate_bag_ids,
+    *,
+    service_type_by_bag: Mapping[str, str] | None = None,
+) -> set[str]:
+    """Bag IDs with authoritative completion date strictly before shift_date_et.
+
+    These bag IDs are ineligible for the selected day's WF workload — forever,
+    regardless of portal presence, ACTIVE service cycles, or new cycle anchors.
+    """
+    from backend.rinse_veewash_day_membership import (
+        _bags_canonically_completed_before_opening,
+    )
+
+    ids = sorted(
+        {
+            normalize_bag_id(b)
+            for b in (candidate_bag_ids or [])
+            if normalize_bag_id(b)
+        }
+    )
+    if not ids:
+        return set()
+    svc_map = dict(service_type_by_bag or {})
+    for bid in ids:
+        svc_map.setdefault(bid, "WF")
+    return _bags_canonically_completed_before_opening(
+        cursor,
+        int(organization_id),
+        shift_date_et,
+        ids,
+        service_type_by_bag=svc_map,
+    )
+
+
+def final_wf_day_membership_bag_ids(
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    candidate_bag_ids,
+    *,
+    service_type_by_bag: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Single canonical WF membership admission rule for every writer.
+
+    final = candidate bag IDs − { authoritative_completion_date_et < shift_date_et }
+    """
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in candidate_bag_ids or []:
+        bid = normalize_bag_id(raw)
+        if bid and bid not in seen:
+            seen.add(bid)
+            ordered.append(bid)
+    if not ordered:
+        return []
+    ineligible = wf_terminal_ineligible_bag_ids(
+        cursor,
+        organization_id,
+        shift_date_et,
+        ordered,
+        service_type_by_bag=service_type_by_bag,
+    )
+    if not ineligible:
+        return ordered
+    return [bid for bid in ordered if bid not in ineligible]
+
+
 def _exclude_stale_prior_day_terminal_cycles(
     cursor,
     organization_id: int,
     shift_date_et: date,
     bags: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Drop WF bags whose authoritative completion date is before shift_date_et.
-
-    Terminal completion wins over stale ACTIVE cycles, portal membership, or
-    same-day anchor/admit evidence. There is no new-cycle exception for a bag ID
-    that already completed on a prior day.
-    """
+    """Drop WF day-bag rows whose bag IDs fail ``final_wf_day_membership_bag_ids``."""
     if not bags:
         return bags
-    from backend.rinse_veewash_day_membership import (
-        _bags_canonically_completed_before_opening,
-    )
-
     bids = [
         normalize_bag_id(b.get("bag_id"))
         for b in bags
@@ -107,20 +169,14 @@ def _exclude_stale_prior_day_terminal_cycles(
     ]
     if not bids:
         return bags
-    completed_before = _bags_canonically_completed_before_opening(
-        cursor,
-        int(organization_id),
-        shift_date_et,
-        bids,
-        service_type_by_bag={bid: "WF" for bid in bids},
+    kept = set(
+        final_wf_day_membership_bag_ids(
+            cursor, int(organization_id), shift_date_et, bids
+        )
     )
-    if not completed_before:
+    if len(kept) == len(bids):
         return bags
-    return [
-        b
-        for b in bags
-        if normalize_bag_id(b.get("bag_id")) not in completed_before
-    ]
+    return [b for b in bags if normalize_bag_id(b.get("bag_id")) in kept]
 
 
 def apply_wf_selected_day_boundary_guard(
@@ -129,7 +185,7 @@ def apply_wf_selected_day_boundary_guard(
     shift_date_et: date,
     bags: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Shared WF day-membership guard — every projection writer must pass through this."""
+    """Shared WF day-bag row guard — every persist/projection writer must pass through this."""
     return _exclude_stale_prior_day_terminal_cycles(
         cursor, organization_id, shift_date_et, list(bags or [])
     )
@@ -398,9 +454,16 @@ def terminal_project_canonical_wf_day_snapshot(
     force: bool = True,
 ) -> dict[str, Any]:
     """Terminal write: canonical WF rows + preserved HD rows → day_bags / Management."""
+    from backend.rinse_wf_service_cycle import (
+        reconcile_stale_active_wf_cycles_from_canonical_completion,
+    )
+
     ensure_wf_service_cycles_table(cursor)
     ensure_shift_monitor_day_tables(cursor)
     org = int(organization_id)
+    reconcile_stale_active_wf_cycles_from_canonical_completion(
+        cursor, org, shift_date_et
+    )
     wf_bags = resolve_canonical_wf_day_bag_rows_for_persist(cursor, org, shift_date_et)
     hd_bags = _preserved_hd_bag_dicts(cursor, org, shift_date_et)
     all_bags = wf_bags + hd_bags
