@@ -1118,6 +1118,24 @@ def persist_day_snapshot(
     )
     bags = [apply_normalized_completion_fields(b) for b in bags]
 
+    from backend.rinse_wf_service_cycle_compat import (
+        apply_wf_selected_day_boundary_guard,
+        final_wf_day_membership_bag_ids,
+    )
+
+    other_rows: list[dict[str, Any]] = []
+    wf_candidate_rows: list[dict[str, Any]] = []
+    for b in bags:
+        svc = str(
+            b.get("service_type")
+            or (b.get("bag_snapshot") or {}).get("service_type")
+            or "WF"
+        ).upper()
+        if svc == "WF":
+            wf_candidate_rows.append(b)
+        else:
+            other_rows.append(b)
+
     try:
         from backend.rinse_wf_service_cycle import is_wf_canonical_lifecycle_enabled
         from backend.rinse_wf_service_cycle_compat import (
@@ -1125,51 +1143,57 @@ def persist_day_snapshot(
         )
 
         if is_wf_canonical_lifecycle_enabled(cursor, int(organization_id)):
-            other_rows: list[dict[str, Any]] = []
-            for b in bags:
-                svc = str(
-                    b.get("service_type")
-                    or (b.get("bag_snapshot") or {}).get("service_type")
-                    or "WF"
-                ).upper()
-                if svc != "WF":
-                    other_rows.append(b)
-            wf_rows = resolve_canonical_wf_day_bag_rows_for_persist(
+            wf_candidate_rows = resolve_canonical_wf_day_bag_rows_for_persist(
                 cursor, int(organization_id), shift_date_et
             )
-            bags = wf_rows + other_rows
     except Exception:
         logger.exception(
-            "WF canonical day-bag replace failed during persist org=%s date=%s",
+            "WF canonical day-bag replace failed during persist org=%s date=%s; "
+            "falling back to terminal-filtered candidates (never unfiltered Stage-B)",
             organization_id,
             shift_date_et,
         )
 
+    # Non-negotiable: candidate − {completion_date_et < D} immediately before upsert.
+    # Fail closed — never persist unfiltered WF bags if the guard errors.
     try:
-        from backend.rinse_wf_service_cycle_compat import apply_wf_selected_day_boundary_guard
-
-        wf_guarded: list[dict[str, Any]] = []
-        other_guarded: list[dict[str, Any]] = []
-        for b in bags:
-            svc = str(
-                b.get("service_type")
-                or (b.get("bag_snapshot") or {}).get("service_type")
-                or "WF"
-            ).upper()
-            if svc == "WF":
-                wf_guarded.append(b)
-            else:
-                other_guarded.append(b)
-        wf_guarded = apply_wf_selected_day_boundary_guard(
-            cursor, int(organization_id), shift_date_et, wf_guarded
+        wf_candidate_rows = apply_wf_selected_day_boundary_guard(
+            cursor, int(organization_id), shift_date_et, wf_candidate_rows
         )
-        bags = wf_guarded + other_guarded
     except Exception:
         logger.exception(
-            "WF terminal membership guard failed during persist org=%s date=%s",
+            "WF terminal membership guard failed during persist org=%s date=%s; "
+            "dropping all WF candidates (fail closed)",
             organization_id,
             shift_date_et,
         )
+        try:
+            kept_ids = set(
+                final_wf_day_membership_bag_ids(
+                    cursor,
+                    int(organization_id),
+                    shift_date_et,
+                    [
+                        normalize_bag_id(b.get("bag_id"))
+                        for b in wf_candidate_rows
+                        if normalize_bag_id(b.get("bag_id"))
+                    ],
+                )
+            )
+            wf_candidate_rows = [
+                b
+                for b in wf_candidate_rows
+                if normalize_bag_id(b.get("bag_id")) in kept_ids
+            ]
+        except Exception:
+            logger.exception(
+                "WF terminal membership fail-closed also failed org=%s date=%s; "
+                "persisting zero WF bags",
+                organization_id,
+                shift_date_et,
+            )
+            wf_candidate_rows = []
+    bags = wf_candidate_rows + other_rows
 
     deferred_ids = {
         normalize_bag_id(b)
@@ -1264,6 +1288,18 @@ def persist_day_snapshot(
               AND manager_edit_version = 0
             """,
             (int(organization_id), shift_date_et, *keep_ids),
+        )
+    else:
+        # Persist intentionally has zero bag rows (e.g. terminal fail-closed).
+        # Still remove unmanaged orphans so historical contamination cannot linger.
+        cursor.execute(
+            """
+            DELETE FROM rinse_shift_monitor_day_bags
+            WHERE organization_id = %s
+              AND shift_date_et = %s
+              AND manager_edit_version = 0
+            """,
+            (int(organization_id), shift_date_et),
         )
     try:
         from backend.rinse_wf_service_cycle_compat import wf_terminal_ineligible_bag_ids
@@ -2704,7 +2740,32 @@ def build_or_load_step1_for_date(
     if not persist_live:
         return _snapshot_missing_step1_payload(selected_date_et)
 
-    # Live / reconstruct path (today, or missing prior-day snapshot).
+    # Canonical lifecycle: never persist append-only Stage-B membership from this path.
+    # Terminal projection + final_wf_day_membership_bag_ids is the only writer.
+    try:
+        from backend.rinse_wf_service_cycle import is_wf_canonical_lifecycle_enabled
+        from backend.rinse_wf_service_cycle_compat import (
+            terminal_project_canonical_wf_day_snapshot,
+        )
+
+        if is_wf_canonical_lifecycle_enabled(cursor, int(organization_id)):
+            terminal_project_canonical_wf_day_snapshot(
+                cursor,
+                int(organization_id),
+                selected_date_et,
+                force=True,
+            )
+            _commit(cursor)
+            day = get_day_record(cursor, organization_id, selected_date_et)
+            return _summary_shell(day or {}, status_value=str((day or {}).get("status") or STATUS_OPEN))
+    except Exception:
+        logger.exception(
+            "canonical terminal project via build_or_load failed org=%s date=%s",
+            organization_id,
+            selected_date_et,
+        )
+
+    # Legacy / non-canonical reconstruct path (today, or missing prior-day snapshot).
     # On/after VeeWash Jul 23 cutover: append-only membership rebuild (not live presence rewrite).
     wl = _build_step1_workload_for_date(cursor, organization_id, selected_date_et)
     summary = build_step1_headline_summary(

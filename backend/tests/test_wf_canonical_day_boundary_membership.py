@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
+from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_wf_service_cycle import STATUS_ACTIVE, STATUS_COMPLETED
 from backend.rinse_wf_service_cycle_compat import (
     OUTCOME_CARRYOVER_QUERY,
@@ -364,9 +365,16 @@ def test_terminal_projection_idempotent_drops_stale_completed(
 @patch("backend.rinse_day_bag_completion_projection.apply_normalized_completion_fields", side_effect=lambda b: b)
 @patch("backend.rinse_step1_productivity_fast.project_productivity_fields_for_day_bag", return_value={})
 @patch("backend.rinse_wf_service_cycle.is_wf_canonical_lifecycle_enabled", return_value=True)
+@patch(
+    "backend.rinse_wf_service_cycle_compat.apply_wf_selected_day_boundary_guard",
+    side_effect=lambda _c, _o, _d, bags: bags,
+)
+@patch("backend.rinse_wf_service_cycle_compat.wf_terminal_ineligible_bag_ids", return_value=set())
 @patch("backend.rinse_wf_service_cycle_compat.resolve_canonical_wf_day_bag_rows_for_persist")
 def test_persist_day_snapshot_replaces_stage_b_wf_with_canonical_membership(
     resolve_canonical,
+    _ineligible,
+    _guard,
     _enabled,
     _proj,
     _apply,
@@ -450,9 +458,87 @@ def test_persist_day_snapshot_replaces_stage_b_wf_with_canonical_membership(
 @patch("backend.rinse_day_bag_completion_projection.apply_normalized_completion_fields", side_effect=lambda b: b)
 @patch("backend.rinse_step1_productivity_fast.project_productivity_fields_for_day_bag", return_value={})
 @patch("backend.rinse_wf_service_cycle.is_wf_canonical_lifecycle_enabled", return_value=True)
+@patch(
+    "backend.rinse_wf_service_cycle_compat.apply_wf_selected_day_boundary_guard",
+    side_effect=lambda _c, _o, _d, bags: [
+        b for b in bags if normalize_bag_id(b.get("bag_id")) != "STALE01"
+    ],
+)
+@patch("backend.rinse_wf_service_cycle_compat.wf_terminal_ineligible_bag_ids", return_value={"STALE01"})
+@patch(
+    "backend.rinse_wf_service_cycle_compat.resolve_canonical_wf_day_bag_rows_for_persist",
+    side_effect=RuntimeError("resolver timeout"),
+)
+def test_persist_fail_closed_excludes_historical_when_canonical_replace_fails(
+    _resolve,
+    _ineligible,
+    _guard,
+    _enabled,
+    _proj,
+    _apply,
+    _enrich,
+    _ensure,
+    _day,
+    _load,
+    _sync,
+):
+    """If canonical replace throws, Stage-B WF must still pass terminal exclusion — never unfiltered."""
+    from backend.rinse_veewash_shift_day import persist_day_snapshot
+
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    cursor.rowcount = 0
+    wl = {
+        "rows": [
+            {
+                "bag_id": "STALE01",
+                "service_type": "WF",
+                "effective_status": OUTCOME_PENDING,
+                "bag_snapshot": {},
+            },
+            {
+                "bag_id": "FRSH001",
+                "service_type": "WF",
+                "effective_status": OUTCOME_PENDING,
+                "bag_snapshot": {},
+            },
+        ],
+        "new_today": ["STALE01", "FRSH001"],
+        "carryover": [],
+        "completed_on_date": [],
+        "pending_end_of_date": ["STALE01", "FRSH001"],
+        "review_required": [],
+    }
+    persist_day_snapshot(
+        cursor, ORG, AUG25, workload=wl, summary={"pending": 2}, force=True
+    )
+    upsert_calls = [
+        c
+        for c in cursor.execute.call_args_list
+        if c[0] and "INSERT INTO rinse_shift_monitor_day_bags" in str(c[0][0])
+    ]
+    persisted_ids = sorted({c[0][1][2] for c in upsert_calls})
+    assert persisted_ids == ["FRSH001"]
+
+
+@patch("backend.rinse_veewash_shift_day._sync_day_header_from_persisted_bags")
+@patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=[])
+@patch("backend.rinse_veewash_shift_day.get_day_record", return_value={"status": "OPEN"})
+@patch("backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables")
+@patch("backend.rinse_day_bag_completion_projection.enrich_bags_completion_from_scans")
+@patch("backend.rinse_day_bag_completion_projection.apply_normalized_completion_fields", side_effect=lambda b: b)
+@patch("backend.rinse_step1_productivity_fast.project_productivity_fields_for_day_bag", return_value={})
+@patch("backend.rinse_wf_service_cycle.is_wf_canonical_lifecycle_enabled", return_value=True)
+@patch(
+    "backend.rinse_wf_service_cycle_compat.apply_wf_selected_day_boundary_guard",
+    side_effect=lambda _c, _o, _d, bags: bags,
+)
+@patch("backend.rinse_wf_service_cycle_compat.wf_terminal_ineligible_bag_ids", return_value=set())
 @patch("backend.rinse_wf_service_cycle_compat.resolve_canonical_wf_day_bag_rows_for_persist")
 def test_persist_day_snapshot_idempotent_across_repeated_automatic_rebuilds(
     resolve_canonical,
+    _ineligible,
+    _guard,
     _enabled,
     _proj,
     _apply,
