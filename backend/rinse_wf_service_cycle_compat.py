@@ -88,28 +88,39 @@ def _exclude_stale_prior_day_terminal_cycles(
     shift_date_et: date,
     bags: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Drop prior-day terminal completions re-admitted via stale ACTIVE cycle rows."""
-    prior_done = _prior_day_terminal_completed_wf_bag_ids(
-        cursor, organization_id, shift_date_et
-    )
-    if not prior_done:
+    """Drop WF bags whose authoritative completion date is before shift_date_et.
+
+    Terminal completion wins over stale ACTIVE cycles, portal membership, or
+    same-day anchor/admit evidence. There is no new-cycle exception for a bag ID
+    that already completed on a prior day.
+    """
+    if not bags:
         return bags
-    kept: list[dict[str, Any]] = []
-    for bag in bags:
-        bid = normalize_bag_id(bag.get("bag_id"))
-        if not bid or bid not in prior_done:
-            kept.append(bag)
-            continue
-        snap = bag.get("bag_snapshot") or {}
-        admitted = _parse_cycle_dt(snap.get("admitted_at"))
-        anchor = _parse_cycle_dt(snap.get("cycle_anchor_at"))
-        if _cycle_anchor_or_admit_on_date(
-            admitted_at=admitted,
-            cycle_anchor_at=anchor,
-            shift_date_et=shift_date_et,
-        ):
-            kept.append(bag)
-    return kept
+    from backend.rinse_veewash_day_membership import (
+        _bags_canonically_completed_before_opening,
+    )
+
+    bids = [
+        normalize_bag_id(b.get("bag_id"))
+        for b in bags
+        if normalize_bag_id(b.get("bag_id"))
+    ]
+    if not bids:
+        return bags
+    completed_before = _bags_canonically_completed_before_opening(
+        cursor,
+        int(organization_id),
+        shift_date_et,
+        bids,
+        service_type_by_bag={bid: "WF" for bid in bids},
+    )
+    if not completed_before:
+        return bags
+    return [
+        b
+        for b in bags
+        if normalize_bag_id(b.get("bag_id")) not in completed_before
+    ]
 
 
 def apply_wf_selected_day_boundary_guard(

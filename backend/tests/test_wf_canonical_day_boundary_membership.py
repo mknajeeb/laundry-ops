@@ -19,6 +19,9 @@ from backend.rinse_veewash_workload import OUTCOME_COMPLETED, OUTCOME_PENDING
 ORG = 3
 AUG24 = date(2026, 8, 24)
 AUG25 = date(2026, 8, 25)
+_COMPLETED_BEFORE = (
+    "backend.rinse_veewash_day_membership._bags_canonically_completed_before_opening"
+)
 _ENRICH = "backend.rinse_day_bag_completion_projection.enrich_bags_completion_from_scans"
 _APPLY = "backend.rinse_day_bag_completion_projection.apply_normalized_completion_fields"
 _WEIGHTS = "backend.rinse_veewash_review.load_bag_weight_map"
@@ -78,8 +81,9 @@ def _mock_cursor_with_cycles(cycles: list[dict]) -> MagicMock:
     return cur
 
 
+@patch(_COMPLETED_BEFORE, return_value={"STALE01"})
 @patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
-def test_completed_aug24_bag_does_not_appear_aug25_workload(load_day_bags):
+def test_completed_aug24_bag_does_not_appear_aug25_workload(load_day_bags, _completed_before):
     load_day_bags.return_value = [
         _prior_completed_day_bag(
             "STALE01",
@@ -92,8 +96,9 @@ def test_completed_aug24_bag_does_not_appear_aug25_workload(load_day_bags):
     assert [b["bag_id"] for b in bags] == []
 
 
+@patch(_COMPLETED_BEFORE, return_value=set())
 @patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
-def test_unfinished_aug24_bag_carries_into_aug25(load_day_bags):
+def test_unfinished_aug24_bag_carries_into_aug25(load_day_bags, _completed_before):
     load_day_bags.return_value = [
         {
             "bag_id": "CARRY01",
@@ -117,8 +122,10 @@ def test_unfinished_aug24_bag_carries_into_aug25(load_day_bags):
     assert bags[0]["new_or_carryover"] == OUTCOME_CARRYOVER_QUERY
 
 
+@patch(_COMPLETED_BEFORE, return_value={"REOPN01"})
 @patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
-def test_genuine_aug25_new_cycle_after_aug24_completion(load_day_bags):
+def test_prior_completed_bag_excluded_even_with_new_cycle_anchor(load_day_bags, _completed_before):
+    """No new-cycle exception once a bag ID has completed on a prior day."""
     load_day_bags.return_value = [
         _prior_completed_day_bag(
             "REOPN01",
@@ -148,9 +155,40 @@ def test_genuine_aug25_new_cycle_after_aug24_completion(load_day_bags):
     )
     with _enrich_patches():
         bags = _canonical_wf_bags_for_date(cur, ORG, AUG25)
+    assert bags == []
+
+
+@patch(_COMPLETED_BEFORE, return_value={"OLD001"})
+def test_completed_two_days_ago_excluded(_completed_before):
+    cur = _mock_cursor_with_cycles([_stale_active_cycle("OLD001")])
+    with _enrich_patches():
+        bags = _canonical_wf_bags_for_date(cur, ORG, AUG25)
+    assert bags == []
+
+
+@patch(_COMPLETED_BEFORE, return_value=set())
+def test_completed_today_included_as_completed(_completed_before):
+    cur = _mock_cursor_with_cycles(
+        [
+            {
+                "id": 1,
+                "bag_id": "TODAY1",
+                "cycle_anchor_at": datetime(2026, 8, 25, 8, 0),
+                "admitted_at": datetime(2026, 8, 25, 8, 0),
+                "status": STATUS_COMPLETED,
+                "completed_at": datetime(2026, 8, 25, 12, 0),
+                "pre_weight_lbs": 10.0,
+                "post_weight_lbs": 9.0,
+                "rush_status": None,
+                "review_reason": None,
+            }
+        ]
+    )
+    with _enrich_patches():
+        bags = _canonical_wf_bags_for_date(cur, ORG, AUG25)
     assert len(bags) == 1
-    assert bags[0]["bag_id"] == "REOPN01"
-    assert bags[0]["new_or_carryover"] == "new_today"
+    assert bags[0]["bag_id"] == "TODAY1"
+    assert bags[0]["effective_status"] == OUTCOME_COMPLETED
 
 
 @patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
@@ -184,19 +222,9 @@ def test_cycle_anchor_or_admit_on_date_midnight_crossing():
     )
 
 
-@patch(
-    "backend.rinse_wf_service_cycle_compat._prior_day_terminal_completed_wf_bag_ids",
-    return_value={"BAG001"},
-)
-def test_exclude_filter_keeps_only_new_cycle_on_d(_prior_done):
+@patch(_COMPLETED_BEFORE, return_value={"BAG001"})
+def test_exclude_filter_drops_historically_completed_bag(_completed_before):
     bags = [
-        {
-            "bag_id": "BAG001",
-            "bag_snapshot": {
-                "admitted_at": str(datetime(2026, 8, 24, 9, 0)),
-                "cycle_anchor_at": str(datetime(2026, 8, 24, 9, 0)),
-            },
-        },
         {
             "bag_id": "BAG001",
             "bag_snapshot": {
@@ -207,10 +235,10 @@ def test_exclude_filter_keeps_only_new_cycle_on_d(_prior_done):
         {"bag_id": "CARY002", "bag_snapshot": {}},
     ]
     kept = _exclude_stale_prior_day_terminal_cycles(MagicMock(), ORG, AUG25, bags)
-    assert [b["bag_id"] for b in kept] == ["BAG001", "CARY002"]
-    assert "2026-08-25" in kept[0]["bag_snapshot"]["admitted_at"]
+    assert [b["bag_id"] for b in kept] == ["CARY002"]
 
 
+@patch(_COMPLETED_BEFORE, return_value={"STALE01"})
 @patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot")
 @patch("backend.rinse_wf_service_cycle_compat.build_step1_headline_summary")
 @patch("backend.rinse_wf_service_cycle_compat._preserved_hd_bag_dicts", return_value=[])
@@ -228,6 +256,7 @@ def test_terminal_projection_idempotent_drops_stale_completed(
     _hd,
     headline,
     persist,
+    _completed_before,
 ):
     load_day_bags.side_effect = lambda _c, _o, d: (
         [_prior_completed_day_bag("STALE01", completed_at=datetime(2026, 8, 24, 13, 0))]
@@ -439,6 +468,7 @@ def test_persist_day_snapshot_idempotent_across_repeated_automatic_rebuilds(
         assert persisted_ids == ["FRSH001"]
 
 
+@patch(_COMPLETED_BEFORE, return_value={"STALE01"})
 @patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot")
 @patch("backend.rinse_wf_service_cycle_compat.build_step1_headline_summary")
 @patch("backend.rinse_wf_service_cycle_compat._preserved_hd_bag_dicts", return_value=[])
@@ -456,6 +486,7 @@ def test_automatic_terminal_rebuild_idempotent_three_passes(
     _hd,
     headline,
     persist,
+    _completed_before,
 ):
     """Simulate repeated scrape finalize projections — membership must stay at guarded size."""
     load_day_bags.side_effect = lambda _c, _o, d: (
@@ -607,8 +638,9 @@ def test_workload_headline_equals_completed_plus_pending_plus_review(
     assert wf["completed"] + wf["pending"] + wf["review_required"] == 3
 
 
+@patch(_COMPLETED_BEFORE, return_value={"STALE01"})
 @patch("backend.rinse_wf_service_cycle_compat.load_day_bags")
-def test_pre_resolver_does_not_create_day_membership_by_itself(load_day_bags):
+def test_pre_resolver_does_not_create_day_membership_by_itself(load_day_bags, _completed_before):
     """PRE weight enrichment must not admit bags filtered out by day boundary guard."""
     load_day_bags.return_value = [
         _prior_completed_day_bag("STALE01", completed_at=datetime(2026, 8, 24, 11, 0))
