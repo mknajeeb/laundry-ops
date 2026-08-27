@@ -42,6 +42,8 @@ const API_ERROR_LABELS = {
   invalid_bag_id: "Invalid bag id.",
   conflict: "This bag was updated while you were reviewing it. Close and reopen to retry.",
   reason_code_required: "A review reason is required.",
+  reason_code_not_allowed_for_action:
+    "Could not save this review action. Close and reopen the bag, then try again.",
   reason_note_required_for_other: "Enter a note for this review action.",
   validation_failed: "Check the form and try again.",
   bulk_update_failed: "Could not save bulk items.",
@@ -135,6 +137,14 @@ function isHumanMessage(text) {
   return true;
 }
 
+function sanitizeUiErrorText(text, fallback = "Something went wrong. Try again.") {
+  const raw = String(text ?? "").trim();
+  if (!raw) return fallback;
+  if (API_ERROR_LABELS[raw]) return API_ERROR_LABELS[raw];
+  if (isRawBackendCode(raw)) return fallback;
+  return raw;
+}
+
 /** Format API `error` / `message` fields for Review drawers and save actions. */
 export function formatReviewApiError(error, message) {
   const errKey = String(error ?? "").trim();
@@ -144,7 +154,9 @@ export function formatReviewApiError(error, message) {
   if (errKey && isRawBackendCode(errKey)) {
     return API_ERROR_LABELS[errKey] || "Something went wrong. Try again.";
   }
-  if (msg) return formatReviewReasonLabel(msg, { fallback: "Something went wrong. Try again." });
+  if (msg) {
+    return sanitizeUiErrorText(formatReviewReasonLabel(msg, { fallback: "" }), "Something went wrong. Try again.");
+  }
   return "Something went wrong. Try again.";
 }
 

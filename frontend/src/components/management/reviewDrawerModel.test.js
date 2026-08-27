@@ -154,6 +154,22 @@ describe("suggestedCompleteAudit", () => {
     expect(audit.reasonCode).toBe("CORRECT_COMPLETION_DETAILS");
     expect(audit.reasonRequired).toBe(true);
   });
+
+  it("uses weight correction audit code for specialty review saves, not review eligibility codes", () => {
+    const audit = suggestedCompleteAudit({
+      draft: { completed_by: "Ada", completion_at: "2026-08-17T10:00", post_weight_lbs: "4.2" },
+      baselineBag: {
+        completion_employee: "Ada",
+        completion_at: "2026-08-17T10:00",
+        post_weight_lbs: "",
+        reason_codes: ["SERVICE_CLASSIFICATION_MISMATCH"],
+      },
+      variant: "specialty",
+    });
+    expect(audit.reasonCode).toBe("INCORRECT_CAPTURED_WEIGHT");
+    expect(audit.reasonCode).not.toBe("SERVICE_CLASSIFICATION_MISMATCH");
+    expect(audit.reasonNote).toMatch(/Specialty review/i);
+  });
 });
 
 describe("catalogSpecialtyLines", () => {

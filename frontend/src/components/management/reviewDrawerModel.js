@@ -224,16 +224,21 @@ export function validateSpecialtySave({
   return { enabled: true, reason: null };
 }
 
-export function suggestedCompleteAudit({ draft, baselineBag }) {
+export function suggestedCompleteAudit({ draft, baselineBag, variant = "missing" }) {
   const path = classifyEditSavePath({
     draft,
     baselineBag,
     outcome: "mark_completed",
   });
   const code = path.suggestedReasonCode || "MARK_COMPLETED";
+  const isSpecialty = variant === "specialty";
   const note = path.confirmCompleted
-    ? "Missing From Portal — confirm completion"
-    : "Missing From Portal — Save & Complete";
+    ? isSpecialty
+      ? "Specialty review — confirm completion"
+      : "Missing From Portal — confirm completion"
+    : isSpecialty
+      ? "Specialty review — Save & Complete"
+      : "Missing From Portal — Save & Complete";
   return {
     reasonCode: path.reasonRequired ? code : "MARK_COMPLETED",
     reasonNote: note,

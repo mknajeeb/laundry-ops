@@ -57,6 +57,10 @@ describe("formatReviewApiError", () => {
       "Select the employee who completed this order.",
     );
     expect(formatReviewApiError("post_weight_required")).toBe("Enter the post weight.");
+    expect(formatReviewApiError("reason_code_not_allowed_for_action")).toBe(
+      API_ERROR_LABELS.reason_code_not_allowed_for_action,
+    );
+    expect(formatReviewApiError("reason_code_not_allowed_for_action")).not.toMatch(/reason_code/i);
   });
 
   it("prefers human message when error key is unknown", () => {

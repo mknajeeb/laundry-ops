@@ -81,7 +81,9 @@ function normalizeCompletionKey(raw) {
 }
 
 export function hasCanonicalCompletion(bag) {
-  const emp = String(bag?.completed_by || bag?.canonical_completion_employee || "").trim();
+  const emp = String(
+    bag?.completed_by || bag?.completion_employee || bag?.canonical_completion_employee || "",
+  ).trim();
   const ts = bag?.completion_at ?? bag?.canonical_completion_timestamp;
   if (emp && ts != null && ts !== "") return true;
   const status = String(bag?.dashboard_status || bag?.outcome || "").trim().toLowerCase();
@@ -301,7 +303,14 @@ export function classifyEditSavePath({ draft, baselineBag, outcome = null }) {
   const draftEmp = String(draft?.completed_by || draft?.completion_employee || "")
     .trim()
     .toLowerCase();
-  const beforeEmp = String(baselineBag?.completed_by || "").trim().toLowerCase();
+  const beforeEmp = String(
+    baselineBag?.completed_by ||
+      baselineBag?.completion_employee ||
+      baselineBag?.canonical_completion_employee ||
+      "",
+  )
+    .trim()
+    .toLowerCase();
   const empChanged = draftEmp !== beforeEmp;
   const tsChanged =
     normalizeCompletionKey(draft?.completion_at) !==

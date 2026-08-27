@@ -355,13 +355,13 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
     if (preEditing || (parsedPre != null && parsedPre !== baselinePre)) {
       draft.pre_weight_lbs = parsedPre;
     }
-    const audit = suggestedCompleteAudit({ draft, baselineBag: bag });
-    const reasonCode = isSpecialty
-      ? "SERVICE_CLASSIFICATION_MISMATCH"
-      : audit.reasonCode || "DISAPPEARED_WITHOUT_COMPLETION";
-    const reasonNote = isSpecialty
-      ? "Specialty review — Save & Complete"
-      : audit.reasonNote;
+    const audit = suggestedCompleteAudit({
+      draft,
+      baselineBag: bag,
+      variant: isSpecialty ? "specialty" : "missing",
+    });
+    const reasonCode = audit.reasonCode;
+    const reasonNote = audit.reasonNote;
     setSaving(true);
     setError("");
     try {
