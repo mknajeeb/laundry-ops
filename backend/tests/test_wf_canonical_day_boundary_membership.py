@@ -651,3 +651,107 @@ def test_pre_resolver_does_not_create_day_membership_by_itself(load_day_bags, _c
         with patch(_WEIGHTS, return_value=weight_map):
             bags = _canonical_wf_bags_for_date(cur, ORG, AUG25)
     assert bags == []
+
+
+AUG26 = date(2026, 8, 26)
+AUG27 = date(2026, 8, 27)
+_CLEAN_AUG26_WORKLOAD = 126
+
+
+def _clean_aug26_day_record() -> dict:
+    return {
+        "status": "OPEN",
+        "shift_date_et": AUG26.isoformat(),
+        "headline": {
+            "segments": {
+                "wf": {
+                    "total_workload": _CLEAN_AUG26_WORKLOAD,
+                    "completed": 101,
+                    "pending": 0,
+                    "review_required": 25,
+                    "exceptions": {"review_required": 25},
+                }
+            }
+        },
+    }
+
+
+@patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=[{"bag_id": f"B{i}"} for i in range(_CLEAN_AUG26_WORKLOAD)])
+@patch("backend.rinse_veewash_shift_day.summary_from_day_record")
+@patch("backend.rinse_veewash_shift_day.get_day_record")
+@patch("backend.rinse_wf_service_cycle.is_wf_canonical_lifecycle_enabled", return_value=True)
+@patch("backend.rinse_wf_service_cycle_compat.terminal_project_canonical_wf_day_snapshot")
+@patch("backend.rinse_veewash_workload.build_veewash_daily_workload_from_membership")
+@patch("backend.rinse_veewash_shift_day.today_et", return_value=AUG27)
+def test_historical_backfill_uses_terminal_canonical_not_additive_membership(
+    mock_today,
+    mock_membership,
+    mock_terminal,
+    _canonical_enabled,
+    mock_get_day,
+    mock_summary,
+    _load_day_bags,
+):
+    """Aug 26 must not re-enter via append-only Stage-B when today is Aug 27."""
+    from backend.rinse_veewash_shift_day import backfill_day_from_live
+
+    mock_get_day.return_value = _clean_aug26_day_record()
+    mock_terminal.return_value = {"ok": True, "shift_date_et": AUG26.isoformat()}
+    mock_summary.return_value = _clean_aug26_day_record()["headline"]
+
+    out = backfill_day_from_live(
+        MagicMock(),
+        ORG,
+        AUG26,
+        force=True,
+        bypass_evidence_gate=True,
+    )
+
+    assert out.get("historical_canonical_reproject") is True
+    assert out.get("ok") is True
+    mock_terminal.assert_called_once()
+    mock_membership.assert_not_called()
+
+
+@patch(_COMPLETED_BEFORE, return_value=set())
+@patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=[{"bag_id": f"B{i}"} for i in range(_CLEAN_AUG26_WORKLOAD)])
+@patch("backend.rinse_veewash_shift_day.summary_from_day_record")
+@patch("backend.rinse_veewash_shift_day.get_day_record")
+@patch("backend.rinse_wf_service_cycle.is_wf_canonical_lifecycle_enabled", return_value=True)
+@patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot")
+@patch("backend.rinse_wf_service_cycle_compat.resolve_canonical_wf_day_bag_rows_for_persist")
+@patch("backend.rinse_veewash_workload.build_veewash_daily_workload_from_membership")
+@patch("backend.rinse_veewash_shift_day.today_et", return_value=AUG27)
+def test_next_day_sync_does_not_resurrect_historical_completed_on_aug26(
+    mock_today,
+    mock_membership,
+    mock_resolve,
+    mock_persist,
+    _canonical_enabled,
+    mock_get_day,
+    mock_summary,
+    _load_day_bags,
+    _completed_before,
+):
+    """Clean Aug 26 canonical snapshot stays 126 after next-day sync/rebuild."""
+    from backend.rinse_veewash_shift_day import backfill_day_from_live
+
+    canonical_rows = [{"bag_id": f"LIVE{i}", "service_type": "WF"} for i in range(_CLEAN_AUG26_WORKLOAD)]
+    mock_resolve.return_value = canonical_rows
+    mock_persist.return_value = {"ok": True}
+    mock_get_day.return_value = _clean_aug26_day_record()
+    mock_summary.return_value = _clean_aug26_day_record()["headline"]
+
+    out = backfill_day_from_live(
+        MagicMock(),
+        ORG,
+        AUG26,
+        force=True,
+        bypass_evidence_gate=True,
+    )
+
+    assert out.get("historical_canonical_reproject") is True
+    assert out.get("bag_count") == _CLEAN_AUG26_WORKLOAD
+    mock_membership.assert_not_called()
+    mock_resolve.assert_called_once()
+    assert len(mock_resolve.return_value) == _CLEAN_AUG26_WORKLOAD
