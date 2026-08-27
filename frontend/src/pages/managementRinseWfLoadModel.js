@@ -4,7 +4,7 @@ export function mergeRinseWfDashboardPayload(primary, secondary) {
   const rinse = {
     ...(primary.rinse || {}),
     ...(secondary?.rinse || {}),
-    weight_totals: primary.rinse?.weight_totals ?? secondary?.rinse?.weight_totals,
+    weight_totals: secondary?.rinse?.weight_totals ?? primary.rinse?.weight_totals,
     segments: primary.rinse?.segments ?? secondary?.rinse?.segments,
     specialty_metrics:
       secondary?.rinse?.specialty_metrics ?? primary.rinse?.specialty_metrics,

@@ -590,7 +590,10 @@ def _run_bash_script(
     progress_fn: Callable[[str], None] | None = None,
     supervisor_tick_fn: Callable[[], None] | None = None,
     hard_deadline_mono: float | None = None,
+    outcome_out: list[dict[str, Any]] | None = None,
 ) -> int:
+    from backend.rinse_scrape_subprocess_outcome import classify_subprocess_failure
+
     env = {**os.environ, **extra_env}
     log.write(f"\n--- bash {script} ---\n")
     timeout = int(timeout_sec) if timeout_sec is not None else combined_phase_timeout_sec()
@@ -603,7 +606,8 @@ def _run_bash_script(
     started = time.monotonic()
     last_hb = started
     last_sup = started
-    last_progress = started
+    last_progress = [started]
+    last_log_lines: list[str] = []
     stall_after = stall_seconds()
     proc = subprocess.Popen(
         ["bash", str(script)],
@@ -614,14 +618,17 @@ def _run_bash_script(
         text=True,
         bufsize=1,
     )
+    log.write(f"portal_subprocess pid={proc.pid}\n")
 
     def _pump(stream) -> None:
-        nonlocal last_progress
         if stream is None:
             return
         for line in stream:
             log.write(line)
-            last_progress = time.monotonic()
+            last_progress[0] = time.monotonic()
+            last_log_lines.append(line.rstrip("\n"))
+            if len(last_log_lines) > 80:
+                del last_log_lines[:-80]
             if progress_fn:
                 try:
                     progress_fn(line)
@@ -634,22 +641,45 @@ def _run_bash_script(
     t_err.start()
     timed_out = False
     stalled = False
+    killed_by_parent = False
+
+    def _stall_watchdog() -> None:
+        nonlocal stalled, killed_by_parent
+        while proc.poll() is None:
+            if (time.monotonic() - last_progress[0]) >= stall_after:
+                stalled = True
+                killed_by_parent = True
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                return
+            time.sleep(2)
+
+    t_watch = threading.Thread(target=_stall_watchdog, daemon=True)
+    t_watch.start()
     try:
         while proc.poll() is None:
             now_m = time.monotonic()
             elapsed = now_m - started
             if elapsed >= timeout:
                 timed_out = True
+                killed_by_parent = True
                 proc.kill()
                 proc.wait(timeout=30)
                 break
             if hard_deadline_mono is not None and now_m >= hard_deadline_mono:
                 timed_out = True
+                killed_by_parent = True
                 proc.kill()
                 proc.wait(timeout=30)
                 break
-            if (now_m - last_progress) >= stall_after:
+            if stalled:
+                proc.wait(timeout=30)
+                break
+            if (now_m - last_progress[0]) >= stall_after:
                 stalled = True
+                killed_by_parent = True
                 proc.kill()
                 proc.wait(timeout=30)
                 break
@@ -657,6 +687,7 @@ def _run_bash_script(
                 try:
                     heartbeat_fn()
                 except FencedWriterError:
+                    killed_by_parent = True
                     proc.kill()
                     proc.wait(timeout=30)
                     raise
@@ -677,18 +708,41 @@ def _run_bash_script(
     except FencedWriterError:
         raise
     except Exception:
+        killed_by_parent = True
         proc.kill()
         raise
+    if proc.poll() is None:
+        proc.wait(timeout=30)
     t_out.join(timeout=30)
     t_err.join(timeout=30)
+    elapsed_sec = round(time.monotonic() - started, 1)
+    rc = -2 if stalled else (-1 if timed_out else int(proc.returncode or 0))
     if stalled:
         log.write(f"exit code: stalled after {stall_after}s without progress\n")
-        return -2
-    if timed_out:
+    elif timed_out:
         log.write(f"exit code: timeout after {timeout}s\n")
-        return -1
-    log.write(f"exit code: {proc.returncode}\n")
-    return int(proc.returncode or 0)
+    else:
+        log.write(f"exit code: {proc.returncode}\n")
+    outcome = classify_subprocess_failure(
+        returncode=rc,
+        timed_out=timed_out,
+        stalled=stalled,
+        killed_by_parent=killed_by_parent,
+        last_log_lines=last_log_lines,
+        elapsed_sec=elapsed_sec,
+    )
+    outcome["pid"] = proc.pid
+    outcome["script"] = str(script)
+    if outcome.get("failure_class"):
+        log.write(
+            "portal_subprocess_outcome: "
+            f"class={outcome.get('failure_class')} "
+            f"signal={outcome.get('signal')} "
+            f"elapsed_sec={elapsed_sec}\n"
+        )
+    if outcome_out is not None:
+        outcome_out.append(outcome)
+    return rc
 
 
 def _subprocess_env_for_vendor(
@@ -2278,6 +2332,7 @@ def run_scheduled_scrape_for_org(
                             org_id, int(lease_gen), stage="portal_scrape"
                         )
 
+                portal_outcome: list[dict[str, Any]] = []
                 with scrape_stage_heartbeat(
                     run_id, org_id, stage="portal_scrape", lease_generation=lease_gen,
                 ):
@@ -2290,6 +2345,15 @@ def run_scheduled_scrape_for_org(
                         progress_fn=_scan_progress,
                         supervisor_tick_fn=_portal_supervisor_tick,
                         hard_deadline_mono=hard_deadline_mono,
+                        outcome_out=portal_outcome,
+                    )
+                if portal_outcome:
+                    from backend.rinse_scrape_subprocess_outcome import (
+                        merge_portal_subprocess_outcome,
+                    )
+
+                    result.detail = merge_portal_subprocess_outcome(
+                        result.detail, portal_outcome[0], stage="portal_scrape"
                     )
                 if rc == -2:
                     raise RuntimeError(
@@ -2357,16 +2421,27 @@ def run_scheduled_scrape_for_org(
                             org_id, int(lease_gen), stage="portal_scrape"
                         )
 
+                portal_outcome: list[dict[str, Any]] = []
                 with scrape_stage_heartbeat(
                     run_id, org_id, stage="portal_scrape", lease_generation=lease_gen,
                 ):
-                    if _run_bash_script(
+                    rc = _run_bash_script(
                         portal_script,
                         env,
                         log,
                         supervisor_tick_fn=_portal_supervisor_tick,
-                    ) != 0:
-                        raise RuntimeError("Portal scrape subprocess failed")
+                        outcome_out=portal_outcome,
+                    )
+                if portal_outcome:
+                    from backend.rinse_scrape_subprocess_outcome import (
+                        merge_portal_subprocess_outcome,
+                    )
+
+                    result.detail = merge_portal_subprocess_outcome(
+                        result.detail, portal_outcome[0], stage="portal_scrape"
+                    )
+                if rc != 0:
+                    raise RuntimeError("Portal scrape subprocess failed")
 
             if not paths.portal_csv.is_file() or count_csv_data_rows(paths.portal_csv) < 1:
                 raise RuntimeError("Portal CSV missing or empty after scrape")

@@ -2,17 +2,17 @@ import { describe, expect, it } from "vitest";
 import { mergeRinseWfDashboardPayload } from "./managementRinseWfLoadModel";
 
 describe("mergeRinseWfDashboardPayload", () => {
-  it("keeps primary segments and weights when secondary arrives", () => {
+  it("keeps primary segments and loads weights from secondary", () => {
     const primary = {
       date_et: "2026-08-16",
       rinse: {
         segments: { wf: { total_workload: 113, completed: 80 } },
-        weight_totals: { pre_lbs: 500 },
       },
       review: { deferred: true },
     };
     const secondary = {
       rinse: {
+        weight_totals: { pre_lbs: 500 },
         specialty_metrics: { wf: { rejected_orders: { count: 2 } } },
       },
       review: {

@@ -1323,10 +1323,10 @@ def build_management_rinse_wf_primary_payload(
     *,
     bypass_cache: bool = False,
 ) -> dict[str, Any]:
-    """Rinse WF primary dashboard — workload segments + PRE/POST weights only.
+    """Rinse WF primary dashboard — workload segment counts only (no PRE/POST weights).
 
-    Does not compute canonical review membership or specialty rebuilds.
-    Secondary sections load via ``build_management_rinse_wf_secondary_payload``.
+    Does not compute canonical review membership, specialty rebuilds, or weight totals.
+    Weights load via ``build_management_rinse_wf_secondary_payload``.
     """
     org = int(organization_id)
     day = selected_date_et
@@ -1356,14 +1356,8 @@ def build_management_rinse_wf_primary_payload(
     _cache_headline(org, day, day_rec, headline)
     _phase_timing(phases, "headline", t0, counting.query_count, query_start=q0)
 
-    t1 = time.perf_counter()
-    q1 = int(counting.query_count)
-    weight_totals = load_wf_day_weight_totals(counting, org, day)
-    _phase_timing(phases, "weights", t1, counting.query_count, query_start=q1)
-
     rinse = _extract_rinse_wf_only(headline, day_rec)
-    rinse["weight_totals"] = weight_totals
-    # Specialty metrics arrive on the secondary request; omit stale packs from primary.
+    # PRE/POST weights and specialty metrics load on the secondary request.
     rinse.pop("specialty_metrics", None)
 
     now_et = business_now()
@@ -1386,7 +1380,7 @@ def build_management_rinse_wf_primary_payload(
             "phases": phases,
             "sources": {
                 "rinse": "persisted_day_headline_compact_read",
-                "wf_weights": "canonical_pre_resolver+rinse_shift_monitor_day_bags.post_weight_lbs",
+                "wf_weights": "deferred_to_/api/management/rinse-wf/secondary",
                 "review": "deferred_to_/api/management/rinse-wf/secondary",
                 "specialty": "deferred_to_/api/management/rinse-wf/secondary",
             },
@@ -1406,7 +1400,7 @@ def build_management_rinse_wf_secondary_payload(
     *,
     bypass_cache: bool = False,
 ) -> dict[str, Any]:
-    """Rinse WF secondary sections — specialty metrics + canonical review counts."""
+    """Rinse WF secondary sections — PRE/POST weights, specialty metrics, review counts."""
     org = int(organization_id)
     day = selected_date_et
     cache_key = (org, day.isoformat())
@@ -1452,6 +1446,11 @@ def build_management_rinse_wf_secondary_payload(
 
     t2 = time.perf_counter()
     q2 = int(counting.query_count)
+    weight_totals = load_wf_day_weight_totals(counting, org, day)
+    _phase_timing(phases, "weights", t2, counting.query_count, query_start=q2)
+
+    t3 = time.perf_counter()
+    q3 = int(counting.query_count)
     review_base = review_category_count_payload(
         headline,
         cursor=counting,
@@ -1462,7 +1461,7 @@ def build_management_rinse_wf_secondary_payload(
         counting, org, day, headline, review_base
     )
     review.pop("_membership", None)
-    _phase_timing(phases, "review", t2, counting.query_count, query_start=q2)
+    _phase_timing(phases, "review", t3, counting.query_count, query_start=q3)
 
     now_et = business_now()
     if getattr(now_et, "tzinfo", None) is None:
@@ -1473,7 +1472,10 @@ def build_management_rinse_wf_secondary_payload(
     payload = {
         "date_et": day.isoformat(),
         "generated_at_et": generated_iso,
-        "rinse": {"specialty_metrics": specialty_metrics},
+        "rinse": {
+            "weight_totals": weight_totals,
+            "specialty_metrics": specialty_metrics,
+        },
         "review": review,
         "_meta": {
             "cached": False,
@@ -1483,6 +1485,7 @@ def build_management_rinse_wf_secondary_payload(
             "tier": "secondary",
             "phases": phases,
             "sources": {
+                "wf_weights": "canonical_pre_resolver+rinse_shift_monitor_day_bags.post_weight_lbs",
                 "specialty": "persisted_or_rebuilt_wf_specialty_pack",
                 "review": "canonical_specialty_review_membership_shared_with_drawer",
             },

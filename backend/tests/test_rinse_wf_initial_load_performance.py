@@ -162,12 +162,6 @@ def test_primary_payload_skips_review_and_specialty_compute(monkeypatch):
         "backend.management_today._load_headline",
         return_value=({"status": "OPEN"}, headline),
     ), patch(
-        "backend.management_today.load_wf_day_weight_totals",
-        return_value=_weight_totals(),
-    ), patch(
-        "backend.management_rinse_wf_review.review_category_count_payload",
-        side_effect=_track_review,
-    ), patch(
         "backend.management_today.business_today",
         return_value=day,
     ), patch(
@@ -179,7 +173,7 @@ def test_primary_payload_skips_review_and_specialty_compute(monkeypatch):
         )
 
     assert payload["rinse"]["segments"]["wf"]["total_workload"] == 113
-    assert payload["rinse"]["weight_totals"]["pre_weight_bag_count"] == 113
+    assert "weight_totals" not in payload["rinse"]
     assert "specialty_metrics" not in payload["rinse"]
     assert payload["review"]["deferred"] is True
     assert review_calls == []
@@ -195,6 +189,9 @@ def test_secondary_payload_includes_review_and_specialty(monkeypatch):
     with patch(
         "backend.management_today._load_headline",
         return_value=({"status": "OPEN"}, headline),
+    ), patch(
+        "backend.management_today.load_wf_day_weight_totals",
+        return_value=_weight_totals(),
     ), patch(
         "backend.management_rinse_wf_review.review_category_count_payload",
         return_value={**_review_payload(), "_membership": {}},
@@ -214,6 +211,7 @@ def test_secondary_payload_includes_review_and_specialty(monkeypatch):
 
     spec = payload["rinse"]["specialty_metrics"]["wf"]
     assert spec["comforter_orders"]["count"] == 3
+    assert payload["rinse"]["weight_totals"]["pre_weight_bag_count"] == 113
     assert payload["review"]["specialty_items"] == 1
     assert payload["review"]["split_available"] is True
     assert payload["_meta"]["tier"] == "secondary"
