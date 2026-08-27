@@ -37,6 +37,13 @@ import {
   loadLocalEnvFile,
   progressLine,
   navTimeoutMs,
+  actionTimeoutMs,
+  ticketOpTimeoutMs,
+  applyBoundedPageTimeouts,
+  closeBrowserSafe,
+  portalDiag,
+  withBoundedTimeout,
+  isTransientBrowserError,
   urlForPage,
   pageNumFromUrl,
   defaultScanEventsOutputPath,
@@ -141,8 +148,14 @@ async function scrapeScanEventsOnPage(page) {
   let recordIndex = 0;
   const minListTd = Math.max(2, Math.min(12, parseInt(process.env.RINSE_MIN_LIST_TD || "2", 10) || 2));
 
+  const maxRowIters = Math.max(
+    initialRowCount * 4 + 40,
+    Math.min(800, parseInt(process.env.RINSE_MAX_ROW_ITERS || "400", 10) || 400),
+  );
   let j = 0;
-  while (true) {
+  let iters = 0;
+  while (iters < maxRowIters) {
+    iters += 1;
     const rowCount = await rowsAll.count();
     if (j >= rowCount) break;
 
@@ -191,22 +204,57 @@ async function scrapeScanEventsOnPage(page) {
     recordIndex += 1;
     const rowHint = `${j + 1}/${rowCount}`;
     const preview = trimmed.replace(/\s+/g, " ").slice(0, 72);
+    progressLine(`  ticket ${recordIndex} (tr ${rowHint}): expanding… ${preview}`);
+    portalDiag({
+      op: "expandRowAndReadBag",
+      ticket: recordIndex,
+      tr: rowHint,
+      action_timeout_ms: actionTimeoutMs(),
+      ticket_op_timeout_ms: ticketOpTimeoutMs(),
+    });
 
     let visibleTableSiRaw = "";
     if (siColumnIndex >= 0) {
       visibleTableSiRaw = await readVisibleTableSpecialInstructions(cand, siColumnIndex);
     }
 
-    const { bagId, bagDisplay, customer, fullText, collapsed } = await expandRowAndReadBag(
-      page,
-      cand,
-      rt,
-    );
+    let bagId = "";
+    let bagDisplay = "";
+    let customer = "";
+    let fullText = "";
+    let collapsed = rt;
+    try {
+      ({ bagId, bagDisplay, customer, fullText, collapsed } = await withBoundedTimeout(
+        expandRowAndReadBag(page, cand, rt),
+        ticketOpTimeoutMs(),
+        "expandRowAndReadBag",
+      ));
+    } catch (expandErr) {
+      portalDiag({
+        op: "expandRowAndReadBag",
+        error: String(expandErr && expandErr.message ? expandErr.message : expandErr).slice(0, 160),
+        ticket: recordIndex,
+        tr: rowHint,
+      });
+      progressLine(
+        `  ticket ${recordIndex} (tr ${rowHint}): expand timed out/failed — ${preview}…`,
+      );
+      j += 1;
+      continue;
+    }
     const portal = parsePortalFields(collapsed || rt, fullText, tdTexts, bagDisplay || bagId, {
       visibleTableSi: visibleTableSiRaw,
     });
-    const scansRaw = await extractScansFromExpandedTicket(cand);
-    const cleanWeights = await extractPrePostCleanWeightsFromExpandedTicket(cand);
+    const scansRaw = await withBoundedTimeout(
+      extractScansFromExpandedTicket(cand),
+      ticketOpTimeoutMs(),
+      "extractScansFromExpandedTicket",
+    ).catch(() => []);
+    const cleanWeights = await withBoundedTimeout(
+      extractPrePostCleanWeightsFromExpandedTicket(cand),
+      Math.min(20000, ticketOpTimeoutMs()),
+      "extractPrePostCleanWeights",
+    ).catch(() => ({}));
     const assigned = assignAuthoritativeWeightsToScans(scansRaw, cleanWeights);
     const scans = assigned.scans;
     const bd = bagDisplay || bagId;
@@ -284,6 +332,13 @@ async function scrapeScanEventsOnPage(page) {
       .catch(() => {});
 
     j += 1;
+  }
+
+  if (iters >= maxRowIters) {
+    portalDiag({ op: "scrapeScanEvents_row_loop", error: "max_row_iters", iters, max: maxRowIters });
+    progressLine(
+      `  Stopping ticket walk: hit RINSE_MAX_ROW_ITERS cap (${maxRowIters}) after ${out.length} ticket(s).`,
+    );
   }
 
   if (initialRowCount > 0 && out.length > 0) {
@@ -376,258 +431,314 @@ async function main() {
       ? "Launching Chromium (events-only CSV: Bag ID + scans)…"
       : "Launching Chromium (tickets file = production portal; events file = Bag ID + scans)…",
   );
-  const browser = await chromium.launch({
-    headless: !headed,
-    slowMo: headed ? 80 : 0,
-    timeout: Math.max(30000, Math.min(180000, navTimeoutMs())),
-    args: ["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
-  });
-  const context = await browser.newContext(storageState ? { storageState } : {});
-  const page = await context.newPage();
-  const pwTimeout = navTimeoutMs();
-  page.setDefaultTimeout(pwTimeout);
-  page.setDefaultNavigationTimeout(pwTimeout);
 
-  try {
-    if (!storageState) {
-      await tryLogin(page, baseUrl);
+  const allowBrowserRetry =
+    String(process.env.RINSE_BROWSER_RETRY || "1").trim() !== "0";
+  const maxAttempts = allowBrowserRetry ? 2 : 1;
+  let lastErr = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    portalDiag({
+      op: "scrape_attempt",
+      attempt,
+      max_attempts: maxAttempts,
+      action_timeout_ms: actionTimeoutMs(),
+      nav_timeout_ms: navTimeoutMs(),
+      fresh_browser: 1,
+    });
+    if (attempt > 1) {
+      progressLine(
+        `Retry ${attempt - 1}/${maxAttempts - 1}: launching fresh Chromium after transient browser/nav failure.`,
+      );
     }
 
-    const allTickets = [];
-    const seenFingerprints = new Set();
-    const seenBagSigs = new Set();
-    let pagesScraped = 0;
-    let stoppedReason = "no_next_page_ui";
-    let reachedMaxPages = false;
-    let lastPageUrl = baseUrl;
-    let sessionAuthenticated = Boolean(storageState);
-    let pageLoaded = false;
+    let browser = null;
+    try {
+      browser = await chromium.launch({
+        headless: !headed,
+        slowMo: headed ? 80 : 0,
+        timeout: Math.max(30000, Math.min(180000, navTimeoutMs())),
+        args: ["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
+      });
+      const context = await browser.newContext(storageState ? { storageState } : {});
+      const page = await context.newPage();
+      applyBoundedPageTimeouts(page);
 
-    for (let p = pageStart; p < pageStart + maxPages; p++) {
-      const url = urlForPage(baseUrl, p);
-      console.error("[rinse-scan-events] page URL:", url);
-      progressLine(`\nPage ${p}: ${url}`);
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: Math.max(pwTimeout, 90000) });
-      await page.waitForTimeout(pageSettleMs);
-      await page.waitForSelector("table tbody tr", { timeout: 20000 }).catch(() => {});
-      lastPageUrl = page.url();
-      pageLoaded = true;
-      pagesScraped += 1;
-
-      const landed = pageNumFromUrl(page.url());
-      if (landed != null && landed !== p) {
-        progressLine(`Stopping: requested page ${p}, landed on ${landed}.`);
-        stoppedReason = "pagination_redirect";
-        break;
+      if (!storageState) {
+        await tryLogin(page, baseUrl);
       }
 
-      if (await isLikelyLoginPage(page)) {
-        console.error("\nNot logged in — run npm run save-session and set RINSE_STORAGE_STATE.");
-        sessionAuthenticated = false;
-        await browser.close();
-        process.exit(3);
-      }
-      sessionAuthenticated = true;
+      const allTickets = [];
+      const seenFingerprints = new Set();
+      const seenBagSigs = new Set();
+      let pagesScraped = 0;
+      let stoppedReason = "no_next_page_ui";
+      let reachedMaxPages = false;
+      let lastPageUrl = baseUrl;
+      let sessionAuthenticated = Boolean(storageState);
+      let pageLoaded = false;
 
-      const { tickets, tableRowCount } = await scrapeScanEventsOnPage(page);
-      if (tableRowCount === 0) {
-        progressLine(`Stopping: no table rows on page ${p}.`);
-        stoppedReason = "no_table_rows";
-        break;
-      }
+      for (let p = pageStart; p < pageStart + maxPages; p++) {
+        const url = urlForPage(baseUrl, p);
+        console.error("[rinse-scan-events] page URL:", url);
+        progressLine(`\nPage ${p}: ${url}`);
+        portalDiag({ op: "page.goto", page: p, url, waitUntil: "domcontentloaded" });
+        await page.goto(url, {
+          waitUntil: "domcontentloaded",
+          timeout: Math.max(navTimeoutMs(), 90000),
+        });
+        await page.waitForTimeout(pageSettleMs);
+        await page.waitForSelector("table tbody tr", { timeout: 20000 }).catch(() => {});
+        lastPageUrl = page.url();
+        pageLoaded = true;
+        pagesScraped += 1;
 
-      const fp = await page
-        .evaluate(() => {
-          const trs = Array.from(document.querySelectorAll("table tbody tr")).filter((tr) =>
-            tr.querySelector("td"),
-          );
-          return trs
-            .slice(0, 120)
-            .map((tr) => (tr.innerText || "").trim().replace(/\s+/g, " ").slice(0, 140))
-            .join("\u241e");
-        })
-        .catch(() => "");
-      if (fp.length > 24 && seenFingerprints.has(fp)) {
-        progressLine(`Stopping: page ${p} duplicates an earlier page.`);
-        stoppedReason = "duplicate_page_fingerprint";
-        break;
-      }
-      if (fp.length > 24) seenFingerprints.add(fp);
-
-      if (p > pageStart && tickets.length === 0) {
-        progressLine(`Stopping: page ${p} had no extractable ticket rows after filtering.`);
-        stoppedReason = "no_extractable_rows";
-        break;
-      }
-
-      const pageBagSig = [
-        ...new Set(
-          tickets.map((t) => String(t.bag_id || t.bag_id_code || "").trim().toUpperCase()).filter(Boolean),
-        ),
-      ]
-        .sort()
-        .join("\u241e");
-
-      if (pageBagSig.length > 0 && seenBagSigs.has(pageBagSig)) {
-        progressLine(
-          `Stopping: page ${p} has the same bag ID set as an earlier page (no new tickets).`,
-        );
-        stoppedReason = "duplicate_bag_set";
-        break;
-      }
-      if (pageBagSig.length > 0) seenBagSigs.add(pageBagSig);
-
-      allTickets.push(...tickets);
-
-      // Freshness early-stop (same contract as scrape.mjs). Do not assume page 1 = delta.
-      if (String(process.env.RINSE_PORTAL_EARLY_STOP || "") === "1") {
-        if (!globalThis.__rinseEarlyStop) {
-          let seed = {};
-          try {
-            const seedPath = String(process.env.RINSE_FINGERPRINT_SEED || "").trim();
-            if (seedPath && fs.existsSync(seedPath)) {
-              const raw = JSON.parse(fs.readFileSync(seedPath, "utf8"));
-              seed = (raw && raw.fingerprints) || {};
-            }
-          } catch {
-            seed = {};
-          }
-          globalThis.__rinseEarlyStop = {
-            consecutiveUnchanged: 0,
-            sourceInspectedComplete: false,
-            seed,
-          };
-        }
-        const early = globalThis.__rinseEarlyStop;
-        const seed = early.seed || {};
-        const unchangedNeed = Math.max(
-          1,
-          parseInt(process.env.RINSE_EARLY_STOP_UNCHANGED_PAGES || "2", 10) || 2,
-        );
-        let pageNewOrChanged = 0;
-        for (const t of tickets) {
-          const bid = String(t.bag_id || t.bag_id_code || "").trim().toUpperCase();
-          if (!bid) {
-            pageNewOrChanged += 1;
-            continue;
-          }
-          const customer = String(t.customer || t.customer_name || "");
-          const edd = String(t.edd || t.estimated_delivery || "");
-          const lbs = String(t.lbs || t.weight || "");
-          const service = String(t.service || "");
-          const fp = `${bid}|${customer}|${edd}|${lbs}|${service}`.slice(0, 24);
-          const known = seed[bid];
-          if (!known || known !== fp) {
-            pageNewOrChanged += 1;
-            seed[bid] = fp;
-          }
-        }
-        early.seed = seed;
-        if (pageNewOrChanged === 0) {
-          early.consecutiveUnchanged += 1;
-        } else {
-          early.consecutiveUnchanged = 0;
-        }
-        if (early.consecutiveUnchanged >= unchangedNeed) {
-          progressLine(
-            `Stopping: safe unchanged boundary after ${unchangedNeed} consecutive page(s) with no new/changed bag fingerprints.`,
-          );
-          stoppedReason = "safe_unchanged_boundary";
-          early.sourceInspectedComplete = true;
+        const landed = pageNumFromUrl(page.url());
+        if (landed != null && landed !== p) {
+          progressLine(`Stopping: requested page ${p}, landed on ${landed}.`);
+          stoppedReason = "pagination_redirect";
           break;
         }
+
+        if (await isLikelyLoginPage(page)) {
+          console.error("\nNot logged in — run npm run save-session and set RINSE_STORAGE_STATE.");
+          sessionAuthenticated = false;
+          await closeBrowserSafe(browser);
+          browser = null;
+          process.exit(3);
+        }
+        sessionAuthenticated = true;
+
+        const { tickets, tableRowCount } = await scrapeScanEventsOnPage(page);
+        if (tableRowCount === 0) {
+          progressLine(`Stopping: no table rows on page ${p}.`);
+          stoppedReason = "no_table_rows";
+          break;
+        }
+
+        const fp = await page
+          .evaluate(() => {
+            const trs = Array.from(document.querySelectorAll("table tbody tr")).filter((tr) =>
+              tr.querySelector("td"),
+            );
+            return trs
+              .slice(0, 120)
+              .map((tr) => (tr.innerText || "").trim().replace(/\s+/g, " ").slice(0, 140))
+              .join("\u241e");
+          })
+          .catch(() => "");
+        if (fp.length > 24 && seenFingerprints.has(fp)) {
+          progressLine(`Stopping: page ${p} duplicates an earlier page.`);
+          stoppedReason = "duplicate_page_fingerprint";
+          break;
+        }
+        if (fp.length > 24) seenFingerprints.add(fp);
+
+        if (p > pageStart && tickets.length === 0) {
+          progressLine(`Stopping: page ${p} had no extractable ticket rows after filtering.`);
+          stoppedReason = "no_extractable_rows";
+          break;
+        }
+
+        const pageBagSig = [
+          ...new Set(
+            tickets.map((t) => String(t.bag_id || t.bag_id_code || "").trim().toUpperCase()).filter(Boolean),
+          ),
+        ]
+          .sort()
+          .join("\u241e");
+
+        if (pageBagSig.length > 0 && seenBagSigs.has(pageBagSig)) {
+          progressLine(
+            `Stopping: page ${p} has the same bag ID set as an earlier page (no new tickets).`,
+          );
+          stoppedReason = "duplicate_bag_set";
+          break;
+        }
+        if (pageBagSig.length > 0) seenBagSigs.add(pageBagSig);
+
+        allTickets.push(...tickets);
+
+        // Freshness early-stop (same contract as scrape.mjs). Do not assume page 1 = delta.
+        if (String(process.env.RINSE_PORTAL_EARLY_STOP || "") === "1") {
+          if (!globalThis.__rinseEarlyStop) {
+            let seed = {};
+            try {
+              const seedPath = String(process.env.RINSE_FINGERPRINT_SEED || "").trim();
+              if (seedPath && fs.existsSync(seedPath)) {
+                const raw = JSON.parse(fs.readFileSync(seedPath, "utf8"));
+                seed = (raw && raw.fingerprints) || {};
+              }
+            } catch {
+              seed = {};
+            }
+            globalThis.__rinseEarlyStop = {
+              consecutiveUnchanged: 0,
+              sourceInspectedComplete: false,
+              seed,
+            };
+          }
+          const early = globalThis.__rinseEarlyStop;
+          const seed = early.seed || {};
+          const unchangedNeed = Math.max(
+            1,
+            parseInt(process.env.RINSE_EARLY_STOP_UNCHANGED_PAGES || "2", 10) || 2,
+          );
+          let pageNewOrChanged = 0;
+          for (const t of tickets) {
+            const bid = String(t.bag_id || t.bag_id_code || "").trim().toUpperCase();
+            if (!bid) {
+              pageNewOrChanged += 1;
+              continue;
+            }
+            const customer = String(t.customer || t.customer_name || "");
+            const edd = String(t.edd || t.estimated_delivery || "");
+            const lbs = String(t.lbs || t.weight || "");
+            const service = String(t.service || "");
+            const fpBag = `${bid}|${customer}|${edd}|${lbs}|${service}`.slice(0, 24);
+            const known = seed[bid];
+            if (!known || known !== fpBag) {
+              pageNewOrChanged += 1;
+              seed[bid] = fpBag;
+            }
+          }
+          early.seed = seed;
+          if (pageNewOrChanged === 0) {
+            early.consecutiveUnchanged += 1;
+          } else {
+            early.consecutiveUnchanged = 0;
+          }
+          if (early.consecutiveUnchanged >= unchangedNeed) {
+            progressLine(
+              `Stopping: safe unchanged boundary after ${unchangedNeed} consecutive page(s) with no new/changed bag fingerprints.`,
+            );
+            stoppedReason = "safe_unchanged_boundary";
+            early.sourceInspectedComplete = true;
+            break;
+          }
+        }
+
+        if (!(await hasNextPageInUi(page, p))) {
+          progressLine(`Stopping: pagination UI shows no next page after ${p}.`);
+          stoppedReason = "no_next_page_ui";
+          break;
+        }
+
+        if (p === pageStart + maxPages - 1) {
+          reachedMaxPages = true;
+          stoppedReason = "max_pages_reached";
+          progressLine(`Stopping: reached RINSE_MAX_PAGES limit (${maxPages}).`);
+        }
       }
 
-      if (!(await hasNextPageInUi(page, p))) {
-        progressLine(`Stopping: pagination UI shows no next page after ${p}.`);
-        stoppedReason = "no_next_page_ui";
-        break;
+      if (allTickets.length === 0) {
+        console.error("\nNo tickets extracted. Check auth / RINSE_TICKETS_URL / selectors.");
+        await closeBrowserSafe(browser);
+        browser = null;
+        process.exit(2);
       }
 
-      if (p === pageStart + maxPages - 1) {
-        reachedMaxPages = true;
-        stoppedReason = "max_pages_reached";
-        progressLine(`Stopping: reached RINSE_MAX_PAGES limit (${maxPages}).`);
+      const dirE = path.dirname(eventsPath);
+      if (dirE && !fs.existsSync(dirE)) fs.mkdirSync(dirE, { recursive: true });
+      if (!eventsOnly) {
+        const dirT = path.dirname(ticketsPath);
+        if (dirT && !fs.existsSync(dirT)) fs.mkdirSync(dirT, { recursive: true });
       }
-    }
 
-    if (allTickets.length === 0) {
-      console.error(
-        "\nNo tickets exported. Use HEADED=1, confirm RINSE_TICKETS_URL, refresh rinse-auth.json.",
-      );
-      await browser.close();
-      process.exit(2);
-    }
-
-    const dir = path.dirname(eventsPath);
-    if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-    let nTickets = 0;
-    if (!eventsOnly && ticketsPath) {
-      nTickets = writeTicketsCsv(allTickets, ticketsPath);
-      const metaPath =
-        (process.env.OUTPUT_PORTAL_SCRAPE_META && String(process.env.OUTPUT_PORTAL_SCRAPE_META).trim()) ||
-        `${ticketsPath}.meta.json`;
-      const portalScrapeMeta = {
-        stopped_reason: stoppedReason,
-        reached_max_pages: reachedMaxPages,
-        pages_scraped: pagesScraped,
-        max_pages_limit: maxPages,
-        effective_child_max_pages: maxPages,
-        page_start: pageStart,
-        row_count: nTickets,
-        scraped_at: new Date().toISOString(),
-        single_pass_source: "scan-events",
-        source_inspected_complete:
-          stoppedReason === "safe_unchanged_boundary" ||
-          stoppedReason === "no_next_page_ui" ||
-          stoppedReason === "duplicate_bag_set" ||
-          stoppedReason === "duplicate_page_fingerprint" ||
-          stoppedReason === "no_table_rows",
-        early_stop_enabled: String(process.env.RINSE_PORTAL_EARLY_STOP || "") === "1",
-        ...buildPortalValidationMeta({
-          baseUrl,
-          pageUrl: lastPageUrl,
-          sessionAuthenticated,
-          pageLoaded,
-          emptyTableDetected: nTickets === 0,
-        }),
-      };
-      if (reachedMaxPages || stoppedReason === "max_pages_reached") {
-        portalScrapeMeta.source_inspected_complete = false;
+      let ticketCount = 0;
+      if (!eventsOnly) {
+        ticketCount = writeTicketsCsv(allTickets, ticketsPath);
+        progressLine(`\nWrote ${ticketCount} ticket row(s) → ${ticketsPath}`);
       }
-      fs.writeFileSync(metaPath, `${JSON.stringify(portalScrapeMeta, null, 2)}\n`, "utf8");
-      console.error("[rinse-scan-events] wrote portal scrape meta:", metaPath);
-    }
-    const nEvents = writeEventsCsv(allTickets, eventsPath);
+      const eventCount = writeEventsCsv(allTickets, eventsPath);
+      if (eventCount === 0) {
+        console.warn(
+          eventsOnly
+            ? "\nNo scan events exported. Use HEADED=1 and confirm tickets expand to show Scans table."
+            : "\nNo scan events in events file; tickets file still written (matches production ticket export).",
+        );
+      }
+      progressLine(`Wrote ${eventCount} scan event row(s) → ${eventsPath}`);
 
-    if (nEvents === 0) {
-      console.warn(
-        eventsOnly
-          ? "\nNo scan events exported. Use HEADED=1 and confirm tickets expand to show Scans table."
-          : "\nNo scan events in events file; tickets file still written (matches production ticket export).",
-      );
-    }
+      if (!eventsOnly && ticketsPath) {
+        const metaPath =
+          (process.env.OUTPUT_PORTAL_SCRAPE_META && String(process.env.OUTPUT_PORTAL_SCRAPE_META).trim()) ||
+          `${ticketsPath}.meta.json`;
+        const portalScrapeMeta = {
+          stopped_reason: stoppedReason,
+          reached_max_pages: reachedMaxPages,
+          pages_scraped: pagesScraped,
+          max_pages_limit: maxPages,
+          effective_child_max_pages: maxPages,
+          page_start: pageStart,
+          row_count: ticketCount,
+          scraped_at: new Date().toISOString(),
+          single_pass_source: "scan-events",
+          source_inspected_complete:
+            stoppedReason === "safe_unchanged_boundary" ||
+            stoppedReason === "no_next_page_ui" ||
+            stoppedReason === "duplicate_bag_set" ||
+            stoppedReason === "duplicate_page_fingerprint" ||
+            stoppedReason === "no_table_rows",
+          early_stop_enabled: String(process.env.RINSE_PORTAL_EARLY_STOP || "") === "1",
+          ...buildPortalValidationMeta({
+            baseUrl,
+            pageUrl: lastPageUrl,
+            sessionAuthenticated,
+            pageLoaded,
+            emptyTableDetected: ticketCount === 0,
+          }),
+        };
+        if (reachedMaxPages || stoppedReason === "max_pages_reached") {
+          portalScrapeMeta.source_inspected_complete = false;
+        }
+        fs.writeFileSync(metaPath, `${JSON.stringify(portalScrapeMeta, null, 2)}\n`, "utf8");
+        console.error("[rinse-scan-events] wrote portal scrape meta:", metaPath);
+        console.error("[rinse-scan-events] meta:", JSON.stringify(portalScrapeMeta));
+      }
 
-    if (!eventsOnly && ticketsPath) {
-      console.error(`[rinse-scan-events] wrote ${nTickets} ticket row(s) → ${ticketsPath}`);
+      if (!eventsOnly && ticketsPath) {
+        console.error(`[rinse-scan-events] wrote ${ticketCount} ticket row(s) → ${ticketsPath}`);
+      }
+      console.error(`[rinse-scan-events] wrote ${eventCount} event row(s) → ${eventsPath}`);
+      if (!eventsOnly && ticketsPath) {
+        progressLine(`\nTickets (production portal CSV): ${ticketsPath}`);
+      }
+      progressLine(`Events (Bag ID + scans only): ${eventsPath}`);
+      if (!eventsOnly) {
+        progressLine(
+          "Join on Bag ID (alphanumeric code) in events ↔ ticket_id prefix in tickets Bag ID column.",
+        );
+      }
+      if (eventsOnly) {
+        console.log(eventsPath);
+      }
+      await closeBrowserSafe(browser);
+      browser = null;
+      return;
+    } catch (err) {
+      lastErr = err;
+      portalDiag({
+        op: "scrape_attempt_failed",
+        attempt,
+        error: String(err && err.message ? err.message : err).slice(0, 200),
+        transient: isTransientBrowserError(err) ? 1 : 0,
+      });
+      await closeBrowserSafe(browser);
+      browser = null;
+      if (attempt < maxAttempts && isTransientBrowserError(err)) {
+        progressLine(
+          `Transient browser/navigation failure on attempt ${attempt}; restarting from a fresh browser.`,
+        );
+        continue;
+      }
+      throw err;
+    } finally {
+      if (browser) await closeBrowserSafe(browser);
     }
-    console.error(`[rinse-scan-events] wrote ${nEvents} event row(s) → ${eventsPath}`);
-    if (!eventsOnly && ticketsPath) {
-      progressLine(`\nTickets (production portal CSV): ${ticketsPath}`);
-    }
-    progressLine(`Events (Bag ID + scans only): ${eventsPath}`);
-    if (!eventsOnly) {
-      progressLine(
-        "Join on Bag ID (alphanumeric code) in events ↔ ticket_id prefix in tickets Bag ID column.",
-      );
-    }
-    if (eventsOnly) {
-      console.log(eventsPath);
-    }
-  } finally {
-    await browser.close();
   }
+
+  if (lastErr) throw lastErr;
 }
 
 function isCliEntry() {

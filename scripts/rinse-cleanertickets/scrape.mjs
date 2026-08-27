@@ -9,6 +9,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import {
+  actionTimeoutMs,
+  ticketOpTimeoutMs,
+  applyBoundedPageTimeouts,
+  closeBrowserSafe,
+  portalDiag,
+  withBoundedTimeout,
+  isTransientBrowserError,
+} from "./rinse-playwright-lib.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1724,9 +1733,16 @@ async function scrapePage(page, pageLabel, layout) {
   /*
    * Expanding a ticket inserts a sibling <tr> for details, so tbody grows. A fixed `for (j < n)`
    * where `n` was snapshotted at the start stops early (e.g. 6 of 25). Re-read count each step.
+   * Cap iterations so a runaway expand/sibling loop cannot hang the scrape indefinitely.
    */
+  const maxRowIters = Math.max(
+    initialRowCount * 4 + 40,
+    Math.min(800, parseInt(process.env.RINSE_MAX_ROW_ITERS || "400", 10) || 400),
+  );
   let j = 0;
-  while (true) {
+  let iters = 0;
+  while (iters < maxRowIters) {
+    iters += 1;
     const rowCount = await rowsAll.count();
     if (j >= rowCount) break;
 
@@ -1772,20 +1788,49 @@ async function scrapePage(page, pageLabel, layout) {
     }
 
     recordIndex += 1;
-    /* Single progress line per ticket; rowCount can grow as expanded detail <tr> siblings are inserted. */
+    /* Progress BEFORE expand — expand can stall; stall watchdog needs a heartbeat. */
     const rowHint = `${j + 1}/${rowCount}`;
     const preview = trimmed.replace(/\s+/g, " ").slice(0, 72);
+    progressLine(`  ticket ${recordIndex} (list tr ${rowHint}): expanding… ${preview}`);
+    portalDiag({
+      op: "expandRowAndReadBag",
+      page: pageLabel,
+      ticket: recordIndex,
+      tr: rowHint,
+      action_timeout_ms: actionTimeoutMs(),
+      ticket_op_timeout_ms: ticketOpTimeoutMs(),
+    });
 
     let visibleTableSiRaw = "";
     if (layout === "portal" && siColumnIndex >= 0) {
       visibleTableSiRaw = await readVisibleTableSpecialInstructions(cand, siColumnIndex);
     }
 
-    const { bagId, bagDisplay, raw, customer, fullText, collapsed } = await expandRowAndReadBag(
-      page,
-      cand,
-      rt,
-    );
+    let bagId = "";
+    let bagDisplay = "";
+    let raw = "";
+    let customer = "";
+    let fullText = "";
+    let collapsed = rt;
+    try {
+      ({ bagId, bagDisplay, raw, customer, fullText, collapsed } = await withBoundedTimeout(
+        expandRowAndReadBag(page, cand, rt),
+        ticketOpTimeoutMs(),
+        "expandRowAndReadBag",
+      ));
+    } catch (expandErr) {
+      portalDiag({
+        op: "expandRowAndReadBag",
+        error: String(expandErr && expandErr.message ? expandErr.message : expandErr).slice(0, 160),
+        ticket: recordIndex,
+        tr: rowHint,
+      });
+      progressLine(
+        `  ticket ${recordIndex} (list tr ${rowHint}): expand timed out/failed — ${preview}…`,
+      );
+      j += 1;
+      continue;
+    }
 
     const base = {
       page: pageLabel,
@@ -1828,6 +1873,13 @@ async function scrapePage(page, pageLabel, layout) {
       .catch(() => {});
 
     j += 1;
+  }
+
+  if (iters >= maxRowIters) {
+    portalDiag({ op: "scrapePage_row_loop", error: "max_row_iters", iters, max: maxRowIters });
+    progressLine(
+      `  Stopping ticket walk: hit RINSE_MAX_ROW_ITERS cap (${maxRowIters}) after ${out.length} export row(s).`,
+    );
   }
 
   if (initialRowCount > 0 && out.length > 0) {
@@ -1991,339 +2043,388 @@ async function main() {
     );
   }
 
-  progressLine(
-    "Launching Chromium (headless) — first process start can take 30–120s while the browser binary loads.",
-  );
-  const browser = await chromium.launch({
-    headless: !headed,
-    slowMo: headed ? 80 : 0,
-    timeout: Math.max(30000, Math.min(180000, navTimeoutMs())),
-    args: ["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
-  });
-  const context = await browser.newContext(storageState ? { storageState } : {});
-  const page = await context.newPage();
-  const pwTimeout = Math.max(5000, Math.min(120000, navTimeoutMs()));
-  page.setDefaultTimeout(pwTimeout);
-  page.setDefaultNavigationTimeout(Math.max(pwTimeout, navTimeoutMs()));
+  const allowBrowserRetry =
+    String(process.env.RINSE_BROWSER_RETRY || "1").trim() !== "0";
+  const maxAttempts = allowBrowserRetry ? 2 : 1;
+  let lastErr = null;
 
-  try {
-    if (!storageState) {
-      await tryLogin(page, baseUrl);
-    }
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    portalDiag({
+      op: "scrape_attempt",
+      attempt,
+      max_attempts: maxAttempts,
+      action_timeout_ms: actionTimeoutMs(),
+      nav_timeout_ms: navTimeoutMs(),
+      fresh_browser: 1,
+    });
+    progressLine(
+      attempt === 1
+        ? "Launching Chromium (headless) — fresh browser per scrape; first start can take 30–120s."
+        : `Retry ${attempt - 1}/${maxAttempts - 1}: launching fresh Chromium after transient browser/nav failure.`,
+    );
 
-    let vendorHomeSummary = null;
-    if (statusFromTicketsUrl(baseUrl) === "at_vendor") {
-      vendorHomeSummary = await scrapeVendorHomeSummary(page);
-    }
-
-    const allRows = [];
-    /** Any earlier page’s table fingerprint — Rinse may repeat page 1 (or another page) after the real last page. */
-    const seenRowFingerprints = new Set();
-    /** Any earlier page’s sorted bag-id signature — same as fingerprint but keyed on exported IDs. */
-    const seenBagSigs = new Set();
-    let stoppedReason = null;
-    let pagesScraped = 0;
-    let sessionAuthenticated = Boolean(storageState);
-    let pageLoaded = false;
-    let lastPageUrl = baseUrl;
-    let emptyTableDetected = false;
-    let siColumnIndexDetected = null;
-
-    function normFingerprint(s) {
-      return String(s || "")
-        .replace(/\s+/g, " ")
-        .trim();
-    }
-
-    for (let p = pageStart; p < pageStart + maxPages; p++) {
-      pagesScraped = p - pageStart + 1;
-      const url = urlForPage(baseUrl, p);
-      console.error("[rinse-scrape] page URL:", url);
-      progressLine(`\nPage ${p}: ${url}`);
-      // "networkidle" often never settles on SPAs; domcontentloaded + fixed wait is more reliable on Azure.
-      await page.goto(url, {
-        waitUntil: "domcontentloaded",
-        timeout: Math.max(navTimeoutMs(), 90000),
+    let browser = null;
+    try {
+      browser = await chromium.launch({
+        headless: !headed,
+        slowMo: headed ? 80 : 0,
+        timeout: Math.max(30000, Math.min(180000, navTimeoutMs())),
+        args: ["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
       });
-      await page.waitForTimeout(pageSettleMs);
-      pageLoaded = true;
-      lastPageUrl = page.url();
-      await page
-        .waitForSelector("table tbody tr", { timeout: 20000 })
-        .catch(() => {});
+      const context = await browser.newContext(storageState ? { storageState } : {});
+      const page = await context.newPage();
+      applyBoundedPageTimeouts(page);
+      portalDiag({
+        op: "browser_ready",
+        attempt,
+        default_action_timeout_ms: actionTimeoutMs(),
+        default_nav_timeout_ms: navTimeoutMs(),
+      });
 
-      const landedPageNum = pageNumFromUrl(page.url());
-      if (landedPageNum != null && landedPageNum !== p) {
-        progressLine(
-          `Stopping: requested page ${p} but landed on page ${landedPageNum} (pagination wrapped/redirected).`,
-        );
-        stoppedReason = "pagination_redirect";
-        break;
+      if (!storageState) {
+        await tryLogin(page, baseUrl);
       }
 
-      if (await isLikelyLoginPage(page)) {
-        console.error(
-          "\nNot logged in: Rinse showed a login page. Refresh session: upload a valid rinse-auth.json and set RINSE_STORAGE_STATE, or set RINSE_EMAIL + RINSE_PASSWORD on the API.",
-        );
-        await browser.close();
-        process.exit(3);
-      }
-      sessionAuthenticated = true;
-      lastPageUrl = page.url();
-
-      const { rows, tableRowCount, siColumnIndex } = await scrapePage(page, url, layout);
-      if (siColumnIndex != null && siColumnIndex >= 0) {
-        siColumnIndexDetected = siColumnIndex;
-      }
-
-      if (tableRowCount === 0) {
-        emptyTableDetected = true;
-        const title = await page.title().catch(() => "");
-        console.error(
-          `\nStopping: no table rows on page ${p} (title: ${JSON.stringify(title)}). Either there are no tickets for this filter, or row selectors need updating — try RINSE_EXTRA_ROW_SELECTORS from DevTools (see scrape.mjs bodyRowsSelector).`,
-        );
-        stoppedReason = "no_table_rows";
-        break;
-      }
-
-      const rowFingerprint = await page
-        .evaluate(() => {
-          let trs = Array.from(document.querySelectorAll("table tbody tr")).filter((tr) =>
-            tr.querySelector("td"),
-          );
-          if (trs.length === 0) {
-            trs = Array.from(
-              document.querySelectorAll("[role='grid'] [role='row'], [role='table'] [role='row']"),
-            );
-          }
-          return trs
-            .slice(0, 120)
-            .map((tr) =>
-              (tr.innerText || "")
-                .trim()
-                .replace(/\s+/g, " ")
-                .slice(0, 140),
-            )
-            .join("\u241e");
-        })
-        .catch(() => "");
-
-      const nf = normFingerprint(rowFingerprint);
-      if (nf.length > 24 && seenRowFingerprints.has(nf)) {
-        progressLine(
-          `Stopping: page ${p} matches an earlier page’s table (pagination wrapped or duplicate list — end of data).`,
-        );
-        break;
-      }
-      if (nf.length > 24) seenRowFingerprints.add(nf);
-
-      if (p > pageStart && rows.length === 0) {
-        progressLine(`Stopping: page ${p} had no extractable ticket rows after filtering.`);
-        stoppedReason = "no_extractable_rows";
-        break;
-      }
-
-      const pageBagSig = [
-        ...new Set(
-          rows.map((r) => String(r.bag_id || "").trim().toUpperCase()).filter(Boolean),
-        ),
-      ]
-        .sort()
-        .join("\u241e");
-
-      if (pageBagSig.length > 0 && seenBagSigs.has(pageBagSig)) {
-        progressLine(
-          `Stopping: page ${p} has the same bag ID set as an earlier page (no new tickets — end of pagination).`,
-        );
-        stoppedReason = "duplicate_bag_set";
-        break;
-      }
-      if (pageBagSig.length > 0) seenBagSigs.add(pageBagSig);
-
-      allRows.push(...rows);
-
-      const withBag = rows.filter((r) => r.bag_id).length;
-      if (withBag === 0 && rows.length > 3) {
-        console.warn(
-          "Many rows but no Bag IDs — selectors or expand control may be wrong; check one row in DevTools."
-        );
-      }
-      const hasNextUi = await hasNextPageInUi(page, p);
-      if (!hasNextUi) {
-        progressLine(`Stopping: pagination UI shows no next page after page ${p}.`);
-        stoppedReason = "no_next_page_ui";
-        break;
-      }
-    }
-
-    const reachedMaxPages = stoppedReason === null;
-    if (reachedMaxPages) {
-      stoppedReason = "max_pages_reached";
-      progressLine(
-        `Stopping: reached RINSE_MAX_PAGES limit (${maxPages}) without natural end-of-pagination signal.`,
-      );
-    }
-
-    if (allRows.length === 0) {
-      const allowEmpty =
-        String(process.env.RINSE_ALLOW_EMPTY_EXPORT || "").trim() === "1" ||
-        String(process.env.RINSE_ALLOW_EMPTY_EXPORT || "").toLowerCase() === "true";
-      if (allowEmpty) {
-        progressLine(
-          "\nExport produced zero data rows — writing header-only CSV (RINSE_ALLOW_EMPTY_EXPORT).",
-        );
-        let header;
-        if (layout === "portal") {
-          header = portalHeaderRow().map(csvEscape).join(",") + "\n";
-        } else {
-          header = "page,row_index,customer_snippet,bag_id,raw_line\n";
-        }
-        const dir = path.dirname(outCsvAbsolute);
-        if (dir && !fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
-        }
-        fs.writeFileSync(outCsvAbsolute, header, "utf8");
-        const portalScrapeMeta = {
-          stopped_reason: stoppedReason || "no_table_rows",
-          reached_max_pages: false,
-          pages_scraped: pagesScraped,
-          max_pages_limit: maxPages,
-          page_start: pageStart,
-          row_count: 0,
-          scraped_at: new Date().toISOString(),
-          ...(vendorHomeSummary ? { vendor_home_summary: vendorHomeSummary } : {}),
-          ...buildPortalValidationMeta({
-            baseUrl,
-            pageUrl: lastPageUrl,
-            sessionAuthenticated,
-            pageLoaded,
-            emptyTableDetected: true,
-          }),
-        };
-        const metaPath =
-          (process.env.OUTPUT_PORTAL_SCRAPE_META && String(process.env.OUTPUT_PORTAL_SCRAPE_META).trim()) ||
-          `${outCsvAbsolute}.meta.json`;
-        fs.writeFileSync(metaPath, `${JSON.stringify(portalScrapeMeta, null, 2)}\n`, "utf8");
-        console.error("[rinse-scrape] wrote empty CSV:", outCsvAbsolute);
-        console.error("[rinse-scrape] portal scrape meta:", JSON.stringify(portalScrapeMeta));
-        await browser.close();
-        return;
-      }
-      console.error(
-        "\nExport produced zero data rows. Fix auth (rinse-auth.json + RINSE_STORAGE_STATE), confirm RINSE_TICKETS_URL, or set RINSE_EXTRA_ROW_SELECTORS / update bodyRowsSelector() in scrape.mjs — see messages above.",
-      );
-      await browser.close();
-      process.exit(2);
-    }
-
-    let header;
-    let lines;
-    if (layout === "portal") {
-      header = portalHeaderRow().map(csvEscape).join(",") + "\n";
-      lines = allRows.map((r) =>
-        portalDataRow(r.portal, r.bag_display || r.bag_id)
-          .map(csvEscape)
-          .join(",") + "\n"
-      );
-    } else {
-      header = "page,row_index,customer_snippet,bag_id,raw_line\n";
-      lines = allRows.map(
-        (r) =>
-          [
-            csvEscape(r.page),
-            r.row_index,
-            csvEscape(r.customer_snippet),
-            csvEscape(r.bag_id),
-            csvEscape(r.raw_line),
-          ].join(",") + "\n"
-      );
-    }
-
-    const dir = path.dirname(outCsvAbsolute);
-    if (dir && !fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(outCsvAbsolute, header + lines.join(""), "utf8");
-    console.error("[rinse-scrape] wrote CSV:", outCsvAbsolute, `(${allRows.length} rows)`);
-    progressLine(`\nWrote ${allRows.length} row records → ${outCsvAbsolute}`);
-
-    if (layout === "portal" && allRows.length > 0) {
-      const siDebugPath =
-        (process.env.OUTPUT_PORTAL_SI_DEBUG && String(process.env.OUTPUT_PORTAL_SI_DEBUG).trim()) ||
-        `${outCsvAbsolute}.si_debug.json`;
-      const siDebugPayload = {
-        scraped_at: new Date().toISOString(),
-        special_instructions_column_index: siColumnIndexDetected,
-        row_count: allRows.length,
-        rows: allRows.map((r) => ({
-          order_id: String(r.bag_id || "").trim(),
-          bag_id: String(r.bag_display || r.bag_id || "").trim(),
-          customer: String(r.portal?.customer_name || r.customer_snippet || "").trim(),
-          visible_table_special_instructions: r.portal?.visible_table_special_instructions || "",
-          expanded_detail_special_instructions: r.portal?.expanded_detail_special_instructions || "",
-          final_special_instructions: r.portal?.special_instructions || "",
-        })),
-      };
-      fs.writeFileSync(siDebugPath, `${JSON.stringify(siDebugPayload, null, 2)}\n`, "utf8");
-      console.error("[rinse-scrape] wrote SI debug:", siDebugPath);
-      const withCleanSi = siDebugPayload.rows.filter((row) =>
-        Boolean(String(row.final_special_instructions || "").trim()),
-      ).length;
-      progressLine(
-        `Special Instructions debug: ${withCleanSi}/${allRows.length} row(s) with final SI (column index ${siColumnIndexDetected ?? "n/a"}).`,
-      );
-    }
-
-    if (
-      statusFromTicketsUrl(baseUrl) === "at_vendor"
-      && sessionAuthenticated
-      && !vendorHomeSummaryUsable(vendorHomeSummary)
-    ) {
-      progressLine(
-        "Vendor Home summary missing after ticket scrape — refreshing from authenticated session.",
-      );
-      try {
+      let vendorHomeSummary = null;
+      if (statusFromTicketsUrl(baseUrl) === "at_vendor") {
         vendorHomeSummary = await scrapeVendorHomeSummary(page);
-      } catch (err) {
-        vendorHomeSummary = {
-          source: "vendor_home_page",
-          scraped_at: new Date().toISOString(),
-          error: String(err.message || err),
-        };
       }
-    }
 
-    const portalScrapeMeta = {
-      stopped_reason: stoppedReason,
-      reached_max_pages: reachedMaxPages,
-      pages_scraped: pagesScraped,
-      max_pages_limit: maxPages,
-      page_start: pageStart,
-      row_count: allRows.length,
-      scraped_at: new Date().toISOString(),
-      ...(vendorHomeSummaryUsable(vendorHomeSummary) ? { vendor_home_summary: vendorHomeSummary } : {}),
-      ...buildPortalValidationMeta({
-        baseUrl,
-        pageUrl: lastPageUrl,
-        sessionAuthenticated,
-        pageLoaded,
-        emptyTableDetected: allRows.length === 0,
-      }),
-    };
-    const metaPath =
-      (process.env.OUTPUT_PORTAL_SCRAPE_META && String(process.env.OUTPUT_PORTAL_SCRAPE_META).trim()) ||
-      `${outCsvAbsolute}.meta.json`;
-    fs.writeFileSync(metaPath, `${JSON.stringify(portalScrapeMeta, null, 2)}\n`, "utf8");
-    console.error("[rinse-scrape] portal scrape meta:", JSON.stringify(portalScrapeMeta));
-    console.error("[rinse-scrape] wrote meta:", metaPath);
-    if (reachedMaxPages) {
-      console.error(
-        "[rinse-scrape] WARNING: partial portal snapshot — increase RINSE_MAX_PAGES or confirm pagination; portal absence completion must be skipped.",
-      );
+      const allRows = [];
+      /** Any earlier page’s table fingerprint — Rinse may repeat page 1 (or another page) after the real last page. */
+      const seenRowFingerprints = new Set();
+      /** Any earlier page’s sorted bag-id signature — same as fingerprint but keyed on exported IDs. */
+      const seenBagSigs = new Set();
+      let stoppedReason = null;
+      let pagesScraped = 0;
+      let sessionAuthenticated = Boolean(storageState);
+      let pageLoaded = false;
+      let lastPageUrl = baseUrl;
+      let emptyTableDetected = false;
+      let siColumnIndexDetected = null;
+
+      function normFingerprint(s) {
+        return String(s || "")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+
+      for (let p = pageStart; p < pageStart + maxPages; p++) {
+        pagesScraped = p - pageStart + 1;
+        const url = urlForPage(baseUrl, p);
+        console.error("[rinse-scrape] page URL:", url);
+        progressLine(`\nPage ${p}: ${url}`);
+        portalDiag({ op: "page.goto", page: p, url, waitUntil: "domcontentloaded" });
+        // "networkidle" often never settles on SPAs; domcontentloaded + fixed wait is more reliable on Azure.
+        await page.goto(url, {
+          waitUntil: "domcontentloaded",
+          timeout: Math.max(navTimeoutMs(), 90000),
+        });
+        await page.waitForTimeout(pageSettleMs);
+        pageLoaded = true;
+        lastPageUrl = page.url();
+        await page
+          .waitForSelector("table tbody tr", { timeout: 20000 })
+          .catch(() => {});
+
+        const landedPageNum = pageNumFromUrl(page.url());
+        if (landedPageNum != null && landedPageNum !== p) {
+          progressLine(
+            `Stopping: requested page ${p} but landed on page ${landedPageNum} (pagination wrapped/redirected).`,
+          );
+          stoppedReason = "pagination_redirect";
+          break;
+        }
+
+        if (await isLikelyLoginPage(page)) {
+          console.error(
+            "\nNot logged in: Rinse showed a login page. Refresh session: upload a valid rinse-auth.json and set RINSE_STORAGE_STATE, or set RINSE_EMAIL + RINSE_PASSWORD on the API.",
+          );
+          await closeBrowserSafe(browser);
+          browser = null;
+          process.exit(3);
+        }
+        sessionAuthenticated = true;
+        lastPageUrl = page.url();
+
+        const { rows, tableRowCount, siColumnIndex } = await scrapePage(page, url, layout);
+        if (siColumnIndex != null && siColumnIndex >= 0) {
+          siColumnIndexDetected = siColumnIndex;
+        }
+
+        if (tableRowCount === 0) {
+          emptyTableDetected = true;
+          const title = await page.title().catch(() => "");
+          console.error(
+            `\nStopping: no table rows on page ${p} (title: ${JSON.stringify(title)}). Either there are no tickets for this filter, or row selectors need updating — try RINSE_EXTRA_ROW_SELECTORS from DevTools (see scrape.mjs bodyRowsSelector).`,
+          );
+          stoppedReason = "no_table_rows";
+          break;
+        }
+
+        const rowFingerprint = await page
+          .evaluate(() => {
+            let trs = Array.from(document.querySelectorAll("table tbody tr")).filter((tr) =>
+              tr.querySelector("td"),
+            );
+            if (trs.length === 0) {
+              trs = Array.from(
+                document.querySelectorAll("[role='grid'] [role='row'], [role='table'] [role='row']"),
+              );
+            }
+            return trs
+              .slice(0, 120)
+              .map((tr) =>
+                (tr.innerText || "")
+                  .trim()
+                  .replace(/\s+/g, " ")
+                  .slice(0, 140),
+              )
+              .join("\u241e");
+          })
+          .catch(() => "");
+
+        const nf = normFingerprint(rowFingerprint);
+        if (nf.length > 24 && seenRowFingerprints.has(nf)) {
+          progressLine(
+            `Stopping: page ${p} matches an earlier page’s table (pagination wrapped or duplicate list — end of data).`,
+          );
+          break;
+        }
+        if (nf.length > 24) seenRowFingerprints.add(nf);
+
+        if (p > pageStart && rows.length === 0) {
+          progressLine(`Stopping: page ${p} had no extractable ticket rows after filtering.`);
+          stoppedReason = "no_extractable_rows";
+          break;
+        }
+
+        const pageBagSig = [
+          ...new Set(
+            rows.map((r) => String(r.bag_id || "").trim().toUpperCase()).filter(Boolean),
+          ),
+        ]
+          .sort()
+          .join("\u241e");
+
+        if (pageBagSig.length > 0 && seenBagSigs.has(pageBagSig)) {
+          progressLine(
+            `Stopping: page ${p} has the same bag ID set as an earlier page (no new tickets — end of pagination).`,
+          );
+          stoppedReason = "duplicate_bag_set";
+          break;
+        }
+        if (pageBagSig.length > 0) seenBagSigs.add(pageBagSig);
+
+        allRows.push(...rows);
+
+        const withBag = rows.filter((r) => r.bag_id).length;
+        if (withBag === 0 && rows.length > 3) {
+          console.warn(
+            "Many rows but no Bag IDs — selectors or expand control may be wrong; check one row in DevTools."
+          );
+        }
+        const hasNextUi = await hasNextPageInUi(page, p);
+        if (!hasNextUi) {
+          progressLine(`Stopping: pagination UI shows no next page after page ${p}.`);
+          stoppedReason = "no_next_page_ui";
+          break;
+        }
+      }
+
+      const reachedMaxPages = stoppedReason === null;
+      if (reachedMaxPages) {
+        stoppedReason = "max_pages_reached";
+        progressLine(
+          `Stopping: reached RINSE_MAX_PAGES limit (${maxPages}) without natural end-of-pagination signal.`,
+        );
+      }
+
+      if (allRows.length === 0) {
+        const allowEmpty =
+          String(process.env.RINSE_ALLOW_EMPTY_EXPORT || "").trim() === "1" ||
+          String(process.env.RINSE_ALLOW_EMPTY_EXPORT || "").toLowerCase() === "true";
+        if (allowEmpty) {
+          progressLine(
+            "\nExport produced zero data rows — writing header-only CSV (RINSE_ALLOW_EMPTY_EXPORT).",
+          );
+          let header;
+          if (layout === "portal") {
+            header = portalHeaderRow().map(csvEscape).join(",") + "\n";
+          } else {
+            header = "page,row_index,customer_snippet,bag_id,raw_line\n";
+          }
+          const dir = path.dirname(outCsvAbsolute);
+          if (dir && !fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+          }
+          fs.writeFileSync(outCsvAbsolute, header, "utf8");
+          const portalScrapeMeta = {
+            stopped_reason: stoppedReason || "no_table_rows",
+            reached_max_pages: false,
+            pages_scraped: pagesScraped,
+            max_pages_limit: maxPages,
+            page_start: pageStart,
+            row_count: 0,
+            scraped_at: new Date().toISOString(),
+            ...(vendorHomeSummary ? { vendor_home_summary: vendorHomeSummary } : {}),
+            ...buildPortalValidationMeta({
+              baseUrl,
+              pageUrl: lastPageUrl,
+              sessionAuthenticated,
+              pageLoaded,
+              emptyTableDetected: true,
+            }),
+          };
+          const metaPath =
+            (process.env.OUTPUT_PORTAL_SCRAPE_META && String(process.env.OUTPUT_PORTAL_SCRAPE_META).trim()) ||
+            `${outCsvAbsolute}.meta.json`;
+          fs.writeFileSync(metaPath, `${JSON.stringify(portalScrapeMeta, null, 2)}\n`, "utf8");
+          console.error("[rinse-scrape] wrote empty CSV:", outCsvAbsolute);
+          console.error("[rinse-scrape] portal scrape meta:", JSON.stringify(portalScrapeMeta));
+          await closeBrowserSafe(browser);
+          browser = null;
+          return;
+        }
+        console.error(
+          "\nExport produced zero data rows. Fix auth (rinse-auth.json + RINSE_STORAGE_STATE), confirm RINSE_TICKETS_URL, or set RINSE_EXTRA_ROW_SELECTORS / update bodyRowsSelector() in scrape.mjs — see messages above.",
+        );
+        await closeBrowserSafe(browser);
+        browser = null;
+        process.exit(2);
+      }
+
+      let header;
+      let lines;
+      if (layout === "portal") {
+        header = portalHeaderRow().map(csvEscape).join(",") + "\n";
+        lines = allRows.map((r) =>
+          portalDataRow(r.portal, r.bag_display || r.bag_id)
+            .map(csvEscape)
+            .join(",") + "\n"
+        );
+      } else {
+        header = "page,row_index,customer_snippet,bag_id,raw_line\n";
+        lines = allRows.map(
+          (r) =>
+            [
+              csvEscape(r.page),
+              r.row_index,
+              csvEscape(r.customer_snippet),
+              csvEscape(r.bag_id),
+              csvEscape(r.raw_line),
+            ].join(",") + "\n"
+        );
+      }
+
+      const dir = path.dirname(outCsvAbsolute);
+      if (dir && !fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(outCsvAbsolute, header + lines.join(""), "utf8");
+      console.error("[rinse-scrape] wrote CSV:", outCsvAbsolute, `(${allRows.length} rows)`);
+      progressLine(`\nWrote ${allRows.length} row records → ${outCsvAbsolute}`);
+
+      if (layout === "portal" && allRows.length > 0) {
+        const siDebugPath =
+          (process.env.OUTPUT_PORTAL_SI_DEBUG && String(process.env.OUTPUT_PORTAL_SI_DEBUG).trim()) ||
+          `${outCsvAbsolute}.si_debug.json`;
+        const siDebugPayload = {
+          scraped_at: new Date().toISOString(),
+          special_instructions_column_index: siColumnIndexDetected,
+          row_count: allRows.length,
+          rows: allRows.map((r) => ({
+            order_id: String(r.bag_id || "").trim(),
+            bag_id: String(r.bag_display || r.bag_id || "").trim(),
+            customer: String(r.portal?.customer_name || r.customer_snippet || "").trim(),
+            visible_table_special_instructions: r.portal?.visible_table_special_instructions || "",
+            expanded_detail_special_instructions: r.portal?.expanded_detail_special_instructions || "",
+            final_special_instructions: r.portal?.special_instructions || "",
+          })),
+        };
+        fs.writeFileSync(siDebugPath, `${JSON.stringify(siDebugPayload, null, 2)}\n`, "utf8");
+        console.error("[rinse-scrape] wrote SI debug:", siDebugPath);
+        const withCleanSi = siDebugPayload.rows.filter((row) =>
+          Boolean(String(row.final_special_instructions || "").trim()),
+        ).length;
+        progressLine(
+          `Special Instructions debug: ${withCleanSi}/${allRows.length} row(s) with final SI (column index ${siColumnIndexDetected ?? "n/a"}).`,
+        );
+      }
+
+      if (
+        statusFromTicketsUrl(baseUrl) === "at_vendor"
+        && sessionAuthenticated
+        && !vendorHomeSummaryUsable(vendorHomeSummary)
+      ) {
+        progressLine(
+          "Vendor Home summary missing after ticket scrape — refreshing from authenticated session.",
+        );
+        try {
+          vendorHomeSummary = await scrapeVendorHomeSummary(page);
+        } catch (err) {
+          vendorHomeSummary = {
+            source: "vendor_home_page",
+            scraped_at: new Date().toISOString(),
+            error: String(err.message || err),
+          };
+        }
+      }
+
+      const portalScrapeMeta = {
+        stopped_reason: stoppedReason,
+        reached_max_pages: reachedMaxPages,
+        pages_scraped: pagesScraped,
+        max_pages_limit: maxPages,
+        page_start: pageStart,
+        row_count: allRows.length,
+        scraped_at: new Date().toISOString(),
+        ...(vendorHomeSummaryUsable(vendorHomeSummary) ? { vendor_home_summary: vendorHomeSummary } : {}),
+        ...buildPortalValidationMeta({
+          baseUrl,
+          pageUrl: lastPageUrl,
+          sessionAuthenticated,
+          pageLoaded,
+          emptyTableDetected: allRows.length === 0,
+        }),
+      };
+      const metaPath =
+        (process.env.OUTPUT_PORTAL_SCRAPE_META && String(process.env.OUTPUT_PORTAL_SCRAPE_META).trim()) ||
+        `${outCsvAbsolute}.meta.json`;
+      fs.writeFileSync(metaPath, `${JSON.stringify(portalScrapeMeta, null, 2)}\n`, "utf8");
+      console.error("[rinse-scrape] portal scrape meta:", JSON.stringify(portalScrapeMeta));
+      console.error("[rinse-scrape] wrote meta:", metaPath);
+      if (reachedMaxPages) {
+        console.error(
+          "[rinse-scrape] WARNING: partial portal snapshot — increase RINSE_MAX_PAGES or confirm pagination; portal absence completion must be skipped.",
+        );
+      }
+      await closeBrowserSafe(browser);
+      browser = null;
+      return;
+    } catch (err) {
+      lastErr = err;
+      portalDiag({
+        op: "scrape_attempt_failed",
+        attempt,
+        error: String(err && err.message ? err.message : err).slice(0, 200),
+        transient: isTransientBrowserError(err) ? 1 : 0,
+      });
+      await closeBrowserSafe(browser);
+      browser = null;
+      if (attempt < maxAttempts && isTransientBrowserError(err)) {
+        progressLine(
+          `Transient browser/navigation failure on attempt ${attempt}; restarting from a fresh browser.`,
+        );
+        continue;
+      }
+      throw err;
+    } finally {
+      if (browser) await closeBrowserSafe(browser);
     }
-  } finally {
-    await browser.close();
   }
+
+  if (lastErr) throw lastErr;
 }
 
 function isCliEntry() {

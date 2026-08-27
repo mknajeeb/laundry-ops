@@ -1,6 +1,6 @@
 /**
  * Shared Playwright helpers for rinse-cleanertickets scripts.
- * Used by scrape-scan-events.mjs only — production scrape.mjs is unchanged.
+ * Timeout / diag / close helpers are shared by scrape.mjs and scrape-scan-events.mjs.
  */
 
 import fs from "node:fs";
@@ -62,6 +62,94 @@ export const DEFAULT_TICKETS_LIST_URL = "https://www.rinse.com/cleanertickets/?p
 export function navTimeoutMs() {
   const n = parseInt(process.env.RINSE_NAV_TIMEOUT_MS || "120000", 10);
   return Math.max(15000, Math.min(300000, Number.isFinite(n) ? n : 120000));
+}
+
+/**
+ * Locator/action timeout — must stay well below stall watchdog and MUST NOT
+ * inherit navigation timeout (historically 120s), or every stuck innerText()
+ * looks like a multi-minute hang with no progress.
+ */
+export function actionTimeoutMs() {
+  const n = parseInt(process.env.RINSE_ACTION_TIMEOUT_MS || "15000", 10);
+  return Math.max(3000, Math.min(60000, Number.isFinite(n) ? n : 15000));
+}
+
+/** Hard wall for one ticket expand/read (includes nested waits). */
+export function ticketOpTimeoutMs() {
+  const n = parseInt(process.env.RINSE_TICKET_OP_TIMEOUT_MS || "45000", 10);
+  return Math.max(10000, Math.min(180000, Number.isFinite(n) ? n : 45000));
+}
+
+export function applyBoundedPageTimeouts(page) {
+  if (!page) return;
+  page.setDefaultTimeout(actionTimeoutMs());
+  page.setDefaultNavigationTimeout(navTimeoutMs());
+}
+
+export async function closeBrowserSafe(browser, label = "browser.close") {
+  if (!browser) return;
+  const ms = Math.min(15000, actionTimeoutMs());
+  try {
+    await Promise.race([
+      browser.close(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`${label}_timeout_${ms}ms`)), ms),
+      ),
+    ]);
+  } catch (e) {
+    progressLine(
+      `[portal-diag] op=${label} error=${String(e && e.message ? e.message : e).slice(0, 160)}`,
+    );
+    try {
+      if (typeof browser.process === "function") {
+        const proc = browser.process();
+        if (proc && !proc.killed) proc.kill("SIGKILL");
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export function portalDiag(fields) {
+  const parts = ["[portal-diag]"];
+  for (const [k, v] of Object.entries(fields || {})) {
+    if (v === undefined || v === null || v === "") continue;
+    parts.push(`${k}=${String(v).replace(/\s+/g, "_").slice(0, 200)}`);
+  }
+  progressLine(parts.join(" "));
+}
+
+export function withBoundedTimeout(promise, ms, label) {
+  const limit = Math.max(1000, Number(ms) || 15000);
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => {
+      if (timer) clearTimeout(timer);
+    }),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`${label || "op"}_timeout_${limit}ms`));
+      }, limit);
+    }),
+  ]);
+}
+
+export function isTransientBrowserError(err) {
+  const msg = String(err && err.message ? err.message : err || "").toLowerCase();
+  if (!msg) return false;
+  return (
+    msg.includes("timeout") ||
+    msg.includes("target closed") ||
+    msg.includes("browser has been closed") ||
+    msg.includes("browser closed") ||
+    msg.includes("connection closed") ||
+    msg.includes("chromium") ||
+    msg.includes("navigation") ||
+    msg.includes("net::") ||
+    msg.includes("page crashed") ||
+    msg.includes("protocol error")
+  );
 }
 
 export function urlForPage(baseUrl, pageNum) {
