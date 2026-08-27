@@ -129,10 +129,10 @@ export function validateMissingComplete({
   if (saving) return { enabled: false, reason: "Save in progress" };
   if (!lockReady) return { enabled: false, reason: "Bag details still loading" };
   if (!String(completedBy || "").trim()) {
-    return { enabled: false, reason: "Select completion employee" };
+    return { enabled: false, reason: "Select the employee who completed this order." };
   }
   if (!String(completionAt || "").trim()) {
-    return { enabled: false, reason: "Enter completion date & time (ET)" };
+    return { enabled: false, reason: "Enter the completion date and time." };
   }
   const raw = String(postWeightLbs ?? "").trim();
   if (raw) {
@@ -172,16 +172,16 @@ export function validateSpecialtyComplete({
   if (saving) return { enabled: false, reason: "Save in progress" };
   if (!lockReady) return { enabled: false, reason: "Bag details still loading" };
   if (!String(completedBy || "").trim()) {
-    return { enabled: false, reason: "Select completion employee" };
+    return { enabled: false, reason: "Select the employee who completed this order." };
   }
   if (!String(completionAt || "").trim()) {
-    return { enabled: false, reason: "Enter completion date & time (ET)" };
+    return { enabled: false, reason: "Enter the completion date and time." };
   }
   const raw = String(postWeightLbs ?? "").trim();
   if (raw === "") {
     return {
       enabled: false,
-      reason: "Enter POST weight (0 is valid for specialty-only orders)",
+      reason: "Enter the post weight.",
     };
   }
   const n = parseWeightInput(raw);

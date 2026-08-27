@@ -43,7 +43,7 @@ describe("parseReviewDrawerActionResponse", () => {
       error: "bag_not_found",
     });
     expect(out.ok).toBe(false);
-    expect(out.error).toBe("bag_not_found");
+    expect(out.error).toBe("Bag not found.");
     expect(out.bag).toBeNull();
     expect(out.catalog).toEqual([]);
   });
@@ -90,6 +90,6 @@ describe("fetchReviewDrawerAction", () => {
     });
     const out = await fetchReviewDrawerAction(getAction, "2026-08-24", "MISSING");
     expect(out.ok).toBe(false);
-    expect(out.error).toBe("bag_not_found");
+    expect(out.error).toBe("Bag not found.");
   });
 });

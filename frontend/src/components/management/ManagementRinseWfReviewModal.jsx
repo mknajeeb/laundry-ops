@@ -22,6 +22,7 @@ import {
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import EditBagPanel from "../shift/EditBagPanel";
 import ManagementCopyableId from "./ManagementCopyableId";
+import { formatReviewApiError } from "./reviewDisplayLabels";
 
 function fmtTime(v) {
   if (!v) return "—";
@@ -148,7 +149,7 @@ export default function ManagementRinseWfReviewModal({
         if (cancelled) return;
         const data = res?.data || {};
         if (data.ok === false) {
-          setError(data.message || data.error || "Failed to load detail");
+          setError(formatReviewApiError(data.error, data.message || "Failed to load detail"));
           setDetail(null);
         } else {
           const bag = {
@@ -162,7 +163,12 @@ export default function ManagementRinseWfReviewModal({
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err?.response?.data?.error || err?.message || "Failed to load detail");
+          setError(
+            formatReviewApiError(
+              err?.response?.data?.error,
+              err?.response?.data?.message || err?.message || "Failed to load detail",
+            ),
+          );
           setDetail(null);
         }
       } finally {
@@ -189,7 +195,7 @@ export default function ManagementRinseWfReviewModal({
         if (data.ok === false) {
           setScansState({
             loading: false,
-            error: data.error || "Failed to load scans",
+            error: formatReviewApiError(data.error, data.message || "Failed to load scans"),
             scans: [],
             meta: data._meta || null,
           });
@@ -205,7 +211,10 @@ export default function ManagementRinseWfReviewModal({
         if (!cancelled) {
           setScansState({
             loading: false,
-            error: err?.response?.data?.error || err?.message || "Failed to load scans",
+            error: formatReviewApiError(
+              err?.response?.data?.error,
+              err?.response?.data?.message || err?.message || "Failed to load scans",
+            ),
             scans: [],
             meta: null,
           });

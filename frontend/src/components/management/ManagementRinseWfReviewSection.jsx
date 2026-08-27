@@ -27,6 +27,13 @@ import ManagementRinseWfReviewDrawerRow from "./ManagementRinseWfReviewDrawerRow
 import ManagementRinseWfReviewModal from "./ManagementRinseWfReviewModal";
 import { fmtLbs } from "./reviewDrawerModel";
 import { pickReviewSummary } from "./todayRinseModel";
+import {
+  formatReviewApiError,
+  formatReviewBagShortReason,
+  formatReviewReasonDebugDetail,
+  formatReviewReasonLabel,
+  formatSplitStateLabel,
+} from "./reviewDisplayLabels";
 
 function fmtTime(v) {
   if (!v) return null;
@@ -87,7 +94,16 @@ function SplitOrderReviewRow({
   perfHint,
 }) {
   const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [debugOpen, setDebugOpen] = useState(false);
   const saving = busyBagId === bag.bag_id;
+  const shortReason = formatReviewBagShortReason(bag, {
+    categoryFallback: "Split needs review",
+  });
+  const reviewReasonLabel = bag.review_reason
+    ? formatReviewReasonLabel(bag.review_reason)
+    : null;
+  const splitStateLabel = bag.split_state ? formatSplitStateLabel(bag.split_state) : null;
+  const debugCodes = formatReviewReasonDebugDetail(bag);
 
   return (
     <Box sx={{ py: 1.1 }} data-testid="split-order-review-row">
@@ -101,7 +117,7 @@ function SplitOrderReviewRow({
         </Typography>
       </Stack>
       <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#334155", mt: 0.45 }}>
-        {bag.short_reason || "Split order review"}
+        {shortReason}
       </Typography>
       {(fmtLbs(bag.pre_weight_lbs) || fmtLbs(bag.post_weight_lbs)) ? (
         <Stack direction="row" spacing={1.25} sx={{ mt: 0.2 }}>
@@ -179,10 +195,32 @@ function SplitOrderReviewRow({
             Wash-close: {bag.close_event_purpose || "—"}
             {fmtTime(bag.relevant_time) ? ` · ${fmtTime(bag.relevant_time)}` : ""}
           </Typography>
-          {bag.split_state ? (
+          {(splitStateLabel || reviewReasonLabel) ? (
             <Typography sx={{ fontSize: 12, color: "#94a3b8", mt: 0.35 }}>
-              State: {bag.split_state}
-              {bag.review_reason ? ` · ${bag.review_reason}` : ""}
+              {splitStateLabel ? `State: ${splitStateLabel}` : null}
+              {splitStateLabel && reviewReasonLabel ? " · " : null}
+              {reviewReasonLabel || null}
+            </Typography>
+          ) : null}
+          {debugCodes ? (
+            <Button
+              size="small"
+              onClick={() => setDebugOpen((v) => !v)}
+              sx={{
+                mt: 0.35,
+                px: 0,
+                minWidth: 0,
+                textTransform: "none",
+                fontSize: 10,
+                color: "#cbd5e1",
+              }}
+            >
+              {debugOpen ? "Hide debug" : "Debug"}
+            </Button>
+          ) : null}
+          {debugOpen && debugCodes ? (
+            <Typography sx={{ fontSize: 10, color: "#cbd5e1", fontFamily: "monospace" }}>
+              {debugCodes}
             </Typography>
           ) : null}
           {perfHint ? (
@@ -267,7 +305,10 @@ export default function ManagementRinseWfReviewSection({
         }
         setListState({
           loading: false,
-          error: data.ok === false ? data.message || data.error || "Failed to load" : "",
+          error:
+            data.ok === false
+              ? formatReviewApiError(data.error, data.message || "Failed to load")
+              : "",
           bags: Array.isArray(data.bags) ? data.bags : [],
           meta: {
             ...(data._meta || {}),
@@ -281,7 +322,10 @@ export default function ManagementRinseWfReviewSection({
       } catch (err) {
         setListState({
           loading: false,
-          error: err?.response?.data?.error || err?.message || "Failed to load review list",
+          error: formatReviewApiError(
+            err?.response?.data?.error,
+            err?.response?.data?.message || err?.message || "Failed to load review list",
+          ),
           bags: [],
           meta: null,
         });
@@ -361,7 +405,7 @@ export default function ManagementRinseWfReviewSection({
         decision,
       });
       if (res?.data?.ok === false) {
-        setDecisionMsg(res.data.error || "Save failed");
+        setDecisionMsg(formatReviewApiError(res.data.error, res.data.message || "Save failed"));
         return;
       }
       const saveMs = Math.round(performance.now() - t0);
@@ -385,7 +429,12 @@ export default function ManagementRinseWfReviewSection({
       onRefresh?.();
       await loadList("split_order_review");
     } catch (err) {
-      setDecisionMsg(err?.response?.data?.error || err?.message || "Save failed");
+      setDecisionMsg(
+        formatReviewApiError(
+          err?.response?.data?.error,
+          err?.response?.data?.message || err?.message || "Save failed",
+        ),
+      );
     } finally {
       setBusyBagId(null);
     }

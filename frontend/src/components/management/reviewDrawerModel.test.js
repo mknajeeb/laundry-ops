@@ -11,6 +11,7 @@ import {
   validateMissingComplete,
   validateSpecialtySave,
 } from "./reviewDrawerModel";
+import { collectNormalReviewUiText } from "./reviewDisplayLabels";
 
 describe("review drawer section flags", () => {
   it("shows missing actions from reason or category", () => {
@@ -89,9 +90,9 @@ describe("fmtLbs", () => {
 describe("validateMissingComplete", () => {
   it("explains missing employee and time", () => {
     expect(validateMissingComplete({ completedBy: "", completionAt: "2026-08-17T10:00" }).reason).toMatch(
-      /employee/i,
+      /employee who completed/i,
     );
-    expect(validateMissingComplete({ completedBy: "Ada", completionAt: "" }).reason).toMatch(/date/i);
+    expect(validateMissingComplete({ completedBy: "Ada", completionAt: "" }).reason).toMatch(/completion date/i);
     expect(
       validateMissingComplete({
         completedBy: "Ada",
@@ -167,5 +168,17 @@ describe("catalogSpecialtyLines", () => {
     expect(lines.map((l) => l.name)).toEqual(["Bath Mat", "Comforter"]);
     expect(lines[0].quantity).toBe(2);
     expect(lines[1].quantity).toBe(0);
+  });
+});
+
+describe("review drawer UI labels", () => {
+  it("never surfaces raw reason codes in normal list copy", () => {
+    const uiText = collectNormalReviewUiText({
+      reason_codes: ["MANAGER_SENT_FOR_REVIEW"],
+      short_reason: "MANAGER_SENT_FOR_REVIEW",
+      category: "manual_review",
+    }).join(" ");
+    expect(uiText).not.toContain("MANAGER_SENT_FOR_REVIEW");
+    expect(uiText).toMatch(/Manual review/i);
   });
 });

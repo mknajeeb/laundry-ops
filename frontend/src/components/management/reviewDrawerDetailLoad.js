@@ -2,12 +2,14 @@
  * Review drawer expand — parse / fetch action metadata (no scans).
  */
 
+import { formatReviewApiError } from "./reviewDisplayLabels";
+
 export function parseReviewDrawerActionResponse(data) {
   const payload = data || {};
   if (payload.ok === false) {
     return {
       ok: false,
-      error: payload.error || payload.message || "Failed to load bag details",
+      error: formatReviewApiError(payload.error, payload.message || "Failed to load bag details"),
       bag: null,
       catalog: [],
     };

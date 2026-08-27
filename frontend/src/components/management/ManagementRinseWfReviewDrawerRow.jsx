@@ -40,6 +40,7 @@ import {
   validateSpecialtyComplete,
   validateSpecialtySave,
 } from "./reviewDrawerModel";
+import { formatReviewApiError } from "./reviewDisplayLabels";
 
 const NO_CHARGE_REASONS = ["Customer cancelled", "False alarm", "Duplicate scan", "Other"];
 
@@ -181,13 +182,18 @@ function ScanChronology({ selectedDateEt, bagId, open }) {
         const res = await getManagementRinseWfReviewScans(selectedDateEt, bagId);
         if (cancelled) return;
         if (!res?.data?.ok) {
-          setError(res?.data?.error || "Failed to load scans");
+          setError(formatReviewApiError(res?.data?.error, res?.data?.message || "Failed to load scans"));
           return;
         }
         setScans(Array.isArray(res.data.scans) ? res.data.scans : []);
       } catch (err) {
         if (!cancelled) {
-          setError(err?.response?.data?.error || err?.message || "Failed to load scans");
+          setError(
+            formatReviewApiError(
+              err?.response?.data?.error,
+              err?.response?.data?.message || err?.message || "Failed to load scans",
+            ),
+          );
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -374,22 +380,20 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
       });
       if (!res?.data?.ok) {
         if (res?.data?.error === "conflict") {
-          setError("This bag was updated while you were reviewing it. Close and reopen to retry.");
+          setError(formatReviewApiError("conflict"));
           return;
         }
-        if (res?.data?.error === "bulk_workitem_review_required") {
-          setError(
-            res?.data?.message ||
-              "Resolve bulk bath mat/comforter quantities or mark no-charge before completing.",
-          );
-          return;
-        }
-        setError(res?.data?.message || res?.data?.error || "Save failed");
+        setError(formatReviewApiError(res?.data?.error, res?.data?.message || "Save failed"));
         return;
       }
       onSaved?.(res.data, { kind: "missing", bagId: bag.bag_id });
     } catch (err) {
-      setError(err?.response?.data?.error || err?.message || "Save failed");
+      setError(
+        formatReviewApiError(
+          err?.response?.data?.error,
+          err?.response?.data?.message || err?.message || "Save failed",
+        ),
+      );
     } finally {
       setSaving(false);
     }
@@ -599,12 +603,17 @@ function SpecialtyInline({ bag, catalog, selectedDateEt, readOnly, onSaved }) {
             })),
       });
       if (!res?.data?.ok) {
-        setError(res?.data?.error || "Failed to save specialty");
+        setError(formatReviewApiError(res?.data?.error, res?.data?.message || "Failed to save specialty"));
         return;
       }
       onSaved?.(res.data, { kind: "specialty", bagId: bag.bag_id });
     } catch (err) {
-      setError(err?.response?.data?.error || err?.message || "Failed to save specialty");
+      setError(
+        formatReviewApiError(
+          err?.response?.data?.error,
+          err?.response?.data?.message || err?.message || "Failed to save specialty",
+        ),
+      );
     } finally {
       setSaving(false);
     }
@@ -727,7 +736,12 @@ export default function ManagementRinseWfReviewDrawerRow({
         setCatalog(result.catalog);
       } catch (err) {
         if (!cancelled) {
-          setError(err?.response?.data?.error || err?.message || "Failed to load bag details");
+          setError(
+            formatReviewApiError(
+              err?.response?.data?.error,
+              err?.response?.data?.message || err?.message || "Failed to load bag details",
+            ),
+          );
           setActionBag(null);
           setCatalog([]);
         }
