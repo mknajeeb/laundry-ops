@@ -1,4 +1,8 @@
-"""One-way compatibility projection: canonical WF cycles → legacy day_bags / Management."""
+"""Compatibility projection: canonical WF workload → legacy day_bags / Management.
+
+Membership authority is ``get_canonical_wf_workload`` (not service cycles).
+Service-cycle rows remain audit/history only.
+"""
 
 from __future__ import annotations
 
@@ -185,7 +189,7 @@ def apply_wf_selected_day_boundary_guard(
     shift_date_et: date,
     bags: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Shared WF day-bag row guard — every persist/projection writer must pass through this."""
+    """Shared WF day-bag row guard — drop historically completed bag IDs."""
     return _exclude_stale_prior_day_terminal_cycles(
         cursor, organization_id, shift_date_et, list(bags or [])
     )
@@ -198,9 +202,8 @@ def resolve_canonical_wf_day_bag_rows_for_persist(
 ) -> list[dict[str, Any]]:
     """Deterministic WF day-bag rows for selected-day persist (single membership source).
 
-    All automatic/manual writers must use this when canonical lifecycle is enabled so
-    repeated projection passes replace the same bag-id set instead of accumulating
-    append-only Stage-B membership additions.
+    Membership comes only from ``get_canonical_wf_workload``. Service cycles,
+    append-only scrape membership, and absence alone cannot admit bags.
     """
     org = int(organization_id)
     prior_wf = _prior_wf_day_bags_by_id(cursor, org, shift_date_et)
@@ -248,128 +251,21 @@ def _canonical_wf_bags_for_date(
     organization_id: int,
     shift_date_et: date,
 ) -> list[dict[str, Any]]:
-    org = int(organization_id)
-    day_start = naive_et_day_start(shift_date_et)
-    day_end = day_start + timedelta(days=1)
-    cur = cursor
-    cur.execute(
-        """
-        SELECT * FROM rinse_wf_service_cycles
-        WHERE organization_id = %s
-          AND (
-            (admitted_at >= %s AND admitted_at < %s)
-            OR (completed_at >= %s AND completed_at < %s)
-            OR (
-              admitted_at < %s
-              AND status IN (%s, %s)
-              AND (completed_at IS NULL OR completed_at >= %s)
-            )
-          )
-        ORDER BY cycle_anchor_at ASC
-        """,
-        (
-            org,
-            day_start,
-            day_end,
-            day_start,
-            day_end,
-            day_start,
-            STATUS_ACTIVE,
-            STATUS_REVIEW,
-            day_start,
-        ),
+    """WF day-bag rows derived from ``get_canonical_wf_workload`` (not service cycles)."""
+    from backend.rinse_wf_canonical_workload import (
+        assert_canonical_workload_invariants,
+        canonical_wf_day_bag_rows,
+        get_canonical_wf_workload,
     )
-    bags: list[dict[str, Any]] = []
-    for c in _dedupe_canonical_cycle_rows(
-        [c for c in (cur.fetchall() or []) if isinstance(c, dict)]
-    ):
-        bid = c.get("bag_id")
-        if not bid:
-            continue
-        admitted_at = c.get("admitted_at")
-        anchor_at = c.get("cycle_anchor_at")
-        status = str(c.get("status") or STATUS_ACTIVE)
-        if status == STATUS_COMPLETED:
-            eff = OUTCOME_COMPLETED
-        elif status == STATUS_REVIEW:
-            eff = OUTCOME_REVIEW_REQUIRED
-        else:
-            eff = OUTCOME_PENDING
 
-        if _cycle_anchor_or_admit_on_date(
-            admitted_at=admitted_at if isinstance(admitted_at, datetime) else None,
-            cycle_anchor_at=anchor_at if isinstance(anchor_at, datetime) else None,
-            shift_date_et=shift_date_et,
-        ):
-            new_or_carry = "new_today"
-        elif isinstance(admitted_at, datetime) and admitted_at < day_start:
-            new_or_carry = OUTCOME_CARRYOVER_QUERY
-        else:
-            new_or_carry = "new_today"
-
-        rush = c.get("rush_status")
-        bags.append(
-            {
-                "bag_id": bid,
-                "service_type": "WF",
-                "rush_status": rush,
-                "rush_flag": rush,
-                "new_or_carryover": new_or_carry,
-                "pre_weight_lbs": c.get("pre_weight_lbs"),
-                "post_weight_lbs": c.get("post_weight_lbs"),
-                "canonical_completion_status": (
-                    OUTCOME_COMPLETED if eff == OUTCOME_COMPLETED else eff
-                ),
-                "canonical_completion_timestamp": c.get("completed_at"),
-                "effective_status": eff,
-                "review_reason_codes": (
-                    [c.get("review_reason")] if c.get("review_reason") else []
-                ),
-                "bag_snapshot": {
-                    "cycle_id": c.get("id"),
-                    "cycle_anchor_at": str(c.get("cycle_anchor_at")),
-                    "admitted_at": str(admitted_at),
-                    "completion_source": c.get("completion_source"),
-                    "canonical_projection": True,
-                },
-                "completion_at": c.get("completed_at"),
-            }
-        )
-    bags = _exclude_stale_prior_day_terminal_cycles(
+    wl = get_canonical_wf_workload(cursor, int(organization_id), shift_date_et)
+    assert_canonical_workload_invariants(wl)
+    bags = canonical_wf_day_bag_rows(
+        cursor, int(organization_id), shift_date_et, workload=wl
+    )
+    return _exclude_stale_prior_day_terminal_cycles(
         cursor, organization_id, shift_date_et, bags
     )
-    if bags:
-        from backend.rinse_day_bag_completion_projection import (
-            apply_normalized_completion_fields,
-            enrich_bags_completion_from_scans,
-        )
-        from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
-        from backend.rinse_veewash_review import load_bag_weight_map
-
-        enrich_bags_completion_from_scans(
-            cursor, organization_id, shift_date_et, bags
-        )
-        bags = [apply_normalized_completion_fields(b) for b in bags]
-        bag_ids = [normalize_bag_id(b.get("bag_id")) for b in bags if b.get("bag_id")]
-        weight_map = load_bag_weight_map(
-            cursor,
-            organization_id,
-            bag_ids,
-            selected_date_et=shift_date_et,
-        )
-        for bag in bags:
-            bid = normalize_bag_id(bag.get("bag_id"))
-            if not bid:
-                continue
-            resolved = weight_map.get(bid) or {}
-            evidence_pre = authoritative_evidence_pre_lbs(resolved)
-            if evidence_pre is not None:
-                bag["pre_weight_lbs"] = evidence_pre
-            if resolved.get("post_weight_lbs") is not None:
-                bag["post_weight_lbs"] = resolved.get("post_weight_lbs")
-            if resolved.get("pre_weight_source"):
-                bag["pre_weight_source"] = resolved.get("pre_weight_source")
-    return bags
 
 
 def _prior_wf_day_bags_by_id(

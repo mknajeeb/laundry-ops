@@ -1156,10 +1156,11 @@ def persist_day_snapshot(
     except Exception:
         logger.exception(
             "WF canonical day-bag replace failed during persist org=%s date=%s; "
-            "falling back to terminal-filtered candidates (never unfiltered Stage-B)",
+            "fail-closed to zero WF bags (never unfiltered Stage-B)",
             organization_id,
             shift_date_et,
         )
+        wf_candidate_rows = []
 
     # Non-negotiable: candidate − {completion_date_et < D} immediately before upsert.
     # Fail closed — never persist unfiltered WF bags if the guard errors.
