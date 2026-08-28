@@ -70,14 +70,14 @@ export function navTimeoutMs() {
  * looks like a multi-minute hang with no progress.
  */
 export function actionTimeoutMs() {
-  const n = parseInt(process.env.RINSE_ACTION_TIMEOUT_MS || "10000", 10);
-  return Math.max(3000, Math.min(60000, Number.isFinite(n) ? n : 10000));
+  const n = parseInt(process.env.RINSE_ACTION_TIMEOUT_MS || "15000", 10);
+  return Math.max(3000, Math.min(60000, Number.isFinite(n) ? n : 15000));
 }
 
 /** Hard wall for one ticket expand/read (includes nested waits). */
 export function ticketOpTimeoutMs() {
-  const n = parseInt(process.env.RINSE_TICKET_OP_TIMEOUT_MS || "25000", 10);
-  return Math.max(8000, Math.min(120000, Number.isFinite(n) ? n : 25000));
+  const n = parseInt(process.env.RINSE_TICKET_OP_TIMEOUT_MS || "45000", 10);
+  return Math.max(8000, Math.min(120000, Number.isFinite(n) ? n : 45000));
 }
 
 export function applyBoundedPageTimeouts(page) {
@@ -245,6 +245,11 @@ export function portalDiag(fields) {
   progressLine(parts.join(" "));
 }
 
+/**
+ * DEPRECATED for Playwright ops: Promise.race alone does NOT cancel the underlying
+ * CDP/locator work. Prefer runExclusivePageOp which closes the page on timeout.
+ * Kept for non-Playwright async walls / tests.
+ */
 export function withBoundedTimeout(promise, ms, label) {
   const limit = Math.max(1000, Number(ms) || 15000);
   let timer;
@@ -258,6 +263,87 @@ export function withBoundedTimeout(promise, ms, label) {
       }, limit);
     }),
   ]);
+}
+
+/**
+ * Run exactly one Playwright operation against `page`.
+ * On wall-clock timeout: CLOSE the page so in-flight CDP commands abort.
+ * Caller must treat err.pageClosed / page.isClosed() as "recreate page before next op".
+ * Never overlaps retries on the same page.
+ */
+export async function runExclusivePageOp(page, fn, ms, label) {
+  const limit = Math.max(1000, Number(ms) || 15000);
+  let timer = null;
+  let settled = false;
+  let timedOut = false;
+
+  const op = (async () => {
+    try {
+      return await fn();
+    } finally {
+      settled = true;
+      if (timer) clearTimeout(timer);
+    }
+  })();
+
+  const wall = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      const err = new Error(`${label || "op"}_timeout_${limit}ms`);
+      err.code = "PORTAL_OP_TIMEOUT";
+      err.pageClosed = true;
+      reject(err);
+      // Cancel underlying Playwright work — race alone leaves it running.
+      Promise.resolve()
+        .then(() => (page && !page.isClosed() ? page.close({ runBeforeUnload: false }) : null))
+        .catch(() => {});
+    }, limit);
+  });
+
+  try {
+    return await Promise.race([op, wall]);
+  } catch (err) {
+    if (timedOut || (err && err.code === "PORTAL_OP_TIMEOUT")) {
+      try {
+        if (page && !page.isClosed()) await page.close({ runBeforeUnload: false });
+      } catch {
+        /* ignore */
+      }
+      const out = err && err.code === "PORTAL_OP_TIMEOUT" ? err : new Error(`${label || "op"}_timeout_${limit}ms`);
+      out.code = "PORTAL_OP_TIMEOUT";
+      out.pageClosed = true;
+      throw out;
+    }
+    if (isPageClosedError(err)) {
+      const wrapped = err instanceof Error ? err : new Error(String(err));
+      wrapped.pageClosed = true;
+      throw wrapped;
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function isPageClosedError(err) {
+  const msg = String(err && err.message ? err.message : err || "").toLowerCase();
+  return (
+    msg.includes("has been closed") ||
+    msg.includes("target closed") ||
+    msg.includes("page.closed") ||
+    msg.includes("browser has been closed") ||
+    msg.includes("context or browser has been closed")
+  );
+}
+
+export async function recreateLightPage(context, url = "") {
+  const page = await context.newPage();
+  await installLightPage(page);
+  if (url) {
+    await gotoWithRetry(page, url, { attempts: 2, label: "page.recreate_goto" });
+  }
+  portalDiag({ op: "page_recreated", url: url || page.url() });
+  return page;
 }
 
 export function isTransientBrowserError(err) {

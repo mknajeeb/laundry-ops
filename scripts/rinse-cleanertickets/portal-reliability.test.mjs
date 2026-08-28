@@ -8,6 +8,7 @@ import {
   actionTimeoutMs,
   ticketOpTimeoutMs,
   withBoundedTimeout,
+  runExclusivePageOp,
   isTransientBrowserError,
   buildDegradedPortalMetaFields,
   closeBrowserSafe,
@@ -80,6 +81,32 @@ describe("degraded meta", () => {
     });
     assert.equal(m.degraded, false);
     assert.equal(m.source_inspected_complete, true);
+  });
+});
+
+describe("exclusive page op cancellation", () => {
+  it("closes page on timeout so underlying work cannot continue", async () => {
+    let closed = false;
+    const fakePage = {
+      isClosed: () => closed,
+      close: async () => {
+        closed = true;
+      },
+    };
+    const hung = new Promise(() => {}); // never settles
+    await assert.rejects(
+      () =>
+        runExclusivePageOp(
+          fakePage,
+          () => hung,
+          1000,
+          "stuckExpand",
+        ),
+      /stuckExpand_timeout_1000ms/,
+    );
+    // allow microtask close to land
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(closed, true);
   });
 });
 

@@ -21,6 +21,9 @@ import {
   closeBrowserSafe,
   portalDiag,
   withBoundedTimeout,
+  runExclusivePageOp,
+  isPageClosedError,
+  recreateLightPage,
   isTransientBrowserError,
 } from "./rinse-playwright-lib.mjs";
 
@@ -1823,8 +1826,9 @@ async function scrapePage(page, pageLabel, layout) {
     let expandErrMsg = "";
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        ({ bagId, bagDisplay, raw, customer, fullText, collapsed } = await withBoundedTimeout(
-          expandRowAndReadBag(page, cand, rt),
+        ({ bagId, bagDisplay, raw, customer, fullText, collapsed } = await runExclusivePageOp(
+          page,
+          () => expandRowAndReadBag(page, cand, rt),
           ticketOpTimeoutMs(),
           "expandRowAndReadBag",
         ));
@@ -1841,12 +1845,28 @@ async function scrapePage(page, pageLabel, layout) {
           ticket: recordIndex,
           tr: rowHint,
           attempt,
+          page_closed: expandErr.pageClosed || isPageClosedError(expandErr) ? 1 : 0,
         });
-        if (
-          isTransientBrowserError(expandErr) &&
-          /target closed|browser.*closed|page crashed|protocol error/i.test(expandErrMsg)
-        ) {
-          throw expandErr;
+        if (expandErr.pageClosed || isPageClosedError(expandErr) || page.isClosed()) {
+          skippedTickets.push({
+            page: pageLabel,
+            ticket_index: recordIndex,
+            row_hint: rowHint,
+            preview,
+            reason: "expand_timeout_or_page_closed",
+            error: expandErrMsg,
+          });
+          progressLine(
+            `  ticket ${recordIndex} (list tr ${rowHint}): SKIPPED (page closed/timeout) — ${preview}…`,
+          );
+          // Page closed cancels in-flight work; stop this page walk (degraded). Caller retries browser if needed.
+          return {
+            rows: out,
+            tableRowCount: initialRowCount,
+            siColumnIndex,
+            skippedTickets,
+            pageClosed: true,
+          };
         }
         if (attempt < 2) {
           progressLine(

@@ -47,6 +47,9 @@ import {
   closeBrowserSafe,
   portalDiag,
   withBoundedTimeout,
+  runExclusivePageOp,
+  isPageClosedError,
+  recreateLightPage,
   isTransientBrowserError,
   urlForPage,
   pageNumFromUrl,
@@ -109,8 +112,11 @@ function eventDataRow(bagIdCode, event) {
   ];
 }
 
-/** Same ticket walk as production scrapePage — plus Scans table capture. */
-async function scrapeScanEventsOnPage(page, { pageNum = null, pageUrl = "" } = {}) {
+/** Same ticket walk as production scrapePage — plus Scans table capture.
+ * `session.page` may be replaced when a timed-out op closes the page (cancellation).
+ */
+async function scrapeScanEventsOnPage(session, { pageNum = null, pageUrl = "" } = {}) {
+  let page = session.page;
   const sel = bodyRowsSelector();
   const tableWait = Math.max(250, Math.min(8000, parseInt(process.env.RINSE_TABLE_WAIT_MS || "450", 10) || 450));
   const tableAfter = Math.max(0, Math.min(5000, parseInt(process.env.RINSE_TABLE_AFTER_MS || "180", 10) || 180));
@@ -159,7 +165,6 @@ async function scrapeScanEventsOnPage(page, { pageNum = null, pageUrl = "" } = {
   const capturedBagIds = new Set();
   let recordIndex = 0;
   const minListTd = Math.max(2, Math.min(12, parseInt(process.env.RINSE_MIN_LIST_TD || "2", 10) || 2));
-
   const maxRowIters = Math.max(
     initialRowCount * 4 + 40,
     Math.min(800, parseInt(process.env.RINSE_MAX_ROW_ITERS || "400", 10) || 400),
@@ -167,8 +172,24 @@ async function scrapeScanEventsOnPage(page, { pageNum = null, pageUrl = "" } = {
   let j = 0;
   let iters = 0;
   let hardRecoveries = 0;
+
+  async function recreateAfterClosed(reason) {
+    portalDiag({ op: "recreate_after_closed", reason, page: pageNum });
+    page = await recreateLightPage(session.context, pageUrl);
+    session.page = page;
+    hardRecoveries += 1;
+    rowsAll = ticketTableBodyRows(page);
+    if ((await rowsAll.count()) === 0) rowsAll = page.locator(sel);
+  }
+
   while (iters < maxRowIters) {
     iters += 1;
+    if (page.isClosed()) {
+      if (hardRecoveries >= 3) break;
+      await recreateAfterClosed("loop_page_closed");
+      j += 1;
+      continue;
+    }
     const rowCount = await rowsAll.count();
     if (j >= rowCount) break;
 
@@ -179,40 +200,20 @@ async function scrapeScanEventsOnPage(page, { pageNum = null, pageUrl = "" } = {
 
     const tdCount = await cand.locator("td").count().catch(() => 0);
     const thOnly = (await cand.locator("th").count().catch(() => 0)) > 0 && tdCount === 0;
-    if (thOnly) {
-      j += 1;
-      continue;
-    }
+    if (thOnly) { j += 1; continue; }
 
     const directTd = await cand.locator(":scope > td").count().catch(() => 0);
     const directGrid = await cand.locator(":scope > [role='gridcell']").count().catch(() => 0);
-    const nListCells = Math.max(directTd, directGrid);
-    if (nListCells < minListTd) {
-      j += 1;
-      continue;
-    }
+    if (Math.max(directTd, directGrid) < minListTd) { j += 1; continue; }
 
     const tdTexts = await readTicketRowDirectCells(cand);
     const rt = await readTicketRowTextSnapshot(cand);
     const trimmed = rt.trim();
     const fromTdsPeek = portalListRowPeekOk(tdTexts, trimmed);
-
-    if (trimmed.length < 6 || /^(scans|rack|time scanned)/i.test(trimmed)) {
-      j += 1;
-      continue;
-    }
-    if (await isProbablySingleCellDetailRow(cand)) {
-      j += 1;
-      continue;
-    }
-    if (isLikelyExpandedDetailSubRow(trimmed)) {
-      j += 1;
-      continue;
-    }
-    if (!isMainListTicketRow(trimmed) && !fromTdsPeek) {
-      j += 1;
-      continue;
-    }
+    if (trimmed.length < 6 || /^(scans|rack|time scanned)/i.test(trimmed)) { j += 1; continue; }
+    if (await isProbablySingleCellDetailRow(cand)) { j += 1; continue; }
+    if (isLikelyExpandedDetailSubRow(trimmed)) { j += 1; continue; }
+    if (!isMainListTicketRow(trimmed) && !fromTdsPeek) { j += 1; continue; }
 
     recordIndex += 1;
     const rowHint = `${j + 1}/${rowCount}`;
@@ -239,192 +240,154 @@ async function scrapeScanEventsOnPage(page, { pageNum = null, pageUrl = "" } = {
     let collapsed = rt;
     let expandOk = false;
     let expandErrMsg = "";
-    const expandAttempts = 2;
-    for (let attempt = 1; attempt <= expandAttempts; attempt++) {
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        ({ bagId, bagDisplay, customer, fullText, collapsed } = await withBoundedTimeout(
-          expandRowAndReadBag(page, cand, rt),
+        ({ bagId, bagDisplay, customer, fullText, collapsed } = await runExclusivePageOp(
+          page,
+          () => expandRowAndReadBag(page, cand, rt),
           ticketOpTimeoutMs(),
           "expandRowAndReadBag",
         ));
         expandOk = true;
         break;
       } catch (expandErr) {
-        expandErrMsg = String(expandErr && expandErr.message ? expandErr.message : expandErr).slice(
-          0,
-          160,
-        );
+        expandErrMsg = String(expandErr && expandErr.message ? expandErr.message : expandErr).slice(0, 160);
         portalDiag({
           op: "expandRowAndReadBag",
           error: expandErrMsg,
           ticket: recordIndex,
           tr: rowHint,
           attempt,
+          page_closed: expandErr.pageClosed || isPageClosedError(expandErr) ? 1 : 0,
         });
-        if (
-          isTransientBrowserError(expandErr) &&
-          /target closed|browser.*closed|page crashed|protocol error/i.test(expandErrMsg)
-        ) {
-          throw expandErr;
+        if (expandErr.pageClosed || isPageClosedError(expandErr) || page.isClosed()) {
+          skippedTickets.push({
+            page: pageNum, ticket_index: recordIndex, row_hint: rowHint, preview,
+            reason: "expand_timeout_or_page_closed", error: expandErrMsg,
+          });
+          progressLine(`  ticket ${recordIndex} (tr ${rowHint}): SKIPPED (page closed/timeout) — recreating page…`);
+          if (hardRecoveries >= 3) {
+            return { tickets: out, tableRowCount: initialRowCount, skippedTickets };
+          }
+          await recreateAfterClosed("expand_timeout");
+          break;
         }
-        if (attempt < expandAttempts) {
-          progressLine(
-            `  ticket ${recordIndex} (tr ${rowHint}): expand failed attempt ${attempt} — retrying once…`,
-          );
+        if (attempt < 2) {
+          progressLine(`  ticket ${recordIndex} (tr ${rowHint}): expand failed attempt ${attempt} — retrying once…`);
           await page.waitForTimeout(200);
-          continue;
         }
       }
     }
     if (!expandOk) {
-      skippedTickets.push({
-        page: pageNum,
-        ticket_index: recordIndex,
-        row_hint: rowHint,
-        preview,
-        reason: "expand_timeout",
-        error: expandErrMsg,
-      });
-      progressLine(
-        `  ticket ${recordIndex} (tr ${rowHint}): SKIPPED after expand failure — ${preview}…`,
-      );
-      // Cancel hung Playwright locator work (Promise.race does not abort it).
-      const recovered = await recoverPageAfterStuckOp(page, pageUrl, "expand_skip");
-      hardRecoveries += 1;
-      if (!recovered || hardRecoveries >= 3) {
-        portalDiag({
-          op: "page_abort_after_skips",
-          page: pageNum,
-          skipped: skippedTickets.length,
-          hard_recoveries: hardRecoveries,
+      if (!skippedTickets.some((s) => s.ticket_index === recordIndex)) {
+        skippedTickets.push({
+          page: pageNum, ticket_index: recordIndex, row_hint: rowHint, preview,
+          reason: "expand_timeout", error: expandErrMsg,
         });
-        break;
+        progressLine(`  ticket ${recordIndex} (tr ${rowHint}): SKIPPED after expand failure — ${preview}…`);
       }
-      rowsAll = ticketTableBodyRows(page);
-      if ((await rowsAll.count()) === 0) rowsAll = page.locator(sel);
       j += 1;
       continue;
     }
 
     const bagKey = String(bagId || "").trim().toUpperCase();
-    if (bagKey && capturedBagIds.has(bagKey)) {
-      j += 1;
-      continue;
-    }
+    if (bagKey && capturedBagIds.has(bagKey)) { j += 1; continue; }
     if (bagKey) capturedBagIds.add(bagKey);
+
     const portal = parsePortalFields(collapsed || rt, fullText, tdTexts, bagDisplay || bagId, {
       visibleTableSi: visibleTableSiRaw,
     });
-    const scansRaw = await withBoundedTimeout(
-      extractScansFromExpandedTicket(cand),
-      ticketOpTimeoutMs(),
-      "extractScansFromExpandedTicket",
-    ).catch(() => []);
-    const cleanWeights = await withBoundedTimeout(
-      extractPrePostCleanWeightsFromExpandedTicket(cand),
-      Math.min(20000, ticketOpTimeoutMs()),
-      "extractPrePostCleanWeights",
-    ).catch(() => ({}));
+
+    let scansRaw = [];
+    let cleanWeights = {};
+    try {
+      scansRaw = await runExclusivePageOp(
+        page,
+        () => extractScansFromExpandedTicket(cand),
+        ticketOpTimeoutMs(),
+        "extractScansFromExpandedTicket",
+      );
+      cleanWeights = await runExclusivePageOp(
+        page,
+        () => extractPrePostCleanWeightsFromExpandedTicket(cand),
+        Math.min(20000, ticketOpTimeoutMs()),
+        "extractPrePostCleanWeights",
+      );
+    } catch (scanErr) {
+      if (scanErr.pageClosed || isPageClosedError(scanErr) || page.isClosed()) {
+        skippedTickets.push({
+          page: pageNum, ticket_index: recordIndex, row_hint: rowHint, preview, bag_id: bagId,
+          reason: "scan_extract_page_closed",
+          error: String(scanErr.message || scanErr).slice(0, 160),
+        });
+        if (hardRecoveries < 3) await recreateAfterClosed("scan_extract");
+        j += 1;
+        continue;
+      }
+      scansRaw = [];
+      cleanWeights = {};
+    }
+
     const assigned = assignAuthoritativeWeightsToScans(scansRaw, cleanWeights);
     const scans = assigned.scans;
     const bd = bagDisplay || bagId;
     const bagIdCode = ticketIdFromBag(bagId, bd);
-
     const pn = portal.customer_name || customer || "";
     const bits = ` | ${String(portal.date_display || "").slice(0, 32)} | svc:${String(portal.service_type || "").slice(0, 22)} | sub:${String(portal.sub_service || "").slice(0, 14)} | lbs:${String(portal.weight_display || "").slice(0, 18)} | #HD:${String(portal.hd_count ?? "").slice(0, 8)} | preclean:${assigned.pre_lbs ?? ""} | post:${assigned.post_lbs ?? ""}`;
 
     const ticketRec = {
-      portal,
-      bag_id: bagId,
-      bag_display: bd,
-      bag_id_code: bagIdCode,
-      pre_clean_weight_lbs: assigned.pre_lbs,
-      post_weight_lbs: assigned.post_lbs,
-      workitem_wf_lbs: assigned.workitem_wf_lbs,
-      weight_capture: cleanWeights,
+      portal, bag_id: bagId, bag_display: bd, bag_id_code: bagIdCode,
+      pre_clean_weight_lbs: assigned.pre_lbs, post_weight_lbs: assigned.post_lbs,
+      workitem_wf_lbs: assigned.workitem_wf_lbs, weight_capture: cleanWeights,
     };
 
     if (scans.length === 0) {
-      progressLine(
-        `  ticket ${recordIndex} (tr ${rowHint}): ${bagIdCode || "no-bag"} — 0 scan rows — ${preview}…`,
-      );
-      if (String(process.env.RINSE_SCAN_INCLUDE_EMPTY_TICKETS || "0").trim() === "1") {
-        out.push({
-          ...ticketRec,
-          events: [
-            {
-              scan_index: "",
-              rack: "",
-              time_scanned: "",
-              user: "",
-              purpose: "",
-              is_last_location: "",
-              is_last_scan: "",
-              weight: "",
-              weight_source: "",
-              weight_role: "",
-            },
-          ],
-        });
-      } else {
-        out.push({ ...ticketRec, events: [] });
-      }
+      progressLine(`  ticket ${recordIndex} (tr ${rowHint}): ${bagIdCode || "no-bag"} — 0 scan rows — ${preview}…`);
+      out.push({ ...ticketRec, events: [] });
     } else {
       const events = scans.map((ev, idx) => ({
-        scan_index: idx + 1,
-        rack: ev.rack,
-        time_scanned: ev.time_scanned,
-        user: ev.user,
-        purpose: ev.purpose,
-        is_last_location: ev.is_last_location ? "Y" : "",
+        scan_index: idx + 1, rack: ev.rack, time_scanned: ev.time_scanned, user: ev.user,
+        purpose: ev.purpose, is_last_location: ev.is_last_location ? "Y" : "",
         is_last_scan: ev.is_last_scan ? "Y" : "",
-        weight: ev.weight != null ? ev.weight : "",
-        weight_source: ev.weight_source || "",
+        weight: ev.weight != null ? ev.weight : "", weight_source: ev.weight_source || "",
         weight_role: ev.weight_role || "",
       }));
       out.push({ ...ticketRec, events });
-      if (bagIdCode) {
-        progressLine(
-          `  ticket ${recordIndex} (tr ${rowHint}): ${bagIdCode}${pn ? ` — ${String(pn).slice(0, 48)}` : ""}${bits} — ${scans.length} scan event(s)`,
-        );
-      } else {
-        progressLine(
-          `  ticket ${recordIndex} (tr ${rowHint}): ${preview}… — no bag id — ${scans.length} scan event(s)`,
-        );
-      }
+      progressLine(
+        bagIdCode
+          ? `  ticket ${recordIndex} (tr ${rowHint}): ${bagIdCode}${pn ? ` — ${String(pn).slice(0, 48)}` : ""}${bits} — ${scans.length} scan event(s)`
+          : `  ticket ${recordIndex} (tr ${rowHint}): ${preview}… — no bag id — ${scans.length} scan event(s)`,
+      );
     }
 
-    await ensureRowCollapsedAfterTicket(cand, page);
-    await page
-      .evaluate(() => {
-        window.scrollBy(0, Math.min(420, Math.floor(window.innerHeight * 0.4)));
-      })
-      .catch(() => {});
-
+    try {
+      await ensureRowCollapsedAfterTicket(cand, page);
+    } catch (collapseErr) {
+      if (isPageClosedError(collapseErr) || page.isClosed()) {
+        if (hardRecoveries < 3) await recreateAfterClosed("collapse");
+        j += 1;
+        continue;
+      }
+    }
+    await page.evaluate(() => {
+      window.scrollBy(0, Math.min(420, Math.floor(window.innerHeight * 0.4)));
+    }).catch(() => {});
     j += 1;
   }
 
   if (iters >= maxRowIters) {
     portalDiag({ op: "scrapeScanEvents_row_loop", error: "max_row_iters", iters, max: maxRowIters });
-    progressLine(
-      `  Stopping ticket walk: hit RINSE_MAX_ROW_ITERS cap (${maxRowIters}) after ${out.length} ticket(s).`,
-    );
+    progressLine(`  Stopping ticket walk: hit RINSE_MAX_ROW_ITERS cap (${maxRowIters}) after ${out.length} ticket(s).`);
   }
-
   if (initialRowCount > 0 && out.length > 0) {
     const eventRows = out.reduce((n, t) => n + t.events.length, 0);
-    progressLine(
-      `  Captured ${out.length} ticket(s), ${eventRows} scan row(s) (${initialRowCount} list <tr> before).`,
-    );
+    progressLine(`  Captured ${out.length} ticket(s), ${eventRows} scan row(s) (${initialRowCount} list <tr> before).`);
   }
   portalDiag({
-    op: "page_complete",
-    page: pageNum,
-    tickets: out.length,
-    skipped: skippedTickets.length,
-    expected_rows: initialRowCount,
+    op: "page_complete", page: pageNum, tickets: out.length,
+    skipped: skippedTickets.length, expected_rows: initialRowCount,
   });
-
   return { tickets: out, tableRowCount: initialRowCount, skippedTickets };
 }
 
@@ -533,8 +496,9 @@ async function main() {
     try {
       browser = await chromium.launch(chromiumLaunchOptions({ headed }));
       const context = await browser.newContext(storageState ? { storageState } : {});
-      const page = await context.newPage();
+      let page = await context.newPage();
       await installLightPage(page);
+      const session = { browser, context, page };
 
       if (!storageState) {
         await tryLogin(page, baseUrl);
@@ -598,10 +562,12 @@ async function main() {
         }
         sessionAuthenticated = true;
 
-        const { tickets, tableRowCount, skippedTickets } = await scrapeScanEventsOnPage(page, {
+        session.page = page;
+        const { tickets, tableRowCount, skippedTickets } = await scrapeScanEventsOnPage(session, {
           pageNum: p,
           pageUrl: url,
         });
+        page = session.page;
         if (skippedTickets && skippedTickets.length) {
           allSkipped.push(...skippedTickets);
         }
