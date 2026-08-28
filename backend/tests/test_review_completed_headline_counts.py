@@ -179,6 +179,69 @@ def test_apply_day_bag_statuses_empty_bag_ids_recalculates_from_statuses():
     assert wf["total_workload"] == 3
 
 
+def test_apply_day_bag_statuses_excludes_prior_open_from_workload_total():
+    """Aug27 corruption: disappeared_prior_open must not inflate workload."""
+    from backend.rinse_veewash_shift_day import _apply_day_bag_statuses_to_headline
+
+    headline = {
+        "segments": {
+            "wf": {
+                "completed": 1,
+                "pending": 0,
+                "total_workload": 396,
+                "active_workload": 396,
+                "new_today": 396,
+                "exceptions": {"review_required": 1, "total": 1},
+                "bag_ids": {
+                    "new_today": [BAG, OTHER, "PRIOR1", "PRIOR2"],
+                    "carryover": [],
+                    "completed": [BAG],
+                    "pending": [],
+                    "review_required": [OTHER],
+                },
+            },
+            "all": {
+                "completed": 1,
+                "pending": 0,
+                "total_workload": 396,
+                "active_workload": 396,
+                "new_today": 396,
+                "exceptions": {"review_required": 1, "total": 1},
+                "bag_ids": {
+                    "new_today": [BAG, OTHER, "PRIOR1", "PRIOR2"],
+                    "carryover": [],
+                    "completed": [BAG],
+                    "pending": [],
+                    "review_required": [OTHER],
+                },
+            },
+        }
+    }
+    status_by_bag = {
+        BAG: {"effective_status": "completed", "service_type": "WF"},
+        OTHER: {"effective_status": "review_required", "service_type": "WF"},
+        "PRIOR1": {
+            "effective_status": "disappeared_prior_open_exception",
+            "service_type": "WF",
+        },
+        "PRIOR2": {
+            "effective_status": "disappeared_prior_open_exception",
+            "service_type": "WF",
+        },
+    }
+    out = _apply_day_bag_statuses_to_headline(headline, status_by_bag)
+    wf = out["segments"]["wf"]
+    assert wf["completed"] == 1
+    assert wf["pending"] == 0
+    assert wf["exceptions"]["review_required"] == 1
+    assert wf["total_workload"] == 2
+    assert wf["active_workload"] == 2
+    assert set(wf["bag_ids"]["new_today"]) == {BAG, OTHER}
+    assert wf["completed"] + wf["pending"] + wf["exceptions"]["review_required"] == wf[
+        "total_workload"
+    ]
+
+
 def _run_mark_completed_patch(*, segments, day_row_status="review_required", status_rows=None):
     from backend.rinse_veewash_shift_day import apply_manager_edit_day_bag_patch
 

@@ -141,11 +141,14 @@ def validate_presence_empty_result(
 
 def portal_scrape_meta_allows_absence_completion(meta: dict[str, Any] | None) -> bool:
     """
-    True only when portal export is a trustworthy full snapshot.
+    True only when portal export is a trustworthy *complete* traversal.
 
     Manual uploads (meta None) are allowed (legacy full_snapshot=1).
-    Scheduled scrapes with reached_max_pages, skipped tickets, or degraded
-    flags must not complete absent bags (Missing From Portal).
+
+    Hard invariant: any scheduled scrape meta must explicitly assert
+    ``source_inspected_complete=True`` plus a natural stop reason, with no
+    degraded/partial/skipped/max-pages signals. Failed, killed, reclaimed,
+    or incomplete traversals must never publish Missing From Portal / absence.
     """
     if meta is None:
         return True
@@ -160,7 +163,8 @@ def portal_scrape_meta_allows_absence_completion(meta: dict[str, Any] | None) ->
             return False
     except (TypeError, ValueError):
         return False
-    if meta.get("source_inspected_complete") is False:
+    # Fail closed: missing/False completeness is not an authoritative snapshot.
+    if meta.get("source_inspected_complete") is not True:
         return False
     reason = str(meta.get("stopped_reason") or "").strip()
     if reason == STOPPED_MAX_PAGES_REACHED:

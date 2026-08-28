@@ -607,6 +607,13 @@ def _bag_rows_from_workload(wl: Mapping[str, Any], summary: Mapping[str, Any]) -
         # Never persist presence-only / not_in_workload rows onto the day table.
         if member_ids and bid not in member_ids:
             continue
+        fb_skip = str(row.get("final_bucket") or row.get("outcome") or "").strip().lower()
+        if fb_skip in (
+            "not_in_workload",
+            "disappeared_prior_open_exception",
+        ):
+            # Historical prior-open exceptions are diagnostics, not day membership.
+            continue
         entry_class = row.get("entry_class") or row.get("inclusion_source") or "new_today"
         # Normalize inclusion_source constants onto stable entry_class labels.
         if entry_class in ("OPENING_CARRYOVER", "opening_carryover", "carryover"):
@@ -1602,26 +1609,35 @@ def _apply_day_bag_statuses_to_headline(
     """Rebuild status bag_ids/counts from persisted day-bag effective_status.
 
     Day-bag ``effective_status`` is authoritative. Headline JSON is only a
-    derived projection. Preserves new_today / carryover / total_workload
-    (membership unchanged during a status transition).
+    derived projection.
+
+    Hard invariant: workload == completed + pending + review
+    (+ carried_forward / unfinished_at_close on closed days). All four
+    headline counts come from the same classified bag-ID set — unbucketed
+    statuses (e.g. disappeared_prior_open_exception) never inflate workload.
     """
     out = dict(headline or {})
     segments = dict(out.get("segments") or {})
     if not segments:
         segments = {"all": {}, "wf": {}, "hd": {}}
 
+    _ops_buckets = (
+        "completed",
+        "pending",
+        "review_required",
+        "carried_forward",
+        "unfinished_at_close",
+    )
+
     for name, seg in list(segments.items()):
         seg_out = dict(seg or {})
         bag_ids = dict(seg_out.get("bag_ids") or {})
         new_today = _unique_bag_id_list(bag_ids.get("new_today"))
         carryover = _unique_bag_id_list(bag_ids.get("carryover"))
-        prev_total = seg_out.get("total_workload")
-        if prev_total is None:
-            prev_total = seg_out.get("active_workload")
 
         svc_filter, rush_filter = _segment_filters(name)
         prior_bucket: dict[str, str] = {}
-        for key in ("completed", "pending", "review_required", "carried_forward", "unfinished_at_close"):
+        for key in _ops_buckets:
             for bid in _unique_bag_id_list(bag_ids.get(key)):
                 prior_bucket[bid] = key
 
@@ -1637,13 +1653,7 @@ def _apply_day_bag_statuses_to_headline(
                     meta, service=svc_filter, rush=rush_filter
                 )
                 and _headline_bucket_for_status(meta.get("effective_status"))
-                in (
-                    "completed",
-                    "pending",
-                    "review_required",
-                    "carried_forward",
-                    "unfinished_at_close",
-                )
+                in _ops_buckets
             }
         if (new_today or carryover) and (svc_filter or rush_filter):
             filtered = set()
@@ -1680,8 +1690,19 @@ def _apply_day_bag_statuses_to_headline(
             elif bucket == "unfinished_at_close":
                 unfinished.append(bid)
 
-        bag_ids["new_today"] = new_today
-        bag_ids["carryover"] = carryover
+        # Same canonical bag-ID set for membership + status + workload totals.
+        classified = set(completed) | set(pending) | set(review) | set(carried) | set(
+            unfinished
+        )
+        new_today = [b for b in new_today if b in classified]
+        carryover = [b for b in carryover if b in classified]
+        # Classified bags missing from membership lists still belong in new_today.
+        listed = set(new_today) | set(carryover)
+        for bid in sorted(classified - listed):
+            new_today.append(bid)
+
+        bag_ids["new_today"] = _unique_bag_id_list(new_today)
+        bag_ids["carryover"] = _unique_bag_id_list(carryover)
         bag_ids["completed"] = completed
         bag_ids["pending"] = pending
         bag_ids["review_required"] = review
@@ -1690,30 +1711,18 @@ def _apply_day_bag_statuses_to_headline(
         bag_ids["disappeared_without_completion"] = list(review)
         seg_out["bag_ids"] = bag_ids
         seg_out = _recalc_status_counts_from_ids(seg_out)
-        if new_today or carryover:
-            # Membership present: total_workload must not change on status transition.
-            if prev_total is not None:
-                try:
-                    total_i = int(prev_total)
-                except (TypeError, ValueError):
-                    total_i = len(new_today) + len(carryover)
-            else:
-                total_i = len(new_today) + len(carryover)
-            seg_out["total_workload"] = total_i
-            seg_out["active_workload"] = total_i
-            seg_out["total_operational_orders"] = total_i
-        else:
-            # No membership ID lists — derive total from the status partition.
-            total_i = (
-                int(seg_out.get("completed") or 0)
-                + int(seg_out.get("pending") or 0)
-                + int(seg_out.get("carried_forward") or 0)
-                + int(seg_out.get("unfinished_at_close") or 0)
-                + int((seg_out.get("exceptions") or {}).get("review_required") or 0)
-            )
-            seg_out["total_workload"] = total_i
-            seg_out["active_workload"] = total_i
-            seg_out["total_operational_orders"] = total_i
+        total_i = (
+            int(seg_out.get("completed") or 0)
+            + int(seg_out.get("pending") or 0)
+            + int(seg_out.get("carried_forward") or 0)
+            + int(seg_out.get("unfinished_at_close") or 0)
+            + int((seg_out.get("exceptions") or {}).get("review_required") or 0)
+        )
+        seg_out["new_today"] = len(bag_ids["new_today"])
+        seg_out["carryover"] = len(bag_ids["carryover"])
+        seg_out["total_workload"] = total_i
+        seg_out["active_workload"] = total_i
+        seg_out["total_operational_orders"] = total_i
         segments[name] = seg_out
 
     out["segments"] = segments

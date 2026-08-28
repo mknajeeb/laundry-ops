@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
@@ -133,6 +134,45 @@ def test_portal_sync_defers_projection(_bags, _disc, _disp, _en, _trav, mock_cur
         portal_csv_path="/tmp/portal.csv",
     )
     assert out["projection"]["deferred"] is True
+
+
+def test_portal_traversal_complete_uses_absence_sot(tmp_path):
+    """Broken OR reached_max_pages must not authorize disappearance."""
+    from backend.rinse_wf_service_cycle import _portal_traversal_complete
+
+    # Missing meta → fail closed
+    assert _portal_traversal_complete(None) is False
+    assert _portal_traversal_complete(tmp_path / "missing.meta.json") is False
+
+    # Aug27-style premature no_next_page_ui without explicit complete → blocked
+    p = tmp_path / "portal.csv.meta.json"
+    p.write_text(
+        json.dumps(
+            {
+                "stopped_reason": "no_next_page_ui",
+                "reached_max_pages": False,
+                "pages_scraped": 2,
+                "row_count": 45,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert _portal_traversal_complete(p) is False
+
+    p.write_text(
+        json.dumps(
+            {
+                "stopped_reason": "no_next_page_ui",
+                "reached_max_pages": False,
+                "pages_scraped": 5,
+                "source_inspected_complete": True,
+                "degraded": False,
+                "skipped_ticket_count": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert _portal_traversal_complete(p) is True
 
 
 @patch("backend.rinse_wf_service_cycle.table_exists", return_value=True)

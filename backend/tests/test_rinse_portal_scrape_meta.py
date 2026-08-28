@@ -30,6 +30,20 @@ class TestPortalScrapeMetaAllowsAbsence(unittest.TestCase):
                     "stopped_reason": "no_next_page_ui",
                     "reached_max_pages": False,
                     "pages_scraped": 3,
+                    "source_inspected_complete": True,
+                }
+            )
+        )
+
+    def test_natural_stop_without_explicit_complete_blocked(self):
+        """Aug27 incident: no_next_page_ui alone must not authorize absence."""
+        self.assertFalse(
+            portal_scrape_meta_allows_absence_completion(
+                {
+                    "stopped_reason": "no_next_page_ui",
+                    "reached_max_pages": False,
+                    "pages_scraped": 2,
+                    "row_count": 45,
                 }
             )
         )

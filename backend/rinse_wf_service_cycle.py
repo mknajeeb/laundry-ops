@@ -770,16 +770,25 @@ def _parse_portal_bags_from_csv(portal_csv_path) -> dict[str, dict[str, Any]]:
 
 
 def _portal_traversal_complete(portal_scrape_meta_path) -> bool:
-    from backend.rinse_portal_scrape_meta import load_portal_scrape_meta_file
+    """Single SoT with portal absence: only a complete traversal may mark absence.
+
+    Fail closed when meta path/file is missing — never treat an unknown scrape
+    as authoritative portal presence/absence.
+    """
+    from backend.rinse_portal_scrape_meta import (
+        load_portal_scrape_meta_file,
+        normalize_portal_scrape_meta,
+        portal_scrape_meta_allows_absence_completion,
+    )
 
     if not portal_scrape_meta_path:
-        return True
-    meta = load_portal_scrape_meta_file(portal_scrape_meta_path) or {}
-    return str(meta.get("stopped_reason") or "") in (
-        "no_next_page_ui",
-        "natural_end",
-        "",
-    ) or not meta.get("reached_max_pages")
+        return False
+    raw = load_portal_scrape_meta_file(portal_scrape_meta_path)
+    if not raw:
+        return False
+    return portal_scrape_meta_allows_absence_completion(
+        normalize_portal_scrape_meta(raw)
+    )
 
 
 def refresh_canonical_cycles_from_evidence(
