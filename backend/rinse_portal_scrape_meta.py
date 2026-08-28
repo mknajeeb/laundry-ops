@@ -66,6 +66,14 @@ def normalize_portal_scrape_meta(raw: dict[str, Any] | None) -> dict[str, Any] |
         max_lim = int(raw.get("max_pages_limit") or 0)
     except (TypeError, ValueError):
         max_lim = 0
+    try:
+        skipped_n = int(raw.get("skipped_ticket_count") or 0)
+    except (TypeError, ValueError):
+        skipped_n = 0
+    skipped_tickets = raw.get("skipped_tickets")
+    if not isinstance(skipped_tickets, list):
+        skipped_tickets = []
+    source_complete = raw.get("source_inspected_complete")
     return {
         "stopped_reason": stopped,
         "reached_max_pages": reached,
@@ -78,6 +86,14 @@ def normalize_portal_scrape_meta(raw: dict[str, Any] | None) -> dict[str, Any] |
         "session_authenticated": bool(raw.get("session_authenticated")),
         "expected_status_in_url": bool(raw.get("expected_status_in_url")),
         "empty_table_detected": bool(raw.get("empty_table_detected")),
+        "degraded": bool(raw.get("degraded") or raw.get("partial") or skipped_n > 0),
+        "partial": bool(raw.get("partial") or raw.get("degraded") or skipped_n > 0),
+        "skipped_ticket_count": skipped_n,
+        "skipped_tickets": skipped_tickets[:40],
+        "page_navigation_failed": bool(raw.get("page_navigation_failed")),
+        "source_inspected_complete": (
+            None if source_complete is None else bool(source_complete)
+        ),
     }
 
 
@@ -101,6 +117,7 @@ def validate_presence_empty_result(
         "no_timeout": exit_code != -1,
         "no_login_redirect": False,
         "no_parser_error": exit_code == 0,
+        "not_degraded": True,
     }
     if parsed_row_count > 0:
         return False, checks
@@ -111,6 +128,7 @@ def validate_presence_empty_result(
     checks["expected_page_found"] = bool(meta.get("expected_status_in_url"))
     checks["explicit_empty_state"] = bool(meta.get("empty_table_detected"))
     checks["no_login_redirect"] = bool(meta.get("session_authenticated"))
+    checks["not_degraded"] = not bool(meta.get("degraded") or meta.get("partial"))
     reason = str(meta.get("stopped_reason") or "").strip()
     checks["pagination_completed"] = (
         not bool(meta.get("reached_max_pages"))
@@ -126,14 +144,32 @@ def portal_scrape_meta_allows_absence_completion(meta: dict[str, Any] | None) ->
     True only when portal export is a trustworthy full snapshot.
 
     Manual uploads (meta None) are allowed (legacy full_snapshot=1).
-    Scheduled scrapes with reached_max_pages must not complete absent bags.
+    Scheduled scrapes with reached_max_pages, skipped tickets, or degraded
+    flags must not complete absent bags (Missing From Portal).
     """
     if meta is None:
         return True
     if bool(meta.get("reached_max_pages")):
         return False
+    if bool(meta.get("degraded") or meta.get("partial")):
+        return False
+    if bool(meta.get("page_navigation_failed")):
+        return False
+    try:
+        if int(meta.get("skipped_ticket_count") or 0) > 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if meta.get("source_inspected_complete") is False:
+        return False
     reason = str(meta.get("stopped_reason") or "").strip()
     if reason == STOPPED_MAX_PAGES_REACHED:
+        return False
+    if reason in {
+        "completed_with_skipped_tickets",
+        "page_navigation_failed",
+        "partial_portal_scrape",
+    }:
         return False
     if reason in NATURAL_STOP_REASONS:
         return True

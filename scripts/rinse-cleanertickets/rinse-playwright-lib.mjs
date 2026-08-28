@@ -70,20 +70,145 @@ export function navTimeoutMs() {
  * looks like a multi-minute hang with no progress.
  */
 export function actionTimeoutMs() {
-  const n = parseInt(process.env.RINSE_ACTION_TIMEOUT_MS || "15000", 10);
-  return Math.max(3000, Math.min(60000, Number.isFinite(n) ? n : 15000));
+  const n = parseInt(process.env.RINSE_ACTION_TIMEOUT_MS || "10000", 10);
+  return Math.max(3000, Math.min(60000, Number.isFinite(n) ? n : 10000));
 }
 
 /** Hard wall for one ticket expand/read (includes nested waits). */
 export function ticketOpTimeoutMs() {
-  const n = parseInt(process.env.RINSE_TICKET_OP_TIMEOUT_MS || "45000", 10);
-  return Math.max(10000, Math.min(180000, Number.isFinite(n) ? n : 45000));
+  const n = parseInt(process.env.RINSE_TICKET_OP_TIMEOUT_MS || "25000", 10);
+  return Math.max(8000, Math.min(120000, Number.isFinite(n) ? n : 25000));
 }
 
 export function applyBoundedPageTimeouts(page) {
   if (!page) return;
   page.setDefaultTimeout(actionTimeoutMs());
   page.setDefaultNavigationTimeout(navTimeoutMs());
+}
+
+/** Lean Chromium flags — reduce RSS so ACA workers survive long ticket walks. */
+export function chromiumLaunchOptions({ headed = false } = {}) {
+  return {
+    headless: !headed,
+    slowMo: headed ? 80 : 0,
+    timeout: Math.max(30000, Math.min(180000, navTimeoutMs())),
+    args: [
+      "--disable-dev-shm-usage",
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-gpu",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--disable-sync",
+      "--disable-translate",
+      "--mute-audio",
+      "--no-first-run",
+      "--renderer-process-limit=2",
+      "--js-flags=--max-old-space-size=384",
+    ],
+  };
+}
+
+/**
+ * Abort heavy assets (images/media/fonts) to cut memory. Keep stylesheets —
+ * Rinse layout/selectors can depend on CSS.
+ */
+export async function installLightPage(page) {
+  applyBoundedPageTimeouts(page);
+  const block =
+    String(process.env.RINSE_BLOCK_HEAVY_ASSETS || "1").trim() !== "0";
+  if (!block) return;
+  await page.route("**/*", (route) => {
+    const t = route.request().resourceType();
+    if (t === "image" || t === "media" || t === "font") {
+      return route.abort();
+    }
+    return route.continue();
+  });
+}
+
+/** Bounded page.goto with one clean retry. */
+export async function gotoWithRetry(page, url, { attempts = 2, label = "page.goto" } = {}) {
+  const maxAttempts = Math.max(1, Math.min(3, Number(attempts) || 2));
+  let lastErr = null;
+  for (let i = 1; i <= maxAttempts; i++) {
+    portalDiag({
+      op: label,
+      attempt: i,
+      max_attempts: maxAttempts,
+      url,
+      waitUntil: "domcontentloaded",
+    });
+    progressLine(`[portal] ${label} attempt ${i}/${maxAttempts}: ${url}`);
+    try {
+      await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: Math.max(navTimeoutMs(), 90000),
+      });
+      portalDiag({ op: `${label}_ok`, attempt: i, url, page_url: page.url() });
+      return;
+    } catch (err) {
+      lastErr = err;
+      portalDiag({
+        op: `${label}_fail`,
+        attempt: i,
+        url,
+        error: String(err && err.message ? err.message : err).slice(0, 160),
+        transient: isTransientBrowserError(err) ? 1 : 0,
+      });
+      if (i >= maxAttempts || !isTransientBrowserError(err)) break;
+      progressLine(`Navigation failed (attempt ${i}); retrying once…`);
+    }
+  }
+  throw lastErr || new Error(`${label}_failed`);
+}
+
+/**
+ * Cancel in-flight Playwright work after a ticket timeout by reloading the
+ * list URL. Promise.race alone does not abort locator waits — those keep
+ * burning memory until the page is reset.
+ */
+export async function recoverPageAfterStuckOp(page, listUrl, reason = "ticket_timeout") {
+  portalDiag({ op: "recoverPageAfterStuckOp", reason, url: listUrl || "" });
+  if (!page) return false;
+  try {
+    if (listUrl) {
+      await page.goto(listUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: Math.min(navTimeoutMs(), 60000),
+      });
+    } else {
+      await page.reload({
+        waitUntil: "domcontentloaded",
+        timeout: Math.min(navTimeoutMs(), 60000),
+      });
+    }
+    return true;
+  } catch (err) {
+    portalDiag({
+      op: "recoverPageAfterStuckOp_fail",
+      error: String(err && err.message ? err.message : err).slice(0, 160),
+    });
+    return false;
+  }
+}
+
+export function buildDegradedPortalMetaFields({
+  skippedTickets = [],
+  pageNavFailed = false,
+  sourceCompleteNatural = false,
+} = {}) {
+  const skipped = Array.isArray(skippedTickets) ? skippedTickets : [];
+  const degraded = skipped.length > 0 || Boolean(pageNavFailed);
+  return {
+    degraded,
+    partial: degraded,
+    skipped_ticket_count: skipped.length,
+    skipped_tickets: skipped.slice(0, 40),
+    page_navigation_failed: Boolean(pageNavFailed),
+    // Never authoritative for Missing From Portal when degraded.
+    source_inspected_complete: Boolean(sourceCompleteNatural) && !degraded,
+  };
 }
 
 export async function closeBrowserSafe(browser, label = "browser.close") {

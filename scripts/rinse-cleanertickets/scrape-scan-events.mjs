@@ -39,7 +39,11 @@ import {
   navTimeoutMs,
   actionTimeoutMs,
   ticketOpTimeoutMs,
-  applyBoundedPageTimeouts,
+  chromiumLaunchOptions,
+  installLightPage,
+  gotoWithRetry,
+  recoverPageAfterStuckOp,
+  buildDegradedPortalMetaFields,
   closeBrowserSafe,
   portalDiag,
   withBoundedTimeout,
@@ -106,7 +110,7 @@ function eventDataRow(bagIdCode, event) {
 }
 
 /** Same ticket walk as production scrapePage — plus Scans table capture. */
-async function scrapeScanEventsOnPage(page) {
+async function scrapeScanEventsOnPage(page, { pageNum = null, pageUrl = "" } = {}) {
   const sel = bodyRowsSelector();
   const tableWait = Math.max(250, Math.min(8000, parseInt(process.env.RINSE_TABLE_WAIT_MS || "450", 10) || 450));
   const tableAfter = Math.max(0, Math.min(5000, parseInt(process.env.RINSE_TABLE_AFTER_MS || "180", 10) || 180));
@@ -127,6 +131,12 @@ async function scrapeScanEventsOnPage(page) {
   if (initialRowCount > 0) {
     progressLine(`  Ticket table rows: ${initialRowCount}.`);
   }
+  portalDiag({
+    op: "page_start",
+    page: pageNum,
+    url: pageUrl,
+    expected_rows: initialRowCount,
+  });
 
   const wheelSteps = Math.max(
     0,
@@ -145,6 +155,8 @@ async function scrapeScanEventsOnPage(page) {
   }
 
   const out = [];
+  const skippedTickets = [];
+  const capturedBagIds = new Set();
   let recordIndex = 0;
   const minListTd = Math.max(2, Math.min(12, parseInt(process.env.RINSE_MIN_LIST_TD || "2", 10) || 2));
 
@@ -154,6 +166,7 @@ async function scrapeScanEventsOnPage(page) {
   );
   let j = 0;
   let iters = 0;
+  let hardRecoveries = 0;
   while (iters < maxRowIters) {
     iters += 1;
     const rowCount = await rowsAll.count();
@@ -207,6 +220,7 @@ async function scrapeScanEventsOnPage(page) {
     progressLine(`  ticket ${recordIndex} (tr ${rowHint}): expanding… ${preview}`);
     portalDiag({
       op: "expandRowAndReadBag",
+      page: pageNum,
       ticket: recordIndex,
       tr: rowHint,
       action_timeout_ms: actionTimeoutMs(),
@@ -223,25 +237,81 @@ async function scrapeScanEventsOnPage(page) {
     let customer = "";
     let fullText = "";
     let collapsed = rt;
-    try {
-      ({ bagId, bagDisplay, customer, fullText, collapsed } = await withBoundedTimeout(
-        expandRowAndReadBag(page, cand, rt),
-        ticketOpTimeoutMs(),
-        "expandRowAndReadBag",
-      ));
-    } catch (expandErr) {
-      portalDiag({
-        op: "expandRowAndReadBag",
-        error: String(expandErr && expandErr.message ? expandErr.message : expandErr).slice(0, 160),
-        ticket: recordIndex,
-        tr: rowHint,
+    let expandOk = false;
+    let expandErrMsg = "";
+    const expandAttempts = 2;
+    for (let attempt = 1; attempt <= expandAttempts; attempt++) {
+      try {
+        ({ bagId, bagDisplay, customer, fullText, collapsed } = await withBoundedTimeout(
+          expandRowAndReadBag(page, cand, rt),
+          ticketOpTimeoutMs(),
+          "expandRowAndReadBag",
+        ));
+        expandOk = true;
+        break;
+      } catch (expandErr) {
+        expandErrMsg = String(expandErr && expandErr.message ? expandErr.message : expandErr).slice(
+          0,
+          160,
+        );
+        portalDiag({
+          op: "expandRowAndReadBag",
+          error: expandErrMsg,
+          ticket: recordIndex,
+          tr: rowHint,
+          attempt,
+        });
+        if (
+          isTransientBrowserError(expandErr) &&
+          /target closed|browser.*closed|page crashed|protocol error/i.test(expandErrMsg)
+        ) {
+          throw expandErr;
+        }
+        if (attempt < expandAttempts) {
+          progressLine(
+            `  ticket ${recordIndex} (tr ${rowHint}): expand failed attempt ${attempt} — retrying once…`,
+          );
+          await page.waitForTimeout(200);
+          continue;
+        }
+      }
+    }
+    if (!expandOk) {
+      skippedTickets.push({
+        page: pageNum,
+        ticket_index: recordIndex,
+        row_hint: rowHint,
+        preview,
+        reason: "expand_timeout",
+        error: expandErrMsg,
       });
       progressLine(
-        `  ticket ${recordIndex} (tr ${rowHint}): expand timed out/failed — ${preview}…`,
+        `  ticket ${recordIndex} (tr ${rowHint}): SKIPPED after expand failure — ${preview}…`,
       );
+      // Cancel hung Playwright locator work (Promise.race does not abort it).
+      const recovered = await recoverPageAfterStuckOp(page, pageUrl, "expand_skip");
+      hardRecoveries += 1;
+      if (!recovered || hardRecoveries >= 3) {
+        portalDiag({
+          op: "page_abort_after_skips",
+          page: pageNum,
+          skipped: skippedTickets.length,
+          hard_recoveries: hardRecoveries,
+        });
+        break;
+      }
+      rowsAll = ticketTableBodyRows(page);
+      if ((await rowsAll.count()) === 0) rowsAll = page.locator(sel);
       j += 1;
       continue;
     }
+
+    const bagKey = String(bagId || "").trim().toUpperCase();
+    if (bagKey && capturedBagIds.has(bagKey)) {
+      j += 1;
+      continue;
+    }
+    if (bagKey) capturedBagIds.add(bagKey);
     const portal = parsePortalFields(collapsed || rt, fullText, tdTexts, bagDisplay || bagId, {
       visibleTableSi: visibleTableSiRaw,
     });
@@ -347,8 +417,15 @@ async function scrapeScanEventsOnPage(page) {
       `  Captured ${out.length} ticket(s), ${eventRows} scan row(s) (${initialRowCount} list <tr> before).`,
     );
   }
+  portalDiag({
+    op: "page_complete",
+    page: pageNum,
+    tickets: out.length,
+    skipped: skippedTickets.length,
+    expected_rows: initialRowCount,
+  });
 
-  return { tickets: out, tableRowCount: initialRowCount };
+  return { tickets: out, tableRowCount: initialRowCount, skippedTickets };
 }
 
 /** Same CSV lines as production scrape.mjs (portal layout, one row per scraped ticket, no dedupe). */
@@ -454,21 +531,17 @@ async function main() {
 
     let browser = null;
     try {
-      browser = await chromium.launch({
-        headless: !headed,
-        slowMo: headed ? 80 : 0,
-        timeout: Math.max(30000, Math.min(180000, navTimeoutMs())),
-        args: ["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
-      });
+      browser = await chromium.launch(chromiumLaunchOptions({ headed }));
       const context = await browser.newContext(storageState ? { storageState } : {});
       const page = await context.newPage();
-      applyBoundedPageTimeouts(page);
+      await installLightPage(page);
 
       if (!storageState) {
         await tryLogin(page, baseUrl);
       }
 
       const allTickets = [];
+      const allSkipped = [];
       const seenFingerprints = new Set();
       const seenBagSigs = new Set();
       let pagesScraped = 0;
@@ -477,21 +550,37 @@ async function main() {
       let lastPageUrl = baseUrl;
       let sessionAuthenticated = Boolean(storageState);
       let pageLoaded = false;
+      let pageNavFailed = false;
 
       for (let p = pageStart; p < pageStart + maxPages; p++) {
         const url = urlForPage(baseUrl, p);
         console.error("[rinse-scan-events] page URL:", url);
         progressLine(`\nPage ${p}: ${url}`);
-        portalDiag({ op: "page.goto", page: p, url, waitUntil: "domcontentloaded" });
-        await page.goto(url, {
-          waitUntil: "domcontentloaded",
-          timeout: Math.max(navTimeoutMs(), 90000),
-        });
+        try {
+          await gotoWithRetry(page, url, { attempts: 2, label: "page.goto" });
+        } catch (navErr) {
+          pageNavFailed = true;
+          portalDiag({
+            op: "page.goto_exhausted",
+            page: p,
+            url,
+            error: String(navErr && navErr.message ? navErr.message : navErr).slice(0, 160),
+          });
+          if (pagesScraped === 0) {
+            throw navErr;
+          }
+          stoppedReason = "page_navigation_failed";
+          progressLine(
+            `Page ${p} navigation failed twice — stopping as partial (pages 1..${pagesScraped} kept; later pages not treated as absent).`,
+          );
+          break;
+        }
         await page.waitForTimeout(pageSettleMs);
         await page.waitForSelector("table tbody tr", { timeout: 20000 }).catch(() => {});
         lastPageUrl = page.url();
         pageLoaded = true;
         pagesScraped += 1;
+        progressLine(`[portal] page ${p} loaded — starting ticket walk`);
 
         const landed = pageNumFromUrl(page.url());
         if (landed != null && landed !== p) {
@@ -509,7 +598,13 @@ async function main() {
         }
         sessionAuthenticated = true;
 
-        const { tickets, tableRowCount } = await scrapeScanEventsOnPage(page);
+        const { tickets, tableRowCount, skippedTickets } = await scrapeScanEventsOnPage(page, {
+          pageNum: p,
+          pageUrl: url,
+        });
+        if (skippedTickets && skippedTickets.length) {
+          allSkipped.push(...skippedTickets);
+        }
         if (tableRowCount === 0) {
           progressLine(`Stopping: no table rows on page ${p}.`);
           stoppedReason = "no_table_rows";
@@ -665,7 +760,10 @@ async function main() {
           (process.env.OUTPUT_PORTAL_SCRAPE_META && String(process.env.OUTPUT_PORTAL_SCRAPE_META).trim()) ||
           `${ticketsPath}.meta.json`;
         const portalScrapeMeta = {
-          stopped_reason: stoppedReason,
+          stopped_reason:
+            allSkipped.length > 0 && stoppedReason === "no_next_page_ui"
+              ? "completed_with_skipped_tickets"
+              : stoppedReason,
           reached_max_pages: reachedMaxPages,
           pages_scraped: pagesScraped,
           max_pages_limit: maxPages,
@@ -674,12 +772,6 @@ async function main() {
           row_count: ticketCount,
           scraped_at: new Date().toISOString(),
           single_pass_source: "scan-events",
-          source_inspected_complete:
-            stoppedReason === "safe_unchanged_boundary" ||
-            stoppedReason === "no_next_page_ui" ||
-            stoppedReason === "duplicate_bag_set" ||
-            stoppedReason === "duplicate_page_fingerprint" ||
-            stoppedReason === "no_table_rows",
           early_stop_enabled: String(process.env.RINSE_PORTAL_EARLY_STOP || "") === "1",
           ...buildPortalValidationMeta({
             baseUrl,
@@ -688,9 +780,28 @@ async function main() {
             pageLoaded,
             emptyTableDetected: ticketCount === 0,
           }),
+          ...buildDegradedPortalMetaFields({
+            skippedTickets: allSkipped,
+            pageNavFailed,
+            sourceCompleteNatural:
+              !reachedMaxPages &&
+              !pageNavFailed &&
+              (stoppedReason === "safe_unchanged_boundary" ||
+                stoppedReason === "no_next_page_ui" ||
+                stoppedReason === "duplicate_bag_set" ||
+                stoppedReason === "duplicate_page_fingerprint" ||
+                stoppedReason === "no_table_rows"),
+          }),
         };
         if (reachedMaxPages || stoppedReason === "max_pages_reached") {
           portalScrapeMeta.source_inspected_complete = false;
+          portalScrapeMeta.degraded = true;
+          portalScrapeMeta.partial = true;
+        }
+        if (allSkipped.length > 0) {
+          progressLine(
+            `DEGRADED: skipped ${allSkipped.length} ticket(s) — not authoritative for Missing From Portal.`,
+          );
         }
         fs.writeFileSync(metaPath, `${JSON.stringify(portalScrapeMeta, null, 2)}\n`, "utf8");
         console.error("[rinse-scan-events] wrote portal scrape meta:", metaPath);

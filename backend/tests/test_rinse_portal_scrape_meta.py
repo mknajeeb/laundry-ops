@@ -45,6 +45,17 @@ class TestPortalScrapeMetaAllowsAbsence(unittest.TestCase):
             )
         )
 
+    def test_skipped_tickets_not_allowed(self):
+        self.assertFalse(
+            portal_scrape_meta_allows_absence_completion(
+                {
+                    "stopped_reason": "completed_with_skipped_tickets",
+                    "degraded": True,
+                    "skipped_ticket_count": 1,
+                }
+            )
+        )
+
     def test_load_meta_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "portal.csv.meta.json"
