@@ -25,9 +25,14 @@ AUG25 = date(2026, 8, 25)
 _COMPLETED_BEFORE = (
     "backend.rinse_veewash_day_membership._bags_canonically_completed_before_opening"
 )
+_REGISTRY_COMPLETED = (
+    "backend.rinse_wf_canonical_workload._registry_completed_date_by_bag"
+)
 _ENRICH = "backend.rinse_day_bag_completion_projection.enrich_bags_completion_from_scans"
 _APPLY = "backend.rinse_day_bag_completion_projection.apply_normalized_completion_fields"
 _WEIGHTS = "backend.rinse_veewash_review.load_bag_weight_map"
+AUG26 = date(2026, 8, 26)
+AUG28 = date(2026, 8, 28)
 
 
 def _enrich_patches():
@@ -221,8 +226,11 @@ def test_cycle_anchor_or_admit_on_date_midnight_crossing():
     )
 
 
+@patch(_REGISTRY_COMPLETED, return_value={})
 @patch(_COMPLETED_BEFORE, return_value={"STALE01"})
-def test_exclude_filter_drops_historically_completed_bag(_completed_before):
+def test_exclude_filter_drops_historically_completed_bag(
+    _completed_before, _registry_completed
+):
     bags = [
         {
             "bag_id": "STALE01",
@@ -237,8 +245,11 @@ def test_exclude_filter_drops_historically_completed_bag(_completed_before):
     assert [b["bag_id"] for b in kept] == ["CARY002"]
 
 
+@patch(_REGISTRY_COMPLETED, return_value={})
 @patch(_COMPLETED_BEFORE, return_value={"STALE01"})
-def test_final_wf_day_membership_bag_ids_is_single_admission_gate(_completed_before):
+def test_final_wf_day_membership_bag_ids_is_single_admission_gate(
+    _completed_before, _registry_completed
+):
     kept = final_wf_day_membership_bag_ids(
         MagicMock(), ORG, AUG25, ["STALE01", "CARY002", "STALE01"]
     )
@@ -247,6 +258,108 @@ def test_final_wf_day_membership_bag_ids_is_single_admission_gate(_completed_bef
         MagicMock(), ORG, AUG25, ["STALE01", "CARY002"]
     )
     assert ineligible == {"STALE01"}
+
+
+@patch(_COMPLETED_BEFORE, return_value=set())
+@patch(
+    _REGISTRY_COMPLETED,
+    return_value={"0CBONWGV5R": AUG26},
+)
+def test_registry_completed_before_d_ineligible_even_when_cycle_active(
+    _registry_completed, _completed_before
+):
+    """Aug28 incident: registry COMPLETED + stale ACTIVE cycle must still be rejected."""
+    ineligible = wf_terminal_ineligible_bag_ids(
+        MagicMock(), ORG, AUG28, ["0CBONWGV5R", "FRSH001"]
+    )
+    assert ineligible == {"0CBONWGV5R"}
+    kept = final_wf_day_membership_bag_ids(
+        MagicMock(), ORG, AUG28, ["0CBONWGV5R", "FRSH001"]
+    )
+    assert kept == ["FRSH001"]
+
+
+@patch("backend.rinse_veewash_shift_day._sync_day_header_from_persisted_bags")
+@patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=[])
+@patch("backend.rinse_veewash_shift_day.get_day_record", return_value={"status": "OPEN"})
+@patch("backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables")
+@patch("backend.rinse_day_bag_completion_projection.enrich_bags_completion_from_scans")
+@patch(
+    "backend.rinse_day_bag_completion_projection.apply_normalized_completion_fields",
+    side_effect=lambda b: b,
+)
+@patch(
+    "backend.rinse_step1_productivity_fast.project_productivity_fields_for_day_bag",
+    return_value={},
+)
+@patch("backend.rinse_wf_service_cycle.is_wf_canonical_lifecycle_enabled", return_value=True)
+@patch(_COMPLETED_BEFORE, return_value=set())
+@patch(_REGISTRY_COMPLETED, return_value={"0CBONWGV5R": AUG26})
+@patch(
+    "backend.rinse_wf_service_cycle_compat.resolve_canonical_wf_day_bag_rows_for_persist",
+)
+def test_aug28_incident_missing_active_not_admitted_across_10_persists(
+    mock_resolve,
+    _registry_completed,
+    _completed_before,
+    _canonical_enabled,
+    _prod,
+    _apply,
+    _enrich,
+    _ensure,
+    _get_day,
+    _load,
+    _sync,
+):
+    """Reproduce 21:05 writer: completed Aug26 + ACTIVE Missing review must never enter Aug28.
+
+    Simulates cycle-based resolve still emitting the bag (ACA f7318c1e behavior) while
+    the persist choke-point registry guard rejects it. Ten automatic rebuilds → growth 0.
+    """
+    from backend.rinse_veewash_shift_day import persist_day_snapshot
+    from backend.rinse_veewash_workload import OUTCOME_REVIEW_REQUIRED
+
+    contaminated = {
+        "bag_id": "0CBONWGV5R",
+        "service_type": "WF",
+        "effective_status": OUTCOME_REVIEW_REQUIRED,
+        "review_reason_codes": ["MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL"],
+        "new_or_carryover": "carryover",
+        "bag_snapshot": {"cycle_status": STATUS_ACTIVE},
+    }
+    fresh = {
+        "bag_id": "FRSH001",
+        "service_type": "WF",
+        "effective_status": OUTCOME_PENDING,
+        "review_reason_codes": [],
+        "new_or_carryover": "new_today",
+        "bag_snapshot": {},
+    }
+    # Old cycle-based resolve would emit both; guard must drop registry-terminal.
+    mock_resolve.return_value = [contaminated, fresh]
+    cursor = MagicMock()
+    membership_wl = {
+        "rows": [contaminated, fresh],
+        "new_today": ["FRSH001"],
+        "carryover": ["0CBONWGV5R"],
+        "completed_on_date": [],
+        "pending_end_of_date": [],
+        "review_required": ["0CBONWGV5R", "FRSH001"],
+    }
+    summary = {"completed": 0, "pending": 0, "review_required": 2}
+    for _ in range(10):
+        cursor.execute.reset_mock()
+        persist_day_snapshot(
+            cursor, ORG, AUG28, workload=membership_wl, summary=summary, force=True
+        )
+        upsert_calls = [
+            c
+            for c in cursor.execute.call_args_list
+            if c[0] and "INSERT INTO rinse_shift_monitor_day_bags" in str(c[0][0])
+        ]
+        persisted_ids = sorted({c[0][1][2] for c in upsert_calls})
+        assert persisted_ids == ["FRSH001"]
+        assert "0CBONWGV5R" not in persisted_ids
 
 
 def test_completed_bag_seen_again_on_portal_still_excluded():
@@ -262,6 +375,7 @@ def test_active_null_completed_at_still_excluded():
     assert bags == []
 
 
+@patch(_REGISTRY_COMPLETED, return_value={})
 @patch(_COMPLETED_BEFORE, return_value={"STALE01"})
 @patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot")
 @patch("backend.rinse_wf_service_cycle_compat.build_step1_headline_summary")
@@ -281,6 +395,7 @@ def test_terminal_projection_idempotent_drops_stale_completed(
     headline,
     persist,
     _completed_before,
+    _registry_completed,
 ):
     load_day_bags.side_effect = lambda _c, _o, d: (
         [_prior_completed_day_bag("STALE01", completed_at=datetime(2026, 8, 24, 13, 0))]
@@ -568,6 +683,7 @@ def test_persist_day_snapshot_idempotent_across_repeated_automatic_rebuilds(
         assert persisted_ids == ["FRSH001"]
 
 
+@patch(_REGISTRY_COMPLETED, return_value={})
 @patch(_COMPLETED_BEFORE, return_value={"STALE01"})
 @patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot")
 @patch("backend.rinse_wf_service_cycle_compat.build_step1_headline_summary")
@@ -587,6 +703,7 @@ def test_automatic_terminal_rebuild_idempotent_three_passes(
     headline,
     persist,
     _completed_before,
+    _registry_completed,
 ):
     """Simulate repeated scrape finalize projections — membership must stay at guarded size."""
     load_day_bags.side_effect = lambda _c, _o, d: (
@@ -780,6 +897,7 @@ def test_historical_backfill_uses_terminal_canonical_not_additive_membership(
     mock_membership.assert_not_called()
 
 
+@patch(_REGISTRY_COMPLETED, return_value={})
 @patch(_COMPLETED_BEFORE, return_value=set())
 @patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=[{"bag_id": f"B{i}"} for i in range(_CLEAN_AUG26_WORKLOAD)])
 @patch("backend.rinse_veewash_shift_day.summary_from_day_record")
@@ -799,6 +917,7 @@ def test_next_day_sync_does_not_resurrect_historical_completed_on_aug26(
     mock_summary,
     _load_day_bags,
     _completed_before,
+    _registry_completed,
 ):
     """Clean Aug 26 canonical snapshot stays 126 after next-day sync/rebuild."""
     from backend.rinse_veewash_shift_day import backfill_day_from_live

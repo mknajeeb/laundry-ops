@@ -97,12 +97,17 @@ def wf_terminal_ineligible_bag_ids(
     """Bag IDs with authoritative completion date strictly before shift_date_et.
 
     These bag IDs are ineligible for the selected day's WF workload — forever,
-    regardless of portal presence, ACTIVE service cycles, or new cycle anchors.
-    """
-    from backend.rinse_veewash_day_membership import (
-        _bags_canonically_completed_before_opening,
-    )
+    regardless of portal presence, ACTIVE service cycles, Missing review, or
+    new cycle anchors.
 
+    Uses the same terminal authority as ``get_canonical_wf_workload``:
+    registry COMPLETED date_et < D first, then scan/cycle completion before opening.
+    ``service_type_by_bag`` is accepted for call-site compatibility; registry
+    terminal status is service-agnostic for WF persist guards.
+    """
+    from backend.rinse_wf_canonical_workload import _terminal_before_date
+
+    del service_type_by_bag  # registry/lifecycle terminal is bag-id permanent
     ids = sorted(
         {
             normalize_bag_id(b)
@@ -112,15 +117,8 @@ def wf_terminal_ineligible_bag_ids(
     )
     if not ids:
         return set()
-    svc_map = dict(service_type_by_bag or {})
-    for bid in ids:
-        svc_map.setdefault(bid, "WF")
-    return _bags_canonically_completed_before_opening(
-        cursor,
-        int(organization_id),
-        shift_date_et,
-        ids,
-        service_type_by_bag=svc_map,
+    return _terminal_before_date(
+        cursor, int(organization_id), shift_date_et, ids
     )
 
 
