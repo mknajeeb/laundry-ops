@@ -6447,6 +6447,37 @@ def payroll_payout_unfinalize_details(batch_id: int):
         conn.close()
 
 
+@ta_bp.route("/payroll/payout-batches/<int:batch_id>/unfinalize-and-delete", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_payout_unfinalize_and_delete(batch_id: int):
+    """Unfinalize (if needed) and permanently delete a payout batch."""
+    conn = get_db()
+    try:
+        from backend.payroll_operations import delete_payout_batch
+        from backend.payroll_payout_details import can_edit_payout_details
+
+        uid = int(g.ta_user["id"])
+        if not can_edit_payout_details(conn, uid):
+            return jsonify({"error": "Forbidden"}), 403
+        body = request.get_json(silent=True) or {}
+        if not body.get("confirm"):
+            return jsonify({"error": "confirm=true is required to delete this batch"}), 400
+        oid = _tenant_id()
+        try:
+            ok = delete_payout_batch(conn, oid, batch_id, unlock_finalized=True)
+            if not ok:
+                return jsonify({"error": "Batch not found"}), 404
+            return jsonify({"ok": True, "deleted_batch_id": int(batch_id)})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_unfinalize_and_delete failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/payout-batches/<int:batch_id>/document-mode", methods=["PUT"])
 @require_auth
 @require_any_perm("ta.settings", "users.edit")

@@ -1473,6 +1473,9 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
         and not finalize_blockers_list
     )
     can_unfinalize = can_unfinalize_payout_details(batch)
+    from backend.payroll_operations import can_delete_payout_batch
+
+    can_delete = can_delete_payout_batch(batch)
     opd = batch_official_pay_date(batch)
     return json_safe(
         {
@@ -1506,6 +1509,9 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
             "can_edit_details": ready and not finalized,
             "can_finalize": can_finalize,
             "can_unfinalize": can_unfinalize,
+            "can_delete": can_delete,
+            "delete_requires_unfinalize": bool(finalized)
+            and st in ("approved_for_payment", "paid", "closed"),
             "finalize_blockers": finalize_blockers_list,
             "official_pay_date": opd,
             "pay_date_missing": opd is None,

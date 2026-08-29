@@ -1255,12 +1255,48 @@ def update_payout_batch(
     return get_payout_batch(conn, organization_id, batch_id)
 
 
-def delete_payout_batch(conn, organization_id: int, batch_id: int) -> bool:
+# Early workflow: delete anytime. Post-finalize statuses: delete after unlock
+# (unfinalize) or via unlock_finalized=True (unfinalize & delete in one step).
+_EARLY_DELETABLE_STATUSES = frozenset({"draft", "hours_reviewed"})
+_POST_FINALIZE_DELETABLE_STATUSES = frozenset(
+    {"approved_for_payment", "paid", "closed"}
+)
+
+
+def can_delete_payout_batch(batch: dict) -> bool:
+    """Whether the batch can be deleted (possibly after unfinalize)."""
+    st = str(batch.get("status") or "")
+    return st in _EARLY_DELETABLE_STATUSES or st in _POST_FINALIZE_DELETABLE_STATUSES
+
+
+def delete_payout_batch(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    *,
+    unlock_finalized: bool = False,
+) -> bool:
+    """Delete a payout batch.
+
+    Draft / hours_reviewed: always allowed.
+    Approved / paid / closed: allowed when payout details are not finalized, or when
+    unlock_finalized=True (admin confirms Unfinalize & delete).
+    """
     batch = get_payout_batch(conn, organization_id, batch_id)
     if not batch:
         return False
-    if str(batch.get("status") or "") not in ("draft", "hours_reviewed"):
+    status = str(batch.get("status") or "")
+    finalized = bool(batch.get("payout_details_finalized_at"))
+    if status in _EARLY_DELETABLE_STATUSES:
+        pass
+    elif status in _POST_FINALIZE_DELETABLE_STATUSES:
+        if finalized and not unlock_finalized:
+            raise ValueError(
+                "Unfinalize this batch before deleting, or confirm Unfinalize & delete"
+            )
+    else:
         raise ValueError("Only draft or hours-reviewed batches can be deleted")
+
     from backend.payroll_accrual import reverse_ledger_entries_for_batch
 
     reverse_ledger_entries_for_batch(conn, organization_id, int(batch_id))

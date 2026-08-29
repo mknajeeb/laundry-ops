@@ -44,6 +44,7 @@ import {
   finalizePayoutDetails,
   setOfficialPayDate,
   unfinalizePayoutDetails,
+  unfinalizeAndDeletePayoutBatch,
   estimatePayoutTaxes,
   getPaymentReceiptHtml,
   getPayoutBatchDetails,
@@ -484,6 +485,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   const [info, setInfo] = useState("");
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   const [unfinalizeOpen, setUnfinalizeOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [finalizePayDate, setFinalizePayDate] = useState("");
   const [confirmPayDate, setConfirmPayDate] = useState(false);
   const [payDateCorrectOpen, setPayDateCorrectOpen] = useState(false);
@@ -570,6 +572,8 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   const isReceiptMode = documentMode === "payment_receipt";
   const canFinalize = detail?.payout_workflow?.can_finalize;
   const canUnfinalize = detail?.payout_workflow?.can_unfinalize && canEditDetails;
+  const canDeleteBatch = detail?.payout_workflow?.can_delete && canEditDetails;
+  const deleteRequiresUnfinalize = Boolean(detail?.payout_workflow?.delete_requires_unfinalize);
   const finalizeBlockers = detail?.payout_workflow?.finalize_blockers || [];
   const canSetDocumentMode = detail?.payout_workflow?.can_set_document_mode && canEditDetails;
 
@@ -751,6 +755,22 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
       await loadBatches();
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Unfinalize failed");
+    }
+  };
+
+  const doDeleteBatch = async () => {
+    if (!selectedId || !canDeleteBatch) return;
+    setError("");
+    try {
+      await unfinalizeAndDeletePayoutBatch(selectedId);
+      setDeleteOpen(false);
+      setDetail(null);
+      setSelectedId(null);
+      setLineDrafts({});
+      setInfo("Batch deleted.");
+      await loadBatches();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Delete failed");
     }
   };
 
@@ -1298,6 +1318,19 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
             >
               Batch note on paystubs
             </MenuItem>
+            {canDeleteBatch ? (
+              <MenuItem
+                onClick={() => {
+                  setMoreAnchor(null);
+                  setDeleteOpen(true);
+                }}
+                sx={{ color: "error.main" }}
+              >
+                {deleteRequiresUnfinalize || finalized
+                  ? "Unfinalize & delete batch"
+                  : "Delete batch"}
+              </MenuItem>
+            ) : null}
           </Menu>
 
           {canEdit ? (
@@ -1678,6 +1711,39 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         <DialogActions>
           <Button onClick={() => setUnfinalizeOpen(false)}>Cancel</Button>
           <Button onClick={doUnfinalize} color="warning" variant="contained">Unfinalize</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={deleteOpen} onClose={() => setDeleteOpen(false)}>
+        <DialogTitle>
+          {deleteRequiresUnfinalize || finalized ? "Unfinalize & delete batch?" : "Delete batch?"}
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Permanently delete <strong>{detail?.batch_name || "this batch"}</strong>
+            {detail?.pay_period_start && detail?.pay_period_end
+              ? ` (${detail.pay_period_start} – ${detail.pay_period_end})`
+              : ""}
+            ? This cannot be undone.
+          </Typography>
+          {deleteRequiresUnfinalize || finalized ? (
+            <Typography variant="body2" color="warning.main">
+              The batch will be unfinalized first, then deleted. Paystubs/receipts and accrual ledger
+              entries for this batch are removed.
+            </Typography>
+          ) : null}
+          {String(detail?.status || "") === "paid" || String(detail?.status || "") === "closed" ? (
+            <Typography variant="body2" color="error.main" sx={{ mt: 1 }}>
+              This batch is marked paid — confirm money was not issued, or that payment records are
+              handled outside this batch.
+            </Typography>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteOpen(false)}>Cancel</Button>
+          <Button onClick={doDeleteBatch} color="error" variant="contained">
+            {deleteRequiresUnfinalize || finalized ? "Unfinalize & delete" : "Delete"}
+          </Button>
         </DialogActions>
       </Dialog>
 

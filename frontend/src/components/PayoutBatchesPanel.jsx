@@ -41,6 +41,7 @@ import MoreVertIcon from "@mui/icons-material/MoreVert";
 import PrintIcon from "@mui/icons-material/Print";
 import {
   deletePayoutBatch,
+  unfinalizeAndDeletePayoutBatch,
   getPayoutBatch,
   getPayoutBatches,
   patchPayoutBatch,
@@ -501,7 +502,12 @@ export default function PayoutBatchesPanel({
   const confirmDeleteBatch = async (batchId = selectedId) => {
     if (!batchId) return;
     try {
-      await deletePayoutBatch(batchId);
+      const st = detail?.status || "";
+      if (["approved_for_payment", "paid", "closed"].includes(st)) {
+        await unfinalizeAndDeletePayoutBatch(batchId);
+      } else {
+        await deletePayoutBatch(batchId);
+      }
       setDeleteOpen(false);
       if (selectedId === batchId) {
         setDetail(null);
@@ -653,6 +659,9 @@ export default function PayoutBatchesPanel({
   };
 
   const isEditable = detail?.status === "draft" || detail?.status === "hours_reviewed";
+  const canDeleteBatch =
+    isEditable ||
+    ["approved_for_payment", "paid", "closed"].includes(detail?.status);
   const canRevertToDraft =
     ["hours_reviewed", "sent_to_accountant", "accountant_reviewed"].includes(detail?.status) &&
     !detail?.payout_details_finalized_at &&
@@ -709,7 +718,7 @@ export default function PayoutBatchesPanel({
   };
 
   const handleDeleteBatchClick = async () => {
-    if (isEditable) {
+    if (isEditable || canDeleteBatch) {
       setDeleteOpen(true);
       return;
     }
@@ -718,7 +727,7 @@ export default function PayoutBatchesPanel({
       if (ok) setDeleteOpen(true);
       return;
     }
-    setError("This batch cannot be deleted after it is ready to pay or paid.");
+    setError("This batch cannot be deleted in its current status.");
   };
 
   const renderBatchFormFields = ({ lockCategory = false, showCategoryPicker = false } = {}) => (
@@ -881,7 +890,10 @@ export default function PayoutBatchesPanel({
                 {b.status === "draft" ||
                 b.status === "hours_reviewed" ||
                 b.status === "sent_to_accountant" ||
-                b.status === "accountant_reviewed" ? (
+                b.status === "accountant_reviewed" ||
+                b.status === "approved_for_payment" ||
+                b.status === "paid" ||
+                b.status === "closed" ? (
                   <Tooltip title="Delete batch">
                     <IconButton
                       size="small"
@@ -1162,17 +1174,37 @@ export default function PayoutBatchesPanel({
       </Dialog>
 
       <Dialog open={deleteOpen} onClose={() => setDeleteOpen(false)}>
-        <DialogTitle>Delete batch?</DialogTitle>
+        <DialogTitle>
+          {detail?.payout_details_finalized_at &&
+          ["approved_for_payment", "paid", "closed"].includes(detail?.status)
+            ? "Unfinalize & delete batch?"
+            : "Delete batch?"}
+        </DialogTitle>
         <DialogContent>
           <Typography variant="body2">
-            Delete <strong>{detail?.batch_name}</strong>? Only draft or hours-reviewed batches can be deleted.
-            {canRevertToDraft ? " Revert to draft first if this batch is awaiting accountant review." : ""}
+            Permanently delete <strong>{detail?.batch_name}</strong>? This cannot be undone.
+            {detail?.payout_details_finalized_at &&
+            ["approved_for_payment", "paid", "closed"].includes(detail?.status)
+              ? " The batch will be unlocked and deleted in one step."
+              : ""}
+            {canRevertToDraft && !canDeleteBatch
+              ? " Revert to draft first if this batch is awaiting accountant review."
+              : ""}
           </Typography>
+          {detail?.status === "paid" || detail?.status === "closed" ? (
+            <Typography variant="body2" color="error.main" sx={{ mt: 1 }}>
+              This batch is marked paid — confirm money was not issued, or that payment records are
+              handled outside this batch.
+            </Typography>
+          ) : null}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDeleteOpen(false)}>Cancel</Button>
           <Button color="error" variant="contained" onClick={() => confirmDeleteBatch(selectedId)}>
-            Delete
+            {detail?.payout_details_finalized_at &&
+            ["approved_for_payment", "paid", "closed"].includes(detail?.status)
+              ? "Unfinalize & delete"
+              : "Delete"}
           </Button>
         </DialogActions>
       </Dialog>

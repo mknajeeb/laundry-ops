@@ -190,6 +190,14 @@ def test_payout_workflow_state_transitions():
     batch5 = {"status": "paid", "payout_details_finalized_at": "2026-06-20"}
     wf5 = payout_workflow_state(batch5)
     assert wf5["awaiting_accountant_confirmation"] is False
+    assert wf5["can_delete"] is True
+    assert wf5["can_unfinalize"] is True
+    assert wf5["delete_requires_unfinalize"] is True
+
+    batch6 = {"status": "paid", "payout_details_finalized_at": None}
+    wf6 = payout_workflow_state(batch6)
+    assert wf6["can_delete"] is True
+    assert wf6["delete_requires_unfinalize"] is False
 
 
 def test_can_confirm_accountant_payment_role():
