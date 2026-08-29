@@ -35,7 +35,19 @@ BATCH_STATUSES = (
 )
 
 
-def worker_category_for_user(conn, user_id: int) -> str:
+def worker_category_for_user(
+    conn,
+    user_id: int,
+    *,
+    on: Optional[date] = None,
+    assignments: Optional[list[dict]] = None,
+) -> str:
+    """Resolve payroll worker category for a user.
+
+    When ``on`` is set (work date), uses employment-category history covering that
+    America/New_York calendar day. When omitted, uses business today — still via
+    history, not a CURDATE()-only lane query that ignores past periods.
+    """
     try:
         from backend.portal_system_users import is_portal_system_user
 
@@ -43,6 +55,44 @@ def worker_category_for_user(conn, user_id: int) -> str:
             return "system"
     except Exception:
         pass
+
+    from backend.business_time import business_today
+    from backend.employment_category_history import (
+        load_user_employment_assignments,
+        _parse_ymd,
+    )
+
+    on_day = on or business_today()
+    rows = assignments
+    if rows is None:
+        try:
+            rows = load_user_employment_assignments(conn, int(user_id))
+        except Exception:
+            rows = []
+
+    covering: list[dict] = []
+    for r in rows or []:
+        start = _parse_ymd(r.get("effective_from"))
+        end = _parse_ymd(r.get("effective_to"))
+        if start and start > on_day:
+            continue
+        if end and end < on_day:
+            continue
+        covering.append(r)
+
+    kinds = [str(r.get("worker_category") or "") for r in covering if r.get("worker_category")]
+    if "tryout" in kinds:
+        return "tryout"
+    has_1099 = "contractor_1099" in kinds
+    has_temp = "temp" in kinds
+    if has_temp and not has_1099:
+        return "temp"
+    if has_1099:
+        return "contractor_1099"
+    if "w2" in kinds:
+        return "w2"
+
+    # No covering history row — fall back to legacy lane inference (today-only).
     try:
         from backend.hr_forms.delivery import infer_user_form_lanes
 
@@ -66,6 +116,17 @@ def worker_category_for_user(conn, user_id: int) -> str:
         except Exception:
             pass
     return "w2"
+
+
+def _session_work_date_et(clock_in_at: Any) -> Optional[date]:
+    """Business (America/New_York) calendar date for a shift clock-in."""
+    from backend.business_time import system_datetime_to_et
+
+    dt = _parse_dt(clock_in_at)
+    if dt is None:
+        return None
+    et = system_datetime_to_et(dt)
+    return et.date() if et is not None else None
 
 
 def _date_start_dt(value: str) -> datetime:
@@ -303,6 +364,7 @@ def list_time_records(
     c.execute(q, params)
     rows = c.fetchall() or []
     rate_cache: dict[int, dict] = {}
+    cat_cache: dict[tuple[int, str], str] = {}
     out = []
     from backend.payroll_workflow import resolve_worker_hourly_rate
 
@@ -311,7 +373,11 @@ def list_time_records(
         if uid not in rate_cache:
             rate_cache[uid] = resolve_worker_hourly_rate(conn, uid, int(organization_id))
         rate_info = rate_cache[uid]
-        cat = rate_info.get("worker_category") or worker_category_for_user(conn, uid)
+        work_day = _session_work_date_et(row.get("clock_in_at"))
+        cat_key = (uid, work_day.isoformat() if work_day else "")
+        if cat_key not in cat_cache:
+            cat_cache[cat_key] = worker_category_for_user(conn, uid, on=work_day)
+        cat = cat_cache[cat_key]
         if worker_category and worker_category != "all" and cat != worker_category:
             continue
         net = int(row.get("net_work_seconds") or 0)
@@ -322,7 +388,7 @@ def list_time_records(
             "worker_name": f"{row.get('first_name') or ''} {row.get('last_name') or ''}".strip(),
             "worker_category": cat,
             "worker_category_label": CATEGORY_LABELS.get(cat, cat),
-            "work_date": str(row.get("clock_in_at") or "")[:10],
+            "work_date": work_day.isoformat() if work_day else str(row.get("clock_in_at") or "")[:10],
             "clock_in_at": row.get("clock_in_at"),
             "clock_out_at": row.get("clock_out_at"),
             "break_seconds": int(row.get("total_break_seconds") or 0),
@@ -1598,8 +1664,18 @@ def add_payout_batch_line(
     uid = body.get("user_id")
     if uid:
         uid = int(uid)
-        if worker_category_for_user(conn, uid) != batch["worker_category"]:
-            raise ValueError("Worker category does not match batch")
+        # Clock-record sync already filtered by category-as-of work date; do not
+        # re-check against today's category (blocks category switches mid-history).
+        if str(body.get("source_type") or "") != "clock_records":
+            as_of = None
+            raw_as_of = body.get("category_as_of") or batch.get("pay_period_end")
+            if raw_as_of:
+                try:
+                    as_of = date.fromisoformat(str(raw_as_of)[:10])
+                except ValueError:
+                    as_of = None
+            if worker_category_for_user(conn, uid, on=as_of) != batch["worker_category"]:
+                raise ValueError("Worker category does not match batch")
     name = (body.get("worker_name_snapshot") or body.get("worker_name") or "").strip()
     if not name and uid:
         u = fetch_payroll_profile_row(conn, uid)

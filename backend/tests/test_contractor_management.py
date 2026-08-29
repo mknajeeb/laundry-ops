@@ -61,11 +61,12 @@ class TestListTimeRecords(unittest.TestCase):
 
         with patch("backend.payroll_operations.payroll_profiles_active", return_value=True):
             with patch("backend.payroll_operations.table_has_column", side_effect=col_exists):
-                with patch(
-                    "backend.payroll_operations.worker_category_for_user",
-                    return_value="w2",
-                ):
-                    items = list_time_records(conn, 1)
+                with patch("backend.payroll_operations.table_exists", return_value=False):
+                    with patch(
+                        "backend.payroll_operations.worker_category_for_user",
+                        return_value="w2",
+                    ):
+                        items = list_time_records(conn, 1)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["worker_category"], "w2")
 
