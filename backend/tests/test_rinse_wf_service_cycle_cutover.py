@@ -262,7 +262,7 @@ def test_compat_projection_never_reads_day_bags_as_authority(
         ),
         patch(
             "backend.rinse_wf_canonical_workload._same_day_presence_wf_ids",
-            return_value=({"BAG001"}, {}, None),
+            return_value=({"BAG001"}, {}, None, set()),
         ),
         patch(
             "backend.rinse_wf_canonical_workload._discover_same_day_entry_wf_ids",
@@ -289,6 +289,10 @@ def test_compat_projection_never_reads_day_bags_as_authority(
         patch(
             "backend.rinse_wf_canonical_workload._latest_absence_capable_present_ids",
             return_value=(None, {"absence_allowed": False}),
+        ),
+        patch(
+            "backend.rinse_wf_canonical_workload._authoritative_hd_bag_ids",
+            return_value=set(),
         ),
         patch("backend.rinse_day_bag_completion_projection.enrich_bags_completion_from_scans"),
         patch(
@@ -383,7 +387,7 @@ def test_canonical_workload_shell_populates_completed_on_date():
         ),
         patch(
             "backend.rinse_wf_canonical_workload._same_day_presence_wf_ids",
-            return_value=({"BAGDONE", "BAGPEND"}, {}, None),
+            return_value=({"BAGDONE", "BAGPEND"}, {}, None, set()),
         ),
         patch(
             "backend.rinse_wf_canonical_workload._discover_same_day_entry_wf_ids",
@@ -410,6 +414,10 @@ def test_canonical_workload_shell_populates_completed_on_date():
         patch(
             "backend.rinse_wf_canonical_workload._latest_absence_capable_present_ids",
             return_value=(None, {"absence_allowed": False}),
+        ),
+        patch(
+            "backend.rinse_wf_canonical_workload._authoritative_hd_bag_ids",
+            return_value=set(),
         ),
         patch("backend.rinse_day_bag_completion_projection.enrich_bags_completion_from_scans"),
         patch(

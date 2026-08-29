@@ -96,18 +96,15 @@ def wf_terminal_ineligible_bag_ids(
 ) -> set[str]:
     """Bag IDs with authoritative completion date strictly before shift_date_et.
 
-    These bag IDs are ineligible for the selected day's WF workload — forever,
-    regardless of portal presence, ACTIVE service cycles, Missing review, or
-    new cycle anchors.
+    These bag IDs are ineligible for the selected day's WF workload when their
+    *current* order occurrence completed before D. A later authoritative
+    order_instance covering D (same physical bag_id) is not ineligible.
 
-    Uses the same terminal authority as ``get_canonical_wf_workload``:
-    registry COMPLETED date_et < D first, then scan/cycle completion before opening.
-    ``service_type_by_bag`` is accepted for call-site compatibility; registry
-    terminal status is service-agnostic for WF persist guards.
+    Uses the same terminal authority as ``get_canonical_wf_workload``.
     """
     from backend.rinse_wf_canonical_workload import _terminal_before_date
 
-    del service_type_by_bag  # registry/lifecycle terminal is bag-id permanent
+    del service_type_by_bag  # WF persist guards use WF order instances
     ids = sorted(
         {
             normalize_bag_id(b)
@@ -327,27 +324,51 @@ def _preserved_hd_bag_dicts(
     *,
     exclude_bag_ids: set[str] | frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Preserve non-WF day_bags alongside a WF replace.
+    """Preserve HD day_bags alongside a WF replace.
 
     Never re-inject bag IDs that belong to the frozen canonical WF set — a prior
     bad persist that labeled a WF bag as HD must not overwrite WF membership.
+
+    Inverse (required after WF derives exclude authoritative HD): prior day_bag
+    rows wrongly labeled WF that are authoritative HD must be kept as HD, or
+    they vanish when canonical WF drops them.
     """
+    from backend.rinse_wf_canonical_workload import _authoritative_hd_bag_ids
+
     exclude = {
         normalize_bag_id(b)
         for b in (exclude_bag_ids or set())
         if normalize_bag_id(b)
     }
+    prior_rows = list(load_day_bags(cursor, organization_id, shift_date_et) or [])
+    prior_ids = [
+        normalize_bag_id(r.get("bag_id"))
+        for r in prior_rows
+        if normalize_bag_id(r.get("bag_id"))
+    ]
+    auth_hd = _authoritative_hd_bag_ids(
+        cursor, int(organization_id), shift_date_et, prior_ids
+    )
     bags: list[dict[str, Any]] = []
-    for row in load_day_bags(cursor, organization_id, shift_date_et) or []:
-        if str(row.get("service_type") or "").upper() == "WF":
-            continue
+    seen: set[str] = set()
+    for row in prior_rows:
         bid = normalize_bag_id(row.get("bag_id"))
-        if not bid or bid in exclude:
+        if not bid or bid in exclude or bid in seen:
             continue
+        svc = str(row.get("service_type") or "").strip().upper()
+        if svc == "WF" and bid not in auth_hd:
+            continue
+        # Non-WF rows stay as stored; mislabeled WF + authoritative HD → HD.
+        out_svc = "HD" if (svc == "WF" and bid in auth_hd) else (row.get("service_type") or "HD")
+        if str(out_svc).strip().upper() == "WF":
+            continue
+        seen.add(bid)
+        snap = dict(row.get("bag_snapshot") or {})
+        snap["service_type"] = out_svc
         bags.append(
             {
                 "bag_id": bid,
-                "service_type": row.get("service_type"),
+                "service_type": out_svc,
                 "rush_status": row.get("rush_status"),
                 "rush_flag": row.get("rush_status"),
                 "new_or_carryover": row.get("new_or_carryover"),
@@ -357,7 +378,7 @@ def _preserved_hd_bag_dicts(
                 "review_reason_codes": row.get("review_reason_codes") or [],
                 "canonical_completion_status": row.get("canonical_completion_status"),
                 "canonical_completion_timestamp": row.get("canonical_completion_timestamp"),
-                "bag_snapshot": row.get("bag_snapshot") or {},
+                "bag_snapshot": snap,
             }
         )
     return bags
@@ -431,7 +452,15 @@ def terminal_project_canonical_wf_day_snapshot(
     review_ids: list[str] = []
     for b in all_bags:
         snap = dict(b.get("bag_snapshot") or {})
-        rows.append({**b, **snap, "bag_id": b["bag_id"]})
+        # Row-level service_type wins over a stale snapshot label (e.g. WF→HD reclass).
+        rows.append(
+            {
+                **b,
+                **snap,
+                "bag_id": b["bag_id"],
+                "service_type": b.get("service_type") or snap.get("service_type"),
+            }
+        )
         bid = b["bag_id"]
         noc = str(b.get("new_or_carryover") or "")
         if noc == OUTCOME_CARRYOVER_QUERY or "carryover" in noc.lower():

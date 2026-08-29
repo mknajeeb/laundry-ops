@@ -3,16 +3,20 @@
 Model (non-negotiable)
 ----------------------
 1. Portal scraper = evidence collector only (never owns membership / resurrection).
-2. One permanent bag lifecycle per (organization_id, bag_id): OPEN | COMPLETED.
-   Completion is terminal — portal presence, Stage-B, service cycles, or snapshots
-   cannot reopen a completed bag into a later day's workload.
+2. Terminality belongs to an order_instance (seeded from service-cycle
+   cycle_anchor_at), not permanently to physical bag_id. A completed order
+   instance never reopens; a later authoritative cycle for the same bag_id
+   may enter a later day's workload as a new order_instance.
 3. Daily workload is DERIVED for ET date D, never append-only accumulation:
      completed = canonical completion date == D
      pending / review = not terminal AND legitimately open for D
      carryover = unfinished OPEN bags from before D
 4. Missing From Portal is a review attribute on an already-legitimate OPEN bag.
    It never introduces membership.
-5. Service cycles are audit/history only — not membership admission.
+5. Service cycles are audit/history + order_instance seed — not membership
+   admission by themselves.
+6. Authoritative Rinse HD bags are excluded before freeze
+   (``canonical WF ∩ authoritative HD = ∅``).
 
 Public API: ``get_canonical_wf_workload(org_id, date_et)``.
 Every Management WF consumer must use this (directly or via the day persist path).
@@ -63,8 +67,13 @@ def get_wf_bag_lifecycle(
     organization_id: int,
     bag_id: str,
 ) -> dict[str, Any]:
-    """Permanent bag lifecycle from registry. COMPLETED is terminal forever."""
+    """Current order-occurrence lifecycle for a physical bag_id.
+
+    COMPLETED means the *latest* order_instance (or legacy registry row) is
+    completed. A later authoritative cycle creates a new open occurrence.
+    """
     from backend.rinse_bag_registry import get_registry_row
+    from backend.rinse_order_instances import get_latest_order_instance_for_bag
 
     bid = normalize_bag_id(bag_id)
     if not bid:
@@ -74,6 +83,27 @@ def get_wf_bag_lifecycle(
             "completed_at": None,
             "completed_date_et": None,
         }
+    latest = get_latest_order_instance_for_bag(
+        cursor, int(organization_id), bid, service_type="WF"
+    )
+    if latest is not None:
+        completed_at = latest.get("completed_at")
+        if isinstance(completed_at, datetime):
+            return {
+                "bag_id": bid,
+                "lifecycle": LIFECYCLE_COMPLETED,
+                "completed_at": completed_at,
+                "completed_date_et": _et_date(completed_at),
+                "order_instance_id": latest.get("order_instance_id"),
+            }
+        return {
+            "bag_id": bid,
+            "lifecycle": LIFECYCLE_OPEN,
+            "completed_at": None,
+            "completed_date_et": None,
+            "order_instance_id": latest.get("order_instance_id"),
+        }
+
     row = get_registry_row(cursor, int(organization_id), bid) or {}
     status = str(row.get("completion_status") or "").strip().upper()
     completed_at = row.get("completed_at")
@@ -190,11 +220,14 @@ def _same_day_presence_wf_ids(
     cursor,
     organization_id: int,
     date_et: date,
-) -> tuple[set[str], dict[str, dict[str, Any]], int | None]:
+) -> tuple[set[str], dict[str, dict[str, Any]], int | None, set[str]]:
     """WF bag IDs observed on valid same-day presence scrapes (presence evidence only).
 
     Failed / empty / partial-baseline scrapes are excluded by
     ``is_valid_baseline_scrape``. Absence is NOT derived here.
+
+    Also returns ``portal_hd_ids``: bag IDs labeled HD on any valid same-day
+    scrape (used to exclude authoritative HD from WF membership).
     """
     from backend.rinse_veewash_day_membership import (
         list_valid_same_day_scrapes,
@@ -203,23 +236,90 @@ def _same_day_presence_wf_ids(
 
     ids: set[str] = set()
     meta: dict[str, dict[str, Any]] = {}
+    portal_hd: set[str] = set()
     latest_run_id: int | None = None
     for run in list_valid_same_day_scrapes(cursor, int(organization_id), date_et):
         run_id = int(run.get("id") or 0) or None
         if run_id:
             latest_run_id = run_id
         for row in load_run_bag_rows(cursor, int(run["id"])):
-            svc = str(row.get("service_type") or "WF").strip().upper()
-            if svc == "HD":
-                continue
-            if svc and svc != "WF":
-                continue
             bid = normalize_bag_id(row.get("bag_id"))
             if not bid:
                 continue
+            svc = str(row.get("service_type") or "WF").strip().upper()
+            if svc == "HD":
+                portal_hd.add(bid)
+                continue
+            if svc and svc != "WF":
+                continue
             ids.add(bid)
             meta[bid] = row
-    return ids, meta, latest_run_id
+    return ids, meta, latest_run_id, portal_hd
+
+
+def _authoritative_hd_bag_ids(
+    cursor,
+    organization_id: int,
+    date_et: date,
+    bag_ids: list[str],
+    *,
+    portal_hd_ids: set[str] | frozenset[str] | None = None,
+) -> set[str]:
+    """Authoritative Rinse HD bags among ``bag_ids`` — must never join WF.
+
+    Authority (any one is sufficient):
+      - registry ``service_type = HD``
+      - same-day portal scrape labeled HD
+      - durable ``hd_day_bag_production`` row for ET date D
+    """
+    ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
+    if not ids:
+        return set()
+    org = int(organization_id)
+    out: set[str] = set()
+    id_set = set(ids)
+
+    portal = {
+        normalize_bag_id(b)
+        for b in (portal_hd_ids or set())
+        if normalize_bag_id(b)
+    }
+    out |= portal & id_set
+
+    if table_exists(cursor, "rinse_bag_registry"):
+        from backend.rinse_bag_registry import get_registry_rows_for_bags
+
+        rows = get_registry_rows_for_bags(cursor, org, ids) or {}
+        for bid, row in rows.items():
+            nb = normalize_bag_id(bid)
+            if not nb:
+                continue
+            if str(row.get("service_type") or "").strip().upper() == "HD":
+                out.add(nb)
+
+    if table_exists(cursor, "hd_day_bag_production"):
+        chunk = 200
+        for i in range(0, len(ids), chunk):
+            part = ids[i : i + chunk]
+            ph = ",".join(["%s"] * len(part))
+            cursor.execute(
+                f"""
+                SELECT bag_id
+                FROM hd_day_bag_production
+                WHERE organization_id = %s
+                  AND operations_date_et = %s
+                  AND bag_id IN ({ph})
+                """,
+                (org, date_et, *part),
+            )
+            for row in cursor.fetchall() or []:
+                bid = normalize_bag_id(
+                    row.get("bag_id") if isinstance(row, dict) else row[0]
+                )
+                if bid:
+                    out.add(bid)
+
+    return out
 
 
 def _discover_same_day_entry_wf_ids(
@@ -261,7 +361,13 @@ def _terminal_before_date(
     date_et: date,
     bag_ids: list[str],
 ) -> set[str]:
-    """Bags whose permanent lifecycle completed strictly before D."""
+    """Bags whose *current* order occurrence completed strictly before D.
+
+    A prior completed order_instance does NOT make the physical bag ineligible
+    when a later authoritative instance covers date_et (cycle_anchor or
+    completion on D). Completed instances stay terminal; bag IDs do not.
+    """
+    from backend.rinse_order_instances import bags_with_order_instance_covering_date
     from backend.rinse_veewash_day_membership import (
         _bags_canonically_completed_before_opening,
     )
@@ -271,6 +377,12 @@ def _terminal_before_date(
         return set()
     reg = _registry_completed_date_by_bag(cursor, organization_id, ids)
     terminal = {bid for bid, d in reg.items() if d < date_et}
+    # Carve out bags with a later/same-day order instance covering D.
+    if terminal:
+        covering = bags_with_order_instance_covering_date(
+            cursor, int(organization_id), date_et, sorted(terminal), service_type="WF"
+        )
+        terminal -= covering
     remaining = [b for b in ids if b not in terminal]
     if remaining:
         terminal |= _bags_canonically_completed_before_opening(
@@ -280,6 +392,16 @@ def _terminal_before_date(
             remaining,
             service_type_by_bag={b: "WF" for b in remaining},
         )
+        # Same carve-out after scan/cycle-based terminal detection.
+        if terminal:
+            covering = bags_with_order_instance_covering_date(
+                cursor,
+                int(organization_id),
+                date_et,
+                sorted(terminal),
+                service_type="WF",
+            )
+            terminal -= covering
     return terminal
 
 
@@ -412,7 +534,7 @@ def get_canonical_wf_workload(
         }
 
     prior_open, prior_meta = _prior_day_unfinished_wf_ids(cursor, org, date_et)
-    presence_ids, presence_meta, _latest_run = _same_day_presence_wf_ids(
+    presence_ids, presence_meta, _latest_run, portal_hd_ids = _same_day_presence_wf_ids(
         cursor, org, date_et
     )
     entry_ids = _discover_same_day_entry_wf_ids(cursor, org, date_et)
@@ -422,6 +544,15 @@ def get_canonical_wf_workload(
     terminal_before = _terminal_before_date(cursor, org, date_et, sorted(seed))
     # Permanent lifecycle: never admit historically completed bag IDs.
     candidates = {b for b in seed if b not in terminal_before}
+    # HD/WF classification BEFORE freeze: authoritative HD ∩ WF must be empty.
+    hd_exclude = _authoritative_hd_bag_ids(
+        cursor,
+        org,
+        date_et,
+        sorted(candidates),
+        portal_hd_ids=portal_hd_ids,
+    )
+    candidates = {b for b in candidates if b not in hd_exclude}
 
     completed_map = _completion_date_on_d(cursor, org, date_et, sorted(candidates))
     completed = frozenset(completed_map.keys()) & frozenset(candidates)

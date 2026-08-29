@@ -1,0 +1,268 @@
+"""Tests for rinse_order_instances — narrow order_instance_id spine."""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from unittest.mock import MagicMock, patch
+
+from backend.rinse_order_instances import (
+    bags_with_order_instance_covering_date,
+    is_authoritative_completed_cycle,
+    is_current_order_instance_completed,
+    upsert_order_instance_from_cycle,
+)
+from backend.rinse_wf_canonical_workload import (
+    LIFECYCLE_COMPLETED,
+    LIFECYCLE_OPEN,
+    _terminal_before_date,
+    get_wf_bag_lifecycle,
+)
+
+
+ORG = 3
+
+
+def test_authoritative_completed_cycle_requires_completed_stamp():
+    assert is_authoritative_completed_cycle(
+        {
+            "status": "COMPLETED",
+            "cycle_anchor_at": datetime(2026, 8, 24, 0, 28),
+            "completed_at": datetime(2026, 8, 24, 16, 48),
+        }
+    )
+    assert not is_authoritative_completed_cycle(
+        {
+            "status": "REVIEW",
+            "cycle_anchor_at": datetime(2026, 8, 24, 3, 18),
+            "completed_at": None,
+        }
+    )
+    assert not is_authoritative_completed_cycle(
+        {
+            "status": "ACTIVE",
+            "cycle_anchor_at": datetime(2026, 8, 28, 4, 44),
+            "completed_at": None,
+        }
+    )
+
+
+def test_cea4_two_completed_cycles_become_two_instances():
+    """CEA4: cycle 89805 and 1840886 → distinct order instances."""
+    stored: dict[tuple, dict] = {}
+    next_id = {"n": 1}
+
+    def execute(sql, params=None):
+        sql_l = " ".join(str(sql).lower().split())
+        if "create table" in sql_l:
+            return
+        if sql_l.startswith("select * from rinse_order_instances where source_cycle_id"):
+            cid = int(params[0])
+            for row in stored.values():
+                if row.get("source_cycle_id") == cid:
+                    execute._result = [row]
+                    return
+            execute._result = []
+            return
+        if "select * from rinse_order_instances where organization_id" in sql_l and "cycle_anchor_at" in sql_l:
+            key = (int(params[0]), str(params[1]), str(params[2]), params[3])
+            row = stored.get(key)
+            execute._result = [row] if row else []
+            return
+        if sql_l.startswith("select * from rinse_order_instances where order_instance_id"):
+            oid = int(params[0])
+            for row in stored.values():
+                if int(row["order_instance_id"]) == oid:
+                    execute._result = [row]
+                    return
+            execute._result = []
+            return
+        if sql_l.startswith("insert into rinse_order_instances"):
+            oid = next_id["n"]
+            next_id["n"] += 1
+            row = {
+                "order_instance_id": oid,
+                "organization_id": int(params[0]),
+                "bag_id": params[1],
+                "service_type": params[2],
+                "cycle_anchor_at": params[3],
+                "source_cycle_id": params[4],
+                "completed_at": params[5],
+                "completed_by_user_id": params[6],
+                "completed_by_employee_name": params[7],
+                "completion_source": params[8],
+            }
+            key = (row["organization_id"], row["bag_id"], row["service_type"], row["cycle_anchor_at"])
+            stored[key] = row
+            execute.lastrowid = oid
+            return
+        if sql_l.startswith("update rinse_order_instances"):
+            return
+        execute._result = []
+
+    cur = MagicMock()
+    cur.execute.side_effect = execute
+    cur.fetchone.side_effect = lambda: (execute._result[0] if getattr(execute, "_result", None) else None)
+    cur.fetchall.side_effect = lambda: list(getattr(execute, "_result", []) or [])
+    cur.lastrowid = None
+
+    with patch("backend.rinse_order_instances.table_exists", return_value=True), patch(
+        "backend.rinse_order_instances.ensure_rinse_order_instances_table"
+    ):
+        a = upsert_order_instance_from_cycle(
+            cur,
+            ORG,
+            {
+                "id": 89805,
+                "bag_id": "CEA4TAF6IK",
+                "service_type": "WF",
+                "status": "COMPLETED",
+                "cycle_anchor_at": datetime(2026, 8, 24, 0, 28),
+                "completed_at": datetime(2026, 8, 24, 16, 48),
+                "completion_source": "post_garments_reviewed_weight_entry",
+            },
+            completed_by_employee_name="Jennifer (VeeWash)",
+        )
+        b = upsert_order_instance_from_cycle(
+            cur,
+            ORG,
+            {
+                "id": 1840886,
+                "bag_id": "CEA4TAF6IK",
+                "service_type": "WF",
+                "status": "COMPLETED",
+                "cycle_anchor_at": datetime(2026, 8, 28, 6, 31),
+                "completed_at": datetime(2026, 8, 28, 9, 14),
+                "completion_source": "post_garments_reviewed_weight_entry",
+            },
+            completed_by_employee_name="Veewash (Training Account 2)",
+        )
+        # Idempotent re-upsert of A
+        a2 = upsert_order_instance_from_cycle(
+            cur,
+            ORG,
+            {
+                "id": 89805,
+                "bag_id": "CEA4TAF6IK",
+                "service_type": "WF",
+                "status": "COMPLETED",
+                "cycle_anchor_at": datetime(2026, 8, 24, 0, 28),
+                "completed_at": datetime(2026, 8, 24, 16, 48),
+            },
+        )
+
+    assert a is not None and b is not None
+    assert int(a["order_instance_id"]) != int(b["order_instance_id"])
+    assert a["bag_id"] == b["bag_id"] == "CEA4TAF6IK"
+    assert a2 is not None
+    assert int(a2["order_instance_id"]) == int(a["order_instance_id"])
+    assert len(stored) == 2
+
+
+def test_terminal_before_carves_out_covering_instance():
+    """Prior registry completion must not block a later order instance on D."""
+    cur = MagicMock()
+    with patch(
+        "backend.rinse_wf_canonical_workload._registry_completed_date_by_bag",
+        return_value={"CEA4TAF6IK": date(2026, 8, 24)},
+    ), patch(
+        "backend.rinse_order_instances.bags_with_order_instance_covering_date",
+        return_value={"CEA4TAF6IK"},
+    ), patch(
+        "backend.rinse_veewash_day_membership._bags_canonically_completed_before_opening",
+        return_value=set(),
+    ):
+        terminal = _terminal_before_date(
+            cur, ORG, date(2026, 8, 28), ["CEA4TAF6IK", "OTHER"]
+        )
+    assert "CEA4TAF6IK" not in terminal
+
+
+def test_terminal_before_keeps_true_historical_terminal():
+    cur = MagicMock()
+    with patch(
+        "backend.rinse_wf_canonical_workload._registry_completed_date_by_bag",
+        return_value={"OLD1": date(2026, 8, 20)},
+    ), patch(
+        "backend.rinse_order_instances.bags_with_order_instance_covering_date",
+        return_value=set(),
+    ), patch(
+        "backend.rinse_veewash_day_membership._bags_canonically_completed_before_opening",
+        return_value=set(),
+    ):
+        terminal = _terminal_before_date(cur, ORG, date(2026, 8, 28), ["OLD1"])
+    assert terminal == {"OLD1"}
+
+
+def test_current_instance_completed_uses_latest_instance():
+    cur = MagicMock()
+    with patch(
+        "backend.rinse_order_instances.get_latest_order_instance_for_bag",
+        return_value={
+            "order_instance_id": 2,
+            "completed_at": datetime(2026, 8, 28, 9, 14),
+        },
+    ):
+        assert is_current_order_instance_completed(cur, ORG, "CEA4TAF6IK") is True
+    with patch(
+        "backend.rinse_order_instances.get_latest_order_instance_for_bag",
+        return_value={"order_instance_id": 2, "completed_at": None},
+    ):
+        assert is_current_order_instance_completed(cur, ORG, "CEA4TAF6IK") is False
+
+
+def test_lifecycle_uses_latest_order_instance_not_sticky_registry():
+    cur = MagicMock()
+    with patch(
+        "backend.rinse_order_instances.get_latest_order_instance_for_bag",
+        return_value={
+            "order_instance_id": 9,
+            "completed_at": datetime(2026, 8, 28, 9, 14),
+        },
+    ):
+        life = get_wf_bag_lifecycle(cur, ORG, "CEA4TAF6IK")
+    assert life["lifecycle"] == LIFECYCLE_COMPLETED
+    assert life["order_instance_id"] == 9
+
+    with patch(
+        "backend.rinse_order_instances.get_latest_order_instance_for_bag",
+        return_value={"order_instance_id": 9, "completed_at": None},
+    ):
+        life = get_wf_bag_lifecycle(cur, ORG, "CEA4TAF6IK")
+    assert life["lifecycle"] == LIFECYCLE_OPEN
+
+
+def test_lifecycle_falls_back_to_registry_when_no_instances():
+    cur = MagicMock()
+    with patch(
+        "backend.rinse_order_instances.get_latest_order_instance_for_bag",
+        return_value=None,
+    ), patch(
+        "backend.rinse_bag_registry.get_registry_row",
+        return_value={
+            "completion_status": "COMPLETED",
+            "completed_at": datetime(2026, 8, 20, 12, 0),
+        },
+    ):
+        life = get_wf_bag_lifecycle(cur, ORG, "BAG1")
+    assert life["lifecycle"] == LIFECYCLE_COMPLETED
+
+
+def test_covering_date_matches_anchor_or_completion():
+    cur = MagicMock()
+    cur.fetchall.return_value = [
+        {
+            "bag_id": "CEA4TAF6IK",
+            "cycle_anchor_at": datetime(2026, 8, 28, 6, 31),
+            "completed_at": datetime(2026, 8, 28, 9, 14),
+        },
+        {
+            "bag_id": "OTHER",
+            "cycle_anchor_at": datetime(2026, 8, 24, 0, 28),
+            "completed_at": datetime(2026, 8, 24, 16, 48),
+        },
+    ]
+    with patch("backend.rinse_order_instances.ensure_rinse_order_instances_table"):
+        covering = bags_with_order_instance_covering_date(
+            cur, ORG, date(2026, 8, 28), ["CEA4TAF6IK", "OTHER"]
+        )
+    assert covering == {"CEA4TAF6IK"}

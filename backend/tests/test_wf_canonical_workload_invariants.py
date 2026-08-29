@@ -39,6 +39,8 @@ def _wl_patches(
     completed_map=None,
     present_for_absence=None,
     absence_meta=None,
+    authoritative_hd=None,
+    portal_hd=None,
 ):
     prior_open = set(prior_open or [])
     prior_meta = dict(prior_meta or {})
@@ -47,6 +49,8 @@ def _wl_patches(
     registry_today = set(registry_today or [])
     terminal = set(terminal or [])
     completed_map = dict(completed_map or {})
+    authoritative_hd = set(authoritative_hd or [])
+    portal_hd = set(portal_hd or [])
     if absence_meta is None:
         absence_meta = {"absence_allowed": present_for_absence is not None}
 
@@ -57,7 +61,7 @@ def _wl_patches(
         ),
         patch(
             "backend.rinse_wf_canonical_workload._same_day_presence_wf_ids",
-            return_value=(presence, {}, 1),
+            return_value=(presence, {}, 1, portal_hd),
         ),
         patch(
             "backend.rinse_wf_canonical_workload._discover_same_day_entry_wf_ids",
@@ -79,13 +83,26 @@ def _wl_patches(
             "backend.rinse_wf_canonical_workload._latest_absence_capable_present_ids",
             return_value=(present_for_absence, absence_meta),
         ),
+        patch(
+            "backend.rinse_wf_canonical_workload._authoritative_hd_bag_ids",
+            return_value=authoritative_hd,
+        ),
     )
 
 
 def _run(cur=None, **kwargs):
     cur = cur or MagicMock()
     patches = _wl_patches(**kwargs)
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5],
+        patches[6],
+        patches[7],
+    ):
         return get_canonical_wf_workload(cur, ORG, D)
 
 
@@ -265,6 +282,9 @@ def test_15_workload_equals_completed_plus_pending_plus_review():
 def test_lifecycle_completed_is_terminal():
     cur = MagicMock()
     with patch(
+        "backend.rinse_order_instances.get_latest_order_instance_for_bag",
+        return_value=None,
+    ), patch(
         "backend.rinse_bag_registry.get_registry_row",
         return_value={
             "completion_status": "COMPLETED",
@@ -277,7 +297,10 @@ def test_lifecycle_completed_is_terminal():
 
 def test_lifecycle_open_default():
     cur = MagicMock()
-    with patch("backend.rinse_bag_registry.get_registry_row", return_value=None):
+    with patch(
+        "backend.rinse_order_instances.get_latest_order_instance_for_bag",
+        return_value=None,
+    ), patch("backend.rinse_bag_registry.get_registry_row", return_value=None):
         life = get_wf_bag_lifecycle(cur, ORG, "BAG1")
     assert life["lifecycle"] == LIFECYCLE_OPEN
 
@@ -292,3 +315,41 @@ def test_missing_subset_of_open_only():
     # Completed bags are not open — missing must not include them.
     assert "OPEN1" not in wl["missing_from_portal"]
     assert "OPEN1" in wl["completed"]
+
+
+def test_hd_evidence_excludes_entry_and_stale_wf_carryover():
+    """7M07HHS5BU-type: HD portal/registry evidence + entry/stale WF carryover → NOT WF."""
+    hd = "7M07HHS5BU"
+    wl = _run(
+        prior_open={hd, "WFKEEP1"},
+        prior_meta={
+            hd: {"effective_status": "pending", "service_type": "WF", "review_reason_codes": []},
+            "WFKEEP1": {"effective_status": "pending", "review_reason_codes": []},
+        },
+        entry={hd, "WFNEW1"},
+        authoritative_hd={hd},
+        present_for_absence={"WFKEEP1", "WFNEW1"},
+        absence_meta={"absence_allowed": True},
+    )
+    assert hd not in wl["bag_ids"]
+    assert hd not in wl["carryover"]
+    assert hd not in wl["new_today"]
+    assert hd not in wl["review"]
+    assert "WFKEEP1" in wl["bag_ids"]
+    assert "WFNEW1" in wl["bag_ids"]
+    assert_canonical_workload_invariants(wl)
+
+
+def test_authoritative_hd_intersection_empty_when_hd_seeded():
+    """canonical WF set ∩ authoritative HD set = ∅ even when HD is in every seed path."""
+    hd = "2QFDTDTULL"
+    wl = _run(
+        prior_open={hd},
+        presence={hd},
+        entry={hd},
+        registry_today={hd},
+        authoritative_hd={hd},
+        portal_hd={hd},
+    )
+    assert wl["bag_ids"] == frozenset()
+    assert_canonical_workload_invariants(wl)

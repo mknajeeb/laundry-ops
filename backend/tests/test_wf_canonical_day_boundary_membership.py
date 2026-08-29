@@ -111,7 +111,7 @@ def _patch_canonical_seeds(
             ),
             patch(
                 "backend.rinse_wf_canonical_workload._same_day_presence_wf_ids",
-                return_value=(set(presence or []), {}, None),
+                return_value=(set(presence or []), {}, None, set()),
             ),
             patch(
                 "backend.rinse_wf_canonical_workload._discover_same_day_entry_wf_ids",
@@ -132,6 +132,10 @@ def _patch_canonical_seeds(
             patch(
                 "backend.rinse_wf_canonical_workload._latest_absence_capable_present_ids",
                 return_value=(present_for_absence, {"absence_allowed": present_for_absence is not None}),
+            ),
+            patch(
+                "backend.rinse_wf_canonical_workload._authoritative_hd_bag_ids",
+                return_value=set(),
             ),
             _enrich_patches(),
         ):
@@ -1149,14 +1153,58 @@ def test_preserved_hd_excludes_canonical_wf_bag_ids():
             "bag_snapshot": {},
         },
     ]
-    with patch(
-        "backend.rinse_wf_service_cycle_compat.load_day_bags",
-        return_value=prior_rows,
+    with (
+        patch(
+            "backend.rinse_wf_service_cycle_compat.load_day_bags",
+            return_value=prior_rows,
+        ),
+        patch(
+            "backend.rinse_wf_canonical_workload._authoritative_hd_bag_ids",
+            return_value={"HDONLY1", "WFHD001"},
+        ),
     ):
         out = _preserved_hd_bag_dicts(
             MagicMock(), ORG, AUG28, exclude_bag_ids={"WFHD001"}
         )
     assert [b["bag_id"] for b in out] == ["HDONLY1"]
+
+
+def test_preserved_hd_reclassifies_mislabeled_wf_authoritative_hd():
+    """Authoritative HD bag wrongly persisted as WF must be kept as HD when not in desired WF."""
+    from backend.rinse_wf_service_cycle_compat import _preserved_hd_bag_dicts
+
+    prior_rows = [
+        {
+            "bag_id": "7M07HHS5BU",
+            "service_type": "WF",
+            "effective_status": "review_required",
+            "review_reason_codes": ["MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL"],
+            "bag_snapshot": {},
+        },
+        {
+            "bag_id": "WFKEEP1",
+            "service_type": "WF",
+            "effective_status": "pending",
+            "review_reason_codes": [],
+            "bag_snapshot": {},
+        },
+    ]
+    with (
+        patch(
+            "backend.rinse_wf_service_cycle_compat.load_day_bags",
+            return_value=prior_rows,
+        ),
+        patch(
+            "backend.rinse_wf_canonical_workload._authoritative_hd_bag_ids",
+            return_value={"7M07HHS5BU"},
+        ),
+    ):
+        out = _preserved_hd_bag_dicts(
+            MagicMock(), ORG, AUG28, exclude_bag_ids={"WFKEEP1"}
+        )
+    assert len(out) == 1
+    assert out[0]["bag_id"] == "7M07HHS5BU"
+    assert out[0]["service_type"] == "HD"
 
 
 @patch(

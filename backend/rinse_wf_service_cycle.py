@@ -240,6 +240,14 @@ def upsert_service_cycle(
         ),
     )
     row = get_cycle_by_key(cursor, org, bid, cycle_anchor_at)
+    if row and str(row.get("status") or "").upper() == STATUS_COMPLETED:
+        try:
+            from backend.rinse_order_instances import sync_order_instance_on_cycle_completion
+
+            sync_order_instance_on_cycle_completion(cursor, org, row)
+        except Exception:
+            # Order-instance sync must not block cycle persistence.
+            pass
     return row or {}
 
 
