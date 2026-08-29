@@ -86,23 +86,40 @@ export function filterEntriesByEntityTab(entries, tab, employees = null, organiz
 
 export function filterEmployeesByEntityTab(employees, tab, entries = null, organizationSlug = null) {
   const list = employees || [];
+  const allEntries = entries || [];
+
   if (tab === BUSINESS_ENTITY.COMBINED) {
-    return list.filter(
-      (employee) => resolveEmployeeEntity(employee, organizationSlug) !== BUSINESS_ENTITY.NONE,
-    );
+    const userIdsWithEntries = new Set(allEntries.map((entry) => Number(entry.user_id)));
+    return list.filter((employee) => {
+      const workerEntity = resolveEmployeeEntity(employee, organizationSlug);
+      if (workerEntity === BUSINESS_ENTITY.NONE) return false;
+      return userIdsWithEntries.has(Number(employee.user_id));
+    });
   }
 
-  const allEntries = entries || [];
   const tabEntries = filterEntriesByEntityTab(allEntries, tab, list, organizationSlug);
   const userIdsWithTabEntries = new Set(tabEntries.map((entry) => Number(entry.user_id)));
 
   return list.filter((employee) => {
-    const uid = Number(employee.user_id);
     const workerEntity = resolveEmployeeEntity(employee, organizationSlug);
     if (workerEntity === BUSINESS_ENTITY.NONE) return false;
-    if (userIdsWithTabEntries.has(uid)) return true;
-    const hasAnyEntry = allEntries.some((entry) => Number(entry.user_id) === uid);
-    if (hasAnyEntry) return false;
+    // Only people with at least one planned shift on this tab/week — no empty rows.
+    return userIdsWithTabEntries.has(Number(employee.user_id));
+  });
+}
+
+/** Affiliated workers who can be added (no shifts on this tab/week yet). */
+export function addableEmployeesForEntityTab(employees, tab, entries = null, organizationSlug = null) {
+  const list = employees || [];
+  const visibleIds = new Set(
+    filterEmployeesByEntityTab(list, tab, entries, organizationSlug).map((e) => Number(e.user_id)),
+  );
+  return list.filter((employee) => {
+    const uid = Number(employee.user_id);
+    if (visibleIds.has(uid)) return false;
+    const workerEntity = resolveEmployeeEntity(employee, organizationSlug);
+    if (workerEntity === BUSINESS_ENTITY.NONE) return false;
+    if (tab === BUSINESS_ENTITY.COMBINED) return true;
     return matchesEntityTab(employee, tab, organizationSlug);
   });
 }
@@ -152,6 +169,7 @@ function defaultEntityForOrgTab(organizationSlug) {
 /** Legacy exports */
 export const filterEntriesByEmployerTab = filterEntriesByEntityTab;
 export const filterEmployeesByEmployerTab = filterEmployeesByEntityTab;
+export const addableEmployeesForEmployerTab = addableEmployeesForEntityTab;
 export const countEmployeesForEmployerTab = countEmployeesForEntityTab;
 export const pickDefaultEmployerTab = pickDefaultEntityTab;
 export const defaultShiftEmployerForTab = defaultShiftEntityForTab;

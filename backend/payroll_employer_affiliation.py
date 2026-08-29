@@ -153,6 +153,7 @@ def save_employer_affiliation(
         int(user_id),
         {**flags, "business_entity": aff},
     )
+    future_entries_cleared = 0
     # Keep shift tabs in sync when the worker moves to a concrete entity. Otherwise
     # stored veewash/washpro shift tags keep them parked on the home-entity tab.
     if cascade_shifts and aff in SHIFT_EMPLOYER_AFFILIATIONS:
@@ -171,6 +172,21 @@ def save_employer_affiliation(
             )
         finally:
             cursor.close()
+    elif cascade_shifts and aff == ENTITY_NONE:
+        # Mapping → None: drop current/future planned participation. Keep past weeks.
+        from backend.business_time import business_today
+        from backend.planned_weekly_schedule import clear_future_planned_schedule_entries_for_user
+
+        cursor = conn.cursor()
+        try:
+            future_entries_cleared = clear_future_planned_schedule_entries_for_user(
+                cursor,
+                int(organization_id),
+                int(user_id),
+                as_of=business_today(),
+            )
+        finally:
+            cursor.close()
     worker = get_worker_by_user_id(conn, int(organization_id), int(user_id))
     return {
         "user_id": int(user_id),
@@ -178,6 +194,7 @@ def save_employer_affiliation(
         "display_name": worker.get("display_name") or worker.get("worker_name") or "",
         "employer_affiliation": aff,
         "business_entity": aff,
+        "future_entries_cleared": int(future_entries_cleared),
         **flags,
     }
 

@@ -146,6 +146,86 @@ def normalize_week_start(raw: date | str | None) -> date | None:
     return parsed - timedelta(days=days_since_sunday)
 
 
+def clear_future_planned_schedule_entries_for_user(
+    cursor,
+    organization_id: int,
+    user_id: int,
+    *,
+    as_of: date,
+) -> int:
+    """
+    Remove planned shifts on/after ``as_of`` (ET business date) for one worker.
+
+    Past weeks and past days in the current week are left intact.
+    """
+    ensure_planned_weekly_schedule_table(cursor)
+    oid = int(organization_id)
+    uid = int(user_id)
+    if not isinstance(as_of, date):
+        raise ValueError("as_of must be a date")
+    current_week = normalize_week_start(as_of)
+    if not current_week:
+        return 0
+
+    deleted = 0
+    cursor.execute(
+        """
+        DELETE FROM planned_weekly_schedule_entries
+        WHERE organization_id = %s AND user_id = %s AND week_start > %s
+        """,
+        (oid, uid, current_week),
+    )
+    deleted += int(getattr(cursor, "rowcount", 0) or 0)
+
+    days_from_sunday = (as_of - current_week).days
+    if 0 <= days_from_sunday <= 6:
+        cursor.execute(
+            """
+            DELETE FROM planned_weekly_schedule_entries
+            WHERE organization_id = %s AND user_id = %s AND week_start = %s
+              AND day_of_week >= %s
+            """,
+            (oid, uid, current_week, days_from_sunday),
+        )
+        deleted += int(getattr(cursor, "rowcount", 0) or 0)
+
+    # Drop future-week exclusions so none workers do not linger as excluded rows.
+    ensure_planned_weekly_schedule_exclusions_table(cursor)
+    cursor.execute(
+        """
+        DELETE FROM planned_weekly_schedule_exclusions
+        WHERE organization_id = %s AND user_id = %s AND week_start >= %s
+        """,
+        (oid, uid, current_week),
+    )
+    return deleted
+
+
+def schedulable_worker_user_ids(
+    conn,
+    organization_id: int,
+    workers: Sequence[Mapping[str, Any]] | None = None,
+) -> set[int]:
+    """Active schedule-grid workers whose Mapping affiliation is not ``none``."""
+    from backend.payroll_employer_affiliation import (
+        EMPLOYER_AFFILIATION_NONE,
+        _organization_slug,
+        employer_affiliation_from_flags,
+    )
+
+    org_slug = _organization_slug(conn, int(organization_id))
+    rows = list(workers) if workers is not None else _load_workers(conn, int(organization_id))
+    out: set[int] = set()
+    for worker in rows:
+        uid = int(worker.get("user_id") or 0)
+        if uid <= 0:
+            continue
+        if employer_affiliation_from_flags(worker, organization_slug=org_slug) == EMPLOYER_AFFILIATION_NONE:
+            continue
+        out.add(uid)
+    return out
+
+
 def normalize_day_of_week(raw: Any) -> int | None:
     try:
         dow = int(raw)
@@ -1163,11 +1243,10 @@ def carry_forward_week_schedule(
 ) -> dict[str, Any]:
     """Copy entries and exclusions from source week into target week."""
     oid = int(organization_id)
-    valid_user_ids = {
-        int(w.get("user_id") or 0)
-        for w in _load_workers(conn, oid)
-        if int(w.get("user_id") or 0) > 0
-    }
+    workers = _load_workers(conn, oid)
+    # Affiliation=none workers must never be resurrected by cascade / carry-forward,
+    # even when stale planned rows still exist on the source week.
+    valid_user_ids = schedulable_worker_user_ids(conn, oid, workers)
 
     source_entries = list_week_entries(cursor, oid, week_start=source_week_start)
     source_exclusions = list_excluded_user_ids(cursor, oid, week_start=source_week_start)
@@ -1350,18 +1429,29 @@ def build_week_payload(
     user_roles: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     from backend.business_entity import entity_scope_payload
-    from backend.payroll_employer_affiliation import _organization_slug, employer_affiliation_from_flags
+    from backend.payroll_employer_affiliation import (
+        EMPLOYER_AFFILIATION_NONE,
+        _organization_slug,
+        employer_affiliation_from_flags,
+    )
     from backend.weekly_schedule_display_settings import effective_weekly_schedule_view, apply_rinse_viewer_scope
 
     org_slug = _organization_slug(conn, organization_id)
     workers = _load_workers(conn, organization_id)
     workers_by_uid = _workers_index(workers)
-    entries = enrich_entries_with_employer_affiliation(
+    schedulable_uids = schedulable_worker_user_ids(conn, organization_id, workers)
+    raw_entries = enrich_entries_with_employer_affiliation(
         list_week_entries(cursor, organization_id, week_start=week_start, conn=conn),
         workers_by_uid,
         organization_slug=org_slug,
     )
-    excluded_user_ids = list_excluded_user_ids(cursor, organization_id, week_start=week_start)
+    # Affiliation=none must not participate in the week grid, even if stale rows remain.
+    entries = [e for e in raw_entries if int(e.get("user_id") or 0) in schedulable_uids]
+    excluded_user_ids = [
+        uid
+        for uid in list_excluded_user_ids(cursor, organization_id, week_start=week_start)
+        if int(uid) in schedulable_uids
+    ]
     excluded_set = set(excluded_user_ids)
     totals = compute_schedule_totals(
         entries,
@@ -1372,6 +1462,9 @@ def build_week_payload(
     employee_rows = []
     for worker in workers:
         uid = int(worker.get("user_id") or 0)
+        aff = employer_affiliation_from_flags(worker, organization_slug=org_slug)
+        if aff == EMPLOYER_AFFILIATION_NONE:
+            continue
         is_excluded = uid in excluded_set
         stats = totals["employee_totals"].get(uid) or {
             "user_id": uid,
@@ -1388,8 +1481,8 @@ def build_week_payload(
                 "can_work_rinse": bool(worker.get("can_work_rinse", True)),
                 "can_work_drop_off": bool(worker.get("can_work_drop_off", True)),
                 "can_work_both": bool(worker.get("can_work_both", True)),
-                "employer_affiliation": employer_affiliation_from_flags(worker, organization_slug=org_slug),
-                "business_entity": employer_affiliation_from_flags(worker, organization_slug=org_slug),
+                "employer_affiliation": aff,
+                "business_entity": aff,
                 "total_hours": stats["total_hours"],
                 "scheduled_days": stats["scheduled_days"],
                 "estimated_cost": stats["estimated_cost"],

@@ -61,6 +61,20 @@ class _FakeCursor:
                 )
             return
         if "delete from planned_weekly_schedule_exclusions" in sql_norm:
+            if "week_start >=" in sql_norm and len(params) == 3:
+                org_id, user_id, week_start = params
+                before = len(self.exclusions)
+                self.exclusions = [
+                    r
+                    for r in self.exclusions
+                    if not (
+                        r["organization_id"] == org_id
+                        and r["user_id"] == user_id
+                        and r["week_start"] >= week_start
+                    )
+                ]
+                self._rowcount = before - len(self.exclusions)
+                return
             if len(params) == 2:
                 org_id, week_start = params
                 before = len(self.exclusions)
@@ -152,6 +166,37 @@ class _FakeCursor:
                     )
             return
         if "delete from planned_weekly_schedule_entries" in sql_norm:
+            # Future weeks for one user: week_start > %s AND user_id
+            if "week_start >" in sql_norm and "user_id" in sql_norm and len(params) == 3:
+                org_id, user_id, week_start = params
+                before = len(self.rows)
+                self.rows = [
+                    r
+                    for r in self.rows
+                    if not (
+                        r["organization_id"] == org_id
+                        and r["user_id"] == user_id
+                        and r["week_start"] > week_start
+                    )
+                ]
+                self._rowcount = before - len(self.rows)
+                return
+            # Current week remaining days: week_start = %s AND day_of_week >= %s
+            if "day_of_week >=" in sql_norm and len(params) == 4:
+                org_id, user_id, week_start, min_dow = params
+                before = len(self.rows)
+                self.rows = [
+                    r
+                    for r in self.rows
+                    if not (
+                        r["organization_id"] == org_id
+                        and r["user_id"] == user_id
+                        and r["week_start"] == week_start
+                        and int(r["day_of_week"]) >= int(min_dow)
+                    )
+                ]
+                self._rowcount = before - len(self.rows)
+                return
             # Week wipe: ... week_start = %s (not "... AND id = %s")
             if "week_start" in sql_norm and " id =" not in sql_norm and len(params) == 2:
                 org_id, week_start = params
@@ -1277,3 +1322,199 @@ def test_bulk_set_week_entry_employer_affiliation_moves_none_worker():
     assert updated == 1
     assert skipped == []
     assert cursor.rows[0]["employer_affiliation"] == "rinse_exclusive"
+
+
+def test_clear_future_planned_keeps_historical_days():
+    from backend.planned_weekly_schedule import clear_future_planned_schedule_entries_for_user
+
+    cursor = _FakeCursor()
+    # Week of Sun Aug 23; as_of = Fri Aug 28 → keep Sun–Thu, drop Fri–Sat + future weeks
+    week = date(2026, 8, 23)
+    future = date(2026, 8, 30)
+    past = date(2026, 8, 16)
+    for dow in range(7):
+        cursor.rows.append(
+            {
+                "id": dow + 1,
+                "organization_id": 3,
+                "week_start": week,
+                "user_id": 29,
+                "day_of_week": dow,
+                "role": "fold",
+                "start_time": time(9, 0),
+                "end_time": time(16, 0),
+                "break_minutes": 0,
+            }
+        )
+    cursor.rows.append(
+        {
+            "id": 100,
+            "organization_id": 3,
+            "week_start": future,
+            "user_id": 29,
+            "day_of_week": 0,
+            "role": "sort",
+            "start_time": time(7, 0),
+            "end_time": time(15, 0),
+            "break_minutes": 0,
+        }
+    )
+    cursor.rows.append(
+        {
+            "id": 50,
+            "organization_id": 3,
+            "week_start": past,
+            "user_id": 29,
+            "day_of_week": 6,
+            "role": "sort",
+            "start_time": time(7, 0),
+            "end_time": time(15, 0),
+            "break_minutes": 0,
+        }
+    )
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True):
+        deleted = clear_future_planned_schedule_entries_for_user(
+            cursor, 3, 29, as_of=date(2026, 8, 28)
+        )
+    assert deleted >= 3
+    remaining = [(r["week_start"], r["day_of_week"]) for r in cursor.rows if r["user_id"] == 29]
+    assert (past, 6) in remaining
+    assert (week, 0) in remaining  # Sunday kept
+    assert (week, 4) in remaining  # Thursday kept
+    assert (week, 5) not in remaining
+    assert (week, 6) not in remaining
+    assert (future, 0) not in remaining
+
+
+def test_carry_forward_skips_affiliation_none_even_with_stale_source_rows():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    source = date(2026, 8, 23)
+    target = date(2026, 8, 30)
+    cursor.rows = [
+        {
+            "id": 1,
+            "organization_id": 3,
+            "week_start": source,
+            "user_id": 29,
+            "day_of_week": 0,
+            "role": "sort",
+            "start_time": time(7, 0),
+            "end_time": time(15, 0),
+            "break_minutes": 0,
+        },
+        {
+            "id": 2,
+            "organization_id": 3,
+            "week_start": source,
+            "user_id": 10,
+            "day_of_week": 1,
+            "role": "fold",
+            "start_time": time(9, 0),
+            "end_time": time(16, 0),
+            "break_minutes": 0,
+        },
+    ]
+    workers = [
+        {
+            "user_id": 29,
+            "display_name": "Paola",
+            "business_entity": "none",
+            "can_work_rinse": 0,
+            "can_work_drop_off": 0,
+            "can_work_both": 0,
+            "active": 1,
+        },
+        {
+            "user_id": 10,
+            "display_name": "Alice",
+            "business_entity": "veewash",
+            "can_work_rinse": 0,
+            "can_work_drop_off": 1,
+            "can_work_both": 0,
+            "active": 1,
+        },
+    ]
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=workers
+    ), patch(
+        "backend.payroll_employer_affiliation._organization_slug", return_value="veewash"
+    ):
+        result = carry_forward_week_schedule(
+            conn,
+            cursor,
+            3,
+            target_week_start=target,
+            source_week_start=source,
+        )
+    assert result["entries_skipped"] >= 1
+    copied = list_week_entries(cursor, 3, week_start=target)
+    assert all(int(e["user_id"]) != 29 for e in copied)
+    assert any(int(e["user_id"]) == 10 for e in copied)
+
+
+def test_build_week_payload_excludes_affiliation_none_worker():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    week = date(2026, 8, 23)
+    cursor.rows = [
+        {
+            "id": 1,
+            "organization_id": 3,
+            "week_start": week,
+            "user_id": 29,
+            "day_of_week": 0,
+            "role": "sort",
+            "start_time": time(7, 0),
+            "end_time": time(15, 0),
+            "break_minutes": 0,
+        },
+        {
+            "id": 2,
+            "organization_id": 3,
+            "week_start": week,
+            "user_id": 10,
+            "day_of_week": 1,
+            "role": "fold",
+            "start_time": time(9, 0),
+            "end_time": time(16, 0),
+            "break_minutes": 0,
+        },
+    ]
+    workers = [
+        {
+            "user_id": 29,
+            "worker_profile_id": 1,
+            "display_name": "Paola",
+            "business_entity": "none",
+            "can_work_rinse": 0,
+            "can_work_drop_off": 0,
+            "can_work_both": 0,
+            "default_hourly_rate": 17,
+        },
+        {
+            "user_id": 10,
+            "worker_profile_id": 2,
+            "display_name": "Alice",
+            "business_entity": "veewash",
+            "can_work_rinse": 0,
+            "can_work_drop_off": 1,
+            "can_work_both": 0,
+            "default_hourly_rate": 18,
+        },
+    ]
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=workers
+    ), patch(
+        "backend.payroll_employer_affiliation._organization_slug", return_value="veewash"
+    ), patch(
+        "backend.weekly_schedule_display_settings.effective_weekly_schedule_view",
+        return_value={"can_edit_schedule": True},
+    ), patch(
+        "backend.business_entity.entity_scope_payload",
+        return_value={"organization_slug": "veewash"},
+    ):
+        payload = build_week_payload(conn, cursor, 3, week_start=week)
+    assert all(int(e["user_id"]) != 29 for e in payload["employees"])
+    assert all(int(e["user_id"]) != 29 for e in payload["entries"])
+    assert any(int(e["user_id"]) == 10 for e in payload["employees"])

@@ -8,7 +8,9 @@ import {
   CircularProgress,
   FormControlLabel,
   IconButton,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   Switch,
   Tab,
@@ -18,6 +20,7 @@ import {
   useTheme,
 } from "@mui/material";
 import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
+import PersonAddAlt1OutlinedIcon from "@mui/icons-material/PersonAddAlt1Outlined";
 import AttachMoneyOutlinedIcon from "@mui/icons-material/AttachMoneyOutlined";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
@@ -46,6 +49,7 @@ import WeeklyScheduleSummaryBar from "../components/weeklySchedule/WeeklySchedul
 import {
   ENTITY_TAB,
   ENTITY_TAB_LABELS,
+  addableEmployeesForEmployerTab,
   countEmployeesForEmployerTab,
   defaultShiftEmployerForTab,
   filterEmployeesByEmployerTab,
@@ -439,6 +443,17 @@ export default function WeeklySchedulePage() {
     return viewEmployees.filter((e) => !e.excluded);
   }, [viewEmployees, showExcluded]);
 
+  const addableEmployees = useMemo(
+    () =>
+      addableEmployeesForEmployerTab(
+        data?.employees || [],
+        employerTab,
+        data?.entries || [],
+        organizationSlug,
+      ),
+    [data?.employees, data?.entries, employerTab, organizationSlug],
+  );
+
   const excludedCount = useMemo(
     () => viewEmployees.filter((e) => e.excluded).length,
     [viewEmployees],
@@ -778,6 +793,33 @@ export default function WeeklySchedulePage() {
                   <ChevronRightIcon fontSize="small" />
                 </IconButton>
               </Stack>
+              {canEdit && addableEmployees.length ? (
+                <Select
+                  size="small"
+                  displayEmpty
+                  value=""
+                  onChange={(e) => {
+                    const uid = Number(e.target.value);
+                    if (!uid) return;
+                    openCreate(uid, visibleDayColumns[0] ?? 0);
+                  }}
+                  startAdornment={<PersonAddAlt1OutlinedIcon sx={{ fontSize: 16, mr: 0.5, color: "text.secondary" }} />}
+                  sx={{
+                    minWidth: 168,
+                    fontWeight: 700,
+                    fontSize: "0.78rem",
+                    height: 30,
+                    "& .MuiSelect-select": { py: 0.35 },
+                  }}
+                  renderValue={() => "Add employee"}
+                >
+                  {addableEmployees.map((emp) => (
+                    <MenuItem key={emp.user_id} value={emp.user_id}>
+                      {emp.display_name || `User #${emp.user_id}`}
+                    </MenuItem>
+                  ))}
+                </Select>
+              ) : null}
               {canEdit ? (
                 <Button
                   size="small"

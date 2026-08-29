@@ -400,3 +400,40 @@ def test_build_team_status_upcoming_uses_saturday_template_for_empty_sunday(
     assert payload["is_tomorrow"] is True
     assert payload["summary"]["staff_count"] == 1
     assert payload["entries"][0]["display_name"] == "Maria"
+
+
+def test_load_planned_day_entries_excludes_affiliation_none():
+    from datetime import date, time
+    from unittest.mock import MagicMock, patch
+
+    from backend.team_status import _load_planned_day_entries
+
+    conn = MagicMock()
+    entries = [
+        {
+            "user_id": 29,
+            "day_of_week": 5,
+            "roles": ["fold"],
+            "start_time": "09:00",
+            "end_time": "16:00",
+            "hours": 7.0,
+        },
+        {
+            "user_id": 10,
+            "day_of_week": 5,
+            "roles": ["sort"],
+            "start_time": "07:00",
+            "end_time": "15:00",
+            "hours": 8.0,
+        },
+    ]
+    with patch(
+        "backend.planned_weekly_schedule.list_week_entries", return_value=entries
+    ), patch(
+        "backend.planned_weekly_schedule.normalize_week_start", return_value=date(2026, 8, 23)
+    ), patch(
+        "backend.team_status._schedulable_user_ids", return_value={10}
+    ):
+        out = _load_planned_day_entries(conn, 3, date(2026, 8, 28))
+    assert len(out) == 1
+    assert out[0]["user_id"] == 10

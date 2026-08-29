@@ -371,6 +371,25 @@ def _format_time_hhmm(val: Any) -> str:
     return s
 
 
+def _schedulable_user_ids(conn, organization_id: int) -> set[int] | None:
+    """Workers whose Mapping affiliation is not ``none``. ``None`` = lookup failed."""
+    from backend.planned_weekly_schedule import schedulable_worker_user_ids
+
+    try:
+        return schedulable_worker_user_ids(conn, int(organization_id))
+    except Exception:
+        return None
+
+
+def _filter_planned_entries_for_schedulable(
+    entries: list[dict],
+    schedulable_uids: set[int] | None,
+) -> list[dict]:
+    if schedulable_uids is None:
+        return list(entries or [])
+    return [e for e in entries if int(e.get("user_id") or 0) in schedulable_uids]
+
+
 def _load_planned_day_entries(conn, organization_id: int, day: date) -> list[dict]:
     """Read-only planned schedule entries for one calendar day (no carry-forward writes)."""
     from backend.planned_weekly_schedule import list_week_entries, normalize_week_start
@@ -384,7 +403,11 @@ def _load_planned_day_entries(conn, organization_id: int, day: date) -> list[dic
     except Exception:
         return []
     dow = _planned_dow(day)
-    return [e for e in entries if int(e.get("day_of_week") or -1) == dow]
+    day_entries = [e for e in entries if int(e.get("day_of_week") or -1) == dow]
+    return _filter_planned_entries_for_schedulable(
+        day_entries,
+        _schedulable_user_ids(conn, organization_id),
+    )
 
 
 def _saturday_template_entries_for_upcoming_sunday(
@@ -979,7 +1002,8 @@ def build_team_status_week(
             entries = list_week_entries(c, oid, week_start=ws, conn=conn)
         except Exception:
             entries = []
-        for entry in entries:
+        schedulable_uids = _schedulable_user_ids(conn, oid)
+        for entry in _filter_planned_entries_for_schedulable(entries, schedulable_uids):
             entry_date = ws + timedelta(days=int(entry.get("day_of_week") or 0))
             if entry_date < week_start or entry_date > week_end:
                 continue
