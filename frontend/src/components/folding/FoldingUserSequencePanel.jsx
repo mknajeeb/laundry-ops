@@ -26,6 +26,7 @@ import {
   formatLbs,
 } from "../../utils/foldingFormat";
 import { foldingExceptionLabel } from "../../utils/foldingExceptionLabels";
+import { displayCustomerName } from "../../utils/displayCustomerName";
 
 const timeCellSx = { whiteSpace: "nowrap", fontSize: 12, py: 1 };
 const statusCellSx = { whiteSpace: "normal", maxWidth: 120, verticalAlign: "top" };
@@ -233,7 +234,7 @@ export default function FoldingUserSequencePanel({
                         : `${r.gap_minutes_from_previous}m idle`}
                   </TableCell>
                   <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>{r.bag_id}</TableCell>
-                  <TableCell>{r.customer || "—"}</TableCell>
+                  <TableCell>{displayCustomerName(r.customer) || "—"}</TableCell>
                   <TableCell align="right">{r.weight_lbs != null ? formatLbs(r.weight_lbs) : "—"}</TableCell>
                   <TableCell sx={statusCellSx}>
                     <Chip

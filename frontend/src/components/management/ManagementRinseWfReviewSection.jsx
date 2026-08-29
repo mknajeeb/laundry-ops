@@ -34,6 +34,7 @@ import {
   formatReviewReasonLabel,
   formatSplitStateLabel,
 } from "./reviewDisplayLabels";
+import { displayCustomerName } from "../../utils/displayCustomerName";
 
 function fmtTime(v) {
   if (!v) return null;
@@ -108,7 +109,7 @@ function SplitOrderReviewRow({
   return (
     <Box sx={{ py: 1.1 }} data-testid="split-order-review-row">
       <Typography sx={{ fontWeight: 800, fontSize: 14, color: "#0f172a" }}>
-        {bag.customer_name || "—"}
+        {displayCustomerName(bag.customer_name) || "—"}
       </Typography>
       <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.15 }} flexWrap="wrap">
         <ManagementCopyableId value={bag.bag_id} fontSize={13} fontWeight={700} />
@@ -448,7 +449,7 @@ export default function ManagementRinseWfReviewSection({
     ? listState.bags || []
     : (listState.bags || []).filter((bag) => {
         const bagId = String(bag.bag_id || "").toLowerCase();
-        const customer = String(bag.customer_name || "").toLowerCase();
+        const customer = displayCustomerName(bag.customer_name).toLowerCase();
         return bagId.includes(searchQ) || customer.includes(searchQ);
       });
 

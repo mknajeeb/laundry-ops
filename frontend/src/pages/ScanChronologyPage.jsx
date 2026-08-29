@@ -36,6 +36,7 @@ import ProcessFlowAvailabilityCalculator from "../components/ProcessFlowAvailabi
 import { todayRange, yesterdayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
 import { parseRinseBagScanEventsResponse } from "../utils/rinseTimeFormat";
+import { displayCustomerName } from "../utils/displayCustomerName";
 import {
   exportScanChronologyCsv,
   hasScanChronologyExportRows,
@@ -861,7 +862,7 @@ export default function ScanChronologyPage() {
                 </Button>
               </TableCell>
               <TableCell>{row.order_id ?? "—"}</TableCell>
-              <TableCell>{row.customer || "—"}</TableCell>
+              <TableCell>{displayCustomerName(row.customer) || "—"}</TableCell>
               <TableCell>{row.service_type || "—"}</TableCell>
               <TableCell>{formatDateTime(row.processed_completed_et) || "—"}</TableCell>
               <TableCell>

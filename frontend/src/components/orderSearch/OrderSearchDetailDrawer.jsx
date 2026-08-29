@@ -19,6 +19,7 @@ import { scanEventPurpose } from "../folding/FoldingScanEventsTable";
 import { formatRinseScanTime, formatSystemDateTime, sortRinseScanEvents } from "../../utils/rinseTimeFormat";
 import { formatDateTime, formatFoldingDuration, formatLbs, formatRate } from "../../utils/foldingFormat";
 import { foldingExceptionLabel } from "../../utils/foldingExceptionLabels";
+import { displayCustomerName } from "../../utils/displayCustomerName";
 
 function FieldRow({ label, value }) {
   return (
@@ -38,7 +39,7 @@ function SummaryTab({ detail }) {
   return (
     <Box>
       <FieldRow label="Bag ID" value={s.bag_id || detail?.bag_id} />
-      <FieldRow label="Customer" value={s.customer ?? s.name_clean} />
+      <FieldRow label="Customer" value={displayCustomerName(s.customer ?? s.name_clean)} />
       <FieldRow label="Completion status" value={s.completion_status} />
       <FieldRow label="Completion reason" value={s.completion_reason} />
       <FieldRow label="Completed at" value={formatDateTime(s.completed_at)} />

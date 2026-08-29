@@ -35,6 +35,7 @@ import ManagementCopyableId from "../components/management/ManagementCopyableId"
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import { groupOrdersByDeliveryDate } from "../components/management/hdDeliveryDateGroups";
 import { formatFriendlyEtWall } from "../utils/rinseTimeFormat";
+import { displayCustomerName } from "../utils/displayCustomerName";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 
 const STATUS_CHIPS = [
@@ -145,7 +146,7 @@ function OrderCard({ order, onOpen, onManage, onExclude, showExclude = false }) 
       workflowStatus === "washed" ||
       workflowStatus === "awaiting_fold");
   const customer =
-    String(order.customer_name || order.name_clean || order.customer || "").trim() ||
+    displayCustomerName(order.customer_name || order.name_clean || order.customer) ||
     "Customer unavailable";
   return (
     <Box
@@ -268,7 +269,8 @@ function OrderCard({ order, onOpen, onManage, onExclude, showExclude = false }) 
 
 function ExcludedOrderCard({ order, selected, onToggle, onRestore }) {
   const customer =
-    String(order.customer_name || order.name_clean || order.customer || "").trim() || "Unknown Customer";
+    displayCustomerName(order.customer_name || order.name_clean || order.customer) ||
+    "Unknown Customer";
   return (
     <Box
       sx={{
@@ -462,7 +464,7 @@ export default function ManagementRinseHdPage() {
     if (!q) return orders;
     return orders.filter((order) => {
       const bag = String(order.bag_id || "").toLowerCase();
-      const customer = String(
+      const customer = displayCustomerName(
         order.customer_name || order.name_clean || order.customer || "",
       ).toLowerCase();
       return bag.includes(q) || customer.includes(q);
@@ -871,10 +873,11 @@ export default function ManagementRinseHdPage() {
       <Dialog open={detailOpen} onClose={() => setDetailOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle sx={{ fontWeight: 800, pb: 1 }}>
           <Typography sx={{ fontSize: 18, fontWeight: 800, lineHeight: 1.2 }}>
-            {detail?.order?.customer_name ||
-              detail?.order?.name_clean ||
-              detail?.order?.customer ||
-              "HD Order"}
+            {displayCustomerName(
+              detail?.order?.customer_name ||
+                detail?.order?.name_clean ||
+                detail?.order?.customer
+            ) || "HD Order"}
           </Typography>
           <Box sx={{ mt: 0.5 }}>
             <ManagementCopyableId

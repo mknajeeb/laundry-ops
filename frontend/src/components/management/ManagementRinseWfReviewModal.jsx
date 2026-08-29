@@ -23,6 +23,7 @@ import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import EditBagPanel from "../shift/EditBagPanel";
 import ManagementCopyableId from "./ManagementCopyableId";
 import { formatReviewApiError } from "./reviewDisplayLabels";
+import { displayCustomerName } from "../../utils/displayCustomerName";
 
 function fmtTime(v) {
   if (!v) return "—";
@@ -310,7 +311,7 @@ export default function ManagementRinseWfReviewModal({
                 sx={{ mt: 0.25 }}
               />
               <Typography sx={{ fontSize: 13, color: "#64748b", mt: 0.25 }}>
-                {seedBag?.customer_name || "Loading…"}
+                {displayCustomerName(seedBag?.customer_name) || "Loading…"}
                 {seedBag?.rush_flag ? ` · ${seedBag.rush_flag}` : ""}
               </Typography>
             </Box>

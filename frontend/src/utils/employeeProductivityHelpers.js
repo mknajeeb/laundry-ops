@@ -285,8 +285,13 @@ export function fmtDurationMinutes(minutes) {
   return `${mins}m`;
 }
 
+import { displayCustomerName as formatCustomerNameForDisplay } from "./displayCustomerName";
+
+/** Resolve + format customer name from a bag/order row (display only). */
 export function displayCustomerName(bag) {
-  const name = String(bag?.customer_name || bag?.name_clean || bag?.portal_customer_name || "").trim();
+  const name = formatCustomerNameForDisplay(
+    bag?.customer_name || bag?.name_clean || bag?.portal_customer_name || ""
+  );
   if (!name || name === "—" || name === "-" || name === "–" || name === "null") {
     return "Unknown Customer";
   }

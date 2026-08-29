@@ -1,4 +1,5 @@
 /** Group HD orders by delivery date for compact operational lists. */
+import { displayCustomerName } from "../../utils/displayCustomerName";
 
 function todayEtIso() {
   try {
@@ -51,8 +52,8 @@ export function groupOrdersByDeliveryDate(orders = [], today = todayEtIso()) {
     label: friendlyDeliveryGroupLabel(deliveryDateEt, today),
     count: items.length,
     orders: items.sort((a, b) =>
-      String(a.customer_name || a.bag_id || "").localeCompare(
-        String(b.customer_name || b.bag_id || ""),
+      String(displayCustomerName(a.customer_name) || a.bag_id || "").localeCompare(
+        String(displayCustomerName(b.customer_name) || b.bag_id || ""),
       ),
     ),
   }));
@@ -62,8 +63,8 @@ export function groupOrdersByDeliveryDate(orders = [], today = todayEtIso()) {
       label: "NO DELIVERY DATE",
       count: noDate.length,
       orders: noDate.sort((a, b) =>
-        String(a.customer_name || a.bag_id || "").localeCompare(
-          String(b.customer_name || b.bag_id || ""),
+        String(displayCustomerName(a.customer_name) || a.bag_id || "").localeCompare(
+          String(displayCustomerName(b.customer_name) || b.bag_id || ""),
         ),
       ),
     });

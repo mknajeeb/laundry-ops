@@ -17,6 +17,7 @@ import {
 } from "@mui/material";
 import { getRinseOrderArchiveDetail, searchRinseOrders } from "../api";
 import OrderSearchDetailDrawer from "../components/orderSearch/OrderSearchDetailDrawer";
+import { displayCustomerName } from "../utils/displayCustomerName";
 
 const LIFECYCLE_CHIPS = [
   { key: "completed", label: "Completed", param: { lifecycle_filter: "completed" }, color: "success" },
@@ -252,7 +253,7 @@ export default function RinseOrderSearchPage() {
             {rows.map((r) => (
               <TableRow key={r.bag_id} hover selected={selectedBag === r.bag_id}>
                 <TableCell>{r.bag_id}</TableCell>
-                <TableCell>{r.name_clean || "—"}</TableCell>
+                <TableCell>{displayCustomerName(r.name_clean) || "—"}</TableCell>
                 <TableCell>{r.date_clean || "—"}</TableCell>
                 <TableCell>{r.completion_status || "—"}</TableCell>
                 <TableCell>

@@ -17,6 +17,7 @@ import PerformanceDetailDrawer, {
 } from "./performance/PerformanceDetailDrawer";
 import { fmtCount } from "./performance/performanceFormat";
 import { PERF_TYPE, PERF_UI, PerfSeparator, perfKpiStripSx, perfRowSx } from "./performance/performanceTokens";
+import { displayCustomerName } from "../../utils/displayCustomerName";
 
 const HD_SORT_OPTIONS = [
   { value: "output", label: "Most output" },
@@ -182,7 +183,7 @@ function HdEmployeeDetailDrawer({ open, onClose, employee, dateEt }) {
               (emp?.wash_bags || []).map((row) => (
                 <Box key={`w-${row.bag_id}`} sx={{ py: 0.65, borderBottom: `1px solid ${PERF_UI.rowBorder}` }}>
                   <Typography sx={{ ...PERF_TYPE.name, fontSize: 13 }}>
-                    {row.customer_name || "Customer unavailable"}
+                    {displayCustomerName(row.customer_name) || "Customer unavailable"}
                   </Typography>
                   <Typography sx={{ mt: 0.1, fontSize: 13, color: PERF_UI.secondary, fontWeight: 400 }}>
                     {row.bag_id}
@@ -204,7 +205,7 @@ function HdEmployeeDetailDrawer({ open, onClose, employee, dateEt }) {
               (emp?.fold_bags || []).map((row) => (
                 <Box key={`f-${row.bag_id}`} sx={{ py: 0.65, borderBottom: `1px solid ${PERF_UI.rowBorder}` }}>
                   <Typography sx={{ ...PERF_TYPE.name, fontSize: 13 }}>
-                    {row.customer_name || "Customer unavailable"}
+                    {displayCustomerName(row.customer_name) || "Customer unavailable"}
                   </Typography>
                   <Typography sx={{ mt: 0.1, fontSize: 13, color: PERF_UI.secondary, fontWeight: 400 }}>
                     {row.bag_id}

@@ -26,6 +26,7 @@ import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { CompactEtDateTimeField } from "../PayrollDateTimeField";
 import { authoritativeEvidencePre, parseWeightInput } from "../shift/editBagHelpers";
 import ManagementCopyableId from "./ManagementCopyableId";
+import { displayCustomerName } from "../../utils/displayCustomerName";
 import {
   bagBulkReviewUnresolved,
   bagHasMissingPortal,
@@ -762,7 +763,7 @@ export default function ManagementRinseWfReviewDrawerRow({
       onClick={() => onToggle?.(bag.bag_id)}
     >
       <Typography sx={{ fontWeight: 800, fontSize: 14, color: "#0f172a" }}>
-        {merged.customer_name || "Customer unavailable"}
+        {displayCustomerName(merged.customer_name) || "Customer unavailable"}
       </Typography>
       <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.15 }} flexWrap="wrap">
         <ManagementCopyableId value={merged.bag_id} fontSize={13} fontWeight={700} />

@@ -35,6 +35,7 @@ import PerformanceDetailDrawer, {
 } from "./performance/PerformanceDetailDrawer";
 import { PERF_TYPE, PERF_UI, PerfSeparator, perfKpiCellSx, perfKpiGridSx, perfKpiInlineSx, perfKpiStripSx, perfRowSx } from "./performance/performanceTokens";
 import { fmtCount, fmtDelta, fmtHours, fmtLbs, fmtRate } from "./performance/performanceFormat";
+import { displayCustomerName } from "../../utils/displayCustomerName";
 
 const WF_SORT_OPTIONS = [
   { value: "output", label: "Most orders" },
@@ -261,7 +262,7 @@ function OrderRow({
         ) : null}
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <Typography sx={{ fontSize: 14, fontWeight: 600, color: PERF_UI.navy }}>
-            {order.customer_name || "Customer unavailable"}
+            {displayCustomerName(order.customer_name) || "Customer unavailable"}
           </Typography>
           <Typography sx={{ mt: 0.15, fontSize: 13, color: PERF_UI.secondary, fontWeight: 400 }}>
             {order.bag_id}
