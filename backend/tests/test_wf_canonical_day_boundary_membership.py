@@ -99,8 +99,13 @@ def _patch_canonical_seeds(
     terminal=None,
     completed_map=None,
     present_for_absence=None,
+    shift_date_et=None,
 ):
     from contextlib import contextmanager
+
+    # Treat the projected day as business_today so historical-open freeze
+    # does not strip same-day presence/entry in unit fixtures.
+    as_of = shift_date_et or AUG25
 
     @contextmanager
     def _ctx():
@@ -136,6 +141,10 @@ def _patch_canonical_seeds(
             patch(
                 "backend.rinse_wf_canonical_workload._authoritative_hd_bag_ids",
                 return_value=set(),
+            ),
+            patch(
+                "backend.business_time.business_today",
+                return_value=as_of,
             ),
             _enrich_patches(),
         ):

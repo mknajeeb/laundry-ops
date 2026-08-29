@@ -90,9 +90,11 @@ def _wl_patches(
     )
 
 
-def _run(cur=None, **kwargs):
+def _run(cur=None, *, as_of_today=None, **kwargs):
+    """Derive workload for D. Default: treat D as business_today (not historical)."""
     cur = cur or MagicMock()
     patches = _wl_patches(**kwargs)
+    today = as_of_today if as_of_today is not None else D
     with (
         patches[0],
         patches[1],
@@ -102,6 +104,10 @@ def _run(cur=None, **kwargs):
         patches[5],
         patches[6],
         patches[7],
+        patch(
+            "backend.business_time.business_today",
+            return_value=today,
+        ),
     ):
         return get_canonical_wf_workload(cur, ORG, D)
 
@@ -352,4 +358,54 @@ def test_authoritative_hd_intersection_empty_when_hd_seeded():
         portal_hd={hd},
     )
     assert wl["bag_ids"] == frozenset()
+    assert_canonical_workload_invariants(wl)
+
+
+def test_historical_reproject_does_not_admit_today_open_via_presence():
+    """Aug29 open membership must not write backward onto historical Aug28.
+
+    Presence/entry open bags that are not D-1 carryover are stripped when
+    date_et < business_today(). Completed-on-D and prior_open carryover remain.
+    """
+    wl = _run(
+        prior_open={"CARRY1"},
+        prior_meta={"CARRY1": {"effective_status": "pending", "review_reason_codes": []}},
+        presence={"OPEN_TODAY_A", "OPEN_TODAY_B", "CARRY1", "DONE28"},
+        entry={"OPEN_TODAY_A", "OPEN_TODAY_B"},
+        registry_today={"DONE28"},
+        completed_map={
+            "DONE28": {
+                "completion_date": D,
+                "completion_at": datetime(2026, 8, 28, 12, 0),
+            }
+        },
+        present_for_absence={"CARRY1"},
+        absence_meta={"absence_allowed": True},
+        as_of_today=date(2026, 8, 29),
+    )
+
+    assert "DONE28" in wl["completed"]
+    assert "CARRY1" in wl["bag_ids"]
+    assert "OPEN_TODAY_A" not in wl["bag_ids"]
+    assert "OPEN_TODAY_B" not in wl["bag_ids"]
+    assert_canonical_workload_invariants(wl)
+
+
+def test_missing_cannot_override_hd_exclusion():
+    """Missing/review path must not keep authoritative HD in WF membership."""
+    hd = "7M07HHS5BU"
+    wl = _run(
+        prior_open={hd},
+        prior_meta={
+            hd: {
+                "effective_status": "review_required",
+                "review_reason_codes": [REVIEW_MISSING_FROM_PORTAL],
+            }
+        },
+        authoritative_hd={hd},
+        present_for_absence=set(),
+        absence_meta={"absence_allowed": True},
+    )
+    assert hd not in wl["bag_ids"]
+    assert hd not in wl["missing_from_portal"]
     assert_canonical_workload_invariants(wl)

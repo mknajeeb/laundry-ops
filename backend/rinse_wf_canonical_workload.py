@@ -267,10 +267,13 @@ def _authoritative_hd_bag_ids(
 ) -> set[str]:
     """Authoritative Rinse HD bags among ``bag_ids`` — must never join WF.
 
-    Authority (any one is sufficient):
+    Authority (any one is sufficient) for *this* occurrence — not a permanent
+    bag-level blacklist:
       - registry ``service_type = HD``
       - same-day portal scrape labeled HD
       - durable ``hd_day_bag_production`` row for ET date D
+      - current ticket presence labeled HD
+    Missing/review must never override this classification.
     """
     ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
     if not ids:
@@ -296,6 +299,28 @@ def _authoritative_hd_bag_ids(
                 continue
             if str(row.get("service_type") or "").strip().upper() == "HD":
                 out.add(nb)
+
+    if table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        chunk = 200
+        for i in range(0, len(ids), chunk):
+            part = ids[i : i + chunk]
+            ph = ",".join(["%s"] * len(part))
+            cursor.execute(
+                f"""
+                SELECT bag_id
+                FROM rinse_cleaner_ticket_presence
+                WHERE organization_id = %s
+                  AND bag_id IN ({ph})
+                  AND UPPER(TRIM(COALESCE(service_type, ''))) = 'HD'
+                """,
+                (org, *part),
+            )
+            for row in cursor.fetchall() or []:
+                bid = normalize_bag_id(
+                    row.get("bag_id") if isinstance(row, dict) else row[0]
+                )
+                if bid:
+                    out.add(bid)
 
     if table_exists(cursor, "hd_day_bag_production"):
         chunk = 200
@@ -363,9 +388,10 @@ def _terminal_before_date(
 ) -> set[str]:
     """Bags whose *current* order occurrence completed strictly before D.
 
-    A prior completed order_instance does NOT make the physical bag ineligible
-    when a later authoritative instance covers date_et (cycle_anchor or
-    completion on D). Completed instances stay terminal; bag IDs do not.
+    Carve-out requires an order_instance that *covers* D under the strict
+    covering rule (completed-on-D, or open instance anchored on/overnight into
+    D). A prior completion plus a malformed later cycle_anchor alone does not
+    reopen the bag. Stale ACTIVE / Missing / EDD alone never carve out.
     """
     from backend.rinse_order_instances import bags_with_order_instance_covering_date
     from backend.rinse_veewash_day_membership import (
@@ -559,8 +585,19 @@ def get_canonical_wf_workload(
 
     open_bags = frozenset(b for b in candidates if b not in completed)
 
-    carryover = frozenset(b for b in prior_open if b in candidates)
-    new_today = frozenset(b for b in candidates if b not in prior_open)
+    # Historical day freeze: never write current-day open ACTIVE/REVIEW bags
+    # backward onto D < business_today merely because they are still open.
+    # Historical D may keep completed-on-D and legitimate D-1 unfinished
+    # carryover; presence/entry alone cannot retroactively grow open membership.
+    from backend.business_time import business_today
+
+    if date_et < business_today():
+        open_bags = frozenset(b for b in open_bags if b in prior_open)
+
+    carryover = frozenset(b for b in prior_open if b in candidates and b in (completed | open_bags))
+    new_today = frozenset(
+        b for b in (completed | open_bags) if b not in prior_open
+    )
 
     present_ids, absence_meta = _latest_absence_capable_present_ids(
         cursor, org, date_et

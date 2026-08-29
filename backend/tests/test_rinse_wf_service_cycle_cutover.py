@@ -357,79 +357,118 @@ def test_dedupe_canonical_cycle_rows_prefers_completed():
 
 
 def test_canonical_workload_shell_populates_completed_on_date():
+    from contextlib import ExitStack
+
     from backend.rinse_wf_service_cycle_compat import terminal_project_canonical_wf_day_snapshot
 
     mock_cursor = MagicMock()
     day = date(2026, 8, 23)
-    with (
-        patch("backend.rinse_wf_service_cycle_compat.ensure_wf_service_cycles_table"),
-        patch("backend.rinse_wf_service_cycle_compat.ensure_shift_monitor_day_tables"),
-        patch("backend.rinse_wf_service_cycle_compat._prior_wf_day_bags_by_id", return_value={}),
-        patch("backend.rinse_wf_service_cycle_compat._preserved_hd_bag_dicts", return_value=[]),
-        patch("backend.rinse_wf_service_cycle_compat.get_day_record", return_value=None),
-        patch("backend.rinse_wf_service_cycle_compat.get_step1_activation_date", return_value=date(2026, 7, 23)),
-        patch(
-            "backend.rinse_wf_service_cycle.reconcile_stale_active_wf_cycles_from_canonical_completion",
-            return_value={"closed": 0, "bag_ids": []},
-        ),
-        patch(
-            "backend.rinse_wf_service_cycle_compat.reporting_counts_for_date",
-            return_value={
-                "admitted_on_date": 2,
-                "completed_on_date": 1,
-                "opening_backlog": 0,
-                "active_now": 1,
-            },
-        ),
-        patch(
-            "backend.rinse_wf_canonical_workload._prior_day_unfinished_wf_ids",
-            return_value=(set(), {}),
-        ),
-        patch(
-            "backend.rinse_wf_canonical_workload._same_day_presence_wf_ids",
-            return_value=({"BAGDONE", "BAGPEND"}, {}, None, set()),
-        ),
-        patch(
-            "backend.rinse_wf_canonical_workload._discover_same_day_entry_wf_ids",
-            return_value=set(),
-        ),
-        patch(
-            "backend.rinse_wf_canonical_workload._registry_wf_completed_on_date",
-            return_value=set(),
-        ),
-        patch(
-            "backend.rinse_wf_canonical_workload._terminal_before_date",
-            return_value=set(),
-        ),
-        patch(
-            "backend.rinse_wf_canonical_workload._completion_date_on_d",
-            return_value={
-                "BAGDONE": {
-                    "completion_date": day,
-                    "completion_at": datetime(2026, 8, 23, 14, 0),
-                    "effective_status": "completed",
-                }
-            },
-        ),
-        patch(
-            "backend.rinse_wf_canonical_workload._latest_absence_capable_present_ids",
-            return_value=(None, {"absence_allowed": False}),
-        ),
-        patch(
-            "backend.rinse_wf_canonical_workload._authoritative_hd_bag_ids",
-            return_value=set(),
-        ),
-        patch("backend.rinse_day_bag_completion_projection.enrich_bags_completion_from_scans"),
-        patch(
-            "backend.rinse_day_bag_completion_projection.apply_normalized_completion_fields",
-            side_effect=lambda b: b,
-        ),
-        patch("backend.rinse_veewash_review.load_bag_weight_map", return_value={}),
-        patch(
-            "backend.rinse_wf_service_cycle_compat.persist_day_snapshot",
-            return_value={"ok": True},
-        ) as persist,
-    ):
+    with ExitStack() as stack:
+        stack.enter_context(patch("backend.rinse_wf_service_cycle_compat.ensure_wf_service_cycles_table"))
+        stack.enter_context(patch("backend.rinse_wf_service_cycle_compat.ensure_shift_monitor_day_tables"))
+        stack.enter_context(
+            patch("backend.rinse_wf_service_cycle_compat._prior_wf_day_bags_by_id", return_value={})
+        )
+        stack.enter_context(
+            patch("backend.rinse_wf_service_cycle_compat._preserved_hd_bag_dicts", return_value=[])
+        )
+        stack.enter_context(
+            patch("backend.rinse_wf_service_cycle_compat.get_day_record", return_value=None)
+        )
+        stack.enter_context(
+            patch(
+                "backend.rinse_wf_service_cycle_compat.get_step1_activation_date",
+                return_value=date(2026, 7, 23),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "backend.rinse_wf_service_cycle.reconcile_stale_active_wf_cycles_from_canonical_completion",
+                return_value={"closed": 0, "bag_ids": []},
+            )
+        )
+        stack.enter_context(
+            patch(
+                "backend.rinse_wf_service_cycle_compat.reporting_counts_for_date",
+                return_value={
+                    "admitted_on_date": 2,
+                    "completed_on_date": 1,
+                    "opening_backlog": 0,
+                    "active_now": 1,
+                },
+            )
+        )
+        stack.enter_context(
+            patch(
+                "backend.rinse_wf_canonical_workload._prior_day_unfinished_wf_ids",
+                return_value=(set(), {}),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "backend.rinse_wf_canonical_workload._same_day_presence_wf_ids",
+                return_value=({"BAGDONE", "BAGPEND"}, {}, None, set()),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "backend.rinse_wf_canonical_workload._discover_same_day_entry_wf_ids",
+                return_value=set(),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "backend.rinse_wf_canonical_workload._registry_wf_completed_on_date",
+                return_value=set(),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "backend.rinse_wf_canonical_workload._terminal_before_date",
+                return_value=set(),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "backend.rinse_wf_canonical_workload._completion_date_on_d",
+                return_value={
+                    "BAGDONE": {
+                        "completion_date": day,
+                        "completion_at": datetime(2026, 8, 23, 14, 0),
+                        "effective_status": "completed",
+                    }
+                },
+            )
+        )
+        stack.enter_context(
+            patch(
+                "backend.rinse_wf_canonical_workload._latest_absence_capable_present_ids",
+                return_value=(None, {"absence_allowed": False}),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "backend.rinse_wf_canonical_workload._authoritative_hd_bag_ids",
+                return_value=set(),
+            )
+        )
+        stack.enter_context(patch("backend.business_time.business_today", return_value=day))
+        stack.enter_context(
+            patch("backend.rinse_day_bag_completion_projection.enrich_bags_completion_from_scans")
+        )
+        stack.enter_context(
+            patch(
+                "backend.rinse_day_bag_completion_projection.apply_normalized_completion_fields",
+                side_effect=lambda b: b,
+            )
+        )
+        stack.enter_context(patch("backend.rinse_veewash_review.load_bag_weight_map", return_value={}))
+        persist = stack.enter_context(
+            patch(
+                "backend.rinse_wf_service_cycle_compat.persist_day_snapshot",
+                return_value={"ok": True},
+            )
+        )
         terminal_project_canonical_wf_day_snapshot(mock_cursor, 3, day)
     workload = persist.call_args.kwargs.get("workload") or persist.call_args[1].get("workload")
     assert "BAGDONE" in workload["completed_on_date"]
