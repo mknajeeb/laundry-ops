@@ -368,6 +368,194 @@ def test_completed_bag_seen_again_on_portal_still_excluded():
     assert bags == []
 
 
+@patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot")
+@patch("backend.rinse_wf_service_cycle_compat.build_step1_headline_summary")
+@patch("backend.rinse_wf_service_cycle_compat._preserved_hd_bag_dicts", return_value=[])
+@patch("backend.rinse_wf_service_cycle_compat._prior_wf_day_bags_by_id", return_value={})
+@patch("backend.rinse_wf_service_cycle.reporting_counts_for_date")
+@patch("backend.rinse_wf_service_cycle_compat.ensure_wf_service_cycles_table")
+@patch("backend.rinse_wf_service_cycle_compat.ensure_shift_monitor_day_tables")
+def test_terminal_project_derives_before_reconcile_and_freezes_membership(
+    _day_tbl,
+    _cyc_tbl,
+    counts,
+    _prior,
+    _hd,
+    headline,
+    persist,
+):
+    """Projection must freeze get_canonical set before cycle reconcile mutates state."""
+    counts.return_value = {
+        "admitted_on_date": 1,
+        "completed_on_date": 0,
+        "opening_backlog": 0,
+        "active_now": 1,
+    }
+    headline.return_value = {
+        "completed": 0,
+        "pending": 1,
+        "review_required": 0,
+        "segments": {"wf": {"completed": 0, "pending": 1, "review_required": 0}},
+    }
+    persist.return_value = {"ok": True}
+    call_order: list[str] = []
+
+    def _derive(cursor, org, day):
+        call_order.append("derive")
+        return {
+            "bag_ids": frozenset({"FRSH001"}),
+            "completed": frozenset(),
+            "pending": frozenset({"FRSH001"}),
+            "review": frozenset(),
+            "missing_from_portal": frozenset(),
+            "historical_completed_in_workload": frozenset(),
+            "new_today": frozenset({"FRSH001"}),
+            "carryover": frozenset(),
+            "bag_meta": {
+                "FRSH001": {
+                    "bag_id": "FRSH001",
+                    "service_type": "WF",
+                    "effective_status": "pending",
+                    "new_or_carryover": "new_today",
+                    "review_reason_codes": [],
+                }
+            },
+            "completion_by_bag": {},
+            "prior_meta": {},
+            "counts": {"workload": 1, "completed": 0, "pending": 1, "review": 0},
+            "arithmetic_ok": True,
+            "invariants_ok": True,
+        }
+
+    def _reconcile(cursor, org, day):
+        call_order.append("reconcile")
+        return {"closed": 0, "bag_ids": []}
+
+    def _persist(*args, **kwargs):
+        call_order.append("persist")
+        wl = kwargs.get("workload") or {}
+        assert wl.get("canonical_membership_frozen") is True
+        assert set(wl.get("canonical_bag_ids") or []) == {"FRSH001"}
+        return {"ok": True}
+
+    persist.side_effect = _persist
+    cur = MagicMock()
+    with (
+        patch("backend.rinse_wf_service_cycle_compat.get_day_record", return_value=None),
+        patch(
+            "backend.rinse_wf_service_cycle_compat.get_step1_activation_date",
+            return_value=date(2026, 7, 1),
+        ),
+        patch(
+            "backend.rinse_wf_canonical_workload.get_canonical_wf_workload",
+            side_effect=_derive,
+        ),
+        patch(
+            "backend.rinse_wf_canonical_workload.canonical_wf_day_bag_rows",
+            side_effect=lambda *a, **k: [
+                {
+                    "bag_id": "FRSH001",
+                    "service_type": "WF",
+                    "effective_status": "pending",
+                    "new_or_carryover": "new_today",
+                    "review_reason_codes": [],
+                    "bag_snapshot": {},
+                }
+            ],
+        ),
+        patch(
+            "backend.rinse_wf_canonical_workload.assert_canonical_workload_invariants",
+            return_value=None,
+        ),
+        patch(
+            "backend.rinse_wf_service_cycle.reconcile_stale_active_wf_cycles_from_canonical_completion",
+            side_effect=_reconcile,
+        ),
+    ):
+        for _ in range(10):
+            call_order.clear()
+            terminal_project_canonical_wf_day_snapshot(cur, ORG, AUG25)
+            assert call_order == ["derive", "persist", "reconcile"]
+
+
+@patch(
+    "backend.rinse_veewash_shift_day._sync_day_header_from_persisted_bags",
+    return_value={"headline": {}, "status_buckets": {}},
+)
+@patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=[])
+@patch("backend.rinse_veewash_shift_day.get_day_record", return_value=None)
+@patch("backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables")
+@patch(
+    "backend.rinse_day_bag_completion_projection.enrich_bags_completion_from_scans",
+    return_value=None,
+)
+@patch(
+    "backend.rinse_day_bag_completion_projection.apply_normalized_completion_fields",
+    side_effect=lambda b: b,
+)
+@patch(
+    "backend.rinse_step1_productivity_fast.project_productivity_fields_for_day_bag",
+    return_value={},
+)
+@patch("backend.rinse_wf_service_cycle.is_wf_canonical_lifecycle_enabled", return_value=True)
+@patch(
+    "backend.rinse_wf_service_cycle_compat.resolve_canonical_wf_day_bag_rows_for_persist",
+)
+def test_persist_frozen_canonical_membership_does_not_reresolve(
+    mock_resolve,
+    _canonical_enabled,
+    _prod,
+    _apply,
+    _enrich,
+    _ensure,
+    _get_day,
+    _load,
+    _sync,
+):
+    """Frozen workload from terminal_project must not call resolve again."""
+    from backend.rinse_veewash_shift_day import persist_day_snapshot
+
+    fresh = {
+        "bag_id": "FRSH001",
+        "service_type": "WF",
+        "effective_status": "pending",
+        "review_reason_codes": [],
+        "new_or_carryover": "new_today",
+        "bag_snapshot": {},
+    }
+    mock_resolve.return_value = [
+        {**fresh, "bag_id": "SHOULD_NOT_APPEAR"},
+    ]
+    cursor = MagicMock()
+    wl = {
+        "rows": [fresh],
+        "new_today": ["FRSH001"],
+        "carryover": [],
+        "completed_on_date": [],
+        "pending_end_of_date": ["FRSH001"],
+        "review_required": [],
+        "from_snapshot": True,
+        "canonical_membership_frozen": True,
+        "canonical_bag_ids": ["FRSH001"],
+    }
+    persist_day_snapshot(
+        cursor,
+        ORG,
+        AUG25,
+        workload=wl,
+        summary={"membership": {"canonical_source": True}},
+        force=True,
+    )
+    mock_resolve.assert_not_called()
+    upsert_calls = [
+        c
+        for c in cursor.execute.call_args_list
+        if c[0] and "INSERT INTO rinse_shift_monitor_day_bags" in str(c[0][0])
+    ]
+    persisted_ids = sorted({c[0][1][2] for c in upsert_calls})
+    assert persisted_ids == ["FRSH001"]
+
+
 def test_active_null_completed_at_still_excluded():
     # Stale ACTIVE cycle alone (no legitimate seed) cannot admit.
     with _patch_canonical_seeds():
@@ -903,15 +1091,13 @@ def test_historical_backfill_uses_terminal_canonical_not_additive_membership(
 @patch("backend.rinse_veewash_shift_day.summary_from_day_record")
 @patch("backend.rinse_veewash_shift_day.get_day_record")
 @patch("backend.rinse_wf_service_cycle.is_wf_canonical_lifecycle_enabled", return_value=True)
-@patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot")
-@patch("backend.rinse_wf_service_cycle_compat.resolve_canonical_wf_day_bag_rows_for_persist")
+@patch("backend.rinse_wf_service_cycle_compat.terminal_project_canonical_wf_day_snapshot")
 @patch("backend.rinse_veewash_workload.build_veewash_daily_workload_from_membership")
 @patch("backend.rinse_veewash_shift_day.today_et", return_value=AUG27)
 def test_next_day_sync_does_not_resurrect_historical_completed_on_aug26(
     mock_today,
     mock_membership,
-    mock_resolve,
-    mock_persist,
+    mock_terminal,
     _canonical_enabled,
     mock_get_day,
     mock_summary,
@@ -922,9 +1108,10 @@ def test_next_day_sync_does_not_resurrect_historical_completed_on_aug26(
     """Clean Aug 26 canonical snapshot stays 126 after next-day sync/rebuild."""
     from backend.rinse_veewash_shift_day import backfill_day_from_live
 
-    canonical_rows = [{"bag_id": f"LIVE{i}", "service_type": "WF"} for i in range(_CLEAN_AUG26_WORKLOAD)]
-    mock_resolve.return_value = canonical_rows
-    mock_persist.return_value = {"ok": True}
+    mock_terminal.return_value = {
+        "ok": True,
+        "bag_count": _CLEAN_AUG26_WORKLOAD,
+    }
     mock_get_day.return_value = _clean_aug26_day_record()
     mock_summary.return_value = _clean_aug26_day_record()["headline"]
 
@@ -939,5 +1126,263 @@ def test_next_day_sync_does_not_resurrect_historical_completed_on_aug26(
     assert out.get("historical_canonical_reproject") is True
     assert out.get("bag_count") == _CLEAN_AUG26_WORKLOAD
     mock_membership.assert_not_called()
-    mock_resolve.assert_called_once()
-    assert len(mock_resolve.return_value) == _CLEAN_AUG26_WORKLOAD
+    mock_terminal.assert_called_once()
+
+
+def test_preserved_hd_excludes_canonical_wf_bag_ids():
+    """Stale HD labels for bags in desired WF set must not be re-injected."""
+    from backend.rinse_wf_service_cycle_compat import _preserved_hd_bag_dicts
+
+    prior_rows = [
+        {
+            "bag_id": "WFHD001",
+            "service_type": "HD",
+            "effective_status": "pending",
+            "review_reason_codes": [],
+            "bag_snapshot": {},
+        },
+        {
+            "bag_id": "HDONLY1",
+            "service_type": "HD",
+            "effective_status": "pending",
+            "review_reason_codes": [],
+            "bag_snapshot": {},
+        },
+    ]
+    with patch(
+        "backend.rinse_wf_service_cycle_compat.load_day_bags",
+        return_value=prior_rows,
+    ):
+        out = _preserved_hd_bag_dicts(
+            MagicMock(), ORG, AUG28, exclude_bag_ids={"WFHD001"}
+        )
+    assert [b["bag_id"] for b in out] == ["HDONLY1"]
+
+
+@patch(
+    "backend.rinse_veewash_shift_day._sync_day_header_from_persisted_bags",
+    return_value={"headline": {}, "status_buckets": {}},
+)
+@patch("backend.rinse_veewash_shift_day.load_day_bags", return_value=[])
+@patch("backend.rinse_veewash_shift_day.get_day_record", return_value=None)
+@patch("backend.rinse_veewash_shift_day.ensure_shift_monitor_day_tables")
+@patch(
+    "backend.rinse_day_bag_completion_projection.enrich_bags_completion_from_scans",
+    return_value=None,
+)
+@patch(
+    "backend.rinse_day_bag_completion_projection.apply_normalized_completion_fields",
+    side_effect=lambda b: b,
+)
+@patch(
+    "backend.rinse_step1_productivity_fast.project_productivity_fields_for_day_bag",
+    return_value={},
+)
+@patch("backend.rinse_wf_service_cycle.is_wf_canonical_lifecycle_enabled", return_value=True)
+@patch(
+    "backend.rinse_wf_service_cycle_compat.apply_wf_selected_day_boundary_guard",
+    side_effect=lambda _c, _o, _d, bags: bags,
+)
+@patch("backend.rinse_wf_service_cycle_compat.wf_terminal_ineligible_bag_ids", return_value=set())
+@patch(
+    "backend.rinse_wf_service_cycle_compat.resolve_canonical_wf_day_bag_rows_for_persist",
+)
+def test_persist_wf_wins_over_colliding_hd_label(
+    mock_resolve,
+    _ineligible,
+    _guard,
+    _canonical_enabled,
+    _prod,
+    _apply,
+    _enrich,
+    _ensure,
+    _get_day,
+    _load,
+    _sync,
+):
+    """Frozen WF row must not be overwritten by a duplicate HD bag_id on upsert."""
+    from backend.rinse_veewash_shift_day import persist_day_snapshot
+
+    mock_resolve.return_value = []
+    cursor = MagicMock()
+    wl = {
+        "rows": [
+            {
+                "bag_id": "2QFDTDTULL",
+                "service_type": "WF",
+                "effective_status": "pending",
+                "review_reason_codes": [],
+                "new_or_carryover": "new_today",
+                "bag_snapshot": {"service_type": "WF"},
+            },
+            {
+                "bag_id": "2QFDTDTULL",
+                "service_type": "HD",
+                "effective_status": "pending",
+                "review_reason_codes": [],
+                "new_or_carryover": "new_today",
+                "bag_snapshot": {"service_type": "HD"},
+            },
+            {
+                "bag_id": "HDONLY1",
+                "service_type": "HD",
+                "effective_status": "pending",
+                "review_reason_codes": [],
+                "new_or_carryover": "new_today",
+                "bag_snapshot": {"service_type": "HD"},
+            },
+        ],
+        "new_today": ["2QFDTDTULL", "HDONLY1"],
+        "carryover": [],
+        "completed_on_date": [],
+        "pending_end_of_date": ["2QFDTDTULL", "HDONLY1"],
+        "review_required": [],
+        "from_snapshot": True,
+        "canonical_membership_frozen": True,
+        "canonical_bag_ids": ["2QFDTDTULL"],
+    }
+    persist_day_snapshot(
+        cursor,
+        ORG,
+        AUG28,
+        workload=wl,
+        summary={"membership": {"canonical_source": True}},
+        force=True,
+    )
+    mock_resolve.assert_not_called()
+    upsert_calls = [
+        c
+        for c in cursor.execute.call_args_list
+        if c[0] and "INSERT INTO rinse_shift_monitor_day_bags" in str(c[0][0])
+    ]
+    by_id: dict[str, str] = {}
+    for c in upsert_calls:
+        params = c[0][1]
+        by_id[params[2]] = str(params[3] or "").upper()
+    assert by_id == {"2QFDTDTULL": "WF", "HDONLY1": "HD"}
+
+
+@patch("backend.rinse_wf_service_cycle_compat.persist_day_snapshot")
+@patch("backend.rinse_wf_service_cycle_compat.build_step1_headline_summary")
+@patch("backend.rinse_wf_service_cycle_compat._prior_wf_day_bags_by_id", return_value={})
+@patch("backend.rinse_wf_service_cycle.reporting_counts_for_date")
+@patch("backend.rinse_wf_service_cycle_compat.ensure_wf_service_cycles_table")
+@patch("backend.rinse_wf_service_cycle_compat.ensure_shift_monitor_day_tables")
+def test_terminal_project_excludes_stale_hd_from_desired_wf_set(
+    _day_tbl,
+    _cyc_tbl,
+    counts,
+    _prior,
+    headline,
+    persist,
+):
+    """terminal_project must not merge stale HD rows for canonical WF bag IDs."""
+    counts.return_value = {
+        "admitted_on_date": 1,
+        "completed_on_date": 0,
+        "opening_backlog": 0,
+        "active_now": 1,
+    }
+    headline.return_value = {
+        "completed": 0,
+        "pending": 1,
+        "review_required": 0,
+        "segments": {"wf": {"completed": 0, "pending": 1, "review_required": 0}},
+    }
+    persist.return_value = {"ok": True}
+    cur = MagicMock()
+
+    def _fake_hd(cursor, org, day, *, exclude_bag_ids=None):
+        exclude = {normalize_bag_id(b) for b in (exclude_bag_ids or set()) if normalize_bag_id(b)}
+        rows = [
+            {
+                "bag_id": "2QFDTDTULL",
+                "service_type": "HD",
+                "effective_status": "pending",
+                "review_reason_codes": [],
+                "bag_snapshot": {},
+            },
+            {
+                "bag_id": "HDONLY1",
+                "service_type": "HD",
+                "effective_status": "pending",
+                "review_reason_codes": [],
+                "bag_snapshot": {},
+            },
+        ]
+        return [r for r in rows if r["bag_id"] not in exclude]
+
+    with (
+        patch("backend.rinse_wf_service_cycle_compat.get_day_record", return_value=None),
+        patch(
+            "backend.rinse_wf_service_cycle_compat.get_step1_activation_date",
+            return_value=date(2026, 7, 1),
+        ),
+        patch(
+            "backend.rinse_wf_service_cycle_compat._preserved_hd_bag_dicts",
+            side_effect=_fake_hd,
+        ),
+        patch(
+            "backend.rinse_wf_canonical_workload.get_canonical_wf_workload",
+            return_value={
+                "bag_ids": frozenset({"2QFDTDTULL"}),
+                "completed": frozenset(),
+                "pending": frozenset({"2QFDTDTULL"}),
+                "review": frozenset(),
+                "missing_from_portal": frozenset(),
+                "historical_completed_in_workload": frozenset(),
+                "new_today": frozenset({"2QFDTDTULL"}),
+                "carryover": frozenset(),
+                "bag_meta": {
+                    "2QFDTDTULL": {
+                        "bag_id": "2QFDTDTULL",
+                        "service_type": "WF",
+                        "effective_status": "pending",
+                        "new_or_carryover": "new_today",
+                        "review_reason_codes": [],
+                    }
+                },
+                "completion_by_bag": {},
+                "prior_meta": {},
+                "counts": {"workload": 1, "completed": 0, "pending": 1, "review": 0},
+                "arithmetic_ok": True,
+                "invariants_ok": True,
+            },
+        ),
+        patch(
+            "backend.rinse_wf_canonical_workload.canonical_wf_day_bag_rows",
+            return_value=[
+                {
+                    "bag_id": "2QFDTDTULL",
+                    "service_type": "WF",
+                    "effective_status": "pending",
+                    "new_or_carryover": "new_today",
+                    "review_reason_codes": [],
+                    "bag_snapshot": {},
+                }
+            ],
+        ),
+        patch(
+            "backend.rinse_wf_canonical_workload.assert_canonical_workload_invariants",
+            return_value=None,
+        ),
+        patch(
+            "backend.rinse_wf_service_cycle.reconcile_stale_active_wf_cycles_from_canonical_completion",
+            return_value={"closed": 0, "bag_ids": []},
+        ),
+    ):
+        terminal_project_canonical_wf_day_snapshot(cur, ORG, AUG28)
+
+    workload = persist.call_args.kwargs.get("workload") or persist.call_args[1]["workload"]
+    rows = workload.get("rows") or []
+    by_id = {normalize_bag_id(r.get("bag_id")): r for r in rows}
+    assert by_id["2QFDTDTULL"]["service_type"] == "WF"
+    assert by_id["HDONLY1"]["service_type"] == "HD"
+    assert set(workload.get("canonical_bag_ids") or []) == {"2QFDTDTULL"}
+    # Frozen path: public canonical count matches WF rows fed to persist.
+    wf_row_ids = {
+        normalize_bag_id(r.get("bag_id"))
+        for r in rows
+        if str(r.get("service_type") or "").upper() == "WF"
+    }
+    assert wf_row_ids == set(workload.get("canonical_bag_ids") or [])

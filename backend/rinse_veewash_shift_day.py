@@ -1150,9 +1150,17 @@ def persist_day_snapshot(
         )
 
         if is_wf_canonical_lifecycle_enabled(cursor, int(organization_id)):
-            wf_candidate_rows = resolve_canonical_wf_day_bag_rows_for_persist(
-                cursor, int(organization_id), shift_date_et
-            )
+            # When terminal_project already froze get_canonical_wf_workload into
+            # this workload, replace-only from those rows — never re-derive after
+            # cycle reconcile / prior projection artifacts.
+            frozen = bool((workload or {}).get("canonical_membership_frozen"))
+            if frozen and wf_candidate_rows:
+                # Keep frozen WF candidates from the workload payload.
+                pass
+            else:
+                wf_candidate_rows = resolve_canonical_wf_day_bag_rows_for_persist(
+                    cursor, int(organization_id), shift_date_et
+                )
     except Exception:
         logger.exception(
             "WF canonical day-bag replace failed during persist org=%s date=%s; "
@@ -1201,6 +1209,20 @@ def persist_day_snapshot(
                 shift_date_et,
             )
             wf_candidate_rows = []
+
+    # WF membership wins on bag_id collisions. A prior bad persist that labeled a
+    # canonical WF bag as HD must not overwrite the WF row on upsert.
+    wf_ids = {
+        normalize_bag_id(b.get("bag_id"))
+        for b in wf_candidate_rows
+        if normalize_bag_id(b.get("bag_id"))
+    }
+    if wf_ids:
+        other_rows = [
+            b
+            for b in other_rows
+            if normalize_bag_id(b.get("bag_id")) not in wf_ids
+        ]
     bags = wf_candidate_rows + other_rows
 
     deferred_ids = {

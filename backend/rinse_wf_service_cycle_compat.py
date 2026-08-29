@@ -202,13 +202,22 @@ def resolve_canonical_wf_day_bag_rows_for_persist(
 
     Membership comes only from ``get_canonical_wf_workload``. Service cycles,
     append-only scrape membership, and absence alone cannot admit bags.
+
+    Same-day projected day_bags are NOT fed back into membership. Manager-edit
+    fields may be preserved; review/Missing flags from a prior projection must
+    not alter whether a bag belongs.
     """
     org = int(organization_id)
+    bags = _canonical_wf_bags_for_date(cursor, org, shift_date_et)
     prior_wf = _prior_wf_day_bags_by_id(cursor, org, shift_date_et)
-    return [
-        _merge_wf_review_hints(b, prior_wf.get(normalize_bag_id(b.get("bag_id"))))
-        for b in _canonical_wf_bags_for_date(cursor, org, shift_date_et)
-    ]
+    out: list[dict[str, Any]] = []
+    for b in bags:
+        prior = prior_wf.get(normalize_bag_id(b.get("bag_id")))
+        if prior and int(prior.get("manager_edit_version") or 0) > 0:
+            out.append(_merge_wf_review_hints(b, prior))
+        else:
+            out.append(b)
+    return out
 
 
 def _cycle_row_rank(row: Mapping[str, Any]) -> tuple[int, float, float]:
@@ -312,14 +321,28 @@ def _merge_wf_review_hints(
 
 
 def _preserved_hd_bag_dicts(
-    cursor, organization_id: int, shift_date_et: date
+    cursor,
+    organization_id: int,
+    shift_date_et: date,
+    *,
+    exclude_bag_ids: set[str] | frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
+    """Preserve non-WF day_bags alongside a WF replace.
+
+    Never re-inject bag IDs that belong to the frozen canonical WF set — a prior
+    bad persist that labeled a WF bag as HD must not overwrite WF membership.
+    """
+    exclude = {
+        normalize_bag_id(b)
+        for b in (exclude_bag_ids or set())
+        if normalize_bag_id(b)
+    }
     bags: list[dict[str, Any]] = []
     for row in load_day_bags(cursor, organization_id, shift_date_et) or []:
         if str(row.get("service_type") or "").upper() == "WF":
             continue
         bid = normalize_bag_id(row.get("bag_id"))
-        if not bid:
+        if not bid or bid in exclude:
             continue
         bags.append(
             {
@@ -347,7 +370,21 @@ def terminal_project_canonical_wf_day_snapshot(
     *,
     force: bool = True,
 ) -> dict[str, Any]:
-    """Terminal write: canonical WF rows + preserved HD rows → day_bags / Management."""
+    """Terminal write: one frozen canonical derivation → replace day_bags.
+
+    Order is non-negotiable for idempotency:
+      1) desired_set = get_canonical_wf_workload(source evidence, D)
+      2) persisted_set := desired_set
+      3) cycle reconcile is hygiene AFTER persist (must not re-drive membership)
+
+    Never derive membership from the previous projected day snapshot, and never
+    re-resolve membership after mutating service cycles in the same projection.
+    """
+    from backend.rinse_wf_canonical_workload import (
+        assert_canonical_workload_invariants,
+        canonical_wf_day_bag_rows,
+        get_canonical_wf_workload,
+    )
     from backend.rinse_wf_service_cycle import (
         reconcile_stale_active_wf_cycles_from_canonical_completion,
     )
@@ -355,11 +392,33 @@ def terminal_project_canonical_wf_day_snapshot(
     ensure_wf_service_cycles_table(cursor)
     ensure_shift_monitor_day_tables(cursor)
     org = int(organization_id)
-    reconcile_stale_active_wf_cycles_from_canonical_completion(
-        cursor, org, shift_date_et
+
+    # Freeze membership from source evidence BEFORE any cycle mutation.
+    workload_canon = get_canonical_wf_workload(cursor, org, shift_date_et)
+    assert_canonical_workload_invariants(workload_canon)
+    wf_bags = canonical_wf_day_bag_rows(
+        cursor, org, shift_date_et, workload=workload_canon
     )
-    wf_bags = resolve_canonical_wf_day_bag_rows_for_persist(cursor, org, shift_date_et)
-    hd_bags = _preserved_hd_bag_dicts(cursor, org, shift_date_et)
+    # Preserve manager edits only — never re-admit via projected review/Missing.
+    prior_wf = _prior_wf_day_bags_by_id(cursor, org, shift_date_et)
+    merged_wf: list[dict[str, Any]] = []
+    for b in wf_bags:
+        prior = prior_wf.get(normalize_bag_id(b.get("bag_id")))
+        if prior and int(prior.get("manager_edit_version") or 0) > 0:
+            merged_wf.append(_merge_wf_review_hints(b, prior))
+        else:
+            merged_wf.append(b)
+    wf_bags = merged_wf
+
+    # Desired WF set wins: never preserve a stale HD label for the same bag_id.
+    desired_wf_ids = {
+        normalize_bag_id(b)
+        for b in (workload_canon.get("bag_ids") or [])
+        if normalize_bag_id(b)
+    }
+    hd_bags = _preserved_hd_bag_dicts(
+        cursor, org, shift_date_et, exclude_bag_ids=desired_wf_ids
+    )
     all_bags = wf_bags + hd_bags
 
     day = get_day_record(cursor, org, shift_date_et)
@@ -401,6 +460,9 @@ def terminal_project_canonical_wf_day_snapshot(
         },
         "from_snapshot": True,
         "shift_day_status": status,
+        # Persist must not re-call get_canonical / resolve after this freeze.
+        "canonical_membership_frozen": True,
+        "canonical_bag_ids": sorted(workload_canon.get("bag_ids") or []),
     }
     activation = get_step1_activation_date(cursor, org) or shift_date_et
     summary = build_step1_headline_summary(
@@ -417,10 +479,11 @@ def terminal_project_canonical_wf_day_snapshot(
             "opening_backlog_query": counts.get("opening_backlog"),
             "active_now": counts.get("active_now"),
             "canonical_source": True,
+            "canonical_workload_count": len(workload_canon.get("bag_ids") or []),
         },
         "headline_status_synced_from_day_bags": True,
     }
-    return persist_day_snapshot(
+    out = persist_day_snapshot(
         cursor,
         org,
         shift_date_et,
@@ -429,6 +492,11 @@ def terminal_project_canonical_wf_day_snapshot(
         force=force,
         chronology_complete=True,
     )
+    # Cycle hygiene only — must not feed back into membership this pass.
+    reconcile_stale_active_wf_cycles_from_canonical_completion(
+        cursor, org, shift_date_et
+    )
+    return out
 
 
 def project_canonical_cycles_to_day_snapshot(
