@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import date, datetime, timedelta
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_cycle_boundary import resolve_current_cycle
@@ -803,24 +803,47 @@ def refresh_canonical_cycles_from_evidence(
     cursor,
     organization_id: int,
     selected_date_et: date,
+    *,
+    bag_ids: Collection[str] | None = None,
 ) -> dict[str, Any]:
-    """Reconcile open/review and today's completed cycles from durable scan evidence."""
+    """Reconcile open/review and today's completed cycles from durable scan evidence.
+
+    When ``bag_ids`` is provided (scrape terminal / publish path), only those bags
+    are refreshed. Unscoped refresh of every ACTIVE/REVIEW row is unsafe at
+    production scale (1000+ rows × per-bag timeline admit ≈ multi-minute hang
+    that never reaches finish_scrape_run).
+    """
     ensure_wf_service_cycles_table(cursor)
     org = int(organization_id)
     day_start = naive_et_day_start(selected_date_et)
     day_end = day_start + timedelta(days=1)
     cur = cursor
-    cur.execute(
-        """
+    scoped_ids: list[str] | None = None
+    if bag_ids is not None:
+        scoped_ids = sorted(
+            {normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)}
+        )
+        if not scoped_ids:
+            return {
+                "refreshed": 0,
+                "selected_date_et": selected_date_et.isoformat(),
+                "scoped": True,
+                "bag_count": 0,
+            }
+    sql = """
         SELECT bag_id, cycle_anchor_at FROM rinse_wf_service_cycles
         WHERE organization_id = %s
           AND (
             status IN (%s, %s)
             OR (status = %s AND completed_at >= %s AND completed_at < %s)
           )
-        """,
-        (org, STATUS_ACTIVE, STATUS_REVIEW, STATUS_COMPLETED, day_start, day_end),
-    )
+        """
+    params: list[Any] = [org, STATUS_ACTIVE, STATUS_REVIEW, STATUS_COMPLETED, day_start, day_end]
+    if scoped_ids is not None:
+        placeholders = ", ".join(["%s"] * len(scoped_ids))
+        sql += f" AND bag_id IN ({placeholders})"
+        params.extend(scoped_ids)
+    cur.execute(sql, tuple(params))
     refreshed = 0
     for row in cur.fetchall() or []:
         if not isinstance(row, dict):
@@ -837,7 +860,14 @@ def refresh_canonical_cycles_from_evidence(
             admitted_source="SCAN_EVIDENCE_REFRESH",
         )
         refreshed += 1
-    return {"refreshed": refreshed, "selected_date_et": selected_date_et.isoformat()}
+    out: dict[str, Any] = {
+        "refreshed": refreshed,
+        "selected_date_et": selected_date_et.isoformat(),
+    }
+    if scoped_ids is not None:
+        out["scoped"] = True
+        out["bag_count"] = len(scoped_ids)
+    return out
 
 
 def reconcile_stale_active_wf_cycles_from_canonical_completion(
@@ -1053,11 +1083,18 @@ def finalize_wf_canonical_lifecycle_terminal(
 
     org = int(organization_id)
     day = shift_date_et or business_today()
-    evidence = refresh_canonical_cycles_from_evidence(cursor, org, day)
+    portal_bags: dict[str, Any] = {}
+    scope: set[str] | None = None
+    if portal_csv_path is not None:
+        portal_bags = _parse_portal_bags_from_csv(portal_csv_path)
+        # Scrape publish must never unbounded-refresh every ACTIVE/REVIEW cycle.
+        scope = set(portal_bags.keys())
+    evidence = refresh_canonical_cycles_from_evidence(
+        cursor, org, day, bag_ids=scope
+    )
     discovery: dict[str, Any] = {}
     disappearance: dict[str, Any] = {}
     if portal_csv_path is not None:
-        portal_bags = _parse_portal_bags_from_csv(portal_csv_path)
         from pathlib import Path
 
         meta_path = portal_scrape_meta_path or Path(str(portal_csv_path) + ".meta.json")
@@ -1068,7 +1105,9 @@ def finalize_wf_canonical_lifecycle_terminal(
             set(portal_bags.keys()),
             traversal_complete=_portal_traversal_complete(meta_path),
         )
-        refresh_canonical_cycles_from_evidence(cursor, org, day)
+        refresh_canonical_cycles_from_evidence(
+            cursor, org, day, bag_ids=scope
+        )
     projection = terminal_project_canonical_wf_day_snapshot(
         cursor, org, day, force=True
     )

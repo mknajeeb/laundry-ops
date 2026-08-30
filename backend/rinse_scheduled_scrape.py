@@ -419,6 +419,11 @@ def _run_wf_canonical_terminal_projection(
 
         if not is_wf_canonical_lifecycle_enabled(cursor, org_id):
             return {"skipped": True, "reason": "canonical_disabled"}
+        if log is not None and hasattr(log, "write"):
+            log.write(
+                "WF canonical terminal projection start "
+                f"org={org_id} portal_csv={portal_csv_path}\n"
+            )
         out = finalize_wf_canonical_lifecycle_terminal(
             cursor,
             org_id,
@@ -1481,14 +1486,17 @@ def run_rinse_combined_sync_for_org(
             )
             result.detail["step1_day_refresh_via"] = "combined_cycle_guarantee"
             if not dry_run and str(result.status or "") in ("success", "needs_attention"):
-                result.detail["wf_canonical_terminal"] = _run_wf_canonical_terminal_projection(
-                    conn,
-                    cursor,
-                    org_id=org_id,
-                    log=log,
-                    portal_csv_path=paths.portal_csv,
-                    portal_scrape_meta_path=Path(str(paths.portal_csv) + ".meta.json"),
-                )
+                # Import path already ran publish-stage WF terminal projection in-lock.
+                # Do not run it a second time (was doubling the hang risk).
+                if not isinstance(result.detail.get("wf_canonical_terminal"), dict):
+                    result.detail["wf_canonical_terminal"] = _run_wf_canonical_terminal_projection(
+                        conn,
+                        cursor,
+                        org_id=org_id,
+                        log=log,
+                        portal_csv_path=paths.portal_csv,
+                        portal_scrape_meta_path=Path(str(paths.portal_csv) + ".meta.json"),
+                    )
         if not dry_run and str(result.status or "") in ("success", "needs_attention"):
             _mark_step1_refresh_failed_on_result(
                 result, result.detail.get("step1_day_refresh")
