@@ -76,10 +76,16 @@ class TestFoldingAfterConfirm(unittest.TestCase):
         cursor = MagicMock()
         with (
             patch(
-                "backend.rinse_portal_absence_completion.complete_bags_missing_from_latest_portal",
+                "backend.rinse_portal_absence_completion.process_bags_missing_from_latest_portal",
                 return_value={
                     "bag_ids": ["BAGOLD"],
+                    "completed_bag_ids": ["BAGOLD"],
+                    "rejected_bag_ids": [],
                     "count": 1,
+                    "completed_count": 1,
+                    "rejected_count": 0,
+                    "needs_verification_count": 0,
+                    "needs_verification_bag_ids": [],
                     "full_snapshot": True,
                 },
             ),

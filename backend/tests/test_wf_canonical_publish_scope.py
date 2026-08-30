@@ -81,6 +81,6 @@ def test_terminal_finalize_passes_portal_bag_scope():
             shift_date_et=date(2026, 8, 30),
         )
     assert out["ok"] is True
-    assert refresh.call_count == 2
-    for call in refresh.call_args_list:
-        assert call.kwargs.get("bag_ids") == {"BAG1", "BAG2"}
+    assert refresh.call_count == 1
+    assert out.get("canonical_refresh_calls") == 1
+    assert refresh.call_args.kwargs.get("bag_ids") == {"BAG1", "BAG2"}

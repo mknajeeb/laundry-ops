@@ -158,6 +158,7 @@ def fetch_upload_batch_scan_rows_for_bags(
     bag_ids: Sequence[str],
     *,
     up_to_batch_id: int | None = None,
+    include_raw_json: bool = True,
 ) -> dict[str, list[dict[str, Any]]]:
     """Batch draft upload scan rows for many bags (same columns/order as single-bag)."""
     ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
@@ -165,14 +166,21 @@ def fetch_upload_batch_scan_rows_for_bags(
     if not ids or not table_exists(cursor, "upload_batch_scan_events"):
         return out
     org = int(organization_id)
+    cols = (
+        "upload_batch_id, bag_id, scan_index, rack, time_scanned_raw, "
+        "scanned_at_parsed, user_name, purpose, last_location, last_scan, "
+        "source_filename"
+    )
+    if include_raw_json:
+        cols += ", raw_json"
+    # Always select id so callers can hydrate raw_json for missing rows only.
+    cols = "id, " + cols
     chunk = 100
     for i in range(0, len(ids), chunk):
         part = ids[i : i + chunk]
         ph = ",".join(["%s"] * len(part))
         sql = f"""
-            SELECT upload_batch_id, bag_id, scan_index, rack, time_scanned_raw,
-                   scanned_at_parsed, user_name, purpose, last_location, last_scan,
-                   source_filename, raw_json
+            SELECT {cols}
             FROM upload_batch_scan_events
             WHERE organization_id = %s AND UPPER(TRIM(bag_id)) IN ({ph})
         """
@@ -189,6 +197,137 @@ def fetch_upload_batch_scan_rows_for_bags(
             if bid:
                 out.setdefault(bid, []).append(dict(row))
     return out
+
+
+def fetch_draft_scan_rows_missing_from_persistent(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+    *,
+    up_to_batch_id: int | None = None,
+    existing_events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int]]:
+    """
+    Draft rows required for portal-absence scan recovery only.
+
+    Loads lightweight draft columns (no raw_json), keeps only rows whose dedupe
+    key is absent from persistent events, then hydrates raw_json for those ids.
+    Business outcomes unchanged: recovery still inserts exactly the missing
+    scans; bags with nothing missing get an empty draft list (stable skip path).
+    """
+    ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
+    stats = {
+        "draft_rows_examined": 0,
+        "draft_rows_missing": 0,
+        "bags_with_missing_drafts": 0,
+    }
+    empty: dict[str, list[dict[str, Any]]] = {bid: [] for bid in ids}
+    if not ids:
+        return empty, stats
+
+    org = int(organization_id)
+    existing_by_bag = existing_events_by_bag or {}
+    existing_keys_by_bag: dict[str, set[str]] = {}
+    for bid in ids:
+        keys: set[str] = set()
+        for ev in existing_by_bag.get(bid) or []:
+            dk = str(ev.get("dedupe_key") or "").strip()
+            if not dk:
+                try:
+                    dk = compute_scan_event_dedupe_key(
+                        organization_id=org,
+                        bag_id=bid,
+                        rack=ev.get("rack"),
+                        user_name=ev.get("user_name"),
+                        purpose=ev.get("purpose"),
+                        time_scanned_raw=str(
+                            ev.get("time_scanned_raw") or ev.get("scanned_at_parsed") or ""
+                        ),
+                        scanned_at_parsed=ev.get("scanned_at_parsed"),
+                    )
+                except ValueError:
+                    continue
+            if dk:
+                keys.add(dk)
+        existing_keys_by_bag[bid] = keys
+
+    light = fetch_upload_batch_scan_rows_for_bags(
+        cursor,
+        org,
+        ids,
+        up_to_batch_id=up_to_batch_id,
+        include_raw_json=False,
+    )
+    missing_ids: list[int] = []
+    missing_by_bag: dict[str, list[dict[str, Any]]] = {bid: [] for bid in ids}
+    examined = 0
+    for bid, rows in light.items():
+        keys = existing_keys_by_bag.get(bid) or set()
+        for row in rows:
+            examined += 1
+            time_raw = str(row.get("time_scanned_raw") or "").strip()
+            scanned_at = row.get("scanned_at_parsed")
+            if not time_raw and not scanned_at:
+                continue
+            if not time_raw and scanned_at is not None:
+                time_raw = str(scanned_at)
+            try:
+                # Match recover_missing_scans_from_preloaded / _recovery_would_insert
+                # identity fields exactly (no last_location).
+                dedupe_key = compute_scan_event_dedupe_key(
+                    organization_id=org,
+                    bag_id=bid,
+                    rack=row.get("rack"),
+                    user_name=row.get("user_name"),
+                    purpose=row.get("purpose"),
+                    time_scanned_raw=time_raw,
+                    scanned_at_parsed=scanned_at,
+                )
+            except ValueError:
+                continue
+            if dedupe_key in keys:
+                continue
+            rid = row.get("id")
+            if rid is not None:
+                missing_ids.append(int(rid))
+            missing_by_bag.setdefault(bid, []).append(row)
+
+    stats["draft_rows_examined"] = examined
+    stats["draft_rows_missing"] = len(missing_ids)
+    stats["bags_with_missing_drafts"] = sum(
+        1 for bid in ids if missing_by_bag.get(bid)
+    )
+
+    if not missing_ids:
+        return missing_by_bag, stats
+
+    # Hydrate raw_json (and full columns) only for rows that can insert.
+    raw_by_id: dict[int, dict[str, Any]] = {}
+    chunk = 200
+    for i in range(0, len(missing_ids), chunk):
+        part = missing_ids[i : i + chunk]
+        ph = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT id, upload_batch_id, bag_id, scan_index, rack, time_scanned_raw,
+                   scanned_at_parsed, user_name, purpose, last_location, last_scan,
+                   source_filename, raw_json
+            FROM upload_batch_scan_events
+            WHERE organization_id = %s AND id IN ({ph})
+            """,
+            (org, *part),
+        )
+        for row in cursor.fetchall() or []:
+            if isinstance(row, dict) and row.get("id") is not None:
+                raw_by_id[int(row["id"])] = dict(row)
+
+    hydrated: dict[str, list[dict[str, Any]]] = {bid: [] for bid in ids}
+    for bid, rows in missing_by_bag.items():
+        for row in rows:
+            rid = row.get("id")
+            full = raw_by_id.get(int(rid)) if rid is not None else None
+            hydrated.setdefault(bid, []).append(full or row)
+    return hydrated, stats
 
 
 def recover_missing_scans_from_preloaded(

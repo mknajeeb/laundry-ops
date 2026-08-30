@@ -1089,9 +1089,15 @@ def finalize_wf_canonical_lifecycle_terminal(
         portal_bags = _parse_portal_bags_from_csv(portal_csv_path)
         # Scrape publish must never unbounded-refresh every ACTIVE/REVIEW cycle.
         scope = set(portal_bags.keys())
+    # One scoped evidence refresh per publish. A second refresh after
+    # discovery/disappearance is redundant:
+    # - sync_portal_discovery already admit_or_update's each portal bag
+    # - handle_disappeared_active_cycles upserts bags *outside* portal scope
+    #   (second scoped refresh would not touch them anyway)
     evidence = refresh_canonical_cycles_from_evidence(
         cursor, org, day, bag_ids=scope
     )
+    refresh_calls = 1
     discovery: dict[str, Any] = {}
     disappearance: dict[str, Any] = {}
     if portal_csv_path is not None:
@@ -1105,9 +1111,6 @@ def finalize_wf_canonical_lifecycle_terminal(
             set(portal_bags.keys()),
             traversal_complete=_portal_traversal_complete(meta_path),
         )
-        refresh_canonical_cycles_from_evidence(
-            cursor, org, day, bag_ids=scope
-        )
     projection = terminal_project_canonical_wf_day_snapshot(
         cursor, org, day, force=True
     )
@@ -1116,6 +1119,7 @@ def finalize_wf_canonical_lifecycle_terminal(
         "evidence": evidence,
         "discovery": discovery,
         "disappearance": disappearance,
+        "canonical_refresh_calls": refresh_calls,
         "projection": {
             "ok": projection.get("ok", True),
             "shift_date_et": day.isoformat(),

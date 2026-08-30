@@ -18,6 +18,7 @@ from backend.rinse_bag_registry import (
     is_bag_already_completed,  # noqa: F401 — patch surface for tests
 )
 from backend.rinse_portal_departure_completion import (
+    fetch_draft_scan_rows_missing_from_persistent,
     verify_and_resolve_portal_departure_bag,
 )
 from backend.rinse_portal_scrape_meta import (
@@ -235,18 +236,25 @@ def process_bags_missing_from_latest_portal(
         fetch_persistent_scan_events_for_bags,
         get_registry_rows_for_bags,
     )
-    from backend.rinse_portal_departure_completion import fetch_upload_batch_scan_rows_for_bags
     from backend.rinse_scan_weight_enrichment import ensure_scan_weight_enrichment_columns
     from backend.rinse_workload_bag_weight import ensure_scan_events_weight_lbs_column
 
     registry_by_bag = get_registry_rows_for_bags(cursor, org, missing) if missing else {}
     events_by_bag = fetch_persistent_scan_events_for_bags(cursor, org, missing) if missing else {}
-    drafts_by_bag = (
-        fetch_upload_batch_scan_rows_for_bags(cursor, org, missing, up_to_batch_id=batch_id)
-        if missing
-        else {}
-    )
+    drafts_by_bag: dict[str, list] = {}
+    draft_fetch_stats: dict[str, int] = {
+        "draft_rows_examined": 0,
+        "draft_rows_missing": 0,
+        "bags_with_missing_drafts": 0,
+    }
     if missing:
+        drafts_by_bag, draft_fetch_stats = fetch_draft_scan_rows_missing_from_persistent(
+            cursor,
+            org,
+            missing,
+            up_to_batch_id=batch_id,
+            existing_events_by_bag=events_by_bag,
+        )
         ensure_rinse_bag_scan_events_table(cursor)
         ensure_rinse_bag_scan_events_dedupe_schema(cursor)
         ensure_scan_events_weight_lbs_column(cursor)
@@ -267,6 +275,14 @@ def process_bags_missing_from_latest_portal(
             preloaded_events=events_by_bag.get(bid, []),
             preloaded_draft_rows=drafts_by_bag.get(bid, []),
         )
+        # Preserve observability of how many historical drafts were scanned.
+        recovery = dict(outcome.get("recovery") or {})
+        if "draft_rows_seen" not in recovery:
+            recovery["draft_rows_seen"] = len(drafts_by_bag.get(bid) or [])
+        recovery["draft_rows_examined_org_pass"] = int(
+            draft_fetch_stats.get("draft_rows_examined") or 0
+        )
+        outcome = {**outcome, "recovery": recovery}
         outcomes.append(outcome)
         action = str(outcome.get("action") or "")
         if action == "completed":
@@ -295,6 +311,13 @@ def process_bags_missing_from_latest_portal(
         "rejected_count": len(rejected),
         "rejected_bag_ids": rejected,
         "outcomes": outcomes,
+        "draft_rows_examined": int(draft_fetch_stats.get("draft_rows_examined") or 0),
+        "draft_rows_fetched_for_recovery": int(
+            draft_fetch_stats.get("draft_rows_missing") or 0
+        ),
+        "bags_with_missing_drafts": int(
+            draft_fetch_stats.get("bags_with_missing_drafts") or 0
+        ),
     }
 
 

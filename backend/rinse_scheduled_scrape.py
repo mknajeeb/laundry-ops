@@ -1705,6 +1705,7 @@ def _run_in_lock_rinse_finalize(
     run_id: int | None,
     lease_generation: int | None,
     log,
+    prior_persistent_merge: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Registry/folding finalize required before terminal success (in-lock)."""
     from backend.rinse_upload_finalize import (
@@ -1747,6 +1748,7 @@ def _run_in_lock_rinse_finalize(
             batch_id,
             accepted_portal_rows=rows,
             source_filename=f"batch_confirm_{batch_id}",
+            prior_persistent_merge=prior_persistent_merge,
         )
         conn.commit()
     if run_id:
@@ -1758,10 +1760,13 @@ def _run_in_lock_rinse_finalize(
             lease_generation=lease_generation,
         )
         conn.commit()
+    merge = payload.get("persistent_merge") or {}
     log.write(
         "In-lock rinse finalize: "
-        f"events_inserted={(payload.get('persistent_merge') or {}).get('events_inserted')} "
-        f"bags_merged={(payload.get('persistent_merge') or {}).get('bags_merged')}\n"
+        f"events_inserted={merge.get('events_inserted')} "
+        f"bags_merged={merge.get('bags_merged')} "
+        f"skipped_redundant_draft_merge={bool(merge.get('skipped_redundant_draft_merge'))} "
+        f"draft_events_inserted={merge.get('draft_events_inserted')}\n"
     )
     _chain_boundary(log, "finalize_complete", batch_id=batch_id, run_id=run_id)
     return payload
@@ -2769,6 +2774,11 @@ def run_scheduled_scrape_for_org(
                     run_id=run_id,
                     lease_generation=lease_gen,
                     log=log,
+                    prior_persistent_merge=(
+                        (draft_payload or {}).get("persistent_scan_merge")
+                        if isinstance(draft_payload, dict)
+                        else None
+                    ),
                 )
                 if isinstance(confirm_payload, dict):
                     confirm_payload = {

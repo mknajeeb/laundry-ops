@@ -279,12 +279,17 @@ def finalize_rinse_after_batch_confirm(
     *,
     accepted_portal_rows: list[dict] | None = None,
     source_filename: str = "",
+    prior_persistent_merge: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Merge draft scan-events → persistent, recompute completion + folding, update registry.
     Call only from confirm_upload_batch after staging apply.
 
     Folding recompute runs last, only for registry-COMPLETED bags touched by this confirm.
+
+    When ``prior_persistent_merge`` is supplied from the same batch's auto-scrape
+    draft merge (same upload_batch_id, replace_existing already applied), skip the
+    second identical merge. Manual UI confirm leaves prior=None and still merges.
     """
     org = int(organization_id)
     batch_id = int(upload_batch_id)
@@ -292,20 +297,43 @@ def finalize_rinse_after_batch_confirm(
     t0 = time.perf_counter()
     timings: dict[str, float] = {}
 
-    events_df = load_upload_batch_scan_events_as_dataframe(cursor, org, batch_id)
+    prior = dict(prior_persistent_merge or {})
+    prior_bags = int(prior.get("bags_merged") or 0)
+    prior_inserted = int(prior.get("events_inserted") or 0)
+    # Draft auto-scrape already ran merge_scan_events_from_upload on this batch.
+    # Re-merge deletes+reinserts the same replace set (~12s on prod) with no
+    # additional durable scan identity. Skip only when draft merge actually ran.
+    skip_redundant_merge = prior_bags > 0 or prior_inserted > 0
+
     merge_payload: dict[str, Any] = {"bags_merged": 0, "events_inserted": 0, "bag_ids": []}
     t_merge = time.perf_counter()
-    if not events_df.empty:
-        merge_payload = merge_scan_events_from_upload(
-            cursor,
-            org,
-            batch_id,
-            events_df,
-            source_filename or "batch_confirm",
-            replace_existing=True,
-            credential_sourced=True,
-        )
-    timings["merge_scan_events_sec"] = round(time.perf_counter() - t_merge, 3)
+    if skip_redundant_merge:
+        merge_payload = {
+            **prior,
+            "bag_ids": list(prior.get("bag_ids") or []),
+            "events_inserted": 0,
+            "events_deleted": 0,
+            "events_already_present": int(prior.get("events_already_present") or 0),
+            "skipped_redundant_draft_merge": True,
+            "draft_events_inserted": prior_inserted,
+            "draft_bags_merged": prior_bags,
+        }
+        timings["merge_scan_events_sec"] = 0.0
+        timings["merge_skipped_redundant"] = 1.0
+    else:
+        events_df = load_upload_batch_scan_events_as_dataframe(cursor, org, batch_id)
+        if not events_df.empty:
+            merge_payload = merge_scan_events_from_upload(
+                cursor,
+                org,
+                batch_id,
+                events_df,
+                source_filename or "batch_confirm",
+                replace_existing=True,
+                credential_sourced=True,
+            )
+        timings["merge_scan_events_sec"] = round(time.perf_counter() - t_merge, 3)
+        timings["merge_skipped_redundant"] = 0.0
 
     from backend.rinse_portal_absence_completion import process_bags_missing_from_latest_portal
 
