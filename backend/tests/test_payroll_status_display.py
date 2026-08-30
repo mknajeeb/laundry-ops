@@ -49,3 +49,51 @@ def test_build_payroll_display_summary():
     assert summary["employee_count"] == 3
     assert summary["gross_payroll"] == 1500
     assert summary["tax_withheld"] == 200
+    assert summary["net_payroll"] == 1300
+
+
+def test_money_summary_does_not_equate_net_to_gross_when_lines_have_withholding():
+    """Stale/missing summary must not hide employee withholding on the headline."""
+    from backend.payroll_status_display import _money_summary
+
+    batch = {
+        "worker_category": "w2",
+        "summary": {
+            "gross_total": 3277.86,
+            "taxes_withheld_total": None,
+            "net_pay_total": None,
+            "paid_amount": 0,
+            "unpaid_amount": 0,
+        },
+        "lines": [
+            {"tax_withheld": 146.78, "net_paid": 554.64, "gross_amount": 701.42},
+            {"tax_withheld": 209.72, "net_paid": 704.12, "gross_amount": 913.84},
+            {"tax_withheld": 178.96, "net_paid": 631.09, "gross_amount": 810.05},
+            {"tax_withheld": 35.74, "net_paid": 264.31, "gross_amount": 300.05},
+            {"tax_withheld": 78.33, "net_paid": 474.17, "gross_amount": 552.50},
+        ],
+        "worker_count": 5,
+    }
+    summary = _money_summary(batch)
+    assert summary["gross_payroll"] == 3277.86
+    assert summary["tax_withheld"] == 649.53
+    assert summary["net_payroll"] == 2628.33
+    assert abs(summary["gross_payroll"] - summary["tax_withheld"] - summary["net_payroll"]) < 0.02
+
+
+def test_money_summary_net_equals_gross_when_no_line_withholding():
+    from backend.payroll_status_display import _money_summary
+
+    batch = {
+        "summary": {
+            "gross_total": 2730.29,
+            "taxes_withheld_total": None,
+            "net_pay_total": None,
+        },
+        "lines": [
+            {"gross_amount": 741.2, "tax_withheld": None, "net_paid": None},
+        ],
+    }
+    summary = _money_summary(batch)
+    assert summary["tax_withheld"] is None
+    assert summary["net_payroll"] == 2730.29

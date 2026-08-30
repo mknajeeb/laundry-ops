@@ -1548,6 +1548,275 @@ def test_enrich_payout_batch_without_employee_id_column():
     assert out["lines"][0]["worker_name_snapshot"] == "Jane Doe"
 
 
+def _enrich_batch_for_summary(batch: dict) -> dict:
+    """Run enrich_payout_batch with common mocks for summary headline tests."""
+    conn = MagicMock()
+    with patch("backend.payroll_workflow.ensure_payout_batch_line_extensions"), patch(
+        "backend.payroll_payout_details.table_has_column", return_value=False
+    ), patch(
+        "backend.payroll_payout_details._user_display_meta",
+        return_value={"display_name": "Worker", "employee_id": ""},
+    ), patch(
+        "backend.payroll_workflow.resolve_worker_hourly_rate",
+        return_value={
+            "worker_category_label": "W-2",
+            "payment_method": "",
+            "rate_missing": False,
+            "hourly_rate": 17,
+            "rate_source": "payroll_schedule",
+        },
+    ), patch(
+        "backend.w2_payroll_tax_engine.fetch_employee_tax_profile",
+        return_value={"w4_complete": True, "missing_fields": []},
+    ), patch(
+        "backend.payroll_workflow.fetch_w4_compliance_summary",
+        return_value={"w4_on_file": True, "tax_calc_status": "estimated"},
+    ), patch(
+        "backend.payroll_accrual.get_sick_leave_balance",
+        return_value={"balance_hours": 0},
+    ):
+        from backend.payroll_workflow import enrich_payout_batch
+
+        return enrich_payout_batch(conn, 1, batch)
+
+
+def _w2_line(name, uid, gross, withheld, net, *, paid=True):
+    return {
+        "id": uid,
+        "user_id": uid,
+        "worker_name_snapshot": name,
+        "payment_status": "paid" if paid else "unpaid",
+        "gross_amount": gross,
+        "total_amount": gross,
+        "rate": 17,
+        "payout_details_json": {
+            "employee_deductions": {
+                "fit": withheld,
+                "ss": 0,
+                "medicare": 0,
+                "state": 0,
+                "local": 0,
+                "other1": 0,
+                "other2": 0,
+            },
+            "employer_taxes": {
+                "er_ss": 50,
+                "er_medicare": 10,
+                "futa": 5,
+                "suta": 20,
+                "other": 0,
+            },
+            "tax_summary": {
+                "actual_tax_withheld": withheld,
+                "current_period_taxes": withheld,
+                "total_tax_liability": withheld,
+            },
+            "settlement": {
+                "amount_paid": net,
+                "amount_withheld": withheld,
+                "payment_recorded": "paid" if paid else "unpaid",
+                "outstanding_balance": 0,
+            },
+            "payment": {"date": "2026-08-19", "method": "direct_deposit"},
+        },
+    }
+
+
+def test_w2_batch_headline_aggregates_employee_withholding_015():
+    """W2-2025-015 equivalent: Tax withheld and Net from settled lines, not Gross."""
+    batch = {
+        "worker_category": "w2",
+        "status": "paid",
+        "payout_details_finalized_at": "2026-08-19T06:22:37",
+        "total_payout_amount": 3277.86,
+        "worker_count": 5,
+        "lines": [
+            _w2_line("Amna Yousaf", 38, 701.42, 146.78, 554.64),
+            _w2_line("Varun Kumar Mongia", 26, 913.84, 209.72, 704.12),
+            _w2_line("Evelin Delgado Hernandez", 30, 810.05, 178.96, 631.09),
+            _w2_line("Jasanpreet Singh", 28, 300.05, 35.74, 264.31),
+            _w2_line("Tarannum Mithila", 35, 552.50, 78.33, 474.17),
+        ],
+    }
+    out = _enrich_batch_for_summary(batch)
+    ps = out["payroll_display"]["payroll_summary"]
+    assert ps["gross_payroll"] == 3277.86
+    assert ps["tax_withheld"] == 649.53
+    assert ps["net_payroll"] == 2628.33
+    assert abs(ps["gross_payroll"] - ps["tax_withheld"] - ps["net_payroll"]) < 0.02
+    # Employer taxes on lines must not reduce employee net headline.
+    assert ps["net_payroll"] == 2628.33
+
+
+def test_w2_batch_headline_aggregates_employee_withholding_016():
+    """W2-2026-016 equivalent."""
+    batch = {
+        "worker_category": "w2",
+        "status": "paid",
+        "payout_details_finalized_at": "2026-08-25T17:02:22",
+        "total_payout_amount": 3169.06,
+        "worker_count": 5,
+        "lines": [
+            _w2_line("Amna Yousaf", 38, 675.92, 139.24, 536.68),
+            _w2_line("Varun Kumar Mongia", 26, 1085.71, 260.66, 825.05),
+            _w2_line("Evelin Delgado Hernandez", 30, 804.44, 177.32, 627.12),
+            _w2_line("Tarannum Mithila", 35, 290.19, 34.24, 255.95),
+            _w2_line("Jasanpreet Singh", 28, 312.80, 38.02, 274.78),
+        ],
+    }
+    out = _enrich_batch_for_summary(batch)
+    ps = out["payroll_display"]["payroll_summary"]
+    assert ps["gross_payroll"] == 3169.06
+    assert ps["tax_withheld"] == 649.48
+    assert ps["net_payroll"] == 2519.58
+    assert abs(ps["gross_payroll"] - ps["tax_withheld"] - ps["net_payroll"]) < 0.02
+
+
+def test_w2_batch_headline_zero_withholding_net_equals_gross():
+    batch = {
+        "worker_category": "w2",
+        "status": "paid",
+        "payout_details_finalized_at": "2026-06-01T12:00:00",
+        "total_payout_amount": 1511.13,
+        "worker_count": 1,
+        "lines": [
+            {
+                "id": 1,
+                "user_id": 1,
+                "worker_name_snapshot": "Zero Tax",
+                "payment_status": "paid",
+                "gross_amount": 1511.13,
+                "total_amount": 1511.13,
+                "rate": 17,
+                "payout_details_json": {
+                    "employee_deductions": {},
+                    "tax_summary": {"actual_tax_withheld": 0, "current_period_taxes": 0},
+                    "settlement": {
+                        "amount_paid": 1511.13,
+                        "amount_withheld": 0,
+                        "paid_full_gross_without_withholding": True,
+                        "payment_recorded": "paid",
+                    },
+                    "payment": {"date": "2026-06-01", "method": "direct_deposit"},
+                },
+            }
+        ],
+    }
+    out = _enrich_batch_for_summary(batch)
+    ps = out["payroll_display"]["payroll_summary"]
+    assert ps["gross_payroll"] == 1511.13
+    assert ps["tax_withheld"] == 0.0
+    assert ps["net_payroll"] == 1511.13
+
+
+def test_w2_unfinalized_headline_does_not_invent_withholding():
+    batch = {
+        "worker_category": "w2",
+        "status": "approved_for_payment",
+        "payout_details_finalized_at": None,
+        "total_payout_amount": 800,
+        "lines": [
+            {
+                "id": 1,
+                "user_id": 1,
+                "worker_name_snapshot": "Draft",
+                "payment_status": "pending",
+                "gross_amount": 800,
+                "total_amount": 800,
+                "rate": 20,
+            }
+        ],
+    }
+    out = _enrich_batch_for_summary(batch)
+    ps = out["payroll_display"]["payroll_summary"]
+    assert ps["tax_withheld"] is None
+    assert ps["net_payroll"] == 800
+
+
+def test_w2_finalized_unpaid_headline_uses_settled_net():
+    batch = {
+        "worker_category": "w2",
+        "status": "approved_for_payment",
+        "payout_details_finalized_at": "2026-08-19T06:22:37",
+        "total_payout_amount": 701.42,
+        "lines": [
+            _w2_line("Amna Yousaf", 38, 701.42, 146.78, 554.64, paid=False),
+        ],
+    }
+    out = _enrich_batch_for_summary(batch)
+    ps = out["payroll_display"]["payroll_summary"]
+    assert ps["tax_withheld"] == 146.78
+    assert ps["net_payroll"] == 554.64
+
+
+def test_1099_batch_headline_net_equals_gross():
+    batch = {
+        "worker_category": "contractor_1099",
+        "status": "paid",
+        "payout_details_finalized_at": "2026-08-24T13:33:40",
+        "total_payout_amount": 3276.16,
+        "lines": [
+            {
+                "id": 1,
+                "user_id": 19,
+                "worker_name_snapshot": "Jennifer Farfan",
+                "payment_status": "paid",
+                "gross_amount": 3276.16,
+                "total_amount": 3276.16,
+                "rate": 17,
+                "payout_details_json": {
+                    "settlement": {
+                        "amount_paid": 3276.16,
+                        "amount_withheld": 0,
+                        "paid_full_gross_without_withholding": True,
+                        "payment_recorded": "paid",
+                    },
+                    "payment": {"date": "2026-08-22", "method": "check"},
+                },
+            }
+        ],
+    }
+    out = _enrich_batch_for_summary(batch)
+    ps = out["payroll_display"]["payroll_summary"]
+    assert ps["gross_payroll"] == 3276.16
+    assert ps["tax_withheld"] is None
+    assert ps["net_payroll"] == 3276.16
+
+
+def test_temp_batch_headline_net_equals_gross():
+    batch = {
+        "worker_category": "temp",
+        "status": "paid",
+        "payout_details_finalized_at": "2026-08-30T00:33:18",
+        "total_payout_amount": 2730.29,
+        "lines": [
+            {
+                "id": 1,
+                "user_id": 27,
+                "worker_name_snapshot": "Guiying Lin",
+                "payment_status": "paid",
+                "gross_amount": 2730.29,
+                "total_amount": 2730.29,
+                "rate": 17,
+                "payout_details_json": {
+                    "settlement": {
+                        "amount_paid": 2730.29,
+                        "amount_withheld": 0,
+                        "paid_full_gross_without_withholding": True,
+                        "payment_recorded": "paid",
+                    },
+                    "payment": {"date": "2026-08-22", "method": "cash"},
+                },
+            }
+        ],
+    }
+    out = _enrich_batch_for_summary(batch)
+    ps = out["payroll_display"]["payroll_summary"]
+    assert ps["gross_payroll"] == 2730.29
+    assert ps["tax_withheld"] is None
+    assert ps["net_payroll"] == 2730.29
+
+
 def test_temp_1099_parse_defaults_paid_full_gross_and_hide_tax_balance():
     """Unset temp/1099 lines default to paid-full-gross ON and tax-balance OFF."""
     from backend.payroll_payout_details import apply_vendor_receipt_detail_defaults

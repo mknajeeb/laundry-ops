@@ -1549,6 +1549,11 @@ def enrich_batch_payout_details(conn, organization_id: int, batch: dict) -> dict
     batch["pay_date_status"] = "set" if batch["official_pay_date"] else "missing"
     batch["suggested_pay_date"] = suggested_pay_date_for_ui(batch)
     batch["finalize_cost_summary"] = compute_batch_finalize_cost_summary(batch, lines)
+    from backend.payroll_tax_messages import MANUAL_TAX_DEDUCTIONS_ONLY
+    from backend.payroll_workflow import apply_manual_tax_batch_summary_totals
+
+    if MANUAL_TAX_DEDUCTIONS_ONLY:
+        apply_manual_tax_batch_summary_totals(batch)
     from backend.payroll_status_display import enrich_batch_payroll_display
 
     batch = enrich_batch_payroll_display(batch)

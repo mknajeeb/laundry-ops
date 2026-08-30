@@ -648,6 +648,90 @@ def build_payroll_readiness(
     ]
 
 
+def aggregate_settled_employee_tax_and_net(
+    lines: list[dict],
+) -> tuple[Optional[float], Optional[float]]:
+    """Sum employee withholding and net from enriched settlement fields.
+
+    Uses line ``tax_withheld`` / ``net_paid`` set by ``enrich_line_settlement_fields``
+    after payout details are finalized. Does **not** use employer taxes.
+
+    Returns ``(None, None)`` when no line has settled fields yet (e.g. not finalized).
+    """
+    withheld_sum = 0.0
+    net_sum = 0.0
+    n_withheld = 0
+    n_net = 0
+    for ln in lines or []:
+        if ln.get("tax_withheld") is not None and str(ln.get("tax_withheld")).strip() != "":
+            withheld_sum += float(_money(ln.get("tax_withheld")))
+            n_withheld += 1
+        if ln.get("net_paid") is not None and str(ln.get("net_paid")).strip() != "":
+            net_sum += float(_money(ln.get("net_paid")))
+            n_net += 1
+        elif ln.get("tax_withheld") is not None and str(ln.get("tax_withheld")).strip() != "":
+            gross = float(_money(ln.get("gross_amount") or ln.get("total_amount") or 0))
+            net_sum += round(gross - float(_money(ln.get("tax_withheld"))), 2)
+            n_net += 1
+    if n_withheld == 0 and n_net == 0:
+        return None, None
+    taxes = round(withheld_sum, 2) if n_withheld else 0.0
+    net = round(net_sum, 2) if n_net else None
+    return taxes, net
+
+
+def apply_manual_tax_batch_summary_totals(
+    batch: dict,
+    *,
+    gross_total: Optional[float] = None,
+) -> dict:
+    """Update ``batch['summary']`` tax withheld / net from settled employee lines.
+
+    For W-2 under manual taxes: aggregate line withholding + net.
+    For Temp/1099/tryout: keep net = gross and tax withheld unset (—).
+    No-op when payout details are not yet finalized (no settled line fields).
+    """
+    summary = dict(batch.get("summary") or {})
+    cat = str(batch.get("worker_category") or summary.get("worker_category") or "")
+    lines = batch.get("lines") or []
+    gross = float(
+        _money(
+            gross_total
+            if gross_total is not None
+            else summary.get("gross_total")
+            or batch.get("total_payout_amount")
+            or 0
+        )
+    )
+    summary["gross_total"] = gross
+    if not MANUAL_TAX_DEDUCTIONS_ONLY:
+        batch["summary"] = summary
+        return batch
+    if cat != "w2":
+        # Preserve intended Temp/1099 presentation: Tax — / Net = Gross.
+        if summary.get("net_pay_total") is None:
+            summary["net_pay_total"] = gross
+        batch["summary"] = summary
+        return batch
+    settled_taxes, settled_net = aggregate_settled_employee_tax_and_net(lines)
+    if settled_taxes is None and settled_net is None:
+        batch["summary"] = summary
+        return batch
+    taxes = float(settled_taxes if settled_taxes is not None else 0.0)
+    if settled_net is not None:
+        net = float(settled_net)
+    else:
+        net = round(gross - taxes, 2)
+    # Prefer line nets; if cents drift from gross - tax, keep line net authoritative.
+    expected = round(gross - taxes, 2)
+    if abs(expected - net) > 0.02 and settled_net is None:
+        net = expected
+    summary["taxes_withheld_total"] = taxes
+    summary["net_pay_total"] = net
+    batch["summary"] = summary
+    return batch
+
+
 def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
     """Attach workflow summary, warnings, and enriched line metadata."""
     if not batch:
@@ -787,21 +871,23 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
         taxes_withheld_total = component_sum if component_sum > 0 else None
     employer_tax_total = None if MANUAL_TAX_DEDUCTIONS_ONLY else _sum_estimated_tax_field(enriched_lines, "total_employer_taxes")
     employer_cost_total = None if MANUAL_TAX_DEDUCTIONS_ONLY else _sum_estimated_tax_field(enriched_lines, "total_employer_cost")
+    if MANUAL_TAX_DEDUCTIONS_ONLY:
+        # Default: Temp/1099 net = gross; W-2 tax/net filled from settled lines below.
+        net_pay_total = float(gross_total) if cat != "w2" else None
+        taxes_withheld_total = None
+    else:
+        net_pay_total = (
+            float(net_total)
+            if cat == "w2" and net_total > 0
+            else (float(gross_total) if cat != "w2" else None)
+        )
     batch["summary"] = json_safe(
         {
             "worker_category": cat,
             "worker_category_label": CATEGORY_LABELS.get(cat, cat),
             "gross_total": float(gross_total),
             "taxes_withheld_total": taxes_withheld_total,
-            "net_pay_total": (
-                None
-                if MANUAL_TAX_DEDUCTIONS_ONLY and cat == "w2"
-                else (
-                    float(net_total)
-                    if cat == "w2" and net_total > 0
-                    else (float(gross_total) if cat != "w2" else None)
-                )
-            ),
+            "net_pay_total": net_pay_total,
             "net_pay_note": None if MANUAL_TAX_DEDUCTIONS_ONLY else (ESTIMATE_DISCLAIMER if cat == "w2" else None),
             "employer_taxes_total": employer_tax_total,
             "employer_cost_total": employer_cost_total,
@@ -812,6 +898,8 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
             "missing_w4_count": 0 if MANUAL_TAX_DEDUCTIONS_ONLY else len(missing_w4),
         }
     )
+    if MANUAL_TAX_DEDUCTIONS_ONLY:
+        apply_manual_tax_batch_summary_totals(batch, gross_total=float(gross_total))
     warnings: list[str] = []
     if missing_rates:
         warnings.append(

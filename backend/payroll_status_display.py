@@ -125,12 +125,46 @@ def _money_summary(batch: dict) -> dict[str, Any]:
     unpaid = summary.get("unpaid_amount") or 0
     taxes = summary.get("taxes_withheld_total")
     net = summary.get("net_pay_total")
+
+    # Prefer authoritative settled line fields when summary tax/net were left unset.
+    line_taxes = 0.0
+    line_nets = 0.0
+    n_line_taxes = 0
+    n_line_nets = 0
+    for ln in batch.get("lines") or []:
+        if ln.get("tax_withheld") is not None and str(ln.get("tax_withheld")).strip() != "":
+            line_taxes += float(ln.get("tax_withheld") or 0)
+            n_line_taxes += 1
+        if ln.get("net_paid") is not None and str(ln.get("net_paid")).strip() != "":
+            line_nets += float(ln.get("net_paid") or 0)
+            n_line_nets += 1
+
+    if taxes is None and n_line_taxes:
+        # Only promote line withholding into the headline for W-2. Temp/1099 keep
+        # Tax withheld as unset (—) even when settled lines store 0.0.
+        cat = str(
+            batch.get("worker_category")
+            or summary.get("worker_category")
+            or ""
+        ).strip().lower()
+        if cat == "w2":
+            taxes = round(line_taxes, 2)
+    if net is None and n_line_nets:
+        cat = str(
+            batch.get("worker_category")
+            or summary.get("worker_category")
+            or ""
+        ).strip().lower()
+        if cat == "w2":
+            net = round(line_nets, 2)
+
     if net is None and taxes is not None:
         try:
             net = float(gross) - float(taxes)
         except (TypeError, ValueError):
             net = None
-    if net is None and not taxes:
+    # Never silently equate net to gross when employee lines carry withholding.
+    if net is None and not taxes and n_line_taxes == 0:
         net = gross
     worker_count = batch.get("worker_count")
     if worker_count is None:
