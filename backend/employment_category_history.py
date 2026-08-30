@@ -85,6 +85,21 @@ def validate_employment_assignments(
                 raise ValueError(f"{name or kind} start date is invalid.")
 
 
+def _assignment_item_from_mapping(r: dict) -> dict:
+    item = {
+        "id": r.get("id"),
+        "employment_category_id": r.get("employment_category_id"),
+        "effective_from": r.get("effective_from"),
+        "effective_to": r.get("effective_to"),
+        "code": r.get("code"),
+        "name": r.get("name"),
+    }
+    item["worker_category"] = classify_employment_category(
+        item.get("code"), item.get("name")
+    )
+    return item
+
+
 def load_user_employment_assignments(conn, user_id: int) -> list[dict]:
     c = conn.cursor(dictionary=True)
     c.execute(
@@ -98,24 +113,69 @@ def load_user_employment_assignments(conn, user_id: int) -> list[dict]:
         """,
         (int(user_id),),
     )
-    rows = []
+    return [_assignment_item_from_mapping(r) for r in (c.fetchall() or [])]
+
+
+def load_employment_assignments_for_users(
+    conn, user_ids: list[int]
+) -> dict[int, list[dict]]:
+    """Bulk-load employment history for many users (one query)."""
+    uids = sorted({int(u) for u in user_ids or [] if u is not None})
+    out: dict[int, list[dict]] = {uid: [] for uid in uids}
+    if not uids:
+        return out
+    placeholders = ",".join(["%s"] * len(uids))
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        f"""
+        SELECT uec.user_id, uec.id, uec.employment_category_id,
+               uec.effective_from, uec.effective_to, ec.code, ec.name
+        FROM user_employment_categories uec
+        JOIN employment_categories ec ON ec.id = uec.employment_category_id
+        WHERE uec.user_id IN ({placeholders})
+        ORDER BY uec.user_id ASC, uec.effective_from DESC, uec.id DESC
+        """,
+        tuple(uids),
+    )
     for r in c.fetchall() or []:
-        if isinstance(r, dict):
-            item = dict(r)
-        else:
-            item = {
-                "id": r[0],
-                "employment_category_id": r[1],
-                "effective_from": r[2],
-                "effective_to": r[3],
-                "code": r[4],
-                "name": r[5],
-            }
-        item["worker_category"] = classify_employment_category(
-            item.get("code"), item.get("name")
-        )
-        rows.append(item)
-    return rows
+        uid = int(r["user_id"])
+        out.setdefault(uid, []).append(_assignment_item_from_mapping(r))
+    return out
+
+
+def category_from_employment_history(
+    rows: list[dict], on_day: date
+) -> Optional[str]:
+    """Resolve worker category from covering history rows (same rules as batch build).
+
+    Returns None when no assignment covers ``on_day`` (caller may fall back to
+    lane inference via ``worker_category_for_user``).
+    """
+    covering: list[dict] = []
+    for r in rows or []:
+        start = _parse_ymd(r.get("effective_from"))
+        end = _parse_ymd(r.get("effective_to"))
+        if start and start > on_day:
+            continue
+        if end and end < on_day:
+            continue
+        covering.append(r)
+    kinds = [str(r.get("worker_category") or "") for r in covering if r.get("worker_category")]
+    if not kinds:
+        return None
+    if "system" in kinds:
+        return "system"
+    if "tryout" in kinds:
+        return "tryout"
+    has_1099 = "contractor_1099" in kinds
+    has_temp = "temp" in kinds
+    if has_temp and not has_1099:
+        return "temp"
+    if has_1099:
+        return "contractor_1099"
+    if "w2" in kinds:
+        return "w2"
+    return None
 
 
 def current_assignment(rows: list[dict], *, on: Optional[date] = None) -> Optional[dict]:

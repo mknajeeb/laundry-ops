@@ -908,17 +908,19 @@ def list_report_employees(conn, organization_id: int) -> list[dict]:
 
 
 def list_report_periods(conn, organization_id: int) -> list[dict]:
-    """Distinct pay periods whose batches are all paid/closed/finalized.
+    """Distinct pay periods whose live batches are all paid/closed/finalized.
 
-    Open, draft, or partially processed periods are omitted so pickers and
-    dashboards never surface incomplete payroll weeks. Category mix is
-    irrelevant (W-2-only / Temp-only weeks are included when complete).
+    Open/draft periods are omitted. Terminal periods with unbatched eligible
+    work remain listed — Period Comparison marks them Incomplete / payroll
+    pending (coverage is not a picker exclusion).
     """
     from backend.payroll_operations import ensure_payout_batches_tables
     from backend.payroll_report_analytics import list_org_periods_asc
 
     ensure_payout_batches_tables(conn.cursor())
-    periods = list_org_periods_asc(conn, organization_id, require_complete=True)
+    periods = list_org_periods_asc(
+        conn, organization_id, require_complete=True, require_work_coverage=False
+    )
     return [
         {
             "pay_period_start": ps,

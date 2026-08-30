@@ -41,25 +41,30 @@ def worker_category_for_user(
     *,
     on: Optional[date] = None,
     assignments: Optional[list[dict]] = None,
+    known_not_system: bool = False,
 ) -> str:
     """Resolve payroll worker category for a user.
 
     When ``on`` is set (work date), uses employment-category history covering that
     America/New_York calendar day. When omitted, uses business today — still via
     history, not a CURDATE()-only lane query that ignores past periods.
-    """
-    try:
-        from backend.portal_system_users import is_portal_system_user
 
-        if is_portal_system_user(conn, int(user_id)):
-            return "system"
-    except Exception:
-        pass
+    ``known_not_system=True`` skips the portal/system-user check when the caller
+    already filtered system accounts (avoids N remote round-trips in coverage scans).
+    """
+    if not known_not_system:
+        try:
+            from backend.portal_system_users import is_portal_system_user
+
+            if is_portal_system_user(conn, int(user_id)):
+                return "system"
+        except Exception:
+            pass
 
     from backend.business_time import business_today
     from backend.employment_category_history import (
+        category_from_employment_history,
         load_user_employment_assignments,
-        _parse_ymd,
     )
 
     on_day = on or business_today()
@@ -70,27 +75,9 @@ def worker_category_for_user(
         except Exception:
             rows = []
 
-    covering: list[dict] = []
-    for r in rows or []:
-        start = _parse_ymd(r.get("effective_from"))
-        end = _parse_ymd(r.get("effective_to"))
-        if start and start > on_day:
-            continue
-        if end and end < on_day:
-            continue
-        covering.append(r)
-
-    kinds = [str(r.get("worker_category") or "") for r in covering if r.get("worker_category")]
-    if "tryout" in kinds:
-        return "tryout"
-    has_1099 = "contractor_1099" in kinds
-    has_temp = "temp" in kinds
-    if has_temp and not has_1099:
-        return "temp"
-    if has_1099:
-        return "contractor_1099"
-    if "w2" in kinds:
-        return "w2"
+    from_history = category_from_employment_history(rows, on_day)
+    if from_history:
+        return from_history
 
     # No covering history row — fall back to legacy lane inference (today-only).
     try:

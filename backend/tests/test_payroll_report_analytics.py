@@ -1066,7 +1066,7 @@ def test_period_completeness_by_batch_terminal_status():
 
 
 def test_list_org_periods_complete_sql_filters_open_batches():
-    """SQL path for complete periods uses terminal/finalized HAVING clause."""
+    """SQL path for terminal periods uses terminal/finalized HAVING clause."""
     from backend.payroll_report_analytics import list_org_periods_asc
 
     captured = {}
@@ -1085,7 +1085,10 @@ def test_list_org_periods_complete_sql_filters_open_batches():
         def cursor(self, dictionary=False):
             return _Cur()
 
-    periods = list_org_periods_asc(_Conn(), 3, require_complete=True)
+    # Skip coverage post-filter so this unit test only asserts the SQL gate.
+    periods = list_org_periods_asc(
+        _Conn(), 3, require_complete=True, require_work_coverage=False
+    )
     assert periods == [("2026-06-01", "2026-06-07")]
     sql = captured["sql"].lower()
     assert "payout_details_finalized_at is not null" in sql

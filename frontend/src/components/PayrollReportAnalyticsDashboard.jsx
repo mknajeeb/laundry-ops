@@ -6,6 +6,7 @@ import {
   Alert,
   Box,
   Button,
+  Chip,
   FormControl,
   InputLabel,
   MenuItem,
@@ -308,7 +309,7 @@ export default function PayrollReportAnalyticsDashboard({
                 }`
               : isMonth
                 ? "Select a month with Official Pay Date payroll."
-                : "No complete payroll period in selection (all batches must be paid or finalized)."}
+                : "No terminal payroll period in selection (batches paid/finalized; eligible work must be batched for Complete)."}
           </Typography>
         </Box>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
@@ -646,6 +647,9 @@ export default function PayrollReportAnalyticsDashboard({
                       {isMonth ? "Month / Period" : "Payroll Period"}
                     </TableCell>
                     <TableCell sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark }}>
+                      Status
+                    </TableCell>
+                    <TableCell sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.primaryDark }}>
                       Pay Date(s)
                     </TableCell>
                     <TableCell align="right" sx={{ color: VEEWASH_BRAND.primaryDark }}>Cost</TableCell>
@@ -664,10 +668,33 @@ export default function PayrollReportAnalyticsDashboard({
                     const hrsPct = p.pct_from_previous?.total_hours;
                     const nestedPeriods = isMonth ? p.periods || [] : [];
                     const monthKey = p.label || p.payroll_period || p.month;
+                    const rowIncomplete = p.is_complete === false || p.completeness_status === "incomplete";
+                    const statusLabel =
+                      p.completeness_label ||
+                      (rowIncomplete
+                        ? "Incomplete / payroll pending"
+                        : isMonth
+                          ? "—"
+                          : "Complete");
                     return [
                       <TableRow key={monthKey} hover sx={{ "& td": { fontWeight: isMonth ? 600 : 400 } }}>
                         <TableCell sx={{ whiteSpace: "nowrap" }}>
                           {p.label || p.payroll_period}
+                        </TableCell>
+                        <TableCell sx={{ whiteSpace: "nowrap" }}>
+                          {isMonth ? (
+                            <Typography variant="caption" color="text.secondary">
+                              —
+                            </Typography>
+                          ) : (
+                            <Chip
+                              size="small"
+                              label={statusLabel}
+                              color={rowIncomplete ? "warning" : "success"}
+                              variant={rowIncomplete ? "filled" : "outlined"}
+                              sx={{ height: 22, fontSize: 11 }}
+                            />
+                          )}
                         </TableCell>
                         <TableCell sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.inkMuted, fontSize: 12 }}>
                           {p.pay_dates_label || "—"}
@@ -693,6 +720,20 @@ export default function PayrollReportAnalyticsDashboard({
                         >
                           <TableCell sx={{ whiteSpace: "nowrap", pl: 3, color: VEEWASH_BRAND.inkMuted }}>
                             {per.label || per.payroll_period}
+                          </TableCell>
+                          <TableCell sx={{ whiteSpace: "nowrap" }}>
+                            <Chip
+                              size="small"
+                              label={
+                                per.completeness_label ||
+                                (per.is_complete === false
+                                  ? "Incomplete / payroll pending"
+                                  : "Complete")
+                              }
+                              color={per.is_complete === false ? "warning" : "default"}
+                              variant="outlined"
+                              sx={{ height: 22, fontSize: 11 }}
+                            />
                           </TableCell>
                           <TableCell sx={{ whiteSpace: "nowrap", color: VEEWASH_BRAND.inkMuted, fontSize: 12 }}>
                             {per.pay_dates_label || "—"}

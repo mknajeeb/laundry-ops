@@ -38,7 +38,16 @@ KPI_DEFS = (
 # Periods appear in pickers / comparison only when every batch for that
 # period is terminal (paid/closed) or details-finalized — category mix
 # does not matter (W-2-only or Temp-only weeks are valid).
+# Historical *complete* also requires all payroll-eligible approved work
+# for the work period to be represented on an effective batch (see
+# payroll_period_coverage). Terminal-but-uncovered periods stay visible
+# as Incomplete / payroll pending.
 TERMINAL_BATCH_STATUSES = frozenset({"paid", "closed"})
+
+COMPLETENESS_COMPLETE = "complete"
+COMPLETENESS_INCOMPLETE = "incomplete"
+COMPLETENESS_LABEL_COMPLETE = "Complete"
+COMPLETENESS_LABEL_INCOMPLETE = "Incomplete / payroll pending"
 
 # Period-comparison delta keys (broader than executive KPIs).
 COMPARISON_DELTA_KEYS = (
@@ -818,18 +827,35 @@ def workforce_breakdown_totals(categories: list[dict]) -> dict[str, Any]:
 def build_period_comparison_entries(
     period_rows_map: dict[tuple[str, str], list[dict]],
     ordered_periods: list[tuple[str, str]],
+    *,
+    completeness_by_period: Optional[dict[tuple[str, str], dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     prev_metrics: Optional[dict[str, Any]] = None
     for ps, pe in ordered_periods:
         rows = period_rows_map.get((ps, pe)) or []
         metrics = aggregate_period_metrics(rows)
+        cov = (completeness_by_period or {}).get((ps, pe)) or {}
+        is_complete = bool(cov.get("is_complete", True))
         entry = {
             "pay_period_start": ps,
             "pay_period_end": pe,
             "payroll_period": period_label(ps, pe),
             "pay_dates_label": ", ".join(metrics.get("pay_dates") or []) or "—",
             **metrics,
+            "is_complete": is_complete,
+            "completeness_status": cov.get(
+                "completeness_status",
+                COMPLETENESS_COMPLETE if is_complete else COMPLETENESS_INCOMPLETE,
+            ),
+            "completeness_label": cov.get(
+                "completeness_label",
+                COMPLETENESS_LABEL_COMPLETE
+                if is_complete
+                else COMPLETENESS_LABEL_INCOMPLETE,
+            ),
+            "unbatched_eligible_hours": cov.get("unbatched_eligible_hours"),
+            "unbatched_eligible_count": cov.get("unbatched_eligible_count"),
             "delta_from_previous": {},
             "pct_from_previous": {},
         }
@@ -885,11 +911,12 @@ def batch_is_complete(batch: dict) -> bool:
 
 
 def period_batches_are_complete(batches: list[dict]) -> bool:
-    """A period is complete when it has ≥1 batch and every batch is terminal.
+    """True when the period has ≥1 batch and every live batch is terminal.
 
-    Worker category mix is irrelevant — W-2-only or Temp-only weeks count
-    when all generated batches for the period are paid/closed/finalized.
-    Partially processed periods (any open/draft batch) are incomplete.
+    This is the *batch-status* half of historical completeness only.
+    Missing category work (unbatched eligible clocks) is checked separately
+    via payroll_period_coverage — terminal W-2+1099 with unbatched Temp is
+    not historically complete.
     """
     if not batches:
         return False
@@ -899,7 +926,11 @@ def period_batches_are_complete(batches: list[dict]) -> bool:
 def complete_period_keys_from_batches(
     batches: list[dict],
 ) -> set[tuple[str, str]]:
-    """Return (start, end) keys for periods whose batches are all complete."""
+    """Return (start, end) keys for periods whose live batches are all terminal.
+
+    Does not apply eligible-work coverage (no DB). Use list_org_periods_asc
+    with require_work_coverage=True for full historical completeness.
+    """
     by_period: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for b in batches or []:
         ps = str(b.get("pay_period_start") or "")[:10]
@@ -910,12 +941,21 @@ def complete_period_keys_from_batches(
 
 
 def list_org_periods_asc(
-    conn, organization_id: int, *, require_complete: bool = True
+    conn,
+    organization_id: int,
+    *,
+    require_complete: bool = True,
+    require_work_coverage: bool = False,
 ) -> list[tuple[str, str]]:
     """Distinct payroll periods ascending.
 
     When require_complete is True (default), only periods where every
     payout batch is paid, closed, or details-finalized are returned.
+
+    When require_work_coverage is True, also require every payroll-eligible
+    approved clock for the work period to sit on an effective batch.
+    Default False: terminal-but-uncovered periods remain listable so the UI
+    can show Incomplete / payroll pending (analytics attaches that flag).
     """
     c = conn.cursor(dictionary=True)
     if require_complete:
@@ -958,6 +998,30 @@ def list_org_periods_asc(
         pe = str(r["pay_period_end"])[:10]
         if ps and pe:
             out.append((ps, pe))
+    if require_work_coverage and out:
+        from backend.payroll_period_coverage import filter_periods_with_full_work_coverage
+
+        out = filter_periods_with_full_work_coverage(conn, organization_id, out)
+    return out
+
+
+def build_period_completeness_map(
+    conn,
+    organization_id: int,
+    periods: list[tuple[str, str]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Map work periods → completeness flags (batches assumed terminal)."""
+    from backend.payroll_period_coverage import period_completeness_status
+
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for ps, pe in periods or []:
+        out[(ps, pe)] = period_completeness_status(
+            conn,
+            organization_id,
+            ps,
+            pe,
+            batches_terminal=True,
+        )
     return out
 
 
@@ -1054,8 +1118,11 @@ def build_report_analytics(
         payment_status=filters.get("payment_status"),
     )
 
-    all_periods = list_org_periods_asc(conn, organization_id, require_complete=True)
-    complete_set = set(all_periods)
+    # Terminal / coverage sets are resolved in period mode (see below).
+    # Month mode does not use work-period coverage for trend buckets.
+    all_periods: list[tuple[str, str]] = []
+    complete_set: set[tuple[str, str]] = set()
+    completeness_map: dict[tuple[str, str], dict[str, Any]] = {}
 
     period_comparison: list[dict] = []
     month_comparison: list[dict] = []
@@ -1063,6 +1130,7 @@ def build_report_analytics(
     focus_label = None
     previous_label = None
     focus_is_partial = False
+    focus_is_incomplete = False
     focus_metrics = detail_metrics
     prev_metrics = None
     analytics_rows = list(detail_rows)
@@ -1151,7 +1219,16 @@ def build_report_analytics(
             focus_metrics = aggregate_period_metrics(detail_rows)
             analytics_rows = list(detail_rows)
     else:
-        # Period mode
+        # Period mode — terminal batches + eligible-work coverage (selected window only)
+        terminal_periods = list_org_periods_asc(
+            conn,
+            organization_id,
+            require_complete=True,
+            require_work_coverage=False,
+        )
+        all_periods = list(terminal_periods)
+        terminal_set = set(all_periods)
+
         anchor_periods = [
             (g["pay_period_start"], g["pay_period_end"])
             for g in groups
@@ -1167,21 +1244,31 @@ def build_report_analytics(
                         [str(e)[:10] for e in ends],
                     )
                 )
-        complete_anchors = [p for p in anchor_periods if p in complete_set]
+        display_anchors = [p for p in anchor_periods if p in terminal_set]
         selected = select_comparison_periods(
-            all_periods, anchor_periods=complete_anchors, comparison_range=n
+            all_periods, anchor_periods=display_anchors, comparison_range=n
         )
+        # Coverage checks only for periods we will show / focus (not entire history).
+        coverage_keys = list(dict.fromkeys([*selected, *display_anchors]))
+        completeness_map = build_period_completeness_map(
+            conn, organization_id, coverage_keys
+        )
+        complete_set = {
+            key for key, st in completeness_map.items() if st.get("is_complete")
+        }
+        complete_anchors = [p for p in display_anchors if p in complete_set]
+
         analytics_rows = [
             r
             for r in detail_rows
-            if (period_key_from_row(r) in complete_set)
+            if (period_key_from_row(r) in terminal_set)
             or (not period_key_from_row(r)[0] and not period_key_from_row(r)[1])
         ]
-        if not analytics_rows and detail_rows and not complete_anchors:
+        if not analytics_rows and detail_rows and not display_anchors:
             analytics_rows = []
 
         period_rows_map: dict[tuple[str, str], list[dict]] = defaultdict(list)
-        detail_period_set = set(complete_anchors)
+        detail_period_set = set(display_anchors)
         for row in analytics_rows:
             key = period_key_from_row(row)
             if key[0] and key[1]:
@@ -1196,16 +1283,38 @@ def build_report_analytics(
                 period_rows_map[key].append(row)
         for p in selected:
             period_rows_map.setdefault(p, [])
-        period_comparison = build_period_comparison_entries(period_rows_map, selected)
+        selected_completeness = {
+            p: completeness_map.get(p)
+            or {
+                "is_complete": p in complete_set,
+                "completeness_status": COMPLETENESS_COMPLETE
+                if p in complete_set
+                else COMPLETENESS_INCOMPLETE,
+                "completeness_label": COMPLETENESS_LABEL_COMPLETE
+                if p in complete_set
+                else COMPLETENESS_LABEL_INCOMPLETE,
+            }
+            for p in selected
+        }
+        period_comparison = build_period_comparison_entries(
+            period_rows_map,
+            selected,
+            completeness_by_period=selected_completeness,
+        )
         employment_mix = employment_mix_by_period(period_rows_map, selected)
 
         focus = None
         if complete_anchors:
             focus = max(complete_anchors, key=lambda t: (t[1] or "", t[0] or ""))
+        elif display_anchors:
+            focus = max(display_anchors, key=lambda t: (t[1] or "", t[0] or ""))
         elif selected:
             focus = selected[-1]
         if focus:
             focus_label = format_focus_period_label(focus[0], focus[1])
+            focus_is_incomplete = focus not in complete_set
+            if focus_is_incomplete:
+                focus_label = f"{focus_label} (incomplete / payroll pending)"
             idx = next(
                 (
                     i
@@ -1215,7 +1324,11 @@ def build_report_analytics(
                 ),
                 None,
             )
-            if report_type == "payroll_period" and len(complete_anchors) == 1 and idx is not None:
+            if (
+                report_type == "payroll_period"
+                and len(display_anchors) == 1
+                and idx is not None
+            ):
                 focus_metrics = period_comparison[idx]
             else:
                 focus_metrics = aggregate_period_metrics(analytics_rows)
@@ -1236,7 +1349,7 @@ def build_report_analytics(
                         prev_metrics.get("pay_period_start") or "",
                         prev_metrics.get("pay_period_end") or "",
                     )
-                elif focus in complete_set:
+                elif focus in terminal_set:
                     try:
                         fi = all_periods.index(focus)
                     except ValueError:
@@ -1294,6 +1407,7 @@ def build_report_analytics(
         "previous_period": previous_label,
         "focus_kind": comparison_mode,
         "focus_is_partial": focus_is_partial,
+        "focus_is_incomplete": focus_is_incomplete,
     }
 
     return {
