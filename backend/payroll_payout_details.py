@@ -457,6 +457,20 @@ def expected_employer_taxes_for_period(
     }
 
 
+# Cent rounding — employer components must match the engine within one cent.
+_EMPLOYER_TAX_CENT_TOL = 0.01
+
+
+def _employer_component_mismatch(label: str, stored: float, expected: float, gross: float) -> Optional[str]:
+    # Compare at cent precision so 43.48 vs 43.49 (float noise / half-up) is within one cent.
+    if round(abs(float(stored) - float(expected)), 2) <= _EMPLOYER_TAX_CENT_TOL:
+        return None
+    return (
+        f"Employer {label} ${float(stored):.2f} does not match period calculation "
+        f"${float(expected):.2f} for gross ${float(gross):.2f}"
+    )
+
+
 def validate_employer_taxes_for_period(
     conn,
     organization_id: int,
@@ -468,11 +482,18 @@ def validate_employer_taxes_for_period(
     pay_period_start: Optional[str] = None,
     pay_frequency: Optional[str] = None,
     worker_category: Optional[str] = None,
+    require_reconcile: bool = False,
+    tax_settings_override: Optional[dict] = None,
 ) -> Optional[str]:
-    """Return an error message when employer taxes disagree with period wage bases.
+    """Block persistence when employer taxes disagree with the canonical engine.
 
-    Compares stored employer components to the canonical engine output for the same
-    period gross (as-of YTD). Not a crude total/gross ratio cutoff.
+    Invariant: each stored employer-tax component (and the component sum) must
+    reconcile to ``expected_employer_taxes_for_period`` for this employee, work
+    period, and gross — within cent rounding. Not a crude total/gross ratio rule.
+
+    ``require_reconcile=True`` (finalize) always enforces the invariant, including
+    when stored employer taxes are still zero. Draft edits with an empty employer
+    block may skip until taxes are entered or finalize runs.
     """
     cat = str(worker_category or "").strip().lower()
     if cat and cat != "w2":
@@ -480,13 +501,19 @@ def validate_employer_taxes_for_period(
     gross_f = float(_money(gross))
     if gross_f <= 0:
         return None
+
     er = (details or {}).get("employer_taxes") or {}
-    if not any(float(_money(er.get(k))) for k in EMPLOYER_TAX_KEYS):
+    stored = {k: float(_money(er.get(k))) for k in EMPLOYER_TAX_KEYS}
+    stored_total = round(sum(stored.values()), 2)
+    if not require_reconcile and stored_total <= _EMPLOYER_TAX_CENT_TOL:
         return None
 
     from backend.payroll_tax_settings import fetch_payroll_tax_settings
 
-    settings = fetch_payroll_tax_settings(conn, organization_id)
+    settings = dict(fetch_payroll_tax_settings(conn, organization_id) or {})
+    if tax_settings_override:
+        settings.update(tax_settings_override)
+
     try:
         expected = expected_employer_taxes_for_period(
             conn,
@@ -496,64 +523,86 @@ def validate_employer_taxes_for_period(
             worker_name=worker_name,
             pay_period_start=pay_period_start,
             pay_frequency=pay_frequency,
+            tax_settings_override=tax_settings_override,
         )
-    except ValueError:
-        # Profile incomplete — fall back to statutory wage-base checks only.
-        expected = None
+    except ValueError as exc:
+        if require_reconcile:
+            return str(exc) or "Tax profile incomplete — cannot finalize employer taxes"
+        # Draft path: statutory wage-base fallback when profile is incomplete.
+        return _validate_employer_taxes_wage_base_fallback(stored, gross_f, settings)
 
+    # Component-level reconciliation to engine taxable wages × rates / caps.
+    for label, key in (
+        ("SS", "er_ss"),
+        ("Medicare", "er_medicare"),
+        ("FUTA", "futa"),
+        ("other", "other"),
+    ):
+        msg = _employer_component_mismatch(label, stored[key], expected[key], gross_f)
+        if msg:
+            return msg
+
+    # SUTA + NY re-employ may be packaged with RSF folded into ``suta``.
+    stored_suta_all = round(stored["suta"] + stored["ny_reemploy"], 2)
+    expected_suta_all = round(
+        float(expected.get("suta") or 0) + float(expected.get("ny_reemploy") or 0), 2
+    )
+    suta_rate = settings.get("ny_suta_rate")
+    if suta_rate in (None, ""):
+        if stored_suta_all > _EMPLOYER_TAX_CENT_TOL and expected_suta_all <= _EMPLOYER_TAX_CENT_TOL:
+            return (
+                f"Employer SUTA ${stored_suta_all:.2f} is set but NY SUTA rate is not "
+                f"configured and period calculation is ${expected_suta_all:.2f}"
+            )
+    else:
+        msg = _employer_component_mismatch(
+            "SUTA", stored_suta_all, expected_suta_all, gross_f
+        )
+        if msg:
+            return msg
+
+    expected_total = round(sum(float(expected.get(k) or 0) for k in EMPLOYER_TAX_KEYS), 2)
+    if round(abs(stored_total - expected_total), 2) > _EMPLOYER_TAX_CENT_TOL:
+        return (
+            f"Employer tax total ${stored_total:.2f} does not match period calculation "
+            f"${expected_total:.2f} for gross ${gross_f:.2f}"
+        )
+    return None
+
+
+def _validate_employer_taxes_wage_base_fallback(
+    stored: dict[str, float], gross_f: float, settings: dict
+) -> Optional[str]:
+    """When the engine cannot run, still reject impossible FICA/FUTA wage bases."""
     ss_rate = float(settings.get("employer_social_security_rate") or 0.062)
     med_rate = float(settings.get("employer_medicare_rate") or 0.0145)
     futa_rate = float(settings.get("futa_rate") or 0.006)
-    tol = max(0.50, round(gross_f * 0.02, 2))  # $0.50 or 2% of gross
+    tol = _EMPLOYER_TAX_CENT_TOL
 
-    def _bad(label: str, stored: float, exp: float) -> Optional[str]:
-        if abs(stored - exp) <= tol:
-            return None
-        return (
-            f"Employer {label} ${stored:.2f} does not match period calculation "
-            f"${exp:.2f} for gross ${gross_f:.2f}"
-        )
-
-    stored_ss = float(_money(er.get("er_ss")))
-    stored_med = float(_money(er.get("er_medicare")))
-    stored_futa = float(_money(er.get("futa")))
-    stored_suta = float(_money(er.get("suta"))) + float(_money(er.get("ny_reemploy")))
-
-    if expected is not None:
-        for label, key, stored in (
-            ("SS", "er_ss", stored_ss),
-            ("Medicare", "er_medicare", stored_med),
-            ("FUTA", "futa", stored_futa),
-        ):
-            msg = _bad(label, stored, float(expected.get(key) or 0))
-            if msg:
-                return msg
-        exp_suta = float(expected.get("suta") or 0) + float(expected.get("ny_reemploy") or 0)
-        # Only enforce SUTA when org rate is configured (otherwise engine expects ~0).
-        if settings.get("ny_suta_rate") not in (None, ""):
-            msg = _bad("SUTA", stored_suta, exp_suta)
-            if msg:
-                return msg
-        return None
-
-    # Fallback: implied wage bases must match period gross (FICA / FUTA rates).
     if ss_rate > 0:
-        implied = stored_ss / ss_rate
-        if abs(implied - gross_f) > tol:
+        implied = stored["er_ss"] / ss_rate
+        if abs(implied - gross_f) > max(tol, gross_f * 0.01):
             return (
                 f"Employer SS implies wages ${implied:.2f} but period gross is "
                 f"${gross_f:.2f}"
             )
-    if med_rate > 0 and stored_med > 0:
-        implied = stored_med / med_rate
-        if abs(implied - gross_f) > tol:
+    if med_rate > 0:
+        expected_med = round(gross_f * med_rate, 2)
+        if expected_med > tol and stored["er_medicare"] <= tol:
             return (
-                f"Employer Medicare implies wages ${implied:.2f} but period gross is "
-                f"${gross_f:.2f}"
+                f"Employer Medicare ${stored['er_medicare']:.2f} does not match "
+                f"period calculation ${expected_med:.2f} for gross ${gross_f:.2f}"
             )
-    if futa_rate > 0 and stored_futa > 0:
-        implied = stored_futa / futa_rate
-        if implied > gross_f + tol and abs(implied - gross_f) > tol:
+        if stored["er_medicare"] > tol:
+            implied = stored["er_medicare"] / med_rate
+            if abs(implied - gross_f) > max(tol, gross_f * 0.01):
+                return (
+                    f"Employer Medicare implies wages ${implied:.2f} but period gross is "
+                    f"${gross_f:.2f}"
+                )
+    if futa_rate > 0 and stored["futa"] > tol:
+        implied = stored["futa"] / futa_rate
+        if implied > gross_f + max(tol, gross_f * 0.01):
             return (
                 f"Employer FUTA implies wages ${implied:.2f} but period gross is "
                 f"${gross_f:.2f}"
@@ -1278,6 +1327,7 @@ def finalize_blockers(
                 pay_period_start=str(batch.get("pay_period_start") or ""),
                 pay_frequency=infer_pay_frequency_from_batch(batch),
                 worker_category=batch.get("worker_category"),
+                require_reconcile=True,
             )
             if er_err:
                 blockers.append(f"{er_err} — {name}")
