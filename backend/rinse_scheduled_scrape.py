@@ -65,10 +65,12 @@ def portal_auto_confirm_force_enabled() -> bool:
 
 
 def av_single_pass_enabled() -> bool:
-    """One Playwright At Vendor walk (scan-events) feeds portal CSV + presence + scans.
+    """One Playwright Cleaner Tickets walk (scan-events) feeds portal CSV + presence + scans.
 
-    Default ON. Set ``RINSE_AV_SINGLE_PASS=0`` to restore the legacy triple scrape
-    (presence scrape.mjs + portal scrape.mjs + scan-events) for emergency rollback.
+    Production sources are WF+HD ship-window URLs (ET yesterday→today), injected by
+    ``_subprocess_env_for_vendor``. Default ON. Set ``RINSE_AV_SINGLE_PASS=0`` to
+    restore the legacy triple scrape (presence + portal + scan-events) for emergency
+    rollback.
     """
     raw = os.getenv("RINSE_AV_SINGLE_PASS")
     if raw is None or not str(raw).strip():
@@ -754,6 +756,7 @@ def _subprocess_env_for_vendor(
     organization_name: str | None = None,
 ) -> dict[str, str]:
     from backend.rinse_bag_export_runner import scraper_dir
+    from backend.rinse_ship_window_tickets_urls import build_scheduled_wf_hd_source_urls
 
     _, vendor_env = rinse_scrape_env_for_organization(
         int(organization_id),
@@ -764,6 +767,13 @@ def _subprocess_env_for_vendor(
     )
     day = _today_label_et()
     tenant_data = tenant_data_dir(vendor)
+    # Production scheduled sources: WF + HD with ET yesterday→today ship dates.
+    # Overrides any Azure/legacy status=at_vendor RINSE_*_TICKETS_URL so the
+    # scheduled job cannot accidentally scrape the old single At Vendor list.
+    sources = build_scheduled_wf_hd_source_urls()
+    source_urls_json = json.dumps(
+        [{"label": s["label"], "url": s["url"]} for s in sources]
+    )
     out = {
         **vendor_env,
         "RINSE_CSV_LAYOUT": "portal",
@@ -771,6 +781,13 @@ def _subprocess_env_for_vendor(
         "OUTPUT_CSV": str(paths.portal_csv),
         "OUTPUT_SCAN_TICKETS_CSV": str(paths.scan_tickets_csv),
         "OUTPUT_SCAN_EVENTS_CSV": str(paths.scan_events_csv),
+        "RINSE_TICKETS_SOURCE_URLS": source_urls_json,
+        # First source also set as RINSE_TICKETS_URL for login next= fallback.
+        "RINSE_TICKETS_URL": str(sources[0]["url"]),
+        # Full traverse every run: no early-stop / no bag-set pagination abort.
+        "RINSE_FULL_TRAVERSE": "1",
+        "RINSE_PORTAL_EARLY_STOP": "0",
+        "RINSE_BLOCK_HEAVY_ASSETS": "1",
     }
     # Tenant scripts default to dated names under output/; explicit paths win.
     if not (os.getenv("RINSE_MAX_PAGES") or "").strip():
@@ -780,7 +797,8 @@ def _subprocess_env_for_vendor(
                 line = line.strip()
                 if line.startswith("RINSE_MAX_PAGES=") and "=" in line:
                     out.setdefault("RINSE_MAX_PAGES", line.split("=", 1)[1].strip())
-    out.setdefault("RINSE_MAX_PAGES", "20")
+    # Ship-window lists are small (~5 pages); keep headroom without early-stop.
+    out.setdefault("RINSE_MAX_PAGES", "40")
     return out
 
 
@@ -1260,8 +1278,8 @@ def run_rinse_combined_sync_for_org(
         single_pass = av_single_pass_enabled()
         if single_pass:
             log.write(
-                f"At Vendor single-pass enabled org={org_id}: "
-                "one scan-events Playwright walk → portal CSV + presence + scans\n"
+                f"Cleaner Tickets single-pass enabled org={org_id}: "
+                "WF+HD ship-window scan-events walk → portal CSV + presence + scans\n"
             )
             # Presence is applied inside run_scheduled_scrape_for_org after tickets land.
             av_presence_result = PresenceScrapeResult(

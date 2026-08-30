@@ -21,6 +21,8 @@ import {
   isLikelyExpandedDetailSubRow,
   isMainListTicketRow,
   expandRowAndReadBag,
+  getShowBagDetailsFallbackCount,
+  resetShowBagDetailsFallbackCount,
   ensureRowCollapsedAfterTicket,
   parsePortalFields,
   portalHeaderRow,
@@ -419,16 +421,60 @@ function writeEventsCsv(ticketRecords, outPath) {
   return lines.length;
 }
 
+/**
+ * Production scheduled scrape may pass RINSE_TICKETS_SOURCE_URLS as JSON:
+ * [{"label":"wash_and_fold","url":"..."},{"label":"hang_dry","url":"..."}]
+ * Falls back to single RINSE_TICKETS_URL.
+ */
+function resolveTicketsSources() {
+  const rawMulti = String(process.env.RINSE_TICKETS_SOURCE_URLS || "").trim();
+  if (rawMulti) {
+    try {
+      const parsed = JSON.parse(rawMulti);
+      if (Array.isArray(parsed) && parsed.length) {
+        const out = [];
+        for (const item of parsed) {
+          const url = String((item && item.url) || "").trim();
+          if (!url) continue;
+          out.push({
+            label: String((item && item.label) || `source_${out.length + 1}`).trim() || "source",
+            url,
+          });
+        }
+        if (out.length) return out;
+      }
+    } catch (err) {
+      console.error(
+        "[rinse-scan-events] RINSE_TICKETS_SOURCE_URLS JSON parse failed — falling back to RINSE_TICKETS_URL:",
+        err && err.message ? err.message : err,
+      );
+    }
+  }
+  const single =
+    process.env.RINSE_TICKETS_URL?.trim() ||
+    "https://www.rinse.com/cleanertickets/?page=1";
+  return [{ label: "default", url: single }];
+}
+
+function fullTraverseEnabled() {
+  const v = String(process.env.RINSE_FULL_TRAVERSE || "").trim();
+  return v === "1" || v.toLowerCase() === "true";
+}
+
 async function main() {
+  const sources = resolveTicketsSources();
   console.error(
     "[rinse-scan-events] process.env.RINSE_TICKETS_URL:",
     process.env.RINSE_TICKETS_URL ?? "<unset>",
   );
-  const baseUrl =
-    process.env.RINSE_TICKETS_URL?.trim() ||
-    "https://www.rinse.com/cleanertickets/?page=1";
-  console.error("[rinse-scan-events] baseUrl:", baseUrl);
+  console.error(
+    "[rinse-scan-events] sources:",
+    sources.map((s) => `${s.label}=${s.url}`).join(" | "),
+  );
+  const baseUrl = sources[0].url;
   const headed = process.env.HEADED === "1" || process.env.HEADED === "true";
+  const fullTraverse = fullTraverseEnabled();
+  console.error(`[rinse-scan-events] RINSE_FULL_TRAVERSE=${fullTraverse ? "1" : "0"}`);
   const storageRel = process.env.RINSE_STORAGE_STATE?.trim();
   const storageState =
     storageRel && fs.existsSync(path.resolve(__rinseDir, storageRel))
@@ -506,8 +552,6 @@ async function main() {
 
       const allTickets = [];
       const allSkipped = [];
-      const seenFingerprints = new Set();
-      const seenBagSigs = new Set();
       let pagesScraped = 0;
       let stoppedReason = "no_next_page_ui";
       let reachedMaxPages = false;
@@ -515,181 +559,226 @@ async function main() {
       let sessionAuthenticated = Boolean(storageState);
       let pageLoaded = false;
       let pageNavFailed = false;
+      const sourceSummaries = [];
+      resetShowBagDetailsFallbackCount();
 
-      for (let p = pageStart; p < pageStart + maxPages; p++) {
-        const url = urlForPage(baseUrl, p);
-        console.error("[rinse-scan-events] page URL:", url);
-        progressLine(`\nPage ${p}: ${url}`);
-        try {
-          await gotoWithRetry(page, url, { attempts: 2, label: "page.goto" });
-        } catch (navErr) {
-          pageNavFailed = true;
-          portalDiag({
-            op: "page.goto_exhausted",
-            page: p,
-            url,
-            error: String(navErr && navErr.message ? navErr.message : navErr).slice(0, 160),
-          });
-          if (pagesScraped === 0) {
-            throw navErr;
-          }
-          stoppedReason = "page_navigation_failed";
-          progressLine(
-            `Page ${p} navigation failed twice — stopping as partial (pages 1..${pagesScraped} kept; later pages not treated as absent).`,
-          );
-          break;
-        }
-        await page.waitForTimeout(pageSettleMs);
-        await page.waitForSelector("table tbody tr", { timeout: 20000 }).catch(() => {});
-        lastPageUrl = page.url();
-        pageLoaded = true;
-        pagesScraped += 1;
-        progressLine(`[portal] page ${p} loaded — starting ticket walk`);
+      for (const source of sources) {
+        const sourceUrl = source.url;
+        const sourceLabel = source.label || "source";
+        progressLine(`\n=== Source ${sourceLabel} ===\n${sourceUrl}`);
+        const seenFingerprints = new Set();
+        const seenBagSigs = new Set();
+        let sourcePages = 0;
+        let sourceTicketsBefore = allTickets.length;
+        let sourceStop = "no_next_page_ui";
 
-        const landed = pageNumFromUrl(page.url());
-        if (landed != null && landed !== p) {
-          progressLine(`Stopping: requested page ${p}, landed on ${landed}.`);
-          stoppedReason = "pagination_redirect";
-          break;
-        }
-
-        if (await isLikelyLoginPage(page)) {
-          console.error("\nNot logged in — run npm run save-session and set RINSE_STORAGE_STATE.");
-          sessionAuthenticated = false;
-          await closeBrowserSafe(browser);
-          browser = null;
-          process.exit(3);
-        }
-        sessionAuthenticated = true;
-
-        session.page = page;
-        const { tickets, tableRowCount, skippedTickets } = await scrapeScanEventsOnPage(session, {
-          pageNum: p,
-          pageUrl: url,
-        });
-        page = session.page;
-        if (skippedTickets && skippedTickets.length) {
-          allSkipped.push(...skippedTickets);
-        }
-        if (tableRowCount === 0) {
-          progressLine(`Stopping: no table rows on page ${p}.`);
-          stoppedReason = "no_table_rows";
-          break;
-        }
-
-        const fp = await page
-          .evaluate(() => {
-            const trs = Array.from(document.querySelectorAll("table tbody tr")).filter((tr) =>
-              tr.querySelector("td"),
-            );
-            return trs
-              .slice(0, 120)
-              .map((tr) => (tr.innerText || "").trim().replace(/\s+/g, " ").slice(0, 140))
-              .join("\u241e");
-          })
-          .catch(() => "");
-        if (fp.length > 24 && seenFingerprints.has(fp)) {
-          progressLine(`Stopping: page ${p} duplicates an earlier page.`);
-          stoppedReason = "duplicate_page_fingerprint";
-          break;
-        }
-        if (fp.length > 24) seenFingerprints.add(fp);
-
-        if (p > pageStart && tickets.length === 0) {
-          progressLine(`Stopping: page ${p} had no extractable ticket rows after filtering.`);
-          stoppedReason = "no_extractable_rows";
-          break;
-        }
-
-        const pageBagSig = [
-          ...new Set(
-            tickets.map((t) => String(t.bag_id || t.bag_id_code || "").trim().toUpperCase()).filter(Boolean),
-          ),
-        ]
-          .sort()
-          .join("\u241e");
-
-        if (pageBagSig.length > 0 && seenBagSigs.has(pageBagSig)) {
-          progressLine(
-            `Stopping: page ${p} has the same bag ID set as an earlier page (no new tickets).`,
-          );
-          stoppedReason = "duplicate_bag_set";
-          break;
-        }
-        if (pageBagSig.length > 0) seenBagSigs.add(pageBagSig);
-
-        allTickets.push(...tickets);
-
-        // Freshness early-stop (same contract as scrape.mjs). Do not assume page 1 = delta.
-        if (String(process.env.RINSE_PORTAL_EARLY_STOP || "") === "1") {
-          if (!globalThis.__rinseEarlyStop) {
-            let seed = {};
-            try {
-              const seedPath = String(process.env.RINSE_FINGERPRINT_SEED || "").trim();
-              if (seedPath && fs.existsSync(seedPath)) {
-                const raw = JSON.parse(fs.readFileSync(seedPath, "utf8"));
-                seed = (raw && raw.fingerprints) || {};
-              }
-            } catch {
-              seed = {};
+        for (let p = pageStart; p < pageStart + maxPages; p++) {
+          const url = urlForPage(sourceUrl, p);
+          console.error("[rinse-scan-events] page URL:", url);
+          progressLine(`\nPage ${p} (${sourceLabel}): ${url}`);
+          try {
+            await gotoWithRetry(page, url, { attempts: 2, label: "page.goto" });
+          } catch (navErr) {
+            pageNavFailed = true;
+            portalDiag({
+              op: "page.goto_exhausted",
+              page: p,
+              url,
+              source: sourceLabel,
+              error: String(navErr && navErr.message ? navErr.message : navErr).slice(0, 160),
+            });
+            if (pagesScraped === 0) {
+              throw navErr;
             }
-            globalThis.__rinseEarlyStop = {
-              consecutiveUnchanged: 0,
-              sourceInspectedComplete: false,
-              seed,
-            };
-          }
-          const early = globalThis.__rinseEarlyStop;
-          const seed = early.seed || {};
-          const unchangedNeed = Math.max(
-            1,
-            parseInt(process.env.RINSE_EARLY_STOP_UNCHANGED_PAGES || "2", 10) || 2,
-          );
-          let pageNewOrChanged = 0;
-          for (const t of tickets) {
-            const bid = String(t.bag_id || t.bag_id_code || "").trim().toUpperCase();
-            if (!bid) {
-              pageNewOrChanged += 1;
-              continue;
-            }
-            const customer = String(t.customer || t.customer_name || "");
-            const edd = String(t.edd || t.estimated_delivery || "");
-            const lbs = String(t.lbs || t.weight || "");
-            const service = String(t.service || "");
-            const fpBag = `${bid}|${customer}|${edd}|${lbs}|${service}`.slice(0, 24);
-            const known = seed[bid];
-            if (!known || known !== fpBag) {
-              pageNewOrChanged += 1;
-              seed[bid] = fpBag;
-            }
-          }
-          early.seed = seed;
-          if (pageNewOrChanged === 0) {
-            early.consecutiveUnchanged += 1;
-          } else {
-            early.consecutiveUnchanged = 0;
-          }
-          if (early.consecutiveUnchanged >= unchangedNeed) {
+            sourceStop = "page_navigation_failed";
+            stoppedReason = "page_navigation_failed";
             progressLine(
-              `Stopping: safe unchanged boundary after ${unchangedNeed} consecutive page(s) with no new/changed bag fingerprints.`,
+              `Page ${p} navigation failed twice — stopping source as partial (pages kept; later pages not treated as absent).`,
             );
-            stoppedReason = "safe_unchanged_boundary";
-            early.sourceInspectedComplete = true;
             break;
           }
+          await page.waitForTimeout(pageSettleMs);
+          await page.waitForSelector("table tbody tr", { timeout: 20000 }).catch(() => {});
+          lastPageUrl = page.url();
+          pageLoaded = true;
+          pagesScraped += 1;
+          sourcePages += 1;
+          progressLine(`[portal] ${sourceLabel} page ${p} loaded — starting ticket walk`);
+
+          const landed = pageNumFromUrl(page.url());
+          if (landed != null && landed !== p) {
+            progressLine(`Stopping source ${sourceLabel}: requested page ${p}, landed on ${landed}.`);
+            sourceStop = "pagination_redirect";
+            stoppedReason = "pagination_redirect";
+            break;
+          }
+
+          if (await isLikelyLoginPage(page)) {
+            console.error("\nNot logged in — run npm run save-session and set RINSE_STORAGE_STATE.");
+            sessionAuthenticated = false;
+            await closeBrowserSafe(browser);
+            browser = null;
+            process.exit(3);
+          }
+          sessionAuthenticated = true;
+
+          session.page = page;
+          const { tickets, tableRowCount, skippedTickets } = await scrapeScanEventsOnPage(session, {
+            pageNum: p,
+            pageUrl: url,
+          });
+          page = session.page;
+          if (skippedTickets && skippedTickets.length) {
+            allSkipped.push(...skippedTickets);
+          }
+          if (tableRowCount === 0) {
+            progressLine(`Stopping source ${sourceLabel}: no table rows on page ${p}.`);
+            sourceStop = "no_table_rows";
+            stoppedReason = "no_table_rows";
+            break;
+          }
+
+          const fp = await page
+            .evaluate(() => {
+              const trs = Array.from(document.querySelectorAll("table tbody tr")).filter((tr) =>
+                tr.querySelector("td"),
+              );
+              return trs
+                .slice(0, 120)
+                .map((tr) => (tr.innerText || "").trim().replace(/\s+/g, " ").slice(0, 140))
+                .join("\u241e");
+            })
+            .catch(() => "");
+          if (!fullTraverse && fp.length > 24 && seenFingerprints.has(fp)) {
+            progressLine(`Stopping: page ${p} duplicates an earlier page.`);
+            sourceStop = "duplicate_page_fingerprint";
+            stoppedReason = "duplicate_page_fingerprint";
+            break;
+          }
+          if (fp.length > 24) seenFingerprints.add(fp);
+
+          if (p > pageStart && tickets.length === 0) {
+            progressLine(
+              `Stopping source ${sourceLabel}: page ${p} had no extractable ticket rows after filtering.`,
+            );
+            sourceStop = "no_extractable_rows";
+            stoppedReason = "no_extractable_rows";
+            break;
+          }
+
+          const pageBagSig = [
+            ...new Set(
+              tickets
+                .map((t) => String(t.bag_id || t.bag_id_code || "").trim().toUpperCase())
+                .filter(Boolean),
+            ),
+          ]
+            .sort()
+            .join("\u241e");
+
+          // Full traverse: never abort pagination because a bag set was seen before
+          // (reusable bags / same-page pagination quirks must not stop the run).
+          if (!fullTraverse && pageBagSig.length > 0 && seenBagSigs.has(pageBagSig)) {
+            progressLine(
+              `Stopping: page ${p} has the same bag ID set as an earlier page (no new tickets).`,
+            );
+            sourceStop = "duplicate_bag_set";
+            stoppedReason = "duplicate_bag_set";
+            break;
+          }
+          if (pageBagSig.length > 0) seenBagSigs.add(pageBagSig);
+
+          allTickets.push(...tickets);
+
+          // Freshness early-stop disabled under RINSE_FULL_TRAVERSE=1.
+          if (!fullTraverse && String(process.env.RINSE_PORTAL_EARLY_STOP || "") === "1") {
+            if (!globalThis.__rinseEarlyStop) {
+              let seed = {};
+              try {
+                const seedPath = String(process.env.RINSE_FINGERPRINT_SEED || "").trim();
+                if (seedPath && fs.existsSync(seedPath)) {
+                  const raw = JSON.parse(fs.readFileSync(seedPath, "utf8"));
+                  seed = (raw && raw.fingerprints) || {};
+                }
+              } catch {
+                seed = {};
+              }
+              globalThis.__rinseEarlyStop = {
+                consecutiveUnchanged: 0,
+                sourceInspectedComplete: false,
+                seed,
+              };
+            }
+            const early = globalThis.__rinseEarlyStop;
+            const seed = early.seed || {};
+            const unchangedNeed = Math.max(
+              1,
+              parseInt(process.env.RINSE_EARLY_STOP_UNCHANGED_PAGES || "2", 10) || 2,
+            );
+            let pageNewOrChanged = 0;
+            for (const t of tickets) {
+              const bid = String(t.bag_id || t.bag_id_code || "").trim().toUpperCase();
+              if (!bid) {
+                pageNewOrChanged += 1;
+                continue;
+              }
+              const customer = String(t.customer || t.customer_name || "");
+              const edd = String(t.edd || t.estimated_delivery || "");
+              const lbs = String(t.lbs || t.weight || "");
+              const service = String(t.service || "");
+              const fpBag = `${bid}|${customer}|${edd}|${lbs}|${service}`.slice(0, 24);
+              const known = seed[bid];
+              if (!known || known !== fpBag) {
+                pageNewOrChanged += 1;
+                seed[bid] = fpBag;
+              }
+            }
+            early.seed = seed;
+            if (pageNewOrChanged === 0) {
+              early.consecutiveUnchanged += 1;
+            } else {
+              early.consecutiveUnchanged = 0;
+            }
+            if (early.consecutiveUnchanged >= unchangedNeed) {
+              progressLine(
+                `Stopping: safe unchanged boundary after ${unchangedNeed} consecutive page(s) with no new/changed bag fingerprints.`,
+              );
+              sourceStop = "safe_unchanged_boundary";
+              stoppedReason = "safe_unchanged_boundary";
+              early.sourceInspectedComplete = true;
+              break;
+            }
+          }
+
+          if (!(await hasNextPageInUi(page, p))) {
+            progressLine(
+              `Source ${sourceLabel}: pagination UI shows no next page after ${p}.`,
+            );
+            sourceStop = "no_next_page_ui";
+            stoppedReason = "no_next_page_ui";
+            break;
+          }
+
+          if (p === pageStart + maxPages - 1) {
+            reachedMaxPages = true;
+            sourceStop = "max_pages_reached";
+            stoppedReason = "max_pages_reached";
+            progressLine(`Stopping source ${sourceLabel}: reached RINSE_MAX_PAGES (${maxPages}).`);
+          }
         }
 
-        if (!(await hasNextPageInUi(page, p))) {
-          progressLine(`Stopping: pagination UI shows no next page after ${p}.`);
-          stoppedReason = "no_next_page_ui";
-          break;
-        }
+        sourceSummaries.push({
+          label: sourceLabel,
+          url: sourceUrl,
+          pages: sourcePages,
+          tickets: allTickets.length - sourceTicketsBefore,
+          stopped_reason: sourceStop,
+        });
+      }
 
-        if (p === pageStart + maxPages - 1) {
-          reachedMaxPages = true;
-          stoppedReason = "max_pages_reached";
-          progressLine(`Stopping: reached RINSE_MAX_PAGES limit (${maxPages}).`);
-        }
+      // Natural end across all sources.
+      if (!pageNavFailed && !reachedMaxPages) {
+        stoppedReason = "no_next_page_ui";
       }
 
       if (allTickets.length === 0) {
@@ -720,6 +809,10 @@ async function main() {
         );
       }
       progressLine(`Wrote ${eventCount} scan event row(s) → ${eventsPath}`);
+      const showBagFallbacks = getShowBagDetailsFallbackCount();
+      progressLine(
+        `Show bag details fallbacks: ${showBagFallbacks} (only when Bag ID missing after expand)`,
+      );
 
       if (!eventsOnly && ticketsPath) {
         const metaPath =
@@ -736,9 +829,15 @@ async function main() {
           effective_child_max_pages: maxPages,
           page_start: pageStart,
           row_count: ticketCount,
+          scan_event_rows: eventCount,
+          show_bag_details_fallbacks: showBagFallbacks,
           scraped_at: new Date().toISOString(),
           single_pass_source: "scan-events",
-          early_stop_enabled: String(process.env.RINSE_PORTAL_EARLY_STOP || "") === "1",
+          full_traverse: fullTraverse,
+          early_stop_enabled:
+            !fullTraverse && String(process.env.RINSE_PORTAL_EARLY_STOP || "") === "1",
+          source_summaries: sourceSummaries,
+          tickets_sources: sources,
           ...buildPortalValidationMeta({
             baseUrl,
             pageUrl: lastPageUrl,

@@ -1572,6 +1572,17 @@ function portalDataRow(portal, bagDisplay) {
   ];
 }
 
+/** Count of Show bag details clicks used as Bag ID fallback (reset per scrape process). */
+let showBagDetailsFallbackCount = 0;
+
+function getShowBagDetailsFallbackCount() {
+  return showBagDetailsFallbackCount;
+}
+
+function resetShowBagDetailsFallbackCount() {
+  showBagDetailsFallbackCount = 0;
+}
+
 async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
   await rowLocator.scrollIntoViewIfNeeded({ timeout: 8000 }).catch(() => {});
   await page.waitForTimeout(70);
@@ -1586,7 +1597,11 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
   const skipShow =
     (process.env.RINSE_SKIP_SHOW_BAG_DETAILS || "").trim() === "1";
 
-  if (!r.bagId && !skipShow) {
+  // Prefer Bag: from expanded .bag-details textContent — do not click Show bag
+  // details or poll when the id is already available (live proof: ~97/102).
+  if (r.bagId) {
+    /* bag id already present after expand — never click Show bag details */
+  } else if (!skipShow) {
     const pollMs = Math.max(30, Math.min(200, parseInt(process.env.RINSE_BAG_DOM_POLL_MS || "60", 10) || 60));
     const maxDom = Math.max(
       0,
@@ -1597,6 +1612,10 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
       await page.waitForTimeout(pollMs);
       r = await readBagFromRowBlock(rowLocator);
     }
+    if (r.bagId) {
+      /* obtained during short DOM wait — still no Show bag details click */
+    } else {
+    showBagDetailsFallbackCount += 1;
     const bagOk = await ensureShowBagDetailsForTicketRow(rowLocator);
     if (!bagOk) {
       const hint = (collapsedRowText || "").trim().replace(/\s+/g, " ").slice(0, 80);
@@ -1631,6 +1650,7 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
       customer: (ordCust || custStructured || custLine || r2.customer || r.customer || "").slice(0, 80),
       fullText: merged,
     };
+    }
   } else if (!r.bagId && skipShow) {
     const hint = (collapsedRowText || "").trim().replace(/\s+/g, " ").slice(0, 80);
     console.warn(
@@ -2544,6 +2564,8 @@ export {
   isLikelyExpandedDetailSubRow,
   isMainListTicketRow,
   expandRowAndReadBag,
+  getShowBagDetailsFallbackCount,
+  resetShowBagDetailsFallbackCount,
   ensureRowCollapsedAfterTicket,
   pickPortalListLine,
   parsePortalFields,
