@@ -790,20 +790,20 @@ def _subprocess_env_for_vendor(
         "RINSE_BLOCK_HEAVY_ASSETS": "1",
         # Match proven ~1.17s/ticket laptop path: short settles + toggle-collapse.
         # Do not inherit inflated Azure/App Service settle waits.
-        "RINSE_EXPAND_SETTLE_MS": "400",
+        "RINSE_EXPAND_SETTLE_MS": "300",
         "RINSE_VENDORINLINE_SETTLE_MS": "50",
-        "RINSE_PAGE_SETTLE_MS": "400",
-        "RINSE_BAG_DETAILS_SETTLE_MS": "200",
-        "RINSE_BAG_DOM_WAIT_MS": "250",
+        "RINSE_PAGE_SETTLE_MS": "300",
+        "RINSE_BAG_DETAILS_SETTLE_MS": "150",
+        "RINSE_BAG_DOM_WAIT_MS": "200",
         "RINSE_BAG_DOM_POLL_MS": "40",
-        "RINSE_TABLE_WAIT_MS": "250",
-        "RINSE_TABLE_AFTER_MS": "50",
+        "RINSE_TABLE_WAIT_MS": "200",
+        "RINSE_TABLE_AFTER_MS": "40",
         "RINSE_TABLE_WHEEL_STEPS": "0",
         "RINSE_ROW_GAP_MS": "0",
         "RINSE_SCAN_TABLE_SETTLE_MS": "0",
-        "RINSE_COLLAPSE_SETTLE_MS": "200",
+        "RINSE_COLLAPSE_SETTLE_MS": "120",
         "RINSE_FAST_COLLAPSE": "1",
-        "RINSE_SHOW_BAG_WAIT_MS": "1500",
+        "RINSE_SHOW_BAG_WAIT_MS": "1200",
     }
     # Tenant scripts default to dated names under output/; explicit paths win.
     if not (os.getenv("RINSE_MAX_PAGES") or "").strip():
