@@ -225,17 +225,36 @@ def fetch_employee_tax_profile(
     return profile
 
 
-def get_w2_ytd_gross(conn, organization_id: int, user_id: int, year: int) -> Decimal:
+def get_w2_ytd_gross(
+    conn,
+    organization_id: int,
+    user_id: int,
+    year: int,
+    *,
+    before_period_start: Optional[str] = None,
+) -> Decimal:
+    """Sum W-2 gross for the tax year.
+
+    When ``before_period_start`` is set (YYYY-MM-DD), only include batches whose
+    pay_period_end is strictly before that date so period tax calcs do not treat
+    the current (or later) period wages as already-paid YTD.
+    """
     c = conn.cursor(dictionary=True)
+    params: list[Any] = [int(organization_id), int(user_id), int(year)]
+    as_of_clause = ""
+    if before_period_start:
+        as_of_clause = " AND pb.pay_period_end < %s"
+        params.append(str(before_period_start)[:10])
     c.execute(
-        """
+        f"""
         SELECT COALESCE(SUM(COALESCE(pbl.gross_wages, pbl.gross_amount, 0)), 0) AS ytd
         FROM payout_batch_lines pbl
         JOIN payout_batches pb ON pb.id = pbl.batch_id
         WHERE pb.organization_id=%s AND pbl.user_id=%s AND pb.worker_category='w2'
           AND YEAR(COALESCE(pbl.payment_date, pb.pay_period_end))=%s
+          {as_of_clause}
         """,
-        (int(organization_id), int(user_id), int(year)),
+        tuple(params),
     )
     row = c.fetchone() or {}
     return _d(row.get("ytd"))
@@ -406,8 +425,16 @@ def calculate_w2_line_taxes(
 
     settings = fetch_payroll_tax_settings(conn, organization_id)
     year = int(tax_year or settings.get("tax_year") or 2026)
+    if pay_period_start and str(pay_period_start).strip()[:4].isdigit():
+        year = int(str(pay_period_start).strip()[:4])
     periods = int(profile["pay_periods_per_year"])
-    ytd_gross = get_w2_ytd_gross(conn, organization_id, user_id, year)
+    ytd_gross = get_w2_ytd_gross(
+        conn,
+        organization_id,
+        user_id,
+        year,
+        before_period_start=str(pay_period_start)[:10] if pay_period_start else None,
+    )
     pre_tax = _d(profile.get("pre_tax_deductions"))
     taxable_gross = max(Decimal("0"), gross - pre_tax)
 

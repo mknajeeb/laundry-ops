@@ -402,6 +402,165 @@ def sum_employer_taxes(details: dict) -> float:
     return float(sum(_money(er.get(k)) for k in EMPLOYER_TAX_KEYS))
 
 
+def expected_employer_taxes_for_period(
+    conn,
+    organization_id: int,
+    user_id: int,
+    gross: float,
+    *,
+    worker_name: str = "",
+    pay_period_start: Optional[str] = None,
+    pay_frequency: Optional[str] = None,
+    tax_settings_override: Optional[dict] = None,
+) -> dict[str, float]:
+    """Canonical employer-tax components for one period gross (engine path)."""
+    from backend.w2_payroll_tax_engine import calculate_w2_line_taxes
+    from backend import w2_payroll_tax_engine as eng
+
+    orig_fetch = eng.fetch_payroll_tax_settings
+    if tax_settings_override:
+
+        def _fetch(conn_, oid):
+            base = dict(orig_fetch(conn_, oid) or {})
+            base.update(tax_settings_override)
+            return base
+
+        eng.fetch_payroll_tax_settings = _fetch
+    try:
+        calc = calculate_w2_line_taxes(
+            conn,
+            organization_id,
+            int(user_id),
+            gross_pay=float(gross or 0),
+            pay_period_start=pay_period_start,
+            minimum_withholding=True,
+            worker_name_snapshot=worker_name or None,
+            pay_frequency=pay_frequency,
+        )
+    finally:
+        eng.fetch_payroll_tax_settings = orig_fetch
+
+    if calc.get("tax_calc_status") == "profile_incomplete":
+        raise ValueError(calc.get("tax_calc_notes") or "Tax profile incomplete")
+
+    return {
+        "er_ss": float(calc.get("employer_social_security") or 0),
+        "er_medicare": float(calc.get("employer_medicare") or 0),
+        "futa": float(calc.get("futa_estimate") or 0),
+        "suta": round(
+            float(calc.get("ny_suta_estimate") or 0)
+            - float(calc.get("ny_reemployment_estimate") or 0),
+            2,
+        ),
+        "ny_reemploy": float(calc.get("ny_reemployment_estimate") or 0),
+        "other": float(calc.get("employer_other_tax_estimate") or 0),
+    }
+
+
+def validate_employer_taxes_for_period(
+    conn,
+    organization_id: int,
+    *,
+    user_id: int,
+    gross: float,
+    details: dict,
+    worker_name: str = "",
+    pay_period_start: Optional[str] = None,
+    pay_frequency: Optional[str] = None,
+    worker_category: Optional[str] = None,
+) -> Optional[str]:
+    """Return an error message when employer taxes disagree with period wage bases.
+
+    Compares stored employer components to the canonical engine output for the same
+    period gross (as-of YTD). Not a crude total/gross ratio cutoff.
+    """
+    cat = str(worker_category or "").strip().lower()
+    if cat and cat != "w2":
+        return None
+    gross_f = float(_money(gross))
+    if gross_f <= 0:
+        return None
+    er = (details or {}).get("employer_taxes") or {}
+    if not any(float(_money(er.get(k))) for k in EMPLOYER_TAX_KEYS):
+        return None
+
+    from backend.payroll_tax_settings import fetch_payroll_tax_settings
+
+    settings = fetch_payroll_tax_settings(conn, organization_id)
+    try:
+        expected = expected_employer_taxes_for_period(
+            conn,
+            organization_id,
+            int(user_id),
+            gross_f,
+            worker_name=worker_name,
+            pay_period_start=pay_period_start,
+            pay_frequency=pay_frequency,
+        )
+    except ValueError:
+        # Profile incomplete — fall back to statutory wage-base checks only.
+        expected = None
+
+    ss_rate = float(settings.get("employer_social_security_rate") or 0.062)
+    med_rate = float(settings.get("employer_medicare_rate") or 0.0145)
+    futa_rate = float(settings.get("futa_rate") or 0.006)
+    tol = max(0.50, round(gross_f * 0.02, 2))  # $0.50 or 2% of gross
+
+    def _bad(label: str, stored: float, exp: float) -> Optional[str]:
+        if abs(stored - exp) <= tol:
+            return None
+        return (
+            f"Employer {label} ${stored:.2f} does not match period calculation "
+            f"${exp:.2f} for gross ${gross_f:.2f}"
+        )
+
+    stored_ss = float(_money(er.get("er_ss")))
+    stored_med = float(_money(er.get("er_medicare")))
+    stored_futa = float(_money(er.get("futa")))
+    stored_suta = float(_money(er.get("suta"))) + float(_money(er.get("ny_reemploy")))
+
+    if expected is not None:
+        for label, key, stored in (
+            ("SS", "er_ss", stored_ss),
+            ("Medicare", "er_medicare", stored_med),
+            ("FUTA", "futa", stored_futa),
+        ):
+            msg = _bad(label, stored, float(expected.get(key) or 0))
+            if msg:
+                return msg
+        exp_suta = float(expected.get("suta") or 0) + float(expected.get("ny_reemploy") or 0)
+        # Only enforce SUTA when org rate is configured (otherwise engine expects ~0).
+        if settings.get("ny_suta_rate") not in (None, ""):
+            msg = _bad("SUTA", stored_suta, exp_suta)
+            if msg:
+                return msg
+        return None
+
+    # Fallback: implied wage bases must match period gross (FICA / FUTA rates).
+    if ss_rate > 0:
+        implied = stored_ss / ss_rate
+        if abs(implied - gross_f) > tol:
+            return (
+                f"Employer SS implies wages ${implied:.2f} but period gross is "
+                f"${gross_f:.2f}"
+            )
+    if med_rate > 0 and stored_med > 0:
+        implied = stored_med / med_rate
+        if abs(implied - gross_f) > tol:
+            return (
+                f"Employer Medicare implies wages ${implied:.2f} but period gross is "
+                f"${gross_f:.2f}"
+            )
+    if futa_rate > 0 and stored_futa > 0:
+        implied = stored_futa / futa_rate
+        if implied > gross_f + tol and abs(implied - gross_f) > tol:
+            return (
+                f"Employer FUTA implies wages ${implied:.2f} but period gross is "
+                f"${gross_f:.2f}"
+            )
+    return None
+
+
 def _effective_prior_tax_balance(prior_balance: float, prior_adj: float) -> float:
     """Prior-period adjustment credits against carryover prior balance (not added on top)."""
     return round(max(0.0, float(prior_balance) - float(prior_adj)), 2)
@@ -1044,7 +1203,13 @@ def apply_payment_defaults(batch: dict, details: dict) -> dict:
     return out
 
 
-def finalize_blockers(batch: dict, lines: list[dict]) -> list[str]:
+def finalize_blockers(
+    batch: dict,
+    lines: list[dict],
+    *,
+    conn=None,
+    organization_id: Optional[int] = None,
+) -> list[str]:
     from backend.payroll_status_display import can_finalize_payout_details
 
     if batch.get("payout_details_finalized_at"):
@@ -1095,6 +1260,27 @@ def finalize_blockers(batch: dict, lines: list[dict]) -> list[str]:
                 blockers.append(f"Payment date required for cash payment — {name}")
             if float(_money(settlement.get("amount_paid"))) <= 0:
                 blockers.append(f"Amount paid required for cash payment — {name}")
+        if (
+            conn is not None
+            and organization_id is not None
+            and str(batch.get("worker_category") or "") == "w2"
+            and ln.get("user_id")
+        ):
+            er_err = validate_employer_taxes_for_period(
+                conn,
+                int(organization_id),
+                user_id=int(ln["user_id"]),
+                gross=float(
+                    _money(ln.get("gross_amount") or ln.get("total_amount") or 0)
+                ),
+                details=details,
+                worker_name=str(ln.get("worker_name_snapshot") or ""),
+                pay_period_start=str(batch.get("pay_period_start") or ""),
+                pay_frequency=infer_pay_frequency_from_batch(batch),
+                worker_category=batch.get("worker_category"),
+            )
+            if er_err:
+                blockers.append(f"{er_err} — {name}")
     return blockers
 
 
@@ -1939,7 +2125,8 @@ def update_payout_batch_details(
             continue
         c.execute(
             """
-            SELECT payout_details_json, gross_amount, total_amount FROM payout_batch_lines
+            SELECT payout_details_json, gross_amount, total_amount, user_id, worker_name_snapshot
+            FROM payout_batch_lines
             WHERE id=%s AND batch_id=%s AND organization_id=%s
             """,
             (int(line_id), int(batch_id), int(organization_id)),
@@ -1947,7 +2134,17 @@ def update_payout_batch_details(
         row = c.fetchone()
         if not row:
             raise ValueError(f"Line {line_id} not found in batch")
-        row_dict = row if isinstance(row, dict) else {"payout_details_json": row[0], "gross_amount": row[1], "total_amount": row[2]}
+        row_dict = (
+            row
+            if isinstance(row, dict)
+            else {
+                "payout_details_json": row[0],
+                "gross_amount": row[1],
+                "total_amount": row[2],
+                "user_id": row[3],
+                "worker_name_snapshot": row[4],
+            }
+        )
         line_gross = float(_money(row_dict.get("gross_amount") or row_dict.get("total_amount") or 0))
         merged = _merge_line_details(
             _parse_json_blob(row_dict.get("payout_details_json")),
@@ -1955,6 +2152,20 @@ def update_payout_batch_details(
             gross=line_gross,
         )
         merged = apply_payment_defaults(batch, merged)
+        if row_dict.get("user_id") and str(batch.get("worker_category") or "") == "w2":
+            er_err = validate_employer_taxes_for_period(
+                conn,
+                organization_id,
+                user_id=int(row_dict["user_id"]),
+                gross=line_gross,
+                details=merged,
+                worker_name=str(row_dict.get("worker_name_snapshot") or ""),
+                pay_period_start=str(batch.get("pay_period_start") or ""),
+                pay_frequency=infer_pay_frequency_from_batch(batch),
+                worker_category=batch.get("worker_category"),
+            )
+            if er_err:
+                raise ValueError(er_err)
         c.execute(
             """
             UPDATE payout_batch_lines SET payout_details_json=%s, updated_at=CURRENT_TIMESTAMP
@@ -2073,8 +2284,19 @@ def set_batch_document_mode(
     return get_payout_batch_details(conn, organization_id, batch_id) or {}
 
 
-def _validate_finalize_batch(batch: dict, *, official_pay_date: Optional[str] = None) -> None:
-    blockers = finalize_blockers(batch, batch.get("lines") or [])
+def _validate_finalize_batch(
+    conn,
+    organization_id: int,
+    batch: dict,
+    *,
+    official_pay_date: Optional[str] = None,
+) -> None:
+    blockers = finalize_blockers(
+        batch,
+        batch.get("lines") or [],
+        conn=conn,
+        organization_id=organization_id,
+    )
     if not _parse_official_pay_date(official_pay_date or batch.get("official_pay_date")):
         blockers = [
             "Official Pay Date is required to finalize. "
@@ -2130,7 +2352,9 @@ def finalize_payout_details(
     if changed:
         conn.commit()
     enriched = get_payout_batch_details(conn, organization_id, batch_id) or {}
-    _validate_finalize_batch(enriched, official_pay_date=pay_date)
+    _validate_finalize_batch(
+        conn, organization_id, enriched, official_pay_date=pay_date
+    )
     events = _audit_append(
         batch,
         "payout_details_finalized",
