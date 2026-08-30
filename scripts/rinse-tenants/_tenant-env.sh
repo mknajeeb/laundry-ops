@@ -15,10 +15,34 @@ if [[ ! -f "$TENANT_DIR/.env" ]]; then
   exit 1
 fi
 
-set -a
-# shellcheck disable=SC1091
-source "$TENANT_DIR/.env"
-set +a
+# Load tenant .env WITHOUT clobbering vars already set by the scheduled scrape
+# supervisor (source URLs, full-traverse, lean settle timings). Prior `set -a;
+# source .env` overwrote production timing and reintroduced slow waits.
+_load_tenant_env_noforce() {
+  local f="$1"
+  local line key val
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "${line//[[:space:]]/}" ]] && continue
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" != *=* ]] && continue
+    key="${line%%=*}"
+    val="${line#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    [[ -z "$key" || "$key" == *[!A-Za-z0-9_]* ]] && continue
+    # Strip optional surrounding quotes
+    if [[ "$val" =~ ^\".*\"$ ]]; then
+      val="${val:1:${#val}-2}"
+    elif [[ "$val" =~ ^\'.*\'$ ]]; then
+      val="${val:1:${#val}-2}"
+    fi
+    if [[ -z "${!key+x}" ]]; then
+      export "${key}=${val}"
+    fi
+  done <"$f"
+}
+_load_tenant_env_noforce "$TENANT_DIR/.env"
 
 mkdir -p "$TENANT_DIR/output"
 

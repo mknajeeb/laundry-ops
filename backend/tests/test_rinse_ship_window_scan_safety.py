@@ -69,12 +69,16 @@ def test_same_scan_seen_again_same_dedupe_key():
 
 def test_full_traverse_env_disables_early_stop_flags():
     """Documented production env contract for simple full pass."""
-    # Mirrors _subprocess_env_for_vendor injection (see scheduled scrape).
     env = {
         "RINSE_FULL_TRAVERSE": "1",
         "RINSE_PORTAL_EARLY_STOP": "0",
         "RINSE_BLOCK_HEAVY_ASSETS": "1",
+        "RINSE_FAST_COLLAPSE": "1",
+        "RINSE_EXPAND_SETTLE_MS": "400",
+        "RINSE_VENDORINLINE_SETTLE_MS": "50",
     }
     assert env["RINSE_FULL_TRAVERSE"] == "1"
     assert env["RINSE_PORTAL_EARLY_STOP"] == "0"
-    assert "1" == env["RINSE_BLOCK_HEAVY_ASSETS"]
+    assert env["RINSE_FAST_COLLAPSE"] == "1"
+    assert int(env["RINSE_EXPAND_SETTLE_MS"]) <= 450
+    assert int(env["RINSE_VENDORINLINE_SETTLE_MS"]) <= 120

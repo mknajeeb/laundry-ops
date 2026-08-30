@@ -788,6 +788,22 @@ def _subprocess_env_for_vendor(
         "RINSE_FULL_TRAVERSE": "1",
         "RINSE_PORTAL_EARLY_STOP": "0",
         "RINSE_BLOCK_HEAVY_ASSETS": "1",
+        # Match proven ~1.17s/ticket laptop path: short settles + toggle-collapse.
+        # Do not inherit inflated Azure/App Service settle waits.
+        "RINSE_EXPAND_SETTLE_MS": "400",
+        "RINSE_VENDORINLINE_SETTLE_MS": "50",
+        "RINSE_PAGE_SETTLE_MS": "400",
+        "RINSE_BAG_DETAILS_SETTLE_MS": "200",
+        "RINSE_BAG_DOM_WAIT_MS": "250",
+        "RINSE_BAG_DOM_POLL_MS": "40",
+        "RINSE_TABLE_WAIT_MS": "250",
+        "RINSE_TABLE_AFTER_MS": "50",
+        "RINSE_TABLE_WHEEL_STEPS": "0",
+        "RINSE_ROW_GAP_MS": "0",
+        "RINSE_SCAN_TABLE_SETTLE_MS": "0",
+        "RINSE_COLLAPSE_SETTLE_MS": "200",
+        "RINSE_FAST_COLLAPSE": "1",
+        "RINSE_SHOW_BAG_WAIT_MS": "1500",
     }
     # Tenant scripts default to dated names under output/; explicit paths win.
     if not (os.getenv("RINSE_MAX_PAGES") or "").strip():
@@ -2302,11 +2318,8 @@ def run_scheduled_scrape_for_org(
 
             if single_pass:
                 # One Playwright walk: scan-events writes tickets (=portal) + events.
-                # Tune settle waits slightly; keep correctness-first (no parallel browsers).
-                env.setdefault("RINSE_PAGE_SETTLE_MS", "900")
-                env.setdefault("RINSE_EXPAND_SETTLE_MS", "900")
-                env.setdefault("RINSE_BAG_DETAILS_SETTLE_MS", "900")
-                env.setdefault("RINSE_VENDORINLINE_SETTLE_MS", "500")
+                # Timing comes from _subprocess_env_for_vendor (lean settles + collapse).
+                # Do not re-inflate EXPAND/VENDORINLINE here — that alone made ACA ~7× slower.
                 env["OUTPUT_PORTAL_SCRAPE_META"] = str(paths.scan_tickets_csv) + ".meta.json"
                 log.write(
                     "Single-pass At Vendor: scan-events only "

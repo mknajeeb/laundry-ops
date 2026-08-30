@@ -492,6 +492,26 @@ async function ensureRowCollapsedAfterTicket(rowLocator, page) {
   await page.keyboard.press("Escape").catch(() => {});
   await page.waitForTimeout(90);
 
+  // Proven 1.17s/ticket path: toggle-collapse after each ticket. Leaving rows expanded
+  // under RINSE_FULL_TRAVERSE stacks Scans DOM and ~7× slows ACA by end of a page.
+  const fullTraverse =
+    String(process.env.RINSE_FULL_TRAVERSE || "").trim() === "1" ||
+    String(process.env.RINSE_FULL_TRAVERSE || "").trim().toLowerCase() === "true";
+  const fastCollapse =
+    String(process.env.RINSE_FAST_COLLAPSE || "").trim() === "1" ||
+    String(process.env.RINSE_FAST_COLLAPSE || "").trim().toLowerCase() === "true";
+  if (fullTraverse || fastCollapse) {
+    if (await ticketExpansionHasBagLinks(rowLocator)) {
+      await clickExpandOnRow(rowLocator).catch(() => {});
+      const ms = Math.max(
+        50,
+        Math.min(1000, parseInt(process.env.RINSE_COLLAPSE_SETTLE_MS || "200", 10) || 200),
+      );
+      await page.waitForTimeout(ms);
+    }
+    return;
+  }
+
   const v = (process.env.RINSE_SKIP_ROW_COLLAPSE ?? "1").trim().toLowerCase();
   if (v !== "0" && v !== "false" && v !== "off") {
     return;

@@ -43,6 +43,10 @@ def test_subprocess_env_injects_wf_hd_ship_window_urls():
     assert env["RINSE_FULL_TRAVERSE"] == "1"
     assert env["RINSE_PORTAL_EARLY_STOP"] == "0"
     assert env["RINSE_BLOCK_HEAVY_ASSETS"] == "1"
+    assert env["RINSE_EXPAND_SETTLE_MS"] == "400"
+    assert env["RINSE_VENDORINLINE_SETTLE_MS"] == "50"
+    assert env["RINSE_FAST_COLLAPSE"] == "1"
+    assert env["RINSE_TABLE_WHEEL_STEPS"] == "0"
     sources = json.loads(env["RINSE_TICKETS_SOURCE_URLS"])
     assert len(sources) == 2
     assert sources[0]["label"] == "wash_and_fold"
