@@ -525,6 +525,8 @@ def refresh_step1_after_scrape(
             err = f"freshness_check_failed:{freshness.get('reason')}"
         else:
             err = backfill.get("error")
+        if not ok and not err:
+            err = "backfill_returned_not_ok"
 
         status = STATUS_SUCCESS if ok else STATUS_FAILED
         diag: dict[str, Any] = {

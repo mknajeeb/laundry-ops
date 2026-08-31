@@ -182,7 +182,7 @@ def fetch_upload_batch_scan_rows_for_bags(
         sql = f"""
             SELECT {cols}
             FROM upload_batch_scan_events
-            WHERE organization_id = %s AND UPPER(TRIM(bag_id)) IN ({ph})
+            WHERE organization_id = %s AND bag_id IN ({ph})
         """
         args: list[Any] = [org, *part]
         if up_to_batch_id is not None:

@@ -24,6 +24,7 @@ STATUS_COMPLETED = "COMPLETED"
 STATUS_RESOLVED_OTHER = "RESOLVED_OTHER"
 
 REVIEW_MISSING_FROM_PORTAL = "MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL"
+SUPERSEDED_PORTAL_DISCOVERY_DUPLICATE = "SUPERSEDED_PORTAL_DISCOVERY_DUPLICATE"
 
 
 def is_wf_canonical_lifecycle_enabled(cursor, organization_id: int) -> bool:
@@ -167,6 +168,262 @@ def get_active_cycle_for_bag(
     )
     row = cur.fetchone()
     return dict(row) if isinstance(row, dict) else None
+
+
+def _cycle_anchor_is_stv_backed(
+    timeline: Sequence[Mapping[str, Any]], cycle_anchor_at: datetime
+) -> bool:
+    """True when anchor matches a sent-to-vendor / lifecycle boundary from scan evidence."""
+    if not isinstance(cycle_anchor_at, datetime):
+        return False
+    for anchor in _valid_cycle_anchors(timeline):
+        if anchor == cycle_anchor_at:
+            return True
+    return False
+
+
+def _portal_only_discovery_active(active: Mapping[str, Any] | None) -> bool:
+    if not active:
+        return False
+    if str(active.get("status") or "") not in (STATUS_ACTIVE, STATUS_REVIEW):
+        return False
+    return str(active.get("admitted_source") or "") == "PORTAL_DISCOVERY"
+
+
+def _update_portal_cycle_metadata(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    cycle_anchor_at: datetime,
+    portal_meta: Mapping[str, Any] | None,
+    *,
+    now_utc: datetime | None = None,
+) -> bool:
+    """Lightweight portal touch — no canonical resolution."""
+    org = int(organization_id)
+    bid = _norm_bag(bag_id)
+    if not bid or not isinstance(cycle_anchor_at, datetime):
+        return False
+    meta = portal_meta or {}
+    now = now_utc or datetime.utcnow()
+    last_seen = meta.get("last_seen_at") or now
+    rush = meta.get("rush_flag") or meta.get("rush_status")
+    est = meta.get("estimated_delivery_date")
+    cur = cursor
+    cur.execute(
+        """
+        UPDATE rinse_wf_service_cycles
+        SET portal_last_seen_at = COALESCE(%s, portal_last_seen_at),
+            rush_status = COALESCE(%s, rush_status),
+            estimated_delivery_date = COALESCE(%s, estimated_delivery_date),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE organization_id = %s AND bag_id = %s AND cycle_anchor_at = %s
+          AND status IN (%s, %s)
+        """,
+        (
+            last_seen,
+            rush,
+            est,
+            org,
+            bid,
+            cycle_anchor_at,
+            STATUS_ACTIVE,
+            STATUS_REVIEW,
+        ),
+    )
+    return bool(getattr(cur, "rowcount", 0))
+
+
+def _fetch_scoped_cycle_refresh_rows(
+    cursor,
+    organization_id: int,
+    scoped_ids: Sequence[str],
+    day_start: datetime,
+    day_end: datetime,
+) -> list[dict[str, Any]]:
+    """Latest legitimate ACTIVE/REVIEW per bag + completed-today lifecycle rows."""
+    org = int(organization_id)
+    ids = sorted({_norm_bag(b) for b in scoped_ids if _norm_bag(b)})
+    if not ids:
+        return []
+    placeholders = ", ".join(["%s"] * len(ids))
+    sql = f"""
+        SELECT c.bag_id, c.cycle_anchor_at
+        FROM rinse_wf_service_cycles c
+        INNER JOIN (
+            SELECT bag_id, MAX(cycle_anchor_at) AS max_anchor
+            FROM rinse_wf_service_cycles
+            WHERE organization_id = %s
+              AND status IN (%s, %s)
+              AND bag_id IN ({placeholders})
+            GROUP BY bag_id
+        ) latest
+          ON c.organization_id = %s
+         AND c.bag_id = latest.bag_id
+         AND c.cycle_anchor_at = latest.max_anchor
+        WHERE c.organization_id = %s
+          AND c.status IN (%s, %s)
+        UNION
+        SELECT bag_id, cycle_anchor_at
+        FROM rinse_wf_service_cycles
+        WHERE organization_id = %s
+          AND status = %s
+          AND completed_at >= %s
+          AND completed_at < %s
+          AND bag_id IN ({placeholders})
+    """
+    params: list[Any] = [
+        org,
+        STATUS_ACTIVE,
+        STATUS_REVIEW,
+        *ids,
+        org,
+        org,
+        STATUS_ACTIVE,
+        STATUS_REVIEW,
+        org,
+        STATUS_COMPLETED,
+        day_start,
+        day_end,
+        *ids,
+    ]
+    cursor.execute(sql, tuple(params))
+    return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+
+
+def supersede_stale_portal_discovery_active_duplicates(
+    cursor,
+    organization_id: int,
+    *,
+    bag_ids: Collection[str] | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """One-time hygiene: resolve proven portal-only duplicate ACTIVE rows (no deletes)."""
+    ensure_wf_service_cycles_table(cursor)
+    org = int(organization_id)
+    scope = sorted({_norm_bag(b) for b in (bag_ids or []) if _norm_bag(b)})
+    report: dict[str, Any] = {
+        "dry_run": bool(dry_run),
+        "bags_scanned": 0,
+        "bags_with_duplicates": 0,
+        "rows_superseded": 0,
+        "ambiguous_bags": [],
+        "examples": [],
+        "superseded": [],
+    }
+    if scope:
+        ph = ", ".join(["%s"] * len(scope))
+        cursor.execute(
+            f"""
+            SELECT DISTINCT bag_id FROM rinse_wf_service_cycles
+            WHERE organization_id = %s AND status = %s AND bag_id IN ({ph})
+            """,
+            (org, STATUS_ACTIVE, *scope),
+        )
+        bag_list = [
+            _norm_bag(r.get("bag_id"))
+            for r in (cursor.fetchall() or [])
+            if isinstance(r, dict) and _norm_bag(r.get("bag_id"))
+        ]
+    else:
+        cursor.execute(
+            """
+            SELECT bag_id, COUNT(*) AS c FROM rinse_wf_service_cycles
+            WHERE organization_id = %s AND status = %s
+            GROUP BY bag_id HAVING c > 1
+            """,
+            (org, STATUS_ACTIVE),
+        )
+        bag_list = [
+            _norm_bag(r.get("bag_id"))
+            for r in (cursor.fetchall() or [])
+            if isinstance(r, dict) and _norm_bag(r.get("bag_id"))
+        ]
+
+    for bid in sorted(set(bag_list)):
+        report["bags_scanned"] += 1
+        cursor.execute(
+            """
+            SELECT * FROM rinse_wf_service_cycles
+            WHERE organization_id = %s AND bag_id = %s AND status = %s
+            ORDER BY cycle_anchor_at ASC
+            """,
+            (org, bid, STATUS_ACTIVE),
+        )
+        active_rows = [
+            dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)
+        ]
+        if len(active_rows) <= 1:
+            continue
+        report["bags_with_duplicates"] += 1
+        timeline = _load_timeline(cursor, org, bid)
+        valid_anchors = set(_valid_cycle_anchors(timeline))
+        stv_rows = [
+            r
+            for r in active_rows
+            if isinstance(r.get("cycle_anchor_at"), datetime)
+            and r["cycle_anchor_at"] in valid_anchors
+        ]
+        if len(stv_rows) > 1:
+            report["ambiguous_bags"].append(
+                {"bag_id": bid, "reason": "multiple_stv_backed_active"}
+            )
+            continue
+        if stv_rows:
+            keeper = stv_rows[-1]
+        else:
+            keeper = active_rows[-1]
+        keeper_id = keeper.get("id")
+        for row in active_rows:
+            if row.get("id") == keeper_id:
+                continue
+            if str(row.get("admitted_source") or "") != "PORTAL_DISCOVERY":
+                report["ambiguous_bags"].append(
+                    {
+                        "bag_id": bid,
+                        "reason": "non_portal_discovery_duplicate",
+                        "cycle_id": row.get("id"),
+                    }
+                )
+                continue
+            anchor = row.get("cycle_anchor_at")
+            if isinstance(anchor, datetime) and anchor in valid_anchors:
+                report["ambiguous_bags"].append(
+                    {
+                        "bag_id": bid,
+                        "reason": "stv_backed_not_keeper",
+                        "cycle_id": row.get("id"),
+                    }
+                )
+                continue
+            action = {
+                "bag_id": bid,
+                "cycle_id": row.get("id"),
+                "cycle_anchor_at": str(anchor),
+                "keeper_id": keeper_id,
+            }
+            report["superseded"].append(action)
+            if len(report["examples"]) < 10:
+                report["examples"].append(action)
+            if not dry_run:
+                cursor.execute(
+                    """
+                    UPDATE rinse_wf_service_cycles
+                    SET status = %s,
+                        review_reason = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s AND organization_id = %s AND status = %s
+                    """,
+                    (
+                        STATUS_RESOLVED_OTHER,
+                        SUPERSEDED_PORTAL_DISCOVERY_DUPLICATE,
+                        int(row["id"]),
+                        org,
+                        STATUS_ACTIVE,
+                    ),
+                )
+            report["rows_superseded"] += 1
+    return report
 
 
 def upsert_service_cycle(
@@ -529,11 +786,15 @@ def sync_portal_discovery(
     portal_bags: Mapping[str, Mapping[str, Any]],
     *,
     now: datetime | None = None,
+    evidence_refreshed_bag_ids: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """After full At-Vendor traversal: admit new cycles, refresh active ones."""
     org = int(organization_id)
     now_utc = now or datetime.utcnow()
-    admitted = updated = 0
+    refreshed = {
+        _norm_bag(b) for b in (evidence_refreshed_bag_ids or []) if _norm_bag(b)
+    }
+    admitted = updated = metadata_only = 0
     for raw_bid, meta in (portal_bags or {}).items():
         bid = _norm_bag(raw_bid)
         if not bid:
@@ -545,6 +806,7 @@ def sync_portal_discovery(
         anchors = _valid_cycle_anchors(timeline)
         anchor = anchors[-1] if anchors else None
         active = get_active_cycle_for_bag(cursor, org, bid)
+        portal_meta = {**(meta or {}), "last_seen_at": now_utc}
         if active and anchor is not None:
             active_anchor = active.get("cycle_anchor_at")
             if (
@@ -564,18 +826,50 @@ def sync_portal_discovery(
                 admitted += 1
                 continue
             if isinstance(active_anchor, datetime) and anchor == active_anchor:
-                admit_or_update_cycle_from_evidence(
+                if bid in refreshed and _update_portal_cycle_metadata(
                     cursor,
                     org,
                     bid,
-                    anchor,
-                    admitted_source="PORTAL_REDISCOVERY",
-                    portal_meta={**(meta or {}), "last_seen_at": now_utc},
-                )
-                updated += 1
+                    active_anchor,
+                    portal_meta,
+                    now_utc=now_utc,
+                ):
+                    metadata_only += 1
+                else:
+                    admit_or_update_cycle_from_evidence(
+                        cursor,
+                        org,
+                        bid,
+                        anchor,
+                        admitted_source="PORTAL_REDISCOVERY",
+                        portal_meta=portal_meta,
+                    )
+                    updated += 1
                 continue
         if anchor is None:
-            # Portal-only admit before first STV: anchor = now, will merge when STV arrives
+            if _portal_only_discovery_active(active):
+                active_anchor = active.get("cycle_anchor_at")
+                if isinstance(active_anchor, datetime):
+                    if bid in refreshed and _update_portal_cycle_metadata(
+                        cursor,
+                        org,
+                        bid,
+                        active_anchor,
+                        portal_meta,
+                        now_utc=now_utc,
+                    ):
+                        metadata_only += 1
+                    else:
+                        admit_or_update_cycle_from_evidence(
+                            cursor,
+                            org,
+                            bid,
+                            active_anchor,
+                            admitted_source="PORTAL_REDISCOVERY",
+                            portal_meta=portal_meta,
+                        )
+                        updated += 1
+                    continue
             anchor = now_utc
         if not get_cycle_by_key(cursor, org, bid, anchor):
             admit_or_update_cycle_from_evidence(
@@ -585,9 +879,29 @@ def sync_portal_discovery(
                 anchor,
                 admitted_at=now_utc,
                 admitted_source="PORTAL_DISCOVERY",
-                portal_meta={**(meta or {}), "last_seen_at": now_utc},
+                portal_meta=portal_meta,
             )
             admitted += 1
+        elif bid in refreshed and isinstance(anchor, datetime):
+            if _update_portal_cycle_metadata(
+                cursor,
+                org,
+                bid,
+                anchor,
+                portal_meta,
+                now_utc=now_utc,
+            ):
+                metadata_only += 1
+            else:
+                admit_or_update_cycle_from_evidence(
+                    cursor,
+                    org,
+                    bid,
+                    anchor,
+                    admitted_source="PORTAL_REDISCOVERY",
+                    portal_meta=portal_meta,
+                )
+                updated += 1
         else:
             admit_or_update_cycle_from_evidence(
                 cursor,
@@ -595,10 +909,14 @@ def sync_portal_discovery(
                 bid,
                 anchor,
                 admitted_source="PORTAL_REDISCOVERY",
-                portal_meta={**(meta or {}), "last_seen_at": now_utc},
+                portal_meta=portal_meta,
             )
             updated += 1
-    return {"admitted": admitted, "updated": updated}
+    return {
+        "admitted": admitted,
+        "updated": updated,
+        "metadata_only": metadata_only,
+    }
 
 
 def handle_disappeared_active_cycles(
@@ -839,15 +1157,16 @@ def refresh_canonical_cycles_from_evidence(
           )
         """
     params: list[Any] = [org, STATUS_ACTIVE, STATUS_REVIEW, STATUS_COMPLETED, day_start, day_end]
+    rows: list[dict[str, Any]]
     if scoped_ids is not None:
-        placeholders = ", ".join(["%s"] * len(scoped_ids))
-        sql += f" AND bag_id IN ({placeholders})"
-        params.extend(scoped_ids)
-    cur.execute(sql, tuple(params))
+        rows = _fetch_scoped_cycle_refresh_rows(
+            cur, org, scoped_ids, day_start, day_end
+        )
+    else:
+        cur.execute(sql, tuple(params))
+        rows = [dict(r) for r in (cur.fetchall() or []) if isinstance(r, dict)]
     refreshed = 0
-    for row in cur.fetchall() or []:
-        if not isinstance(row, dict):
-            continue
+    for row in rows:
         bid = _norm_bag(row.get("bag_id"))
         anchor = row.get("cycle_anchor_at")
         if not bid or not isinstance(anchor, datetime):
@@ -1104,7 +1423,12 @@ def finalize_wf_canonical_lifecycle_terminal(
         from pathlib import Path
 
         meta_path = portal_scrape_meta_path or Path(str(portal_csv_path) + ".meta.json")
-        discovery = sync_portal_discovery(cursor, org, portal_bags)
+        discovery = sync_portal_discovery(
+            cursor,
+            org,
+            portal_bags,
+            evidence_refreshed_bag_ids=scope,
+        )
         disappearance = handle_disappeared_active_cycles(
             cursor,
             org,

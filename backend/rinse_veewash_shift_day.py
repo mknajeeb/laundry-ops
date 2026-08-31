@@ -3660,6 +3660,23 @@ def reproject_day_bag_completions_from_chronology(
     }
 
 
+def _canonical_terminal_projection_succeeded(
+    projection: Mapping[str, Any] | None,
+    day_after: Mapping[str, Any] | None,
+) -> bool:
+    """``persist_day_snapshot`` / terminal projection return a day record, not ``{ok: true}``."""
+    if isinstance(projection, Mapping):
+        if projection.get("ok") is True:
+            return True
+        if projection.get("ok") is False:
+            return False
+        if projection.get("status") or projection.get("last_sync_at"):
+            return True
+    if isinstance(day_after, Mapping) and day_after.get("last_sync_at"):
+        return True
+    return False
+
+
 def backfill_day_from_live(
     cursor,
     organization_id: int,
@@ -3714,6 +3731,7 @@ def backfill_day_from_live(
                 force=force,
             )
             day_after = get_day_record(cursor, organization_id, shift_date_et) or {}
+            proj_ok = _canonical_terminal_projection_succeeded(proj, day_after)
             headline = (
                 summary_from_day_record(
                     day_after, cursor=cursor, organization_id=int(organization_id)
@@ -3722,8 +3740,8 @@ def backfill_day_from_live(
             )
             wf = (headline.get("segments") or {}).get("wf") or {}
             return {
-                "ok": bool(proj.get("ok")),
-                "persisted": bool(proj.get("ok")),
+                "ok": proj_ok,
+                "persisted": proj_ok,
                 "historical_canonical_reproject": shift_date_et < today,
                 "canonical_terminal_reproject": True,
                 "day": day_after,
