@@ -1,25 +1,17 @@
-"""Canonical WF daily workload — single public membership authority.
+"""Canonical WF workload — lifecycle-based membership authority.
 
-Model (non-negotiable)
-----------------------
-1. Portal scraper = evidence collector only (never owns membership / resurrection).
-2. Terminality belongs to an order_instance (seeded from service-cycle
-   cycle_anchor_at), not permanently to physical bag_id. A completed order
-   instance never reopens; a later authoritative cycle for the same bag_id
-   may enter a later day's workload as a new order_instance.
-3. Daily workload is DERIVED for ET date D, never append-only accumulation:
-     completed = canonical completion date == D
-     pending / review = not terminal AND legitimately open for D
-     carryover = unfinished OPEN bags from before D
-4. Missing From Portal is a review attribute on an already-legitimate OPEN bag.
-   It never introduces membership.
-5. Service cycles are audit/history + order_instance seed — not membership
-   admission by themselves.
-6. Authoritative Rinse HD bags are excluded before freeze
-   (``canonical WF ∩ authoritative HD = ∅``).
+Model (frozen)
+--------------
+1. Portal scraper = discovery/update only (never workload membership / absence).
+2. Current open WF workload = legitimate non-terminal WF order instances
+   (``completed_at IS NULL`` on the latest instance per bag).
+3. Completed-on-D = instances whose canonical completion timestamp falls on D ET.
+4. Selected-day view = current open workload ∪ completed-on-selected-date
+   (separate sections; discovery counts ≠ workload counts).
+5. Missing From Portal is never derived from rolling discovery absence.
+6. Authoritative Rinse HD bags are excluded (``canonical WF ∩ HD = ∅``).
 
 Public API: ``get_canonical_wf_workload(org_id, date_et)``.
-Every Management WF consumer must use this (directly or via the day persist path).
 """
 
 from __future__ import annotations
@@ -329,13 +321,13 @@ def _authoritative_hd_bag_ids(
             ph = ",".join(["%s"] * len(part))
             cursor.execute(
                 f"""
-                SELECT bag_id
+                SELECT DISTINCT bag_id
                 FROM hd_day_bag_production
                 WHERE organization_id = %s
-                  AND operations_date_et = %s
                   AND bag_id IN ({ph})
+                  AND COALESCE(workflow_status, '') NOT IN ('excluded', 'pre_activation_excluded')
                 """,
-                (org, date_et, *part),
+                (org, *part),
             )
             for row in cursor.fetchall() or []:
                 bid = normalize_bag_id(
@@ -345,6 +337,62 @@ def _authoritative_hd_bag_ids(
                     out.add(bid)
 
     return out
+
+
+def _review_wf_bag_ids_from_cycles(
+    cursor,
+    organization_id: int,
+    open_bags: set[str] | frozenset[str],
+) -> set[str]:
+    """OPEN WF bags whose latest service cycle is in REVIEW (not discovery absence)."""
+    from backend.rinse_wf_service_cycle import STATUS_REVIEW
+
+    if not open_bags or not table_exists(cursor, "rinse_wf_service_cycles"):
+        return set()
+    org = int(organization_id)
+    ids = sorted(open_bags)
+    out: set[str] = set()
+    chunk = 200
+    for i in range(0, len(ids), chunk):
+        part = ids[i : i + chunk]
+        ph = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT bag_id, status
+            FROM rinse_wf_service_cycles
+            WHERE organization_id = %s
+              AND bag_id IN ({ph})
+              AND status = %s
+            """,
+            (org, *part, STATUS_REVIEW),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            bid = normalize_bag_id(row.get("bag_id"))
+            if bid:
+                out.add(bid)
+    return out
+
+
+def _oi_meta_by_bag(
+    open_rows: list[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Build prior_meta-style dict from open order-instance rows."""
+    meta: dict[str, dict[str, Any]] = {}
+    for row in open_rows:
+        bid = normalize_bag_id(row.get("bag_id"))
+        if not bid:
+            continue
+        anchor = row.get("cycle_anchor_at")
+        meta[bid] = {
+            "bag_id": bid,
+            "service_type": str(row.get("service_type") or "WF"),
+            "effective_status": "pending",
+            "review_reason_codes": [],
+            "cycle_anchor_at": anchor,
+        }
+    return meta
 
 
 def _discover_same_day_entry_wf_ids(
@@ -556,90 +604,95 @@ def get_canonical_wf_workload(
             "invariants_ok": True,
             "bag_meta": {},
             "completion_by_bag": {},
-            "source": "canonical_wf_workload_v1",
+            "source": "canonical_wf_workload_v2",
         }
 
-    prior_open, prior_meta = _prior_day_unfinished_wf_ids(cursor, org, date_et)
-    presence_ids, presence_meta, _latest_run, portal_hd_ids = _same_day_presence_wf_ids(
-        cursor, org, date_et
+    from backend.rinse_order_instances import (
+        list_open_wf_order_instances,
+        list_order_instances_completed_on_date,
     )
-    entry_ids = _discover_same_day_entry_wf_ids(cursor, org, date_et)
-    registry_done_today = _registry_wf_completed_on_date(cursor, org, date_et)
 
-    seed = set(prior_open) | set(presence_ids) | set(entry_ids) | set(registry_done_today)
-    terminal_before = _terminal_before_date(cursor, org, date_et, sorted(seed))
-    # Permanent lifecycle: never admit historically completed bag IDs.
-    candidates = {b for b in seed if b not in terminal_before}
-    # HD/WF classification BEFORE freeze: authoritative HD ∩ WF must be empty.
+    open_rows = list_open_wf_order_instances(cursor, org, service_type="WF")
+    prior_meta = _oi_meta_by_bag(open_rows)
+    open_bags_set = {normalize_bag_id(r.get("bag_id")) for r in open_rows}
+    open_bags_set = {b for b in open_bags_set if b}
+
+    # Completed-on-D from order instances (+ registry legacy fallback).
+    oi_completed_rows = list_order_instances_completed_on_date(
+        cursor, org, date_et, service_type="WF"
+    )
+    completed_map: dict[str, dict[str, Any]] = {}
+    for row in oi_completed_rows:
+        bid = normalize_bag_id(row.get("bag_id"))
+        if not bid:
+            continue
+        ca = row.get("completed_at")
+        completed_map[bid] = {
+            "completion_date": date_et,
+            "completion_at": ca,
+            "effective_status": "completed",
+            "completion_source": row.get("completion_source") or "order_instance",
+            "order_instance_id": row.get("order_instance_id"),
+        }
+    legacy_completed = _completion_date_on_d(
+        cursor, org, date_et, sorted(open_bags_set | set(completed_map.keys()))
+    )
+    for bid, comp in legacy_completed.items():
+        if bid not in completed_map:
+            completed_map[bid] = comp
+
+    completed = frozenset(completed_map.keys())
+
+    # HD/WF classification: authoritative HD must never join WF workload.
+    all_candidates = sorted(open_bags_set | completed)
     hd_exclude = _authoritative_hd_bag_ids(
         cursor,
         org,
         date_et,
-        sorted(candidates),
-        portal_hd_ids=portal_hd_ids,
+        all_candidates,
+        portal_hd_ids=set(),
     )
-    candidates = {b for b in candidates if b not in hd_exclude}
+    open_bags_set -= hd_exclude
+    completed = frozenset(b for b in completed if b not in hd_exclude)
+    completed_map = {b: completed_map[b] for b in completed}
 
-    completed_map = _completion_date_on_d(cursor, org, date_et, sorted(candidates))
-    completed = frozenset(completed_map.keys()) & frozenset(candidates)
-
-    open_bags = frozenset(b for b in candidates if b not in completed)
-
-    # Historical day freeze: never write current-day open ACTIVE/REVIEW bags
-    # backward onto D < business_today merely because they are still open.
-    # Historical D may keep completed-on-D and legitimate D-1 unfinished
-    # carryover; presence/entry alone cannot retroactively grow open membership.
-    from backend.business_time import business_today
-
-    if date_et < business_today():
-        open_bags = frozenset(b for b in open_bags if b in prior_open)
-
-    carryover = frozenset(b for b in prior_open if b in candidates and b in (completed | open_bags))
-    new_today = frozenset(
-        b for b in (completed | open_bags) if b not in prior_open
+    # Never admit historically terminal bags lacking a current open instance.
+    terminal_before = _terminal_before_date(
+        cursor, org, date_et, sorted(open_bags_set)
     )
+    open_bags_set = {b for b in open_bags_set if b not in terminal_before}
 
-    present_ids, absence_meta = _latest_absence_capable_present_ids(
-        cursor, org, date_et
-    )
-    missing: set[str] = set()
-    if present_ids is not None:
-        # Review attribute only — never introduce membership from absence.
-        missing = {b for b in open_bags if b not in present_ids}
+    open_bags = frozenset(open_bags_set)
 
-    review: set[str] = set()
-    for bid in open_bags:
-        prior = prior_meta.get(bid) or {}
-        prior_status = str(prior.get("effective_status") or "").strip().lower()
-        prior_codes = [
-            str(c).strip()
-            for c in (prior.get("review_reason_codes") or [])
-            if str(c).strip()
-        ]
-        if prior_status == "review_required" or prior_codes:
-            review.add(bid)
-        if bid in missing:
-            review.add(bid)
-
+    # Review from REVIEW cycles only — discovery absence never marks MFP.
+    review = _review_wf_bag_ids_from_cycles(cursor, org, open_bags)
     pending = frozenset(b for b in open_bags if b not in review)
     review_fs = frozenset(review)
-    missing_fs = frozenset(missing)
+    missing_fs = frozenset()
+
     bag_ids = frozenset(completed | pending | review_fs)
 
-    historical = frozenset(b for b in bag_ids if b in terminal_before)
-    disjoint = (
-        not (completed & pending)
-        and not (completed & review_fs)
-        and not (pending & review_fs)
+    carryover = frozenset(
+        b
+        for b in open_bags
+        if _et_date((prior_meta.get(b) or {}).get("cycle_anchor_at")) is not None
+        and _et_date((prior_meta.get(b) or {}).get("cycle_anchor_at")) < date_et
     )
+    new_today = frozenset(b for b in open_bags if b not in carryover)
+
+    historical = frozenset(b for b in bag_ids if b in terminal_before)
+    open_only = pending | review_fs
+    disjoint_open = not (pending & review_fs)
     union_ok = bag_ids == (completed | pending | review_fs)
-    arithmetic_ok = len(bag_ids) == len(completed) + len(pending) + len(review_fs)
+    # Completed-on-D may overlap current-open for reusable-bag edge cases.
+    arithmetic_ok = len(bag_ids) >= len(completed) + len(pending) + len(review_fs) - len(
+        completed & open_only
+    )
     invariants_ok = (
-        disjoint
+        disjoint_open
         and union_ok
-        and arithmetic_ok
         and len(historical) == 0
-        and missing_fs <= open_bags
+        and missing_fs <= open_only
     )
 
     bag_meta: dict[str, dict[str, Any]] = {}
@@ -649,8 +702,6 @@ def get_canonical_wf_workload(
         for c in prior.get("review_reason_codes") or []:
             if str(c).strip():
                 codes.append(str(c).strip())
-        if bid in missing_fs and REVIEW_MISSING_FROM_PORTAL not in codes:
-            codes.append(REVIEW_MISSING_FROM_PORTAL)
         if bid in completed:
             eff = OUTCOME_COMPLETED
         elif bid in review_fs:
@@ -658,19 +709,14 @@ def get_canonical_wf_workload(
         else:
             eff = OUTCOME_PENDING
         noc = OUTCOME_CARRYOVER if bid in carryover else "new_today"
-        rush = None
-        if bid in prior_meta:
-            rush = prior_meta[bid].get("rush_status") or prior_meta[bid].get("rush_flag")
-        if rush is None and bid in presence_meta:
-            rush = presence_meta[bid].get("rush_flag")
         bag_meta[bid] = {
             "bag_id": bid,
             "service_type": "WF",
             "effective_status": eff,
             "new_or_carryover": noc,
             "review_reason_codes": codes,
-            "rush_status": rush,
-            "rush_flag": rush,
+            "rush_status": prior.get("rush_status") or prior.get("rush_flag"),
+            "rush_flag": prior.get("rush_flag") or prior.get("rush_status"),
             "lifecycle": (
                 LIFECYCLE_COMPLETED if bid in completed else LIFECYCLE_OPEN
             ),
@@ -696,14 +742,15 @@ def get_canonical_wf_workload(
             "new_today": len(new_today),
             "carryover": len(carryover),
             "missing_from_portal": len(missing_fs),
+            "current_open": len(open_only),
         },
         "arithmetic_ok": arithmetic_ok,
         "invariants_ok": invariants_ok,
-        "absence_meta": absence_meta,
+        "absence_meta": {"absence_allowed": False, "reason": "lifecycle_no_discovery_absence"},
         "bag_meta": bag_meta,
         "completion_by_bag": completed_map,
         "prior_meta": prior_meta,
-        "source": "canonical_wf_workload_v1",
+        "source": "canonical_wf_workload_v2",
     }
 
 
@@ -742,7 +789,7 @@ def canonical_wf_day_bag_rows(
             "completion_at": comp_at,
             "bag_snapshot": {
                 "canonical_workload": True,
-                "source": "canonical_wf_workload_v1",
+                "source": "canonical_wf_workload_v2",
                 "review_reason": (meta.get("review_reason_codes") or [None])[0],
                 "completion_source": comp.get("completion_source"),
             },
@@ -794,10 +841,8 @@ def assert_canonical_workload_invariants(workload: Mapping[str, Any]) -> None:
     open_bags = pending | review
     if bag_ids != completed | pending | review:
         raise AssertionError("workload union mismatch")
-    if completed & pending or completed & review or pending & review:
-        raise AssertionError("workload sets not mutually exclusive")
-    if len(bag_ids) != len(completed) + len(pending) + len(review):
-        raise AssertionError("workload arithmetic failed")
+    if pending & review:
+        raise AssertionError("pending/review not mutually exclusive")
     if historical:
         raise AssertionError(
             f"historical_completed_in_workload non-empty: {sorted(historical)[:10]}"

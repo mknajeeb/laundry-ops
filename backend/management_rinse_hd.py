@@ -769,10 +769,29 @@ def _load_hd_service_hints(cursor, organization_id: int, selected_date_et: date)
         bid = _norm_bag(row.get("bag_id"))
         if bid:
             out[bid] = "HD"
-    # Ship-window presence is the HD discovery source after scrape; shift monitor
-    # HD day-bags may not exist until first Management HD read.
-    for bid in _load_hd_portal_bags_for_day(cursor, organization_id, selected_date_et):
-        out.setdefault(bid, "HD")
+    return out
+
+
+def _load_hd_discovery_bag_ids(cursor, organization_id: int) -> set[str]:
+    """Active HD portal presence — discovery/admission only (not date membership)."""
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        return set()
+    org = int(organization_id)
+    cursor.execute(
+        """
+        SELECT bag_id, service_type
+        FROM rinse_cleaner_ticket_presence
+        WHERE organization_id = %s AND active = 1
+        """,
+        (org,),
+    )
+    out: set[str] = set()
+    for row in cursor.fetchall() or []:
+        if not _is_hd_presence_service(row.get("service_type")):
+            continue
+        bid = _norm_bag(row.get("bag_id"))
+        if bid:
+            out.add(bid)
     return out
 
 
@@ -1108,14 +1127,15 @@ def build_rinse_hd_day(
         }
 
     hints = _load_hd_service_hints(cursor, org, selected_date_et)
-    # Live portal/day_bags discovers NEW HD only — persist on first sight.
+    discovery_ids = _load_hd_discovery_bag_ids(cursor, org)
+    # Live portal discovers NEW HD only — persist on first sight (not date membership).
     admit_meta = admit_discovered_hd_bags(
         cursor,
         org,
         selected_date_et,
-        list(hints.keys()),
+        list(discovery_ids | set(hints.keys())),
     )
-    candidate_ids: set[str] = set(hints.keys())
+    candidate_ids: set[str] = set(hints.keys()) | discovery_ids
     # Durable incomplete admissions remain after portal disappearance.
     candidate_ids |= _load_active_admitted_bag_ids(
         cursor, org, selected_date_et, activation=activation
@@ -1261,9 +1281,20 @@ def build_rinse_hd_day(
         if not state.get("operations_date_et"):
             state["operations_date_et"] = selected_date_et
 
-        bucket = order_visible_on_day(state, selected_date_et, activation_date=activation)
-        if bucket is None:
-            continue
+        prod_row = production.get(bid)
+        if _is_workflow_complete_row(prod_row):
+            bucket = order_visible_on_day(state, selected_date_et, activation_date=activation)
+            if bucket is None:
+                continue
+        else:
+            # Lifecycle open HD workload — visible regardless of selected date.
+            bucket = str(state.get("status") or STATUS_PENDING_WASH)
+            if bucket not in (
+                STATUS_PENDING_WASH,
+                STATUS_WASHED,
+                STATUS_AWAITING_ENTRY,
+            ):
+                bucket = STATUS_PENDING_WASH
         bid_norm = _norm_bag(state.get("bag_id") or bid)
         explicit = bucket == STATUS_COMPLETE or bool(state.get("completion_at"))
         visible_orders.append(

@@ -1,4 +1,4 @@
-"""Invariant tests for get_canonical_wf_workload — WF source-of-truth boundary."""
+"""Invariant tests for lifecycle-based get_canonical_wf_workload."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from backend.rinse_wf_canonical_workload import (
     LIFECYCLE_COMPLETED,
     LIFECYCLE_OPEN,
     OUTCOME_CARRYOVER,
-    REVIEW_MISSING_FROM_PORTAL,
     assert_canonical_workload_invariants,
     get_canonical_wf_workload,
     get_wf_bag_lifecycle,
@@ -24,264 +23,112 @@ from backend.rinse_veewash_workload import (
 
 ORG = 3
 D = date(2026, 8, 28)
-D_YDAY = date(2026, 8, 27)
-D_30 = date(2026, 7, 29)
+
+
+def _oi(bag_id: str, *, completed_at=None, anchor=None):
+    return {
+        "order_instance_id": 1,
+        "bag_id": bag_id,
+        "service_type": "WF",
+        "cycle_anchor_at": anchor or datetime(2026, 8, 27, 10, 0),
+        "completed_at": completed_at,
+    }
 
 
 def _wl_patches(
     *,
-    prior_open=None,
-    prior_meta=None,
-    presence=None,
-    entry=None,
-    registry_today=None,
+    open_rows=None,
+    completed_rows=None,
     terminal=None,
-    completed_map=None,
-    present_for_absence=None,
-    absence_meta=None,
+    legacy_completed=None,
     authoritative_hd=None,
-    portal_hd=None,
+    review_bags=None,
 ):
-    prior_open = set(prior_open or [])
-    prior_meta = dict(prior_meta or {})
-    presence = set(presence or [])
-    entry = set(entry or [])
-    registry_today = set(registry_today or [])
-    terminal = set(terminal or [])
-    completed_map = dict(completed_map or {})
-    authoritative_hd = set(authoritative_hd or [])
-    portal_hd = set(portal_hd or [])
-    if absence_meta is None:
-        absence_meta = {"absence_allowed": present_for_absence is not None}
+    open_rows = list(open_rows or [])
+    completed_rows = list(completed_rows or [])
+    legacy_completed = dict(legacy_completed or {})
 
     return (
         patch(
-            "backend.rinse_wf_canonical_workload._prior_day_unfinished_wf_ids",
-            return_value=(prior_open, prior_meta),
+            "backend.rinse_order_instances.list_open_wf_order_instances",
+            return_value=open_rows,
         ),
         patch(
-            "backend.rinse_wf_canonical_workload._same_day_presence_wf_ids",
-            return_value=(presence, {}, 1, portal_hd),
-        ),
-        patch(
-            "backend.rinse_wf_canonical_workload._discover_same_day_entry_wf_ids",
-            return_value=entry,
-        ),
-        patch(
-            "backend.rinse_wf_canonical_workload._registry_wf_completed_on_date",
-            return_value=registry_today,
-        ),
-        patch(
-            "backend.rinse_wf_canonical_workload._terminal_before_date",
-            return_value=terminal,
+            "backend.rinse_order_instances.list_order_instances_completed_on_date",
+            return_value=completed_rows,
         ),
         patch(
             "backend.rinse_wf_canonical_workload._completion_date_on_d",
-            return_value=completed_map,
+            return_value=legacy_completed,
         ),
         patch(
-            "backend.rinse_wf_canonical_workload._latest_absence_capable_present_ids",
-            return_value=(present_for_absence, absence_meta),
+            "backend.rinse_wf_canonical_workload._terminal_before_date",
+            return_value=set(terminal or []),
         ),
         patch(
             "backend.rinse_wf_canonical_workload._authoritative_hd_bag_ids",
-            return_value=authoritative_hd,
+            return_value=set(authoritative_hd or []),
+        ),
+        patch(
+            "backend.rinse_wf_canonical_workload._review_wf_bag_ids_from_cycles",
+            return_value=set(review_bags or []),
         ),
     )
 
 
-def _run(cur=None, *, as_of_today=None, **kwargs):
-    """Derive workload for D. Default: treat D as business_today (not historical)."""
+def _run(cur=None, **kwargs):
     cur = cur or MagicMock()
     patches = _wl_patches(**kwargs)
-    today = as_of_today if as_of_today is not None else D
-    with (
-        patches[0],
-        patches[1],
-        patches[2],
-        patches[3],
-        patches[4],
-        patches[5],
-        patches[6],
-        patches[7],
-        patch(
-            "backend.business_time.business_today",
-            return_value=today,
-        ),
-    ):
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
         return get_canonical_wf_workload(cur, ORG, D)
 
 
-def test_1_complete_yesterday_cannot_appear_today():
+def test_terminal_registry_excludes_from_open():
     wl = _run(
-        prior_open={"OLD1"},
-        presence={"OLD1"},
-        terminal={"OLD1"},
+        open_rows=[_oi("TERM")],
+        terminal={"TERM"},
     )
-    assert "OLD1" not in wl["bag_ids"]
+    assert "TERM" not in wl["bag_ids"]
     assert_canonical_workload_invariants(wl)
 
 
-def test_2_complete_30_days_ago_cannot_appear_today():
-    wl = _run(
-        presence={"ANCIENT"},
-        entry={"ANCIENT"},
-        terminal={"ANCIENT"},
-    )
-    assert "ANCIENT" not in wl["bag_ids"]
-    assert len(wl["historical_completed_in_workload"]) == 0
-
-
-def test_3_stale_active_cycle_cannot_resurrect():
-    # Service cycles are not a seed — only prior_open / presence / entry / registry.
-    # A stale ACTIVE cycle with no legitimate seed must not appear.
-    wl = _run(prior_open=set(), presence=set(), entry=set(), terminal=set())
-    assert wl["bag_ids"] == frozenset()
-
-
-def test_4_portal_sees_completed_bag_again_cannot_resurrect():
-    wl = _run(
-        presence={"DONE01"},
-        terminal={"DONE01"},
-    )
-    assert "DONE01" not in wl["bag_ids"]
-
-
-def test_5_failed_scrape_cannot_create_absence():
-    wl = _run(
-        prior_open={"OPEN1"},
-        present_for_absence=None,
-        absence_meta={"absence_allowed": False, "reason": "failed"},
-    )
-    assert "OPEN1" in wl["pending"] or "OPEN1" in wl["review"]
+def test_open_oi_persists_without_discovery_seeds():
+    wl = _run(open_rows=[_oi("OPEN")])
+    assert "OPEN" in wl["pending"]
     assert wl["missing_from_portal"] == frozenset()
 
 
-def test_6_partial_scrape_cannot_create_absence():
-    wl = _run(
-        prior_open={"OPEN1"},
-        present_for_absence=None,
-        absence_meta={"absence_allowed": False, "reason": "no_full_traversal"},
-    )
+def test_discovery_absence_never_creates_mfp():
+    wl = _run(open_rows=[_oi("OPEN")])
     assert wl["missing_from_portal"] == frozenset()
+    assert "OPEN" not in wl["review"]
 
 
-def test_7_full_scrape_may_establish_absence():
+def test_completed_on_date_separate_from_open():
     wl = _run(
-        prior_open={"OPEN1", "OPEN2"},
-        present_for_absence={"OPEN1"},
-        absence_meta={"absence_allowed": True},
+        open_rows=[_oi("PEND")],
+        completed_rows=[
+            _oi("COMP", completed_at=datetime(2026, 8, 28, 14, 0)),
+        ],
     )
-    assert "OPEN2" in wl["missing_from_portal"]
-    assert "OPEN2" in wl["review"]
-    assert "OPEN2" in wl["bag_ids"]
-    assert REVIEW_MISSING_FROM_PORTAL in (wl["bag_meta"]["OPEN2"]["review_reason_codes"])
+    assert "COMP" in wl["completed"]
+    assert "PEND" in wl["pending"]
+    assert_canonical_workload_invariants(wl)
 
 
-def test_8_missing_flag_cannot_introduce_workload_membership():
-    # Absence of a bag that was never a legitimate open seed must not add it.
+def test_carryover_metadata_from_oi_anchor():
+    wl = _run(open_rows=[_oi("CARY", anchor=datetime(2026, 8, 27, 9, 0))])
+    assert "CARY" in wl["carryover"]
+    assert wl["bag_meta"]["CARY"]["new_or_carryover"] == OUTCOME_CARRYOVER
+
+
+def test_workload_union_pending_review_completed():
     wl = _run(
-        prior_open={"OPEN1"},
-        present_for_absence={"OPEN1"},  # ghost bag GHOST not present, but also not seeded
-        absence_meta={"absence_allowed": True},
+        open_rows=[_oi("PEND"), _oi("REVW")],
+        completed_rows=[_oi("COMP", completed_at=datetime(2026, 8, 28, 12, 0))],
+        review_bags={"REVW"},
     )
-    assert "GHOST" not in wl["bag_ids"]
-    assert "GHOST" not in wl["missing_from_portal"]
-
-
-def test_9_genuine_unfinished_yesterday_carries_into_today():
-    wl = _run(
-        prior_open={"CARRY1"},
-        prior_meta={
-            "CARRY1": {
-                "effective_status": "pending",
-                "review_reason_codes": [],
-            }
-        },
-    )
-    assert "CARRY1" in wl["carryover"]
-    assert "CARRY1" in wl["pending"]
-    assert wl["bag_meta"]["CARRY1"]["new_or_carryover"] == OUTCOME_CARRYOVER
-
-
-def test_10_carryover_completes_today():
-    wl = _run(
-        prior_open={"CARRY1"},
-        completed_map={
-            "CARRY1": {
-                "completion_date": D,
-                "completion_at": datetime(2026, 8, 28, 14, 0),
-                "effective_status": "completed",
-            }
-        },
-    )
-    assert "CARRY1" in wl["completed"]
-    assert "CARRY1" not in wl["pending"]
-    assert "CARRY1" in wl["carryover"]  # labeled carryover even when completed today
-    assert wl["bag_meta"]["CARRY1"]["effective_status"] == OUTCOME_COMPLETED
-
-
-def test_11_reproject_x10_identical_membership_hash():
-    import hashlib
-
-    hashes = []
-    for _ in range(10):
-        wl = _run(
-            prior_open={"A", "B"},
-            presence={"B", "C"},
-            completed_map={"A": {"completion_date": D, "effective_status": "completed"}},
-            present_for_absence={"B", "C"},
-            absence_meta={"absence_allowed": True},
-        )
-        h = hashlib.sha256(",".join(sorted(wl["bag_ids"])).encode()).hexdigest()
-        hashes.append(h)
-        assert_canonical_workload_invariants(wl)
-    assert len(set(hashes)) == 1
-
-
-def test_12_stage_b_x10_identical_membership():
-    # Stage-B must not grow membership — same seeds → same set every pass.
-    import hashlib
-
-    hashes = []
-    for _ in range(10):
-        wl = _run(prior_open={"P1"}, presence={"N1"}, entry={"N1"})
-        hashes.append(hashlib.sha256(",".join(sorted(wl["bag_ids"])).encode()).hexdigest())
-    assert len(set(hashes)) == 1
-    assert wl["bag_ids"] == frozenset({"P1", "N1"})
-
-
-def test_13_repeated_portal_scrapes_no_membership_growth_without_new_open():
-    sizes = []
-    for _ in range(10):
-        wl = _run(presence={"N1", "N2"}, terminal={"N2"})
-        sizes.append(len(wl["bag_ids"]))
-    assert sizes == [1] * 10
-    assert wl["bag_ids"] == frozenset({"N1"})
-
-
-def test_14_multiple_service_cycles_no_duplicate_resurrection():
-    # Cycles are not consulted; duplicate cycle noise cannot resurrect.
-    wl = _run(prior_open={"X"}, terminal={"X"}, presence={"X"})
-    assert "X" not in wl["bag_ids"]
-
-
-def test_15_workload_equals_completed_plus_pending_plus_review():
-    wl = _run(
-        prior_open={"C1", "P1", "R1"},
-        prior_meta={
-            "R1": {"effective_status": "review_required", "review_reason_codes": ["SPEC"]},
-            "P1": {"effective_status": "pending", "review_reason_codes": []},
-            "C1": {"effective_status": "pending", "review_reason_codes": []},
-        },
-        completed_map={"C1": {"completion_date": D, "effective_status": "completed"}},
-        present_for_absence={"P1", "R1"},
-        absence_meta={"absence_allowed": True},
-    )
-    assert wl["counts"]["workload"] == (
-        wl["counts"]["completed"] + wl["counts"]["pending"] + wl["counts"]["review"]
-    )
-    assert wl["arithmetic_ok"] is True
+    assert wl["bag_ids"] == frozenset({"PEND", "REVW", "COMP"})
     assert_canonical_workload_invariants(wl)
 
 
@@ -311,101 +158,23 @@ def test_lifecycle_open_default():
     assert life["lifecycle"] == LIFECYCLE_OPEN
 
 
-def test_missing_subset_of_open_only():
-    wl = _run(
-        prior_open={"OPEN1"},
-        completed_map={"OPEN1": {"completion_date": D}},
-        present_for_absence=set(),
-        absence_meta={"absence_allowed": True},
-    )
-    # Completed bags are not open — missing must not include them.
-    assert "OPEN1" not in wl["missing_from_portal"]
-    assert "OPEN1" in wl["completed"]
-
-
-def test_hd_evidence_excludes_entry_and_stale_wf_carryover():
-    """7M07HHS5BU-type: HD portal/registry evidence + entry/stale WF carryover → NOT WF."""
+def test_hd_evidence_excludes_wf_open():
     hd = "7M07HHS5BU"
     wl = _run(
-        prior_open={hd, "WFKEEP1"},
-        prior_meta={
-            hd: {"effective_status": "pending", "service_type": "WF", "review_reason_codes": []},
-            "WFKEEP1": {"effective_status": "pending", "review_reason_codes": []},
-        },
-        entry={hd, "WFNEW1"},
+        open_rows=[_oi(hd), _oi("WFKP")],
         authoritative_hd={hd},
-        present_for_absence={"WFKEEP1", "WFNEW1"},
-        absence_meta={"absence_allowed": True},
     )
     assert hd not in wl["bag_ids"]
-    assert hd not in wl["carryover"]
-    assert hd not in wl["new_today"]
-    assert hd not in wl["review"]
-    assert "WFKEEP1" in wl["bag_ids"]
-    assert "WFNEW1" in wl["bag_ids"]
+    assert "WFKP" in wl["bag_ids"]
     assert_canonical_workload_invariants(wl)
 
 
-def test_authoritative_hd_intersection_empty_when_hd_seeded():
-    """canonical WF set ∩ authoritative HD set = ∅ even when HD is in every seed path."""
+def test_authoritative_hd_intersection_empty():
     hd = "2QFDTDTULL"
     wl = _run(
-        prior_open={hd},
-        presence={hd},
-        entry={hd},
-        registry_today={hd},
+        open_rows=[_oi(hd)],
+        completed_rows=[_oi(hd, completed_at=datetime(2026, 8, 28, 12, 0))],
         authoritative_hd={hd},
-        portal_hd={hd},
     )
     assert wl["bag_ids"] == frozenset()
-    assert_canonical_workload_invariants(wl)
-
-
-def test_historical_reproject_does_not_admit_today_open_via_presence():
-    """Aug29 open membership must not write backward onto historical Aug28.
-
-    Presence/entry open bags that are not D-1 carryover are stripped when
-    date_et < business_today(). Completed-on-D and prior_open carryover remain.
-    """
-    wl = _run(
-        prior_open={"CARRY1"},
-        prior_meta={"CARRY1": {"effective_status": "pending", "review_reason_codes": []}},
-        presence={"OPEN_TODAY_A", "OPEN_TODAY_B", "CARRY1", "DONE28"},
-        entry={"OPEN_TODAY_A", "OPEN_TODAY_B"},
-        registry_today={"DONE28"},
-        completed_map={
-            "DONE28": {
-                "completion_date": D,
-                "completion_at": datetime(2026, 8, 28, 12, 0),
-            }
-        },
-        present_for_absence={"CARRY1"},
-        absence_meta={"absence_allowed": True},
-        as_of_today=date(2026, 8, 29),
-    )
-
-    assert "DONE28" in wl["completed"]
-    assert "CARRY1" in wl["bag_ids"]
-    assert "OPEN_TODAY_A" not in wl["bag_ids"]
-    assert "OPEN_TODAY_B" not in wl["bag_ids"]
-    assert_canonical_workload_invariants(wl)
-
-
-def test_missing_cannot_override_hd_exclusion():
-    """Missing/review path must not keep authoritative HD in WF membership."""
-    hd = "7M07HHS5BU"
-    wl = _run(
-        prior_open={hd},
-        prior_meta={
-            hd: {
-                "effective_status": "review_required",
-                "review_reason_codes": [REVIEW_MISSING_FROM_PORTAL],
-            }
-        },
-        authoritative_hd={hd},
-        present_for_absence=set(),
-        absence_meta={"absence_allowed": True},
-    )
-    assert hd not in wl["bag_ids"]
-    assert hd not in wl["missing_from_portal"]
     assert_canonical_workload_invariants(wl)

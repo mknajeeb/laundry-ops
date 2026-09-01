@@ -247,22 +247,19 @@ def test_durable_pending_stays_visible_after_admission_day():
     assert order_visible_on_day(state, date(2026, 8, 20)) is None
 
 
-def test_hd_service_hints_include_presence_discovery():
+def test_hd_service_hints_exclude_date_scoped_presence():
     from unittest.mock import MagicMock, patch
 
     from backend.management_rinse_hd import _load_hd_service_hints
 
     cursor = MagicMock()
     cursor.fetchall.return_value = []
-    with patch("backend.management_rinse_hd.table_exists", return_value=True), patch(
-        "backend.management_rinse_hd._load_hd_portal_bags_for_day",
-        return_value={"HDPRES1"},
-    ):
+    with patch("backend.management_rinse_hd.table_exists", return_value=True):
         hints = _load_hd_service_hints(cursor, 3, date(2026, 9, 1))
-    assert hints == {"HDPRES1": "HD"}
+    assert hints == {}
 
 
-def test_build_hd_day_admits_presence_discovered_bag():
+def test_build_hd_day_admits_discovery_bag_ids():
     from unittest.mock import MagicMock, patch
 
     from backend.management_rinse_hd import build_rinse_hd_day
@@ -277,7 +274,11 @@ def test_build_hd_day_admits_presence_discovered_bag():
         ),
         patch(
             "backend.management_rinse_hd._load_hd_service_hints",
-            return_value={"HDPRES2": "HD"},
+            return_value={},
+        ),
+        patch(
+            "backend.management_rinse_hd._load_hd_discovery_bag_ids",
+            return_value={"HDPRES2"},
         ),
         patch(
             "backend.management_rinse_hd.admit_discovered_hd_bags",

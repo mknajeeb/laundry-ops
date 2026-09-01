@@ -346,6 +346,77 @@ def get_latest_order_instance_for_bag(
     return rows[-1] if rows else None
 
 
+def list_open_wf_order_instances(
+    cursor,
+    organization_id: int,
+    *,
+    service_type: str = "WF",
+) -> list[dict[str, Any]]:
+    """Latest open (``completed_at IS NULL``) order instance per bag."""
+    ensure_rinse_order_instances_table(cursor)
+    org = int(organization_id)
+    svc = _svc(service_type)
+    cursor.execute(
+        f"""
+        SELECT oi.*
+        FROM {ORDER_INSTANCES_TABLE} oi
+        INNER JOIN (
+            SELECT bag_id, MAX(order_instance_id) AS max_id
+            FROM {ORDER_INSTANCES_TABLE}
+            WHERE organization_id = %s AND service_type = %s
+            GROUP BY bag_id
+        ) latest ON oi.order_instance_id = latest.max_id
+        WHERE oi.organization_id = %s
+          AND oi.service_type = %s
+          AND oi.completed_at IS NULL
+        """,
+        (org, svc, org, svc),
+    )
+    return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+
+
+def list_order_instances_completed_on_date(
+    cursor,
+    organization_id: int,
+    date_et: date,
+    *,
+    service_type: str = "WF",
+) -> list[dict[str, Any]]:
+    """Order instances whose authoritative completion falls on ET date ``date_et``."""
+    from backend.business_time import system_datetime_to_et
+
+    ensure_rinse_order_instances_table(cursor)
+    org = int(organization_id)
+    svc = _svc(service_type)
+    day_start = naive_et_day_start(date_et)
+    day_end = day_start + timedelta(days=1)
+    pad_start = day_start - timedelta(hours=6)
+    pad_end = day_end + timedelta(hours=6)
+    cursor.execute(
+        f"""
+        SELECT *
+        FROM {ORDER_INSTANCES_TABLE}
+        WHERE organization_id = %s
+          AND service_type = %s
+          AND completed_at IS NOT NULL
+          AND completed_at >= %s
+          AND completed_at < %s
+        """,
+        (org, svc, pad_start, pad_end),
+    )
+    out: list[dict[str, Any]] = []
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        completed_at = _parse_dt(row.get("completed_at"))
+        if completed_at is None:
+            continue
+        et = system_datetime_to_et(completed_at)
+        if et is not None and et.date() == date_et:
+            out.append(dict(row))
+    return out
+
+
 def upsert_order_instance_from_cycle(
     cursor,
     organization_id: int,

@@ -484,22 +484,25 @@ def test_ensure_open_oi_creates_when_boundary_after_prior_completion():
 
 def test_ship_window_open_oi_outside_window_not_missing_from_portal():
     """Open OI outside rolling STV window must not become Missing From Portal."""
+    from datetime import datetime
+
     from backend.rinse_wf_canonical_workload import get_canonical_wf_workload
 
     day = date(2026, 8, 31)
     cur = MagicMock()
+    open_row = {
+        "order_instance_id": 1,
+        "bag_id": "OUTS1",
+        "service_type": "WF",
+        "cycle_anchor_at": datetime(2026, 8, 25, 10, 0),
+        "completed_at": None,
+    }
     with patch(
-        "backend.rinse_wf_canonical_workload._prior_day_unfinished_wf_ids",
-        return_value=(frozenset({"OUTSIDE1"}), {"OUTSIDE1": {"effective_status": "pending"}}),
+        "backend.rinse_order_instances.list_open_wf_order_instances",
+        return_value=[open_row],
     ), patch(
-        "backend.rinse_wf_canonical_workload._same_day_presence_wf_ids",
-        return_value=(frozenset(), {}, None, frozenset()),
-    ), patch(
-        "backend.rinse_wf_canonical_workload._discover_same_day_entry_wf_ids",
-        return_value=frozenset(),
-    ), patch(
-        "backend.rinse_wf_canonical_workload._registry_wf_completed_on_date",
-        return_value=frozenset(),
+        "backend.rinse_order_instances.list_order_instances_completed_on_date",
+        return_value=[],
     ), patch(
         "backend.rinse_wf_canonical_workload._terminal_before_date",
         return_value=set(),
@@ -510,13 +513,10 @@ def test_ship_window_open_oi_outside_window_not_missing_from_portal():
         "backend.rinse_wf_canonical_workload._completion_date_on_d",
         return_value={},
     ), patch(
-        "backend.rinse_wf_canonical_workload._latest_absence_capable_present_ids",
-        return_value=(None, {"absence_allowed": False, "reason": "ship_window"}),
-    ), patch(
-        "backend.business_time.business_today",
-        return_value=day,
+        "backend.rinse_wf_canonical_workload._review_wf_bag_ids_from_cycles",
+        return_value=set(),
     ):
         wl = get_canonical_wf_workload(cur, ORG, day)
-    assert "OUTSIDE1" in (wl.get("bag_ids") or frozenset())
-    assert "OUTSIDE1" not in (wl.get("missing_from_portal") or frozenset())
+    assert "OUTS1" in (wl.get("bag_ids") or frozenset())
+    assert "OUTS1" not in (wl.get("missing_from_portal") or frozenset())
     assert int((wl.get("counts") or {}).get("missing_from_portal") or 0) == 0

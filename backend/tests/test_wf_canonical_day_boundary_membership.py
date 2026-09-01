@@ -89,6 +89,22 @@ def _mock_cursor_with_cycles(cycles: list[dict]) -> MagicMock:
     return cur
 
 
+def _oi_row(
+    bag_id: str,
+    *,
+    completed_at: datetime | None = None,
+    anchor: datetime | None = None,
+) -> dict:
+    return {
+        "order_instance_id": 1,
+        "bag_id": bag_id,
+        "service_type": "WF",
+        "cycle_anchor_at": anchor or datetime(2026, 8, 24, 10, 0),
+        "completed_at": completed_at,
+        "completion_source": "scan" if completed_at else None,
+    }
+
+
 def _patch_canonical_seeds(
     *,
     prior_open=None,
@@ -103,40 +119,71 @@ def _patch_canonical_seeds(
 ):
     from contextlib import contextmanager
 
-    # Treat the projected day as business_today so historical-open freeze
-    # does not strip same-day presence/entry in unit fixtures.
     as_of = shift_date_et or AUG25
+    terminal_set = set(terminal or [])
+    completed_map_dict = dict(completed_map or {})
+    registry_set = set(registry_today or [])
+
+    open_ids = (
+        set(prior_open or [])
+        | set(presence or [])
+        | set(entry or [])
+    ) - terminal_set - set(completed_map_dict.keys()) - registry_set
+
+    prior_set = set(prior_open or [])
+    open_rows = []
+    for bid in sorted(open_ids):
+        meta = (prior_meta or {}).get(bid) or {}
+        anchor = meta.get("cycle_anchor_at")
+        if anchor is None and bid in prior_set:
+            anchor = datetime(2026, 8, 24, 10, 0)
+        elif anchor is None:
+            anchor = datetime(as_of.year, as_of.month, as_of.day, 8, 0)
+        open_rows.append(_oi_row(bid, anchor=anchor))
+
+    completed_rows: list[dict] = []
+    for bid, comp in completed_map_dict.items():
+        if bid in terminal_set:
+            continue
+        completed_rows.append(
+            _oi_row(
+                bid,
+                completed_at=comp.get("completion_at")
+                or datetime(as_of.year, as_of.month, as_of.day, 12, 0),
+            )
+        )
+    for bid in sorted(registry_set):
+        if bid in terminal_set:
+            continue
+        completed_rows.append(
+            _oi_row(
+                bid,
+                completed_at=datetime(as_of.year, as_of.month, as_of.day, 12, 0),
+            )
+        )
 
     @contextmanager
     def _ctx():
         with (
             patch(
-                "backend.rinse_wf_canonical_workload._prior_day_unfinished_wf_ids",
-                return_value=(set(prior_open or []), dict(prior_meta or {})),
+                "backend.rinse_order_instances.list_open_wf_order_instances",
+                return_value=open_rows,
             ),
             patch(
-                "backend.rinse_wf_canonical_workload._same_day_presence_wf_ids",
-                return_value=(set(presence or []), {}, None, set()),
-            ),
-            patch(
-                "backend.rinse_wf_canonical_workload._discover_same_day_entry_wf_ids",
-                return_value=set(entry or []),
-            ),
-            patch(
-                "backend.rinse_wf_canonical_workload._registry_wf_completed_on_date",
-                return_value=set(registry_today or []),
+                "backend.rinse_order_instances.list_order_instances_completed_on_date",
+                return_value=completed_rows,
             ),
             patch(
                 "backend.rinse_wf_canonical_workload._terminal_before_date",
-                return_value=set(terminal or []),
+                return_value=terminal_set,
             ),
             patch(
                 "backend.rinse_wf_canonical_workload._completion_date_on_d",
-                return_value=dict(completed_map or {}),
+                return_value={},
             ),
             patch(
-                "backend.rinse_wf_canonical_workload._latest_absence_capable_present_ids",
-                return_value=(present_for_absence, {"absence_allowed": present_for_absence is not None}),
+                "backend.rinse_wf_canonical_workload._review_wf_bag_ids_from_cycles",
+                return_value=set(),
             ),
             patch(
                 "backend.rinse_wf_canonical_workload._authoritative_hd_bag_ids",

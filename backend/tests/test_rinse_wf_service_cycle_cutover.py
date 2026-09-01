@@ -21,6 +21,16 @@ from backend.rinse_wf_service_cycle import (
 )
 
 
+def _oi_row(bag_id: str, *, completed_at=None, anchor=None):
+    return {
+        "order_instance_id": 1,
+        "bag_id": bag_id,
+        "service_type": "WF",
+        "cycle_anchor_at": anchor or datetime(2026, 8, 23, 10, 0),
+        "completed_at": completed_at,
+    }
+
+
 @pytest.fixture
 def mock_cursor():
     cur = MagicMock()
@@ -400,26 +410,19 @@ def test_canonical_workload_shell_populates_completed_on_date():
         )
         stack.enter_context(
             patch(
-                "backend.rinse_wf_canonical_workload._prior_day_unfinished_wf_ids",
-                return_value=(set(), {}),
+                "backend.rinse_order_instances.list_open_wf_order_instances",
+                return_value=[_oi_row("BAGPEND")],
             )
         )
         stack.enter_context(
             patch(
-                "backend.rinse_wf_canonical_workload._same_day_presence_wf_ids",
-                return_value=({"BAGDONE", "BAGPEND"}, {}, None, set()),
-            )
-        )
-        stack.enter_context(
-            patch(
-                "backend.rinse_wf_canonical_workload._discover_same_day_entry_wf_ids",
-                return_value=set(),
-            )
-        )
-        stack.enter_context(
-            patch(
-                "backend.rinse_wf_canonical_workload._registry_wf_completed_on_date",
-                return_value=set(),
+                "backend.rinse_order_instances.list_order_instances_completed_on_date",
+                return_value=[
+                    _oi_row(
+                        "BAGDONE",
+                        completed_at=datetime(2026, 8, 23, 14, 0),
+                    )
+                ],
             )
         )
         stack.enter_context(
@@ -431,19 +434,13 @@ def test_canonical_workload_shell_populates_completed_on_date():
         stack.enter_context(
             patch(
                 "backend.rinse_wf_canonical_workload._completion_date_on_d",
-                return_value={
-                    "BAGDONE": {
-                        "completion_date": day,
-                        "completion_at": datetime(2026, 8, 23, 14, 0),
-                        "effective_status": "completed",
-                    }
-                },
+                return_value={},
             )
         )
         stack.enter_context(
             patch(
-                "backend.rinse_wf_canonical_workload._latest_absence_capable_present_ids",
-                return_value=(None, {"absence_allowed": False}),
+                "backend.rinse_wf_canonical_workload._review_wf_bag_ids_from_cycles",
+                return_value=set(),
             )
         )
         stack.enter_context(
