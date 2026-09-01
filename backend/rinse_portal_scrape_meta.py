@@ -74,7 +74,7 @@ def normalize_portal_scrape_meta(raw: dict[str, Any] | None) -> dict[str, Any] |
     if not isinstance(skipped_tickets, list):
         skipped_tickets = []
     source_complete = raw.get("source_inspected_complete")
-    return {
+    out: dict[str, Any] = {
         "stopped_reason": stopped,
         "reached_max_pages": reached,
         "pages_scraped": pages,
@@ -95,6 +95,35 @@ def normalize_portal_scrape_meta(raw: dict[str, Any] | None) -> dict[str, Any] |
             None if source_complete is None else bool(source_complete)
         ),
     }
+    # Preserve discovery/absence authority fields (must survive normalize round-trip).
+    for key in (
+        "source_mode",
+        "source_role",
+        "absence_capable",
+        "tickets_sources",
+        "source_summaries",
+        "completeness_guard",
+    ):
+        if key in raw:
+            out[key] = raw[key]
+    return out
+
+
+def apply_ship_window_discovery_meta(
+    meta: dict[str, Any] | None,
+    sources: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Stamp scheduled ship-window discovery semantics onto scrape meta."""
+    if not sources:
+        return meta
+    base = dict(meta or {})
+    base["source_mode"] = "ship_to_vendor_window"
+    base["absence_capable"] = False
+    guard = dict(base.get("completeness_guard") or {})
+    guard["allow_mark_missing"] = False
+    base["completeness_guard"] = guard
+    base["tickets_sources"] = list(sources)
+    return base
 
 
 def validate_presence_empty_result(

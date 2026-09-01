@@ -10,9 +10,11 @@ from unittest.mock import MagicMock, patch
 
 from backend.rinse_portal_absence_completion import complete_bags_missing_from_latest_portal
 from backend.rinse_portal_scrape_meta import (
+    apply_ship_window_discovery_meta,
     fetch_portal_scrape_meta_for_batch,
     load_portal_scrape_meta_file,
     meta_path_for_portal_csv,
+    normalize_portal_scrape_meta,
     portal_scrape_meta_allows_absence_completion,
     persist_portal_scrape_meta_on_batch,
     validate_presence_empty_result,
@@ -151,6 +153,36 @@ class TestPortalScrapeMetaAllowsAbsence(unittest.TestCase):
             meta = fetch_portal_scrape_meta_for_batch(cursor, 493, 3)
         self.assertIsNone(meta)
         self.assertTrue(portal_scrape_meta_allows_absence_completion(meta))
+
+    def test_normalize_preserves_ship_window_discovery_fields(self):
+        raw = {
+            "stopped_reason": "no_next_page_ui",
+            "source_mode": "ship_to_vendor_window",
+            "absence_capable": False,
+            "tickets_sources": [
+                {"label": "wash_and_fold", "url": "x?ship_to_vendor_date_start=1"}
+            ],
+            "source_inspected_complete": True,
+        }
+        norm = normalize_portal_scrape_meta(raw)
+        self.assertEqual(norm["source_mode"], "ship_to_vendor_window")
+        self.assertFalse(norm["absence_capable"])
+        self.assertFalse(portal_scrape_meta_allows_absence_completion(norm))
+
+    def test_apply_ship_window_discovery_meta_blocks_absence(self):
+        sources = [
+            {
+                "label": "wash_and_fold",
+                "url": "https://example/?ship_to_vendor_date_start=2026-08-30",
+            }
+        ]
+        meta = apply_ship_window_discovery_meta(
+            {"source_inspected_complete": True, "stopped_reason": "no_next_page_ui"},
+            sources,
+        )
+        self.assertEqual(meta["source_mode"], "ship_to_vendor_window")
+        self.assertFalse(meta["absence_capable"])
+        self.assertFalse(portal_scrape_meta_allows_absence_completion(meta))
 
 
 class TestValidatePresenceEmptyResult(unittest.TestCase):
