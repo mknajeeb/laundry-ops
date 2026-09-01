@@ -405,3 +405,118 @@ def test_covering_date_completed_on_d_not_prior_anchor_only():
         )
     assert covering == {"CEA4TAF6IK"}
     assert "44N8W174KG" not in covering
+
+
+def test_ensure_open_oi_after_completed_requires_boundary():
+    from backend.rinse_order_instances import ensure_open_order_instance_for_new_active_cycle
+
+    prior = {
+        "order_instance_id": 1,
+        "bag_id": "BAGNEW1",
+        "service_type": "WF",
+        "cycle_anchor_at": datetime(2026, 8, 20, 1, 0),
+        "completed_at": datetime(2026, 8, 20, 15, 0),
+    }
+    active = {
+        "id": 99,
+        "bag_id": "BAGNEW1",
+        "service_type": "WF",
+        "status": "ACTIVE",
+        "cycle_anchor_at": datetime(2026, 8, 30, 22, 0),
+        "completed_at": None,
+    }
+    cur = MagicMock()
+    with patch(
+        "backend.rinse_order_instances.get_order_instance_by_cycle_key",
+        return_value=None,
+    ), patch(
+        "backend.rinse_order_instances.get_latest_order_instance_for_bag",
+        return_value=prior,
+    ), patch(
+        "backend.rinse_order_instances.has_authoritative_new_order_boundary_after",
+        return_value=False,
+    ) as boundary, patch(
+        "backend.rinse_order_instances.upsert_order_instance_from_cycle",
+    ) as upsert:
+        out = ensure_open_order_instance_for_new_active_cycle(cur, ORG, active)
+    assert out is None
+    upsert.assert_not_called()
+    boundary.assert_called_once()
+
+
+def test_ensure_open_oi_creates_when_boundary_after_prior_completion():
+    from backend.rinse_order_instances import ensure_open_order_instance_for_new_active_cycle
+
+    prior = {
+        "order_instance_id": 1,
+        "bag_id": "BAGNEW2",
+        "service_type": "WF",
+        "cycle_anchor_at": datetime(2026, 8, 20, 1, 0),
+        "completed_at": datetime(2026, 8, 20, 15, 0),
+    }
+    active = {
+        "id": 100,
+        "bag_id": "BAGNEW2",
+        "service_type": "WF",
+        "status": "ACTIVE",
+        "cycle_anchor_at": datetime(2026, 8, 30, 22, 0),
+        "completed_at": None,
+    }
+    created = {**active, "order_instance_id": 55, "completed_at": None}
+    cur = MagicMock()
+    with patch(
+        "backend.rinse_order_instances.get_order_instance_by_cycle_key",
+        return_value=None,
+    ), patch(
+        "backend.rinse_order_instances.get_latest_order_instance_for_bag",
+        return_value=prior,
+    ), patch(
+        "backend.rinse_order_instances.has_authoritative_new_order_boundary_after",
+        return_value=True,
+    ), patch(
+        "backend.rinse_order_instances.upsert_order_instance_from_cycle",
+        return_value=created,
+    ) as upsert:
+        out = ensure_open_order_instance_for_new_active_cycle(cur, ORG, active)
+    assert out is created
+    upsert.assert_called_once()
+
+
+def test_ship_window_open_oi_outside_window_not_missing_from_portal():
+    """Open OI outside rolling STV window must not become Missing From Portal."""
+    from backend.rinse_wf_canonical_workload import get_canonical_wf_workload
+
+    day = date(2026, 8, 31)
+    cur = MagicMock()
+    with patch(
+        "backend.rinse_wf_canonical_workload._prior_day_unfinished_wf_ids",
+        return_value=(frozenset({"OUTSIDE1"}), {"OUTSIDE1": {"effective_status": "pending"}}),
+    ), patch(
+        "backend.rinse_wf_canonical_workload._same_day_presence_wf_ids",
+        return_value=(frozenset(), {}, None, frozenset()),
+    ), patch(
+        "backend.rinse_wf_canonical_workload._discover_same_day_entry_wf_ids",
+        return_value=frozenset(),
+    ), patch(
+        "backend.rinse_wf_canonical_workload._registry_wf_completed_on_date",
+        return_value=frozenset(),
+    ), patch(
+        "backend.rinse_wf_canonical_workload._terminal_before_date",
+        return_value=set(),
+    ), patch(
+        "backend.rinse_wf_canonical_workload._authoritative_hd_bag_ids",
+        return_value=set(),
+    ), patch(
+        "backend.rinse_wf_canonical_workload._completion_date_on_d",
+        return_value={},
+    ), patch(
+        "backend.rinse_wf_canonical_workload._latest_absence_capable_present_ids",
+        return_value=(None, {"absence_allowed": False, "reason": "ship_window"}),
+    ), patch(
+        "backend.business_time.business_today",
+        return_value=day,
+    ):
+        wl = get_canonical_wf_workload(cur, ORG, day)
+    assert "OUTSIDE1" in (wl.get("bag_ids") or frozenset())
+    assert "OUTSIDE1" not in (wl.get("missing_from_portal") or frozenset())
+    assert int((wl.get("counts") or {}).get("missing_from_portal") or 0) == 0

@@ -139,6 +139,38 @@ def validate_presence_empty_result(
     return validated, checks
 
 
+def _meta_is_ship_window_discovery(meta: Mapping[str, Any]) -> bool:
+    """Rolling ship_to_vendor window is discovery-only — never absence authority."""
+    mode = str(meta.get("source_mode") or meta.get("source_role") or "").strip().lower()
+    if mode in {
+        "ship_to_vendor_window",
+        "ship_window",
+        "discovery",
+        "discovery_only",
+    }:
+        return True
+    if meta.get("absence_capable") is False:
+        return True
+    guard = meta.get("completeness_guard")
+    if isinstance(guard, Mapping) and guard.get("allow_mark_missing") is False:
+        return True
+    sources = meta.get("tickets_sources") or meta.get("source_summaries") or []
+    if not isinstance(sources, list):
+        return False
+    for src in sources:
+        if not isinstance(src, Mapping):
+            continue
+        url = str(src.get("url") or "")
+        if "ship_to_vendor_date_start=" in url or "ship_to_vendor_date_end=" in url:
+            return True
+        label = str(src.get("label") or "").strip().lower()
+        if label in {"wash_and_fold", "hang_dry"} and (
+            src.get("ship_to_vendor_date_start") or src.get("ship_to_vendor_date_end")
+        ):
+            return True
+    return False
+
+
 def portal_scrape_meta_allows_absence_completion(meta: dict[str, Any] | None) -> bool:
     """
     True only when portal export is a trustworthy *complete* traversal.
@@ -149,9 +181,14 @@ def portal_scrape_meta_allows_absence_completion(meta: dict[str, Any] | None) ->
     ``source_inspected_complete=True`` plus a natural stop reason, with no
     degraded/partial/skipped/max-pages signals. Failed, killed, reclaimed,
     or incomplete traversals must never publish Missing From Portal / absence.
+
+    Rolling ship_to_vendor_date windows are discovery sources only: traversing
+    every page of that window must never authorize Missing From Portal.
     """
     if meta is None:
         return True
+    if _meta_is_ship_window_discovery(meta):
+        return False
     if bool(meta.get("reached_max_pages")):
         return False
     if bool(meta.get("degraded") or meta.get("partial")):

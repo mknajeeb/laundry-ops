@@ -818,6 +818,13 @@ async function main() {
         const metaPath =
           (process.env.OUTPUT_PORTAL_SCRAPE_META && String(process.env.OUTPUT_PORTAL_SCRAPE_META).trim()) ||
           `${ticketsPath}.meta.json`;
+        const shipWindowDiscovery = (Array.isArray(sources) ? sources : []).some((s) => {
+          const url = String((s && s.url) || "");
+          return (
+            url.includes("ship_to_vendor_date_start=") ||
+            url.includes("ship_to_vendor_date_end=")
+          );
+        });
         const portalScrapeMeta = {
           stopped_reason:
             allSkipped.length > 0 && stoppedReason === "no_next_page_ui"
@@ -834,6 +841,9 @@ async function main() {
           scraped_at: new Date().toISOString(),
           single_pass_source: "scan-events",
           full_traverse: fullTraverse,
+          // Rolling STV window discovers orders; it is never a full-board absence authority.
+          source_mode: shipWindowDiscovery ? "ship_to_vendor_window" : "portal_list",
+          absence_capable: shipWindowDiscovery ? false : undefined,
           early_stop_enabled:
             !fullTraverse && String(process.env.RINSE_PORTAL_EARLY_STOP || "") === "1",
           source_summaries: sourceSummaries,

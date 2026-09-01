@@ -20,6 +20,47 @@ from backend.rinse_portal_scrape_meta import (
 
 
 class TestPortalScrapeMetaAllowsAbsence(unittest.TestCase):
+    def test_ship_window_discovery_never_allows_absence(self):
+        """Rolling STV window traversal must not authorize Missing From Portal."""
+        self.assertFalse(
+            portal_scrape_meta_allows_absence_completion(
+                {
+                    "stopped_reason": "no_next_page_ui",
+                    "reached_max_pages": False,
+                    "pages_scraped": 6,
+                    "source_inspected_complete": True,
+                    "source_mode": "ship_to_vendor_window",
+                    "absence_capable": False,
+                    "tickets_sources": [
+                        {
+                            "label": "wash_and_fold",
+                            "url": (
+                                "https://www.rinse.com/cleanertickets/?"
+                                "status=any&service_types=wash_and_fold"
+                                "&ship_to_vendor_date_start=2026-08-30"
+                                "&ship_to_vendor_date_end=2026-08-31"
+                            ),
+                        }
+                    ],
+                }
+            )
+        )
+
+    def test_completeness_guard_blocks_absence(self):
+        self.assertFalse(
+            portal_scrape_meta_allows_absence_completion(
+                {
+                    "stopped_reason": "no_next_page_ui",
+                    "source_inspected_complete": True,
+                    "completeness_guard": {
+                        "trustworthy": False,
+                        "allow_mark_missing": False,
+                        "reason": "row_count_drop:135<0.60*230",
+                    },
+                }
+            )
+        )
+
     def test_manual_upload_no_meta_allowed(self):
         self.assertTrue(portal_scrape_meta_allows_absence_completion(None))
 

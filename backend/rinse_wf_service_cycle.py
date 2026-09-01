@@ -597,7 +597,7 @@ def admit_or_update_cycle_from_evidence(
             )
         completion_source = cycle_dict.get("completion_source")
 
-    return upsert_service_cycle(
+    row = upsert_service_cycle(
         cursor,
         org,
         bag_id=bid,
@@ -613,6 +613,16 @@ def admit_or_update_cycle_from_evidence(
         post_weight_lbs=weights.get("post_weight_lbs"),
         portal_last_seen_at=(portal_meta or {}).get("last_seen_at"),
     )
+    if status == STATUS_ACTIVE and completed_at is None:
+        try:
+            from backend.rinse_order_instances import (
+                ensure_open_order_instance_for_new_active_cycle,
+            )
+
+            ensure_open_order_instance_for_new_active_cycle(cursor, org, row)
+        except Exception:
+            pass
+    return row
 
 
 def _current_cycle_anchor(

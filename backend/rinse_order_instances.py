@@ -201,6 +201,54 @@ def should_create_new_order_instance_for_cycle(
     )
 
 
+def ensure_open_order_instance_for_new_active_cycle(
+    cursor,
+    organization_id: int,
+    cycle_row: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Create an open OI for a new ACTIVE cycle after a completed prior OI.
+
+    Requires authoritative new-order boundary evidence (pickup / workitems /
+    load-in) after the prior completed instance. STV-only lingering tickets
+    without that boundary must not invent a new OI.
+    """
+    status = str(cycle_row.get("status") or "").strip().upper()
+    if status != "ACTIVE":
+        return None
+    if _parse_dt(cycle_row.get("completed_at")) is not None:
+        return None
+    bid = normalize_bag_id(cycle_row.get("bag_id"))
+    anchor = _parse_dt(cycle_row.get("cycle_anchor_at"))
+    if not bid or anchor is None:
+        return None
+    org = int(organization_id)
+    svc = _svc(cycle_row.get("service_type") or "WF")
+    existing = get_order_instance_by_cycle_key(
+        cursor, org, bid, service_type=svc, cycle_anchor_at=anchor
+    )
+    if existing is not None:
+        return existing
+    prior = get_latest_order_instance_for_bag(
+        cursor, org, bid, service_type=svc
+    )
+    prior_completed = _parse_dt((prior or {}).get("completed_at")) if prior else None
+    if prior is not None and prior_completed is None:
+        # An open prior OI already covers this bag — do not fork.
+        return prior
+    if prior_completed is not None:
+        if not has_authoritative_new_order_boundary_after(
+            cursor,
+            org,
+            bid,
+            prior_completed,
+            before_or_at=anchor,
+        ):
+            return None
+    elif prior is not None:
+        return prior
+    return upsert_order_instance_from_cycle(cursor, org, cycle_row)
+
+
 def get_order_instance_by_id(
     cursor, order_instance_id: int
 ) -> dict[str, Any] | None:
