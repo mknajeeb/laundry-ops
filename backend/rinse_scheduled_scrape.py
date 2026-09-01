@@ -2648,17 +2648,13 @@ def run_scheduled_scrape_for_org(
 
             portal_meta_path = meta_path_for_portal_csv(paths.portal_csv)
             from backend.rinse_portal_scrape_meta import (
-                apply_ship_window_discovery_meta,
                 load_portal_scrape_meta_file,
-            )
-            from backend.rinse_ship_window_tickets_urls import (
-                build_scheduled_wf_hd_source_urls,
+                prepare_scheduled_ship_window_portal_meta,
             )
 
-            portal_meta = load_portal_scrape_meta_file(portal_meta_path)
-            portal_meta = apply_ship_window_discovery_meta(
-                portal_meta,
-                build_scheduled_wf_hd_source_urls(),
+            portal_meta = prepare_scheduled_ship_window_portal_meta(
+                load_portal_scrape_meta_file(portal_meta_path),
+                meta_path=str(portal_meta_path),
             )
             with scrape_stage_heartbeat(
                 run_id, org_id, stage="scan_import", lease_generation=lease_gen,

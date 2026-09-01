@@ -805,11 +805,19 @@ def commit_rinse_combined_upload(
     from backend.rinse_portal_scrape_meta import (
         load_portal_scrape_meta_file,
         persist_portal_scrape_meta_on_batch,
+        prepare_scheduled_ship_window_portal_meta,
     )
 
     meta = portal_scrape_meta
     if meta is None and portal_scrape_meta_path:
         meta = load_portal_scrape_meta_file(portal_scrape_meta_path)
+    # Scheduled ACA scrape must stamp discovery-only semantics before DB persist
+    # (defense in depth — callers may only pass meta_path).
+    if scrape_run_id is not None:
+        meta = prepare_scheduled_ship_window_portal_meta(
+            meta,
+            meta_path=portal_scrape_meta_path,
+        )
     is_auto_scrape = meta not in (None, "", "null", "NULL")
     portal_meta_payload = persist_portal_scrape_meta_on_batch(
         cursor, upload_batch_id, tenant_oid, meta

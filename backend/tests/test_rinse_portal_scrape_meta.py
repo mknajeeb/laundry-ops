@@ -17,6 +17,7 @@ from backend.rinse_portal_scrape_meta import (
     normalize_portal_scrape_meta,
     portal_scrape_meta_allows_absence_completion,
     persist_portal_scrape_meta_on_batch,
+    prepare_scheduled_ship_window_portal_meta,
     validate_presence_empty_result,
 )
 
@@ -184,8 +185,50 @@ class TestPortalScrapeMetaAllowsAbsence(unittest.TestCase):
         self.assertFalse(meta["absence_capable"])
         self.assertFalse(portal_scrape_meta_allows_absence_completion(meta))
 
+    def test_prepare_scheduled_ship_window_meta_persists_and_blocks_absence(self):
+        import tempfile
+        from pathlib import Path
 
-class TestValidatePresenceEmptyResult(unittest.TestCase):
+        raw = {
+            "source_inspected_complete": True,
+            "stopped_reason": "no_next_page_ui",
+            "reached_max_pages": False,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            meta_path = Path(tmp) / "portal.csv.meta.json"
+            stamped = prepare_scheduled_ship_window_portal_meta(
+                raw,
+                meta_path=meta_path,
+            )
+            self.assertEqual(stamped["source_mode"], "ship_to_vendor_window")
+            self.assertFalse(stamped["absence_capable"])
+            self.assertFalse(portal_scrape_meta_allows_absence_completion(stamped))
+            reloaded = load_portal_scrape_meta_file(meta_path)
+            norm = normalize_portal_scrape_meta(reloaded)
+            self.assertFalse(portal_scrape_meta_allows_absence_completion(norm))
+
+    def test_persist_ship_window_meta_round_trip_blocks_absence(self):
+        cursor = MagicMock()
+        raw = prepare_scheduled_ship_window_portal_meta(
+            {
+                "source_inspected_complete": True,
+                "stopped_reason": "no_next_page_ui",
+                "reached_max_pages": False,
+            }
+        )
+        with patch(
+            "backend.rinse_portal_scrape_meta.table_has_column",
+            return_value=True,
+        ), patch(
+            "backend.rinse_portal_scrape_meta.table_exists",
+            return_value=True,
+        ):
+            out = persist_portal_scrape_meta_on_batch(cursor, 99, 3, raw)
+        self.assertFalse(out["portal_absence_allowed"])
+        self.assertFalse(out["full_snapshot"])
+        stored = out["portal_scrape_meta"]
+        self.assertEqual(stored["source_mode"], "ship_to_vendor_window")
+        self.assertFalse(portal_scrape_meta_allows_absence_completion(stored))
     def test_validated_empty_requires_scrape_flags(self):
         validated, checks = validate_presence_empty_result(
             {

@@ -247,6 +247,53 @@ def test_durable_pending_stays_visible_after_admission_day():
     assert order_visible_on_day(state, date(2026, 8, 20)) is None
 
 
+def test_hd_service_hints_include_presence_discovery():
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_rinse_hd import _load_hd_service_hints
+
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    with patch("backend.management_rinse_hd.table_exists", return_value=True), patch(
+        "backend.management_rinse_hd._load_hd_portal_bags_for_day",
+        return_value={"HDPRES1"},
+    ):
+        hints = _load_hd_service_hints(cursor, 3, date(2026, 9, 1))
+    assert hints == {"HDPRES1": "HD"}
+
+
+def test_build_hd_day_admits_presence_discovered_bag():
+    from unittest.mock import MagicMock, patch
+
+    from backend.management_rinse_hd import build_rinse_hd_day
+
+    cursor = MagicMock()
+    with (
+        patch("backend.management_rinse_hd.table_exists", return_value=True),
+        patch("backend.management_rinse_hd.ensure_management_hd_columns"),
+        patch(
+            "backend.hd_workflow_extensions.hd_workflow_cutoff",
+            return_value=(date(2026, 8, 21), None),
+        ),
+        patch(
+            "backend.management_rinse_hd._load_hd_service_hints",
+            return_value={"HDPRES2": "HD"},
+        ),
+        patch(
+            "backend.management_rinse_hd.admit_discovered_hd_bags",
+            return_value={"admitted_new": 1, "already_admitted": 0, "bag_ids": ["HDPRES2"]},
+        ) as admit,
+        patch("backend.management_rinse_hd._load_active_admitted_bag_ids", return_value=set()),
+        patch("backend.management_rinse_hd._load_candidate_events_for_bags", return_value=[]),
+        patch("backend.management_rinse_hd._load_production_by_bag", return_value={}),
+        patch("backend.management_rinse_hd._load_user_maps", return_value={}),
+        patch("backend.management_rinse_hd._load_hd_presence_meta", return_value={}),
+    ):
+        build_rinse_hd_day(cursor, 3, date(2026, 9, 1), status="all")
+    admit.assert_called_once()
+    assert "HDPRES2" in admit.call_args[0][3]
+
+
 def test_admit_discovered_writes_pending_and_is_idempotent():
     from unittest.mock import MagicMock, patch
 

@@ -769,6 +769,10 @@ def _load_hd_service_hints(cursor, organization_id: int, selected_date_et: date)
         bid = _norm_bag(row.get("bag_id"))
         if bid:
             out[bid] = "HD"
+    # Ship-window presence is the HD discovery source after scrape; shift monitor
+    # HD day-bags may not exist until first Management HD read.
+    for bid in _load_hd_portal_bags_for_day(cursor, organization_id, selected_date_et):
+        out.setdefault(bid, "HD")
     return out
 
 

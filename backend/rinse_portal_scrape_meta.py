@@ -126,6 +126,25 @@ def apply_ship_window_discovery_meta(
     return base
 
 
+def prepare_scheduled_ship_window_portal_meta(
+    meta: dict[str, Any] | None,
+    *,
+    meta_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Apply ship-window discovery stamp and optionally persist to the meta file."""
+    from backend.rinse_ship_window_tickets_urls import build_scheduled_wf_hd_source_urls
+
+    stamped = apply_ship_window_discovery_meta(meta, build_scheduled_wf_hd_source_urls())
+    if meta_path and stamped:
+        p = Path(meta_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps(stamped, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+    return stamped
+
+
 def validate_presence_empty_result(
     scrape_meta: dict[str, Any] | Mapping[str, Any] | None,
     *,

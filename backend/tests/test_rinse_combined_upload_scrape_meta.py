@@ -94,6 +94,91 @@ class TestManualDualCsvScrapeMetaImport(unittest.TestCase):
         self.assertEqual(out.get("status"), "draft_uploaded")
         self.assertEqual(out.get("source"), "upload_rinse_dual_csv")
 
+    def test_scheduled_scrape_stamps_ship_window_meta_before_persist(self):
+        schema = MagicMock(row_pk="batch_id")
+        orders_df = pd.DataFrame(
+            {
+                "ticket_id": ["BAGTEST01"],
+                "date_clean": ["2026-05-25"],
+                "name_clean": ["TEST"],
+                "weight_num": [10],
+                "service_type": ["WF"],
+                "rush_type": ["NON-RUSH"],
+            }
+        )
+        events_df = pd.DataFrame(
+            {
+                "Bag ID": ["BAGTEST01"],
+                "Scan Index": ["1"],
+                "Rack": ["Clean A"],
+                "Time Scanned": [""],
+                "User": ["staff"],
+                "Purpose": [""],
+                "Last Location": [""],
+                "Last Scan": [""],
+            }
+        )
+        conn = MagicMock()
+        cursor = MagicMock()
+
+        with (
+            patch("backend.rinse_combined_upload.get_upload_batch_schema", return_value=schema),
+            patch("backend.rinse_combined_upload.prepare_orders_df", side_effect=lambda df: df),
+            patch("backend.rinse_combined_upload.snapshot_pre_upload_completed_bag_ids", return_value=set()),
+            patch("backend.rinse_combined_upload.create_draft_upload_batch_shell", return_value=1),
+            patch("backend.rinse_combined_upload.build_upload_duplicate_indexes", return_value=(set(), {}, 3)),
+            patch(
+                "backend.rinse_combined_upload.insert_upload_batch_rows_from_orders_df",
+                return_value={"rows_inserted": 1, "rejected_rows": 0, "needs_attention_rows": 0},
+            ),
+            patch(
+                "backend.rinse_scan_events_upload.commit_scan_events_for_batch",
+                return_value={"rows_inserted": 1},
+            ),
+            patch("backend.rinse_combined_upload.finalize_upload_batch_row_counts"),
+            patch(
+                "backend.rinse_portal_scrape_meta.persist_portal_scrape_meta_on_batch",
+                side_effect=lambda _c, _b, _o, meta: {
+                    "full_snapshot": False,
+                    "portal_scrape_meta": meta,
+                    "portal_absence_allowed": False,
+                },
+            ) as mock_persist,
+            patch.dict(
+                sys.modules,
+                {"backend.app": MagicMock(summarize_batch_rows=MagicMock(return_value={}))},
+            ),
+            patch(
+                "backend.upload_batch_requirements.batch_upload_files_status",
+                return_value={"confirm_ready": True, "has_scan_events": True},
+            ),
+            patch(
+                "backend.rinse_portal_scrape_meta.load_portal_scrape_meta_file",
+                return_value={
+                    "source_inspected_complete": True,
+                    "stopped_reason": "no_next_page_ui",
+                },
+            ),
+        ):
+            out = commit_rinse_combined_upload(
+                conn,
+                cursor,
+                tenant_oid=3,
+                batch_date=date.today(),
+                portal_filename="portal.csv",
+                orders_df=orders_df,
+                events_filename="events.csv",
+                events_df=events_df,
+                portal_scrape_meta_path="/tmp/portal.csv.meta.json",
+                scrape_run_id=5809,
+            )
+
+        mock_persist.assert_called_once()
+        call_meta = mock_persist.call_args[0][3]
+        self.assertEqual(call_meta["source_mode"], "ship_to_vendor_window")
+        self.assertFalse(call_meta["absence_capable"])
+        self.assertFalse(out.get("portal_absence_allowed"))
+
 
 if __name__ == "__main__":
     unittest.main()
