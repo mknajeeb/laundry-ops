@@ -637,8 +637,10 @@ def get_canonical_wf_workload(
     legacy_completed = _completion_date_on_d(
         cursor, org, date_et, sorted(open_bags_set | set(completed_map.keys()))
     )
+    # Open order-instance lifecycle wins over stale registry/folding completion.
+    # Reusable-bag registry rows must not mark a currently-open OI completed-on-D.
     for bid, comp in legacy_completed.items():
-        if bid not in completed_map:
+        if bid not in completed_map and bid not in open_bags_set:
             completed_map[bid] = comp
 
     completed = frozenset(completed_map.keys())

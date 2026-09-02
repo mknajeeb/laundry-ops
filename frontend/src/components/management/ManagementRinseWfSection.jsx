@@ -439,22 +439,16 @@ export default function ManagementRinseWfSection({
               }
             />
             <TodayTapCard
-              label={readOnly ? "Carried Forward" : "Pending"}
-              value={
-                snapshotUnavailable
-                  ? "—"
-                  : fmtInt(readOnly ? wf.carriedForward || wf.movedForward || 0 : wf.pending)
-              }
+              label="Pending"
+              value={snapshotUnavailable ? "—" : fmtInt(wf.pending)}
               tone="pending"
               onClick={
                 snapshotUnavailable
                   ? undefined
                   : () =>
-                      openMetric(
-                        readOnly ? "carried_forward" : "pending",
-                        readOnly ? "Rinse WF · Carried Forward" : "Rinse WF · Pending",
-                        { queue: readOnly ? "carried_forward" : "pending" },
-                      )
+                      openMetric("pending", "Rinse WF · Pending", {
+                        queue: "pending",
+                      })
               }
             />
             <TodayTapCard

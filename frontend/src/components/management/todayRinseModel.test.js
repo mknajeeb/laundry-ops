@@ -46,6 +46,7 @@ describe("Rinse WF presentation model", () => {
       completed: 70,
       pending: 1,
       review: 26,
+      currentOpen: 1,
       carriedForward: 0,
       movedForward: 0,
       dayClosed: false,
@@ -68,6 +69,7 @@ describe("Rinse WF presentation model", () => {
       completed: 115,
       pending: 0,
       review: 0,
+      currentOpen: 0,
       carriedForward: 33,
       movedForward: 33,
       dayClosed: true,
@@ -75,6 +77,22 @@ describe("Rinse WF presentation model", () => {
     expect(wfIdentityLine(wf)).toBe(
       "115 = 115 Completed + 0 Pending + 0 Review · 33 moved forward",
     );
+  });
+
+  it("prefers current_open overlay for pending across selected dates", () => {
+    const seg = {
+      total_workload: 127,
+      completed: 124,
+      pending: 0,
+      current_open: 3,
+      carried_forward: 110,
+      exceptions: { review_required: 0 },
+    };
+    const wf = wfHeadline(seg, { dayClosed: true });
+    expect(wf.pending).toBe(3);
+    expect(wf.currentOpen).toBe(3);
+    expect(wf.workload).toBe(127);
+    expect(wf.carriedForward).toBe(110);
   });
 
   it("applies rush filter to WF segment and specialty counts", () => {

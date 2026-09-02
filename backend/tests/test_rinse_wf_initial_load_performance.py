@@ -162,6 +162,9 @@ def test_primary_payload_skips_review_and_specialty_compute(monkeypatch):
         "backend.management_today._load_headline",
         return_value=({"status": "OPEN"}, headline),
     ), patch(
+        "backend.management_today._overlay_lifecycle_wf_segment",
+        return_value=None,
+    ), patch(
         "backend.management_today.business_today",
         return_value=day,
     ), patch(

@@ -709,11 +709,67 @@ def _compact_segment(seg: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "pending": _int_or_zero(seg.get("pending")),
         "exceptions": {"review_required": review, "total": review},
     }
+    if seg.get("current_open") is not None:
+        out["current_open"] = _int_or_zero(seg.get("current_open"))
+    if seg.get("carried_forward") is not None:
+        out["carried_forward"] = _int_or_zero(seg.get("carried_forward"))
     if seg.get("unfinished_at_close") is not None:
         out["unfinished_at_close"] = _int_or_zero(seg.get("unfinished_at_close"))
     if seg.get("partially_recorded") is not None:
         out["partially_recorded"] = _int_or_zero(seg.get("partially_recorded"))
     return out
+
+
+def _overlay_lifecycle_wf_segment(
+    rinse: dict[str, Any],
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+) -> None:
+    """Overlay WF KPI counts from live lifecycle — not date-bounded day snapshots.
+
+    pending / current_open = currently open WF order instances (date-independent).
+    completed = completed on the selected ET date.
+    total_workload = |open ∪ completed-on-D ∪ review| (canonical union).
+    """
+    from backend.rinse_wf_canonical_workload import get_canonical_wf_workload
+
+    wl = get_canonical_wf_workload(cursor, int(organization_id), selected_date_et)
+    counts = wl.get("counts") or {}
+    current_open = _int_or_zero(counts.get("current_open"))
+    completed = _int_or_zero(counts.get("completed"))
+    review = _int_or_zero(counts.get("review"))
+    workload = _int_or_zero(counts.get("workload"))
+    segs = dict(rinse.get("segments") or {})
+    for key in ("wf", "wf_rush", "wf_non_rush"):
+        if key not in segs or not isinstance(segs.get(key), Mapping):
+            continue
+        # Rush-scoped overlays stay on persisted packs; only all-WF gets live lifecycle.
+        if key != "wf":
+            continue
+        seg = dict(segs[key] or {})
+        # Preserve closed-day carried_forward as lineage metadata only.
+        carried = _int_or_zero(seg.get("carried_forward"))
+        seg["pending"] = current_open
+        seg["current_open"] = current_open
+        seg["completed"] = completed
+        seg["exceptions"] = {
+            "review_required": review,
+            "total": review,
+        }
+        seg["total_workload"] = workload
+        seg["active_workload"] = workload
+        if carried:
+            seg["carried_forward"] = carried
+        segs[key] = seg
+    rinse["segments"] = segs
+    rinse["lifecycle_overlay"] = {
+        "current_open": current_open,
+        "completed_on_selected_date": completed,
+        "review": review,
+        "workload_union": workload,
+        "source": "canonical_wf_workload_v2",
+    }
 
 
 def _segment_member_ids(seg: Mapping[str, Any] | None) -> set[str]:
@@ -1357,6 +1413,14 @@ def build_management_rinse_wf_primary_payload(
     _phase_timing(phases, "headline", t0, counting.query_count, query_start=q0)
 
     rinse = _extract_rinse_wf_only(headline, day_rec)
+    # Live lifecycle overlay: pending/current_open is date-independent;
+    # completed is selected-date; workload is the canonical union.
+    t_overlay = time.perf_counter()
+    q_overlay = int(getattr(counting, "query_count", 0))
+    _overlay_lifecycle_wf_segment(rinse, counting, org, day)
+    _phase_timing(
+        phases, "lifecycle_overlay", t_overlay, counting.query_count, query_start=q_overlay
+    )
     # PRE/POST weights and specialty metrics load on the secondary request.
     rinse.pop("specialty_metrics", None)
 
@@ -1379,7 +1443,7 @@ def build_management_rinse_wf_primary_payload(
             "tier": "primary",
             "phases": phases,
             "sources": {
-                "rinse": "persisted_day_headline_compact_read",
+                "rinse": "persisted_day_headline_compact_read+lifecycle_overlay",
                 "wf_weights": "deferred_to_/api/management/rinse-wf/secondary",
                 "review": "deferred_to_/api/management/rinse-wf/secondary",
                 "specialty": "deferred_to_/api/management/rinse-wf/secondary",

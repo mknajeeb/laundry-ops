@@ -1634,10 +1634,11 @@ def _apply_day_bag_statuses_to_headline(
     Day-bag ``effective_status`` is authoritative. Headline JSON is only a
     derived projection.
 
-    Hard invariant: workload == completed + pending + review
-    (+ carried_forward / unfinished_at_close on closed days). All four
-    headline counts come from the same classified bag-ID set — unbucketed
-    statuses (e.g. disappeared_prior_open_exception) never inflate workload.
+    Hard invariant: workload == completed + pending + review.
+    carried_forward / unfinished_at_close stay as separate closed-day lineage
+    counts and must NOT inflate total_workload (those bags are next-day open
+    state, not selected-date operational workload). Unbucketed statuses
+    (e.g. disappeared_prior_open_exception) never inflate workload.
     """
     out = dict(headline or {})
     segments = dict(out.get("segments") or {})
@@ -1734,11 +1735,10 @@ def _apply_day_bag_statuses_to_headline(
         bag_ids["disappeared_without_completion"] = list(review)
         seg_out["bag_ids"] = bag_ids
         seg_out = _recalc_status_counts_from_ids(seg_out)
+        # Selected-date operational total only — never mix in carried_forward.
         total_i = (
             int(seg_out.get("completed") or 0)
             + int(seg_out.get("pending") or 0)
-            + int(seg_out.get("carried_forward") or 0)
-            + int(seg_out.get("unfinished_at_close") or 0)
             + int((seg_out.get("exceptions") or {}).get("review_required") or 0)
         )
         seg_out["new_today"] = len(bag_ids["new_today"])

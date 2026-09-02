@@ -83,6 +83,24 @@ def _run(cur=None, **kwargs):
         return get_canonical_wf_workload(cur, ORG, D)
 
 
+def test_open_oi_beats_stale_registry_completion():
+    """Registry COMPLETED must not complete a bag that still has an open OI."""
+    wl = _run(
+        open_rows=[_oi("BZ9A")],
+        legacy_completed={
+            "BZ9A": {
+                "completion_date": D,
+                "effective_status": "completed",
+                "completion_source": "registry",
+            }
+        },
+    )
+    assert "BZ9A" in wl["pending"]
+    assert "BZ9A" not in wl["completed"]
+    assert wl["counts"]["current_open"] == 1
+    assert_canonical_workload_invariants(wl)
+
+
 def test_terminal_registry_excludes_from_open():
     wl = _run(
         open_rows=[_oi("TERM")],

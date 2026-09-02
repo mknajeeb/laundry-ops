@@ -64,8 +64,9 @@ export function wfHeadline(seg, { dayClosed = false } = {}) {
       seg?.exceptions?.moved_forward_to_next_day ??
       0,
   );
-  const pending = asInt(seg?.pending);
-  // Closed-day final workload never includes carried_forward (next-day lineage).
+  // Current open is date-independent when the API overlays lifecycle state.
+  const pending = asInt(seg?.current_open ?? seg?.pending);
+  // Prefer backend total_workload (canonical union). Never add carried_forward.
   const workload = asInt(
     seg?.total_workload ??
       seg?.active_workload ??
@@ -76,6 +77,7 @@ export function wfHeadline(seg, { dayClosed = false } = {}) {
     completed,
     pending,
     review,
+    currentOpen: pending,
     carriedForward: dayClosed ? carriedForward : 0,
     movedForward: dayClosed ? carriedForward : 0,
     dayClosed: Boolean(dayClosed),
