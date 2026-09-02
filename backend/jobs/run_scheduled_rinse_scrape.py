@@ -119,7 +119,22 @@ def main(argv: list[str] | None = None) -> int:
             str(getattr(r, "status", "") or "") not in ("skipped", "")
             for r in results
         )
-        if not args.once and not args.dry_run and owned_cycle:
+        # --once is a one-shot probe: it must not start a successor (that was the
+        # Sep-1 pause mode). Continuous / --max-cycles exits still hand off.
+        if args.once:
+            print(
+                "CHAIN_BOUNDARY successor_skipped reason=once_flag "
+                f"owned_cycle={owned_cycle}",
+                flush=True,
+            )
+        elif args.dry_run:
+            print("CHAIN_BOUNDARY successor_skipped reason=dry_run", flush=True)
+        elif not owned_cycle:
+            print(
+                "CHAIN_BOUNDARY successor_skipped reason=no_owned_cycle",
+                flush=True,
+            )
+        else:
             try:
                 from backend.rinse_scrape_chain import start_successor_execution
 

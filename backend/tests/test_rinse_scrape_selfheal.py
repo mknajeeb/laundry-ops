@@ -1031,3 +1031,91 @@ def test_success_handoff_starts_exactly_one_successor(monkeypatch):
     assert job.main([]) == 0
     assert starts == [1]
 
+
+def test_once_flag_skips_successor_handoff(monkeypatch):
+    """Regression: --once (acceptance pause) must not start a successor ACA job."""
+    from backend.jobs import run_scheduled_rinse_scrape as job
+
+    class Result:
+        organization_id = 3
+        run_id = 5811
+        status = "success"
+        rinse_vendor = "veewash"
+        tenant_slug = "veewash"
+        batch_id = 1
+        portal_rows_count = 10
+        scan_events_count = 20
+        error_message = None
+        ready_for_vendor_status = None
+        ready_for_vendor_error = None
+        at_vendor_status = None
+        paths = None
+        detail = {}
+        finished_at = datetime(2026, 9, 2, 3, 55, 51)
+
+    starts: list[int] = []
+
+    class FakeConn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr("backend.db.get_db", lambda: FakeConn())
+    monkeypatch.setattr(
+        "backend.release_revision.load_release_revision_stamps",
+        lambda: {"runtime_revision": "abc"},
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scheduled_scrape.run_all_scheduled_scrapes",
+        lambda *_a, **_k: [Result()],
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.start_successor_execution",
+        lambda **_k: starts.append(1) or {"ok": True, "execution_name": "should-not-fire"},
+    )
+    assert job.main(["--once"]) == 0
+    assert starts == []
+
+
+def test_max_cycles_one_still_starts_successor(monkeypatch):
+    """--max-cycles 1 exits the loop but must still hand off to a successor."""
+    from backend.jobs import run_scheduled_rinse_scrape as job
+
+    class Result:
+        organization_id = 3
+        run_id = 200
+        status = "success"
+        rinse_vendor = "veewash"
+        tenant_slug = "veewash"
+        batch_id = 1
+        portal_rows_count = 10
+        scan_events_count = 20
+        error_message = None
+        ready_for_vendor_status = None
+        ready_for_vendor_error = None
+        at_vendor_status = None
+        paths = None
+        detail = {}
+        finished_at = datetime(2026, 9, 2, 4, 0, 0)
+
+    starts: list[int] = []
+
+    class FakeConn:
+        def close(self):
+            return None
+
+    monkeypatch.setattr("backend.db.get_db", lambda: FakeConn())
+    monkeypatch.setattr(
+        "backend.release_revision.load_release_revision_stamps",
+        lambda: {"runtime_revision": "abc"},
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.run_continuous_scheduled_loop",
+        lambda *_a, **_k: [Result()],
+    )
+    monkeypatch.setattr(
+        "backend.rinse_scrape_chain.start_successor_execution",
+        lambda **_k: starts.append(1) or {"ok": True, "execution_name": "succ-max1"},
+    )
+    assert job.main(["--max-cycles", "1"]) == 0
+    assert starts == [1]
+
