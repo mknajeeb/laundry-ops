@@ -25,12 +25,14 @@ import {
 } from "../../api";
 import SupplyCostSimulatorModal from "./SupplyCostSimulatorModal";
 import {
+  formatReceivedFromVendor,
+  pickCurrentWorkload,
   pickRinseSegments,
+  pickSelectedDateCompleted,
   pickWfSpecialty,
   pickWfSupplies,
   pickWfWeights,
   wfHeadline,
-  wfIdentityLine,
 } from "./todayRinseModel";
 
 const DOSE_TOOLTIP =
@@ -156,6 +158,7 @@ export default function ManagementRinseWfSection({
   rushFilter: rushFilterProp,
   onRushFilterChange,
   selectedDateEt,
+  onSelectedDateChange,
   onRefresh,
   primaryLoading = false,
   secondaryLoading = false,
@@ -170,6 +173,7 @@ export default function ManagementRinseWfSection({
     service: "wf",
     queue: null,
   });
+  const [currentWorkloadOpen, setCurrentWorkloadOpen] = useState(false);
   const [splitSimOpen, setSplitSimOpen] = useState(false);
   const [supplyDetail, setSupplyDetail] = useState({
     open: false,
@@ -210,6 +214,8 @@ export default function ManagementRinseWfSection({
     [rinse, suppliesProp],
   );
   const wf = wfHeadline(wfSeg, { dayClosed: readOnly });
+  const currentWorkload = pickCurrentWorkload(rinse, wfSeg);
+  const selectedCompleted = pickSelectedDateCompleted(rinse, wfSeg);
   // Dashboard cards: item quantities (not order counts). Review Specialty Items
   // is a separate unresolved-order concept — do not merge.
   const comforterQty =
@@ -407,55 +413,30 @@ export default function ManagementRinseWfSection({
         <RushFilterChips value={rushFilter} onChange={onRushChange} disabled={snapshotUnavailable} />
       </Box>
 
-      <BlockLabel>Workload</BlockLabel>
-      <CardGrid>
+      <BlockLabel hint="date-free · open order instances">Current Workload</BlockLabel>
+      <CardGrid columns={{ xs: 2, sm: 2 }}>
         {primaryLoading ? (
           <>
-            <TodayTapCardSkeleton tone="workload" />
-            <TodayTapCardSkeleton tone="completed" />
             <TodayTapCardSkeleton tone="pending" />
             <TodayTapCardSkeleton tone="review" />
           </>
         ) : (
           <>
             <TodayTapCard
-              label="Workload"
-              value={snapshotUnavailable ? "—" : fmtInt(wf.workload)}
-              tone="workload"
-              onClick={
-                snapshotUnavailable
-                  ? undefined
-                  : () => openMetric("active_workload", "Rinse WF · Workload", { queue: "active_workload" })
-              }
-            />
-            <TodayTapCard
-              label="Completed"
-              value={snapshotUnavailable ? "—" : fmtInt(wf.completed)}
-              tone="completed"
-              onClick={
-                snapshotUnavailable
-                  ? undefined
-                  : () => openMetric("completed", "Rinse WF · Completed", { queue: "completed" })
-              }
-            />
-            <TodayTapCard
-              label="Pending"
-              value={snapshotUnavailable ? "—" : fmtInt(wf.pending)}
+              label="Open / Pending"
+              value={snapshotUnavailable ? "—" : fmtInt(currentWorkload.open)}
               tone="pending"
               onClick={
                 snapshotUnavailable
                   ? undefined
-                  : () =>
-                      openMetric("pending", "Rinse WF · Pending", {
-                        queue: "pending",
-                      })
+                  : () => setCurrentWorkloadOpen(true)
               }
             />
             <TodayTapCard
-              label="Review Required"
-              value={snapshotUnavailable ? "—" : fmtInt(wf.review)}
+              label="Review"
+              value={snapshotUnavailable ? "—" : fmtInt(currentWorkload.review)}
               tone="review"
-              warn={!snapshotUnavailable && wf.review > 0}
+              warn={!snapshotUnavailable && currentWorkload.review > 0}
               onClick={
                 snapshotUnavailable
                   ? undefined
@@ -472,12 +453,51 @@ export default function ManagementRinseWfSection({
           </>
         )}
       </CardGrid>
-      {primaryLoading ? null : snapshotUnavailable ? null : (
-        <Typography sx={{ mt: -1, mb: 1.5, fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-          {wfIdentityLine(wf)}
-        </Typography>
-      )}
 
+      <Stack
+        direction="row"
+        alignItems="center"
+        justifyContent="space-between"
+        spacing={1}
+        sx={{ mt: 0.5, mb: 0.75 }}
+      >
+        <BlockLabel hint={selectedDateEt || undefined}>Completed</BlockLabel>
+        {typeof onSelectedDateChange === "function" ? (
+          <Box
+            component="input"
+            type="date"
+            value={selectedDateEt || ""}
+            onChange={(e) => onSelectedDateChange(e.target.value)}
+            aria-label="Completed report date"
+            sx={{
+              fontSize: 12,
+              fontWeight: 700,
+              border: "1px solid #cbd5e1",
+              borderRadius: 1,
+              px: 0.75,
+              py: 0.5,
+              color: "#334155",
+              bgcolor: "#fff",
+            }}
+          />
+        ) : null}
+      </Stack>
+      <CardGrid columns={{ xs: 1, sm: 1 }}>
+        {primaryLoading ? (
+          <TodayTapCardSkeleton tone="completed" />
+        ) : (
+          <TodayTapCard
+            label="Completed"
+            value={snapshotUnavailable ? "—" : fmtInt(selectedCompleted.completed)}
+            tone="completed"
+            onClick={
+              snapshotUnavailable
+                ? undefined
+                : () => openMetric("completed", "Rinse WF · Completed", { queue: "completed" })
+            }
+          />
+        )}
+      </CardGrid>
       <BlockLabel>Processed pounds</BlockLabel>
       <CardGrid columns={{ xs: 2, sm: 2 }}>
         {primaryLoading ? (
@@ -1035,6 +1055,69 @@ export default function ManagementRinseWfSection({
                   </Typography>
                   <Typography sx={{ fontSize: 11, fontWeight: 700 }}>
                     {row.estimated_cost != null ? fmtMoney(row.estimated_cost) : "—"}
+                  </Typography>
+                </Box>
+              ))}
+            </Stack>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={currentWorkloadOpen}
+        onClose={() => setCurrentWorkloadOpen(false)}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle sx={{ pr: 6 }}>
+          Current Workload
+          <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#64748b" }}>
+            Open order instances · no selected date
+          </Typography>
+          <IconButton
+            aria-label="Close"
+            onClick={() => setCurrentWorkloadOpen(false)}
+            sx={{ position: "absolute", right: 8, top: 8 }}
+          >
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent dividers>
+          {(currentWorkload.items || []).length === 0 ? (
+            <Typography sx={{ fontSize: 13, color: "#64748b" }}>No open orders.</Typography>
+          ) : (
+            <Stack spacing={1}>
+              {(currentWorkload.items || []).map((row) => (
+                <Box
+                  key={`${row.bag_id}-${row.order_instance_id || ""}`}
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr auto",
+                    gap: 0.5,
+                    py: 0.75,
+                    borderBottom: "1px solid #e2e8f0",
+                  }}
+                >
+                  <Box>
+                    <Typography sx={{ fontSize: 13, fontWeight: 800 }}>
+                      {row.bag_id}
+                      {row.customer_name ? (
+                        <Typography component="span" sx={{ ml: 0.75, fontSize: 12, fontWeight: 600, color: "#64748b" }}>
+                          {row.customer_name}
+                        </Typography>
+                      ) : null}
+                    </Typography>
+                    <Typography sx={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>
+                      OI {row.order_instance_id ?? "—"}
+                      {" · "}
+                      {row.status === "review_required" ? "Review" : "Open"}
+                      {row.rush_status ? ` · ${row.rush_status}` : ""}
+                    </Typography>
+                  </Box>
+                  <Typography sx={{ fontSize: 11, fontWeight: 700, color: "#334155", textAlign: "right" }}>
+                    Received
+                    <br />
+                    {formatReceivedFromVendor(row.received_from_vendor_at)}
                   </Typography>
                 </Box>
               ))}

@@ -211,6 +211,9 @@ def assert_compact_today_payload(payload: Mapping[str, Any]) -> None:
 
     Scalar maps (WF/HD segment counts, specialty counts, reason counts) are allowed.
     Bag/order ID lists are not.
+
+    Exception: ``items`` under Current Workload / selected-date Completed is a
+    compact open-OI summary (typically tiny) required for the lifecycle drawer.
     """
     stack: list[Any] = [payload]
     while stack:
@@ -222,6 +225,11 @@ def assert_compact_today_payload(payload: Mapping[str, Any]) -> None:
                 if key in FORBIDDEN_COLLECTION_KEYS and isinstance(val, (list, tuple, dict)) and val:
                     raise AssertionError(f"TODAY payload leaked collection key {key!r}")
                 if isinstance(val, (list, tuple)) and val:
+                    if key == "items":
+                        for entry in val:
+                            if isinstance(entry, dict):
+                                stack.append(entry)
+                        continue
                     raise AssertionError(f"TODAY payload leaked a non-empty list at {key!r}")
                 if isinstance(val, dict):
                     stack.append(val)
@@ -726,11 +734,11 @@ def _overlay_lifecycle_wf_segment(
     organization_id: int,
     selected_date_et: date,
 ) -> None:
-    """Overlay WF KPI counts from live lifecycle — not date-bounded day snapshots.
+    """Overlay WF KPIs: date-free Current Workload + separate selected-date Completed.
 
-    pending / current_open = currently open WF order instances (date-independent).
-    completed = completed on the selected ET date.
-    total_workload = |open ∪ completed-on-D ∪ review| (canonical union).
+    current_workload / pending / current_open = open WF OIs (no selected date).
+    selected_date_completed / completed = OI.completed_at on selected ET date.
+    total_workload = Current Workload open only (not Completed+Pending+Review).
     """
     from backend.rinse_wf_canonical_workload import get_canonical_wf_workload
 
@@ -739,7 +747,10 @@ def _overlay_lifecycle_wf_segment(
     current_open = _int_or_zero(counts.get("current_open"))
     completed = _int_or_zero(counts.get("completed"))
     review = _int_or_zero(counts.get("review"))
-    workload = _int_or_zero(counts.get("workload"))
+    pending = _int_or_zero(counts.get("pending"))
+    workload = _int_or_zero(counts.get("workload"))  # open only
+    current_workload = wl.get("current_workload") or {}
+    selected_completed = wl.get("selected_date_completed") or {}
     segs = dict(rinse.get("segments") or {})
     for key in ("wf", "wf_rush", "wf_non_rush"):
         if key not in segs or not isinstance(segs.get(key), Mapping):
@@ -748,9 +759,10 @@ def _overlay_lifecycle_wf_segment(
         if key != "wf":
             continue
         seg = dict(segs[key] or {})
-        # Preserve closed-day carried_forward as lineage metadata only.
-        carried = _int_or_zero(seg.get("carried_forward"))
-        seg["pending"] = current_open
+        seg.pop("carried_forward", None)
+        seg.pop("carried_forward_count", None)
+        seg.pop("moved_forward_count", None)
+        seg["pending"] = pending
         seg["current_open"] = current_open
         seg["completed"] = completed
         seg["exceptions"] = {
@@ -759,16 +771,30 @@ def _overlay_lifecycle_wf_segment(
         }
         seg["total_workload"] = workload
         seg["active_workload"] = workload
-        if carried:
-            seg["carried_forward"] = carried
         segs[key] = seg
     rinse["segments"] = segs
+    # Explicit separate concepts — frontend must not reconstruct from day headline.
+    rinse["current_workload"] = {
+        "open": current_open,
+        "pending": pending,
+        "review": review,
+        "items": list(current_workload.get("items") or []),
+        "date_independent": True,
+        "source": current_workload.get("source") or wl.get("source"),
+    }
+    rinse["selected_date_completed"] = {
+        "date_et": selected_date_et.isoformat(),
+        "completed": completed,
+        "items": list(selected_completed.get("items") or []),
+        "source": selected_completed.get("source") or wl.get("source"),
+    }
     rinse["lifecycle_overlay"] = {
         "current_open": current_open,
         "completed_on_selected_date": completed,
         "review": review,
-        "workload_union": workload,
-        "source": "canonical_wf_workload_v2",
+        "pending": pending,
+        "current_workload_open": workload,
+        "source": wl.get("source") or "canonical_wf_workload_v3_lifecycle",
     }
 
 

@@ -4,7 +4,6 @@ import {
   Box,
   IconButton,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
@@ -30,14 +29,6 @@ function todayEtIso() {
   } catch {
     return new Date().toISOString().slice(0, 10);
   }
-}
-
-function formatDayLabel(iso) {
-  const parts = String(iso || "").split("-").map(Number);
-  if (parts.length !== 3 || parts.some((n) => !n && n !== 0)) return iso || "";
-  const [year, month, day] = parts;
-  const dt = new Date(year, month - 1, day);
-  return dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 function isAbortError(err) {
@@ -234,44 +225,33 @@ export default function ManagementRinseWfPage() {
             RINSE WF
           </Typography>
           <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-            {formatDayLabel(dateEt)}
+            Current Workload is date-free
             {refreshedLabel ? ` · ${refreshedLabel}` : ""}
           </Typography>
         </Box>
-        <Stack direction="row" alignItems="center" spacing={0.5} sx={{ flexShrink: 0 }}>
-          <TextField
-            size="small"
-            type="date"
-            value={dateEt}
-            onChange={(e) => setDateEt(e.target.value)}
-            InputLabelProps={{ shrink: true }}
-            inputProps={{ "aria-label": "Business date" }}
-            sx={{ width: 142 }}
+        <IconButton
+          aria-label="Refresh"
+          onClick={() => load(dateEt, true, rushFilter)}
+          disabled={refreshing}
+          size="small"
+          sx={{
+            opacity: refreshing ? 0.6 : 1,
+          }}
+        >
+          <RefreshIcon
+            sx={
+              refreshing
+                ? {
+                  animation: "spin 0.9s linear infinite",
+                  "@keyframes spin": {
+                    "0%": { transform: "rotate(0deg)" },
+                    "100%": { transform: "rotate(360deg)" },
+                  },
+                }
+                : undefined
+            }
           />
-          <IconButton
-            aria-label="Refresh"
-            onClick={() => load(dateEt, true, rushFilter)}
-            disabled={refreshing}
-            size="small"
-            sx={{
-              opacity: refreshing ? 0.6 : 1,
-            }}
-          >
-            <RefreshIcon
-              sx={
-                refreshing
-                  ? {
-                    animation: "spin 0.9s linear infinite",
-                    "@keyframes spin": {
-                      "0%": { transform: "rotate(0deg)" },
-                      "100%": { transform: "rotate(360deg)" },
-                    },
-                  }
-                  : undefined
-              }
-            />
-          </IconButton>
-        </Stack>
+        </IconButton>
       </Stack>
 
       {primaryError ? <Alert severity="error" sx={{ mb: 1.5 }}>{primaryError}</Alert> : null}
@@ -291,10 +271,10 @@ export default function ManagementRinseWfPage() {
         rushFilter={rushFilter}
         onRushFilterChange={onRushFilterChange}
         selectedDateEt={dateEt}
+        onSelectedDateChange={setDateEt}
         onRefresh={() => load(dateEt, true, rushFilter)}
         primaryLoading={primaryLoading}
         secondaryLoading={secondaryLoading}
-      />
-    </Box>
+      />    </Box>
   );
 }

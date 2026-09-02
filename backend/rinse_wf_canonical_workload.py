@@ -1,17 +1,19 @@
-"""Canonical WF workload — lifecycle-based membership authority.
+"""Canonical WF workload — open-OI Current Workload + date Completed.
 
 Model (frozen)
 --------------
 1. Portal scraper = discovery/update only (never workload membership / absence).
-2. Current open WF workload = legitimate non-terminal WF order instances
-   (``completed_at IS NULL`` on the latest instance per bag).
-3. Completed-on-D = instances whose canonical completion timestamp falls on D ET.
-4. Selected-day view = current open workload ∪ completed-on-selected-date
-   (separate sections; discovery counts ≠ workload counts).
-5. Missing From Portal is never derived from rolling discovery absence.
-6. Authoritative Rinse HD bags are excluded (``canonical WF ∩ HD = ∅``).
+2. Current Workload = latest WF OI per bag with ``completed_at IS NULL``
+   (date-free; no carry-forward; registry cannot remove open OIs).
+3. Completed-on-D = OIs whose ``completed_at`` falls on D ET (OI only).
+4. Current Workload and Completed are separate API concepts — not one equation.
+5. Open OI + registry COMPLETED without valid current-OI completion → Review.
+6. Missing From Portal is never derived from rolling discovery absence.
+7. Authoritative Rinse HD bags are excluded (``canonical WF ∩ HD = ∅``).
 
-Public API: ``get_canonical_wf_workload(org_id, date_et)``.
+Public API: ``get_canonical_wf_workload(org_id, date_et)`` plus
+``rinse_wf_current_workload.get_current_wf_workload`` /
+``get_selected_date_wf_completed``.
 """
 
 from __future__ import annotations
@@ -569,17 +571,21 @@ def get_canonical_wf_workload(
     organization_id: int,
     date_et: date,
 ) -> dict[str, Any]:
-    """Single public WF membership derivation for ET date ``date_et``.
+    """WF membership: date-free Current Workload + separate selected-date Completed.
 
-    Returns immutable bag-ID sets with invariants:
-      workload == completed ∪ pending ∪ review
-      pairwise disjoint
-      count == sum
-      historical_completed_in_workload == 0
+    Current Workload (pending/review/open) ignores selected date.
+    Completed-on-D comes only from OI.completed_at (never registry).
+    Carry-forward / terminal_before / registry removal are not applied.
     """
+    from backend.rinse_wf_current_workload import (
+        REVIEW_REGISTRY_STALE_COMPLETED,
+        get_current_wf_workload,
+        get_selected_date_wf_completed,
+    )
+
     org = int(organization_id)
+    empty = frozenset()
     if date_et < STEP1_AUTHORITATIVE_START_ET:
-        empty = frozenset()
         return {
             "organization_id": org,
             "date_et": date_et.isoformat(),
@@ -599,131 +605,99 @@ def get_canonical_wf_workload(
                 "new_today": 0,
                 "carryover": 0,
                 "missing_from_portal": 0,
+                "current_open": 0,
             },
             "arithmetic_ok": True,
             "invariants_ok": True,
             "bag_meta": {},
             "completion_by_bag": {},
-            "source": "canonical_wf_workload_v2",
+            "current_workload": {
+                "pending": empty,
+                "review": empty,
+                "open": empty,
+                "counts": {"pending": 0, "review": 0, "open": 0},
+                "items": [],
+            },
+            "selected_date_completed": {
+                "date_et": date_et.isoformat(),
+                "completed": empty,
+                "counts": {"completed": 0},
+                "items": [],
+            },
+            "source": "canonical_wf_workload_v3_lifecycle",
         }
 
-    from backend.rinse_order_instances import (
-        list_open_wf_order_instances,
-        list_order_instances_completed_on_date,
-    )
-
-    open_rows = list_open_wf_order_instances(cursor, org, service_type="WF")
-    prior_meta = _oi_meta_by_bag(open_rows)
-    open_bags_set = {normalize_bag_id(r.get("bag_id")) for r in open_rows}
-    open_bags_set = {b for b in open_bags_set if b}
-
-    # Completed-on-D from order instances (+ registry legacy fallback).
-    oi_completed_rows = list_order_instances_completed_on_date(
-        cursor, org, date_et, service_type="WF"
-    )
-    completed_map: dict[str, dict[str, Any]] = {}
-    for row in oi_completed_rows:
-        bid = normalize_bag_id(row.get("bag_id"))
-        if not bid:
-            continue
-        ca = row.get("completed_at")
-        completed_map[bid] = {
-            "completion_date": date_et,
-            "completion_at": ca,
-            "effective_status": "completed",
-            "completion_source": row.get("completion_source") or "order_instance",
-            "order_instance_id": row.get("order_instance_id"),
-        }
-    legacy_completed = _completion_date_on_d(
-        cursor, org, date_et, sorted(open_bags_set | set(completed_map.keys()))
-    )
-    # Open order-instance lifecycle wins over stale registry/folding completion.
-    # Reusable-bag registry rows must not mark a currently-open OI completed-on-D.
-    for bid, comp in legacy_completed.items():
-        if bid not in completed_map and bid not in open_bags_set:
-            completed_map[bid] = comp
-
-    completed = frozenset(completed_map.keys())
-
-    # HD/WF classification: authoritative HD must never join WF workload.
-    all_candidates = sorted(open_bags_set | completed)
-    hd_exclude = _authoritative_hd_bag_ids(
+    current = get_current_wf_workload(
         cursor,
         org,
-        date_et,
-        all_candidates,
-        portal_hd_ids=set(),
+        include_received_from_vendor=True,
+        as_of_date_et=date_et,
     )
-    open_bags_set -= hd_exclude
-    completed = frozenset(b for b in completed if b not in hd_exclude)
-    completed_map = {b: completed_map[b] for b in completed}
+    selected = get_selected_date_wf_completed(cursor, org, date_et)
 
-    # Never admit historically terminal bags lacking a current open instance.
-    terminal_before = _terminal_before_date(
-        cursor, org, date_et, sorted(open_bags_set)
-    )
-    open_bags_set = {b for b in open_bags_set if b not in terminal_before}
+    pending = frozenset(current.get("pending") or [])
+    review_fs = frozenset(current.get("review") or [])
+    open_only = frozenset(current.get("open") or [])
+    completed = frozenset(selected.get("completed") or [])
+    completed_map = dict(selected.get("completion_by_bag") or {})
+    missing_fs = empty
+    # Carry-forward removed from authority (compat keys stay empty).
+    carryover = empty
+    new_today = empty
+    historical = empty
+    # bag_ids for day materialization = open ∪ completed-on-D (reporting union only).
+    bag_ids = frozenset(open_only | completed)
 
-    open_bags = frozenset(open_bags_set)
-
-    # Review from REVIEW cycles only — discovery absence never marks MFP.
-    review = _review_wf_bag_ids_from_cycles(cursor, org, open_bags)
-    pending = frozenset(b for b in open_bags if b not in review)
-    review_fs = frozenset(review)
-    missing_fs = frozenset()
-
-    bag_ids = frozenset(completed | pending | review_fs)
-
-    carryover = frozenset(
-        b
-        for b in open_bags
-        if _et_date((prior_meta.get(b) or {}).get("cycle_anchor_at")) is not None
-        and _et_date((prior_meta.get(b) or {}).get("cycle_anchor_at")) < date_et
-    )
-    new_today = frozenset(b for b in open_bags if b not in carryover)
-
-    historical = frozenset(b for b in bag_ids if b in terminal_before)
-    open_only = pending | review_fs
-    disjoint_open = not (pending & review_fs)
-    union_ok = bag_ids == (completed | pending | review_fs)
-    # Completed-on-D may overlap current-open for reusable-bag edge cases.
-    arithmetic_ok = len(bag_ids) >= len(completed) + len(pending) + len(review_fs) - len(
-        completed & open_only
-    )
-    invariants_ok = (
-        disjoint_open
-        and union_ok
-        and len(historical) == 0
-        and missing_fs <= open_only
-    )
-
+    prior_meta: dict[str, dict[str, Any]] = {}
     bag_meta: dict[str, dict[str, Any]] = {}
-    for bid in bag_ids:
-        codes: list[str] = []
-        prior = prior_meta.get(bid) or {}
-        for c in prior.get("review_reason_codes") or []:
-            if str(c).strip():
-                codes.append(str(c).strip())
-        if bid in completed:
-            eff = OUTCOME_COMPLETED
-        elif bid in review_fs:
-            eff = OUTCOME_REVIEW_REQUIRED
-        else:
-            eff = OUTCOME_PENDING
-        noc = OUTCOME_CARRYOVER if bid in carryover else "new_today"
+    for item in current.get("items") or []:
+        bid = normalize_bag_id(item.get("bag_id"))
+        if not bid:
+            continue
+        codes = list(item.get("review_reason_codes") or [])
+        prior_meta[bid] = {
+            "bag_id": bid,
+            "service_type": "WF",
+            "effective_status": item.get("status") or OUTCOME_PENDING,
+            "review_reason_codes": codes,
+            "cycle_anchor_at": item.get("cycle_anchor_at"),
+            "received_from_vendor_at": item.get("received_from_vendor_at"),
+            "order_instance_id": item.get("order_instance_id"),
+        }
         bag_meta[bid] = {
             "bag_id": bid,
             "service_type": "WF",
-            "effective_status": eff,
-            "new_or_carryover": noc,
-            "review_reason_codes": codes,
-            "rush_status": prior.get("rush_status") or prior.get("rush_flag"),
-            "rush_flag": prior.get("rush_flag") or prior.get("rush_status"),
-            "lifecycle": (
-                LIFECYCLE_COMPLETED if bid in completed else LIFECYCLE_OPEN
+            "effective_status": (
+                OUTCOME_REVIEW_REQUIRED if bid in review_fs else OUTCOME_PENDING
             ),
+            "new_or_carryover": None,
+            "review_reason_codes": codes,
+            "rush_status": item.get("rush_status"),
+            "rush_flag": item.get("rush_status"),
+            "lifecycle": LIFECYCLE_OPEN,
             "from_canonical_workload": True,
+            "received_from_vendor_at": item.get("received_from_vendor_at"),
+            "order_instance_id": item.get("order_instance_id"),
         }
+
+    for bid in completed:
+        if bid in bag_meta:
+            # Reusable bag: open OI is current; completed-on-D is separate reporting.
+            continue
+        comp = completed_map.get(bid) or {}
+        bag_meta[bid] = {
+            "bag_id": bid,
+            "service_type": "WF",
+            "effective_status": OUTCOME_COMPLETED,
+            "new_or_carryover": None,
+            "review_reason_codes": [],
+            "lifecycle": LIFECYCLE_COMPLETED,
+            "from_canonical_workload": True,
+            "order_instance_id": comp.get("order_instance_id"),
+        }
+
+    disjoint_open = not (pending & review_fs)
+    invariants_ok = disjoint_open and len(historical) == 0 and missing_fs <= open_only
 
     return {
         "organization_id": org,
@@ -740,19 +714,39 @@ def get_canonical_wf_workload(
             "completed": len(completed),
             "pending": len(pending),
             "review": len(review_fs),
-            "workload": len(bag_ids),
-            "new_today": len(new_today),
-            "carryover": len(carryover),
-            "missing_from_portal": len(missing_fs),
+            # Workload count is Current Workload open only (not a daily equation).
+            "workload": len(open_only),
+            "new_today": 0,
+            "carryover": 0,
+            "missing_from_portal": 0,
             "current_open": len(open_only),
         },
-        "arithmetic_ok": arithmetic_ok,
+        "arithmetic_ok": True,
         "invariants_ok": invariants_ok,
-        "absence_meta": {"absence_allowed": False, "reason": "lifecycle_no_discovery_absence"},
+        "absence_meta": {
+            "absence_allowed": False,
+            "reason": "lifecycle_no_discovery_absence",
+        },
         "bag_meta": bag_meta,
         "completion_by_bag": completed_map,
         "prior_meta": prior_meta,
-        "source": "canonical_wf_workload_v2",
+        "current_workload": {
+            "pending": pending,
+            "review": review_fs,
+            "open": open_only,
+            "counts": dict(current.get("counts") or {}),
+            "items": list(current.get("items") or []),
+            "source": current.get("source"),
+        },
+        "selected_date_completed": {
+            "date_et": date_et.isoformat(),
+            "completed": completed,
+            "counts": dict(selected.get("counts") or {}),
+            "items": list(selected.get("items") or []),
+            "source": selected.get("source"),
+        },
+        "conflict_review_reason": REVIEW_REGISTRY_STALE_COMPLETED,
+        "source": "canonical_wf_workload_v3_lifecycle",
     }
 
 
@@ -833,16 +827,17 @@ def canonical_wf_day_bag_rows(
 
 
 def assert_canonical_workload_invariants(workload: Mapping[str, Any]) -> None:
-    """Raise AssertionError when membership invariants fail."""
-    completed = set(workload.get("completed") or [])
+    """Raise AssertionError when lifecycle membership invariants fail."""
     pending = set(workload.get("pending") or [])
     review = set(workload.get("review") or [])
-    bag_ids = set(workload.get("bag_ids") or [])
     historical = set(workload.get("historical_completed_in_workload") or [])
     missing = set(workload.get("missing_from_portal") or [])
     open_bags = pending | review
-    if bag_ids != completed | pending | review:
-        raise AssertionError("workload union mismatch")
+    cw = workload.get("current_workload") or {}
+    if cw:
+        cw_open = set(cw.get("open") or [])
+        if cw_open != open_bags:
+            raise AssertionError("current_workload.open != pending∪review")
     if pending & review:
         raise AssertionError("pending/review not mutually exclusive")
     if historical:
@@ -851,3 +846,11 @@ def assert_canonical_workload_invariants(workload: Mapping[str, Any]) -> None:
         )
     if not missing <= open_bags:
         raise AssertionError("missing_from_portal introduced non-open membership")
+    # Carry-forward removed from authority.
+    if workload.get("carryover"):
+        raise AssertionError("carryover must be empty under lifecycle authority")
+    counts = workload.get("counts") or {}
+    if int(counts.get("current_open") or 0) != len(open_bags):
+        raise AssertionError("current_open count mismatch")
+    if int(counts.get("workload") or 0) != len(open_bags):
+        raise AssertionError("workload count must equal current open only")

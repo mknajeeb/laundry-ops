@@ -58,20 +58,20 @@ def _run_wf(
             return_value=completed_rows,
         ),
         patch(
-            "backend.rinse_wf_canonical_workload._completion_date_on_d",
-            return_value={},
-        ),
-        patch(
-            "backend.rinse_wf_canonical_workload._terminal_before_date",
-            return_value=set(terminal or []),
-        ),
-        patch(
             "backend.rinse_wf_canonical_workload._authoritative_hd_bag_ids",
             return_value=set(hd or []),
         ),
         patch(
             "backend.rinse_wf_canonical_workload._review_wf_bag_ids_from_cycles",
             return_value=set(review_bags or []),
+        ),
+        patch(
+            "backend.rinse_wf_current_workload.registry_stale_completion_review_bags",
+            return_value=set(),
+        ),
+        patch(
+            "backend.rinse_wf_current_workload.lifecycle_received_from_vendor_at",
+            return_value=None,
         ),
     ):
         return get_canonical_wf_workload(cur, ORG, date_et)

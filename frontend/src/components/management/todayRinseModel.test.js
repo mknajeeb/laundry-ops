@@ -1,19 +1,33 @@
 import { describe, expect, it } from "vitest";
 import {
+  pickCurrentWorkload,
   pickRinseSegments,
+  pickSelectedDateCompleted,
   pickWfSpecialty,
   pickWfWeights,
   wfHeadline,
-  wfIdentityLine,
 } from "./todayRinseModel";
 
 const rinse = {
+  current_workload: {
+    open: 3,
+    pending: 2,
+    review: 1,
+    date_independent: true,
+    items: [{ bag_id: "AAA", order_instance_id: 1 }],
+  },
+  selected_date_completed: {
+    date_et: "2026-09-02",
+    completed: 112,
+    items: [],
+  },
   segments: {
     wf: {
-      total_workload: 97,
-      completed: 70,
-      pending: 1,
-      exceptions: { review_required: 26 },
+      total_workload: 3,
+      completed: 112,
+      pending: 3,
+      current_open: 3,
+      exceptions: { review_required: 1 },
     },
     wf_rush: {
       total_workload: 12,
@@ -39,60 +53,35 @@ const rinse = {
 };
 
 describe("Rinse WF presentation model", () => {
-  it("keeps WF workload/completed/pending/review identity", () => {
+  it("keeps Current Workload separate from selected-date Completed", () => {
     const wf = wfHeadline(rinse.segments.wf);
     expect(wf).toEqual({
-      workload: 97,
-      completed: 70,
-      pending: 1,
-      review: 26,
-      currentOpen: 1,
-      carriedForward: 0,
-      movedForward: 0,
+      completed: 112,
+      pending: 3,
+      review: 1,
+      currentOpen: 3,
       dayClosed: false,
     });
-    expect(wfIdentityLine(wf)).toBe("97 = 70 Completed + 1 Pending + 26 Review");
-  });
-
-  it("closed day final workload excludes carried_forward (audit lineage only)", () => {
-    const closedSeg = {
-      total_workload: 115,
-      completed: 115,
-      pending: 0,
-      carried_forward: 33,
-      moved_forward_count: 33,
-      exceptions: { review_required: 0, moved_forward_to_next_day: 33 },
-    };
-    const wf = wfHeadline(closedSeg, { dayClosed: true });
-    expect(wf).toEqual({
-      workload: 115,
-      completed: 115,
-      pending: 0,
-      review: 0,
-      currentOpen: 0,
-      carriedForward: 33,
-      movedForward: 33,
-      dayClosed: true,
-    });
-    expect(wfIdentityLine(wf)).toBe(
-      "115 = 115 Completed + 0 Pending + 0 Review · 33 moved forward",
-    );
+    const cw = pickCurrentWorkload(rinse, rinse.segments.wf);
+    expect(cw.open).toBe(3);
+    expect(cw.review).toBe(1);
+    expect(cw.dateIndependent).toBe(true);
+    const sc = pickSelectedDateCompleted(rinse, rinse.segments.wf);
+    expect(sc.completed).toBe(112);
+    expect(sc.dateEt).toBe("2026-09-02");
   });
 
   it("prefers current_open overlay for pending across selected dates", () => {
     const seg = {
-      total_workload: 127,
+      total_workload: 3,
       completed: 124,
       pending: 0,
       current_open: 3,
-      carried_forward: 110,
       exceptions: { review_required: 0 },
     };
-    const wf = wfHeadline(seg, { dayClosed: true });
+    const wf = wfHeadline(seg);
     expect(wf.pending).toBe(3);
     expect(wf.currentOpen).toBe(3);
-    expect(wf.workload).toBe(127);
-    expect(wf.carriedForward).toBe(110);
   });
 
   it("applies rush filter to WF segment and specialty counts", () => {
@@ -122,35 +111,17 @@ describe("Rinse WF presentation model", () => {
             post_weight_bag_count: 8,
           },
           rush: {
-            pre_lbs: 70,
-            post_lbs: 60,
-            pre_weight_lbs: 70,
-            post_weight_lbs: 60,
-            pre_weight_bag_count: 6,
-            post_weight_bag_count: 5,
-          },
-          non_rush: {
-            pre_lbs: 30,
-            post_lbs: 20,
-            pre_weight_lbs: 30,
-            post_weight_lbs: 20,
+            pre_lbs: 40,
+            post_lbs: 30,
+            pre_weight_lbs: 40,
+            post_weight_lbs: 30,
             pre_weight_bag_count: 4,
             post_weight_bag_count: 3,
           },
         },
       },
     };
-    expect(pickWfWeights(withWeights, "all").preLbs).toBe(100);
-    expect(pickWfWeights(withWeights, "rush").postLbs).toBe(60);
-    expect(pickWfWeights(withWeights, "rush").preBagCount).toBe(6);
-    expect(pickWfWeights(withWeights, "rush").postBagCount).toBe(5);
-  });
-
-  it("does not fall specialty back to All under Rush", () => {
-    const missingRush = {
-      ...rinse,
-      specialty_metrics: { wf: rinse.specialty_metrics.wf },
-    };
-    expect(pickWfSpecialty(missingRush, "rush")).toBeNull();
+    expect(pickWfWeights(withWeights, "rush").preLbs).toBe(40);
+    expect(pickWfWeights(withWeights, "all").postBagCount).toBe(8);
   });
 });

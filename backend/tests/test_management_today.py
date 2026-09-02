@@ -281,6 +281,8 @@ def test_rinse_wf_payload_skips_hd_labor_and_supplies_compute(monkeypatch):
         "backend.management_today.business_today", return_value=day
     ), patch(
         "backend.management_today.business_now", return_value=datetime(2026, 8, 16, 18, 0, 0)
+    ), patch(
+        "backend.management_today._overlay_lifecycle_wf_segment",
     ):
         payload = build_management_rinse_wf_payload(object(), 3, day, bypass_cache=True)
 

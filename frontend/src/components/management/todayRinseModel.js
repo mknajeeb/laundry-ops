@@ -54,33 +54,59 @@ export function specialtyOrderCount(row) {
   return asInt(row.order_count ?? row.count);
 }
 
+/**
+ * Current Workload is date-free (open OIs). Completed is selected-date only.
+ * Do not reconstruct Workload = Completed + Pending + Review.
+ */
 export function wfHeadline(seg, { dayClosed = false } = {}) {
   const review = asInt(seg?.exceptions?.review_required ?? seg?.exceptions?.total);
   const completed = asInt(seg?.completed);
-  const carriedForward = asInt(
-    seg?.carried_forward ??
-      seg?.carried_forward_count ??
-      seg?.moved_forward_count ??
-      seg?.exceptions?.moved_forward_to_next_day ??
-      0,
-  );
-  // Current open is date-independent when the API overlays lifecycle state.
   const pending = asInt(seg?.current_open ?? seg?.pending);
-  // Prefer backend total_workload (canonical union). Never add carried_forward.
-  const workload = asInt(
-    seg?.total_workload ??
-      seg?.active_workload ??
-      completed + pending + review,
-  );
+  // Current Workload open count — never Completed+Pending+Review.
+  const currentOpen = asInt(seg?.current_open ?? pending);
   return {
-    workload,
     completed,
-    pending,
+    pending: currentOpen,
     review,
-    currentOpen: pending,
-    carriedForward: dayClosed ? carriedForward : 0,
-    movedForward: dayClosed ? carriedForward : 0,
+    currentOpen,
     dayClosed: Boolean(dayClosed),
+  };
+}
+
+export function pickCurrentWorkload(rinse, seg) {
+  const cw = rinse?.current_workload;
+  if (cw && typeof cw === "object") {
+    return {
+      open: asInt(cw.open ?? cw.counts?.open),
+      pending: asInt(cw.pending ?? cw.counts?.pending),
+      review: asInt(cw.review ?? cw.counts?.review),
+      items: Array.isArray(cw.items) ? cw.items : [],
+      dateIndependent: cw.date_independent !== false,
+    };
+  }
+  const h = wfHeadline(seg);
+  return {
+    open: h.currentOpen,
+    pending: h.pending,
+    review: h.review,
+    items: [],
+    dateIndependent: true,
+  };
+}
+
+export function pickSelectedDateCompleted(rinse, seg) {
+  const sc = rinse?.selected_date_completed;
+  if (sc && typeof sc === "object") {
+    return {
+      dateEt: sc.date_et || null,
+      completed: asInt(sc.completed ?? sc.counts?.completed),
+      items: Array.isArray(sc.items) ? sc.items : [],
+    };
+  }
+  return {
+    dateEt: null,
+    completed: asInt(seg?.completed),
+    items: [],
   };
 }
 
@@ -126,26 +152,16 @@ export function pickWfSupplies(rinse, topLevelSupplies) {
   return rinse?.supplies || null;
 }
 
-export function wfIdentityLine({
-  workload,
-  completed,
-  pending,
-  review,
-  carriedForward = 0,
-  movedForward = 0,
-  dayClosed = false,
-}) {
-  // Final closed-day identity excludes carried_forward from workload.
-  const line = `${workload} = ${completed} Completed + ${pending} Pending + ${review} Review`;
-  if (dayClosed) {
-    const moved = asInt(movedForward || carriedForward);
-    if (moved > 0) {
-      return `${line} · ${moved} moved forward`;
-    }
-  }
-  return line;
-}
-
 export function hdIdentityLine({ orders, completed, review }) {
   return `${orders} = ${completed} Completed + ${review} Review`;
+}
+
+/** Format received_from_vendor_at for compact drawer rows (ET wall when possible). */
+export function formatReceivedFromVendor(value) {
+  if (value == null || value === "") return "—";
+  const s = String(value);
+  // Prefer YYYY-MM-DD HH:MM when ISO-like.
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+  if (m) return `${m[1]} ${m[2]}`;
+  return s.slice(0, 16);
 }
