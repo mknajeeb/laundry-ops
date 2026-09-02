@@ -206,14 +206,25 @@ def _clip_seconds(
     return max(0.0, (end - start).total_seconds())
 
 
+# Compact scalar-code lists allowed on Current Workload / Completed item rows.
+# These are short reason codes, not bag/order drilldown arrays.
+_ALLOWED_COMPACT_SCALAR_LIST_KEYS = frozenset(
+    {
+        "items",  # tiny open-OI / completed-OI summary rows
+        "review_reason_codes",  # e.g. REGISTRY_COMPLETED_WITHOUT_OI_EVIDENCE
+    }
+)
+
+
 def assert_compact_today_payload(payload: Mapping[str, Any]) -> None:
     """Raise if the TODAY DTO ships collection payloads meant for later drilldowns.
 
     Scalar maps (WF/HD segment counts, specialty counts, reason counts) are allowed.
     Bag/order ID lists are not.
 
-    Exception: ``items`` under Current Workload / selected-date Completed is a
-    compact open-OI summary (typically tiny) required for the lifecycle drawer.
+    Allowed compact lists:
+      - ``items``: Current Workload / selected-date Completed row summaries
+      - ``review_reason_codes``: short string codes on those rows
     """
     stack: list[Any] = [payload]
     while stack:
@@ -225,10 +236,12 @@ def assert_compact_today_payload(payload: Mapping[str, Any]) -> None:
                 if key in FORBIDDEN_COLLECTION_KEYS and isinstance(val, (list, tuple, dict)) and val:
                     raise AssertionError(f"TODAY payload leaked collection key {key!r}")
                 if isinstance(val, (list, tuple)) and val:
-                    if key == "items":
-                        for entry in val:
-                            if isinstance(entry, dict):
-                                stack.append(entry)
+                    if key in _ALLOWED_COMPACT_SCALAR_LIST_KEYS:
+                        if key == "items":
+                            for entry in val:
+                                if isinstance(entry, dict):
+                                    stack.append(entry)
+                        # review_reason_codes: list[str] only — do not recurse
                         continue
                     raise AssertionError(f"TODAY payload leaked a non-empty list at {key!r}")
                 if isinstance(val, dict):

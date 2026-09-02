@@ -695,6 +695,39 @@ def test_extract_rinse_step1_keeps_shift_analysis_counts_without_ids():
     assert_compact_today_payload({"rinse": rinse})
 
 
+def test_compact_payload_allows_current_workload_review_reason_codes():
+    """Lifecycle conflict codes on open-OI items must not trip the compact guard."""
+    payload = {
+        "date_et": "2026-09-02",
+        "rinse": {
+            "current_workload": {
+                "open": 3,
+                "pending": 0,
+                "review": 3,
+                "items": [
+                    {
+                        "bag_id": "BUEKCP33J1",
+                        "order_instance_id": 3585,
+                        "completed_at": None,
+                        "status": "review_required",
+                        "review_reason_codes": [
+                            "REGISTRY_COMPLETED_WITHOUT_OI_EVIDENCE"
+                        ],
+                    }
+                ],
+            },
+            "selected_date_completed": {
+                "date_et": "2026-09-02",
+                "completed": 112,
+                "items": [],
+            },
+            "segments": {"wf": {"pending": 0, "current_open": 3, "completed": 112}},
+        },
+        "_meta": {},
+    }
+    assert_compact_today_payload(payload)
+
+
 def test_specialty_counts_resums_item_qty_under_rush_membership():
     from backend.management_today import _specialty_counts
 

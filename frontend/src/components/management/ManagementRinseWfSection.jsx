@@ -413,7 +413,9 @@ export default function ManagementRinseWfSection({
         <RushFilterChips value={rushFilter} onChange={onRushChange} disabled={snapshotUnavailable} />
       </Box>
 
-      <BlockLabel hint="date-free · open order instances">Current Workload</BlockLabel>
+      <BlockLabel hint={`date-free · ${fmtInt(currentWorkload.open)} open total · Pending + Review are mutually exclusive`}>
+        Current Workload
+      </BlockLabel>
       <CardGrid columns={{ xs: 2, sm: 2 }}>
         {primaryLoading ? (
           <>
@@ -423,8 +425,13 @@ export default function ManagementRinseWfSection({
         ) : (
           <>
             <TodayTapCard
-              label="Open / Pending"
-              value={snapshotUnavailable ? "—" : fmtInt(currentWorkload.open)}
+              label="Pending"
+              value={snapshotUnavailable ? "—" : fmtInt(currentWorkload.pending)}
+              sub={
+                snapshotUnavailable
+                  ? undefined
+                  : `of ${fmtInt(currentWorkload.open)} open`
+              }
               tone="pending"
               onClick={
                 snapshotUnavailable
@@ -435,6 +442,11 @@ export default function ManagementRinseWfSection({
             <TodayTapCard
               label="Review"
               value={snapshotUnavailable ? "—" : fmtInt(currentWorkload.review)}
+              sub={
+                snapshotUnavailable
+                  ? undefined
+                  : `of ${fmtInt(currentWorkload.open)} open`
+              }
               tone="review"
               warn={!snapshotUnavailable && currentWorkload.review > 0}
               onClick={
