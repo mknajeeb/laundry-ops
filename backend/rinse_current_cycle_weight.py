@@ -290,7 +290,7 @@ def _obs_lbs(obs: Mapping[str, Any]) -> float | None:
 def _latest_portal_wf_lbs_observation(
     observations: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any] | None:
-    """Latest portal # WF LBS (``wf_lbs_num`` only) — authoritative Management PRE."""
+    """Latest portal # WF LBS (``wf_lbs_num`` only) — PRE fallback when no preclean event."""
     best: tuple[datetime, float, Any, int | None] | None = None
     for obs in observations or []:
         if not isinstance(obs, Mapping):
@@ -315,7 +315,7 @@ def _latest_portal_wf_lbs_observation(
         "status": STATUS_CONFIRMED,
         "reason": "latest_portal_wf_lbs_num",
         "source": "portal_wf_lbs_num",
-        "attach_reason": "portal_wf_lbs_authoritative_pre",
+        "attach_reason": "portal_wf_lbs_pre_fallback",
     }
 
 
@@ -901,6 +901,22 @@ def _combine_event_and_portal_lbs(
     if event_seed is None:
         return dict(portal)
 
+    if (
+        role == "PRE"
+        and event is not None
+        and str(event.get("weight_source") or "").strip() == "rinse_preclean_info"
+        and _is_authoritative_pre_bearing(event)
+    ):
+        notes.append("preclean_event_authoritative_over_portal_interval")
+        out = dict(event_seed)
+        portal_lbs = portal.get("lbs")
+        if portal_lbs is not None and _weights_equal(portal_lbs, out["lbs"]):
+            out["reason"] = f"{out['reason']};portal_agrees"
+            notes.append("pre_portal_agrees_with_event")
+        else:
+            notes.append("pre_event_weight_lbs_authoritative")
+        return out
+
     portal_lbs = portal.get("lbs")
     if _portal_credibly_corrects_event(
         portal, event_lbs=float(event_seed["lbs"]), peer_lbs=peer_lbs, role=role
@@ -956,10 +972,9 @@ def resolve_current_cycle_weights(
 
     PRE pounds precedence (single authority rule):
       1. audited manager ``corrected_pre_weight_lbs`` / manager weight_source
-      2. latest portal ``wf_lbs_num`` on presence observations (when present)
-      3. selected PRE weight-entry ``weight_lbs`` with authoritative Rinse source
-         (e.g. ``rinse_preclean_info``) — never above (2) when portal wf_lbs exists
-      4. deterministic fallback only when portal wf_lbs is genuinely unavailable
+      2. authoritative current-cycle PRE weight-entry (``rinse_preclean_info``)
+      3. latest portal ``wf_lbs_num`` only when no genuine preclean event exists
+      4. other deterministic fallback when portal wf_lbs is unavailable
 
     POST remains separate; POST processing scans must not overwrite PRE.
     """
@@ -1081,11 +1096,17 @@ def resolve_current_cycle_weights(
     reason_parts = [pre_resolved.get("reason"), post_resolved.get("reason")]
 
     portal_wf_pre = _latest_portal_wf_lbs_observation(obs)
+    has_genuine_preclean_pre = (
+        pre_event is not None
+        and str(pre_event.get("weight_source") or "").strip() == "rinse_preclean_info"
+        and _is_authoritative_pre_bearing(pre_event)
+    )
     if (
         manual_pre_lbs is None
         and portal_wf_pre is not None
         and portal_wf_pre.get("lbs") is not None
         and pre_source not in _MANAGER_WEIGHT_SOURCES
+        and not has_genuine_preclean_pre
     ):
         pre_lbs = portal_wf_pre["lbs"]
         pre_status = portal_wf_pre["status"]
@@ -1096,8 +1117,10 @@ def resolve_current_cycle_weights(
             "observation_at": portal_wf_pre.get("observation_at"),
             "observation_run": portal_wf_pre.get("observation_run"),
         }
-        reason_parts.append(portal_wf_pre.get("reason") or "portal_wf_lbs_authoritative_pre")
-        notes.append("portal_wf_lbs_authoritative_over_event_pre")
+        reason_parts.append(portal_wf_pre.get("reason") or "portal_wf_lbs_pre_fallback")
+        notes.append("portal_wf_lbs_pre_fallback_no_preclean_event")
+    elif has_genuine_preclean_pre:
+        notes.append("preclean_event_authoritative_over_portal_wf_lbs")
 
     if manual_pre_lbs is not None:
         corrected_pre = float(manual_pre_lbs)

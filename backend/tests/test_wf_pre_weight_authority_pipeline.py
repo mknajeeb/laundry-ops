@@ -56,7 +56,7 @@ def _base_events(*, preclean=17.6):
     ]
 
 
-def test_portal_update_beats_older_portal_and_preclean():
+def test_portal_update_does_not_override_authoritative_preclean():
     events = _base_events(preclean=17.6)
     obs = [
         _obs_wf(datetime(2026, 8, 24, 12, 0), 17.6, run=1),
@@ -65,8 +65,8 @@ def test_portal_update_beats_older_portal_and_preclean():
     resolved = resolve_current_cycle_weights(
         events, selected_date_et=DAY, observations=obs
     )
-    assert resolved.pre_weight_lbs == 15.7
-    assert resolved.pre_weight_source == "portal_wf_lbs_num"
+    assert resolved.pre_weight_lbs == 17.6
+    assert resolved.pre_weight_source == "rinse_preclean_info"
 
 
 def test_manager_correction_beats_portal_wf_lbs():
@@ -83,7 +83,7 @@ def test_manager_correction_beats_portal_wf_lbs():
     assert resolved.pre_resolution_status == STATUS_MANUAL_CORRECTION
 
 
-def test_clearing_manager_correction_returns_to_portal_wf_lbs():
+def test_clearing_manager_correction_returns_to_preclean_not_portal():
     events = _base_events()
     obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)]
     corrected = resolve_current_cycle_weights(
@@ -99,11 +99,11 @@ def test_clearing_manager_correction_returns_to_portal_wf_lbs():
         observations=obs,
         manual_pre_lbs=None,
     )
-    assert restored.pre_weight_lbs == 15.7
-    assert restored.pre_weight_source == "portal_wf_lbs_num"
+    assert restored.pre_weight_lbs == 17.6
+    assert restored.pre_weight_source == "rinse_preclean_info"
 
 
-def test_repeated_resolution_is_idempotent_with_portal_authority():
+def test_repeated_resolution_is_idempotent_with_preclean_authority():
     events = _base_events()
     obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)]
     first = resolve_current_cycle_weights(
@@ -116,14 +116,14 @@ def test_repeated_resolution_is_idempotent_with_portal_authority():
         events, selected_date_et=DAY, observations=obs
     )
     for r in (first, second, third):
-        assert r.pre_weight_lbs == 15.7
-        assert r.pre_weight_source == "portal_wf_lbs_num"
+        assert r.pre_weight_lbs == 17.6
+        assert r.pre_weight_source == "rinse_preclean_info"
 
 
 def test_stale_day_bag_pre_does_not_override_live_resolver():
     """Simulates refresh after reset/rebuild: live resolver wins over stale day-bag column."""
-    events = _base_events()
-    obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)]
+    events = _base_events(preclean=15.7)
+    obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 23.5, run=9)]
     stale_day_bag_pre = 17.6
     resolved = resolve_current_cycle_weights(
         events, selected_date_et=DAY, observations=obs
@@ -132,7 +132,7 @@ def test_stale_day_bag_pre_does_not_override_live_resolver():
     assert authoritative_evidence_pre_lbs(resolved.as_weight_info()) == 15.7
 
 
-def test_fresh_portal_stops_preclean_fallback():
+def test_portal_wf_lbs_does_not_override_preclean_when_both_present():
     events = _base_events(preclean=17.6)
     without_portal = resolve_current_cycle_weights(
         events, selected_date_et=DAY, observations=[]
@@ -145,8 +145,8 @@ def test_fresh_portal_stops_preclean_fallback():
         selected_date_et=DAY,
         observations=[_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)],
     )
-    assert with_portal.pre_weight_lbs == 15.7
-    assert with_portal.pre_weight_source == "portal_wf_lbs_num"
+    assert with_portal.pre_weight_lbs == 17.6
+    assert with_portal.pre_weight_source == "rinse_preclean_info"
 
 
 def test_post_processing_scan_does_not_become_pre():
@@ -165,7 +165,7 @@ def test_post_processing_scan_does_not_become_pre():
     resolved = resolve_current_cycle_weights(
         events, selected_date_et=DAY, observations=obs
     )
-    assert resolved.pre_weight_lbs == 15.7
+    assert resolved.pre_weight_lbs == 17.6
     assert resolved.post_weight_lbs == 16.2
 
 
@@ -207,23 +207,31 @@ def test_canonical_wf_day_projection_overlays_resolver_not_stale_cycle_pre():
     from backend.rinse_wf_service_cycle_compat import _canonical_wf_bags_for_date
 
     cursor = MagicMock()
-    cycle_row = {
-        "bag_id": "BAG1",
-        "admitted_at": datetime(2026, 8, 24, 1, 0),
-        "status": "ACTIVE",
-        "rush_status": "NON-RUSH",
-        "pre_weight_lbs": 17.6,
-        "post_weight_lbs": None,
-        "cycle_anchor_at": datetime(2026, 8, 24, 0, 52),
-        "id": 1,
+    workload = {
+        "bag_ids": ["BAG1"],
+        "pending": ["BAG1"],
+        "completed": [],
+        "review": [],
+        "bag_meta": {
+            "BAG1": {
+                "bag_id": "BAG1",
+                "effective_status": "pending",
+                "service_type": "WF",
+            }
+        },
+        "completion_by_bag": {},
+        "prior_meta": {},
     }
-    cursor.fetchall.return_value = [cycle_row]
     with patch(
+        "backend.rinse_wf_canonical_workload.get_canonical_wf_workload",
+        return_value=workload,
+    ), patch(
         "backend.rinse_veewash_review.load_bag_weight_map",
         return_value={
             "BAG1": {
-                "pre_weight_lbs": 15.7,
-                "pre_weight_source": "portal_wf_lbs_num",
+                "pre_weight_lbs": 17.6,
+                "pre_weight_source": "rinse_preclean_info",
+                "evidence_pre_weight_lbs": 17.6,
                 "post_weight_lbs": None,
             }
         },
@@ -235,8 +243,8 @@ def test_canonical_wf_day_projection_overlays_resolver_not_stale_cycle_pre():
     ):
         bags = _canonical_wf_bags_for_date(cursor, 3, DAY)
         assert len(bags) == 1
-        assert bags[0]["pre_weight_lbs"] == 15.7
-        assert bags[0]["pre_weight_source"] == "portal_wf_lbs_num"
+        assert bags[0]["pre_weight_lbs"] == 17.6
+        assert bags[0]["pre_weight_source"] == "rinse_preclean_info"
 
 
 def test_drawer_and_headline_share_canonical_pre(monkeypatch):
@@ -309,7 +317,7 @@ def test_load_current_cycle_weight_map_passes_cycle_anchor_override(monkeypatch)
     assert captured["cycle_anchor_override"] == anchor
 
 
-def test_full_refresh_sequence_stays_on_portal_authority():
+def test_full_refresh_sequence_stays_on_preclean_authority():
     """Simulate reset → rebuild → reproject → refresh as repeated canonical resolves."""
     events = _base_events(preclean=17.6)
     obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)]
@@ -317,6 +325,101 @@ def test_full_refresh_sequence_stays_on_portal_authority():
         resolved = resolve_current_cycle_weights(
             events, selected_date_et=DAY, observations=obs
         )
-        assert resolved.pre_weight_lbs == 15.7
-        assert resolved.pre_weight_source == "portal_wf_lbs_num"
-        assert resolved.pre_weight_lbs != 17.6
+        assert resolved.pre_weight_lbs == 17.6
+        assert resolved.pre_weight_source == "rinse_preclean_info"
+        assert resolved.pre_weight_lbs != 15.7
+
+
+def test_management_pre_preclean_post_workitem_regression():
+    """preclean=26.2, portal=23.5, workitem post=23.5 → PRE preclean, POST workitem."""
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 24, 0, 52), eid=1, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 24, 8, 0),
+            eid=2,
+            lbs=26.2,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+        _ev("garments-reviewed", datetime(2026, 8, 24, 11, 0), eid=3),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 24, 15, 0),
+            eid=4,
+            lbs=23.5,
+            weight_source="rinse_workitem_wf_lbs",
+            weight_role="POST",
+        ),
+    ]
+    obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 23.5, run=9)]
+    resolved = resolve_current_cycle_weights(
+        events, selected_date_et=DAY, observations=obs
+    )
+    assert resolved.pre_weight_lbs == 26.2
+    assert resolved.pre_weight_source == "rinse_preclean_info"
+    assert resolved.post_weight_lbs == 23.5
+    assert resolved.post_weight_source == "rinse_workitem_wf_lbs"
+
+
+def test_portal_wf_lbs_pre_fallback_when_preclean_missing():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 24, 0, 52), eid=1, rack="VeeWash Dirty"),
+    ]
+    obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)]
+    resolved = resolve_current_cycle_weights(
+        events, selected_date_et=DAY, observations=obs
+    )
+    assert resolved.pre_weight_lbs == 15.7
+    assert resolved.pre_weight_source == "portal_wf_lbs_num"
+    assert resolved.post_weight_lbs is None
+
+
+def test_post_missing_when_no_explicit_post_event():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 24, 0, 52), eid=1, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 24, 8, 0),
+            eid=2,
+            lbs=19.1,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+    ]
+    obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 19.1, run=9)]
+    resolved = resolve_current_cycle_weights(
+        events, selected_date_et=DAY, observations=obs
+    )
+    assert resolved.pre_weight_lbs == 19.1
+    assert resolved.post_weight_lbs is None
+
+
+def test_reused_bag_preclean_only_from_current_cycle():
+    """Prior-cycle preclean must not become PRE for the current order instance."""
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 23, 10, 0), eid=1, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 23, 11, 0),
+            eid=2,
+            lbs=40.0,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+        _ev("sent-to-vendor", datetime(2026, 8, 24, 0, 52), eid=3, rack="VeeWash Dirty"),
+        _ev(
+            "weight-entry",
+            datetime(2026, 8, 24, 8, 44),
+            eid=4,
+            lbs=17.6,
+            weight_source="rinse_preclean_info",
+            weight_role="PRE",
+        ),
+    ]
+    obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)]
+    resolved = resolve_current_cycle_weights(
+        events, selected_date_et=DAY, observations=obs
+    )
+    assert resolved.pre_weight_lbs == 17.6
+    assert resolved.pre_weight_source == "rinse_preclean_info"

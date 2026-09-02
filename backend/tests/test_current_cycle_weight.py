@@ -1299,7 +1299,7 @@ def _obs_wf(ts, wf_lbs, run=1, row_id=1, *, weight_num=None):
     return row
 
 
-def test_portal_wf_lbs_wins_over_stale_preclean_event():
+def test_portal_wf_lbs_does_not_override_authoritative_preclean_event():
     events = [
         _ev("sent-to-vendor", datetime(2026, 8, 24, 0, 52), eid=1, rack="VeeWash Dirty"),
         _ev(
@@ -1315,8 +1315,8 @@ def test_portal_wf_lbs_wins_over_stale_preclean_event():
     resolved = resolve_current_cycle_weights(
         events, selected_date_et=date(2026, 8, 24), observations=obs
     )
-    assert resolved.pre_weight_lbs == 15.7
-    assert resolved.pre_weight_source == "portal_wf_lbs_num"
+    assert resolved.pre_weight_lbs == 17.6
+    assert resolved.pre_weight_source == "rinse_preclean_info"
     assert resolved.post_weight_lbs is None
 
 
@@ -1341,13 +1341,13 @@ def test_later_processing_weight_entry_does_not_overwrite_pre_pounds():
             weight_role="POST",
         ),
     ]
-    obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)]
+    obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 16.2, run=9)]
     resolved = resolve_current_cycle_weights(
         events, selected_date_et=date(2026, 8, 24), observations=obs
     )
-    assert resolved.pre_weight_lbs == 15.7
+    assert resolved.pre_weight_lbs == 17.6
     assert resolved.post_weight_lbs == 16.2
-    assert resolved.pre_weight_source == "portal_wf_lbs_num"
+    assert resolved.pre_weight_source == "rinse_preclean_info"
     assert resolved.post_weight_source == "rinse_workitem_wf_lbs"
 
 
@@ -1405,5 +1405,37 @@ def test_portal_wf_lbs_resolution_is_idempotent():
     second = resolve_current_cycle_weights(
         events, selected_date_et=date(2026, 8, 24), observations=obs
     )
-    assert first.pre_weight_lbs == second.pre_weight_lbs == 15.7
-    assert first.pre_weight_source == second.pre_weight_source == "portal_wf_lbs_num"
+    assert first.pre_weight_lbs == second.pre_weight_lbs == 17.6
+    assert first.pre_weight_source == second.pre_weight_source == "rinse_preclean_info"
+
+
+def test_management_pre_preclean_beats_portal_post_workitem():
+  """preclean=26.2, portal=23.5, workitem post=23.5."""
+  events = [
+      _ev("sent-to-vendor", datetime(2026, 8, 24, 0, 52), eid=1, rack="VeeWash Dirty"),
+      _ev(
+          "weight-entry",
+          datetime(2026, 8, 24, 8, 0),
+          eid=2,
+          lbs=26.2,
+          weight_source="rinse_preclean_info",
+          weight_role="PRE",
+      ),
+      _ev("garments-reviewed", datetime(2026, 8, 24, 11, 0), eid=3),
+      _ev(
+          "weight-entry",
+          datetime(2026, 8, 24, 15, 0),
+          eid=4,
+          lbs=23.5,
+          weight_source="rinse_workitem_wf_lbs",
+          weight_role="POST",
+      ),
+  ]
+  obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 23.5, run=9)]
+  resolved = resolve_current_cycle_weights(
+      events, selected_date_et=date(2026, 8, 24), observations=obs
+  )
+  assert resolved.pre_weight_lbs == 26.2
+  assert resolved.pre_weight_source == "rinse_preclean_info"
+  assert resolved.post_weight_lbs == 23.5
+  assert resolved.post_weight_source == "rinse_workitem_wf_lbs"
