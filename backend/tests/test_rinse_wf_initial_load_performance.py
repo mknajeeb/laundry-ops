@@ -267,3 +267,144 @@ def test_primary_headline_skips_specialty_rebuild(monkeypatch):
         _rec, out = _load_headline(object(), 1, date(2026, 8, 16), rebuild_specialty=True)
 
     assert rebuild_calls == ["rebuild"]
+
+
+def test_secondary_rebuilds_specialty_after_primary_caches_bare_headline():
+    """Primary caches rebuild_specialty=False headline; secondary must still rebuild.
+
+    Reproduces production: secondary alone returns Rejects/Splits, but
+    primary→secondary returned zeros because the shared headline cache lacked packs.
+    """
+    from backend.management_today import (
+        _RINSE_WF_SECONDARY_CACHE,
+        _cache_headline,
+        _get_cached_headline,
+        _specialty_packs_current,
+    )
+    from backend.rinse_hd_day_metrics import CLASSIFICATION_VERSION
+
+    clear_management_today_cache()
+    day = date(2026, 8, 16)
+    reject_ids = [f"R{i}" for i in range(1, 7)]
+    split_ids = [f"S{i}" for i in range(1, 100)]
+    member_ids = reject_ids + split_ids
+    bare_headline = {
+        "selected_date_et": "2026-08-16",
+        "segments": {
+            "wf": {
+                "total_workload": len(member_ids),
+                "completed": len(member_ids),
+                "pending": 0,
+                "exceptions": {"review_required": 0},
+                "bag_ids": {
+                    "completed": list(member_ids),
+                    "pending": [],
+                    "review_required": [],
+                    "new_today": [],
+                    "carryover": [],
+                },
+            },
+            "wf_rush": {
+                "total_workload": 0,
+                "completed": 0,
+                "pending": 0,
+                "exceptions": {"review_required": 0},
+                "bag_ids": {},
+            },
+            "wf_non_rush": {
+                "total_workload": len(member_ids),
+                "completed": len(member_ids),
+                "pending": 0,
+                "exceptions": {"review_required": 0},
+                "bag_ids": {
+                    "completed": list(member_ids),
+                    "pending": [],
+                    "review_required": [],
+                },
+            },
+        },
+    }
+    day_rec = {"status": "OPEN"}
+    # Simulate primary caching a headline without specialty packs.
+    _cache_headline(3, day, day_rec, bare_headline)
+    assert _specialty_packs_current(_get_cached_headline(3, day)[1]) is False
+
+    rebuild_calls: list[str] = []
+
+    def _fake_rebuild(_cursor, _org, _day, _headline, *, service="wf"):
+        rebuild_calls.append(service)
+        return {
+            "classification_version": CLASSIFICATION_VERSION,
+            "comforter_orders": {
+                "count": 0,
+                "order_count": 0,
+                "order_ids": [],
+                "orders": [],
+                "total_quantity": 0,
+            },
+            "bath_mat_orders": {
+                "count": 0,
+                "order_count": 0,
+                "order_ids": [],
+                "orders": [],
+                "total_quantity": 0,
+            },
+            "rejected_orders": {
+                "count": 6,
+                "order_count": 6,
+                "order_ids": list(reject_ids),
+                "orders": [{"bag_id": b} for b in reject_ids],
+            },
+            "split_orders": {
+                "count": 99,
+                "order_count": 99,
+                "order_ids": list(split_ids),
+                "orders": [{"bag_id": b} for b in split_ids],
+            },
+            "split_review": {"count": 0, "order_ids": [], "orders": []},
+            "split_pending": {"count": 0, "order_ids": [], "orders": []},
+        }
+
+    def _run_secondary():
+        with patch(
+            "backend.management_today.load_wf_day_weight_totals",
+            return_value=_weight_totals(),
+        ), patch(
+            "backend.management_rinse_wf_review.review_category_count_payload",
+            return_value={**_review_payload(), "_membership": {}},
+        ), patch(
+            "backend.management_rinse_wf_review.enrich_review_counts_by_rush",
+            side_effect=lambda _c, _o, _d, _h, base: dict(base),
+        ), patch(
+            "backend.management_today.business_today",
+            return_value=day,
+        ), patch(
+            "backend.management_today.business_now",
+            return_value=datetime(2026, 8, 16, 18, 0, 0),
+        ), patch(
+            "backend.rinse_hd_day_metrics.build_day_specialty_metrics",
+            side_effect=_fake_rebuild,
+        ):
+            # Do NOT bypass_cache — that would clear the primary-seeded headline cache.
+            return build_management_rinse_wf_secondary_payload(
+                object(), 3, day, bypass_cache=False
+            )
+
+    sec = _run_secondary()
+    assert rebuild_calls == ["wf"]
+    wf = sec["rinse"]["specialty_metrics"]["wf"]
+    assert wf["rejected_orders"]["count"] == 6
+    assert wf["split_orders"]["count"] == 99
+    assert wf["comforter_orders"]["count"] == 0
+    assert wf["bath_mat_orders"]["count"] == 0
+    # Headline cache now holds current packs for later secondary reuse.
+    assert _specialty_packs_current(_get_cached_headline(3, day)[1]) is True
+
+    # secondary → secondary: response cache cleared, headline packs current → no rebuild.
+    _RINSE_WF_SECONDARY_CACHE.clear()
+    rebuild_calls.clear()
+    sec2 = _run_secondary()
+    assert rebuild_calls == []
+    wf2 = sec2["rinse"]["specialty_metrics"]["wf"]
+    assert wf2["rejected_orders"]["count"] == 6
+    assert wf2["split_orders"]["count"] == 99

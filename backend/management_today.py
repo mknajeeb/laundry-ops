@@ -1076,6 +1076,31 @@ def _specialty_packs_current(headline: Mapping[str, Any] | None) -> bool:
         return False
 
 
+def _ensure_headline_specialty_packs(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    headline: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Ensure WF specialty packs are current on a headline (existing rebuild path).
+
+    Idempotent when ``_specialty_packs_current`` is already true. Does not invent
+    Reject/Split formulas — delegates to ``build_day_specialty_metrics``.
+    """
+    headline_in = dict(headline or {})
+    if _specialty_packs_current(headline_in):
+        return headline_in
+    from backend.rinse_hd_day_metrics import build_day_specialty_metrics
+
+    packs = dict(headline_in.get("specialty_metrics") or {})
+    packs["wf"] = build_day_specialty_metrics(
+        cursor, organization_id, selected_date_et, headline_in, service="wf"
+    )
+    out = dict(headline_in)
+    out["specialty_metrics"] = packs
+    return out
+
+
 def _load_headline(
     cursor,
     organization_id: int,
@@ -1098,25 +1123,15 @@ def _load_headline(
         summary_from_day_record,
     )
 
-    def _maybe_rebuild_specialty(headline_in: dict[str, Any]) -> dict[str, Any]:
-        if not rebuild_specialty or _specialty_packs_current(headline_in):
-            return headline_in
-        from backend.rinse_hd_day_metrics import build_day_specialty_metrics
-
-        packs = dict(headline_in.get("specialty_metrics") or {})
-        packs["wf"] = build_day_specialty_metrics(
-            cursor, organization_id, selected_date_et, headline_in, service="wf"
-        )
-        out = dict(headline_in)
-        out["specialty_metrics"] = packs
-        return out
-
     day = get_day_record(cursor, organization_id, selected_date_et)
     if day and day.get("headline"):
         # Omit cursor so summary_from_day_record skips HD presentation heal.
         headline = summary_from_day_record(day) or {}
         if headline and not headline.get("data_unavailable"):
-            headline = _maybe_rebuild_specialty(headline)
+            if rebuild_specialty:
+                headline = _ensure_headline_specialty_packs(
+                    cursor, organization_id, selected_date_et, headline
+                )
             return dict(day), dict(headline)
 
     _wl, summary, day_rec = build_or_load_step1_for_date(
@@ -1128,8 +1143,10 @@ def _load_headline(
     )
     headline = dict(summary or {})
     rec = dict(day_rec or {})
-    if headline and not headline.get("data_unavailable"):
-        headline = _maybe_rebuild_specialty(headline)
+    if headline and not headline.get("data_unavailable") and rebuild_specialty:
+        headline = _ensure_headline_specialty_packs(
+            cursor, organization_id, selected_date_et, headline
+        )
     return rec, headline
 
 
@@ -1529,6 +1546,13 @@ def build_management_rinse_wf_secondary_payload(
     t0 = time.perf_counter()
     if cached_headline:
         day_rec, headline = cached_headline
+        # Primary may cache a headline with rebuild_specialty=False (no packs).
+        # Presence of that cache must not suppress secondary specialty rebuild.
+        if not _specialty_packs_current(headline):
+            headline = _ensure_headline_specialty_packs(
+                counting, org, day, headline
+            )
+            _cache_headline(org, day, day_rec, headline)
     else:
         day_rec, headline = _load_headline(
             counting, org, day, rebuild_specialty=True
