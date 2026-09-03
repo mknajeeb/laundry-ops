@@ -21,6 +21,8 @@ const REVIEW_REASON_LABELS = {
   SCAN_CHRONOLOGY_STALE: "Specialty items need review",
   CORRECT_COMPLETION_DETAILS: "Manual review",
   MARK_COMPLETED: "Manual review",
+  REGISTRY_COMPLETED_WITHOUT_OI_EVIDENCE:
+    "Completion conflict — registry shows completed, but no valid completion evidence exists for this current order.",
 };
 
 const SPLIT_STATE_LABELS = {

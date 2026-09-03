@@ -35,6 +35,12 @@ describe("formatReviewReasonLabel", () => {
       "Split needs review",
     );
     expect(formatReviewReasonLabel("MANAGER_SENT_FOR_REVIEW")).toBe("Manual review");
+    expect(formatReviewReasonLabel("REGISTRY_COMPLETED_WITHOUT_OI_EVIDENCE")).toMatch(
+      /Completion conflict/i,
+    );
+    expect(formatReviewReasonLabel("REGISTRY_COMPLETED_WITHOUT_OI_EVIDENCE")).not.toBe(
+      "REGISTRY_COMPLETED_WITHOUT_OI_EVIDENCE",
+    );
   });
 
   it("falls back for unknown machine codes", () => {

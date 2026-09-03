@@ -34,6 +34,7 @@ import {
   pickWfWeights,
   wfHeadline,
 } from "./todayRinseModel";
+import { formatReviewReasonLabels } from "./reviewDisplayLabels";
 
 const DOSE_TOOLTIP =
   "Split orders may require multiple doses, so doses can exceed orders.";
@@ -173,7 +174,10 @@ export default function ManagementRinseWfSection({
     service: "wf",
     queue: null,
   });
-  const [currentWorkloadOpen, setCurrentWorkloadOpen] = useState(false);
+  const [currentWorkloadDialog, setCurrentWorkloadDialog] = useState({
+    open: false,
+    filter: "all", // all | pending | review
+  });
   const [splitSimOpen, setSplitSimOpen] = useState(false);
   const [supplyDetail, setSupplyDetail] = useState({
     open: false,
@@ -182,7 +186,6 @@ export default function ManagementRinseWfSection({
     product: null,
     rows: [],
   });
-  const [reviewOpenRequest, setReviewOpenRequest] = useState(null);
 
   const snapshotUnavailable = Boolean(
     !primaryLoading
@@ -436,7 +439,7 @@ export default function ManagementRinseWfSection({
               onClick={
                 snapshotUnavailable
                   ? undefined
-                  : () => setCurrentWorkloadOpen(true)
+                  : () => setCurrentWorkloadDialog({ open: true, filter: "pending" })
               }
             />
             <TodayTapCard
@@ -452,14 +455,7 @@ export default function ManagementRinseWfSection({
               onClick={
                 snapshotUnavailable
                   ? undefined
-                  : () => {
-                      const el = document.getElementById("management-rinse-wf-review");
-                      el?.scrollIntoView({ behavior: "smooth", block: "start" });
-                      setReviewOpenRequest({
-                        category: "review_required",
-                        nonce: Date.now(),
-                      });
-                    }
+                  : () => setCurrentWorkloadDialog({ open: true, filter: "review" })
               }
             />
           </>
@@ -633,8 +629,6 @@ export default function ManagementRinseWfSection({
           snapshotUnavailable={snapshotUnavailable}
           readOnly={readOnly}
           onRefresh={onRefresh}
-          openCategoryRequest={reviewOpenRequest}
-          onOpenCategoryRequestHandled={() => setReviewOpenRequest(null)}
         />
       </Box>
 
@@ -1076,65 +1070,98 @@ export default function ManagementRinseWfSection({
       </Dialog>
 
       <Dialog
-        open={currentWorkloadOpen}
-        onClose={() => setCurrentWorkloadOpen(false)}
+        open={currentWorkloadDialog.open}
+        onClose={() => setCurrentWorkloadDialog({ open: false, filter: "all" })}
         fullWidth
         maxWidth="sm"
       >
         <DialogTitle sx={{ pr: 6 }}>
           Current Workload
           <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#64748b" }}>
-            Open order instances · no selected date
+            {currentWorkloadDialog.filter === "review"
+              ? "Review · open order instances · no selected date"
+              : currentWorkloadDialog.filter === "pending"
+                ? "Pending · open order instances · no selected date"
+                : "Open order instances · no selected date"}
           </Typography>
           <IconButton
             aria-label="Close"
-            onClick={() => setCurrentWorkloadOpen(false)}
+            onClick={() => setCurrentWorkloadDialog({ open: false, filter: "all" })}
             sx={{ position: "absolute", right: 8, top: 8 }}
           >
             <CloseIcon />
           </IconButton>
         </DialogTitle>
         <DialogContent dividers>
-          {(currentWorkload.items || []).length === 0 ? (
-            <Typography sx={{ fontSize: 13, color: "#64748b" }}>No open orders.</Typography>
-          ) : (
-            <Stack spacing={1}>
-              {(currentWorkload.items || []).map((row) => (
-                <Box
-                  key={`${row.bag_id}-${row.order_instance_id || ""}`}
-                  sx={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr auto",
-                    gap: 0.5,
-                    py: 0.75,
-                    borderBottom: "1px solid #e2e8f0",
-                  }}
-                >
-                  <Box>
-                    <Typography sx={{ fontSize: 13, fontWeight: 800 }}>
-                      {row.bag_id}
-                      {row.customer_name ? (
-                        <Typography component="span" sx={{ ml: 0.75, fontSize: 12, fontWeight: 600, color: "#64748b" }}>
-                          {row.customer_name}
+          {(() => {
+            const allItems = currentWorkload.items || [];
+            const items =
+              currentWorkloadDialog.filter === "review"
+                ? allItems.filter((row) => row.status === "review_required")
+                : currentWorkloadDialog.filter === "pending"
+                  ? allItems.filter((row) => row.status !== "review_required")
+                  : allItems;
+            if (items.length === 0) {
+              return (
+                <Typography sx={{ fontSize: 13, color: "#64748b" }}>
+                  {currentWorkloadDialog.filter === "review"
+                    ? "No orders need review."
+                    : currentWorkloadDialog.filter === "pending"
+                      ? "No pending open orders."
+                      : "No open orders."}
+                </Typography>
+              );
+            }
+            return (
+              <Stack spacing={1}>
+                {items.map((row) => {
+                  const reasonText = formatReviewReasonLabels(
+                    row.review_reason_codes || [],
+                    { fallback: "" },
+                  );
+                  return (
+                    <Box
+                      key={`${row.bag_id}-${row.order_instance_id || ""}`}
+                      sx={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr auto",
+                        gap: 0.5,
+                        py: 0.75,
+                        borderBottom: "1px solid #e2e8f0",
+                      }}
+                    >
+                      <Box>
+                        <Typography sx={{ fontSize: 13, fontWeight: 800 }}>
+                          {row.bag_id}
+                          {row.customer_name ? (
+                            <Typography component="span" sx={{ ml: 0.75, fontSize: 12, fontWeight: 600, color: "#64748b" }}>
+                              {row.customer_name}
+                            </Typography>
+                          ) : null}
                         </Typography>
-                      ) : null}
-                    </Typography>
-                    <Typography sx={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>
-                      OI {row.order_instance_id ?? "—"}
-                      {" · "}
-                      {row.status === "review_required" ? "Review" : "Open"}
-                      {row.rush_status ? ` · ${row.rush_status}` : ""}
-                    </Typography>
-                  </Box>
-                  <Typography sx={{ fontSize: 11, fontWeight: 700, color: "#334155", textAlign: "right" }}>
-                    Received
-                    <br />
-                    {formatReceivedFromVendor(row.received_from_vendor_at)}
-                  </Typography>
-                </Box>
-              ))}
-            </Stack>
-          )}
+                        <Typography sx={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>
+                          OI {row.order_instance_id ?? "—"}
+                          {" · "}
+                          {row.status === "review_required" ? "Review" : "Pending"}
+                          {row.rush_status ? ` · ${row.rush_status}` : ""}
+                        </Typography>
+                        {reasonText ? (
+                          <Typography sx={{ fontSize: 11, color: "#b91c1c", fontWeight: 600, mt: 0.25 }}>
+                            {reasonText}
+                          </Typography>
+                        ) : null}
+                      </Box>
+                      <Typography sx={{ fontSize: 11, fontWeight: 700, color: "#334155", textAlign: "right" }}>
+                        Received
+                        <br />
+                        {formatReceivedFromVendor(row.received_from_vendor_at)}
+                      </Typography>
+                    </Box>
+                  );
+                })}
+              </Stack>
+            );
+          })()}
         </DialogContent>
       </Dialog>
 
