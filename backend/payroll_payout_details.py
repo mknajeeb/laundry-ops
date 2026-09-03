@@ -485,15 +485,10 @@ def validate_employer_taxes_for_period(
     require_reconcile: bool = False,
     tax_settings_override: Optional[dict] = None,
 ) -> Optional[str]:
-    """Block persistence when employer taxes disagree with the canonical engine.
+    """Compare stored employer taxes to the canonical engine (advisory / tests only).
 
-    Invariant: each stored employer-tax component (and the component sum) must
-    reconcile to ``expected_employer_taxes_for_period`` for this employee, work
-    period, and gross — within cent rounding. Not a crude total/gross ratio rule.
-
-    ``require_reconcile=True`` (finalize) always enforces the invariant, including
-    when stored employer taxes are still zero. Draft edits with an empty employer
-    block may skip until taxes are entered or finalize runs.
+    Employee and employer tax fields on payout lines are entered by the accountant
+    from an external payroll run — this helper is not enforced on save or finalize.
     """
     cat = str(worker_category or "").strip().lower()
     if cat and cat != "w2":
@@ -1252,13 +1247,7 @@ def apply_payment_defaults(batch: dict, details: dict) -> dict:
     return out
 
 
-def finalize_blockers(
-    batch: dict,
-    lines: list[dict],
-    *,
-    conn=None,
-    organization_id: Optional[int] = None,
-) -> list[str]:
+def finalize_blockers(batch: dict, lines: list[dict]) -> list[str]:
     from backend.payroll_status_display import can_finalize_payout_details
 
     if batch.get("payout_details_finalized_at"):
@@ -1309,28 +1298,6 @@ def finalize_blockers(
                 blockers.append(f"Payment date required for cash payment — {name}")
             if float(_money(settlement.get("amount_paid"))) <= 0:
                 blockers.append(f"Amount paid required for cash payment — {name}")
-        if (
-            conn is not None
-            and organization_id is not None
-            and str(batch.get("worker_category") or "") == "w2"
-            and ln.get("user_id")
-        ):
-            er_err = validate_employer_taxes_for_period(
-                conn,
-                int(organization_id),
-                user_id=int(ln["user_id"]),
-                gross=float(
-                    _money(ln.get("gross_amount") or ln.get("total_amount") or 0)
-                ),
-                details=details,
-                worker_name=str(ln.get("worker_name_snapshot") or ""),
-                pay_period_start=str(batch.get("pay_period_start") or ""),
-                pay_frequency=infer_pay_frequency_from_batch(batch),
-                worker_category=batch.get("worker_category"),
-                require_reconcile=True,
-            )
-            if er_err:
-                blockers.append(f"{er_err} — {name}")
     return blockers
 
 
@@ -2202,20 +2169,6 @@ def update_payout_batch_details(
             gross=line_gross,
         )
         merged = apply_payment_defaults(batch, merged)
-        if row_dict.get("user_id") and str(batch.get("worker_category") or "") == "w2":
-            er_err = validate_employer_taxes_for_period(
-                conn,
-                organization_id,
-                user_id=int(row_dict["user_id"]),
-                gross=line_gross,
-                details=merged,
-                worker_name=str(row_dict.get("worker_name_snapshot") or ""),
-                pay_period_start=str(batch.get("pay_period_start") or ""),
-                pay_frequency=infer_pay_frequency_from_batch(batch),
-                worker_category=batch.get("worker_category"),
-            )
-            if er_err:
-                raise ValueError(er_err)
         c.execute(
             """
             UPDATE payout_batch_lines SET payout_details_json=%s, updated_at=CURRENT_TIMESTAMP
@@ -2344,8 +2297,6 @@ def _validate_finalize_batch(
     blockers = finalize_blockers(
         batch,
         batch.get("lines") or [],
-        conn=conn,
-        organization_id=organization_id,
     )
     if not _parse_official_pay_date(official_pay_date or batch.get("official_pay_date")):
         blockers = [
