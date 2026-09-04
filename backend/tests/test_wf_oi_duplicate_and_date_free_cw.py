@@ -293,3 +293,203 @@ def test_heal_deletes_only_proven_portal_orphans():
     ) as heal:
         out = heal(cur, ORG, dry_run=False)
     assert out["healed"][0]["orphan_oi"] == 4034
+
+
+def test_heal_uses_preceding_completed_stv_ignores_load_in():
+    """Residual portal shells after completed STV + post-completion load-in."""
+    from backend.rinse_order_instances import heal_same_lifecycle_portal_orphan_ois
+
+    stv_anchor = datetime(2026, 8, 20, 8, 0)
+    stv_done = datetime(2026, 8, 20, 14, 0)
+    load_in = datetime(2026, 8, 20, 16, 0)  # logistics — not customer boundary
+    later_unrelated_stv = datetime(2026, 9, 1, 9, 0)
+    orphan_anchor = datetime(2026, 8, 21, 3, 0)
+    legit = {
+        "order_instance_id": 100,
+        "bag_id": "1MKHJV1F9B",
+        "cycle_anchor_at": stv_anchor,
+        "completed_at": stv_done,
+        "source_cycle_id": 1,
+    }
+    later_stv = {
+        "order_instance_id": 200,
+        "bag_id": "1MKHJV1F9B",
+        "cycle_anchor_at": later_unrelated_stv,
+        "completed_at": datetime(2026, 9, 1, 15, 0),
+        "source_cycle_id": 2,
+    }
+    orphan = {
+        "order_instance_id": 3506,
+        "bag_id": "1MKHJV1F9B",
+        "cycle_anchor_at": orphan_anchor,
+        "completed_at": None,
+        "source_cycle_id": 3,
+    }
+    cur = MagicMock()
+    cur.fetchall.side_effect = [
+        [orphan],  # open OIs query
+        [],  # customer boundary query (no pickup/workitems)
+    ]
+    with (
+        patch(
+            "backend.rinse_order_instances.ensure_rinse_order_instances_table",
+        ),
+        patch(
+            "backend.rinse_order_instances.list_order_instances_for_bag",
+            return_value=[legit, orphan, later_stv],
+        ),
+        patch(
+            "backend.rinse_wf_service_cycle._load_timeline",
+            return_value=[
+                {"scanned_at_parsed": stv_anchor, "purpose": "started-by-vendor"},
+                {"scanned_at_parsed": load_in, "purpose": "load-in"},
+                {
+                    "scanned_at_parsed": later_unrelated_stv,
+                    "purpose": "started-by-vendor",
+                },
+            ],
+        ),
+        patch(
+            "backend.rinse_wf_service_cycle._valid_cycle_anchors",
+            return_value=[stv_anchor, later_unrelated_stv],
+        ),
+        patch(
+            "backend.rinse_order_instances._oi_source_is_portal_discovery",
+            return_value=True,
+        ),
+        patch(
+            "backend.rinse_order_instances.table_exists",
+            return_value=True,
+        ),
+    ):
+        report = heal_same_lifecycle_portal_orphan_ois(
+            cur, ORG, bag_ids=["1MKHJV1F9B"], dry_run=True
+        )
+    assert len(report["candidates"]) == 1
+    assert report["candidates"][0]["orphan_oi"] == 3506
+    assert report["candidates"][0]["legitimate_oi"] == 100
+    assert report["ambiguous"] == []
+
+
+def test_heal_skips_when_customer_pickup_between_stv_and_orphan():
+    from backend.rinse_order_instances import heal_same_lifecycle_portal_orphan_ois
+
+    stv_anchor = datetime(2026, 8, 20, 8, 0)
+    stv_done = datetime(2026, 8, 20, 14, 0)
+    pickup = datetime(2026, 8, 21, 1, 0)
+    orphan_anchor = datetime(2026, 8, 21, 3, 0)
+    legit = {
+        "order_instance_id": 100,
+        "bag_id": "BAGX",
+        "cycle_anchor_at": stv_anchor,
+        "completed_at": stv_done,
+        "source_cycle_id": 1,
+    }
+    orphan = {
+        "order_instance_id": 999,
+        "bag_id": "BAGX",
+        "cycle_anchor_at": orphan_anchor,
+        "completed_at": None,
+        "source_cycle_id": 3,
+    }
+    cur = MagicMock()
+    cur.fetchall.side_effect = [
+        [orphan],
+        [{"scanned_at_parsed": pickup}],  # customer boundary
+    ]
+    with (
+        patch("backend.rinse_order_instances.ensure_rinse_order_instances_table"),
+        patch(
+            "backend.rinse_order_instances.list_order_instances_for_bag",
+            return_value=[legit, orphan],
+        ),
+        patch(
+            "backend.rinse_wf_service_cycle._load_timeline",
+            return_value=[
+                {"scanned_at_parsed": stv_anchor, "purpose": "started-by-vendor"},
+            ],
+        ),
+        patch(
+            "backend.rinse_wf_service_cycle._valid_cycle_anchors",
+            return_value=[stv_anchor],
+        ),
+        patch(
+            "backend.rinse_order_instances._oi_source_is_portal_discovery",
+            return_value=True,
+        ),
+        patch(
+            "backend.rinse_order_instances.table_exists",
+            return_value=True,
+        ),
+    ):
+        report = heal_same_lifecycle_portal_orphan_ois(
+            cur, ORG, bag_ids=["BAGX"], dry_run=True
+        )
+    assert report["candidates"] == []
+    assert report["ambiguous"][0]["reason"] == "customer_boundary_between_stv_and_orphan"
+
+
+def test_repair_7zs_stamps_stv_oi_from_strong_qc():
+    from backend.rinse_bag_activity_rules import BagCompletionResult
+    from backend.rinse_order_instances import repair_open_portal_oi_with_stv_strong_completion
+
+    stv = datetime(2026, 9, 3, 0, 17)
+    portal = datetime(2026, 9, 3, 3, 27, 53)
+    qc = datetime(2026, 9, 3, 15, 20)
+    portal_oi = {
+        "order_instance_id": 4061,
+        "bag_id": "7ZS1AE302U",
+        "cycle_anchor_at": portal,
+        "completed_at": None,
+        "source_cycle_id": 99,
+    }
+    cur = MagicMock()
+    with (
+        patch(
+            "backend.rinse_order_instances.list_order_instances_for_bag",
+            return_value=[portal_oi],
+        ),
+        patch(
+            "backend.rinse_wf_service_cycle._load_timeline",
+            return_value=[
+                {"scanned_at_parsed": stv, "purpose": "started-by-vendor"},
+                {
+                    "scanned_at_parsed": qc,
+                    "purpose": "quality-control-completed",
+                    "employee_name": "QC",
+                },
+            ],
+        ),
+        patch(
+            "backend.rinse_wf_service_cycle._valid_cycle_anchors",
+            return_value=[stv],
+        ),
+        patch(
+            "backend.rinse_order_instances._oi_source_is_portal_discovery",
+            return_value=True,
+        ),
+        patch(
+            "backend.rinse_bag_activity_rules.evaluate_bag_completion_v2",
+            return_value=BagCompletionResult(
+                completed=True,
+                via_clean_rack=False,
+                completion_at=qc,
+                completion_user="QC",
+                completion_kind="quality-control-completed",
+                exception_code="COMPLETED_WITHOUT_FINAL_CLEAN_SCAN",
+                needs_review=True,
+            ),
+        ),
+        patch(
+            "backend.rinse_bag_stage_bounds.gaming_events_from_records",
+            side_effect=lambda x: x,
+        ),
+    ):
+        out = repair_open_portal_oi_with_stv_strong_completion(
+            cur, ORG, "7ZS1AE302U", dry_run=True
+        )
+    assert out["ok"] is True
+    assert out["portal_shell_ois"] == [4061]
+    assert out["completion_kind"] == "quality-control-completed"
+    assert out["completion_source"] == "STRONG_COMPLETION_EVIDENCE"
+    assert "2026-09-03 00:17" in out["stv_anchor"]

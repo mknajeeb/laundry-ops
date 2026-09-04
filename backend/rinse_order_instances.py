@@ -27,6 +27,13 @@ _NEW_ORDER_BOUNDARY_PURPOSES = (
     "load-in",
 )
 
+# Heal-only: post-completion load-in / undelivered movement is logistics, not a
+# new customer lifecycle. Do not use this set for OI creation gates.
+_CUSTOMER_NEW_ORDER_BOUNDARY_PURPOSES = (
+    "bag-picked-up",
+    "workitems-added",
+)
+
 
 def ensure_rinse_order_instances_table(cursor) -> None:
     cursor.execute(
@@ -171,6 +178,83 @@ def has_authoritative_new_order_boundary_after(
             return True
     return False
 
+
+def has_customer_new_order_boundary_after(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    after_dt: datetime | None,
+    *,
+    before_or_at: datetime | None = None,
+) -> bool:
+    """True when pickup/workitems prove a new customer order after ``after_dt``.
+
+    Unlike ``has_authoritative_new_order_boundary_after``, ignores bare ``load-in``
+    (including undelivered-bag-load-in logistics after a completed lifecycle).
+    Used only by portal-shell heal — does not change OI creation gates.
+    """
+    if after_dt is None:
+        return True
+    after = _parse_dt(after_dt)
+    if after is None:
+        return True
+    end = _parse_dt(before_or_at)
+    bid = normalize_bag_id(bag_id)
+    if not bid or not table_exists(cursor, "rinse_bag_scan_events"):
+        return False
+    ph = ",".join(["%s"] * len(_CUSTOMER_NEW_ORDER_BOUNDARY_PURPOSES))
+    cursor.execute(
+        f"""
+        SELECT scanned_at_parsed
+        FROM rinse_bag_scan_events
+        WHERE organization_id = %s
+          AND bag_id = %s
+          AND purpose IN ({ph})
+          AND scanned_at_parsed IS NOT NULL
+          AND scanned_at_parsed > %s
+        ORDER BY scanned_at_parsed ASC
+        """,
+        (int(organization_id), bid, *_CUSTOMER_NEW_ORDER_BOUNDARY_PURPOSES, after),
+    )
+    for row in cursor.fetchall() or []:
+        ts = _parse_dt(row.get("scanned_at_parsed") if isinstance(row, dict) else row[0])
+        if ts is None:
+            continue
+        if end is not None and ts > end:
+            continue
+        return True
+    return False
+
+
+def _preceding_completed_stv_oi(
+    all_ois: Sequence[Mapping[str, Any]],
+    valid_stv_anchors: set[datetime],
+    orphan_anchor: datetime,
+) -> dict[str, Any] | None:
+    """Latest completed STV-backed OI whose lifecycle precedes the portal orphan."""
+    candidates: list[dict[str, Any]] = []
+    for o in all_ois:
+        anchor = _parse_dt(o.get("cycle_anchor_at"))
+        completed = _parse_dt(o.get("completed_at"))
+        if anchor is None or completed is None:
+            continue
+        if anchor not in valid_stv_anchors:
+            continue
+        if anchor >= orphan_anchor:
+            continue
+        if completed > orphan_anchor + timedelta(hours=12):
+            # Completion long after the shell is not this lifecycle.
+            continue
+        candidates.append(dict(o))
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda r: (
+            _parse_dt(r.get("cycle_anchor_at")) or datetime.min,
+            int(r.get("order_instance_id") or 0),
+        )
+    )
+    return candidates[-1]
 
 def should_create_new_order_instance_for_cycle(
     cursor,
@@ -350,13 +434,13 @@ def heal_same_lifecycle_portal_orphan_ois(
     Candidate proof (all required):
     - orphan OI is open
     - orphan cycle admitted_source = PORTAL_DISCOVERY (or anchor not STV-backed)
-    - same bag has another OI whose cycle_anchor is STV-backed
-    - orphan anchor is strictly after legitimate STV anchor
-    - no authoritative new-order boundary between STV and orphan anchor
-    - legitimate OI is completed OR still open with STV anchor
+    - a preceding completed STV-backed OI exists with anchor < orphan anchor
+    - orphan anchor is strictly after that STV anchor
+    - no customer new-order boundary (pickup/workitems) between STV completion
+      and orphan anchor — bare post-completion load-in is logistics, not a
+      new lifecycle (creation gates still use load-in)
 
-    Does not touch the three genuine stale-registry Review OIs unless they
-    match this portal-duplicate pattern (they do not).
+    Does not touch the three genuine stale-registry Review OIs.
     """
     from backend.rinse_wf_service_cycle import (
         SUPERSEDED_PORTAL_DISCOVERY_DUPLICATE,
@@ -438,22 +522,43 @@ def heal_same_lifecycle_portal_orphan_ois(
         ]
         if not portal_open or not stv_ois:
             continue
-        # Prefer completed STV OI as legitimate; else open STV OI.
-        legit = None
-        for o in reversed(stv_ois):
-            if _parse_dt(o.get("completed_at")) is not None:
-                legit = o
-                break
-        if legit is None:
-            legit = stv_ois[-1]
-        legit_anchor = _parse_dt(legit.get("cycle_anchor_at"))
-        legit_completed = _parse_dt(legit.get("completed_at"))
-        if legit_anchor is None:
-            continue
         for orphan in portal_open:
             oid = int(orphan["order_instance_id"])
             o_anchor = _parse_dt(orphan.get("cycle_anchor_at"))
-            if o_anchor is None or o_anchor <= legit_anchor:
+            if o_anchor is None:
+                report["ambiguous"].append(
+                    {"bag_id": bid, "orphan_oi": oid, "reason": "orphan_anchor_missing"}
+                )
+                continue
+            if (bid, oid) in genuine_protect:
+                report["skipped_genuine_review"].append(
+                    {"bag_id": bid, "order_instance_id": oid}
+                )
+                continue
+            # Correct preceding lifecycle: completed STV OI before this shell —
+            # never a later unrelated reusable-bag OI.
+            legit = _preceding_completed_stv_oi(all_ois, valid, o_anchor)
+            if legit is None:
+                report["ambiguous"].append(
+                    {
+                        "bag_id": bid,
+                        "orphan_oi": oid,
+                        "reason": "no_preceding_completed_stv_oi",
+                    }
+                )
+                continue
+            legit_anchor = _parse_dt(legit.get("cycle_anchor_at"))
+            legit_completed = _parse_dt(legit.get("completed_at"))
+            if legit_anchor is None or legit_completed is None:
+                report["ambiguous"].append(
+                    {
+                        "bag_id": bid,
+                        "orphan_oi": oid,
+                        "reason": "preceding_stv_incomplete",
+                    }
+                )
+                continue
+            if o_anchor <= legit_anchor:
                 report["ambiguous"].append(
                     {
                         "bag_id": bid,
@@ -462,24 +567,20 @@ def heal_same_lifecycle_portal_orphan_ois(
                     }
                 )
                 continue
-            if (bid, oid) in genuine_protect:
-                report["skipped_genuine_review"].append(
-                    {"bag_id": bid, "order_instance_id": oid}
-                )
-                continue
-            # No new-order boundary between STV and orphan ⇒ same lifecycle.
-            if has_authoritative_new_order_boundary_after(
+            # Customer new-order boundary only (not post-completion load-in).
+            if has_customer_new_order_boundary_after(
                 cursor,
                 org,
                 bid,
-                legit_completed or legit_anchor,
+                legit_completed,
                 before_or_at=o_anchor,
             ):
                 report["ambiguous"].append(
                     {
                         "bag_id": bid,
                         "orphan_oi": oid,
-                        "reason": "boundary_between_stv_and_orphan",
+                        "reason": "customer_boundary_between_stv_and_orphan",
+                        "legitimate_oi": int(legit["order_instance_id"]),
                     }
                 )
                 continue
@@ -489,13 +590,15 @@ def heal_same_lifecycle_portal_orphan_ois(
                 "legitimate_oi": int(legit["order_instance_id"]),
                 "orphan_anchor": str(o_anchor),
                 "legitimate_lifecycle_anchor": str(legit_anchor),
-                "completion_at": str(legit_completed) if legit_completed else None,
-                "evidence": "portal_discovery_oi_after_stv_same_lifecycle_no_boundary",
+                "completion_at": str(legit_completed),
+                "evidence": (
+                    "portal_discovery_shell_after_preceding_completed_stv_"
+                    "no_customer_new_order_boundary"
+                ),
             }
             report["candidates"].append(cand)
             if dry_run:
                 continue
-            # Supersede orphan's portal cycle if still open.
             if orphan.get("source_cycle_id") is not None:
                 cursor.execute(
                     """
@@ -524,8 +627,249 @@ def heal_same_lifecycle_portal_orphan_ois(
                 """,
                 (oid, org),
             )
+            # Prevent scrape from recreating shells from leftover portal cycles.
+            cursor.execute(
+                """
+                UPDATE rinse_wf_service_cycles
+                SET status = %s,
+                    review_reason = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE organization_id = %s
+                  AND bag_id = %s
+                  AND status IN (%s, %s)
+                  AND UPPER(COALESCE(admitted_source, '')) = 'PORTAL_DISCOVERY'
+                """,
+                (
+                    STATUS_RESOLVED_OTHER,
+                    SUPERSEDED_PORTAL_DISCOVERY_DUPLICATE,
+                    org,
+                    bid,
+                    STATUS_ACTIVE,
+                    STATUS_REVIEW,
+                ),
+            )
             report["healed"].append(cand)
     return report
+
+
+def repair_open_portal_oi_with_stv_strong_completion(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Bind STV-owned OI + stamp strong completion; remove portal shell.
+
+    Uses existing ``evaluate_bag_completion_v2`` / STRONG_COMPLETION_EVIDENCE
+    signals (QC / processed-by-vendor / …) scoped to the STV lifecycle window.
+    Does not invent a new completion definition.
+    """
+    from backend.rinse_bag_activity_rules import evaluate_bag_completion_v2
+    from backend.rinse_bag_completion import REASON_STRONG_COMPLETION_EVIDENCE
+    from backend.rinse_bag_stage_bounds import gaming_events_from_records
+    from backend.rinse_wf_service_cycle import (
+        STATUS_ACTIVE,
+        STATUS_COMPLETED,
+        STATUS_RESOLVED_OTHER,
+        STATUS_REVIEW,
+        SUPERSEDED_PORTAL_DISCOVERY_DUPLICATE,
+        _load_timeline,
+        _valid_cycle_anchors,
+        get_cycle_by_key,
+        upsert_service_cycle,
+    )
+
+    org = int(organization_id)
+    bid = normalize_bag_id(bag_id)
+    out: dict[str, Any] = {
+        "ok": False,
+        "dry_run": bool(dry_run),
+        "bag_id": bid,
+        "action": None,
+    }
+    if not bid:
+        out["error"] = "invalid_bag_id"
+        return out
+    all_ois = list_order_instances_for_bag(cursor, org, bid, service_type="WF")
+    open_ois = [o for o in all_ois if _parse_dt(o.get("completed_at")) is None]
+    if not open_ois:
+        out["error"] = "no_open_oi"
+        return out
+    # Never touch the three genuine Review OIs.
+    genuine_protect = {3585, 3587, 3963}
+    if any(int(o["order_instance_id"]) in genuine_protect for o in open_ois):
+        out["error"] = "genuine_review_protected"
+        return out
+
+    timeline = _load_timeline(cursor, org, bid)
+    valid = list(_valid_cycle_anchors(timeline))
+    valid_set = set(valid)
+    if not valid:
+        out["error"] = "no_stv_anchor"
+        return out
+    portal_shells = [
+        o
+        for o in open_ois
+        if isinstance(o.get("cycle_anchor_at"), datetime)
+        and o["cycle_anchor_at"] not in valid_set
+        and _oi_source_is_portal_discovery(cursor, {**o, "organization_id": org})
+    ]
+    if not portal_shells:
+        out["error"] = "no_portal_shell"
+        return out
+    portal_anchors = [
+        _parse_dt(o.get("cycle_anchor_at"))
+        for o in portal_shells
+        if _parse_dt(o.get("cycle_anchor_at")) is not None
+    ]
+    earliest_portal = min(portal_anchors) if portal_anchors else None
+    # STV lifecycle that owns this production: latest valid STV before the shell.
+    preceding_stvs = [
+        a for a in valid if earliest_portal is None or a < earliest_portal
+    ]
+    if not preceding_stvs:
+        out["error"] = "no_stv_before_portal_shell"
+        out["portal_shell_ois"] = [int(o["order_instance_id"]) for o in portal_shells]
+        return out
+    stv_anchor = preceding_stvs[-1]
+
+    # Strong completion evidence on/after this STV (existing v2 path).
+    # Cap at next STV so a later reusable-bag lifecycle cannot bleed in.
+    next_stvs = [a for a in valid if a > stv_anchor]
+    window_end = next_stvs[0] if next_stvs else None
+    scoped = [
+        e
+        for e in timeline
+        if isinstance(e.get("scanned_at_parsed"), datetime)
+        and e["scanned_at_parsed"] >= stv_anchor
+        and (window_end is None or e["scanned_at_parsed"] < window_end)
+    ]
+    v2 = evaluate_bag_completion_v2(gaming_events_from_records(scoped))
+    if not v2.completed or not isinstance(v2.completion_at, datetime):
+        out["error"] = "no_strong_completion_in_stv_window"
+        out["stv_anchor"] = str(stv_anchor)
+        out["v2"] = {
+            "completed": bool(v2.completed),
+            "kind": v2.completion_kind,
+        }
+        return out
+    if v2.completion_at < stv_anchor:
+        out["error"] = "strong_completion_before_stv"
+        return out
+
+    completion_source = REASON_STRONG_COMPLETION_EVIDENCE
+    out.update(
+        {
+            "ok": True,
+            "stv_anchor": str(stv_anchor),
+            "completion_at": str(v2.completion_at),
+            "completion_kind": v2.completion_kind,
+            "completion_source": completion_source,
+            "completion_user": v2.completion_user,
+            "portal_shell_ois": [int(o["order_instance_id"]) for o in portal_shells],
+            "action": "stamp_stv_oi_delete_portal_shells",
+        }
+    )
+    if dry_run:
+        return out
+
+    # Complete / upsert the STV service cycle; sync stamps the OI.
+    existing = get_cycle_by_key(cursor, org, bid, stv_anchor) or {}
+    admitted_source = str(existing.get("admitted_source") or "").strip()
+    if not admitted_source or admitted_source.upper() == "PORTAL_DISCOVERY":
+        admitted_source = "SCAN_EVIDENCE_REFRESH"
+    row = upsert_service_cycle(
+        cursor,
+        org,
+        bag_id=bid,
+        cycle_anchor_at=stv_anchor,
+        admitted_at=existing.get("admitted_at") or stv_anchor,
+        admitted_source=admitted_source,
+        status=STATUS_COMPLETED,
+        completed_at=v2.completion_at,
+        completion_source=completion_source,
+        rush_status=existing.get("rush_status"),
+        estimated_delivery_date=existing.get("estimated_delivery_date"),
+        pre_weight_lbs=existing.get("pre_weight_lbs"),
+        post_weight_lbs=existing.get("post_weight_lbs"),
+        portal_last_seen_at=existing.get("portal_last_seen_at"),
+    )
+    stamped = upsert_order_instance_from_cycle(
+        cursor,
+        org,
+        {
+            **(row or {}),
+            "bag_id": bid,
+            "service_type": "WF",
+            "status": STATUS_COMPLETED,
+            "cycle_anchor_at": stv_anchor,
+            "completed_at": v2.completion_at,
+            "completion_source": completion_source,
+            "id": (row or {}).get("id") or existing.get("id"),
+        },
+        completed_by_employee_name=v2.completion_user,
+    )
+    out["stamped_oi"] = (stamped or {}).get("order_instance_id")
+
+    # Remove open portal shells only (and supersede their portal cycles).
+    for shell in portal_shells:
+        sid = shell.get("source_cycle_id")
+        if sid is not None:
+            cursor.execute(
+                """
+                UPDATE rinse_wf_service_cycles
+                SET status = %s,
+                    review_reason = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND organization_id = %s
+                  AND status IN (%s, %s)
+                """,
+                (
+                    STATUS_RESOLVED_OTHER,
+                    SUPERSEDED_PORTAL_DISCOVERY_DUPLICATE,
+                    int(sid),
+                    org,
+                    STATUS_ACTIVE,
+                    STATUS_REVIEW,
+                ),
+            )
+        cursor.execute(
+            f"""
+            DELETE FROM {ORDER_INSTANCES_TABLE}
+            WHERE order_instance_id = %s
+              AND organization_id = %s
+              AND completed_at IS NULL
+            """,
+            (int(shell["order_instance_id"]), org),
+        )
+    # Supersede any other open PORTAL_DISCOVERY cycles for this bag so scrape
+    # cannot recreate a shell OI after the STV lifecycle is stamped complete.
+    keeper_id = (row or {}).get("id") or existing.get("id")
+    cursor.execute(
+        """
+        UPDATE rinse_wf_service_cycles
+        SET status = %s,
+            review_reason = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE organization_id = %s
+          AND bag_id = %s
+          AND status IN (%s, %s)
+          AND UPPER(COALESCE(admitted_source, '')) = 'PORTAL_DISCOVERY'
+          AND (%s IS NULL OR id <> %s)
+        """,
+        (
+            STATUS_RESOLVED_OTHER,
+            SUPERSEDED_PORTAL_DISCOVERY_DUPLICATE,
+            org,
+            bid,
+            STATUS_ACTIVE,
+            STATUS_REVIEW,
+            keeper_id,
+            keeper_id,
+        ),
+    )
+    return out
 
 
 def get_order_instance_by_id(
