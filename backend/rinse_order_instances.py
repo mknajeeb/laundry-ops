@@ -211,6 +211,9 @@ def ensure_open_order_instance_for_new_active_cycle(
     Requires authoritative new-order boundary evidence (pickup / workitems /
     load-in) after the prior completed instance. STV-only lingering tickets
     without that boundary must not invent a new OI.
+
+    When an open portal-discovery OI already covers the bag and this ACTIVE
+    cycle is STV-backed, rebind that OI onto this cycle instead of forking.
     """
     status = str(cycle_row.get("status") or "").strip().upper()
     if status != "ACTIVE":
@@ -233,8 +236,11 @@ def ensure_open_order_instance_for_new_active_cycle(
     )
     prior_completed = _parse_dt((prior or {}).get("completed_at")) if prior else None
     if prior is not None and prior_completed is None:
-        # An open prior OI already covers this bag — do not fork.
-        return prior
+        # Open prior OI — rebind portal-only orphan onto STV cycle when applicable.
+        rebound = _maybe_rebind_open_portal_oi_to_stv_cycle(
+            cursor, org, prior, cycle_row
+        )
+        return rebound or prior
     if prior_completed is not None:
         if not has_authoritative_new_order_boundary_after(
             cursor,
@@ -247,6 +253,279 @@ def ensure_open_order_instance_for_new_active_cycle(
     elif prior is not None:
         return prior
     return upsert_order_instance_from_cycle(cursor, org, cycle_row)
+
+
+def _cycle_row_is_stv_backed(cursor, organization_id: int, cycle_row: Mapping[str, Any]) -> bool:
+    """True when cycle_anchor_at matches a valid STV boundary on the bag timeline."""
+    from backend.rinse_wf_service_cycle import (
+        _cycle_anchor_is_stv_backed,
+        _load_timeline,
+    )
+
+    bid = normalize_bag_id(cycle_row.get("bag_id"))
+    anchor = _parse_dt(cycle_row.get("cycle_anchor_at"))
+    if not bid or anchor is None:
+        return False
+    timeline = _load_timeline(cursor, int(organization_id), bid)
+    return _cycle_anchor_is_stv_backed(timeline, anchor)
+
+
+def _oi_source_is_portal_discovery(cursor, oi_row: Mapping[str, Any]) -> bool:
+    """True when the OI's source cycle (or matching cycle) was PORTAL_DISCOVERY."""
+    source_cycle_id = oi_row.get("source_cycle_id")
+    if source_cycle_id is not None and table_exists(cursor, "rinse_wf_service_cycles"):
+        try:
+            cursor.execute(
+                """
+                SELECT admitted_source FROM rinse_wf_service_cycles
+                WHERE id = %s LIMIT 1
+                """,
+                (int(source_cycle_id),),
+            )
+            row = cursor.fetchone() or {}
+            if str(row.get("admitted_source") or "") == "PORTAL_DISCOVERY":
+                return True
+        except (TypeError, ValueError):
+            pass
+    # Fallback: open OI whose anchor is not STV-backed.
+    return not _cycle_row_is_stv_backed(cursor, int(oi_row.get("organization_id") or 0), oi_row)
+
+
+def _maybe_rebind_open_portal_oi_to_stv_cycle(
+    cursor,
+    organization_id: int,
+    open_oi: Mapping[str, Any],
+    stv_cycle_row: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Re-key an open portal-discovery OI onto a legitimate STV ACTIVE cycle."""
+    if not _cycle_row_is_stv_backed(cursor, organization_id, stv_cycle_row):
+        return None
+    oi_with_org = dict(open_oi)
+    oi_with_org.setdefault("organization_id", organization_id)
+    if not _oi_source_is_portal_discovery(cursor, oi_with_org):
+        return None
+    oid = int(open_oi["order_instance_id"])
+    new_anchor = _parse_dt(stv_cycle_row.get("cycle_anchor_at"))
+    if new_anchor is None:
+        return None
+    # Do not steal a completed OI or collide with an existing cycle key.
+    conflict = get_order_instance_by_cycle_key(
+        cursor,
+        organization_id,
+        open_oi.get("bag_id"),
+        service_type=_svc(open_oi.get("service_type") or "WF"),
+        cycle_anchor_at=new_anchor,
+    )
+    if conflict is not None and int(conflict["order_instance_id"]) != oid:
+        return None
+    source_cycle_id = None
+    try:
+        if stv_cycle_row.get("id") is not None:
+            source_cycle_id = int(stv_cycle_row["id"])
+    except (TypeError, ValueError):
+        source_cycle_id = None
+    cursor.execute(
+        f"""
+        UPDATE {ORDER_INSTANCES_TABLE}
+        SET cycle_anchor_at = %s,
+            source_cycle_id = COALESCE(%s, source_cycle_id),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE order_instance_id = %s
+          AND completed_at IS NULL
+        """,
+        (new_anchor, source_cycle_id, oid),
+    )
+    return get_order_instance_by_id(cursor, oid)
+
+
+def heal_same_lifecycle_portal_orphan_ois(
+    cursor,
+    organization_id: int,
+    *,
+    bag_ids: Sequence[str] | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Bounded heal: delete proven portal-discovery OI orphans for one org.
+
+    Candidate proof (all required):
+    - orphan OI is open
+    - orphan cycle admitted_source = PORTAL_DISCOVERY (or anchor not STV-backed)
+    - same bag has another OI whose cycle_anchor is STV-backed
+    - orphan anchor is strictly after legitimate STV anchor
+    - no authoritative new-order boundary between STV and orphan anchor
+    - legitimate OI is completed OR still open with STV anchor
+
+    Does not touch the three genuine stale-registry Review OIs unless they
+    match this portal-duplicate pattern (they do not).
+    """
+    from backend.rinse_wf_service_cycle import (
+        SUPERSEDED_PORTAL_DISCOVERY_DUPLICATE,
+        STATUS_ACTIVE,
+        STATUS_RESOLVED_OTHER,
+        STATUS_REVIEW,
+        _load_timeline,
+        _valid_cycle_anchors,
+    )
+
+    ensure_rinse_order_instances_table(cursor)
+    org = int(organization_id)
+    report: dict[str, Any] = {
+        "dry_run": bool(dry_run),
+        "organization_id": org,
+        "candidates": [],
+        "healed": [],
+        "ambiguous": [],
+        "skipped_genuine_review": [],
+    }
+    genuine_protect = {
+        ("BUEKCP33J1", 3585),
+        ("BZ9AOU641G", 3963),
+        ("C1PI050KEU", 3587),
+    }
+    scope = sorted({normalize_bag_id(b) for b in (bag_ids or []) if normalize_bag_id(b)})
+    if scope:
+        ph = ", ".join(["%s"] * len(scope))
+        cursor.execute(
+            f"""
+            SELECT * FROM {ORDER_INSTANCES_TABLE}
+            WHERE organization_id = %s AND service_type = 'WF'
+              AND bag_id IN ({ph})
+            ORDER BY bag_id, cycle_anchor_at, order_instance_id
+            """,
+            (org, *scope),
+        )
+    else:
+        cursor.execute(
+            f"""
+            SELECT * FROM {ORDER_INSTANCES_TABLE}
+            WHERE organization_id = %s AND service_type = 'WF'
+              AND completed_at IS NULL
+            ORDER BY bag_id, cycle_anchor_at, order_instance_id
+            """,
+            (org,),
+        )
+    open_orphans = [
+        dict(r)
+        for r in (cursor.fetchall() or [])
+        if isinstance(r, dict) and _parse_dt(r.get("completed_at")) is None
+    ]
+    # If scoped with bag_ids, also include open rows only was wrong — reload all
+    # OIs per bag for those bags when scope set.
+    bags_needed = sorted({normalize_bag_id(r.get("bag_id")) for r in open_orphans if normalize_bag_id(r.get("bag_id"))})
+    if not scope:
+        bags_needed = bags_needed  # all bags with open OIs
+    for bid in bags_needed:
+        all_ois = list_order_instances_for_bag(cursor, org, bid, service_type="WF")
+        if len(all_ois) < 2:
+            continue
+        timeline = _load_timeline(cursor, org, bid)
+        valid = set(_valid_cycle_anchors(timeline))
+        stv_ois = [
+            o
+            for o in all_ois
+            if isinstance(o.get("cycle_anchor_at"), datetime)
+            and o["cycle_anchor_at"] in valid
+        ]
+        portal_open = [
+            o
+            for o in all_ois
+            if _parse_dt(o.get("completed_at")) is None
+            and isinstance(o.get("cycle_anchor_at"), datetime)
+            and o["cycle_anchor_at"] not in valid
+            and _oi_source_is_portal_discovery(
+                cursor, {**o, "organization_id": org}
+            )
+        ]
+        if not portal_open or not stv_ois:
+            continue
+        # Prefer completed STV OI as legitimate; else open STV OI.
+        legit = None
+        for o in reversed(stv_ois):
+            if _parse_dt(o.get("completed_at")) is not None:
+                legit = o
+                break
+        if legit is None:
+            legit = stv_ois[-1]
+        legit_anchor = _parse_dt(legit.get("cycle_anchor_at"))
+        legit_completed = _parse_dt(legit.get("completed_at"))
+        if legit_anchor is None:
+            continue
+        for orphan in portal_open:
+            oid = int(orphan["order_instance_id"])
+            o_anchor = _parse_dt(orphan.get("cycle_anchor_at"))
+            if o_anchor is None or o_anchor <= legit_anchor:
+                report["ambiguous"].append(
+                    {
+                        "bag_id": bid,
+                        "orphan_oi": oid,
+                        "reason": "orphan_anchor_not_after_stv",
+                    }
+                )
+                continue
+            if (bid, oid) in genuine_protect:
+                report["skipped_genuine_review"].append(
+                    {"bag_id": bid, "order_instance_id": oid}
+                )
+                continue
+            # No new-order boundary between STV and orphan ⇒ same lifecycle.
+            if has_authoritative_new_order_boundary_after(
+                cursor,
+                org,
+                bid,
+                legit_completed or legit_anchor,
+                before_or_at=o_anchor,
+            ):
+                report["ambiguous"].append(
+                    {
+                        "bag_id": bid,
+                        "orphan_oi": oid,
+                        "reason": "boundary_between_stv_and_orphan",
+                    }
+                )
+                continue
+            cand = {
+                "bag_id": bid,
+                "orphan_oi": oid,
+                "legitimate_oi": int(legit["order_instance_id"]),
+                "orphan_anchor": str(o_anchor),
+                "legitimate_lifecycle_anchor": str(legit_anchor),
+                "completion_at": str(legit_completed) if legit_completed else None,
+                "evidence": "portal_discovery_oi_after_stv_same_lifecycle_no_boundary",
+            }
+            report["candidates"].append(cand)
+            if dry_run:
+                continue
+            # Supersede orphan's portal cycle if still open.
+            if orphan.get("source_cycle_id") is not None:
+                cursor.execute(
+                    """
+                    UPDATE rinse_wf_service_cycles
+                    SET status = %s,
+                        review_reason = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s AND organization_id = %s
+                      AND status IN (%s, %s)
+                    """,
+                    (
+                        STATUS_RESOLVED_OTHER,
+                        SUPERSEDED_PORTAL_DISCOVERY_DUPLICATE,
+                        int(orphan["source_cycle_id"]),
+                        org,
+                        STATUS_ACTIVE,
+                        STATUS_REVIEW,
+                    ),
+                )
+            cursor.execute(
+                f"""
+                DELETE FROM {ORDER_INSTANCES_TABLE}
+                WHERE order_instance_id = %s
+                  AND organization_id = %s
+                  AND completed_at IS NULL
+                """,
+                (oid, org),
+            )
+            report["healed"].append(cand)
+    return report
 
 
 def get_order_instance_by_id(
@@ -352,25 +631,25 @@ def list_open_wf_order_instances(
     *,
     service_type: str = "WF",
 ) -> list[dict[str, Any]]:
-    """Latest open (``completed_at IS NULL``) order instance per bag."""
+    """All open (``completed_at IS NULL``) WF order instances.
+
+    Does **not** collapse to MAX(order_instance_id) per bag — orphan portal
+    duplicates must remain visible until healed, and completion ownership is
+    cycle-keyed rather than latest-id.
+    """
     ensure_rinse_order_instances_table(cursor)
     org = int(organization_id)
     svc = _svc(service_type)
     cursor.execute(
         f"""
-        SELECT oi.*
-        FROM {ORDER_INSTANCES_TABLE} oi
-        INNER JOIN (
-            SELECT bag_id, MAX(order_instance_id) AS max_id
-            FROM {ORDER_INSTANCES_TABLE}
-            WHERE organization_id = %s AND service_type = %s
-            GROUP BY bag_id
-        ) latest ON oi.order_instance_id = latest.max_id
-        WHERE oi.organization_id = %s
-          AND oi.service_type = %s
-          AND oi.completed_at IS NULL
+        SELECT *
+        FROM {ORDER_INSTANCES_TABLE}
+        WHERE organization_id = %s
+          AND service_type = %s
+          AND completed_at IS NULL
+        ORDER BY bag_id ASC, cycle_anchor_at ASC, order_instance_id ASC
         """,
-        (org, svc, org, svc),
+        (org, svc),
     )
     return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
 
@@ -507,6 +786,51 @@ def upsert_order_instance_from_cycle(
         )
         return get_order_instance_by_id(cursor, oid)
 
+    # Prefer rebinding an open portal-discovery OI onto this completing STV cycle
+    # instead of inserting a second OI for the same lifecycle.
+    if status == "COMPLETED" or completed_at is not None:
+        open_rows = [
+            r
+            for r in list_order_instances_for_bag(cursor, org, bid, service_type=svc)
+            if _parse_dt(r.get("completed_at")) is None
+        ]
+        for open_oi in open_rows:
+            rebound = _maybe_rebind_open_portal_oi_to_stv_cycle(
+                cursor, org, open_oi, cycle_row
+            )
+            target = rebound
+            if target is None and _parse_dt(open_oi.get("cycle_anchor_at")) == anchor:
+                target = open_oi
+            if target is None:
+                continue
+            oid = int(target["order_instance_id"])
+            cursor.execute(
+                f"""
+                UPDATE {ORDER_INSTANCES_TABLE}
+                SET completed_at = COALESCE(%s, completed_at),
+                    completed_by_user_id = COALESCE(%s, completed_by_user_id),
+                    completed_by_employee_name = COALESCE(%s, completed_by_employee_name),
+                    completion_source = COALESCE(%s, completion_source),
+                    source_cycle_id = COALESCE(%s, source_cycle_id),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE order_instance_id = %s
+                """,
+                (
+                    completed_at,
+                    completed_by_user_id,
+                    emp,
+                    completion_source,
+                    source_cycle_id,
+                    oid,
+                ),
+            )
+            return get_order_instance_by_id(cursor, oid)
+        # Open OI(s) exist but none matched this cycle — never invent a second
+        # OI while the bag still has an open instance (same-lifecycle guard).
+        if open_rows:
+            oid = int(open_rows[-1]["order_instance_id"])
+            return get_order_instance_by_id(cursor, oid)
+
     # New cycle_anchor → new instance only with authoritative new-order evidence.
     # Duplicate/reconciliation completed cycles merge into the latest instance.
     latest = get_latest_order_instance_for_bag(
@@ -515,6 +839,9 @@ def upsert_order_instance_from_cycle(
     prior_completed = (
         _parse_dt(latest.get("completed_at")) if latest else None
     )
+    if latest is not None and prior_completed is None:
+        # Still open — do not insert another OI for this bag.
+        return get_order_instance_by_id(cursor, int(latest["order_instance_id"]))
     if latest is not None and not should_create_new_order_instance_for_cycle(
         cursor,
         org,

@@ -156,8 +156,15 @@ def test_registry_stale_completion_review_helper():
             return_value={"BAG1", "BAG2"},
         ),
         patch(
-            "backend.rinse_wf_current_workload._bags_with_valid_current_cycle_completion",
+            "backend.rinse_wf_current_workload._bags_with_valid_open_oi_completion",
             return_value={"BAG2"},
+        ),
+        patch(
+            "backend.rinse_order_instances.list_open_wf_order_instances",
+            return_value=[
+                {"bag_id": "BAG1", "cycle_anchor_at": datetime(2026, 9, 1, 8)},
+                {"bag_id": "BAG2", "cycle_anchor_at": datetime(2026, 9, 1, 9)},
+            ],
         ),
     ):
         out = registry_stale_completion_review_bags(cur, ORG, ["BAG1", "BAG2", "BAG3"])

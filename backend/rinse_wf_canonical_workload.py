@@ -627,11 +627,11 @@ def get_canonical_wf_workload(
             "source": "canonical_wf_workload_v3_lifecycle",
         }
 
+    # Current Workload is date-free — never pass selected reporting date.
     current = get_current_wf_workload(
         cursor,
         org,
         include_received_from_vendor=True,
-        as_of_date_et=date_et,
     )
     selected = get_selected_date_wf_completed(cursor, org, date_et)
 

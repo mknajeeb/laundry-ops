@@ -1,9 +1,10 @@
 """WF Current Workload — open order-instance authority (date-free).
 
-Current Workload = latest legitimate WF OI per bag where completed_at IS NULL.
+Current Workload = every legitimate open WF OI (``completed_at IS NULL``).
 
 Selected-date Completed is a separate concept (see get_selected_date_wf_completed).
 Registry / day-bag / Performance COMPLETED never removes an open OI.
+Conflict evidence is OI/lifecycle-scoped — never selected-date reporting.
 """
 
 from __future__ import annotations
@@ -151,41 +152,90 @@ def _registry_completed_open_bags(
     return out
 
 
-def _bags_with_valid_current_cycle_completion(
+def _oi_has_valid_lifecycle_completion(
     cursor,
     organization_id: int,
-    bag_ids: Sequence[str],
     *,
-    as_of_date_et: date | None = None,
-) -> set[str]:
-    """Bags whose canonical current-cycle resolver reports completed."""
-    from backend.rinse_veewash_workload import load_canonical_completions_v2
+    bag_id: str,
+    cycle_anchor_at: datetime,
+    lifecycle_end_exclusive: datetime | None = None,
+) -> bool:
+    """True when canonical resolver finds completion inside this OI window.
 
-    ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
-    if not ids:
-        return set()
-    day = as_of_date_et or business_today()
-    comps = (
-        load_canonical_completions_v2(
+    Date-free: evaluates the OI's ``cycle_anchor_at`` via
+    ``cycle_anchor_override`` — never filters by a selected reporting day.
+    """
+    from backend.rinse_cycle_boundary import resolve_current_cycle
+    from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
+
+    bid = normalize_bag_id(bag_id)
+    if not bid or not isinstance(cycle_anchor_at, datetime):
+        return False
+    if not table_exists(cursor, "rinse_bag_scan_events"):
+        return False
+    cursor.execute(
+        """
+        SELECT purpose, scanned_at_parsed, time_scanned_raw, user_name,
+               weight_lbs, rack, source_filename, raw_json
+        FROM rinse_bag_scan_events
+        WHERE organization_id = %s AND bag_id = %s
+          AND scanned_at_parsed IS NOT NULL
+        ORDER BY scanned_at_parsed ASC, id ASC
+        """,
+        (int(organization_id), bid),
+    )
+    timeline = [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    if not timeline:
+        return False
+    try:
+        from backend.rinse_processing_settings import get_processing_settings
+
+        racks = get_processing_settings(cursor, organization_id).get(
+            "facility_entry_racks"
+        ) or list(DEFAULT_FACILITY_ENTRY_RACKS)
+    except Exception:
+        racks = list(DEFAULT_FACILITY_ENTRY_RACKS)
+    # selected_date_et is unused when cycle_anchor_override is set; pass anchor date.
+    day = _et_date(cycle_anchor_at) or business_today()
+    result = resolve_current_cycle(
+        timeline,
+        selected_date_et=day,
+        entry_racks=racks,
+        cycle_anchor_override=cycle_anchor_at,
+    )
+    if str(getattr(result, "effective_status", "") or "").lower() != "completed":
+        return False
+    comp_at = getattr(result, "completion_at", None)
+    if not isinstance(comp_at, datetime):
+        return False
+    if comp_at < cycle_anchor_at:
+        return False
+    if lifecycle_end_exclusive is not None and comp_at >= lifecycle_end_exclusive:
+        return False
+    return True
+
+
+def _bags_with_valid_open_oi_completion(
+    cursor,
+    organization_id: int,
+    open_oi_rows: Sequence[Mapping[str, Any]],
+) -> set[str]:
+    """Bag_ids whose open OI lifecycle has valid completion evidence (date-free)."""
+    out: set[str] = set()
+    for row in open_oi_rows:
+        bid = normalize_bag_id(row.get("bag_id"))
+        anchor = row.get("cycle_anchor_at")
+        if not bid or not isinstance(anchor, datetime):
+            continue
+        end = _next_oi_cycle_anchor(cursor, int(organization_id), bid, anchor)
+        if _oi_has_valid_lifecycle_completion(
             cursor,
             int(organization_id),
-            ids,
-            selected_date_et=day,
-            service_type_by_bag={b: "WF" for b in ids},
-        )
-        or {}
-    )
-    out: set[str] = set()
-    for bid, comp in comps.items():
-        if not isinstance(comp, Mapping):
-            continue
-        if str(comp.get("effective_status") or "").lower() != "completed":
-            continue
-        if comp.get("completion_at") is None:
-            continue
-        nb = normalize_bag_id(bid)
-        if nb:
-            out.add(nb)
+            bag_id=bid,
+            cycle_anchor_at=anchor,
+            lifecycle_end_exclusive=end,
+        ):
+            out.add(bid)
     return out
 
 
@@ -194,12 +244,15 @@ def registry_stale_completion_review_bags(
     organization_id: int,
     open_bags: Sequence[str],
     *,
+    open_oi_rows: Sequence[Mapping[str, Any]] | None = None,
     as_of_date_et: date | None = None,
 ) -> set[str]:
     """Open OI + registry COMPLETED + no valid current-OI completion → Review.
 
+    ``as_of_date_et`` is ignored (compat kwarg). Evidence is OI-lifecycle scoped.
     Does not complete the OI. Does not remove it from Current Workload.
     """
+    _ = as_of_date_et  # date-free; retained for call-site compatibility
     open_set = {normalize_bag_id(b) for b in open_bags if normalize_bag_id(b)}
     if not open_set:
         return set()
@@ -207,11 +260,22 @@ def registry_stale_completion_review_bags(
     candidates = open_set & reg_done
     if not candidates:
         return set()
-    has_evidence = _bags_with_valid_current_cycle_completion(
-        cursor,
-        organization_id,
-        sorted(candidates),
-        as_of_date_et=as_of_date_et,
+    rows = [
+        r
+        for r in (open_oi_rows or [])
+        if normalize_bag_id((r or {}).get("bag_id")) in candidates
+    ]
+    if not rows:
+        # Bag-id-only callers: build minimal open rows from DB.
+        from backend.rinse_order_instances import list_open_wf_order_instances
+
+        rows = [
+            r
+            for r in list_open_wf_order_instances(cursor, int(organization_id))
+            if normalize_bag_id(r.get("bag_id")) in candidates
+        ]
+    has_evidence = _bags_with_valid_open_oi_completion(
+        cursor, organization_id, rows
     )
     return candidates - has_evidence
 
@@ -223,7 +287,11 @@ def get_current_wf_workload(
     include_received_from_vendor: bool = True,
     as_of_date_et: date | None = None,
 ) -> dict[str, Any]:
-    """Date-free Current Workload from open WF order instances only."""
+    """Date-free Current Workload from open WF order instances only.
+
+    ``as_of_date_et`` is ignored — CW never depends on the selected reporting day.
+    """
+    _ = as_of_date_et
     from backend.rinse_order_instances import list_open_wf_order_instances
     from backend.rinse_wf_canonical_workload import (
         LIFECYCLE_OPEN,
@@ -233,71 +301,81 @@ def get_current_wf_workload(
 
     org = int(organization_id)
     open_rows = list_open_wf_order_instances(cursor, org, service_type="WF")
-    open_by_bag: dict[str, dict[str, Any]] = {}
+    # Prefer STV-backed / earliest open OI per bag for bag-level sets; keep all
+    # open OIs as items after HD filter.
+    rows_by_bag: dict[str, list[dict[str, Any]]] = {}
     for row in open_rows:
         bid = normalize_bag_id(row.get("bag_id"))
         if not bid:
             continue
-        open_by_bag[bid] = dict(row)
+        rows_by_bag.setdefault(bid, []).append(dict(row))
 
-    open_bags = set(open_by_bag.keys())
-    # HD exclusion only — never registry/terminal/carry-forward.
+    open_bags = set(rows_by_bag.keys())
+    # HD exclusion uses business_today only — never selected reporting date.
     hd_exclude = _authoritative_hd_bag_ids(
         cursor,
         org,
-        as_of_date_et or business_today(),
+        business_today(),
         sorted(open_bags),
         portal_hd_ids=set(),
     )
     for bid in hd_exclude:
-        open_by_bag.pop(bid, None)
-    open_bags = set(open_by_bag.keys())
+        rows_by_bag.pop(bid, None)
+    open_bags = set(rows_by_bag.keys())
 
+    flat_rows = [r for rows in rows_by_bag.values() for r in rows]
     cycle_review = _review_wf_bag_ids_from_cycles(cursor, org, open_bags)
     conflict_review = registry_stale_completion_review_bags(
         cursor,
         org,
         sorted(open_bags),
-        as_of_date_et=as_of_date_et,
+        open_oi_rows=flat_rows,
     )
     review = frozenset(cycle_review | conflict_review)
     pending = frozenset(b for b in open_bags if b not in review)
 
     items: list[dict[str, Any]] = []
     for bid in sorted(open_bags):
-        row = open_by_bag[bid]
-        anchor = row.get("cycle_anchor_at")
-        rfv = None
-        if include_received_from_vendor:
-            end = None
-            if isinstance(anchor, datetime):
-                end = _next_oi_cycle_anchor(cursor, org, bid, anchor)
-            rfv = lifecycle_received_from_vendor_at(
-                cursor,
-                org,
-                bid,
-                anchor,
-                lifecycle_end_exclusive=end,
+        for row in sorted(
+            rows_by_bag[bid],
+            key=lambda r: (
+                r.get("cycle_anchor_at") or datetime.min,
+                int(r.get("order_instance_id") or 0),
+            ),
+        ):
+            anchor = row.get("cycle_anchor_at")
+            rfv = None
+            if include_received_from_vendor:
+                end = None
+                if isinstance(anchor, datetime):
+                    end = _next_oi_cycle_anchor(cursor, org, bid, anchor)
+                rfv = lifecycle_received_from_vendor_at(
+                    cursor,
+                    org,
+                    bid,
+                    anchor,
+                    lifecycle_end_exclusive=end,
+                )
+            in_review = bid in review
+            reason_codes: list[str] = []
+            if bid in conflict_review:
+                reason_codes.append(REVIEW_REGISTRY_STALE_COMPLETED)
+            items.append(
+                {
+                    "bag_id": bid,
+                    "order_instance_id": row.get("order_instance_id"),
+                    "completed_at": None,
+                    "cycle_anchor_at": anchor,
+                    "lifecycle": LIFECYCLE_OPEN,
+                    "status": OUTCOME_REVIEW_REQUIRED if in_review else OUTCOME_PENDING,
+                    "review_reason_codes": reason_codes,
+                    "received_from_vendor_at": rfv,
+                    "rush_status": row.get("rush_status") or row.get("rush_flag"),
+                    "customer_name": row.get("customer_name"),
+                }
             )
-        in_review = bid in review
-        reason_codes: list[str] = []
-        if bid in conflict_review:
-            reason_codes.append(REVIEW_REGISTRY_STALE_COMPLETED)
-        items.append(
-            {
-                "bag_id": bid,
-                "order_instance_id": row.get("order_instance_id"),
-                "completed_at": None,
-                "cycle_anchor_at": anchor,
-                "lifecycle": LIFECYCLE_OPEN,
-                "status": OUTCOME_REVIEW_REQUIRED if in_review else OUTCOME_PENDING,
-                "review_reason_codes": reason_codes,
-                "received_from_vendor_at": rfv,
-                "rush_status": row.get("rush_status") or row.get("rush_flag"),
-                "customer_name": row.get("customer_name"),
-            }
-        )
 
+    # Bag-level equation: one bag → one pending/review membership.
     return {
         "organization_id": org,
         "date_independent": True,

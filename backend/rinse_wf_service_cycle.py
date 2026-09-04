@@ -798,7 +798,12 @@ def sync_portal_discovery(
     now: datetime | None = None,
     evidence_refreshed_bag_ids: Collection[str] | None = None,
 ) -> dict[str, Any]:
-    """After full At-Vendor traversal: admit new cycles, refresh active ones."""
+    """After full At-Vendor traversal: admit new cycles, refresh active ones.
+
+    Presence alone must never fork a second OI/cycle while an ACTIVE/REVIEW
+    cycle already owns the bag. ``now_utc`` portal anchors are only allowed
+    when there is no open cycle.
+    """
     org = int(organization_id)
     now_utc = now or datetime.utcnow()
     refreshed = {
@@ -856,8 +861,69 @@ def sync_portal_discovery(
                     )
                     updated += 1
                 continue
+            # ACTIVE/REVIEW owns the bag; STV timeline advanced to a different
+            # anchor → migrate to STV (same lifecycle), never seed now_utc.
+            if (
+                isinstance(active_anchor, datetime)
+                and anchor != active_anchor
+                and str(active.get("status")) in (STATUS_ACTIVE, STATUS_REVIEW)
+            ):
+                if _portal_only_discovery_active(active) and anchor in anchors:
+                    # Supersede portal-only active; admit STV-backed cycle.
+                    cursor.execute(
+                        """
+                        UPDATE rinse_wf_service_cycles
+                        SET status = %s,
+                            review_reason = %s,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE organization_id = %s AND bag_id = %s
+                          AND cycle_anchor_at = %s AND status IN (%s, %s)
+                        """,
+                        (
+                            STATUS_RESOLVED_OTHER,
+                            SUPERSEDED_PORTAL_DISCOVERY_DUPLICATE,
+                            org,
+                            bid,
+                            active_anchor,
+                            STATUS_ACTIVE,
+                            STATUS_REVIEW,
+                        ),
+                    )
+                    admit_or_update_cycle_from_evidence(
+                        cursor,
+                        org,
+                        bid,
+                        anchor,
+                        admitted_at=now_utc,
+                        admitted_source="SCAN_EVIDENCE_REFRESH",
+                        portal_meta=portal_meta,
+                    )
+                    admitted += 1
+                    continue
+                # Non-portal active with different STV: refresh metadata on keeper.
+                if bid in refreshed and _update_portal_cycle_metadata(
+                    cursor,
+                    org,
+                    bid,
+                    active_anchor,
+                    portal_meta,
+                    now_utc=now_utc,
+                ):
+                    metadata_only += 1
+                else:
+                    admit_or_update_cycle_from_evidence(
+                        cursor,
+                        org,
+                        bid,
+                        active_anchor,
+                        admitted_source="PORTAL_REDISCOVERY",
+                        portal_meta=portal_meta,
+                    )
+                    updated += 1
+                continue
         if anchor is None:
-            if _portal_only_discovery_active(active):
+            # Reuse ANY open cycle — never invent now_utc while ACTIVE/REVIEW exists.
+            if active and str(active.get("status")) in (STATUS_ACTIVE, STATUS_REVIEW):
                 active_anchor = active.get("cycle_anchor_at")
                 if isinstance(active_anchor, datetime):
                     if bid in refreshed and _update_portal_cycle_metadata(
