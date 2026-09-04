@@ -130,49 +130,30 @@ def _next_oi_cycle_anchor(
     return end if isinstance(end, datetime) else None
 
 
-def _registry_completed_open_bags(
+def _parse_dt(raw: Any) -> datetime | None:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw.replace(tzinfo=None) if raw.tzinfo else raw
+    if isinstance(raw, date) and not isinstance(raw, datetime):
+        return datetime(raw.year, raw.month, raw.day)
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "")[:19])
+    except ValueError:
+        return None
+
+
+def _load_bag_timeline(
     cursor,
     organization_id: int,
-    open_bags: Sequence[str],
-) -> set[str]:
-    """Open bag_ids whose registry row is COMPLETED (stale vs open OI)."""
-    from backend.rinse_bag_registry import get_registry_rows_for_bags
-
-    ids = sorted({normalize_bag_id(b) for b in open_bags if normalize_bag_id(b)})
-    if not ids or not table_exists(cursor, "rinse_bag_registry"):
-        return set()
-    rows = get_registry_rows_for_bags(cursor, int(organization_id), ids) or {}
-    out: set[str] = set()
-    for bid, row in rows.items():
-        if str(row.get("completion_status") or "").strip().upper() != COMPLETION_COMPLETED:
-            continue
-        nb = normalize_bag_id(bid)
-        if nb:
-            out.add(nb)
-    return out
-
-
-def _oi_has_valid_lifecycle_completion(
-    cursor,
-    organization_id: int,
-    *,
     bag_id: str,
-    cycle_anchor_at: datetime,
-    lifecycle_end_exclusive: datetime | None = None,
-) -> bool:
-    """True when canonical resolver finds completion inside this OI window.
-
-    Date-free: evaluates the OI's ``cycle_anchor_at`` via
-    ``cycle_anchor_override`` — never filters by a selected reporting day.
-    """
-    from backend.rinse_cycle_boundary import resolve_current_cycle
-    from backend.rinse_processing_settings import DEFAULT_FACILITY_ENTRY_RACKS
-
+) -> list[dict[str, Any]]:
     bid = normalize_bag_id(bag_id)
-    if not bid or not isinstance(cycle_anchor_at, datetime):
-        return False
-    if not table_exists(cursor, "rinse_bag_scan_events"):
-        return False
+    if not bid or not table_exists(cursor, "rinse_bag_scan_events"):
+        return []
     cursor.execute(
         """
         SELECT purpose, scanned_at_parsed, time_scanned_raw, user_name,
@@ -184,59 +165,164 @@ def _oi_has_valid_lifecycle_completion(
         """,
         (int(organization_id), bid),
     )
-    timeline = [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
-    if not timeline:
-        return False
-    try:
-        from backend.rinse_processing_settings import get_processing_settings
-
-        racks = get_processing_settings(cursor, organization_id).get(
-            "facility_entry_racks"
-        ) or list(DEFAULT_FACILITY_ENTRY_RACKS)
-    except Exception:
-        racks = list(DEFAULT_FACILITY_ENTRY_RACKS)
-    # selected_date_et is unused when cycle_anchor_override is set; pass anchor date.
-    day = _et_date(cycle_anchor_at) or business_today()
-    result = resolve_current_cycle(
-        timeline,
-        selected_date_et=day,
-        entry_racks=racks,
-        cycle_anchor_override=cycle_anchor_at,
-    )
-    if str(getattr(result, "effective_status", "") or "").lower() != "completed":
-        return False
-    comp_at = getattr(result, "completion_at", None)
-    if not isinstance(comp_at, datetime):
-        return False
-    if comp_at < cycle_anchor_at:
-        return False
-    if lifecycle_end_exclusive is not None and comp_at >= lifecycle_end_exclusive:
-        return False
-    return True
+    return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
 
 
-def _bags_with_valid_open_oi_completion(
+def _events_in_oi_lifecycle_window(
+    timeline: Sequence[Mapping[str, Any]],
+    cycle_anchor_at: datetime,
+    lifecycle_end_exclusive: datetime | None,
+) -> list[dict[str, Any]]:
+    """Events in [OI anchor, next OI anchor). Never cut on intra-lifecycle STV."""
+    out: list[dict[str, Any]] = []
+    for ev in timeline:
+        ts = ev.get("scanned_at_parsed")
+        if not isinstance(ts, datetime):
+            continue
+        if ts < cycle_anchor_at:
+            continue
+        if lifecycle_end_exclusive is not None and ts >= lifecycle_end_exclusive:
+            continue
+        out.append(dict(ev))
+    return out
+
+
+def evaluate_oi_lifecycle_completion_evidence(
     cursor,
     organization_id: int,
-    open_oi_rows: Sequence[Mapping[str, Any]],
-) -> set[str]:
-    """Bag_ids whose open OI lifecycle has valid completion evidence (date-free)."""
-    out: set[str] = set()
-    for row in open_oi_rows:
-        bid = normalize_bag_id(row.get("bag_id"))
-        anchor = row.get("cycle_anchor_at")
-        if not bid or not isinstance(anchor, datetime):
-            continue
-        end = _next_oi_cycle_anchor(cursor, int(organization_id), bid, anchor)
-        if _oi_has_valid_lifecycle_completion(
+    *,
+    bag_id: str,
+    cycle_anchor_at: datetime,
+    lifecycle_end_exclusive: datetime | None = None,
+    timeline: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Canonical/v2 completion evidence inside one OI lifecycle window.
+
+    Reuses existing clean-rack + strong/QC signals (``evaluate_bag_completion_v2``
+    and classic clean-rack). Does **not** use ``resolve_current_cycle`` (that
+    truncates at the next STV and misses same-lifecycle production completion).
+    """
+    from backend.rinse_bag_activity_rules import evaluate_bag_completion_v2
+    from backend.rinse_bag_completion import (
+        COMPLETION_COMPLETED as CLASSIC_COMPLETED,
+        evaluate_bag_completion,
+    )
+    from backend.rinse_bag_stage_bounds import gaming_events_from_records
+
+    bid = normalize_bag_id(bag_id)
+    if not bid or not isinstance(cycle_anchor_at, datetime):
+        return None
+    tl = list(timeline) if timeline is not None else _load_bag_timeline(
+        cursor, organization_id, bid
+    )
+    scoped = _events_in_oi_lifecycle_window(
+        tl, cycle_anchor_at, lifecycle_end_exclusive
+    )
+    if not scoped:
+        return None
+
+    v2 = evaluate_bag_completion_v2(gaming_events_from_records(scoped))
+    if (
+        v2.completed
+        and isinstance(v2.completion_at, datetime)
+        and v2.completion_at >= cycle_anchor_at
+        and (
+            lifecycle_end_exclusive is None
+            or v2.completion_at < lifecycle_end_exclusive
+        )
+    ):
+        return {
+            "completed": True,
+            "completion_at": v2.completion_at,
+            "completion_kind": v2.completion_kind,
+            "completion_user": v2.completion_user,
+            "via_clean_rack": bool(v2.via_clean_rack),
+            "evidence_family": "v2",
+        }
+
+    classic = evaluate_bag_completion(scoped)
+    classic_at = classic.trigger_scan_at or classic.first_clean_scan_at
+    if (
+        str(classic.completion_status or "").upper() == CLASSIC_COMPLETED
+        and isinstance(classic_at, datetime)
+        and classic_at >= cycle_anchor_at
+        and (
+            lifecycle_end_exclusive is None or classic_at < lifecycle_end_exclusive
+        )
+    ):
+        return {
+            "completed": True,
+            "completion_at": classic_at,
+            "completion_kind": classic.trigger_kind or classic.completion_reason,
+            "completion_user": None,
+            "via_clean_rack": str(classic.completion_reason or "").upper()
+            == "CLEAN_RACK_SCANNED"
+            or str(classic.trigger_kind or "").upper() == "CLEAN_RACK",
+            "evidence_family": "classic",
+        }
+    return None
+
+
+def _oi_has_valid_lifecycle_completion(
+    cursor,
+    organization_id: int,
+    *,
+    bag_id: str,
+    cycle_anchor_at: datetime,
+    lifecycle_end_exclusive: datetime | None = None,
+) -> bool:
+    """True when canonical/v2 completion exists inside this OI window."""
+    return (
+        evaluate_oi_lifecycle_completion_evidence(
             cursor,
-            int(organization_id),
-            bag_id=bid,
-            cycle_anchor_at=anchor,
-            lifecycle_end_exclusive=end,
-        ):
-            out.add(bid)
-    return out
+            organization_id,
+            bag_id=bag_id,
+            cycle_anchor_at=cycle_anchor_at,
+            lifecycle_end_exclusive=lifecycle_end_exclusive,
+        )
+        is not None
+    )
+
+
+def _registry_row_for_bag(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+) -> dict[str, Any] | None:
+    from backend.rinse_bag_registry import get_registry_rows_for_bags
+
+    bid = normalize_bag_id(bag_id)
+    if not bid or not table_exists(cursor, "rinse_bag_registry"):
+        return None
+    rows = get_registry_rows_for_bags(cursor, int(organization_id), [bid]) or {}
+    row = rows.get(bid)
+    return dict(row) if isinstance(row, dict) else None
+
+
+def _registry_completed_at_in_oi_window(
+    registry_row: Mapping[str, Any] | None,
+    cycle_anchor_at: datetime,
+    lifecycle_end_exclusive: datetime | None,
+) -> bool:
+    """True when bag registry completion timestamp belongs to this OI window.
+
+    Historical registry (completed_at < OI anchor) → False (ignore for CW).
+    """
+    if not registry_row:
+        return False
+    if (
+        str(registry_row.get("completion_status") or "").strip().upper()
+        != COMPLETION_COMPLETED
+    ):
+        return False
+    reg_at = _parse_dt(registry_row.get("completed_at"))
+    if reg_at is None or not isinstance(cycle_anchor_at, datetime):
+        return False
+    if reg_at < cycle_anchor_at:
+        return False
+    if lifecycle_end_exclusive is not None and reg_at >= lifecycle_end_exclusive:
+        return False
+    return True
 
 
 def registry_stale_completion_review_bags(
@@ -247,37 +333,55 @@ def registry_stale_completion_review_bags(
     open_oi_rows: Sequence[Mapping[str, Any]] | None = None,
     as_of_date_et: date | None = None,
 ) -> set[str]:
-    """Open OI + registry COMPLETED + no valid current-OI completion → Review.
+    """Review only for same-lifecycle registry contradiction without evidence.
 
-    ``as_of_date_et`` is ignored (compat kwarg). Evidence is OI-lifecycle scoped.
-    Does not complete the OI. Does not remove it from Current Workload.
+    Historical bag-scoped registry (completed_at < OI anchor) is ignored.
+    Same-lifecycle canonical/v2 evidence → not Review (OI should be stamped).
+    ``resolve_current_cycle`` is never used here.
+    ``as_of_date_et`` is ignored (compat kwarg).
     """
-    _ = as_of_date_et  # date-free; retained for call-site compatibility
+    _ = as_of_date_et
     open_set = {normalize_bag_id(b) for b in open_bags if normalize_bag_id(b)}
     if not open_set:
-        return set()
-    reg_done = _registry_completed_open_bags(cursor, organization_id, sorted(open_set))
-    candidates = open_set & reg_done
-    if not candidates:
         return set()
     rows = [
         r
         for r in (open_oi_rows or [])
-        if normalize_bag_id((r or {}).get("bag_id")) in candidates
+        if normalize_bag_id((r or {}).get("bag_id")) in open_set
     ]
     if not rows:
-        # Bag-id-only callers: build minimal open rows from DB.
         from backend.rinse_order_instances import list_open_wf_order_instances
 
         rows = [
             r
             for r in list_open_wf_order_instances(cursor, int(organization_id))
-            if normalize_bag_id(r.get("bag_id")) in candidates
+            if normalize_bag_id(r.get("bag_id")) in open_set
         ]
-    has_evidence = _bags_with_valid_open_oi_completion(
-        cursor, organization_id, rows
-    )
-    return candidates - has_evidence
+
+    review: set[str] = set()
+    for row in rows:
+        bid = normalize_bag_id(row.get("bag_id"))
+        anchor = row.get("cycle_anchor_at")
+        if not bid or not isinstance(anchor, datetime):
+            continue
+        end = _next_oi_cycle_anchor(cursor, int(organization_id), bid, anchor)
+        reg = _registry_row_for_bag(cursor, int(organization_id), bid)
+        if not _registry_completed_at_in_oi_window(reg, anchor, end):
+            # Historical or non-completed registry → zero CW effect.
+            continue
+        evidence = evaluate_oi_lifecycle_completion_evidence(
+            cursor,
+            int(organization_id),
+            bag_id=bid,
+            cycle_anchor_at=anchor,
+            lifecycle_end_exclusive=end,
+        )
+        if evidence is not None:
+            # Evidence exists → complete via stamp path; not Review.
+            continue
+        # Same-lifecycle registry claim without canonical/v2 evidence.
+        review.add(bid)
+    return review
 
 
 def get_current_wf_workload(

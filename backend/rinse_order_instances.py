@@ -652,6 +652,218 @@ def heal_same_lifecycle_portal_orphan_ois(
     return report
 
 
+def stamp_open_oi_from_lifecycle_completion_evidence(
+    cursor,
+    organization_id: int,
+    oi_row: Mapping[str, Any],
+    *,
+    evidence: Mapping[str, Any] | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Stamp open WF OI + owning cycle from OI-window canonical/v2 evidence.
+
+    Uses existing ``upsert_service_cycle`` → ``sync_order_instance_on_cycle_completion``.
+    Does not invent completion signals. Does not touch other bags' OIs.
+    """
+    from backend.rinse_bag_completion import REASON_STRONG_COMPLETION_EVIDENCE
+    from backend.rinse_wf_current_workload import (
+        _next_oi_cycle_anchor,
+        evaluate_oi_lifecycle_completion_evidence,
+    )
+    from backend.rinse_wf_service_cycle import (
+        STATUS_COMPLETED,
+        get_cycle_by_key,
+        upsert_service_cycle,
+    )
+
+    org = int(organization_id)
+    bid = normalize_bag_id(oi_row.get("bag_id"))
+    anchor = _parse_dt(oi_row.get("cycle_anchor_at"))
+    oid = oi_row.get("order_instance_id")
+    out: dict[str, Any] = {
+        "ok": False,
+        "dry_run": bool(dry_run),
+        "bag_id": bid,
+        "order_instance_id": oid,
+        "action": None,
+    }
+    if not bid or anchor is None:
+        out["error"] = "invalid_oi"
+        return out
+    if _parse_dt(oi_row.get("completed_at")) is not None:
+        out["ok"] = True
+        out["action"] = "already_completed"
+        return out
+
+    end = _next_oi_cycle_anchor(cursor, org, bid, anchor)
+    ev = evidence or evaluate_oi_lifecycle_completion_evidence(
+        cursor,
+        org,
+        bag_id=bid,
+        cycle_anchor_at=anchor,
+        lifecycle_end_exclusive=end,
+    )
+    if not ev or not isinstance(ev.get("completion_at"), datetime):
+        out["error"] = "no_lifecycle_completion_evidence"
+        return out
+
+    completion_at = ev["completion_at"]
+    if bool(ev.get("via_clean_rack")):
+        completion_source = "CLEAN_RACK_SCANNED"
+    else:
+        completion_source = REASON_STRONG_COMPLETION_EVIDENCE
+    out.update(
+        {
+            "ok": True,
+            "action": "stamp_oi_completed",
+            "completion_at": str(completion_at),
+            "completion_source": completion_source,
+            "completion_kind": ev.get("completion_kind"),
+            "evidence_family": ev.get("evidence_family"),
+        }
+    )
+    if dry_run:
+        return out
+
+    existing = get_cycle_by_key(cursor, org, bid, anchor) or {}
+    admitted_source = str(existing.get("admitted_source") or "").strip()
+    if not admitted_source:
+        admitted_source = "SCAN_EVIDENCE_REFRESH"
+    row = upsert_service_cycle(
+        cursor,
+        org,
+        bag_id=bid,
+        cycle_anchor_at=anchor,
+        admitted_at=existing.get("admitted_at") or anchor,
+        admitted_source=admitted_source,
+        status=STATUS_COMPLETED,
+        completed_at=completion_at,
+        completion_source=completion_source,
+        rush_status=existing.get("rush_status"),
+        estimated_delivery_date=existing.get("estimated_delivery_date"),
+        pre_weight_lbs=existing.get("pre_weight_lbs"),
+        post_weight_lbs=existing.get("post_weight_lbs"),
+        portal_last_seen_at=existing.get("portal_last_seen_at"),
+    )
+    stamped = upsert_order_instance_from_cycle(
+        cursor,
+        org,
+        {
+            **(row or {}),
+            "bag_id": bid,
+            "service_type": "WF",
+            "status": STATUS_COMPLETED,
+            "cycle_anchor_at": anchor,
+            "completed_at": completion_at,
+            "completion_source": completion_source,
+            "id": (row or {}).get("id") or existing.get("id") or oi_row.get("source_cycle_id"),
+        },
+        completed_by_employee_name=ev.get("completion_user"),
+    )
+    out["stamped_oi"] = (stamped or {}).get("order_instance_id") or oid
+    return out
+
+
+def classify_and_stamp_open_ois_lifecycle_completion(
+    cursor,
+    organization_id: int,
+    *,
+    dry_run: bool = True,
+    bag_ids: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Classify open WF OIs; optionally stamp those with lifecycle completion evidence."""
+    from backend.rinse_wf_current_workload import (
+        _next_oi_cycle_anchor,
+        _registry_completed_at_in_oi_window,
+        _registry_row_for_bag,
+        evaluate_oi_lifecycle_completion_evidence,
+    )
+
+    org = int(organization_id)
+    ensure_rinse_order_instances_table(cursor)
+    open_rows = list_open_wf_order_instances(cursor, org, service_type="WF")
+    scope = None
+    if bag_ids:
+        scope = {normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)}
+        open_rows = [
+            r for r in open_rows if normalize_bag_id(r.get("bag_id")) in scope
+        ]
+
+    report: dict[str, Any] = {
+        "dry_run": bool(dry_run),
+        "organization_id": org,
+        "should_close": [],
+        "pending": [],
+        "review": [],
+        "stamped": [],
+        "errors": [],
+    }
+    # Pass 1: classify only (no writes) so stamp SQL cannot interfere with evidence reads.
+    close_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for row in open_rows:
+        bid = normalize_bag_id(row.get("bag_id"))
+        anchor = _parse_dt(row.get("cycle_anchor_at"))
+        oid = row.get("order_instance_id")
+        if not bid or anchor is None:
+            continue
+        end = _next_oi_cycle_anchor(cursor, org, bid, anchor)
+        evidence = evaluate_oi_lifecycle_completion_evidence(
+            cursor,
+            org,
+            bag_id=bid,
+            cycle_anchor_at=anchor,
+            lifecycle_end_exclusive=end,
+        )
+        reg = _registry_row_for_bag(cursor, org, bid)
+        reg_same = _registry_completed_at_in_oi_window(reg, anchor, end)
+        entry = {
+            "bag_id": bid,
+            "order_instance_id": oid,
+            "cycle_anchor_at": str(anchor),
+            "registry_completed_at": str(reg.get("completed_at"))
+            if reg and reg.get("completed_at")
+            else None,
+            "registry_same_lifecycle": reg_same,
+        }
+        if evidence is not None:
+            entry["evidence"] = {
+                "completion_at": str(evidence.get("completion_at")),
+                "completion_kind": evidence.get("completion_kind"),
+                "evidence_family": evidence.get("evidence_family"),
+            }
+            report["should_close"].append(entry)
+            close_rows.append((dict(row), evidence))
+            continue
+        if reg_same:
+            entry["reason"] = "same_lifecycle_registry_without_evidence"
+            report["review"].append(entry)
+        else:
+            entry["reason"] = "genuinely_open"
+            report["pending"].append(entry)
+
+    # Pass 2: stamp proven completions.
+    for row, evidence in close_rows:
+        stamped = stamp_open_oi_from_lifecycle_completion_evidence(
+            cursor, org, row, evidence=evidence, dry_run=dry_run
+        )
+        if stamped.get("ok") and stamped.get("action") in (
+            "stamp_oi_completed",
+            "already_completed",
+        ):
+            report["stamped"].append(stamped)
+        elif not stamped.get("ok"):
+            report["errors"].append(stamped)
+    report["counts"] = {
+        "open_before": len(open_rows),
+        "should_close": len(report["should_close"]),
+        "pending": len(report["pending"]),
+        "review": len(report["review"]),
+        "stamped": len(report["stamped"]),
+        "errors": len(report["errors"]),
+    }
+    return report
+
+
 def repair_open_portal_oi_with_stv_strong_completion(
     cursor,
     organization_id: int,

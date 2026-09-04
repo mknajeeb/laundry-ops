@@ -253,7 +253,8 @@ def test_d_completion_stamps_cycle_owning_oi_not_max_id():
     assert insert_sqls == []
 
 
-def test_e_genuine_stale_registry_still_review():
+def test_e_historical_registry_not_review():
+    """Prior registry completion before OI anchor must not create Review."""
     open_oi = {
         "order_instance_id": 3585,
         "bag_id": "BUEKCP33J1",
@@ -261,12 +262,22 @@ def test_e_genuine_stale_registry_still_review():
         "completed_at": None,
     }
     cur = MagicMock()
-    with patch(
-        "backend.rinse_wf_current_workload._registry_completed_open_bags",
-        return_value={"BUEKCP33J1"},
-    ), patch(
-        "backend.rinse_wf_current_workload._oi_has_valid_lifecycle_completion",
-        return_value=False,
+    with (
+        patch(
+            "backend.rinse_wf_current_workload._registry_row_for_bag",
+            return_value={
+                "completion_status": "COMPLETED",
+                "completed_at": datetime(2026, 9, 1, 15, 34),
+            },
+        ),
+        patch(
+            "backend.rinse_wf_current_workload._next_oi_cycle_anchor",
+            return_value=None,
+        ),
+        patch(
+            "backend.rinse_wf_current_workload.evaluate_oi_lifecycle_completion_evidence",
+            return_value=None,
+        ),
     ):
         conflict = registry_stale_completion_review_bags(
             cur,
@@ -275,7 +286,7 @@ def test_e_genuine_stale_registry_still_review():
             open_oi_rows=[open_oi],
             as_of_date_et=SEP2,
         )
-    assert conflict == {"BUEKCP33J1"}
+    assert conflict == set()
 
 
 def test_heal_deletes_only_proven_portal_orphans():

@@ -1501,6 +1501,51 @@ def apply_completion_to_registry(
         ),
     )
     out = {"bag_id": bid, **fields}
+    if fields.get("completion_status") == COMPLETION_COMPLETED:
+        # Lifecycle-owning open OI must close when canonical completion is accepted.
+        try:
+            from backend.rinse_order_instances import (
+                list_open_wf_order_instances,
+                stamp_open_oi_from_lifecycle_completion_evidence,
+            )
+            from backend.rinse_wf_current_workload import (
+                _next_oi_cycle_anchor,
+                evaluate_oi_lifecycle_completion_evidence,
+            )
+
+            open_ois = [
+                r
+                for r in list_open_wf_order_instances(cursor, org, service_type="WF")
+                if normalize_bag_id(r.get("bag_id")) == bid
+            ]
+            for oi in open_ois:
+                anchor = oi.get("cycle_anchor_at")
+                if not isinstance(anchor, datetime):
+                    continue
+                end = _next_oi_cycle_anchor(cursor, org, bid, anchor)
+                # Prefer OI whose window contains registry completion_at.
+                reg_at = fields.get("completed_at")
+                if isinstance(reg_at, datetime):
+                    if reg_at < anchor:
+                        continue
+                    if end is not None and reg_at >= end:
+                        continue
+                evidence = evaluate_oi_lifecycle_completion_evidence(
+                    cursor,
+                    org,
+                    bag_id=bid,
+                    cycle_anchor_at=anchor,
+                    lifecycle_end_exclusive=end,
+                )
+                if evidence is None:
+                    continue
+                stamp = stamp_open_oi_from_lifecycle_completion_evidence(
+                    cursor, org, oi, evidence=evidence, dry_run=False
+                )
+                out["oi_stamp"] = stamp
+                break
+        except Exception as exc:
+            out["oi_stamp_error"] = str(exc)[:240]
     if fields.get("completion_status") != COMPLETION_COMPLETED:
         from backend.rinse_folding_registry import delete_folding_performance_for_bag
 
