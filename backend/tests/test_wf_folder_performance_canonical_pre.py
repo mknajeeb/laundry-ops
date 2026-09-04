@@ -232,16 +232,30 @@ def test_day_build_overlays_canonical_before_aggregation():
             "backend.rinse_current_cycle_weight.authoritative_evidence_pre_lbs",
             side_effect=lambda w: (w or {}).get("evidence_pre_weight_lbs"),
         ),
+        patch(
+            "backend.management_wf_folder_performance.enrich_folder_performance_bags_with_oi_fold_attribution",
+            side_effect=lambda _cur, _org, _day, bags: [
+                {
+                    **dict(b),
+                    "folder_fold_qualified": True,
+                    "fold_complete_at": b.get("completion_time")
+                    or b.get("productivity_completed_at"),
+                }
+                for b in bags
+            ],
+        ),
     ):
         day = build_day_folder_performance(
             MagicMock(), ORG, selected_date_et=DAY, attach_customers=False
         )
 
-    unmapped = day.get("unmapped_orders") or []
-    assert len(unmapped) == 2
-    assert round(sum(float(o.get("pre_lbs") or 0) for o in unmapped), 2) == 38.5
+    outside = day.get("outside_folder_session_orders") or day.get("unmapped_orders") or []
+    assert len(outside) == 2
+    assert round(sum(float(o.get("pre_lbs") or 0) for o in outside), 2) == 38.5
     raw = day.get("_unmapped_raw") or []
     assert round(sum(_bag_credited_lbs_pre(o) for o in raw), 2) == 38.5
+    assert int(day.get("outside_folder_session_count") or 0) == 2
+    assert int(day.get("needs_attribution_count") or 0) == 0
 
 
 def test_employee_pounds_equal_canonical_sum_of_employee_bags():

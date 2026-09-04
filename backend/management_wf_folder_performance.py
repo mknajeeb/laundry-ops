@@ -24,6 +24,12 @@ from backend.management_wf_folder_attribution import (
     apply_override_to_bag,
     load_active_attribution_overrides,
 )
+from backend.management_wf_folder_fold_attribution import (
+    EXCEPTION_NEEDS_ATTRIBUTION,
+    EXCEPTION_OUTSIDE_FOLDER_SESSION,
+    enrich_folder_performance_bags_with_oi_fold_attribution,
+    is_provable_folder_employee,
+)
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_employee_productivity_sessions import (
     ASSIGNMENT_NEEDS_REVIEW,
@@ -700,6 +706,10 @@ def _public_order_row(order: Mapping[str, Any]) -> dict[str, Any]:
         "session_assignment": order.get("session_assignment"),
         "selected_date_et": order.get("selected_date_et"),
         "unmapped_reason": order.get("unmapped_reason"),
+        "exception_class": order.get("exception_class"),
+        "order_instance_id": order.get("order_instance_id"),
+        "fold_complete_at": order.get("fold_complete_at"),
+        "folder_employee_source": order.get("folder_employee_source"),
     }
 
 
@@ -779,6 +789,10 @@ def build_day_folder_performance(
     bags = apply_canonical_pre_to_folder_performance_bags(
         cursor, org, selected_date_et, bags
     )
+    # OI-window fold gate + missing-employee fill (no resolve_current_cycle).
+    bags = enrich_folder_performance_bags_with_oi_fold_attribution(
+        cursor, org, selected_date_et, bags
+    )
     for b in bags:
         b["selected_date_et"] = selected_date_et.isoformat()
         b["original_scanner"] = b.get("credited_employee") or b.get("employee")
@@ -806,7 +820,9 @@ def build_day_folder_performance(
         {
             str(b.get("effective_employee") or b.get("credited_employee") or "").strip()
             for b in attributed
-            if str(b.get("effective_employee") or b.get("credited_employee") or "").strip()
+            if is_provable_folder_employee(
+                b.get("effective_employee") or b.get("credited_employee") or ""
+            )
         }
     )
     # Also include employees who have Folder sessions even with zero bags.
@@ -926,17 +942,24 @@ def build_day_folder_performance(
             have.add(str(s.get("session_id")))
 
     mapped_orders_by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    unmapped: list[dict[str, Any]] = []
+    needs_attribution: list[dict[str, Any]] = []
+    outside_folder_session: list[dict[str, Any]] = []
     employee_orders: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     for bag in attributed:
         emp = str(bag.get("effective_employee") or bag.get("credited_employee") or "").strip()
-        sessions = sessions_by_employee.get(emp) or []
+        has_emp = is_provable_folder_employee(emp)
+        sessions = sessions_by_employee.get(emp) or [] if has_emp else []
         assigned = _assign_bag_into_folder_sessions(bag, sessions)
         sid = assigned.get("session_id")
-        if sid and assigned.get("session_assignment") not in (
-            ASSIGNMENT_UNASSIGNED,
-            ASSIGNMENT_NEEDS_REVIEW,
+        if (
+            has_emp
+            and sid
+            and assigned.get("session_assignment")
+            not in (
+                ASSIGNMENT_UNASSIGNED,
+                ASSIGNMENT_NEEDS_REVIEW,
+            )
         ):
             # Attach session code
             match = next((s for s in sessions if str(s.get("session_id")) == str(sid)), None)
@@ -944,13 +967,23 @@ def build_day_folder_performance(
                 assigned["session_code"] = match.get("session_code")
             mapped_orders_by_session[str(sid)].append(assigned)
             employee_orders[emp].append(assigned)
-        else:
+        elif has_emp:
             reason = assigned.get("unmapped_reason") or "OUTSIDE_FOLDER_SESSION"
             if not sessions:
-                reason = "NO_FOLDER_SESSION"
+                reason = "OUTSIDE_FOLDER_SESSION"
             assigned["unmapped_reason"] = reason
+            assigned["exception_class"] = EXCEPTION_OUTSIDE_FOLDER_SESSION
             assigned["session_id"] = None
-            unmapped.append(assigned)
+            outside_folder_session.append(assigned)
+        else:
+            assigned["unmapped_reason"] = "NEEDS_ATTRIBUTION"
+            assigned["exception_class"] = EXCEPTION_NEEDS_ATTRIBUTION
+            assigned["session_id"] = None
+            assigned["credited_employee"] = None
+            assigned["effective_employee"] = None
+            needs_attribution.append(assigned)
+
+    unmapped = needs_attribution + outside_folder_session
 
     # Build session cards + employee cards
     session_cards: list[dict[str, Any]] = []
@@ -1052,26 +1085,58 @@ def build_day_folder_performance(
         "credited_weight_basis": "EVIDENCE_PRE",
         "employees": employees_out,
         "sessions": session_cards,
+        "needs_attribution_orders": [_public_order_row(o) for o in needs_attribution],
+        "needs_attribution_count": len(needs_attribution),
+        "outside_folder_session_orders": [
+            _public_order_row(o) for o in outside_folder_session
+        ],
+        "outside_folder_session_count": len(outside_folder_session),
+        # Backward-compatible union (Needs Attribution first).
         "unmapped_orders": [_public_order_row(o) for o in unmapped],
         "unmapped_count": len(unmapped),
         "summary": {
             **totals,
             "employee_count": len(employees_out),
             "session_count": len(session_cards),
+            "needs_attribution_count": len(needs_attribution),
+            "outside_folder_session_count": len(outside_folder_session),
             "unmapped_count": len(unmapped),
         },
         # Internal full bags for reassignment proof / destination helpers
         "_attributed_bags": attributed,
         "_unmapped_raw": unmapped,
+        "_needs_attribution_raw": needs_attribution,
+        "_outside_folder_session_raw": outside_folder_session,
         "_sessions_by_employee": sessions_by_employee,
     }
+
+
+def _split_exception_orders(
+    orders: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    needs: list[dict[str, Any]] = []
+    outside: list[dict[str, Any]] = []
+    for u in orders or []:
+        if not isinstance(u, Mapping):
+            continue
+        row = dict(u)
+        cls = str(row.get("exception_class") or "").strip().lower()
+        reason = str(row.get("unmapped_reason") or "").strip().upper()
+        if cls == EXCEPTION_OUTSIDE_FOLDER_SESSION or reason == "OUTSIDE_FOLDER_SESSION":
+            row["exception_class"] = EXCEPTION_OUTSIDE_FOLDER_SESSION
+            outside.append(row)
+        else:
+            row["exception_class"] = EXCEPTION_NEEDS_ATTRIBUTION
+            needs.append(row)
+    return needs, outside
 
 
 def merge_day_payloads(day_payloads: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Weighted merge across days using Σ orders / Σ hours."""
     employees_acc: dict[str, dict[str, Any]] = {}
     all_sessions: list[dict[str, Any]] = []
-    unmapped: list[dict[str, Any]] = []
+    needs_attribution: list[dict[str, Any]] = []
+    outside_folder_session: list[dict[str, Any]] = []
 
     for day in day_payloads:
         if not isinstance(day, Mapping):
@@ -1112,9 +1177,16 @@ def merge_day_payloads(day_payloads: Sequence[Mapping[str, Any]]) -> dict[str, A
                 if isinstance(sess, Mapping):
                     slot["sessions"].append(dict(sess))
                     all_sessions.append(dict(sess))
-        for u in day.get("unmapped_orders") or []:
+        day_needs = day.get("needs_attribution_orders")
+        day_outside = day.get("outside_folder_session_orders")
+        if day_needs is None and day_outside is None:
+            day_needs, day_outside = _split_exception_orders(day.get("unmapped_orders") or [])
+        for u in day_needs or []:
             if isinstance(u, Mapping):
-                unmapped.append(dict(u))
+                needs_attribution.append(dict(u))
+        for u in day_outside or []:
+            if isinstance(u, Mapping):
+                outside_folder_session.append(dict(u))
 
     employees_out: list[dict[str, Any]] = []
     for emp in employees_acc.values():
@@ -1154,15 +1226,22 @@ def merge_day_payloads(day_payloads: Sequence[Mapping[str, Any]]) -> dict[str, A
         total_pre_lbs=total_lbs,
         total_session_hours=total_hours if total_hours > 0 else None,
     )
+    unmapped = needs_attribution + outside_folder_session
     return {
         "employees": employees_out,
         "sessions": [{k: v for k, v in s.items() if k != "orders"} for s in all_sessions],
+        "needs_attribution_orders": needs_attribution,
+        "needs_attribution_count": len(needs_attribution),
+        "outside_folder_session_orders": outside_folder_session,
+        "outside_folder_session_count": len(outside_folder_session),
         "unmapped_orders": unmapped,
         "unmapped_count": len(unmapped),
         "summary": {
             **totals,
             "employee_count": len(employees_out),
             "session_count": len(all_sessions),
+            "needs_attribution_count": len(needs_attribution),
+            "outside_folder_session_count": len(outside_folder_session),
             "unmapped_count": len(unmapped),
         },
     }
@@ -1236,22 +1315,42 @@ def _limit_last_n_sessions(merged: Mapping[str, Any], last_n: int) -> dict[str, 
         total_pre_lbs=total_lbs,
         total_session_hours=total_hours or None,
     )
-    # Unmapped only for days represented in kept sessions
+    # Exception queues only for days represented in kept sessions
     keep_dates = {str(s.get("selected_date_et")) for s in keep}
-    unmapped = [
+    needs = [
         u
-        for u in (merged.get("unmapped_orders") or [])
+        for u in (merged.get("needs_attribution_orders") or [])
         if str(u.get("selected_date_et") or "") in keep_dates
     ]
+    outside = [
+        u
+        for u in (merged.get("outside_folder_session_orders") or [])
+        if str(u.get("selected_date_et") or "") in keep_dates
+    ]
+    if not needs and not outside and merged.get("unmapped_orders"):
+        needs, outside = _split_exception_orders(
+            [
+                u
+                for u in (merged.get("unmapped_orders") or [])
+                if str(u.get("selected_date_et") or "") in keep_dates
+            ]
+        )
+    unmapped = needs + outside
     return {
         "employees": employees_out,
         "sessions": keep,
+        "needs_attribution_orders": needs,
+        "needs_attribution_count": len(needs),
+        "outside_folder_session_orders": outside,
+        "outside_folder_session_count": len(outside),
         "unmapped_orders": unmapped,
         "unmapped_count": len(unmapped),
         "summary": {
             **totals,
             "employee_count": len(employees_out),
             "session_count": len(keep),
+            "needs_attribution_count": len(needs),
+            "outside_folder_session_count": len(outside),
             "unmapped_count": len(unmapped),
         },
     }
@@ -1350,6 +1449,13 @@ def build_folder_performance_dashboard(
         "sessions": primary.get("sessions") or [],
         "unmapped_count": int(primary.get("unmapped_count") or 0),
         "unmapped_orders": primary.get("unmapped_orders") or [],
+        "needs_attribution_count": int(primary.get("needs_attribution_count") or 0),
+        "needs_attribution_orders": primary.get("needs_attribution_orders") or [],
+        "outside_folder_session_count": int(
+            primary.get("outside_folder_session_count") or 0
+        ),
+        "outside_folder_session_orders": primary.get("outside_folder_session_orders")
+        or [],
         "deltas": deltas,
         "credited_weight_basis": "EVIDENCE_PRE",
         "formulas": {
@@ -1361,7 +1467,14 @@ def build_folder_performance_dashboard(
             "order_time_first": "first_completion − session_start",
             "order_time_next": "completion − previous_completion",
             "weight_basis": "EVIDENCE_PRE",
-            "unmapped": "credited WF completions outside a valid RINSE_WF/FOLDER session",
+            "needs_attribution": "qualifying fold with no provable folder employee",
+            "outside_folder_session": (
+                "credited fold outside a valid RINSE_WF/FOLDER session"
+            ),
+            "folder_membership": (
+                "OI-window garments-reviewed required; non-fold lifecycle "
+                "completion excluded"
+            ),
         },
         "ui_presets": [
             {"key": COMPARE_TODAY, "label": "Today"},

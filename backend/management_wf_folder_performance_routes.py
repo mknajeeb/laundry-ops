@@ -144,7 +144,7 @@ def register_management_wf_folder_performance_routes(
 
     @app.route("/api/management/performance/wf-folder/unmapped", methods=["GET"])
     def management_wf_folder_unmapped():
-        """Unmapped completions — credited but outside a valid Folder session."""
+        """Folder Performance exception queues (Needs Attribution + Outside Session)."""
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
@@ -167,6 +167,18 @@ def register_management_wf_folder_performance_routes(
                 json_safe_rinse(
                     {
                         "selected_date_et": selected.isoformat(),
+                        "needs_attribution_count": day.get("needs_attribution_count")
+                        or 0,
+                        "needs_attribution_orders": day.get("needs_attribution_orders")
+                        or [],
+                        "outside_folder_session_count": day.get(
+                            "outside_folder_session_count"
+                        )
+                        or 0,
+                        "outside_folder_session_orders": day.get(
+                            "outside_folder_session_orders"
+                        )
+                        or [],
                         "unmapped_count": day.get("unmapped_count") or 0,
                         "orders": day.get("unmapped_orders") or [],
                     }

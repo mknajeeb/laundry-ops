@@ -281,7 +281,11 @@ function OrderRow({
                 ? ` · Scanner ${order.original_scanner}`
                 : ""}
               {order.reassignment_indicator ? " · Reassigned" : ""}
-              {order.unmapped_reason ? ` · ${order.unmapped_reason.replaceAll("_", " ")}` : ""}
+              {order.unmapped_reason === "OUTSIDE_FOLDER_SESSION"
+                ? " · Outside recorded Folder session"
+                : order.unmapped_reason
+                  ? ` · ${order.unmapped_reason.replaceAll("_", " ")}`
+                  : ""}
             </Typography>
           ) : null}
           {expanded ? (
@@ -413,7 +417,8 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
   const [moveOpen, setMoveOpen] = useState(false);
   const [destinations, setDestinations] = useState([]);
   const [actionBusy, setActionBusy] = useState(false);
-  const [showUnmapped, setShowUnmapped] = useState(false);
+  const [showNeedsAttribution, setShowNeedsAttribution] = useState(false);
+  const [showOutsideSession, setShowOutsideSession] = useState(false);
   const [sortBy, setSortBy] = useState("output");
 
   const load = useCallback(
@@ -552,8 +557,10 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
 
   const summary = data?.summary || {};
   const deltas = data?.deltas;
-  const unmapped = data?.unmapped_orders || [];
-  const unmappedCount = data?.unmapped_count || 0;
+  const needsAttribution = data?.needs_attribution_orders || [];
+  const needsAttributionCount = data?.needs_attribution_count || 0;
+  const outsideFolderSession = data?.outside_folder_session_orders || [];
+  const outsideFolderSessionCount = data?.outside_folder_session_count || 0;
 
   const employees = useMemo(() => {
     const rows = [...(data?.employees || [])];
@@ -714,11 +721,11 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
             ) : null}
           </Box>
 
-          {unmappedCount > 0 ? (
+          {needsAttributionCount > 0 ? (
             <Box sx={{ mb: 0.85 }}>
               <Button
                 fullWidth
-                onClick={() => setShowUnmapped((v) => !v)}
+                onClick={() => setShowNeedsAttribution((v) => !v)}
                 sx={{
                   justifyContent: "space-between",
                   textTransform: "none",
@@ -728,18 +735,18 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
                   px: 1,
                   borderRadius: 1.25,
                   color: "#9a6700",
-                  bgcolor: showUnmapped ? "rgba(180, 83, 9, 0.08)" : PERF_UI.rowBg,
+                  bgcolor: showNeedsAttribution ? "rgba(180, 83, 9, 0.08)" : PERF_UI.rowBg,
                   border: `1px solid ${PERF_UI.rowBorder}`,
                   boxShadow: "none",
                   "&:hover": { bgcolor: "rgba(180, 83, 9, 0.08)" },
                 }}
               >
-                Unmapped orders
+                Needs Attribution
                 <Box component="span" sx={{ fontWeight: 600 }}>
-                  {unmappedCount}
+                  {needsAttributionCount}
                 </Box>
               </Button>
-              {showUnmapped ? (
+              {showNeedsAttribution ? (
                 <Box
                   sx={{
                     mt: 0.45,
@@ -752,10 +759,14 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
                 >
                   <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.35 }}>
                     <Typography sx={{ fontSize: 12, fontWeight: 500, color: "#92400e" }}>
-                      Reassign unattributed orders
+                      Reassign orders with no provable folder employee
                     </Typography>
                     <Stack direction="row" spacing={0.5}>
-                      <Button size="small" onClick={() => selectAllVisible(unmapped)} sx={{ textTransform: "none" }}>
+                      <Button
+                        size="small"
+                        onClick={() => selectAllVisible(needsAttribution)}
+                        sx={{ textTransform: "none" }}
+                      >
                         All
                       </Button>
                       <Button
@@ -768,13 +779,71 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
                       </Button>
                     </Stack>
                   </Stack>
-                  {unmapped.map((o) => (
+                  {needsAttribution.map((o) => (
                     <OrderRow
                       key={o.bag_id}
                       order={o}
                       selectable
                       selected={selectedBagIds.has(o.bag_id)}
                       onToggle={toggleBag}
+                      selectedDateEt={o.selected_date_et || dateEt}
+                      onSentBack={handleOrderSentBack}
+                    />
+                  ))}
+                </Box>
+              ) : null}
+            </Box>
+          ) : null}
+
+          {outsideFolderSessionCount > 0 ? (
+            <Box sx={{ mb: 0.85 }}>
+              <Button
+                fullWidth
+                onClick={() => setShowOutsideSession((v) => !v)}
+                sx={{
+                  justifyContent: "space-between",
+                  textTransform: "none",
+                  fontWeight: 500,
+                  fontSize: 12,
+                  py: 0.65,
+                  px: 1,
+                  borderRadius: 1.25,
+                  color: "#475569",
+                  bgcolor: showOutsideSession ? "rgba(71, 85, 105, 0.08)" : PERF_UI.rowBg,
+                  border: `1px solid ${PERF_UI.rowBorder}`,
+                  boxShadow: "none",
+                  "&:hover": { bgcolor: "rgba(71, 85, 105, 0.08)" },
+                }}
+              >
+                Outside Folder Session
+                <Box component="span" sx={{ fontWeight: 600 }}>
+                  {outsideFolderSessionCount}
+                </Box>
+              </Button>
+              {showOutsideSession ? (
+                <Box
+                  sx={{
+                    mt: 0.45,
+                    px: 1,
+                    py: 0.75,
+                    borderRadius: 1.25,
+                    bgcolor: "rgba(71, 85, 105, 0.05)",
+                    border: `1px solid rgba(71, 85, 105, 0.12)`,
+                  }}
+                >
+                  <Typography sx={{ fontSize: 12, fontWeight: 500, color: "#475569", mb: 0.5 }}>
+                    Employee is known — fold occurred outside their recorded Folder session
+                  </Typography>
+                  {outsideFolderSession.map((o) => (
+                    <OrderRow
+                      key={o.bag_id}
+                      order={{
+                        ...o,
+                        unmapped_reason: "OUTSIDE_FOLDER_SESSION",
+                      }}
+                      selectable={false}
+                      selected={false}
+                      onToggle={() => {}}
                       selectedDateEt={o.selected_date_et || dateEt}
                       onSentBack={handleOrderSentBack}
                     />
