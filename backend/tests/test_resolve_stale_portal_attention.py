@@ -234,5 +234,47 @@ class TestConfirmGateIsolationSemantics(unittest.TestCase):
         )
 
 
+    def test_reclassify_does_not_revive_isolated_older_than(self):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {"batch_date": "2026-09-05"}
+        cursor.fetchall.return_value = [
+            {
+                "id": 7,
+                "ticket_id": "2HCJP6S8FL",
+                "date_clean": "2026-09-04",
+                "row_status": "REJECTED_DUPLICATE",
+                "reason": REASON_ISOLATED_OLDER_THAN_BATCH_DATE,
+            }
+        ]
+        with patch(
+            "backend.manual_checkout_eligibility.get_checkout_include_completed_if_at_vendor",
+            return_value=True,
+        ), patch(
+            "backend.checkout_batch_source.upload_batch_is_auto_scrape",
+            return_value=True,
+        ), patch(
+            "backend.ta_helpers.table_exists",
+            return_value=True,
+        ), patch(
+            "backend.ta_helpers.table_has_column",
+            side_effect=lambda _c, table, col: col
+            in ("upload_batch_id", "id", "batch_id", "batch_date"),
+        ), patch(
+            "backend.manual_checkout_eligibility.effective_checkout_row_status",
+            return_value=("NEEDS_ATTENTION", REASON_OLDER_THAN_BATCH_DATE),
+        ) as eff:
+            from backend.manual_checkout_eligibility import (
+                reclassify_checkout_batch_upload_rows,
+            )
+
+            out = reclassify_checkout_batch_upload_rows(cursor, 3, 5910)
+        self.assertEqual(out["updated"], 0)
+        eff.assert_not_called()
+        update_calls = [
+            c for c in cursor.execute.call_args_list if "UPDATE upload_batch_rows" in c[0][0]
+        ]
+        self.assertEqual(update_calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

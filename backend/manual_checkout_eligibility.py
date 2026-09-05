@@ -598,6 +598,11 @@ def reclassify_checkout_batch_upload_rows(
         row_id = row.get(row_pk) or row.get("id") or row.get("row_id")
         if row_id is None:
             continue
+        old_status = str(row.get("row_status") or "")
+        old_reason = str(row.get("reason") or "")
+        # Confirm-boundary isolation must stick: do not revive OLDER_THAN attention.
+        if old_reason == REASON_ISOLATED_OLDER_THAN_BATCH_DATE:
+            continue
         eff_status, eff_reason = effective_checkout_row_status(
             cursor,
             org,
@@ -605,8 +610,6 @@ def reclassify_checkout_batch_upload_rows(
             has_active_staging=False,
             is_auto_scrape=is_auto,
         )
-        old_status = str(row.get("row_status") or "")
-        old_reason = str(row.get("reason") or "")
         if eff_status == old_status and eff_reason == old_reason:
             continue
         updated += 1

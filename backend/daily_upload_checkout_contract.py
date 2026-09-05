@@ -14,6 +14,7 @@ CONFIRM_MUST_IMPORT = "resolve_stale_portal_attention_rows_before_confirm"
 CONFIRM_MUST_CALL = (
     "resolve_stale_portal_attention_rows_before_confirm",
     "reclassify_checkout_batch_upload_rows",
+    "isolate_nonblocking_older_than_batch_date_attention_rows",
 )
 
 # --- Portal credential ownership (cross-org history must not block upload) ---
@@ -32,9 +33,15 @@ def assert_confirm_pipeline_wired(source: str) -> None:
             raise AssertionError(f"confirm_upload_batch_core must call {name}")
     resolve_at = source.index(f"{CONFIRM_MUST_CALL[0]}(")
     reclass_at = source.index(f"{CONFIRM_MUST_CALL[1]}(")
+    isolate_at = source.index(f"{CONFIRM_MUST_CALL[2]}(")
     if resolve_at >= reclass_at:
         raise AssertionError(
             "resolve_stale_portal_attention_rows_before_confirm must run before reclassify_checkout_batch_upload_rows"
+        )
+    if reclass_at >= isolate_at:
+        raise AssertionError(
+            "isolate_nonblocking_older_than_batch_date_attention_rows must run after reclassify "
+            "(override can revive OLDER_THAN_BATCH_DATE)"
         )
 
 

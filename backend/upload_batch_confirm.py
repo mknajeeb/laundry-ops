@@ -91,6 +91,7 @@ def confirm_upload_batch_core(
 
     from backend.manual_checkout_settings import checkout_at_vendor_override_active
     from backend.manual_checkout_eligibility import (
+        isolate_nonblocking_older_than_batch_date_attention_rows,
         reclassify_checkout_batch_upload_rows,
         resolve_stale_portal_attention_rows_before_confirm,
     )
@@ -98,6 +99,11 @@ def confirm_upload_batch_core(
     resolve_stale_portal_attention_rows_before_confirm(cursor, tenant_oid, batch_id)
     if checkout_at_vendor_override_active(cursor, tenant_oid):
         reclassify_checkout_batch_upload_rows(cursor, tenant_oid, batch_id)
+    # Reclassify can revive OLDER_THAN_BATCH_DATE attention; isolate again so it
+    # cannot block confirm. Other NEEDS_ATTENTION reasons stay blocking.
+    isolate_nonblocking_older_than_batch_date_attention_rows(
+        cursor, tenant_oid, batch_id
+    )
 
     cursor.execute(
         """
