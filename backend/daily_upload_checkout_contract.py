@@ -52,6 +52,7 @@ def assert_finalize_scan_merge_wired(source: str) -> None:
 # --- Symbols finalize/confirm must be able to import (partial-deploy guard) ---
 FINALIZE_REQUIRED_EXPORTS: tuple[tuple[str, str], ...] = (
     ("backend.manual_checkout_eligibility", "resolve_stale_portal_attention_rows_before_confirm"),
+    ("backend.manual_checkout_eligibility", "isolate_nonblocking_older_than_batch_date_attention_rows"),
     ("backend.manual_checkout_eligibility", "reclassify_checkout_batch_upload_rows"),
     ("backend.rinse_portal_absence_completion", "reject_bags_missing_from_latest_portal"),
 )

@@ -2689,7 +2689,17 @@ def run_scheduled_scrape_for_org(
                 resolve_stale_portal_attention_rows_before_confirm,
             )
 
-            resolve_stale_portal_attention_rows_before_confirm(cursor, org_id, batch_id)
+            stale_resolve = resolve_stale_portal_attention_rows_before_confirm(
+                cursor, org_id, batch_id
+            )
+            isolated_stale = int(stale_resolve.get("isolated_count") or 0)
+            if isolated_stale:
+                log.write(
+                    f"Isolated {isolated_stale} OLDER_THAN_BATCH_DATE row(s) "
+                    f"(tickets={stale_resolve.get('isolated_ticket_ids')}, "
+                    f"null_ticket={stale_resolve.get('isolated_null_ticket_rows')}); "
+                    "non-blocking for confirm\n"
+                )
             attention = _count_attention_rows(cursor, batch_id)
 
             if accepted < 1:

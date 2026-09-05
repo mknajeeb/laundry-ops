@@ -30,12 +30,15 @@ from backend.rinse_bag_completion import (
     _progressive_timeline_sort_key,
 )
 
-REASON_OLDER_THAN_BATCH_DATE = "OLDER_THAN_BATCH_DATE"
 from backend.rinse_scan_purpose import (
     is_inbound_cycle_reset_purpose,
     is_rack_location_movement_purpose,
 )
 
+REASON_OLDER_THAN_BATCH_DATE = "OLDER_THAN_BATCH_DATE"
+# Confirm-boundary isolation: diagnostically stale portal row, rejected from admission
+# so it cannot block the rest of the batch. Does not mutate OI/lifecycle.
+REASON_ISOLATED_OLDER_THAN_BATCH_DATE = "ISOLATED_OLDER_THAN_BATCH_DATE"
 REASON_RACK_SCAN_AFTER_CLEAN_LABEL = "Rack scan after CLEAN"
 REASON_ALREADY_SENT_TO_RINSE = "ALREADY_SENT_TO_RINSE"
 REASON_ALREADY_FORCE_CHECKOUT = "ALREADY_FORCE_CHECKOUT"
@@ -362,20 +365,32 @@ def resolve_stale_portal_attention_rows_before_confirm(
     Completed bags still on Vendor Home often carry yesterday's EDD on today's scrape.
     Downgrade NEEDS_ATTENTION/OLDER_THAN_BATCH_DATE → REJECTED/ALREADY_COMPLETED so one
     stale portal row cannot block scan-event import for the whole batch.
+
+    Remaining OLDER_THAN_BATCH_DATE attention (including null ticket_id, or bags whose
+    *current* OI is open so is_bag_already_completed is false) are isolated as
+    non-blocking rejects — they must not hold the entire batch at DRAFT.
+    Does not mutate order instances or weaken is_bag_already_completed().
     """
     from backend.rinse_bag_registry import is_bag_already_completed
     from backend.ta_helpers import table_exists, table_has_column
 
     org = int(organization_id)
     bid = int(batch_id)
+    empty = {
+        "resolved_count": 0,
+        "resolved_bag_ids": [],
+        "isolated_count": 0,
+        "isolated_ticket_ids": [],
+        "isolated_null_ticket_rows": 0,
+    }
     if not table_exists(cursor, "upload_batch_rows"):
-        return {"resolved_count": 0, "resolved_bag_ids": []}
+        return empty
 
     row_col = "upload_batch_id"
     if not table_has_column(cursor, "upload_batch_rows", row_col):
         row_col = "batch_id" if table_has_column(cursor, "upload_batch_rows", "batch_id") else None
     if not row_col:
-        return {"resolved_count": 0, "resolved_bag_ids": []}
+        return empty
 
     row_pk = "id"
     if table_has_column(cursor, "upload_batch_rows", "row_id"):
@@ -415,7 +430,102 @@ def resolve_stale_portal_attention_rows_before_confirm(
         )
         resolved.append(tid)
 
-    return {"resolved_count": len(resolved), "resolved_bag_ids": sorted(set(resolved))}
+    isolated = isolate_nonblocking_older_than_batch_date_attention_rows(
+        cursor, organization_id, batch_id
+    )
+    return {
+        "resolved_count": len(resolved),
+        "resolved_bag_ids": sorted(set(resolved)),
+        "isolated_count": int(isolated.get("isolated_count") or 0),
+        "isolated_ticket_ids": list(isolated.get("isolated_ticket_ids") or []),
+        "isolated_null_ticket_rows": int(isolated.get("isolated_null_ticket_rows") or 0),
+    }
+
+
+def isolate_nonblocking_older_than_batch_date_attention_rows(
+    cursor,
+    organization_id: int,
+    batch_id: int,
+) -> dict[str, Any]:
+    """Reject residual OLDER_THAN_BATCH_DATE attention so it cannot block confirm.
+
+    Scope: only ``NEEDS_ATTENTION`` + ``OLDER_THAN_BATCH_DATE``.
+    Includes null ``ticket_id`` rows (no fabricated identity).
+    Does not call or weaken ``is_bag_already_completed``.
+    Does not write order instances / CW / completion.
+    Other NEEDS_ATTENTION reasons remain blocking.
+    """
+    from backend.ta_helpers import table_exists, table_has_column
+
+    bid = int(batch_id)
+    empty = {
+        "isolated_count": 0,
+        "isolated_ticket_ids": [],
+        "isolated_null_ticket_rows": 0,
+        "isolated_row_ids": [],
+    }
+    if not table_exists(cursor, "upload_batch_rows"):
+        return empty
+
+    row_col = "upload_batch_id"
+    if not table_has_column(cursor, "upload_batch_rows", row_col):
+        row_col = "batch_id" if table_has_column(cursor, "upload_batch_rows", "batch_id") else None
+    if not row_col:
+        return empty
+
+    row_pk = "id"
+    if table_has_column(cursor, "upload_batch_rows", "row_id"):
+        row_pk = "row_id"
+    elif not table_has_column(cursor, "upload_batch_rows", "id"):
+        row_pk = "row_id"
+
+    cursor.execute(
+        f"""
+        SELECT {row_pk} AS row_pk, ticket_id, reason
+        FROM upload_batch_rows
+        WHERE {row_col} = %s
+          AND row_status = 'NEEDS_ATTENTION'
+          AND reason = %s
+        """,
+        (bid, REASON_OLDER_THAN_BATCH_DATE),
+    )
+    isolated_tickets: list[str] = []
+    isolated_null = 0
+    isolated_ids: list[Any] = []
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        row_id = row.get("row_pk")
+        if row_id is None:
+            continue
+        tid = normalize_bag_id(row.get("ticket_id"))
+        cursor.execute(
+            f"""
+            UPDATE upload_batch_rows
+            SET row_status = %s, reason = %s, updated_at = NOW()
+            WHERE {row_pk} = %s
+              AND row_status = 'NEEDS_ATTENTION'
+              AND reason = %s
+            """,
+            (
+                ROW_REJECTED,
+                REASON_ISOLATED_OLDER_THAN_BATCH_DATE,
+                row_id,
+                REASON_OLDER_THAN_BATCH_DATE,
+            ),
+        )
+        isolated_ids.append(row_id)
+        if tid:
+            isolated_tickets.append(tid)
+        else:
+            isolated_null += 1
+
+    return {
+        "isolated_count": len(isolated_ids),
+        "isolated_ticket_ids": sorted(set(isolated_tickets)),
+        "isolated_null_ticket_rows": isolated_null,
+        "isolated_row_ids": isolated_ids,
+    }
 
 
 # Back-compat aliases
