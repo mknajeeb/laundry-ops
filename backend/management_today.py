@@ -755,7 +755,13 @@ def _overlay_lifecycle_wf_segment(
     """
     from backend.rinse_wf_canonical_workload import get_canonical_wf_workload
 
-    wl = get_canonical_wf_workload(cursor, int(organization_id), selected_date_et)
+    # Management read path only — bulk next-anchor + RFV scans (scrape keeps default).
+    wl = get_canonical_wf_workload(
+        cursor,
+        int(organization_id),
+        selected_date_et,
+        use_bulk_reads=True,
+    )
     counts = wl.get("counts") or {}
     current_open = _int_or_zero(counts.get("current_open"))
     completed = _int_or_zero(counts.get("completed"))

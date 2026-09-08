@@ -145,6 +145,7 @@ def resolve_day_bag_folder_oi(
     bag_id: str,
     selected_date_et: date,
     completion_hint: datetime | None = None,
+    preloaded_ois: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Pick the WF OI whose lifecycle owns this day's folder completion.
 
@@ -159,21 +160,24 @@ def resolve_day_bag_folder_oi(
     bid = normalize_bag_id(bag_id)
     if not bid:
         return None
-    ensure_rinse_order_instances_table(cursor)
-    if not table_exists(cursor, ORDER_INSTANCES_TABLE):
-        return None
-    cursor.execute(
-        f"""
-        SELECT order_instance_id, bag_id, cycle_anchor_at, completed_at, completion_source
-        FROM {ORDER_INSTANCES_TABLE}
-        WHERE organization_id = %s
-          AND bag_id = %s
-          AND service_type = 'WF'
-        ORDER BY order_instance_id ASC
-        """,
-        (int(organization_id), bid),
-    )
-    rows = [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    if preloaded_ois is not None:
+        rows = [dict(r) for r in preloaded_ois if isinstance(r, Mapping)]
+    else:
+        ensure_rinse_order_instances_table(cursor)
+        if not table_exists(cursor, ORDER_INSTANCES_TABLE):
+            return None
+        cursor.execute(
+            f"""
+            SELECT order_instance_id, bag_id, cycle_anchor_at, completed_at, completion_source
+            FROM {ORDER_INSTANCES_TABLE}
+            WHERE organization_id = %s
+              AND bag_id = %s
+              AND service_type = 'WF'
+            ORDER BY order_instance_id ASC
+            """,
+            (int(organization_id), bid),
+        )
+        rows = [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
     if not rows:
         return None
 
@@ -207,6 +211,9 @@ def resolve_folder_fold_attribution_for_bag(
     selected_date_et: date,
     completion_hint: datetime | None = None,
     timeline: Sequence[Mapping[str, Any]] | None = None,
+    preloaded_ois: Sequence[Mapping[str, Any]] | None = None,
+    next_anchor: datetime | None = None,
+    next_anchor_provided: bool = False,
 ) -> dict[str, Any] | None:
     """OI-scoped qualifying folder fold evidence for one bag on selected date."""
     from backend.rinse_wf_current_workload import (
@@ -220,13 +227,17 @@ def resolve_folder_fold_attribution_for_bag(
         bag_id=bag_id,
         selected_date_et=selected_date_et,
         completion_hint=completion_hint,
+        preloaded_ois=preloaded_ois,
     )
     if not oi:
         return None
     anchor = oi.get("cycle_anchor_at")
     if not isinstance(anchor, datetime):
         return None
-    end = _next_oi_cycle_anchor(cursor, organization_id, bag_id, anchor)
+    if next_anchor_provided:
+        end = next_anchor
+    else:
+        end = _next_oi_cycle_anchor(cursor, organization_id, bag_id, anchor)
     tl = list(timeline) if timeline is not None else _load_bag_timeline(
         cursor, organization_id, bag_id
     )
@@ -254,11 +265,59 @@ def enrich_folder_performance_bags_with_oi_fold_attribution(
     Returns only bags that have garments-reviewed in the owning OI window.
     Does not rewrite persisted day-bag / OI columns.
     """
+    from backend.management_wf_lifecycle_bulk import (
+        bulk_load_bag_timelines,
+        bulk_load_next_oi_anchors,
+        bulk_load_wf_order_instances_for_bags,
+    )
+
+    bag_ids = [
+        normalize_bag_id(b.get("bag_id"))
+        for b in (bags or [])
+        if normalize_bag_id((b or {}).get("bag_id"))
+    ]
+    ois_by_bag = bulk_load_wf_order_instances_for_bags(
+        cursor, organization_id, bag_ids
+    )
+    # Resolve OI pick first (in memory), then bulk next-anchors + timelines.
+    picked: dict[str, dict[str, Any]] = {}
+    oi_keys: list[tuple[str, datetime]] = []
+    for raw in bags or []:
+        bid = normalize_bag_id(raw.get("bag_id"))
+        if not bid:
+            continue
+        hint = _parse_dt(
+            raw.get("completion_time")
+            or raw.get("completion_timestamp")
+            or raw.get("productivity_completed_at")
+            or raw.get("canonical_completion_timestamp")
+        )
+        oi = resolve_day_bag_folder_oi(
+            cursor,
+            organization_id,
+            bag_id=bid,
+            selected_date_et=selected_date_et,
+            completion_hint=hint,
+            preloaded_ois=ois_by_bag.get(bid) or [],
+        )
+        if not oi:
+            continue
+        picked[bid] = oi
+        anchor = oi.get("cycle_anchor_at")
+        if isinstance(anchor, datetime):
+            oi_keys.append((bid, anchor))
+
+    next_anchors = bulk_load_next_oi_anchors(cursor, organization_id, oi_keys)
+    timelines = bulk_load_bag_timelines(cursor, organization_id, list(picked.keys()))
+
     out: list[dict[str, Any]] = []
     for raw in bags or []:
         bag = dict(raw)
         bid = normalize_bag_id(bag.get("bag_id"))
         if not bid:
+            continue
+        oi = picked.get(bid)
+        if not oi:
             continue
         hint = _parse_dt(
             bag.get("completion_time")
@@ -266,12 +325,22 @@ def enrich_folder_performance_bags_with_oi_fold_attribution(
             or bag.get("productivity_completed_at")
             or bag.get("canonical_completion_timestamp")
         )
+        anchor = oi.get("cycle_anchor_at")
+        end = (
+            next_anchors.get((bid, anchor))
+            if isinstance(anchor, datetime)
+            else None
+        )
         evidence = resolve_folder_fold_attribution_for_bag(
             cursor,
             organization_id,
             bag_id=bid,
             selected_date_et=selected_date_et,
             completion_hint=hint,
+            timeline=timelines.get(bid),
+            preloaded_ois=ois_by_bag.get(bid) or [],
+            next_anchor=end,
+            next_anchor_provided=True,
         )
         if not evidence:
             # Non-fold lifecycle completion (e.g. PBV-only) — exclude from Folder Perf.

@@ -570,12 +570,16 @@ def get_canonical_wf_workload(
     cursor,
     organization_id: int,
     date_et: date,
+    *,
+    use_bulk_reads: bool = False,
 ) -> dict[str, Any]:
     """WF membership: date-free Current Workload + separate selected-date Completed.
 
     Current Workload (pending/review/open) ignores selected date.
     Completed-on-D comes only from OI.completed_at (never registry).
     Carry-forward / terminal_before / registry removal are not applied.
+
+    ``use_bulk_reads`` is Management/API-only (default False keeps scrape path).
     """
     from backend.rinse_wf_current_workload import (
         REVIEW_REGISTRY_STALE_COMPLETED,
@@ -632,8 +636,11 @@ def get_canonical_wf_workload(
         cursor,
         org,
         include_received_from_vendor=True,
+        use_bulk_reads=use_bulk_reads,
     )
-    selected = get_selected_date_wf_completed(cursor, org, date_et)
+    selected = get_selected_date_wf_completed(
+        cursor, org, date_et, use_bulk_reads=use_bulk_reads
+    )
 
     pending = frozenset(current.get("pending") or [])
     review_fs = frozenset(current.get("review") or [])

@@ -48,6 +48,7 @@ def lifecycle_received_from_vendor_at(
     cycle_anchor_at: datetime | None,
     *,
     lifecycle_end_exclusive: datetime | None = None,
+    preloaded_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> datetime | None:
     """Latest purpose=sent-to-vendor scan in this OI lifecycle window.
 
@@ -55,28 +56,34 @@ def lifecycle_received_from_vendor_at(
     ``lifecycle_end_exclusive`` should be the next OI's cycle_anchor_at when
     known; otherwise open-ended (do not cut on every subsequent STV).
     Never uses lifetime MAX(bag_id) across reusable-bag history.
+
+    When ``preloaded_rows`` is provided (Management bulk read), SQL is skipped;
+    rows must already match the single-bag SELECT shape/filter.
     """
     bid = normalize_bag_id(bag_id)
     if not bid or cycle_anchor_at is None:
         return None
     if not isinstance(cycle_anchor_at, datetime):
         return None
-    if not table_exists(cursor, "rinse_bag_scan_events"):
-        return None
-    org = int(organization_id)
-    cursor.execute(
-        """
-        SELECT purpose, scanned_at_parsed, id
-        FROM rinse_bag_scan_events
-        WHERE organization_id = %s
-          AND bag_id = %s
-          AND scanned_at_parsed IS NOT NULL
-          AND scanned_at_parsed >= %s
-        ORDER BY scanned_at_parsed ASC, id ASC
-        """,
-        (org, bid, cycle_anchor_at),
-    )
-    rows = [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    if preloaded_rows is None:
+        if not table_exists(cursor, "rinse_bag_scan_events"):
+            return None
+        org = int(organization_id)
+        cursor.execute(
+            """
+            SELECT purpose, scanned_at_parsed, id
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND bag_id = %s
+              AND scanned_at_parsed IS NOT NULL
+              AND scanned_at_parsed >= %s
+            ORDER BY scanned_at_parsed ASC, id ASC
+            """,
+            (org, bid, cycle_anchor_at),
+        )
+        rows = [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    else:
+        rows = [dict(r) for r in preloaded_rows if isinstance(r, Mapping)]
     if not rows:
         return None
 
@@ -97,19 +104,32 @@ def lifecycle_received_from_vendor_at(
     return latest
 
 
+# Process-local flag unused for default scrape path (still ensures when asked).
+_OI_TABLE_ENSURED_THIS_PROCESS = False
+
+
 def _next_oi_cycle_anchor(
     cursor,
     organization_id: int,
     bag_id: str,
     cycle_anchor_at: datetime,
+    *,
+    ensure_schema: bool = True,
 ) -> datetime | None:
-    """Next WF OI cycle_anchor_at for the same bag after this lifecycle (exclusive end)."""
+    """Next WF OI cycle_anchor_at for the same bag after this lifecycle (exclusive end).
+
+    ``ensure_schema`` defaults True for scrape/stamp callers (unchanged).
+    Management bulk reads pass False to avoid per-OI DDL.
+    """
+    global _OI_TABLE_ENSURED_THIS_PROCESS
     from backend.rinse_order_instances import ORDER_INSTANCES_TABLE, ensure_rinse_order_instances_table
 
     bid = normalize_bag_id(bag_id)
     if not bid:
         return None
-    ensure_rinse_order_instances_table(cursor)
+    if ensure_schema:
+        ensure_rinse_order_instances_table(cursor)
+        _OI_TABLE_ENSURED_THIS_PROCESS = True
     cursor.execute(
         f"""
         SELECT cycle_anchor_at
@@ -332,6 +352,9 @@ def registry_stale_completion_review_bags(
     *,
     open_oi_rows: Sequence[Mapping[str, Any]] | None = None,
     as_of_date_et: date | None = None,
+    next_anchors: Mapping[tuple[str, datetime], datetime | None] | None = None,
+    timelines_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    ensure_schema: bool = True,
 ) -> set[str]:
     """Review only for same-lifecycle registry contradiction without evidence.
 
@@ -364,17 +387,30 @@ def registry_stale_completion_review_bags(
         anchor = row.get("cycle_anchor_at")
         if not bid or not isinstance(anchor, datetime):
             continue
-        end = _next_oi_cycle_anchor(cursor, int(organization_id), bid, anchor)
+        if next_anchors is not None:
+            end = next_anchors.get((bid, anchor))
+        else:
+            end = _next_oi_cycle_anchor(
+                cursor,
+                int(organization_id),
+                bid,
+                anchor,
+                ensure_schema=ensure_schema,
+            )
         reg = _registry_row_for_bag(cursor, int(organization_id), bid)
         if not _registry_completed_at_in_oi_window(reg, anchor, end):
             # Historical or non-completed registry → zero CW effect.
             continue
+        tl = None
+        if timelines_by_bag is not None:
+            tl = timelines_by_bag.get(bid)
         evidence = evaluate_oi_lifecycle_completion_evidence(
             cursor,
             int(organization_id),
             bag_id=bid,
             cycle_anchor_at=anchor,
             lifecycle_end_exclusive=end,
+            timeline=tl,
         )
         if evidence is not None:
             # Evidence exists → complete via stamp path; not Review.
@@ -390,10 +426,13 @@ def get_current_wf_workload(
     *,
     include_received_from_vendor: bool = True,
     as_of_date_et: date | None = None,
+    use_bulk_reads: bool = False,
 ) -> dict[str, Any]:
     """Date-free Current Workload from open WF order instances only.
 
     ``as_of_date_et`` is ignored — CW never depends on the selected reporting day.
+    ``use_bulk_reads`` (Management/API only): batch next-anchor + RFV/scan loads.
+    Default False preserves scrape/stamp call-site SQL behavior.
     """
     _ = as_of_date_et
     from backend.rinse_order_instances import list_open_wf_order_instances
@@ -428,12 +467,44 @@ def get_current_wf_workload(
     open_bags = set(rows_by_bag.keys())
 
     flat_rows = [r for rows in rows_by_bag.values() for r in rows]
+
+    next_anchors = None
+    rfv_rows_by_bag = None
+    timelines_by_bag = None
+    if use_bulk_reads and flat_rows:
+        from backend.management_wf_lifecycle_bulk import (
+            bulk_load_bag_timelines,
+            bulk_load_lifecycle_rfv_scan_rows,
+            bulk_load_next_oi_anchors,
+        )
+
+        oi_keys: list[tuple[str, datetime]] = []
+        min_anchor_by_bag: dict[str, datetime] = {}
+        for row in flat_rows:
+            bid = normalize_bag_id(row.get("bag_id"))
+            anchor = row.get("cycle_anchor_at")
+            if not bid or not isinstance(anchor, datetime):
+                continue
+            oi_keys.append((bid, anchor))
+            prev = min_anchor_by_bag.get(bid)
+            if prev is None or anchor < prev:
+                min_anchor_by_bag[bid] = anchor
+        next_anchors = bulk_load_next_oi_anchors(cursor, org, oi_keys)
+        if include_received_from_vendor:
+            rfv_rows_by_bag = bulk_load_lifecycle_rfv_scan_rows(
+                cursor, org, min_anchor_by_bag
+            )
+        timelines_by_bag = bulk_load_bag_timelines(cursor, org, sorted(open_bags))
+
     cycle_review = _review_wf_bag_ids_from_cycles(cursor, org, open_bags)
     conflict_review = registry_stale_completion_review_bags(
         cursor,
         org,
         sorted(open_bags),
         open_oi_rows=flat_rows,
+        next_anchors=next_anchors,
+        timelines_by_bag=timelines_by_bag,
+        ensure_schema=not use_bulk_reads,
     )
     review = frozenset(cycle_review | conflict_review)
     pending = frozenset(b for b in open_bags if b not in review)
@@ -452,13 +523,21 @@ def get_current_wf_workload(
             if include_received_from_vendor:
                 end = None
                 if isinstance(anchor, datetime):
-                    end = _next_oi_cycle_anchor(cursor, org, bid, anchor)
+                    if next_anchors is not None:
+                        end = next_anchors.get((bid, anchor))
+                    else:
+                        end = _next_oi_cycle_anchor(cursor, org, bid, anchor)
                 rfv = lifecycle_received_from_vendor_at(
                     cursor,
                     org,
                     bid,
                     anchor,
                     lifecycle_end_exclusive=end,
+                    preloaded_rows=(
+                        (rfv_rows_by_bag or {}).get(bid)
+                        if rfv_rows_by_bag is not None
+                        else None
+                    ),
                 )
             in_review = bid in review
             reason_codes: list[str] = []
@@ -500,6 +579,8 @@ def get_selected_date_wf_completed(
     cursor,
     organization_id: int,
     date_et: date,
+    *,
+    use_bulk_reads: bool = False,
 ) -> dict[str, Any]:
     """Completed reporting for ET date D — OI.completed_at only (no registry)."""
     from backend.rinse_order_instances import list_order_instances_completed_on_date
@@ -532,6 +613,27 @@ def get_selected_date_wf_completed(
         by_bag.pop(bid, None)
     bag_ids = set(by_bag.keys())
 
+    next_anchors = None
+    rfv_rows_by_bag = None
+    if use_bulk_reads and by_bag:
+        from backend.management_wf_lifecycle_bulk import (
+            bulk_load_lifecycle_rfv_scan_rows,
+            bulk_load_next_oi_anchors,
+        )
+
+        oi_keys: list[tuple[str, datetime]] = []
+        min_anchor_by_bag: dict[str, datetime] = {}
+        for bid, row in by_bag.items():
+            anchor = row.get("cycle_anchor_at")
+            if not isinstance(anchor, datetime):
+                continue
+            oi_keys.append((bid, anchor))
+            min_anchor_by_bag[bid] = anchor
+        next_anchors = bulk_load_next_oi_anchors(cursor, org, oi_keys)
+        rfv_rows_by_bag = bulk_load_lifecycle_rfv_scan_rows(
+            cursor, org, min_anchor_by_bag
+        )
+
     completed = frozenset(bag_ids)
     items: list[dict[str, Any]] = []
     completion_by_bag: dict[str, dict[str, Any]] = {}
@@ -545,6 +647,13 @@ def get_selected_date_wf_completed(
             "completion_source": row.get("completion_source") or "order_instance",
             "order_instance_id": row.get("order_instance_id"),
         }
+        anchor = row.get("cycle_anchor_at")
+        end = None
+        if isinstance(anchor, datetime):
+            if next_anchors is not None:
+                end = next_anchors.get((bid, anchor))
+            else:
+                end = _next_oi_cycle_anchor(cursor, org, bid, anchor)
         items.append(
             {
                 "bag_id": bid,
@@ -557,12 +666,11 @@ def get_selected_date_wf_completed(
                     cursor,
                     org,
                     bid,
-                    row.get("cycle_anchor_at"),
-                    lifecycle_end_exclusive=(
-                        _next_oi_cycle_anchor(
-                            cursor, org, bid, row["cycle_anchor_at"]
-                        )
-                        if isinstance(row.get("cycle_anchor_at"), datetime)
+                    anchor,
+                    lifecycle_end_exclusive=end,
+                    preloaded_rows=(
+                        (rfv_rows_by_bag or {}).get(bid)
+                        if rfv_rows_by_bag is not None
                         else None
                     ),
                 ),
