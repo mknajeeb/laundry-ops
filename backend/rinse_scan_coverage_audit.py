@@ -343,12 +343,12 @@ def _load_bag_ids_with_scan_activity_on_day(
         return set()
     cursor.execute(
         """
-        SELECT DISTINCT UPPER(TRIM(bag_id)) AS bag_id
+        SELECT DISTINCT bag_id
         FROM rinse_bag_scan_events
         WHERE organization_id = %s
           AND scanned_at_parsed >= %s
           AND scanned_at_parsed <= %s
-          AND bag_id IS NOT NULL AND TRIM(bag_id) != ''
+          AND bag_id IS NOT NULL AND bag_id != ''
         """,
         (int(organization_id), day_start, day_end),
     )
@@ -374,7 +374,7 @@ def _load_bag_ids_with_process_completion_scans_on_day(
         WHERE organization_id = %s
           AND scanned_at_parsed >= %s
           AND scanned_at_parsed <= %s
-          AND bag_id IS NOT NULL AND TRIM(bag_id) != ''
+          AND bag_id IS NOT NULL AND bag_id != ''
         """,
         (int(organization_id), day_start, day_end),
     )

@@ -694,12 +694,16 @@ def filter_process_flow_rows(
 
 
 def _load_scan_events_window(cursor, organization_id: int, window_start, window_end):
+    """Day±1 discovery load — purpose/time only (no raw_json).
+
+    Candidate discovery does not need machine-rack fields; full bag timelines
+    (with last_location/last_scan/raw_json) are loaded separately for composition.
+    """
     if not table_exists(cursor, "rinse_bag_scan_events"):
         return []
     cursor.execute(
         """
-        SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index,
-               last_location, last_scan, raw_json
+        SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index
         FROM rinse_bag_scan_events
         WHERE organization_id = %s
           AND scanned_at_parsed >= %s
@@ -867,6 +871,8 @@ def build_process_flow_chronology_payload(
     )
 
     # Candidate discovery from day-window extracts (sort/wash/dry activity).
+    # Window SELECT is column-pruned (no raw_json); rack column is retained so
+    # drying extract candidate membership matches the prior fat load.
     wash_window = extract_washing_rows_from_events(window_events)
     dry_window = extract_drying_rows_from_events(window_events)
     candidate_ids = {

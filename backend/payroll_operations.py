@@ -350,21 +350,17 @@ def list_time_records(
     params.append(int(limit))
     c.execute(q, params)
     rows = c.fetchall() or []
-    rate_cache: dict[int, dict] = {}
-    cat_cache: dict[tuple[int, str], str] = {}
     out = []
-    from backend.payroll_workflow import resolve_worker_hourly_rate
+    from backend.payroll_list_lookup_cache import build_payroll_list_lookup_cache
+
+    uids = sorted({int(r["user_id"]) for r in rows if r.get("user_id") is not None})
+    lookup = build_payroll_list_lookup_cache(conn, int(organization_id), uids)
 
     for row in rows:
         uid = int(row["user_id"])
-        if uid not in rate_cache:
-            rate_cache[uid] = resolve_worker_hourly_rate(conn, uid, int(organization_id))
-        rate_info = rate_cache[uid]
+        rate_info = lookup.rate_for(uid)
         work_day = _session_work_date_et(row.get("clock_in_at"))
-        cat_key = (uid, work_day.isoformat() if work_day else "")
-        if cat_key not in cat_cache:
-            cat_cache[cat_key] = worker_category_for_user(conn, uid, on=work_day)
-        cat = cat_cache[cat_key]
+        cat = lookup.category_for(uid, on=work_day)
         if worker_category and worker_category != "all" and cat != worker_category:
             continue
         net = int(row.get("net_work_seconds") or 0)

@@ -91,8 +91,7 @@ def _load_scan_events_on_day(
         return []
     cursor.execute(
         """
-        SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index,
-               last_location, last_scan, raw_json
+        SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index
         FROM rinse_bag_scan_events
         WHERE organization_id = %s
           AND scanned_at_parsed >= %s
@@ -123,8 +122,8 @@ def _load_scan_events_for_bags(
         placeholders = ",".join(["%s"] * len(part))
         cursor.execute(
             f"""
-            SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index,
-                   last_location, last_scan, raw_json{weight_col}
+            SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index
+                   {weight_col}
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND bag_id IN ({placeholders})

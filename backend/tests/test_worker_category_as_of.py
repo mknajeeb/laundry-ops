@@ -102,23 +102,25 @@ def test_list_time_records_filters_temp_by_work_date_not_today():
         }
     ]
 
+    class _FakeLookup:
+        def rate_for(self, uid):
+            return {
+                "worker_category": "w2",
+                "hourly_rate": 17.0,
+                "rate_source": "user_rates",
+                "rate_missing": False,
+            }
+
+        def category_for(self, uid, on=None):
+            return "temp" if on and on < date(2026, 8, 24) else "w2"
+
     with patch("backend.payroll_operations.payroll_profiles_active", return_value=True), patch(
         "backend.payroll_operations.ensure_payroll_hours_approved_column"
     ), patch("backend.payroll_operations.table_has_column", return_value=True), patch(
         "backend.payroll_operations.table_exists", return_value=False
     ), patch(
-        "backend.payroll_workflow.resolve_worker_hourly_rate",
-        return_value={
-            "worker_category": "w2",
-            "hourly_rate": 17.0,
-            "rate_source": "user_rates",
-            "rate_missing": False,
-        },
-    ), patch(
-        "backend.payroll_operations.worker_category_for_user",
-        side_effect=lambda conn, uid, *, on=None, assignments=None: (
-            "temp" if on and on < date(2026, 8, 24) else "w2"
-        ),
+        "backend.payroll_list_lookup_cache.build_payroll_list_lookup_cache",
+        return_value=_FakeLookup(),
     ), patch(
         "backend.payroll_operations.time_record_status",
         return_value="approved",

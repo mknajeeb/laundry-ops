@@ -384,7 +384,7 @@ def _load_scan_events_for_folder_bags(
         cursor.execute(
             f"""
             SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index,
-                   weight_lbs, weight_role
+                   weight_lbs
             FROM rinse_bag_scan_events
             WHERE organization_id = %s AND bag_id IN ({placeholders})
             ORDER BY bag_id, scanned_at_parsed, scan_index, id

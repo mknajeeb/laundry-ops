@@ -392,6 +392,45 @@ def _load_scan_events_on_day(
     return [dict(r) for r in cursor.fetchall() or [] if isinstance(r, dict)]
 
 
+def _load_washing_split_events_sargable(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """Scan Chronology-only full timelines for split summary (sargable bag_id IN).
+
+    Same column set as rinse_wf_canonical_split._load_events_for_bags(slim=False)
+    but uses bag_id IN with normalize_bag_id keys. Does not alter the shared
+    canonical_split loader used by Supply / Management / CW paths.
+    """
+    from backend.rinse_bag_completion import normalize_bag_id
+
+    ids = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
+    out: dict[str, list[dict[str, Any]]] = {b: [] for b in ids}
+    if not ids or not table_exists(cursor, "rinse_bag_scan_events"):
+        return out
+    ph = ",".join(["%s"] * len(ids))
+    cursor.execute(
+        f"""
+        SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index,
+               last_location, last_scan, raw_json
+        FROM rinse_bag_scan_events
+        WHERE organization_id = %s
+          AND bag_id IN ({ph})
+        ORDER BY scanned_at_parsed, scan_index, id
+        """,
+        (int(organization_id), *ids),
+    )
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        bid = normalize_bag_id(row.get("bag_id"))
+        if bid not in out:
+            continue
+        out[bid].append(dict(row))
+    return out
+
+
 def build_washing_chronology_payload(
     cursor,
     organization_id: int,
@@ -449,8 +488,9 @@ def build_washing_chronology_payload(
 
     # Full bag event histories for canonical split (day window alone is insufficient
     # for STV lifecycle anchors that may precede the selected day).
+    # Chronology-local sargable bag_id IN (stored bag_ids proven normalized);
+    # do not change rinse_wf_canonical_split._load_events_for_bags (Supply/Management).
     from backend.rinse_bag_completion import normalize_bag_id
-    from backend.rinse_wf_canonical_split import _load_events_for_bags
 
     bag_ids = sorted(
         {
@@ -460,7 +500,9 @@ def build_washing_chronology_payload(
         }
     )
     events_by_bag = (
-        _load_events_for_bags(cursor, organization_id, bag_ids) if bag_ids else {}
+        _load_washing_split_events_sargable(cursor, organization_id, bag_ids)
+        if bag_ids
+        else {}
     )
     summary = build_washing_chronology_summary(rows, events_by_bag=events_by_bag)
 
