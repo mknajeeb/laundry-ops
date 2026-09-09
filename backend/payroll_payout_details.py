@@ -1876,7 +1876,7 @@ def list_employee_payroll_history(
     ``user_id``, with batch/pay-period associations attached.
     """
     from backend.payroll_batch_enrich_cache import build_payroll_batch_enrich_cache
-    from backend.payroll_operations import _fetch_payout_batch_core, ensure_payout_batches_tables
+    from backend.payroll_operations import ensure_payout_batches_tables
     from backend.payroll_workflow import ACCOUNTANT_VISIBLE_STATUSES
 
     ensure_payout_batches_tables(conn.cursor())
@@ -1897,27 +1897,76 @@ def list_employee_payroll_history(
         params.append(int(batch_id))
 
     c = conn.cursor(dictionary=True)
+    # One join load: worker lines + batch header fields needed for document/settlement.
     c.execute(
         f"""
-        SELECT DISTINCT
-          b.id,
-          b.pay_period_end,
-          b.worker_category
-        FROM payout_batches b
-        JOIN payout_batch_lines l
-          ON l.batch_id = b.id AND l.organization_id = b.organization_id
+        SELECT
+          l.*,
+          b.id AS _batch_id,
+          b.batch_name AS _batch_name,
+          b.worker_category AS _batch_worker_category,
+          b.pay_period_start AS _pay_period_start,
+          b.pay_period_end AS _pay_period_end,
+          b.status AS _batch_status,
+          b.payout_details_finalized_at AS _payout_details_finalized_at,
+          b.document_mode AS _document_mode,
+          b.accountant_payment_confirmed_at AS _accountant_payment_confirmed_at
+        FROM payout_batch_lines l
+        JOIN payout_batches b
+          ON b.id = l.batch_id AND b.organization_id = l.organization_id
         WHERE b.organization_id=%s
           AND l.user_id=%s
           AND b.status IN ({ph})
           {cat_sql}
           {batch_sql}
-        ORDER BY b.pay_period_end DESC, b.id DESC
+        ORDER BY b.pay_period_end DESC, b.id DESC, l.worker_name_snapshot ASC
         """,
         tuple(params),
     )
-    batch_headers = [json_safe(r) for r in c.fetchall() or []]
-    batch_headers = _filter_batches_by_history_range(batch_headers, range_key)
-    if not batch_headers:
+    joined = [json_safe(r) for r in c.fetchall() or []]
+    if not joined:
+        return []
+
+    # Group into batch stubs (preserve period DESC order from SQL).
+    by_batch: dict[int, dict] = {}
+    batch_order: list[int] = []
+    for row in joined:
+        bid = int(row["_batch_id"])
+        if bid not in by_batch:
+            by_batch[bid] = {
+                "id": bid,
+                "batch_name": row.get("_batch_name"),
+                "worker_category": row.get("_batch_worker_category"),
+                "pay_period_start": row.get("_pay_period_start"),
+                "pay_period_end": row.get("_pay_period_end"),
+                "status": row.get("_batch_status"),
+                "payout_details_finalized_at": row.get("_payout_details_finalized_at"),
+                "document_mode": row.get("_document_mode"),
+                "accountant_payment_confirmed_at": row.get(
+                    "_accountant_payment_confirmed_at"
+                ),
+                "lines": [],
+            }
+            batch_order.append(bid)
+        line = {
+            k: v
+            for k, v in row.items()
+            if not str(k).startswith("_")
+        }
+        by_batch[bid]["lines"].append(line)
+
+    batch_headers = [
+        {
+            "id": bid,
+            "pay_period_end": by_batch[bid].get("pay_period_end"),
+            "worker_category": by_batch[bid].get("worker_category"),
+        }
+        for bid in batch_order
+    ]
+    keep_ids = {
+        int(b["id"]) for b in _filter_batches_by_history_range(batch_headers, range_key)
+    }
+    if not keep_ids:
         return []
 
     enrich_cache = build_payroll_batch_enrich_cache(
@@ -1925,32 +1974,43 @@ def list_employee_payroll_history(
         oid,
         [uid],
         include_sick=any(
-            str(b.get("worker_category") or "") == "w2" for b in batch_headers
+            str(by_batch[bid].get("worker_category") or "") == "w2"
+            for bid in keep_ids
         ),
     )
 
     out: list[dict] = []
-    for hdr in batch_headers:
-        bid = int(hdr["id"])
-        batch = _fetch_payout_batch_core(conn, oid, bid)
-        if not batch:
+    for bid in batch_order:
+        if bid not in keep_ids:
             continue
-        batch["lines"] = [
-            ln for ln in (batch.get("lines") or []) if int(ln.get("user_id") or 0) == uid
-        ]
-        if not batch["lines"]:
-            continue
-        enriched = enrich_batch_payout_details(
-            conn, oid, batch, enrich_cache=enrich_cache
-        )
-        for ln in enriched.get("lines") or []:
+        batch = by_batch[bid]
+        for ln in batch.get("lines") or []:
             row = dict(ln)
-            row["batch_id"] = enriched.get("id") or bid
-            row["batch_name"] = enriched.get("batch_name")
-            row["worker_category"] = enriched.get("worker_category")
-            row["pay_period_start"] = enriched.get("pay_period_start")
-            row["pay_period_end"] = enriched.get("pay_period_end")
-            row["batch_status"] = enriched.get("status")
+            meta = enrich_cache.meta_for(uid)
+            row["employee_id"] = meta["employee_id"]
+            rate_info = enrich_cache.rate_info_for(conn, uid)
+            row["worker_category_label"] = rate_info.get("worker_category_label")
+            row["payment_method"] = row.get("payment_method") or rate_info.get(
+                "payment_method"
+            )
+            if str(batch.get("worker_category") or "") == "w2":
+                sb = enrich_cache.sick_for(uid) or {}
+                row["sick_balance_hours"] = sb.get("balance_hours")
+                row["sick_hours_accrued_ytd"] = sb.get("ytd_accrued_hours")
+                row["sick_hours_used_ytd"] = sb.get("ytd_used_hours")
+            row = enrich_line_with_payout_details(
+                row,
+                batch,
+                conn=conn,
+                organization_id=oid,
+                batch_id=bid,
+            )
+            row["batch_id"] = bid
+            row["batch_name"] = batch.get("batch_name")
+            row["worker_category"] = batch.get("worker_category")
+            row["pay_period_start"] = batch.get("pay_period_start")
+            row["pay_period_end"] = batch.get("pay_period_end")
+            row["batch_status"] = batch.get("status")
             out.append(json_safe(row))
 
     out.sort(key=lambda r: str(r.get("worker_name_snapshot") or ""))
