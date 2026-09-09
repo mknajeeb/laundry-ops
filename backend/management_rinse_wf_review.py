@@ -706,9 +706,16 @@ def compute_canonical_wf_review_membership(
     _, headline_by_bag = _headline_maps(headline)
     fresh_reasons = dict(headline_by_bag) if headline_by_bag else {}
     if not fresh_reasons:
-        wl = build_veewash_daily_workload_from_membership(
-            cursor, organization_id, selected_date_et=selected_date_et
-        )
+        # Management-only: bulk presence COUNT / DDL-once while rebuilding
+        # membership for Review scalars. ACA never enters this scope.
+        from backend.management_presence_read_opt import management_presence_read_opt_scope
+
+        with management_presence_read_opt_scope(
+            cursor, int(organization_id), selected_date_et
+        ):
+            wl = build_veewash_daily_workload_from_membership(
+                cursor, organization_id, selected_date_et=selected_date_et
+            )
         activation = get_step1_activation_date(cursor, organization_id) or selected_date_et
         summary = build_step1_headline_summary(
             wl, selected_date_et=selected_date_et, activation_date=activation
