@@ -6245,6 +6245,45 @@ def payroll_payout_batch_details(batch_id: int):
         conn.close()
 
 
+@ta_bp.route("/payroll/employee/<int:user_id>/history", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_employee_history(user_id: int):
+    """Scoped payroll document history for one worker (Employee Detail tab)."""
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            accountant_w2_only_scope,
+            list_employee_payroll_history,
+        )
+
+        oid = _tenant_id()
+        actor_id = int(g.ta_user["id"])
+        worker_category = request.args.get("worker_category")
+        if accountant_w2_only_scope(conn, actor_id):
+            worker_category = "w2"
+        items = list_employee_payroll_history(
+            conn,
+            oid,
+            int(user_id),
+            range_key=request.args.get("range") or "this_year",
+            worker_category=worker_category,
+            batch_id=(
+                int(request.args["batch_id"])
+                if request.args.get("batch_id")
+                else None
+            ),
+        )
+        return jsonify({"items": items, "user_id": int(user_id)})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_employee_history failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/payout-batches/<int:batch_id>/refresh-prior-balances", methods=["POST"])
 @require_auth
 @require_any_perm("ta.settings", "users.edit")

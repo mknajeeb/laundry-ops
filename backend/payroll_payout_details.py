@@ -1725,15 +1725,40 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
     )
 
 
-def enrich_batch_payout_details(conn, organization_id: int, batch: dict) -> dict:
+def enrich_batch_payout_details(
+    conn,
+    organization_id: int,
+    batch: dict,
+    *,
+    enrich_cache: Optional[Any] = None,
+    bulk: bool = True,
+) -> dict:
     from backend.payroll_workflow import enrich_payout_batch
 
-    batch = enrich_payout_batch(conn, organization_id, batch)
+    lines_in = batch.get("lines") or []
+    uids = [int(ln["user_id"]) for ln in lines_in if ln.get("user_id")]
+    if enrich_cache is None and bulk and uids:
+        from backend.payroll_batch_enrich_cache import build_payroll_batch_enrich_cache
+
+        cat = str(batch.get("worker_category") or "")
+        enrich_cache = build_payroll_batch_enrich_cache(
+            conn,
+            int(organization_id),
+            uids,
+            include_sick=(cat == "w2"),
+        )
+
+    batch = enrich_payout_batch(
+        conn, organization_id, batch, enrich_cache=enrich_cache, bulk=bulk
+    )
     lines = []
     for ln in batch.get("lines") or []:
         row = dict(ln)
         uid = row.get("user_id")
-        if uid:
+        if uid and enrich_cache is not None:
+            meta = enrich_cache.meta_for(int(uid))
+            row["employee_id"] = meta["employee_id"]
+        elif uid:
             meta = _user_display_meta(conn, int(uid))
             row["employee_id"] = meta["employee_id"]
         lines.append(
@@ -1763,7 +1788,6 @@ def enrich_batch_payout_details(conn, organization_id: int, batch: dict) -> dict
     audit = _parse_json_blob(batch.get("payout_details_audit_json"))
     batch["payout_details_audit"] = audit.get("events") or []
     return json_safe(batch)
-
 
 def list_accountant_payment_queue(
     conn, organization_id: int, *, worker_category: Optional[str] = None
@@ -1795,10 +1819,143 @@ def list_accountant_payment_queue(
 
 
 def get_payout_batch_details(conn, organization_id: int, batch_id: int) -> Optional[dict]:
-    batch = get_payout_batch(conn, organization_id, batch_id)
+    """Load batch details with a single enrichment pass (no double enrich)."""
+    from backend.payroll_operations import _fetch_payout_batch_core
+    from backend.payroll_workflow import backfill_batch_line_rates
+
+    batch = _fetch_payout_batch_core(conn, organization_id, batch_id)
     if not batch:
         return None
+    if backfill_batch_line_rates(conn, organization_id, batch):
+        c = conn.cursor(dictionary=True)
+        c.execute(
+            "SELECT * FROM payout_batch_lines WHERE batch_id=%s ORDER BY worker_name_snapshot",
+            (int(batch_id),),
+        )
+        batch["lines"] = [json_safe(r) for r in c.fetchall() or []]
     return enrich_batch_payout_details(conn, organization_id, batch)
+
+
+def _filter_batches_by_history_range(batches: list[dict], range_key: str) -> list[dict]:
+    """Mirror AccountantEmployeePaystubsPanel.filterBatchesByRange (ET calendar year)."""
+    from backend.business_time import business_today
+
+    year = business_today().year
+    key = str(range_key or "this_year").strip().lower()
+    if key == "this_year":
+        return [
+            b
+            for b in batches
+            if str(b.get("pay_period_end") or "")[:4] == str(year)
+        ]
+    if key == "last_year":
+        return [
+            b
+            for b in batches
+            if str(b.get("pay_period_end") or "")[:4] == str(year - 1)
+        ]
+    if key == "last_5":
+        return batches[:5]
+    if key == "last_10":
+        return batches[:10]
+    return batches
+
+
+def list_employee_payroll_history(
+    conn,
+    organization_id: int,
+    user_id: int,
+    *,
+    range_key: str = "this_year",
+    worker_category: Optional[str] = None,
+    batch_id: Optional[int] = None,
+) -> list[dict]:
+    """Payroll-document history for one worker — no all-batch fan-out.
+
+    Returns enriched lines (same fields as batch ``/details`` lines) scoped to
+    ``user_id``, with batch/pay-period associations attached.
+    """
+    from backend.payroll_batch_enrich_cache import build_payroll_batch_enrich_cache
+    from backend.payroll_operations import _fetch_payout_batch_core, ensure_payout_batches_tables
+    from backend.payroll_workflow import ACCOUNTANT_VISIBLE_STATUSES
+
+    ensure_payout_batches_tables(conn.cursor())
+    ensure_payout_details_columns(conn.cursor())
+    uid = int(user_id)
+    oid = int(organization_id)
+    cat = str(worker_category or "").strip()
+    statuses = sorted(ACCOUNTANT_VISIBLE_STATUSES)
+    ph = ",".join(["%s"] * len(statuses))
+    params: list[Any] = [oid, uid, *statuses]
+    cat_sql = ""
+    if cat and cat != "all":
+        cat_sql = " AND b.worker_category=%s"
+        params.append(cat)
+    batch_sql = ""
+    if batch_id:
+        batch_sql = " AND b.id=%s"
+        params.append(int(batch_id))
+
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        f"""
+        SELECT DISTINCT
+          b.id,
+          b.pay_period_end,
+          b.worker_category
+        FROM payout_batches b
+        JOIN payout_batch_lines l
+          ON l.batch_id = b.id AND l.organization_id = b.organization_id
+        WHERE b.organization_id=%s
+          AND l.user_id=%s
+          AND b.status IN ({ph})
+          {cat_sql}
+          {batch_sql}
+        ORDER BY b.pay_period_end DESC, b.id DESC
+        """,
+        tuple(params),
+    )
+    batch_headers = [json_safe(r) for r in c.fetchall() or []]
+    batch_headers = _filter_batches_by_history_range(batch_headers, range_key)
+    if not batch_headers:
+        return []
+
+    enrich_cache = build_payroll_batch_enrich_cache(
+        conn,
+        oid,
+        [uid],
+        include_sick=any(
+            str(b.get("worker_category") or "") == "w2" for b in batch_headers
+        ),
+    )
+
+    out: list[dict] = []
+    for hdr in batch_headers:
+        bid = int(hdr["id"])
+        batch = _fetch_payout_batch_core(conn, oid, bid)
+        if not batch:
+            continue
+        batch["lines"] = [
+            ln for ln in (batch.get("lines") or []) if int(ln.get("user_id") or 0) == uid
+        ]
+        if not batch["lines"]:
+            continue
+        enriched = enrich_batch_payout_details(
+            conn, oid, batch, enrich_cache=enrich_cache
+        )
+        for ln in enriched.get("lines") or []:
+            row = dict(ln)
+            row["batch_id"] = enriched.get("id") or bid
+            row["batch_name"] = enriched.get("batch_name")
+            row["worker_category"] = enriched.get("worker_category")
+            row["pay_period_start"] = enriched.get("pay_period_start")
+            row["pay_period_end"] = enriched.get("pay_period_end")
+            row["batch_status"] = enriched.get("status")
+            out.append(json_safe(row))
+
+    out.sort(key=lambda r: str(r.get("worker_name_snapshot") or ""))
+    out.sort(key=lambda r: str(r.get("pay_period_end") or ""), reverse=True)
+    return out
 
 
 def infer_pay_frequency_from_batch(batch: dict) -> str:

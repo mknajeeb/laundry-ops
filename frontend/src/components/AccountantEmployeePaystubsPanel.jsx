@@ -19,6 +19,7 @@ import DownloadIcon from "@mui/icons-material/Download";
 import PrintIcon from "@mui/icons-material/Print";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import {
+  getEmployeePayrollHistory,
   getPayoutBatchDetails,
   getPayoutBatches,
   getPaystubHtml,
@@ -104,21 +105,6 @@ function documentFetch(kind, batchId, lineId, { preview = false } = {}) {
     : () => getPaystubHtml(batchId, lineId, { preview });
 }
 
-function filterBatchesByRange(batches, range) {
-  const year = new Date().getFullYear();
-  let list = [...batches];
-  if (range === "this_year") {
-    list = list.filter((b) => String(b.pay_period_end || "").slice(0, 4) === String(year));
-  } else if (range === "last_year") {
-    list = list.filter((b) => String(b.pay_period_end || "").slice(0, 4) === String(year - 1));
-  } else if (range === "last_5") {
-    list = list.slice(0, 5);
-  } else if (range === "last_10") {
-    list = list.slice(0, 10);
-  }
-  return list;
-}
-
 export default function AccountantEmployeePaystubsPanel({ w2Only = false }) {
   const [viewMode, setViewMode] = useState("employee");
   const [category, setCategory] = useState(w2Only ? "w2" : "all");
@@ -163,6 +149,20 @@ export default function AccountantEmployeePaystubsPanel({ w2Only = false }) {
   }, [category, w2Only]);
 
   const loadRows = useCallback(async () => {
+    // Empty selection: never fan out /details — show prompt immediately.
+    if (viewMode === "employee" && !selectedWorker?.id) {
+      setRows([]);
+      setLoading(false);
+      setError("");
+      return;
+    }
+    if (viewMode === "batch" && !selectedBatchId) {
+      setRows([]);
+      setLoading(false);
+      setError("");
+      return;
+    }
+
     setLoading(true);
     setError("");
     try {
@@ -176,10 +176,6 @@ export default function AccountantEmployeePaystubsPanel({ w2Only = false }) {
       });
 
       if (viewMode === "batch") {
-        if (!selectedBatchId) {
-          setRows([]);
-          return;
-        }
         const res = await getPayoutBatchDetails(Number(selectedBatchId));
         const batch = res.data;
         let lines = (batch?.lines || []).map((ln) => shapeLine(ln, batch));
@@ -190,45 +186,32 @@ export default function AccountantEmployeePaystubsPanel({ w2Only = false }) {
         return;
       }
 
-      let scopedBatches = filterBatchesByRange(batches, range);
+      // Employee mode: scoped history API only (no all-year batch /details fan-out).
+      const effectiveCategory = w2Only ? "w2" : category;
+      const params = { range };
+      if (effectiveCategory && effectiveCategory !== "all") {
+        params.worker_category = effectiveCategory;
+      }
       if (selectedBatchId) {
-        scopedBatches = scopedBatches.filter((b) => String(b.id) === String(selectedBatchId));
+        params.batch_id = Number(selectedBatchId);
       }
-
-      const details = await Promise.all(
-        scopedBatches.map(async (b) => {
-          try {
-            const r = await getPayoutBatchDetails(b.id);
-            return r.data;
-          } catch {
-            return null;
-          }
-        }),
-      );
-
-      // Keep every worker's line so the worker dropdown (built from these rows)
-      // stays complete; the selected worker is applied in `visibleRows`.
-      const out = [];
-      for (const batch of details.filter(Boolean)) {
-        for (const ln of batch.lines || []) {
-          out.push(shapeLine(ln, batch));
-        }
-      }
-      out.sort((a, b) => {
+      const res = await getEmployeePayrollHistory(Number(selectedWorker.id), params);
+      const items = res.data?.items || [];
+      items.sort((a, b) => {
         const pe = String(b.pay_period_end || "").localeCompare(String(a.pay_period_end || ""));
         if (pe !== 0) return pe;
         return String(a.worker_name_snapshot || "").localeCompare(
           String(b.worker_name_snapshot || ""),
         );
       });
-      setRows(out);
+      setRows(items);
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Could not load payroll documents");
       setRows([]);
     } finally {
       setLoading(false);
     }
-  }, [viewMode, range, batches, selectedBatchId, selectedWorker]);
+  }, [viewMode, range, selectedBatchId, selectedWorker, category, w2Only]);
 
   useEffect(() => {
     if (viewMode !== "batch" || !selectedBatchId) {
@@ -266,9 +249,8 @@ export default function AccountantEmployeePaystubsPanel({ w2Only = false }) {
   }, [loadRows]);
 
   const visibleRows = useMemo(() => {
-    if (viewMode === "batch") return rows;
-    if (!selectedWorker) return [];
-    return rows.filter((ln) => Number(ln.user_id) === Number(selectedWorker.id));
+    if (viewMode === "employee" && !selectedWorker) return [];
+    return rows;
   }, [viewMode, selectedWorker, rows]);
 
   // Worker dropdown = payroll profiles for the category ∪ workers present in the
@@ -426,17 +408,17 @@ export default function AccountantEmployeePaystubsPanel({ w2Only = false }) {
       />
 
       <Paper variant="outlined" sx={{ overflow: "hidden" }}>
-        {loading ? (
+        {viewMode === "employee" && !selectedWorker ? (
           <Typography sx={{ p: 2 }} color="text.secondary">
-            Loading…
-          </Typography>
-        ) : viewMode === "employee" && !selectedWorker ? (
-          <Typography sx={{ p: 2 }} color="text.secondary">
-            Select a worker to see their payroll document history.
+            Select a worker to view payroll history.
           </Typography>
         ) : viewMode === "batch" && !selectedBatchId ? (
           <Typography sx={{ p: 2 }} color="text.secondary">
             Select a batch to see payroll documents for that pay period.
+          </Typography>
+        ) : loading ? (
+          <Typography sx={{ p: 2 }} color="text.secondary">
+            Loading…
           </Typography>
         ) : (
           <TableContainer sx={{ px: 1, pb: 1 }}>

@@ -1853,6 +1853,9 @@ export const getPayoutAccountantQueue = (params) =>
 export const getPayoutBatchDetails = (batchId) =>
   axios.get(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/details`);
 
+export const getEmployeePayrollHistory = (userId, params = {}) =>
+  axios.get(`${API_BASE}/api/ta/payroll/employee/${userId}/history`, { params });
+
 export const putPayoutBatchDetails = (batchId, body) =>
   axios.put(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/details`, body);
 

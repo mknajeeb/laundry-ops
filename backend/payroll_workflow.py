@@ -732,13 +732,30 @@ def apply_manual_tax_batch_summary_totals(
     return batch
 
 
-def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
+def enrich_payout_batch(
+    conn,
+    organization_id: int,
+    batch: dict,
+    *,
+    enrich_cache: Optional[Any] = None,
+    bulk: bool = True,
+) -> dict:
     """Attach workflow summary, warnings, and enriched line metadata."""
     if not batch:
         return batch
     ensure_payout_batch_line_extensions(conn.cursor())
     cat = str(batch.get("worker_category") or "")
     lines = batch.get("lines") or []
+    uids = [int(ln["user_id"]) for ln in lines if ln.get("user_id")]
+    if enrich_cache is None and bulk and uids:
+        from backend.payroll_batch_enrich_cache import build_payroll_batch_enrich_cache
+
+        enrich_cache = build_payroll_batch_enrich_cache(
+            conn,
+            int(organization_id),
+            uids,
+            include_sick=(cat == "w2"),
+        )
     missing_rates: list[dict] = []
     missing_w4: list[dict] = []
     enriched_lines = []
@@ -749,11 +766,15 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
         row = dict(ln)
         uid = row.get("user_id")
         if uid:
-            from backend.payroll_payout_details import _user_display_meta
+            if enrich_cache is not None:
+                meta = enrich_cache.meta_for(int(uid))
+                rate_info = enrich_cache.rate_info_for(conn, int(uid))
+            else:
+                from backend.payroll_payout_details import _user_display_meta
 
-            meta = _user_display_meta(conn, int(uid))
+                meta = _user_display_meta(conn, int(uid))
+                rate_info = resolve_worker_hourly_rate(conn, int(uid), organization_id)
             row["employee_id"] = meta["employee_id"]
-            rate_info = resolve_worker_hourly_rate(conn, int(uid), organization_id)
             row["worker_category_label"] = rate_info["worker_category_label"]
             row["payment_method"] = row.get("payment_method") or rate_info.get("payment_method")
             if float(row.get("rate") or 0) <= 0 and not rate_info["rate_missing"]:
@@ -791,9 +812,16 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
                             }
                         )
                     _mask_incomplete_w2_line_taxes(row)
-                from backend.payroll_accrual import get_sick_leave_balance
+                if enrich_cache is not None:
+                    sb = enrich_cache.sick_for(int(uid))
+                    if sb is None:
+                        from backend.payroll_accrual import get_sick_leave_balance
 
-                sb = get_sick_leave_balance(conn, organization_id, int(uid))
+                        sb = get_sick_leave_balance(conn, organization_id, int(uid))
+                else:
+                    from backend.payroll_accrual import get_sick_leave_balance
+
+                    sb = get_sick_leave_balance(conn, organization_id, int(uid))
                 row["sick_balance_hours"] = sb.get("balance_hours")
                 row["sick_hours_accrued_ytd"] = sb.get("ytd_accrued_hours")
                 row["sick_hours_used_ytd"] = sb.get("ytd_used_hours")
