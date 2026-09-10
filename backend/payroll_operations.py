@@ -1253,6 +1253,36 @@ def _parse_segment_end(value: Any, *, provided: bool) -> tuple[Optional[datetime
     return dt, False
 
 
+def _coalesce_same_minute_seconds(
+    proposed: Optional[datetime], existing: Optional[datetime]
+) -> Optional[datetime]:
+    """Keep existing sub-minute precision when the client only posts minute resolution.
+
+    ``<input type="datetime-local">`` / MUI DateTimePicker round to minutes and the
+    UI re-sends ``:00`` seconds. That falsely overlaps an adjacent segment that ends
+    at ``HH:MM:SS`` with SS>0 when the edited segment also starts at that same minute
+    (e.g. prior ends 07:56:45, edited start truncated to 07:56:00).
+    """
+    if proposed is None or existing is None:
+        return proposed
+    if not isinstance(proposed, datetime) or not isinstance(existing, datetime):
+        return proposed
+    prop = proposed.replace(tzinfo=None) if proposed.tzinfo else proposed
+    ex = existing.replace(tzinfo=None) if existing.tzinfo else existing
+    if (
+        prop.year == ex.year
+        and prop.month == ex.month
+        and prop.day == ex.day
+        and prop.hour == ex.hour
+        and prop.minute == ex.minute
+        and prop.second == 0
+        and prop.microsecond == 0
+        and (ex.second != 0 or ex.microsecond != 0)
+    ):
+        return ex
+    return prop
+
+
 def _segments_overlap(
     start_a: datetime,
     end_a: Optional[datetime],
@@ -1451,12 +1481,15 @@ def update_time_record_segment(
         new_start = _parse_clock_dt(new_start)
     if not new_start:
         raise ValueError("Segment start time is required")
+    new_start = _coalesce_same_minute_seconds(new_start, target.get("started_at"))
 
     new_end = target.get("ended_at")
     if isinstance(new_end, str):
         new_end = _parse_clock_dt(new_end)
     if ended_at_provided:
         new_end, _ = _parse_segment_end(ended_at, provided=True)
+    if new_end is not None:
+        new_end = _coalesce_same_minute_seconds(new_end, target.get("ended_at"))
 
     if new_end is not None and new_end <= new_start:
         raise ValueError("Role segment end time must be after start time")

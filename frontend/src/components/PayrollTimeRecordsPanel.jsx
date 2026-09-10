@@ -112,6 +112,18 @@ function toApiDateTime(local) {
   return local.length === 16 ? `${local.replace("T", " ")}:00` : local;
 }
 
+/** Keep original seconds when the picker minute is unchanged (datetime-local is minute-only). */
+function toApiDateTimePreservingSeconds(local, originalApiValue) {
+  if (!local) return "";
+  const localMinute = local.length >= 16 ? local.slice(0, 16) : local;
+  if (originalApiValue && toDatetimeLocal(originalApiValue) === localMinute) {
+    const raw = String(originalApiValue).trim();
+    const m = raw.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/);
+    if (m) return `${m[1]} ${m[2]}`;
+  }
+  return toApiDateTime(local);
+}
+
 const emptyForm = () => ({
   user_id: "",
   category_id: "",
@@ -486,8 +498,13 @@ export default function PayrollTimeRecordsPanel({
       );
       return;
     }
-    const endApi = segmentForm.ended_at ? toApiDateTime(segmentForm.ended_at) : "";
-    const startApi = toApiDateTime(segmentForm.started_at);
+    const endApi = segmentForm.ended_at
+      ? toApiDateTimePreservingSeconds(segmentForm.ended_at, segmentTarget.segment?.ended_at)
+      : "";
+    const startApi = toApiDateTimePreservingSeconds(
+      segmentForm.started_at,
+      segmentTarget.segment?.started_at,
+    );
     if (endApi && endApi <= startApi) {
       setSegmentEditorError("End time must be after start time.");
       return;
