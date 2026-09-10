@@ -773,7 +773,14 @@ def _load_hd_service_hints(cursor, organization_id: int, selected_date_et: date)
 
 
 def _load_hd_discovery_bag_ids(cursor, organization_id: int) -> set[str]:
-    """Active HD portal presence — discovery/admission only (not date membership)."""
+    """Active HD portal presence — discovery/admission only (not date membership).
+
+    WARNING: ship-window scrapes are absence_capable=false, so active=1 can retain
+    stale HD rows from prior windows when later scrapes are anomalous / not applied.
+    Reset / fresh-start re-admission must use
+    ``backend.hd_ship_window_admission.admit_hd_reset_from_ship_window`` instead of
+    this set alone.
+    """
     if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
         return set()
     org = int(organization_id)
