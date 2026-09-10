@@ -574,24 +574,12 @@ def get_current_wf_workload(
                     "review_reason_codes": reason_codes,
                     "received_from_vendor_at": rfv,
                     "rush_status": row.get("rush_status") or row.get("rush_flag"),
-                    # OI has no customer_name column — bulk-resolved below.
                     "customer_name": row.get("customer_name"),
                 }
             )
 
-    if items:
-        from backend.rinse_employee_productivity_sessions import (
-            resolve_customer_names_for_bags,
-        )
-
-        items = resolve_customer_names_for_bags(
-            cursor,
-            org,
-            items,
-            selected_date_et=None,
-        )
-
-    payload = {
+    # Bag-level equation: one bag → one pending/review membership.
+    return {
         "organization_id": org,
         "date_independent": True,
         "pending": pending,
@@ -605,21 +593,6 @@ def get_current_wf_workload(
         "items": items,
         "source": "current_wf_workload_open_oi_v1",
     }
-
-    # Soft manager overlay (manual review / exclude) — does not change OI open set.
-    try:
-        from backend.management_wf_cw_controls import (
-            apply_cw_manager_overlay,
-            bulk_load_active_cw_overrides,
-        )
-
-        overrides = bulk_load_active_cw_overrides(cursor, org, sorted(open_bags))
-        payload = apply_cw_manager_overlay(payload, overrides)
-    except Exception:
-        # Presentation overlay must never break CW authority reads.
-        pass
-
-    return payload
 
 
 def get_selected_date_wf_completed(
@@ -709,7 +682,6 @@ def get_selected_date_wf_completed(
                 "completed_date_et": date_et.isoformat(),
                 "lifecycle": LIFECYCLE_COMPLETED,
                 "completion_source": row.get("completion_source") or "order_instance",
-                "customer_name": row.get("customer_name"),
                 "received_from_vendor_at": lifecycle_received_from_vendor_at(
                     cursor,
                     org,
@@ -723,18 +695,6 @@ def get_selected_date_wf_completed(
                     ),
                 ),
             }
-        )
-
-    if items:
-        from backend.rinse_employee_productivity_sessions import (
-            resolve_customer_names_for_bags,
-        )
-
-        items = resolve_customer_names_for_bags(
-            cursor,
-            org,
-            items,
-            selected_date_et=date_et,
         )
 
     return {

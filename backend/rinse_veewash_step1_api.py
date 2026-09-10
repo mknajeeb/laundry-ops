@@ -881,18 +881,6 @@ def build_drilldown(
             item["bulk_audits"] = []
         bags.append(item)
 
-    if bags:
-        from backend.rinse_employee_productivity_sessions import (
-            resolve_customer_names_for_bags,
-        )
-
-        bags = resolve_customer_names_for_bags(
-            cursor,
-            organization_id,
-            bags,
-            selected_date_et=selected_date_et,
-        )
-
     # Attach HD manager review facts (items/revenue/washed/folded) for HD rows.
     hd_page_ids = [
         normalize_bag_id(b.get("bag_id"))

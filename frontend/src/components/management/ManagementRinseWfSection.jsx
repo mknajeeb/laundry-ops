@@ -6,12 +6,10 @@ import {
   Button,
   CircularProgress,
   Dialog,
-  DialogActions,
   DialogContent,
   DialogTitle,
   IconButton,
   Stack,
-  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -24,9 +22,6 @@ import ManagementRinseWfReviewSection from "./ManagementRinseWfReviewSection";
 import ManagementCopyableId from "./ManagementCopyableId";
 import {
   getManagementTodaySuppliesDetail,
-  postManagementWfCwExclude,
-  postManagementWfCwMoveToReview,
-  postManagementWfCwResolveManual,
 } from "../../api";
 import SupplyCostSimulatorModal from "./SupplyCostSimulatorModal";
 import {
@@ -39,9 +34,7 @@ import {
   pickWfWeights,
   wfHeadline,
 } from "./todayRinseModel";
-import { formatReviewReasonLabel, formatReviewReasonLabels } from "./reviewDisplayLabels";
-import { displayCustomerName } from "../../utils/displayCustomerName";
-import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
+import { formatReviewReasonLabels } from "./reviewDisplayLabels";
 
 const DOSE_TOOLTIP =
   "Split orders may require multiple doses, so doses can exceed orders.";
@@ -170,7 +163,6 @@ export default function ManagementRinseWfSection({
   onRefresh,
   primaryLoading = false,
   secondaryLoading = false,
-  reviewLoading = false,
 }) {
   const [rushFilterLocal, setRushFilterLocal] = useState("all");
   const rushFilter = rushFilterProp ?? rushFilterLocal;
@@ -185,14 +177,6 @@ export default function ManagementRinseWfSection({
   const [currentWorkloadDialog, setCurrentWorkloadDialog] = useState({
     open: false,
     filter: "all", // all | pending | review
-  });
-  const [cwAction, setCwAction] = useState({
-    open: false,
-    type: null, // move_to_review | exclude | resolve_manual
-    row: null,
-    reason: "",
-    busy: false,
-    error: "",
   });
   const [splitSimOpen, setSplitSimOpen] = useState(false);
   const [supplyDetail, setSupplyDetail] = useState({
@@ -334,76 +318,6 @@ export default function ManagementRinseWfSection({
       service: "wf",
       queue: opts.queue || metric,
     });
-  };
-
-  const openCwAction = (type, row) => {
-    if (readOnly || !row?.bag_id) return;
-    setCwAction({
-      open: true,
-      type,
-      row,
-      reason: "",
-      busy: false,
-      error: "",
-    });
-  };
-
-  const closeCwAction = () =>
-    setCwAction({
-      open: false,
-      type: null,
-      row: null,
-      reason: "",
-      busy: false,
-      error: "",
-    });
-
-  const submitCwAction = async () => {
-    const row = cwAction.row;
-    const type = cwAction.type;
-    const reason = String(cwAction.reason || "").trim();
-    if (!row?.bag_id || !type || !selectedDateEt) return;
-    if ((type === "move_to_review" || type === "exclude") && !reason) {
-      setCwAction((prev) => ({ ...prev, error: "Reason is required" }));
-      return;
-    }
-    setCwAction((prev) => ({ ...prev, busy: true, error: "" }));
-    try {
-      const body = {
-        reason,
-        order_instance_id: row.order_instance_id,
-      };
-      let res;
-      if (type === "move_to_review") {
-        res = await postManagementWfCwMoveToReview(selectedDateEt, row.bag_id, body);
-      } else if (type === "exclude") {
-        res = await postManagementWfCwExclude(selectedDateEt, row.bag_id, body);
-      } else if (type === "resolve_manual") {
-        res = await postManagementWfCwResolveManual(selectedDateEt, row.bag_id, body);
-      } else {
-        throw new Error("Unknown action");
-      }
-      if (res?.data?.ok === false) {
-        setCwAction((prev) => ({
-          ...prev,
-          busy: false,
-          error: res?.data?.error || res?.data?.message || "Action failed",
-        }));
-        return;
-      }
-      closeCwAction();
-      onRefresh?.();
-    } catch (err) {
-      setCwAction((prev) => ({
-        ...prev,
-        busy: false,
-        error:
-          err?.response?.data?.error
-          || err?.response?.data?.message
-          || err?.message
-          || "Action failed",
-      }));
-    }
   };
 
   const onRushChange = (next) => {
@@ -587,14 +501,14 @@ export default function ManagementRinseWfSection({
             onClick={
               snapshotUnavailable
                 ? undefined
-                : () => openMetric("completed", "Rinse WF · Completed · Manage/View", { queue: "completed" })
+                : () => openMetric("completed", "Rinse WF · Completed", { queue: "completed" })
             }
           />
         )}
       </CardGrid>
       <BlockLabel>Processed pounds</BlockLabel>
       <CardGrid columns={{ xs: 2, sm: 2 }}>
-        {secondaryLoading ? (
+        {primaryLoading ? (
           <>
             <TodayTapCardSkeleton tone="workload" />
             <TodayTapCardSkeleton tone="completed" />
@@ -711,7 +625,7 @@ export default function ManagementRinseWfSection({
           selectedDateEt={selectedDateEt || rinse?.selected_date_et}
           rushFilter={rushFilter}
           reviewSummary={reviewSummary}
-          reviewLoading={reviewLoading}
+          reviewLoading={secondaryLoading}
           snapshotUnavailable={snapshotUnavailable}
           readOnly={readOnly}
           onRefresh={onRefresh}
@@ -1199,123 +1113,49 @@ export default function ManagementRinseWfSection({
               );
             }
             return (
-              <Stack spacing={1.25}>
+              <Stack spacing={1}>
                 {items.map((row) => {
-                  const isReview = row.status === "review_required";
-                  const customer =
-                    displayCustomerName(row.customer_name) || "Unknown Customer";
-                  const origin = String(row.review_origin || "").toLowerCase();
-                  const systemCodes = row.system_review_reason_codes || [];
-                  const systemText = formatReviewReasonLabels(systemCodes, {
-                    fallback: "",
-                  });
-                  const manualReason =
-                    row.manual_review_reason
-                    || formatReviewReasonLabel(row.manual_review_reason_code, {
-                      fallback: "Manual review",
-                    });
+                  const reasonText = formatReviewReasonLabels(
+                    row.review_reason_codes || [],
+                    { fallback: "" },
+                  );
                   return (
                     <Box
                       key={`${row.bag_id}-${row.order_instance_id || ""}`}
                       sx={{
-                        py: 1,
+                        display: "grid",
+                        gridTemplateColumns: "1fr auto",
+                        gap: 0.5,
+                        py: 0.75,
                         borderBottom: "1px solid #e2e8f0",
                       }}
                     >
-                      <Typography sx={{ fontSize: 14, fontWeight: 800, color: "#0f172a" }}>
-                        {customer}
-                      </Typography>
-                      <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" sx={{ mt: 0.2 }}>
-                        <ManagementCopyableId value={row.bag_id} fontSize={13} fontWeight={700} />
-                        <Typography sx={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-                          · OI {row.order_instance_id ?? "—"}
+                      <Box>
+                        <Typography sx={{ fontSize: 13, fontWeight: 800 }}>
+                          {row.bag_id}
+                          {row.customer_name ? (
+                            <Typography component="span" sx={{ ml: 0.75, fontSize: 12, fontWeight: 600, color: "#64748b" }}>
+                              {row.customer_name}
+                            </Typography>
+                          ) : null}
                         </Typography>
-                      </Stack>
-                      <Typography sx={{ fontSize: 12, fontWeight: 700, color: "#334155", mt: 0.35 }}>
-                        {isReview ? "Review" : "Pending"}
-                        {row.rush_status ? ` · ${row.rush_status}` : ""}
+                        <Typography sx={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>
+                          OI {row.order_instance_id ?? "—"}
+                          {" · "}
+                          {row.status === "review_required" ? "Review" : "Pending"}
+                          {row.rush_status ? ` · ${row.rush_status}` : ""}
+                        </Typography>
+                        {reasonText ? (
+                          <Typography sx={{ fontSize: 11, color: "#b91c1c", fontWeight: 600, mt: 0.25 }}>
+                            {reasonText}
+                          </Typography>
+                        ) : null}
+                      </Box>
+                      <Typography sx={{ fontSize: 11, fontWeight: 700, color: "#334155", textAlign: "right" }}>
+                        Received
+                        <br />
+                        {formatReceivedFromVendor(row.received_from_vendor_at)}
                       </Typography>
-                      <Typography sx={{ fontSize: 11, fontWeight: 600, color: "#64748b", mt: 0.2 }}>
-                        Received {formatReceivedFromVendor(row.received_from_vendor_at)}
-                      </Typography>
-                      {isReview ? (
-                        <Stack spacing={0.35} sx={{ mt: 0.6 }}>
-                          {(origin === "system" || origin === "both" || (!origin && systemText)) ? (
-                            <Typography sx={{ fontSize: 11, color: "#b91c1c", fontWeight: 600 }}>
-                              {systemText || formatReviewReasonLabels(row.review_reason_codes || [], { fallback: "Needs review" })}
-                              {" · "}System detected
-                            </Typography>
-                          ) : null}
-                          {(origin === "manual" || origin === "both" || row.manual_review_active) ? (
-                            <Typography sx={{ fontSize: 11, color: "#9a3412", fontWeight: 600 }}>
-                              Manual Review
-                              {manualReason ? ` · Reason: ${manualReason}` : ""}
-                              {row.sent_by ? ` · Sent by: ${row.sent_by}` : ""}
-                              {row.sent_at
-                                ? ` · ${formatFriendlyEtWall(row.sent_at) || row.sent_at}`
-                                : ""}
-                            </Typography>
-                          ) : null}
-                        </Stack>
-                      ) : null}
-                      {!readOnly ? (
-                        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 0.85 }}>
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            onClick={() =>
-                              openMetric(
-                                isReview ? "review_required" : "pending",
-                                isReview ? "Rinse WF · Manage Review" : "Rinse WF · Manage Pending",
-                                { queue: isReview ? "review_required" : "pending" },
-                              )
-                            }
-                          >
-                            Manage
-                          </Button>
-                          {!isReview ? (
-                            <>
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                color="warning"
-                                onClick={() => openCwAction("move_to_review", row)}
-                              >
-                                Move to Review
-                              </Button>
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                color="error"
-                                onClick={() => openCwAction("exclude", row)}
-                              >
-                                Exclude
-                              </Button>
-                            </>
-                          ) : (
-                            <>
-                              {row.manual_review_active || origin === "manual" || origin === "both" ? (
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  color="success"
-                                  onClick={() => openCwAction("resolve_manual", row)}
-                                >
-                                  Resolve
-                                </Button>
-                              ) : null}
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                color="error"
-                                onClick={() => openCwAction("exclude", row)}
-                              >
-                                Exclude
-                              </Button>
-                            </>
-                          )}
-                        </Stack>
-                      ) : null}
                     </Box>
                   );
                 })}
@@ -1323,65 +1163,6 @@ export default function ManagementRinseWfSection({
             );
           })()}
         </DialogContent>
-      </Dialog>
-
-      <Dialog open={cwAction.open} onClose={cwAction.busy ? undefined : closeCwAction} fullWidth maxWidth="xs">
-        <DialogTitle sx={{ fontWeight: 800, fontSize: 16, pr: 5, position: "relative" }}>
-          {cwAction.type === "move_to_review"
-            ? "Move to Review"
-            : cwAction.type === "exclude"
-              ? "Exclude from Workload"
-              : "Resolve Manual Review"}
-          <IconButton
-            aria-label="Close"
-            onClick={closeCwAction}
-            disabled={cwAction.busy}
-            sx={{ position: "absolute", right: 8, top: 8 }}
-          >
-            <CloseIcon />
-          </IconButton>
-        </DialogTitle>
-        <DialogContent dividers>
-          <Typography sx={{ fontSize: 13, color: "#475569", mb: 1 }}>
-            {displayCustomerName(cwAction.row?.customer_name) || "Unknown Customer"}
-            {" · "}
-            {cwAction.row?.bag_id}
-          </Typography>
-          {cwAction.type === "resolve_manual" ? (
-            <Typography sx={{ fontSize: 12, color: "#64748b", mb: 1 }}>
-              Clears the manual review override only. System review reasons stay active if still present.
-            </Typography>
-          ) : (
-            <TextField
-              autoFocus
-              fullWidth
-              multiline
-              minRows={2}
-              label="Reason"
-              value={cwAction.reason}
-              onChange={(e) => setCwAction((prev) => ({ ...prev, reason: e.target.value }))}
-              disabled={cwAction.busy}
-            />
-          )}
-          {cwAction.error ? (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {cwAction.error}
-            </Alert>
-          ) : null}
-        </DialogContent>
-        <DialogActions sx={{ px: 2, py: 1.25 }}>
-          <Button onClick={closeCwAction} disabled={cwAction.busy}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            onClick={submitCwAction}
-            disabled={cwAction.busy}
-            startIcon={cwAction.busy ? <CircularProgress size={14} color="inherit" /> : null}
-          >
-            Confirm
-          </Button>
-        </DialogActions>
       </Dialog>
 
       <Step1MetricDrawer

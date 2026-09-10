@@ -744,9 +744,6 @@ def get_canonical_wf_workload(
             "counts": dict(current.get("counts") or {}),
             "items": list(current.get("items") or []),
             "source": current.get("source"),
-            "oi_counts": current.get("oi_counts"),
-            "manager_overlay": current.get("manager_overlay"),
-            "excluded_from_workload": current.get("excluded_from_workload"),
         },
         "selected_date_completed": {
             "date_et": date_et.isoformat(),
