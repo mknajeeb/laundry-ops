@@ -1668,6 +1668,17 @@ export const postPayrollTimeRecord = (body) =>
 export const patchPayrollTimeRecord = (recordId, body) =>
   axios.post(`${API_BASE}/api/ta/payroll/time-records/${recordId}/save`, body);
 
+export const patchPayrollTimeRecordSegment = (recordId, segmentId, body) =>
+  axios.post(
+    `${API_BASE}/api/ta/payroll/time-records/${recordId}/segments/${segmentId}/save`,
+    body,
+  );
+
+export const deletePayrollTimeRecordSegment = (recordId, segmentId) =>
+  axios.delete(
+    `${API_BASE}/api/ta/payroll/time-records/${recordId}/segments/${segmentId}`,
+  );
+
 export const postApprovePayrollTimeRecord = (recordId) =>
   axios.post(`${API_BASE}/api/ta/payroll/time-records/${recordId}/approve`, {});
 
@@ -2402,6 +2413,14 @@ export const getManagementRinseWf = (dateEt, params = {}) => {
 export const getManagementRinseWfSecondary = (dateEt, params = {}) => {
   const { signal, ...rest } = params || {};
   return axios.get(`${API_BASE}/api/management/rinse-wf/secondary`, {
+    params: { date_et: dateEt, ...rest },
+    signal,
+  });
+};
+
+export const getManagementRinseWfReviewCounts = (dateEt, params = {}) => {
+  const { signal, ...rest } = params || {};
+  return axios.get(`${API_BASE}/api/management/rinse-wf/review-counts`, {
     params: { date_et: dateEt, ...rest },
     signal,
   });

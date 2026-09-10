@@ -174,6 +174,8 @@ def test_update_tags_role_when_category_and_role_provided(conn):
     with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
         "backend.payroll_operations.table_has_column", return_value=False
     ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
+        "backend.payroll_operations._count_role_segments", return_value=1
+    ), patch(
         "backend.payroll_operations._apply_time_record_role_tag"
     ) as tag, patch(
         "backend.payroll_operations.list_time_records"
@@ -214,6 +216,8 @@ def test_update_tags_role_on_open_shift_without_clock_out(conn):
     with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
         "backend.payroll_operations.table_has_column", return_value=False
     ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
+        "backend.payroll_operations._count_role_segments", return_value=1
+    ), patch(
         "backend.payroll_operations._apply_time_record_role_tag"
     ) as tag, patch(
         "backend.payroll_operations.list_time_records"
@@ -253,6 +257,8 @@ def test_update_role_only_when_session_row_unchanged(conn):
     with patch("backend.payroll_operations._session_in_org", return_value=True), patch(
         "backend.payroll_operations.table_has_column", return_value=False
     ), patch("backend.payroll_operations._sum_break_seconds", return_value=0), patch(
+        "backend.payroll_operations._count_role_segments", return_value=1
+    ), patch(
         "backend.payroll_operations._apply_time_record_role_tag"
     ) as tag, patch(
         "backend.payroll_operations.list_time_records"
@@ -274,14 +280,45 @@ def test_update_role_only_when_session_row_unchanged(conn):
     assert tag.call_args.kwargs["role_id"] == 2
 
 
-def test_resync_role_segments_retag_last_assignment(conn):
+def test_resync_role_segments_edge_adjusts_without_retag(conn):
+    """Clock resync must preserve segment rows — only nudge first start / last end."""
     schema_cur = MagicMock()
-    schema_cur.fetchone.return_value = {"category_id": 1, "role_id": 2}
-    conn.cursor.side_effect = [schema_cur]
+    schema_cur.fetchall.return_value = [
+        {
+            "id": 1,
+            "started_at": datetime(2026, 9, 10, 5, 35),
+            "ended_at": datetime(2026, 9, 10, 7, 4),
+            "category_id": 1,
+            "role_id": 1,
+            "category_role_id": 10,
+        },
+        {
+            "id": 2,
+            "started_at": datetime(2026, 9, 10, 7, 4),
+            "ended_at": datetime(2026, 9, 10, 7, 56),
+            "category_id": 1,
+            "role_id": 2,
+            "category_role_id": 11,
+        },
+        {
+            "id": 3,
+            "started_at": datetime(2026, 9, 10, 7, 56),
+            "ended_at": None,
+            "category_id": 1,
+            "role_id": 3,
+            "category_role_id": 12,
+        },
+    ]
+    upd = MagicMock()
+    conn.cursor.side_effect = [schema_cur, upd]
 
     with patch("backend.payroll_operations.table_exists", return_value=True), patch(
+        "backend.payroll_operations.table_has_column", return_value=False
+    ), patch(
         "backend.payroll_operations._apply_time_record_role_tag"
-    ) as tag:
+    ) as tag, patch(
+        "backend.payroll_operations._sync_session_current_assignment_from_segments"
+    ) as sync:
         from backend.payroll_operations import _resync_role_segments_to_session_clock
 
         ok = _resync_role_segments_to_session_clock(
@@ -289,18 +326,20 @@ def test_resync_role_segments_retag_last_assignment(conn):
             3,
             session_id=792,
             user_id=19,
-            started_at=datetime(2026, 7, 28, 8, 0),
+            started_at=datetime(2026, 9, 10, 5, 30),
             ended_at=None,
         )
 
     assert ok is True
-    tag.assert_called_once()
-    kwargs = tag.call_args.kwargs
-    assert kwargs["session_id"] == 792
-    assert kwargs["category_id"] == 1
-    assert kwargs["role_id"] == 2
-    assert kwargs["started_at"] == datetime(2026, 7, 28, 8, 0)
-    assert kwargs["ended_at"] is None
+    tag.assert_not_called()
+    sync.assert_called_once()
+    # First segment start nudged earlier; last end already open/matching — one UPDATE.
+    assert upd.execute.call_count == 1
+    sql, params = upd.execute.call_args[0]
+    assert "UPDATE shift_job_segments" in sql
+    assert "started_at=%s" in sql
+    assert params[0] == datetime(2026, 9, 10, 5, 30)
+    assert params[1:] == (1, 792)
 
 
 def test_update_without_role_fields_still_resyncs_segments(conn):

@@ -35,6 +35,7 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import {
   deletePayrollTimeRecord,
+  deletePayrollTimeRecordSegment,
   getPayrollCalendarSettings,
   getPayrollScheduleSettings,
   getPayrollScheduleWorkers,
@@ -42,6 +43,7 @@ import {
   getTaUsers,
   getTaskTrackingSelectionTree,
   patchPayrollTimeRecord,
+  patchPayrollTimeRecordSegment,
   postApprovePayrollTimeRecord,
   postBulkApprovePayrollTimeRecords,
   postPayrollTimeRecord,
@@ -117,6 +119,13 @@ const emptyForm = () => ({
   clock_in_at: "",
   clock_out_at: "",
   notes: "",
+});
+
+const emptySegmentForm = () => ({
+  category_id: "",
+  role_id: "",
+  started_at: "",
+  ended_at: "",
 });
 
 function hoursCellSx(level, theme) {
@@ -208,7 +217,14 @@ export default function PayrollTimeRecordsPanel({
   const [form, setForm] = useState(emptyForm);
   const [initialRoleKey, setInitialRoleKey] = useState("");
   const [editingId, setEditingId] = useState(null);
+  const [editingSegmentCount, setEditingSegmentCount] = useState(0);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [segmentEditorOpen, setSegmentEditorOpen] = useState(false);
+  const [segmentForm, setSegmentForm] = useState(emptySegmentForm);
+  const [segmentTarget, setSegmentTarget] = useState(null);
+  const [segmentEditorError, setSegmentEditorError] = useState("");
+  const [segmentWarning, setSegmentWarning] = useState("");
+  const [segmentDeleteTarget, setSegmentDeleteTarget] = useState(null);
   const [saving, setSaving] = useState(false);
   const [bulkApproving, setBulkApproving] = useState(false);
 
@@ -303,6 +319,7 @@ export default function PayrollTimeRecordsPanel({
   const openAdd = () => {
     setEditorMode("add");
     setEditingId(null);
+    setEditingSegmentCount(0);
     setInitialRoleKey("");
     setEditorError("");
     setForm(emptyForm());
@@ -314,6 +331,7 @@ export default function PayrollTimeRecordsPanel({
     setEditingId(row.id);
     setEditorError("");
     const segs = Array.isArray(row.role_segments) ? row.role_segments : [];
+    setEditingSegmentCount(segs.length);
     const lastSeg = segs.length ? segs[segs.length - 1] : null;
     const categoryId = lastSeg?.category_id != null ? String(lastSeg.category_id) : "";
     const roleId = lastSeg?.role_id != null ? String(lastSeg.role_id) : "";
@@ -339,20 +357,22 @@ export default function PayrollTimeRecordsPanel({
       setEditorError("Clock out must be after clock in.");
       return;
     }
+    const multiRoleDay = editorMode === "edit" && editingSegmentCount > 1;
     const hasCategory = form.category_id !== "" && form.category_id != null;
     const hasRole = form.role_id !== "" && form.role_id != null;
-    if (hasCategory !== hasRole) {
+    if (!multiRoleDay && hasCategory !== hasRole) {
       setEditorError("Select both category and role to tag a role, or leave both blank.");
       return;
     }
-    if ((hasCategory || hasRole) && !selectionTree.length) {
+    if (!multiRoleDay && (hasCategory || hasRole) && !selectionTree.length) {
       setEditorError(
         "Category/role list failed to load. Refresh the page, or check that your account can view job tracking.",
       );
       return;
     }
     const roleKey = `${form.category_id || ""}:${form.role_id || ""}`;
-    const roleChanged = editorMode === "add" || roleKey !== initialRoleKey;
+    const roleChanged =
+      !multiRoleDay && (editorMode === "add" || roleKey !== initialRoleKey);
     setSaving(true);
     setEditorError("");
     setError("");
@@ -435,11 +455,107 @@ export default function PayrollTimeRecordsPanel({
     }
   };
 
+  const openSegmentEdit = (row, seg) => {
+    setSegmentTarget({ record: row, segment: seg });
+    setSegmentEditorError("");
+    setSegmentWarning("");
+    setSegmentForm({
+      category_id: seg?.category_id != null ? String(seg.category_id) : "",
+      role_id: seg?.role_id != null ? String(seg.role_id) : "",
+      started_at: toDatetimeLocal(seg?.started_at),
+      ended_at: toDatetimeLocal(seg?.ended_at),
+    });
+    setSegmentEditorOpen(true);
+  };
+
+  const saveSegmentEditor = async () => {
+    if (!segmentTarget?.record?.id || !segmentTarget?.segment?.id) return;
+    if (!segmentForm.started_at) {
+      setSegmentEditorError("Start time is required.");
+      return;
+    }
+    const hasCategory = segmentForm.category_id !== "" && segmentForm.category_id != null;
+    const hasRole = segmentForm.role_id !== "" && segmentForm.role_id != null;
+    if (!hasCategory || !hasRole) {
+      setSegmentEditorError("Category and role are required for a role segment.");
+      return;
+    }
+    if (!selectionTree.length) {
+      setSegmentEditorError(
+        "Category/role list failed to load. Refresh the page, or check that your account can view job tracking.",
+      );
+      return;
+    }
+    const endApi = segmentForm.ended_at ? toApiDateTime(segmentForm.ended_at) : "";
+    const startApi = toApiDateTime(segmentForm.started_at);
+    if (endApi && endApi <= startApi) {
+      setSegmentEditorError("End time must be after start time.");
+      return;
+    }
+    setSaving(true);
+    setSegmentEditorError("");
+    setSegmentWarning("");
+    setError("");
+    try {
+      const res = await patchPayrollTimeRecordSegment(
+        segmentTarget.record.id,
+        segmentTarget.segment.id,
+        {
+          category_id: Number(segmentForm.category_id),
+          role_id: Number(segmentForm.role_id),
+          started_at: startApi,
+          ended_at: endApi,
+        },
+      );
+      const warnings = Array.isArray(res.data?.warnings) ? res.data.warnings : [];
+      setSegmentEditorOpen(false);
+      setSegmentTarget(null);
+      if (warnings.length) {
+        setSegmentWarning(warnings.join(" "));
+      }
+      await load();
+    } catch (e) {
+      setSegmentEditorError(
+        e.response?.data?.error || e.message || "Role segment save failed",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmSegmentDelete = async () => {
+    if (!segmentDeleteTarget?.record?.id || !segmentDeleteTarget?.segment?.id) return;
+    setSaving(true);
+    setError("");
+    setSegmentWarning("");
+    try {
+      const res = await deletePayrollTimeRecordSegment(
+        segmentDeleteTarget.record.id,
+        segmentDeleteTarget.segment.id,
+      );
+      const warnings = Array.isArray(res.data?.warnings) ? res.data.warnings : [];
+      setSegmentDeleteTarget(null);
+      if (warnings.length) {
+        setSegmentWarning(warnings.join(" "));
+      }
+      await load();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Role segment delete failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <Stack spacing={2} sx={{ width: "100%", minWidth: 0 }}>
       {error ? (
         <Alert severity="error" onClose={() => setError("")}>
           {error}
+        </Alert>
+      ) : null}
+      {segmentWarning ? (
+        <Alert severity="warning" onClose={() => setSegmentWarning("")}>
+          {segmentWarning}
         </Alert>
       ) : null}
       <Paper sx={{ p: 2 }}>
@@ -647,7 +763,8 @@ export default function PayrollTimeRecordsPanel({
           <TableBody>
             {displayRows.flatMap((r) => {
               const segs = Array.isArray(r.role_segments) ? r.role_segments : [];
-              const showSegRows = segs.length > 1;
+              const showSegRows = segs.length >= 1;
+              const multiRole = segs.length > 1;
               const parent = (
               <TableRow
                 key={r.id}
@@ -673,7 +790,7 @@ export default function PayrollTimeRecordsPanel({
                   title={r.role_label || undefined}
                 >
                   {r.role_label || (segs.length === 1 ? segs[0].display_label : null) || "—"}
-                  {showSegRows ? (
+                  {multiRole ? (
                     <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
                       ({segs.length})
                     </Typography>
@@ -728,12 +845,12 @@ export default function PayrollTimeRecordsPanel({
                       </IconButton>
                     </Tooltip>
                   ) : null}
-                  <Tooltip title="Edit">
+                  <Tooltip title="Edit attendance day">
                     <IconButton size="small" onClick={() => openEdit(r)} aria-label="Edit">
                       <EditIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
-                  <Tooltip title="Delete">
+                  <Tooltip title="Delete attendance day">
                     <IconButton
                       size="small"
                       color="error"
@@ -769,9 +886,32 @@ export default function PayrollTimeRecordsPanel({
                     {formatEasternTimeShort(seg.started_at)}
                   </TableCell>
                   <TableCell sx={{ whiteSpace: "nowrap", fontSize: "0.8125rem" }}>
-                    {formatEasternTimeShort(seg.ended_at)}
+                    {seg.ended_at ? formatEasternTimeShort(seg.ended_at) : "Open"}
                   </TableCell>
-                  <TableCell colSpan={6} />
+                  <TableCell colSpan={5} />
+                  <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                    <Tooltip title="Edit role segment">
+                      <IconButton
+                        size="small"
+                        onClick={() => openSegmentEdit(r, seg)}
+                        aria-label="Edit role segment"
+                        sx={{ opacity: 0.85 }}
+                      >
+                        <EditIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Delete role segment">
+                      <IconButton
+                        size="small"
+                        color="error"
+                        onClick={() => setSegmentDeleteTarget({ record: r, segment: seg })}
+                        aria-label="Delete role segment"
+                        sx={{ opacity: 0.85 }}
+                      >
+                        <DeleteIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                    </Tooltip>
+                  </TableCell>
                 </TableRow>
               ));
               return [parent, ...segRows];
@@ -811,71 +951,84 @@ export default function PayrollTimeRecordsPanel({
                 ))}
               </Select>
             </FormControl>
-            <FormControl fullWidth size="small">
-              <InputLabel>Category (optional)</InputLabel>
-              <Select
-                label="Category (optional)"
-                value={form.category_id}
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    category_id: e.target.value,
-                    role_id: "",
-                  }))
-                }
-              >
-                <MenuItem value="">
-                  <em>No role tag</em>
-                </MenuItem>
-                {selectionTree.map((cat) => (
-                  <MenuItem key={cat.id} value={String(cat.id)}>
-                    {cat.name || cat.category_name}
-                  </MenuItem>
-                ))}
-                {form.category_id &&
-                !selectionTree.some((c) => String(c.id) === String(form.category_id)) ? (
-                  <MenuItem value={String(form.category_id)}>
-                    Current category (id {form.category_id})
-                  </MenuItem>
-                ) : null}
-              </Select>
-            </FormControl>
-            <FormControl fullWidth size="small" disabled={!form.category_id}>
-              <InputLabel>Role (optional)</InputLabel>
-              <Select
-                label="Role (optional)"
-                value={form.role_id}
-                onChange={(e) => setForm((f) => ({ ...f, role_id: e.target.value }))}
-              >
-                <MenuItem value="">
-                  <em>Select role</em>
-                </MenuItem>
-                {(
-                  selectionTree.find((c) => String(c.id) === String(form.category_id))?.roles || []
-                ).map((role) => (
-                  <MenuItem
-                    key={role.role_id ?? role.id}
-                    value={String(role.role_id ?? role.id)}
+            {editorMode === "edit" && editingSegmentCount > 1 ? (
+              <Alert severity="info">
+                This day has {editingSegmentCount} role segments. Day-level category/role editing is
+                disabled so multi-role history is preserved — use Edit on each role segment row
+                instead. Clock in/out still adjusts only the first/last segment edges.
+              </Alert>
+            ) : (
+              <>
+                <FormControl fullWidth size="small">
+                  <InputLabel>Category (optional)</InputLabel>
+                  <Select
+                    label="Category (optional)"
+                    value={form.category_id}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        category_id: e.target.value,
+                        role_id: "",
+                      }))
+                    }
                   >
-                    {displayRoleLabel(role)}
-                  </MenuItem>
-                ))}
-                {form.role_id &&
-                !(
-                  selectionTree
-                    .find((c) => String(c.id) === String(form.category_id))
-                    ?.roles || []
-                ).some((role) => String(role.role_id ?? role.id) === String(form.role_id)) ? (
-                  <MenuItem value={String(form.role_id)}>
-                    Current role (id {form.role_id})
-                  </MenuItem>
-                ) : null}
-              </Select>
-            </FormControl>
-            <Typography variant="caption" color="text.secondary">
-              Tag the category and role for this shift. Leave blank if unknown — you can set it later
-              while editing. Works for open (still clocked-in) records too.
-            </Typography>
+                    <MenuItem value="">
+                      <em>No role tag</em>
+                    </MenuItem>
+                    {selectionTree.map((cat) => (
+                      <MenuItem key={cat.id} value={String(cat.id)}>
+                        {cat.name || cat.category_name}
+                      </MenuItem>
+                    ))}
+                    {form.category_id &&
+                    !selectionTree.some((c) => String(c.id) === String(form.category_id)) ? (
+                      <MenuItem value={String(form.category_id)}>
+                        Current category (id {form.category_id})
+                      </MenuItem>
+                    ) : null}
+                  </Select>
+                </FormControl>
+                <FormControl fullWidth size="small" disabled={!form.category_id}>
+                  <InputLabel>Role (optional)</InputLabel>
+                  <Select
+                    label="Role (optional)"
+                    value={form.role_id}
+                    onChange={(e) => setForm((f) => ({ ...f, role_id: e.target.value }))}
+                  >
+                    <MenuItem value="">
+                      <em>Select role</em>
+                    </MenuItem>
+                    {(
+                      selectionTree.find((c) => String(c.id) === String(form.category_id))
+                        ?.roles || []
+                    ).map((role) => (
+                      <MenuItem
+                        key={role.role_id ?? role.id}
+                        value={String(role.role_id ?? role.id)}
+                      >
+                        {displayRoleLabel(role)}
+                      </MenuItem>
+                    ))}
+                    {form.role_id &&
+                    !(
+                      selectionTree
+                        .find((c) => String(c.id) === String(form.category_id))
+                        ?.roles || []
+                    ).some(
+                      (role) => String(role.role_id ?? role.id) === String(form.role_id),
+                    ) ? (
+                      <MenuItem value={String(form.role_id)}>
+                        Current role (id {form.role_id})
+                      </MenuItem>
+                    ) : null}
+                  </Select>
+                </FormControl>
+                <Typography variant="caption" color="text.secondary">
+                  Tag the category and role for this shift. Leave blank if unknown — you can set it
+                  later while editing. Works for open (still clocked-in) records too.
+                </Typography>
+              </>
+            )}
             <PayrollDateTimeField
               label="Clock in"
               value={form.clock_in_at}
@@ -920,6 +1073,135 @@ export default function PayrollTimeRecordsPanel({
           <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
           <Button color="error" variant="contained" onClick={confirmDelete} disabled={saving}>
             Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={segmentEditorOpen}
+        onClose={() => !saving && setSegmentEditorOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Edit role segment</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            {segmentEditorError ? (
+              <Alert severity="error" onClose={() => setSegmentEditorError("")}>
+                {segmentEditorError}
+              </Alert>
+            ) : null}
+            <Typography variant="body2" color="text.secondary">
+              Updates only this role segment for {segmentTarget?.record?.worker_name}. Employee
+              check-in/out for the day is not changed.
+            </Typography>
+            <FormControl fullWidth size="small">
+              <InputLabel>Category</InputLabel>
+              <Select
+                label="Category"
+                value={segmentForm.category_id}
+                onChange={(e) =>
+                  setSegmentForm((f) => ({
+                    ...f,
+                    category_id: e.target.value,
+                    role_id: "",
+                  }))
+                }
+              >
+                {selectionTree.map((cat) => (
+                  <MenuItem key={cat.id} value={String(cat.id)}>
+                    {cat.name || cat.category_name}
+                  </MenuItem>
+                ))}
+                {segmentForm.category_id &&
+                !selectionTree.some((c) => String(c.id) === String(segmentForm.category_id)) ? (
+                  <MenuItem value={String(segmentForm.category_id)}>
+                    Current category (id {segmentForm.category_id})
+                  </MenuItem>
+                ) : null}
+              </Select>
+            </FormControl>
+            <FormControl fullWidth size="small" disabled={!segmentForm.category_id}>
+              <InputLabel>Role</InputLabel>
+              <Select
+                label="Role"
+                value={segmentForm.role_id}
+                onChange={(e) => setSegmentForm((f) => ({ ...f, role_id: e.target.value }))}
+              >
+                {(
+                  selectionTree.find((c) => String(c.id) === String(segmentForm.category_id))
+                    ?.roles || []
+                ).map((role) => (
+                  <MenuItem
+                    key={role.role_id ?? role.id}
+                    value={String(role.role_id ?? role.id)}
+                  >
+                    {displayRoleLabel(role)}
+                  </MenuItem>
+                ))}
+                {segmentForm.role_id &&
+                !(
+                  selectionTree
+                    .find((c) => String(c.id) === String(segmentForm.category_id))
+                    ?.roles || []
+                ).some(
+                  (role) => String(role.role_id ?? role.id) === String(segmentForm.role_id),
+                ) ? (
+                  <MenuItem value={String(segmentForm.role_id)}>
+                    Current role (id {segmentForm.role_id})
+                  </MenuItem>
+                ) : null}
+              </Select>
+            </FormControl>
+            <PayrollDateTimeField
+              label="Segment start"
+              value={segmentForm.started_at}
+              onChange={(v) => setSegmentForm((f) => ({ ...f, started_at: v }))}
+            />
+            <PayrollDateTimeField
+              label="Segment end (optional / Open)"
+              value={segmentForm.ended_at}
+              onChange={(v) => setSegmentForm((f) => ({ ...f, ended_at: v }))}
+              clearable
+            />
+            <Typography variant="caption" color="text.secondary">
+              Leave end blank for an open/current segment. Gaps between segments are allowed and
+              will warn; overlapping times are blocked. Adjacent segments are not auto-adjusted.
+            </Typography>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSegmentEditorOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={saveSegmentEditor} disabled={saving}>
+            {saving ? "Saving…" : "Save segment"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={!!segmentDeleteTarget}
+        onClose={() => setSegmentDeleteTarget(null)}
+      >
+        <DialogTitle>Delete role segment?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            Remove only{" "}
+            <strong>{segmentDeleteTarget?.segment?.display_label || "this role segment"}</strong>
+            {segmentDeleteTarget?.record?.worker_name
+              ? ` for ${segmentDeleteTarget.record.worker_name}`
+              : ""}
+            ? The daily attendance record stays; other role segments are unchanged.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSegmentDeleteTarget(null)}>Cancel</Button>
+          <Button
+            color="error"
+            variant="contained"
+            onClick={confirmSegmentDelete}
+            disabled={saving}
+          >
+            Delete segment
           </Button>
         </DialogActions>
       </Dialog>

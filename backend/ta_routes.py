@@ -5932,6 +5932,104 @@ def payroll_time_record_mutate(rid):
         conn.close()
 
 
+def _payroll_time_record_segment_update(conn, oid: int, rid: int, seg_id: int, body: dict):
+    from backend.payroll_operations import update_time_record_segment
+
+    ended_at_provided = "ended_at" in body or "clock_out_at" in body
+    ended_raw = body.get("ended_at") if "ended_at" in body else body.get("clock_out_at")
+    started_raw = body.get("started_at") if "started_at" in body else body.get("clock_in_at")
+    kwargs = {
+        "started_at": started_raw,
+        "ended_at": ended_raw,
+        "ended_at_provided": ended_at_provided,
+    }
+    if "category_id" in body:
+        kwargs["category_id"] = body.get("category_id")
+    if "role_id" in body:
+        kwargs["role_id"] = body.get("role_id")
+    rec = update_time_record_segment(conn, oid, rid, seg_id, **kwargs)
+    write_audit(
+        conn,
+        g.ta_user["id"],
+        "shift_job_segment",
+        seg_id,
+        "payroll_role_segment_update",
+        new=body,
+    )
+    conn.commit()
+    return rec
+
+
+@ta_bp.route(
+    "/payroll/time-records/<int:rid>/segments/<int:seg_id>/save",
+    methods=["POST"],
+)
+@require_auth
+@require_any_perm("ta.settings", "ta.override", "users.edit")
+def payroll_time_record_segment_save(rid, seg_id):
+    """POST alias for role-segment update (CORS-safe, mirrors time-record /save)."""
+    conn = get_db()
+    try:
+        body = request.json or {}
+        try:
+            rec = _payroll_time_record_segment_update(conn, _tenant_id(), rid, seg_id, body)
+            return jsonify(rec)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_time_record_segment_save failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route(
+    "/payroll/time-records/<int:rid>/segments/<int:seg_id>",
+    methods=["PATCH", "DELETE"],
+)
+@require_auth
+@require_any_perm("ta.settings", "ta.override", "users.edit")
+def payroll_time_record_segment_mutate(rid, seg_id):
+    conn = get_db()
+    try:
+        oid = _tenant_id()
+        if request.method == "DELETE":
+            from backend.payroll_operations import delete_time_record_segment
+
+            if not user_has_perm(conn, g.ta_user["id"], "ta.settings") and not user_has_perm(
+                conn, g.ta_user["id"], "ta.override"
+            ):
+                return jsonify({"error": "Forbidden"}), 403
+            try:
+                result = delete_time_record_segment(conn, oid, rid, seg_id)
+            except ValueError as e:
+                msg = str(e)
+                code = 404 if "not found" in msg.lower() else 400
+                return jsonify({"error": msg}), code
+            write_audit(
+                conn,
+                g.ta_user["id"],
+                "shift_job_segment",
+                seg_id,
+                "payroll_role_segment_delete",
+                remarks=f"deleted role segment from time record {rid}",
+            )
+            conn.commit()
+            return jsonify(result)
+
+        body = request.json or {}
+        try:
+            rec = _payroll_time_record_segment_update(conn, oid, rid, seg_id, body)
+            return jsonify(rec)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_time_record_segment_mutate failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/tax-settings", methods=["GET", "PUT"])
 @require_auth
 @require_any_perm("ta.settings", "users.edit")

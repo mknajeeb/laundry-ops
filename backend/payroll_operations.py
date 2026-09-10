@@ -594,6 +594,22 @@ def _parse_optional_id(val: Any) -> Optional[int]:
         raise ValueError("category_id and role_id must be integers") from None
 
 
+def _count_role_segments(conn, session_id: int) -> int:
+    c = conn.cursor()
+    if not table_exists(c, "shift_job_segments"):
+        return 0
+    c.execute(
+        "SELECT COUNT(*) AS cnt FROM shift_job_segments WHERE shift_session_id=%s",
+        (int(session_id),),
+    )
+    row = c.fetchone()
+    if isinstance(row, dict):
+        return int(row.get("cnt") or 0)
+    if row is None:
+        return 0
+    return int(row[0] or 0)
+
+
 def _resync_role_segments_to_session_clock(
     conn,
     organization_id: int,
@@ -603,39 +619,113 @@ def _resync_role_segments_to_session_clock(
     started_at: datetime,
     ended_at: Optional[datetime] = None,
 ) -> bool:
-    """Re-span existing role segments to match the session clock window.
+    """Align first/last role-segment edges to the session clock without collapsing history.
 
-    Payroll clock edits previously updated shift_sessions only, leaving open
-    segments with stale started_at (e.g. Jul 8 → now) that blew up productivity.
-    Manager correction: keep the latest category/role, replace spans with one
-    window matching clock in/out.
+    Multi-segment sessions keep intermediate segments byte-for-byte unchanged and
+    retain stable segment IDs. Only the first segment start and/or last segment end
+    are adjusted when needed for chronology with the new clock window.
+
+    Previously this path deleted all segments and inserted one span from the last
+    assignment — that destroyed valid role-switch history on day-level clock edits.
     """
+    del organization_id, user_id  # reserved for call-site compatibility
     c = conn.cursor(dictionary=True)
     if not table_exists(c, "shift_job_segments"):
         return False
     c.execute(
         """
-        SELECT category_id, role_id
+        SELECT id, started_at, ended_at, category_id, role_id, category_role_id
         FROM shift_job_segments
         WHERE shift_session_id=%s
-        ORDER BY started_at DESC, id DESC
-        LIMIT 1
+        ORDER BY started_at ASC, id ASC
         """,
         (int(session_id),),
     )
-    last = c.fetchone()
-    if not last or last.get("category_id") is None or last.get("role_id") is None:
+    segments = list(c.fetchall() or [])
+    if not segments:
         return False
-    _apply_time_record_role_tag(
-        conn,
-        int(organization_id),
-        session_id=int(session_id),
-        user_id=int(user_id),
-        category_id=int(last["category_id"]),
-        role_id=int(last["role_id"]),
-        started_at=started_at,
-        ended_at=ended_at,
+
+    def _as_dt(val: Any) -> Optional[datetime]:
+        if val is None or val == "":
+            return None
+        if isinstance(val, datetime):
+            return val.replace(tzinfo=None) if val.tzinfo else val
+        return _parse_clock_dt(val)
+
+    first = dict(segments[0])
+    last = dict(segments[-1])
+    first_id = int(first["id"])
+    last_id = int(last["id"])
+    first_start = _as_dt(first.get("started_at"))
+    first_end = _as_dt(first.get("ended_at"))
+    last_start = _as_dt(last.get("started_at"))
+    last_end = _as_dt(last.get("ended_at"))
+    new_start = started_at
+    new_end = ended_at
+
+    if first_end is not None and new_start >= first_end:
+        raise ValueError(
+            "Clock in would invalidate the first role segment "
+            f"(starts at {first_start}, ends at {first_end}). "
+            "Edit role segments individually or choose an earlier clock in."
+        )
+    if new_end is not None and last_start is not None and new_end <= last_start:
+        raise ValueError(
+            "Clock out would invalidate the last role segment "
+            f"(starts at {last_start}). "
+            "Edit role segments individually or choose a later clock out."
+        )
+
+    # Proposed windows for validation (middle segments unchanged).
+    proposed: list[dict] = []
+    for i, seg in enumerate(segments):
+        row = dict(seg)
+        if i == 0:
+            row["started_at"] = new_start
+        if i == len(segments) - 1:
+            row["ended_at"] = new_end
+        proposed.append(row)
+    _validate_role_segment_windows(
+        proposed,
+        session_clock_in=new_start,
+        session_clock_out=new_end,
     )
+
+    upd = conn.cursor()
+    changed = False
+    if first_start != new_start:
+        upd.execute(
+            """
+            UPDATE shift_job_segments
+            SET started_at=%s
+            WHERE id=%s AND shift_session_id=%s
+            """,
+            (new_start, first_id, int(session_id)),
+        )
+        changed = True
+
+    if last_end != new_end:
+        sets = ["ended_at=%s"]
+        params: list[Any] = [new_end]
+        if table_has_column(upd, "shift_job_segments", "close_source"):
+            if new_end is None:
+                sets.append("close_source=NULL")
+            else:
+                sets.append("close_source=%s")
+                params.append("payroll_manual")
+        params.extend([last_id, int(session_id)])
+        upd.execute(
+            f"""
+            UPDATE shift_job_segments
+            SET {', '.join(sets)}
+            WHERE id=%s AND shift_session_id=%s
+            """,
+            tuple(params),
+        )
+        changed = True
+
+    if changed:
+        _sync_session_current_assignment_from_segments(conn, int(session_id), proposed)
     return True
 
 
@@ -930,6 +1020,13 @@ def update_time_record(
         raise ValueError("Time record not found")
 
     if wants_role_tag and cat_id is not None and rol_id is not None:
+        seg_count = _count_role_segments(conn, sid)
+        if seg_count > 1:
+            raise ValueError(
+                "This attendance day has multiple role segments. "
+                "Edit each role segment individually — day-level role tagging "
+                "would replace the full role history."
+            )
         _apply_time_record_role_tag(
             conn,
             int(organization_id),
@@ -941,7 +1038,7 @@ def update_time_record(
             ended_at=new_co,
         )
     else:
-        # Clock-only edits must still realign role segments (prevents multi-day open spans).
+        # Clock/metadata edits realign only first/last segment edges (preserve history).
         _resync_role_segments_to_session_clock(
             conn,
             int(organization_id),
@@ -1097,6 +1194,439 @@ def delete_time_record(conn, organization_id: int, session_id: int) -> bool:
         )
     conn.commit()
     return c.rowcount > 0
+
+
+def _segment_display_label(category_name: Any, role_name: Any) -> Optional[str]:
+    if category_name and role_name:
+        return f"{category_name} — {role_name}"
+    return None
+
+
+def _load_session_for_segment_edit(
+    conn, organization_id: int, session_id: int
+) -> dict:
+    if not _session_in_org(conn, organization_id, session_id):
+        raise ValueError("Time record not found")
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT id, user_id, clock_in_at, clock_out_at, status,
+               net_work_seconds, total_break_seconds
+        FROM shift_sessions
+        WHERE id=%s
+        """,
+        (int(session_id),),
+    )
+    row = c.fetchone()
+    if not row:
+        raise ValueError("Time record not found")
+    return row
+
+
+def _load_role_segments_for_session(conn, session_id: int) -> list[dict]:
+    c = conn.cursor(dictionary=True)
+    if not table_exists(c, "shift_job_segments"):
+        raise ValueError("Role tracking is not available")
+    c.execute(
+        """
+        SELECT id, shift_session_id, user_id, category_id, role_id, category_role_id,
+               category_code, role_code, category_name_snapshot, role_name_snapshot,
+               started_at, ended_at, change_source
+        FROM shift_job_segments
+        WHERE shift_session_id=%s
+        ORDER BY started_at ASC, id ASC
+        """,
+        (int(session_id),),
+    )
+    return list(c.fetchall() or [])
+
+
+def _parse_segment_end(value: Any, *, provided: bool) -> tuple[Optional[datetime], bool]:
+    """Parse ended_at. Empty string clears to open (NULL). Returns (dt_or_none, clear_open)."""
+    if not provided:
+        return None, False
+    if value is None or (isinstance(value, str) and not str(value).strip()):
+        return None, True
+    dt = _parse_clock_dt(value)
+    if dt is None:
+        raise ValueError("Invalid segment end time")
+    return dt, False
+
+
+def _segments_overlap(
+    start_a: datetime,
+    end_a: Optional[datetime],
+    start_b: datetime,
+    end_b: Optional[datetime],
+) -> bool:
+    """True when intervals overlap in time. Touching endpoints (end == other start) is OK."""
+    # Treat open end as far future for comparison.
+    far = datetime(9999, 12, 31, 23, 59, 59)
+    a_end = end_a if end_a is not None else far
+    b_end = end_b if end_b is not None else far
+    return start_a < b_end and start_b < a_end
+
+
+def _validate_role_segment_windows(
+    segments: list[dict],
+    *,
+    session_clock_in: Optional[datetime],
+    session_clock_out: Optional[datetime],
+) -> list[str]:
+    """Reject overlaps / bad chronology; return soft warnings (gaps, outside session)."""
+    warnings: list[str] = []
+    normalized: list[tuple[int, datetime, Optional[datetime]]] = []
+    open_count = 0
+    for seg in segments:
+        sid = int(seg["id"])
+        start = seg.get("started_at")
+        end = seg.get("ended_at")
+        if isinstance(start, str):
+            start = _parse_clock_dt(start)
+        if isinstance(end, str):
+            end = _parse_clock_dt(end)
+        if not start:
+            raise ValueError("Each role segment needs a start time")
+        if end is not None and end <= start:
+            raise ValueError("Role segment end time must be after start time")
+        if end is None:
+            open_count += 1
+        normalized.append((sid, start, end))
+
+    if open_count > 1:
+        raise ValueError("Only one role segment can be open at a time")
+    if session_clock_out is not None and open_count > 0:
+        raise ValueError(
+            "Cannot leave a role segment open on a clocked-out attendance record"
+        )
+
+    for i, (aid, a_start, a_end) in enumerate(normalized):
+        for bid, b_start, b_end in normalized[i + 1 :]:
+            if _segments_overlap(a_start, a_end, b_start, b_end):
+                raise ValueError(
+                    "Role segments overlap. Adjust start/end times so segments do not overlap."
+                )
+
+    ordered = sorted(normalized, key=lambda t: (t[1], t[0]))
+    for i in range(1, len(ordered)):
+        prev_end = ordered[i - 1][2]
+        cur_start = ordered[i][1]
+        if prev_end is not None and cur_start > prev_end:
+            gap_sec = int((cur_start - prev_end).total_seconds())
+            if gap_sec > 0:
+                mins = gap_sec // 60
+                warnings.append(
+                    f"Gap of {mins} minute(s) between role segments "
+                    f"(adjacent times were not auto-adjusted)."
+                )
+
+    if session_clock_in is not None and ordered:
+        first_start = ordered[0][1]
+        if first_start < session_clock_in:
+            warnings.append(
+                "First role segment starts before the employee check-in time "
+                "(attendance check-in was not changed)."
+            )
+        elif first_start > session_clock_in:
+            gap_sec = int((first_start - session_clock_in).total_seconds())
+            if gap_sec > 0:
+                warnings.append(
+                    f"Gap of {gap_sec // 60} minute(s) between check-in and first role segment "
+                    f"(attendance check-in was not changed)."
+                )
+    if session_clock_out is not None and ordered:
+        last_end = ordered[-1][2]
+        if last_end is not None and last_end > session_clock_out:
+            warnings.append(
+                "Last role segment ends after the employee check-out time "
+                "(attendance check-out was not changed)."
+            )
+        elif last_end is not None and last_end < session_clock_out:
+            gap_sec = int((session_clock_out - last_end).total_seconds())
+            if gap_sec > 0:
+                warnings.append(
+                    f"Gap of {gap_sec // 60} minute(s) between last role segment and check-out "
+                    f"(attendance check-out was not changed)."
+                )
+
+    # de-dupe while preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for w in warnings:
+        if w not in seen:
+            seen.add(w)
+            out.append(w)
+    return out
+
+
+def _sync_session_current_assignment_from_segments(
+    conn, session_id: int, segments: list[dict]
+) -> None:
+    """Keep shift_sessions.current_* aligned with the open role segment, if any."""
+    chk = conn.cursor()
+    has_cat = table_has_column(chk, "shift_sessions", "current_category_id")
+    has_role = table_has_column(chk, "shift_sessions", "current_role_id")
+    has_cr = table_has_column(chk, "shift_sessions", "current_category_role_id")
+    if not (has_cat or has_role or has_cr):
+        return
+
+    open_seg = next((s for s in segments if s.get("ended_at") is None), None)
+    sets: list[str] = []
+    vals: list[Any] = []
+    if has_cat:
+        sets.append("current_category_id=%s")
+        vals.append(int(open_seg["category_id"]) if open_seg and open_seg.get("category_id") is not None else None)
+    if has_role:
+        sets.append("current_role_id=%s")
+        vals.append(int(open_seg["role_id"]) if open_seg and open_seg.get("role_id") is not None else None)
+    if has_cr:
+        sets.append("current_category_role_id=%s")
+        cr = open_seg.get("category_role_id") if open_seg else None
+        vals.append(int(cr) if cr is not None else None)
+    if not sets:
+        return
+    vals.append(int(session_id))
+    upd = conn.cursor()
+    upd.execute(f"UPDATE shift_sessions SET {', '.join(sets)} WHERE id=%s", tuple(vals))
+
+
+def _session_summary_for_segment_response(session_row: dict) -> dict:
+    net = session_row.get("net_work_seconds")
+    hours = round(float(net) / 3600.0, 4) if net is not None else None
+    status = session_row.get("status")
+    if status == "active" or session_row.get("clock_out_at") is None:
+        ui_status = "open"
+    else:
+        ui_status = "pending_approval"
+    return json_safe(
+        {
+            "id": int(session_row["id"]),
+            "user_id": int(session_row["user_id"]),
+            "clock_in_at": session_row.get("clock_in_at"),
+            "clock_out_at": session_row.get("clock_out_at"),
+            "status": ui_status,
+            "approved_hours": hours,
+            "net_work_seconds": net,
+        }
+    )
+
+
+def update_time_record_segment(
+    conn,
+    organization_id: int,
+    session_id: int,
+    segment_id: int,
+    *,
+    category_id: Any = None,
+    role_id: Any = None,
+    started_at: Any = None,
+    ended_at: Any = None,
+    ended_at_provided: bool = False,
+) -> dict:
+    """Update a single role segment without rewriting the parent attendance record.
+
+    Does not change shift_sessions clock_in/clock_out or net_work_seconds.
+    Does not auto-adjust adjacent segments (gaps become warnings).
+    """
+    sid = int(session_id)
+    seg_id = int(segment_id)
+    session_row = _load_session_for_segment_edit(conn, organization_id, sid)
+    segments = _load_role_segments_for_session(conn, sid)
+    target = next((s for s in segments if int(s["id"]) == seg_id), None)
+    if not target:
+        raise ValueError("Role segment not found")
+
+    cat_provided = category_id is not None and str(category_id).strip() != ""
+    rol_provided = role_id is not None and str(role_id).strip() != ""
+    if cat_provided ^ rol_provided:
+        raise ValueError("category_id and role_id are required together")
+
+    new_start = target.get("started_at")
+    if started_at is not None and str(started_at).strip() != "":
+        parsed_start = _parse_clock_dt(started_at)
+        if parsed_start is None:
+            raise ValueError("Invalid segment start time")
+        new_start = parsed_start
+    if isinstance(new_start, str):
+        new_start = _parse_clock_dt(new_start)
+    if not new_start:
+        raise ValueError("Segment start time is required")
+
+    new_end = target.get("ended_at")
+    if isinstance(new_end, str):
+        new_end = _parse_clock_dt(new_end)
+    if ended_at_provided:
+        new_end, _ = _parse_segment_end(ended_at, provided=True)
+
+    if new_end is not None and new_end <= new_start:
+        raise ValueError("Role segment end time must be after start time")
+
+    assignment = None
+    if cat_provided and rol_provided:
+        from backend.shift_job_tracking import (
+            ensure_shift_job_tracking_schema,
+            resolve_active_assignment,
+        )
+
+        c_assign = conn.cursor(dictionary=True)
+        ensure_shift_job_tracking_schema(c_assign)
+        assignment = resolve_active_assignment(
+            c_assign,
+            int(organization_id),
+            category_id=int(category_id),
+            role_id=int(role_id),
+        )
+
+    proposed = []
+    for seg in segments:
+        if int(seg["id"]) == seg_id:
+            row = dict(seg)
+            row["started_at"] = new_start
+            row["ended_at"] = new_end
+            if assignment is not None:
+                row["category_id"] = int(assignment["category_id"])
+                row["role_id"] = int(assignment["role_id"])
+                row["category_role_id"] = int(assignment["id"])
+                row["category_code"] = assignment.get("category_code")
+                row["role_code"] = assignment.get("role_code")
+                row["category_name_snapshot"] = assignment.get("category_name")
+                row["role_name_snapshot"] = assignment.get("role_name")
+            proposed.append(row)
+        else:
+            proposed.append(dict(seg))
+
+    warnings = _validate_role_segment_windows(
+        proposed,
+        session_clock_in=session_row.get("clock_in_at"),
+        session_clock_out=session_row.get("clock_out_at"),
+    )
+
+    sets = ["started_at=%s", "ended_at=%s"]
+    params: list[Any] = [new_start, new_end]
+    if assignment is not None:
+        sets.extend(
+            [
+                "category_id=%s",
+                "role_id=%s",
+                "category_role_id=%s",
+                "category_code=%s",
+                "role_code=%s",
+                "category_name_snapshot=%s",
+                "role_name_snapshot=%s",
+            ]
+        )
+        params.extend(
+            [
+                int(assignment["category_id"]),
+                int(assignment["role_id"]),
+                int(assignment["id"]),
+                assignment.get("category_code"),
+                assignment.get("role_code"),
+                assignment.get("category_name"),
+                assignment.get("role_name"),
+            ]
+        )
+
+    chk = conn.cursor()
+    if table_has_column(chk, "shift_job_segments", "close_source"):
+        if new_end is None:
+            sets.append("close_source=NULL")
+        elif target.get("ended_at") is None or new_end != target.get("ended_at"):
+            sets.append("close_source=%s")
+            params.append("payroll_manual")
+
+    params.extend([seg_id, sid])
+    upd = conn.cursor()
+    upd.execute(
+        f"""
+        UPDATE shift_job_segments
+        SET {', '.join(sets)}
+        WHERE id=%s AND shift_session_id=%s
+        """,
+        tuple(params),
+    )
+    if upd.rowcount < 1 and not any(int(s["id"]) == seg_id for s in segments):
+        raise ValueError("Role segment not found")
+
+    _sync_session_current_assignment_from_segments(conn, sid, proposed)
+
+    # Mark session as manager-touched without changing clocks/hours.
+    if table_has_column(chk, "shift_sessions", "manual_override"):
+        mo = conn.cursor()
+        mo.execute(
+            "UPDATE shift_sessions SET manual_override=1 WHERE id=%s",
+            (sid,),
+        )
+
+    conn.commit()
+
+    out_seg = next(s for s in proposed if int(s["id"]) == seg_id)
+    return json_safe(
+        {
+            "id": seg_id,
+            "shift_session_id": sid,
+            "category_id": out_seg.get("category_id"),
+            "role_id": out_seg.get("role_id"),
+            "display_label": _segment_display_label(
+                out_seg.get("category_name_snapshot"),
+                out_seg.get("role_name_snapshot"),
+            ),
+            "started_at": out_seg.get("started_at"),
+            "ended_at": out_seg.get("ended_at"),
+            "change_source": out_seg.get("change_source"),
+            "warnings": warnings,
+            "session": _session_summary_for_segment_response(session_row),
+        }
+    )
+
+
+def delete_time_record_segment(
+    conn, organization_id: int, session_id: int, segment_id: int
+) -> dict:
+    """Delete one role segment. Never deletes the parent attendance (shift_sessions) row."""
+    sid = int(session_id)
+    seg_id = int(segment_id)
+    session_row = _load_session_for_segment_edit(conn, organization_id, sid)
+    segments = _load_role_segments_for_session(conn, sid)
+    if not any(int(s["id"]) == seg_id for s in segments):
+        raise ValueError("Role segment not found")
+
+    remaining = [dict(s) for s in segments if int(s["id"]) != seg_id]
+    warnings = _validate_role_segment_windows(
+        remaining,
+        session_clock_in=session_row.get("clock_in_at"),
+        session_clock_out=session_row.get("clock_out_at"),
+    ) if remaining else []
+
+    c = conn.cursor()
+    c.execute(
+        "DELETE FROM shift_job_segments WHERE id=%s AND shift_session_id=%s",
+        (seg_id, sid),
+    )
+    if c.rowcount < 1:
+        raise ValueError("Role segment not found")
+
+    _sync_session_current_assignment_from_segments(conn, sid, remaining)
+
+    chk = conn.cursor()
+    if table_has_column(chk, "shift_sessions", "manual_override"):
+        mo = conn.cursor()
+        mo.execute(
+            "UPDATE shift_sessions SET manual_override=1 WHERE id=%s",
+            (sid,),
+        )
+
+    conn.commit()
+    return json_safe(
+        {
+            "ok": True,
+            "deleted_segment_id": seg_id,
+            "shift_session_id": sid,
+            "remaining_segment_count": len(remaining),
+            "warnings": warnings,
+            "session": _session_summary_for_segment_response(session_row),
+        }
+    )
 
 
 def _recompute_batch_totals(conn, batch_id: int) -> None:
