@@ -2479,6 +2479,38 @@ export const postManagementRinseWfSplitDecision = (dateEt, bagId, body = {}) => 
   );
 };
 
+/** Current Workload Pending → Manual Review (soft override). */
+export const postManagementWfCwMoveToReview = (dateEt, bagId, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/rinse-wf/current-workload/${encodeURIComponent(bagId)}/move-to-review`,
+    body,
+    { params: { date_et: dateEt }, timeout: 60000 },
+  );
+
+/** Soft-exclude open CW bag from operational workload. */
+export const postManagementWfCwExclude = (dateEt, bagId, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/rinse-wf/current-workload/${encodeURIComponent(bagId)}/exclude`,
+    body,
+    { params: { date_et: dateEt }, timeout: 60000 },
+  );
+
+/** Clear Manual Review override only (system reasons remain). */
+export const postManagementWfCwResolveManual = (dateEt, bagId, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/rinse-wf/current-workload/${encodeURIComponent(bagId)}/resolve-manual`,
+    body,
+    { params: { date_et: dateEt }, timeout: 60000 },
+  );
+
+/** Restore soft-excluded CW bag. */
+export const postManagementWfCwRestore = (dateEt, bagId, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/rinse-wf/current-workload/${encodeURIComponent(bagId)}/restore`,
+    body,
+    { params: { date_et: dateEt }, timeout: 60000 },
+  );
+
 export const getManagementTodaySupplies = (dateEt, params = {}) => {
   const { signal, ...rest } = params || {};
   return axios.get(`${API_BASE}/api/management/today/supplies`, {

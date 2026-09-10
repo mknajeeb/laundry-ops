@@ -45,6 +45,7 @@ import { formatWeightObservedEt, mergeBagListRow } from "./editBagHelpers";
 import { actionsForBagStatus } from "./step1BagActions";
 import { friendlyApiError } from "../../utils/shiftMonitorHelpers";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
+import { displayCustomerName } from "../../utils/displayCustomerName";
 
 /** Session-scoped maintenance catalog (fetched once per browser session). */
 let cachedBulkCatalog = null;
@@ -643,7 +644,8 @@ export default function Step1MetricDrawer({
                       />
                     </Stack>
                     <Typography variant="caption" color="text.secondary" display="block">
-                      {bag.customer_name || "—"} · {bag.entry_class || "—"} · Pre Weight{" "}
+                      {displayCustomerName(bag.customer_name) || "Unknown Customer"} ·{" "}
+                      {bag.entry_class || "—"} · Pre Weight{" "}
                       {bag.pre_weight_lbs ?? "—"} · Post Weight{" "}
                       {bag.post_weight_event_exists
                         ? bag.post_weight_value ?? bag.post_weight_lbs ?? 0

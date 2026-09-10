@@ -18,6 +18,8 @@ import {
 import {
   getManagementRinseWfReviewAction,
   getManagementRinseWfReviewScans,
+  postManagementWfCwExclude,
+  postManagementWfCwResolveManual,
   postVeewashStep1Correction,
 } from "../../api";
 import { fetchReviewDrawerAction } from "./reviewDrawerDetailLoad";
@@ -41,7 +43,7 @@ import {
   validateSpecialtyComplete,
   validateSpecialtySave,
 } from "./reviewDrawerModel";
-import { formatReviewApiError } from "./reviewDisplayLabels";
+import { formatReviewApiError, formatReviewBagShortReason } from "./reviewDisplayLabels";
 
 const NO_CHARGE_REASONS = ["Customer cancelled", "False alarm", "Duplicate scan", "Other"];
 
@@ -763,20 +765,44 @@ export default function ManagementRinseWfReviewDrawerRow({
       onClick={() => onToggle?.(bag.bag_id)}
     >
       <Typography sx={{ fontWeight: 800, fontSize: 14, color: "#0f172a" }}>
-        {displayCustomerName(merged.customer_name) || "Customer unavailable"}
+        {displayCustomerName(merged.customer_name) || "Unknown Customer"}
       </Typography>
       <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.15 }} flexWrap="wrap">
         <ManagementCopyableId value={merged.bag_id} fontSize={13} fontWeight={700} />
         <Typography sx={{ fontSize: 12, color: "#64748b" }}>· {rushLabel(merged.rush_flag)}</Typography>
       </Stack>
       {!expanded ? (
-        <Stack direction="row" spacing={1.25} flexWrap="wrap" sx={{ mt: 0.35 }}>
-          <Typography sx={{ fontSize: 12, color: "#475569" }}>
-            PRE {evidencePreLabel(merged)}
-          </Typography>
-          <Typography sx={{ fontSize: 12, color: "#475569" }}>
-            POST {fmtLbs(merged?.post_weight_lbs ?? merged?.post_weight_value) || "—"}
-          </Typography>
+        <Stack spacing={0.25} sx={{ mt: 0.35 }}>
+          {(merged.review_origin === "system" || merged.review_origin === "both" || !merged.review_origin) ? (
+            <Typography sx={{ fontSize: 12, color: "#475569" }}>
+              {formatReviewBagShortReason(merged)}
+              {merged.review_origin === "system" || merged.system_review_reason_codes?.length
+                ? " · System detected"
+                : ""}
+            </Typography>
+          ) : null}
+          {(merged.review_origin === "manual" || merged.review_origin === "both" || merged.manual_review_active) ? (
+            <Typography sx={{ fontSize: 12, color: "#9a3412" }}>
+              Manual Review
+              {merged.manual_review_reason
+                ? ` · Reason: ${
+                    Array.isArray(merged.manual_review_reason)
+                      ? merged.manual_review_reason.join(", ")
+                      : merged.manual_review_reason
+                  }`
+                : ""}
+              {merged.sent_by ? ` · Sent by: ${merged.sent_by}` : ""}
+              {merged.sent_at ? ` · ${merged.sent_at}` : ""}
+            </Typography>
+          ) : null}
+          <Stack direction="row" spacing={1.25} flexWrap="wrap">
+            <Typography sx={{ fontSize: 12, color: "#475569" }}>
+              PRE {evidencePreLabel(merged)}
+            </Typography>
+            <Typography sx={{ fontSize: 12, color: "#475569" }}>
+              POST {fmtLbs(merged?.post_weight_lbs ?? merged?.post_weight_value) || "—"}
+            </Typography>
+          </Stack>
         </Stack>
       ) : null}
 
@@ -816,9 +842,70 @@ export default function ManagementRinseWfReviewDrawerRow({
             variant="specialty"
           />
         ) : (
-          <Typography sx={{ mt: 0.75, fontSize: 12, color: "#64748b" }}>
-            No inline actions for this review category.
-          </Typography>
+          <Stack spacing={1} sx={{ mt: 0.75 }} onClick={(e) => e.stopPropagation()}>
+            {(merged.manual_review_active || merged.review_origin === "manual" || merged.review_origin === "both") && !readOnly ? (
+              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="success"
+                  onClick={async () => {
+                    try {
+                      const res = await postManagementWfCwResolveManual(selectedDateEt, merged.bag_id, {
+                        reason: "Resolved manual review",
+                      });
+                      if (res?.data?.ok === false) {
+                        setError(res?.data?.error || "Resolve failed");
+                        return;
+                      }
+                      onSaved?.();
+                    } catch (err) {
+                      setError(
+                        formatReviewApiError(
+                          err?.response?.data?.error,
+                          err?.response?.data?.message || err?.message || "Resolve failed",
+                        ),
+                      );
+                    }
+                  }}
+                >
+                  Resolve
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="error"
+                  onClick={async () => {
+                    const reason = window.prompt("Exclude reason (required):");
+                    if (!reason || !String(reason).trim()) return;
+                    try {
+                      const res = await postManagementWfCwExclude(selectedDateEt, merged.bag_id, {
+                        reason: String(reason).trim(),
+                      });
+                      if (res?.data?.ok === false) {
+                        setError(res?.data?.error || "Exclude failed");
+                        return;
+                      }
+                      onSaved?.();
+                    } catch (err) {
+                      setError(
+                        formatReviewApiError(
+                          err?.response?.data?.error,
+                          err?.response?.data?.message || err?.message || "Exclude failed",
+                        ),
+                      );
+                    }
+                  }}
+                >
+                  Exclude
+                </Button>
+              </Stack>
+            ) : (
+              <Typography sx={{ fontSize: 12, color: "#64748b" }}>
+                Expand Manage actions above, or use Current Workload controls for manual review.
+              </Typography>
+            )}
+          </Stack>
         )}
       </Collapse>
     </Box>

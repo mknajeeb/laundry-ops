@@ -660,6 +660,66 @@ def _membership_result_payload(
     }
 
 
+def merge_cw_manual_overrides_into_review_membership(
+    cursor,
+    organization_id: int,
+    membership: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Union active CW Manual Review overrides into Manual Review membership.
+
+    Does not reclassify Specialty / Missing / Split bags. Additive only.
+    """
+    from backend.management_wf_cw_controls import (
+        OVERRIDE_MANUAL_REVIEW,
+        bulk_load_active_cw_overrides,
+    )
+    from backend.rinse_veewash_workload import REASON_MANAGER_SENT_FOR_REVIEW
+
+    out = dict(membership or {})
+    specialty = list(out.get(CATEGORY_SPECIALTY) or [])
+    missing = list(out.get(CATEGORY_MISSING_PORTAL) or [])
+    split_ids = list(out.get(CATEGORY_SPLIT_ORDER) or [])
+    manual = list(out.get(CATEGORY_MANUAL_REVIEW) or [])
+    unknown = list(out.get(CATEGORY_UNKNOWN) or [])
+    claimed = set(specialty) | set(missing) | set(split_ids) | set(manual) | set(unknown)
+    codes_by_bag = dict(out.get("codes_by_bag") or {})
+    disposition = dict(out.get("disposition") or {})
+    override_meta: dict[str, dict[str, Any]] = {}
+
+    try:
+        overrides = bulk_load_active_cw_overrides(cursor, int(organization_id))
+    except Exception:
+        overrides = {}
+
+    added: list[str] = []
+    for bid, ov in overrides.items():
+        if str(ov.get("override_type") or "") != OVERRIDE_MANUAL_REVIEW:
+            continue
+        override_meta[bid] = dict(ov)
+        if bid in claimed:
+            # Already in a system category — keep system membership; expose meta only.
+            continue
+        added.append(bid)
+        manual.append(bid)
+        claimed.add(bid)
+        disposition[bid] = CATEGORY_MANUAL_REVIEW
+        prior = [str(c) for c in (codes_by_bag.get(bid) or []) if c]
+        if REASON_MANAGER_SENT_FOR_REVIEW not in prior:
+            prior.append(REASON_MANAGER_SENT_FOR_REVIEW)
+        codes_by_bag[bid] = prior
+
+    rebuilt = _membership_result_payload(
+        specialty, missing, split_ids, manual=manual, unknown=unknown
+    )
+    rebuilt["disposition"] = disposition
+    rebuilt["codes_by_bag"] = codes_by_bag
+    if "excluded" in out:
+        rebuilt["excluded"] = out.get("excluded")
+    rebuilt["_cw_override_meta"] = override_meta
+    rebuilt["_cw_manual_added"] = sorted(added)
+    return rebuilt
+
+
 def compute_canonical_wf_review_membership(
     cursor,
     organization_id: int,
@@ -674,7 +734,6 @@ def compute_canonical_wf_review_membership(
         load_bulk_resolutions,
         load_bulk_workitem_scan_map,
     )
-    from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
     from backend.rinse_veewash_shift_day import get_day_record, load_day_bags, summary_from_day_record
     from backend.rinse_veewash_workload import (
         build_step1_headline_summary,
@@ -720,9 +779,9 @@ def compute_canonical_wf_review_membership(
         summary = build_step1_headline_summary(
             wl, selected_date_et=selected_date_et, activation_date=activation
         )
-        summary = attach_specialty_metrics_to_summary(
-            cursor, organization_id, selected_date_et, summary
-        )
+        # review_reasons_by_bag is already authoritative on the workload summary.
+        # Specialty metric packs are loaded on the secondary specialty path — do
+        # not re-run attach_specialty_metrics_to_summary here (~2s).
         fresh_reasons = summary.get("review_reasons_by_bag") or {}
 
     headline_split = _split_review_ids_from_headline(headline)
@@ -1135,6 +1194,9 @@ def review_category_count_payload(
             selected_date_et,
             headline=headline,
         )
+        split = merge_cw_manual_overrides_into_review_membership(
+            cursor, int(organization_id), split
+        )
     else:
         split = split_review_categories(headline)
     counts = split["counts"]
@@ -1156,6 +1218,7 @@ def review_category_count_payload(
             CATEGORY_MANUAL_REVIEW: list(split.get(CATEGORY_MANUAL_REVIEW) or []),
             CATEGORY_UNKNOWN: list(split.get(CATEGORY_UNKNOWN) or []),
         },
+        "_cw_override_meta": dict(split.get("_cw_override_meta") or {}),
     }
 
 
@@ -1455,6 +1518,10 @@ def build_management_review_list(
     membership = compute_canonical_wf_review_membership(
         cursor, organization_id, selected_date_et, headline=headline
     )
+    membership = merge_cw_manual_overrides_into_review_membership(
+        cursor, organization_id, membership
+    )
+    cw_override_meta = dict(membership.get("_cw_override_meta") or {})
     try:
         clear_stale_completed_wf_review_day_bag_codes(
             cursor, organization_id, selected_date_et, membership
@@ -1731,6 +1798,45 @@ def build_management_review_list(
                 else smeta.get("canonical_split"),
         }
         _merge_review_weight_fields(bag_row, weight_map.get(bid))
+        from backend.rinse_manual_review import public_manual_review_fields
+        from backend.rinse_veewash_workload import REASON_MANAGER_SENT_FOR_REVIEW
+
+        mr = public_manual_review_fields(snap)
+        ov = cw_override_meta.get(bid) or {}
+        system_codes = [
+            c
+            for c in codes
+            if c and c != REASON_MANAGER_SENT_FOR_REVIEW
+        ]
+        manual_active = bool(ov) or bool(mr.get("sent_back_at")) or (
+            REASON_MANAGER_SENT_FOR_REVIEW in codes and bag_category == CATEGORY_MANUAL_REVIEW
+        )
+        if manual_active and system_codes:
+            review_origin = "both"
+        elif manual_active:
+            review_origin = "manual"
+        else:
+            review_origin = "system"
+        bag_row.update(
+            {
+                "review_origin": review_origin,
+                "system_review_reason_codes": system_codes,
+                "manual_review_active": bool(ov) or bool(mr.get("sent_back_at")),
+                "manual_review_reason": ov.get("reason_text")
+                or snap.get("cw_manual_review_reason")
+                or mr.get("manual_review_reason_codes"),
+                "manual_review_reason_code": ov.get("reason_code")
+                or (
+                    REASON_MANAGER_SENT_FOR_REVIEW
+                    if REASON_MANAGER_SENT_FOR_REVIEW in codes
+                    else None
+                ),
+                "sent_by": ov.get("actor_display_name") or mr.get("sent_back_by"),
+                "sent_at": ov.get("created_at_et") or mr.get("sent_back_at"),
+                "reviewed_by": mr.get("reviewed_by"),
+                "reviewed_at": mr.get("reviewed_at"),
+            }
+        )
         bags_out.append(bag_row)
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 1)
