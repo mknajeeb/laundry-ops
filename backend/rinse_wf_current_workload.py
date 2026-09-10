@@ -355,6 +355,7 @@ def registry_stale_completion_review_bags(
     next_anchors: Mapping[tuple[str, datetime], datetime | None] | None = None,
     timelines_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     ensure_schema: bool = True,
+    registry_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> set[str]:
     """Review only for same-lifecycle registry contradiction without evidence.
 
@@ -362,6 +363,10 @@ def registry_stale_completion_review_bags(
     Same-lifecycle canonical/v2 evidence → not Review (OI should be stamped).
     ``resolve_current_cycle`` is never used here.
     ``as_of_date_et`` is ignored (compat kwarg).
+
+    Management bulk path (``use_bulk_reads``): pass ``next_anchors`` /
+    ``timelines_by_bag`` and optionally ``registry_by_bag``, or omit registry
+    preload to load once via ``get_registry_rows_for_bags`` for all open bags.
     """
     _ = as_of_date_et
     open_set = {normalize_bag_id(b) for b in open_bags if normalize_bag_id(b)}
@@ -381,6 +386,17 @@ def registry_stale_completion_review_bags(
             if normalize_bag_id(r.get("bag_id")) in open_set
         ]
 
+    # One registry preload when Management bulk path is active (next_anchors
+    # and/or ensure_schema=False). Avoids per-bag ensure+SELECT N+1.
+    reg_map: Mapping[str, Mapping[str, Any]] | None = registry_by_bag
+    use_bulk_registry = reg_map is not None or next_anchors is not None or not ensure_schema
+    if reg_map is None and use_bulk_registry:
+        from backend.rinse_bag_registry import get_registry_rows_for_bags
+
+        reg_map = get_registry_rows_for_bags(
+            cursor, int(organization_id), sorted(open_set)
+        )
+
     review: set[str] = set()
     for row in rows:
         bid = normalize_bag_id(row.get("bag_id"))
@@ -397,7 +413,11 @@ def registry_stale_completion_review_bags(
                 anchor,
                 ensure_schema=ensure_schema,
             )
-        reg = _registry_row_for_bag(cursor, int(organization_id), bid)
+        if reg_map is not None:
+            raw_reg = reg_map.get(bid)
+            reg = dict(raw_reg) if isinstance(raw_reg, Mapping) else None
+        else:
+            reg = _registry_row_for_bag(cursor, int(organization_id), bid)
         if not _registry_completed_at_in_oi_window(reg, anchor, end):
             # Historical or non-completed registry → zero CW effect.
             continue
