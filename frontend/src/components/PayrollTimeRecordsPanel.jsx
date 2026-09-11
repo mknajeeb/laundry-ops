@@ -353,7 +353,7 @@ export default function PayrollTimeRecordsPanel({
       category_id: categoryId,
       role_id: roleId,
       clock_in_at: toDatetimeLocal(row.clock_in_at),
-      clock_out_at: toDatetimeLocal(row.clock_out_at),
+      clock_out_at: toDatetimeLocal(row.clock_out_at) || toDatetimeLocal(lastSeg?.ended_at),
       notes: row.notes || "",
     });
     setEditorOpen(true);

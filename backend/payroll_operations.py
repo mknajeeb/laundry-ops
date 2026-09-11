@@ -704,7 +704,8 @@ def _resync_role_segments_to_session_clock(
         )
         changed = True
 
-    if last_end != new_end:
+    # An open parent day must not wipe a manager-set last-segment end.
+    if last_end != new_end and not (new_end is None and last_end is not None):
         sets = ["ended_at=%s"]
         params: list[Any] = [new_end]
         if table_has_column(upd, "shift_job_segments", "close_source"):
@@ -1420,6 +1421,89 @@ def _sync_session_current_assignment_from_segments(
     upd.execute(f"UPDATE shift_sessions SET {', '.join(sets)} WHERE id=%s", tuple(vals))
 
 
+def _as_naive_dt(val: Any) -> Optional[datetime]:
+    if val is None or val == "":
+        return None
+    if isinstance(val, datetime):
+        return val.replace(tzinfo=None) if val.tzinfo else val
+    return _parse_clock_dt(val)
+
+
+def _sync_session_clock_out_from_last_segment(
+    conn,
+    session_row: dict,
+    segments: list[dict],
+    *,
+    edited_segment_id: Optional[int] = None,
+) -> None:
+    """Close (or reopen) the parent day from the last role segment only.
+
+    Segment edits previously left shift_sessions.clock_out NULL, so Time Records
+    stayed Open with 0.00 hours after the last segment already had an end.
+    Clock-in is never changed.
+    """
+    if not segments:
+        return
+    ordered = sorted(
+        segments,
+        key=lambda s: (
+            _as_naive_dt(s.get("started_at")) or datetime.min,
+            int(s.get("id") or 0),
+        ),
+    )
+    last = ordered[-1]
+    last_id = int(last["id"])
+    if edited_segment_id is not None and int(edited_segment_id) != last_id:
+        return
+
+    last_end = _as_naive_dt(last.get("ended_at"))
+    clock_in = _as_naive_dt(session_row.get("clock_in_at"))
+    sid = int(session_row["id"])
+    chk = conn.cursor()
+    has_manual = table_has_column(chk, "shift_sessions", "manual_override")
+
+    if last_end is None:
+        sets = ["clock_out_at=NULL", "status=%s", "net_work_seconds=NULL"]
+        params: list[Any] = ["active"]
+        if has_manual:
+            sets.append("manual_override=1")
+        params.append(sid)
+        conn.cursor().execute(
+            f"UPDATE shift_sessions SET {', '.join(sets)} WHERE id=%s",
+            tuple(params),
+        )
+        session_row["clock_out_at"] = None
+        session_row["status"] = "active"
+        session_row["net_work_seconds"] = None
+        return
+
+    if not clock_in:
+        return
+    if last_end <= clock_in:
+        raise ValueError("Role segment end time must be after the employee check-in")
+
+    br = _sum_break_seconds(conn, sid)
+    net = int((last_end - clock_in).total_seconds()) - br
+    sets = [
+        "clock_out_at=%s",
+        "status=%s",
+        "total_break_seconds=%s",
+        "net_work_seconds=%s",
+    ]
+    params = [last_end, "completed", br, net]
+    if has_manual:
+        sets.append("manual_override=1")
+    params.append(sid)
+    conn.cursor().execute(
+        f"UPDATE shift_sessions SET {', '.join(sets)} WHERE id=%s",
+        tuple(params),
+    )
+    session_row["clock_out_at"] = last_end
+    session_row["status"] = "completed"
+    session_row["net_work_seconds"] = net
+    session_row["total_break_seconds"] = br
+
+
 def _session_summary_for_segment_response(session_row: dict) -> dict:
     net = session_row.get("net_work_seconds")
     hours = round(float(net) / 3600.0, 4) if net is not None else None
@@ -1455,8 +1539,9 @@ def update_time_record_segment(
 ) -> dict:
     """Update a single role segment without rewriting the parent attendance record.
 
-    Does not change shift_sessions clock_in/clock_out or net_work_seconds.
-    Does not auto-adjust adjacent segments (gaps become warnings).
+    Clock-in is never changed. If the edited row is the last segment, its end
+    becomes the parent clock-out and hours. Neighbor segments are not auto-adjusted
+    (gaps become warnings).
     """
     sid = int(session_id)
     seg_id = int(segment_id)
@@ -1582,14 +1667,9 @@ def update_time_record_segment(
         raise ValueError("Role segment not found")
 
     _sync_session_current_assignment_from_segments(conn, sid, proposed)
-
-    # Mark session as manager-touched without changing clocks/hours.
-    if table_has_column(chk, "shift_sessions", "manual_override"):
-        mo = conn.cursor()
-        mo.execute(
-            "UPDATE shift_sessions SET manual_override=1 WHERE id=%s",
-            (sid,),
-        )
+    _sync_session_clock_out_from_last_segment(
+        conn, session_row, proposed, edited_segment_id=seg_id
+    )
 
     conn.commit()
 

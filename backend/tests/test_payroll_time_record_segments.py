@@ -9,6 +9,7 @@ import pytest
 
 from backend.payroll_operations import (
     _segments_overlap,
+    _sync_session_clock_out_from_last_segment,
     _validate_role_segment_windows,
     delete_time_record_segment,
     update_time_record_segment,
@@ -134,6 +135,8 @@ def test_edit_middle_segment_times_only(conn):
     ), patch(
         "backend.payroll_operations._sync_session_current_assignment_from_segments"
     ) as sync, patch(
+        "backend.payroll_operations._sync_session_clock_out_from_last_segment"
+    ), patch(
         "backend.payroll_operations.table_has_column", return_value=False
     ):
         rec = update_time_record_segment(
@@ -202,6 +205,8 @@ def test_edit_first_segment_does_not_change_check_in(conn):
     ), patch(
         "backend.payroll_operations._sync_session_current_assignment_from_segments"
     ), patch(
+        "backend.payroll_operations._sync_session_clock_out_from_last_segment"
+    ), patch(
         "backend.payroll_operations.table_has_column", return_value=False
     ):
         rec = update_time_record_segment(
@@ -252,6 +257,8 @@ def test_edit_open_segment_role_and_start(conn):
     ), patch(
         "backend.payroll_operations._sync_session_current_assignment_from_segments"
     ) as sync, patch(
+        "backend.payroll_operations._sync_session_clock_out_from_last_segment"
+    ), patch(
         "backend.payroll_operations.table_has_column", return_value=False
     ):
         rec = update_time_record_segment(
@@ -298,6 +305,8 @@ def test_delete_middle_segment_keeps_parent_attendance(conn):
     ), patch(
         "backend.payroll_operations._sync_session_current_assignment_from_segments"
     ) as sync, patch(
+        "backend.payroll_operations._sync_session_clock_out_from_last_segment"
+    ), patch(
         "backend.payroll_operations.table_has_column", return_value=False
     ):
         result = delete_time_record_segment(conn, 3, 100, 2)
@@ -424,6 +433,8 @@ def test_extend_hd_segment_gap_and_touch_vs_overlap(conn, new_end, expect_ok):
     ), patch(
         "backend.payroll_operations._sync_session_current_assignment_from_segments"
     ), patch(
+        "backend.payroll_operations._sync_session_clock_out_from_last_segment"
+    ), patch(
         "backend.payroll_operations.table_has_column", return_value=False
     ):
         if expect_ok:
@@ -488,6 +499,8 @@ def test_edited_segment_excludes_itself_from_overlap(conn):
         return_value=segments,
     ), patch(
         "backend.payroll_operations._sync_session_current_assignment_from_segments"
+    ), patch(
+        "backend.payroll_operations._sync_session_clock_out_from_last_segment"
     ), patch(
         "backend.payroll_operations.table_has_column", return_value=False
     ):
@@ -564,3 +577,92 @@ def test_open_last_segment_does_not_false_overlap_earlier_edit():
         session_clock_out=None,
     )
     assert all("overlap" not in w.lower() for w in warnings)
+
+
+def test_last_segment_end_closes_open_parent_session(conn):
+    """Mithila-shaped: last segment already ended, parent still Open → close day."""
+    session = {
+        "id": 1366,
+        "user_id": 35,
+        "clock_in_at": datetime(2026, 9, 10, 7, 53, 51),
+        "clock_out_at": None,
+        "status": "active",
+        "net_work_seconds": None,
+        "total_break_seconds": 0,
+    }
+    segments = [
+        _seg(980, started=datetime(2026, 9, 10, 7, 53, 51), ended=datetime(2026, 9, 10, 8, 51, 40)),
+        _seg(993, started=datetime(2026, 9, 10, 15, 43), ended=datetime(2026, 9, 10, 16, 32)),
+    ]
+    upd = MagicMock()
+    conn.cursor.side_effect = [MagicMock(), upd]
+
+    with patch("backend.payroll_operations.table_has_column", return_value=False), patch(
+        "backend.payroll_operations._sum_break_seconds", return_value=0
+    ):
+        _sync_session_clock_out_from_last_segment(
+            conn, session, segments, edited_segment_id=993
+        )
+
+    assert session["clock_out_at"] == datetime(2026, 9, 10, 16, 32)
+    assert session["status"] == "completed"
+    assert session["net_work_seconds"] == 8 * 3600 + 38 * 60 + 9
+    sql, params = upd.execute.call_args[0]
+    assert "clock_out_at=%s" in sql
+    assert params[0] == datetime(2026, 9, 10, 16, 32)
+    assert "completed" in params
+
+
+def test_middle_segment_edit_does_not_close_parent(conn):
+    session = _session_row()
+    segments = [
+        _seg(980, started=datetime(2026, 9, 10, 7, 53, 51), ended=datetime(2026, 9, 10, 8, 51, 40)),
+        _seg(993, started=datetime(2026, 9, 10, 15, 43), ended=datetime(2026, 9, 10, 16, 32)),
+    ]
+    _sync_session_clock_out_from_last_segment(
+        conn, session, segments, edited_segment_id=980
+    )
+    assert session.get("clock_out_at") is None
+    conn.cursor.assert_not_called()
+
+
+def test_resync_open_day_does_not_wipe_last_segment_end(conn):
+    select_cur = MagicMock()
+    select_cur.fetchall.return_value = [
+        {
+            "id": 980,
+            "started_at": datetime(2026, 9, 10, 7, 53, 51),
+            "ended_at": datetime(2026, 9, 10, 8, 51, 40),
+            "category_id": 1,
+            "role_id": 2,
+            "category_role_id": 10,
+        },
+        {
+            "id": 993,
+            "started_at": datetime(2026, 9, 10, 15, 43),
+            "ended_at": datetime(2026, 9, 10, 16, 32),
+            "category_id": 1,
+            "role_id": 2,
+            "category_role_id": 10,
+        },
+    ]
+    upd = MagicMock()
+    conn.cursor.side_effect = [select_cur, upd]
+
+    with patch("backend.payroll_operations.table_exists", return_value=True), patch(
+        "backend.payroll_operations.table_has_column", return_value=False
+    ), patch("backend.payroll_operations._sync_session_current_assignment_from_segments"):
+        from backend.payroll_operations import _resync_role_segments_to_session_clock
+
+        ok = _resync_role_segments_to_session_clock(
+            conn,
+            3,
+            session_id=1366,
+            user_id=35,
+            started_at=datetime(2026, 9, 10, 7, 53, 51),
+            ended_at=None,
+        )
+
+    assert ok is True
+    # First start unchanged; last end must not be nulled.
+    assert upd.execute.call_count == 0
