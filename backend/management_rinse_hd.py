@@ -559,6 +559,165 @@ def _is_hd_presence_service(service_type: Any) -> bool:
     return "HOME DELIVERY" in st or "HANG DRY" in st or st in ("HOME_DELIVERY", "HANG_DRY")
 
 
+_HD_COUNT_ABSENT = frozenset({"", "NULL", "NONE", "NA", "N/A", "-"})
+_HANG_DRY_SOURCE_LABELS = frozenset({"hang_dry", "hd"})
+_WF_AUTHORITY_SERVICES = frozenset({"WF", "WASH & FOLD", "WASH AND FOLD", "WASH_AND_FOLD"})
+_DUP_HD_PROD_ERRNO = 1062
+
+
+def _parse_mapping_json(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    return {}
+
+
+def hd_count_field_present(value: Any) -> bool:
+    """True when the Cleaner Tickets # HD field is present, including 0 / 0.0."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float, Decimal)):
+        return True
+    text = str(value).strip()
+    if not text or text.upper() in _HD_COUNT_ABSENT:
+        return False
+    return True
+
+
+def extract_hd_count_values(row: Mapping[str, Any] | None) -> list[Any]:
+    """Collect # HD candidates from a presence / run_row / raw payload."""
+    src = dict(row or {})
+    values = [
+        src.get("hd_count_num"),
+        src.get("hd_count_raw"),
+        src.get("hd_count"),
+    ]
+    raw = _parse_mapping_json(src.get("raw_row_json"))
+    if raw:
+        values.extend(
+            [
+                raw.get("hd_count_num"),
+                raw.get("hd_count_raw"),
+                raw.get("hd_count"),
+                raw.get("# HD"),
+            ]
+        )
+    return values
+
+
+def _hang_dry_source_label(row: Mapping[str, Any] | None) -> str:
+    src = dict(row or {})
+    raw = _parse_mapping_json(src.get("raw_row_json"))
+    for key in ("source_label", "source_service", "tickets_source_label"):
+        text = str(src.get(key) or raw.get(key) or "").strip().lower()
+        if text:
+            return text
+    return ""
+
+
+def has_positive_hd_admission_evidence(row: Mapping[str, Any] | None) -> bool:
+    """Positive HD evidence required for hd_day_bag_production admission.
+
+    Acceptable:
+      - # HD / hd_count field present (including 0 / 0.0)
+      - explicit hang_dry / hd source label on the row (when persisted)
+
+    Not sufficient by themselves:
+      - classified service_type == HD
+      - Weight == 0
+      - active=1 presence
+      - bag appears in a combined ship-window run
+    """
+    src = dict(row or {})
+    if _hang_dry_source_label(src) in _HANG_DRY_SOURCE_LABELS:
+        return True
+    return any(hd_count_field_present(v) for v in extract_hd_count_values(src))
+
+
+def _is_authoritative_wf_service(service_type: Any) -> bool:
+    st = str(service_type or "").strip().upper()
+    if not st:
+        return False
+    if st in _WF_AUTHORITY_SERVICES:
+        return True
+    return "WASH" in st and "FOLD" in st
+
+
+def _load_authoritative_wf_bag_ids(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+) -> set[str]:
+    """Bags with WF order-instance or day-bag evidence (admission fail-closed)."""
+    ids = [_norm_bag(b) for b in bag_ids if _norm_bag(b)]
+    if not ids:
+        return set()
+    org = int(organization_id)
+    out: set[str] = set()
+    placeholders = ",".join(["%s"] * len(ids))
+    if table_exists(cursor, "rinse_order_instances"):
+        cursor.execute(
+            f"""
+            SELECT bag_id, service_type
+            FROM rinse_order_instances
+            WHERE organization_id = %s AND bag_id IN ({placeholders})
+            """,
+            (org, *ids),
+        )
+        for row in cursor.fetchall() or []:
+            if _is_authoritative_wf_service(row.get("service_type")):
+                bid = _norm_bag(row.get("bag_id"))
+                if bid:
+                    out.add(bid)
+    if table_exists(cursor, "rinse_shift_monitor_day_bags"):
+        cursor.execute(
+            f"""
+            SELECT bag_id, service_type
+            FROM rinse_shift_monitor_day_bags
+            WHERE organization_id = %s AND bag_id IN ({placeholders})
+            """,
+            (org, *ids),
+        )
+        for row in cursor.fetchall() or []:
+            if _is_authoritative_wf_service(row.get("service_type")):
+                bid = _norm_bag(row.get("bag_id"))
+                if bid:
+                    out.add(bid)
+    return out
+
+
+def hd_row_eligible_for_admission(
+    row: Mapping[str, Any] | None,
+    *,
+    has_authoritative_wf: bool = False,
+) -> bool:
+    """Admission predicate: positive HD evidence, else fail closed.
+
+    Classified HD + missing # HD + WF OI/day_bag is never eligible.
+    Missing / unknown evidence is never eligible.
+    """
+    if not has_positive_hd_admission_evidence(row):
+        return False
+    if has_authoritative_wf and not any(hd_count_field_present(v) for v in extract_hd_count_values(row)):
+        return False
+    return True
+
+
+def _is_duplicate_hd_production_key(exc: BaseException) -> bool:
+    errno = getattr(exc, "errno", None)
+    if errno == _DUP_HD_PROD_ERRNO:
+        return True
+    msg = str(exc).lower()
+    return "uq_hd_day_bag_prod" in msg
+
+
 def _load_hd_portal_bags_for_day(
     cursor,
     organization_id: int,
@@ -583,9 +742,12 @@ def _load_hd_portal_bags_for_day(
             if bid:
                 out.add(bid)
     if table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        raw_col = ""
+        if table_has_column(cursor, "rinse_cleaner_ticket_presence", "raw_row_json"):
+            raw_col = ", raw_row_json"
         cursor.execute(
-            """
-            SELECT bag_id, service_type, active, last_seen_at
+            f"""
+            SELECT bag_id, service_type, active, last_seen_at{raw_col}
             FROM rinse_cleaner_ticket_presence
             WHERE organization_id = %s
               AND active = 1
@@ -593,7 +755,7 @@ def _load_hd_portal_bags_for_day(
             (org,),
         )
         for row in cursor.fetchall() or []:
-            if not _is_hd_presence_service(row.get("service_type")):
+            if not has_positive_hd_admission_evidence(row):
                 continue
             last_seen = _as_naive(row.get("last_seen_at"))
             if last_seen is None:
@@ -769,11 +931,51 @@ def _load_hd_service_hints(cursor, organization_id: int, selected_date_et: date)
         bid = _norm_bag(row.get("bag_id"))
         if bid:
             out[bid] = "HD"
+    if not out:
+        return {}
+    evidenced = _filter_bags_with_positive_hd_evidence(cursor, int(organization_id), list(out))
+    return {bid: "HD" for bid in out if bid in evidenced}
+
+
+def _filter_bags_with_positive_hd_evidence(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+) -> set[str]:
+    """Keep bag IDs that have # HD (or hang_dry source) evidence on presence."""
+    ids = [_norm_bag(b) for b in bag_ids if _norm_bag(b)]
+    if not ids or not table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        return set()
+    org = int(organization_id)
+    placeholders = ",".join(["%s"] * len(ids))
+    raw_col = ", raw_row_json" if table_has_column(cursor, "rinse_cleaner_ticket_presence", "raw_row_json") else ""
+    extra = ""
+    if table_has_column(cursor, "rinse_cleaner_ticket_presence", "hd_count_raw"):
+        extra += ", hd_count_raw"
+    if table_has_column(cursor, "rinse_cleaner_ticket_presence", "hd_count_num"):
+        extra += ", hd_count_num"
+    cursor.execute(
+        f"""
+        SELECT bag_id, service_type{extra}{raw_col}
+        FROM rinse_cleaner_ticket_presence
+        WHERE organization_id = %s AND bag_id IN ({placeholders})
+        """,
+        (org, *ids),
+    )
+    out: set[str] = set()
+    for row in cursor.fetchall() or []:
+        bid = _norm_bag(row.get("bag_id"))
+        if bid and has_positive_hd_admission_evidence(row):
+            out.add(bid)
     return out
 
 
 def _load_hd_discovery_bag_ids(cursor, organization_id: int) -> set[str]:
-    """Active HD portal presence — discovery/admission only (not date membership).
+    """Active portal presence with positive HD evidence — discovery/admission only.
+
+    Classified service_type=HD / active=1 / Weight=0 are not sufficient.
+    Requires # HD present (including 0.0) or explicit hang_dry source provenance.
+    WF OI/day_bag bags without # HD fail closed.
 
     WARNING: ship-window scrapes are absence_capable=false, so active=1 can retain
     stale HD rows from prior windows when later scrapes are anomalous / not applied.
@@ -784,20 +986,36 @@ def _load_hd_discovery_bag_ids(cursor, organization_id: int) -> set[str]:
     if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
         return set()
     org = int(organization_id)
+    raw_col = ", raw_row_json" if table_has_column(cursor, "rinse_cleaner_ticket_presence", "raw_row_json") else ""
+    extra = ""
+    if table_has_column(cursor, "rinse_cleaner_ticket_presence", "hd_count_raw"):
+        extra += ", hd_count_raw"
+    if table_has_column(cursor, "rinse_cleaner_ticket_presence", "hd_count_num"):
+        extra += ", hd_count_num"
     cursor.execute(
-        """
-        SELECT bag_id, service_type
+        f"""
+        SELECT bag_id, service_type{extra}{raw_col}
         FROM rinse_cleaner_ticket_presence
         WHERE organization_id = %s AND active = 1
         """,
         (org,),
     )
-    out: set[str] = set()
-    for row in cursor.fetchall() or []:
-        if not _is_hd_presence_service(row.get("service_type")):
-            continue
+    rows = [dict(r) for r in (cursor.fetchall() or [])]
+    candidates: list[str] = []
+    by_bag: dict[str, dict[str, Any]] = {}
+    for row in rows:
         bid = _norm_bag(row.get("bag_id"))
-        if bid:
+        if not bid:
+            continue
+        by_bag[bid] = row
+        if has_positive_hd_admission_evidence(row):
+            candidates.append(bid)
+    if not candidates:
+        return set()
+    wf_ids = _load_authoritative_wf_bag_ids(cursor, org, candidates)
+    out: set[str] = set()
+    for bid in candidates:
+        if hd_row_eligible_for_admission(by_bag.get(bid), has_authoritative_wf=bid in wf_ids):
             out.add(bid)
     return out
 
@@ -929,24 +1147,41 @@ def _ensure_admitted_production_row(
 
     now = business_now()
     now_naive = now.replace(tzinfo=None) if getattr(now, "tzinfo", None) else now
-    cursor.execute(
-        """
-        INSERT INTO hd_day_bag_production (
-          organization_id, operations_date_et, bag_id, status, workflow_status,
-          admitted_at, created_by_user_id, updated_by_user_id, version
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1)
-        """,
-        (
-            org,
-            admission_date_et,
-            bid,
-            PROD_NOT_RECORDED,
-            STATUS_PENDING_WASH,
-            now_naive,
-            actor_user_id,
-            actor_user_id,
-        ),
-    )
+    try:
+        cursor.execute(
+            """
+            INSERT INTO hd_day_bag_production (
+              organization_id, operations_date_et, bag_id, status, workflow_status,
+              admitted_at, created_by_user_id, updated_by_user_id, version
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1)
+            """,
+            (
+                org,
+                admission_date_et,
+                bid,
+                PROD_NOT_RECORDED,
+                STATUS_PENDING_WASH,
+                now_naive,
+                actor_user_id,
+                actor_user_id,
+            ),
+        )
+    except Exception as exc:
+        if not _is_duplicate_hd_production_key(exc):
+            raise
+        raced = _load_production_by_bag(cursor, org, [bid]).get(bid)
+        if not raced:
+            raise
+        wf = str(raced.get("workflow_status") or "").strip().upper()
+        if wf == WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED:
+            return {
+                "bag_id": bid,
+                "created": False,
+                "reactivated": False,
+                "quarantined": True,
+                "row": raced,
+            }
+        return {"bag_id": bid, "created": False, "reactivated": False, "row": raced}
     if table_exists(cursor, "hd_day_bag_production_audits"):
         cursor.execute(
             """

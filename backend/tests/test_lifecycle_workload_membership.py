@@ -177,10 +177,13 @@ def test_wf_unknown_weight_does_not_remove_from_workload():
 def test_hd_discovery_bag_ids_from_active_presence_not_date():
     cur = MagicMock()
     cur.fetchall.side_effect = [
-        [{"bag_id": "HD1", "service_type": "hang_dry"}],
+        [{"bag_id": "HD1", "service_type": "hang_dry", "raw_row_json": {"hd_count_raw": "0.0"}}],
+        [],
         [],
     ]
-    with patch("backend.management_rinse_hd.table_exists", return_value=True):
+    with patch("backend.management_rinse_hd.table_exists", return_value=True), patch(
+        "backend.management_rinse_hd.table_has_column", return_value=True
+    ):
         ids = _load_hd_discovery_bag_ids(cur, ORG)
     assert ids == {"HD1"}
 

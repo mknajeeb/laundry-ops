@@ -19,9 +19,9 @@ from urllib.parse import parse_qs, urlparse
 
 from backend.management_rinse_hd import (
     WORKFLOW_STATUS_PRE_ACTIVATION_EXCLUDED,
-    _is_hd_presence_service,
     _norm_bag,
     admit_discovered_hd_bags,
+    has_positive_hd_admission_evidence,
 )
 from backend.rinse_ship_window_tickets_urls import ship_to_vendor_window_et
 from backend.ta_helpers import table_exists
@@ -103,7 +103,7 @@ def _load_hd_bag_ids_for_presence_run(cursor, organization_id: int, run_id: int)
         return set()
     cursor.execute(
         """
-        SELECT bag_id, service_type
+        SELECT bag_id, service_type, hd_count_num, hd_count_raw, raw_row_json
         FROM rinse_cleaner_ticket_presence_run_rows
         WHERE organization_id = %s AND presence_run_id = %s
         """,
@@ -111,7 +111,7 @@ def _load_hd_bag_ids_for_presence_run(cursor, organization_id: int, run_id: int)
     )
     out: set[str] = set()
     for row in cursor.fetchall() or []:
-        if not _is_hd_presence_service(row.get("service_type")):
+        if not has_positive_hd_admission_evidence(row):
             continue
         bid = _norm_bag(row.get("bag_id"))
         if bid:

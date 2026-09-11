@@ -87,9 +87,9 @@ def test_edd_mismatch_does_not_affect_ship_window_membership_resolution():
         elif "FROM rinse_cleaner_ticket_presence_run_rows" in s:
             # Skylar EDD Sep11 / Rain EDD Sep13 still in ship-window set
             cursor.fetchall.return_value = [
-                {"bag_id": "BLXFDA5KUV", "service_type": "HD"},  # EDD Sep11
-                {"bag_id": "28WV1QS4F9", "service_type": "HD"},  # EDD Sep13
-                {"bag_id": "7J0K1VM6WS", "service_type": "HD"},
+                {"bag_id": "BLXFDA5KUV", "service_type": "HD", "hd_count_raw": "0.0"},
+                {"bag_id": "28WV1QS4F9", "service_type": "HD", "hd_count_raw": "0.0"},
+                {"bag_id": "7J0K1VM6WS", "service_type": "HD", "hd_count_raw": "0.0"},
             ]
         else:
             cursor.fetchall.return_value = []
@@ -126,8 +126,8 @@ def test_stale_active_presence_not_eligible_for_reset_re_admission():
             ]
         elif "FROM rinse_cleaner_ticket_presence_run_rows" in s:
             cursor.fetchall.return_value = [
-                {"bag_id": "LIVE1", "service_type": "HD"},
-                {"bag_id": "LIVE2", "service_type": "HD"},
+                {"bag_id": "LIVE1", "service_type": "HD", "hd_count_raw": "0.0"},
+                {"bag_id": "LIVE2", "service_type": "HD", "hd_count_raw": "0.0"},
             ]
         else:
             cursor.fetchall.return_value = []
@@ -180,7 +180,9 @@ def test_current_successful_ship_window_presence_is_eligible():
                 }
             ]
         elif "FROM rinse_cleaner_ticket_presence_run_rows" in s:
-            cursor.fetchall.return_value = [{"bag_id": "OKBAG", "service_type": "HD"}]
+            cursor.fetchall.return_value = [
+                {"bag_id": "OKBAG", "service_type": "HD", "hd_count_raw": "0.0"}
+            ]
         else:
             cursor.fetchall.return_value = []
 
@@ -272,14 +274,14 @@ def test_repair_union_includes_intermittent_ship_window_bags():
             rid = int(params[1])
             if rid == 2:
                 cursor.fetchall.return_value = [
-                    {"bag_id": "A", "service_type": "HD"},
-                    {"bag_id": "B", "service_type": "HD"},
+                    {"bag_id": "A", "service_type": "HD", "hd_count_raw": "0.0"},
+                    {"bag_id": "B", "service_type": "HD", "hd_count_raw": "0.0"},
                 ]
             else:
                 cursor.fetchall.return_value = [
-                    {"bag_id": "A", "service_type": "HD"},
-                    {"bag_id": "B", "service_type": "HD"},
-                    {"bag_id": "C", "service_type": "HD"},
+                    {"bag_id": "A", "service_type": "HD", "hd_count_raw": "0.0"},
+                    {"bag_id": "B", "service_type": "HD", "hd_count_raw": "0.0"},
+                    {"bag_id": "C", "service_type": "HD", "hd_count_raw": "0.0"},
                 ]
         else:
             cursor.fetchall.return_value = []
