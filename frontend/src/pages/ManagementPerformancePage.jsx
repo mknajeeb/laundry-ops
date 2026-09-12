@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Box, Stack, TextField, Typography } from "@mui/material";
+import { Box, Button, Stack, TextField, Typography } from "@mui/material";
 import ManagementHubNav from "../components/management/ManagementHubNav";
 import ManagementHdPerformanceSection from "../components/management/ManagementHdPerformanceSection";
 import ManagementWfFolderPerformanceSection from "../components/management/ManagementWfFolderPerformanceSection";
@@ -48,6 +48,15 @@ export default function ManagementPerformancePage() {
           sx={{ mb: 1 }}
         >
           <Typography sx={PERF_TYPE.pageTitle}>Performance</Typography>
+          <Button
+            component="a"
+            href="/rinse/performance"
+            size="small"
+            variant="text"
+            sx={{ textTransform: "none", alignSelf: { xs: "flex-start", sm: "center" } }}
+          >
+            Open Rinse dashboard
+          </Button>
           <TextField
             size="small"
             type="date"

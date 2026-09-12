@@ -1384,16 +1384,52 @@ def build_folder_performance_dashboard(
         custom_start=custom_start,
         custom_end=custom_end,
     )
-    day_payloads = []
-    for d in window["dates"]:
-        day_payloads.append(
-            build_day_folder_performance(
-                cursor,
-                organization_id,
-                selected_date_et=d,
-                attach_customers=False,
+    day_payloads: list[dict[str, Any]] = []
+    dates = list(window["dates"] or [])
+    if len(dates) <= 1:
+        for d in dates:
+            day_payloads.append(
+                build_day_folder_performance(
+                    cursor,
+                    organization_id,
+                    selected_date_et=d,
+                    attach_customers=False,
+                )
             )
-        )
+    else:
+        # Multi-day ranges: parallel day builds (pooled connections).
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from backend.db import get_db as _get_db
+
+        def _one(day_et: date) -> dict[str, Any]:
+            conn = _get_db()
+            cur = conn.cursor(dictionary=True)
+            try:
+                return build_day_folder_performance(
+                    cur,
+                    organization_id,
+                    selected_date_et=day_et,
+                    attach_customers=False,
+                )
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        workers = min(8, len(dates))
+        by_date: dict[date, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {pool.submit(_one, d): d for d in dates}
+            for fut in as_completed(futs):
+                d = futs[fut]
+                by_date[d] = fut.result()
+        day_payloads = [by_date[d] for d in dates]
 
     if window["mode"] == "last_n_sessions":
         merged = merge_day_payloads(day_payloads)

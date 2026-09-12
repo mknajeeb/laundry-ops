@@ -16,12 +16,63 @@ ACTION_APPROVE = "APPROVE"
 ACTION_INVALIDATE = "INVALIDATE"
 ACTION_REAPPROVE = "REAPPROVE"
 ACTION_UNAPPROVE = "UNAPPROVE"
+ACTION_OVERRIDE = "OVERRIDE"
+ACTION_EXCLUDE = "EXCLUDE"
+ACTION_INCLUDE = "INCLUDE"
 
 APPROVALS_TABLE = "rinse_performance_session_approvals"
 EVENTS_TABLE = "rinse_performance_approval_events"
 
+# Process-warm flag — avoid SHOW COLUMNS / CREATE on every hot read/write.
+_SCHEMA_READY = False
+
+
+def _ensure_publication_extension_columns(cursor) -> None:
+    """Idempotent columns for calculated vs published + exclude (ensure-on-use)."""
+    if not table_exists(cursor, APPROVALS_TABLE):
+        return
+    cursor.execute(f"SHOW COLUMNS FROM {APPROVALS_TABLE}")
+    have = {str(r.get("Field") or r.get("field") or "").lower() for r in (cursor.fetchall() or [])}
+    alters: list[str] = []
+    if "calculated_numerator" not in have:
+        alters.append(
+            "ADD COLUMN calculated_numerator DECIMAL(14,4) NULL AFTER published_metric_value"
+        )
+    if "calculated_denominator" not in have:
+        alters.append(
+            "ADD COLUMN calculated_denominator DECIMAL(14,4) NULL AFTER calculated_numerator"
+        )
+    if "calculated_metric_value" not in have:
+        alters.append(
+            "ADD COLUMN calculated_metric_value DECIMAL(14,4) NULL AFTER calculated_denominator"
+        )
+    if "is_rate_override" not in have:
+        alters.append(
+            "ADD COLUMN is_rate_override TINYINT(1) NOT NULL DEFAULT 0 AFTER calculated_metric_value"
+        )
+    if "override_reason" not in have:
+        alters.append(
+            "ADD COLUMN override_reason VARCHAR(255) NULL AFTER is_rate_override"
+        )
+    if "excluded_at" not in have:
+        alters.append("ADD COLUMN excluded_at DATETIME NULL AFTER invalidated_reason")
+    if "excluded_by" not in have:
+        alters.append("ADD COLUMN excluded_by INT NULL AFTER excluded_at")
+    if "excluded_reason" not in have:
+        alters.append(
+            "ADD COLUMN excluded_reason VARCHAR(255) NULL AFTER excluded_by"
+        )
+    for clause in alters:
+        try:
+            cursor.execute(f"ALTER TABLE {APPROVALS_TABLE} {clause}")
+        except Exception:
+            pass
+
 
 def ensure_rinse_performance_approval_tables(cursor) -> None:
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return
     if not table_exists(cursor, APPROVALS_TABLE):
         cursor.execute(
             f"""
@@ -39,6 +90,11 @@ def ensure_rinse_performance_approval_tables(cursor) -> None:
               published_numerator DECIMAL(14,4) NOT NULL,
               published_denominator DECIMAL(14,4) NOT NULL,
               published_metric_value DECIMAL(14,4) NOT NULL,
+              calculated_numerator DECIMAL(14,4) NULL,
+              calculated_denominator DECIMAL(14,4) NULL,
+              calculated_metric_value DECIMAL(14,4) NULL,
+              is_rate_override TINYINT(1) NOT NULL DEFAULT 0,
+              override_reason VARCHAR(255) NULL,
               published_quantity DECIMAL(14,4) NULL,
               published_duration_hours DECIMAL(14,4) NULL,
               published_session_start_et DATETIME NULL,
@@ -48,6 +104,9 @@ def ensure_rinse_performance_approval_tables(cursor) -> None:
               content_fingerprint VARCHAR(128) NOT NULL,
               invalidated_at DATETIME NULL,
               invalidated_reason VARCHAR(255) NULL,
+              excluded_at DATETIME NULL,
+              excluded_by INT NULL,
+              excluded_reason VARCHAR(255) NULL,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
               UNIQUE KEY uq_rinse_perf_appr_org_role_session
@@ -66,6 +125,8 @@ def ensure_rinse_performance_approval_tables(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+    else:
+        _ensure_publication_extension_columns(cursor)
     if not table_exists(cursor, EVENTS_TABLE):
         cursor.execute(
             f"""
@@ -88,10 +149,16 @@ def ensure_rinse_performance_approval_tables(cursor) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+    _SCHEMA_READY = True
 
 
 def folder_session_fingerprint(session: Mapping[str, Any]) -> str:
-    """Stable hash of values that define published Folder performance."""
+    """Stable hash of values that define published Folder performance.
+
+    Must NOT depend on nested ``orders`` arrays — Management list payloads strip
+    orders for bandwidth, and reconcile-on-GET with orders present at approve
+    time caused immediate fingerprint_mismatch invalidation after every Approve.
+    """
     parts = [
         str(session.get("session_id") or "").strip(),
         ROLE_FOLDER,
@@ -105,12 +172,6 @@ def folder_session_fingerprint(session: Mapping[str, Any]) -> str:
         str(session.get("performance_basis") or ""),
         str(session.get("role_status") or ""),
     ]
-    bag_ids = []
-    for o in session.get("orders") or []:
-        bid = str(o.get("bag_id") or "").strip().upper()
-        if bid:
-            bag_ids.append(bid)
-    parts.append("|".join(sorted(bag_ids)))
     raw = "\n".join(parts)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -241,18 +302,63 @@ def upsert_approved_snapshot(
 
     fp = str(snapshot.get("content_fingerprint") or "")
     metric_value = float(snapshot["published_metric_value"])
+    calc_num = float(
+        snapshot.get("calculated_numerator")
+        if snapshot.get("calculated_numerator") is not None
+        else snapshot["published_numerator"]
+    )
+    calc_den = float(
+        snapshot.get("calculated_denominator")
+        if snapshot.get("calculated_denominator") is not None
+        else snapshot["published_denominator"]
+    )
+    calc_rate = float(
+        snapshot.get("calculated_metric_value")
+        if snapshot.get("calculated_metric_value") is not None
+        else metric_value
+    )
+    is_override = 1 if snapshot.get("is_rate_override") else 0
+    override_reason = snapshot.get("override_reason")
+    # Preserve prior override when re-approving same fingerprint without new override.
+    if (
+        existing
+        and not is_override
+        and existing.get("is_rate_override")
+        and str(existing.get("content_fingerprint") or "") == fp
+        and existing.get("invalidated_at") is None
+    ):
+        try:
+            metric_value = float(existing["published_metric_value"])
+            pub_num = float(existing["published_numerator"])
+            pub_den = float(existing["published_denominator"])
+        except (TypeError, ValueError, KeyError):
+            pub_num = float(snapshot["published_numerator"])
+            pub_den = float(snapshot["published_denominator"])
+        is_override = 1
+        override_reason = existing.get("override_reason")
+    else:
+        pub_num = float(snapshot["published_numerator"])
+        pub_den = float(snapshot["published_denominator"])
+        if is_override and calc_den > 0:
+            pub_num = round(metric_value * calc_den, 4)
+            pub_den = calc_den
+
     cursor.execute(
         f"""
         INSERT INTO {APPROVALS_TABLE} (
           organization_id, business_date_et, role_key, session_id, segment_id,
           employee_user_id, employee_name, metric_key, metric_unit,
           published_numerator, published_denominator, published_metric_value,
+          calculated_numerator, calculated_denominator, calculated_metric_value,
+          is_rate_override, override_reason,
           published_quantity, published_duration_hours,
           published_session_start_et, published_session_end_et,
           approved_at, approved_by, content_fingerprint,
-          invalidated_at, invalidated_reason
+          invalidated_at, invalidated_reason,
+          excluded_at, excluded_by, excluded_reason
         ) VALUES (
-          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,NULL,NULL
+          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s,
+          NULL,NULL,NULL,NULL,NULL
         )
         ON DUPLICATE KEY UPDATE
           business_date_et = VALUES(business_date_et),
@@ -264,6 +370,11 @@ def upsert_approved_snapshot(
           published_numerator = VALUES(published_numerator),
           published_denominator = VALUES(published_denominator),
           published_metric_value = VALUES(published_metric_value),
+          calculated_numerator = VALUES(calculated_numerator),
+          calculated_denominator = VALUES(calculated_denominator),
+          calculated_metric_value = VALUES(calculated_metric_value),
+          is_rate_override = VALUES(is_rate_override),
+          override_reason = VALUES(override_reason),
           published_quantity = VALUES(published_quantity),
           published_duration_hours = VALUES(published_duration_hours),
           published_session_start_et = VALUES(published_session_start_et),
@@ -273,6 +384,9 @@ def upsert_approved_snapshot(
           content_fingerprint = VALUES(content_fingerprint),
           invalidated_at = NULL,
           invalidated_reason = NULL,
+          excluded_at = NULL,
+          excluded_by = NULL,
+          excluded_reason = NULL,
           updated_at = CURRENT_TIMESTAMP
         """,
         (
@@ -285,9 +399,14 @@ def upsert_approved_snapshot(
             str(snapshot.get("employee_name") or ""),
             str(snapshot.get("metric_key") or role["metric_key"]),
             str(snapshot.get("metric_unit") or role["unit"]),
-            float(snapshot["published_numerator"]),
-            float(snapshot["published_denominator"]),
+            pub_num,
+            pub_den,
             metric_value,
+            calc_num,
+            calc_den,
+            calc_rate,
+            is_override,
+            override_reason,
             snapshot.get("published_quantity"),
             snapshot.get("published_duration_hours"),
             _parse_dt(snapshot.get("published_session_start_et")),
@@ -314,10 +433,22 @@ def upsert_approved_snapshot(
         "action": action,
         "session_id": sid,
         "role_key": rk,
-        "already_approved": was_active and action == ACTION_REAPPROVE and existing
-        and str(existing.get("content_fingerprint") or "") == fp,
+        "already_approved": was_active
+        and action == ACTION_REAPPROVE
+        and existing
+        and str(existing.get("content_fingerprint") or "") == fp
+        and not existing.get("excluded_at"),
         "published_metric_value": metric_value,
+        "calculated_metric_value": calc_rate,
+        "is_rate_override": bool(is_override),
         "content_fingerprint": fp,
+        "publication": {
+            "status": "APPROVED",
+            "published_metric_value": metric_value,
+            "calculated_metric_value": calc_rate,
+            "is_rate_override": bool(is_override),
+            "content_fingerprint": fp,
+        },
     }
 
 
@@ -450,9 +581,13 @@ def list_active_approvals(
     employee_name: str | None = None,
     session_ids: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Active = not invalidated. Used by Rinse dashboard reads."""
+    """Active = not invalidated and not excluded. Used by Rinse dashboard reads."""
     ensure_rinse_performance_approval_tables(cursor)
-    clauses = ["organization_id=%s", "invalidated_at IS NULL"]
+    clauses = [
+        "organization_id=%s",
+        "invalidated_at IS NULL",
+        "excluded_at IS NULL",
+    ]
     params: list[Any] = [int(organization_id)]
     if role_key:
         clauses.append("role_key=%s")
@@ -493,7 +628,7 @@ def approval_status_map(
     role_key: str,
     session_ids: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
-    """Map session_id → {status: APPROVED|UNAPPROVED, ...} for Management UI."""
+    """Map session_id → {status: APPROVED|UNAPPROVED|EXCLUDED, ...} for Management UI."""
     ensure_rinse_performance_approval_tables(cursor)
     sids = [str(s).strip() for s in session_ids if str(s).strip()]
     if not sids:
@@ -501,8 +636,10 @@ def approval_status_map(
     placeholders = ",".join(["%s"] * len(sids))
     cursor.execute(
         f"""
-        SELECT session_id, invalidated_at, approved_at, content_fingerprint,
-               published_metric_value
+        SELECT session_id, invalidated_at, excluded_at, approved_at, content_fingerprint,
+               published_metric_value, calculated_metric_value, is_rate_override,
+               override_reason, published_numerator, published_denominator,
+               calculated_numerator, calculated_denominator
         FROM {APPROVALS_TABLE}
         WHERE organization_id=%s AND role_key=%s AND session_id IN ({placeholders})
         """,
@@ -512,9 +649,14 @@ def approval_status_map(
     for row in cursor.fetchall() or []:
         r = dict(row)
         sid = str(r["session_id"])
-        active = r.get("invalidated_at") is None
+        if r.get("excluded_at") is not None:
+            status = "EXCLUDED"
+        elif r.get("invalidated_at") is None:
+            status = "APPROVED"
+        else:
+            status = "UNAPPROVED"
         out[sid] = {
-            "status": "APPROVED" if active else "UNAPPROVED",
+            "status": status,
             "approved_at": r.get("approved_at"),
             "content_fingerprint": r.get("content_fingerprint"),
             "published_metric_value": (
@@ -522,10 +664,245 @@ def approval_status_map(
                 if r.get("published_metric_value") is not None
                 else None
             ),
+            "calculated_metric_value": (
+                float(r["calculated_metric_value"])
+                if r.get("calculated_metric_value") is not None
+                else None
+            ),
+            "is_rate_override": bool(r.get("is_rate_override")),
+            "override_reason": r.get("override_reason"),
+            "excluded": r.get("excluded_at") is not None,
         }
     for sid in sids:
         out.setdefault(sid, {"status": "UNAPPROVED"})
     return out
+
+
+def override_published_rate(
+    cursor,
+    organization_id: int,
+    *,
+    role_key: str,
+    session_id: str,
+    published_metric_value: float,
+    reason: str | None = None,
+    actor_user_id: int | None = None,
+    actor_name: str | None = None,
+    approve_if_needed: bool = False,
+    snapshot: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Set manager-approved rate; keeps calculated_* immutable. Weighted via rate*denom."""
+    ensure_rinse_performance_approval_tables(cursor)
+    org = int(organization_id)
+    rk = str(role_key).upper()
+    sid = str(session_id).strip()
+    rate = float(published_metric_value)
+    if rate < 0:
+        raise ValueError("published_metric_value must be >= 0")
+    row = get_approval_row(cursor, org, role_key=rk, session_id=sid)
+    if row is None or row.get("invalidated_at") is not None:
+        if not approve_if_needed or snapshot is None:
+            return {"ok": False, "status": "not_approved", "session_id": sid}
+        snap = dict(snapshot)
+        snap["published_metric_value"] = rate
+        snap["published_numerator"] = round(
+            rate * float(snap.get("calculated_denominator") or snap.get("published_denominator") or 0),
+            4,
+        )
+        snap["is_rate_override"] = True
+        snap["override_reason"] = reason
+        out = upsert_approved_snapshot(
+            cursor,
+            org,
+            role_key=rk,
+            snapshot=snap,
+            actor_user_id=actor_user_id,
+            actor_name=actor_name,
+        )
+        _record_event(
+            cursor,
+            org,
+            role_key=rk,
+            session_id=sid,
+            action=ACTION_OVERRIDE,
+            business_date_et=_parse_date(snap.get("business_date_et")),
+            actor_user_id=actor_user_id,
+            actor_name=actor_name,
+            reason=reason,
+            snapshot_metric_value=rate,
+            content_fingerprint=out.get("content_fingerprint"),
+        )
+        return {**out, "action": ACTION_OVERRIDE, "ok": True}
+
+    calc_den = float(row.get("calculated_denominator") or row.get("published_denominator") or 0)
+    if calc_den <= 0:
+        return {"ok": False, "status": "invalid_empty", "session_id": sid}
+    pub_num = round(rate * calc_den, 4)
+    cursor.execute(
+        f"""
+        UPDATE {APPROVALS_TABLE}
+        SET published_metric_value=%s,
+            published_numerator=%s,
+            published_denominator=%s,
+            is_rate_override=1,
+            override_reason=%s,
+            excluded_at=NULL,
+            excluded_by=NULL,
+            excluded_reason=NULL,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE organization_id=%s AND role_key=%s AND session_id=%s
+        """,
+        (rate, pub_num, calc_den, reason, org, rk, sid),
+    )
+    _record_event(
+        cursor,
+        org,
+        role_key=rk,
+        session_id=sid,
+        action=ACTION_OVERRIDE,
+        business_date_et=_parse_date(row.get("business_date_et")),
+        actor_user_id=actor_user_id,
+        actor_name=actor_name,
+        reason=reason,
+        snapshot_metric_value=rate,
+        content_fingerprint=str(row.get("content_fingerprint") or ""),
+    )
+    return {
+        "ok": True,
+        "action": ACTION_OVERRIDE,
+        "session_id": sid,
+        "role_key": rk,
+        "published_metric_value": rate,
+        "calculated_metric_value": (
+            float(row["calculated_metric_value"])
+            if row.get("calculated_metric_value") is not None
+            else None
+        ),
+        "is_rate_override": True,
+        "publication": {
+            "status": "APPROVED",
+            "published_metric_value": rate,
+            "calculated_metric_value": (
+                float(row["calculated_metric_value"])
+                if row.get("calculated_metric_value") is not None
+                else None
+            ),
+            "is_rate_override": True,
+            "override_reason": reason,
+        },
+    }
+
+
+def exclude_session_publication(
+    cursor,
+    organization_id: int,
+    *,
+    role_key: str,
+    session_id: str,
+    reason: str | None = None,
+    actor_user_id: int | None = None,
+    actor_name: str | None = None,
+) -> dict[str, Any]:
+    """Exclude from external reads without altering calculated Management values."""
+    ensure_rinse_performance_approval_tables(cursor)
+    org = int(organization_id)
+    rk = str(role_key).upper()
+    sid = str(session_id).strip()
+    row = get_approval_row(cursor, org, role_key=rk, session_id=sid)
+    if row is None:
+        return {"ok": False, "status": "not_approved", "session_id": sid}
+    cursor.execute(
+        f"""
+        UPDATE {APPROVALS_TABLE}
+        SET excluded_at=NOW(), excluded_by=%s, excluded_reason=%s,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE organization_id=%s AND role_key=%s AND session_id=%s
+        """,
+        (actor_user_id, reason, org, rk, sid),
+    )
+    _record_event(
+        cursor,
+        org,
+        role_key=rk,
+        session_id=sid,
+        action=ACTION_EXCLUDE,
+        business_date_et=_parse_date(row.get("business_date_et")),
+        actor_user_id=actor_user_id,
+        actor_name=actor_name,
+        reason=reason,
+        snapshot_metric_value=(
+            float(row["published_metric_value"])
+            if row.get("published_metric_value") is not None
+            else None
+        ),
+        content_fingerprint=str(row.get("content_fingerprint") or ""),
+    )
+    return {
+        "ok": True,
+        "action": ACTION_EXCLUDE,
+        "session_id": sid,
+        "publication": {"status": "EXCLUDED", "excluded": True},
+    }
+
+
+def include_session_publication(
+    cursor,
+    organization_id: int,
+    *,
+    role_key: str,
+    session_id: str,
+    actor_user_id: int | None = None,
+    actor_name: str | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    ensure_rinse_performance_approval_tables(cursor)
+    org = int(organization_id)
+    rk = str(role_key).upper()
+    sid = str(session_id).strip()
+    row = get_approval_row(cursor, org, role_key=rk, session_id=sid)
+    if row is None:
+        return {"ok": False, "status": "not_approved", "session_id": sid}
+    cursor.execute(
+        f"""
+        UPDATE {APPROVALS_TABLE}
+        SET excluded_at=NULL, excluded_by=NULL, excluded_reason=NULL,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE organization_id=%s AND role_key=%s AND session_id=%s
+        """,
+        (org, rk, sid),
+    )
+    active = row.get("invalidated_at") is None
+    _record_event(
+        cursor,
+        org,
+        role_key=rk,
+        session_id=sid,
+        action=ACTION_INCLUDE,
+        business_date_et=_parse_date(row.get("business_date_et")),
+        actor_user_id=actor_user_id,
+        actor_name=actor_name,
+        reason=reason,
+        snapshot_metric_value=(
+            float(row["published_metric_value"])
+            if row.get("published_metric_value") is not None
+            else None
+        ),
+        content_fingerprint=str(row.get("content_fingerprint") or ""),
+    )
+    return {
+        "ok": True,
+        "action": ACTION_INCLUDE,
+        "session_id": sid,
+        "publication": {
+            "status": "APPROVED" if active else "UNAPPROVED",
+            "excluded": False,
+            "published_metric_value": (
+                float(row["published_metric_value"])
+                if row.get("published_metric_value") is not None
+                else None
+            ),
+        },
+    }
 
 
 def weighted_rate_from_rows(rows: Sequence[Mapping[str, Any]]) -> float | None:

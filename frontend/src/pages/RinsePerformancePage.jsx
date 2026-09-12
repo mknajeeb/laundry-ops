@@ -433,7 +433,22 @@ export default function RinsePerformancePage() {
                   <LineChart data={chartRows} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                     <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 11 }} width={40} />
+                    <YAxis
+                      tick={{ fontSize: 11 }}
+                      width={40}
+                      domain={[
+                        0,
+                        (dataMax) => {
+                          const bench = Number(detailHistory?.benchmark);
+                          const top = Math.max(
+                            Number(dataMax) || 0,
+                            Number.isFinite(bench) ? bench : 0,
+                            1
+                          );
+                          return Math.ceil(top * 1.1);
+                        },
+                      ]}
+                    />
                     {detailHistory?.benchmark != null ? (
                       <ReferenceLine
                         y={Number(detailHistory.benchmark)}

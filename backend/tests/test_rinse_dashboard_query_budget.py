@@ -88,26 +88,19 @@ class SnapshotCursor:
             self._last = []
             return
         if "insert into rinse_performance_session_approvals" in s:
-            (
-                org,
-                biz,
-                rk,
-                sid,
-                seg,
-                uid,
-                name,
-                mk,
-                mu,
-                num,
-                den,
-                metric,
-                qty,
-                dur,
-                start,
-                end,
-                approved_by,
-                fp,
-            ) = params
+            p = list(params)
+            if len(p) >= 23:
+                (
+                    org, biz, rk, sid, seg, uid, name, mk, mu,
+                    num, den, metric, calc_num, calc_den, calc_rate,
+                    is_ovr, ovr_reason, qty, dur, start, end, approved_by, fp,
+                ) = p[:23]
+            else:
+                (
+                    org, biz, rk, sid, seg, uid, name, mk, mu,
+                    num, den, metric, qty, dur, start, end, approved_by, fp,
+                ) = p[:18]
+                calc_num, calc_den, calc_rate, is_ovr, ovr_reason = num, den, metric, 0, None
             # upsert by org/role/session
             self.rows = [
                 r
@@ -133,6 +126,11 @@ class SnapshotCursor:
                     "published_numerator": float(num),
                     "published_denominator": float(den),
                     "published_metric_value": float(metric),
+                    "calculated_numerator": float(calc_num) if calc_num is not None else float(num),
+                    "calculated_denominator": float(calc_den) if calc_den is not None else float(den),
+                    "calculated_metric_value": float(calc_rate) if calc_rate is not None else float(metric),
+                    "is_rate_override": int(is_ovr or 0),
+                    "override_reason": ovr_reason,
                     "published_quantity": qty,
                     "published_duration_hours": dur,
                     "published_session_start_et": start,
@@ -140,6 +138,7 @@ class SnapshotCursor:
                     "approved_by": approved_by,
                     "content_fingerprint": fp,
                     "invalidated_at": None,
+                    "excluded_at": None,
                     "approved_at": datetime(2026, 9, 10, 12, 0, 0),
                 }
             )

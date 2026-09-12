@@ -82,6 +82,10 @@ def session_card_to_snapshot(session: Mapping[str, Any], *, business_date_et: da
         "published_numerator": round(lbs, 4),
         "published_denominator": round(hours, 4),
         "published_metric_value": float(rate) if rate is not None else None,
+        "calculated_numerator": round(lbs, 4),
+        "calculated_denominator": round(hours, 4),
+        "calculated_metric_value": float(rate) if rate is not None else None,
+        "is_rate_override": False,
         "published_quantity": round(lbs, 4),
         "published_duration_hours": round(hours, 4),
         "published_session_start_et": session.get("start_time"),
@@ -117,24 +121,37 @@ def approve_folder_session(
     actor_user_id: int | None = None,
     actor_name: str | None = None,
     day: Mapping[str, Any] | None = None,
+    session: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Approve one Folder session.
+
+    Prefer ``session`` (already-rendered Management card) to avoid a full-day
+    Folder rebuild. Fall back to ``day`` or ``build_day_folder_performance``.
+    """
     if not role_is_publishable(ROLE_FOLDER):
         raise ValueError("FOLDER is not publishable")
-    day_payload = day or build_day_folder_performance(
-        cursor,
-        int(organization_id),
-        selected_date_et=selected_date_et,
-        attach_customers=False,
-    )
-    sess = _find_session(day_payload, session_id)
+    sid = str(session_id).strip()
+    sess = None
+    if session is not None and str(session.get("session_id") or "").strip() == sid:
+        sess = dict(session)
+    elif day is not None:
+        sess = _find_session(day, sid)
+    else:
+        day_payload = build_day_folder_performance(
+            cursor,
+            int(organization_id),
+            selected_date_et=selected_date_et,
+            attach_customers=False,
+        )
+        sess = _find_session(day_payload, sid)
     if not sess:
-        return {"ok": False, "status": "failed", "reason": "session_not_found", "session_id": session_id}
+        return {"ok": False, "status": "failed", "reason": "session_not_found", "session_id": sid}
     ok, reason = session_is_approvable(sess)
     if not ok:
-        return {"ok": False, "status": reason, "session_id": session_id}
+        return {"ok": False, "status": reason, "session_id": sid}
     snap = session_card_to_snapshot(sess, business_date_et=selected_date_et)
     if snap.get("published_metric_value") is None:
-        return {"ok": False, "status": "invalid_empty", "session_id": session_id}
+        return {"ok": False, "status": "invalid_empty", "session_id": sid}
     result = upsert_approved_snapshot(
         cursor,
         int(organization_id),

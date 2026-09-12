@@ -122,8 +122,42 @@ def main():
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            cursor.execute(explain_leaderboard_sql())
+            # Bound literals — the explain_leaderboard_sql() helper keeps %s for apps.
+            cursor.execute(
+                """
+                EXPLAIN SELECT
+                  employee_user_id,
+                  employee_name,
+                  SUM(published_numerator) AS sum_num,
+                  SUM(published_denominator) AS sum_den,
+                  COUNT(*) AS session_count
+                FROM rinse_performance_session_approvals
+                WHERE organization_id = 3
+                  AND role_key = 'FOLDER'
+                  AND invalidated_at IS NULL
+                  AND excluded_at IS NULL
+                  AND business_date_et >= '2026-09-07'
+                  AND business_date_et <= '2026-09-13'
+                GROUP BY employee_user_id, employee_name
+                """
+            )
             print("\nEXPLAIN rows:")
+            for row in cursor.fetchall() or []:
+                print(json.dumps(row, default=str))
+            cursor.execute(
+                """
+                EXPLAIN SELECT session_id, business_date_et, published_metric_value
+                FROM rinse_performance_session_approvals
+                WHERE organization_id = 3
+                  AND role_key = 'FOLDER'
+                  AND invalidated_at IS NULL
+                  AND excluded_at IS NULL
+                  AND employee_user_id = 38
+                ORDER BY business_date_et DESC, published_session_start_et DESC, id DESC
+                LIMIT 5
+                """
+            )
+            print("\nEXPLAIN emp hist:")
             for row in cursor.fetchall() or []:
                 print(json.dumps(row, default=str))
         finally:

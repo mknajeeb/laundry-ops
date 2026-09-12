@@ -114,27 +114,20 @@ class FakeCursor:
             return
 
         if "insert into rinse_performance_session_approvals" in s:
-            # upsert
-            (
-                org,
-                biz,
-                rk,
-                sid,
-                seg,
-                uid,
-                name,
-                mk,
-                mu,
-                num,
-                den,
-                metric,
-                qty,
-                dur,
-                start,
-                end,
-                approved_by,
-                fp,
-            ) = params
+            # upsert — support legacy 18-arg and extended override/exclude shape
+            p = list(params)
+            if len(p) >= 23:
+                (
+                    org, biz, rk, sid, seg, uid, name, mk, mu,
+                    num, den, metric, calc_num, calc_den, calc_rate,
+                    is_ovr, ovr_reason, qty, dur, start, end, approved_by, fp,
+                ) = p[:23]
+            else:
+                (
+                    org, biz, rk, sid, seg, uid, name, mk, mu,
+                    num, den, metric, qty, dur, start, end, approved_by, fp,
+                ) = p[:18]
+                calc_num, calc_den, calc_rate, is_ovr, ovr_reason = num, den, metric, 0, None
             key = (int(org), str(rk).upper(), str(sid))
             self.approvals[key] = {
                 "id": len(self.approvals) + 1,
@@ -150,6 +143,11 @@ class FakeCursor:
                 "published_numerator": num,
                 "published_denominator": den,
                 "published_metric_value": metric,
+                "calculated_numerator": calc_num,
+                "calculated_denominator": calc_den,
+                "calculated_metric_value": calc_rate,
+                "is_rate_override": is_ovr,
+                "override_reason": ovr_reason,
                 "published_quantity": qty,
                 "published_duration_hours": dur,
                 "published_session_start_et": start,
@@ -158,6 +156,9 @@ class FakeCursor:
                 "content_fingerprint": fp,
                 "invalidated_at": None,
                 "invalidated_reason": None,
+                "excluded_at": None,
+                "excluded_by": None,
+                "excluded_reason": None,
                 "approved_at": datetime(2026, 9, 10, 12, 0, 0),
             }
             self._last = None

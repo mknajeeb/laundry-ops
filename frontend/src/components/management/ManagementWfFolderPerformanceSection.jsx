@@ -27,6 +27,9 @@ import {
   postManagementWfFolderAttributionReset,
   postManagementPerformanceApproveSession,
   postManagementPerformanceApproveDay,
+  postManagementPerformanceOverrideSession,
+  postManagementPerformanceExcludeSession,
+  postManagementPerformanceIncludeSession,
   putManagementFolderBenchmark,
   postVeewashStep1Correction,
 } from "../../api";
@@ -47,13 +50,30 @@ const WF_SORT_OPTIONS = [
   { value: "bags_hr", label: "Highest bags/hr" },
 ];
 
-function SessionLink({ session, onOpenSession, onApprove, approveBusy }) {
+function SessionLink({
+  session,
+  onOpenSession,
+  onApprove,
+  onEdit,
+  onExclude,
+  onInclude,
+  approveBusy,
+}) {
   const label = session.session_code
     ? `View ${session.session_code}`
     : `View ${session.orders_completed} order${session.orders_completed === 1 ? "" : "s"}`;
   const pub = session.publication_status || session.publication?.status || "UNAPPROVED";
   const isOpen = String(session.role_status || "").toLowerCase() === "open";
   const approved = pub === "APPROVED";
+  const excluded = pub === "EXCLUDED";
+  const calc =
+    session.publication?.calculated_metric_value ??
+    session.lbs_per_hour ??
+    null;
+  const approvedVal =
+    session.publication?.published_metric_value ??
+    (approved ? session.lbs_per_hour : null);
+  const overridden = Boolean(session.publication?.is_rate_override);
   return (
     <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
       <Box
@@ -79,29 +99,65 @@ function SessionLink({ session, onOpenSession, onApprove, approveBusy }) {
         {label}
         <ChevronRightIcon sx={{ fontSize: 14 }} />
       </Box>
+      <Typography sx={{ ...PERF_TYPE.meta, color: "#64748b" }}>
+        Calc {fmtRate(calc)}
+        {approved || excluded ? ` · Pub ${fmtRate(approvedVal)}` : ""}
+        {overridden ? " · Override" : ""}
+      </Typography>
       <Typography
         sx={{
           ...PERF_TYPE.meta,
-          color: approved ? PERF_UI.tealDark : "#94a3b8",
+          color: excluded ? "#b45309" : approved ? PERF_UI.tealDark : "#94a3b8",
           fontWeight: 700,
         }}
       >
-        {approved ? "Approved" : "Unapproved"}
+        {excluded ? "Excluded" : approved ? "Approved" : "Unapproved"}
       </Typography>
+      {!isOpen && !excluded ? (
+        <Button
+          size="small"
+          variant="outlined"
+          disabled={approveBusy}
+          onClick={() => onEdit?.(session)}
+          sx={{ minHeight: 28, py: 0, px: 1, fontSize: 11, textTransform: "none" }}
+        >
+          Edit
+        </Button>
+      ) : null}
       <Button
         size="small"
         variant="outlined"
-        disabled={approved || isOpen || approveBusy}
+        disabled={approved || isOpen || approveBusy || excluded}
         onClick={() => onApprove?.(session)}
         sx={{ minHeight: 28, py: 0, px: 1, fontSize: 11, textTransform: "none" }}
       >
         {isOpen ? "Open" : "Approve"}
       </Button>
+      {!isOpen ? (
+        <Button
+          size="small"
+          variant="text"
+          disabled={approveBusy}
+          onClick={() => (excluded ? onInclude?.(session) : onExclude?.(session))}
+          sx={{ minHeight: 28, py: 0, px: 1, fontSize: 11, textTransform: "none" }}
+        >
+          {excluded ? "Include" : "Exclude"}
+        </Button>
+      ) : null}
     </Stack>
   );
 }
 
-function WfEmployeeRankCard({ rank, employee, onOpenSession, onApprove, approveBusy }) {
+function WfEmployeeRankCard({
+  rank,
+  employee,
+  onOpenSession,
+  onApprove,
+  onEdit,
+  onExclude,
+  onInclude,
+  approveBusy,
+}) {
   const sessions = employee.sessions || [];
   const timeRange = employee.time_range_label || sessions[0]?.time_range_label;
   const duration = employee.duration_label;
@@ -138,6 +194,9 @@ function WfEmployeeRankCard({ rank, employee, onOpenSession, onApprove, approveB
                 session={sess}
                 onOpenSession={onOpenSession}
                 onApprove={onApprove}
+                onEdit={onEdit}
+                onExclude={onExclude}
+                onInclude={onInclude}
                 approveBusy={approveBusy}
               />
             ))}
@@ -191,6 +250,9 @@ function WfEmployeeRankCard({ rank, employee, onOpenSession, onApprove, approveB
                 session={sess}
                 onOpenSession={onOpenSession}
                 onApprove={onApprove}
+                onEdit={onEdit}
+                onExclude={onExclude}
+                onInclude={onInclude}
                 approveBusy={approveBusy}
               />
             </Stack>
@@ -460,6 +522,33 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
   const [approveBusy, setApproveBusy] = useState(false);
   const [benchDraft, setBenchDraft] = useState("");
   const [pubMessage, setPubMessage] = useState("");
+  const [editSession, setEditSession] = useState(null);
+  const [editRate, setEditRate] = useState("");
+  const [editReason, setEditReason] = useState("");
+
+  const patchSessionPublication = (sessionId, publication) => {
+    const sid = String(sessionId || "");
+    const status = publication?.status || "UNAPPROVED";
+    setData((prev) => {
+      if (!prev) return prev;
+      const patchOne = (s) =>
+        String(s?.session_id || "") === sid
+          ? {
+              ...s,
+              publication_status: status,
+              publication: { ...(s.publication || {}), ...publication, status },
+            }
+          : s;
+      return {
+        ...prev,
+        sessions: (prev.sessions || []).map(patchOne),
+        employees: (prev.employees || []).map((e) => ({
+          ...e,
+          sessions: (e.sessions || []).map(patchOne),
+        })),
+      };
+    });
+  };
 
   const load = useCallback(
     async (opts = {}) => {
@@ -589,19 +678,147 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
     }
   };
 
+  const sessionPublishPayload = (session) => ({
+    session_id: session.session_id,
+    session_code: session.session_code,
+    segment_id: session.segment_id,
+    user_id: session.user_id ?? session.employee_user_id,
+    employee: session.employee,
+    total_pre_lbs: session.total_pre_lbs,
+    performance_hours: session.performance_hours,
+    lbs_per_hour: session.lbs_per_hour,
+    orders_completed: session.orders_completed,
+    start_time: session.start_time,
+    end_time: session.end_time,
+    performance_end: session.performance_end,
+    performance_basis: session.performance_basis,
+    role_status: session.role_status,
+  });
+
   const approveSession = async (session) => {
     if (!session?.session_id) return;
     setApproveBusy(true);
     setPubMessage("");
+    setError("");
     try {
       const day = session.selected_date_et || dateEt;
-      await postManagementPerformanceApproveSession("FOLDER", session.session_id, {
+      const res = await postManagementPerformanceApproveSession("FOLDER", session.session_id, {
         date_et: day,
+        session: sessionPublishPayload(session),
       });
+      const body = res.data || {};
+      if (!body.ok) {
+        setError(body.error || body.status || "Approve failed");
+        return;
+      }
       setPubMessage(`Approved ${session.session_code || session.session_id}`);
-      await load();
+      patchSessionPublication(
+        session.session_id,
+        body.publication || {
+          status: "APPROVED",
+          published_metric_value: body.published_metric_value,
+          calculated_metric_value: body.calculated_metric_value ?? session.lbs_per_hour,
+          is_rate_override: Boolean(body.is_rate_override),
+          content_fingerprint: body.content_fingerprint,
+        }
+      );
     } catch (err) {
       setError(err?.response?.data?.error || err?.message || "Approve failed");
+    } finally {
+      setApproveBusy(false);
+    }
+  };
+
+  const openEdit = (session) => {
+    const pub = session.publication || {};
+    const seed =
+      pub.published_metric_value ??
+      pub.calculated_metric_value ??
+      session.lbs_per_hour ??
+      "";
+    setEditSession(session);
+    setEditRate(String(seed));
+    setEditReason(pub.override_reason || "");
+  };
+
+  const saveEdit = async ({ andApprove = false } = {}) => {
+    if (!editSession?.session_id) return;
+    const rate = Number(editRate);
+    if (!Number.isFinite(rate) || rate < 0) {
+      setError("Manager approved rate must be a non-negative number");
+      return;
+    }
+    setApproveBusy(true);
+    setError("");
+    try {
+      const day = editSession.selected_date_et || dateEt;
+      const res = await postManagementPerformanceOverrideSession("FOLDER", editSession.session_id, {
+        date_et: day,
+        published_metric_value: rate,
+        reason: editReason || undefined,
+        approve_if_needed: true,
+        session: sessionPublishPayload(editSession),
+      });
+      const body = res.data || {};
+      if (!body.ok) {
+        setError(body.error || body.status || "Save failed");
+        return;
+      }
+      setPubMessage(`Saved manager value for ${editSession.session_code || editSession.session_id}`);
+      patchSessionPublication(
+        editSession.session_id,
+        body.publication || {
+          status: "APPROVED",
+          published_metric_value: body.published_metric_value,
+          calculated_metric_value: body.calculated_metric_value,
+          is_rate_override: true,
+        }
+      );
+      setEditSession(null);
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || "Save failed");
+    } finally {
+      setApproveBusy(false);
+    }
+  };
+
+  const excludeSession = async (session) => {
+    if (!session?.session_id) return;
+    setApproveBusy(true);
+    setError("");
+    try {
+      const res = await postManagementPerformanceExcludeSession("FOLDER", session.session_id, {
+        date_et: session.selected_date_et || dateEt,
+      });
+      const body = res.data || {};
+      if (!body.ok) {
+        setError(body.error || body.status || "Exclude failed");
+        return;
+      }
+      setPubMessage(`Excluded ${session.session_code || session.session_id}`);
+      patchSessionPublication(session.session_id, body.publication || { status: "EXCLUDED", excluded: true });
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || "Exclude failed");
+    } finally {
+      setApproveBusy(false);
+    }
+  };
+
+  const includeSession = async (session) => {
+    if (!session?.session_id) return;
+    setApproveBusy(true);
+    setError("");
+    try {
+      const res = await postManagementPerformanceIncludeSession("FOLDER", session.session_id, {});
+      const body = res.data || {};
+      if (!body.ok) {
+        setError(body.error || body.status || "Include failed");
+        return;
+      }
+      setPubMessage(`Included ${session.session_code || session.session_id}`);
+      patchSessionPublication(session.session_id, body.publication || { status: "APPROVED" });
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || "Include failed");
     } finally {
       setApproveBusy(false);
     }
@@ -610,13 +827,28 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
   const approveDay = async () => {
     setApproveBusy(true);
     setPubMessage("");
+    setError("");
     try {
       const res = await postManagementPerformanceApproveDay("FOLDER", dateEt, {});
       const s = res.data || {};
+      if (!s.ok) {
+        setError(s.error || "Approve Day failed");
+        return;
+      }
       setPubMessage(
         `Approve Day: ${s.approved || 0} approved · ${s.already_approved || 0} already · ${s.open || 0} open · ${s.invalid_empty || 0} invalid`
       );
-      await load();
+      for (const row of s.results || []) {
+        if (!row?.session_id || !row.ok) continue;
+        patchSessionPublication(
+          row.session_id,
+          row.publication || {
+            status: "APPROVED",
+            published_metric_value: row.published_metric_value,
+            content_fingerprint: row.content_fingerprint,
+          }
+        );
+      }
     } catch (err) {
       setError(err?.response?.data?.error || err?.message || "Approve Day failed");
     } finally {
@@ -984,6 +1216,9 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
                 employee={emp}
                 onOpenSession={openSession}
                 onApprove={approveSession}
+                onEdit={openEdit}
+                onExclude={excludeSession}
+                onInclude={includeSession}
                 approveBusy={approveBusy}
               />
             ))}
@@ -1070,6 +1305,44 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
         onConfirm={confirmMove}
         busy={actionBusy}
       />
+
+      <Dialog open={!!editSession} onClose={() => setEditSession(null)} fullWidth maxWidth="xs">
+        <DialogTitle>Manager approved value</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 1 }}>
+            <Typography sx={{ fontSize: 13, color: "#64748b" }}>
+              {editSession?.employee} · {editSession?.session_code || editSession?.session_id}
+            </Typography>
+            <Typography sx={{ fontSize: 13 }}>
+              Calculated: {fmtRate(editSession?.lbs_per_hour)} lb/hr
+            </Typography>
+            <TextField
+              label="Manager Approved (lb/hr)"
+              value={editRate}
+              onChange={(e) => setEditRate(e.target.value)}
+              size="small"
+              type="number"
+              inputProps={{ min: 0, step: 0.1 }}
+            />
+            <TextField
+              label="Reason / note (optional)"
+              value={editReason}
+              onChange={(e) => setEditReason(e.target.value)}
+              size="small"
+              multiline
+              minRows={2}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditSession(null)} disabled={approveBusy}>
+            Cancel
+          </Button>
+          <Button onClick={() => saveEdit({ andApprove: true })} disabled={approveBusy} variant="contained">
+            Save & Approve
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

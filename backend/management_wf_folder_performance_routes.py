@@ -20,7 +20,12 @@ from backend.management_wf_folder_performance import (
     get_session_orders,
     list_move_destinations,
 )
-from backend.rinse_performance_approvals import unapprove_session
+from backend.rinse_performance_approvals import (
+    exclude_session_publication,
+    include_session_publication,
+    override_published_rate,
+    unapprove_session,
+)
 from backend.rinse_performance_folder_publisher import (
     approve_folder_day,
     approve_folder_session,
@@ -28,7 +33,6 @@ from backend.rinse_performance_folder_publisher import (
     get_folder_benchmark,
     invalidate_folder_approvals_for_date,
     put_folder_benchmark,
-    reconcile_folder_approvals_for_day,
 )
 from backend.rinse_performance_roles import ROLE_FOLDER, role_is_publishable
 from backend.rinse_scan_time import json_safe_rinse
@@ -58,15 +62,13 @@ def _actor(me: dict) -> tuple[int | None, str | None]:
 
 
 def _annotate_dashboard(cursor, oid: int, payload: dict, selected: date) -> dict:
-    """Attach publication status; reconcile fingerprint drift for the selected day."""
-    primary = payload.get("primary") if isinstance(payload.get("primary"), dict) else None
-    day = primary or payload
-    try:
-        reconcile_folder_approvals_for_day(
-            cursor, oid, selected_date_et=selected, day=day
-        )
-    except Exception:
-        pass
+    """Attach publication status only — no fingerprint reconcile on GET.
+
+    Reconcile-on-GET previously invalidated every approval after Approve because
+    list payloads strip nested orders while approve fingerprints included them.
+    Fingerprint no longer depends on orders; reconcile remains on mutation paths.
+    """
+    day = payload
     attach_publication_status_to_day(cursor, oid, day)
     payload["folder_benchmark_lbs_hr"] = get_folder_benchmark(cursor, oid)
     return payload
@@ -130,6 +132,12 @@ def register_management_wf_folder_performance_routes(
             custom_end, err_ce = _parse_optional_date(request.args.get("end_et"))
             if err_ce:
                 return err_ce
+            # Baseline delta is optional — default on for Today UX, skippable for speed.
+            include_baseline = str(
+                request.args.get("include_baseline")
+                or request.args.get("include_baseline_delta")
+                or "1"
+            ).strip().lower() not in {"0", "false", "no"}
             payload = build_folder_performance_dashboard(
                 cursor,
                 oid,
@@ -138,6 +146,7 @@ def register_management_wf_folder_performance_routes(
                 last_n=last_n,
                 custom_start=custom_start,
                 custom_end=custom_end,
+                include_baseline_delta=include_baseline,
             )
             payload = _annotate_dashboard(cursor, oid, payload, selected)
             try:
@@ -178,6 +187,11 @@ def register_management_wf_folder_performance_routes(
             if err:
                 return err
             actor_id, actor_name = _actor(me)
+            # Fast path: already-rendered session card → skip full-day rebuild.
+            session_card = body.get("session") if isinstance(body.get("session"), dict) else None
+            if session_card is not None:
+                session_card = dict(session_card)
+                session_card["session_id"] = str(session_id).strip()
             out = approve_folder_session(
                 cursor,
                 oid,
@@ -185,6 +199,7 @@ def register_management_wf_folder_performance_routes(
                 session_id=session_id,
                 actor_user_id=actor_id,
                 actor_name=actor_name,
+                session=session_card,
             )
             conn.commit()
             status = 200 if out.get("ok") else 400
@@ -266,6 +281,150 @@ def register_management_wf_folder_performance_routes(
             return jsonify(json_safe_rinse(out))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/performance/<role_key>/sessions/<session_id>/override",
+        methods=["POST"],
+    )
+    def management_performance_override_session(role_key: str, session_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            rk = str(role_key or "").strip().upper()
+            if not role_is_publishable(rk) or rk != ROLE_FOLDER:
+                return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
+            oid = int(user_org_id(me))
+            body = request.get_json(silent=True) or {}
+            try:
+                rate = float(body.get("published_metric_value"))
+            except (TypeError, ValueError):
+                return jsonify({"error": "published_metric_value required"}), 400
+            selected, err = _selected_date_et(
+                body.get("date_et") or body.get("selected_date_et")
+            )
+            if err:
+                return err
+            actor_id, actor_name = _actor(me)
+            snap = None
+            session_card = body.get("session") if isinstance(body.get("session"), dict) else None
+            if body.get("approve_if_needed"):
+                from backend.rinse_performance_folder_publisher import (
+                    _find_session,
+                    session_card_to_snapshot,
+                )
+
+                if session_card is not None:
+                    sess = dict(session_card)
+                    sess["session_id"] = str(session_id).strip()
+                    snap = session_card_to_snapshot(sess, business_date_et=selected)
+                else:
+                    day = build_day_folder_performance(
+                        cursor, oid, selected_date_et=selected, attach_customers=False
+                    )
+                    sess = _find_session(day, session_id)
+                    if sess:
+                        snap = session_card_to_snapshot(sess, business_date_et=selected)
+            out = override_published_rate(
+                cursor,
+                oid,
+                role_key=rk,
+                session_id=session_id,
+                published_metric_value=rate,
+                reason=(body.get("reason") or body.get("note") or None),
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                approve_if_needed=bool(body.get("approve_if_needed")),
+                snapshot=snap,
+            )
+            conn.commit()
+            status = 200 if out.get("ok") else 400
+            return jsonify(json_safe_rinse(out)), status
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/performance/<role_key>/sessions/<session_id>/exclude",
+        methods=["POST"],
+    )
+    def management_performance_exclude_session(role_key: str, session_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            rk = str(role_key or "").strip().upper()
+            if rk != ROLE_FOLDER:
+                return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
+            oid = int(user_org_id(me))
+            body = request.get_json(silent=True) or {}
+            actor_id, actor_name = _actor(me)
+            out = exclude_session_publication(
+                cursor,
+                oid,
+                role_key=rk,
+                session_id=session_id,
+                reason=(body.get("reason") or body.get("note") or None),
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+            )
+            conn.commit()
+            status = 200 if out.get("ok") else 400
+            return jsonify(json_safe_rinse(out)), status
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/performance/<role_key>/sessions/<session_id>/include",
+        methods=["POST"],
+    )
+    def management_performance_include_session(role_key: str, session_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            rk = str(role_key or "").strip().upper()
+            if rk != ROLE_FOLDER:
+                return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
+            oid = int(user_org_id(me))
+            body = request.get_json(silent=True) or {}
+            actor_id, actor_name = _actor(me)
+            out = include_session_publication(
+                cursor,
+                oid,
+                role_key=rk,
+                session_id=session_id,
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                reason=(body.get("reason") or None),
+            )
+            conn.commit()
+            status = 200 if out.get("ok") else 400
+            return jsonify(json_safe_rinse(out)), status
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:

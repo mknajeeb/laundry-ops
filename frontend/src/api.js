@@ -2584,8 +2584,13 @@ export const runManagementRinseHdFreshStart = (body = {}) =>
 /** Management → Performance → WF Folder Performance */
 export const getManagementWfFolderPerformance = (dateEt, params = {}) =>
   axios.get(`${API_BASE}/api/management/performance/wf-folder`, {
-    params: { date_et: dateEt, ...params },
-    timeout: 60000,
+    params: {
+      date_et: dateEt,
+      // Skip same-weekday baseline rebuild unless explicitly requested.
+      include_baseline: params.include_baseline ?? (params.compare === "today" || !params.compare ? 1 : 0),
+      ...params,
+    },
+    timeout: 120000,
   });
 
 export const getManagementWfFolderSessionOrders = (sessionId, dateEt, params = {}) =>
@@ -2619,6 +2624,27 @@ export const postManagementWfFolderAttributionReset = (body) =>
 export const postManagementPerformanceApproveSession = (roleKey, sessionId, body = {}) =>
   axios.post(
     `${API_BASE}/api/management/performance/${encodeURIComponent(roleKey)}/sessions/${encodeURIComponent(sessionId)}/approve`,
+    body,
+    { timeout: 60000 }
+  );
+
+export const postManagementPerformanceOverrideSession = (roleKey, sessionId, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/performance/${encodeURIComponent(roleKey)}/sessions/${encodeURIComponent(sessionId)}/override`,
+    body,
+    { timeout: 60000 }
+  );
+
+export const postManagementPerformanceExcludeSession = (roleKey, sessionId, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/performance/${encodeURIComponent(roleKey)}/sessions/${encodeURIComponent(sessionId)}/exclude`,
+    body,
+    { timeout: 60000 }
+  );
+
+export const postManagementPerformanceIncludeSession = (roleKey, sessionId, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/performance/${encodeURIComponent(roleKey)}/sessions/${encodeURIComponent(sessionId)}/include`,
     body,
     { timeout: 60000 }
   );
