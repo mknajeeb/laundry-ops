@@ -43,6 +43,7 @@ from backend.rinse_employee_productivity_sessions import (
     resolve_customer_names_for_bags,
 )
 from backend.rinse_veewash_workload import (
+    REASON_DISAPPEARED_FROM_PORTAL,
     REASON_DISAPPEARED_WITHOUT_COMPLETION,
     REASON_SERVICE_CLASSIFICATION_MISMATCH,
     REASON_WF_BULK_WORKITEM_REVIEW,
@@ -117,6 +118,7 @@ REVIEW_CUSTOMER_UNAVAILABLE = "Customer unavailable"
 MISSING_FROM_PORTAL_REASONS = frozenset(
     {
         REASON_DISAPPEARED_WITHOUT_COMPLETION,
+        REASON_DISAPPEARED_FROM_PORTAL,
         REVIEW_MISSING_FROM_PORTAL,
     }
 )
@@ -724,6 +726,54 @@ def compute_canonical_wf_review_membership(
             cursor, organization_id, selected_date_et, summary
         )
         fresh_reasons = summary.get("review_reasons_by_bag") or {}
+
+    # Open WF OIs that disappeared from Cleaner Tickets while still in-window.
+    # Overlay onto Review membership even when day-bag codes are still empty.
+    try:
+        from backend.rinse_order_instances import list_open_wf_order_instances
+        from backend.rinse_wf_disappeared_from_portal import (
+            REASON_DISAPPEARED_FROM_PORTAL as _DFP,
+            qualify_disappeared_from_portal_bags,
+        )
+
+        open_rows = list_open_wf_order_instances(
+            cursor, organization_id, service_type="WF"
+        )
+        dfp = qualify_disappeared_from_portal_bags(cursor, organization_id, open_rows)
+        for bid, _ctx in dfp.items():
+            if bid not in by_id:
+                # Not on selected-day day_bag — still surface in Review via overlay.
+                by_id[bid] = {
+                    "bag_id": bid,
+                    "service_type": "WF",
+                    "effective_status": "review_required",
+                    "review_reason_codes": [_DFP],
+                }
+            if bid not in bag_ids:
+                bag_ids.append(bid)
+            codes = list(fresh_reasons.get(bid) or [])
+            if _DFP not in codes:
+                codes = [*codes, _DFP]
+            fresh_reasons[bid] = codes
+            row = by_id.get(bid) or {}
+            row_codes = [
+                str(c)
+                for c in (row.get("review_reason_codes") or [])
+                if c
+            ]
+            if _DFP not in row_codes:
+                by_id[bid] = {
+                    **row,
+                    "effective_status": (
+                        "review_required"
+                        if str(row.get("effective_status") or "").strip().lower()
+                        == "pending"
+                        else (row.get("effective_status") or "review_required")
+                    ),
+                    "review_reason_codes": [*row_codes, _DFP],
+                }
+    except Exception:
+        pass
 
     headline_split = _split_review_ids_from_headline(headline)
     split_candidates: set[str] = set(headline_split)
@@ -1342,6 +1392,8 @@ def _short_reason(codes: list[str], category: str) -> str:
             return "Manager sent for review"
         return "Manual review"
     if category == CATEGORY_MISSING_PORTAL:
+        if REASON_DISAPPEARED_FROM_PORTAL in codes:
+            return "Disappeared From Portal"
         return "Missing from portal"
     if category == CATEGORY_SPLIT_ORDER:
         if "SPLIT_MARKED_BUT_SECOND_WASHER_NOT_FOUND" in codes:

@@ -526,7 +526,14 @@ def get_current_wf_workload(
         timelines_by_bag=timelines_by_bag,
         ensure_schema=not use_bulk_reads,
     )
-    review = frozenset(cycle_review | conflict_review)
+    from backend.rinse_wf_disappeared_from_portal import (
+        REASON_DISAPPEARED_FROM_PORTAL,
+        qualify_disappeared_from_portal_bags,
+    )
+
+    disappeared_ctx = qualify_disappeared_from_portal_bags(cursor, org, flat_rows)
+    disappeared_review = frozenset(disappeared_ctx.keys())
+    review = frozenset(cycle_review | conflict_review | disappeared_review)
     pending = frozenset(b for b in open_bags if b not in review)
 
     items: list[dict[str, Any]] = []
@@ -563,20 +570,29 @@ def get_current_wf_workload(
             reason_codes: list[str] = []
             if bid in conflict_review:
                 reason_codes.append(REVIEW_REGISTRY_STALE_COMPLETED)
-            items.append(
-                {
-                    "bag_id": bid,
-                    "order_instance_id": row.get("order_instance_id"),
-                    "completed_at": None,
-                    "cycle_anchor_at": anchor,
-                    "lifecycle": LIFECYCLE_OPEN,
-                    "status": OUTCOME_REVIEW_REQUIRED if in_review else OUTCOME_PENDING,
-                    "review_reason_codes": reason_codes,
-                    "received_from_vendor_at": rfv,
-                    "rush_status": row.get("rush_status") or row.get("rush_flag"),
-                    "customer_name": row.get("customer_name"),
+            if bid in disappeared_review:
+                reason_codes.append(REASON_DISAPPEARED_FROM_PORTAL)
+            dctx = disappeared_ctx.get(bid) or {}
+            item: dict[str, Any] = {
+                "bag_id": bid,
+                "order_instance_id": row.get("order_instance_id"),
+                "completed_at": None,
+                "cycle_anchor_at": anchor,
+                "lifecycle": LIFECYCLE_OPEN,
+                "status": OUTCOME_REVIEW_REQUIRED if in_review else OUTCOME_PENDING,
+                "review_reason_codes": reason_codes,
+                "received_from_vendor_at": rfv,
+                "rush_status": row.get("rush_status") or row.get("rush_flag"),
+                "customer_name": row.get("customer_name") or dctx.get("customer_name"),
+            }
+            if dctx:
+                item["disappeared_from_portal"] = {
+                    "last_seen_at": dctx.get("last_seen_at"),
+                    "last_present_run_id": dctx.get("last_present_run_id"),
+                    "first_absent_run_id": dctx.get("first_absent_run_id"),
+                    "reason_label": dctx.get("reason_label"),
                 }
-            )
+            items.append(item)
 
     # Bag-level equation: one bag → one pending/review membership.
     return {

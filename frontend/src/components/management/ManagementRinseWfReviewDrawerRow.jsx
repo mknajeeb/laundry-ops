@@ -241,6 +241,15 @@ function ScanChronology({ selectedDateEt, bagId, open }) {
 
 function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, variant = "missing" }) {
   const isSpecialty = variant === "specialty";
+  const reasonCodes = useMemo(
+    () =>
+      (Array.isArray(bag?.reason_codes) ? bag.reason_codes : [])
+        .map((c) => String(c || "").toUpperCase())
+        .filter(Boolean),
+    [bag?.reason_codes],
+  );
+  const canExcludeDisappeared =
+    !isSpecialty && reasonCodes.includes("DISAPPEARED_FROM_PORTAL");
   const bulkRequired = !isSpecialty && bagBulkReviewUnresolved(bag);
   const initialLines = useMemo(
     () => catalogSpecialtyLines(catalog, bag?.bulk_workitems),
@@ -400,6 +409,48 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
     }
   };
 
+  const excludeDisappeared = async () => {
+    if (readOnly || saving || !canExcludeDisappeared) return;
+    setSaving(true);
+    setError("");
+    try {
+      const res = await postVeewashStep1Correction({
+        action: "edit_bag",
+        bag_id: bag.bag_id,
+        selected_date_et: selectedDateEt,
+        reason: "Disappeared From Portal — manager exclude",
+        reason_code: "EXCLUDE",
+        reason_note: "Disappeared From Portal — manager exclude",
+        expected_updated_at: bag.updated_at || bag.day_bag_updated_at || null,
+        expected_manager_edit_version:
+          bag.manager_edit_version != null ? Number(bag.manager_edit_version) : null,
+        outcome_action: "exclude",
+        draft: {
+          service_type: String(bag?.service_type || "WF").toUpperCase(),
+          rush_flag: bag?.rush_flag || "NON-RUSH",
+        },
+      });
+      if (!res?.data?.ok) {
+        if (res?.data?.error === "conflict") {
+          setError(formatReviewApiError("conflict"));
+          return;
+        }
+        setError(formatReviewApiError(res?.data?.error, res?.data?.message || "Exclude failed"));
+        return;
+      }
+      onSaved?.(res.data, { kind: "missing", bagId: bag.bag_id });
+    } catch (err) {
+      setError(
+        formatReviewApiError(
+          err?.response?.data?.error,
+          err?.response?.data?.message || err?.message || "Exclude failed",
+        ),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const revertPre = () => {
     const pre = authoritativeEvidencePre(bag);
     setPreLbs(pre == null ? "" : String(pre));
@@ -524,6 +575,19 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
         >
           {saving ? "Saving…" : "Save & Complete"}
         </Button>
+        {canExcludeDisappeared ? (
+          <Button
+            data-testid="review-exclude-disappeared"
+            size="small"
+            variant="outlined"
+            color="error"
+            disabled={readOnly || saving || !lockReady}
+            onClick={excludeDisappeared}
+            sx={{ textTransform: "none", fontWeight: 800 }}
+          >
+            {saving ? "Saving…" : "Exclude"}
+          </Button>
+        ) : null}
         <Button
           data-testid="review-view-scans"
           size="small"

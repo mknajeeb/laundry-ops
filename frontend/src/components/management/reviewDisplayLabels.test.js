@@ -31,6 +31,9 @@ describe("formatReviewReasonLabel", () => {
     expect(formatReviewReasonLabel("MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL")).toBe(
       "Missing from portal",
     );
+    expect(formatReviewReasonLabel("DISAPPEARED_FROM_PORTAL")).toBe(
+      "Disappeared From Portal",
+    );
     expect(formatReviewReasonLabel("SPLIT_MARKED_BUT_SECOND_WASHER_NOT_FOUND")).toBe(
       "Split needs review",
     );

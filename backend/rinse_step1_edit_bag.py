@@ -1191,6 +1191,21 @@ def apply_unified_bag_edit(
             actor_user_id=actor_user_id,
             actor_display_name=actor_display_name,
         )
+        if outcome == OUTCOME_EXCLUDE:
+            try:
+                from backend.rinse_wf_disappeared_from_portal import (
+                    apply_manager_exclude_to_open_wf_lifecycle,
+                )
+
+                apply_manager_exclude_to_open_wf_lifecycle(
+                    cursor,
+                    organization_id,
+                    bid,
+                    resolved_by=actor_display_name,
+                    resolution_note=reason_text,
+                )
+            except Exception:
+                pass
     # OUTCOME_KEEP_REVIEW / None: no bucket change beyond draft field updates.
 
     # Persist completion employee / timestamp even when outcome is null (Save Review).

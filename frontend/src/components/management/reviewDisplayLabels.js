@@ -8,6 +8,7 @@ const REVIEW_REASON_LABELS = {
   WF_BULK_WORKITEM_REVIEW: "Bulk items need review",
   MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL: "Missing from portal",
   DISAPPEARED_WITHOUT_COMPLETION: "Missing from portal",
+  DISAPPEARED_FROM_PORTAL: "Disappeared From Portal",
   REVIEW_MISSING_FROM_PORTAL: "Missing from portal",
   SPLIT_MARKED_BUT_SECOND_WASHER_NOT_FOUND: "Split needs review",
   MULTIPLE_WASHERS_WITHOUT_SPLIT_MARKER: "Split needs review",
