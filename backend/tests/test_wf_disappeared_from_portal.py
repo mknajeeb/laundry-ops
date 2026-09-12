@@ -306,7 +306,7 @@ def test_cw_moves_qualified_bag_to_review():
             return_value=None,
         ),
         patch(
-            "backend.rinse_wf_disappeared_from_portal.qualify_disappeared_from_portal_bags",
+            "backend.management_wf_review_cache.get_qualified_disappeared_from_portal",
             return_value={
                 "9B5V934T45": {
                     "bag_id": "9B5V934T45",
@@ -423,7 +423,7 @@ def test_i_present_bag_unchanged_in_cw_pending():
             return_value=None,
         ),
         patch(
-            "backend.rinse_wf_disappeared_from_portal.qualify_disappeared_from_portal_bags",
+            "backend.management_wf_review_cache.get_qualified_disappeared_from_portal",
             return_value={},
         ),
     ):

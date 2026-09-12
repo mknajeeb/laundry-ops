@@ -662,6 +662,135 @@ def _membership_result_payload(
     }
 
 
+def _fresh_review_reasons_from_day_bags(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    wf_rows: list[Mapping[str, Any]],
+) -> dict[str, list[str]]:
+    """Derive classifier review reasons from persisted day-bag rows (Management read).
+
+    Reuses ``expand_review_required`` on a day-bag shell so specialty / zero-post
+    reason codes match the full Step-1 rebuild without re-running append-only
+    membership, presence-run reconstruction, or completion-cycle loads.
+
+    Does not change qualification semantics — same expander, cheaper inputs.
+    """
+    from backend.rinse_bulk_workitems import (
+        load_bag_bulk_lines,
+        load_bulk_resolutions,
+        load_bulk_workitem_scan_map,
+    )
+    from backend.rinse_scan_freshness import load_last_scan_at_by_bag
+    from backend.rinse_veewash_review import (
+        expand_review_required,
+        load_bag_weight_map,
+        load_registry_service_classification,
+    )
+
+    rows: list[dict[str, Any]] = []
+    presence: dict[str, dict[str, Any]] = {}
+    entry: dict[str, dict[str, Any]] = {}
+    new_today: list[str] = []
+    carryover: list[str] = []
+    completed: list[str] = []
+    pending: list[str] = []
+
+    for raw in wf_rows or []:
+        bid = normalize_bag_id(raw.get("bag_id"))
+        if not bid:
+            continue
+        status = str(raw.get("effective_status") or "").strip().lower()
+        entry_class = str(
+            raw.get("new_or_carryover") or raw.get("entry_class") or ""
+        ).strip().lower()
+        row = {
+            "bag_id": bid,
+            "service_type": "WF",
+            "rush_flag": raw.get("rush_status") or raw.get("rush_flag"),
+            "customer_name": raw.get("customer_name"),
+            "effective_status": status,
+            "outcome": status,
+            "pre_weight_lbs": raw.get("pre_weight_lbs"),
+            "post_weight_lbs": raw.get("post_weight_lbs"),
+            "canonical_status": "completed" if status == "completed" else status,
+        }
+        if status == "completed":
+            row["final_bucket"] = "completed"
+            completed.append(bid)
+        else:
+            pending.append(bid)
+        if entry_class in ("carryover", "carried_forward"):
+            carryover.append(bid)
+        else:
+            new_today.append(bid)
+        rows.append(row)
+        presence[bid] = {
+            "bag_id": bid,
+            "active": 1,
+            "portal_status": "at_vendor",
+            "service_type": "WF",
+            "rush_flag": row.get("rush_flag"),
+            "customer_name": row.get("customer_name"),
+        }
+        entry[bid] = {
+            "entry_date": selected_date_et,
+            "entry_source": "day_bag_shell",
+        }
+
+    bag_ids = sorted(presence)
+    if not bag_ids:
+        return {}
+
+    weights = load_bag_weight_map(
+        cursor, organization_id, bag_ids, selected_date_et=selected_date_et
+    )
+    registry_services, registry_historical = load_registry_service_classification(
+        cursor, organization_id, bag_ids
+    )
+    bulk_scans = load_bulk_workitem_scan_map(
+        cursor, organization_id, bag_ids, selected_date_et=selected_date_et
+    )
+    bulk_resolutions = load_bulk_resolutions(
+        cursor, organization_id, selected_date_et, bag_ids
+    )
+    bulk_lines = load_bag_bulk_lines(
+        cursor, organization_id, selected_date_et, bag_ids
+    )
+    last_scans = load_last_scan_at_by_bag(cursor, organization_id, bag_ids)
+
+    shell = {
+        "rows": rows,
+        "new_today": new_today,
+        "carryover": carryover,
+        "completed_on_date": completed,
+        "pending_end_of_date": pending,
+        "review_required": [],
+        "disappeared_without_completion_exceptions": [],
+        "completed_without_recognized_entry": [],
+        "review_reasons_by_bag": {},
+    }
+    expanded = expand_review_required(
+        shell,
+        selected_date_et=selected_date_et,
+        presence_by_bag=presence,
+        entry_by_bag=entry,
+        weight_by_bag=weights,
+        bulk_scan_by_bag=bulk_scans,
+        bulk_resolution_by_bag=bulk_resolutions,
+        bulk_lines_by_bag=bulk_lines,
+        registry_service_by_bag=registry_services,
+        registry_historical_completed_bags=registry_historical,
+        last_scan_at_by_bag=last_scans,
+    )
+    reasons = expanded.get("review_reasons_by_bag") or {}
+    return {
+        normalize_bag_id(bid): [str(c) for c in (codes or []) if c]
+        for bid, codes in reasons.items()
+        if normalize_bag_id(bid)
+    }
+
+
 def compute_canonical_wf_review_membership(
     cursor,
     organization_id: int,
@@ -676,13 +805,7 @@ def compute_canonical_wf_review_membership(
         load_bulk_resolutions,
         load_bulk_workitem_scan_map,
     )
-    from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
     from backend.rinse_veewash_shift_day import get_day_record, load_day_bags, summary_from_day_record
-    from backend.rinse_veewash_workload import (
-        build_step1_headline_summary,
-        build_veewash_daily_workload_from_membership,
-        get_step1_activation_date,
-    )
     from backend.rinse_wf_canonical_split import STATE_REVIEW_REQUIRED
 
     if headline is None:
@@ -708,24 +831,40 @@ def compute_canonical_wf_review_membership(
     _, headline_by_bag = _headline_maps(headline)
     fresh_reasons = dict(headline_by_bag) if headline_by_bag else {}
     if not fresh_reasons:
-        # Management-only: bulk presence COUNT / DDL-once while rebuilding
-        # membership for Review scalars. ACA never enters this scope.
-        from backend.management_presence_read_opt import management_presence_read_opt_scope
-
-        with management_presence_read_opt_scope(
-            cursor, int(organization_id), selected_date_et
-        ):
-            wl = build_veewash_daily_workload_from_membership(
-                cursor, organization_id, selected_date_et=selected_date_et
+        # Prefer day-bag shell + expand_review_required (same reason codes as the
+        # full Step-1 rebuild, without re-running append-only membership / presence
+        # reconstruction). Empty seed is valid. Fall back only on shell failure.
+        try:
+            fresh_reasons = _fresh_review_reasons_from_day_bags(
+                cursor, organization_id, selected_date_et, wf_rows
             )
-        activation = get_step1_activation_date(cursor, organization_id) or selected_date_et
-        summary = build_step1_headline_summary(
-            wl, selected_date_et=selected_date_et, activation_date=activation
-        )
-        summary = attach_specialty_metrics_to_summary(
-            cursor, organization_id, selected_date_et, summary
-        )
-        fresh_reasons = summary.get("review_reasons_by_bag") or {}
+        except Exception:
+            from backend.management_presence_read_opt import (
+                management_presence_read_opt_scope,
+            )
+            from backend.rinse_hd_day_metrics import attach_specialty_metrics_to_summary
+            from backend.rinse_veewash_workload import (
+                build_step1_headline_summary,
+                build_veewash_daily_workload_from_membership,
+                get_step1_activation_date,
+            )
+
+            with management_presence_read_opt_scope(
+                cursor, int(organization_id), selected_date_et
+            ):
+                wl = build_veewash_daily_workload_from_membership(
+                    cursor, organization_id, selected_date_et=selected_date_et
+                )
+            activation = (
+                get_step1_activation_date(cursor, organization_id) or selected_date_et
+            )
+            summary = build_step1_headline_summary(
+                wl, selected_date_et=selected_date_et, activation_date=activation
+            )
+            summary = attach_specialty_metrics_to_summary(
+                cursor, organization_id, selected_date_et, summary
+            )
+            fresh_reasons = summary.get("review_reasons_by_bag") or {}
 
     # Open WF OIs that disappeared from Cleaner Tickets while still in-window.
     # Overlay onto Review membership even when day-bag codes are still empty.
@@ -733,13 +872,17 @@ def compute_canonical_wf_review_membership(
         from backend.rinse_order_instances import list_open_wf_order_instances
         from backend.rinse_wf_disappeared_from_portal import (
             REASON_DISAPPEARED_FROM_PORTAL as _DFP,
-            qualify_disappeared_from_portal_bags,
+        )
+        from backend.management_wf_review_cache import (
+            get_qualified_disappeared_from_portal,
         )
 
         open_rows = list_open_wf_order_instances(
             cursor, organization_id, service_type="WF"
         )
-        dfp = qualify_disappeared_from_portal_bags(cursor, organization_id, open_rows)
+        dfp = get_qualified_disappeared_from_portal(
+            cursor, organization_id, open_rows
+        )
         for bid, _ctx in dfp.items():
             if bid not in by_id:
                 # Not on selected-day day_bag — still surface in Review via overlay.
@@ -1179,7 +1322,11 @@ def review_category_count_payload(
 ) -> dict[str, Any]:
     """Scalar Review counts from the same membership as the Review drawers."""
     if cursor is not None and organization_id is not None and selected_date_et is not None:
-        split = compute_canonical_wf_review_membership(
+        from backend.management_wf_review_cache import (
+            get_canonical_wf_review_membership_cached,
+        )
+
+        split = get_canonical_wf_review_membership_cached(
             cursor,
             int(organization_id),
             selected_date_et,
@@ -1504,7 +1651,11 @@ def build_management_review_list(
 
     day = get_day_record(cursor, organization_id, selected_date_et)
     headline = summary_from_day_record(day) or {}
-    membership = compute_canonical_wf_review_membership(
+    from backend.management_wf_review_cache import (
+        get_canonical_wf_review_membership_cached,
+    )
+
+    membership = get_canonical_wf_review_membership_cached(
         cursor, organization_id, selected_date_et, headline=headline
     )
     try:

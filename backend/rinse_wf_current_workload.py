@@ -528,10 +528,14 @@ def get_current_wf_workload(
     )
     from backend.rinse_wf_disappeared_from_portal import (
         REASON_DISAPPEARED_FROM_PORTAL,
-        qualify_disappeared_from_portal_bags,
+    )
+    from backend.management_wf_review_cache import (
+        get_qualified_disappeared_from_portal,
     )
 
-    disappeared_ctx = qualify_disappeared_from_portal_bags(cursor, org, flat_rows)
+    disappeared_ctx = get_qualified_disappeared_from_portal(
+        cursor, org, flat_rows
+    )
     disappeared_review = frozenset(disappeared_ctx.keys())
     review = frozenset(cycle_review | conflict_review | disappeared_review)
     pending = frozenset(b for b in open_bags if b not in review)

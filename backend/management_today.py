@@ -109,6 +109,12 @@ def clear_management_today_cache(
         _RINSE_WF_HEADLINE_CACHE.clear()
         if include_supplies:
             _SUPPLY_SUMMARY_CACHE.clear()
+        try:
+            from backend.management_wf_review_cache import clear_wf_review_derived_cache
+
+            clear_wf_review_derived_cache()
+        except Exception:
+            pass
         return
     org = int(organization_id) if organization_id is not None else None
     day_key = date_et.isoformat() if isinstance(date_et, date) else (str(date_et) if date_et else None)
@@ -127,6 +133,14 @@ def clear_management_today_cache(
             store.pop(key, None)
     if include_supplies:
         clear_management_supply_cache(organization_id=organization_id, date_et=date_et)
+    try:
+        from backend.management_wf_review_cache import clear_wf_review_derived_cache
+
+        clear_wf_review_derived_cache(
+            organization_id=organization_id, date_et=date_et
+        )
+    except Exception:
+        pass
 
 
 def clear_management_supply_cache(
@@ -1453,6 +1467,12 @@ def build_management_rinse_wf_primary_payload(
     if bypass_cache:
         _RINSE_WF_PRIMARY_CACHE.pop(cache_key, None)
         _RINSE_WF_HEADLINE_CACHE.pop(cache_key, None)
+        try:
+            from backend.management_wf_review_cache import clear_wf_review_derived_cache
+
+            clear_wf_review_derived_cache(organization_id=org, date_et=day)
+        except Exception:
+            pass
     else:
         cached = _RINSE_WF_PRIMARY_CACHE.get(cache_key)
         if cached and (time.monotonic() - cached[0]) < ttl:
@@ -1534,6 +1554,8 @@ def build_management_rinse_wf_secondary_payload(
     if bypass_cache:
         _RINSE_WF_SECONDARY_CACHE.pop(cache_key, None)
         _RINSE_WF_HEADLINE_CACHE.pop(cache_key, None)
+        # Do not clear DFP/membership here — primary may have just populated them
+        # on the same page load. Mutations use clear_management_today_cache.
     else:
         cached = _RINSE_WF_SECONDARY_CACHE.get(cache_key)
         if cached and (time.monotonic() - cached[0]) < ttl:

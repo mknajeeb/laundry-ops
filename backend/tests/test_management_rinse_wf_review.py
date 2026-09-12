@@ -18,8 +18,12 @@ from backend.management_rinse_wf_review import (
 @pytest.fixture(autouse=True)
 def _mock_canonical_membership_for_list(monkeypatch, request):
     """List tests use headline-shaped membership unless integration tests opt out."""
+    from backend.management_wf_review_cache import clear_wf_review_derived_cache
+
+    clear_wf_review_derived_cache()
     if request.node.get_closest_marker("integration_membership"):
         yield
+        clear_wf_review_derived_cache()
         return
 
     def _fake(cursor, organization_id, selected_date_et, *, headline=None):
@@ -44,7 +48,17 @@ def _mock_canonical_membership_for_list(monkeypatch, request):
         "backend.management_rinse_wf_review.compute_canonical_wf_review_membership",
         _fake,
     )
+
+    def _cached(cursor, organization_id, selected_date_et, *, headline=None, bypass_cache=False):
+        # Bypass process cache so each list test sees its own headline.
+        return _fake(cursor, organization_id, selected_date_et, headline=headline)
+
+    monkeypatch.setattr(
+        "backend.management_wf_review_cache.get_canonical_wf_review_membership_cached",
+        _cached,
+    )
     yield
+    clear_wf_review_derived_cache()
 
 
 def test_category_specialty_bulk():
@@ -899,6 +913,9 @@ def test_split_order_list_filters_persisted_ids_with_as_of_day_cutoff():
     assert out["bags"] == []
     assert out["pagination"]["total"] == 0
     # Sanity: if as-of said REVIEW, they would remain.
+    from backend.management_wf_review_cache import clear_wf_review_derived_cache
+
+    clear_wf_review_derived_cache()
     as_of_evals["3WXRM6SYAR"] = {"state": STATE_REVIEW_REQUIRED}
     with (
         patch(
@@ -925,6 +942,47 @@ def test_split_order_list_filters_persisted_ids_with_as_of_day_cutoff():
                     "manager_edit_version": 0,
                 }
             ],
+        ),
+        patch(
+            "backend.rinse_veewash_shift_day.load_day_bags",
+            return_value=[
+                {
+                    "bag_id": "3WXRM6SYAR",
+                    "service_type": "WF",
+                    "effective_status": "carried_forward",
+                    "bag_snapshot": {},
+                    "review_reason_codes": [],
+                },
+                {
+                    "bag_id": "6IU2WPCXNL",
+                    "service_type": "WF",
+                    "effective_status": "pending",
+                    "bag_snapshot": {},
+                    "review_reason_codes": [],
+                },
+            ],
+        ),
+        patch(
+            "backend.management_rinse_wf_review._fresh_review_reasons_from_day_bags",
+            return_value={},
+        ),
+        patch(
+            "backend.rinse_order_instances.list_open_wf_order_instances",
+            return_value=[],
+        ),
+        patch(
+            "backend.management_wf_review_cache.get_qualified_disappeared_from_portal",
+            return_value={},
+        ),
+        patch("backend.rinse_bulk_workitems.load_bag_bulk_lines", return_value={}),
+        patch("backend.rinse_bulk_workitems.load_bulk_resolutions", return_value={}),
+        patch(
+            "backend.rinse_bulk_workitems.load_bulk_workitem_scan_map",
+            return_value={},
+        ),
+        patch(
+            "backend.management_rinse_wf_review._canonical_review_weights",
+            return_value={},
         ),
     ):
         out2 = build_management_review_list(

@@ -176,7 +176,7 @@ export default function ManagementRinseWfSection({
   });
   const [currentWorkloadDialog, setCurrentWorkloadDialog] = useState({
     open: false,
-    filter: "all", // all | pending | review
+    filter: "all", // all | pending (review KPI opens actionable Review section)
   });
   const [splitSimOpen, setSplitSimOpen] = useState(false);
   const [supplyDetail, setSupplyDetail] = useState({
@@ -186,6 +186,7 @@ export default function ManagementRinseWfSection({
     product: null,
     rows: [],
   });
+  const [reviewOpenRequest, setReviewOpenRequest] = useState(null);
 
   const snapshotUnavailable = Boolean(
     !primaryLoading
@@ -455,7 +456,14 @@ export default function ManagementRinseWfSection({
               onClick={
                 snapshotUnavailable
                   ? undefined
-                  : () => setCurrentWorkloadDialog({ open: true, filter: "review" })
+                  : () => {
+                      const el = document.getElementById("management-rinse-wf-review");
+                      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+                      setReviewOpenRequest({
+                        category: "review_required",
+                        nonce: Date.now(),
+                      });
+                    }
               }
             />
           </>
@@ -629,6 +637,8 @@ export default function ManagementRinseWfSection({
           snapshotUnavailable={snapshotUnavailable}
           readOnly={readOnly}
           onRefresh={onRefresh}
+          openCategoryRequest={reviewOpenRequest}
+          onOpenCategoryRequestHandled={() => setReviewOpenRequest(null)}
         />
       </Box>
 
