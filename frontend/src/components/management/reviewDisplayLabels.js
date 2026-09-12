@@ -4,24 +4,24 @@
  */
 
 const REVIEW_REASON_LABELS = {
-  SERVICE_CLASSIFICATION_MISMATCH: "Specialty items need review",
-  WF_BULK_WORKITEM_REVIEW: "Bulk items need review",
-  MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL: "Missing from portal",
-  DISAPPEARED_WITHOUT_COMPLETION: "Missing from portal",
-  DISAPPEARED_FROM_PORTAL: "Disappeared From Portal",
-  REVIEW_MISSING_FROM_PORTAL: "Missing from portal",
-  SPLIT_MARKED_BUT_SECOND_WASHER_NOT_FOUND: "Split needs review",
-  MULTIPLE_WASHERS_WITHOUT_SPLIT_MARKER: "Split needs review",
-  SPLIT_EVIDENCE_INCOMPLETE_AT_DISAPPEARANCE: "Split needs review",
-  MANAGER_SENT_FOR_REVIEW: "Manual review",
-  WF_ZERO_OR_MISSING_POST_WEIGHT: "Specialty items need review",
-  WF_ZERO_OR_MISSING_WEIGHT: "Specialty items need review",
-  COMPLETED_WITHOUT_RECOGNIZED_ENTRY: "Specialty items need review",
-  COMPLETION_DETAILS_MISSING: "Specialty items need review",
-  MISSING_PRE_EVIDENCE: "Specialty items need review",
-  SCAN_CHRONOLOGY_STALE: "Specialty items need review",
-  CORRECT_COMPLETION_DETAILS: "Manual review",
-  MARK_COMPLETED: "Manual review",
+  SERVICE_CLASSIFICATION_MISMATCH: "Specialty / Bulky Item Review",
+  WF_BULK_WORKITEM_REVIEW: "Specialty / Bulky Item Review",
+  MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL: "Missing From Portal",
+  DISAPPEARED_WITHOUT_COMPLETION: "Missing From Portal",
+  DISAPPEARED_FROM_PORTAL: "Missing From Portal",
+  REVIEW_MISSING_FROM_PORTAL: "Missing From Portal",
+  SPLIT_MARKED_BUT_SECOND_WASHER_NOT_FOUND: "Split Order Review",
+  MULTIPLE_WASHERS_WITHOUT_SPLIT_MARKER: "Split Order Review",
+  SPLIT_EVIDENCE_INCOMPLETE_AT_DISAPPEARANCE: "Split Order Review",
+  MANAGER_SENT_FOR_REVIEW: "Manual Review",
+  WF_ZERO_OR_MISSING_POST_WEIGHT: "Specialty / Bulky Item Review",
+  WF_ZERO_OR_MISSING_WEIGHT: "Specialty / Bulky Item Review",
+  COMPLETED_WITHOUT_RECOGNIZED_ENTRY: "Specialty / Bulky Item Review",
+  COMPLETION_DETAILS_MISSING: "Specialty / Bulky Item Review",
+  MISSING_PRE_EVIDENCE: "Specialty / Bulky Item Review",
+  SCAN_CHRONOLOGY_STALE: "Specialty / Bulky Item Review",
+  CORRECT_COMPLETION_DETAILS: "Manual Review",
+  MARK_COMPLETED: "Manual Review",
   REGISTRY_COMPLETED_WITHOUT_OI_EVIDENCE:
     "Completion conflict — registry shows completed, but no valid completion evidence exists for this current order.",
 };
@@ -117,10 +117,10 @@ export function formatReviewBagShortReason(
   }
   if (categoryFallback) return categoryFallback;
   const cat = String(bag?.category || bag?.review_category || "").toLowerCase();
-  if (cat === "missing_from_portal") return "Missing from portal";
-  if (cat === "split_order_review") return "Split needs review";
-  if (cat === "manual_review") return "Manual review";
-  if (cat === "specialty_items") return "Specialty items need review";
+  if (cat === "missing_from_portal") return "Missing From Portal";
+  if (cat === "split_order_review") return "Split Order Review";
+  if (cat === "manual_review") return "Manual Review";
+  if (cat === "specialty_items") return "Specialty / Bulky Item Review";
   return fallback;
 }
 

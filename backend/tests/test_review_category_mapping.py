@@ -31,6 +31,15 @@ ORG = 3
 DAY = date(2026, 8, 24)
 
 
+@pytest.fixture(autouse=True)
+def _clear_wf_review_cache():
+    from backend.management_wf_review_cache import clear_wf_review_derived_cache
+
+    clear_wf_review_derived_cache()
+    yield
+    clear_wf_review_derived_cache()
+
+
 def test_wf_bulk_unresolved_maps_specialty():
     assert category_for_reason_codes([REASON_WF_BULK_WORKITEM_REVIEW]) == CATEGORY_SPECIALTY
     assert specialty_review_is_unresolved([REASON_WF_BULK_WORKITEM_REVIEW], bulk_cleared=False)

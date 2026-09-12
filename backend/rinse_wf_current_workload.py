@@ -598,8 +598,19 @@ def get_current_wf_workload(
                 }
             items.append(item)
 
-    # Bag-level equation: one bag → one pending/review membership.
-    return {
+    if items:
+        from backend.rinse_employee_productivity_sessions import (
+            resolve_customer_names_for_bags,
+        )
+
+        items = resolve_customer_names_for_bags(
+            cursor,
+            org,
+            items,
+            selected_date_et=None,
+        )
+
+    payload = {
         "organization_id": org,
         "date_independent": True,
         "pending": pending,
@@ -613,6 +624,21 @@ def get_current_wf_workload(
         "items": items,
         "source": "current_wf_workload_open_oi_v1",
     }
+
+    # Soft manager overlay (manual review / exclude) — does not change OI open set.
+    try:
+        from backend.management_wf_cw_controls import (
+            apply_cw_manager_overlay,
+            bulk_load_active_cw_overrides,
+        )
+
+        overrides = bulk_load_active_cw_overrides(cursor, org, sorted(open_bags))
+        payload = apply_cw_manager_overlay(payload, overrides)
+    except Exception:
+        # Presentation overlay must never break CW authority reads.
+        pass
+
+    return payload
 
 
 def get_selected_date_wf_completed(

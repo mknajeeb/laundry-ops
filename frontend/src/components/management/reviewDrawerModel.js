@@ -17,11 +17,11 @@ const SPECIALTY_REVIEW_CODES = new Set([
   "WF_ZERO_OR_MISSING_WEIGHT",
   "COMPLETED_WITHOUT_RECOGNIZED_ENTRY",
   "SERVICE_CLASSIFICATION_MISMATCH",
-  "MANAGER_SENT_FOR_REVIEW",
   "COMPLETION_DETAILS_MISSING",
   "MISSING_PRE_EVIDENCE",
   "SCAN_CHRONOLOGY_STALE",
 ]);
+const MANUAL_REVIEW_CODES = new Set(["MANAGER_SENT_FOR_REVIEW"]);
 
 export function reasonCodeSet(bag) {
   return new Set(
@@ -67,6 +67,11 @@ export function resolveReviewDrawerInlineVariant(bag, drawerCategory = null) {
     review_category:
       bag?.review_category || bag?.category || drawerCategory || null,
   };
+  const cat = String(enriched.category || enriched.review_category || "").toLowerCase();
+  if (cat === "manual_review") return "manual";
+  if ([...reasonCodeSet(enriched)].some((c) => MANUAL_REVIEW_CODES.has(c)) && !bagHasMissingPortal(enriched)) {
+    return "manual";
+  }
   const showMissing = bagHasMissingPortal(enriched);
   const showSpecialtyBulk = bagHasSpecialtyBulk(enriched) && !showMissing;
   const showSpecialtyReview =

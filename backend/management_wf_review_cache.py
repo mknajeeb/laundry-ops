@@ -196,6 +196,17 @@ def get_canonical_wf_review_membership_cached(
             day,
             headline=headline,
         )
+        try:
+            from backend.management_rinse_wf_review import (
+                merge_cw_manual_overrides_into_review_membership,
+            )
+
+            result = merge_cw_manual_overrides_into_review_membership(
+                cursor, org, result
+            )
+        except Exception:
+            # Soft overlay must never break membership reads.
+            pass
         _STATS["membership_compute"] += 1
         _MEMBERSHIP_CACHE[key] = (time.monotonic(), copy.deepcopy(result))
         return copy.deepcopy(result)

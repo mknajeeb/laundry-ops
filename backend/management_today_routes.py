@@ -638,3 +638,292 @@ def register_management_today_routes(
         finally:
             cursor.close()
             conn.close()
+
+    def _actor_display(me: dict) -> str | None:
+        display = (
+            me.get("display_name")
+            or me.get("full_name")
+            or me.get("email")
+            or me.get("username")
+        )
+        return str(display).strip() if display else None
+
+    @app.route("/api/management/rinse-wf/bag-detail", methods=["GET"])
+    def management_rinse_wf_bag_detail():
+        """Pending or Review bag detail — soft overlay aware, no full CW rebuild."""
+        from backend.management_rinse_wf_review import build_management_wf_bag_detail
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            selected, err = _selected_date_et()
+            if err:
+                return err
+            bag_id = (request.args.get("bag_id") or "").strip() or None
+            raw_oi = (request.args.get("order_instance_id") or "").strip()
+            oi_id = None
+            if raw_oi:
+                try:
+                    oi_id = int(raw_oi)
+                except (TypeError, ValueError):
+                    return jsonify({"ok": False, "error": "invalid_order_instance_id"}), 400
+            counting = CountingCursor(cursor)
+            payload = build_management_wf_bag_detail(
+                counting,
+                oid,
+                selected,
+                bag_id=bag_id,
+                order_instance_id=oi_id,
+            )
+            if payload.get("ok") is False:
+                code = 404 if payload.get("error") == "bag_not_found" else 400
+                return jsonify(json_safe_rinse(payload)), code
+            meta = dict(payload.get("_meta") or {})
+            meta["query_count"] = int(getattr(counting, "query_count", 0))
+            payload["_meta"] = meta
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/rinse-wf/current-workload/<bag_id>/move-to-review",
+        methods=["POST"],
+    )
+    def management_wf_cw_move_to_review(bag_id: str):
+        """Pending → Manual Review (soft override; no scan/OI rewrite)."""
+        from backend.management_today import clear_management_today_cache
+        from backend.management_wf_cw_controls import move_pending_to_manual_review
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            selected, err = _selected_date_et()
+            if err:
+                return err
+            body = request.get_json(silent=True) or {}
+            reason = str(body.get("reason") or body.get("reason_text") or "").strip()
+            if not reason:
+                return jsonify({"ok": False, "error": "reason_required"}), 400
+            result = move_pending_to_manual_review(
+                cursor,
+                oid,
+                bag_id=bag_id,
+                reason_text=reason,
+                actor_user_id=me.get("id") or me.get("user_id"),
+                actor_display_name=_actor_display(me),
+                order_instance_id=body.get("order_instance_id"),
+                selected_date_et=selected,
+            )
+            if not result.get("ok"):
+                return jsonify(json_safe_rinse(result)), 400
+            conn.commit()
+            clear_management_today_cache(oid, selected, include_supplies=False)
+            return jsonify(json_safe_rinse(result))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/rinse-wf/current-workload/<bag_id>/exclude",
+        methods=["POST"],
+    )
+    def management_wf_cw_exclude(bag_id: str):
+        """Soft-exclude open CW bag from operational workload (no deletes)."""
+        from backend.management_today import clear_management_today_cache
+        from backend.management_wf_cw_controls import exclude_from_current_workload
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            selected, err = _selected_date_et()
+            if err:
+                return err
+            body = request.get_json(silent=True) or {}
+            reason = str(body.get("reason") or body.get("reason_text") or "").strip()
+            if not reason:
+                return jsonify({"ok": False, "error": "reason_required"}), 400
+            result = exclude_from_current_workload(
+                cursor,
+                oid,
+                bag_id=bag_id,
+                reason_text=reason,
+                actor_user_id=me.get("id") or me.get("user_id"),
+                actor_display_name=_actor_display(me),
+                order_instance_id=body.get("order_instance_id"),
+                selected_date_et=selected,
+            )
+            if not result.get("ok"):
+                return jsonify(json_safe_rinse(result)), 400
+            conn.commit()
+            clear_management_today_cache(oid, selected, include_supplies=False)
+            return jsonify(json_safe_rinse(result))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/rinse-wf/current-workload/<bag_id>/resolve-manual",
+        methods=["POST"],
+    )
+    def management_wf_cw_resolve_manual(bag_id: str):
+        """Return to Pending — clear Manual Review soft disposition only.
+
+        Refuses when the bag still qualifies as DISAPPEARED_FROM_PORTAL.
+        """
+        from backend.management_today import clear_management_today_cache
+        from backend.management_rinse_wf_review import _single_bag_dfp_qualified
+        from backend.management_wf_cw_controls import resolve_manual_cw_review
+        from backend.management_wf_review_cache import clear_wf_review_derived_cache
+        from backend.rinse_bag_completion import normalize_bag_id
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            selected, err = _selected_date_et()
+            if err:
+                return err
+            body = request.get_json(silent=True) or {}
+            bid = normalize_bag_id(bag_id)
+            if _single_bag_dfp_qualified(
+                cursor,
+                oid,
+                bid,
+                order_instance_id=body.get("order_instance_id"),
+            ):
+                return (
+                    jsonify(
+                        json_safe_rinse(
+                            {
+                                "ok": False,
+                                "error": "still_disappeared_from_portal",
+                                "message": (
+                                    "Bag still qualifies as Missing From Portal; "
+                                    "cannot return to Pending."
+                                ),
+                            }
+                        )
+                    ),
+                    400,
+                )
+            result = resolve_manual_cw_review(
+                cursor,
+                oid,
+                bag_id=bag_id,
+                actor_user_id=me.get("id") or me.get("user_id"),
+                actor_display_name=_actor_display(me),
+                clear_reason_text=body.get("clear_reason_text")
+                or body.get("reason")
+                or body.get("reason_text")
+                or "Return to Pending",
+                selected_date_et=selected,
+            )
+            if not result.get("ok"):
+                return jsonify(json_safe_rinse(result)), 400
+            conn.commit()
+            clear_management_today_cache(oid, selected, include_supplies=False)
+            try:
+                clear_wf_review_derived_cache(organization_id=oid, date_et=selected)
+            except Exception:
+                pass
+            return jsonify(json_safe_rinse(result))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/rinse-wf/current-workload/<bag_id>/restore",
+        methods=["POST"],
+    )
+    def management_wf_cw_restore(bag_id: str):
+        """Restore soft-excluded CW bag to operational workload."""
+        from backend.management_today import clear_management_today_cache
+        from backend.management_wf_cw_controls import (
+            OVERRIDE_EXCLUDE,
+            clear_cw_override,
+        )
+        from backend.rinse_veewash_step1_api import _record_correction
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_READ_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            oid = int(user_org_id(me))
+            selected, err = _selected_date_et()
+            if err:
+                return err
+            body = request.get_json(silent=True) or {}
+            reason = str(
+                body.get("reason") or body.get("reason_text") or "Restored to workload"
+            ).strip()
+            result = clear_cw_override(
+                cursor,
+                oid,
+                bag_id=bag_id,
+                actor_user_id=me.get("id") or me.get("user_id"),
+                actor_display_name=_actor_display(me),
+                clear_reason_text=reason,
+                only_types=[OVERRIDE_EXCLUDE],
+            )
+            if not result.get("ok"):
+                return jsonify(json_safe_rinse(result)), 400
+            _record_correction(
+                cursor,
+                oid,
+                bag_id=bag_id,
+                action="cw_restore",
+                reason_text=reason,
+                reason_code="MANAGER_RESTORED_TO_WORKLOAD",
+                previous_values={"cw_override_type": OVERRIDE_EXCLUDE},
+                new_values={"active": False},
+                actor_user_id=me.get("id") or me.get("user_id"),
+                actor_display_name=_actor_display(me),
+            )
+            conn.commit()
+            clear_management_today_cache(oid, selected, include_supplies=False)
+            return jsonify(json_safe_rinse({**result, "action": "restore"}))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()

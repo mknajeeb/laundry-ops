@@ -17,10 +17,17 @@ from backend.rinse_step1_productivity_fast import (
 from backend.rinse_veewash_shift_day import apply_manager_edit_day_bag_patch
 
 
-def test_manager_sent_for_review_has_specialty_review_flag_without_bulk():
+def test_manager_sent_for_review_is_manual_not_specialty_bulk():
     flags = review_drawer_section_flags(["MANAGER_SENT_FOR_REVIEW"])
     assert flags["has_specialty_bulk"] is False
-    assert flags["has_specialty_review"] is True
+    assert flags["has_specialty_review"] is False
+    assert flags["has_missing_portal"] is False
+    from backend.management_rinse_wf_review import (
+        CATEGORY_MANUAL_REVIEW,
+        category_for_reason_codes,
+    )
+
+    assert category_for_reason_codes(["MANAGER_SENT_FOR_REVIEW"]) == CATEGORY_MANUAL_REVIEW
 
 
 def test_clear_stale_completed_review_codes_for_non_member():

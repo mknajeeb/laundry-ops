@@ -117,9 +117,32 @@ function SplitOrderReviewRow({
           · {rushLabel(bag.rush_flag)}
         </Typography>
       </Stack>
-      <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#334155", mt: 0.45 }}>
-        {shortReason}
-      </Typography>
+      <Box
+        data-testid="review-reason-banner"
+        sx={{
+          mt: 0.75,
+          mb: 0.35,
+          p: 1,
+          borderRadius: 1,
+          bgcolor: "#fef2f2",
+          border: "1px solid #fecaca",
+        }}
+      >
+        <Typography
+          sx={{
+            fontSize: 10,
+            fontWeight: 800,
+            letterSpacing: 0.7,
+            textTransform: "uppercase",
+            color: "#991b1b",
+          }}
+        >
+          Review reason
+        </Typography>
+        <Typography sx={{ fontSize: 14, fontWeight: 800, color: "#7f1d1d", mt: 0.15 }}>
+          {shortReason || "Split Order Review"}
+        </Typography>
+      </Box>
       {(fmtLbs(bag.pre_weight_lbs) || fmtLbs(bag.post_weight_lbs)) ? (
         <Stack direction="row" spacing={1.25} sx={{ mt: 0.2 }}>
           {fmtLbs(bag.pre_weight_lbs) ? (
@@ -317,9 +340,7 @@ export default function ManagementRinseWfReviewSection({
             server_elapsed_ms: serverMs,
           },
         });
-        if (category !== "split_order_review" && Array.isArray(data.bags) && data.bags.length) {
-          setExpandedBagId((prev) => prev || data.bags[0]?.bag_id || null);
-        }
+        // Do not auto-expand first bag — manager clicks to expand (faster + no premature completion UI).
       } catch (err) {
         setListState({
           loading: false,

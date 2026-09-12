@@ -17,27 +17,29 @@ describe("isRawBackendCode", () => {
   it("detects ALL_CAPS and snake_case machine keys", () => {
     expect(isRawBackendCode("WF_BULK_WORKITEM_REVIEW")).toBe(true);
     expect(isRawBackendCode("bulk_workitem_review_required")).toBe(true);
-    expect(isRawBackendCode("Specialty items need review")).toBe(false);
-    expect(isRawBackendCode("Missing from portal")).toBe(false);
+    expect(isRawBackendCode("Specialty / Bulky Item Review")).toBe(false);
+    expect(isRawBackendCode("Missing From Portal")).toBe(false);
   });
 });
 
 describe("formatReviewReasonLabel", () => {
   it("maps known review codes to VeeWash language", () => {
     expect(formatReviewReasonLabel("SERVICE_CLASSIFICATION_MISMATCH")).toBe(
-      "Specialty items need review",
+      "Specialty / Bulky Item Review",
     );
-    expect(formatReviewReasonLabel("WF_BULK_WORKITEM_REVIEW")).toBe("Bulk items need review");
+    expect(formatReviewReasonLabel("WF_BULK_WORKITEM_REVIEW")).toBe(
+      "Specialty / Bulky Item Review",
+    );
     expect(formatReviewReasonLabel("MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL")).toBe(
-      "Missing from portal",
+      "Missing From Portal",
     );
     expect(formatReviewReasonLabel("DISAPPEARED_FROM_PORTAL")).toBe(
-      "Disappeared From Portal",
+      "Missing From Portal",
     );
     expect(formatReviewReasonLabel("SPLIT_MARKED_BUT_SECOND_WASHER_NOT_FOUND")).toBe(
-      "Split needs review",
+      "Split Order Review",
     );
-    expect(formatReviewReasonLabel("MANAGER_SENT_FOR_REVIEW")).toBe("Manual review");
+    expect(formatReviewReasonLabel("MANAGER_SENT_FOR_REVIEW")).toBe("Manual Review");
     expect(formatReviewReasonLabel("REGISTRY_COMPLETED_WITHOUT_OI_EVIDENCE")).toMatch(
       /Completion conflict/i,
     );
@@ -94,12 +96,12 @@ describe("formatReviewBagShortReason", () => {
       short_reason: "Wf Bulk Workitem Review",
       reason_codes: ["WF_BULK_WORKITEM_REVIEW"],
     });
-    expect(label).toBe("Bulk items need review");
+    expect(label).toBe("Specialty / Bulky Item Review");
     expect(label).not.toMatch(/WF_BULK|workitem/i);
   });
 
   it("uses category fallback when codes are absent", () => {
-    expect(formatReviewBagShortReason({ category: "manual_review" })).toBe("Manual review");
+    expect(formatReviewBagShortReason({ category: "manual_review" })).toBe("Manual Review");
   });
 });
 
@@ -141,7 +143,7 @@ describe("normal Review UI never shows raw backend codes", () => {
     ]) {
       expect(uiText).not.toContain(code);
     }
-    expect(uiText).toMatch(/Bulk items need review/i);
+    expect(uiText).toMatch(/Specialty \/ Bulky Item Review/i);
     expect(uiText).toMatch(/Select the employee/i);
   });
 
@@ -151,6 +153,6 @@ describe("normal Review UI never shows raw backend codes", () => {
         "DISAPPEARED_WITHOUT_COMPLETION",
         "MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL",
       ]),
-    ).toBe("Missing from portal");
+    ).toBe("Missing From Portal");
   });
 });

@@ -2460,6 +2460,53 @@ export const getManagementRinseWfReviewAction = (dateEt, bagId, params = {}) => 
   );
 };
 
+/** Targeted Pending/Review bag detail — one bag, no full-day rebuild. */
+export const getManagementRinseWfBagDetail = (dateEt, params = {}) => {
+  const { signal, bag_id, order_instance_id, ...rest } = params || {};
+  return axios.get(`${API_BASE}/api/management/rinse-wf/bag-detail`, {
+    params: {
+      date_et: dateEt,
+      bag_id: bag_id || undefined,
+      order_instance_id: order_instance_id || undefined,
+      ...rest,
+    },
+    signal,
+    timeout: 30000,
+  });
+};
+
+/** Current Workload Pending → Manual Review (soft override). */
+export const postManagementWfCwMoveToReview = (dateEt, bagId, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/rinse-wf/current-workload/${encodeURIComponent(bagId)}/move-to-review`,
+    body,
+    { params: { date_et: dateEt }, timeout: 60000 },
+  );
+
+/** Soft-exclude open CW bag from operational workload. */
+export const postManagementWfCwExclude = (dateEt, bagId, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/rinse-wf/current-workload/${encodeURIComponent(bagId)}/exclude`,
+    body,
+    { params: { date_et: dateEt }, timeout: 60000 },
+  );
+
+/** Clear Manual Review soft disposition (Return to Pending). */
+export const postManagementWfCwResolveManual = (dateEt, bagId, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/rinse-wf/current-workload/${encodeURIComponent(bagId)}/resolve-manual`,
+    body,
+    { params: { date_et: dateEt }, timeout: 60000 },
+  );
+
+/** Restore soft-excluded CW bag. */
+export const postManagementWfCwRestore = (dateEt, bagId, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/rinse-wf/current-workload/${encodeURIComponent(bagId)}/restore`,
+    body,
+    { params: { date_et: dateEt }, timeout: 60000 },
+  );
+
 export const getManagementRinseWfReviewScans = (dateEt, bagId, params = {}) => {
   const { signal, ...rest } = params || {};
   return axios.get(

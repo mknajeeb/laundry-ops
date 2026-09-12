@@ -47,15 +47,15 @@ describe("review drawer section flags", () => {
     ).toBe(false);
   });
 
-  it("always mounts specialty review inline surface without bulk evidence", () => {
+  it("routes manager-sent bags to manual inline surface", () => {
     const bag = {
       reason_codes: ["MANAGER_SENT_FOR_REVIEW"],
       has_specialty_bulk: false,
       bulk_review_unresolved: false,
     };
-    expect(bagHasSpecialtyReview(bag)).toBe(true);
-    expect(resolveReviewDrawerInlineVariant(bag, "specialty_items")).toBe("specialty_review");
-    expect(resolveReviewDrawerInlineVariant(bag)).toBe("specialty_review");
+    expect(bagHasSpecialtyReview(bag)).toBe(false);
+    expect(resolveReviewDrawerInlineVariant(bag, "manual_review")).toBe("manual");
+    expect(resolveReviewDrawerInlineVariant(bag)).toBe("manual");
   });
 
   it("keeps bulk controls separate from specialty review completion surface", () => {

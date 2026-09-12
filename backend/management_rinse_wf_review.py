@@ -130,12 +130,13 @@ SPECIALTY_ITEMS_REASONS = frozenset(
         "WF_ZERO_OR_MISSING_WEIGHT",
         "COMPLETED_WITHOUT_RECOGNIZED_ENTRY",
         REASON_SERVICE_CLASSIFICATION_MISMATCH,
-        "MANAGER_SENT_FOR_REVIEW",
         "COMPLETION_DETAILS_MISSING",
         "MISSING_PRE_EVIDENCE",
         "SCAN_CHRONOLOGY_STALE",
     }
 )
+
+MANUAL_REVIEW_REASONS = frozenset({"MANAGER_SENT_FOR_REVIEW"})
 
 SPECIALTY_ONLY_ZERO_POST_CLEARABLE_REASONS = frozenset(
     {
@@ -223,6 +224,7 @@ SPLIT_ORDER_REASONS = frozenset(
 REASON_CATEGORY_MAP: dict[str, str] = {
     **{code: CATEGORY_MISSING_PORTAL for code in MISSING_FROM_PORTAL_REASONS},
     **{code: CATEGORY_SPECIALTY for code in SPECIALTY_ITEMS_REASONS},
+    **{code: CATEGORY_MANUAL_REVIEW for code in MANUAL_REVIEW_REASONS},
     **{code: CATEGORY_SPLIT_ORDER for code in SPLIT_ORDER_REASONS},
 }
 
@@ -263,6 +265,9 @@ def category_for_reason_codes(
     """Deterministic single category for a bag's reason codes (no double-count).
 
     Returns ``None`` for unrecognized codes — never silently map to Specialty.
+
+    Precedence: specialty bulk → missing (when no specialty) → specialty other
+    (except manager-sent) → split → manual_review reasons → missing fallback → None.
     """
     normalized = [str(c) for c in (codes or []) if c]
     if not normalized:
@@ -275,13 +280,15 @@ def category_for_reason_codes(
     if has_missing and not (code_set & SPECIALTY_ITEMS_REASONS):
         return CATEGORY_MISSING_PORTAL
     if has_missing and not has_specialty_bulk:
-        other = code_set - MISSING_FROM_PORTAL_REASONS
+        other = code_set - MISSING_FROM_PORTAL_REASONS - MANUAL_REVIEW_REASONS
         if not other:
             return CATEGORY_MISSING_PORTAL
     if code_set & SPECIALTY_ITEMS_REASONS:
         return CATEGORY_SPECIALTY
     if code_set & SPLIT_ORDER_REASONS:
         return CATEGORY_SPLIT_ORDER
+    if code_set & MANUAL_REVIEW_REASONS:
+        return CATEGORY_MANUAL_REVIEW
     if has_missing:
         return CATEGORY_MISSING_PORTAL
     return None
@@ -660,6 +667,92 @@ def _membership_result_payload(
             CATEGORY_SPLIT_ORDER: "operational_split_contradiction_not_auto_employee_quality",
         },
     }
+
+
+def merge_cw_manual_overrides_into_review_membership(
+    cursor,
+    organization_id: int,
+    membership: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Union active CW Manual Review overrides into Manual Review membership.
+
+    Does not reclassify Specialty / Missing / Split bags. Additive only.
+    """
+    from backend.management_wf_cw_controls import (
+        OVERRIDE_MANUAL_REVIEW,
+        bulk_load_active_cw_overrides,
+    )
+    from backend.rinse_veewash_workload import REASON_MANAGER_SENT_FOR_REVIEW
+
+    out = dict(membership or {})
+    try:
+        overrides = bulk_load_active_cw_overrides(cursor, int(organization_id))
+        if not isinstance(overrides, dict):
+            overrides = {}
+    except Exception:
+        overrides = {}
+
+    override_meta: dict[str, dict[str, Any]] = {}
+    for bid, ov in overrides.items():
+        if not isinstance(ov, Mapping):
+            continue
+        if str(ov.get("override_type") or "") != OVERRIDE_MANUAL_REVIEW:
+            continue
+        nb = normalize_bag_id(bid) or normalize_bag_id(ov.get("bag_id"))
+        if not nb:
+            continue
+        override_meta[nb] = dict(ov)
+
+    if not override_meta:
+        out["_cw_override_meta"] = {}
+        out["_cw_manual_added"] = []
+        return out
+
+    specialty = list(out.get(CATEGORY_SPECIALTY) or [])
+    missing = list(out.get(CATEGORY_MISSING_PORTAL) or [])
+    split_ids = list(out.get(CATEGORY_SPLIT_ORDER) or [])
+    manual = list(out.get(CATEGORY_MANUAL_REVIEW) or [])
+    unknown = list(out.get(CATEGORY_UNKNOWN) or [])
+    claimed = set(specialty) | set(missing) | set(split_ids) | set(manual) | set(unknown)
+    codes_by_bag = dict(out.get("codes_by_bag") or {})
+    disposition = dict(out.get("disposition") or {})
+
+    added: list[str] = []
+    for bid, ov in override_meta.items():
+        if bid in claimed:
+            # Already in a system category — keep system membership; expose meta only.
+            continue
+        added.append(bid)
+        manual.append(bid)
+        claimed.add(bid)
+        disposition[bid] = CATEGORY_MANUAL_REVIEW
+        prior = [str(c) for c in (codes_by_bag.get(bid) or []) if c]
+        if REASON_MANAGER_SENT_FOR_REVIEW not in prior:
+            prior.append(REASON_MANAGER_SENT_FOR_REVIEW)
+        codes_by_bag[bid] = prior
+
+    if not added:
+        out["_cw_override_meta"] = override_meta
+        out["_cw_manual_added"] = []
+        return out
+
+    rebuilt = _membership_result_payload(
+        specialty, missing, split_ids, manual=manual, unknown=unknown
+    )
+    # Preserve caller-provided maps when present (tests / cached enrichments).
+    if out.get("reason_category_map") is not None:
+        rebuilt["reason_category_map"] = out.get("reason_category_map")
+    if out.get("precedence") is not None:
+        rebuilt["precedence"] = out.get("precedence")
+    if out.get("employee_performance_hint") is not None:
+        rebuilt["employee_performance_hint"] = out.get("employee_performance_hint")
+    rebuilt["disposition"] = disposition
+    rebuilt["codes_by_bag"] = codes_by_bag
+    if "excluded" in out:
+        rebuilt["excluded"] = out.get("excluded")
+    rebuilt["_cw_override_meta"] = override_meta
+    rebuilt["_cw_manual_added"] = sorted(added)
+    return rebuilt
 
 
 def _fresh_review_reasons_from_day_bags(
@@ -1353,6 +1446,7 @@ def review_category_count_payload(
             CATEGORY_MANUAL_REVIEW: list(split.get(CATEGORY_MANUAL_REVIEW) or []),
             CATEGORY_UNKNOWN: list(split.get(CATEGORY_UNKNOWN) or []),
         },
+        "_cw_override_meta": dict(split.get("_cw_override_meta") or {}),
     }
 
 
@@ -1658,6 +1752,7 @@ def build_management_review_list(
     membership = get_canonical_wf_review_membership_cached(
         cursor, organization_id, selected_date_et, headline=headline
     )
+    cw_override_meta = dict(membership.get("_cw_override_meta") or {})
     try:
         clear_stale_completed_wf_review_day_bag_codes(
             cursor, organization_id, selected_date_et, membership
@@ -1934,6 +2029,44 @@ def build_management_review_list(
                 else smeta.get("canonical_split"),
         }
         _merge_review_weight_fields(bag_row, weight_map.get(bid))
+        from backend.rinse_manual_review import public_manual_review_fields
+        from backend.rinse_veewash_workload import REASON_MANAGER_SENT_FOR_REVIEW
+
+        mr = public_manual_review_fields(snap)
+        ov = cw_override_meta.get(bid) or {}
+        system_codes = [
+            c for c in codes if c and c != REASON_MANAGER_SENT_FOR_REVIEW
+        ]
+        manual_active = bool(ov) or bool(mr.get("sent_back_at")) or (
+            REASON_MANAGER_SENT_FOR_REVIEW in codes
+            and bag_category == CATEGORY_MANUAL_REVIEW
+        )
+        if manual_active and system_codes:
+            review_origin = "both"
+        elif manual_active:
+            review_origin = "manual"
+        else:
+            review_origin = "system"
+        bag_row.update(
+            {
+                "review_origin": review_origin,
+                "system_review_reason_codes": system_codes,
+                "manual_review_active": bool(ov) or bool(mr.get("sent_back_at")),
+                "manual_review_reason": ov.get("reason_text")
+                or snap.get("cw_manual_review_reason")
+                or mr.get("manual_review_reason_codes"),
+                "manual_review_reason_code": ov.get("reason_code")
+                or (
+                    REASON_MANAGER_SENT_FOR_REVIEW
+                    if REASON_MANAGER_SENT_FOR_REVIEW in codes
+                    else None
+                ),
+                "sent_by": ov.get("actor_display_name") or mr.get("sent_back_by"),
+                "sent_at": ov.get("created_at_et") or mr.get("sent_back_at"),
+                "reviewed_by": mr.get("reviewed_by"),
+                "reviewed_at": mr.get("reviewed_at"),
+            }
+        )
         bags_out.append(bag_row)
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 1)
@@ -2168,6 +2301,9 @@ def build_management_review_action(
 
     Lock version, weights, completion, bulk lines, and catalog — no scans,
     chronology, photos, or full drilldown payload.
+
+    Soft CW / DFP overlay reasons are consulted when day_bag codes are empty
+    so empty day_bag rows do not wipe Manual Review or Missing From Portal.
     """
     import time
 
@@ -2178,6 +2314,7 @@ def build_management_review_action(
         load_bulk_workitem_scan_map,
     )
     from backend.rinse_veewash_shift_day import load_day_bags_by_ids
+    from backend.rinse_veewash_workload import REASON_MANAGER_SENT_FOR_REVIEW
 
     t0 = time.perf_counter()
     bid = normalize_bag_id(bag_id)
@@ -2185,12 +2322,26 @@ def build_management_review_action(
         return {"ok": False, "error": "bag_id_required"}
 
     rows = load_day_bags_by_ids(cursor, organization_id, selected_date_et, [bid])
-    if not rows:
-        return {"ok": False, "error": "bag_not_found", "bag_id": bid}
+    row = rows[0] if rows else {}
+    snap = dict(row.get("bag_snapshot") or {}) if row else {}
+    codes = [
+        str(c)
+        for c in (row.get("review_reason_codes") or snap.get("reason_codes") or [])
+        if c
+    ]
 
-    row = rows[0]
-    snap = dict(row.get("bag_snapshot") or {})
-    codes = [str(c) for c in (row.get("review_reason_codes") or snap.get("reason_codes") or []) if c]
+    codes, cw_ov, still_dfp = _resolve_action_reason_codes(
+        cursor,
+        organization_id,
+        selected_date_et,
+        bid,
+        codes,
+        order_instance_id=row.get("order_instance_id") if row else None,
+        day_bag_status=(row.get("effective_status") if row else None),
+    )
+
+    if not rows and not codes and not cw_ov:
+        return {"ok": False, "error": "bag_not_found", "bag_id": bid}
 
     bulk_lines = load_bag_bulk_lines(
         cursor, organization_id, selected_date_et, [bid]
@@ -2216,6 +2367,10 @@ def build_management_review_action(
         bulk_unresolved=bulk_unresolved,
     )
     category = category_for_reason_codes(codes)
+    if category is None and cw_ov:
+        category = CATEGORY_MANUAL_REVIEW
+    if category is None and still_dfp:
+        category = CATEGORY_MISSING_PORTAL
 
     need_catalog = bool(flags["has_specialty_bulk"] or bulk_lines or bulk_res)
     catalog: list[dict[str, Any]] = []
@@ -2240,13 +2395,23 @@ def build_management_review_action(
         row.get("customer_name"),
     )
 
+    manager_note = None
+    if cw_ov:
+        manager_note = cw_ov.get("reason_text")
+    if not manager_note:
+        manager_note = snap.get("cw_manual_review_reason")
+
+    allowed = _allowed_actions_for_review_category(
+        category, still_dfp_qualified=still_dfp
+    )
+
     bag = {
         "bag_id": bid,
         "customer_name": customer_name,
         "service_type": snap.get("service_type") or row.get("service_type") or "WF",
         "rush_flag": snap.get("rush_flag") or row.get("rush_status"),
         "reason_codes": codes,
-        "short_reason": _short_reason(codes, category),
+        "short_reason": _short_reason(codes, category or CATEGORY_MANUAL_REVIEW),
         "dashboard_status": snap.get("outcome") or row.get("effective_status"),
         "pre_weight_lbs": None,
         "post_weight_lbs": snap.get("post_weight_lbs", row.get("post_weight_lbs")),
@@ -2258,22 +2423,37 @@ def build_management_review_action(
         "completed_by": completion_employee,
         "canonical_completion_timestamp": completion_at,
         "canonical_completion_employee": completion_employee,
-        "manager_edit_version": int(row.get("manager_edit_version") or 0),
-        "updated_at": row.get("updated_at"),
-        "day_bag_updated_at": row.get("updated_at"),
+        "manager_edit_version": int(row.get("manager_edit_version") or 0) if row else 0,
+        "updated_at": row.get("updated_at") if row else None,
+        "day_bag_updated_at": row.get("updated_at") if row else None,
         "comforter_quantity": qty_info.get("comforter_quantity") or 0,
         "bath_mat_quantity": qty_info.get("bath_mat_quantity") or 0,
         "bulk_workitems": bulk_lines,
         "bulk_resolution": bulk_res,
         "has_specialty_bulk": flags["has_specialty_bulk"],
         "has_specialty_review": flags["has_specialty_review"],
-        "has_missing_portal": flags["has_missing_portal"],
+        "has_missing_portal": flags["has_missing_portal"]
+        or category == CATEGORY_MISSING_PORTAL,
         "bulk_review_cleared": bulk_cleared,
         "bulk_review_unresolved": bulk_unresolved,
         "corrected_pre_weight_lbs": weights.get("corrected_pre_weight_lbs"),
         "pre_weight_source": weights.get("pre_weight_source"),
         "review_category": category,
         "category": category,
+        "manual_review_reason": manager_note,
+        "manual_review_reason_code": (
+            (cw_ov or {}).get("reason_code")
+            or (
+                REASON_MANAGER_SENT_FOR_REVIEW
+                if REASON_MANAGER_SENT_FOR_REVIEW in codes
+                else None
+            )
+        ),
+        "manual_review_active": bool(cw_ov),
+        "sent_by": (cw_ov or {}).get("actor_display_name"),
+        "sent_at": (cw_ov or {}).get("created_at_et"),
+        "still_disappeared_from_portal": bool(still_dfp),
+        "allowed_actions": allowed,
         "_detailsLoaded": True,
         "_actionMetaOnly": True,
     }
@@ -2284,11 +2464,320 @@ def build_management_review_action(
         "date_et": selected_date_et.isoformat(),
         "bag": bag,
         "active_bulk_workitems": catalog,
+        "allowed_actions": allowed,
         "_meta": {
             "include_details": False,
             "scans_loaded": False,
             "action_metadata": True,
             "elapsed_ms": elapsed_ms,
-            "source": "day_bag+optional_bulk_catalog",
+            "source": "day_bag+optional_bulk_catalog+cw_overlay",
+            "day_bag_present": bool(rows),
+        },
+    }
+
+
+def _allowed_actions_for_review_category(
+    category: str | None,
+    *,
+    still_dfp_qualified: bool = False,
+) -> list[str]:
+    if category == CATEGORY_MISSING_PORTAL:
+        actions = ["complete", "exclude"]
+        if not still_dfp_qualified:
+            actions.append("return_pending")
+        return actions
+    if category == CATEGORY_MANUAL_REVIEW:
+        return ["complete", "exclude", "return_pending"]
+    if category == CATEGORY_SPECIALTY:
+        return ["specialty_save"]
+    if category == CATEGORY_SPLIT_ORDER:
+        return ["mark_split", "mark_not_split"]
+    # Pending / unknown — inspect + Send to Review only.
+    return ["send_to_review"]
+
+
+def _single_bag_dfp_qualified(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    order_instance_id: int | None = None,
+) -> bool:
+    """Cheap single-bag DFP check — does not rebuild CW or pollute DFP cache."""
+    from backend.rinse_order_instances import (
+        get_order_instance_by_id,
+        list_order_instances_for_bag,
+    )
+    from backend.rinse_wf_disappeared_from_portal import (
+        qualify_disappeared_from_portal_bags,
+    )
+
+    bid = normalize_bag_id(bag_id)
+    if not bid:
+        return False
+    rows: list[dict[str, Any]] = []
+    if order_instance_id:
+        oi = get_order_instance_by_id(cursor, int(order_instance_id))
+        if isinstance(oi, dict) and oi.get("completed_at") is None:
+            rows = [oi]
+    if not rows:
+        try:
+            for r in list_order_instances_for_bag(
+                cursor, organization_id, bid, service_type="WF"
+            ):
+                if r.get("completed_at") is None:
+                    rows.append(r)
+        except Exception:
+            rows = []
+    if not rows:
+        return False
+    try:
+        qualified = qualify_disappeared_from_portal_bags(
+            cursor, int(organization_id), rows
+        )
+    except Exception:
+        return False
+    return bid in (qualified or {})
+
+
+def _resolve_action_reason_codes(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    bag_id: str,
+    day_bag_codes: list[str],
+    *,
+    order_instance_id: int | None = None,
+    day_bag_status: str | None = None,
+) -> tuple[list[str], dict[str, Any] | None, bool]:
+    """Resolve reason codes without wiping soft overlay / DFP when day_bag empty.
+
+    Prefer cheap single-bag CW override + DFP checks before full membership rebuild.
+    """
+    from backend.management_wf_cw_controls import (
+        OVERRIDE_MANUAL_REVIEW,
+        bulk_load_active_cw_overrides,
+    )
+    from backend.rinse_veewash_workload import REASON_MANAGER_SENT_FOR_REVIEW
+
+    bid = normalize_bag_id(bag_id) or ""
+    codes = [str(c) for c in (day_bag_codes or []) if c]
+    cw_ov: dict[str, Any] | None = None
+    still_dfp = False
+
+    # 1) Soft CW override (1 query).
+    try:
+        ov = bulk_load_active_cw_overrides(cursor, organization_id, [bid]).get(bid)
+        if ov and str(ov.get("override_type") or "") == OVERRIDE_MANUAL_REVIEW:
+            cw_ov = ov
+    except Exception:
+        cw_ov = None
+
+    # 2) Single-bag DFP — bounded; avoids cold membership rebuild for DFP bags.
+    still_dfp = _single_bag_dfp_qualified(
+        cursor,
+        organization_id,
+        bid,
+        order_instance_id=order_instance_id
+        or (cw_ov or {}).get("order_instance_id"),
+    )
+    if still_dfp and REASON_DISAPPEARED_FROM_PORTAL not in codes:
+        codes = [*codes, REASON_DISAPPEARED_FROM_PORTAL]
+
+    # 3) Membership cache only when day_bag already claims review_required
+    #    (or codes still empty after DFP for a review-status row). Avoids
+    #    rebuilding full Review membership for ordinary Pending bags.
+    status = str(day_bag_status or "").strip().lower()
+    needs_membership = (not codes) and status in ("review_required", "review")
+    if needs_membership:
+        try:
+            from backend.management_wf_review_cache import (
+                get_canonical_wf_review_membership_cached,
+            )
+
+            membership = get_canonical_wf_review_membership_cached(
+                cursor, organization_id, selected_date_et
+            )
+            mem_codes = list((membership.get("codes_by_bag") or {}).get(bid) or [])
+            if mem_codes:
+                codes = [str(c) for c in mem_codes if c]
+            if cw_ov is None:
+                meta = (membership.get("_cw_override_meta") or {}).get(bid)
+                if isinstance(meta, dict):
+                    cw_ov = meta
+        except Exception:
+            pass
+
+    if not codes and cw_ov:
+        codes = [REASON_MANAGER_SENT_FOR_REVIEW]
+    elif cw_ov and REASON_MANAGER_SENT_FOR_REVIEW not in codes:
+        codes = [*codes, REASON_MANAGER_SENT_FOR_REVIEW]
+
+    if not still_dfp:
+        still_dfp = bool(set(codes) & MISSING_FROM_PORTAL_REASONS)
+
+    return codes, cw_ov, still_dfp
+
+
+
+def build_management_wf_bag_detail(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+    *,
+    bag_id: str | None = None,
+    order_instance_id: int | None = None,
+) -> dict[str, Any]:
+    """Pending or Review bag detail — reuses action metadata + cheap lifecycle."""
+    from backend.rinse_order_instances import (
+        get_order_instance_by_id,
+        list_order_instances_for_bag,
+    )
+    from backend.rinse_veewash_workload import (
+        OUTCOME_PENDING,
+        OUTCOME_REVIEW_REQUIRED,
+    )
+
+    bid = normalize_bag_id(bag_id)
+    oi_row: dict[str, Any] | None = None
+    if order_instance_id is not None:
+        oi_row = get_order_instance_by_id(cursor, int(order_instance_id))
+        if isinstance(oi_row, dict):
+            oi_bid = normalize_bag_id(oi_row.get("bag_id"))
+            if bid and oi_bid and bid != oi_bid:
+                return {
+                    "ok": False,
+                    "error": "bag_id_order_instance_mismatch",
+                    "bag_id": bid,
+                }
+            bid = bid or oi_bid
+    if not bid:
+        return {"ok": False, "error": "bag_id_or_order_instance_id_required"}
+
+    action = build_management_review_action(
+        cursor, organization_id, selected_date_et, bid
+    )
+
+    if oi_row is None:
+        try:
+            open_ois = [
+                r
+                for r in list_order_instances_for_bag(
+                    cursor, organization_id, bid, service_type="WF"
+                )
+                if r.get("completed_at") is None
+            ]
+            if open_ois:
+                oi_row = max(
+                    open_ois,
+                    key=lambda r: int(r.get("order_instance_id") or 0),
+                )
+        except Exception:
+            oi_row = None
+
+    if action.get("ok") is False:
+        # Pending bags may lack a selected-date day_bag — still return OI context.
+        if not oi_row:
+            return action
+        name_rows = resolve_customer_names_for_bags(
+            cursor,
+            organization_id,
+            [{"bag_id": bid, "customer_name": oi_row.get("customer_name")}],
+            selected_date_et=selected_date_et,
+        )
+        customer_name = review_customer_display_name(
+            (name_rows[0] if name_rows else {}).get("customer_name"),
+            oi_row.get("customer_name"),
+        )
+        bag = {
+            "bag_id": bid,
+            "customer_name": customer_name,
+            "order_instance_id": oi_row.get("order_instance_id"),
+            "service_type": "WF",
+            "rush_flag": oi_row.get("rush_status") or oi_row.get("rush_flag"),
+            "reason_codes": [],
+            "short_reason": None,
+            "dashboard_status": OUTCOME_PENDING,
+            "cw_status": OUTCOME_PENDING,
+            "category": None,
+            "review_category": None,
+            "has_missing_portal": False,
+            "allowed_actions": ["send_to_review"],
+            "pre_weight_lbs": None,
+            "post_weight_lbs": None,
+            "cycle_anchor_at": oi_row.get("cycle_anchor_at"),
+            "lifecycle": {
+                "open": True,
+                "completed_at": None,
+                "cycle_anchor_at": oi_row.get("cycle_anchor_at"),
+                "order_instance_id": oi_row.get("order_instance_id"),
+            },
+            "_detailsLoaded": True,
+        }
+        return {
+            "ok": True,
+            "date_et": selected_date_et.isoformat(),
+            "bag": bag,
+            "order_instance": {
+                "order_instance_id": oi_row.get("order_instance_id"),
+                "bag_id": bid,
+                "cycle_anchor_at": oi_row.get("cycle_anchor_at"),
+                "completed_at": None,
+            },
+            "allowed_actions": ["send_to_review"],
+            "active_bulk_workitems": [],
+            "_meta": {"source": "wf_bag_detail_pending_oi_v1", "day_bag_present": False},
+        }
+
+    bag = dict(action.get("bag") or {})
+    category = bag.get("category") or bag.get("review_category")
+    cw_status = OUTCOME_REVIEW_REQUIRED if category else OUTCOME_PENDING
+    if bag.get("dashboard_status"):
+        cw_status = bag.get("dashboard_status")
+    if not category and not bag.get("reason_codes"):
+        cw_status = OUTCOME_PENDING
+        bag["allowed_actions"] = list(
+            dict.fromkeys([*(bag.get("allowed_actions") or []), "send_to_review"])
+        )
+
+    lifecycle = {
+        "open": bool(oi_row and oi_row.get("completed_at") is None),
+        "completed_at": (oi_row or {}).get("completed_at"),
+        "cycle_anchor_at": (oi_row or {}).get("cycle_anchor_at"),
+        "order_instance_id": (oi_row or {}).get("order_instance_id"),
+        "still_disappeared_from_portal": bool(bag.get("still_disappeared_from_portal")),
+        "manual_review_active": bool(bag.get("manual_review_active")),
+    }
+
+    bag.update(
+        {
+            "order_instance_id": lifecycle["order_instance_id"]
+            or bag.get("order_instance_id"),
+            "cw_status": cw_status,
+            "cycle_anchor_at": lifecycle["cycle_anchor_at"] or bag.get("cycle_anchor_at"),
+            "lifecycle": lifecycle,
+        }
+    )
+    return {
+        "ok": True,
+        "date_et": selected_date_et.isoformat(),
+        "bag": bag,
+        "order_instance": {
+            "order_instance_id": (oi_row or {}).get("order_instance_id"),
+            "bag_id": bid,
+            "cycle_anchor_at": (oi_row or {}).get("cycle_anchor_at"),
+            "completed_at": (oi_row or {}).get("completed_at"),
+            "rush_status": (oi_row or {}).get("rush_status")
+            or (oi_row or {}).get("rush_flag"),
+        }
+        if oi_row
+        else None,
+        "allowed_actions": list(
+            action.get("allowed_actions") or bag.get("allowed_actions") or []
+        ),
+        "active_bulk_workitems": action.get("active_bulk_workitems") or [],
+        "_meta": {
+            **dict(action.get("_meta") or {}),
+            "source": "wf_bag_detail_v1",
         },
     }

@@ -19,6 +19,7 @@ import Step1MetricDrawer from "../shift/Step1MetricDrawer";
 import TodayTapCard from "./TodayTapCard";
 import TodayTapCardSkeleton from "./TodayTapCardSkeleton";
 import ManagementRinseWfReviewSection from "./ManagementRinseWfReviewSection";
+import ManagementPendingBagDrawer from "./ManagementPendingBagDrawer";
 import ManagementCopyableId from "./ManagementCopyableId";
 import {
   getManagementTodaySuppliesDetail,
@@ -178,6 +179,7 @@ export default function ManagementRinseWfSection({
     open: false,
     filter: "all", // all | pending (review KPI opens actionable Review section)
   });
+  const [pendingBagDrawer, setPendingBagDrawer] = useState({ open: false, row: null });
   const [splitSimOpen, setSplitSimOpen] = useState(false);
   const [supplyDetail, setSupplyDetail] = useState({
     open: false,
@@ -1132,12 +1134,28 @@ export default function ManagementRinseWfSection({
                   return (
                     <Box
                       key={`${row.bag_id}-${row.order_instance_id || ""}`}
+                      data-testid="pending-cw-row"
+                      onClick={() => {
+                        if (currentWorkloadDialog.filter !== "pending") return;
+                        if (row.status === "review_required") return;
+                        setPendingBagDrawer({ open: true, row });
+                      }}
                       sx={{
                         display: "grid",
                         gridTemplateColumns: "1fr auto",
                         gap: 0.5,
                         py: 0.75,
                         borderBottom: "1px solid #e2e8f0",
+                        cursor:
+                          currentWorkloadDialog.filter === "pending" &&
+                          row.status !== "review_required"
+                            ? "pointer"
+                            : "default",
+                        "&:hover":
+                          currentWorkloadDialog.filter === "pending" &&
+                          row.status !== "review_required"
+                            ? { bgcolor: "#f8fafc" }
+                            : undefined,
                       }}
                     >
                       <Box>
@@ -1174,6 +1192,18 @@ export default function ManagementRinseWfSection({
           })()}
         </DialogContent>
       </Dialog>
+
+      <ManagementPendingBagDrawer
+        open={pendingBagDrawer.open}
+        seedRow={pendingBagDrawer.row}
+        selectedDateEt={selectedDateEt || rinse?.selected_date_et}
+        readOnly={readOnly}
+        onClose={() => setPendingBagDrawer({ open: false, row: null })}
+        onSentToReview={() => {
+          setCurrentWorkloadDialog({ open: false, filter: "all" });
+          onRefresh?.();
+        }}
+      />
 
       <Step1MetricDrawer
         open={drawer.open}

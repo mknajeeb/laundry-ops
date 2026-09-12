@@ -18,6 +18,8 @@ import {
 import {
   getManagementRinseWfReviewAction,
   getManagementRinseWfReviewScans,
+  postManagementWfCwExclude,
+  postManagementWfCwResolveManual,
   postVeewashStep1Correction,
 } from "../../api";
 import { fetchReviewDrawerAction } from "./reviewDrawerDetailLoad";
@@ -41,7 +43,10 @@ import {
   validateSpecialtyComplete,
   validateSpecialtySave,
 } from "./reviewDrawerModel";
-import { formatReviewApiError } from "./reviewDisplayLabels";
+import {
+  formatReviewApiError,
+  formatReviewBagShortReason,
+} from "./reviewDisplayLabels";
 
 const NO_CHARGE_REASONS = ["Customer cancelled", "False alarm", "Duplicate scan", "Other"];
 
@@ -239,8 +244,65 @@ function ScanChronology({ selectedDateEt, bagId, open }) {
   );
 }
 
-function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, variant = "missing" }) {
+function ReviewReasonBanner({ bag, drawerCategory }) {
+  const label = formatReviewBagShortReason(bag, {
+    categoryFallback:
+      drawerCategory === "missing_from_portal"
+        ? "Missing From Portal"
+        : drawerCategory === "manual_review"
+          ? "Manual Review"
+          : drawerCategory === "specialty_items"
+            ? "Specialty / Bulky Item Review"
+            : "Needs review",
+  });
+  const note =
+    bag?.manual_review_reason ||
+    bag?.manager_note ||
+    bag?.cw_manual_review_reason ||
+    null;
+  return (
+    <Box
+      data-testid="review-reason-banner"
+      sx={{
+        mt: 0.75,
+        mb: 0.5,
+        p: 1,
+        borderRadius: 1,
+        bgcolor: "#fef2f2",
+        border: "1px solid #fecaca",
+      }}
+    >
+      <Typography
+        sx={{
+          fontSize: 10,
+          fontWeight: 800,
+          letterSpacing: 0.7,
+          textTransform: "uppercase",
+          color: "#991b1b",
+        }}
+      >
+        Review reason
+      </Typography>
+      <Typography sx={{ fontSize: 14, fontWeight: 800, color: "#7f1d1d", mt: 0.15 }}>
+        {label}
+      </Typography>
+      {note ? (
+        <Typography sx={{ fontSize: 12, color: "#7f1d1d", mt: 0.35, fontWeight: 600 }}>
+          Manager note: {note}
+        </Typography>
+      ) : null}
+    </Box>
+  );
+}
+
+function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, variant = "missing", drawerCategory = null }) {
   const isSpecialty = variant === "specialty";
+  const isManual =
+    drawerCategory === "manual_review" ||
+    String(bag?.category || bag?.review_category || "").toLowerCase() === "manual_review" ||
+    (Array.isArray(bag?.reason_codes) &&
+      bag.reason_codes.map((c) => String(c || "").toUpperCase()).includes("MANAGER_SENT_FOR_REVIEW") &&
+      !bagHasMissingPortal(bag));
   const reasonCodes = useMemo(
     () =>
       (Array.isArray(bag?.reason_codes) ? bag.reason_codes : [])
@@ -250,7 +312,11 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
   );
   const canExcludeDisappeared =
     !isSpecialty && reasonCodes.includes("DISAPPEARED_FROM_PORTAL");
+  const stillDfp = canExcludeDisappeared || Boolean(bag?.disappeared_from_portal);
+  const canReturnPending = isManual && !stillDfp;
+  const canExcludeManual = isManual && !stillDfp;
   const bulkRequired = !isSpecialty && bagBulkReviewUnresolved(bag);
+  const [phase, setPhase] = useState("choose");
   const initialLines = useMemo(
     () => catalogSpecialtyLines(catalog, bag?.bulk_workitems),
     [catalog, bag?.bulk_workitems],
@@ -281,6 +347,7 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
   const [error, setError] = useState("");
 
   useEffect(() => {
+    setPhase("choose");
     setPostLbs(
       bag?.post_weight_lbs == null || bag?.post_weight_lbs === ""
         ? ""
@@ -370,8 +437,6 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
       baselineBag: bag,
       variant: isSpecialty ? "specialty" : "missing",
     });
-    const reasonCode = audit.reasonCode;
-    const reasonNote = audit.reasonNote;
     setSaving(true);
     setError("");
     try {
@@ -379,9 +444,9 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
         action: "edit_bag",
         bag_id: bag.bag_id,
         selected_date_et: selectedDateEt,
-        reason: reasonNote,
-        reason_code: reasonCode,
-        reason_note: reasonNote,
+        reason: audit.reasonNote,
+        reason_code: audit.reasonCode,
+        reason_note: audit.reasonNote,
         expected_updated_at: bag.updated_at || bag.day_bag_updated_at || null,
         expected_manager_edit_version:
           bag.manager_edit_version != null ? Number(bag.manager_edit_version) : null,
@@ -451,6 +516,65 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
     }
   };
 
+  const excludeManual = async () => {
+    if (readOnly || saving || !canExcludeManual) return;
+    const reason = window.prompt("Exclude reason (required):");
+    if (!reason || !String(reason).trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      const res = await postManagementWfCwExclude(selectedDateEt, bag.bag_id, {
+        reason: String(reason).trim(),
+        order_instance_id: bag.order_instance_id || null,
+      });
+      if (!res?.data?.ok) {
+        setError(formatReviewApiError(res?.data?.error, res?.data?.message || "Exclude failed"));
+        return;
+      }
+      onSaved?.(res.data, { kind: "manual_exclude", bagId: bag.bag_id });
+    } catch (err) {
+      setError(
+        formatReviewApiError(
+          err?.response?.data?.error,
+          err?.response?.data?.message || err?.message || "Exclude failed",
+        ),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const returnToPending = async () => {
+    if (readOnly || saving || !canReturnPending) return;
+    setSaving(true);
+    setError("");
+    try {
+      const res = await postManagementWfCwResolveManual(selectedDateEt, bag.bag_id, {
+        clear_reason_text: "Return to Pending",
+        order_instance_id: bag.order_instance_id || null,
+      });
+      if (!res?.data?.ok) {
+        setError(
+          formatReviewApiError(
+            res?.data?.error,
+            res?.data?.message || "Could not return to Pending",
+          ),
+        );
+        return;
+      }
+      onSaved?.(res.data, { kind: "return_pending", bagId: bag.bag_id });
+    } catch (err) {
+      setError(
+        formatReviewApiError(
+          err?.response?.data?.error,
+          err?.response?.data?.message || err?.message || "Could not return to Pending",
+        ),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const revertPre = () => {
     const pre = authoritativeEvidencePre(bag);
     setPreLbs(pre == null ? "" : String(pre));
@@ -463,142 +587,202 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
 
   return (
     <Box sx={{ mt: 0.75 }} data-testid={isSpecialty ? "review-specialty-inline" : "review-missing-inline"}>
+      <ReviewReasonBanner bag={bag} drawerCategory={drawerCategory || (isManual ? "manual_review" : null)} />
       <Stack direction="row" spacing={1.25} flexWrap="wrap" sx={{ mb: 0.5 }} alignItems="center">
         <Typography data-testid="review-drawer-pre" sx={{ fontSize: 12, color: "#475569", fontWeight: 700 }}>
-          PRE {preEditing ? "" : evidencePreLabel(bag)}
+          PRE {evidencePreLabel(bag)}
         </Typography>
-        {!preEditing ? (
-          <Button
-            size="small"
-            variant="text"
-            onClick={() => setPreEditing(true)}
-            disabled={readOnly || saving}
-            sx={{ textTransform: "none", fontWeight: 700, minWidth: 0, px: 0.5 }}
-          >
-            Edit PRE
-          </Button>
-        ) : null}
         <Typography data-testid="review-drawer-post" sx={{ fontSize: 12, color: "#475569", fontWeight: 700 }}>
           POST {fmtLbs(bag?.post_weight_lbs ?? bag?.post_weight_value) || "—"}
         </Typography>
       </Stack>
-      {preEditing ? (
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.75 }}>
-          <TextField
-            size="small"
-            type="number"
-            label="PRE lbs (manager correction)"
-            value={preLbs}
-            onChange={(e) => setPreLbs(e.target.value)}
-            inputProps={{ step: 0.1, min: 0 }}
-            sx={{ flex: 1 }}
-            disabled={readOnly || saving}
-          />
-          <Button size="small" onClick={revertPre} disabled={saving} sx={{ textTransform: "none" }}>
-            Revert
-          </Button>
-        </Stack>
-      ) : null}
-      {managerPre != null ? (
-        <Typography sx={{ fontSize: 11, color: "#64748b", mb: 0.5 }}>
-          Manager PRE override active ({fmtLbs(managerPre)})
-        </Typography>
-      ) : null}
       {completionEmp || completionTime ? (
         <Typography sx={{ fontSize: 12, color: "#94a3b8", mb: 0.5 }}>
           Detected: {[completionEmp, completionTime].filter(Boolean).join(" · ")}
         </Typography>
       ) : null}
-      {bulkRequired || (isSpecialty && lines.some((l) => Number(l.quantity) > 0)) ? (
-        <BulkWorkitemFields
-          catalog={catalog}
-          bag={bag}
-          readOnly={readOnly}
-          saving={saving}
-          qty={qty}
-          setQty={setQty}
-          noCharge={noCharge}
-          setNoCharge={setNoCharge}
-          noChargeReason={noChargeReason}
-          setNoChargeReason={setNoChargeReason}
-        />
-      ) : null}
-      {error ? (
-        <Alert severity="error" sx={{ mb: 0.75, py: 0.25, mt: 0.75 }} onClose={() => setError("")}>
-          {error}
-        </Alert>
-      ) : null}
-      <TextField
-        size="small"
-        type="number"
-        label="POST lbs"
-        value={postLbs}
-        onChange={(e) => setPostLbs(e.target.value)}
-        inputProps={{ step: 0.1, min: 0 }}
-        fullWidth
-        disabled={readOnly || saving}
-        sx={{ mt: 0.75 }}
-      />
-      <FoldingUserSelect
-        label="Completion employee"
-        value={completedBy}
-        onChange={setCompletedBy}
-        allowEmpty
-        sx={{ width: "100%", minWidth: 0, mt: 1 }}
-      />
-      <Box sx={{ mt: 1 }}>
-        <CompactEtDateTimeField
-          label="Completion date & time (ET)"
-          value={completionAt}
-          onChange={setCompletionAt}
-          disabled={readOnly || saving}
-        />
-      </Box>
-      {!lockReady ? (
-        <Typography sx={{ mt: 0.5, fontSize: 11, color: "#64748b" }}>
-          Loading bag details…
-        </Typography>
-      ) : null}
-      {!canSave && saveBlockReason ? (
-        <Typography sx={{ mt: 0.5, fontSize: 11, color: "#b45309" }}>
-          {saveBlockReason}
-        </Typography>
-      ) : null}
-      <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
-        <Button
-          data-testid="review-save-complete"
-          size="small"
-          variant="contained"
-          disabled={!canSave}
-          onClick={save}
-          sx={{ textTransform: "none", fontWeight: 800 }}
-        >
-          {saving ? "Saving…" : "Save & Complete"}
-        </Button>
-        {canExcludeDisappeared ? (
-          <Button
-            data-testid="review-exclude-disappeared"
+
+      {phase === "choose" ? (
+        <>
+          {error ? (
+            <Alert severity="error" sx={{ mb: 0.75, py: 0.25, mt: 0.75 }} onClose={() => setError("")}>
+              {error}
+            </Alert>
+          ) : null}
+          <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+            <Button
+              data-testid="review-choose-complete"
+              size="small"
+              variant="contained"
+              disabled={readOnly || saving || !lockReady}
+              onClick={() => setPhase("complete")}
+              sx={{ textTransform: "none", fontWeight: 800 }}
+            >
+              Complete
+            </Button>
+            {canExcludeDisappeared ? (
+              <Button
+                data-testid="review-exclude-disappeared"
+                size="small"
+                variant="outlined"
+                color="error"
+                disabled={readOnly || saving || !lockReady}
+                onClick={excludeDisappeared}
+                sx={{ textTransform: "none", fontWeight: 800 }}
+              >
+                {saving ? "Saving…" : "Exclude"}
+              </Button>
+            ) : null}
+            {canExcludeManual ? (
+              <Button
+                data-testid="review-exclude-manual"
+                size="small"
+                variant="outlined"
+                color="error"
+                disabled={readOnly || saving || !lockReady}
+                onClick={excludeManual}
+                sx={{ textTransform: "none", fontWeight: 800 }}
+              >
+                Exclude
+              </Button>
+            ) : null}
+            {canReturnPending ? (
+              <Button
+                data-testid="review-return-pending"
+                size="small"
+                variant="outlined"
+                disabled={readOnly || saving || !lockReady}
+                onClick={returnToPending}
+                sx={{ textTransform: "none", fontWeight: 800 }}
+              >
+                Return to Pending
+              </Button>
+            ) : null}
+            <Button
+              data-testid="review-view-scans"
+              size="small"
+              variant="outlined"
+              onClick={() => setScansOpen((v) => !v)}
+              sx={{ textTransform: "none", fontWeight: 700 }}
+            >
+              {scansOpen ? "Hide Scans" : "View Scans"}
+            </Button>
+          </Stack>
+          {!lockReady ? (
+            <Typography sx={{ mt: 0.5, fontSize: 11, color: "#64748b" }}>
+              Loading bag details…
+            </Typography>
+          ) : null}
+          <ScanChronology selectedDateEt={selectedDateEt} bagId={bag.bag_id} open={scansOpen} />
+        </>
+      ) : (
+        <>
+          {!preEditing ? (
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => setPreEditing(true)}
+              disabled={readOnly || saving}
+              sx={{ textTransform: "none", fontWeight: 700, minWidth: 0, px: 0.5, mb: 0.5 }}
+            >
+              Edit PRE
+            </Button>
+          ) : null}
+          {preEditing ? (
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.75 }}>
+              <TextField
+                size="small"
+                type="number"
+                label="PRE lbs (manager correction)"
+                value={preLbs}
+                onChange={(e) => setPreLbs(e.target.value)}
+                inputProps={{ step: 0.1, min: 0 }}
+                sx={{ flex: 1 }}
+                disabled={readOnly || saving}
+              />
+              <Button size="small" onClick={revertPre} disabled={saving} sx={{ textTransform: "none" }}>
+                Revert
+              </Button>
+            </Stack>
+          ) : null}
+          {managerPre != null ? (
+            <Typography sx={{ fontSize: 11, color: "#64748b", mb: 0.5 }}>
+              Manager PRE override active ({fmtLbs(managerPre)})
+            </Typography>
+          ) : null}
+          {bulkRequired || (isSpecialty && lines.some((l) => Number(l.quantity) > 0)) ? (
+            <BulkWorkitemFields
+              catalog={catalog}
+              bag={bag}
+              readOnly={readOnly}
+              saving={saving}
+              qty={qty}
+              setQty={setQty}
+              noCharge={noCharge}
+              setNoCharge={setNoCharge}
+              noChargeReason={noChargeReason}
+              setNoChargeReason={setNoChargeReason}
+            />
+          ) : null}
+          {error ? (
+            <Alert severity="error" sx={{ mb: 0.75, py: 0.25, mt: 0.75 }} onClose={() => setError("")}>
+              {error}
+            </Alert>
+          ) : null}
+          <TextField
             size="small"
-            variant="outlined"
-            color="error"
-            disabled={readOnly || saving || !lockReady}
-            onClick={excludeDisappeared}
-            sx={{ textTransform: "none", fontWeight: 800 }}
-          >
-            {saving ? "Saving…" : "Exclude"}
-          </Button>
-        ) : null}
-        <Button
-          data-testid="review-view-scans"
-          size="small"
-          variant="outlined"
-          onClick={() => setScansOpen((v) => !v)}
-          sx={{ textTransform: "none", fontWeight: 700 }}
-        >
-          {scansOpen ? "Hide Scans" : "View Scans"}
-        </Button>
-      </Stack>
-      <ScanChronology selectedDateEt={selectedDateEt} bagId={bag.bag_id} open={scansOpen} />
+            type="number"
+            label="POST lbs"
+            value={postLbs}
+            onChange={(e) => setPostLbs(e.target.value)}
+            inputProps={{ step: 0.1, min: 0 }}
+            fullWidth
+            disabled={readOnly || saving}
+            sx={{ mt: 0.75 }}
+          />
+          <FoldingUserSelect
+            label="Completion employee"
+            value={completedBy}
+            onChange={setCompletedBy}
+            allowEmpty
+            sx={{ width: "100%", minWidth: 0, mt: 1 }}
+          />
+          <Box sx={{ mt: 1 }}>
+            <CompactEtDateTimeField
+              label="Completion date & time (ET)"
+              value={completionAt}
+              onChange={setCompletionAt}
+              disabled={readOnly || saving}
+            />
+          </Box>
+          {!canSave && saveBlockReason ? (
+            <Typography sx={{ mt: 0.5, fontSize: 11, color: "#b45309" }}>
+              {saveBlockReason}
+            </Typography>
+          ) : null}
+          <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+            <Button
+              data-testid="review-save-complete"
+              size="small"
+              variant="contained"
+              disabled={!canSave}
+              onClick={save}
+              sx={{ textTransform: "none", fontWeight: 800 }}
+            >
+              {saving ? "Saving…" : "Save & Complete"}
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={saving}
+              onClick={() => setPhase("choose")}
+              sx={{ textTransform: "none", fontWeight: 700 }}
+            >
+              Back
+            </Button>
+          </Stack>
+        </>
+      )}
     </Box>
   );
 }
@@ -685,8 +869,9 @@ function SpecialtyInline({ bag, catalog, selectedDateEt, readOnly, onSaved }) {
   };
 
   return (
-    <Box sx={{ mt: 0.75, p: 1, bgcolor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 1 }}>
-      <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.6, color: "#64748b" }}>
+    <Box sx={{ mt: 0.75, p: 1, bgcolor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 1 }} data-testid="review-specialty-inline">
+      <ReviewReasonBanner bag={bag} drawerCategory="specialty_items" />
+      <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 0.6, color: "#64748b", mt: 0.75 }}>
         Specialty items
       </Typography>
       {error ? (
@@ -754,9 +939,36 @@ export default function ManagementRinseWfReviewDrawerRow({
         ...bag,
         ...actionBag,
         bag_id: bag.bag_id,
-        category: bag?.category || actionBag?.category || actionBag?.review_category || drawerCategory,
+        // Never let empty action reason arrays wipe list/overlay codes.
+        reason_codes:
+          Array.isArray(actionBag.reason_codes) && actionBag.reason_codes.length
+            ? actionBag.reason_codes
+            : bag?.reason_codes || [],
+        short_reason:
+          actionBag.short_reason &&
+          !(Array.isArray(actionBag.reason_codes) && actionBag.reason_codes.length === 0 && bag?.reason_codes?.length)
+            ? actionBag.short_reason
+            : bag?.short_reason || actionBag.short_reason,
+        category:
+          actionBag.category ||
+          bag?.category ||
+          actionBag?.review_category ||
+          bag?.review_category ||
+          drawerCategory,
         review_category:
-          actionBag?.review_category || bag?.review_category || bag?.category || drawerCategory,
+          actionBag?.review_category ||
+          bag?.review_category ||
+          actionBag?.category ||
+          bag?.category ||
+          drawerCategory,
+        has_missing_portal:
+          actionBag.has_missing_portal === true ||
+          bag?.has_missing_portal === true ||
+          drawerCategory === "missing_from_portal",
+        manual_review_reason:
+          actionBag.manual_review_reason || bag?.manual_review_reason || null,
+        order_instance_id:
+          actionBag.order_instance_id ?? bag?.order_instance_id ?? null,
         _detailsLoaded: true,
       }
     : {
@@ -834,14 +1046,28 @@ export default function ManagementRinseWfReviewDrawerRow({
         <Typography sx={{ fontSize: 12, color: "#64748b" }}>· {rushLabel(merged.rush_flag)}</Typography>
       </Stack>
       {!expanded ? (
-        <Stack direction="row" spacing={1.25} flexWrap="wrap" sx={{ mt: 0.35 }}>
-          <Typography sx={{ fontSize: 12, color: "#475569" }}>
-            PRE {evidencePreLabel(merged)}
+        <>
+          <Typography sx={{ fontSize: 12, fontWeight: 700, color: "#b91c1c", mt: 0.35 }}>
+            {formatReviewBagShortReason(merged, {
+              categoryFallback:
+                drawerCategory === "missing_from_portal"
+                  ? "Missing From Portal"
+                  : drawerCategory === "manual_review"
+                    ? "Manual Review"
+                    : drawerCategory === "specialty_items"
+                      ? "Specialty / Bulky Item Review"
+                      : "Needs review",
+            })}
           </Typography>
-          <Typography sx={{ fontSize: 12, color: "#475569" }}>
-            POST {fmtLbs(merged?.post_weight_lbs ?? merged?.post_weight_value) || "—"}
-          </Typography>
-        </Stack>
+          <Stack direction="row" spacing={1.25} flexWrap="wrap" sx={{ mt: 0.35 }}>
+            <Typography sx={{ fontSize: 12, color: "#475569" }}>
+              PRE {evidencePreLabel(merged)}
+            </Typography>
+            <Typography sx={{ fontSize: 12, color: "#475569" }}>
+              POST {fmtLbs(merged?.post_weight_lbs ?? merged?.post_weight_value) || "—"}
+            </Typography>
+          </Stack>
+        </>
       ) : null}
 
       <Collapse in={expanded} onClick={(e) => e.stopPropagation()}>
@@ -861,6 +1087,7 @@ export default function ManagementRinseWfReviewDrawerRow({
             selectedDateEt={selectedDateEt}
             readOnly={readOnly}
             onSaved={onSaved}
+            drawerCategory={drawerCategory}
           />
         ) : inlineVariant === "specialty_bulk" ? (
           <SpecialtyInline
@@ -878,6 +1105,16 @@ export default function ManagementRinseWfReviewDrawerRow({
             readOnly={readOnly}
             onSaved={onSaved}
             variant="specialty"
+            drawerCategory={drawerCategory}
+          />
+        ) : inlineVariant === "manual" || drawerCategory === "manual_review" ? (
+          <MissingPortalInline
+            bag={merged}
+            catalog={catalog || []}
+            selectedDateEt={selectedDateEt}
+            readOnly={readOnly}
+            onSaved={onSaved}
+            drawerCategory="manual_review"
           />
         ) : (
           <Typography sx={{ mt: 0.75, fontSize: 12, color: "#64748b" }}>

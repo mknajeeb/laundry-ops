@@ -7,6 +7,7 @@ import pytest
 from backend.management_rinse_wf_review import (
     CATEGORY_MISSING_PORTAL,
     CATEGORY_SPECIALTY,
+    CATEGORY_MANUAL_REVIEW,
     category_for_reason_codes,
     specialty_review_is_resolved,
     specialty_review_is_unresolved,
@@ -86,7 +87,7 @@ def test_other_review_reasons_route_to_specialty_queue():
         category_for_reason_codes(["WF_ZERO_OR_MISSING_POST_WEIGHT"])
         == CATEGORY_SPECIALTY
     )
-    assert category_for_reason_codes(["MANAGER_SENT_FOR_REVIEW"]) == CATEGORY_SPECIALTY
+    assert category_for_reason_codes(["MANAGER_SENT_FOR_REVIEW"]) == CATEGORY_MANUAL_REVIEW
 
 
 def test_split_no_double_count():

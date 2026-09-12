@@ -1,6 +1,6 @@
 import { Autocomplete, TextField } from "@mui/material";
 import { useEffect, useState } from "react";
-import { listFoldingUsers } from "../../api";
+import { getFoldingUserOptions } from "./foldingUserOptionsCache";
 
 export default function FoldingUserSelect({
   label = "Employee / user",
@@ -15,22 +15,17 @@ export default function FoldingUserSelect({
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const res = await listFoldingUsers();
-        if (cancelled) return;
-        const opts = res.data?.user_options || [];
-        const names = opts.length
-          ? opts
-          : (res.data?.users || []).map((u) => ({ user_name: u, label: u }));
-        setOptions(names);
-      } catch {
-        if (!cancelled) setOptions([]);
-      }
+      const names = await getFoldingUserOptions();
+      if (!cancelled) setOptions(names);
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const selected = options.find((o) => o.user_name === value) || (value ? { user_name: value, label: value } : null);
+  const selected =
+    options.find((o) => o.user_name === value) ||
+    (value ? { user_name: value, label: value } : null);
 
   return (
     <Autocomplete
@@ -42,7 +37,11 @@ export default function FoldingUserSelect({
       getOptionLabel={(o) => o.label || o.user_name || ""}
       isOptionEqualToValue={(a, b) => a?.user_name === b?.user_name}
       renderInput={(params) => (
-        <TextField {...params} label={label} placeholder={allowEmpty ? "All users" : "Select user"} />
+        <TextField
+          {...params}
+          label={label}
+          placeholder={allowEmpty ? "All users" : "Select user"}
+        />
       )}
     />
   );
