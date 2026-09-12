@@ -89,6 +89,10 @@ def register_rinse_dashboard_routes(
             )
             if payload.get("error") == "role_not_available":
                 return jsonify(json_safe_rinse(payload)), 404
+            from backend.rinse_dashboard_performance import payload_bytes
+
+            if isinstance(payload.get("perf"), dict):
+                payload["perf"]["payload_bytes"] = payload_bytes(payload)
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:  # noqa: BLE001
             return jsonify({"error": str(exc)}), 500

@@ -57,7 +57,12 @@ def ensure_rinse_performance_approval_tables(cursor) -> None:
               KEY idx_rinse_perf_appr_org_emp_date
                 (organization_id, employee_user_id, business_date_et),
               KEY idx_rinse_perf_appr_active
-                (organization_id, role_key, invalidated_at, business_date_et)
+                (organization_id, role_key, invalidated_at, business_date_et),
+              KEY idx_rinse_perf_read_role_week
+                (organization_id, role_key, invalidated_at, business_date_et),
+              KEY idx_rinse_perf_read_emp_hist
+                (organization_id, role_key, employee_user_id, invalidated_at,
+                 business_date_et, published_session_start_et, id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )

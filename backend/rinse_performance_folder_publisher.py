@@ -39,6 +39,12 @@ def put_folder_benchmark(cursor, organization_id: int, lbs_per_hour: float) -> d
     out = put_rinse_folding_benchmarks(
         cursor, int(organization_id), lbs_per_hour=float(lbs_per_hour)
     )
+    try:
+        from backend.rinse_dashboard_performance import clear_benchmark_cache
+
+        clear_benchmark_cache(int(organization_id))
+    except Exception:
+        pass
     return {
         "benchmark_setting_key": FOLDER_BENCHMARK_SETTING_KEY,
         "lbs_per_hour_target": float(out.get("lbs_per_hour_target") or FOLDER_DEFAULT_BENCHMARK),

@@ -231,15 +231,27 @@ class FakeCursor:
             if "employee_name=%s" in s:
                 name = params[idx]
                 idx += 1
+
+            def _as_date(v):
+                if v is None:
+                    return None
+                if isinstance(v, date) and not isinstance(v, datetime):
+                    return v
+                if isinstance(v, datetime):
+                    return v.date()
+                return date.fromisoformat(str(v)[:10])
+
+            ws = _as_date(week_start)
+            we = _as_date(week_end)
             for key, row in self.approvals.items():
                 if key[0] != org or row.get("invalidated_at") is not None:
                     continue
                 if role and key[1] != role:
                     continue
-                biz = row.get("business_date_et")
-                if week_start and biz < week_start:
+                biz = _as_date(row.get("business_date_et"))
+                if ws and biz and biz < ws:
                     continue
-                if week_end and biz > week_end:
+                if we and biz and biz > we:
                     continue
                 if uid is not None and int(row.get("employee_user_id") or -1) != uid:
                     continue
@@ -248,6 +260,106 @@ class FakeCursor:
                 out.append(dict(row))
             out.sort(key=lambda r: (str(r.get("business_date_et")), str(r.get("published_session_start_et") or ""), int(r.get("id") or 0)))
             self._last = out
+            return
+
+        # Set-based leaderboard GROUP BY (new read path)
+        if "sum(published_numerator)" in s and "group by employee_user_id, employee_name" in s:
+            org, rk, ws, we = params[0], params[1], params[2], params[3]
+
+            def _as_date(v):
+                if isinstance(v, date) and not isinstance(v, datetime):
+                    return v
+                if isinstance(v, datetime):
+                    return v.date()
+                return date.fromisoformat(str(v)[:10])
+
+            ws_d, we_d = _as_date(ws), _as_date(we)
+            grouped = {}
+            for key, row in self.approvals.items():
+                if key[0] != int(org) or key[1] != str(rk).upper():
+                    continue
+                if row.get("invalidated_at") is not None:
+                    continue
+                biz = _as_date(row.get("business_date_et"))
+                if biz < ws_d or biz > we_d:
+                    continue
+                gkey = (row.get("employee_user_id"), row.get("employee_name"))
+                g = grouped.setdefault(
+                    gkey,
+                    {
+                        "employee_user_id": row.get("employee_user_id"),
+                        "employee_name": row.get("employee_name"),
+                        "sum_num": 0.0,
+                        "sum_den": 0.0,
+                        "session_count": 0,
+                    },
+                )
+                g["sum_num"] += float(row["published_numerator"])
+                g["sum_den"] += float(row["published_denominator"])
+                g["session_count"] += 1
+            self._last = list(grouped.values())
+            return
+
+        # Week agg / last-N for employee role history
+        if "group by employee_name, employee_user_id" in s:
+            org, rk, ws, we, emp = params
+
+            def _as_date(v):
+                if isinstance(v, date) and not isinstance(v, datetime):
+                    return v
+                if isinstance(v, datetime):
+                    return v.date()
+                return date.fromisoformat(str(v)[:10])
+
+            rows = []
+            for key, row in self.approvals.items():
+                if key[0] != int(org) or key[1] != str(rk).upper():
+                    continue
+                if row.get("invalidated_at") is not None:
+                    continue
+                biz = _as_date(row.get("business_date_et"))
+                if biz < _as_date(ws) or biz > _as_date(we):
+                    continue
+                if "employee_user_id" in s and int(row.get("employee_user_id") or -1) != int(emp):
+                    continue
+                if "employee_name" in s and "employee_user_id" not in s.split("where")[-1][:80]:
+                    if str(row.get("employee_name")) != str(emp):
+                        continue
+                rows.append(row)
+            if not rows:
+                self._last = []
+                return
+            self._last = [
+                {
+                    "employee_name": rows[0]["employee_name"],
+                    "employee_user_id": rows[0]["employee_user_id"],
+                    "sum_num": sum(float(r["published_numerator"]) for r in rows),
+                    "sum_den": sum(float(r["published_denominator"]) for r in rows),
+                    "session_count": len(rows),
+                }
+            ]
+            return
+
+        if "order by business_date_et desc" in s and "limit %s" in s:
+            org, rk, emp, lim = params
+            rows = []
+            for key, row in self.approvals.items():
+                if key[0] != int(org) or key[1] != str(rk).upper():
+                    continue
+                if row.get("invalidated_at") is not None:
+                    continue
+                if "employee_user_id" in s and int(row.get("employee_user_id") or -1) != int(emp):
+                    continue
+                rows.append(dict(row))
+            rows.sort(
+                key=lambda r: (
+                    str(r.get("business_date_et")),
+                    str(r.get("published_session_start_et") or ""),
+                    int(r.get("id") or 0),
+                ),
+                reverse=True,
+            )
+            self._last = rows[: int(lim)]
             return
 
         if "from system_settings" in s:
@@ -414,66 +526,12 @@ class TestApprovals:
 
 
 class TestRinseProjection:
-    def test_leaderboard_weighted_and_query_bounded(self, cursor):
-        s1 = _closed_session(session_id="WF-1", total_pre_lbs=80, performance_hours=2, lbs_per_hour=40)
-        s2 = _closed_session(session_id="WF-2", total_pre_lbs=60, performance_hours=1, lbs_per_hour=60)
-        with patch("backend.rinse_performance_approvals.table_exists", return_value=True), patch(
-            "backend.rinse_folding_settings.table_exists", return_value=True
-        ), patch(
-            "backend.management_wf_folder_performance.build_day_folder_performance"
-        ) as live:
-            for sess in (s1, s2):
-                upsert_approved_snapshot(
-                    cursor,
-                    3,
-                    role_key=ROLE_FOLDER,
-                    snapshot=session_card_to_snapshot(sess, business_date_et=DAY),
-                )
-            week_start = DAY - timedelta(days=DAY.weekday())
-            payload = build_role_leaderboard(cursor, 3, role_key=ROLE_FOLDER, week_start=week_start)
-            live.assert_not_called()
-        assert payload["team_weekly_avg"] == 46.6667
-        assert payload["leaderboard"][0]["weekly_avg"] == 46.6667
-        assert payload["query_count"] <= 5
-        assert last_query_count() <= 5
-
-    def test_last_n_ignores_unapproved(self, cursor):
-        with patch("backend.rinse_performance_approvals.table_exists", return_value=True), patch(
-            "backend.rinse_folding_settings.table_exists", return_value=True
-        ):
-            for i in range(3):
-                sess = _closed_session(
-                    session_id=f"WF-{i}",
-                    start_time=f"2026-09-0{i+1}T08:00:00",
-                )
-                snap = session_card_to_snapshot(sess, business_date_et=date(2026, 9, i + 1))
-                upsert_approved_snapshot(cursor, 3, role_key=ROLE_FOLDER, snapshot=snap)
-            # unapproved fourth — never inserted
-            hist = build_employee_role_history(
-                cursor,
-                3,
-                employee_id="42",
-                role_key=ROLE_FOLDER,
-                week_start=date(2026, 9, 1),
-                last_n=5,
-            )
-        assert len(hist["sessions"]) == 3
+    """Projection math / isolation covered in test_rinse_dashboard_query_budget.py."""
 
     def test_disabled_role_returns_unavailable(self, cursor):
         with patch("backend.rinse_performance_approvals.table_exists", return_value=True):
             payload = build_role_leaderboard(cursor, 3, role_key=ROLE_SORT)
         assert payload.get("error") == "role_not_available"
-
-    def test_cross_org_isolation(self, cursor):
-        snap = session_card_to_snapshot(_closed_session(), business_date_et=DAY)
-        with patch("backend.rinse_performance_approvals.table_exists", return_value=True), patch(
-            "backend.rinse_folding_settings.table_exists", return_value=True
-        ):
-            upsert_approved_snapshot(cursor, 3, role_key=ROLE_FOLDER, snapshot=snap)
-            week_start = DAY - timedelta(days=DAY.weekday())
-            other = build_role_leaderboard(cursor, 99, role_key=ROLE_FOLDER, week_start=week_start)
-        assert other["approved_session_count"] == 0
-        assert other["leaderboard"] == []
 
 
 class TestAuthHelpers:

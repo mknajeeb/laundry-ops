@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS rinse_performance_session_approvals (
   UNIQUE KEY uq_rinse_perf_appr_org_role_session (organization_id, role_key, session_id),
   KEY idx_rinse_perf_appr_org_role_date (organization_id, role_key, business_date_et),
   KEY idx_rinse_perf_appr_org_emp_date (organization_id, employee_user_id, business_date_et),
-  KEY idx_rinse_perf_appr_active (organization_id, role_key, invalidated_at, business_date_et)
+  KEY idx_rinse_perf_appr_active (organization_id, role_key, invalidated_at, business_date_et),
+  KEY idx_rinse_perf_read_role_week (organization_id, role_key, invalidated_at, business_date_et),
+  KEY idx_rinse_perf_read_emp_hist (organization_id, role_key, employee_user_id, invalidated_at, business_date_et, published_session_start_et, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Append-only approval audit trail.

@@ -30,10 +30,8 @@ import {
   YAxis,
 } from "recharts";
 import {
-  getRinseDashboardEmployee,
   getRinseDashboardEmployeeRole,
   getRinseDashboardEmployees,
-  getRinseDashboardMeta,
   getRinseDashboardRole,
 } from "../api";
 import PerformanceDetailDrawer from "../components/management/performance/PerformanceDetailDrawer";
@@ -116,12 +114,27 @@ export default function RinsePerformancePage() {
     setLoading(true);
     setError("");
     try {
-      const metaRes = await getRinseDashboardMeta();
-      setMeta(metaRes.data || null);
-      const rk = (metaRes.data?.performance_roles || []).find((r) => r.enabled)?.role_key || "FOLDER";
+      // Single primary request — role endpoint includes metadata + benchmark + KPIs.
       if (view === "role") {
-        const res = await getRinseDashboardRole(rk, { week_start: weekStart });
-        setRoleData(res.data || null);
+        const res = await getRinseDashboardRole("FOLDER", { week_start: weekStart });
+        const data = res.data || null;
+        setRoleData(data);
+        setMeta({
+          performance_roles: data
+            ? [
+                {
+                  role_key: data.role_key,
+                  display_name: data.display_name,
+                  unit: data.unit,
+                  metric_key: data.metric_key,
+                  benchmark: data.benchmark,
+                  enabled: true,
+                  rinse_visible: true,
+                },
+              ]
+            : [],
+        });
+        setEmployees([]);
       } else {
         const res = await getRinseDashboardEmployees({ week_start: weekStart });
         setEmployees(res.data?.employees || []);
@@ -145,14 +158,14 @@ export default function RinsePerformancePage() {
     setDetailLoading(true);
     setDetailHistory(null);
     try {
-      const [emp, hist] = await Promise.all([
-        getRinseDashboardEmployee(employeeId, { week_start: weekStart }),
-        getRinseDashboardEmployeeRole(employeeId, roleKey, { week_start: weekStart, last_n: lastN }),
-      ]);
+      // One detail request — weekly avg + last N sessions (lazy, on open only).
+      const hist = await getRinseDashboardEmployeeRole(employeeId, roleKey, {
+        week_start: weekStart,
+        last_n: lastN,
+      });
       setDetail({
         employeeId,
         roleKey,
-        employee: emp.data,
         history: hist.data,
       });
       setDetailHistory(hist.data);
