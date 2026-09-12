@@ -229,6 +229,37 @@ _ALLOWED_COMPACT_SCALAR_LIST_KEYS = frozenset(
     }
 )
 
+# CW overlay / Review builders may attach internal diagnostics on items.
+# TODAY primary must project them away — only public compact fields ship.
+# INTERNAL ONLY (strip at TODAY boundary): system_review_reason_codes
+# PUBLIC on TODAY CW items: review_reason_codes, review_origin, short scalars
+# PUBLIC on Review list / bag-detail/action: system_review_reason_codes allowed
+_TODAY_CW_ITEM_INTERNAL_KEYS = frozenset(
+    {
+        "system_review_reason_codes",
+    }
+)
+
+
+def project_cw_item_for_today(item: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Project one CW/completed item into the TODAY compact contract."""
+    if not isinstance(item, Mapping):
+        return {}
+    return {
+        key: value
+        for key, value in item.items()
+        if key not in _TODAY_CW_ITEM_INTERNAL_KEYS
+    }
+
+
+def project_cw_items_for_today(items: Any) -> list[dict[str, Any]]:
+    """Strip internal-only CW fields before embedding items in TODAY."""
+    out: list[dict[str, Any]] = []
+    for raw in items or []:
+        if isinstance(raw, Mapping):
+            out.append(project_cw_item_for_today(raw))
+    return out
+
 
 def assert_compact_today_payload(payload: Mapping[str, Any]) -> None:
     """Raise if the TODAY DTO ships collection payloads meant for later drilldowns.
@@ -239,6 +270,10 @@ def assert_compact_today_payload(payload: Mapping[str, Any]) -> None:
     Allowed compact lists:
       - ``items``: Current Workload / selected-date Completed row summaries
       - ``review_reason_codes``: short string codes on those rows
+
+    Forbidden on TODAY (internal / Review-list-only):
+      - ``system_review_reason_codes`` — CW overlay diagnostic separating system
+        vs manager-sent reasons; strip via ``project_cw_items_for_today``.
     """
     stack: list[Any] = [payload]
     while stack:
@@ -807,18 +842,20 @@ def _overlay_lifecycle_wf_segment(
         segs[key] = seg
     rinse["segments"] = segs
     # Explicit separate concepts — frontend must not reconstruct from day headline.
+    # Project CW items at the TODAY boundary so internal overlay diagnostics
+    # (system_review_reason_codes) never enter the compact public payload.
     rinse["current_workload"] = {
         "open": current_open,
         "pending": pending,
         "review": review,
-        "items": list(current_workload.get("items") or []),
+        "items": project_cw_items_for_today(current_workload.get("items") or []),
         "date_independent": True,
         "source": current_workload.get("source") or wl.get("source"),
     }
     rinse["selected_date_completed"] = {
         "date_et": selected_date_et.isoformat(),
         "completed": completed,
-        "items": list(selected_completed.get("items") or []),
+        "items": project_cw_items_for_today(selected_completed.get("items") or []),
         "source": selected_completed.get("source") or wl.get("source"),
     }
     rinse["lifecycle_overlay"] = {

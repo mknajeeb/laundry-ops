@@ -728,6 +728,116 @@ def test_compact_payload_allows_current_workload_review_reason_codes():
     assert_compact_today_payload(payload)
 
 
+def test_compact_payload_rejects_system_review_reason_codes_leak():
+    """d618b926 regression: CW overlay diagnostic must not enter TODAY items."""
+    import pytest
+    from backend.management_today import project_cw_items_for_today
+
+    leaked = {
+        "date_et": "2026-09-12",
+        "rinse": {
+            "current_workload": {
+                "open": 2,
+                "pending": 0,
+                "review": 2,
+                "items": [
+                    {
+                        "bag_id": "A347CPMO70",
+                        "order_instance_id": 4951,
+                        "status": "review_required",
+                        "review_reason_codes": ["DISAPPEARED_FROM_PORTAL"],
+                        "system_review_reason_codes": ["DISAPPEARED_FROM_PORTAL"],
+                        "review_origin": "system",
+                    },
+                    {
+                        "bag_id": "MANUALBAG01",
+                        "order_instance_id": 9999,
+                        "status": "review_required",
+                        "review_reason_codes": ["MANAGER_SENT_FOR_REVIEW"],
+                        "system_review_reason_codes": [],
+                        "review_origin": "manual",
+                        "manual_review_active": True,
+                        "manual_review_reason": "Check specialty",
+                    },
+                ],
+            }
+        },
+        "_meta": {},
+    }
+    with pytest.raises(AssertionError, match="system_review_reason_codes"):
+        assert_compact_today_payload(leaked)
+
+    projected = {
+        **leaked,
+        "rinse": {
+            **leaked["rinse"],
+            "current_workload": {
+                **leaked["rinse"]["current_workload"],
+                "items": project_cw_items_for_today(
+                    leaked["rinse"]["current_workload"]["items"]
+                ),
+            },
+        },
+    }
+    assert_compact_today_payload(projected)
+    items = projected["rinse"]["current_workload"]["items"]
+    assert "system_review_reason_codes" not in items[0]
+    assert "system_review_reason_codes" not in items[1]
+    assert items[0]["review_reason_codes"] == ["DISAPPEARED_FROM_PORTAL"]
+    assert items[1]["review_reason_codes"] == ["MANAGER_SENT_FOR_REVIEW"]
+    assert items[1]["manual_review_reason"] == "Check specialty"
+
+
+def test_overlay_lifecycle_projects_away_system_review_reason_codes():
+    """Primary overlay must strip internal system codes before compact assert."""
+    from backend.management_today import _overlay_lifecycle_wf_segment
+
+    rinse = {"segments": {"wf": {"pending": 0, "completed": 0}}}
+    wl = {
+        "counts": {
+            "current_open": 2,
+            "completed": 5,
+            "review": 2,
+            "pending": 0,
+            "workload": 2,
+        },
+        "current_workload": {
+            "items": [
+                {
+                    "bag_id": "A347CPMO70",
+                    "order_instance_id": 4951,
+                    "status": "review_required",
+                    "review_reason_codes": ["DISAPPEARED_FROM_PORTAL"],
+                    "system_review_reason_codes": ["DISAPPEARED_FROM_PORTAL"],
+                },
+                {
+                    "bag_id": "MANUALBAG01",
+                    "status": "review_required",
+                    "review_reason_codes": ["MANAGER_SENT_FOR_REVIEW"],
+                    "system_review_reason_codes": [],
+                    "manual_review_active": True,
+                },
+            ],
+            "source": "test",
+        },
+        "selected_date_completed": {"items": [], "source": "test"},
+        "source": "test",
+    }
+    with patch(
+        "backend.rinse_wf_canonical_workload.get_canonical_wf_workload",
+        return_value=wl,
+    ):
+        _overlay_lifecycle_wf_segment(rinse, cursor=None, organization_id=3, selected_date_et=date(2026, 9, 12))
+
+    items = rinse["current_workload"]["items"]
+    assert rinse["current_workload"]["open"] == 2
+    assert rinse["current_workload"]["review"] == 2
+    assert all("system_review_reason_codes" not in it for it in items)
+    assert items[0]["review_reason_codes"] == ["DISAPPEARED_FROM_PORTAL"]
+    assert items[1]["review_reason_codes"] == ["MANAGER_SENT_FOR_REVIEW"]
+    assert_compact_today_payload({"rinse": rinse, "_meta": {}})
+
+
 def test_specialty_counts_resums_item_qty_under_rush_membership():
     from backend.management_today import _specialty_counts
 
