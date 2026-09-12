@@ -260,6 +260,54 @@ def _last_present_run_ids(
     return out
 
 
+_ABSENCE_SKIP_STATUSES = frozenset(
+    {"failed", "skipped", "anomalous", "running", "rejected"}
+)
+
+
+def _pick_first_establishing_from_candidates(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    present_run_ids: set[int] | Mapping[int, bool],
+) -> dict[str, Any] | None:
+    """Shared first-absence picker — identical predicates for oracle and bulk."""
+    if isinstance(present_run_ids, Mapping):
+        def _present(rid: int) -> bool:
+            return bool(present_run_ids.get(rid))
+    else:
+        present_set = present_run_ids
+
+        def _present(rid: int) -> bool:
+            return rid in present_set
+
+    for row in candidates:
+        rid = int(row.get("id") or 0)
+        status = str(row.get("status") or "").strip().lower()
+        rows_found = int(row.get("rows_found") or 0)
+        if status in _ABSENCE_SKIP_STATUSES:
+            continue
+        if rows_found <= 0:
+            continue
+        meta = row.get("scrape_meta")
+        if not isinstance(meta, dict):
+            meta = _parse_meta(row.get("scrape_meta_json"))
+        guard = meta.get("completeness_guard") if isinstance(meta, dict) else None
+        # Prefer explicit guard; otherwise accept successful non-empty captures.
+        if isinstance(guard, Mapping) and guard.get("allow_mark_missing") is False:
+            continue
+        if _present(rid):
+            continue
+        return {
+            "id": rid,
+            "status": row.get("status"),
+            "started_at": row.get("started_at"),
+            "finished_at": row.get("finished_at"),
+            "rows_found": row.get("rows_found"),
+            "scrape_meta": meta,
+        }
+    return None
+
+
 def _first_establishing_absence_run(
     cursor,
     organization_id: int,
@@ -269,8 +317,9 @@ def _first_establishing_absence_run(
     portal_status: str = "at_vendor",
     look_ahead: int = 40,
 ) -> dict[str, Any] | None:
-    """First successful post-present run that did not contain the bag.
+    """First successful post-present run that did not contain the bag (per-bag oracle).
 
+    Kept for equivalence tests. Production qualify uses the set-based bulk path.
     This is the disappearance event used for ship-window authority — not a later
     rolling-window scrape after the bag aged out of the query.
     """
@@ -321,30 +370,129 @@ def _first_establishing_absence_run(
             if rid:
                 present_map[rid] = True
 
-    for row in candidates:
+    return _pick_first_establishing_from_candidates(
+        candidates, present_run_ids=present_map
+    )
+
+
+def _first_establishing_absence_runs_bulk(
+    cursor,
+    organization_id: int,
+    last_present_by_bag: Mapping[str, int],
+    *,
+    portal_status: str = "at_vendor",
+    look_ahead: int = 40,
+) -> dict[str, dict[str, Any]]:
+    """Set-based first establishing absence for many bags (same semantics as oracle).
+
+    Respects each bag's own ``last_present_run_id`` boundary and the same
+    ``look_ahead`` window / trust predicates as ``_first_establishing_absence_run``.
+    """
+    if not last_present_by_bag:
+        return {}
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence_runs"):
+        return {}
+
+    org = int(organization_id)
+    normalized: dict[str, int] = {}
+    for raw_bid, raw_lp in last_present_by_bag.items():
+        bid = normalize_bag_id(raw_bid)
+        lp = int(raw_lp or 0)
+        if bid and lp:
+            normalized[bid] = lp
+    if not normalized:
+        return {}
+
+    min_lp = min(normalized.values())
+    cursor.execute(
+        """
+        SELECT id, status, rows_found, started_at, finished_at, scrape_meta_json
+        FROM rinse_cleaner_ticket_presence_runs
+        WHERE organization_id = %s
+          AND dry_run = 0
+          AND portal_status = %s
+          AND id > %s
+        ORDER BY id ASC
+        """,
+        (org, portal_status, int(min_lp)),
+    )
+    all_runs = [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    if not all_runs:
+        return {}
+
+    # Parse scrape_meta once per run (invocation-local memoization).
+    prepared: list[dict[str, Any]] = []
+    for row in all_runs:
         rid = int(row.get("id") or 0)
-        status = str(row.get("status") or "").strip().lower()
-        rows_found = int(row.get("rows_found") or 0)
-        if status in {"failed", "skipped", "anomalous", "running", "rejected"}:
-            continue
-        if rows_found <= 0:
+        if not rid:
             continue
         meta = _parse_meta(row.get("scrape_meta_json"))
-        guard = meta.get("completeness_guard") if isinstance(meta, dict) else None
-        # Prefer explicit guard; otherwise accept successful non-empty captures.
-        if isinstance(guard, Mapping) and guard.get("allow_mark_missing") is False:
+        prepared.append(
+            {
+                "id": rid,
+                "status": row.get("status"),
+                "started_at": row.get("started_at"),
+                "finished_at": row.get("finished_at"),
+                "rows_found": row.get("rows_found"),
+                "scrape_meta": meta,
+                "scrape_meta_json": row.get("scrape_meta_json"),
+            }
+        )
+
+    look = max(1, int(look_ahead))
+    bag_candidates: dict[str, list[dict[str, Any]]] = {}
+    needed_run_ids: set[int] = set()
+    for bid, lp in normalized.items():
+        # Exact oracle window: first ``look`` filtered runs with id > bag's lp.
+        cands = [r for r in prepared if int(r["id"]) > int(lp)][:look]
+        if not cands:
             continue
-        if present_map.get(rid):
-            continue
-        return {
-            "id": rid,
-            "status": row.get("status"),
-            "started_at": row.get("started_at"),
-            "finished_at": row.get("finished_at"),
-            "rows_found": row.get("rows_found"),
-            "scrape_meta": meta,
-        }
-    return None
+        bag_candidates[bid] = cands
+        needed_run_ids.update(int(r["id"]) for r in cands)
+
+    present_by_bag: dict[str, set[int]] = {bid: set() for bid in bag_candidates}
+    if (
+        needed_run_ids
+        and bag_candidates
+        and table_exists(cursor, "rinse_cleaner_ticket_presence_run_rows")
+    ):
+        bag_list = sorted(bag_candidates.keys())
+        run_list = sorted(needed_run_ids)
+        # Bounded chunks — query count stays O(chunks), not O(bags).
+        bag_chunk = 100
+        run_chunk = 200
+        for bi in range(0, len(bag_list), bag_chunk):
+            bags_part = bag_list[bi : bi + bag_chunk]
+            for ri in range(0, len(run_list), run_chunk):
+                runs_part = run_list[ri : ri + run_chunk]
+                bag_ph = ",".join(["%s"] * len(bags_part))
+                run_ph = ",".join(["%s"] * len(runs_part))
+                cursor.execute(
+                    f"""
+                    SELECT presence_run_id, bag_id
+                    FROM rinse_cleaner_ticket_presence_run_rows
+                    WHERE organization_id = %s
+                      AND bag_id IN ({bag_ph})
+                      AND presence_run_id IN ({run_ph})
+                    """,
+                    (org, *bags_part, *runs_part),
+                )
+                for row in cursor.fetchall() or []:
+                    if not isinstance(row, dict):
+                        continue
+                    bid = normalize_bag_id(row.get("bag_id"))
+                    rid = int(row.get("presence_run_id") or 0)
+                    if bid in present_by_bag and rid:
+                        present_by_bag[bid].add(rid)
+
+    out: dict[str, dict[str, Any]] = {}
+    for bid, cands in bag_candidates.items():
+        picked = _pick_first_establishing_from_candidates(
+            cands, present_run_ids=present_by_bag.get(bid) or set()
+        )
+        if picked:
+            out[bid] = picked
+    return out
 
 
 def qualify_disappeared_from_portal_bags(
@@ -408,6 +556,24 @@ def qualify_disappeared_from_portal_bags(
 
     last_present = _last_present_run_ids(cursor, organization_id, sorted(confirmed.keys()))
 
+    # Build last_present map for bags that have immutable run-row evidence.
+    lp_for_bulk: dict[str, int] = {}
+    for bid in confirmed:
+        lp = int(last_present.get(bid) or 0)
+        if lp:
+            lp_for_bulk[bid] = lp
+
+    establish_by_bag = (
+        _first_establishing_absence_runs_bulk(
+            cursor,
+            organization_id,
+            lp_for_bulk,
+            portal_status=portal_status,
+        )
+        if lp_for_bulk
+        else {}
+    )
+
     out: dict[str, dict[str, Any]] = {}
     for bid, conf in confirmed.items():
         oi = by_bag[bid]
@@ -416,13 +582,7 @@ def qualify_disappeared_from_portal_bags(
         if not lp:
             # Never observed in immutable run_rows → cannot prove prior portal presence.
             continue
-        establish = _first_establishing_absence_run(
-            cursor,
-            organization_id,
-            bag_id=bid,
-            last_present_run_id=lp,
-            portal_status=portal_status,
-        )
+        establish = establish_by_bag.get(bid)
         if not establish:
             continue
         scrape_meta = establish.get("scrape_meta") or {}

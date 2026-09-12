@@ -116,20 +116,22 @@ def test_a_confirmed_in_window_open_oi_qualifies():
             return_value={"9B5V934T45": 7202},
         ),
         patch(
-            "backend.rinse_wf_disappeared_from_portal._first_establishing_absence_run",
+            "backend.rinse_wf_disappeared_from_portal._first_establishing_absence_runs_bulk",
             return_value={
-                "id": 7203,
-                "scrape_meta": {
-                    "source_mode": "ship_to_vendor_window",
-                    "absence_capable": False,
-                    "tickets_sources": [
-                        {
-                            "label": "wash_and_fold",
-                            "ship_to_vendor_date_start": "2026-09-09",
-                            "ship_to_vendor_date_end": "2026-09-10",
-                        }
-                    ],
-                },
+                "9B5V934T45": {
+                    "id": 7203,
+                    "scrape_meta": {
+                        "source_mode": "ship_to_vendor_window",
+                        "absence_capable": False,
+                        "tickets_sources": [
+                            {
+                                "label": "wash_and_fold",
+                                "ship_to_vendor_date_start": "2026-09-09",
+                                "ship_to_vendor_date_end": "2026-09-10",
+                            }
+                        ],
+                    },
+                }
             },
         ),
     ):
@@ -228,19 +230,21 @@ def test_d_rolloff_confirmed_but_outside_window_no_qualify():
             return_value={"BAGROLL": 40},
         ),
         patch(
-            "backend.rinse_wf_disappeared_from_portal._first_establishing_absence_run",
+            "backend.rinse_wf_disappeared_from_portal._first_establishing_absence_runs_bulk",
             return_value={
-                "id": 49,
-                "scrape_meta": {
-                    "source_mode": "ship_to_vendor_window",
-                    "tickets_sources": [
-                        {
-                            "label": "wash_and_fold",
-                            "ship_to_vendor_date_start": "2026-09-11",
-                            "ship_to_vendor_date_end": "2026-09-12",
-                        }
-                    ],
-                },
+                "BAGROLL": {
+                    "id": 49,
+                    "scrape_meta": {
+                        "source_mode": "ship_to_vendor_window",
+                        "tickets_sources": [
+                            {
+                                "label": "wash_and_fold",
+                                "ship_to_vendor_date_start": "2026-09-11",
+                                "ship_to_vendor_date_end": "2026-09-12",
+                            }
+                        ],
+                    },
+                }
             },
         ),
     ):
