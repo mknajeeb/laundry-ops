@@ -211,7 +211,7 @@ def test_list_path_reuses_membership_cache():
     assert any(b.get("bag_id") == "9B5V934T45" for b in bags)
     hit = next(b for b in bags if b.get("bag_id") == "9B5V934T45")
     assert "DISAPPEARED_FROM_PORTAL" in (hit.get("reason_codes") or [])
-    assert hit.get("short_reason") == "Disappeared From Portal"
+    assert hit.get("short_reason") == "Missing From Portal"
 
 
 def test_membership_prefers_day_bag_shell_over_full_workload_rebuild():

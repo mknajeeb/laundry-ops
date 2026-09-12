@@ -1630,12 +1630,12 @@ def _specialty_qty_from_lines(lines: list | None) -> dict[str, Any]:
 def _short_reason(codes: list[str], category: str) -> str:
     if category == CATEGORY_MANUAL_REVIEW:
         if "MANAGER_SENT_FOR_REVIEW" in codes:
-            return "Manager sent for review"
-        return "Manual review"
+            return "Manual Review"
+        return "Manual Review"
     if category == CATEGORY_MISSING_PORTAL:
         if REASON_DISAPPEARED_FROM_PORTAL in codes:
-            return "Disappeared From Portal"
-        return "Missing from portal"
+            return "Missing From Portal"
+        return "Missing From Portal"
     if category == CATEGORY_SPLIT_ORDER:
         if "SPLIT_MARKED_BUT_SECOND_WASHER_NOT_FOUND" in codes:
             return "Split marked · second washer not found"
@@ -1645,10 +1645,10 @@ def _short_reason(codes: list[str], category: str) -> str:
             return "Split evidence incomplete at disappearance"
         return "Split order review"
     if REASON_WF_BULK_WORKITEM_REVIEW in codes:
-        return "Specialty review"
+        return "Specialty / Bulky Item Review"
     if codes:
         return str(codes[0]).replace("_", " ").title()
-    return "Specialty review"
+    return "Specialty / Bulky Item Review"
 
 
 def review_drawer_section_flags(
