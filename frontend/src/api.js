@@ -2616,6 +2616,57 @@ export const postManagementWfFolderAttributionReset = (body) =>
     timeout: 60000,
   });
 
+export const postManagementPerformanceApproveSession = (roleKey, sessionId, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/performance/${encodeURIComponent(roleKey)}/sessions/${encodeURIComponent(sessionId)}/approve`,
+    body,
+    { timeout: 60000 }
+  );
+
+export const postManagementPerformanceApproveDay = (roleKey, dateEt, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/performance/${encodeURIComponent(roleKey)}/days/${encodeURIComponent(dateEt)}/approve`,
+    body,
+    { timeout: 120000 }
+  );
+
+export const postManagementPerformanceUnapproveSession = (roleKey, sessionId, body = {}) =>
+  axios.post(
+    `${API_BASE}/api/management/performance/${encodeURIComponent(roleKey)}/sessions/${encodeURIComponent(sessionId)}/unapprove`,
+    body,
+    { timeout: 60000 }
+  );
+
+export const getManagementFolderBenchmark = () =>
+  axios.get(`${API_BASE}/api/management/performance/FOLDER/benchmark`, { timeout: 30000 });
+
+export const putManagementFolderBenchmark = (body) =>
+  axios.put(`${API_BASE}/api/management/performance/FOLDER/benchmark`, body, { timeout: 30000 });
+
+export const getRinseDashboardMeta = () =>
+  axios.get(`${API_BASE}/api/rinse-dashboard/meta`, { timeout: 30000 });
+
+export const getRinseDashboardRole = (roleKey, params = {}) =>
+  axios.get(`${API_BASE}/api/rinse-dashboard/performance/roles/${encodeURIComponent(roleKey)}`, {
+    params,
+    timeout: 30000,
+  });
+
+export const getRinseDashboardEmployees = (params = {}) =>
+  axios.get(`${API_BASE}/api/rinse-dashboard/performance/employees`, { params, timeout: 30000 });
+
+export const getRinseDashboardEmployee = (employeeId, params = {}) =>
+  axios.get(
+    `${API_BASE}/api/rinse-dashboard/performance/employees/${encodeURIComponent(employeeId)}`,
+    { params, timeout: 30000 }
+  );
+
+export const getRinseDashboardEmployeeRole = (employeeId, roleKey, params = {}) =>
+  axios.get(
+    `${API_BASE}/api/rinse-dashboard/performance/employees/${encodeURIComponent(employeeId)}/roles/${encodeURIComponent(roleKey)}`,
+    { params, timeout: 30000 }
+  );
+
 export const getManagementRevenue = (dateEt) =>
   axios.get(`${API_BASE}/api/management/revenue`, { params: { date_et: dateEt } });
 

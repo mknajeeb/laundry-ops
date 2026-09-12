@@ -207,7 +207,7 @@ function HomePage({ user }) {
   }
 
   if (isRinseScheduleOnlyUser(user)) {
-    return <Navigate to="/performance/weekly-schedule" replace />;
+    return <Navigate to="/rinse/performance" replace />;
   }
 
   return (

@@ -1,6 +1,7 @@
 import {
   hasPlatformAdminRole,
   isPayrollManagementOnlyUser,
+  isRinsePartnerOnlyUser,
   isRinseScheduleOnlyUser,
   isTenantModuleEnabled,
   TENANT_PORTAL_ROLES,
@@ -11,6 +12,19 @@ import {
 const OPS = [...TENANT_STANDARD_OPS_ROLES];
 /** Checkout counter + clock + notifications for front-line staff without full ops roles. */
 const PORTAL = [...TENANT_PORTAL_ROLES];
+
+/** Rinse partner shell destinations (Phase 1: Performance + Schedule). */
+export const RINSE_HUB_NAV_ITEMS = [
+  { to: "/rinse/performance", labelKey: "nav.rinsePerformance", label: "Performance" },
+  { to: "/performance/weekly-schedule", labelKey: "nav.weeklySchedule", label: "Weekly Schedule" },
+];
+
+/** Future modules reserved in architecture — not shown in Phase 1 nav. */
+export const RINSE_HUB_RESERVED = [
+  { id: "supplies_rejects", label: "Supplies & Rejects", enabled: false },
+  { id: "issues", label: "Issues", enabled: false },
+];
+
 
 /** Tenant app sidebar / mobile drawer — single source of truth. */
 export const TENANT_NAV_ITEMS = [
@@ -153,9 +167,8 @@ export function tenantNavItemVisible(user, item, payrollNavVisible = true, hasPe
     if (payrollNavVisible === false) return false;
     return isTenantModuleEnabled(user, item.moduleKey || "payroll");
   }
-  if (isRinseScheduleOnlyUser(user)) {
-    if (item.to !== "/performance/weekly-schedule") return false;
-    return true;
+  if (isRinsePartnerOnlyUser(user) || isRinseScheduleOnlyUser(user)) {
+    return RINSE_HUB_NAV_ITEMS.some((x) => x.to === item.to);
   }
   if (item.to === "/payroll" && payrollNavVisible === false) return false;
   if (item.skipModuleCheck) return hasPlatformAdminRole(user);

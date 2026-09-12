@@ -1169,6 +1169,21 @@ def apply_step1_correction(
                 pass
 
             # Membership already patched inside apply_unified_bag_edit.
+            try:
+                from backend.rinse_performance_folder_publisher import (
+                    invalidate_folder_approvals_for_date,
+                )
+
+                invalidate_folder_approvals_for_date(
+                    cursor,
+                    organization_id,
+                    selected_date_et=day,
+                    reason="pre_or_bag_correction",
+                    actor_user_id=actor_user_id,
+                    actor_name=actor_display_name,
+                )
+            except Exception:
+                pass
         return out
 
     if action == "move_to_review":

@@ -28,7 +28,7 @@ import TenantNavAccessBoundary from "./components/TenantNavAccessBoundary";
 import Sidebar from "./components/Sidebar";
 import PlatformSidebar from "./components/PlatformSidebar";
 import { useI18n } from "./i18n/I18nContext";
-import { hasPlatformAdminRole, isPayrollManagementOnlyUser, isPlatformOnlyUser, isRinseScheduleOnlyUser, tenantDefaultRoute, userMayUseKioskLock, userSatisfiesRoleGate } from "./utils/platformAccess";
+import { hasPlatformAdminRole, isPayrollManagementOnlyUser, isPlatformOnlyUser, isRinsePartnerOnlyUser, isRinseScheduleOnlyUser, tenantDefaultRoute, userMayUseKioskLock, userSatisfiesRoleGate } from "./utils/platformAccess";
 
 import ProductionPage from "./pages/ProductionPage";
 import ScoreboardPage from "./pages/ScoreboardPage";
@@ -38,6 +38,7 @@ import ScanChronologyPage from "./pages/ScanChronologyPage";
 import OperationsTimelinePage from "./pages/OperationsTimelinePage";
 import ShiftCapacityPlannerPage from "./pages/ShiftCapacityPlannerPage";
 import WeeklySchedulePage from "./pages/WeeklySchedulePage";
+import RinsePerformancePage from "./pages/RinsePerformancePage";
 import WeeklyScheduleEmployeeViewPage from "./pages/WeeklyScheduleEmployeeViewPage";
 import PerformanceSettingsPage from "./pages/PerformanceSettingsPage";
 import PerformanceUserMappingPage from "./pages/PerformanceUserMappingPage";
@@ -593,6 +594,17 @@ function AppShell() {
       !pathname.startsWith("/payroll/")
     ) {
       navigate("/payroll", { replace: true });
+      return;
+    }
+    if (isRinsePartnerOnlyUser(user)) {
+      const allowed =
+        pathname === "/rinse/performance" ||
+        pathname.startsWith("/rinse/performance/") ||
+        pathname === "/performance/weekly-schedule" ||
+        pathname.startsWith("/performance/weekly-schedule/");
+      if (!allowed) {
+        navigate("/rinse/performance", { replace: true });
+      }
     }
   }, [authLoading, pathname, user, navigate]);
 
@@ -1078,6 +1090,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS", "RINSE"]}>
                     <WeeklyScheduleEmployeeViewPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/rinse/performance"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER", "RINSE"]}>
+                    <RinsePerformancePage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

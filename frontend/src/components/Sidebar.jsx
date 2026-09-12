@@ -5,8 +5,8 @@ import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 import { getClockPayrollUiSettings } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
-import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
-import { isRinseScheduleOnlyUser } from "../utils/platformAccess";
+import { TENANT_NAV_ITEMS, RINSE_HUB_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
+import { isRinsePartnerOnlyUser } from "../utils/platformAccess";
 import TenantLogo from "./TenantLogo";
 
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
@@ -125,7 +125,9 @@ function RinseClientSidebar({ user, onLogout, locale, setLocale, t, navItems }) 
                 fontWeight: isActive ? 700 : 600,
               })}
             >
-              {t(item.labelKey)}
+              {item.labelKey && t(item.labelKey) !== item.labelKey
+                ? t(item.labelKey)
+                : item.label || t(item.labelKey)}
             </NavLink>
           ))}
         </Stack>
@@ -197,7 +199,7 @@ function Sidebar({ activeBatch, user, onLogout, showKioskLock, onKioskLock }) {
   const { locale, setLocale, t } = useI18n();
   const { loading: authLoading, hasPerm } = useAuth();
   const [payrollNavVisible, setPayrollNavVisible] = useState(true);
-  const rinseOnly = isRinseScheduleOnlyUser(user);
+  const rinseOnly = isRinsePartnerOnlyUser(user);
 
   useEffect(() => {
     if (authLoading || !user?.id) return;
@@ -210,7 +212,7 @@ function Sidebar({ activeBatch, user, onLogout, showKioskLock, onKioskLock }) {
   }, [authLoading, user?.id]);
 
   const allow = (item) => tenantNavItemVisible(user, item, payrollNavVisible, hasPerm);
-  const navItems = TENANT_NAV_ITEMS.filter(allow);
+  const navItems = rinseOnly ? RINSE_HUB_NAV_ITEMS : TENANT_NAV_ITEMS.filter(allow);
 
   if (rinseOnly) {
     return (

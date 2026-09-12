@@ -20,6 +20,17 @@ from backend.management_wf_folder_performance import (
     get_session_orders,
     list_move_destinations,
 )
+from backend.rinse_performance_approvals import unapprove_session
+from backend.rinse_performance_folder_publisher import (
+    approve_folder_day,
+    approve_folder_session,
+    attach_publication_status_to_day,
+    get_folder_benchmark,
+    invalidate_folder_approvals_for_date,
+    put_folder_benchmark,
+    reconcile_folder_approvals_for_day,
+)
+from backend.rinse_performance_roles import ROLE_FOLDER, role_is_publishable
 from backend.rinse_scan_time import json_safe_rinse
 
 HUB_READ_ROLES = frozenset({"ADMIN", "OPS", "MANAGER", "SUPER_ADMIN", "PLATFORM_ADMIN"})
@@ -31,6 +42,34 @@ def _role_set(me: dict) -> set[str]:
     if isinstance(raw, str):
         raw = [x for x in raw.split(",") if x]
     return {str(r).upper() for r in raw}
+
+
+def _actor(me: dict) -> tuple[int | None, str | None]:
+    actor_id = me.get("id") if isinstance(me, dict) else None
+    actor_name = None
+    if isinstance(me, dict):
+        actor_name = (
+            me.get("name")
+            or me.get("display_name")
+            or me.get("email")
+            or me.get("username")
+        )
+    return actor_id, str(actor_name) if actor_name else None
+
+
+def _annotate_dashboard(cursor, oid: int, payload: dict, selected: date) -> dict:
+    """Attach publication status; reconcile fingerprint drift for the selected day."""
+    primary = payload.get("primary") if isinstance(payload.get("primary"), dict) else None
+    day = primary or payload
+    try:
+        reconcile_folder_approvals_for_day(
+            cursor, oid, selected_date_et=selected, day=day
+        )
+    except Exception:
+        pass
+    attach_publication_status_to_day(cursor, oid, day)
+    payload["folder_benchmark_lbs_hr"] = get_folder_benchmark(cursor, oid)
+    return payload
 
 
 def register_management_wf_folder_performance_routes(
@@ -100,9 +139,171 @@ def register_management_wf_folder_performance_routes(
                 custom_start=custom_start,
                 custom_end=custom_end,
             )
+            payload = _annotate_dashboard(cursor, oid, payload, selected)
+            try:
+                conn.commit()
+            except Exception:
+                pass
             return jsonify(json_safe_rinse(payload))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/performance/<role_key>/sessions/<session_id>/approve",
+        methods=["POST"],
+    )
+    def management_performance_approve_session(role_key: str, session_id: str):
+        """Role-generic approve route — Phase 1 FOLDER only."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            rk = str(role_key or "").strip().upper()
+            if not role_is_publishable(rk) or rk != ROLE_FOLDER:
+                return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
+            oid = int(user_org_id(me))
+            body = request.get_json(silent=True) or {}
+            selected, err = _selected_date_et(
+                body.get("date_et") or body.get("selected_date_et")
+            )
+            if err:
+                return err
+            actor_id, actor_name = _actor(me)
+            out = approve_folder_session(
+                cursor,
+                oid,
+                selected_date_et=selected,
+                session_id=session_id,
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+            )
+            conn.commit()
+            status = 200 if out.get("ok") else 400
+            return jsonify(json_safe_rinse(out)), status
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/performance/<role_key>/days/<date_et>/approve",
+        methods=["POST"],
+    )
+    def management_performance_approve_day(role_key: str, date_et: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            rk = str(role_key or "").strip().upper()
+            if not role_is_publishable(rk) or rk != ROLE_FOLDER:
+                return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
+            oid = int(user_org_id(me))
+            selected, err = _selected_date_et(date_et)
+            if err:
+                return err
+            actor_id, actor_name = _actor(me)
+            out = approve_folder_day(
+                cursor,
+                oid,
+                selected_date_et=selected,
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route(
+        "/api/management/performance/<role_key>/sessions/<session_id>/unapprove",
+        methods=["POST"],
+    )
+    def management_performance_unapprove_session(role_key: str, session_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            rk = str(role_key or "").strip().upper()
+            if rk != ROLE_FOLDER:
+                return jsonify({"error": f"role_key {rk!r} is not publishable"}), 400
+            oid = int(user_org_id(me))
+            actor_id, actor_name = _actor(me)
+            out = unapprove_session(
+                cursor,
+                oid,
+                role_key=rk,
+                session_id=session_id,
+                actor_user_id=actor_id,
+                actor_name=actor_name,
+                reason="manual_unapprove",
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(out))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/management/performance/FOLDER/benchmark", methods=["GET", "PUT"])
+    def management_folder_benchmark():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            oid = int(user_org_id(me))
+            if request.method == "GET":
+                if not (_role_set(me) & HUB_READ_ROLES):
+                    return jsonify({"error": "Forbidden"}), 403
+                return jsonify(
+                    {
+                        "role_key": ROLE_FOLDER,
+                        "lbs_per_hour_target": get_folder_benchmark(cursor, oid),
+                        "benchmark_setting_key": "rinse_folding_lbs_per_hour_target",
+                    }
+                )
+            if not (_role_set(me) & HUB_WRITE_ROLES):
+                return jsonify({"error": "Forbidden"}), 403
+            body = request.get_json(silent=True) or {}
+            raw = body.get("lbs_per_hour_target", body.get("benchmark"))
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                return jsonify({"error": "lbs_per_hour_target required"}), 400
+            if value <= 0 or value > 500:
+                return jsonify({"error": "lbs_per_hour_target out of range"}), 400
+            out = put_folder_benchmark(cursor, oid, value)
+            conn.commit()
+            return jsonify(json_safe_rinse({"ok": True, "role_key": ROLE_FOLDER, **out}))
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:
@@ -317,6 +518,24 @@ def register_management_wf_folder_performance_routes(
                 compare="today",
                 include_baseline_delta=False,
             )
+            # Attribution changes Folder credit → invalidate published snapshots for the day
+            try:
+                invalidate_folder_approvals_for_date(
+                    cursor,
+                    oid,
+                    selected_date_et=selected,
+                    reason="attribution_move",
+                    actor_user_id=actor_id,
+                    actor_name=str(actor_name) if actor_name else None,
+                )
+                conn.commit()
+            except Exception:
+                pass
+            refreshed = _annotate_dashboard(cursor, oid, refreshed, selected)
+            try:
+                conn.commit()
+            except Exception:
+                pass
             return jsonify(
                 json_safe_rinse(
                     {
@@ -363,15 +582,7 @@ def register_management_wf_folder_performance_routes(
             bag_ids = sorted({str(b).strip().upper() for b in bag_ids if str(b).strip()})
             if not bag_ids:
                 return jsonify({"error": "bag_ids required"}), 400
-            actor_name = None
-            if isinstance(me, dict):
-                actor_name = (
-                    me.get("name")
-                    or me.get("display_name")
-                    or me.get("email")
-                    or me.get("username")
-                )
-            actor_id = me.get("id") if isinstance(me, dict) else None
+            actor_id, actor_name = _actor(me)
             results = []
             for bid in bag_ids:
                 row = reset_bag_attribution(
@@ -392,6 +603,23 @@ def register_management_wf_folder_performance_routes(
                 compare="today",
                 include_baseline_delta=False,
             )
+            try:
+                invalidate_folder_approvals_for_date(
+                    cursor,
+                    oid,
+                    selected_date_et=selected,
+                    reason="attribution_reset",
+                    actor_user_id=actor_id,
+                    actor_name=str(actor_name) if actor_name else None,
+                )
+                conn.commit()
+            except Exception:
+                pass
+            refreshed = _annotate_dashboard(cursor, oid, refreshed, selected)
+            try:
+                conn.commit()
+            except Exception:
+                pass
             return jsonify(
                 json_safe_rinse(
                     {

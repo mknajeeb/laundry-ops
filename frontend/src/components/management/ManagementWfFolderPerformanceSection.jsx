@@ -25,6 +25,9 @@ import {
   getManagementWfFolderDestinations,
   postManagementWfFolderAttributionMove,
   postManagementWfFolderAttributionReset,
+  postManagementPerformanceApproveSession,
+  postManagementPerformanceApproveDay,
+  putManagementFolderBenchmark,
   postVeewashStep1Correction,
 } from "../../api";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
@@ -44,38 +47,61 @@ const WF_SORT_OPTIONS = [
   { value: "bags_hr", label: "Highest bags/hr" },
 ];
 
-function SessionLink({ session, onOpenSession }) {
+function SessionLink({ session, onOpenSession, onApprove, approveBusy }) {
   const label = session.session_code
     ? `View ${session.session_code}`
     : `View ${session.orders_completed} order${session.orders_completed === 1 ? "" : "s"}`;
+  const pub = session.publication_status || session.publication?.status || "UNAPPROVED";
+  const isOpen = String(session.role_status || "").toLowerCase() === "open";
+  const approved = pub === "APPROVED";
   return (
-    <Box
-      component="button"
-      type="button"
-      onClick={() => onOpenSession(session)}
-      sx={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 0.1,
-        m: 0,
-        p: 0,
-        border: "none",
-        bgcolor: "transparent",
-        cursor: "pointer",
-        fontFamily: "inherit",
-        ...PERF_TYPE.link,
-        minHeight: { xs: 36, md: 28 },
-        WebkitTapHighlightColor: "transparent",
-        "&:hover": { color: PERF_UI.teal, textDecoration: "underline" },
-      }}
-    >
-      {label}
-      <ChevronRightIcon sx={{ fontSize: 14 }} />
-    </Box>
+    <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+      <Box
+        component="button"
+        type="button"
+        onClick={() => onOpenSession(session)}
+        sx={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 0.1,
+          m: 0,
+          p: 0,
+          border: "none",
+          bgcolor: "transparent",
+          cursor: "pointer",
+          fontFamily: "inherit",
+          ...PERF_TYPE.link,
+          minHeight: { xs: 36, md: 28 },
+          WebkitTapHighlightColor: "transparent",
+          "&:hover": { color: PERF_UI.teal, textDecoration: "underline" },
+        }}
+      >
+        {label}
+        <ChevronRightIcon sx={{ fontSize: 14 }} />
+      </Box>
+      <Typography
+        sx={{
+          ...PERF_TYPE.meta,
+          color: approved ? PERF_UI.tealDark : "#94a3b8",
+          fontWeight: 700,
+        }}
+      >
+        {approved ? "Approved" : "Unapproved"}
+      </Typography>
+      <Button
+        size="small"
+        variant="outlined"
+        disabled={approved || isOpen || approveBusy}
+        onClick={() => onApprove?.(session)}
+        sx={{ minHeight: 28, py: 0, px: 1, fontSize: 11, textTransform: "none" }}
+      >
+        {isOpen ? "Open" : "Approve"}
+      </Button>
+    </Stack>
   );
 }
 
-function WfEmployeeRankCard({ rank, employee, onOpenSession }) {
+function WfEmployeeRankCard({ rank, employee, onOpenSession, onApprove, approveBusy }) {
   const sessions = employee.sessions || [];
   const timeRange = employee.time_range_label || sessions[0]?.time_range_label;
   const duration = employee.duration_label;
@@ -107,7 +133,13 @@ function WfEmployeeRankCard({ rank, employee, onOpenSession }) {
         {sessions.length ? (
           <Stack direction="row" spacing={0.75} flexWrap="wrap" sx={{ mt: 0.35 }}>
             {sessions.map((sess) => (
-              <SessionLink key={sess.session_id} session={sess} onOpenSession={onOpenSession} />
+              <SessionLink
+                key={sess.session_id}
+                session={sess}
+                onOpenSession={onOpenSession}
+                onApprove={onApprove}
+                approveBusy={approveBusy}
+              />
             ))}
           </Stack>
         ) : null}
@@ -155,7 +187,12 @@ function WfEmployeeRankCard({ rank, employee, onOpenSession }) {
                   ·
                 </Typography>
               ) : null}
-              <SessionLink session={sess} onOpenSession={onOpenSession} />
+              <SessionLink
+                session={sess}
+                onOpenSession={onOpenSession}
+                onApprove={onApprove}
+                approveBusy={approveBusy}
+              />
             </Stack>
           ))}
         </Stack>
@@ -420,6 +457,9 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
   const [showNeedsAttribution, setShowNeedsAttribution] = useState(false);
   const [showOutsideSession, setShowOutsideSession] = useState(false);
   const [sortBy, setSortBy] = useState("output");
+  const [approveBusy, setApproveBusy] = useState(false);
+  const [benchDraft, setBenchDraft] = useState("");
+  const [pubMessage, setPubMessage] = useState("");
 
   const load = useCallback(
     async (opts = {}) => {
@@ -431,6 +471,8 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           last_n: opts.last_n ?? lastN,
         });
         setData(res.data || null);
+        const b = res.data?.folder_benchmark_lbs_hr;
+        if (b != null) setBenchDraft(String(b));
       } catch (err) {
         setError(err?.response?.data?.error || err?.message || "Unable to load Folder Performance");
         setData(null);
@@ -547,6 +589,59 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
     }
   };
 
+  const approveSession = async (session) => {
+    if (!session?.session_id) return;
+    setApproveBusy(true);
+    setPubMessage("");
+    try {
+      const day = session.selected_date_et || dateEt;
+      await postManagementPerformanceApproveSession("FOLDER", session.session_id, {
+        date_et: day,
+      });
+      setPubMessage(`Approved ${session.session_code || session.session_id}`);
+      await load();
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || "Approve failed");
+    } finally {
+      setApproveBusy(false);
+    }
+  };
+
+  const approveDay = async () => {
+    setApproveBusy(true);
+    setPubMessage("");
+    try {
+      const res = await postManagementPerformanceApproveDay("FOLDER", dateEt, {});
+      const s = res.data || {};
+      setPubMessage(
+        `Approve Day: ${s.approved || 0} approved · ${s.already_approved || 0} already · ${s.open || 0} open · ${s.invalid_empty || 0} invalid`
+      );
+      await load();
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || "Approve Day failed");
+    } finally {
+      setApproveBusy(false);
+    }
+  };
+
+  const saveBenchmark = async () => {
+    const n = Number(benchDraft);
+    if (!Number.isFinite(n) || n <= 0) {
+      setError("Benchmark must be a positive number");
+      return;
+    }
+    setApproveBusy(true);
+    try {
+      await putManagementFolderBenchmark({ lbs_per_hour_target: n });
+      setPubMessage(`Folder benchmark set to ${n} lb/hr`);
+      await load();
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || "Benchmark save failed");
+    } finally {
+      setApproveBusy(false);
+    }
+  };
+
   const presets = data?.ui_presets || [
     { key: "today", label: "Today" },
     { key: "same_weekday_last_week", label: "Same day last week" },
@@ -655,6 +750,15 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           ))}
         </Box>
         <Stack direction="row" spacing={0.75} alignItems="center" sx={{ flexShrink: 0 }}>
+          <Button
+            size="small"
+            variant="contained"
+            disabled={approveBusy || loading}
+            onClick={approveDay}
+            sx={{ textTransform: "none", fontWeight: 700, bgcolor: PERF_UI.teal, "&:hover": { bgcolor: PERF_UI.tealDark } }}
+          >
+            Approve Day
+          </Button>
           <PerformanceSortSelect
             value={sortBy}
             options={WF_SORT_OPTIONS}
@@ -703,6 +807,25 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
           {error}
         </Alert>
       ) : null}
+      {pubMessage ? (
+        <Alert severity="success" sx={{ mb: 1.25, py: 0.5 }} onClose={() => setPubMessage("")}>
+          {pubMessage}
+        </Alert>
+      ) : null}
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>
+        <Typography sx={{ ...PERF_TYPE.meta, fontWeight: 700 }}>Folder Benchmark</Typography>
+        <TextField
+          size="small"
+          value={benchDraft}
+          onChange={(e) => setBenchDraft(e.target.value)}
+          sx={{ width: 88 }}
+          inputProps={{ "aria-label": "Folder benchmark lb/hr" }}
+        />
+        <Typography sx={PERF_TYPE.meta}>lb/hr</Typography>
+        <Button size="small" variant="outlined" disabled={approveBusy} onClick={saveBenchmark} sx={{ textTransform: "none" }}>
+          Save
+        </Button>
+      </Stack>
 
       {loading && !data ? (
         <Box sx={{ py: 5, textAlign: "center" }}>
@@ -860,6 +983,8 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
                 rank={idx + 1}
                 employee={emp}
                 onOpenSession={openSession}
+                onApprove={approveSession}
+                approveBusy={approveBusy}
               />
             ))}
             {!loading && !employees.length ? (

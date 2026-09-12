@@ -46,8 +46,13 @@ export function isAccountantOnlyUser(user) {
   return !r.some((role) => role !== "ACCOUNTANT" && TENANT_PORTAL_ROLES.includes(role));
 }
 
-/** True when the user only has the RINSE role (Rinse Exclusive schedule viewer). */
+/** True when the user only has the RINSE role (Rinse partner shell). */
 export function isRinseScheduleOnlyUser(user) {
+  return isRinsePartnerOnlyUser(user);
+}
+
+/** Rinse partner login: Performance + Schedule shell; no Management/Payroll. */
+export function isRinsePartnerOnlyUser(user) {
   const r = normalizedRoles(user);
   if (!r.includes("RINSE")) return false;
   if (hasPlatformAdminRole(user)) return false;
@@ -81,7 +86,7 @@ export function isPayrollManagementOnlyUser(user) {
 /** Post-login / blocked-route landing path for tenant users. */
 export function tenantDefaultRoute(user) {
   if (isPayrollManagementOnlyUser(user)) return "/payroll";
-  if (isRinseScheduleOnlyUser(user)) return "/performance/weekly-schedule";
+  if (isRinsePartnerOnlyUser(user)) return "/rinse/performance";
   const roles = normalizedRoles(user);
   if (roles.some((r) => ["ADMIN", "OPS", "MANAGER", "SUPER_ADMIN"].includes(r))) {
     return "/management";

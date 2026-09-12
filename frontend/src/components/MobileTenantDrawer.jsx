@@ -5,8 +5,8 @@ import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useI18n } from "../i18n/I18nContext";
 import { useAuth } from "../context/AuthContext";
-import { tenantNavItemVisible, TENANT_NAV_ITEMS } from "../constants/tenantNav";
-import { isRinseScheduleOnlyUser } from "../utils/platformAccess";
+import { tenantNavItemVisible, TENANT_NAV_ITEMS, RINSE_HUB_NAV_ITEMS } from "../constants/tenantNav";
+import { isRinsePartnerOnlyUser } from "../utils/platformAccess";
 import TenantLogo from "./TenantLogo";
 
 export default function MobileTenantDrawer({
@@ -21,10 +21,10 @@ export default function MobileTenantDrawer({
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { hasPerm } = useAuth();
-  const rinseOnly = isRinseScheduleOnlyUser(user);
+  const rinseOnly = isRinsePartnerOnlyUser(user);
 
   const allow = (item) => tenantNavItemVisible(user, item, payrollNavVisible, hasPerm);
-  const navItems = TENANT_NAV_ITEMS.filter(allow);
+  const navItems = rinseOnly ? RINSE_HUB_NAV_ITEMS : TENANT_NAV_ITEMS.filter(allow);
 
   const go = (to) => {
     navigate(to);
@@ -64,7 +64,14 @@ export default function MobileTenantDrawer({
                   },
                 }}
               >
-                <ListItemText primary={t(item.labelKey)} primaryTypographyProps={{ fontWeight: 600 }} />
+                <ListItemText
+                  primary={
+                    item.labelKey && t(item.labelKey) !== item.labelKey
+                      ? t(item.labelKey)
+                      : item.label || t(item.labelKey)
+                  }
+                  primaryTypographyProps={{ fontWeight: 600 }}
+                />
               </ListItemButton>
             ))}
           </List>

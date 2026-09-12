@@ -652,6 +652,7 @@ def _public_session_card(sess: Mapping[str, Any], orders: Sequence[Mapping[str, 
         "session_code": sess.get("session_code"),
         "segment_id": sess.get("segment_id"),
         "employee": sess.get("employee"),
+        "user_id": sess.get("user_id"),
         "start_time": _iso(start),
         "end_time": _iso(perf.get("role_session_end")),
         "end_display": sess.get("end_display"),
@@ -1006,6 +1007,8 @@ def build_day_folder_performance(
             )
             card = _public_session_card(sess, timed)
             card["employee"] = emp
+            if card.get("user_id") is None and sess.get("user_id") is not None:
+                card["user_id"] = sess.get("user_id")
             card["orders"] = [_public_order_row(o) for o in timed]
             emp_sessions.append(card)
             session_cards.append(card)
@@ -1032,9 +1035,14 @@ def build_day_folder_performance(
         ends = [_parse_dt(s.get("end_time")) for s in emp_sessions]
         ends = [t for t in ends if t]
         any_open = any(s.get("role_status") == "open" for s in emp_sessions)
+        emp_uid = next(
+            (s.get("user_id") for s in emp_sessions if s.get("user_id") is not None),
+            name_to_uid.get(emp),
+        )
         employees_out.append(
             {
                 "employee": emp,
+                "user_id": emp_uid,
                 "orders_completed": emp_orders,
                 "total_pre_lbs": round(emp_lbs, 2),
                 "bags_per_hour": rates["bags_per_hour"],
