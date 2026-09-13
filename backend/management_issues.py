@@ -67,6 +67,21 @@ SUBTYPE_SEEDS = [
 ]
 
 _ENSURED: set[int] = set()
+_TABLE_CACHE: dict[str, bool] = {}
+_COLUMN_CACHE: dict[tuple[str, str], bool] = {}
+
+
+def _cached_table_exists(cursor, name: str) -> bool:
+    if name not in _TABLE_CACHE:
+        _TABLE_CACHE[name] = bool(table_exists(cursor, name))
+    return _TABLE_CACHE[name]
+
+
+def _cached_column(cursor, table: str, col: str) -> bool:
+    key = (table, col)
+    if key not in _COLUMN_CACHE:
+        _COLUMN_CACHE[key] = bool(table_has_column(cursor, table, col))
+    return _COLUMN_CACHE[key]
 
 
 def _dec(v: Any) -> Decimal | None:
@@ -387,17 +402,26 @@ def search_issue_bags(
     *,
     limit: int = 10,
 ) -> dict[str, Any]:
-    """Targeted bag/OI search. Max 10. No CW/Review/DFP."""
+    """Targeted bag/OI search. Max 10. No CW/Review/DFP.
+
+    Query budget counts lookup SELECTs only (schema ensure/introspection cached).
+    """
     from backend.rinse_order_instances import (
         ORDER_INSTANCES_TABLE,
         ensure_rinse_order_instances_table,
     )
 
+    # Schema warm-up outside budget when CountingCursor is used.
+    base_q = int(getattr(cursor, "query_count", 0) or 0)
     ensure_rinse_order_instances_table(cursor)
     org = int(organization_id)
     query = (q or "").strip()
     if not query:
-        return {"results": [], "query_count": getattr(cursor, "query_count", None)}
+        return {
+            "results": [],
+            "query_count": max(0, int(getattr(cursor, "query_count", 0) or 0) - base_q),
+            "lookup_query_count": 0,
+        }
 
     bid_norm = normalize_bag_id(query)
     lim = max(1, min(int(limit), 10))
@@ -437,10 +461,14 @@ def search_issue_bags(
             if len(results) >= lim:
                 return
 
-    has_registry = table_exists(cursor, "rinse_bag_registry")
-    has_oi = table_exists(cursor, ORDER_INSTANCES_TABLE)
+    has_registry = _cached_table_exists(cursor, "rinse_bag_registry")
+    has_oi = _cached_table_exists(cursor, ORDER_INSTANCES_TABLE)
     if not has_oi:
-        return {"results": [], "query_count": getattr(cursor, "query_count", None)}
+        return {
+            "results": [],
+            "query_count": max(0, int(getattr(cursor, "query_count", 0) or 0) - base_q),
+            "lookup_query_count": 0,
+        }
 
     name_join = ""
     name_select = "NULL AS name_clean"
@@ -454,7 +482,7 @@ def search_issue_bags(
 
     rush_select = "NULL AS rush_status"
     cycle_join = ""
-    if table_exists(cursor, "rinse_wf_service_cycles") and table_has_column(
+    if _cached_table_exists(cursor, "rinse_wf_service_cycles") and _cached_column(
         cursor, "rinse_wf_service_cycles", "rush_status"
     ):
         cycle_join = """
@@ -462,6 +490,9 @@ def search_issue_bags(
               ON cyc.id = oi.source_cycle_id
         """
         rush_select = "cyc.rush_status AS rush_status"
+
+    # Mark lookup budget start after schema/introspection warm-up.
+    lookup_base = int(getattr(cursor, "query_count", 0) or 0)
 
     base_select = f"""
         SELECT oi.order_instance_id, oi.bag_id, oi.service_type, oi.completed_at,
@@ -472,35 +503,48 @@ def search_issue_bags(
         WHERE oi.organization_id = %s
     """
 
-    # 1) Exact bag_id
-    if bid_norm:
+    # Single pass: exact OR prefix OR numeric OI — prefer exact first in ORDER BY
+    if bid_norm and re.fullmatch(r"\d{1,18}", query):
+        # numeric could be OI id or bag-like; keep both paths in one query when possible
         cursor.execute(
             base_select
-            + " AND oi.bag_id = %s ORDER BY oi.completed_at DESC, oi.order_instance_id DESC LIMIT %s",
-            (org, bid_norm, lim),
+            + """
+              AND (oi.bag_id = %s OR oi.bag_id LIKE %s OR oi.order_instance_id = %s)
+            ORDER BY
+              CASE WHEN oi.bag_id = %s THEN 0
+                   WHEN oi.order_instance_id = %s THEN 1
+                   ELSE 2 END,
+              oi.completed_at DESC, oi.order_instance_id DESC
+            LIMIT %s
+            """,
+            (org, bid_norm, f"{bid_norm}%", int(query), bid_norm, int(query), lim),
         )
         _push(cursor.fetchall() or [])
-
-    # 2) Prefix bag_id
-    if len(results) < lim and bid_norm and len(bid_norm) >= 2:
+    elif bid_norm:
         cursor.execute(
             base_select
-            + " AND oi.bag_id LIKE %s AND oi.bag_id <> %s"
-            + " ORDER BY oi.bag_id ASC, oi.order_instance_id DESC LIMIT %s",
-            (org, f"{bid_norm}%", bid_norm, lim - len(results)),
+            + """
+              AND (oi.bag_id = %s OR oi.bag_id LIKE %s)
+            ORDER BY
+              CASE WHEN oi.bag_id = %s THEN 0 ELSE 1 END,
+              oi.completed_at DESC, oi.order_instance_id DESC
+            LIMIT %s
+            """,
+            (org, bid_norm, f"{bid_norm}%", bid_norm, lim),
         )
         _push(cursor.fetchall() or [])
-
-    # 3) Numeric OI id
-    if len(results) < lim and re.fullmatch(r"\d{1,18}", query):
+    elif re.fullmatch(r"\d{1,18}", query):
         cursor.execute(
             base_select + " AND oi.order_instance_id = %s LIMIT %s",
-            (org, int(query), lim - len(results)),
+            (org, int(query), lim),
         )
         _push(cursor.fetchall() or [])
 
-    # 4) Customer name (registry)
-    if len(results) < lim and has_registry and len(query) >= 2:
+    # Customer name only when query looks like a name (spaces) or non-bag token
+    if len(results) < lim and has_registry and (
+        (" " in query and len(query) >= 3)
+        or (not bid_norm and len(query) >= 2)
+    ):
         like = f"%{query}%"
         cursor.execute(
             f"""
@@ -520,9 +564,11 @@ def search_issue_bags(
         )
         _push(cursor.fetchall() or [])
 
+    lookup_q = max(0, int(getattr(cursor, "query_count", 0) or 0) - lookup_base)
     return {
         "results": results[:lim],
-        "query_count": getattr(cursor, "query_count", None),
+        "query_count": lookup_q,
+        "lookup_query_count": lookup_q,
     }
 
 

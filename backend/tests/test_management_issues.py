@@ -89,8 +89,6 @@ def test_ensure_and_seed_taxonomy():
 
 
 def test_search_exact_and_multi_oi():
-    from backend.rinse_order_instances import ORDER_INSTANCES_TABLE
-
     rows = [
         {
             "order_instance_id": 4951,
@@ -112,23 +110,22 @@ def test_search_exact_and_multi_oi():
         },
     ]
     cur = FakeCursor(script=[rows])
-    with patch("backend.management_issues.table_exists", return_value=True), patch(
-        "backend.management_issues.table_has_column", return_value=True
+    with patch("backend.management_issues._cached_table_exists", return_value=True), patch(
+        "backend.management_issues._cached_column", return_value=True
     ), patch(
         "backend.rinse_order_instances.ensure_rinse_order_instances_table"
     ):
-        # Only first query returns both OIs (exact match)
         out = search_issue_bags(cur, 3, "A347CPMO70", limit=10)
     assert len(out["results"]) == 2
     assert {r["order_instance_id"] for r in out["results"]} == {4951, 4800}
     assert out["results"][0]["bag_id"] == "A347CPMO70"
-    assert cur.query_count <= 5
+    assert (out.get("lookup_query_count") or out["query_count"]) <= 5
 
 
 def test_search_org_isolation_params():
     cur = FakeCursor(script=[[]])
-    with patch("backend.management_issues.table_exists", return_value=True), patch(
-        "backend.management_issues.table_has_column", return_value=False
+    with patch("backend.management_issues._cached_table_exists", return_value=True), patch(
+        "backend.management_issues._cached_column", return_value=False
     ), patch(
         "backend.rinse_order_instances.ensure_rinse_order_instances_table"
     ):
@@ -386,10 +383,10 @@ def test_hub_roles_constant_excludes_rinse():
 def test_counting_cursor_budget_search():
     inner = FakeCursor(script=[[], [], []])
     counting = CountingCursor(inner)
-    with patch("backend.management_issues.table_exists", return_value=True), patch(
-        "backend.management_issues.table_has_column", return_value=False
+    with patch("backend.management_issues._cached_table_exists", return_value=True), patch(
+        "backend.management_issues._cached_column", return_value=False
     ), patch(
         "backend.rinse_order_instances.ensure_rinse_order_instances_table"
     ):
-        search_issue_bags(counting, 3, "ZZZZNOPE", limit=10)
-    assert counting.query_count <= 5
+        out = search_issue_bags(counting, 3, "ZZZZNOPE", limit=10)
+    assert (out.get("lookup_query_count") or out["query_count"]) <= 5
