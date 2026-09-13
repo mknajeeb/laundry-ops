@@ -44,6 +44,10 @@ const API_ERROR_LABELS = {
   invalid_category: "Invalid review category.",
   invalid_bag_id: "Invalid bag id.",
   conflict: "This bag was updated while you were reviewing it. Close and reopen to retry.",
+  order_completed_while_reviewing: "Order was completed while you were reviewing it.",
+  already_excluded: "This order was already excluded.",
+  no_longer_in_review: "This order is no longer Missing From Portal.",
+  bag_not_on_selected_date: "This bag has no day row for the selected date.",
   reason_code_required: "A review reason is required.",
   reason_code_not_allowed_for_action:
     "Could not save this review action. Close and reopen the bag, then try again.",

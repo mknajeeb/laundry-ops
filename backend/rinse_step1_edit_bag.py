@@ -487,6 +487,184 @@ def _parse_manager_edit_version(raw: Any) -> int | None:
         return None
 
 
+def _day_bag_row_exists(
+    cursor, organization_id: int, selected_date_et: date, bag_id: str
+) -> bool:
+    cursor.execute(
+        """
+        SELECT 1 AS ok
+        FROM rinse_shift_monitor_day_bags
+        WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+        LIMIT 1
+        """,
+        (int(organization_id), selected_date_et, normalize_bag_id(bag_id)),
+    )
+    return bool(cursor.fetchone())
+
+
+def _open_wf_order_instances(cursor, organization_id: int, bag_id: str) -> list[dict[str, Any]]:
+    try:
+        from backend.rinse_order_instances import list_order_instances_for_bag
+
+        rows = list_order_instances_for_bag(
+            cursor, int(organization_id), normalize_bag_id(bag_id), service_type="WF"
+        )
+    except Exception:
+        return []
+    return [r for r in (rows or []) if r.get("completed_at") is None]
+
+
+_DFP_REASON_CODES = frozenset(
+    {
+        "DISAPPEARED_FROM_PORTAL",
+        "DISAPPEARED_WITHOUT_COMPLETION",
+        "MISSING_FROM_PORTAL_AFTER_FULL_TRAVERSAL",
+        "REVIEW_MISSING_FROM_PORTAL",
+    }
+)
+
+
+def _before_has_dfp_reason(before: Mapping[str, Any]) -> bool:
+    raw = before.get("review_reason_codes") or before.get("reason_codes") or []
+    codes = {str(c or "").strip().upper() for c in raw if c}
+    return bool(codes & _DFP_REASON_CODES)
+
+
+def _completion_draft_differs_from_before(
+    draft: Mapping[str, Any] | None, before: Mapping[str, Any]
+) -> bool:
+    """True when Complete draft would rewrite safety-critical completion fields."""
+    if not draft:
+        return False
+    d = dict(draft)
+    if "post_weight_lbs" in d and _weight_changed(
+        before.get("post_weight_lbs"), d.get("post_weight_lbs")
+    ):
+        return True
+    if "pre_weight_lbs" in d and _weight_changed(
+        before.get("pre_weight_lbs"), d.get("pre_weight_lbs")
+    ):
+        return True
+    if _completion_employee_changed(d, before) or _completion_timestamp_changed(d, before):
+        return True
+    return False
+
+
+def _soft_resolve_review_mutation_conflict(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    selected_date_et: date,
+    outcome: str | None,
+    before: Mapping[str, Any],
+    current_version: int,
+    draft: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Distinguish material conflicts from harmless drawer/token drift.
+
+    Returns:
+      - ok success payload (idempotent already-excluded / already-completed)
+      - ``refresh_lock`` True to continue mutation with current version
+      - otherwise error payload fields (caller wraps as 409)
+    """
+    bid = normalize_bag_id(bag_id)
+    open_ois = _open_wf_order_instances(cursor, organization_id, bid)
+    day_bag_present = (
+        before.get("updated_at") is not None
+        or before.get("dashboard_status") is not None
+        or before.get("outcome") is not None
+        or before.get("effective_status") is not None
+    )
+
+    if outcome == OUTCOME_EXCLUDE:
+        if not open_ois:
+            # Already closed (exclude or complete) — treat Exclude as success.
+            return {
+                "ok": True,
+                "already_excluded": True,
+                "edit_id": None,
+                "before": dict(before),
+                "after": capture_bag_edit_state(
+                    cursor, organization_id, selected_date_et, bid
+                ),
+                "undo_token": None,
+                "bag": capture_bag_edit_state(
+                    cursor, organization_id, selected_date_et, bid
+                ),
+                "deltas": [],
+                "outcome_result": {"skipped": "already_excluded"},
+                "management_cache_cleared": False,
+            }
+        # Day-bag present but DFP membership cleared while OI still open.
+        if day_bag_present and before.get("review_reason_codes") is not None:
+            if not _before_has_dfp_reason(before):
+                eff = str(
+                    before.get("effective_status")
+                    or before.get("dashboard_status")
+                    or ""
+                ).strip().lower()
+                if eff and eff not in ("review_required", "review"):
+                    return {
+                        "ok": False,
+                        "error": "no_longer_in_review",
+                        "status": 409,
+                        "message": "This order is no longer Missing From Portal.",
+                        "latest": dict(before),
+                    }
+        # Still open: drawer token drift is harmless — refresh lock and proceed.
+        return {
+            "refresh_lock": True,
+            "current_version": int(current_version),
+        }
+
+    if outcome == OUTCOME_MARK_COMPLETED:
+        if not open_ois:
+            dash = str(before.get("dashboard_status") or before.get("outcome") or "").lower()
+            if dash in ("excluded", "exclude"):
+                return {
+                    "ok": False,
+                    "error": "already_excluded",
+                    "status": 409,
+                    "message": "This order was excluded while you were reviewing it.",
+                }
+            return {
+                "ok": False,
+                "error": "order_completed_while_reviewing",
+                "status": 409,
+                "message": "Order was completed while you were reviewing it.",
+            }
+        # Concurrent manager already stamped completion facts on the day bag and
+        # this draft would overwrite them — true conflict. Filling empty fields is OK.
+        prior_has_completion = bool(
+            before.get("completion_at")
+            or before.get("completed_by")
+            or before.get("canonical_completion_timestamp")
+            or before.get("canonical_completion_employee")
+        )
+        if prior_has_completion and _completion_draft_differs_from_before(draft, before):
+            return {
+                "ok": False,
+                "error": "conflict",
+                "status": 409,
+                "message": (
+                    "Completion details changed while you were reviewing. "
+                    "Close and reopen to retry."
+                ),
+            }
+        return {
+            "refresh_lock": True,
+            "current_version": int(current_version),
+        }
+
+    return {
+        "ok": False,
+        "error": "conflict",
+        "status": 409,
+        "message": "This bag was updated while you were reviewing it. Close and reopen to retry.",
+    }
+
+
 def _lock_dt_for_compare(raw: Any) -> datetime | None:
     """Legacy updated_at compare: strip tz + microseconds (API truncates both)."""
     dt = _parse_dt(raw)
@@ -966,14 +1144,35 @@ def apply_unified_bag_edit(
         conflict=conflict,
     )
     if conflict:
-        return {
-            "ok": False,
-            "error": "conflict",
-            "status": 409,
-            "current_version": current_version,
-            "manager_edit_version": current_version,
-            "latest": before,
-        }
+        # Soft concurrency: re-read material OI/review state before rejecting.
+        # Harmless day_bag version drift (scrape/list refresh) must not block
+        # Exclude / Complete when the order is still eligible.
+        soft = _soft_resolve_review_mutation_conflict(
+            cursor,
+            organization_id,
+            bid,
+            selected_date_et=selected_date_et,
+            outcome=outcome,
+            before=before,
+            current_version=current_version,
+            draft=draft,
+        )
+        if soft.get("ok"):
+            return soft
+        if soft.get("refresh_lock"):
+            expected_version = int(soft.get("current_version") or current_version)
+            current_version = expected_version
+            conflict = False
+        else:
+            return {
+                "ok": False,
+                "error": soft.get("error") or "conflict",
+                "status": int(soft.get("status") or 409),
+                "current_version": current_version,
+                "manager_edit_version": current_version,
+                "latest": before,
+                "message": soft.get("message"),
+            }
 
     resolved = resolve_edit_audit_reason(
         reason=reason,
@@ -1373,7 +1572,12 @@ def apply_unified_bag_edit(
     # Ensure manager edits bump the dedicated lock once (and only once).
     # Atomic WHERE guards against a concurrent manager save that raced past
     # the pre-check. Source/productivity paths never touch this column.
+    #
+    # DFP Exclude often has NO day_bag on the selected Management date (open OI
+    # only). A 0-row bump is NOT a conflict then — that false conflict produced
+    # "updated while reviewing" for bags like C1PI050KEU.
     lock_from = expected_version if expected_version is not None else current_version
+    after: dict[str, Any] | None = None
     cursor.execute(
         """
         UPDATE rinse_shift_monitor_day_bags
@@ -1386,29 +1590,76 @@ def apply_unified_bag_edit(
     )
     rowcount = getattr(cursor, "rowcount", None)
     if rowcount is not None and int(rowcount) == 0:
-        latest = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
-        latest_ver = int(latest.get("manager_edit_version") or 0)
-        _log_lock_check(
-            bag_id=bid,
-            organization_id=organization_id,
-            selected_date_et=selected_date_et,
-            expected_version=lock_from,
-            current_version=latest_ver,
-            expected_updated_at=expected_updated_at,
-            current_updated_at=latest.get("updated_at"),
-            actor_user_id=actor_user_id,
-            actor_display_name=actor_display_name,
-            conflict=True,
+        latest = capture_bag_edit_state(
+            cursor, organization_id, selected_date_et, bid
         )
-        return {
-            "ok": False,
-            "error": "conflict",
-            "status": 409,
-            "current_version": latest_ver,
-            "manager_edit_version": latest_ver,
-            "latest": latest,
-        }
-    after = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
+        latest_ver = int(latest.get("manager_edit_version") or 0)
+        day_bag_present = (
+            latest.get("updated_at") is not None
+            or latest.get("dashboard_status") is not None
+            or latest.get("outcome") is not None
+        )
+        if (
+            not day_bag_present
+            and outcome
+            in (OUTCOME_EXCLUDE, OUTCOME_RETURN_PENDING, OUTCOME_MARK_COMPLETED)
+        ):
+            # No selected-date day_bag — lifecycle mutation already applied above.
+            after = latest
+        else:
+            soft = _soft_resolve_review_mutation_conflict(
+                cursor,
+                organization_id,
+                bid,
+                selected_date_et=selected_date_et,
+                outcome=outcome,
+                before=latest,
+                current_version=latest_ver,
+                draft=draft,
+            )
+            if soft.get("ok"):
+                return soft
+            if soft.get("refresh_lock") and outcome in (
+                OUTCOME_EXCLUDE,
+                OUTCOME_MARK_COMPLETED,
+            ):
+                cursor.execute(
+                    """
+                    UPDATE rinse_shift_monitor_day_bags
+                    SET manager_edit_version = manager_edit_version + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE organization_id = %s AND shift_date_et = %s AND bag_id = %s
+                      AND manager_edit_version = %s
+                    """,
+                    (
+                        int(organization_id),
+                        selected_date_et,
+                        bid,
+                        int(soft.get("current_version") or latest_ver),
+                    ),
+                )
+                if int(getattr(cursor, "rowcount", 0) or 0) == 0:
+                    return {
+                        "ok": False,
+                        "error": soft.get("error") or "conflict",
+                        "status": int(soft.get("status") or 409),
+                        "current_version": latest_ver,
+                        "manager_edit_version": latest_ver,
+                        "latest": latest,
+                        "message": soft.get("message"),
+                    }
+            else:
+                return {
+                    "ok": False,
+                    "error": soft.get("error") or "conflict",
+                    "status": int(soft.get("status") or 409),
+                    "current_version": latest_ver,
+                    "manager_edit_version": latest_ver,
+                    "latest": latest,
+                    "message": soft.get("message"),
+                }
+    if after is None:
+        after = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
 
     cursor.execute(
         """

@@ -1986,6 +1986,17 @@ def apply_manager_edit_day_bag_patch(
 
     rows = load_day_bags_by_ids(cursor, organization_id, shift_date_et, [bid])
     day_row = rows[0] if rows else {}
+    outcome_norm = str(outcome_action or "").strip().lower() or None
+    if not rows and outcome_norm in ("exclude", "return_pending", "mark_completed"):
+        # Lifecycle-only mutations (DFP Exclude on open OI with no selected-date
+        # day_bag) must not run headline specialty reproject against an empty row.
+        return {
+            "ok": True,
+            "skipped": "no_day_bag",
+            "lifecycle_only": True,
+            "bag_id": bid,
+            "outcome_action": outcome_action,
+        }
     prev_status = str(
         previous_effective_status
         or day_row.get("effective_status")

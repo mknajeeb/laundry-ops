@@ -162,6 +162,7 @@ export default function ManagementRinseWfSection({
   selectedDateEt,
   onSelectedDateChange,
   onRefresh,
+  onReviewResolved = null,
   primaryLoading = false,
   secondaryLoading = false,
 }) {
@@ -638,8 +639,9 @@ export default function ManagementRinseWfSection({
           reviewLoading={secondaryLoading}
           snapshotUnavailable={snapshotUnavailable}
           readOnly={readOnly}
-          onRefresh={onRefresh}
-          openCategoryRequest={reviewOpenRequest}
+        onRefresh={onRefresh}
+        onReviewResolved={onReviewResolved}
+        openCategoryRequest={reviewOpenRequest}
           onOpenCategoryRequestHandled={() => setReviewOpenRequest(null)}
         />
       </Box>

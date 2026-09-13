@@ -361,7 +361,30 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
     setQty(Object.fromEntries(initialLines.map((l) => [l.workitem_id, l.quantity])));
     setNoCharge(String(bag?.bulk_resolution?.resolution_type || "") === "no_charge");
     setNoChargeReason(bag?.bulk_resolution?.no_charge_reason || "");
-  }, [bag?.bag_id, bag?._detailsLoaded, bag?.manager_edit_version]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [bag?.bag_id, bag?._detailsLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Harmless list/detail refresh must not wipe an in-progress Complete form.
+  // Only merge display fields while the manager is still on the choose screen.
+  useEffect(() => {
+    if (!bag?._detailsLoaded || phase !== "choose") return;
+    setPostLbs(
+      bag?.post_weight_lbs == null || bag?.post_weight_lbs === ""
+        ? ""
+        : String(bag.post_weight_lbs),
+    );
+    const pre = authoritativeEvidencePre(bag);
+    setPreLbs(pre == null ? "" : String(pre));
+    setCompletedBy(bag?.completion_employee || bag?.completed_by || "");
+    setCompletionAt(toPickerValue(bag?.completion_at));
+  }, [
+    bag?._detailsLoaded,
+    bag?.post_weight_lbs,
+    bag?.pre_weight_lbs,
+    bag?.completion_employee,
+    bag?.completed_by,
+    bag?.completion_at,
+    phase,
+  ]);
 
   const lockReady = Boolean(bag?._detailsLoaded);
   const lines = initialLines.map((l) => ({
@@ -440,7 +463,7 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
     setSaving(true);
     setError("");
     try {
-      const res = await postVeewashStep1Correction({
+      let res = await postVeewashStep1Correction({
         action: "edit_bag",
         bag_id: bag.bag_id,
         selected_date_et: selectedDateEt,
@@ -453,12 +476,31 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
         outcome_action: "mark_completed",
         draft,
       });
+      if (
+        !res?.data?.ok &&
+        res?.data?.error === "conflict" &&
+        res?.data?.manager_edit_version != null
+      ) {
+        res = await postVeewashStep1Correction({
+          action: "edit_bag",
+          bag_id: bag.bag_id,
+          selected_date_et: selectedDateEt,
+          reason: audit.reasonNote,
+          reason_code: audit.reasonCode,
+          reason_note: audit.reasonNote,
+          expected_updated_at: res.data?.latest?.updated_at || bag.updated_at || null,
+          expected_manager_edit_version: Number(res.data.manager_edit_version),
+          outcome_action: "mark_completed",
+          draft,
+        });
+      }
       if (!res?.data?.ok) {
-        if (res?.data?.error === "conflict") {
-          setError(formatReviewApiError("conflict"));
-          return;
-        }
-        setError(formatReviewApiError(res?.data?.error, res?.data?.message || "Save failed"));
+        setError(
+          formatReviewApiError(
+            res?.data?.error,
+            res?.data?.message || res?.data?.error || "Save failed",
+          ),
+        );
         return;
       }
       onSaved?.(res.data, { kind: "missing", bagId: bag.bag_id });
@@ -478,32 +520,51 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
     if (readOnly || saving || !canExcludeDisappeared) return;
     setSaving(true);
     setError("");
+    const body = {
+      action: "edit_bag",
+      bag_id: bag.bag_id,
+      selected_date_et: selectedDateEt,
+      reason: "Disappeared From Portal — manager exclude",
+      reason_code: "EXCLUDE",
+      reason_note: "Disappeared From Portal — manager exclude",
+      expected_updated_at: bag.updated_at || bag.day_bag_updated_at || null,
+      expected_manager_edit_version:
+        bag.manager_edit_version != null ? Number(bag.manager_edit_version) : null,
+      outcome_action: "exclude",
+      draft: {
+        service_type: String(bag?.service_type || "WF").toUpperCase(),
+        rush_flag: bag?.rush_flag || "NON-RUSH",
+      },
+    };
     try {
-      const res = await postVeewashStep1Correction({
-        action: "edit_bag",
-        bag_id: bag.bag_id,
-        selected_date_et: selectedDateEt,
-        reason: "Disappeared From Portal — manager exclude",
-        reason_code: "EXCLUDE",
-        reason_note: "Disappeared From Portal — manager exclude",
-        expected_updated_at: bag.updated_at || bag.day_bag_updated_at || null,
-        expected_manager_edit_version:
-          bag.manager_edit_version != null ? Number(bag.manager_edit_version) : null,
-        outcome_action: "exclude",
-        draft: {
-          service_type: String(bag?.service_type || "WF").toUpperCase(),
-          rush_flag: bag?.rush_flag || "NON-RUSH",
-        },
-      });
+      let res = await postVeewashStep1Correction(body);
+      // One automatic retry with server-current lock version when still eligible.
+      if (
+        !res?.data?.ok &&
+        res?.data?.error === "conflict" &&
+        res?.data?.manager_edit_version != null
+      ) {
+        res = await postVeewashStep1Correction({
+          ...body,
+          expected_manager_edit_version: Number(res.data.manager_edit_version),
+          expected_updated_at: res.data?.latest?.updated_at || body.expected_updated_at,
+        });
+      }
       if (!res?.data?.ok) {
-        if (res?.data?.error === "conflict") {
-          setError(formatReviewApiError("conflict"));
-          return;
-        }
-        setError(formatReviewApiError(res?.data?.error, res?.data?.message || "Exclude failed"));
+        setError(
+          formatReviewApiError(
+            res?.data?.error,
+            res?.data?.message || res?.data?.error || "Exclude failed",
+          ),
+        );
         return;
       }
-      onSaved?.(res.data, { kind: "missing", bagId: bag.bag_id });
+      // Idempotent already-excluded is success — remove locally like a fresh exclude.
+      onSaved?.(res.data, {
+        kind: "missing_exclude",
+        bagId: bag.bag_id,
+        alreadyExcluded: Boolean(res.data?.already_excluded),
+      });
     } catch (err) {
       setError(
         formatReviewApiError(

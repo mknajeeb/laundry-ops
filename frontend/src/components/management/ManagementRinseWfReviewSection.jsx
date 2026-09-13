@@ -269,6 +269,7 @@ export default function ManagementRinseWfReviewSection({
   snapshotUnavailable = false,
   readOnly = false,
   onRefresh,
+  onReviewResolved = null,
   openCategoryRequest = null,
   onOpenCategoryRequestHandled = null,
 }) {
@@ -300,6 +301,34 @@ export default function ManagementRinseWfReviewSection({
     lastDecisionRequests: null,
   });
   const drawerOpenStarted = useRef(null);
+
+  const applyLocalResolve = useCallback(
+    (meta) => {
+      const id = meta?.bagId;
+      if (id) {
+        setExpandedBagId((prev) => (prev === id ? null : prev));
+        setListState((prev) => ({
+          ...prev,
+          bags: (prev.bags || []).filter((b) => b.bag_id !== id),
+        }));
+      }
+      const kind = String(meta?.kind || "");
+      if (kind.includes("exclude")) {
+        setDecisionMsg(
+          meta?.alreadyExcluded ? "Already excluded — removed from Review." : "Excluded.",
+        );
+      } else if (kind === "return_pending") {
+        setDecisionMsg("Returned to Pending.");
+      } else {
+        setDecisionMsg("Saved.");
+      }
+      // Cheap reconcile — never force a full Rinse WF primary/supplies reload here.
+      if (typeof onReviewResolved === "function") {
+        onReviewResolved({ category: drawer.category, bagId: id, kind });
+      }
+    },
+    [drawer.category, onReviewResolved],
+  );
 
   const loadList = useCallback(
     async (category) => {
@@ -701,12 +730,10 @@ export default function ManagementRinseWfReviewSection({
                       setExpandedBagId((prev) => (prev === bagId ? null : bagId))
                     }
                     onSaved={(_data, meta) => {
-                      const id = meta?.bagId || bag.bag_id;
-                      setListState((prev) => ({
-                        ...prev,
-                        bags: (prev.bags || []).filter((b) => b.bag_id !== id),
-                      }));
-                      onRefresh?.();
+                      applyLocalResolve({
+                        ...(meta || {}),
+                        bagId: meta?.bagId || bag.bag_id,
+                      });
                     }}
                   />
                 ),
@@ -780,7 +807,10 @@ export default function ManagementRinseWfReviewSection({
         readOnly={readOnly}
         onClose={() => setModal({ open: false, bagId: null, seed: null })}
         onSaved={() => {
-          onRefresh?.();
+          applyLocalResolve({
+            bagId: modal.bagId,
+            kind: "modal_save",
+          });
           if (drawer.category && drawer.category !== "split_order_review") {
             loadList(drawer.category);
           }

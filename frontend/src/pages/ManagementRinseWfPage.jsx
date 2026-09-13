@@ -177,6 +177,53 @@ export default function ManagementRinseWfPage() {
     await Promise.allSettled([primaryPromise, secondaryPromise, supplyPromise]);
   }, [loadPrimary, loadSecondary, loadSupplies, rushFilter]);
 
+  /** After Review Exclude/Complete: optimistic counts + secondary reconcile (no supplies). */
+  const reconcileAfterReviewMutation = useCallback(
+    async (meta = {}) => {
+      const cat = meta?.category;
+      // Optimistic local decrement so Missing/Review counts move immediately.
+      if (cat) {
+        setSecondaryData((prev) => {
+          const review = { ...((prev && prev.review) || {}) };
+          if (review[cat] != null) {
+            review[cat] = Math.max(0, Number(review[cat]) - 1);
+          }
+          const by = review.by_rush;
+          if (by && typeof by === "object") {
+            const nextBy = { ...by };
+            for (const scope of ["all", "rush", "non_rush"]) {
+              if (nextBy[scope] && nextBy[scope][cat] != null) {
+                nextBy[scope] = {
+                  ...nextBy[scope],
+                  [cat]: Math.max(0, Number(nextBy[scope][cat]) - 1),
+                };
+              }
+            }
+            review.by_rush = nextBy;
+          }
+          return { ...(prev || {}), review };
+        });
+        setPrimaryData((prev) => {
+          if (!prev?.rinse?.current_workload) return prev;
+          const cw = prev.rinse.current_workload;
+          return {
+            ...prev,
+            rinse: {
+              ...prev.rinse,
+              current_workload: {
+                ...cw,
+                review: Math.max(0, Number(cw.review || 0) - 1),
+              },
+            },
+          };
+        });
+      }
+      // Secondary payload carries authoritative review counts — not full page/supplies.
+      await loadSecondary(dateEt, true);
+    },
+    [dateEt, loadSecondary],
+  );
+
   useEffect(() => {
     load(dateEt, false, rushFilter);
     return () => {
@@ -273,6 +320,9 @@ export default function ManagementRinseWfPage() {
         selectedDateEt={dateEt}
         onSelectedDateChange={setDateEt}
         onRefresh={() => load(dateEt, true, rushFilter)}
+        onReviewResolved={(meta) => {
+          reconcileAfterReviewMutation(meta);
+        }}
         primaryLoading={primaryLoading}
         secondaryLoading={secondaryLoading}
       />    </Box>
