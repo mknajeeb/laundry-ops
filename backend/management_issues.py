@@ -583,15 +583,32 @@ def _load_oi(cursor, organization_id: int, order_instance_id: int) -> dict[str, 
         ensure_rinse_order_instances_table,
     )
 
-    ensure_rinse_order_instances_table(cursor)
-    cursor.execute(
-        f"""
-        SELECT * FROM {ORDER_INSTANCES_TABLE}
-        WHERE organization_id = %s AND order_instance_id = %s
-        LIMIT 1
-        """,
-        (int(organization_id), int(order_instance_id)),
-    )
+    if not _cached_table_exists(cursor, ORDER_INSTANCES_TABLE):
+        ensure_rinse_order_instances_table(cursor)
+        _TABLE_CACHE[ORDER_INSTANCES_TABLE] = True
+    has_reg = _cached_table_exists(cursor, "rinse_bag_registry")
+    if has_reg:
+        cursor.execute(
+            f"""
+            SELECT oi.*, reg.name_clean AS registry_name_clean
+            FROM {ORDER_INSTANCES_TABLE} oi
+            LEFT JOIN rinse_bag_registry reg
+              ON reg.organization_id = oi.organization_id
+             AND reg.bag_id = oi.bag_id
+            WHERE oi.organization_id = %s AND oi.order_instance_id = %s
+            LIMIT 1
+            """,
+            (int(organization_id), int(order_instance_id)),
+        )
+    else:
+        cursor.execute(
+            f"""
+            SELECT * FROM {ORDER_INSTANCES_TABLE}
+            WHERE organization_id = %s AND order_instance_id = %s
+            LIMIT 1
+            """,
+            (int(organization_id), int(order_instance_id)),
+        )
     row = cursor.fetchone()
     return dict(row) if isinstance(row, dict) else None
 
@@ -613,15 +630,20 @@ def _customer_for_bag(cursor, organization_id: int, bag_id: str) -> str | None:
     return None
 
 
-def _weights_for_oi(
+def _weights_and_rush_for_oi(
     cursor, organization_id: int, oi: Mapping[str, Any]
-) -> tuple[float | None, float | None]:
+) -> tuple[float | None, float | None, bool | None]:
     pre = post = None
+    rush = None
     sid = oi.get("source_cycle_id")
-    if sid and table_exists(cursor, "rinse_wf_service_cycles"):
+    if sid and _cached_table_exists(cursor, "rinse_wf_service_cycles"):
+        cols = ["pre_weight_lbs", "post_weight_lbs"]
+        rush_col = _cached_column(cursor, "rinse_wf_service_cycles", "rush_status")
+        if rush_col:
+            cols.append("rush_status")
         cursor.execute(
-            """
-            SELECT pre_weight_lbs, post_weight_lbs
+            f"""
+            SELECT {", ".join(cols)}
             FROM rinse_wf_service_cycles
             WHERE id = %s AND organization_id = %s
             LIMIT 1
@@ -632,25 +654,10 @@ def _weights_for_oi(
         if isinstance(row, dict):
             pre = _money(row.get("pre_weight_lbs"))
             post = _money(row.get("post_weight_lbs"))
-    return pre, post
-
-
-def _rush_for_oi(cursor, organization_id: int, oi: Mapping[str, Any]) -> bool | None:
-    sid = oi.get("source_cycle_id")
-    if sid and table_exists(cursor, "rinse_wf_service_cycles"):
-        if table_has_column(cursor, "rinse_wf_service_cycles", "rush_status"):
-            cursor.execute(
-                """
-                SELECT rush_status FROM rinse_wf_service_cycles
-                WHERE id = %s AND organization_id = %s LIMIT 1
-                """,
-                (int(sid), int(organization_id)),
-            )
-            row = cursor.fetchone()
-            if isinstance(row, dict):
+            if rush_col:
                 b = _bool01(row.get("rush_status"))
-                return bool(b) if b is not None else None
-    return None
+                rush = bool(b) if b is not None else None
+    return pre, post, rush
 
 
 def _folder_candidate(
@@ -660,33 +667,24 @@ def _folder_candidate(
     from backend.management_wf_folder_fold_attribution import (
         extract_oi_window_folder_fold_evidence,
     )
-    from backend.rinse_wf_current_workload import _load_bag_timeline, _next_oi_cycle_anchor
+    from backend.rinse_wf_current_workload import _next_oi_cycle_anchor
 
     bag_id = normalize_bag_id(oi.get("bag_id"))
     anchor = oi.get("cycle_anchor_at")
     if not bag_id or not isinstance(anchor, datetime):
         return None
 
-    end = _next_oi_cycle_anchor(cursor, organization_id, bag_id, anchor)
-    timeline = _load_bag_timeline(cursor, organization_id, bag_id)
-    evidence = extract_oi_window_folder_fold_evidence(
-        timeline,
-        cycle_anchor_at=anchor,
-        lifecycle_end_exclusive=end,
-    )
     name = None
     source = "auto_oi_fold"
     confidence = "medium"
-    if evidence:
-        name = (evidence.get("fold_employee") or "").strip() or None
-        if name:
-            confidence = "high"
-            source = "oi_window_fold_evidence"
+    evidence = None
 
-    if production_date and table_exists(cursor, "rinse_wf_folder_attribution_overrides"):
+    if production_date and _cached_table_exists(
+        cursor, "rinse_wf_folder_attribution_overrides"
+    ):
         cursor.execute(
             """
-            SELECT effective_employee_name, original_employee_name
+            SELECT effective_employee_name
             FROM rinse_wf_folder_attribution_overrides
             WHERE organization_id = %s AND bag_id = %s AND selected_date_et = %s
               AND override_status = 'active'
@@ -700,7 +698,46 @@ def _folder_candidate(
             source = "folder_manager_override"
             confidence = "high"
 
-    if not name and not evidence:
+    if not name and _cached_table_exists(cursor, "rinse_bag_scan_events"):
+        end = _next_oi_cycle_anchor(
+            cursor, organization_id, bag_id, anchor, ensure_schema=False
+        )
+        params: list[Any] = [int(organization_id), bag_id, anchor]
+        end_sql = ""
+        if end is not None:
+            end_sql = " AND scanned_at_parsed < %s"
+            params.append(end)
+        cursor.execute(
+            f"""
+            SELECT purpose, scanned_at_parsed, user_name
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s AND bag_id = %s
+              AND scanned_at_parsed IS NOT NULL
+              AND scanned_at_parsed >= %s
+              {end_sql}
+              AND (
+                purpose LIKE %s OR purpose LIKE %s OR purpose LIKE %s
+              )
+            ORDER BY scanned_at_parsed ASC, id ASC
+            """,
+            tuple(
+                params
+                + ["%garments-reviewed%", "%weight-entry%", "%processed-by-vendor%"]
+            ),
+        )
+        timeline = [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+        evidence = extract_oi_window_folder_fold_evidence(
+            timeline,
+            cycle_anchor_at=anchor,
+            lifecycle_end_exclusive=end,
+        )
+        if evidence:
+            name = (evidence.get("fold_employee") or "").strip() or None
+            if name:
+                confidence = "high"
+                source = "oi_window_fold_evidence"
+
+    if not name:
         return None
     return {
         "role_key": ROLE_FOLDER,
@@ -708,15 +745,15 @@ def _folder_candidate(
         "employee_user_id": None,
         "employee_name": name,
         "attribution_source": source,
-        "confidence": confidence if name else "low",
-        "is_primary_candidate": bool(name),
+        "confidence": confidence,
+        "is_primary_candidate": True,
     }
 
 
 def _hd_candidates(
     cursor, organization_id: int, bag_id: str, production_date: date | None
 ) -> list[dict[str, Any]]:
-    if not table_exists(cursor, "hd_day_bag_production"):
+    if not _cached_table_exists(cursor, "hd_day_bag_production"):
         return []
     params: list[Any] = [int(organization_id), bag_id]
     sql = """
@@ -782,6 +819,7 @@ def build_order_context(
     if not bid or oi_id <= 0:
         return {"error": "bag_id_and_order_instance_required", "status": 400}
 
+    base_q = int(getattr(cursor, "query_count", 0) or 0)
     oi = _load_oi(cursor, organization_id, oi_id)
     if not oi:
         return {"error": "order_instance_not_found", "status": 404}
@@ -792,9 +830,10 @@ def build_order_context(
     completed = oi.get("completed_at")
     completed_et = _et_from_system(completed) if isinstance(completed, datetime) else None
     production_date = completed_et.date() if completed_et else None
-    customer = _customer_for_bag(cursor, organization_id, bid)
-    pre, post = _weights_for_oi(cursor, organization_id, oi)
-    rush = _rush_for_oi(cursor, organization_id, oi)
+    customer = (oi.get("registry_name_clean") or "").strip() or None
+    if not customer:
+        customer = _customer_for_bag(cursor, organization_id, bid)
+    pre, post, rush = _weights_and_rush_for_oi(cursor, organization_id, oi)
     service = str(oi.get("service_type") or "WF").upper()
 
     candidates: list[dict[str, Any]] = []
@@ -824,6 +863,7 @@ def build_order_context(
         None,
     )
 
+    lookup_q = max(0, int(getattr(cursor, "query_count", 0) or 0) - base_q)
     return {
         "organization_id": int(organization_id),
         "bag_id": bid,
@@ -840,8 +880,10 @@ def build_order_context(
         "folder_employee_name": folder_name,
         "attribution_candidates": candidates,
         "matched_state": MATCHED,
-        "query_count": getattr(cursor, "query_count", None),
+        "query_count": lookup_q,
+        "lookup_query_count": lookup_q,
     }
+
 
 
 # ---------------------------------------------------------------------------
