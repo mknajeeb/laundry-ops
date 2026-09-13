@@ -2822,6 +2822,66 @@ export const getManagementRevenueSchedulePreview = (accountId, params = {}) =>
 export const saveManagementRevenueAccountSchedule = (accountId, body) =>
   axios.post(`${API_BASE}/api/management/revenue/accounts/${accountId}/schedule`, body);
 
+/* —— Management Issues —— */
+export const getManagementIssuesTaxonomy = () =>
+  axios.get(`${API_BASE}/api/management/issues/taxonomy`, { timeout: 15000 });
+
+export const searchManagementIssuesBags = (q) =>
+  axios.get(`${API_BASE}/api/management/issues/bag-search`, {
+    params: { q },
+    timeout: 10000,
+  });
+
+export const getManagementIssuesOrderContext = (bagId, orderInstanceId) =>
+  axios.get(`${API_BASE}/api/management/issues/order-context`, {
+    params: { bag_id: bagId, order_instance_id: orderInstanceId },
+    timeout: 15000,
+  });
+
+export const getManagementIssues = (params = {}) =>
+  axios.get(`${API_BASE}/api/management/issues`, { params, timeout: 20000 });
+
+export const createManagementIssue = (body) =>
+  axios.post(`${API_BASE}/api/management/issues`, body, { timeout: 20000 });
+
+export const getManagementIssue = (issueId, params = {}) =>
+  axios.get(`${API_BASE}/api/management/issues/${issueId}`, {
+    params,
+    timeout: 15000,
+  });
+
+export const patchManagementIssue = (issueId, body) =>
+  axios.patch(`${API_BASE}/api/management/issues/${issueId}`, body, {
+    timeout: 20000,
+  });
+
+export const linkManagementIssueBag = (issueId, body) =>
+  axios.post(`${API_BASE}/api/management/issues/${issueId}/link-bag`, body, {
+    timeout: 20000,
+  });
+
+export const putManagementIssueAttributions = (issueId, body) =>
+  axios.put(`${API_BASE}/api/management/issues/${issueId}/attributions`, body, {
+    timeout: 20000,
+  });
+
+export const getManagementIssuesDashboardByIssue = (params = {}) =>
+  axios.get(`${API_BASE}/api/management/issues/dashboard/by-issue`, {
+    params,
+    timeout: 20000,
+  });
+
+export const getManagementIssuesDashboardByEmployee = (params = {}) =>
+  axios.get(`${API_BASE}/api/management/issues/dashboard/by-employee`, {
+    params,
+    timeout: 20000,
+  });
+
+export const getManagementIssuesEmployeeDrill = (params = {}) =>
+  axios.get(`${API_BASE}/api/management/issues/dashboard/employee`, {
+    params,
+    timeout: 20000,
+  });
 
 export const getDailyOperationsMeta = () =>
   axios.get(`${API_BASE}/api/daily-operations/meta`);

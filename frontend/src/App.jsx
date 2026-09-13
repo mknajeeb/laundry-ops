@@ -86,6 +86,10 @@ import ManagementRinseHdPage from "./pages/ManagementRinseHdPage";
 import ManagementPerformancePage from "./pages/ManagementPerformancePage";
 import ManagementRevenuePage from "./pages/ManagementRevenuePage";
 import ManagementRevenueAccountsPage from "./pages/ManagementRevenueAccountsPage";
+import ManagementIssuesPage from "./pages/ManagementIssuesPage";
+import ManagementIssuesNewPage from "./pages/ManagementIssuesNewPage";
+import ManagementIssuesDetailPage from "./pages/ManagementIssuesDetailPage";
+import ManagementIssuesDashboardPage from "./pages/ManagementIssuesDashboardPage";
 import OrganizationsPlatformPage from "./pages/OrganizationsPlatformPage";
 import PlatformAdminPage from "./pages/PlatformAdminPage";
 import UserProfilePage from "./pages/UserProfilePage";
@@ -1323,6 +1327,46 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
                     <ManagementRevenueAccountsPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/management/issues"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
+                    <ManagementIssuesPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/management/issues/new"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
+                    <ManagementIssuesNewPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/management/issues/dashboard"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
+                    <ManagementIssuesDashboardPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/management/issues/:issueId"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "MANAGER"]}>
+                    <ManagementIssuesDetailPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

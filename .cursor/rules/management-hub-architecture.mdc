@@ -9,7 +9,7 @@ alwaysApply: true
 
 `/management` is the **only** user-facing operational system.
 
-Compartments: Rinse WF · Rinse HD · Performance · Labor · Revenue · Rinse Flow · Analysis · Bag Search.
+Compartments: Rinse WF · Rinse HD · Performance · Labor · Revenue · Issues · Rinse Flow · Analysis · Bag Search.
 
 Do **not** maintain Management + a legacy ops page as two simultaneously active systems once Management has absorbed that page’s useful functionality.
 
