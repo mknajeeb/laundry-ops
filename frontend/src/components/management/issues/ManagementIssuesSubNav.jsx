@@ -1,6 +1,6 @@
 import { Box, Button, Stack, Typography } from "@mui/material";
 import { Link as RouterLink, useLocation } from "react-router-dom";
-import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+import { VEEWASH_DASHBOARD } from "../../../theme/veewashDashboard";
 
 const LINKS = [
   { to: "/management/issues", label: "Issues", exact: true },

@@ -10,10 +10,10 @@ import {
   Typography,
 } from "@mui/material";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
-import { getManagementIssues } from "../../api";
-import ManagementHubNav from "../../components/management/ManagementHubNav";
-import { IssuesPageShell } from "../../components/management/issues/ManagementIssuesSubNav";
-import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+import { getManagementIssues } from "../api";
+import ManagementHubNav from "../components/management/ManagementHubNav";
+import { IssuesPageShell } from "../components/management/issues/ManagementIssuesSubNav";
+import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 
 const STATUS_COLORS = {
   open: VEEWASH_DASHBOARD.pending,
