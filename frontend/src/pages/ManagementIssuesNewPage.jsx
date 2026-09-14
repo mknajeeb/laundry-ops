@@ -301,7 +301,7 @@ export default function ManagementIssuesNewPage() {
                   }}
                 >
                   <Typography sx={{ fontWeight: 900, fontSize: 16 }}>
-                    {r.bag_id}
+                    {r.order_display_id || r.bag_id}
                   </Typography>
                   <Typography sx={{ fontSize: 14 }}>
                     {r.customer_name || "—"}
@@ -371,7 +371,7 @@ export default function ManagementIssuesNewPage() {
               }}
             >
               <Typography sx={{ fontWeight: 900, fontSize: 18 }}>
-                {context.bag_id}
+                {context.order_display_id || context.bag_id}
               </Typography>
               <Typography>{context.customer_name || "—"}</Typography>
               <Typography sx={{ fontSize: 13, color: "#64748b" }}>

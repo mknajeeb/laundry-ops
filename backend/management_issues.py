@@ -423,7 +423,17 @@ def search_issue_bags(
             "lookup_query_count": 0,
         }
 
-    bid_norm = normalize_bag_id(query)
+    from backend.order_display_id import (
+        attach_order_display_id,
+        format_order_display_id,
+        parse_order_display_id,
+    )
+
+    display_parsed = parse_order_display_id(query)
+    # Bare-bag search uses the bag token; display-id search extracts bag (+ oi/edd).
+    bid_norm = normalize_bag_id(
+        display_parsed["bag_id"] if display_parsed else query
+    )
     lim = max(1, min(int(limit), 10))
     results: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
@@ -445,19 +455,38 @@ def search_issue_bags(
             prod = completed_et.date() if completed_et else None
             rush_raw = r.get("rush_status") or r.get("rush_flag")
             rush = _bool01(rush_raw)
-            results.append(
-                {
-                    "bag_id": bag,
-                    "order_instance_id": oi,
-                    "customer_name": (r.get("customer_name") or r.get("name_clean") or "").strip()
-                    or None,
-                    "service_type": str(r.get("service_type") or "WF").upper(),
-                    "rush": bool(rush) if rush is not None else False,
-                    "production_date_et": prod.isoformat() if prod else None,
-                    "completed_at_et": completed_et.isoformat(sep=" ") if completed_et else None,
-                    "cycle_anchor_at": str(r.get("cycle_anchor_at") or "") or None,
-                }
-            )
+            edd = r.get("estimated_delivery_date")
+            row = {
+                "bag_id": bag,
+                "order_instance_id": oi,
+                "customer_name": (r.get("customer_name") or r.get("name_clean") or "").strip()
+                or None,
+                "service_type": str(r.get("service_type") or "WF").upper(),
+                "rush": bool(rush) if rush is not None else False,
+                "production_date_et": prod.isoformat() if prod else None,
+                "completed_at_et": completed_et.isoformat(sep=" ") if completed_et else None,
+                "cycle_anchor_at": str(r.get("cycle_anchor_at") or "") or None,
+                "estimated_delivery_date": edd.isoformat()
+                if isinstance(edd, date)
+                else (str(edd)[:10] if edd else None),
+            }
+            attach_order_display_id(row)
+            # Display-id EDD search: keep only matching EDD when unambiguous filter applies.
+            if (
+                display_parsed
+                and display_parsed.get("form") == "edd"
+                and display_parsed.get("estimated_delivery_date") is not None
+            ):
+                row_edd = row.get("estimated_delivery_date")
+                want = display_parsed["estimated_delivery_date"].isoformat()
+                if row_edd and row_edd != want:
+                    continue
+                if not row_edd:
+                    # No EDD on row — keep and rely on oi secondary detail; do not drop.
+                    row["order_display_id"] = format_order_display_id(
+                        bag, oi, estimated_delivery_date=None
+                    )
+            results.append(row)
             if len(results) >= lim:
                 return
 
@@ -481,30 +510,54 @@ def search_issue_bags(
         name_select = "reg.name_clean AS name_clean"
 
     rush_select = "NULL AS rush_status"
+    edd_select = "NULL AS estimated_delivery_date"
     cycle_join = ""
-    if _cached_table_exists(cursor, "rinse_wf_service_cycles") and _cached_column(
-        cursor, "rinse_wf_service_cycles", "rush_status"
-    ):
+    if _cached_table_exists(cursor, "rinse_wf_service_cycles"):
         cycle_join = """
             LEFT JOIN rinse_wf_service_cycles cyc
               ON cyc.id = oi.source_cycle_id
         """
-        rush_select = "cyc.rush_status AS rush_status"
+        if _cached_column(cursor, "rinse_wf_service_cycles", "rush_status"):
+            rush_select = "cyc.rush_status AS rush_status"
+        if _cached_column(cursor, "rinse_wf_service_cycles", "estimated_delivery_date"):
+            edd_select = "cyc.estimated_delivery_date AS estimated_delivery_date"
 
     # Mark lookup budget start after schema/introspection warm-up.
     lookup_base = int(getattr(cursor, "query_count", 0) or 0)
 
     base_select = f"""
         SELECT oi.order_instance_id, oi.bag_id, oi.service_type, oi.completed_at,
-               oi.cycle_anchor_at, {name_select}, {rush_select}
+               oi.cycle_anchor_at, {name_select}, {rush_select}, {edd_select}
         FROM {ORDER_INSTANCES_TABLE} oi
         {name_join}
         {cycle_join}
         WHERE oi.organization_id = %s
     """
 
+    # Display-id with explicit OI: resolve that OI (still verify bag when present).
+    if (
+        display_parsed
+        and display_parsed.get("form") == "oi_fallback"
+        and display_parsed.get("order_instance_id")
+    ):
+        cursor.execute(
+            base_select
+            + """
+              AND oi.order_instance_id = %s
+              AND (%s IS NULL OR oi.bag_id = %s)
+            LIMIT %s
+            """,
+            (
+                org,
+                int(display_parsed["order_instance_id"]),
+                bid_norm,
+                bid_norm,
+                lim,
+            ),
+        )
+        _push(cursor.fetchall() or [])
     # Single pass: exact OR prefix OR numeric OI — prefer exact first in ORDER BY
-    if bid_norm and re.fullmatch(r"\d{1,18}", query):
+    elif bid_norm and re.fullmatch(r"\d{1,18}", query):
         # numeric could be OI id or bag-like; keep both paths in one query when possible
         cursor.execute(
             base_select
@@ -549,7 +602,7 @@ def search_issue_bags(
         cursor.execute(
             f"""
             SELECT oi.order_instance_id, oi.bag_id, oi.service_type, oi.completed_at,
-                   oi.cycle_anchor_at, reg.name_clean AS name_clean, {rush_select}
+                   oi.cycle_anchor_at, reg.name_clean AS name_clean, {rush_select}, {edd_select}
             FROM rinse_bag_registry reg
             INNER JOIN {ORDER_INSTANCES_TABLE} oi
               ON oi.organization_id = reg.organization_id
@@ -864,7 +917,7 @@ def build_order_context(
     )
 
     lookup_q = max(0, int(getattr(cursor, "query_count", 0) or 0) - base_q)
-    return {
+    out = {
         "organization_id": int(organization_id),
         "bag_id": bid,
         "order_instance_id": oi_id,
@@ -883,6 +936,9 @@ def build_order_context(
         "query_count": lookup_q,
         "lookup_query_count": lookup_q,
     }
+    from backend.order_display_id import attach_order_display_id
+
+    return attach_order_display_id(out)
 
 
 
@@ -899,7 +955,7 @@ def _serialize_issue(row: Mapping[str, Any]) -> dict[str, Any]:
             return v.isoformat(sep=" ")
         return str(v) if v is not None else None
 
-    return {
+    out = {
         "id": int(row["id"]),
         "organization_id": int(row["organization_id"]),
         "matched_state": row.get("matched_state"),
@@ -940,6 +996,9 @@ def _serialize_issue(row: Mapping[str, Any]) -> dict[str, Any]:
         "created_at": _d(row.get("created_at")),
         "updated_at": _d(row.get("updated_at")),
     }
+    from backend.order_display_id import attach_order_display_id
+
+    return attach_order_display_id(out)
 
 
 def _serialize_attr(row: Mapping[str, Any]) -> dict[str, Any]:

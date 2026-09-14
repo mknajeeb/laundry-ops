@@ -23,6 +23,7 @@ import {
 } from "../../api";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import ManagementCopyableId from "./ManagementCopyableId";
+import { orderDisplayIdFromRow } from "../../utils/orderDisplayId";
 import ManagementRinseWfReviewDrawerRow from "./ManagementRinseWfReviewDrawerRow";
 import ManagementRinseWfReviewModal from "./ManagementRinseWfReviewModal";
 import { fmtLbs } from "./reviewDrawerModel";
@@ -112,7 +113,11 @@ function SplitOrderReviewRow({
         {displayCustomerName(bag.customer_name) || "—"}
       </Typography>
       <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.15 }} flexWrap="wrap">
-        <ManagementCopyableId value={bag.bag_id} fontSize={13} fontWeight={700} />
+        <ManagementCopyableId
+          value={orderDisplayIdFromRow(bag) || bag.bag_id}
+          fontSize={13}
+          fontWeight={700}
+        />
         <Typography sx={{ fontSize: 12, color: "#64748b" }}>
           · {rushLabel(bag.rush_flag)}
         </Typography>

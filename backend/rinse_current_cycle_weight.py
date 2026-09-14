@@ -32,15 +32,20 @@ authoritative for that role **when** ``weight_source`` is an authoritative
 Rinse capture (``rinse_preclean_info`` / ``rinse_postclean_info`` /
 ``rinse_workitem_wf_lbs``) or a manager correction.
 
-Portal / presence ``weight_num`` (cleaner-ticket list) is a **mutable
-operational field** for generic fallback. **``wf_lbs_num``** on presence rows
-(the portal # WF LBS field) is authoritative for Management PRE when present —
-it wins over ``rinse_preclean_info`` on a weight-entry event when they differ.
+Portal / presence ``weight_num`` / ``wf_lbs_num`` are **mutable operational
+fields**. They must never cross an ``order_instance_id`` / lifecycle boundary.
+
+PRE precedence (locked):
+  1. OI-valid manager correction
+  2. genuine current-lifecycle ``rinse_preclean_info``
+  3. explicitly allowed + current-lifecycle-valid portal fallback
+  4. otherwise NULL
 
 By default portal observations are **not** used to fill PRE/POST. Set
 ``allow_portal_weight_fallback=True`` (or env ``RINSE_ALLOW_PORTAL_WEIGHT_FALLBACK=1``)
-only for documented emergency recovery — and sources remain labeled
-``portal_weight_num``, never as scale PRE.
+only for documented emergency recovery — and only with
+``observed_at >= current lifecycle anchor`` (and ``< next OI/cycle boundary``
+when known). Same ``bag_id`` alone is never sufficient.
 
 Finalization (deterministic, no silent freeze)
 ----------------------------------------------
@@ -289,8 +294,17 @@ def _obs_lbs(obs: Mapping[str, Any]) -> float | None:
 
 def _latest_portal_wf_lbs_observation(
     observations: Sequence[Mapping[str, Any]],
+    *,
+    lifecycle_start: datetime | None = None,
+    lifecycle_end: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """Latest portal # WF LBS (``wf_lbs_num`` only) — PRE fallback when no preclean event."""
+    """Latest portal # WF LBS (``wf_lbs_num`` only) inside the current OI lifecycle.
+
+    A portal ``wf_lbs_num`` may never cross an OI / lifecycle boundary. When
+    ``lifecycle_start`` is missing, refuse fallback (same bag_id is insufficient).
+    """
+    if lifecycle_start is None:
+        return None
     best: tuple[datetime, float, Any, int | None] | None = None
     for obs in observations or []:
         if not isinstance(obs, Mapping):
@@ -300,6 +314,10 @@ def _latest_portal_wf_lbs_observation(
             continue
         ts = _obs_ts(obs)
         if ts is None:
+            continue
+        if ts < lifecycle_start:
+            continue
+        if lifecycle_end is not None and ts >= lifecycle_end:
             continue
         row_id = obs.get("presence_run_row_id")
         if best is None or ts > best[0] or (
@@ -313,7 +331,7 @@ def _latest_portal_wf_lbs_observation(
         "observation_at": best[0],
         "observation_run": best[2],
         "status": STATUS_CONFIRMED,
-        "reason": "latest_portal_wf_lbs_num",
+        "reason": "latest_portal_wf_lbs_num_current_lifecycle",
         "source": "portal_wf_lbs_num",
         "attach_reason": "portal_wf_lbs_pre_fallback",
     }
@@ -445,10 +463,10 @@ def select_current_cycle_weight_events(
     pre_event = None
     post_event = None
     cycle_weight_events: list[Mapping[str, Any]] = []
+    next_send: datetime | None = None
 
     if anchor is not None:
         # Bound to this cycle: after anchor, before next cycle-boundary STV.
-        next_send = None
         rack_keys = {
             str(r).strip().lower()
             for r in (entry_racks if entry_racks is not None else DEFAULT_FACILITY_ENTRY_RACKS)
@@ -574,6 +592,7 @@ def select_current_cycle_weight_events(
         "cycle_anchor": anchor,
         "entry_at": entry_at,
         "garments_reviewed_at": review_at,
+        "next_cycle_boundary": next_send,
         "pre_event": pre_event,
         "post_event": post_event,
         "cycle_weight_events": cycle_weight_events,
@@ -971,10 +990,13 @@ def resolve_current_cycle_weights(
     Canonical current-cycle PRE/POST resolver for all surfaces.
 
     PRE pounds precedence (single authority rule):
-      1. audited manager ``corrected_pre_weight_lbs`` / manager weight_source
-      2. authoritative current-cycle PRE weight-entry (``rinse_preclean_info``)
-      3. latest portal ``wf_lbs_num`` only when no genuine preclean event exists
-      4. other deterministic fallback when portal wf_lbs is unavailable
+      1. OI-valid manager correction
+      2. genuine current-lifecycle ``rinse_preclean_info``
+      3. explicitly allowed + current-lifecycle-valid portal ``wf_lbs_num``
+      4. otherwise NULL
+
+    Portal ``wf_lbs_num`` never crosses an OI / lifecycle boundary. When
+    ``allow_portal_weight_fallback=False``, no portal PRE via any path.
 
     POST remains separate; POST processing scans must not overwrite PRE.
     """
@@ -992,6 +1014,8 @@ def resolve_current_cycle_weights(
     post_ts = _event_ts(post_event) if post_event else None
     obs = list(observations or [])
     portal_ok = _portal_fallback_enabled(allow_portal_weight_fallback)
+    lifecycle_start = selected.get("cycle_anchor")
+    lifecycle_end = selected.get("next_cycle_boundary")
 
     notes: list[str] = []
     # Interval ends: PRE ends at POST event (or +inf); POST open-ended within cycle.
@@ -1095,14 +1119,23 @@ def resolve_current_cycle_weights(
     corrected_post = None
     reason_parts = [pre_resolved.get("reason"), post_resolved.get("reason")]
 
-    portal_wf_pre = _latest_portal_wf_lbs_observation(obs)
+    # Secondary portal wf_lbs PRE override — only when explicitly allowed AND
+    # observation is inside the current OI lifecycle. Never bypass portal_ok.
+    portal_wf_pre = None
+    if portal_ok:
+        portal_wf_pre = _latest_portal_wf_lbs_observation(
+            obs,
+            lifecycle_start=lifecycle_start,
+            lifecycle_end=lifecycle_end,
+        )
     has_genuine_preclean_pre = (
         pre_event is not None
         and str(pre_event.get("weight_source") or "").strip() == "rinse_preclean_info"
         and _is_authoritative_pre_bearing(pre_event)
     )
     if (
-        manual_pre_lbs is None
+        portal_ok
+        and manual_pre_lbs is None
         and portal_wf_pre is not None
         and portal_wf_pre.get("lbs") is not None
         and pre_source not in _MANAGER_WEIGHT_SOURCES
@@ -1121,6 +1154,8 @@ def resolve_current_cycle_weights(
         notes.append("portal_wf_lbs_pre_fallback_no_preclean_event")
     elif has_genuine_preclean_pre:
         notes.append("preclean_event_authoritative_over_portal_wf_lbs")
+    elif not portal_ok:
+        notes.append("portal_wf_lbs_pre_override_disabled")
 
     if manual_pre_lbs is not None:
         corrected_pre = float(manual_pre_lbs)

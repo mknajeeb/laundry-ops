@@ -149,7 +149,10 @@ export default function ManagementIssuesPage() {
                   <Box sx={{ minWidth: 0 }}>
                     <Typography sx={{ fontWeight: 800, fontSize: 15 }}>
                       #{iss.id}{" "}
-                      {iss.bag_id || iss.manual_identifier || "Unmatched"}
+                      {iss.order_display_id ||
+                        iss.bag_id ||
+                        iss.manual_identifier ||
+                        "Unmatched"}
                     </Typography>
                     <Typography
                       sx={{ fontSize: 13, color: "#64748b" }}

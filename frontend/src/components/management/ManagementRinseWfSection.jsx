@@ -21,6 +21,7 @@ import TodayTapCardSkeleton from "./TodayTapCardSkeleton";
 import ManagementRinseWfReviewSection from "./ManagementRinseWfReviewSection";
 import ManagementPendingBagDrawer from "./ManagementPendingBagDrawer";
 import ManagementCopyableId from "./ManagementCopyableId";
+import { orderDisplayIdFromRow } from "../../utils/orderDisplayId";
 import {
   getManagementTodaySuppliesDetail,
 } from "../../api";
@@ -1162,7 +1163,7 @@ export default function ManagementRinseWfSection({
                     >
                       <Box>
                         <Typography sx={{ fontSize: 13, fontWeight: 800 }}>
-                          {row.bag_id}
+                          {orderDisplayIdFromRow(row) || row.bag_id}
                           {row.customer_name ? (
                             <Typography component="span" sx={{ ml: 0.75, fontSize: 12, fontWeight: 600, color: "#64748b" }}>
                               {row.customer_name}

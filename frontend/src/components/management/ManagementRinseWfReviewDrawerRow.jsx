@@ -28,6 +28,7 @@ import FoldingUserSelect from "../folding/FoldingUserSelect";
 import { CompactEtDateTimeField } from "../PayrollDateTimeField";
 import { authoritativeEvidencePre, parseWeightInput } from "../shift/editBagHelpers";
 import ManagementCopyableId from "./ManagementCopyableId";
+import { orderDisplayIdFromRow } from "../../utils/orderDisplayId";
 import { displayCustomerName } from "../../utils/displayCustomerName";
 import {
   bagBulkReviewUnresolved,
@@ -1230,7 +1231,11 @@ export default function ManagementRinseWfReviewDrawerRow({
         {displayCustomerName(merged.customer_name) || "Customer unavailable"}
       </Typography>
       <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.15 }} flexWrap="wrap">
-        <ManagementCopyableId value={merged.bag_id} fontSize={13} fontWeight={700} />
+        <ManagementCopyableId
+          value={orderDisplayIdFromRow(merged) || merged.bag_id}
+          fontSize={13}
+          fontWeight={700}
+        />
         <Typography sx={{ fontSize: 12, color: "#64748b" }}>· {rushLabel(merged.rush_flag)}</Typography>
       </Stack>
       {!expanded ? (

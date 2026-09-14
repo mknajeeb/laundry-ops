@@ -153,7 +153,7 @@ export default function ManagementIssuesDetailPage() {
         >
           <Typography sx={{ fontWeight: 800, mb: 0.5 }}>Order</Typography>
           <Typography sx={{ fontWeight: 900, fontSize: 18 }}>
-            {iss.bag_id || iss.manual_identifier || "—"}
+            {iss.order_display_id || iss.bag_id || iss.manual_identifier || "—"}
           </Typography>
           <Typography>{iss.customer_name_snapshot || "—"}</Typography>
           <Typography sx={{ fontSize: 13, color: "#64748b" }}>
@@ -397,7 +397,7 @@ export default function ManagementIssuesDetailPage() {
                     minHeight: 48,
                   }}
                 >
-                  {r.bag_id} · OI {r.order_instance_id} ·{" "}
+                  {r.order_display_id || r.bag_id} · OI {r.order_instance_id} ·{" "}
                   {r.customer_name || ""}
                 </Button>
               ))}

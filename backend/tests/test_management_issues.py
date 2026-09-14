@@ -390,3 +390,80 @@ def test_counting_cursor_budget_search():
     ):
         out = search_issue_bags(counting, 3, "ZZZZNOPE", limit=10)
     assert (out.get("lookup_query_count") or out["query_count"]) <= 5
+
+
+def test_search_bare_bag_returns_multiple_ois_with_display_id():
+    rows = [
+        {
+            "order_instance_id": 5493,
+            "bag_id": "8MNDJDAV8D",
+            "service_type": "WF",
+            "completed_at": None,
+            "cycle_anchor_at": datetime(2026, 9, 13, 22, 40, 0),
+            "name_clean": "A",
+            "rush_status": None,
+            "estimated_delivery_date": date(2026, 9, 14),
+        },
+        {
+            "order_instance_id": 5114,
+            "bag_id": "8MNDJDAV8D",
+            "service_type": "WF",
+            "completed_at": datetime(2026, 9, 11, 18, 0, 0),
+            "cycle_anchor_at": datetime(2026, 9, 11, 7, 0, 0),
+            "name_clean": "A",
+            "rush_status": None,
+            "estimated_delivery_date": date(2026, 9, 12),
+        },
+    ]
+    cur = FakeCursor(script=[rows])
+    with patch("backend.management_issues._cached_table_exists", return_value=True), patch(
+        "backend.management_issues._cached_column", return_value=True
+    ), patch(
+        "backend.rinse_order_instances.ensure_rinse_order_instances_table"
+    ):
+        out = search_issue_bags(cur, 3, "8MNDJDAV8D", limit=10)
+    assert {r["order_instance_id"] for r in out["results"]} == {5493, 5114}
+    assert out["results"][0]["order_display_id"] == "8MNDJDAV8D-OI-09142026"
+
+
+def test_search_display_id_resolves_oi_fallback():
+    rows = [
+        {
+            "order_instance_id": 5493,
+            "bag_id": "8MNDJDAV8D",
+            "service_type": "WF",
+            "completed_at": None,
+            "cycle_anchor_at": datetime(2026, 9, 13, 22, 40, 0),
+            "name_clean": "A",
+            "rush_status": None,
+            "estimated_delivery_date": None,
+        }
+    ]
+    cur = FakeCursor(script=[rows])
+    with patch("backend.management_issues._cached_table_exists", return_value=True), patch(
+        "backend.management_issues._cached_column", return_value=True
+    ), patch(
+        "backend.rinse_order_instances.ensure_rinse_order_instances_table"
+    ):
+        out = search_issue_bags(cur, 3, "8MNDJDAV8D-OI-5493", limit=10)
+    assert len(out["results"]) == 1
+    assert out["results"][0]["order_instance_id"] == 5493
+    assert out["results"][0]["order_display_id"] == "8MNDJDAV8D-OI-5493"
+
+
+def test_create_issue_stores_order_instance_id_not_display_string():
+    from backend.order_display_id import format_order_display_id, parse_order_display_id
+
+    disp = format_order_display_id(
+        "8MNDJDAV8D", 5493, estimated_delivery_date="2026-09-14"
+    )
+    parsed = parse_order_display_id(disp)
+    assert parsed["bag_id"] == "8MNDJDAV8D"
+    assert parsed["form"] == "edd"
+    payload = {
+        "bag_id": "8MNDJDAV8D",
+        "order_instance_id": 5493,
+        "order_display_id": disp,
+    }
+    assert isinstance(payload["order_instance_id"], int)
+    assert payload["order_display_id"] != str(payload["order_instance_id"])

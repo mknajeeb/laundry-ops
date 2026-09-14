@@ -212,6 +212,10 @@ def test_canonical_wf_day_projection_overlays_resolver_not_stale_cycle_pre():
         "pending": ["BAG1"],
         "completed": [],
         "review": [],
+        "historical_completed_in_workload": [],
+        "missing_from_portal": [],
+        "carryover": [],
+        "counts": {"current_open": 1, "workload": 1},
         "bag_meta": {
             "BAG1": {
                 "bag_id": "BAG1",
@@ -368,11 +372,28 @@ def test_portal_wf_lbs_pre_fallback_when_preclean_missing():
     ]
     obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)]
     resolved = resolve_current_cycle_weights(
-        events, selected_date_et=DAY, observations=obs
+        events,
+        selected_date_et=DAY,
+        observations=obs,
+        allow_portal_weight_fallback=True,
     )
     assert resolved.pre_weight_lbs == 15.7
     assert resolved.pre_weight_source == "portal_wf_lbs_num"
     assert resolved.post_weight_lbs is None
+
+
+def test_portal_wf_lbs_blocked_when_fallback_disabled():
+    events = [
+        _ev("sent-to-vendor", datetime(2026, 8, 24, 0, 52), eid=1, rack="VeeWash Dirty"),
+    ]
+    obs = [_obs_wf(datetime(2026, 8, 24, 18, 45), 15.7, run=9)]
+    resolved = resolve_current_cycle_weights(
+        events,
+        selected_date_et=DAY,
+        observations=obs,
+        allow_portal_weight_fallback=False,
+    )
+    assert resolved.pre_weight_lbs is None
 
 
 def test_post_missing_when_no_explicit_post_event():

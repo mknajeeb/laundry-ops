@@ -22,6 +22,7 @@ import {
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import { displayCustomerName } from "../../utils/displayCustomerName";
 import ManagementCopyableId from "./ManagementCopyableId";
+import { orderDisplayIdFromRow } from "../../utils/orderDisplayId";
 import { formatReviewApiError } from "./reviewDisplayLabels";
 import { fmtLbs } from "./reviewDrawerModel";
 
@@ -179,7 +180,11 @@ export default function ManagementPendingBagDrawer({
               {displayCustomerName(bag.customer_name) || "Customer unavailable"}
             </Typography>
             <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
-              <ManagementCopyableId value={bag.bag_id} fontSize={13} fontWeight={700} />
+              <ManagementCopyableId
+                value={orderDisplayIdFromRow(bag) || bag.bag_id}
+                fontSize={13}
+                fontWeight={700}
+              />
               <Typography sx={{ fontSize: 12, color: "#64748b" }}>
                 · OI {bag.order_instance_id ?? "—"} · {rushLabel(bag.rush_status || bag.rush_flag)}
               </Typography>
