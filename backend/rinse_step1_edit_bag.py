@@ -1375,6 +1375,25 @@ def apply_unified_bag_edit(
             )
         except Exception:
             pass
+        # Retire Manual Review soft override so completed OIs do not reappear
+        # in the Manual Review queue after refresh.
+        try:
+            from backend.management_wf_cw_controls import (
+                OVERRIDE_MANUAL_REVIEW,
+                clear_cw_override,
+            )
+
+            clear_cw_override(
+                cursor,
+                organization_id,
+                bag_id=bid,
+                actor_user_id=actor_user_id,
+                actor_display_name=actor_display_name,
+                clear_reason_text="Manual Review completed",
+                only_types=[OVERRIDE_MANUAL_REVIEW],
+            )
+        except Exception:
+            pass
     elif outcome in (OUTCOME_RETURN_PENDING, OUTCOME_EXCLUDE):
         from backend.rinse_veewash_step1_api import _record_correction
 

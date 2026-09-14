@@ -555,13 +555,40 @@ export default function ManagementWfFolderPerformanceSection({ dateEt }) {
       setLoading(true);
       setError("");
       try {
+        const nextCompare = opts.compare ?? compare;
+        const nextLastN = opts.last_n ?? lastN;
+        const wantBaseline =
+          opts.include_baseline != null
+            ? Boolean(Number(opts.include_baseline))
+            : false;
         const res = await getManagementWfFolderPerformance(dateEt, {
-          compare: opts.compare ?? compare,
-          last_n: opts.last_n ?? lastN,
+          compare: nextCompare,
+          last_n: nextLastN,
+          include_baseline: wantBaseline ? 1 : 0,
         });
         setData(res.data || null);
         const b = res.data?.folder_benchmark_lbs_hr;
         if (b != null) setBenchDraft(String(b));
+        // Lazy baseline deltas for Today — do not block first paint.
+        if (
+          nextCompare === "today" &&
+          !wantBaseline &&
+          !(opts && opts.skip_lazy_baseline)
+        ) {
+          getManagementWfFolderPerformance(dateEt, {
+            compare: "today",
+            last_n: nextLastN,
+            include_baseline: 1,
+          })
+            .then((deltaRes) => {
+              const deltas = deltaRes?.data?.deltas;
+              if (!deltas) return;
+              setData((prev) => (prev ? { ...prev, deltas } : prev));
+            })
+            .catch(() => {
+              /* deltas optional */
+            });
+        }
       } catch (err) {
         setError(err?.response?.data?.error || err?.message || "Unable to load Folder Performance");
         setData(null);

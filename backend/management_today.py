@@ -1290,31 +1290,52 @@ def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: da
         empty["rush_filtering_supported"] = False
         return empty
 
-    cursor.execute(
-        """
-        SELECT bag_id, rush_status
-        FROM rinse_shift_monitor_day_bags
-        WHERE organization_id = %s
-          AND shift_date_et = %s
-          AND UPPER(COALESCE(service_type, '')) = 'WF'
-        """,
-        (int(organization_id), selected_date_et),
-    )
-    bag_rows = cursor.fetchall() or []
-    bag_ids = [str(r.get("bag_id") or "").strip().upper() for r in bag_rows if r.get("bag_id")]
-    weight_map: dict[str, dict[str, Any]] = {}
-    if bag_ids:
-        from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
-        from backend.rinse_veewash_review import load_bag_weight_map
-
-        weight_map = load_bag_weight_map(
-            cursor,
-            int(organization_id),
-            bag_ids,
-            selected_date_et=selected_date_et,
+    # Prefer request-scoped secondary evidence when present (same org/day).
+    bag_rows = None
+    weight_map = None
+    try:
+        from backend.management_wf_secondary_evidence import (
+            secondary_evidence_bag_rows,
+            secondary_evidence_weight_map,
         )
-    else:
-        from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
+
+        pre_rows = secondary_evidence_bag_rows(int(organization_id), selected_date_et)
+        pre_wm = secondary_evidence_weight_map(int(organization_id), selected_date_et)
+        if pre_rows is not None:
+            bag_rows = list(pre_rows)
+        if pre_wm is not None:
+            weight_map = dict(pre_wm)
+    except Exception:
+        bag_rows = None
+        weight_map = None
+
+    if bag_rows is None:
+        cursor.execute(
+            """
+            SELECT bag_id, rush_status, post_weight_lbs
+            FROM rinse_shift_monitor_day_bags
+            WHERE organization_id = %s
+              AND shift_date_et = %s
+              AND UPPER(COALESCE(service_type, '')) = 'WF'
+            """,
+            (int(organization_id), selected_date_et),
+        )
+        bag_rows = cursor.fetchall() or []
+
+    bag_ids = [str(r.get("bag_id") or "").strip().upper() for r in bag_rows if r.get("bag_id")]
+    from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
+
+    if weight_map is None:
+        weight_map = {}
+        if bag_ids:
+            from backend.rinse_veewash_review import load_bag_weight_map
+
+            weight_map = load_bag_weight_map(
+                cursor,
+                int(organization_id),
+                bag_ids,
+                selected_date_et=selected_date_et,
+            )
 
     pre_all = 0.0
     pre_count_all = 0
@@ -1334,23 +1355,6 @@ def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: da
             bucket_pre[bucket] += float(pre)
             bucket_pre_count[bucket] += 1
 
-    cursor.execute(
-        """
-        SELECT rush_status,
-               SUM(
-                 CASE WHEN post_weight_lbs IS NOT NULL THEN post_weight_lbs ELSE 0 END
-               ) AS post_lbs,
-               SUM(
-                 CASE WHEN post_weight_lbs IS NOT NULL THEN 1 ELSE 0 END
-               ) AS post_bag_count
-        FROM rinse_shift_monitor_day_bags
-        WHERE organization_id = %s
-          AND shift_date_et = %s
-          AND UPPER(COALESCE(service_type, '')) = 'WF'
-        GROUP BY rush_status
-        """,
-        (int(organization_id), selected_date_et),
-    )
     post_all = 0.0
     post_count_all = 0
     by_rush = {
@@ -1361,16 +1365,17 @@ def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: da
     bucket_post = {"rush": 0.0, "non_rush": 0.0}
     bucket_post_count = {"rush": 0, "non_rush": 0}
 
-    for row in cursor.fetchall() or []:
+    # POST from the same bag_rows (request pack or single SELECT) — no second GROUP BY.
+    for row in bag_rows:
+        post = _lbs_or_none(row.get("post_weight_lbs"))
+        if post is None:
+            continue
         bucket = _rush_bucket(row.get("rush_status"))
-        post_count = int(row.get("post_bag_count") or 0)
-        post = _lbs_or_none(row.get("post_lbs")) if post_count else None
-        if post is not None:
-            post_all += post
-            post_count_all += post_count
-            if bucket in bucket_post:
-                bucket_post[bucket] += post
-                bucket_post_count[bucket] += post_count
+        post_all += post
+        post_count_all += 1
+        if bucket in bucket_post:
+            bucket_post[bucket] += post
+            bucket_post_count[bucket] += 1
 
     def _pack(pre: float | None, post: float | None, pre_n: int, post_n: int) -> dict[str, Any]:
         return {
@@ -1636,24 +1641,29 @@ def build_management_rinse_wf_secondary_payload(
     specialty_metrics = rinse_secondary.get("specialty_metrics") or {}
     _phase_timing(phases, "specialty", t1, counting.query_count, query_start=q1)
 
-    t2 = time.perf_counter()
-    q2 = int(counting.query_count)
-    weight_totals = load_wf_day_weight_totals(counting, org, day)
-    _phase_timing(phases, "weights", t2, counting.query_count, query_start=q2)
+    from backend.management_wf_secondary_evidence import (
+        management_secondary_evidence_scope,
+    )
 
-    t3 = time.perf_counter()
-    q3 = int(counting.query_count)
-    review_base = review_category_count_payload(
-        headline,
-        cursor=counting,
-        organization_id=org,
-        selected_date_et=day,
-    )
-    review = enrich_review_counts_by_rush(
-        counting, org, day, headline, review_base
-    )
-    review.pop("_membership", None)
-    _phase_timing(phases, "review", t3, counting.query_count, query_start=q3)
+    with management_secondary_evidence_scope(counting, org, day):
+        t2 = time.perf_counter()
+        q2 = int(counting.query_count)
+        weight_totals = load_wf_day_weight_totals(counting, org, day)
+        _phase_timing(phases, "weights", t2, counting.query_count, query_start=q2)
+
+        t3 = time.perf_counter()
+        q3 = int(counting.query_count)
+        review_base = review_category_count_payload(
+            headline,
+            cursor=counting,
+            organization_id=org,
+            selected_date_et=day,
+        )
+        review = enrich_review_counts_by_rush(
+            counting, org, day, headline, review_base
+        )
+        review.pop("_membership", None)
+        _phase_timing(phases, "review", t3, counting.query_count, query_start=q3)
 
     now_et = business_now()
     if getattr(now_et, "tzinfo", None) is None:

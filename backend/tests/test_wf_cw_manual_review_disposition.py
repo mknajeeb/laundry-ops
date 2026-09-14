@@ -109,6 +109,9 @@ def test_merge_cw_manual_overrides_into_membership():
         "precedence": "",
         "employee_performance_hint": {},
     }
+    cursor = MagicMock()
+    # No OI ids on overrides → only open-bag lookup runs.
+    cursor.fetchall.return_value = [{"bag_id": "MANBAG01"}, {"bag_id": "SPECBAG"}]
     with patch(
         "backend.management_wf_cw_controls.bulk_load_active_cw_overrides",
         return_value={
@@ -128,13 +131,53 @@ def test_merge_cw_manual_overrides_into_membership():
         },
     ):
         out = merge_cw_manual_overrides_into_review_membership(
-            MagicMock(), ORG, membership
+            cursor, ORG, membership
         )
     assert "MANBAG01" in out[CATEGORY_MANUAL_REVIEW]
     assert "SPECBAG" not in out[CATEGORY_MANUAL_REVIEW]
     assert out["disposition"]["MANBAG01"] == CATEGORY_MANUAL_REVIEW
     assert REASON_MANAGER_SENT_FOR_REVIEW in out["codes_by_bag"]["MANBAG01"]
     assert "SPECBAG" in out["_cw_override_meta"]
+
+
+def test_merge_skips_completed_override_oi():
+    membership = {
+        CATEGORY_SPECIALTY: [],
+        CATEGORY_MISSING_PORTAL: [],
+        "split_order_review": [],
+        CATEGORY_MANUAL_REVIEW: [],
+        "unknown_review": [],
+        "counts": {},
+        "disposition": {},
+        "codes_by_bag": {},
+        "reason_category_map": {},
+        "precedence": "",
+        "employee_performance_hint": {},
+    }
+    cursor = MagicMock()
+    cursor.fetchall.side_effect = [
+        # OI 5355 completed
+        [{"order_instance_id": 5355, "completed_at": "2026-09-12 16:54:00"}],
+        # no open bags
+        [],
+    ]
+    with patch(
+        "backend.management_wf_cw_controls.bulk_load_active_cw_overrides",
+        return_value={
+            "2C9TFH2EI7": {
+                "bag_id": "2C9TFH2EI7",
+                "override_type": OVERRIDE_MANUAL_REVIEW,
+                "active": True,
+                "order_instance_id": 5355,
+                "reason_code": REASON_MANAGER_SENT_FOR_REVIEW,
+            },
+        },
+    ):
+        out = merge_cw_manual_overrides_into_review_membership(
+            cursor, ORG, membership
+        )
+    assert out[CATEGORY_MANUAL_REVIEW] == []
+    assert "2C9TFH2EI7" in (out.get("_cw_manual_skipped_completed") or [])
 
 
 def test_action_preserves_dfp_when_day_bag_codes_empty():

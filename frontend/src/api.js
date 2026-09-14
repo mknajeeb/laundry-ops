@@ -2633,8 +2633,9 @@ export const getManagementWfFolderPerformance = (dateEt, params = {}) =>
   axios.get(`${API_BASE}/api/management/performance/wf-folder`, {
     params: {
       date_et: dateEt,
-      // Skip same-weekday baseline rebuild unless explicitly requested.
-      include_baseline: params.include_baseline ?? (params.compare === "today" || !params.compare ? 1 : 0),
+      // Initial Today load skips same-weekday baseline (eager second day build).
+      // Pass include_baseline: 1 when UI needs comparison deltas.
+      include_baseline: 0,
       ...params,
     },
     timeout: 120000,

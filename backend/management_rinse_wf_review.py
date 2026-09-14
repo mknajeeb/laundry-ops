@@ -677,6 +677,10 @@ def merge_cw_manual_overrides_into_review_membership(
     """Union active CW Manual Review overrides into Manual Review membership.
 
     Does not reclassify Specialty / Missing / Split bags. Additive only.
+
+    Defensive: do not resurrect completed / non-open override OIs into Manual
+    Review. Active overrides whose ``order_instance_id`` is completed (or whose
+    bag has no open WF OI when no OI was recorded) are skipped.
     """
     from backend.management_wf_cw_controls import (
         OVERRIDE_MANUAL_REVIEW,
@@ -708,6 +712,75 @@ def merge_cw_manual_overrides_into_review_membership(
         out["_cw_manual_added"] = []
         return out
 
+    # Bulk-resolve OI open/completed for override identity.
+    oi_ids: list[int] = []
+    for ov in override_meta.values():
+        try:
+            oid = int(ov.get("order_instance_id") or 0)
+        except (TypeError, ValueError):
+            oid = 0
+        if oid > 0:
+            oi_ids.append(oid)
+    oi_open: dict[int, bool] = {}
+    if oi_ids:
+        ph = ",".join(["%s"] * len(oi_ids))
+        try:
+            cursor.execute(
+                f"""
+                SELECT order_instance_id, completed_at
+                FROM rinse_order_instances
+                WHERE organization_id = %s
+                  AND order_instance_id IN ({ph})
+                """,
+                (int(organization_id), *oi_ids),
+            )
+            for row in cursor.fetchall() or []:
+                try:
+                    oid = int(row.get("order_instance_id"))
+                except (TypeError, ValueError):
+                    continue
+                oi_open[oid] = row.get("completed_at") is None
+        except Exception:
+            oi_open = {}
+
+    # Bags with any open WF OI (fallback when override lacks order_instance_id).
+    bag_ids = list(override_meta.keys())
+    open_bags: set[str] = set()
+    if bag_ids:
+        ph = ",".join(["%s"] * len(bag_ids))
+        try:
+            cursor.execute(
+                f"""
+                SELECT DISTINCT bag_id
+                FROM rinse_order_instances
+                WHERE organization_id = %s
+                  AND service_type = 'WF'
+                  AND completed_at IS NULL
+                  AND bag_id IN ({ph})
+                """,
+                (int(organization_id), *bag_ids),
+            )
+            for row in cursor.fetchall() or []:
+                nb = normalize_bag_id(row.get("bag_id"))
+                if nb:
+                    open_bags.add(nb)
+        except Exception:
+            open_bags = set()
+
+    def _override_still_eligible(bid: str, ov: Mapping[str, Any]) -> bool:
+        try:
+            oid = int(ov.get("order_instance_id") or 0)
+        except (TypeError, ValueError):
+            oid = 0
+        if oid > 0:
+            # Known OI: only eligible while that OI is still open.
+            if oid in oi_open:
+                return bool(oi_open[oid])
+            # OI row missing — do not resurrect.
+            return False
+        # No OI on override — require an open WF OI for the bag.
+        return bid in open_bags
+
     specialty = list(out.get(CATEGORY_SPECIALTY) or [])
     missing = list(out.get(CATEGORY_MISSING_PORTAL) or [])
     split_ids = list(out.get(CATEGORY_SPLIT_ORDER) or [])
@@ -718,7 +791,13 @@ def merge_cw_manual_overrides_into_review_membership(
     disposition = dict(out.get("disposition") or {})
 
     added: list[str] = []
+    skipped_completed: list[str] = []
+    eligible_meta: dict[str, dict[str, Any]] = {}
     for bid, ov in override_meta.items():
+        if not _override_still_eligible(bid, ov):
+            skipped_completed.append(bid)
+            continue
+        eligible_meta[bid] = ov
         if bid in claimed:
             # Already in a system category — keep system membership; expose meta only.
             continue
@@ -732,8 +811,9 @@ def merge_cw_manual_overrides_into_review_membership(
         codes_by_bag[bid] = prior
 
     if not added:
-        out["_cw_override_meta"] = override_meta
+        out["_cw_override_meta"] = eligible_meta
         out["_cw_manual_added"] = []
+        out["_cw_manual_skipped_completed"] = sorted(skipped_completed)
         return out
 
     rebuilt = _membership_result_payload(
@@ -750,8 +830,9 @@ def merge_cw_manual_overrides_into_review_membership(
     rebuilt["codes_by_bag"] = codes_by_bag
     if "excluded" in out:
         rebuilt["excluded"] = out.get("excluded")
-    rebuilt["_cw_override_meta"] = override_meta
+    rebuilt["_cw_override_meta"] = eligible_meta
     rebuilt["_cw_manual_added"] = sorted(added)
+    rebuilt["_cw_manual_skipped_completed"] = sorted(skipped_completed)
     return rebuilt
 
 
@@ -835,9 +916,37 @@ def _fresh_review_reasons_from_day_bags(
     if not bag_ids:
         return {}
 
-    weights = load_bag_weight_map(
-        cursor, organization_id, bag_ids, selected_date_et=selected_date_et
-    )
+    try:
+        from backend.management_wf_secondary_evidence import secondary_evidence_weight_map
+
+        pre_wm = secondary_evidence_weight_map(
+            int(organization_id), selected_date_et
+        )
+    except Exception:
+        pre_wm = None
+    if pre_wm is not None:
+        # Reuse request-scoped map; subset to this bag_id set.
+        weights = {
+            bid: pre_wm[bid]
+            for bid in bag_ids
+            if bid in pre_wm
+        }
+        # Fill any missing ids (should be rare) via one targeted load.
+        missing = [bid for bid in bag_ids if bid not in weights]
+        if missing:
+            weights.update(
+                load_bag_weight_map(
+                    cursor,
+                    organization_id,
+                    missing,
+                    selected_date_et=selected_date_et,
+                )
+                or {}
+            )
+    else:
+        weights = load_bag_weight_map(
+            cursor, organization_id, bag_ids, selected_date_et=selected_date_et
+        )
     registry_services, registry_historical = load_registry_service_classification(
         cursor, organization_id, bag_ids
     )
