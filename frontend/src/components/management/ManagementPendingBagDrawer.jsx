@@ -198,6 +198,24 @@ export default function ManagementPendingBagDrawer({
             <Typography sx={{ fontSize: 12, color: "#64748b" }}>
               Received {fmtTime(bag.received_from_vendor_at)}
             </Typography>
+            {Array.isArray(bag.manager_dispositions) && bag.manager_dispositions.length ? (
+              <Box sx={{ mt: 0.5, p: 1, bgcolor: "#f8fafc", borderRadius: 1, border: "1px solid #e2e8f0" }}>
+                <Typography sx={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.6, color: "#64748b", textTransform: "uppercase" }}>
+                  Manager disposition history
+                </Typography>
+                {bag.manager_dispositions.slice(0, 5).map((d) => (
+                  <Typography key={d.id || `${d.disposition_type}-${d.created_at_et}`} sx={{ fontSize: 12, color: "#334155", mt: 0.35 }}>
+                    {d.disposition_type} · {d.reason_code}
+                    {d.comment ? ` — ${d.comment}` : ""}
+                    {d.active ? "" : " (superseded)"}
+                  </Typography>
+                ))}
+              </Box>
+            ) : bag.manager_note ? (
+              <Typography sx={{ fontSize: 12, color: "#475569" }}>
+                Manager note: {bag.manager_note}
+              </Typography>
+            ) : null}
             {bag.cycle_anchor_at ? (
               <Typography sx={{ fontSize: 11, color: "#94a3b8" }}>
                 Cycle anchor {fmtTime(bag.cycle_anchor_at)}

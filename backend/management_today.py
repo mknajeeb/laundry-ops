@@ -1312,7 +1312,8 @@ def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: da
     if bag_rows is None:
         cursor.execute(
             """
-            SELECT bag_id, rush_status, post_weight_lbs
+            SELECT bag_id, rush_status, post_weight_lbs,
+                   disposition, effective_status
             FROM rinse_shift_monitor_day_bags
             WHERE organization_id = %s
               AND shift_date_et = %s
@@ -1321,6 +1322,26 @@ def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: da
             (int(organization_id), selected_date_et),
         )
         bag_rows = cursor.fetchall() or []
+
+    # Manager Exclude — omit from Processed Pounds (PRE/POST/counts).
+    # Raw day_bag evidence rows remain; only operational aggregates filter.
+    excluded_bag_ids: set[str] = set()
+    try:
+        from backend.rinse_wf_oi_manager_disposition import (
+            collect_processed_pounds_excluded_bag_ids,
+        )
+
+        excluded_bag_ids = collect_processed_pounds_excluded_bag_ids(
+            cursor, int(organization_id), bag_rows
+        )
+    except Exception:
+        excluded_bag_ids = set()
+    if excluded_bag_ids:
+        bag_rows = [
+            r
+            for r in bag_rows
+            if str(r.get("bag_id") or "").strip().upper() not in excluded_bag_ids
+        ]
 
     bag_ids = [str(r.get("bag_id") or "").strip().upper() for r in bag_rows if r.get("bag_id")]
     from backend.rinse_current_cycle_weight import authoritative_evidence_pre_lbs
@@ -1336,6 +1357,13 @@ def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: da
                 bag_ids,
                 selected_date_et=selected_date_et,
             )
+    elif excluded_bag_ids and weight_map:
+        # Drop excluded bags from a preloaded secondary weight map too.
+        weight_map = {
+            k: v
+            for k, v in weight_map.items()
+            if str(k or "").strip().upper() not in excluded_bag_ids
+        }
 
     pre_all = 0.0
     pre_count_all = 0
@@ -1405,7 +1433,14 @@ def load_wf_day_weight_totals(cursor, organization_id: int, selected_date_et: da
         **by_rush["all"],
         "rush_filtering_supported": True,
         "source": "canonical_pre_resolver+rinse_shift_monitor_day_bags.post_weight_lbs",
-        "semantics": empty["semantics"],
+        "semantics": {
+            **empty["semantics"],
+            "exclude": (
+                "manager_excluded_ois_omitted_from_pre_post_and_bag_counts;"
+                "raw_day_bag_evidence_retained"
+            ),
+        },
+        "excluded_bag_count": len(excluded_bag_ids),
         "by_rush": by_rush,
     }
 

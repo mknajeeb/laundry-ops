@@ -70,10 +70,8 @@ REASON_CODES_RETURN_PENDING = (
     {"code": "OTHER", "label": "Other"},
 )
 REASON_CODES_EXCLUDE = (
-    {"code": "NOT_VEEWASH_BAG", "label": "Not a VeeWash bag"},
-    {"code": "DUPLICATE_RECORD", "label": "Duplicate record"},
-    {"code": "TEST_RECORD", "label": "Test record"},
-    {"code": "WRONG_SERVICE_DAY", "label": "Wrong service/day"},
+    {"code": "EXTRA_OR_DUPLICATE_BAG", "label": "Extra bag / duplicate bag used"},
+    {"code": "REJECTED_NOT_PROCESSED", "label": "Rejected / not processed"},
     {"code": "OTHER", "label": "Other"},
 )
 REASON_CODES_COMPLETION_CHANGE = (
@@ -82,10 +80,11 @@ REASON_CODES_COMPLETION_CHANGE = (
     {"code": "OTHER", "label": "Other"},
 )
 REASON_CODES_MANUAL_MARK_COMPLETED = (
-    {"code": "MARK_COMPLETED", "label": "Manually mark completed"},
-    {"code": "DISAPPEARED_WITHOUT_COMPLETION", "label": "Missing from portal"},
-    {"code": "WF_BULK_WORKITEM_REVIEW", "label": "Bulk review"},
-    {"code": "STATUS_OVERRIDE", "label": "Manual status override"},
+    {"code": "BAG_ID_REASSIGNED", "label": "Bag ID unassigned / reassigned"},
+    {
+        "code": "MANUAL_RESEARCH_CONFIRMED",
+        "label": "Manually researched and confirmed complete",
+    },
     {"code": "OTHER", "label": "Other"},
 )
 
@@ -105,6 +104,13 @@ REASON_CODE_OPTIONS = (
     {"code": "COMPLETION_ASSIGNED_INCORRECTLY", "label": "Completion assigned incorrectly"},
     {"code": "BAG_NOT_ACTUALLY_COMPLETED", "label": "Bag not actually completed"},
     {"code": "COMPLETION_EVIDENCE_INVALID", "label": "Completion evidence invalid"},
+    {"code": "EXTRA_OR_DUPLICATE_BAG", "label": "Extra bag / duplicate bag used"},
+    {"code": "REJECTED_NOT_PROCESSED", "label": "Rejected / not processed"},
+    {"code": "BAG_ID_REASSIGNED", "label": "Bag ID unassigned / reassigned"},
+    {
+        "code": "MANUAL_RESEARCH_CONFIRMED",
+        "label": "Manually researched and confirmed complete",
+    },
     {"code": "NOT_VEEWASH_BAG", "label": "Not a VeeWash bag"},
     {"code": "DUPLICATE_RECORD", "label": "Duplicate record"},
     {"code": "TEST_RECORD", "label": "Test record"},
@@ -246,18 +252,24 @@ def _bulk_draft_changed(before: Mapping[str, Any], draft: Mapping[str, Any]) -> 
     )
 
 
-def _reason_options_for_triggers(triggers: list[str]) -> list[dict[str, str]]:
+def _reason_options_for_triggers(
+    triggers: list[str],
+    outcome: str | None = None,
+) -> list[dict[str, str]]:
+    # Outcome catalogs win — Manual Complete / Exclude may also change weights.
+    if outcome == OUTCOME_EXCLUDE or "exclude" in triggers or OUTCOME_EXCLUDE in triggers:
+        return list(REASON_CODES_EXCLUDE)
+    if outcome == OUTCOME_MARK_COMPLETED or "mark_completed" in triggers:
+        return list(REASON_CODES_MANUAL_MARK_COMPLETED)
+    if outcome == OUTCOME_RETURN_PENDING or "return_pending" in triggers or OUTCOME_RETURN_PENDING in triggers:
+        return list(REASON_CODES_RETURN_PENDING)
     if "post_weight_correction" in triggers:
         return list(REASON_CODES_POST_CORRECTION)
     if "pre_weight_correction" in triggers:
         return list(REASON_CODES_PRE_CORRECTION)
-    if "return_pending" in triggers or OUTCOME_RETURN_PENDING in triggers:
-        return list(REASON_CODES_RETURN_PENDING)
-    if "exclude" in triggers or OUTCOME_EXCLUDE in triggers:
-        return list(REASON_CODES_EXCLUDE)
     if "completion_employee_changed" in triggers or "completion_timestamp_changed" in triggers:
         return list(REASON_CODES_COMPLETION_CHANGE)
-    if "mark_completed" in triggers or "status_override" in triggers:
+    if "status_override" in triggers:
         return list(REASON_CODES_MANUAL_MARK_COMPLETED)
     return list(REASON_CODE_OPTIONS)
 
@@ -319,10 +331,11 @@ def classify_edit_reason_requirements(
             and not weight_override
             and not draft.get("manual_status_override")
         ):
-            # Confirming existing completion evidence — not a manual override.
+            # Confirming existing completion evidence — still requires manager
+            # completion reason + note (separate from Exclude).
             confirm_completed = True
-        else:
-            triggers.append("mark_completed")
+        # Always require structured Manual Complete reason/note.
+        triggers.append("mark_completed")
     elif outcome in ALWAYS_REASONED_OUTCOMES:
         triggers.append(str(outcome))
 
@@ -336,13 +349,16 @@ def classify_edit_reason_requirements(
     elif "pre_weight_correction" in triggers:
         suggested = "INCORRECT_CAPTURED_WEIGHT"
     elif outcome == OUTCOME_EXCLUDE or "exclude" in triggers:
-        suggested = "NOT_VEEWASH_BAG"
+        # Manager must pick an Exclude reason — do not auto-fill.
+        suggested = None
     elif outcome == OUTCOME_RETURN_PENDING or "return_pending" in triggers:
         suggested = "BAG_NOT_ACTUALLY_COMPLETED"
     elif "completion_employee_changed" in triggers or "completion_timestamp_changed" in triggers:
-        suggested = "CORRECT_COMPLETION_DETAILS"
+        if outcome != OUTCOME_MARK_COMPLETED:
+            suggested = "CORRECT_COMPLETION_DETAILS"
     elif "mark_completed" in triggers:
-        suggested = _review_context_reason_code(before) or "MARK_COMPLETED"
+        # Manager must pick Manual Complete reason — do not auto-fill.
+        suggested = None
     elif "status_override" in triggers:
         suggested = "STATUS_OVERRIDE"
 
@@ -361,7 +377,7 @@ def classify_edit_reason_requirements(
         )
         save_path = "routine_review"
 
-    reason_codes = _reason_options_for_triggers(triggers) if required else []
+    reason_codes = _reason_options_for_triggers(triggers, outcome=outcome) if required else []
     return {
         "reason_required": required,
         "triggers": triggers,
@@ -401,9 +417,11 @@ def resolve_edit_audit_reason(
     }
 
     if policy["reason_required"]:
-        if not code:
+        # Exclude / Manual Complete require an explicit manager-selected code.
+        strict_outcome = outcome in (OUTCOME_EXCLUDE, OUTCOME_MARK_COMPLETED)
+        if not code and not strict_outcome:
             code = str(policy.get("suggested_reason_code") or "").strip().upper() or None
-        if not code and legacy_reason:
+        if not code and legacy_reason and not strict_outcome:
             # Backward compatible: free-text reason alone is accepted as OTHER note.
             code = "OTHER"
             note = legacy_reason
@@ -417,6 +435,12 @@ def resolve_edit_audit_reason(
             return {
                 "ok": False,
                 "error": "reason_code_not_allowed_for_action",
+                "policy": policy,
+            }
+        if outcome == OUTCOME_MARK_COMPLETED and not note:
+            return {
+                "ok": False,
+                "error": "manager_note_required",
                 "policy": policy,
             }
         if code == "OTHER" and not note:
@@ -619,7 +643,18 @@ def _soft_resolve_review_mutation_conflict(
         }
 
     if outcome == OUTCOME_MARK_COMPLETED:
+        retire_exclude = bool(
+            (draft or {}).get("retire_mistaken_exclude")
+            or (draft or {}).get("retire_exclude")
+        )
         if not open_ois:
+            if retire_exclude:
+                # Bounded path: convert manager_exclude → manager complete.
+                return {
+                    "refresh_lock": True,
+                    "current_version": int(current_version),
+                    "retire_mistaken_exclude": True,
+                }
             dash = str(before.get("dashboard_status") or before.get("outcome") or "").lower()
             if dash in ("excluded", "exclude"):
                 return {
@@ -1189,8 +1224,70 @@ def apply_unified_bag_edit(
             "policy": resolved.get("policy"),
         }
     reason_text = str(resolved["reason"])
+    reason_code = resolved.get("reason_code") or reason_code
+    reason_note = resolved.get("reason_note") or reason_note
     policy = dict(resolved.get("policy") or {})
     confirm_completed = bool(policy.get("confirm_completed"))
+
+    # Retire mistaken exclude → audited manager complete (OI already closed).
+    if outcome == OUTCOME_MARK_COMPLETED and (
+        draft.get("retire_mistaken_exclude") or draft.get("retire_exclude")
+    ):
+        from backend.rinse_wf_oi_manager_disposition import (
+            convert_manager_exclude_to_complete,
+            resolve_order_instance_id_for_bag,
+        )
+
+        oid = draft.get("order_instance_id")
+        if oid is None:
+            oid = resolve_order_instance_id_for_bag(
+                cursor,
+                organization_id,
+                bid,
+                prefer_open=False,
+            )
+        if oid is None:
+            return {"ok": False, "error": "order_instance_id_required"}
+        convert_out = convert_manager_exclude_to_complete(
+            cursor,
+            organization_id,
+            order_instance_id=int(oid),
+            bag_id=bid,
+            reason_code=str(reason_code or ""),
+            manager_note=str(reason_note or reason_text or ""),
+            completion_at=_parse_dt(draft.get("completion_at")),
+            completed_by=str(
+                draft.get("completion_employee")
+                or draft.get("completed_by")
+                or draft.get("employee")
+                or actor_display_name
+                or ""
+            ).strip()
+            or None,
+            actor_user_id=actor_user_id,
+            actor_display_name=actor_display_name,
+            selected_date_et=selected_date_et,
+            dry_run=False,
+        )
+        if not convert_out.get("ok"):
+            return {
+                "ok": False,
+                "error": convert_out.get("error") or "retire_exclude_failed",
+                "detail": convert_out,
+            }
+        after = capture_bag_edit_state(cursor, organization_id, selected_date_et, bid)
+        return {
+            "ok": True,
+            "edit_id": None,
+            "before": before,
+            "after": after,
+            "undo_token": None,
+            "bag": after,
+            "deltas": [],
+            "outcome_result": convert_out,
+            "retired_mistaken_exclude": True,
+            "management_cache_cleared": False,
+        }
 
     effective_service = str(draft.get("service_type") or before.get("service_type") or "").strip().upper()
     errors = validate_edit_draft(draft, service_type=effective_service)
@@ -1375,6 +1472,37 @@ def apply_unified_bag_edit(
             )
         except Exception:
             pass
+        # OI-scoped Manual Complete note/history (visible in order detail).
+        try:
+            from backend.rinse_wf_oi_manager_disposition import (
+                DISPOSITION_MARK_COMPLETED,
+                record_oi_manager_disposition,
+                resolve_order_instance_id_for_bag,
+            )
+
+            oid = draft.get("order_instance_id")
+            if oid is None:
+                oid = resolve_order_instance_id_for_bag(
+                    cursor,
+                    organization_id,
+                    bid,
+                    prefer_open=False,
+                )
+            if oid is not None:
+                record_oi_manager_disposition(
+                    cursor,
+                    organization_id,
+                    order_instance_id=int(oid),
+                    bag_id=bid,
+                    disposition_type=DISPOSITION_MARK_COMPLETED,
+                    reason_code=str(reason_code or "MANUAL_RESEARCH_CONFIRMED"),
+                    comment=str(reason_note or reason_text or "") or None,
+                    actor_user_id=actor_user_id,
+                    actor_display_name=actor_display_name,
+                    supersede_active_excludes=True,
+                )
+        except Exception:
+            pass
         # Retire Manual Review soft override so completed OIs do not reappear
         # in the Manual Review queue after refresh.
         try:
@@ -1397,15 +1525,33 @@ def apply_unified_bag_edit(
     elif outcome in (OUTCOME_RETURN_PENDING, OUTCOME_EXCLUDE):
         from backend.rinse_veewash_step1_api import _record_correction
 
+        oi_for_audit = draft.get("order_instance_id")
+        try:
+            from backend.rinse_wf_oi_manager_disposition import (
+                resolve_order_instance_id_for_bag,
+            )
+
+            if oi_for_audit is None:
+                oi_for_audit = resolve_order_instance_id_for_bag(
+                    cursor, organization_id, bid, prefer_open=True
+                )
+        except Exception:
+            pass
+
         _record_correction(
             cursor,
             organization_id,
             bag_id=bid,
             action=outcome,
             reason_text=reason_text,
-            reason_code=outcome.upper(),
+            reason_code=str(reason_code or outcome.upper()).strip().upper(),
             previous_values=before,
-            new_values={"status": outcome},
+            new_values={
+                "status": outcome,
+                "order_instance_id": oi_for_audit,
+                "reason_code": reason_code,
+                "comment": reason_note,
+            },
             actor_user_id=actor_user_id,
             actor_display_name=actor_display_name,
         )
@@ -1422,6 +1568,35 @@ def apply_unified_bag_edit(
                     resolved_by=actor_display_name,
                     resolution_note=reason_text,
                 )
+            except Exception:
+                pass
+            try:
+                from backend.rinse_wf_oi_manager_disposition import (
+                    DISPOSITION_EXCLUDE,
+                    record_oi_manager_disposition,
+                    resolve_order_instance_id_for_bag,
+                )
+
+                oid = oi_for_audit
+                if oid is None:
+                    oid = resolve_order_instance_id_for_bag(
+                        cursor,
+                        organization_id,
+                        bid,
+                        prefer_open=False,
+                    )
+                if oid is not None:
+                    record_oi_manager_disposition(
+                        cursor,
+                        organization_id,
+                        order_instance_id=int(oid),
+                        bag_id=bid,
+                        disposition_type=DISPOSITION_EXCLUDE,
+                        reason_code=str(reason_code or "OTHER"),
+                        comment=str(reason_note or "") or None,
+                        actor_user_id=actor_user_id,
+                        actor_display_name=actor_display_name,
+                    )
             except Exception:
                 pass
     # OUTCOME_KEEP_REVIEW / None: no bucket change beyond draft field updates.

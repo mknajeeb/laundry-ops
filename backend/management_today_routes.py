@@ -763,14 +763,16 @@ def register_management_today_routes(
             if err:
                 return err
             body = request.get_json(silent=True) or {}
-            reason = str(body.get("reason") or body.get("reason_text") or "").strip()
-            if not reason:
+            reason = str(body.get("reason") or body.get("reason_text") or body.get("comment") or "").strip()
+            reason_code = str(body.get("reason_code") or "").strip().upper() or None
+            if not reason_code and not reason:
                 return jsonify({"ok": False, "error": "reason_required"}), 400
             result = exclude_from_current_workload(
                 cursor,
                 oid,
                 bag_id=bag_id,
                 reason_text=reason,
+                reason_code=reason_code,
                 actor_user_id=me.get("id") or me.get("user_id"),
                 actor_display_name=_actor_display(me),
                 order_instance_id=body.get("order_instance_id"),

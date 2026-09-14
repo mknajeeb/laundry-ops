@@ -146,16 +146,16 @@ describe("validateSpecialtySave", () => {
 });
 
 describe("suggestedCompleteAudit", () => {
-  it("uses CORRECT_COMPLETION_DETAILS when employee is newly entered", () => {
+  it("requires manager-selected Manual Complete reason (no auto-fill)", () => {
     const audit = suggestedCompleteAudit({
       draft: { completed_by: "Ada", completion_at: "2026-08-17T10:00", post_weight_lbs: "12" },
       baselineBag: { post_weight_lbs: "12" },
     });
-    expect(audit.reasonCode).toBe("CORRECT_COMPLETION_DETAILS");
+    expect(audit.reasonCode).toBeNull();
     expect(audit.reasonRequired).toBe(true);
   });
 
-  it("uses weight correction audit code for specialty review saves, not review eligibility codes", () => {
+  it("still suggests specialty confirm note text without auto reason code", () => {
     const audit = suggestedCompleteAudit({
       draft: { completed_by: "Ada", completion_at: "2026-08-17T10:00", post_weight_lbs: "4.2" },
       baselineBag: {
@@ -166,8 +166,8 @@ describe("suggestedCompleteAudit", () => {
       },
       variant: "specialty",
     });
-    expect(audit.reasonCode).toBe("INCORRECT_CAPTURED_WEIGHT");
-    expect(audit.reasonCode).not.toBe("SERVICE_CLASSIFICATION_MISMATCH");
+    expect(audit.reasonCode).toBeNull();
+    expect(audit.reasonRequired).toBe(true);
     expect(audit.reasonNote).toMatch(/Specialty review/i);
   });
 });

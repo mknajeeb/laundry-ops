@@ -213,7 +213,7 @@ def test_exclude_without_day_bag_does_not_false_conflict():
             draft={"service_type": "WF", "rush_flag": "NON-RUSH"},
             expected_manager_edit_version=0,
             outcome_action="exclude",
-            reason_code="EXCLUDE",
+            reason_code="EXTRA_OR_DUPLICATE_BAG",
             reason_note="Disappeared From Portal — manager exclude",
             actor_display_name="mgr",
         )
@@ -287,7 +287,7 @@ def test_exclude_stale_version_refreshes_instead_of_hard_conflict():
             draft={"service_type": "WF"},
             expected_manager_edit_version=0,  # stale drawer token
             outcome_action="exclude",
-            reason_code="EXCLUDE",
+            reason_code="EXTRA_OR_DUPLICATE_BAG",
             reason_note="exclude",
         )
     assert out["ok"] is True, out
@@ -353,7 +353,7 @@ def test_exclude_ignores_harmless_cache_generation_token_drift():
             draft={"service_type": "WF"},
             expected_manager_edit_version=1,  # stale vs current 7
             outcome_action="exclude",
-            reason_code="EXCLUDE",
+            reason_code="EXTRA_OR_DUPLICATE_BAG",
             reason_note="exclude",
         )
     assert out["ok"] is True, out
@@ -422,7 +422,7 @@ def test_exclude_does_not_rebuild_full_review_membership_in_mutation():
             draft={"service_type": "WF"},
             expected_manager_edit_version=0,
             outcome_action="exclude",
-            reason_code="EXCLUDE",
+            reason_code="EXTRA_OR_DUPLICATE_BAG",
             reason_note="exclude",
         )
     assert out["ok"] is True, out

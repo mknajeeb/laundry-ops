@@ -66,7 +66,8 @@ def management_secondary_evidence_scope(
     if table_exists(cursor, "rinse_shift_monitor_day_bags"):
         cursor.execute(
             """
-            SELECT bag_id, rush_status, post_weight_lbs, service_type
+            SELECT bag_id, rush_status, post_weight_lbs, service_type,
+                   disposition, effective_status
             FROM rinse_shift_monitor_day_bags
             WHERE organization_id = %s
               AND shift_date_et = %s

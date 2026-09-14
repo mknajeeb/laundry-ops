@@ -549,9 +549,32 @@ def exclude_from_current_workload(
     actor_display_name: str | None = None,
     order_instance_id: int | None = None,
     selected_date_et=None,
+    reason_code: str | None = None,
 ) -> dict[str, Any]:
     """Soft-exclude open CW bag from operational workload (no deletes / no OI close)."""
     from backend.rinse_veewash_step1_api import _record_correction
+    from backend.rinse_wf_oi_manager_disposition import (
+        DISPOSITION_EXCLUDE,
+        record_oi_manager_disposition,
+        resolve_order_instance_id_for_bag,
+        validate_exclude_reason,
+    )
+
+    validated = validate_exclude_reason(reason_code, reason_text)
+    if not validated.get("ok"):
+        # Backward-compatible: free-text alone → OTHER when no code provided.
+        if not reason_code and str(reason_text or "").strip():
+            validated = validate_exclude_reason("OTHER", reason_text)
+        if not validated.get("ok"):
+            return {"ok": False, "error": validated.get("error") or "reason_required"}
+
+    resolved_code = validated["reason_code"]
+    resolved_text = validated["comment"] or validated["audit_text"]
+    oid = order_instance_id
+    if oid is None:
+        oid = resolve_order_instance_id_for_bag(
+            cursor, organization_id, bag_id, prefer_open=True
+        )
 
     # Step1 outcome=exclude only patches day_bags and does not remove open CW
     # bags from OI membership — so CW soft-exclude lives here instead.
@@ -560,11 +583,11 @@ def exclude_from_current_workload(
         organization_id,
         bag_id=bag_id,
         override_type=OVERRIDE_EXCLUDE,
-        reason_text=reason_text,
-        reason_code="MANAGER_EXCLUDED_FROM_WORKLOAD",
+        reason_text=resolved_text,
+        reason_code=resolved_code,
         actor_user_id=actor_user_id,
         actor_display_name=actor_display_name,
-        order_instance_id=order_instance_id,
+        order_instance_id=oid,
     )
     if not out.get("ok"):
         return out
@@ -575,17 +598,34 @@ def exclude_from_current_workload(
         organization_id,
         bag_id=bid,
         action="cw_exclude",
-        reason_text=str(reason_text).strip(),
-        reason_code="MANAGER_EXCLUDED_FROM_WORKLOAD",
+        reason_text=str(resolved_text).strip(),
+        reason_code=resolved_code,
         previous_values={"cw_status": "open"},
         new_values={
             "cw_override_type": OVERRIDE_EXCLUDE,
             "selected_date_et": str(selected_date_et) if selected_date_et else None,
-            "order_instance_id": order_instance_id,
+            "order_instance_id": oid,
+            "reason_code": resolved_code,
+            "comment": validated.get("comment"),
         },
         actor_user_id=actor_user_id,
         actor_display_name=actor_display_name,
     )
+    if oid is not None:
+        try:
+            record_oi_manager_disposition(
+                cursor,
+                organization_id,
+                order_instance_id=int(oid),
+                bag_id=bid,
+                disposition_type=DISPOSITION_EXCLUDE,
+                reason_code=resolved_code,
+                comment=validated.get("comment"),
+                actor_user_id=actor_user_id,
+                actor_display_name=actor_display_name,
+            )
+        except Exception:
+            pass
 
     day_sync = None
     if selected_date_et is not None:
@@ -600,10 +640,12 @@ def exclude_from_current_workload(
                 snap = dict(day_row.get("bag_snapshot") or {})
                 snap["cw_operational_exclude"] = {
                     "active": True,
-                    "reason": str(reason_text).strip(),
+                    "reason": str(resolved_text).strip(),
+                    "reason_code": resolved_code,
                     "by": (actor_display_name or "").strip() or None,
                     "actor_user_id": actor_user_id,
                     "at": out.get("created_at_et"),
+                    "order_instance_id": oid,
                 }
                 cursor.execute(
                     """

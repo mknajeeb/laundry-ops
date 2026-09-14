@@ -229,10 +229,10 @@ def test_edit_bag_confirm_canonical_completion_no_reason():
         "completion_at": "2026-07-24T14:00",
     }
     confirmed = classify_edit_reason_requirements(draft, before, outcome="mark_completed")
-    assert confirmed["reason_required"] is False
+    # Manual Complete always requires structured reason + manager note.
+    assert confirmed["reason_required"] is True
     assert confirmed["confirm_completed"] is True
-    assert confirmed["system_action"] == SYSTEM_ACTION_REVIEW_CONFIRMED_COMPLETED
-    assert confirmed["save_path"] == "confirm_completed"
+    assert "mark_completed" in confirmed["triggers"]
 
     resolved = resolve_edit_audit_reason(
         reason=None,
@@ -242,8 +242,19 @@ def test_edit_bag_confirm_canonical_completion_no_reason():
         before=before,
         outcome="mark_completed",
     )
-    assert resolved["ok"] is True
-    assert resolved["reason"] == SYSTEM_ACTION_REVIEW_CONFIRMED_COMPLETED
+    assert resolved["ok"] is False
+    assert resolved["error"] == "reason_code_required"
+
+    resolved_ok = resolve_edit_audit_reason(
+        reason=None,
+        reason_code="MANUAL_RESEARCH_CONFIRMED",
+        reason_note="Confirmed complete from portal evidence",
+        draft=draft,
+        before=before,
+        outcome="mark_completed",
+    )
+    assert resolved_ok["ok"] is True
+    assert resolved_ok["reason_code"] == "MANUAL_RESEARCH_CONFIRMED"
 
 
 def test_edit_bag_completion_employee_change_requires_reason():
@@ -261,7 +272,12 @@ def test_edit_bag_completion_employee_change_requires_reason():
     policy = classify_edit_reason_requirements(draft, before, outcome="mark_completed")
     assert policy["reason_required"] is True
     assert "completion_employee_changed" in policy["triggers"]
-    assert policy["suggested_reason_code"] == "CORRECT_COMPLETION_DETAILS"
+    assert "mark_completed" in policy["triggers"]
+    # Manual Complete catalog — no auto-suggested code.
+    assert policy["suggested_reason_code"] is None
+    codes = {c["code"] for c in policy["reason_codes"]}
+    assert "BAG_ID_REASSIGNED" in codes
+    assert "MANUAL_RESEARCH_CONFIRMED" in codes
 
 
 def test_edit_bag_resolve_other_requires_note():

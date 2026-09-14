@@ -78,7 +78,7 @@ def test_mark_completed_clears_manual_review_override():
             },
             expected_manager_edit_version=0,
             outcome_action="mark_completed",
-            reason_code="MARK_COMPLETED",
+            reason_code="MANUAL_RESEARCH_CONFIRMED",
             reason_note="complete",
             actor_display_name="Mgr",
         )

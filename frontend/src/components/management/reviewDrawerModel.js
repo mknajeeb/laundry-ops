@@ -5,6 +5,23 @@
 
 import { classifyEditSavePath, parseWeightInput } from "../shift/editBagHelpers";
 
+/** Manager Exclude reason dropdown (required). */
+export const EXCLUDE_REASON_OPTIONS = [
+  { code: "EXTRA_OR_DUPLICATE_BAG", label: "Extra bag / duplicate bag used" },
+  { code: "REJECTED_NOT_PROCESSED", label: "Rejected / not processed" },
+  { code: "OTHER", label: "Other" },
+];
+
+/** Manual Complete reason dropdown (required). */
+export const COMPLETE_REASON_OPTIONS = [
+  { code: "BAG_ID_REASSIGNED", label: "Bag ID unassigned / reassigned" },
+  {
+    code: "MANUAL_RESEARCH_CONFIRMED",
+    label: "Manually researched and confirmed complete",
+  },
+  { code: "OTHER", label: "Other" },
+];
+
 const MISSING_CODES = new Set([
   "DISAPPEARED_WITHOUT_COMPLETION",
   "DISAPPEARED_FROM_PORTAL",
@@ -239,7 +256,6 @@ export function suggestedCompleteAudit({ draft, baselineBag, variant = "missing"
     baselineBag,
     outcome: "mark_completed",
   });
-  const code = path.suggestedReasonCode || "MARK_COMPLETED";
   const isSpecialty = variant === "specialty";
   const note = path.confirmCompleted
     ? isSpecialty
@@ -249,9 +265,10 @@ export function suggestedCompleteAudit({ draft, baselineBag, variant = "missing"
       ? "Specialty review — Save & Complete"
       : "Missing From Portal — Save & Complete";
   return {
-    reasonCode: path.reasonRequired ? code : "MARK_COMPLETED",
+    // Caller must supply Manual Complete reason_code + manager note.
+    reasonCode: null,
     reasonNote: note,
-    reasonRequired: Boolean(path.reasonRequired),
+    reasonRequired: true,
     confirmCompleted: Boolean(path.confirmCompleted),
   };
 }

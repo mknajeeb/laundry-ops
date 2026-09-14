@@ -36,6 +36,8 @@ import {
   resolveReviewDrawerInlineVariant,
   bulkItemsDraft,
   catalogSpecialtyLines,
+  COMPLETE_REASON_OPTIONS,
+  EXCLUDE_REASON_OPTIONS,
   fmtLbs,
   suggestedCompleteAudit,
   toPickerValue,
@@ -260,6 +262,7 @@ function ReviewReasonBanner({ bag, drawerCategory }) {
     bag?.manager_note ||
     bag?.cw_manual_review_reason ||
     null;
+  const disposition = bag?.manager_disposition || null;
   return (
     <Box
       data-testid="review-reason-banner"
@@ -289,6 +292,12 @@ function ReviewReasonBanner({ bag, drawerCategory }) {
       {note ? (
         <Typography sx={{ fontSize: 12, color: "#7f1d1d", mt: 0.35, fontWeight: 600 }}>
           Manager note: {note}
+        </Typography>
+      ) : null}
+      {disposition?.reason_code ? (
+        <Typography sx={{ fontSize: 11, color: "#7f1d1d", mt: 0.25 }}>
+          Disposition: {disposition.disposition_type} · {disposition.reason_code}
+          {disposition.comment ? ` — ${disposition.comment}` : ""}
         </Typography>
       ) : null}
     </Box>
@@ -345,9 +354,17 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
   const [scansOpen, setScansOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [completeReason, setCompleteReason] = useState("");
+  const [completeNote, setCompleteNote] = useState("");
+  const [excludeReason, setExcludeReason] = useState("");
+  const [excludeComment, setExcludeComment] = useState("");
 
   useEffect(() => {
     setPhase("choose");
+    setCompleteReason("");
+    setCompleteNote("");
+    setExcludeReason("");
+    setExcludeComment("");
     setPostLbs(
       bag?.post_weight_lbs == null || bag?.post_weight_lbs === ""
         ? ""
@@ -427,17 +444,31 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
   const canSave =
     completionAvailability.enabled &&
     bulkAvailability.enabled &&
+    Boolean(String(completeReason || "").trim()) &&
+    Boolean(String(completeNote || "").trim()) &&
     !saving &&
     !readOnly;
 
   const saveBlockReason =
     (!bulkAvailability.enabled && bulkAvailability.reason) ||
     (!completionAvailability.enabled && completionAvailability.reason) ||
+    (!String(completeReason || "").trim() && "Completion reason required") ||
+    (!String(completeNote || "").trim() && "Manager note required") ||
     null;
 
   const save = async () => {
     if (!canSave) {
       setError(saveBlockReason || "Cannot save");
+      return;
+    }
+    const reasonCode = String(completeReason || "").trim().toUpperCase();
+    const managerNote = String(completeNote || "").trim();
+    if (!reasonCode) {
+      setError("Completion reason required");
+      return;
+    }
+    if (!managerNote) {
+      setError("Manager note required");
       return;
     }
     const baselinePre = authoritativeEvidencePre(bag);
@@ -448,6 +479,7 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
       post_weight_lbs: parseWeightInput(postLbs),
       completed_by: completedBy,
       completion_at: completionAt,
+      order_instance_id: bag.order_instance_id || null,
       ...(bulkRequired || (isSpecialty && bagBulkReviewUnresolved(bag))
         ? bulkItemsDraft(lines, { noChargeable: noCharge, noChargeReason })
         : {}),
@@ -460,6 +492,7 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
       baselineBag: bag,
       variant: isSpecialty ? "specialty" : "missing",
     });
+    const reasonNote = managerNote || audit.reasonNote;
     setSaving(true);
     setError("");
     try {
@@ -467,9 +500,9 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
         action: "edit_bag",
         bag_id: bag.bag_id,
         selected_date_et: selectedDateEt,
-        reason: audit.reasonNote,
-        reason_code: audit.reasonCode,
-        reason_note: audit.reasonNote,
+        reason: reasonNote,
+        reason_code: reasonCode,
+        reason_note: reasonNote,
         expected_updated_at: bag.updated_at || bag.day_bag_updated_at || null,
         expected_manager_edit_version:
           bag.manager_edit_version != null ? Number(bag.manager_edit_version) : null,
@@ -485,9 +518,9 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
           action: "edit_bag",
           bag_id: bag.bag_id,
           selected_date_et: selectedDateEt,
-          reason: audit.reasonNote,
-          reason_code: audit.reasonCode,
-          reason_note: audit.reasonNote,
+          reason: reasonNote,
+          reason_code: reasonCode,
+          reason_note: reasonNote,
           expected_updated_at: res.data?.latest?.updated_at || bag.updated_at || null,
           expected_manager_edit_version: Number(res.data.manager_edit_version),
           outcome_action: "mark_completed",
@@ -516,83 +549,80 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
     }
   };
 
-  const excludeDisappeared = async () => {
-    if (readOnly || saving || !canExcludeDisappeared) return;
-    setSaving(true);
-    setError("");
-    const body = {
-      action: "edit_bag",
-      bag_id: bag.bag_id,
-      selected_date_et: selectedDateEt,
-      reason: "Disappeared From Portal — manager exclude",
-      reason_code: "EXCLUDE",
-      reason_note: "Disappeared From Portal — manager exclude",
-      expected_updated_at: bag.updated_at || bag.day_bag_updated_at || null,
-      expected_manager_edit_version:
-        bag.manager_edit_version != null ? Number(bag.manager_edit_version) : null,
-      outcome_action: "exclude",
-      draft: {
-        service_type: String(bag?.service_type || "WF").toUpperCase(),
-        rush_flag: bag?.rush_flag || "NON-RUSH",
-      },
-    };
-    try {
-      let res = await postVeewashStep1Correction(body);
-      // One automatic retry with server-current lock version when still eligible.
-      if (
-        !res?.data?.ok &&
-        res?.data?.error === "conflict" &&
-        res?.data?.manager_edit_version != null
-      ) {
-        res = await postVeewashStep1Correction({
-          ...body,
-          expected_manager_edit_version: Number(res.data.manager_edit_version),
-          expected_updated_at: res.data?.latest?.updated_at || body.expected_updated_at,
-        });
-      }
-      if (!res?.data?.ok) {
-        setError(
-          formatReviewApiError(
-            res?.data?.error,
-            res?.data?.message || res?.data?.error || "Exclude failed",
-          ),
-        );
-        return;
-      }
-      // Idempotent already-excluded is success — remove locally like a fresh exclude.
-      onSaved?.(res.data, {
-        kind: "missing_exclude",
-        bagId: bag.bag_id,
-        alreadyExcluded: Boolean(res.data?.already_excluded),
-      });
-    } catch (err) {
-      setError(
-        formatReviewApiError(
-          err?.response?.data?.error,
-          err?.response?.data?.message || err?.message || "Exclude failed",
-        ),
-      );
-    } finally {
-      setSaving(false);
+  const submitExclude = async () => {
+    if (readOnly || saving) return;
+    const reasonCode = String(excludeReason || "").trim().toUpperCase();
+    const comment = String(excludeComment || "").trim();
+    if (!reasonCode) {
+      setError("Exclude reason required");
+      return;
     }
-  };
-
-  const excludeManual = async () => {
-    if (readOnly || saving || !canExcludeManual) return;
-    const reason = window.prompt("Exclude reason (required):");
-    if (!reason || !String(reason).trim()) return;
+    if (reasonCode === "OTHER" && !comment) {
+      setError("Comment required for Other");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      const res = await postManagementWfCwExclude(selectedDateEt, bag.bag_id, {
-        reason: String(reason).trim(),
-        order_instance_id: bag.order_instance_id || null,
-      });
-      if (!res?.data?.ok) {
-        setError(formatReviewApiError(res?.data?.error, res?.data?.message || "Exclude failed"));
+      if (canExcludeDisappeared && phase === "exclude") {
+        const body = {
+          action: "edit_bag",
+          bag_id: bag.bag_id,
+          selected_date_et: selectedDateEt,
+          reason: comment || reasonCode,
+          reason_code: reasonCode,
+          reason_note: comment || null,
+          expected_updated_at: bag.updated_at || bag.day_bag_updated_at || null,
+          expected_manager_edit_version:
+            bag.manager_edit_version != null ? Number(bag.manager_edit_version) : null,
+          outcome_action: "exclude",
+          draft: {
+            service_type: String(bag?.service_type || "WF").toUpperCase(),
+            rush_flag: bag?.rush_flag || "NON-RUSH",
+            order_instance_id: bag.order_instance_id || null,
+          },
+        };
+        let res = await postVeewashStep1Correction(body);
+        if (
+          !res?.data?.ok &&
+          res?.data?.error === "conflict" &&
+          res?.data?.manager_edit_version != null
+        ) {
+          res = await postVeewashStep1Correction({
+            ...body,
+            expected_manager_edit_version: Number(res.data.manager_edit_version),
+            expected_updated_at: res.data?.latest?.updated_at || body.expected_updated_at,
+          });
+        }
+        if (!res?.data?.ok) {
+          setError(
+            formatReviewApiError(
+              res?.data?.error,
+              res?.data?.message || res?.data?.error || "Exclude failed",
+            ),
+          );
+          return;
+        }
+        onSaved?.(res.data, {
+          kind: "missing_exclude",
+          bagId: bag.bag_id,
+          alreadyExcluded: Boolean(res.data?.already_excluded),
+        });
         return;
       }
-      onSaved?.(res.data, { kind: "manual_exclude", bagId: bag.bag_id });
+      if (canExcludeManual) {
+        const res = await postManagementWfCwExclude(selectedDateEt, bag.bag_id, {
+          reason: comment || reasonCode,
+          reason_code: reasonCode,
+          reason_text: comment || reasonCode,
+          order_instance_id: bag.order_instance_id || null,
+        });
+        if (!res?.data?.ok) {
+          setError(formatReviewApiError(res?.data?.error, res?.data?.message || "Exclude failed"));
+          return;
+        }
+        onSaved?.(res.data, { kind: "manual_exclude", bagId: bag.bag_id });
+      }
     } catch (err) {
       setError(
         formatReviewApiError(
@@ -688,10 +718,13 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
                 variant="outlined"
                 color="error"
                 disabled={readOnly || saving || !lockReady}
-                onClick={excludeDisappeared}
+                onClick={() => {
+                  setError("");
+                  setPhase("exclude");
+                }}
                 sx={{ textTransform: "none", fontWeight: 800 }}
               >
-                {saving ? "Saving…" : "Exclude"}
+                Exclude
               </Button>
             ) : null}
             {canExcludeManual ? (
@@ -701,7 +734,10 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
                 variant="outlined"
                 color="error"
                 disabled={readOnly || saving || !lockReady}
-                onClick={excludeManual}
+                onClick={() => {
+                  setError("");
+                  setPhase("exclude");
+                }}
                 sx={{ textTransform: "none", fontWeight: 800 }}
               >
                 Exclude
@@ -735,6 +771,69 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
             </Typography>
           ) : null}
           <ScanChronology selectedDateEt={selectedDateEt} bagId={bag.bag_id} open={scansOpen} />
+        </>
+      ) : phase === "exclude" ? (
+        <>
+          {error ? (
+            <Alert severity="error" sx={{ mb: 0.75, py: 0.25, mt: 0.75 }} onClose={() => setError("")}>
+              {error}
+            </Alert>
+          ) : null}
+          <FormControl size="small" fullWidth sx={{ mt: 1 }} disabled={readOnly || saving}>
+            <InputLabel id="exclude-reason-label">Reason *</InputLabel>
+            <Select
+              labelId="exclude-reason-label"
+              label="Reason *"
+              data-testid="review-exclude-reason"
+              value={excludeReason}
+              onChange={(e) => setExcludeReason(e.target.value)}
+            >
+              {EXCLUDE_REASON_OPTIONS.map((opt) => (
+                <MenuItem key={opt.code} value={opt.code}>
+                  {opt.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <TextField
+            size="small"
+            label={excludeReason === "OTHER" ? "Comments *" : "Comments"}
+            value={excludeComment}
+            onChange={(e) => setExcludeComment(e.target.value)}
+            fullWidth
+            multiline
+            minRows={2}
+            disabled={readOnly || saving}
+            sx={{ mt: 1 }}
+            data-testid="review-exclude-comment"
+          />
+          <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+            <Button
+              data-testid="review-exclude-confirm"
+              size="small"
+              variant="contained"
+              color="error"
+              disabled={
+                readOnly ||
+                saving ||
+                !excludeReason ||
+                (excludeReason === "OTHER" && !String(excludeComment || "").trim())
+              }
+              onClick={submitExclude}
+              sx={{ textTransform: "none", fontWeight: 800 }}
+            >
+              {saving ? "Saving…" : "Confirm Exclude"}
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={saving}
+              onClick={() => setPhase("choose")}
+              sx={{ textTransform: "none", fontWeight: 700 }}
+            >
+              Back
+            </Button>
+          </Stack>
         </>
       ) : (
         <>
@@ -810,12 +909,40 @@ function MissingPortalInline({ bag, catalog, selectedDateEt, readOnly, onSaved, 
           />
           <Box sx={{ mt: 1 }}>
             <CompactEtDateTimeField
-              label="Completion date & time (ET)"
+              label="Completion date & time (ET) *"
               value={completionAt}
               onChange={setCompletionAt}
               disabled={readOnly || saving}
             />
           </Box>
+          <FormControl size="small" fullWidth sx={{ mt: 1 }} disabled={readOnly || saving}>
+            <InputLabel id="complete-reason-label">Completion reason *</InputLabel>
+            <Select
+              labelId="complete-reason-label"
+              label="Completion reason *"
+              data-testid="review-complete-reason"
+              value={completeReason}
+              onChange={(e) => setCompleteReason(e.target.value)}
+            >
+              {COMPLETE_REASON_OPTIONS.map((opt) => (
+                <MenuItem key={opt.code} value={opt.code}>
+                  {opt.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <TextField
+            size="small"
+            label="Manager note *"
+            value={completeNote}
+            onChange={(e) => setCompleteNote(e.target.value)}
+            fullWidth
+            multiline
+            minRows={2}
+            disabled={readOnly || saving}
+            sx={{ mt: 1 }}
+            data-testid="review-complete-note"
+          />
           {!canSave && saveBlockReason ? (
             <Typography sx={{ mt: 0.5, fontSize: 11, color: "#b45309" }}>
               {saveBlockReason}

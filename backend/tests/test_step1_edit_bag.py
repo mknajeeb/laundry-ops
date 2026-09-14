@@ -812,6 +812,8 @@ def test_save_and_mark_completed_is_atomic(cur):
                 "completion_at": "2026-07-22T15:00:00",
             },
             outcome_action="mark_completed",
+            reason_code="MANUAL_RESEARCH_CONFIRMED",
+            reason_note="atomic mark completed",
             actor_display_name="Manager Mo",
         )
     assert out["ok"] is True

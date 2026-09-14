@@ -2867,6 +2867,27 @@ def build_management_wf_bag_detail(
             "lifecycle": lifecycle,
         }
     )
+    # OI-scoped manager disposition history (Exclude / Manual Complete notes).
+    try:
+        from backend.rinse_wf_oi_manager_disposition import list_oi_manager_dispositions
+
+        oid_hist = lifecycle.get("order_instance_id") or bag.get("order_instance_id")
+        if oid_hist is not None:
+            hist = list_oi_manager_dispositions(
+                cursor,
+                organization_id,
+                order_instance_id=int(oid_hist),
+                active_only=False,
+                limit=40,
+            )
+            bag["manager_dispositions"] = hist
+            active = next((h for h in hist if h.get("active")), None)
+            if active:
+                bag["manager_disposition"] = active
+                bag["manager_note"] = active.get("comment") or bag.get("manager_note")
+                bag["manager_disposition_reason_code"] = active.get("reason_code")
+    except Exception:
+        bag.setdefault("manager_dispositions", [])
     return {
         "ok": True,
         "date_et": selected_date_et.isoformat(),

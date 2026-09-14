@@ -29,24 +29,17 @@ class _Cur:
 def test_wf_weight_totals_sum_evidence_not_completion(monkeypatch):
     monkeypatch.setattr("backend.management_today.table_exists", lambda *a, **k: True)
     monkeypatch.setattr("backend.management_today.table_has_column", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "backend.rinse_wf_oi_manager_disposition.collect_processed_pounds_excluded_bag_ids",
+        lambda *a, **k: set(),
+    )
     cur = _Cur(
         [
-            {"bag_id": "BAG1", "rush_status": "RUSH"},
-            {"bag_id": "BAG2", "rush_status": "RUSH"},
-            {"bag_id": "BAG3", "rush_status": "NON-RUSH"},
+            {"bag_id": "BAG1", "rush_status": "RUSH", "post_weight_lbs": 50.0},
+            {"bag_id": "BAG2", "rush_status": "RUSH", "post_weight_lbs": 40.0},
+            {"bag_id": "BAG3", "rush_status": "NON-RUSH", "post_weight_lbs": 40.2},
         ],
-        [
-            {
-                "rush_status": "RUSH",
-                "post_lbs": 90.0,
-                "post_bag_count": 2,
-            },
-            {
-                "rush_status": "NON-RUSH",
-                "post_lbs": 40.25,
-                "post_bag_count": 1,
-            },
-        ],
+        [],
     )
 
     def _weight_map(cursor, org, ids, *, selected_date_et):
@@ -101,9 +94,13 @@ def test_drawer_and_headline_share_authoritative_pre(monkeypatch):
 def test_wf_weight_totals_post_only_bag_contributes_zero_pre(monkeypatch):
     monkeypatch.setattr("backend.management_today.table_exists", lambda *a, **k: True)
     monkeypatch.setattr("backend.management_today.table_has_column", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "backend.rinse_wf_oi_manager_disposition.collect_processed_pounds_excluded_bag_ids",
+        lambda *a, **k: set(),
+    )
     cur = _Cur(
-        [{"bag_id": "0WMBKDYLS0", "rush_status": "NON-RUSH"}],
-        [{"rush_status": "NON-RUSH", "post_lbs": 13.1, "post_bag_count": 1}],
+        [{"bag_id": "0WMBKDYLS0", "rush_status": "NON-RUSH", "post_weight_lbs": 13.1}],
+        [],
     )
 
     monkeypatch.setattr(
